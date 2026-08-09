@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Callable
 
 import dbus
@@ -43,6 +44,32 @@ class PairingAgent(dbus.service.Object):
         if str(device) != self._expected_device:
             raise _Rejected("BlueFerry did not request pairing with this device")
 
+    def _confirm_deferred(
+        self,
+        passkey: int | None,
+        rejection: str,
+        return_cb: Callable[[], None],
+        error_cb: Callable[[Exception], None],
+    ) -> None:
+        # BlueZ expects an answer within its own pairing timeout, but the
+        # confirmation callback may wait on a human. Blocking this dispatch
+        # would also block the GLib loop that carries the rest of the
+        # transaction, so answer through a deferred D-Bus reply instead.
+        def confirm() -> None:
+            try:
+                if self._confirmation(passkey):
+                    return_cb()
+                else:
+                    error_cb(_Rejected(rejection))
+            except Exception as error:  # callback/UI failures reject securely
+                error_cb(error)
+
+        threading.Thread(
+            target=confirm,
+            name="blueferry-pairing-confirmation",
+            daemon=True,
+        ).start()
+
     @dbus.service.method(AGENT_INTERFACE, in_signature="", out_signature="")
     def Release(self) -> None:
         pass
@@ -72,21 +99,46 @@ class PairingAgent(dbus.service.Object):
         if self._display is not None:
             self._display(int(passkey))
 
-    @dbus.service.method(AGENT_INTERFACE, in_signature="ou", out_signature="")
+    @dbus.service.method(
+        AGENT_INTERFACE,
+        in_signature="ou",
+        out_signature="",
+        async_callbacks=("return_cb", "error_cb"),
+    )
     def RequestConfirmation(
         self,
         device: dbus.ObjectPath,
         passkey: dbus.UInt32,
+        return_cb: Callable[[], None],
+        error_cb: Callable[[Exception], None],
     ) -> None:
         self._require_expected(device)
-        if not self._confirmation(int(passkey)):
-            raise _Rejected("Pairing code was not confirmed")
+        self._confirm_deferred(
+            int(passkey),
+            "Pairing code was not confirmed",
+            return_cb,
+            error_cb,
+        )
 
-    @dbus.service.method(AGENT_INTERFACE, in_signature="o", out_signature="")
-    def RequestAuthorization(self, device: dbus.ObjectPath) -> None:
+    @dbus.service.method(
+        AGENT_INTERFACE,
+        in_signature="o",
+        out_signature="",
+        async_callbacks=("return_cb", "error_cb"),
+    )
+    def RequestAuthorization(
+        self,
+        device: dbus.ObjectPath,
+        return_cb: Callable[[], None],
+        error_cb: Callable[[Exception], None],
+    ) -> None:
         self._require_expected(device)
-        if not self._confirmation(None):
-            raise _Rejected("Pairing was not authorized")
+        self._confirm_deferred(
+            None,
+            "Pairing was not authorized",
+            return_cb,
+            error_cb,
+        )
 
     @dbus.service.method(AGENT_INTERFACE, in_signature="os", out_signature="")
     def AuthorizeService(self, device: dbus.ObjectPath, uuid: str) -> None:
@@ -98,7 +150,14 @@ class PairingAgent(dbus.service.Object):
 
 
 class RegisteredPairingAgent:
-    """Register an agent for one call to ``Device1.Pair`` and clean it up."""
+    """Register a same-thread agent for one interactive pairing transaction.
+
+    The agent's D-Bus callbacks are dispatched by a GLib loop running on the
+    caller's thread (``wait_for_pair``). An earlier design ran the loop on a
+    background thread next to a synchronous ``Device1.Pair()``; dbus-python
+    intermittently lost the confirmation reply in that arrangement, producing
+    spurious authentication failures.
+    """
 
     def __init__(
         self,
@@ -107,12 +166,7 @@ class RegisteredPairingAgent:
         display: DisplayCallback | None = None,
     ) -> None:
         self._bus = get_system_bus()
-        self._loop = GLib.MainLoop()
-        self._thread = threading.Thread(
-            target=self._loop.run,
-            name="blueferry-pairing-agent",
-            daemon=True,
-        )
+        self._expected_device = expected_device
         self._agent = PairingAgent(
             self._bus,
             expected_device,
@@ -125,35 +179,81 @@ class RegisteredPairingAgent:
         )
         self._registered = False
 
-    def __enter__(self) -> PairingAgent:
-        self._thread.start()
+    def __enter__(self) -> RegisteredPairingAgent:
         try:
             self._manager.RegisterAgent(
                 dbus.ObjectPath(AGENT_PATH),
                 "DisplayYesNo",
                 timeout=10.0,
             )
+            self._registered = True
+            # Own incoming requests the way desktop pairing managers do, so
+            # an iPhone-initiated transaction reaches this confirmation UI
+            # instead of racing whichever desktop agent happens to exist.
+            self._manager.RequestDefaultAgent(
+                dbus.ObjectPath(AGENT_PATH),
+                timeout=10.0,
+            )
         except dbus.exceptions.DBusException as error:
+            self._unregister()
             self._agent.remove_from_connection()
-            self._stop_loop()
             detail = error.get_dbus_message() or error.get_dbus_name() or str(error)
             raise PairingError(f"Could not start secure pairing confirmation: {detail}") from error
-        self._registered = True
-        return self._agent
+        return self
 
     def __exit__(self, _type, _value, _traceback) -> None:
-        if self._registered:
-            try:
-                self._manager.UnregisterAgent(
-                    dbus.ObjectPath(AGENT_PATH),
-                    timeout=10.0,
-                )
-            except dbus.exceptions.DBusException:
-                pass
+        self._unregister()
         self._agent.remove_from_connection()
-        self._stop_loop()
 
-    def _stop_loop(self) -> None:
-        self._loop.quit()
-        if self._thread.is_alive():
-            self._thread.join(timeout=2)
+    def _unregister(self) -> None:
+        if not self._registered:
+            return
+        try:
+            self._manager.UnregisterAgent(
+                dbus.ObjectPath(AGENT_PATH),
+                timeout=10.0,
+            )
+        except dbus.exceptions.DBusException:
+            pass
+        self._registered = False
+
+    def wait_for_pair(self, timeout: float = 120.0) -> None:
+        """Dispatch Agent1 callbacks until BlueZ reports the device paired."""
+        loop = GLib.MainLoop()
+        deadline = time.monotonic() + timeout
+        failure: list[PairingError] = []
+        props = dbus.Interface(
+            self._bus.get_object("org.bluez", self._expected_device),
+            "org.freedesktop.DBus.Properties",
+        )
+
+        def check_state() -> bool:
+            try:
+                paired = bool(props.Get("org.bluez.Device1", "Paired"))
+            except dbus.exceptions.DBusException as error:
+                # BlueZ can briefly delete and recreate the device object
+                # during an incoming transaction.
+                if error.get_dbus_name() == "org.freedesktop.DBus.Error.UnknownObject":
+                    paired = False
+                else:
+                    failure.append(
+                        PairingError(f"Could not inspect pairing state: {error}")
+                    )
+                    loop.quit()
+                    return GLib.SOURCE_REMOVE
+            if paired:
+                loop.quit()
+                return GLib.SOURCE_REMOVE
+            if time.monotonic() >= deadline:
+                failure.append(PairingError(
+                    "Timed out waiting for the iPhone to pair. Keep Bluetooth "
+                    "settings open on the phone and tap this computer's name."
+                ))
+                loop.quit()
+                return GLib.SOURCE_REMOVE
+            return GLib.SOURCE_CONTINUE
+
+        GLib.timeout_add(250, check_state)
+        loop.run()
+        if failure:
+            raise failure[0]

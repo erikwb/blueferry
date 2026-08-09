@@ -418,26 +418,32 @@ def test_backend_restart_does_not_create_per_user_enablement(monkeypatch):
     ]
 
 
-def test_complete_pairing_hands_advertisement_to_daemon(monkeypatch):
-    device = _device(paired=True)
-    calls = []
-    monkeypatch.setattr(pair_setup, "_device", lambda _mac: device)
+def _compatible(monkeypatch, *, notifications: bool = True) -> None:
     monkeypatch.setattr(
         pair_setup,
         "bluetooth_compatibility",
         lambda _adapter: {
             "hardware_supported": True,
-            "notifications_supported": True,
+            "notifications_supported": notifications,
             "bearer_api_active": True,
         },
     )
+
+
+def test_complete_pairing_advertises_only_after_bond_then_hands_to_daemon(monkeypatch):
+    device = _device(paired=True)
+    calls = []
+    monkeypatch.setattr(pair_setup, "_device", lambda _mac: device)
+    _compatible(monkeypatch)
     monkeypatch.setattr(
         bluez_setup,
-        "prepare",
-        lambda **kwargs: calls.append(
-            ("prepare", kwargs["adapter"], kwargs["settle_for_pairing"])
-        )
-        or True,
+        "prepare_classic",
+        lambda **kwargs: calls.append(("prepare_classic", kwargs["adapter"])) or True,
+    )
+    monkeypatch.setattr(
+        bluez_setup,
+        "register_advert",
+        lambda adapter, **_kwargs: calls.append(("advert", adapter)) or True,
     )
     monkeypatch.setattr(
         bluez_setup,
@@ -446,90 +452,69 @@ def test_complete_pairing_hands_advertisement_to_daemon(monkeypatch):
     )
     monkeypatch.setattr(pair_setup, "trust_device", lambda *_args: calls.append("trust"))
     monkeypatch.setattr(pair_setup, "write_local_env", lambda *_args: calls.append("config"))
+    monkeypatch.setattr(
+        pair_setup, "_connect_classic", lambda _path: calls.append("classic-connect")
+    )
+    monkeypatch.setattr(
+        pair_setup, "_connect_ancs", lambda _device: calls.append("ancs") or "connected"
+    )
     monkeypatch.setattr(pair_setup, "_restart_user_service", lambda: calls.append("restart"))
 
     result = pair_setup.complete_pairing(device.mac)
 
     assert result["ok"] is True
-    assert result["ancs"] == "connection supervised by daemon"
-    assert result["ancs_ready"] is False
-    assert set(calls) == {
-        ("prepare", "hci0", False),
+    assert result["ancs"] == "connected"
+    assert result["ancs_ready"] is True
+    assert calls == [
+        ("prepare_classic", "hci0"),
         "trust",
         "config",
+        "classic-connect",
+        ("advert", "hci0"),
+        "ancs",
         ("unregister", "hci0"),
         "restart",
-    }
-    # The setup process owns the temporary advertisement until the backend is
-    # restarted; handing it off in the opposite order can leak an instance.
-    assert calls.index(("unregister", "hci0")) < calls.index("restart")
+    ]
 
 
-def test_complete_pairing_invokes_bluez_pair_for_new_device(monkeypatch):
+def test_complete_pairing_headless_pairs_from_linux(monkeypatch):
     unpaired = _device(paired=False)
     paired = _device(paired=True)
-    devices = iter([unpaired, paired, paired])
-    paired_calls = []
-    prepared = []
+    calls = []
 
     class DeviceInterface:
         def Pair(self, **kwargs):
-            paired_calls.append(kwargs["timeout"])
-
-    monkeypatch.setattr(pair_setup, "_device", lambda _mac: next(devices))
-    monkeypatch.setattr(
-        pair_setup,
-        "bluetooth_compatibility",
-        lambda _adapter: {
-            "hardware_supported": True,
-            "notifications_supported": True,
-            "bearer_api_active": True,
-        },
-    )
-    monkeypatch.setattr(
-        bluez_setup,
-        "prepare",
-        lambda **kwargs: prepared.append(kwargs) or True,
-    )
-    monkeypatch.setattr(bluez_setup, "unregister_advert", lambda _adapter: None)
+            calls.append(("pair", kwargs["timeout"]))
 
     class Bus:
         @staticmethod
         def get_object(*_args):
             return object()
 
+    monkeypatch.setattr(pair_setup, "_device", lambda _mac: unpaired)
+    monkeypatch.setattr(pair_setup, "_wait_for_paired_device", lambda _mac: paired)
+    _compatible(monkeypatch, notifications=False)
+    monkeypatch.setattr(bluez_setup, "prepare_classic", lambda **_kwargs: True)
+    monkeypatch.setattr(bluez_setup, "unregister_advert", lambda _adapter: None)
     monkeypatch.setattr(pair_setup, "get_system_bus", Bus)
     monkeypatch.setattr(pair_setup.dbus, "Interface", lambda *_args: DeviceInterface())
     monkeypatch.setattr(pair_setup, "trust_device", lambda *_args: None)
     monkeypatch.setattr(pair_setup, "write_local_env", lambda *_args: None)
     monkeypatch.setattr(pair_setup, "_restart_user_service", lambda: None)
-    monkeypatch.setattr(pair_setup.time, "sleep", lambda _seconds: None)
 
-    pair_setup.complete_pairing(unpaired.mac)
+    result = pair_setup.complete_pairing(unpaired.mac)
 
-    assert paired_calls == [120.0]
-    assert prepared[0]["settle_for_pairing"] is True
+    assert calls == [("pair", 120.0)]
+    assert result["ok"] is True
+    assert result["ancs"] == "unsupported by Bluetooth controller"
 
 
-def test_interactive_pairing_replaces_competing_peer_transaction(monkeypatch):
+def test_interactive_pairing_connects_and_lets_the_iphone_initiate(monkeypatch):
     from blueferry import pairing_agent
 
     unpaired = _device(paired=False)
     paired = _device(paired=True)
-    devices = iter([unpaired, paired, paired])
     calls = []
-
-    class DeviceInterface:
-        def Pair(self, **kwargs):
-            calls.append(("pair", kwargs["timeout"]))
-            if calls.count(("pair", 120.0)) == 1:
-                raise pair_setup.dbus.exceptions.DBusException(
-                    "Pairing already in progress",
-                    name="org.bluez.Error.InProgress",
-                )
-
-        def CancelPairing(self, **kwargs):
-            calls.append(("cancel", kwargs["timeout"]))
 
     class Agent:
         def __init__(self, path, confirmation, display):
@@ -537,14 +522,13 @@ def test_interactive_pairing_replaces_competing_peer_transaction(monkeypatch):
 
         def __enter__(self):
             calls.append("agent-enter")
+            return self
 
         def __exit__(self, *_args):
             calls.append("agent-exit")
 
-    class Bus:
-        @staticmethod
-        def get_object(*_args):
-            return object()
+        def wait_for_pair(self, *, timeout):
+            calls.append(("wait", timeout))
 
     def confirmation(_passkey):
         return True
@@ -552,25 +536,24 @@ def test_interactive_pairing_replaces_competing_peer_transaction(monkeypatch):
     def display(_passkey):
         return None
 
-    monkeypatch.setattr(pair_setup, "_device", lambda _mac: next(devices))
+    monkeypatch.setattr(pair_setup, "_device", lambda _mac: unpaired)
     monkeypatch.setattr(
         pair_setup,
-        "bluetooth_compatibility",
-        lambda _adapter: {
-            "hardware_supported": True,
-            "notifications_supported": True,
-            "bearer_api_active": True,
-        },
+        "_wait_for_paired_device",
+        lambda _mac: calls.append("settled") or paired,
     )
-    monkeypatch.setattr(bluez_setup, "prepare", lambda **_kwargs: True)
+    _compatible(monkeypatch, notifications=False)
+    monkeypatch.setattr(bluez_setup, "prepare_classic", lambda **_kwargs: True)
     monkeypatch.setattr(bluez_setup, "unregister_advert", lambda _adapter: None)
     monkeypatch.setattr(pairing_agent, "RegisteredPairingAgent", Agent)
-    monkeypatch.setattr(pair_setup, "get_system_bus", Bus)
-    monkeypatch.setattr(pair_setup.dbus, "Interface", lambda *_args: DeviceInterface())
+    monkeypatch.setattr(
+        pair_setup,
+        "_connect_classic",
+        lambda path, **kwargs: calls.append(("connect", path, kwargs["timeout"])),
+    )
     monkeypatch.setattr(pair_setup, "trust_device", lambda *_args: None)
     monkeypatch.setattr(pair_setup, "write_local_env", lambda *_args: None)
     monkeypatch.setattr(pair_setup, "_restart_user_service", lambda: None)
-    monkeypatch.setattr(pair_setup.time, "sleep", lambda _seconds: None)
 
     pair_setup.complete_pairing(
         unpaired.mac,
@@ -578,28 +561,23 @@ def test_interactive_pairing_replaces_competing_peer_transaction(monkeypatch):
         display=display,
     )
 
+    # Connecting the unpaired ACL makes iOS initiate pairing (and derive the
+    # LE keys); there must be no competing Linux-side Device1.Pair() call,
+    # and the agent must be alive before the connect provokes iOS.
     assert calls == [
         ("agent", unpaired.device_path, confirmation, display),
         "agent-enter",
-        ("pair", 120.0),
-        ("cancel", 10.0),
-        ("pair", 120.0),
+        ("connect", unpaired.device_path, 60.0),
+        ("wait", 120.0),
         "agent-exit",
+        "settled",
     ]
 
 
 def test_peer_initiated_pairing_is_allowed_to_finish(monkeypatch):
     unpaired = _device(paired=False)
     paired = _device(paired=True)
-    first_lookup = True
     pair_calls = []
-
-    def lookup(_mac):
-        nonlocal first_lookup
-        if first_lookup:
-            first_lookup = False
-            return unpaired
-        return paired
 
     class DeviceInterface:
         def Pair(self, **_kwargs):
@@ -614,24 +592,16 @@ def test_peer_initiated_pairing_is_allowed_to_finish(monkeypatch):
         def get_object(*_args):
             return object()
 
-    monkeypatch.setattr(pair_setup, "_device", lookup)
-    monkeypatch.setattr(
-        pair_setup,
-        "bluetooth_compatibility",
-        lambda _adapter: {
-            "hardware_supported": True,
-            "notifications_supported": True,
-            "bearer_api_active": True,
-        },
-    )
-    monkeypatch.setattr(bluez_setup, "prepare", lambda **_kwargs: True)
+    monkeypatch.setattr(pair_setup, "_device", lambda _mac: unpaired)
+    monkeypatch.setattr(pair_setup, "_wait_for_paired_device", lambda _mac: paired)
+    _compatible(monkeypatch, notifications=False)
+    monkeypatch.setattr(bluez_setup, "prepare_classic", lambda **_kwargs: True)
     monkeypatch.setattr(bluez_setup, "unregister_advert", lambda _adapter: None)
     monkeypatch.setattr(pair_setup, "get_system_bus", Bus)
     monkeypatch.setattr(pair_setup.dbus, "Interface", lambda *_args: DeviceInterface())
     monkeypatch.setattr(pair_setup, "trust_device", lambda *_args: None)
     monkeypatch.setattr(pair_setup, "write_local_env", lambda *_args: None)
     monkeypatch.setattr(pair_setup, "_restart_user_service", lambda: None)
-    monkeypatch.setattr(pair_setup.time, "sleep", lambda _seconds: None)
 
     result = pair_setup.complete_pairing(unpaired.mac)
 
@@ -639,28 +609,26 @@ def test_peer_initiated_pairing_is_allowed_to_finish(monkeypatch):
     assert result["ok"] is True
 
 
-def test_pairing_does_not_claim_ancs_ready_before_daemon_reports_it(monkeypatch):
+def test_pairing_reports_pending_ancs_when_le_bond_is_missing(monkeypatch):
     device = _device(paired=True)
     device.uuids = frozenset()
     monkeypatch.setattr(pair_setup, "_device", lambda _mac: device)
-    monkeypatch.setattr(
-        pair_setup,
-        "bluetooth_compatibility",
-        lambda _adapter: {
-            "hardware_supported": True,
-            "notifications_supported": True,
-            "bearer_api_active": True,
-        },
-    )
-    monkeypatch.setattr(bluez_setup, "prepare", lambda **_kwargs: True)
+    _compatible(monkeypatch)
+    monkeypatch.setattr(bluez_setup, "prepare_classic", lambda **_kwargs: True)
+    monkeypatch.setattr(bluez_setup, "register_advert", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(bluez_setup, "unregister_advert", lambda _adapter: None)
     monkeypatch.setattr(pair_setup, "trust_device", lambda *_args: None)
     monkeypatch.setattr(pair_setup, "write_local_env", lambda *_args: None)
+    monkeypatch.setattr(pair_setup, "_connect_classic", lambda _path: None)
+
+    def no_le(_device):
+        raise pair_setup.PairingError("LE bond missing")
+
+    monkeypatch.setattr(pair_setup, "_connect_ancs", no_le)
     monkeypatch.setattr(pair_setup, "_restart_user_service", lambda: None)
-    monkeypatch.setattr(pair_setup.time, "sleep", lambda _seconds: None)
 
     result = pair_setup.complete_pairing(device.mac)
 
     assert result["ok"] is True
     assert result["ancs_ready"] is False
-    assert result["ancs"] == "connection supervised by daemon"
+    assert result["ancs"].startswith("pending:")

@@ -8,6 +8,7 @@ from pathlib import Path
 
 import dbus
 import dbus.exceptions
+from gi.repository import GLib
 
 from blueferry import bluetooth_capabilities as capabilities
 from blueferry import config
@@ -221,6 +222,90 @@ def _wait_for_paired_device(mac: str, *, timeout: float = 120) -> PairedDevice:
     return device
 
 
+def _dispatching_wait(deadline: float, done: Callable[[], bool]) -> bool:
+    """Poll ``done`` while dispatching pending GLib events.
+
+    The pairing agent's callbacks arrive over the same GLib default context;
+    a plain ``time.sleep`` loop here would silently drop an iPhone-initiated
+    confirmation that races these waits.
+    """
+    context = GLib.MainContext.default()
+    while True:
+        while context.pending():
+            context.iteration(False)
+        if done():
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.1)
+
+
+def _connect_classic(device_path: str, *, timeout: float = 45.0) -> None:
+    """Connect the Classic bearer without blocking agent dispatch."""
+    interface = dbus.Interface(
+        get_system_bus().get_object("org.bluez", device_path),
+        "org.bluez.Device1",
+    )
+    results: list[dbus.exceptions.DBusException | None] = []
+    interface.Connect(
+        reply_handler=lambda: results.append(None),
+        error_handler=results.append,
+        timeout=timeout,
+    )
+    _dispatching_wait(time.monotonic() + timeout + 5.0, lambda: bool(results))
+    error = results[0] if results else None
+    if error is None:
+        return
+    if error.get_dbus_name() in {
+        "org.bluez.Error.AlreadyConnected",
+        "org.bluez.Error.InProgress",
+    }:
+        return
+    raise PairingError(
+        error.get_dbus_message() or error.get_dbus_name() or str(error)
+    ) from error
+
+
+def _connect_ancs(device: PairedDevice, *, timeout: float = 30.0) -> str:
+    """Connect the bonded LE bearer exposed by bluetoothd's experimental API."""
+    manager = _object_manager()
+
+    def bearer_present() -> bool:
+        objects = manager.GetManagedObjects()
+        interfaces = objects.get(dbus.ObjectPath(device.device_path), {})
+        return "org.bluez.Bearer.LE1" in interfaces
+
+    if not _dispatching_wait(time.monotonic() + timeout, bearer_present):
+        raise PairingError(
+            "The iPhone has not established the low-energy half of this "
+            "bond yet; notification setup continues in the background."
+        )
+
+    obj = get_system_bus().get_object("org.bluez", device.device_path)
+    props = dbus.Interface(obj, "org.freedesktop.DBus.Properties")
+    try:
+        props.Set("org.bluez.Device1", "PreferredBearer", dbus.String("le"))
+        dbus.Interface(obj, "org.bluez.Bearer.LE1").Connect(timeout=45.0)
+    except dbus.exceptions.DBusException as error:
+        name = error.get_dbus_name() or ""
+        detail = error.get_dbus_message() or ""
+        if name in {
+            "org.bluez.Error.AlreadyConnected",
+            "org.bluez.Error.InProgress",
+        } or detail.casefold() == "operation already in progress":
+            return "already connected"
+        if name in {
+            "org.freedesktop.DBus.Error.UnknownInterface",
+            "org.freedesktop.DBus.Error.UnknownMethod",
+            "org.freedesktop.DBus.Error.UnknownProperty",
+        }:
+            # Marker-only bearer API: the advert invites the bonded iPhone
+            # to establish LE inbound instead.
+            return "waiting for iPhone to connect"
+        raise PairingError(detail or name or str(error)) from error
+    return "connected"
+
+
 def _restart_user_service() -> None:
     for command in (
         ["/usr/bin/systemctl", "--user", "daemon-reload"],
@@ -259,19 +344,10 @@ def complete_pairing(
     notifications_supported = compatibility["notifications_supported"]
     if notifications_supported and not compatibility["bearer_api_active"]:
         raise PairingError("Activate Bluetooth support before pairing or re-pairing the iPhone")
-    if notifications_supported:
-        prepared = bluez_setup.prepare(
-            adapter=adapter,
-            authorize=True,
-            settle_for_pairing=not device.paired,
-        )
-    else:
-        cod = bluez_setup.current_cod(adapter)
-        prepared = bluez_setup.desired_cod_matches(cod) or bluez_setup.set_cod(
-            adapter=adapter, authorize=True
-        )
-    if not prepared:
-        bluez_setup.unregister_advert(adapter)
+    # No LE advertisement during pairing: iOS would connect the unbonded
+    # advert as a separate accessory and keep two device records. The advert
+    # is registered only after the bond exists.
+    if not bluez_setup.prepare_classic(adapter=adapter, authorize=True):
         raise PairingError(
             "Could not prepare the Bluetooth adapter; check that "
             "blueferry-backend is installed and run doctor."
@@ -279,47 +355,42 @@ def complete_pairing(
 
     try:
         if not device.paired:
-            def invoke_pair() -> None:
-                device_interface = dbus.Interface(
-                    get_system_bus().get_object("org.bluez", device.device_path),
-                    "org.bluez.Device1",
-                )
-                try:
-                    device_interface.Pair(timeout=120.0)
-                except dbus.exceptions.DBusException as error:
-                    if (
-                        confirmation is None
-                        or error.get_dbus_name() != "org.bluez.Error.InProgress"
-                    ):
-                        raise
-                    # Discovery can provoke an iPhone-initiated transaction,
-                    # which would use an unrelated desktop agent. Replace it
-                    # with the transaction owned by this registered agent.
-                    device_interface.CancelPairing(timeout=10.0)
-                    time.sleep(0.25)
-                    device_interface.Pair(timeout=120.0)
-
             try:
                 if confirmation is None:
-                    invoke_pair()
+                    # Headless fallback: a Linux-initiated transaction pairs
+                    # the Classic bearer. Controllers whose Classic pairing
+                    # derives LE keys (CTKD) get the dual bond this way too.
+                    dbus.Interface(
+                        get_system_bus().get_object("org.bluez", device.device_path),
+                        "org.bluez.Device1",
+                    ).Pair(timeout=120.0)
                 else:
                     from blueferry.pairing_agent import RegisteredPairingAgent
 
+                    # Connecting the unpaired ACL makes iOS initiate the
+                    # pairing itself, and the authentication initiator is the
+                    # side that derives the cross-transport LE keys. A
+                    # Linux-initiated Device1.Pair() left an Intel AX210 with
+                    # a BR/EDR-only bond because the iPhone role-switches to
+                    # central and then neither side runs SMP-over-BREDR.
+                    # Driving pairing through Connect gets the dual bond on
+                    # every tested controller, with the user only confirming
+                    # the numeric comparison on both screens.
                     with RegisteredPairingAgent(
                         device.device_path,
                         confirmation,
                         display,
-                    ):
-                        invoke_pair()
+                    ) as registered:
+                        _connect_classic(device.device_path, timeout=60.0)
+                        registered.wait_for_pair(timeout=120.0)
             except dbus.exceptions.DBusException as error:
                 name = error.get_dbus_name() or ""
                 if name in {
                     "org.bluez.Error.AlreadyExists",
                     "org.bluez.Error.InProgress",
                 }:
-                    # The iPhone can initiate pairing while a scan is still
-                    # running. Do not start a competing transaction.
-                    device = _wait_for_paired_device(mac)
+                    # The iPhone initiated pairing on its own; settle below.
+                    pass
                 else:
                     detail = error.get_dbus_message() or name or str(error)
                     if name in {
@@ -332,6 +403,21 @@ def complete_pairing(
             device = _wait_for_paired_device(mac)
         trust_device(device.mac, device.adapter_path)
         write_local_env(device.mac, device.adapter_path.rsplit("/", 1)[-1])
+
+        ancs = "unsupported by Bluetooth controller"
+        ancs_ready = False
+        if notifications_supported:
+            _connect_classic(device.device_path)
+            # Two-phase LE setup, matching the proven desktop sequence: only
+            # after the Classic bearer is connected does the ANCS solicitation
+            # advert appear, inviting the bonded iPhone to establish LE.
+            if not bluez_setup.register_advert(adapter, settle_for_pairing=True):
+                raise PairingError("The ANCS advertisement did not activate")
+            try:
+                ancs = _connect_ancs(_device(mac))
+                ancs_ready = ancs in {"connected", "already connected"}
+            except PairingError as error:
+                ancs = f"pending: {error}"
     finally:
         # The temporary setup process owns this advertisement. Remove it
         # before starting the daemon so ownership transfers without a gap or
@@ -340,22 +426,20 @@ def complete_pairing(
 
     _restart_user_service()
     device = _device(mac)
-    if notifications_supported:
-        ancs = "connection supervised by daemon"
-    else:
-        ancs = "unsupported by Bluetooth controller"
     return {
         "ok": True,
         "device": device.to_dict(),
         "config": str(LOCAL_ENV_PATH),
         "service": "package-enabled and restarted",
         "ancs": ancs,
-        # Pair() returning only proves that the bond exists. The daemon owns
-        # connection and ANCS subscription retries, while clients verify its
-        # eventual readiness through GetStatus.
-        "ancs_ready": False,
+        # The daemon owns connection and ANCS subscription retries, while
+        # clients verify its eventual readiness through GetStatus.
+        "ancs_ready": ancs_ready,
         "iphone_steps": [
             "Open Settings → Bluetooth and tap ⓘ next to this computer",
+            "If the toggles below are missing, go back and reopen this "
+            "screen — iOS adds them with a delay, sometimes after minutes",
+            "If this computer is listed twice, check both entries",
             "Enable Show Message Notifications",
             "Enable Sync Contacts",
         ],

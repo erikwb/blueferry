@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
 
 import dbus
@@ -15,6 +16,11 @@ log = logging.getLogger(__name__)
 
 POLL_SECONDS = 5
 CLASSIC_SETTLE_SECONDS = 3
+# A phone that rejects a connection keeps rejecting it for a while (powered
+# off, out of range, or a broken bond). Repeating Connect every poll turned
+# into a five-second hammer against the iPhone; back off exponentially
+# instead, up to this ceiling, and reset as soon as a bearer connects.
+BACKOFF_CAP_SECONDS = 300
 _INTERFACES = {
     "bredr": "org.bluez.Bearer.BREDR1",
     "le": "org.bluez.Bearer.LE1",
@@ -24,6 +30,7 @@ ReadConnected = Callable[[str], bool | None]
 Connect = Callable[[str, Callable[[], None], Callable[[Exception], None]], None]
 Schedule = Callable[[int, Callable[[], bool]], int]
 Cancel = Callable[[int], object]
+Clock = Callable[[], float]
 
 
 class BearerSupervisor:
@@ -43,6 +50,7 @@ class BearerSupervisor:
         connect: Connect | None = None,
         schedule: Schedule = GLib.timeout_add_seconds,
         cancel: Cancel = GLib.source_remove,
+        clock: Clock = time.monotonic,
     ) -> None:
         self.device_path = device_path
         self._on_status = on_status
@@ -50,12 +58,15 @@ class BearerSupervisor:
         self._connect = connect or self._connect_bluez
         self._schedule = schedule
         self._cancel = cancel
+        self._clock = clock
         self._timer_id: int | None = None
         self._le_settle_id: int | None = None
         self._running = False
         self._connecting: set[str] = set()
         self._last_errors: dict[str, str] = {}
         self._states: dict[str, bool | None] = {"bredr": None, "le": None}
+        self._failures: dict[str, int] = {"bredr": 0, "le": 0}
+        self._next_attempt: dict[str, float] = {"bredr": 0.0, "le": 0.0}
 
     @property
     def bredr_connected(self) -> bool:
@@ -167,11 +178,15 @@ class BearerSupervisor:
         self._states[kind] = value
         if value is True:
             self._last_errors.pop(kind, None)
+            self._failures[kind] = 0
+            self._next_attempt[kind] = 0.0
         if previous != value and self._on_status is not None:
             self._on_status()
 
     def _request_connect(self, kind: str) -> None:
         if kind in self._connecting:
+            return
+        if self._clock() < self._next_attempt[kind]:
             return
         self._connecting.add(kind)
         log.info("connecting iPhone %s bearer", kind.upper())
@@ -187,6 +202,8 @@ class BearerSupervisor:
     def _connect_succeeded(self, kind: str) -> None:
         self._connecting.discard(kind)
         self._last_errors.pop(kind, None)
+        self._failures[kind] = 0
+        self._next_attempt[kind] = 0.0
         log.info("iPhone %s bearer connection requested successfully", kind.upper())
 
     def _connect_failed(self, kind: str, error: Exception) -> None:
@@ -202,15 +219,30 @@ class BearerSupervisor:
         }:
             log.debug("%s bearer connection already active", kind.upper())
             return
+        self._failures[kind] += 1
+        delay = min(
+            POLL_SECONDS * (2 ** self._failures[kind]),
+            BACKOFF_CAP_SECONDS,
+        )
+        self._next_attempt[kind] = self._clock() + delay
         if self._last_errors.get(kind) != name:
-            log.warning("could not connect iPhone %s bearer: %s", kind.upper(), name)
+            log.warning(
+                "could not connect iPhone %s bearer: %s (next attempt in %ds)",
+                kind.upper(),
+                name,
+                delay,
+            )
             self._last_errors[kind] = name
 
     def _read_bluez_connected(self, kind: str) -> bool | None:
-        interface = _INTERFACES[kind]
         obj = get_system_bus().get_object("org.bluez", self.device_path)
         properties = dbus.Interface(obj, "org.freedesktop.DBus.Properties")
-        return bool(properties.Get(interface, "Connected", timeout=5.0))
+        if kind == "bredr":
+            # Bearer.BREDR1 is marker-only on some packaged BlueZ builds (no
+            # Connected property). Before LE is up, Device1.Connected is the
+            # observable Classic ACL state.
+            return bool(properties.Get("org.bluez.Device1", "Connected", timeout=5.0))
+        return bool(properties.Get(_INTERFACES[kind], "Connected", timeout=5.0))
 
     def _connect_bluez(
         self,
@@ -218,7 +250,9 @@ class BearerSupervisor:
         on_success: Callable[[], None],
         on_error: Callable[[Exception], None],
     ) -> None:
-        interface = _INTERFACES[kind]
+        # Device1.Connect drives the Classic bearer (Bearer.BREDR1 can be
+        # marker-only); the LE bearer interface is driven directly.
+        interface = "org.bluez.Device1" if kind == "bredr" else _INTERFACES[kind]
         bearer = dbus.Interface(
             get_system_bus().get_object("org.bluez", self.device_path),
             interface,

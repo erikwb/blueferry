@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import pytest
+
 from blueferry.time_display import format_message_timestamp
 
 NOW = datetime(2026, 8, 9, 14, 30, tzinfo=timezone.utc)

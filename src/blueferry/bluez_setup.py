@@ -279,3 +279,21 @@ def prepare(
 
     ok &= register_advert(adapter, settle_for_pairing=settle_for_pairing)
     return ok
+
+
+def prepare_classic(*, adapter: str | None = None, authorize: bool = False) -> bool:
+    """Prepare only the BR/EDR identity, without exposing the LE advert.
+
+    Advertising ANCS solicitation while Classic pairing is still in flight
+    lets the iPhone connect the unbonded LE peripheral as a separate device,
+    leaving two accessory records on the phone. Pairing therefore starts from
+    the classic identity alone; the advert is registered only after the bond
+    exists.
+    """
+    adapter = adapter or config.ADAPTER
+    cod = current_cod(adapter)
+    log.info("current adapter Class = 0x%06x", cod or 0)
+    if desired_cod_matches(cod):
+        log.info("CoD already matches A/V Hands-Free, leaving as-is")
+        return True
+    return set_cod(adapter=adapter, authorize=authorize)
