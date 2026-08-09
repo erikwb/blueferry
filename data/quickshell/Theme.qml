@@ -44,6 +44,13 @@ QtObject {
     ? baseColor(["muted", "color8"], withAlpha(foreground, 0.65))
     : fallbackPalette.mid
 
+  // BlueFerry is a normal application window, not a shell flyout. Quattro
+  // themes may deliberately make popups translucent, but the app needs an
+  // opaque base so its contents remain readable over arbitrary wallpapers.
+  readonly property color windowSurface: Qt.rgba(
+    background.r, background.g, background.b, 1)
+  readonly property color windowText: foreground
+
   readonly property color surface: quattroActive
     ? withAlpha(resolveShellColor("popups.background", background),
                 shellNumber("popups.background-alpha", 1.0))
@@ -56,10 +63,11 @@ QtObject {
                 shellNumber("popups.border-alpha", 1.0))
     : fallbackPalette.mid
   readonly property color control: quattroActive
-    ? blend(surfaceText, surface, shellNumber("controls.normal-fill-alpha", 0.04))
+    ? blend(windowText, windowSurface,
+            shellNumber("controls.normal-fill-alpha", 0.04))
     : fallbackPalette.button
   readonly property color alternate: quattroActive
-    ? blend(surfaceText, surface, 0.07)
+    ? blend(windowText, windowSurface, 0.07)
     : fallbackPalette.alternateBase
   readonly property color highlightedText: quattroActive ? background : fallbackPalette.highlightedText
 
@@ -72,6 +80,7 @@ QtObject {
   readonly property int cornerRadius: quattroActive ? hyprlandRadius : 14
   readonly property int headingSize: Math.max(1, Math.round(baseFontSize * 1.5))
   readonly property int displaySize: Math.max(1, Math.round(baseFontSize * 1.85))
+  readonly property string fontFamily: "monospace"
 
   function scaled(px) {
     var scale = spacingScale * (spacingFollowsFont ? fontScale : 1.0)

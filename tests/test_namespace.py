@@ -131,7 +131,12 @@ def test_gui_clients_open_encrypted_storage_without_setup_buttons() -> None:
 def test_quickshell_package_ships_its_quattro_theme_adapter() -> None:
     pkgbuild = (ROOT / "packaging/arch/PKGBUILD").read_text()
     theme = (ROOT / "data/quickshell/Theme.qml").read_text()
+    shell = (ROOT / "data/quickshell/shell.qml").read_text()
 
     assert "install -Dm644 data/quickshell/Theme.qml" in pkgbuild
     assert "/.local/state/omarchy/current/theme" in theme
     assert "fallbackPalette" in theme
+    assert "readonly property color windowSurface" in theme
+    assert "color: theme.windowSurface" in shell
+    window_declaration = shell.split("FloatingWindow {", 1)[1].split("Pane {", 1)[0]
+    assert 'color: "transparent"' not in window_declaration

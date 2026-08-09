@@ -426,19 +426,21 @@ ShellRoot {
     title: "BlueFerry"
     implicitWidth: 760
     implicitHeight: 620
-    color: "transparent"
+    color: theme.windowSurface
 
     Pane {
       id: applicationSurface
       anchors.fill: parent
       padding: 0
-      palette.window: theme.surface
-      palette.windowText: theme.surfaceText
-      palette.base: theme.surface
+      font.family: theme.fontFamily
+      font.pixelSize: theme.baseFontSize
+      palette.window: theme.windowSurface
+      palette.windowText: theme.windowText
+      palette.base: theme.windowSurface
       palette.alternateBase: theme.alternate
-      palette.text: theme.surfaceText
+      palette.text: theme.windowText
       palette.button: theme.control
-      palette.buttonText: theme.surfaceText
+      palette.buttonText: theme.windowText
       palette.highlight: theme.accent
       palette.highlightedText: theme.highlightedText
       palette.placeholderText: theme.muted
@@ -448,7 +450,7 @@ ShellRoot {
 
       background: Rectangle {
         radius: theme.cornerRadius
-        color: theme.surface
+        color: theme.windowSurface
         border.color: theme.surfaceBorder
       }
 
