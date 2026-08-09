@@ -1,8 +1,12 @@
 """Toolkit-neutral first-run state derivation."""
+
 from __future__ import annotations
 
 from collections.abc import Mapping
 from enum import Enum
+
+from blueferry.models import BackendStatus
+from blueferry.setup_verification import remaining_iphone_setup_tasks
 
 
 class OnboardingStage(str, Enum):
@@ -24,26 +28,28 @@ def derive_stage(
     setup_loaded: bool,
     configured: bool,
     compatibility: Mapping,
-    status: Mapping,
+    status: Mapping | BackendStatus,
 ) -> OnboardingStage:
     """Return the user-facing setup stage from observable state only."""
+    status_values = status.to_dict() if isinstance(status, BackendStatus) else status
     if not setup_loaded:
         return OnboardingStage.CHECKING
     if not compatibility.get("hardware_supported"):
         return OnboardingStage.INCOMPATIBLE
-    if (
-        compatibility.get("notifications_supported")
-        and not compatibility.get("bearer_api_active")
-    ):
+    if compatibility.get("notifications_supported") and not compatibility.get("bearer_api_active"):
         return OnboardingStage.ACTIVATE_BLUETOOTH
     if not configured:
         return OnboardingStage.SELECT_DEVICE
-    if status.get("map") and status.get("pbap"):
-        if status.get("ancs"):
-            return OnboardingStage.READY
+    remaining_tasks = remaining_iphone_setup_tasks(
+        status_values.get("verified_iphone_setup", ()),
+        notifications_supported=bool(compatibility.get("notifications_supported")),
+    )
+    if status_values.get("map") and status_values.get("pbap"):
+        if remaining_tasks:
+            return OnboardingStage.IPHONE_SETTINGS
         if not compatibility.get("notifications_supported"):
             return OnboardingStage.READY_WITHOUT_ANCS
-        return OnboardingStage.IPHONE_SETTINGS
-    if status.get("daemon"):
+        return OnboardingStage.READY
+    if status_values.get("daemon"):
         return OnboardingStage.IPHONE_SETTINGS
     return OnboardingStage.STARTING

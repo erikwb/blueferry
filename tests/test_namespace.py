@@ -1,4 +1,5 @@
 """Installed identities agree with the public runtime protocol."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -10,10 +11,19 @@ from blueferry.protocol import BUS_NAME, OBJECT_PATH
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_graphical_commands_follow_client_package_names() -> None:
+    project = (ROOT / "pyproject.toml").read_text()
+    pkgbuild = (ROOT / "packaging" / "arch" / "PKGBUILD").read_text()
+    desktop = (ROOT / "data" / "io.weirdware.BlueFerry.Gtk.desktop").read_text()
+
+    assert 'blueferry-gtk = "blueferry.ui.app:main"' in project
+    assert "/usr/bin/blueferry-gtk" in pkgbuild
+    assert "Exec=blueferry-gtk" in desktop
+    assert "blueferry-ui" not in project + pkgbuild + desktop
+
+
 def test_dbus_activation_and_systemd_publish_the_runtime_bus_name() -> None:
-    activation = (
-        ROOT / "packaging" / "arch" / f"{BUS_NAME}.service"
-    ).read_text()
+    activation = (ROOT / "packaging" / "arch" / f"{BUS_NAME}.service").read_text()
     unit = (ROOT / "systemd" / "blueferry.service").read_text()
 
     assert f"Name={BUS_NAME}" in activation
@@ -73,9 +83,7 @@ def test_qt_package_ships_the_kirigami_ui_and_dependencies() -> None:
     assert "Kirigami.AboutPage" in qml
     assert "customFooterActions" in qml
     assert "interval: 3000" not in qml
-    assert "QtWidgets" not in (
-        ROOT / "src" / "blueferry" / "qt" / "app.py"
-    ).read_text()
+    assert "QtWidgets" not in (ROOT / "src" / "blueferry" / "qt" / "app.py").read_text()
 
 
 def test_quickshell_package_ships_its_quattro_theme_adapter() -> None:

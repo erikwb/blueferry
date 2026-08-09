@@ -14,12 +14,13 @@ ShellRoot {
   property string errorText: ""
   property int currentSection: 0
   property var pairingDevices: []
-  property string pairingStatus: "Scan for an iPhone to begin."
+  property string pairingStatus: "Step 1: scan for the iPhone. Scanning does not pair it."
   property bool bluezActive: false
   property bool hardwareSupported: false
   property bool notificationsSupported: false
   property bool pairingReady: false
   property bool configured: false
+  property string configuredMac: ""
   property string adapterName: ""
   property string onboardingStage: "checking"
   property var backendStatus: ({})
@@ -49,15 +50,32 @@ ShellRoot {
     return thread.key + "\n" + JSON.stringify(thread.recipients || [])
   }
 
+  function pendingIphoneSetupTasks() {
+    var verified = backendStatus.verified_iphone_setup || []
+    var tasks = []
+    if (verified.indexOf("message-notifications") < 0)
+      tasks.push("Enable Show Message Notifications")
+    if (verified.indexOf("contacts") < 0)
+      tasks.push("Enable Sync Contacts")
+    if (notificationsSupported && verified.indexOf("notification-access") < 0)
+      tasks.push("Allow Notification Access when prompted")
+    return tasks
+  }
+
+  function pendingIphoneSetupText() {
+    return "On the iPhone open Settings → Bluetooth, tap ⓘ next to this computer, then finish:\n• "
+      + pendingIphoneSetupTasks().join("\n• ")
+  }
+
   function updateOnboarding() {
     var device = selectedPairingDevice()
     if (!hardwareSupported) onboardingStage = "incompatible"
     else if (notificationsSupported && !bluezActive) onboardingStage = "activate-bluetooth"
     else if (!configured) onboardingStage = "select-device"
     else if (backendStatus.map && backendStatus.pbap) {
-      if (backendStatus.ancs) onboardingStage = "ready"
+      if (pendingIphoneSetupTasks().length > 0) onboardingStage = "iphone-settings"
       else if (!notificationsSupported) onboardingStage = "ready-without-ancs"
-      else onboardingStage = "iphone-settings"
+      else onboardingStage = "ready"
     }
     else if (backendStatus.daemon) onboardingStage = "iphone-settings"
     else onboardingStage = "starting"
@@ -75,6 +93,13 @@ ShellRoot {
   function selectedPairingDevice() {
     var index = pairingDeviceCombo.currentIndex
     return index >= 0 && index < pairingDevices.length ? pairingDevices[index] : null
+  }
+
+  function configuredPairingDevice() {
+    for (var index = 0; index < pairingDevices.length; ++index) {
+      if (pairingDevices[index].mac === configuredMac) return pairingDevices[index]
+    }
+    return null
   }
 
   function markStatusUnavailable(message) {
@@ -155,6 +180,7 @@ ShellRoot {
         try {
           var parsed = JSON.parse(text)
           root.configured = parsed.configured === true
+          root.configuredMac = root.configured ? (parsed.mac || "") : ""
           if (!root.configured) root.currentSection = 1
           else root.reload()
           root.updateOnboarding()
@@ -267,19 +293,18 @@ ShellRoot {
             root.pairingStatus = parsed.error
             return
           }
-          var likely = parsed.filter(function(device) { return device.likely_iphone })
           var matching = parsed.filter(function(device) {
             return !root.adapterName || device.adapter_path.endsWith("/" + root.adapterName)
           })
-          likely = matching.filter(function(device) { return device.likely_iphone })
-          var devices = likely.length ? likely : matching
-          root.pairingDevices = devices.map(function(device) {
+          root.pairingDevices = matching.map(function(device) {
             device.label = device.name + " — " + device.mac
               + (device.paired ? " (paired)" : "")
             return device
           })
-          root.pairingStatus = devices.length
-            ? "Select the iPhone, then pair or repair it."
+          root.pairingStatus = matching.length
+            ? root.configured
+              ? "Linux pairing is complete. Check the required iPhone settings below."
+              : "Step 2: select the iPhone, then choose Pair Selected iPhone."
             : "No devices found. Unlock the iPhone, keep Bluetooth settings open, and scan again."
           root.updateOnboarding()
         } catch (error) { root.pairingStatus = "Bluetooth scan returned invalid data." }
@@ -331,9 +356,10 @@ ShellRoot {
             return
           }
           root.pairingStatus = parsed.ancs_ready || !root.notificationsSupported
-            ? "Linux setup complete. On the iPhone enable Show Message Notifications and Sync Contacts."
+            ? "Linux pairing complete. On the iPhone enable Show Message Notifications and Sync Contacts."
             : "Pairing is complete. Notification access is still settling; keep the iPhone Bluetooth settings open."
           root.configured = true
+          root.configuredMac = parsed.device ? (parsed.device.mac || "") : ""
           root.loadPairingDevices(false)
           root.reload()
           root.updateOnboarding()
@@ -351,7 +377,14 @@ ShellRoot {
           root.pairingStatus = parsed.ok
             ? "Local bond removed. Also forget this computer on the iPhone, then scan again."
             : (parsed.error || "Could not remove the bond.")
-          if (parsed.ok) root.loadPairingDevices(false)
+          if (parsed.ok) {
+            root.configured = false
+            root.configuredMac = ""
+            root.backendStatus = ({})
+            root.pairingDevices = []
+            root.updateOnboarding()
+            root.loadPairingDevices(false)
+          }
         } catch (error) { root.pairingStatus = "Forget operation returned invalid data." }
       }
     }
@@ -554,17 +587,107 @@ ShellRoot {
             textFormat: Text.PlainText
             wrapMode: Text.Wrap
             Layout.fillWidth: true
+            visible: !root.configured
           }
           Label {
             text: root.onboardingStage === "ready"
-              ? "Setup verified: messages, contacts, and iPhone notifications are connected."
+              ? "Bluetooth services and iPhone permissions have been verified."
               : root.onboardingStage === "ready-without-ancs"
-                ? "Setup verified: messages and contacts work; per-app notifications are unavailable."
+                ? "Messages and contacts have been verified; per-app notifications are unavailable."
                 : root.onboardingStage === "iphone-settings"
-                    ? "Finish the two iPhone settings; verification updates automatically."
+                    ? root.pendingIphoneSetupText()
                     : "Controller: " + (root.adapterName || "checking…")
             wrapMode: Text.Wrap
             Layout.fillWidth: true
+          }
+          Label {
+            text: "Pair an iPhone"
+            font.bold: true
+            visible: !root.configured
+          }
+          Label {
+            text: "Pairing takes two steps. Scan only finds nearby devices; it does not pair them. After scanning, select the iPhone and choose Pair Selected iPhone."
+            wrapMode: Text.Wrap
+            Layout.fillWidth: true
+            visible: !root.configured
+          }
+          CheckBox {
+            id: confirmBluetoothRestart
+            visible: !root.configured && root.notificationsSupported && !root.bluezActive
+            text: "I understand this briefly disconnects all Bluetooth devices"
+          }
+          Button {
+            visible: !root.configured && root.notificationsSupported && !root.bluezActive
+            text: bluezActivateProcess.running ? "Activating…" : "Activate Bluetooth support"
+            enabled: confirmBluetoothRestart.checked && !bluezActivateProcess.running
+            onClicked: {
+              root.pairingStatus = "Authorizing Bluetooth restart…"
+              bluezActivateProcess.running = true
+              confirmBluetoothRestart.checked = false
+            }
+          }
+          Button {
+            visible: !root.configured
+            text: deviceProcess.running ? "Scanning…" : "1. Scan for iPhone"
+            enabled: !deviceProcess.running && !pairProcess.running
+            onClicked: root.loadPairingDevices(true)
+          }
+          ComboBox {
+            id: pairingDeviceCombo
+            visible: !root.configured
+            Layout.fillWidth: true
+            model: root.pairingDevices
+            textRole: "label"
+          }
+          Button {
+            visible: !root.configured
+            text: pairProcess.running ? "Pairing…"
+              : root.selectedPairingDevice() && root.selectedPairingDevice().paired
+                ? "Use existing pairing" : "2. Pair Selected iPhone"
+            enabled: root.selectedPairingDevice() !== null
+                     && root.pairingReady
+                     && !deviceProcess.running && !pairProcess.running
+            onClicked: {
+              var device = root.selectedPairingDevice()
+              root.pairingStatus = "Preparing secure pairing… The code can take about 15 seconds to appear."
+              pairProcess.command = ["/usr/bin/blueferry", "pairing-complete", device.mac]
+              pairProcess.running = true
+            }
+          }
+          CheckBox {
+            id: confirmForget
+            text: "I will also forget this computer in the iPhone's Bluetooth settings"
+            visible: root.configured
+          }
+          RowLayout {
+            visible: root.configured
+            Layout.fillWidth: true
+            Label {
+              Layout.fillWidth: true
+              text: root.configuredPairingDevice()
+                ? root.configuredPairingDevice().name : "iPhone"
+              font.bold: true
+            }
+            Button {
+              text: forgetProcess.running ? "Unpairing…" : "Unpair"
+              enabled: confirmForget.checked && root.configuredMac !== "" && !forgetProcess.running
+              onClicked: {
+                forgetProcess.command = ["/usr/bin/blueferry", "pairing-forget", root.configuredMac]
+                forgetProcess.running = true
+                confirmForget.checked = false
+              }
+            }
+          }
+          Label {
+            text: "Finish Setup on the iPhone"
+            font.bold: true
+            visible: root.configured && root.pendingIphoneSetupTasks().length > 0
+          }
+          Label {
+            text: root.pendingIphoneSetupText()
+            wrapMode: Text.Wrap
+            Layout.fillWidth: true
+            visible: root.configured && root.pendingIphoneSetupTasks().length > 0
           }
           Label {
             text: "Connection health"
@@ -652,69 +775,6 @@ ShellRoot {
                 ? "Set up encrypted storage" : "Unlock desktop keyring"
             enabled: !storageUnlockProcess.running
             onClicked: storageUnlockProcess.running = true
-          }
-          CheckBox {
-            id: confirmBluetoothRestart
-            visible: root.notificationsSupported && !root.bluezActive
-            text: "I understand this briefly disconnects all Bluetooth devices"
-          }
-          Button {
-            visible: root.notificationsSupported && !root.bluezActive
-            text: bluezActivateProcess.running ? "Activating…" : "Activate Bluetooth support"
-            enabled: confirmBluetoothRestart.checked && !bluezActivateProcess.running
-            onClicked: {
-              root.pairingStatus = "Authorizing Bluetooth restart…"
-              bluezActivateProcess.running = true
-              confirmBluetoothRestart.checked = false
-            }
-          }
-          ComboBox {
-            id: pairingDeviceCombo
-            Layout.fillWidth: true
-            model: root.pairingDevices
-            textRole: "label"
-          }
-          RowLayout {
-            Layout.fillWidth: true
-            Button {
-              text: deviceProcess.running ? "Scanning…" : "Scan"
-              enabled: !deviceProcess.running && !pairProcess.running
-              onClicked: root.loadPairingDevices(true)
-            }
-            Button {
-              text: pairProcess.running ? "Pairing…"
-                : root.selectedPairingDevice() && root.selectedPairingDevice().paired
-                  ? "Use existing pairing" : "Pair iPhone"
-              enabled: root.selectedPairingDevice() !== null
-                       && root.pairingReady
-                       && !deviceProcess.running && !pairProcess.running
-              onClicked: {
-                var device = root.selectedPairingDevice()
-                root.pairingStatus = "Preparing secure pairing… The code can take about 15 seconds to appear."
-                pairProcess.command = ["/usr/bin/blueferry", "pairing-complete", device.mac]
-                pairProcess.running = true
-              }
-            }
-          }
-          Label {
-            text: "After pairing: on the iPhone open Settings → Bluetooth → ⓘ next to this computer, then enable Show Message Notifications and Sync Contacts."
-            wrapMode: Text.Wrap
-            Layout.fillWidth: true
-          }
-          CheckBox {
-            id: confirmForget
-            text: "I will also forget this computer in the iPhone's Bluetooth settings"
-            visible: root.selectedPairingDevice() !== null && root.selectedPairingDevice().paired
-          }
-          Button {
-            text: "Forget local bond"
-            enabled: confirmForget.checked && root.selectedPairingDevice() !== null && !forgetProcess.running
-            onClicked: {
-              var device = root.selectedPairingDevice()
-              forgetProcess.command = ["/usr/bin/blueferry", "pairing-forget", device.mac]
-              forgetProcess.running = true
-              confirmForget.checked = false
-            }
           }
             Item { Layout.fillHeight: true }
           }

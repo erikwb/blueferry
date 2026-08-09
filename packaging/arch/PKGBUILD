@@ -137,7 +137,7 @@ package_blueferry-gtk() {
   cd "$pkgbase-$pkgver"
   install -d "$pkgdir/$_site/blueferry"
   cp -a "$srcdir/$_stage/$_site/blueferry/ui" "$pkgdir/$_site/blueferry/"
-  install -Dm755 "$srcdir/$_stage/usr/bin/blueferry-ui" "$pkgdir/usr/bin/blueferry-ui"
+  install -Dm755 "$srcdir/$_stage/usr/bin/blueferry-gtk" "$pkgdir/usr/bin/blueferry-gtk"
   install -Dm644 data/io.weirdware.BlueFerry.Gtk.desktop \
     "$pkgdir/usr/share/applications/io.weirdware.BlueFerry.Gtk.desktop"
   install -Dm644 data/io.weirdware.BlueFerry.Gtk.metainfo.xml \

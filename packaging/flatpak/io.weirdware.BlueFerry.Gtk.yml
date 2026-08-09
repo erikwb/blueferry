@@ -1,4 +1,4 @@
-# Flatpak manifest — blueferry-ui (the GTK4 desktop app only).
+# Flatpak manifest — blueferry-gtk (the GTK4 desktop app only).
 #
 # The daemon is deliberately NOT packaged here: it needs privileged setup
 # (adapter Class-of-Device via btmgmt and the BLE-bearer configuration) that
@@ -13,7 +13,7 @@ id: io.weirdware.BlueFerry.Gtk
 runtime: org.gnome.Platform
 runtime-version: '47'   # bump to the current stable GNOME runtime
 sdk: org.gnome.Sdk
-command: blueferry-ui
+command: blueferry-gtk
 
 finish-args:
   - --socket=wayland
@@ -41,10 +41,10 @@ modules:
         url: https://gitlab.freedesktop.org/dbus/dbus-python.git
         tag: dbus-python-1.3.2
 
-  - name: blueferry-ui
+  - name: blueferry-gtk
     buildsystem: simple
     build-commands:
-      # Install the Python package. The UI entry point is blueferry-ui.
+      # Install the Python package. The UI entry point is blueferry-gtk.
       # --no-deps: typer is only used by the CLI, which this Flatpak does not
       # ship; PyGObject + GTK4 + libadwaita come from the GNOME runtime.
       - pip3 install --prefix=/app --no-deps --no-build-isolation .

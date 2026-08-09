@@ -1,9 +1,11 @@
 """Event fan-out policy without desktop or device access."""
+
 from __future__ import annotations
 
 from types import SimpleNamespace
 
 from blueferry.event_dispatcher import EventDispatcher
+from blueferry.events import sms_sent_event
 
 
 class _Sink:
@@ -68,7 +70,8 @@ def _historical(event) -> dict:
 def test_replayed_ancs_event_is_not_sent_to_any_sink():
     event = _event()
     dispatcher = EventDispatcher(
-        object(), submit_obex=lambda *_args, **_kwargs: None,
+        object(),
+        submit_obex=lambda *_args, **_kwargs: None,
         historical_ancs=[_historical(event)],
     )
     sink = _Sink()
@@ -86,7 +89,8 @@ def test_modified_notification_with_same_id_is_delivered_once():
     previous = _event("old body")
     current = _event("new body")
     dispatcher = EventDispatcher(
-        object(), submit_obex=lambda *_args, **_kwargs: None,
+        object(),
+        submit_obex=lambda *_args, **_kwargs: None,
         historical_ancs=[_historical(previous)],
     )
     sink = _Sink()
@@ -109,7 +113,8 @@ def test_system_notification_only_reaches_explicit_ephemeral_sink():
     ephemeral.accepts_system_ancs = True
     service = _Service()
     dispatcher = EventDispatcher(
-        object(), submit_obex=lambda *_args, **_kwargs: None,
+        object(),
+        submit_obex=lambda *_args, **_kwargs: None,
     )
     dispatcher.sinks = [durable, ephemeral]
     dispatcher.set_dbus_service(service)
@@ -119,3 +124,17 @@ def test_system_notification_only_reaches_explicit_ephemeral_sink():
     assert durable.events == []
     assert ephemeral.events == [event]
     assert service.events == []
+
+
+def test_only_an_incoming_map_message_verifies_message_notifications():
+    verified = []
+    dispatcher = EventDispatcher(
+        object(),
+        submit_obex=lambda *_args, **_kwargs: None,
+        on_incoming_message=lambda: verified.append(True),
+    )
+
+    dispatcher.message(sms_sent_event("+15551234567", "sent"))
+    dispatcher.message(SimpleNamespace(kind="sms_received", handle="received"))
+
+    assert verified == [True]

@@ -1,4 +1,5 @@
 """Typed models at the client side of Messages1."""
+
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -35,6 +36,7 @@ class BackendStatus:
     connectivity_detail: str = ""
     contacts: int = 0
     events: int = 0
+    verified_iphone_setup: tuple[str, ...] = ()
     retry_attempt: int = 0
     retry_delay_seconds: int = 0
     history_retention_days: int = 0
@@ -48,12 +50,25 @@ class BackendStatus:
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> BackendStatus:
         known = {
-            "daemon", "map", "pbap", "ancs", "initializing", "backend_release",
-            "connectivity_state", "connectivity_detail", "contacts", "events",
-            "retry_attempt", "retry_delay_seconds", "history_retention_days",
+            "daemon",
+            "map",
+            "pbap",
+            "ancs",
+            "initializing",
+            "backend_release",
+            "connectivity_state",
+            "connectivity_detail",
+            "contacts",
+            "events",
+            "verified_iphone_setup",
+            "retry_attempt",
+            "retry_delay_seconds",
+            "history_retention_days",
             "notification_timeout_ms",
             "notification_policy",
-            "storage_policy", "storage_state", "storage_detail",
+            "storage_policy",
+            "storage_state",
+            "storage_detail",
         }
         return cls(
             daemon=_bool(value.get("daemon")),
@@ -66,6 +81,11 @@ class BackendStatus:
             connectivity_detail=_str(value.get("connectivity_detail")),
             contacts=_int(value.get("contacts")),
             events=_int(value.get("events")),
+            verified_iphone_setup=tuple(
+                str(task) for task in value.get("verified_iphone_setup", ())
+            )
+            if isinstance(value.get("verified_iphone_setup"), list | tuple)
+            else (),
             retry_attempt=_int(value.get("retry_attempt")),
             retry_delay_seconds=_int(value.get("retry_delay_seconds")),
             history_retention_days=_int(value.get("history_retention_days")),
@@ -90,6 +110,7 @@ class BackendStatus:
             "connectivity_detail": self.connectivity_detail,
             "contacts": self.contacts,
             "events": self.events,
+            "verified_iphone_setup": list(self.verified_iphone_setup),
             "retry_attempt": self.retry_attempt,
             "retry_delay_seconds": self.retry_delay_seconds,
             "history_retention_days": self.history_retention_days,
@@ -147,7 +168,12 @@ class Thread:
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> Thread:
         known = {
-            "key", "name", "is_group", "recipients", "reply_ready", "messages",
+            "key",
+            "name",
+            "is_group",
+            "recipients",
+            "reply_ready",
+            "messages",
             "last_ts",
         }
         raw_recipients = value.get("recipients")
@@ -156,15 +182,15 @@ class Thread:
             key=_str(value.get("key")),
             name=_str(value.get("name"), "Unknown"),
             is_group=_bool(value.get("is_group")),
-            recipients=tuple(
-                str(item) for item in raw_recipients
-            ) if isinstance(raw_recipients, list | tuple) else (),
+            recipients=tuple(str(item) for item in raw_recipients)
+            if isinstance(raw_recipients, list | tuple)
+            else (),
             reply_ready=_bool(value.get("reply_ready")),
             messages=tuple(
-                ThreadMessage.from_dict(item)
-                for item in raw_messages
-                if isinstance(item, Mapping)
-            ) if isinstance(raw_messages, list | tuple) else (),
+                ThreadMessage.from_dict(item) for item in raw_messages if isinstance(item, Mapping)
+            )
+            if isinstance(raw_messages, list | tuple)
+            else (),
             last_ts=_str(value.get("last_ts")),
             extra={key: item for key, item in value.items() if key not in known},
         )

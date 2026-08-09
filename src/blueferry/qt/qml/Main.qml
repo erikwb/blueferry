@@ -38,6 +38,25 @@ Kirigami.ApplicationWindow {
             .replace(/>/g, "&gt;")
     }
 
+    function pendingIphoneSetupTasks() {
+        const verified = bridge.status.verified_iphone_setup || []
+        const tasks = []
+        if (verified.indexOf("message-notifications") < 0)
+            tasks.push(qsTr("Enable Show Message Notifications"))
+        if (verified.indexOf("contacts") < 0)
+            tasks.push(qsTr("Enable Sync Contacts"))
+        if (bridge.compatibility.notifications_supported
+                && verified.indexOf("notification-access") < 0)
+            tasks.push(qsTr("Allow Notification Access when prompted"))
+        return tasks
+    }
+
+    function pendingIphoneSetupText() {
+        const tasks = pendingIphoneSetupTasks()
+        return qsTr("Open Settings → Bluetooth on the iPhone, tap ⓘ next to this computer, then finish:\n• ")
+            + tasks.join("\n• ")
+    }
+
     function showSection(index, page) {
         currentSection = index
         while (pageStack.depth > 0) {
@@ -51,11 +70,11 @@ Kirigami.ApplicationWindow {
             "checking": qsTr("Checking Bluetooth Support"),
             "incompatible": qsTr("Bluetooth Controller Is Not Compatible"),
             "activate-bluetooth": qsTr("Activate Bluetooth Support"),
-            "select-device": qsTr("Select and Pair an iPhone"),
+            "select-device": qsTr("Pair an iPhone"),
             "starting": qsTr("Starting the Background Service"),
             "iphone-settings": qsTr("Finish Setup on the iPhone"),
-            "ready": qsTr("BlueFerry Is Ready"),
-            "ready-without-ancs": qsTr("Messages Are Ready")
+            "ready": qsTr("BlueFerry Is Connected"),
+            "ready-without-ancs": qsTr("Messages Are Connected")
         }
         return titles[stage] || qsTr("Set Up BlueFerry")
     }
@@ -65,11 +84,11 @@ Kirigami.ApplicationWindow {
             "checking": qsTr("Inspecting the selected Bluetooth controller without changing it."),
             "incompatible": bridge.compatibility.issue || qsTr("A controller with BR/EDR and secure pairing is required."),
             "activate-bluetooth": qsTr("The packaged BlueZ bearer support needs one authorized Bluetooth restart."),
-            "select-device": qsTr("Keep Bluetooth settings open on the unlocked iPhone, then scan and confirm the matching code."),
+            "select-device": qsTr("First scan for the phone, then select it and choose Pair Selected iPhone."),
             "starting": qsTr("The configured backend is starting. This normally takes a few seconds."),
-            "iphone-settings": qsTr("Enable Show Message Notifications and Sync Contacts in the iPhone's Bluetooth entry. Verification updates automatically."),
-            "ready": qsTr("Messages, contacts, and iPhone notifications are connected."),
-            "ready-without-ancs": qsTr("Messages and contacts are connected. Per-app iPhone notifications are not available on this bond or controller.")
+            "iphone-settings": pendingIphoneSetupText(),
+            "ready": qsTr("Bluetooth services and iPhone permissions have been verified."),
+            "ready-without-ancs": qsTr("Messages and contacts have been verified; per-app notifications are unavailable.")
         }
         return details[stage] || ""
     }
@@ -218,12 +237,12 @@ Kirigami.ApplicationWindow {
     Kirigami.PromptDialog {
         id: forgetDialog
         property string mac: ""
-        title: qsTr("Forget This Device?")
+        title: qsTr("Unpair This iPhone?")
         subtitle: qsTr("Also forget this computer in the iPhone Bluetooth settings before pairing again.")
         dialogType: Kirigami.PromptDialog.Warning
         standardButtons: Kirigami.Dialog.Cancel
         customFooterActions: [Kirigami.Action {
-            text: qsTr("Forget Device")
+            text: qsTr("Unpair")
             icon.name: "edit-delete-remove"
             onTriggered: {
                 root.bridge.forgetDevice(forgetDialog.mac)
@@ -480,6 +499,13 @@ Kirigami.ApplicationWindow {
         property var device: selectedDevice >= 0 && selectedDevice < root.bridge.devices.length
             ? root.bridge.devices[selectedDevice]
             : null
+        property var configuredDevice: {
+            for (let index = 0; index < root.bridge.devices.length; ++index) {
+                if (root.bridge.devices[index].mac === root.bridge.configuredMac)
+                    return root.bridge.devices[index]
+            }
+            return null
+        }
         property string effectiveStage: root.bridge.onboardingStage
 
         ColumnLayout {
@@ -502,7 +528,7 @@ Kirigami.ApplicationWindow {
                     Layout.fillWidth: true
                     wrapMode: Text.Wrap
                     visible: !root.bridge.configured
-                    text: qsTr("Keep Bluetooth settings open on the unlocked iPhone, then scan and confirm the matching code on both devices.")
+                    text: qsTr("Keep Bluetooth settings open on the unlocked iPhone. Scan for it first, then explicitly pair the selected device.")
                 }
 
                 Kirigami.InlineMessage {
@@ -516,6 +542,151 @@ Kirigami.ApplicationWindow {
                             || iphonePage.effectiveStage === "ready-without-ancs"
                             ? Kirigami.MessageType.Positive
                             : Kirigami.MessageType.Information
+                }
+
+                Kirigami.Heading {
+                    visible: !root.bridge.configured
+                    text: qsTr("Pair an iPhone")
+                    level: 2
+                }
+                Controls.Label {
+                    Layout.fillWidth: true
+                    visible: !root.bridge.configured
+                    wrapMode: Text.Wrap
+                    text: qsTr("Pairing takes two steps. Scan only finds nearby devices; it does not pair them. After scanning, select the iPhone and choose Pair Selected iPhone.")
+                }
+
+                Kirigami.FormLayout {
+                    Layout.fillWidth: true
+                    visible: !root.bridge.configured
+
+                    Controls.Label {
+                        Kirigami.FormData.label: qsTr("Controller:")
+                        text: root.bridge.compatibility.adapter || qsTr("Checking…")
+                    }
+
+                    Controls.Label {
+                        Kirigami.FormData.label: qsTr("Hardware:")
+                        text: root.bridge.compatibility.hardware_supported
+                            ? qsTr("Compatible")
+                            : qsTr("Unsupported")
+                    }
+
+                    Controls.Label {
+                        Kirigami.FormData.label: qsTr("Messages and Contacts:")
+                        text: root.bridge.compatibility.messages_supported
+                            ? qsTr("Supported") : qsTr("Unsupported")
+                    }
+
+                    Controls.Label {
+                        Kirigami.FormData.label: qsTr("iPhone Notifications:")
+                        text: root.bridge.compatibility.notifications_supported
+                            ? qsTr("Supported") : qsTr("Unsupported")
+                    }
+
+                    Controls.Label {
+                        Kirigami.FormData.label: qsTr("Bluetooth Support:")
+                        text: !root.bridge.compatibility.notifications_supported
+                            ? qsTr("Not Required")
+                            : root.bridge.bluetoothActive
+                                ? qsTr("Active")
+                                : qsTr("Restart Required")
+                    }
+                }
+
+                RowLayout {
+                    visible: !root.bridge.configured
+                    Controls.Button {
+                        visible: root.bridge.compatibility.notifications_supported === true
+                            && !root.bridge.bluetoothActive
+                        text: qsTr("Restart Bluetooth")
+                        icon.name: "network-bluetooth"
+                        enabled: !root.bridge.busy
+                        onClicked: restartBluetoothDialog.open()
+                    }
+                    Controls.Button {
+                        text: qsTr("1. Scan for iPhone")
+                        icon.name: "edit-find"
+                        enabled: !root.bridge.busy
+                        onClicked: root.bridge.loadDevices(true)
+                    }
+                    Controls.BusyIndicator {
+                        running: root.bridge.busy
+                        visible: running
+                    }
+                }
+
+                Kirigami.FormLayout {
+                    Layout.fillWidth: true
+                    visible: !root.bridge.configured
+
+                    Controls.ComboBox {
+                        id: deviceCombo
+                        Kirigami.FormData.label: qsTr("Found iPhone:")
+                        model: root.bridge.devices
+                        textRole: "display_name"
+                        valueRole: "mac"
+                        enabled: !root.bridge.busy
+                        onCurrentIndexChanged: iphonePage.selectedDevice = currentIndex
+                    }
+                }
+
+                RowLayout {
+                    visible: !root.bridge.configured
+                    Controls.Button {
+                        text: iphonePage.device !== null && iphonePage.device.paired
+                            ? qsTr("Use Existing Pairing") : qsTr("2. Pair Selected iPhone")
+                        icon.name: "network-connect"
+                        enabled: iphonePage.device !== null
+                            && root.bridge.compatibility.pairing_ready
+                            && !root.bridge.busy
+                        onClicked: root.bridge.completePairing(iphonePage.device.mac)
+                    }
+                    Controls.Button {
+                        text: qsTr("Forget")
+                        icon.name: "edit-delete-remove"
+                        enabled: iphonePage.device !== null
+                            && iphonePage.device.paired && !root.bridge.busy
+                        onClicked: {
+                            forgetDialog.mac = iphonePage.device.mac
+                            forgetDialog.open()
+                        }
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    visible: root.bridge.configured
+
+                    Controls.Label {
+                        Layout.fillWidth: true
+                        text: iphonePage.configuredDevice !== null
+                            ? iphonePage.configuredDevice.name
+                            : qsTr("iPhone")
+                    }
+                    Controls.Button {
+                        text: qsTr("Unpair")
+                        icon.name: "network-disconnect"
+                        enabled: !root.bridge.busy
+                        onClicked: {
+                            forgetDialog.mac = root.bridge.configuredMac
+                            forgetDialog.open()
+                        }
+                    }
+                }
+
+                Kirigami.Heading {
+                    visible: root.bridge.configured
+                        && root.pendingIphoneSetupTasks().length > 0
+                    text: qsTr("Finish Setup on the iPhone")
+                    level: 2
+                }
+                Kirigami.InlineMessage {
+                    Layout.fillWidth: true
+                    visible: root.bridge.configured
+                        && root.pendingIphoneSetupTasks().length > 0
+                    type: Kirigami.MessageType.Information
+                    text: root.pendingIphoneSetupText()
                 }
 
                 Kirigami.Heading { text: qsTr("Connection Health"); level: 2 }
@@ -567,109 +738,6 @@ Kirigami.ApplicationWindow {
                         enabled: root.bridge.status.daemon === true && !root.bridge.busy
                         onActivated: root.bridge.setNotificationPolicy(currentValue)
                     }
-                }
-
-                Kirigami.Heading { text: qsTr("Pairing and Hardware"); level: 2 }
-
-                Kirigami.FormLayout {
-                    Layout.fillWidth: true
-
-                    Controls.Label {
-                        Kirigami.FormData.label: qsTr("Controller:")
-                        text: root.bridge.compatibility.adapter || qsTr("Checking…")
-                    }
-
-                    Controls.Label {
-                        Kirigami.FormData.label: qsTr("Hardware:")
-                        text: root.bridge.compatibility.hardware_supported
-                            ? qsTr("Compatible")
-                            : qsTr("Unsupported")
-                    }
-
-                    Controls.Label {
-                        Kirigami.FormData.label: qsTr("Messages and Contacts:")
-                        text: root.bridge.compatibility.messages_supported
-                            ? qsTr("Supported") : qsTr("Unsupported")
-                    }
-
-                    Controls.Label {
-                        Kirigami.FormData.label: qsTr("iPhone Notifications:")
-                        text: root.bridge.compatibility.notifications_supported
-                            ? qsTr("Supported") : qsTr("Unsupported")
-                    }
-
-                    Controls.Label {
-                        Kirigami.FormData.label: qsTr("Bluetooth Support:")
-                        text: !root.bridge.compatibility.notifications_supported
-                            ? qsTr("Not Required")
-                            : root.bridge.bluetoothActive
-                                ? qsTr("Active")
-                                : qsTr("Restart Required")
-                    }
-
-                    Controls.ComboBox {
-                        id: deviceCombo
-                        Kirigami.FormData.label: qsTr("Device:")
-                        model: root.bridge.devices
-                        textRole: "display_name"
-                        valueRole: "mac"
-                        enabled: !root.bridge.busy
-                        onCurrentIndexChanged: iphonePage.selectedDevice = currentIndex
-                    }
-                }
-
-                RowLayout {
-                    Controls.Button {
-                        visible: root.bridge.compatibility.notifications_supported === true
-                            && !root.bridge.bluetoothActive
-                        text: qsTr("Restart Bluetooth")
-                        icon.name: "network-bluetooth"
-                        enabled: !root.bridge.busy
-                        onClicked: restartBluetoothDialog.open()
-                    }
-                    Controls.Button {
-                        text: qsTr("Scan")
-                        icon.name: "edit-find"
-                        enabled: !root.bridge.busy
-                        onClicked: root.bridge.loadDevices(true)
-                    }
-                    Controls.Button {
-                        text: iphonePage.device !== null && iphonePage.device.paired
-                            ? qsTr("Use Existing Pairing") : qsTr("Pair iPhone")
-                        icon.name: "network-connect"
-                        enabled: iphonePage.device !== null
-                            && root.bridge.compatibility.pairing_ready
-                            && !root.bridge.busy
-                        onClicked: root.bridge.completePairing(iphonePage.device.mac)
-                    }
-                    Controls.Button {
-                        text: qsTr("Forget")
-                        icon.name: "edit-delete-remove"
-                        enabled: iphonePage.device !== null
-                            && iphonePage.device.paired && !root.bridge.busy
-                        onClicked: {
-                            forgetDialog.mac = iphonePage.device.mac
-                            forgetDialog.open()
-                        }
-                    }
-                    Controls.BusyIndicator {
-                        running: root.bridge.busy
-                        visible: running
-                    }
-                }
-
-                Kirigami.Heading { text: qsTr("Finish on the iPhone"); level: 2 }
-                Controls.Label {
-                    Layout.fillWidth: true
-                    wrapMode: Text.Wrap
-                    text: qsTr("In Settings → Bluetooth, tap ⓘ next to this computer. Enable Show Message Notifications and Sync Contacts.")
-                }
-                Controls.Label {
-                    Layout.fillWidth: true
-                    wrapMode: Text.Wrap
-                    visible: root.bridge.onboardingStage === "ready"
-                        || root.bridge.onboardingStage === "ready-without-ancs"
-                    text: qsTr("Setup is verified. Existing history may be empty; new incoming messages will appear automatically.")
                 }
 
                 Kirigami.Heading { text: qsTr("Local Data"); level: 2 }

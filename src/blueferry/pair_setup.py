@@ -4,6 +4,7 @@ The toolkit UIs and CLI all use this module.  BlueZ's desktop agent remains
 responsible for showing the secure passkey/confirmation dialog; BlueFerry
 initiates the operation and performs the protocol-specific setup around it.
 """
+
 from __future__ import annotations
 
 import time
@@ -19,6 +20,7 @@ from blueferry.bus import get_system_bus
 from blueferry.commands import run_command
 from blueferry.errors import CommandError, PairingError
 from blueferry.private_files import atomic_write_private_text
+from blueferry.setup_verification import clear_setup_verification
 
 LOCAL_ENV_PATH = config.LOCAL_ENV_PATH
 
@@ -27,15 +29,9 @@ def configuration_status() -> dict:
     """Return first-run state without activating the user daemon."""
     values = config.read_local_env(LOCAL_ENV_PATH)
     mac = values.get("BLUEFERRY_MAC", "").upper()
-    saved = bool(
-        config.is_valid_mac(mac) and mac != "AA:BB:CC:DD:EE:FF"
-    )
+    saved = bool(config.is_valid_mac(mac) and mac != "AA:BB:CC:DD:EE:FF")
     configured_adapter = values.get("BLUEFERRY_ADAPTER", "")
-    adapter = (
-        configured_adapter
-        if config.is_valid_adapter(configured_adapter)
-        else config.ADAPTER
-    )
+    adapter = configured_adapter if config.is_valid_adapter(configured_adapter) else config.ADAPTER
     bonded = bond_status(mac, adapter) if saved else False
     # A temporary BlueZ failure should not erase a valid setup decision. A
     # definitive, reachable adapter with no bond means setup is incomplete.
@@ -118,18 +114,20 @@ def list_devices(*, paired_only: bool = False) -> list[PairedDevice]:
         paired = bool(d.get("Paired", False))
         if paired_only and not paired:
             continue
-        out.append(PairedDevice(
-            mac=str(d.get("Address", "")),
-            name=str(d.get("Alias") or d.get("Name") or "(unnamed)"),
-            icon=str(d.get("Icon", "")),
-            trusted=bool(d.get("Trusted", False)),
-            connected=bool(d.get("Connected", False)),
-            paired=paired,
-            adapter_path=path.rsplit("/", 1)[0],
-            device_path=str(path),
-            uuids=frozenset(str(v).lower() for v in d.get("UUIDs", [])),
-            services_resolved=bool(d.get("ServicesResolved", False)),
-        ))
+        out.append(
+            PairedDevice(
+                mac=str(d.get("Address", "")),
+                name=str(d.get("Alias") or d.get("Name") or "(unnamed)"),
+                icon=str(d.get("Icon", "")),
+                trusted=bool(d.get("Trusted", False)),
+                connected=bool(d.get("Connected", False)),
+                paired=paired,
+                adapter_path=path.rsplit("/", 1)[0],
+                device_path=str(path),
+                uuids=frozenset(str(v).lower() for v in d.get("UUIDs", [])),
+                services_resolved=bool(d.get("ServicesResolved", False)),
+            )
+        )
     return sorted(
         out,
         key=lambda device: (
@@ -147,16 +145,10 @@ def discover_devices(seconds: int = 8) -> list[PairedDevice]:
     adapter_path = f"/org/bluez/{config.ADAPTER}"
     try:
         objects = _object_manager().GetManagedObjects()
-        adapters = [
-            str(path) for path, ifaces in objects.items()
-            if "org.bluez.Adapter1" in ifaces
-        ]
+        adapters = [str(path) for path, ifaces in objects.items() if "org.bluez.Adapter1" in ifaces]
         if adapters:
             adapter_path = next(
-                (
-                    path for path in adapters
-                    if path.endswith(f"/{config.ADAPTER}")
-                ),
+                (path for path in adapters if path.endswith(f"/{config.ADAPTER}")),
                 adapters[0],
             )
         obj = get_system_bus().get_object("org.bluez", adapter_path)
@@ -251,6 +243,16 @@ def _restart_user_service() -> None:
             raise PairingError(f"Could not run {' '.join(command)}: {error}") from error
 
 
+def _stop_user_service() -> None:
+    try:
+        run_command(
+            ["/usr/bin/systemctl", "--user", "stop", "blueferry.service"],
+            timeout=30,
+        )
+    except CommandError as error:
+        raise PairingError(f"Could not stop BlueFerry: {error}") from error
+
+
 def complete_pairing(mac: str) -> dict:
     """Pair if needed and finish every Linux-side BlueFerry setup step."""
     from blueferry import bluez_setup
@@ -262,16 +264,13 @@ def complete_pairing(mac: str) -> dict:
         raise PairingError(compatibility["issue"] or "Bluetooth controller is incompatible")
     notifications_supported = compatibility["notifications_supported"]
     if notifications_supported and not compatibility["bearer_api_active"]:
-        raise PairingError(
-            "Activate Bluetooth support before pairing or re-pairing the iPhone"
-        )
+        raise PairingError("Activate Bluetooth support before pairing or re-pairing the iPhone")
     if notifications_supported:
         prepared = bluez_setup.prepare(adapter=adapter, authorize=True)
     else:
         cod = bluez_setup.current_cod(adapter)
-        prepared = (
-            bluez_setup.desired_cod_matches(cod)
-            or bluez_setup.set_cod(adapter=adapter, authorize=True)
+        prepared = bluez_setup.desired_cod_matches(cod) or bluez_setup.set_cod(
+            adapter=adapter, authorize=True
         )
     if not prepared:
         bluez_setup.unregister_advert(adapter)
@@ -311,9 +310,7 @@ def complete_pairing(mac: str) -> dict:
                     raise PairingError(detail) from error
             device = _wait_for_paired_device(mac)
         trust_device(device.mac, device.adapter_path)
-        write_local_env(
-            device.mac, device.adapter_path.rsplit("/", 1)[-1]
-        )
+        write_local_env(device.mac, device.adapter_path.rsplit("/", 1)[-1])
     finally:
         # The temporary setup process owns this advertisement. Remove it
         # before starting the daemon so ownership transfers without a gap or
@@ -353,8 +350,9 @@ def complete_pairing(mac: str) -> dict:
 
 
 def forget_device(mac: str) -> None:
-    """Remove the local BlueZ bond so a clean two-sided re-pair can occur."""
+    """Stop BlueFerry, remove the local bond, and clear the selected phone."""
     device = _device(mac)
+    _stop_user_service()
     try:
         dbus.Interface(
             get_system_bus().get_object("org.bluez", device.adapter_path),
@@ -364,6 +362,30 @@ def forget_device(mac: str) -> None:
         raise PairingError(
             error.get_dbus_message() or error.get_dbus_name() or str(error)
         ) from error
+    clear_local_target()
+
+
+def clear_local_target() -> Path:
+    """Forget the selected phone without discarding unrelated preferences."""
+    existing = config.read_local_env(LOCAL_ENV_PATH)
+    existing.pop("BLUEFERRY_MAC", None)
+    existing.pop("BLUEFERRY_ADAPTER", None)
+    content = "".join(
+        f"{key}={existing[key]}\n" for key in sorted(config.LOCAL_ENV_KEYS) if key in existing
+    )
+    try:
+        atomic_write_private_text(
+            LOCAL_ENV_PATH,
+            content,
+            maximum_bytes=config.MAX_CONFIG_FILE_BYTES,
+        )
+    except (OSError, ValueError) as error:
+        raise PairingError(f"could not clear private configuration: {error}") from error
+    try:
+        clear_setup_verification()
+    except (OSError, ValueError) as error:
+        raise PairingError(f"could not clear setup verification: {error}") from error
+    return LOCAL_ENV_PATH
 
 
 def write_local_env(mac: str, adapter: str | None = None) -> Path:
@@ -378,9 +400,7 @@ def write_local_env(mac: str, adapter: str | None = None) -> Path:
         existing["BLUEFERRY_ADAPTER"] = adapter
     ordered = ["BLUEFERRY_MAC", "BLUEFERRY_ADAPTER"]
     ordered.extend(sorted(config.LOCAL_ENV_KEYS - set(ordered)))
-    content = "".join(
-        f"{key}={existing[key]}\n" for key in ordered if key in existing
-    )
+    content = "".join(f"{key}={existing[key]}\n" for key in ordered if key in existing)
     try:
         atomic_write_private_text(
             LOCAL_ENV_PATH,

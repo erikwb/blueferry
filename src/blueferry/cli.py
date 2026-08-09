@@ -1,4 +1,5 @@
 """Typer CLI entrypoints."""
+
 from __future__ import annotations
 
 import logging
@@ -17,7 +18,7 @@ app = typer.Typer(
 )
 
 _OBEXD_PATHS = (
-    "/usr/lib/bluetooth/obexd",      # Arch Linux
+    "/usr/lib/bluetooth/obexd",  # Arch Linux
     "/usr/libexec/bluetooth/obexd",  # Debian/Ubuntu, Fedora
 )
 
@@ -36,6 +37,7 @@ def run(verbose: bool = typer.Option(False, "-v", "--verbose")):
     _setup_logging(verbose)
     # Import inside command to avoid loading dbus stack just to print --help
     from blueferry.daemon import Daemon
+
     exit_code = Daemon().run()
     if exit_code:
         raise typer.Exit(code=exit_code)
@@ -98,8 +100,7 @@ def doctor(verbose: bool = typer.Option(False, "-v", "--verbose")):
     if ok:
         typer.echo(typer.style("All checks passed.", fg=typer.colors.GREEN))
     else:
-        typer.echo(typer.style("One or more checks FAILED.",
-                               fg=typer.colors.RED))
+        typer.echo(typer.style("One or more checks FAILED.", fg=typer.colors.RED))
         raise typer.Exit(code=1)
 
 
@@ -109,12 +110,11 @@ def contacts_sync(verbose: bool = typer.Option(False, "-v", "--verbose")):
     _setup_logging(verbose)
 
     from blueferry.client import BackendClient, BackendError
+
     try:
         n = BackendClient().sync_contacts()
     except BackendError as error:
-        typer.echo(typer.style(
-            f"Contact sync failed: {error}", fg=typer.colors.RED
-        ))
+        typer.echo(typer.style(f"Contact sync failed: {error}", fg=typer.colors.RED))
         raise typer.Exit(code=3) from None
     typer.echo(f"Pulled contacts; {n} cached destinations")
 
@@ -137,34 +137,30 @@ def ancs_enable(
     _setup_logging(verbose)
     import dbus
     import dbus.mainloop.glib
+
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
     sysbus = dbus.SystemBus()
 
     device_mac = config.IPHONE_MAC
-    device_path = (
-        f"/org/bluez/{config.ADAPTER}/"
-        f"dev_{device_mac.replace(':', '_')}"
-    )
+    device_path = f"/org/bluez/{config.ADAPTER}/dev_{device_mac.replace(':', '_')}"
     try:
         obj = sysbus.get_object("org.bluez", device_path)
         props = dbus.Interface(obj, "org.freedesktop.DBus.Properties")
-        props.Set(
-            "org.bluez.Device1", "PreferredBearer", dbus.String("le")
-        )
+        props.Set("org.bluez.Device1", "PreferredBearer", dbus.String("le"))
         typer.echo("PreferredBearer: le")
         dbus.Interface(obj, "org.bluez.Bearer.LE1").Connect(timeout=45.0)
     except dbus.exceptions.DBusException as e:
         name = e.get_dbus_name()
         message = e.get_dbus_message() or name
-        if name in {"org.bluez.Error.AlreadyConnected",
-                    "org.bluez.Error.InProgress"}:
+        if name in {"org.bluez.Error.AlreadyConnected", "org.bluez.Error.InProgress"}:
             typer.echo(typer.style("LE bearer already connected", fg=typer.colors.GREEN))
         else:
-            typer.echo(typer.style(f"LE connect failed: {message}",
-                                   fg=typer.colors.RED))
-            if name in {"org.freedesktop.DBus.Error.UnknownInterface",
-                        "org.freedesktop.DBus.Error.UnknownMethod",
-                        "org.freedesktop.DBus.Error.UnknownProperty"}:
+            typer.echo(typer.style(f"LE connect failed: {message}", fg=typer.colors.RED))
+            if name in {
+                "org.freedesktop.DBus.Error.UnknownInterface",
+                "org.freedesktop.DBus.Error.UnknownMethod",
+                "org.freedesktop.DBus.Error.UnknownProperty",
+            }:
                 typer.echo(
                     "BlueZ's experimental D-Bus API is not enabled. "
                     "Install the Arch package's bluetooth.service drop-in "
@@ -192,6 +188,7 @@ def pair_setup(
     """First-run wizard: pick a paired iPhone, write the local config,
     walk through the iPhone-side toggle steps."""
     from blueferry.pairing_cli import run_wizard
+
     raise typer.Exit(code=run_wizard(verify_after=not no_verify))
 
 
@@ -202,11 +199,18 @@ def pairing_devices_json(
     """List Bluetooth devices for graphical setup clients."""
     import json
 
+    from blueferry.bluetooth_devices import iphone_candidates
     from blueferry.errors import PairingError
     from blueferry.setup_client import SetupClient
 
     try:
-        devices = SetupClient().devices(scan_seconds=scan_seconds)
+        setup = SetupClient()
+        configuration = setup.configuration()
+        devices = iphone_candidates(
+            setup.devices(scan_seconds=scan_seconds),
+            configured_mac=configuration.mac,
+            include_unpaired=scan_seconds > 0,
+        )
         typer.echo(json.dumps([device.to_dict() for device in devices]))
     except PairingError as error:
         typer.echo(json.dumps({"error": str(error)}))
@@ -286,7 +290,7 @@ def pairing_complete(mac: str) -> None:
 
 @app.command("pairing-forget", hidden=True)
 def pairing_forget(mac: str) -> None:
-    """Remove a local bond for graphical repair workflows."""
+    """Unpair the phone and clear it from BlueFerry configuration."""
     import json
 
     from blueferry.errors import PairingError
@@ -333,6 +337,7 @@ def status_json() -> None:
     client, error_type = _json_client()
     try:
         from blueferry.backend_lifecycle import ensure_backend_current
+
         ensure_backend_current()
         typer.echo(json.dumps(client.status().to_dict(), ensure_ascii=False))
     except (error_type, RuntimeError) as error:
@@ -347,10 +352,12 @@ def threads_json(limit: int = typer.Option(200, "--limit")) -> None:
 
     client, error_type = _json_client()
     try:
-        typer.echo(json.dumps(
-            [thread.to_dict() for thread in client.threads(limit)],
-            ensure_ascii=False,
-        ))
+        typer.echo(
+            json.dumps(
+                [thread.to_dict() for thread in client.threads(limit)],
+                ensure_ascii=False,
+            )
+        )
     except error_type as error:
         typer.echo(json.dumps({"error": str(error)}))
         raise typer.Exit(code=2) from None
@@ -405,9 +412,7 @@ def thread_send(
     """Send through an opaque backend thread key for shell clients."""
     client, error_type = _json_client()
     try:
-        typer.echo(client.send_to_thread(
-            thread_key, body, confirm_group=confirm_group
-        ))
+        typer.echo(client.send_to_thread(thread_key, body, confirm_group=confirm_group))
     except error_type as error:
         typer.echo(str(error), err=True)
         raise typer.Exit(code=2) from None
@@ -439,6 +444,7 @@ app.command("sms-send")(sms_send)
 def version():
     """Print version and exit."""
     from blueferry import __version__
+
     typer.echo(f"BlueFerry {__version__}")
 
 

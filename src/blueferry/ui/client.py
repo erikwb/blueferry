@@ -9,6 +9,7 @@ The daemon owns `io.weirdware.BlueFerry` on the session bus. This client:
 
 Slow methods are issued asynchronously so the UI never blocks.
 """
+
 from __future__ import annotations
 
 import json
@@ -35,6 +36,7 @@ from blueferry.protocol import (
 
 log = logging.getLogger(__name__)
 
+
 def _plain(value):
     """Recursively convert dbus-python types into plain Python values."""
     if isinstance(value, dbus.Dictionary):
@@ -45,8 +47,10 @@ def _plain(value):
         return str(value)
     if isinstance(value, dbus.Boolean):
         return bool(value)
-    if isinstance(value, dbus.Int16 | dbus.Int32 | dbus.Int64 |
-                  dbus.UInt16 | dbus.UInt32 | dbus.UInt64 | dbus.Byte):
+    if isinstance(
+        value,
+        dbus.Int16 | dbus.Int32 | dbus.Int64 | dbus.UInt16 | dbus.UInt32 | dbus.UInt64 | dbus.Byte,
+    ):
         return int(value)
     if isinstance(value, dbus.Double):
         return float(value)
@@ -63,8 +67,8 @@ class DaemonClient(GObject.Object):
     """Live link to the daemon. Emits GObject signals as D-Bus signals arrive."""
 
     __gsignals__: ClassVar = {
-        "history-changed":      (GObject.SignalFlags.RUN_FIRST, None, (object,)),
-        "status-invalidated":   (GObject.SignalFlags.RUN_FIRST, None, ()),
+        "history-changed": (GObject.SignalFlags.RUN_FIRST, None, (object,)),
+        "status-invalidated": (GObject.SignalFlags.RUN_FIRST, None, ()),
         "availability-changed": (GObject.SignalFlags.RUN_FIRST, None, (bool,)),
     }
 
@@ -72,12 +76,10 @@ class DaemonClient(GObject.Object):
         super().__init__()
         self._bus = get_session_bus()
         self._matches: list = []
-        self._executor = ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="blueferry-ui-dbus"
-        )
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="blueferry-gtk-dbus")
         self._stopped = False
-        self.available = False   # is the daemon reachable on D-Bus?
-        self.healthy = False     # is the MAP session up?
+        self.available = False  # is the daemon reachable on D-Bus?
+        self.healthy = False  # is the MAP session up?
         self._subscribe()
         if configuration_status()["configured"]:
             self.ensure_backend_current_async()
@@ -87,20 +89,24 @@ class DaemonClient(GObject.Object):
     def _subscribe(self) -> None:
         # add_signal_receiver works even before the daemon is up — delivery
         # just starts once it claims the bus name.
-        self._matches.append(self._bus.add_signal_receiver(
-            lambda props: self.emit("history-changed", _plain(props)),
-            dbus_interface=EVENTS_IFACE,
-            signal_name="HistoryChanged",
-            bus_name=BUS_NAME,
-            path=OBJECT_PATH,
-        ))
-        self._matches.append(self._bus.add_signal_receiver(
-            lambda: self.emit("status-invalidated"),
-            dbus_interface=EVENTS_IFACE,
-            signal_name="StatusChanged",
-            bus_name=BUS_NAME,
-            path=OBJECT_PATH,
-        ))
+        self._matches.append(
+            self._bus.add_signal_receiver(
+                lambda props: self.emit("history-changed", _plain(props)),
+                dbus_interface=EVENTS_IFACE,
+                signal_name="HistoryChanged",
+                bus_name=BUS_NAME,
+                path=OBJECT_PATH,
+            )
+        )
+        self._matches.append(
+            self._bus.add_signal_receiver(
+                lambda: self.emit("status-invalidated"),
+                dbus_interface=EVENTS_IFACE,
+                signal_name="StatusChanged",
+                bus_name=BUS_NAME,
+                path=OBJECT_PATH,
+            )
+        )
 
     def stop(self) -> None:
         self._stopped = True
@@ -122,9 +128,7 @@ class DaemonClient(GObject.Object):
         """Make a blocking call on a worker-owned connection."""
         bus = dbus.SessionBus(private=True)
         try:
-            iface = dbus.Interface(
-                bus.get_object(BUS_NAME, OBJECT_PATH), MESSAGES_IFACE
-            )
+            iface = dbus.Interface(bus.get_object(BUS_NAME, OBJECT_PATH), MESSAGES_IFACE)
             return getattr(iface, method)(*args, timeout=timeout)
         finally:
             bus.close()
@@ -218,9 +222,12 @@ class DaemonClient(GObject.Object):
         """Send asynchronously. on_ok(transfer_path) / on_err(text)."""
         try:
             self._iface(MESSAGES_IFACE).Send(
-                recipient, body, timeout=OBEX_CALL_TIMEOUT_SEC,
+                recipient,
+                body,
+                timeout=OBEX_CALL_TIMEOUT_SEC,
                 reply_handler=lambda t: on_ok(str(t)),
-                error_handler=lambda e: on_err(dbus_error_text(e)))
+                error_handler=lambda e: on_err(dbus_error_text(e)),
+            )
         except dbus.exceptions.DBusException as e:
             on_err(dbus_error_text(e))
 
@@ -259,12 +266,20 @@ class DaemonClient(GObject.Object):
 
     def list_threads_async(self, on_ok, on_err=None, limit: int = 1000) -> None:
         def operation() -> list[Thread]:
-            raw = str(self._private_call(
-                "ListThreads", dbus.UInt32(limit), timeout=20,
-            ))
+            raw = str(
+                self._private_call(
+                    "ListThreads",
+                    dbus.UInt32(limit),
+                    timeout=20,
+                )
+            )
             value = json.loads(raw)
-            return [Thread.from_dict(item) for item in value
-                    if isinstance(item, Mapping)] if isinstance(value, list) else []
+            return (
+                [Thread.from_dict(item) for item in value if isinstance(item, Mapping)]
+                if isinstance(value, list)
+                else []
+            )
+
         self._submit(operation, on_ok, on_err)
 
     def get_status_async(self, on_ok, on_err=None) -> None:
@@ -272,33 +287,29 @@ class DaemonClient(GObject.Object):
             raw = str(self._private_call("GetStatus", timeout=10))
             value = json.loads(raw)
             return BackendStatus.from_dict(value) if isinstance(value, dict) else BackendStatus()
+
         self._submit(operation, on_ok, on_err)
 
     def clear_history_async(self, on_ok, on_err) -> None:
         self._submit(
-            lambda: self._private_call(
-                "ClearHistory", dbus.Boolean(True), timeout=20
-            ),
+            lambda: self._private_call("ClearHistory", dbus.Boolean(True), timeout=20),
             lambda _value: on_ok(),
             on_err,
         )
 
     def set_notification_policy_async(self, policy: str, on_ok, on_err) -> None:
         self._submit(
-            lambda: str(self._private_call(
-                "SetNotificationPolicy", policy, timeout=10
-            )),
+            lambda: str(self._private_call("SetNotificationPolicy", policy, timeout=10)),
             on_ok,
             on_err,
         )
 
     def set_storage_policy_async(self, policy: str, on_ok, on_err) -> None:
         def operation() -> dict:
-            raw = str(self._private_call(
-                "SetStoragePolicy", policy, timeout=30
-            ))
+            raw = str(self._private_call("SetStoragePolicy", policy, timeout=30))
             value = json.loads(raw)
             return value if isinstance(value, dict) else {}
+
         self._submit(operation, on_ok, on_err)
 
     def unlock_storage_async(self, on_ok, on_err) -> None:
@@ -306,4 +317,5 @@ class DaemonClient(GObject.Object):
             raw = str(self._private_call("UnlockStorage", timeout=30))
             value = json.loads(raw)
             return value if isinstance(value, dict) else {}
+
         self._submit(operation, on_ok, on_err)

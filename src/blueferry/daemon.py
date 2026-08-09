@@ -3,6 +3,7 @@
 The control API is published before Bluetooth initialization. Profile failures
 leave it available in degraded mode and are retried periodically.
 """
+
 from __future__ import annotations
 
 import logging
@@ -35,6 +36,12 @@ from blueferry.obex.worker import ObexWorker
 from blueferry.pair_setup import bond_status
 from blueferry.profile_supervisor import ProfileSupervisor
 from blueferry.protocol import BUS_NAME
+from blueferry.setup_verification import (
+    CONTACTS,
+    MESSAGE_NOTIFICATIONS,
+    NOTIFICATION_ACCESS,
+    SetupVerification,
+)
 from blueferry.storage_security import StorageSecurity
 
 log = logging.getLogger(__name__)
@@ -63,11 +70,13 @@ class Daemon:
         self.contacts = ContactsResolver(storage=self.storage)
         self.connectivity = Connectivity()
         self.notification_policy = NotificationPolicyStore()
+        self.setup_verification = SetupVerification(config.IPHONE_MAC)
         self.events = EventDispatcher(
             self.contacts,
             submit_obex=self.obex_worker.submit,
             notification_policy=lambda: self.notification_policy.value,
             storage=self.storage,
+            on_incoming_message=lambda: self._verify_setup_task(MESSAGE_NOTIFICATIONS),
         )
         self.listener: MapEventListener | None = None
         self.ancs: AncsClient | None = None
@@ -98,6 +107,17 @@ class Daemon:
         emit = getattr(self._dbus_service, "emit_status", None)
         if emit is not None:
             emit()
+
+    def _mark_setup_task(self, task: str) -> bool:
+        try:
+            return self.setup_verification.mark(task)
+        except (OSError, ValueError):
+            log.warning("could not persist iPhone setup verification", exc_info=True)
+            return False
+
+    def _verify_setup_task(self, task: str) -> None:
+        if self._mark_setup_task(task):
+            self._emit_status()
 
     # ---- lifecycle -------------------------------------------------------
 
@@ -155,9 +175,17 @@ class Daemon:
                 minimized,
             )
         self.contacts.refresh()
-        self.events.seed_historical_ancs(read_events(
-            kinds={"ancs_notification"}, limit=2_000, storage=self.storage,
-        ))
+        if self.contacts.count() > 0:
+            self._mark_setup_task(CONTACTS)
+        if read_events(kinds={"sms_received"}, limit=1, storage=self.storage):
+            self._mark_setup_task(MESSAGE_NOTIFICATIONS)
+        self.events.seed_historical_ancs(
+            read_events(
+                kinds={"ancs_notification"},
+                limit=2_000,
+                storage=self.storage,
+            )
+        )
 
     def _initialize(self) -> bool:
         self._startup_id = None
@@ -167,16 +195,12 @@ class Daemon:
         except PairingRequiredError as error:
             log.warning("Bluetooth setup is incomplete: %s", error)
             delay = self.connectivity.failed(error)
-            self._initialization_retry_id = GLib.timeout_add_seconds(
-                delay, self._initialize
-            )
+            self._initialization_retry_id = GLib.timeout_add_seconds(delay, self._initialize)
             log.info("waiting %ds for pairing before checking again", delay)
         except Exception as error:
             log.exception("Bluetooth initialization failed; running degraded")
             delay = self.connectivity.failed(error)
-            self._initialization_retry_id = GLib.timeout_add_seconds(
-                delay, self._initialize
-            )
+            self._initialization_retry_id = GLib.timeout_add_seconds(delay, self._initialize)
             log.warning("retrying Bluetooth initialization in %ds", delay)
         finally:
             self._initializing = False
@@ -200,10 +224,7 @@ class Daemon:
         # `blueferry ancs-enable` asks BlueZ to connect the bonded LE
         # bearer alongside BR/EDR; the client waits patiently for the three
         # ANCS characteristics to appear and subscribes when they do.
-        device_path = (
-            f"/org/bluez/{config.ADAPTER}"
-            f"/dev_{config.IPHONE_MAC.replace(':', '_')}"
-        )
+        device_path = f"/org/bluez/{config.ADAPTER}/dev_{config.IPHONE_MAC.replace(':', '_')}"
         if self.ancs is None:
             candidate = AncsClient(
                 device_path,
@@ -247,9 +268,7 @@ class Daemon:
             return
         try:
             manager = dbus.Interface(
-                get_system_bus().get_object(
-                    "org.freedesktop.login1", "/org/freedesktop/login1"
-                ),
+                get_system_bus().get_object("org.freedesktop.login1", "/org/freedesktop/login1"),
                 "org.freedesktop.login1.Manager",
             )
             self._sleep_match = manager.connect_to_signal(
@@ -289,9 +308,11 @@ class Daemon:
             )
             self.listener.start()
 
-        log.info("=== BlueFerry ready (contacts=%d, sinks=%s) ===",
-                 self.contacts.count(),
-                 self.events.names)
+        log.info(
+            "=== BlueFerry ready (contacts=%d, sinks=%s) ===",
+            self.contacts.count(),
+            self.events.names,
+        )
 
     def _pull_contacts(self) -> int:
         """Worker-side PBAP operation."""
@@ -300,6 +321,8 @@ class Daemon:
     def _contacts_pulled(self, pulled: int) -> int:
         """GLib-side cache refresh after a successful PBAP pull."""
         count = self.contacts.refresh()
+        if count > 0:
+            self._mark_setup_task(CONTACTS)
         if self._dbus_service is not None:
             self._dbus_service.operations.invalidate_conversations()
             self._dbus_service.emit_history_changed()
@@ -308,12 +331,17 @@ class Daemon:
         return count
 
     def _status(self) -> dict:
+        if self.contacts.count() > 0:
+            self._mark_setup_task(CONTACTS)
+        if self.ancs and self.ancs.connected:
+            self._mark_setup_task(NOTIFICATION_ACCESS)
         return {
             "backend_release": self._running_release,
             "initializing": self._initializing,
             "ancs": bool(self.ancs and self.ancs.connected),
             "contacts": self.contacts.count(),
             "events": history_count(storage=self.storage),
+            "verified_iphone_setup": list(self.setup_verification.verified),
             "history_retention_days": config.HISTORY_RETENTION_DAYS,
             "notification_timeout_ms": config.NOTIFICATION_TIMEOUT_MS,
             "notification_policy": self.notification_policy.value,
@@ -338,9 +366,7 @@ class Daemon:
             log.error("contacts refresh failed; using previous cache: %s", error)
             self.sessions.report_error(error)
 
-        self.obex_worker.submit(
-            self._pull_contacts, on_success=succeeded, on_error=failed
-        )
+        self.obex_worker.submit(self._pull_contacts, on_success=succeeded, on_error=failed)
 
     def _periodic_refresh_contacts(self) -> bool:
         """GLib timeout callback. Return True to keep the timer running."""

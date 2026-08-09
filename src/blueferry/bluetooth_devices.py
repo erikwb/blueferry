@@ -1,6 +1,7 @@
 """Typed BlueZ device projection shared by setup workflows and clients."""
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 from blueferry import config
@@ -65,3 +66,28 @@ class PairedDevice:
             "uuids": sorted(self.uuids),
             "services_resolved": self.services_resolved,
         }
+
+
+def iphone_candidates(
+    devices: Iterable[PairedDevice],
+    *,
+    adapter: str = "",
+    configured_mac: str = "",
+    include_unpaired: bool = False,
+) -> list[PairedDevice]:
+    """Return phone-like devices that are safe to offer for iPhone setup.
+
+    BlueZ sometimes loses a configured phone's icon or friendly name, so the
+    saved target remains eligible. Other unrelated devices are never used as a
+    fallback. Unpaired phones appear only after an explicit discovery scan.
+    """
+    selected_mac = configured_mac.strip().casefold()
+    return [
+        device for device in devices
+        if (not adapter or device.adapter_path.endswith(f"/{adapter}"))
+        and (
+            device.likely_iphone
+            or bool(selected_mac and device.mac.casefold() == selected_mac)
+        )
+        and (include_unpaired or device.paired)
+    ]

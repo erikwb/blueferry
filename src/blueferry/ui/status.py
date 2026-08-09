@@ -1,9 +1,10 @@
 """Adaptive iPhone page for setup, health, preferences, and maintenance."""
+
 from __future__ import annotations
 
 from gi.repository import Adw, GLib, Gtk
 
-from blueferry.bluetooth_devices import PairedDevice
+from blueferry.bluetooth_devices import PairedDevice, iphone_candidates
 from blueferry.i18n import _
 from blueferry.models import BackendStatus
 from blueferry.onboarding import OnboardingStage, derive_stage
@@ -12,11 +13,14 @@ from blueferry.setup_client import (
     ConfigurationState,
     SetupClient,
 )
-from blueferry.ui.setup_runner import SetupRunner
-from blueferry.ui.status_presenter import (
-    connection_subtitle,
-    onboarding_presentation,
+from blueferry.setup_verification import (
+    CONTACTS,
+    MESSAGE_NOTIFICATIONS,
+    NOTIFICATION_ACCESS,
+    remaining_iphone_setup_tasks,
 )
+from blueferry.ui.setup_runner import SetupRunner
+from blueferry.ui.status_presenter import connection_subtitle
 
 
 class IPhonePage(Gtk.Box):
@@ -37,17 +41,7 @@ class IPhonePage(Gtk.Box):
         page = Adw.PreferencesPage()
         self.append(page)
 
-        onboarding_group = Adw.PreferencesGroup(title=_("Getting Started"))
-        self._onboarding_row = Adw.ActionRow(
-            title=_("Checking Bluetooth Support"),
-            subtitle=_("No changes are being made"),
-        )
-        self._onboarding_icon = Gtk.Image(icon_name="content-loading-symbolic")
-        self._onboarding_row.add_suffix(self._onboarding_icon)
-        onboarding_group.add(self._onboarding_row)
-        page.add(onboarding_group)
-
-        pairing_group = Adw.PreferencesGroup(
+        self._pairing_group = Adw.PreferencesGroup(
             title=_("iPhone Pairing"),
             description=_(
                 "Discovery and pairing are handled here. Confirm the matching "
@@ -57,11 +51,11 @@ class IPhonePage(Gtk.Box):
         self._device_model = Gtk.StringList()
         self._devices: list[PairedDevice] = []
         self._device_row = Adw.ComboRow(
-            title=_("Bluetooth Device"), model=self._device_model,
+            title=_("Found iPhone"),
+            subtitle=_("Choose the phone to pair"),
+            model=self._device_model,
         )
-        self._device_row.connect(
-            "notify::selected", lambda *_args: self._selection_changed()
-        )
+        self._device_row.connect("notify::selected", lambda *_args: self._selection_changed())
         self._hardware_row = Adw.ActionRow(
             title=_("Bluetooth Controller"),
             subtitle=_("Checking compatibility…"),
@@ -71,42 +65,104 @@ class IPhonePage(Gtk.Box):
             subtitle=_("Checking system configuration…"),
         )
         self._activate_button = Gtk.Button(
-            label=_("Activate"), valign=Gtk.Align.CENTER,
+            label=_("Activate"),
+            valign=Gtk.Align.CENTER,
         )
         self._activate_button.connect("clicked", self._confirm_activate_bluez)
         self._bluez_row.add_suffix(self._activate_button)
-        pairing_group.add(self._hardware_row)
-        pairing_group.add(self._bluez_row)
-        pairing_group.add(self._device_row)
+        self._pairing_group.add(self._hardware_row)
+        self._pairing_group.add(self._bluez_row)
 
-        actions = Adw.ActionRow(
-            title=_("Discover and Configure"),
-            subtitle=_("Finds the iPhone and completes Linux-side setup"),
+        scan = Adw.ActionRow(
+            title=_("1. Find Your iPhone"),
+            subtitle=_("Scanning finds nearby devices; it does not pair them"),
+        )
+        self._scan_button = Gtk.Button(
+            label=_("Scan for iPhone"),
+            valign=Gtk.Align.CENTER,
+        )
+        self._scan_button.connect("clicked", lambda _button: self._load_devices(scan=True))
+        scan.add_suffix(self._scan_button)
+        self._pairing_group.add(scan)
+        self._pairing_group.add(self._device_row)
+
+        pair = Adw.ActionRow(
+            title=_("2. Pair the Selected iPhone"),
+            subtitle=_("Then confirm the matching code on both devices"),
         )
         self._setup_spinner = Gtk.Spinner(valign=Gtk.Align.CENTER)
-        actions.add_suffix(self._setup_spinner)
-        self._scan_button = Gtk.Button(label=_("Scan"), valign=Gtk.Align.CENTER)
-        self._scan_button.connect("clicked", lambda _button: self._load_devices(scan=True))
+        pair.add_suffix(self._setup_spinner)
         self._pair_button = Gtk.Button(
-            label=_("Pair or Repair"), valign=Gtk.Align.CENTER,
+            label=_("Pair Selected iPhone"),
+            valign=Gtk.Align.CENTER,
             css_classes=["suggested-action"],
         )
         self._pair_button.connect("clicked", self._complete_pairing)
-        actions.add_suffix(self._scan_button)
-        actions.add_suffix(self._pair_button)
-        pairing_group.add(actions)
+        pair.add_suffix(self._pair_button)
+        self._pairing_group.add(pair)
 
         forget = Adw.ActionRow(
             title=_("Forget This Device"),
             subtitle=_("Use before a clean re-pair on both devices"),
         )
         self._forget_button = Gtk.Button(
-            label=_("Forget"), valign=Gtk.Align.CENTER,
+            label=_("Forget"),
+            valign=Gtk.Align.CENTER,
             css_classes=["destructive-action"],
         )
         self._forget_button.connect("clicked", self._confirm_forget)
         forget.add_suffix(self._forget_button)
-        pairing_group.add(forget)
+        self._pairing_group.add(forget)
+        page.add(self._pairing_group)
+
+        self._paired_group = Adw.PreferencesGroup(title=_("Paired Phone"))
+        self._paired_row = Adw.ActionRow(
+            title=_("Paired iPhone"),
+            subtitle=_("Checking device name…"),
+        )
+        self._unpair_button = Gtk.Button(
+            label=_("Unpair"),
+            valign=Gtk.Align.CENTER,
+            css_classes=["destructive-action"],
+        )
+        self._unpair_button.connect("clicked", self._confirm_forget)
+        self._paired_row.add_suffix(self._unpair_button)
+        self._paired_group.add(self._paired_row)
+        self._paired_group.set_visible(False)
+        page.add(self._paired_group)
+
+        self._iphone_setup_group = Adw.PreferencesGroup(
+            title=_("Finish Setup on the iPhone"),
+            description=_(
+                "Linux pairing is only the first half. Even when BlueFerry "
+                "shows Connected, open Settings → Bluetooth, tap ⓘ next to "
+                "this computer, and check these options:"
+            ),
+        )
+        self._iphone_setup_rows = {}
+        for key, item, sub in (
+            # ActionRow subtitles are parsed as Pango markup.
+            (
+                MESSAGE_NOTIFICATIONS,
+                _("Show Message Notifications"),
+                GLib.markup_escape_text(_("Required for SMS & iMessage")),
+            ),
+            (
+                CONTACTS,
+                _("Sync Contacts"),
+                _("Required for contact names and Apple IDs"),
+            ),
+            (
+                NOTIFICATION_ACCESS,
+                _("Notification Access"),
+                _("Authorized during pairing; some iOS versions show no separate toggle"),
+            ),
+        ):
+            row = Adw.ActionRow(title=item, subtitle=sub)
+            self._iphone_setup_rows[key] = row
+            self._iphone_setup_group.add(row)
+        self._iphone_setup_group.set_visible(False)
+        page.add(self._iphone_setup_group)
 
         daemon_group = Adw.PreferencesGroup(title=_("Connection Details"))
         recheck = Gtk.Button(label=_("Recheck"), valign=Gtk.Align.CENTER)
@@ -130,41 +186,41 @@ class IPhonePage(Gtk.Box):
             title=_("Desktop Notifications"),
             description=_("Choose which iPhone events create desktop popups."),
         )
-        policy_model = Gtk.StringList.new([
-            _("All iPhone Notifications"),
-            _("Messages Only"),
-            _("None"),
-        ])
+        policy_model = Gtk.StringList.new(
+            [
+                _("All iPhone Notifications"),
+                _("Messages Only"),
+                _("None"),
+            ]
+        )
         self._notification_policy_row = Adw.ComboRow(
             title=_("Show Popups"),
             subtitle=_("Messages only is the default"),
             model=policy_model,
         )
         self._notification_policy_row.set_selected(1)
-        self._notification_policy_row.connect(
-            "notify::selected", self._notification_policy_changed
-        )
+        self._notification_policy_row.connect("notify::selected", self._notification_policy_changed)
         notification_group.add(self._notification_policy_row)
         page.add(notification_group)
-        page.add(pairing_group)
 
         data_group = Adw.PreferencesGroup(title=_("Local Data"))
-        history_model = Gtk.StringList.new([
-            _("Encrypted with Desktop Keyring"),
-            _("Do Not Retain Local Data"),
-        ])
+        history_model = Gtk.StringList.new(
+            [
+                _("Encrypted with Desktop Keyring"),
+                _("Do Not Retain Local Data"),
+            ]
+        )
         self._storage_policy_row = Adw.ComboRow(
             title=_("Storage"),
             subtitle=_("Protects message history and cached contacts"),
             model=history_model,
         )
-        self._storage_policy_row.connect(
-            "notify::selected", self._storage_policy_changed
-        )
+        self._storage_policy_row.connect("notify::selected", self._storage_policy_changed)
         data_group.add(self._storage_policy_row)
         self._storage_row = Adw.ActionRow(title=_("Storage Security"))
         self._unlock_storage_button = Gtk.Button(
-            label=_("Unlock"), valign=Gtk.Align.CENTER,
+            label=_("Unlock"),
+            valign=Gtk.Align.CENTER,
         )
         self._unlock_storage_button.connect("clicked", self._unlock_storage)
         self._storage_row.add_suffix(self._unlock_storage_button)
@@ -186,28 +242,14 @@ class IPhonePage(Gtk.Box):
             subtitle=_("Does not delete contacts or messages from the iPhone"),
         )
         clear_button = Gtk.Button(
-            label=_("Clear"), valign=Gtk.Align.CENTER,
+            label=_("Clear"),
+            valign=Gtk.Align.CENTER,
             css_classes=["destructive-action"],
         )
         clear_button.connect("clicked", self._confirm_clear_history)
         clear_row.add_suffix(clear_button)
         data_group.add(clear_row)
         page.add(data_group)
-
-        checklist = Adw.PreferencesGroup(
-            title=_("iPhone Settings"),
-            description=_("In Settings → Bluetooth, tap ⓘ next to this computer, "
-                          "then enable these options:"))
-        for item, sub in (
-            # ActionRow subtitles are parsed as Pango markup.
-            (_("Show Message Notifications"),
-             GLib.markup_escape_text(_("SMS & iMessage"))),
-            (_("Sync Contacts"), _("Resolves phone numbers and Apple IDs")),
-            (_("Notification Access"), _("Authorized during pairing; some iOS "
-             "versions show no separate toggle")),
-        ):
-            checklist.add(Adw.ActionRow(title=item, subtitle=sub))
-        page.add(checklist)
 
         client.connect("availability-changed", lambda *_: self._refresh())
         client.connect("status-invalidated", self._status_invalidated)
@@ -219,24 +261,50 @@ class IPhonePage(Gtk.Box):
         selected = self._device_row.get_selected()
         return self._devices[selected] if selected < len(self._devices) else None
 
+    def _configured_device(self) -> PairedDevice | None:
+        mac = self._configuration.mac if self._configuration else ""
+        return next(
+            (device for device in self._devices if device.mac.casefold() == mac.casefold()),
+            None,
+        )
+
+    def _update_phone_controls(self) -> None:
+        configured = bool(self._configuration and self._configuration.configured)
+        self._pairing_group.set_visible(not configured)
+        self._paired_group.set_visible(configured)
+        device = self._configured_device()
+        self._paired_row.set_title(device.name if device else _("Paired iPhone"))
+        self._paired_row.set_subtitle(self._configuration.mac if self._configuration else "")
+        self._unpair_button.set_sensitive(configured and not self._setup_spinner.get_spinning())
+        self._update_iphone_setup_tasks()
+
+    def _update_iphone_setup_tasks(self) -> None:
+        configured = bool(self._configuration and self._configuration.configured)
+        notifications_supported = bool(
+            self._compatibility and self._compatibility.notifications_supported
+        )
+        remaining = set(
+            remaining_iphone_setup_tasks(
+                self._last_status.verified_iphone_setup,
+                notifications_supported=notifications_supported,
+            )
+        )
+        for key, row in self._iphone_setup_rows.items():
+            row.set_visible(key in remaining)
+        self._iphone_setup_group.set_visible(configured and bool(remaining))
+
     def _set_pairing_busy(self, busy: bool) -> None:
         self._setup_spinner.set_spinning(busy)
         self._activate_button.set_sensitive(not busy)
         self._scan_button.set_sensitive(not busy)
         selected = self._selected_device()
-        pairing_ready = bool(
-            self._compatibility and self._compatibility.pairing_ready
-        )
-        self._pair_button.set_sensitive(
-            not busy and pairing_ready and bool(selected)
-        )
+        pairing_ready = bool(self._compatibility and self._compatibility.pairing_ready)
+        self._pair_button.set_sensitive(not busy and pairing_ready and bool(selected))
         self._pair_button.set_label(
-            _("Use Existing Pairing")
-            if selected and selected.paired else _("Pair iPhone")
+            _("Use Existing Pairing") if selected and selected.paired else _("Pair Selected iPhone")
         )
-        self._forget_button.set_sensitive(
-            not busy and bool(selected and selected.paired)
-        )
+        self._forget_button.set_sensitive(not busy and bool(selected and selected.paired))
+        self._update_phone_controls()
 
     def _selection_changed(self) -> None:
         self._set_pairing_busy(False)
@@ -290,13 +358,11 @@ class IPhonePage(Gtk.Box):
                 )
             else:
                 self._bluez_row.set_subtitle(
-                    _("Active") if active
-                    else _("A one-time Bluetooth restart is required")
+                    _("Active") if active else _("A one-time Bluetooth restart is required")
                 )
-            self._activate_button.set_visible(
-                compatibility.notifications_supported and not active
-            )
+            self._activate_button.set_visible(compatibility.notifications_supported and not active)
             self._set_pairing_busy(False)
+            self._update_phone_controls()
             self._update_onboarding()
             if scan_after or not self._devices:
                 self._load_devices(scan=scan_after)
@@ -331,16 +397,13 @@ class IPhonePage(Gtk.Box):
 
     def _load_devices(self, *, scan: bool) -> None:
         def loaded(devices: list[PairedDevice]) -> None:
-            selected_adapter = (
-                self._compatibility.adapter if self._compatibility else ""
+            selected_adapter = self._compatibility.adapter if self._compatibility else ""
+            self._devices = iphone_candidates(
+                devices,
+                adapter=selected_adapter,
+                configured_mac=(self._configuration.mac if self._configuration else ""),
+                include_unpaired=scan,
             )
-            matching = [
-                item for item in devices
-                if not selected_adapter
-                or item.adapter_path.endswith(f"/{selected_adapter}")
-            ]
-            likely = [item for item in matching if item.likely_iphone]
-            self._devices = likely or matching
             labels = []
             for item in self._devices:
                 if item.paired:
@@ -349,15 +412,20 @@ class IPhonePage(Gtk.Box):
                     template = _("{name} — {mac}")
                 labels.append(template.format(name=item.name, mac=item.mac))
             self._device_model.splice(
-                0, self._device_model.get_n_items(), labels,
+                0,
+                self._device_model.get_n_items(),
+                labels,
             )
             self._device_row.set_selected(0 if self._devices else Gtk.INVALID_LIST_POSITION)
             self._set_pairing_busy(False)
+            self._update_phone_controls()
             self._update_onboarding()
             if scan and not self._devices:
                 self._toast(
-                    _("No Bluetooth devices found; unlock the iPhone and keep "
-                      "Bluetooth settings open")
+                    _(
+                        "No Bluetooth devices found; unlock the iPhone and keep "
+                        "Bluetooth settings open"
+                    )
                 )
 
         self._run_setup(
@@ -370,9 +438,7 @@ class IPhonePage(Gtk.Box):
         if not device:
             self._toast(_("Scan for and select an iPhone first"))
             return
-        self._toast(_(
-            "Preparing secure pairing — the code can take about 15 seconds to appear"
-        ))
+        self._toast(_("Preparing secure pairing — the code can take about 15 seconds to appear"))
 
         def completed(result) -> None:
             self._configuration = ConfigurationState(
@@ -391,9 +457,7 @@ class IPhonePage(Gtk.Box):
                     "settling. Keep Bluetooth settings open."
                 )
             else:
-                message = _(
-                    "Linux setup is complete; finish the two iPhone settings"
-                )
+                message = _("Linux setup is complete; finish the two iPhone settings")
             self._toast(message)
             self._load_devices(scan=False)
             self._update_onboarding()
@@ -402,26 +466,44 @@ class IPhonePage(Gtk.Box):
         self._run_setup(lambda: self._setup.complete(device.mac), completed)
 
     def _confirm_forget(self, _button) -> None:
-        device = self._selected_device()
-        if not device or not device.paired:
+        device = self._configured_device() or self._selected_device()
+        mac = (
+            self._configuration.mac
+            if self._configuration and self._configuration.configured
+            else device.mac
+            if device
+            else ""
+        )
+        if not mac:
             return
         dialog = Adw.AlertDialog(
-            heading=_("Forget {name}?").format(name=device.name),
+            heading=_("Unpair {name}?").format(name=device.name if device else _("this iPhone")),
             body=_(
-                "For a clean re-pair, also forget this computer in the iPhone's "
-                "Bluetooth settings."
+                "For a clean re-pair, also forget this computer in the iPhone's Bluetooth settings."
             ),
         )
         dialog.add_response("cancel", _("Cancel"))
-        dialog.add_response("forget", _("Forget"))
+        dialog.add_response("forget", _("Unpair"))
         dialog.set_close_response("cancel")
         dialog.set_response_appearance("forget", Adw.ResponseAppearance.DESTRUCTIVE)
 
         def responded(_current, response: str) -> None:
             if response == "forget":
+
+                def forgotten(_value) -> None:
+                    self._configuration = ConfigurationState(
+                        configured=False,
+                        mac="",
+                        adapter=(self._compatibility.adapter if self._compatibility else ""),
+                        path="",
+                    )
+                    self._apply_status(BackendStatus())
+                    self._load_devices(scan=False)
+                    self._update_phone_controls()
+
                 self._run_setup(
-                    lambda: self._setup.forget(device.mac),
-                    lambda _value: self._load_devices(scan=False),
+                    lambda: self._setup.forget(mac),
+                    forgotten,
                 )
 
         dialog.connect("response", responded)
@@ -442,18 +524,18 @@ class IPhonePage(Gtk.Box):
         values = status.to_dict()
         reachable = status.daemon
         self._client.record_status(status)
-        self._daemon_row.set_subtitle(
-            connection_subtitle(values, reachable=reachable)
-        )
+        self._daemon_row.set_subtitle(connection_subtitle(values, reachable=reachable))
         self._daemon_icon.set_from_icon_name(
-            "emblem-ok-symbolic" if reachable else "dialog-warning-symbolic")
+            "emblem-ok-symbolic" if reachable else "dialog-warning-symbolic"
+        )
 
         healthy = status.map
         self._map_row.set_subtitle(
-            _("Connected") if healthy
-            else _("Unavailable — Check the iPhone Settings Below"))
+            _("Connected") if healthy else _("Unavailable — Check the iPhone Settings Below")
+        )
         self._map_icon.set_from_icon_name(
-            "emblem-ok-symbolic" if healthy else "dialog-warning-symbolic")
+            "emblem-ok-symbolic" if healthy else "dialog-warning-symbolic"
+        )
 
         for row, key in (
             (self._pbap_row, "pbap"),
@@ -469,20 +551,17 @@ class IPhonePage(Gtk.Box):
         self._notification_policy_row.set_sensitive(reachable)
         self._applying_notification_policy = False
         self._applying_storage_policy = True
-        self._storage_policy_row.set_selected(
-            1 if status.storage_policy == "none" else 0
-        )
+        self._storage_policy_row.set_selected(1 if status.storage_policy == "none" else 0)
         self._storage_policy_row.set_sensitive(reachable)
         self._applying_storage_policy = False
-        self._storage_row.set_subtitle(
-            status.storage_detail or _("Storage status unavailable")
-        )
+        self._storage_row.set_subtitle(status.storage_detail or _("Storage status unavailable"))
         locked = status.storage_policy == "encrypted" and status.storage_state != "ready"
         self._unlock_storage_button.set_label(
             _("Set Up") if "one-time" in status.storage_detail else _("Unlock")
         )
         self._unlock_storage_button.set_visible(locked)
         self._unlock_storage_button.set_sensitive(reachable and locked)
+        self._update_iphone_setup_tasks()
         self._update_onboarding()
         return False
 
@@ -500,11 +579,7 @@ class IPhonePage(Gtk.Box):
             self._refresh()
 
         def failed(error: str) -> None:
-            self._toast(
-                _("Could not save notification preference: {error}").format(
-                    error=error
-                )
-            )
+            self._toast(_("Could not save notification preference: {error}").format(error=error))
             self._apply_status(self._last_status)
 
         self._client.set_notification_policy_async(policy, saved, failed)
@@ -525,9 +600,7 @@ class IPhonePage(Gtk.Box):
             dialog.add_response("cancel", _("Cancel"))
             dialog.add_response("disable", _("Clear and Stop Retaining"))
             dialog.set_close_response("cancel")
-            dialog.set_response_appearance(
-                "disable", Adw.ResponseAppearance.DESTRUCTIVE
-            )
+            dialog.set_response_appearance("disable", Adw.ResponseAppearance.DESTRUCTIVE)
             dialog.connect(
                 "response",
                 lambda _dialog, response: (
@@ -544,10 +617,13 @@ class IPhonePage(Gtk.Box):
         self._storage_policy_row.set_sensitive(False)
 
         def saved(_value: dict) -> None:
-            self._toast(_(
-                "Local data will not be retained"
-                if policy == "none" else "Encrypted local storage enabled"
-            ))
+            self._toast(
+                _(
+                    "Local data will not be retained"
+                    if policy == "none"
+                    else "Encrypted local storage enabled"
+                )
+            )
             self._refresh()
 
         def failed(error: str) -> None:
@@ -567,32 +643,22 @@ class IPhonePage(Gtk.Box):
         )
 
     def _update_onboarding(self) -> None:
-        compatibility = (
-            self._compatibility.to_dict() if self._compatibility else {}
-        )
-        configured = bool(
-            self._configuration and self._configuration.configured
-        )
+        compatibility = self._compatibility.to_dict() if self._compatibility else {}
+        configured = bool(self._configuration and self._configuration.configured)
         stage = derive_stage(
             setup_loaded=self._setup_loaded,
             configured=configured,
             compatibility=compatibility,
             status=self._last_status,
         )
-        title, subtitle, icon = onboarding_presentation(
-            stage,
-            incompatibility=self._compatibility.issue if self._compatibility else "",
-        )
-        self._onboarding_row.set_title(title)
-        self._onboarding_row.set_subtitle(subtitle)
-        self._onboarding_icon.set_from_icon_name(icon)
-        if (
-            stage in {OnboardingStage.READY, OnboardingStage.READY_WITHOUT_ANCS}
-            and self._last_onboarding_stage not in {
-                OnboardingStage.READY, OnboardingStage.READY_WITHOUT_ANCS,
-            }
-        ):
-            self._toast(_("Setup verified — BlueFerry is ready"))
+        if stage in {
+            OnboardingStage.READY,
+            OnboardingStage.READY_WITHOUT_ANCS,
+        } and self._last_onboarding_stage not in {
+            OnboardingStage.READY,
+            OnboardingStage.READY_WITHOUT_ANCS,
+        }:
+            self._toast(_("BlueFerry is connected and ready"))
         self._last_onboarding_stage = stage
 
     def _sync_contacts(self, _button) -> None:
@@ -601,9 +667,7 @@ class IPhonePage(Gtk.Box):
                 self._toast(_("Synced {count} contact destinations").format(count=count)),
                 self._refresh(),
             ),
-            on_err=lambda error: self._toast(
-                _("Contact sync failed: {error}").format(error=error)
-            ),
+            on_err=lambda error: self._toast(_("Contact sync failed: {error}").format(error=error)),
         )
 
     def _confirm_clear_history(self, _button) -> None:
@@ -624,9 +688,7 @@ class IPhonePage(Gtk.Box):
                 return
             self._client.clear_history_async(
                 lambda: (self._toast(_("Local history cleared")), self._refresh()),
-                lambda error: self._toast(
-                    _("Clear failed: {error}").format(error=error)
-                ),
+                lambda error: self._toast(_("Clear failed: {error}").format(error=error)),
             )
 
         dialog.connect("response", responded)

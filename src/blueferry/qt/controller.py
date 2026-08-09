@@ -1,4 +1,5 @@
 """Asynchronous presentation controller for the Kirigami client."""
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -16,6 +17,7 @@ from PySide6.QtDBus import QDBusConnection
 
 from blueferry import __version__
 from blueferry.backend_lifecycle import ensure_backend_current, restart_backend
+from blueferry.bluetooth_devices import iphone_candidates
 from blueferry.client import BackendClient, BackendError
 from blueferry.i18n import _
 from blueferry.onboarding import derive_stage
@@ -62,13 +64,16 @@ class BridgeController(QObject):
         self._error_text = ""
         self._compatibility: dict = {}
         self._configured = False
+        self._configured_mac = ""
         self._setup_loaded = False
-        self._onboarding_stage = str(derive_stage(
-            setup_loaded=self._setup_loaded,
-            configured=self._configured,
-            compatibility=self._compatibility,
-            status=self._status,
-        ))
+        self._onboarding_stage = str(
+            derive_stage(
+                setup_loaded=self._setup_loaded,
+                configured=self._configured,
+                compatibility=self._compatibility,
+                status=self._status,
+            )
+        )
         self._refreshing = False
         self._refresh_again = False
         self._refresh_timer = QTimer(self)
@@ -113,6 +118,10 @@ class BridgeController(QObject):
     def configured(self) -> bool:
         return self._configured
 
+    @Property(str, notify=configuredChanged)
+    def configuredMac(self) -> str:
+        return self._configured_mac
+
     @Property(bool, notify=setupLoadedChanged)
     def setupLoaded(self) -> bool:
         return self._setup_loaded
@@ -122,12 +131,14 @@ class BridgeController(QObject):
         return self._onboarding_stage
 
     def _update_onboarding_stage(self) -> None:
-        stage = str(derive_stage(
-            setup_loaded=self._setup_loaded,
-            configured=self._configured,
-            compatibility=self._compatibility,
-            status=self._status,
-        ))
+        stage = str(
+            derive_stage(
+                setup_loaded=self._setup_loaded,
+                configured=self._configured,
+                compatibility=self._compatibility,
+                status=self._status,
+            )
+        )
         if stage == self._onboarding_stage:
             return
         self._onboarding_stage = stage
@@ -214,6 +225,7 @@ class BridgeController(QObject):
         def ready(result: object) -> None:
             configuration, status = result
             self._configured = configuration.configured
+            self._configured_mac = configuration.mac
             self._setup_loaded = True
             self.configuredChanged.emit()
             self.setupLoadedChanged.emit()
@@ -228,9 +240,7 @@ class BridgeController(QObject):
             self._update_onboarding_stage()
 
         def failed(message: str) -> None:
-            self._set_error(
-                _("Background service unavailable: {error}").format(error=message)
-            )
+            self._set_error(_("Background service unavailable: {error}").format(error=message))
             self._setup_loaded = True
             self.setupLoadedChanged.emit()
             self._update_onboarding_stage()
@@ -248,6 +258,7 @@ class BridgeController(QObject):
             compatibility, configuration = value
             self._compatibility = compatibility.to_dict()
             self._configured = configuration.configured
+            self._configured_mac = configuration.mac
             self._setup_loaded = True
             self._bluetooth_active = compatibility.bearer_api_active
             self.compatibilityChanged.emit()
@@ -273,9 +284,7 @@ class BridgeController(QObject):
         except BackendError as error:
             status = {"daemon": False, "error": str(error)}
         return {
-            "threads": safely(
-                lambda: [item.to_dict() for item in self._backend.threads()], []
-            ),
+            "threads": safely(lambda: [item.to_dict() for item in self._backend.threads()], []),
             "status": status,
         }
 
@@ -322,9 +331,7 @@ class BridgeController(QObject):
             self.refresh()
 
         self._run(
-            lambda: self._backend.send_to_thread(
-                key, body, confirm_group=confirm_group
-            ),
+            lambda: self._backend.send_to_thread(key, body, confirm_group=confirm_group),
             completed,
         )
 
@@ -356,9 +363,7 @@ class BridgeController(QObject):
             self._status["notification_policy"] = selected
             self.statusChanged.emit()
 
-        self._run(
-            lambda: self._backend.set_notification_policy(policy), completed
-        )
+        self._run(lambda: self._backend.set_notification_policy(policy), completed)
 
     @Slot(str)
     def setStoragePolicy(self, policy: str) -> None:
@@ -394,13 +399,14 @@ class BridgeController(QObject):
         def completed(value: object) -> None:
             devices = list(value) if isinstance(value, list) else []
             adapter = str(self._compatibility.get("adapter", ""))
-            matching = [
-                item for item in devices
-                if not adapter or item.adapter_path.endswith(f"/{adapter}")
-            ]
-            likely = [item for item in matching if item.likely_iphone]
+            candidates = iphone_candidates(
+                devices,
+                adapter=adapter,
+                configured_mac=self._configured_mac,
+                include_unpaired=scan,
+            )
             self._devices = []
-            for item in likely or matching:
+            for item in candidates:
                 value = item.to_dict()
                 if item.paired:
                     value["display_name"] = _("{name} — paired").format(name=item.name)
@@ -409,10 +415,12 @@ class BridgeController(QObject):
                 self._devices.append(value)
             self.devicesChanged.emit()
             if scan and not self._devices:
-                self._set_error(_(
-                    "No Bluetooth devices found; unlock the iPhone and keep "
-                    "Bluetooth settings open"
-                ))
+                self._set_error(
+                    _(
+                        "No Bluetooth devices found; unlock the iPhone and keep "
+                        "Bluetooth settings open"
+                    )
+                )
 
         self._run(
             lambda: self._setup.devices(scan_seconds=8 if scan else 0),
@@ -431,6 +439,7 @@ class BridgeController(QObject):
     def completePairing(self, mac: str) -> None:
         def completed(_value: object) -> None:
             self._configured = True
+            self._configured_mac = mac
             self.configuredChanged.emit()
             self._update_onboarding_stage()
             self.loadDevices(False)
@@ -442,6 +451,15 @@ class BridgeController(QObject):
     @Slot(str)
     def forgetDevice(self, mac: str) -> None:
         def completed(_value: object) -> None:
+            self._configured = False
+            self._configured_mac = ""
+            self._status = {}
+            self._threads = []
+            self.configuredChanged.emit()
+            self.statusChanged.emit()
+            self.threadsChanged.emit()
+            self._update_onboarding_stage()
             self.loadDevices(False)
+            self.loadSetupState()
 
         self._run(lambda: self._setup.forget(mac), completed)

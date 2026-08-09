@@ -47,7 +47,7 @@ dev = [
 blueferry = "blueferry.cli:app"
 
 [project.gui-scripts]
-blueferry-ui = "blueferry.ui.app:main"
+blueferry-gtk = "blueferry.ui.app:main"
 blueferry-qt = "blueferry.qt.app:main"
 
 [tool.setuptools.packages.find]

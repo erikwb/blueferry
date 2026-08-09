@@ -1,4 +1,5 @@
 """Message construction and fan-out to persistence, desktop, and D-Bus sinks."""
+
 from __future__ import annotations
 
 import json
@@ -28,20 +29,23 @@ def _ancs_fingerprint(event) -> bytes:
     if isinstance(event, dict):
         values = [event.get(field) for field in _ANCS_FINGERPRINT_FIELDS]
     else:
-        values = [
-            getattr(event, field, None)
-            for field in _ANCS_FINGERPRINT_FIELDS
-        ]
-    encoded = json.dumps(
-        values, ensure_ascii=False, separators=(",", ":"), default=str
-    ).encode("utf-8")
+        values = [getattr(event, field, None) for field in _ANCS_FINGERPRINT_FIELDS]
+    encoded = json.dumps(values, ensure_ascii=False, separators=(",", ":"), default=str).encode(
+        "utf-8"
+    )
     return blake2b(encoded, digest_size=16).digest()
 
 
 class EventDispatcher:
     def __init__(
-        self, contacts, *, submit_obex, historical_ancs=(),
-        notification_policy=None, storage=None,
+        self,
+        contacts,
+        *,
+        submit_obex,
+        historical_ancs=(),
+        notification_policy=None,
+        storage=None,
+        on_incoming_message=None,
     ) -> None:
         self.contacts = contacts
         self.submit_obex = submit_obex
@@ -49,16 +53,14 @@ class EventDispatcher:
         self.dbus_service = None
         self.notification_policy = notification_policy
         self.storage = storage
+        self.on_incoming_message = on_incoming_message
         self._seen_ancs: OrderedDict[bytes, None] = OrderedDict()
         self.seed_historical_ancs(historical_ancs)
 
     def seed_historical_ancs(self, events) -> None:
         """Add retained correlation fingerprints without emitting events."""
         for event in events:
-            if (
-                isinstance(event, dict)
-                and event.get("kind") == "ancs_notification"
-            ):
+            if isinstance(event, dict) and event.get("kind") == "ancs_notification":
                 self._seen_ancs[_ancs_fingerprint(event)] = None
         while len(self._seen_ancs) > MAX_ANCS_FINGERPRINTS:
             self._seen_ancs.popitem(last=False)
@@ -68,10 +70,12 @@ class EventDispatcher:
             return
         self.sinks.append(SqliteSink(storage=self.storage))
         try:
-            self.sinks.append(LibnotifySink(
-                submit_obex=self.submit_obex,
-                notification_policy=self.notification_policy,
-            ))
+            self.sinks.append(
+                LibnotifySink(
+                    submit_obex=self.submit_obex,
+                    notification_policy=self.notification_policy,
+                )
+            )
         except Exception:
             log.exception("libnotify sink failed to init — continuing")
         log.info("sinks ready: %s", self.names)
@@ -84,6 +88,8 @@ class EventDispatcher:
         self.dbus_service = service
 
     def message(self, event) -> None:
+        if getattr(event, "kind", "") == "sms_received" and self.on_incoming_message is not None:
+            self.on_incoming_message()
         for sink in self.sinks:
             try:
                 sink.handle(event)
@@ -139,9 +145,8 @@ class EventDispatcher:
         while len(self._seen_ancs) > MAX_ANCS_FINGERPRINTS:
             self._seen_ancs.popitem(last=False)
         for sink in self.sinks:
-            if (
-                event.app_id != MESSAGES_APP_ID
-                and not bool(getattr(sink, "accepts_system_ancs", False))
+            if event.app_id != MESSAGES_APP_ID and not bool(
+                getattr(sink, "accepts_system_ancs", False)
             ):
                 continue
             try:

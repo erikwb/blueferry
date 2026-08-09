@@ -3,6 +3,7 @@
 History, group correlation, and reply recipients come from the daemon.
 Live signals tell this page when to refresh that backend-owned model.
 """
+
 from __future__ import annotations
 
 from gi.repository import Adw, GLib, Gtk, Pango
@@ -12,9 +13,14 @@ from blueferry.ui.util import format_ts
 
 _ELLIPSIZE_END = Pango.EllipsizeMode.END
 
+
 class ConversationsPage(Gtk.Box):
     def __init__(self, client, toast) -> None:
-        super().__init__(orientation=Gtk.Orientation.HORIZONTAL)
+        super().__init__(
+            orientation=Gtk.Orientation.HORIZONTAL,
+            hexpand=True,
+            vexpand=True,
+        )
         self._client = client
         self._toast = toast
         self._threads: dict[str, dict] = {}
@@ -26,26 +32,36 @@ class ConversationsPage(Gtk.Box):
         # ---- left: thread list ----------------------------------------
         self._thread_list = Gtk.ListBox(css_classes=["navigation-sidebar"])
         self._thread_selected_handler = self._thread_list.connect(
-            "row-selected", self._on_thread_selected)
+            "row-selected", self._on_thread_selected
+        )
         sidebar_scroll = Gtk.ScrolledWindow(
-            hscrollbar_policy=Gtk.PolicyType.NEVER, width_request=240,
-            child=self._thread_list)
+            hscrollbar_policy=Gtk.PolicyType.NEVER, width_request=240, child=self._thread_list
+        )
         sidebar_page = Adw.NavigationPage(
             child=sidebar_scroll,
             title=_("Conversations"),
         )
 
         # ---- right: message view + compose ----------------------------
-        right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True)
+        right = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL,
+            hexpand=True,
+            vexpand=True,
+        )
         self._msg_list = Gtk.ListBox(
-            selection_mode=Gtk.SelectionMode.NONE, css_classes=["background"])
+            selection_mode=Gtk.SelectionMode.NONE,
+            css_classes=["background"],
+            hexpand=True,
+        )
         self._msg_scroll = Gtk.ScrolledWindow(
-            vexpand=True, child=self._msg_list)
+            hexpand=True,
+            vexpand=True,
+            child=self._msg_list,
+        )
         self._placeholder = Gtk.Label(
-            label=_("Select a Conversation"),
-            css_classes=["dim-label", "title-2"],
-            vexpand=True)
-        self._stack = Gtk.Stack()
+            label=_("Select a Conversation"), css_classes=["dim-label", "title-2"], vexpand=True
+        )
+        self._stack = Gtk.Stack(hexpand=True, vexpand=True)
         self._stack.add_named(self._placeholder, "empty")
         self._stack.add_named(self._msg_scroll, "messages")
         conversation_header = Gtk.Box(
@@ -64,9 +80,7 @@ class ConversationsPage(Gtk.Box):
         self.back_button.update_property(
             [Gtk.AccessibleProperty.LABEL], [_("Back to Conversations")]
         )
-        self.back_button.connect(
-            "clicked", lambda _button: self.split_view.set_show_content(False)
-        )
+        self.back_button.connect("clicked", lambda _button: self.split_view.set_show_content(False))
         self._conversation_title = Gtk.Label(
             label=_("Messages"),
             css_classes=["heading"],
@@ -80,18 +94,25 @@ class ConversationsPage(Gtk.Box):
         right.append(Gtk.Separator())
         right.append(self._stack)
 
-        compose = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6,
-                          margin_top=6, margin_bottom=6,
-                          margin_start=6, margin_end=6)
+        compose = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL,
+            spacing=6,
+            margin_top=6,
+            margin_bottom=6,
+            margin_start=6,
+            margin_end=6,
+        )
         self._entry = Gtk.Entry(
-            placeholder_text=_("Write a Message"), hexpand=True, sensitive=False)
+            placeholder_text=_("Write a Message"), hexpand=True, sensitive=False
+        )
         self._entry.connect("activate", self._on_send)
         self._send_btn = Gtk.Button(
-            icon_name="document-send-symbolic", sensitive=False,
-            css_classes=["suggested-action"], tooltip_text=_("Send Message"))
-        self._send_btn.update_property(
-            [Gtk.AccessibleProperty.LABEL], [_("Send Message")]
+            icon_name="document-send-symbolic",
+            sensitive=False,
+            css_classes=["suggested-action"],
+            tooltip_text=_("Send Message"),
         )
+        self._send_btn.update_property([Gtk.AccessibleProperty.LABEL], [_("Send Message")])
         self._send_btn.connect("clicked", self._on_send)
         compose.append(self._entry)
         compose.append(self._send_btn)
@@ -103,6 +124,8 @@ class ConversationsPage(Gtk.Box):
             content=content_page,
             min_sidebar_width=220,
             max_sidebar_width=320,
+            hexpand=True,
+            vexpand=True,
         )
         self.append(self.split_view)
 
@@ -147,18 +170,21 @@ class ConversationsPage(Gtk.Box):
                 continue
             messages = []
             for message in current.get("messages", []):
-                messages.append({
-                    **message,
-                    "ts": str(message.get("timestamp") or ""),
-                })
+                messages.append(
+                    {
+                        **message,
+                        "ts": str(message.get("timestamp") or ""),
+                    }
+                )
             self._threads[key] = {**current, "key": key, "messages": messages}
 
         if self._current not in self._threads:
             self._current = None
             if selected_handle:
                 for key, thread in self._threads.items():
-                    if any(message.get("handle") == selected_handle
-                           for message in thread["messages"]):
+                    if any(
+                        message.get("handle") == selected_handle for message in thread["messages"]
+                    ):
                         self._current = key
                         break
         self._rebuild_thread_list()
@@ -166,9 +192,7 @@ class ConversationsPage(Gtk.Box):
             self._msg_list.remove_all()
             for message in self._threads[self._current]["messages"]:
                 self._append_bubble(message)
-            can_reply = bool(
-                self._threads[self._current].get("reply_ready", True)
-            )
+            can_reply = bool(self._threads[self._current].get("reply_ready", True))
             self._entry.set_sensitive(can_reply)
             self._send_btn.set_sensitive(can_reply)
             self._stack.set_visible_child_name("messages")
@@ -191,22 +215,35 @@ class ConversationsPage(Gtk.Box):
         self._thread_list.handler_block(self._thread_selected_handler)
         try:
             self._thread_list.remove_all()
-            order = sorted(self._threads.values(),
-                           key=lambda t: t.get("last_ts", ""), reverse=True)
+            order = sorted(self._threads.values(), key=lambda t: t.get("last_ts", ""), reverse=True)
             for thread in order:
                 row = Gtk.ListBoxRow()
                 row.thread_key = thread["key"]
-                box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2,
-                              margin_top=8, margin_bottom=8,
-                              margin_start=10, margin_end=10)
-                box.append(Gtk.Label(label=thread["name"], xalign=0,
-                                     css_classes=["heading"],
-                                     ellipsize=_ELLIPSIZE_END))
-                last = (thread["messages"][-1]["body"]
-                        if thread["messages"] else "")
-                box.append(Gtk.Label(
-                    label=last.replace("\n", " "), xalign=0,
-                    ellipsize=_ELLIPSIZE_END, css_classes=["dim-label"]))
+                box = Gtk.Box(
+                    orientation=Gtk.Orientation.VERTICAL,
+                    spacing=2,
+                    margin_top=8,
+                    margin_bottom=8,
+                    margin_start=10,
+                    margin_end=10,
+                )
+                box.append(
+                    Gtk.Label(
+                        label=thread["name"],
+                        xalign=0,
+                        css_classes=["heading"],
+                        ellipsize=_ELLIPSIZE_END,
+                    )
+                )
+                last = thread["messages"][-1]["body"] if thread["messages"] else ""
+                box.append(
+                    Gtk.Label(
+                        label=last.replace("\n", " "),
+                        xalign=0,
+                        ellipsize=_ELLIPSIZE_END,
+                        css_classes=["dim-label"],
+                    )
+                )
                 row.set_child(box)
                 self._thread_list.append(row)
                 if thread["key"] == selected:
@@ -234,21 +271,26 @@ class ConversationsPage(Gtk.Box):
 
     def _append_bubble(self, msg: dict) -> None:
         row = Gtk.ListBoxRow(activatable=False, selectable=False)
-        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,
-                        margin_top=3, margin_bottom=3,
-                        margin_start=8, margin_end=8)
-        bubble = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2,
-                         css_classes=["card", "msg-bubble"])
+        outer = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL,
+            margin_top=3,
+            margin_bottom=3,
+            margin_start=8,
+            margin_end=8,
+        )
+        bubble = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, spacing=2, css_classes=["card", "msg-bubble"]
+        )
         bubble.set_halign(Gtk.Align.END if msg["outgoing"] else Gtk.Align.START)
         if msg["outgoing"]:
             bubble.add_css_class("msg-out")
-        body = Gtk.Label(label=msg["body"], xalign=0, wrap=True,
-                         selectable=True, max_width_chars=46)
+        body = Gtk.Label(
+            label=msg["body"], xalign=0, wrap=True, selectable=True, max_width_chars=46
+        )
         bubble.append(body)
         ts = format_ts(msg["ts"])
         if ts:
-            bubble.append(Gtk.Label(label=ts, xalign=1,
-                                    css_classes=["dim-label", "caption"]))
+            bubble.append(Gtk.Label(label=ts, xalign=1, css_classes=["dim-label", "caption"]))
         outer.append(bubble)
         row.set_child(outer)
         self._msg_list.append(row)
@@ -258,6 +300,7 @@ class ConversationsPage(Gtk.Box):
             adj = self._msg_scroll.get_vadjustment()
             adj.set_value(adj.get_upper())
             return False
+
         GLib.idle_add(_scroll)
 
     # ---- send ----------------------------------------------------------
@@ -267,8 +310,7 @@ class ConversationsPage(Gtk.Box):
         if not body or self._current is None:
             return
         thread = self._threads[self._current]
-        if (thread.get("is_group")
-                and thread["key"] not in self._confirmed_groups):
+        if thread.get("is_group") and thread["key"] not in self._confirmed_groups:
             self._confirm_group_send(thread, body)
             return
         self._dispatch_send(thread, body, confirm_group=False)
@@ -278,8 +320,7 @@ class ConversationsPage(Gtk.Box):
         dialog = Adw.AlertDialog(
             heading=_("Reply to {name}?").format(name=thread["name"]),
             body=_(
-                "The iPhone identifies this group by this participant set:\n\n"
-                "{recipients}"
+                "The iPhone identifies this group by this participant set:\n\n{recipients}"
             ).format(recipients=recipients),
         )
         dialog.add_response("cancel", _("Cancel"))
@@ -297,7 +338,11 @@ class ConversationsPage(Gtk.Box):
         dialog.present(self.get_root())
 
     def _dispatch_send(
-        self, thread: dict, body: str, *, confirm_group: bool,
+        self,
+        thread: dict,
+        body: str,
+        *,
+        confirm_group: bool,
     ) -> None:
         self._entry.set_sensitive(False)
         self._send_btn.set_sensitive(False)
@@ -322,7 +367,8 @@ class ConversationsPage(Gtk.Box):
             failed(_("This thread has no unambiguous reply destination"))
             return
         self._client.send_to_thread(
-            thread["key"], body,
+            thread["key"],
+            body,
             confirm_group=confirm_group,
             on_ok=done,
             on_err=failed,

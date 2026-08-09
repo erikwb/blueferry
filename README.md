@@ -58,7 +58,7 @@ individual packages or understand exactly what pacman owns.
 Open the client for your desktop:
 
 ```bash
-blueferry-ui          # GNOME
+blueferry-gtk         # GNOME
 blueferry-qt          # KDE
 blueferry-quickshell  # Quickshell
 ```

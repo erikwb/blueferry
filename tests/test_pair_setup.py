@@ -1,4 +1,5 @@
 """Shared graphical pairing workflow regressions."""
+
 from __future__ import annotations
 
 import stat
@@ -6,6 +7,7 @@ import stat
 import pytest
 
 from blueferry import bluez_setup, config, pair_setup
+from blueferry.bluetooth_devices import iphone_candidates
 
 
 def _device(*, paired: bool) -> pair_setup.PairedDevice:
@@ -52,12 +54,57 @@ def test_write_local_env_rejects_environment_injection(tmp_path, monkeypatch):
         pair_setup.write_local_env("02:00:00:00:00:01", "hci0\nEVIL=1")
 
 
-def test_saved_mac_without_a_bluez_bond_returns_to_first_run(tmp_path, monkeypatch):
+def test_clear_local_target_preserves_unrelated_preferences(tmp_path, monkeypatch):
     destination = tmp_path / "local.env"
     destination.write_text(
         "BLUEFERRY_MAC=02:00:00:00:00:01\n"
         "BLUEFERRY_ADAPTER=hci7\n"
+        "BLUEFERRY_HISTORY_RETENTION_DAYS=14\n"
+        "BLUEFERRY_SHOW_NOTIFICATION_CONTENT=false\n"
     )
+    monkeypatch.setattr(pair_setup, "LOCAL_ENV_PATH", destination)
+    cleared = []
+    monkeypatch.setattr(pair_setup, "clear_setup_verification", lambda: cleared.append(True))
+
+    pair_setup.clear_local_target()
+
+    assert destination.read_text() == (
+        "BLUEFERRY_HISTORY_RETENTION_DAYS=14\nBLUEFERRY_SHOW_NOTIFICATION_CONTENT=false\n"
+    )
+    assert stat.S_IMODE(destination.stat().st_mode) == 0o600
+    assert cleared == [True]
+
+
+def test_forget_stops_backend_removes_bond_and_clears_target(monkeypatch):
+    device = _device(paired=True)
+    calls = []
+
+    class Bus:
+        def get_object(self, _service, _path):
+            return object()
+
+    class Adapter:
+        def RemoveDevice(self, path, *, timeout):
+            calls.append(("remove", str(path), timeout))
+
+    monkeypatch.setattr(pair_setup, "_device", lambda _mac: device)
+    monkeypatch.setattr(pair_setup, "_stop_user_service", lambda: calls.append("stop"))
+    monkeypatch.setattr(pair_setup, "clear_local_target", lambda: calls.append("clear"))
+    monkeypatch.setattr(pair_setup, "get_system_bus", Bus)
+    monkeypatch.setattr(pair_setup.dbus, "Interface", lambda *_args: Adapter())
+
+    pair_setup.forget_device(device.mac)
+
+    assert calls == [
+        "stop",
+        ("remove", device.device_path, 30.0),
+        "clear",
+    ]
+
+
+def test_saved_mac_without_a_bluez_bond_returns_to_first_run(tmp_path, monkeypatch):
+    destination = tmp_path / "local.env"
+    destination.write_text("BLUEFERRY_MAC=02:00:00:00:00:01\nBLUEFERRY_ADAPTER=hci7\n")
     monkeypatch.setattr(pair_setup, "LOCAL_ENV_PATH", destination)
     monkeypatch.setattr(pair_setup, "bond_status", lambda *_args: False)
 
@@ -70,7 +117,8 @@ def test_saved_mac_without_a_bluez_bond_returns_to_first_run(tmp_path, monkeypat
 
 
 def test_temporary_bluez_failure_does_not_discard_saved_configuration(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     destination = tmp_path / "local.env"
     destination.write_text("BLUEFERRY_MAC=02:00:00:00:00:01\n")
@@ -111,9 +159,7 @@ def test_list_devices_includes_unpaired_and_prefers_iphones(monkeypatch):
 
     assert [device.name for device in devices] == ["iPhone", "Keyboard"]
     assert devices[0].paired is False
-    assert [device.name for device in pair_setup.list_devices(paired_only=True)] == [
-        "Keyboard"
-    ]
+    assert [device.name for device in pair_setup.list_devices(paired_only=True)] == ["Keyboard"]
 
 
 def test_headphones_are_not_misclassified_as_an_iphone():
@@ -122,6 +168,37 @@ def test_headphones_are_not_misclassified_as_an_iphone():
     airpods.icon = "audio-headphones"
 
     assert airpods.likely_iphone is False
+
+
+def test_initial_iphone_candidates_exclude_headphones_and_unpaired_devices():
+    paired_phone = _device(paired=True)
+    headphones = _device(paired=True)
+    headphones.name = "Test Headphones"
+    headphones.icon = "audio-headphones"
+    discovered_phone = _device(paired=False)
+    discovered_phone.mac = "02:00:00:00:00:02"
+
+    assert iphone_candidates(
+        [
+            headphones,
+            discovered_phone,
+            paired_phone,
+        ]
+    ) == [paired_phone]
+
+
+def test_explicit_scan_includes_unpaired_iphones_and_saved_sparse_target():
+    discovered_phone = _device(paired=False)
+    sparse_target = _device(paired=True)
+    sparse_target.mac = "02:00:00:00:00:03"
+    sparse_target.name = "Erik's device"
+    sparse_target.icon = ""
+
+    assert iphone_candidates(
+        [discovered_phone, sparse_target],
+        configured_mac=sparse_target.mac,
+        include_unpaired=True,
+    ) == [discovered_phone, sparse_target]
 
 
 def test_early_service_resolution_does_not_claim_ancs_is_bonded():
@@ -136,10 +213,14 @@ def test_bluez_support_status_detects_experimental_execstart(monkeypatch):
     monkeypatch.setattr(
         pair_setup,
         "run_command",
-        lambda *_args, **_kwargs: type("Result", (), {
-            "returncode": 0,
-            "stdout": "{ argv[]=/usr/lib/bluetooth/bluetoothd -E ; }\n",
-        })(),
+        lambda *_args, **_kwargs: type(
+            "Result",
+            (),
+            {
+                "returncode": 0,
+                "stdout": "{ argv[]=/usr/lib/bluetooth/bluetoothd -E ; }\n",
+            },
+        )(),
     )
 
     assert pair_setup.bluez_support_status()["active"] is True
@@ -151,17 +232,22 @@ def test_compatibility_is_based_on_controller_features_not_vendor(monkeypatch):
             return {"/org/bluez/hci7": {"org.bluez.Adapter1": {}}}
 
     monkeypatch.setattr(pair_setup, "_object_manager", lambda: Manager())
+
     def controller_info(command, **_kwargs):
         if command[2] == "0":
             return type("Result", (), {"returncode": 1, "stdout": ""})()
-        return type("Result", (), {
-            "returncode": 0,
-            "stdout": (
-                "hci7: Primary controller\n"
-                "supported settings: powered ssp br/edr le advertising secure-conn\n"
-                "current settings: powered br/edr le advertising\n"
-            ),
-        })()
+        return type(
+            "Result",
+            (),
+            {
+                "returncode": 0,
+                "stdout": (
+                    "hci7: Primary controller\n"
+                    "supported settings: powered ssp br/edr le advertising secure-conn\n"
+                    "current settings: powered br/edr le advertising\n"
+                ),
+            },
+        )()
 
     monkeypatch.setattr(pair_setup, "run_command", controller_info)
     monkeypatch.setattr(
@@ -186,10 +272,14 @@ def test_compatibility_explains_missing_classic_transport(monkeypatch):
     monkeypatch.setattr(
         pair_setup,
         "run_command",
-        lambda *_args, **_kwargs: type("Result", (), {
-            "returncode": 0,
-            "stdout": "supported settings: powered le advertising secure-conn\n",
-        })(),
+        lambda *_args, **_kwargs: type(
+            "Result",
+            (),
+            {
+                "returncode": 0,
+                "stdout": "supported settings: powered le advertising secure-conn\n",
+            },
+        )(),
     )
     monkeypatch.setattr(
         pair_setup,
@@ -212,10 +302,14 @@ def test_classic_only_controller_supports_core_without_ancs(monkeypatch):
     monkeypatch.setattr(
         pair_setup,
         "run_command",
-        lambda *_args, **_kwargs: type("Result", (), {
-            "returncode": 0,
-            "stdout": "supported settings: powered ssp br/edr\n",
-        })(),
+        lambda *_args, **_kwargs: type(
+            "Result",
+            (),
+            {
+                "returncode": 0,
+                "stdout": "supported settings: powered ssp br/edr\n",
+            },
+        )(),
     )
     monkeypatch.setattr(
         pair_setup,
@@ -269,15 +363,9 @@ def test_complete_pairing_hands_advertisement_to_daemon(monkeypatch):
         "unregister_advert",
         lambda adapter: calls.append(("unregister", adapter)),
     )
-    monkeypatch.setattr(
-        pair_setup, "trust_device", lambda *_args: calls.append("trust")
-    )
-    monkeypatch.setattr(
-        pair_setup, "write_local_env", lambda *_args: calls.append("config")
-    )
-    monkeypatch.setattr(
-        pair_setup, "_restart_user_service", lambda: calls.append("restart")
-    )
+    monkeypatch.setattr(pair_setup, "trust_device", lambda *_args: calls.append("trust"))
+    monkeypatch.setattr(pair_setup, "write_local_env", lambda *_args: calls.append("config"))
+    monkeypatch.setattr(pair_setup, "_restart_user_service", lambda: calls.append("restart"))
     monkeypatch.setattr(pair_setup.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(
         pair_setup, "_connect_ancs", lambda _device: calls.append("ancs") or "connected"
@@ -289,8 +377,12 @@ def test_complete_pairing_hands_advertisement_to_daemon(monkeypatch):
     assert result["ancs"] == "connected"
     assert result["ancs_ready"] is True
     assert set(calls) == {
-        ("prepare", "hci0"), "trust", "config", ("unregister", "hci0"),
-        "restart", "ancs",
+        ("prepare", "hci0"),
+        "trust",
+        "config",
+        ("unregister", "hci0"),
+        "restart",
+        "ancs",
     }
     # The setup process owns the temporary advertisement until the backend is
     # restarted; handing it off in the opposite order can leak an instance.
@@ -319,6 +411,7 @@ def test_complete_pairing_invokes_bluez_pair_for_new_device(monkeypatch):
     )
     monkeypatch.setattr(bluez_setup, "prepare", lambda **_kwargs: True)
     monkeypatch.setattr(bluez_setup, "unregister_advert", lambda _adapter: None)
+
     class Bus:
         @staticmethod
         def get_object(*_args):
