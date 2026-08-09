@@ -260,7 +260,11 @@ def complete_pairing(
     if notifications_supported and not compatibility["bearer_api_active"]:
         raise PairingError("Activate Bluetooth support before pairing or re-pairing the iPhone")
     if notifications_supported:
-        prepared = bluez_setup.prepare(adapter=adapter, authorize=True)
+        prepared = bluez_setup.prepare(
+            adapter=adapter,
+            authorize=True,
+            settle_for_pairing=not device.paired,
+        )
     else:
         cod = bluez_setup.current_cod(adapter)
         prepared = bluez_setup.desired_cod_matches(cod) or bluez_setup.set_cod(

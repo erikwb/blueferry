@@ -82,7 +82,7 @@ def test_authorized_cod_change_uses_polkit_and_fixed_command(monkeypatch):
     assert calls[0][1]["timeout"] == 120
 
 
-def test_advert_no_reply_proceeds_as_soon_as_activation_is_observed(
+def test_pairing_advert_settles_after_activation_is_observed(
     monkeypatch,
 ):
     calls = []
@@ -117,9 +117,9 @@ def test_advert_no_reply_proceeds_as_soon_as_activation_is_observed(
     monkeypatch.setattr(bluez_setup.time, "monotonic", monotonic)
     monkeypatch.setattr(bluez_setup.time, "sleep", sleep)
 
-    assert bluez_setup.register_advert("hci7") is True
+    assert bluez_setup.register_advert("hci7", settle_for_pairing=True) is True
     assert calls[0][2]["timeout"] == 1.0
-    assert sleeps == [0.25, 0.25]
+    assert sleeps == [0.25, 0.25, bluez_setup.PAIRING_ADVERT_SETTLE_SECONDS]
     assert elapsed < bluez_setup.ADVERT_ACTIVATION_TIMEOUT_SECONDS
 
 

@@ -434,7 +434,10 @@ def test_complete_pairing_hands_advertisement_to_daemon(monkeypatch):
     monkeypatch.setattr(
         bluez_setup,
         "prepare",
-        lambda **kwargs: calls.append(("prepare", kwargs["adapter"])) or True,
+        lambda **kwargs: calls.append(
+            ("prepare", kwargs["adapter"], kwargs["settle_for_pairing"])
+        )
+        or True,
     )
     monkeypatch.setattr(
         bluez_setup,
@@ -451,7 +454,7 @@ def test_complete_pairing_hands_advertisement_to_daemon(monkeypatch):
     assert result["ancs"] == "connection supervised by daemon"
     assert result["ancs_ready"] is False
     assert set(calls) == {
-        ("prepare", "hci0"),
+        ("prepare", "hci0", False),
         "trust",
         "config",
         ("unregister", "hci0"),
@@ -467,6 +470,7 @@ def test_complete_pairing_invokes_bluez_pair_for_new_device(monkeypatch):
     paired = _device(paired=True)
     devices = iter([unpaired, paired, paired])
     paired_calls = []
+    prepared = []
 
     class DeviceInterface:
         def Pair(self, **kwargs):
@@ -482,7 +486,11 @@ def test_complete_pairing_invokes_bluez_pair_for_new_device(monkeypatch):
             "bearer_api_active": True,
         },
     )
-    monkeypatch.setattr(bluez_setup, "prepare", lambda **_kwargs: True)
+    monkeypatch.setattr(
+        bluez_setup,
+        "prepare",
+        lambda **kwargs: prepared.append(kwargs) or True,
+    )
     monkeypatch.setattr(bluez_setup, "unregister_advert", lambda _adapter: None)
 
     class Bus:
@@ -500,6 +508,7 @@ def test_complete_pairing_invokes_bluez_pair_for_new_device(monkeypatch):
     pair_setup.complete_pairing(unpaired.mac)
 
     assert paired_calls == [120.0]
+    assert prepared[0]["settle_for_pairing"] is True
 
 
 def test_interactive_pairing_replaces_competing_peer_transaction(monkeypatch):

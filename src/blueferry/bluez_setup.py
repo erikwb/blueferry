@@ -34,6 +34,7 @@ log = logging.getLogger(__name__)
 ADVERT_DBUS_TIMEOUT_SECONDS = 1
 ADVERT_ACTIVATION_TIMEOUT_SECONDS = 15
 ADVERT_POLL_INTERVAL_SECONDS = 0.25
+PAIRING_ADVERT_SETTLE_SECONDS = 5
 
 
 # ---- Class-of-Device ----------------------------------------------------
@@ -177,7 +178,11 @@ def _active_advertisements(adapter: str | None = None) -> int | None:
         return None
 
 
-def register_advert(adapter: str | None = None) -> bool:
+def register_advert(
+    adapter: str | None = None,
+    *,
+    settle_for_pairing: bool = False,
+) -> bool:
     """Register the BLE advertisement on the system bus.
 
     Idempotent — calling twice is harmless because BlueZ will reject the
@@ -204,6 +209,8 @@ def register_advert(adapter: str | None = None) -> bool:
         )
         _advert_registered = True
         log.info("BLE advert registered: %s", _AncsAdvert.PATH)
+        if settle_for_pairing:
+            time.sleep(PAIRING_ADVERT_SETTLE_SECONDS)
         return True
     except dbus.exceptions.DBusException as e:
         name = e.get_dbus_name()
@@ -223,6 +230,8 @@ def register_advert(adapter: str | None = None) -> bool:
                     log.info("BLE advert activated after delayed reply "
                              "(ActiveInstances=%d→%d)",
                              active_before, active_after)
+                    if settle_for_pairing:
+                        time.sleep(PAIRING_ADVERT_SETTLE_SECONDS)
                     return True
                 remaining = activation_deadline - time.monotonic()
                 if remaining <= 0:
@@ -249,7 +258,12 @@ def unregister_advert(adapter: str | None = None) -> None:
 
 # ---- one-shot startup ---------------------------------------------------
 
-def prepare(*, adapter: str | None = None, authorize: bool = False) -> bool:
+def prepare(
+    *,
+    adapter: str | None = None,
+    authorize: bool = False,
+    settle_for_pairing: bool = False,
+) -> bool:
     """Run all the prerequisites. Returns False if anything critical failed.
 
     Idempotent. Safe to call on every daemon start.
@@ -263,5 +277,5 @@ def prepare(*, adapter: str | None = None, authorize: bool = False) -> bool:
     else:
         log.info("CoD already matches A/V Hands-Free, leaving as-is")
 
-    ok &= register_advert(adapter)
+    ok &= register_advert(adapter, settle_for_pairing=settle_for_pairing)
     return ok

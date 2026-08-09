@@ -26,11 +26,39 @@ def test_connects_classic_before_le() -> None:
 
     state["bredr"] = True
     scheduled[0][1]()
+    assert connections == ["bredr"]
+    assert scheduled[1][0] == 3
+
+    scheduled[1][1]()
     assert connections == ["bredr", "le"]
 
     state["le"] = True
     scheduled[0][1]()
     assert supervisor.snapshot() == {"bredr": True, "le": True}
+
+
+def test_le_is_not_connected_if_classic_drops_during_settling() -> None:
+    state = {"bredr": True, "le": False}
+    connections = []
+    scheduled = []
+    supervisor = BearerSupervisor(
+        "/device",
+        read_connected=state.get,
+        connect=lambda kind, on_success, _on_error: (
+            connections.append(kind),
+            on_success(),
+        ),
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+    )
+
+    supervisor.start()
+    assert scheduled[0][0] == 3
+
+    state["bredr"] = False
+    scheduled[0][1]()
+
+    assert connections == ["bredr"]
+    assert "le" not in connections
 
 
 def test_failed_connection_is_retried_on_next_health_check() -> None:

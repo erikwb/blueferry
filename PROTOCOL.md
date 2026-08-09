@@ -20,6 +20,9 @@ during pairing. The reliable setup has these properties:
   bits and report a value such as `0x7c0408`.
 - A connectable, temporarily discoverable LE peripheral advertisement solicits
   ANCS service UUID `7905f431-b5ce-4e99-a40f-4b1e122d00d0` while pairing.
+  After controller activation is observed, let the advertisement settle before
+  starting classic pairing; beginning both at once can make iOS reject the
+  overlapping transactions.
 - The working advertisement also contains inert private/test manufacturer and
   service identifiers `0xffff` and `0x9999`, following the behavior established
   by ancs4linux. They do not claim an Apple or hardware-vendor identity.
@@ -158,9 +161,10 @@ carry both. That conclusion was incomplete.
 With BlueZ's experimental API enabled, the same bond can carry both transports.
 Pairing only creates the bond; it does not guarantee a live connection. The
 reliable sequence is to connect `org.bluez.Bearer.BREDR1` first, wait until its
-`Connected` property is true, and then connect `org.bluez.Bearer.LE1`. BlueFerry
-supervises both connections for the daemon lifetime and repeats the sequence
-after disconnects and system resume. It does not set `Device1.PreferredBearer`:
+`Connected` property is true across a short settling interval, and only then
+connect `org.bluez.Bearer.LE1`. BlueFerry supervises both connections for the
+daemon lifetime and repeats the sequence after disconnects and system resume.
+It does not set `Device1.PreferredBearer`:
 BlueZ only applies that property while disconnected, and preferring LE removes
 the device from the normal auto-connect list.
 

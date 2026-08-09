@@ -14,6 +14,7 @@ from blueferry.bus import get_system_bus
 log = logging.getLogger(__name__)
 
 POLL_SECONDS = 5
+CLASSIC_SETTLE_SECONDS = 3
 _INTERFACES = {
     "bredr": "org.bluez.Bearer.BREDR1",
     "le": "org.bluez.Bearer.LE1",
@@ -50,6 +51,7 @@ class BearerSupervisor:
         self._schedule = schedule
         self._cancel = cancel
         self._timer_id: int | None = None
+        self._le_settle_id: int | None = None
         self._running = False
         self._connecting: set[str] = set()
         self._last_errors: dict[str, str] = {}
@@ -78,6 +80,7 @@ class BearerSupervisor:
     def stop(self) -> None:
         self._running = False
         self._connecting.clear()
+        self._cancel_le_settle()
         if self._timer_id is not None:
             try:
                 self._cancel(self._timer_id)
@@ -103,11 +106,50 @@ class BearerSupervisor:
         # Establish the normal Bluetooth ACL/profile connection before LE.
         # This is the order used by the proven manual setup flow and avoids
         # racing MAP/PBAP profile discovery against GATT discovery.
+        if bredr is not True:
+            self._cancel_le_settle()
         if bredr is False:
             self._request_connect("bredr")
         elif bredr is True and le is False:
-            self._request_connect("le")
+            self._schedule_le_connect()
+        elif le is True:
+            self._cancel_le_settle()
         return True
+
+    def _schedule_le_connect(self) -> None:
+        if self._le_settle_id is not None:
+            return
+        log.info(
+            "iPhone BR/EDR connected; allowing %ds to settle before LE",
+            CLASSIC_SETTLE_SECONDS,
+        )
+        self._le_settle_id = self._schedule(
+            CLASSIC_SETTLE_SECONDS,
+            self._connect_le_after_settle,
+        )
+
+    def _connect_le_after_settle(self) -> bool:
+        self._le_settle_id = None
+        if not self._running:
+            return False
+        bredr = self._read("bredr")
+        le = self._read("le")
+        self._update_state("bredr", bredr)
+        self._update_state("le", le)
+        if bredr is True and le is False:
+            self._request_connect("le")
+        elif bredr is False:
+            self._request_connect("bredr")
+        return False
+
+    def _cancel_le_settle(self) -> None:
+        if self._le_settle_id is None:
+            return
+        try:
+            self._cancel(self._le_settle_id)
+        except Exception:
+            log.debug("could not remove LE settling timer", exc_info=True)
+        self._le_settle_id = None
 
     def _read(self, kind: str) -> bool | None:
         try:
