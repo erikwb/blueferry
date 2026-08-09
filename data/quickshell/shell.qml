@@ -644,6 +644,17 @@ ShellRoot {
                     horizontalAlignment: messageRow.modelData.outgoing
                       ? Text.AlignRight : Text.AlignLeft
                   }
+                  Text {
+                    width: parent.width
+                    visible: text !== ""
+                    text: messageRow.modelData.display_timestamp || ""
+                    textFormat: Text.PlainText
+                    color: theme.muted
+                    font.family: theme.fontFamily
+                    font.pixelSize: theme.captionSize
+                    horizontalAlignment: messageRow.modelData.outgoing
+                      ? Text.AlignRight : Text.AlignLeft
+                  }
                 }
               }
             }

@@ -52,6 +52,11 @@ def test_local_sms_list_excludes_ancs_notifications(monkeypatch) -> None:
     monkeypatch.setattr(cli_messages, "BackendClient", _Backend)
     monkeypatch.setattr(
         cli_messages,
+        "format_message_timestamp",
+        lambda value: f"friendly:{value}",
+    )
+    monkeypatch.setattr(
+        cli_messages,
         "_render",
         lambda sender, body, timestamp, **_kwargs: rendered.append(
             (sender, body, timestamp)
@@ -67,6 +72,7 @@ def test_local_sms_list_excludes_ancs_notifications(monkeypatch) -> None:
 
     assert requested[0][0] == ["sms_received", "sms_sent"]
     assert [item[1] for item in rendered] == ["hello"]
+    assert rendered[0][2] == "friendly:2026-08-08T10:00:00+00:00"
 
 
 def test_sms_list_rejects_unknown_source_before_any_io(monkeypatch) -> None:

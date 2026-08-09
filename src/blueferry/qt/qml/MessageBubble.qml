@@ -41,8 +41,10 @@ Rectangle {
             Accessible.name: qsTr("Message: ") + text
         }
         Controls.Label {
-            text: root.message.timestamp
+            text: root.message.display_timestamp || ""
+            visible: text !== ""
             textFormat: Text.PlainText
+            font: Kirigami.Theme.smallFont
             opacity: 0.7
             color: root.message.outgoing
                 ? Kirigami.Theme.highlightedTextColor

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
 
 import typer
 
@@ -11,6 +10,7 @@ from blueferry.client import BackendClient, BackendError
 from blueferry.events import is_email_shaped, normalize_phone
 from blueferry.obex.map_send import InvalidRecipient, validate_recipient
 from blueferry.text_safety import terminal_text
+from blueferry.time_display import format_message_timestamp
 
 _PHONE_LIKE = re.compile(r"^\+?[\d\s()\-.]{7,}$")
 
@@ -111,13 +111,7 @@ def sms_list(
                     or message.get("sender")
                     or "?"
                 )
-                raw_timestamp = message.get("timestamp", "")
-                try:
-                    timestamp = datetime.fromisoformat(raw_timestamp).astimezone().strftime(
-                        "%m-%d %H:%M"
-                    )
-                except (ValueError, AttributeError):
-                    timestamp = raw_timestamp[:16] if raw_timestamp else "??-?? ??:??"
+                timestamp = format_message_timestamp(message.get("timestamp"))
                 _render(sender, message.get("body", ""), timestamp,
                         read=message.get("read", True))
             return
@@ -136,13 +130,7 @@ def sms_list(
         if _matches_sender(dict(record.data), phones, sender_text)
     ]
     for event in events[-n:][::-1]:
-        raw_timestamp = event.get("seen_at", "")
-        try:
-            timestamp = datetime.fromisoformat(
-                raw_timestamp.replace("Z", "+00:00")
-            ).astimezone().strftime("%m-%d %H:%M")
-        except (ValueError, AttributeError):
-            timestamp = raw_timestamp[:16]
+        timestamp = format_message_timestamp(event.get("seen_at"))
         _render(
             event.get("contact_name") or event.get("sender_address") or "?",
             event.get("body") or "",

@@ -6,6 +6,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from blueferry.time_display import format_message_timestamp
+
 
 def _bool(value: Any, default: bool = False) -> bool:
     return value if isinstance(value, bool) else default
@@ -133,7 +135,7 @@ class ThreadMessage:
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> ThreadMessage:
-        known = {"handle", "body", "timestamp", "outgoing", "read"}
+        known = {"handle", "body", "timestamp", "display_timestamp", "outgoing", "read"}
         return cls(
             handle=_str(value.get("handle")),
             body=_str(value.get("body")),
@@ -149,6 +151,7 @@ class ThreadMessage:
             "handle": self.handle,
             "body": self.body,
             "timestamp": self.timestamp,
+            "display_timestamp": format_message_timestamp(self.timestamp),
             "outgoing": self.outgoing,
             "read": self.read,
         }

@@ -1,5 +1,6 @@
 """Typed client models validate and preserve Messages1 payloads."""
 
+from blueferry import models as models_module
 from blueferry.models import BackendStatus, EventRecord, Thread
 
 
@@ -28,7 +29,12 @@ def test_status_defaults_missing_fields_and_preserves_new_fields():
     assert status.to_dict()["future_capability"] == "supported"
 
 
-def test_thread_normalizes_nested_messages():
+def test_thread_normalizes_nested_messages(monkeypatch):
+    monkeypatch.setattr(
+        models_module,
+        "format_message_timestamp",
+        lambda value: f"friendly:{value}",
+    )
     thread = Thread.from_dict(
         {
             "key": "address:phone:15551234567",
@@ -49,6 +55,7 @@ def test_thread_normalizes_nested_messages():
 
     assert thread.key == "address:phone:15551234567"
     assert thread.messages[0].body == "hello"
+    assert thread.to_dict()["messages"][0]["display_timestamp"] == "friendly:today"
     assert thread.to_dict()["messages"][0]["body"] == "hello"
     assert thread.to_dict()["recipients"] == ["+15551234567"]
 
