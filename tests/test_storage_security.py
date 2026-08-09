@@ -65,6 +65,34 @@ def test_passive_start_does_not_request_a_keyring_prompt(tmp_path) -> None:
     assert provider.calls == [False]
 
 
+def test_unencrypted_policy_retains_plaintext_without_using_keyring(tmp_path) -> None:
+    settings = SettingsStore(tmp_path / "settings.json")
+    settings.update(local_data="plaintext")
+    provider = _KeyProvider()
+    storage = StorageSecurity(settings=settings, key_provider=provider)
+    path = tmp_path / "events.sqlite"
+    event = {"kind": "sms_received", "body": "visible on disk"}
+
+    append_event(event, path=path, storage=storage)
+
+    assert storage.status.state == "ready"
+    assert storage.status.can_read is True
+    assert provider.calls == []
+    assert b"visible on disk" in path.read_bytes()
+    assert read_events(path=path, storage=storage) == [event]
+
+
+def test_switching_to_unencrypted_policy_stops_encrypting(tmp_path) -> None:
+    storage = _storage(tmp_path)
+
+    status = storage.set_policy("plaintext")
+
+    assert status.policy == "plaintext"
+    assert status.state == "ready"
+    assert storage.encrypt("plain", purpose="history-event-v1") == "plain"
+    assert storage.decrypt("plain", purpose="history-event-v1") == "plain"
+
+
 def test_locked_keyring_fails_closed_without_blocking_policy_changes(tmp_path) -> None:
     settings = SettingsStore(tmp_path / "settings.json")
     storage = StorageSecurity(settings=settings, key_provider=_LockedProvider())
@@ -177,6 +205,30 @@ def test_plaintext_secure_contact_record_fails_closed(
     assert resolver.resolve("+1 555 123 4567") is None
     assert resolver.find_by_name("alice") == []
     assert storage.status.state == "error"
+
+
+def test_unencrypted_policy_reads_plaintext_contact_records(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(config, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(config, "CONTACTS_DB", tmp_path / "contacts.sqlite")
+    monkeypatch.setattr(config, "EVENTS_DB", tmp_path / "events.sqlite")
+    with contacts._open_db() as database:
+        with database:
+            database.execute(
+                "INSERT INTO secure_contacts(payload) VALUES (?)",
+                (json.dumps({
+                    "name": "Alice Example",
+                    "phones": ["15551234567"],
+                    "emails": [],
+                }),),
+            )
+    settings = SettingsStore(tmp_path / "settings.json")
+    settings.update(local_data="plaintext")
+
+    resolver = ContactsResolver(storage=StorageSecurity(settings=settings))
+
+    assert resolver.resolve("+1 555 123 4567") == "Alice Example"
 
 
 def test_plaintext_contact_tables_are_discarded_in_encrypted_mode(

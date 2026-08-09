@@ -12,7 +12,7 @@ ShellRoot {
   property string selectedThreadKey: ""
   property string confirmedGroupSignature: ""
   property string errorText: ""
-  property int currentSection: 0
+  property bool phoneSettingsVisible: false
   property var pairingDevices: []
   property string pairingStatus: "Step 1: scan for the iPhone. Scanning does not pair it."
   property bool bluezActive: false
@@ -28,14 +28,28 @@ ShellRoot {
   property string storagePolicy: "encrypted"
   property string storageState: "locked"
   property string storageDetail: ""
+  property bool storageUnlockAttempted: false
   property string statusErrorText: ""
 
   Theme { id: theme }
+
+  Connections {
+    target: Quickshell
+    function onLastWindowClosed() { Qt.quit() }
+  }
 
   function reload() {
     if (!configured) return
     if (!threadsProcess.running) threadsProcess.running = true
     if (!statusProcess.running) statusProcess.running = true
+  }
+
+  function maybeUnlockStorage() {
+    if (configured && storagePolicy === "encrypted" && storageState !== "ready"
+        && !storageUnlockAttempted && !storageUnlockProcess.running) {
+      storageUnlockAttempted = true
+      storageUnlockProcess.running = true
+    }
   }
 
   function selectedThread() {
@@ -129,11 +143,14 @@ ShellRoot {
           var policy = parsed.notification_policy || "messages"
           root.notificationPolicy = ["all", "messages", "none"].indexOf(policy) >= 0
             ? policy : "messages"
-          root.storagePolicy = parsed.storage_policy === "none" ? "none" : "encrypted"
+          var storagePolicy = parsed.storage_policy || "encrypted"
+          root.storagePolicy = ["encrypted", "plaintext", "none"].indexOf(storagePolicy) >= 0
+            ? storagePolicy : "encrypted"
           root.storageState = parsed.storage_state || "locked"
           root.storageDetail = parsed.storage_detail || "Storage status unavailable"
           root.statusErrorText = ""
           root.updateOnboarding()
+          root.maybeUnlockStorage()
         } catch (error) {
           root.markStatusUnavailable("BlueFerry backend returned invalid status data")
         }
@@ -181,10 +198,10 @@ ShellRoot {
           var parsed = JSON.parse(text)
           root.configured = parsed.configured === true
           root.configuredMac = root.configured ? (parsed.mac || "") : ""
-          if (!root.configured) root.currentSection = 1
+          if (!root.configured) root.phoneSettingsVisible = true
           else root.reload()
           root.updateOnboarding()
-        } catch (error) { root.currentSection = 1 }
+        } catch (error) { root.phoneSettingsVisible = true }
       }
     }
   }
@@ -442,22 +459,17 @@ ShellRoot {
 
         RowLayout {
           Layout.fillWidth: true
-          Label { text: "BlueFerry"; font.pixelSize: theme.displaySize; font.bold: true }
           Item { Layout.fillWidth: true }
           Button {
-            text: "Messages"
+            icon.name: "phone"
+            display: AbstractButton.IconOnly
             checkable: true
-            checked: root.currentSection === 0
-            onClicked: root.currentSection = 0
+            checked: root.phoneSettingsVisible
+            Accessible.name: "iPhone settings"
+            ToolTip.visible: hovered
+            ToolTip.text: "iPhone settings"
+            onToggled: root.phoneSettingsVisible = checked
           }
-          Button {
-            text: "iPhone"
-            checkable: true
-            checked: root.currentSection === 1
-            onClicked: root.currentSection = 1
-          }
-          Button { text: "Refresh"; onClicked: root.reload() }
-          Button { text: "Close"; onClicked: Qt.quit() }
         }
 
         Label {
@@ -470,7 +482,7 @@ ShellRoot {
         }
 
         SplitView {
-          visible: root.currentSection === 0
+          visible: !root.phoneSettingsVisible
           Layout.fillWidth: true
           Layout.fillHeight: true
 
@@ -568,7 +580,7 @@ ShellRoot {
 
         ScrollView {
           id: iphoneScroll
-          visible: root.currentSection === 1
+          visible: root.phoneSettingsVisible
           Layout.fillWidth: true
           Layout.fillHeight: true
           contentWidth: availableWidth
@@ -746,12 +758,18 @@ ShellRoot {
           ComboBox {
             id: storagePolicyCombo
             Layout.fillWidth: true
-            model: ["Encrypted with desktop keyring", "Do not retain local data"]
-            currentIndex: root.storagePolicy === "none" ? 1 : 0
+            model: [
+              "Encrypted with desktop keyring",
+              "Unencrypted local data",
+              "Do not retain local data"
+            ]
+            currentIndex: root.storagePolicy === "plaintext" ? 1
+              : root.storagePolicy === "none" ? 2 : 0
             enabled: root.configured && !storagePolicyProcess.running
             onActivated: {
-              var values = ["encrypted", "none"]
-              if (values[currentIndex] === "none" && !confirmNoRetention.checked) {
+              var values = ["encrypted", "plaintext", "none"]
+              if (values[currentIndex] !== root.storagePolicy
+                  && !confirmStorageChange.checked) {
                 root.errorText = "Confirm clearing local messages and contacts first"
                 root.reload()
                 return
@@ -759,22 +777,15 @@ ShellRoot {
               storagePolicyProcess.command = [
                 "/usr/bin/blueferry", "storage-policy-set", values[currentIndex]
               ]
+              if (values[currentIndex] === "encrypted")
+                root.storageUnlockAttempted = true
               storagePolicyProcess.running = true
-              confirmNoRetention.checked = false
+              confirmStorageChange.checked = false
             }
           }
           CheckBox {
-            id: confirmNoRetention
-            visible: root.storagePolicy !== "none"
-            text: "I understand that no retention clears local messages and contacts"
-          }
-          Button {
-            visible: root.storagePolicy === "encrypted" && root.storageState !== "ready"
-            text: storageUnlockProcess.running ? "Opening keyring…"
-              : root.storageDetail.indexOf("one-time") >= 0
-                ? "Set up encrypted storage" : "Unlock desktop keyring"
-            enabled: !storageUnlockProcess.running
-            onClicked: storageUnlockProcess.running = true
+            id: confirmStorageChange
+            text: "I understand that changing storage mode clears local messages and contacts"
           }
             Item { Layout.fillHeight: true }
           }

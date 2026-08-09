@@ -379,7 +379,7 @@ def notification_policy_set(policy: str = typer.Argument(...)) -> None:
 
 @app.command("storage-policy-set")
 def storage_policy_set(policy: str = typer.Argument(...)) -> None:
-    """Choose encrypted local history or no retained history."""
+    """Choose encrypted, unencrypted, or unretained local data."""
     import json
 
     client, error_type = _json_client()

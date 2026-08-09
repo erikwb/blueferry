@@ -1,6 +1,8 @@
 """Backend trust-boundary behavior independent of its D-Bus transport."""
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from blueferry import backend_operations
@@ -165,6 +167,56 @@ def test_invalid_notification_policy_has_public_invalid_args_error() -> None:
         operations.set_notification_policy("bad")
 
     assert getattr(caught.value, "dbus_suffix", None) == "InvalidArgs"
+
+
+def test_storage_policy_change_clears_data_before_switching(monkeypatch) -> None:
+    calls = []
+
+    class Storage:
+        status = SimpleNamespace(policy="encrypted", can_read=True)
+
+        def set_policy(self, value, *, allow_prompt):
+            assert allow_prompt is True
+            calls.append(("set", value))
+            self.status = SimpleNamespace(
+                policy=value,
+                state="ready",
+                detail="Local data is retained without encryption",
+                can_read=True,
+            )
+            return self.status
+
+    monkeypatch.setattr(
+        backend_operations, "clear_events", lambda: calls.append("events")
+    )
+    monkeypatch.setattr(
+        backend_operations, "clear_contact_cache", lambda: calls.append("contacts")
+    )
+    operations = BackendOperations(_Sessions(), storage=Storage())
+
+    result = operations.set_storage_policy("plaintext")
+
+    assert calls == ["events", "contacts", ("set", "plaintext")]
+    assert result["storage_policy"] == "plaintext"
+
+
+def test_invalid_storage_policy_does_not_clear_data(monkeypatch) -> None:
+    cleared = []
+    storage = SimpleNamespace(status=SimpleNamespace(policy="encrypted"))
+    operations = BackendOperations(_Sessions(), storage=storage)
+    monkeypatch.setattr(
+        backend_operations, "clear_events", lambda: cleared.append("events")
+    )
+    monkeypatch.setattr(
+        backend_operations,
+        "clear_contact_cache",
+        lambda: cleared.append("contacts"),
+    )
+
+    with pytest.raises(InvalidArgumentsError, match="local data policy"):
+        operations.set_storage_policy("surprise")
+
+    assert cleared == []
 
 
 def test_outgoing_body_limit_is_enforced_before_obex() -> None:

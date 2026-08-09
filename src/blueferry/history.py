@@ -68,9 +68,9 @@ def _insert(
     storage: StorageSecurity | None,
 ) -> None:
     occurred = _event_datetime(event)
-    # Keep queryable metadata only for deliberately plaintext test stores.
-    # Production storage encrypts the kind and timestamp with the payload;
-    # the remaining row count/order is inherent SQLite metadata.
+    # Keep queryable metadata only for direct test stores. Policy-managed
+    # stores keep it inside the payload even when the user chooses plaintext,
+    # so changing protection does not change the database's visible shape.
     stored_kind = (
         str(event.get("kind") or "unknown") if storage is None else "private"
     )
@@ -215,9 +215,9 @@ def prune_events(
     with closing(_open_database(path)) as database, database:
         before = int(database.execute("SELECT COUNT(*) FROM events").fetchone()[0])
         if storage is not None and before:
-            # Verify the active key before any retention deletion. A replaced
-            # wallet key must never make an otherwise intact archive look
-            # like disposable old data.
+            # Verify that the archive is readable before retention deletion.
+            # In encrypted mode, a replaced wallet key must never make an
+            # otherwise intact archive look like disposable old data.
             (newest_payload,) = database.execute(
                 "SELECT payload_json FROM events ORDER BY id DESC LIMIT 1"
             ).fetchone()
@@ -239,7 +239,7 @@ def prune_events(
             (selected_max,),
         )
         expired: list[int] = []
-        authenticated: list[int] = []
+        validated: list[int] = []
         for event_id, payload in database.execute(
             "SELECT id, payload_json FROM events ORDER BY id"
         ):
@@ -254,7 +254,7 @@ def prune_events(
             except (ValueError, RuntimeError):
                 continue
             if storage is not None:
-                authenticated.append(int(event_id))
+                validated.append(int(event_id))
             occurred = _event_datetime(event) if event is not None else None
             if occurred is not None and occurred < cutoff:
                 expired.append(int(event_id))
@@ -263,11 +263,11 @@ def prune_events(
                 "DELETE FROM events WHERE id = ?",
                 ((event_id,) for event_id in expired),
             )
-        if authenticated:
+        if validated:
             database.executemany(
                 "UPDATE events SET kind = 'private', occurred_at = NULL "
                 "WHERE id = ?",
-                ((event_id,) for event_id in authenticated),
+                ((event_id,) for event_id in validated),
             )
         total = 0
         delete_through = None

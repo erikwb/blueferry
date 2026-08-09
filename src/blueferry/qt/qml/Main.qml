@@ -12,7 +12,6 @@ Kirigami.ApplicationWindow {
     property string selectedThreadKey: ""
     property var pendingThread: null
     property string pendingBody: ""
-    property int currentSection: 0
     property bool firstRunRedirected: false
 
     visible: true
@@ -57,12 +56,8 @@ Kirigami.ApplicationWindow {
             + tasks.join("\n• ")
     }
 
-    function showSection(index, page) {
-        currentSection = index
-        while (pageStack.depth > 0) {
-            pageStack.pop()
-        }
-        pageStack.push(page)
+    function openPhoneSettings() {
+        pageStack.layers.push(iphonePageComponent)
     }
 
     function onboardingTitle(stage) {
@@ -105,7 +100,7 @@ Kirigami.ApplicationWindow {
         function onSetupLoadedChanged() {
             if (root.bridge.setupLoaded && !root.bridge.configured && !root.firstRunRedirected) {
                 root.firstRunRedirected = true
-                root.showSection(1, iphonePage)
+                root.openPhoneSettings()
             }
         }
 
@@ -129,6 +124,11 @@ Kirigami.ApplicationWindow {
     globalDrawer: Kirigami.GlobalDrawer {
         actions: [
             Kirigami.Action {
+                text: qsTr("iPhone Settings")
+                icon.name: "phone"
+                onTriggered: root.openPhoneSettings()
+            },
+            Kirigami.Action {
                 text: qsTr("Keyboard Shortcuts")
                 icon.name: "preferences-desktop-keyboard-shortcuts"
                 onTriggered: shortcutsDialog.open()
@@ -137,7 +137,6 @@ Kirigami.ApplicationWindow {
                 text: qsTr("About BlueFerry")
                 icon.name: "help-about"
                 onTriggered: {
-                    root.currentSection = -1
                     root.pageStack.layers.push(aboutPage)
                 }
             },
@@ -146,23 +145,6 @@ Kirigami.ApplicationWindow {
                 icon.name: "application-exit"
                 shortcut: StandardKey.Quit
                 onTriggered: Qt.quit()
-            }
-        ]
-    }
-
-    footer: Kirigami.NavigationTabBar {
-        actions: [
-            Kirigami.Action {
-                text: qsTr("Messages")
-                icon.name: "mail-message-new"
-                checked: root.currentSection === 0
-                onTriggered: root.showSection(0, messagesPage)
-            },
-            Kirigami.Action {
-                text: qsTr("iPhone")
-                icon.name: "phone"
-                checked: root.currentSection === 1
-                onTriggered: root.showSection(1, iphonePage)
             }
         ]
     }
@@ -202,17 +184,30 @@ Kirigami.ApplicationWindow {
     }
 
     Kirigami.PromptDialog {
-        id: noRetentionDialog
-        title: qsTr("Stop Retaining Local Data?")
-        subtitle: qsTr("This clears message history and cached contacts, then removes BlueFerry's storage key. Nothing on the iPhone is deleted.")
+        id: storageChangeDialog
+        property string requestedPolicy: ""
+        title: requestedPolicy === "none"
+            ? qsTr("Stop Retaining Local Data?")
+            : requestedPolicy === "plaintext"
+                ? qsTr("Store Local Data Without Encryption?")
+                : qsTr("Use Encrypted Local Storage?")
+        subtitle: requestedPolicy === "none"
+            ? qsTr("This clears message history and cached contacts, then removes BlueFerry's storage key. Nothing on the iPhone is deleted.")
+            : requestedPolicy === "plaintext"
+                ? qsTr("This clears existing local message history and cached contacts. New local data will be stored unencrypted and can be read by anyone with access to your files. Nothing on the iPhone is deleted.")
+                : qsTr("Changing storage protection clears existing local message history and cached contacts. New local data will be encrypted with your desktop keyring. Nothing on the iPhone is deleted.")
         dialogType: Kirigami.PromptDialog.Warning
         standardButtons: Kirigami.Dialog.Cancel
         customFooterActions: [Kirigami.Action {
-            text: qsTr("Clear and Stop Retaining")
+            text: storageChangeDialog.requestedPolicy === "none"
+                ? qsTr("Clear and Stop Retaining")
+                : storageChangeDialog.requestedPolicy === "plaintext"
+                    ? qsTr("Clear and Store Unencrypted")
+                    : qsTr("Clear and Use Encryption")
             icon.name: "edit-delete"
             onTriggered: {
-                root.bridge.setStoragePolicy("none")
-                noRetentionDialog.close()
+                root.bridge.setStoragePolicy(storageChangeDialog.requestedPolicy)
+                storageChangeDialog.close()
             }
         }]
         onClosed: root.bridge.refresh()
@@ -286,8 +281,8 @@ Kirigami.ApplicationWindow {
                     position: Kirigami.InlineMessage.Position.Header
                     actions: [
                         Kirigami.Action {
-                            text: qsTr("Open iPhone")
-                            onTriggered: root.showSection(1, iphonePage)
+                            text: qsTr("Open iPhone Settings")
+                            onTriggered: root.openPhoneSettings()
                         }
                     ]
                 }
@@ -486,15 +481,12 @@ Kirigami.ApplicationWindow {
         }
     }
 
-    Kirigami.ScrollablePage {
-        id: iphonePage
-        visible: false
-        title: qsTr("iPhone")
-        actions: [Kirigami.Action {
-            text: qsTr("Refresh")
-            icon.name: "view-refresh"
-            onTriggered: root.bridge.refresh()
-        }]
+    Component {
+        id: iphonePageComponent
+
+        Kirigami.ScrollablePage {
+            id: iphonePage
+            title: qsTr("iPhone Settings")
         property int selectedDevice: -1
         property var device: selectedDevice >= 0 && selectedDevice < root.bridge.devices.length
             ? root.bridge.devices[selectedDevice]
@@ -675,20 +667,6 @@ Kirigami.ApplicationWindow {
                     }
                 }
 
-                Kirigami.Heading {
-                    visible: root.bridge.configured
-                        && root.pendingIphoneSetupTasks().length > 0
-                    text: qsTr("Finish Setup on the iPhone")
-                    level: 2
-                }
-                Kirigami.InlineMessage {
-                    Layout.fillWidth: true
-                    visible: root.bridge.configured
-                        && root.pendingIphoneSetupTasks().length > 0
-                    type: Kirigami.MessageType.Information
-                    text: root.pendingIphoneSetupText()
-                }
-
                 Kirigami.Heading { text: qsTr("Connection Health"); level: 2 }
                 Kirigami.FormLayout {
                     Layout.fillWidth: true
@@ -750,31 +728,17 @@ Kirigami.ApplicationWindow {
                         valueRole: "value"
                         model: [
                             { "text": qsTr("Encrypted with Desktop Keyring"), "value": "encrypted" },
+                            { "text": qsTr("Unencrypted Local Data"), "value": "plaintext" },
                             { "text": qsTr("Do Not Retain Local Data"), "value": "none" }
                         ]
-                        currentIndex: root.bridge.status.storage_policy === "none" ? 1 : 0
+                        currentIndex: root.bridge.status.storage_policy === "plaintext" ? 1
+                            : root.bridge.status.storage_policy === "none" ? 2 : 0
                         enabled: root.bridge.status.daemon === true && !root.bridge.busy
                         onActivated: {
-                            if (currentValue === "none") noRetentionDialog.open()
-                            else root.bridge.setStoragePolicy(currentValue)
+                            if (currentValue === root.bridge.status.storage_policy) return
+                            storageChangeDialog.requestedPolicy = currentValue
+                            storageChangeDialog.open()
                         }
-                    }
-                    Controls.Label {
-                        Kirigami.FormData.label: qsTr("Security:")
-                        Layout.fillWidth: true
-                        wrapMode: Text.Wrap
-                        text: root.bridge.status.storage_detail || qsTr("Storage status unavailable")
-                    }
-                    Controls.Button {
-                        Kirigami.FormData.label: qsTr("Keyring:")
-                        visible: root.bridge.status.storage_policy !== "none"
-                            && root.bridge.status.storage_state !== "ready"
-                        text: root.bridge.status.storage_detail
-                            && root.bridge.status.storage_detail.indexOf("one-time") >= 0
-                            ? qsTr("Set Up") : qsTr("Unlock")
-                        icon.name: "unlock"
-                        enabled: !root.bridge.busy
-                        onClicked: root.bridge.unlockStorage()
                     }
                 }
 
@@ -799,6 +763,7 @@ Kirigami.ApplicationWindow {
                         onClicked: clearDialog.open()
                     }
                 }
+            }
         }
     }
 }

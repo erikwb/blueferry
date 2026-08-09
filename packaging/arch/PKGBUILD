@@ -33,6 +33,7 @@ checkdepends=(
   'python-gobject'
   'python-hypothesis'
   'python-pytest'
+  'python-typer>=0.12'
   'pyside6'
   'qt6-declarative'
   'quickshell'

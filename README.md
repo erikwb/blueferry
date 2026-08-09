@@ -74,8 +74,8 @@ On first launch it opens the iPhone setup page.
 3. Confirm the same code on both devices.
 4. On the iPhone, open **Settings → Bluetooth → ⓘ** beside the computer and
    enable **Show Message Notifications** and **Sync Contacts**.
-5. Wait for Messages and Contacts to show as connected, then set up local
-   storage when prompted.
+5. Wait for Messages and Contacts to show as connected. For the default
+   encrypted storage, approve the desktop wallet prompt that opens automatically.
 
 BlueFerry keeps a valid existing bond and will not repeatedly re-pair the
 phone. If you need a truly clean repair, forget the device on both sides and
@@ -111,16 +111,19 @@ notifications, or none. Ordinary app notifications are shown and discarded;
 they are not added to message history or exposed as a notification feed.
 Messages arriving through both MAP and ANCS are deduplicated.
 
-Message history and synced contacts are encrypted with a random key stored in
-GNOME Keyring or KDE Wallet. If the wallet is locked, live messages still work
-but history and contact lookup remain unavailable until you unlock it. You can
-also choose **Do not retain local data**, which clears the cache and keeps new
-events ephemeral.
+By default, message history and synced contacts are encrypted with a random key
+stored in GNOME Keyring or KDE Wallet. If the wallet is locked, live messages
+still work but history and contact lookup remain unavailable until you unlock
+it. The iPhone settings also offer unencrypted local storage, with an explicit
+warning, or **Do not retain local data**, which clears the cache and keeps new
+events ephemeral. Changing storage modes clears existing local history and
+cached contacts so encrypted and plaintext records are never mixed.
 
-BlueFerry stores configuration in `~/.config/blueferry` and encrypted state in
+BlueFerry stores configuration in `~/.config/blueferry` and local state in
 `~/.local/state/blueferry`. Pacman leaves those directories alone when the
 packages are removed. Delete them yourself if you want a complete reset; the
-storage key is named “BlueFerry local storage key” in your wallet manager.
+encrypted mode's key is named “BlueFerry local storage key” in your wallet
+manager.
 
 The default popup lifetime and history limits can be changed in
 `~/.config/blueferry/local.env`:
@@ -188,9 +191,10 @@ vendor.
 One unprivileged user daemon owns the Bluetooth sessions and exposes a small
 session D-Bus API to the clients. Private records are returned by method call,
 not broadcast in signals. Clients reply through opaque thread identities so a
-UI cannot silently change the recipients of an existing conversation. Local
-encryption protects data at rest; it is not a sandbox against another process
-already running as the same Unix user.
+UI cannot silently change the recipients of an existing conversation. The
+default local encryption protects data at rest; unencrypted storage
+deliberately gives up that protection, and neither mode is a sandbox against
+another process already running as the same Unix user.
 
 The pairing helper configures BlueZ through Polkit and presents the computer as
 an ordinary accessory. It does not exploit the phone, bypass pairing consent,

@@ -50,7 +50,7 @@ sudo pacman -Rns blueferry-backend blueferry-gtk blueferry-qt blueferry-quickshe
 ```
 
 Pacman removes the daemon, clients, units, BlueZ drop-in, and application
-metadata. It deliberately leaves per-user configuration and encrypted history
+metadata. It deliberately leaves per-user configuration and local history
 under `~/.config/blueferry` and `~/.local/state/blueferry`. Delete those
 directories—and the “BlueFerry local storage key” in your desktop wallet—only
 if you want to erase the pairing configuration, contacts, and history too.

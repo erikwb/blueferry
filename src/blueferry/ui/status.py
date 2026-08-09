@@ -37,6 +37,7 @@ class IPhonePage(Gtk.Box):
         self._last_onboarding_stage: OnboardingStage | None = None
         self._applying_notification_policy = False
         self._applying_storage_policy = False
+        self._storage_unlock_attempted = False
 
         page = Adw.PreferencesPage()
         self.append(page)
@@ -207,6 +208,7 @@ class IPhonePage(Gtk.Box):
         history_model = Gtk.StringList.new(
             [
                 _("Encrypted with Desktop Keyring"),
+                _("Unencrypted Local Data"),
                 _("Do Not Retain Local Data"),
             ]
         )
@@ -217,14 +219,6 @@ class IPhonePage(Gtk.Box):
         )
         self._storage_policy_row.connect("notify::selected", self._storage_policy_changed)
         data_group.add(self._storage_policy_row)
-        self._storage_row = Adw.ActionRow(title=_("Storage Security"))
-        self._unlock_storage_button = Gtk.Button(
-            label=_("Unlock"),
-            valign=Gtk.Align.CENTER,
-        )
-        self._unlock_storage_button.connect("clicked", self._unlock_storage)
-        self._storage_row.add_suffix(self._unlock_storage_button)
-        data_group.add(self._storage_row)
         self._contacts_row = Adw.ActionRow(title=_("Contact Destinations"))
         self._events_row = Adw.ActionRow(title=_("History Events"))
         data_group.add(self._contacts_row)
@@ -551,16 +545,18 @@ class IPhonePage(Gtk.Box):
         self._notification_policy_row.set_sensitive(reachable)
         self._applying_notification_policy = False
         self._applying_storage_policy = True
-        self._storage_policy_row.set_selected(1 if status.storage_policy == "none" else 0)
+        selected_storage = {
+            "encrypted": 0,
+            "plaintext": 1,
+            "none": 2,
+        }.get(status.storage_policy, 0)
+        self._storage_policy_row.set_selected(selected_storage)
         self._storage_policy_row.set_sensitive(reachable)
         self._applying_storage_policy = False
-        self._storage_row.set_subtitle(status.storage_detail or _("Storage status unavailable"))
         locked = status.storage_policy == "encrypted" and status.storage_state != "ready"
-        self._unlock_storage_button.set_label(
-            _("Set Up") if "one-time" in status.storage_detail else _("Unlock")
-        )
-        self._unlock_storage_button.set_visible(locked)
-        self._unlock_storage_button.set_sensitive(reachable and locked)
+        if reachable and locked and not self._storage_unlock_attempted:
+            self._storage_unlock_attempted = True
+            self._unlock_storage()
         self._update_iphone_setup_tasks()
         self._update_onboarding()
         return False
@@ -587,31 +583,56 @@ class IPhonePage(Gtk.Box):
     def _storage_policy_changed(self, _row, _property) -> None:
         if self._applying_storage_policy:
             return
-        policy = "none" if self._storage_policy_row.get_selected() == 1 else "encrypted"
-        if policy == "none":
-            dialog = Adw.AlertDialog(
-                heading=_("Stop Retaining Local Data?"),
-                body=_(
-                    "This clears message history and cached contacts, then "
-                    "removes BlueFerry's storage key. Nothing on the iPhone "
-                    "is deleted."
-                ),
-            )
-            dialog.add_response("cancel", _("Cancel"))
-            dialog.add_response("disable", _("Clear and Stop Retaining"))
-            dialog.set_close_response("cancel")
-            dialog.set_response_appearance("disable", Adw.ResponseAppearance.DESTRUCTIVE)
-            dialog.connect(
-                "response",
-                lambda _dialog, response: (
-                    self._save_storage_policy("none")
-                    if response == "disable"
-                    else self._apply_status(self._last_status)
-                ),
-            )
-            dialog.present(self.get_root())
+        policy = {
+            0: "encrypted",
+            1: "plaintext",
+            2: "none",
+        }.get(self._storage_policy_row.get_selected())
+        if policy is None or policy == self._last_status.storage_policy:
             return
-        self._save_storage_policy(policy)
+        prompts = {
+            "encrypted": (
+                _("Use Encrypted Local Storage?"),
+                _(
+                    "Changing storage protection clears existing local message "
+                    "history and cached contacts. New local data will be encrypted "
+                    "with your desktop keyring. Nothing on the iPhone is deleted."
+                ),
+                _("Clear and Use Encryption"),
+            ),
+            "plaintext": (
+                _("Store Local Data Without Encryption?"),
+                _(
+                    "This clears existing local message history and cached contacts. "
+                    "New local data will be stored unencrypted and can be read by "
+                    "anyone with access to your files. Nothing on the iPhone is deleted."
+                ),
+                _("Clear and Store Unencrypted"),
+            ),
+            "none": (
+                _("Stop Retaining Local Data?"),
+                _(
+                    "This clears message history and cached contacts, then removes "
+                    "BlueFerry's storage key. Nothing on the iPhone is deleted."
+                ),
+                _("Clear and Stop Retaining"),
+            ),
+        }
+        heading, body, confirm_label = prompts[policy]
+        dialog = Adw.AlertDialog(heading=heading, body=body)
+        dialog.add_response("cancel", _("Cancel"))
+        dialog.add_response("confirm", confirm_label)
+        dialog.set_close_response("cancel")
+        dialog.set_response_appearance("confirm", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.connect(
+            "response",
+            lambda _dialog, response: (
+                self._save_storage_policy(policy)
+                if response == "confirm"
+                else self._apply_status(self._last_status)
+            ),
+        )
+        dialog.present(self.get_root())
 
     def _save_storage_policy(self, policy: str) -> None:
         self._storage_policy_row.set_sensitive(False)
@@ -621,6 +642,8 @@ class IPhonePage(Gtk.Box):
                 _(
                     "Local data will not be retained"
                     if policy == "none"
+                    else "Unencrypted local storage enabled"
+                    if policy == "plaintext"
                     else "Encrypted local storage enabled"
                 )
             )
@@ -632,8 +655,7 @@ class IPhonePage(Gtk.Box):
 
         self._client.set_storage_policy_async(policy, saved, failed)
 
-    def _unlock_storage(self, _button) -> None:
-        self._unlock_storage_button.set_sensitive(False)
+    def _unlock_storage(self) -> None:
         self._client.unlock_storage_async(
             lambda _value: self._refresh(),
             lambda error: (

@@ -361,7 +361,7 @@ class ContactsResolver:
 
     @staticmethod
     def _discard_plaintext(db: sqlite3.Connection) -> bool:
-        """Remove unauthenticated contact rows when encrypted mode is active."""
+        """Remove legacy rows when policy-managed contact storage is active."""
         count = int(db.execute(
             "SELECT (SELECT COUNT(*) FROM contacts) + "
             "(SELECT COUNT(*) FROM phones) + "

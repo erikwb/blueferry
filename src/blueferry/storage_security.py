@@ -1,4 +1,4 @@
-"""Keyring-backed authenticated encryption for retained private state."""
+"""Local retention policy and keyring-backed authenticated encryption."""
 from __future__ import annotations
 
 import base64
@@ -15,8 +15,9 @@ from blueferry.settings_store import SettingsStore
 log = logging.getLogger(__name__)
 
 ENCRYPTED_STORAGE = "encrypted"
+PLAINTEXT_STORAGE = "plaintext"
 NO_STORAGE = "none"
-STORAGE_POLICIES = frozenset({ENCRYPTED_STORAGE, NO_STORAGE})
+STORAGE_POLICIES = frozenset({ENCRYPTED_STORAGE, PLAINTEXT_STORAGE, NO_STORAGE})
 DEFAULT_STORAGE_POLICY = ENCRYPTED_STORAGE
 
 _PREFIX = "blueferry:aesgcm:v1:"
@@ -166,7 +167,7 @@ class StorageStatus:
 
     @property
     def can_read(self) -> bool:
-        return self.policy == ENCRYPTED_STORAGE and self.state == "ready"
+        return self.policy != NO_STORAGE and self.state == "ready"
 
     @property
     def can_write(self) -> bool:
@@ -190,12 +191,15 @@ class StorageSecurity:
         ))
         self._policy = selected if selected in STORAGE_POLICIES else DEFAULT_STORAGE_POLICY
         self._key: bytearray | None = None
-        self._state = "disabled" if self._policy == NO_STORAGE else "locked"
-        self._detail = (
-            "Local data is not retained"
-            if self._policy == NO_STORAGE
-            else "Unlock the desktop keyring to retain encrypted local data"
-        )
+        if self._policy == NO_STORAGE:
+            self._state = "disabled"
+            self._detail = "Local data is not retained"
+        elif self._policy == PLAINTEXT_STORAGE:
+            self._state = "ready"
+            self._detail = "Local data is retained without encryption"
+        else:
+            self._state = "locked"
+            self._detail = "Unlock the desktop keyring to retain encrypted local data"
         if initialize and self._policy == ENCRYPTED_STORAGE:
             self.refresh(allow_prompt=False)
 
@@ -205,6 +209,11 @@ class StorageSecurity:
 
     def refresh(self, *, allow_prompt: bool) -> StorageStatus:
         if self._policy == NO_STORAGE:
+            return self.status
+        if self._policy == PLAINTEXT_STORAGE:
+            self._forget_key()
+            self._state = "ready"
+            self._detail = "Local data is retained without encryption"
             return self.status
         try:
             key = self._provider.get_or_create(allow_prompt=allow_prompt)
@@ -238,6 +247,10 @@ class StorageSecurity:
                 )
             else:
                 self._detail = "Local data is not retained"
+        elif selected == PLAINTEXT_STORAGE:
+            self._forget_key()
+            self._state = "ready"
+            self._detail = "Local data is retained without encryption"
         else:
             self.refresh(allow_prompt=allow_prompt)
         return self.status
@@ -258,7 +271,11 @@ class StorageSecurity:
         self._key = None
 
     def encrypt(self, plaintext: str, *, purpose: str) -> str:
-        if not self.status.can_write or self._key is None:
+        if not self.status.can_write:
+            raise StorageUnavailableError(self._detail)
+        if self._policy == PLAINTEXT_STORAGE:
+            return plaintext
+        if self._key is None:
             raise StorageUnavailableError(self._detail)
         nonce = os.urandom(12)
         ciphertext = AESGCM(bytes(self._key)).encrypt(
@@ -270,9 +287,17 @@ class StorageSecurity:
 
     def decrypt(self, value: str, *, purpose: str) -> str:
         """Authenticate and decrypt one purpose-bound storage record."""
+        if not self.status.can_read:
+            raise StorageUnavailableError(self._detail)
+        if self._policy == PLAINTEXT_STORAGE:
+            if value.startswith(_PREFIX):
+                raise CorruptStorageError(
+                    "encrypted data remains under the unencrypted storage policy"
+                )
+            return value
         if not value.startswith(_PREFIX):
             raise CorruptStorageError("retained data is not authenticated")
-        if not self.status.can_read or self._key is None:
+        if self._key is None:
             raise StorageUnavailableError(self._detail)
         try:
             framed = base64.b64decode(value[len(_PREFIX):], validate=True)

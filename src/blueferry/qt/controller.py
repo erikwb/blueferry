@@ -76,6 +76,7 @@ class BridgeController(QObject):
         )
         self._refreshing = False
         self._refresh_again = False
+        self._storage_unlock_attempted = False
         self._refresh_timer = QTimer(self)
         self._refresh_timer.setSingleShot(True)
         self._refresh_timer.setInterval(100)
@@ -232,6 +233,7 @@ class BridgeController(QObject):
             if status:
                 self._status = dict(status)
                 self.statusChanged.emit()
+                self._maybe_unlock_storage()
             self._set_error("")
             if self._configured:
                 self.refresh()
@@ -301,6 +303,7 @@ class BridgeController(QObject):
             self._status = dict(value.get("status", {}))
             self.threadsChanged.emit()
             self.statusChanged.emit()
+            self._maybe_unlock_storage()
             self._update_onboarding_stage()
             if self._status.get("daemon"):
                 self._set_error("")
@@ -367,6 +370,11 @@ class BridgeController(QObject):
 
     @Slot(str)
     def setStoragePolicy(self, policy: str) -> None:
+        if policy == "encrypted":
+            # SetStoragePolicy already opens the wallet when encryption is
+            # selected, so do not immediately issue a duplicate request.
+            self._storage_unlock_attempted = True
+
         def completed(value: object) -> None:
             if isinstance(value, dict):
                 self._status.update(value)
@@ -377,6 +385,8 @@ class BridgeController(QObject):
 
     @Slot()
     def unlockStorage(self) -> None:
+        self._storage_unlock_attempted = True
+
         def completed(value: object) -> None:
             if isinstance(value, dict):
                 self._status.update(value)
@@ -384,6 +394,17 @@ class BridgeController(QObject):
             self.refresh()
 
         self._run(self._backend.unlock_storage, completed)
+
+    def _maybe_unlock_storage(self) -> None:
+        if self._storage_unlock_attempted:
+            return
+        if (
+            self._status.get("daemon")
+            and self._status.get("storage_policy") == "encrypted"
+            and self._status.get("storage_state") != "ready"
+        ):
+            self._storage_unlock_attempted = True
+            self.unlockStorage()
 
     @Slot()
     def loadBluetoothStatus(self) -> None:

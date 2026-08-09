@@ -75,3 +75,44 @@ def test_configured_mac_is_exposed_for_the_paired_phone_summary():
     controller._configured_mac = "02:00:00:00:00:01"
 
     assert controller.configuredMac == "02:00:00:00:00:01"
+
+
+def test_encrypted_storage_unlock_is_requested_only_once(monkeypatch):
+    controller = BridgeController(
+        backend=_Backend(),
+        setup=object(),
+        subscribe=False,
+        autostart=False,
+    )
+    controller._status = {
+        "daemon": True,
+        "storage_policy": "encrypted",
+        "storage_state": "locked",
+    }
+    calls = []
+    monkeypatch.setattr(controller, "unlockStorage", lambda: calls.append(True))
+
+    controller._maybe_unlock_storage()
+    controller._maybe_unlock_storage()
+
+    assert calls == [True]
+
+
+def test_non_encrypted_storage_does_not_open_keyring(monkeypatch):
+    controller = BridgeController(
+        backend=_Backend(),
+        setup=object(),
+        subscribe=False,
+        autostart=False,
+    )
+    controller._status = {
+        "daemon": True,
+        "storage_policy": "plaintext",
+        "storage_state": "ready",
+    }
+    calls = []
+    monkeypatch.setattr(controller, "unlockStorage", lambda: calls.append(True))
+
+    controller._maybe_unlock_storage()
+
+    assert calls == []

@@ -58,6 +58,13 @@ def test_backend_package_includes_maintained_protocol_findings() -> None:
     assert not (ROOT / "spike").exists()
 
 
+def test_arch_check_dependencies_cover_cli_test_imports() -> None:
+    pkgbuild = (ROOT / "packaging" / "arch" / "PKGBUILD").read_text()
+    checkdepends = pkgbuild.split("checkdepends=(", 1)[1].split("\n)", 1)[0]
+
+    assert "'python-typer>=0.12'" in checkdepends
+
+
 @pytest.mark.parametrize("suffix", ["Gtk", "Qt", "Quickshell"])
 def test_desktop_and_appstream_ids_match(suffix: str) -> None:
     app_id = f"{BUS_NAME}.{suffix}"
@@ -79,11 +86,46 @@ def test_qt_package_ships_the_kirigami_ui_and_dependencies() -> None:
     assert "'kirigami'" in pkgbuild
     assert "'qqc2-desktop-style'" in pkgbuild
     assert "Kirigami.ApplicationWindow" in qml
-    assert "Kirigami.NavigationTabBar" in qml
+    assert "Kirigami.NavigationTabBar" not in qml
+    assert "pageStack.layers.push(iphonePageComponent)" in qml
     assert "Kirigami.AboutPage" in qml
     assert "customFooterActions" in qml
     assert "interval: 3000" not in qml
     assert "QtWidgets" not in (ROOT / "src" / "blueferry" / "qt" / "app.py").read_text()
+
+
+def test_gui_clients_keep_phone_settings_out_of_primary_navigation() -> None:
+    gtk_window = (ROOT / "src/blueferry/ui/window.py").read_text()
+    quickshell = (ROOT / "data/quickshell/shell.qml").read_text()
+
+    assert "Adw.ViewSwitcher" not in gtk_window
+    assert 'menu.append(_("iPhone Settings"), "win.phone")' in gtk_window
+    assert "display: AbstractButton.IconOnly" in quickshell
+    assert 'text: "Messages"' not in quickshell
+    assert 'text: "iPhone"' not in quickshell
+
+
+def test_all_gui_clients_offer_unencrypted_local_storage() -> None:
+    gtk = (ROOT / "src/blueferry/ui/status.py").read_text()
+    qt = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
+    quickshell = (ROOT / "data/quickshell/shell.qml").read_text()
+
+    assert '_("Unencrypted Local Data")' in gtk
+    assert '"value": "plaintext"' in qt
+    assert '"Unencrypted local data"' in quickshell
+
+
+def test_gui_clients_open_encrypted_storage_without_setup_buttons() -> None:
+    gtk = (ROOT / "src/blueferry/ui/status.py").read_text()
+    qt_controller = (ROOT / "src/blueferry/qt/controller.py").read_text()
+    qt_qml = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
+    quickshell = (ROOT / "data/quickshell/shell.qml").read_text()
+
+    assert "_unlock_storage_button" not in gtk
+    assert "_maybe_unlock_storage" in qt_controller
+    assert "onClicked: root.bridge.unlockStorage()" not in qt_qml
+    assert "root.maybeUnlockStorage()" in quickshell
+    assert "onClicked: storageUnlockProcess.running" not in quickshell
 
 
 def test_quickshell_package_ships_its_quattro_theme_adapter() -> None:

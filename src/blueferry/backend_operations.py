@@ -42,6 +42,7 @@ from blueferry.obex.map_send import (
     send_message,
     validate_recipient,
 )
+from blueferry.storage_security import STORAGE_POLICIES
 from blueferry.threads import ConversationIndex, build_threads
 
 log = logging.getLogger(__name__)
@@ -288,11 +289,17 @@ class BackendOperations:
 
     def set_storage_policy(self, value: str) -> dict:
         if self._storage is None:
-            raise NotReadyError("encrypted storage is unavailable")
+            raise NotReadyError("local storage is unavailable")
         selected = str(value).strip().casefold()
-        if selected == "none":
-            # Erase ciphertext before deleting its only key. A crash between
-            # these steps may leave an unused key, never irrecoverable data.
+        if selected not in STORAGE_POLICIES:
+            choices = ", ".join(sorted(STORAGE_POLICIES))
+            raise InvalidArgumentsError(
+                f"local data policy must be one of: {choices}"
+            )
+        if selected != self._storage.status.policy:
+            # Never mix plaintext and ciphertext in one archive. Clear before
+            # changing policy so a crash can leave stale settings or an empty
+            # archive, but never private data under the wrong policy.
             clear_events()
             clear_contact_cache()
         try:
@@ -316,7 +323,7 @@ class BackendOperations:
 
     def unlock_storage(self) -> dict:
         if self._storage is None:
-            raise NotReadyError("encrypted storage is unavailable")
+            raise NotReadyError("local storage is unavailable")
         status = self._storage.refresh(allow_prompt=True)
         if status.can_read:
             if self._contacts is not None:

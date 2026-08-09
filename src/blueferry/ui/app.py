@@ -4,6 +4,7 @@ A separate process from the daemon. Its application id is
 `io.weirdware.BlueFerry.Gtk` — distinct from the daemon's bus name
 `io.weirdware.BlueFerry`, which it talks to over D-Bus.
 """
+
 from __future__ import annotations
 
 import logging
@@ -34,8 +35,7 @@ _CSS = """
 
 class BlueFerryApp(Adw.Application):
     def __init__(self) -> None:
-        super().__init__(application_id=APP_ID,
-                         flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
+        super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
         self._client: DaemonClient | None = None
 
     def do_startup(self) -> None:
@@ -52,14 +52,15 @@ class BlueFerryApp(Adw.Application):
         self.set_accels_for_action("app.quit", ["<primary>q"])
         self.set_accels_for_action("app.close", ["<primary>w"])
         self.set_accels_for_action("app.shortcuts", ["<primary>question"])
+        self.set_accels_for_action("win.phone", ["<primary>comma"])
 
         provider = Gtk.CssProvider()
         provider.load_from_string(_CSS)
         display = Gdk.Display.get_default()
         if display is not None:
             Gtk.StyleContext.add_provider_for_display(
-                display, provider,
-                Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+                display, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+            )
 
     def _close_window(self, *_args) -> None:
         if self.props.active_window is not None:
@@ -87,6 +88,7 @@ class BlueFerryApp(Adw.Application):
             body=_(
                 "Ctrl+W  Close Window\n"
                 "Ctrl+Q  Quit\n"
+                "Ctrl+,  iPhone Settings\n"
                 "Ctrl+?  Keyboard Shortcuts\n"
                 "Enter   Send Message"
             ),
@@ -102,6 +104,7 @@ class BlueFerryApp(Adw.Application):
                 self._client = DaemonClient()
             win = MainWindow(application=self, client=self._client)
         win.present()
+        win.present_initial_setup()
 
     def do_shutdown(self) -> None:
         if self._client is not None:
@@ -113,7 +116,8 @@ def main() -> int:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)-5s %(name)s: %(message)s",
-        stream=sys.stderr)
+        stream=sys.stderr,
+    )
     return BlueFerryApp().run(sys.argv)
 
 
