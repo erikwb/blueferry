@@ -155,17 +155,23 @@ with the ANCS solicitation advertisement active but saw only the BR/EDR
 profiles, leading to the provisional conclusion that one adapter could not
 carry both. That conclusion was incomplete.
 
-With BlueZ's experimental API enabled, the same bond can carry both transports:
+With BlueZ's experimental API enabled, the same bond can carry both transports.
+Pairing only creates the bond; it does not guarantee a live connection. The
+reliable sequence is to connect `org.bluez.Bearer.BREDR1` first, wait until its
+`Connected` property is true, and then connect `org.bluez.Bearer.LE1`. BlueFerry
+supervises both connections for the daemon lifetime and repeats the sequence
+after disconnects and system resume. It does not set `Device1.PreferredBearer`:
+BlueZ only applies that property while disconnected, and preferring LE removes
+the device from the normal auto-connect list.
 
-1. Set `org.bluez.Device1.PreferredBearer` to `le`.
-2. Call `org.bluez.Bearer.LE1.Connect`.
-3. Wait for BlueZ to enumerate the ANCS service and its Notification Source,
-   Data Source, and Control Point characteristics.
+After LE connects, BlueFerry waits for BlueZ to enumerate the ANCS service and
+its Notification Source, Data Source, and Control Point characteristics. A
+`StartNotify` call can race GATT readiness even after the characteristics have
+appeared, so subscription failures are retried without requiring rediscovery.
 
-This worked on the MediaTek MT7922 while MAP and PBAP stayed connected over
-BR/EDR. BlueFerry's Arch package enables the necessary bluetoothd experimental
-API. The requirement is based on controller capabilities, not an Intel vendor
-check.
+This works on the MediaTek MT7922 while MAP and PBAP stay connected over BR/EDR.
+BlueFerry's Arch package enables the necessary bluetoothd experimental API. The
+requirement is based on controller capabilities, not an Intel vendor check.
 
 ANCS responses have no outer total-length field and may arrive fragmented.
 Control Point requests must be serialized and reassembled according to the

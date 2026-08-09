@@ -65,6 +65,7 @@ log = logging.getLogger(__name__)
 
 REQUEST_TIMEOUT_SECONDS = 15
 DBUS_CALL_TIMEOUT_SECONDS = 10
+SUBSCRIBE_RETRY_SECONDS = 2
 
 
 @dataclass(slots=True)
@@ -99,6 +100,9 @@ class AncsClient:
         on_event: Callable[[AncsEvent], None],
         on_status: Callable[[], None] | None = None,
         include_non_message_notifications: Callable[[], bool] | None = None,
+        *,
+        schedule: Callable[[int, Callable[[], bool]], int] = GLib.timeout_add_seconds,
+        cancel: Callable[[int], object] = GLib.source_remove,
     ) -> None:
         self.device_path = device_path
         self.on_event = on_event
@@ -106,6 +110,8 @@ class AncsClient:
         self._include_non_message_notifications = (
             include_non_message_notifications or (lambda: False)
         )
+        self._schedule = schedule
+        self._cancel = cancel
 
         # Char path slots — set as InterfacesAdded fires
         self._ns_path: str | None = None
@@ -128,6 +134,7 @@ class AncsClient:
         # BlueZ removes any part of the ANCS service.
         self._manager_signal_matches: list = []
         self._characteristic_signal_matches: list = []
+        self._subscribe_retry_id: int | None = None
         self._started = False
 
     # ---- lifecycle ------------------------------------------------------
@@ -170,6 +177,7 @@ class AncsClient:
     def stop(self) -> None:
         log.info("ANCS client stopping")
         was_connected = self._notify_started
+        self._cancel_subscribe_retry()
         self._clear_characteristic_subscription()
         for m in self._manager_signal_matches:
             try:
@@ -211,6 +219,7 @@ class AncsClient:
             if getattr(self, attr) == path_s:
                 was_connected = self._notify_started
                 setattr(self, attr, None)
+                self._cancel_subscribe_retry()
                 self._clear_characteristic_subscription()
                 log.warning("ANCS char gone: %s", path_s)
                 if was_connected and self.on_status is not None:
@@ -287,12 +296,41 @@ class AncsClient:
                     match.remove()
                 except Exception:
                     log.debug("could not roll back ANCS signal watch", exc_info=True)
+            self._schedule_subscribe_retry()
             return
+        self._cancel_subscribe_retry()
         self._characteristic_signal_matches = matches
         self._notify_started = True
         log.info("ANCS subscription active for %s", self.device_path)
         if self.on_status is not None:
             self.on_status()
+
+    def _schedule_subscribe_retry(self) -> None:
+        if (
+            not self._started
+            or self._subscribe_retry_id is not None
+            or not (self._ns_path and self._ds_path and self._cp_path)
+        ):
+            return
+        self._subscribe_retry_id = self._schedule(
+            SUBSCRIBE_RETRY_SECONDS,
+            self._retry_subscribe,
+        )
+
+    def _retry_subscribe(self) -> bool:
+        self._subscribe_retry_id = None
+        if self._started:
+            self._try_subscribe()
+        return False
+
+    def _cancel_subscribe_retry(self) -> None:
+        if self._subscribe_retry_id is None:
+            return
+        try:
+            self._cancel(self._subscribe_retry_id)
+        except Exception:
+            log.debug("could not remove ANCS subscription retry", exc_info=True)
+        self._subscribe_retry_id = None
 
     # ---- Notification Source: new/modified/removed events --------------
 

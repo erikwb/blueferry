@@ -119,66 +119,6 @@ def contacts_sync(verbose: bool = typer.Option(False, "-v", "--verbose")):
     typer.echo(f"Pulled contacts; {n} cached destinations")
 
 
-@app.command("ancs-enable")
-def ancs_enable(
-    verbose: bool = typer.Option(False, "-v", "--verbose"),
-):
-    """Enable ANCS (per-app notifications) for the paired iPhone.
-
-    What this does:
-      1. Selects LE through BlueZ's PreferredBearer D-Bus property.
-      2. Connects the already-bonded LE bearer directly, without dropping
-         the BR/EDR connection that carries MAP/PBAP.
-      3. The running daemon subscribes when ANCS characteristics appear.
-
-    BlueZ must run with its experimental D-Bus API enabled. The Arch package
-    installs the corresponding bluetooth.service drop-in.
-    """
-    _setup_logging(verbose)
-    import dbus
-    import dbus.mainloop.glib
-
-    dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
-    sysbus = dbus.SystemBus()
-
-    device_mac = config.IPHONE_MAC
-    device_path = f"/org/bluez/{config.ADAPTER}/dev_{device_mac.replace(':', '_')}"
-    try:
-        obj = sysbus.get_object("org.bluez", device_path)
-        props = dbus.Interface(obj, "org.freedesktop.DBus.Properties")
-        props.Set("org.bluez.Device1", "PreferredBearer", dbus.String("le"))
-        typer.echo("PreferredBearer: le")
-        dbus.Interface(obj, "org.bluez.Bearer.LE1").Connect(timeout=45.0)
-    except dbus.exceptions.DBusException as e:
-        name = e.get_dbus_name()
-        message = e.get_dbus_message() or name
-        if name in {"org.bluez.Error.AlreadyConnected", "org.bluez.Error.InProgress"}:
-            typer.echo(typer.style("LE bearer already connected", fg=typer.colors.GREEN))
-        else:
-            typer.echo(typer.style(f"LE connect failed: {message}", fg=typer.colors.RED))
-            if name in {
-                "org.freedesktop.DBus.Error.UnknownInterface",
-                "org.freedesktop.DBus.Error.UnknownMethod",
-                "org.freedesktop.DBus.Error.UnknownProperty",
-            }:
-                typer.echo(
-                    "BlueZ's experimental D-Bus API is not enabled. "
-                    "Install the Arch package's bluetooth.service drop-in "
-                    "and restart bluetooth.service."
-                )
-            else:
-                typer.echo(
-                    "If the LE bearer is absent, forget the device on both "
-                    "ends and pair again while BlueFerry is advertising."
-                )
-            raise typer.Exit(code=3) from None
-    else:
-        typer.echo(typer.style("LE connection successful", fg=typer.colors.GREEN))
-
-    typer.echo("\nWatch the daemon log for ANCS chars appearing:")
-    typer.echo("  journalctl --user -u blueferry -f | grep -i ancs")
-
-
 @app.command("pair-setup")
 def pair_setup(
     no_verify: bool = typer.Option(

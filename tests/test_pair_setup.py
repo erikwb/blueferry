@@ -25,6 +25,47 @@ def _device(*, paired: bool) -> pair_setup.PairedDevice:
     )
 
 
+def test_discovery_stops_as_soon_as_an_iphone_appears(monkeypatch):
+    phone = _device(paired=False)
+    scans = [[], [], [phone]]
+    sleeps = []
+    elapsed = 0.0
+
+    class Adapter:
+        def Set(self, *_args):
+            pass
+
+        def StartDiscovery(self):
+            pass
+
+        def StopDiscovery(self):
+            pass
+
+    class ObjectManager:
+        def GetManagedObjects(self):
+            return {"/org/bluez/hci0": {"org.bluez.Adapter1": {}}}
+
+    class Bus:
+        def get_object(self, *_args):
+            return Adapter()
+
+    def sleep(seconds):
+        nonlocal elapsed
+        sleeps.append(seconds)
+        elapsed += seconds
+
+    monkeypatch.setattr(pair_setup, "_object_manager", ObjectManager)
+    monkeypatch.setattr(pair_setup, "get_system_bus", Bus)
+    monkeypatch.setattr(pair_setup.dbus, "Interface", lambda value, _iface: value)
+    monkeypatch.setattr(pair_setup, "list_devices", lambda: scans.pop(0))
+    monkeypatch.setattr(pair_setup.time, "monotonic", lambda: elapsed)
+    monkeypatch.setattr(pair_setup.time, "sleep", sleep)
+
+    assert pair_setup.discover_devices(8) == [phone]
+    assert sleeps == [0.25, 0.25]
+    assert elapsed < 8
+
+
 def test_write_local_env_preserves_settings_and_is_private(tmp_path, monkeypatch):
     destination = tmp_path / "blueferry" / "local.env"
     destination.parent.mkdir()
@@ -403,23 +444,18 @@ def test_complete_pairing_hands_advertisement_to_daemon(monkeypatch):
     monkeypatch.setattr(pair_setup, "trust_device", lambda *_args: calls.append("trust"))
     monkeypatch.setattr(pair_setup, "write_local_env", lambda *_args: calls.append("config"))
     monkeypatch.setattr(pair_setup, "_restart_user_service", lambda: calls.append("restart"))
-    monkeypatch.setattr(pair_setup.time, "sleep", lambda _seconds: None)
-    monkeypatch.setattr(
-        pair_setup, "_connect_ancs", lambda _device: calls.append("ancs") or "connected"
-    )
 
     result = pair_setup.complete_pairing(device.mac)
 
     assert result["ok"] is True
-    assert result["ancs"] == "connected"
-    assert result["ancs_ready"] is True
+    assert result["ancs"] == "connection supervised by daemon"
+    assert result["ancs_ready"] is False
     assert set(calls) == {
         ("prepare", "hci0"),
         "trust",
         "config",
         ("unregister", "hci0"),
         "restart",
-        "ancs",
     }
     # The setup process owns the temporary advertisement until the backend is
     # restarted; handing it off in the opposite order can leak an instance.
@@ -460,7 +496,6 @@ def test_complete_pairing_invokes_bluez_pair_for_new_device(monkeypatch):
     monkeypatch.setattr(pair_setup, "write_local_env", lambda *_args: None)
     monkeypatch.setattr(pair_setup, "_restart_user_service", lambda: None)
     monkeypatch.setattr(pair_setup.time, "sleep", lambda _seconds: None)
-    monkeypatch.setattr(pair_setup, "_connect_ancs", lambda _device: "connected")
 
     pair_setup.complete_pairing(unpaired.mac)
 
@@ -527,7 +562,6 @@ def test_interactive_pairing_replaces_competing_peer_transaction(monkeypatch):
     monkeypatch.setattr(pair_setup, "write_local_env", lambda *_args: None)
     monkeypatch.setattr(pair_setup, "_restart_user_service", lambda: None)
     monkeypatch.setattr(pair_setup.time, "sleep", lambda _seconds: None)
-    monkeypatch.setattr(pair_setup, "_connect_ancs", lambda _device: "connected")
 
     pair_setup.complete_pairing(
         unpaired.mac,
@@ -589,7 +623,6 @@ def test_peer_initiated_pairing_is_allowed_to_finish(monkeypatch):
     monkeypatch.setattr(pair_setup, "write_local_env", lambda *_args: None)
     monkeypatch.setattr(pair_setup, "_restart_user_service", lambda: None)
     monkeypatch.setattr(pair_setup.time, "sleep", lambda _seconds: None)
-    monkeypatch.setattr(pair_setup, "_connect_ancs", lambda _device: "connected")
 
     result = pair_setup.complete_pairing(unpaired.mac)
 
@@ -597,7 +630,7 @@ def test_peer_initiated_pairing_is_allowed_to_finish(monkeypatch):
     assert result["ok"] is True
 
 
-def test_pending_ancs_does_not_turn_a_valid_pair_into_failure(monkeypatch):
+def test_pairing_does_not_claim_ancs_ready_before_daemon_reports_it(monkeypatch):
     device = _device(paired=True)
     device.uuids = frozenset()
     monkeypatch.setattr(pair_setup, "_device", lambda _mac: device)
@@ -617,13 +650,8 @@ def test_pending_ancs_does_not_turn_a_valid_pair_into_failure(monkeypatch):
     monkeypatch.setattr(pair_setup, "_restart_user_service", lambda: None)
     monkeypatch.setattr(pair_setup.time, "sleep", lambda _seconds: None)
 
-    def pending(_device):
-        raise pair_setup.PairingError("LE services are still resolving")
-
-    monkeypatch.setattr(pair_setup, "_connect_ancs", pending)
-
     result = pair_setup.complete_pairing(device.mac)
 
     assert result["ok"] is True
     assert result["ancs_ready"] is False
-    assert result["ancs"].startswith("pending:")
+    assert result["ancs"] == "connection supervised by daemon"

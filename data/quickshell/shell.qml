@@ -770,7 +770,7 @@ ShellRoot {
                      && !deviceProcess.running && !pairProcess.running
             onClicked: {
               var device = root.selectedPairingDevice()
-              root.pairingStatus = "Preparing secure pairing… The code can take about 15 seconds to appear."
+              root.pairingStatus = "Activating Bluetooth, then starting secure pairing…"
               root.pairingResultReceived = false
               pairProcess.command = [
                 "/usr/bin/blueferry", "pairing-complete", device.mac, "--interactive-agent"

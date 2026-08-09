@@ -82,11 +82,21 @@ def test_authorized_cod_change_uses_polkit_and_fixed_command(monkeypatch):
     assert calls[0][1]["timeout"] == 120
 
 
-def test_advert_no_reply_uses_bounded_wait_and_accepts_observed_activation(
+def test_advert_no_reply_proceeds_as_soon_as_activation_is_observed(
     monkeypatch,
 ):
     calls = []
-    counts = iter([0, 1])
+    counts = iter([0, 0, 0, 1])
+    sleeps = []
+    elapsed = 0.0
+
+    def monotonic():
+        return elapsed
+
+    def sleep(seconds):
+        nonlocal elapsed
+        sleeps.append(seconds)
+        elapsed += seconds
 
     class Manager:
         def RegisterAdvertisement(self, path, options, **kwargs):
@@ -104,6 +114,35 @@ def test_advert_no_reply_uses_bounded_wait_and_accepts_observed_activation(
         "_active_advertisements",
         lambda _adapter=None: next(counts),
     )
+    monkeypatch.setattr(bluez_setup.time, "monotonic", monotonic)
+    monkeypatch.setattr(bluez_setup.time, "sleep", sleep)
 
     assert bluez_setup.register_advert("hci7") is True
-    assert calls[0][2]["timeout"] == 15.0
+    assert calls[0][2]["timeout"] == 1.0
+    assert sleeps == [0.25, 0.25]
+    assert elapsed < bluez_setup.ADVERT_ACTIVATION_TIMEOUT_SECONDS
+
+
+def test_advert_activation_polling_keeps_a_bounded_failure_deadline(monkeypatch):
+    elapsed = 0.0
+
+    class Manager:
+        def RegisterAdvertisement(self, _path, _options, **_kwargs):
+            raise dbus.exceptions.DBusException(
+                "method reply timed out",
+                name="org.freedesktop.DBus.Error.NoReply",
+            )
+
+    def sleep(seconds):
+        nonlocal elapsed
+        elapsed += seconds
+
+    monkeypatch.setattr(bluez_setup, "_advert_instance", object())
+    monkeypatch.setattr(bluez_setup, "_advert_registered", False)
+    monkeypatch.setattr(bluez_setup, "bluez", lambda *_args: Manager())
+    monkeypatch.setattr(bluez_setup, "_active_advertisements", lambda _adapter=None: 0)
+    monkeypatch.setattr(bluez_setup.time, "monotonic", lambda: elapsed)
+    monkeypatch.setattr(bluez_setup.time, "sleep", sleep)
+
+    assert bluez_setup.register_advert("hci7") is False
+    assert elapsed == bluez_setup.ADVERT_ACTIVATION_TIMEOUT_SECONDS

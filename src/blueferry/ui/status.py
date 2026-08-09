@@ -432,7 +432,7 @@ class IPhonePage(Gtk.Box):
         if not device:
             self._toast(_("Scan for and select an iPhone first"))
             return
-        self._toast(_("Preparing secure pairing — the code can take about 15 seconds to appear"))
+        self._toast(_("Activating Bluetooth, then starting secure pairing…"))
 
         def completed(result) -> None:
             self._configuration = ConfigurationState(

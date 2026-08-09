@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import Any
 
 import dbus
@@ -30,7 +31,9 @@ from blueferry.errors import CommandError
 
 log = logging.getLogger(__name__)
 
-ADVERT_REGISTRATION_TIMEOUT_SECONDS = 15
+ADVERT_DBUS_TIMEOUT_SECONDS = 1
+ADVERT_ACTIVATION_TIMEOUT_SECONDS = 15
+ADVERT_POLL_INTERVAL_SECONDS = 0.25
 
 
 # ---- Class-of-Device ----------------------------------------------------
@@ -188,14 +191,16 @@ def register_advert(adapter: str | None = None) -> bool:
     ad_mgr = bluez(f"/org/bluez/{adapter}",
                    "org.bluez.LEAdvertisingManager1")
     active_before = _active_advertisements(adapter)
+    activation_deadline = time.monotonic() + ADVERT_ACTIVATION_TIMEOUT_SECONDS
     try:
-        # Hardware-offloaded advertisements on the MediaTek controller took
-        # just over ten seconds in practice. BlueZ sometimes activates the
-        # instance without returning, so bound the wait and verify the count.
+        # Hardware-offloaded advertisements on the MediaTek controller can
+        # activate without BlueZ replying to this call. Use a short D-Bus
+        # timeout, then observe the actual controller state instead of making
+        # pairing wait for a reply that may never arrive.
         ad_mgr.RegisterAdvertisement(
             _AncsAdvert.PATH,
             {},
-            timeout=float(ADVERT_REGISTRATION_TIMEOUT_SECONDS),
+            timeout=float(ADVERT_DBUS_TIMEOUT_SECONDS),
         )
         _advert_registered = True
         log.info("BLE advert registered: %s", _AncsAdvert.PATH)
@@ -207,17 +212,22 @@ def register_advert(adapter: str | None = None) -> bool:
             log.info("BLE advert already registered")
             return True
         if name == "org.freedesktop.DBus.Error.NoReply":
-            # Only claim this particular registration succeeded if the count
-            # increased.  The old `count > 0` check mistook unrelated/stale
-            # advertisements for ours and helped hide a 20-instance leak.
-            active_after = _active_advertisements(adapter)
-            if (active_before is not None and active_after is not None
-                    and active_after > active_before):
-                _advert_registered = True
-                log.info("BLE advert registered despite NoReply "
-                         "(ActiveInstances=%d→%d)",
-                         active_before, active_after)
-                return True
+            while True:
+                # Only claim this registration succeeded if the count
+                # increased. `count > 0` can mistake an unrelated or stale
+                # advertisement for ours.
+                active_after = _active_advertisements(adapter)
+                if (active_before is not None and active_after is not None
+                        and active_after > active_before):
+                    _advert_registered = True
+                    log.info("BLE advert activated after delayed reply "
+                             "(ActiveInstances=%d→%d)",
+                             active_before, active_after)
+                    return True
+                remaining = activation_deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                time.sleep(min(ADVERT_POLL_INTERVAL_SECONDS, remaining))
         log.error("RegisterAdvertisement failed: %s: %s",
                   name, e.get_dbus_message())
         return False

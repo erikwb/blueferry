@@ -179,6 +179,17 @@ class _Bus:
         return self.manager
 
 
+class _CharacteristicBus:
+    def __init__(self, characteristics) -> None:
+        self.characteristics = characteristics
+
+    def add_signal_receiver(self, *_args, **_kwargs):
+        return _Match()
+
+    def get_object(self, _name, path):
+        return self.characteristics[path]
+
+
 def test_start_is_idempotent(monkeypatch) -> None:
     manager = _ObjectManager()
     monkeypatch.setattr(client_module, "get_system_bus", lambda: _Bus(manager))
@@ -224,3 +235,51 @@ def test_characteristic_removal_discards_all_characteristic_receivers(
     assert client._characteristic_signal_matches == []
     assert all(match.removed for match in matches)
     assert stopped == [True]
+
+
+def test_start_notify_failure_retries_without_rediscovery(monkeypatch) -> None:
+    scheduled = []
+
+    class _Characteristic:
+        def __init__(self, *, fail_once: bool = False) -> None:
+            self.fail_once = fail_once
+            self.start_calls = 0
+
+        def StartNotify(self, **_kwargs) -> None:
+            self.start_calls += 1
+            if self.fail_once:
+                self.fail_once = False
+                raise client_module.dbus.exceptions.DBusException(
+                    "not ready",
+                    name="org.bluez.Error.Failed",
+                )
+
+        def StopNotify(self, **_kwargs) -> None:
+            pass
+
+    ns = _Characteristic(fail_once=True)
+    ds = _Characteristic()
+    bus = _CharacteristicBus({"/device/ns": ns, "/device/ds": ds})
+    monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
+    monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
+    client = AncsClient(
+        "/device",
+        lambda _event: None,
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+    )
+    client._started = True
+    client._ns_path = "/device/ns"
+    client._ds_path = "/device/ds"
+    client._cp_path = "/device/cp"
+
+    client._try_subscribe()
+
+    assert client.connected is False
+    assert len(scheduled) == 1
+    assert scheduled[0][0] == client_module.SUBSCRIBE_RETRY_SECONDS
+
+    scheduled[0][1]()
+
+    assert client.connected is True
+    assert ns.start_calls == 2
+    assert ds.start_calls == 1

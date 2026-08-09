@@ -122,7 +122,7 @@ def run_wizard(*, verify_after: bool = True) -> int:
             typer.echo(typer.style("Invalid choice.", fg=typer.colors.RED))
             return 1
 
-    typer.echo("\nPreparing secure pairing. The matching code can take about 15 seconds to appear.")
+    typer.echo("\nActivating Bluetooth, then starting secure pairing…")
     try:
         result = setup.complete(chosen.mac)
     except PairingError as error:

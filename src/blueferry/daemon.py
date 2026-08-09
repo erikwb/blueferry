@@ -15,6 +15,7 @@ from gi.repository import GLib
 from blueferry import __version__, bluez_setup, config
 from blueferry.ancs.client import AncsClient
 from blueferry.backend_lifecycle import installed_release
+from blueferry.bearer_supervisor import BearerSupervisor
 from blueferry.bus import get_system_bus, main_loop
 from blueferry.connectivity import Connectivity
 from blueferry.contacts import ContactsResolver, pull_phonebook
@@ -80,6 +81,11 @@ class Daemon:
         )
         self.listener: MapEventListener | None = None
         self.ancs: AncsClient | None = None
+        device_path = (
+            f"/org/bluez/{config.ADAPTER}/"
+            f"dev_{config.IPHONE_MAC.replace(':', '_')}"
+        )
+        self.bearers = BearerSupervisor(device_path, on_status=self._emit_status)
         self._contacts_refresh_id: int | None = None
         self._bus_name = None
         self._dbus_service: MessagesService | None = None
@@ -220,10 +226,15 @@ class Daemon:
                 "adapter is in A/V Hands-Free CoD if the toggles aren't there."
             )
 
+        # A bond records trust but does not guarantee a live connection.
+        # Connect classic Bluetooth first for MAP/PBAP, then LE for ANCS.
+        # Keeping this in the daemon avoids relying on a desktop Bluetooth
+        # applet to connect a newly paired phone as a side effect.
+        self.bearers.start()
+
         # ANCS — per-app notifications via BLE GATT. Independent of MAP/PBAP.
-        # `blueferry ancs-enable` asks BlueZ to connect the bonded LE
-        # bearer alongside BR/EDR; the client waits patiently for the three
-        # ANCS characteristics to appear and subscribes when they do.
+        # The bearer supervisor connects LE alongside BR/EDR; the client waits
+        # for the three ANCS characteristics and subscribes when they appear.
         device_path = f"/org/bluez/{config.ADAPTER}/dev_{config.IPHONE_MAC.replace(':', '_')}"
         if self.ancs is None:
             candidate = AncsClient(
@@ -281,6 +292,7 @@ class Daemon:
         if bool(sleeping):
             return
         log.info("system resumed — refreshing Bluetooth profile sessions")
+        self.bearers.poke()
         self.profiles.reconnect("system resumed")
 
     def _post_sessions_setup(self) -> None:
@@ -339,6 +351,7 @@ class Daemon:
             "backend_release": self._running_release,
             "initializing": self._initializing,
             "ancs": bool(self.ancs and self.ancs.connected),
+            **self.bearers.snapshot(),
             "contacts": self.contacts.count(),
             "events": history_count(storage=self.storage),
             "verified_iphone_setup": list(self.setup_verification.verified),
@@ -400,6 +413,7 @@ class Daemon:
 
     def stop(self) -> None:
         log.info("=== BlueFerry stopping ===")
+        self.bearers.stop()
         self.profiles.stop()
         for tid_attr in (
             "_contacts_refresh_id",
