@@ -93,12 +93,16 @@ after package upgrades; routine use should not require `systemctl --user`.
 
 ### Omarchy Quattro
 
-The native bar widget lives in
-[blueferry-quattro](https://github.com/erikwb/blueferry-quattro):
+The native bar panel lives in
+[omarchy-iphone](https://github.com/erikwb/omarchy-iphone):
 
 ```bash
-omarchy plugin add https://github.com/erikwb/blueferry-quattro.git
+omarchy plugin add https://github.com/erikwb/omarchy-iphone.git
 ```
+
+Its popup follows Quattro's own panel controls and shows connection health and
+recent conversations. The full Quickshell client handles messages, pairing,
+and preferences.
 
 Enable it from **Setup › Plugins**. If BlueFerry is not installed, clicking
 the widget opens a terminal with the source-build instructions. The standalone

@@ -100,7 +100,7 @@ def test_gui_clients_keep_phone_settings_out_of_primary_navigation() -> None:
 
     assert "Adw.ViewSwitcher" not in gtk_window
     assert 'menu.append(_("iPhone Settings"), "win.phone")' in gtk_window
-    assert "display: AbstractButton.IconOnly" in quickshell
+    assert 'Accessible.name: "iPhone settings"' in quickshell
     assert 'text: "Messages"' not in quickshell
     assert 'text: "iPhone"' not in quickshell
 
@@ -137,6 +137,10 @@ def test_quickshell_package_ships_its_quattro_theme_adapter() -> None:
     assert "/.local/state/omarchy/current/theme" in theme
     assert "fallbackPalette" in theme
     assert "readonly property color windowSurface" in theme
+    assert "readonly property color selectedSurface" in theme
+    assert "readonly property int panelRadius" in theme
     assert "color: theme.windowSurface" in shell
+    assert "component FerryButton: Button" in shell
+    assert "component FerrySectionLabel: Label" in shell
     window_declaration = shell.split("FloatingWindow {", 1)[1].split("Pane {", 1)[0]
     assert 'color: "transparent"' not in window_declaration

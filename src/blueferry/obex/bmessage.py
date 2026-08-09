@@ -41,7 +41,9 @@ _VCARD_RE = re.compile(
     r"BEGIN:VCARD(?P<body>.*?)END:VCARD", re.DOTALL | re.IGNORECASE
 )
 _MSG_BODY_RE = re.compile(
-    r"BEGIN:MSG\s*\r?\n(?P<body>.*?)\s*END:MSG", re.DOTALL | re.IGNORECASE
+    r"^(?P<indent>[ \t]*)BEGIN:MSG[ \t]*\r?\n"
+    r"(?P<body>.*?)(?:\r?\n)?^(?P=indent)END:MSG[ \t]*\r?$",
+    re.DOTALL | re.IGNORECASE | re.MULTILINE,
 )
 _BMSG_STATUS_RE = re.compile(r"^STATUS:(?P<v>\S+)", re.MULTILINE | re.IGNORECASE)
 _BMSG_TYPE_RE   = re.compile(r"^TYPE:(?P<v>\S+)",   re.MULTILINE | re.IGNORECASE)

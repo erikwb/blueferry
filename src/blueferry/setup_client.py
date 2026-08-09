@@ -172,8 +172,20 @@ class SetupClient:
             return pair_setup.discover_devices(scan_seconds)
         return pair_setup.list_devices()
 
-    def complete(self, mac: str) -> PairingResult:
-        return PairingResult.from_dict(pair_setup.complete_pairing(mac))
+    def complete(
+        self,
+        mac: str,
+        *,
+        confirmation: pair_setup.ConfirmationCallback | None = None,
+        display: pair_setup.DisplayCallback | None = None,
+    ) -> PairingResult:
+        return PairingResult.from_dict(
+            pair_setup.complete_pairing(
+                mac,
+                confirmation=confirmation,
+                display=display,
+            )
+        )
 
     def forget(self, mac: str) -> None:
         pair_setup.forget_device(mac)

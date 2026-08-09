@@ -101,7 +101,7 @@ def test_complete_pairing_decodes_result_and_forget_delegates(monkeypatch):
     monkeypatch.setattr(
         setup_client.pair_setup,
         "complete_pairing",
-        lambda mac: {
+        lambda mac, **_kwargs: {
             "ok": True,
             "device": device.to_dict(),
             "config": "/tmp/test-config",

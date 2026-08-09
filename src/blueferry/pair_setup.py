@@ -1,13 +1,9 @@
-"""Bluetooth discovery, pairing, and first-run configuration.
-
-The toolkit UIs and CLI all use this module.  BlueZ's desktop agent remains
-responsible for showing the secure passkey/confirmation dialog; BlueFerry
-initiates the operation and performs the protocol-specific setup around it.
-"""
+"""Bluetooth discovery, pairing, and first-run configuration."""
 
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import dbus
@@ -23,6 +19,9 @@ from blueferry.private_files import atomic_write_private_text
 from blueferry.setup_verification import clear_setup_verification
 
 LOCAL_ENV_PATH = config.LOCAL_ENV_PATH
+
+ConfirmationCallback = Callable[[int | None], bool]
+DisplayCallback = Callable[[int], None]
 
 
 def configuration_status() -> dict:
@@ -182,11 +181,19 @@ def trust_device(mac: str, adapter_path: str) -> None:
     props.Set("org.bluez.Device1", "Trusted", dbus.Boolean(True))
 
 
-def _device(mac: str) -> PairedDevice:
+def _find_device(mac: str) -> PairedDevice | None:
     normalized = mac.strip().upper()
     for device in list_devices():
         if device.mac.upper() == normalized:
             return device
+    return None
+
+
+def _device(mac: str) -> PairedDevice:
+    normalized = mac.strip().upper()
+    device = _find_device(normalized)
+    if device is not None:
+        return device
     raise PairingError(f"Bluetooth device {normalized} is no longer available; scan again")
 
 
@@ -253,7 +260,12 @@ def _stop_user_service() -> None:
         raise PairingError(f"Could not stop BlueFerry: {error}") from error
 
 
-def complete_pairing(mac: str) -> dict:
+def complete_pairing(
+    mac: str,
+    *,
+    confirmation: ConfirmationCallback | None = None,
+    display: DisplayCallback | None = None,
+) -> dict:
     """Pair if needed and finish every Linux-side BlueFerry setup step."""
     from blueferry import bluez_setup
 
@@ -281,11 +293,38 @@ def complete_pairing(mac: str) -> dict:
 
     try:
         if not device.paired:
-            try:
-                dbus.Interface(
+            def invoke_pair() -> None:
+                device_interface = dbus.Interface(
                     get_system_bus().get_object("org.bluez", device.device_path),
                     "org.bluez.Device1",
-                ).Pair(timeout=120.0)
+                )
+                try:
+                    device_interface.Pair(timeout=120.0)
+                except dbus.exceptions.DBusException as error:
+                    if (
+                        confirmation is None
+                        or error.get_dbus_name() != "org.bluez.Error.InProgress"
+                    ):
+                        raise
+                    # Discovery can provoke an iPhone-initiated transaction,
+                    # which would use an unrelated desktop agent. Replace it
+                    # with the transaction owned by this registered agent.
+                    device_interface.CancelPairing(timeout=10.0)
+                    time.sleep(0.25)
+                    device_interface.Pair(timeout=120.0)
+
+            try:
+                if confirmation is None:
+                    invoke_pair()
+                else:
+                    from blueferry.pairing_agent import RegisteredPairingAgent
+
+                    with RegisteredPairingAgent(
+                        device.device_path,
+                        confirmation,
+                        display,
+                    ):
+                        invoke_pair()
             except dbus.exceptions.DBusException as error:
                 name = error.get_dbus_name() or ""
                 if name in {
@@ -302,11 +341,7 @@ def complete_pairing(mac: str) -> dict:
                         "org.bluez.Error.AuthenticationFailed",
                         "org.bluez.Error.AuthenticationRejected",
                     }:
-                        detail = (
-                            "Bluetooth confirmation did not complete. Ensure your "
-                            "desktop Bluetooth pairing agent is running, then retry: "
-                            f"{detail}"
-                        )
+                        detail = f"Bluetooth confirmation did not complete: {detail}"
                     raise PairingError(detail) from error
             device = _wait_for_paired_device(mac)
         trust_device(device.mac, device.adapter_path)
@@ -351,17 +386,22 @@ def complete_pairing(mac: str) -> dict:
 
 def forget_device(mac: str) -> None:
     """Stop BlueFerry, remove the local bond, and clear the selected phone."""
-    device = _device(mac)
+    normalized = mac.strip().upper()
+    if not config.is_valid_mac(normalized):
+        raise PairingError("invalid Bluetooth device address")
+    device = _find_device(normalized)
     _stop_user_service()
-    try:
-        dbus.Interface(
-            get_system_bus().get_object("org.bluez", device.adapter_path),
-            "org.bluez.Adapter1",
-        ).RemoveDevice(dbus.ObjectPath(device.device_path), timeout=30.0)
-    except dbus.exceptions.DBusException as error:
-        raise PairingError(
-            error.get_dbus_message() or error.get_dbus_name() or str(error)
-        ) from error
+    if device is not None:
+        try:
+            dbus.Interface(
+                get_system_bus().get_object("org.bluez", device.adapter_path),
+                "org.bluez.Adapter1",
+            ).RemoveDevice(dbus.ObjectPath(device.device_path), timeout=30.0)
+        except dbus.exceptions.DBusException as error:
+            if error.get_dbus_name() != "org.bluez.Error.DoesNotExist":
+                raise PairingError(
+                    error.get_dbus_message() or error.get_dbus_name() or str(error)
+                ) from error
     clear_local_target()
 
 

@@ -69,6 +69,8 @@ QtObject {
   readonly property color alternate: quattroActive
     ? blend(windowText, windowSurface, 0.07)
     : fallbackPalette.alternateBase
+  readonly property color hoverSurface: blend(windowText, windowSurface, 0.06)
+  readonly property color selectedSurface: blend(accent, windowSurface, 0.16)
   readonly property color highlightedText: quattroActive ? background : fallbackPalette.highlightedText
 
   readonly property real baseFontSize: shellNumber("font.base-size", 12)
@@ -78,8 +80,11 @@ QtObject {
   readonly property int panelPadding: shellPixels("spacing.panel-padding", 18)
   readonly property int smallGap: shellPixels("spacing.lg", 8)
   readonly property int cornerRadius: quattroActive ? hyprlandRadius : 14
+  readonly property int panelRadius: quattroActive ? 0 : cornerRadius
   readonly property int headingSize: Math.max(1, Math.round(baseFontSize * 1.5))
   readonly property int displaySize: Math.max(1, Math.round(baseFontSize * 1.85))
+  readonly property int captionSize: Math.max(1, Math.round(baseFontSize * 0.82))
+  readonly property int bodySmallSize: Math.max(1, Math.round(baseFontSize * 0.9))
   readonly property string fontFamily: "monospace"
 
   function scaled(px) {

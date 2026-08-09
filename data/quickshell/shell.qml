@@ -20,7 +20,13 @@ ShellRoot {
   property bool notificationsSupported: false
   property bool pairingReady: false
   property bool configured: false
+  property bool targetSaved: false
+  property bool targetBonded: false
+  property bool bondStateKnown: false
   property string configuredMac: ""
+  property bool pairingConfirmationPending: false
+  property string pairingPasskey: ""
+  property bool pairingResultReceived: false
   property string adapterName: ""
   property string onboardingStage: "checking"
   property var backendStatus: ({})
@@ -132,6 +138,45 @@ ShellRoot {
     updateOnboarding()
   }
 
+  function handlePairingLine(line) {
+    if (line.trim() === "") return
+    try {
+      var parsed = JSON.parse(line)
+      if (parsed.event === "display") {
+        root.pairingPasskey = parsed.passkey || ""
+        root.pairingStatus = "Compare the pairing code shown here with the iPhone."
+        return
+      }
+      if (parsed.event === "confirmation") {
+        root.pairingPasskey = parsed.passkey || ""
+        root.pairingConfirmationPending = true
+        root.pairingStatus = root.pairingPasskey === ""
+          ? "The iPhone is asking to pair. Approve only if you started this pairing."
+          : "Confirm that this code exactly matches the code on the iPhone."
+        return
+      }
+      if (!parsed.ok) {
+        root.pairingResultReceived = true
+        root.pairingStatus = parsed.error || "Pairing failed; it is safe to retry."
+        return
+      }
+      root.pairingResultReceived = true
+      root.pairingStatus = parsed.ancs_ready || !root.notificationsSupported
+        ? "Linux pairing complete. On the iPhone enable Show Message Notifications and Sync Contacts."
+        : "Pairing is complete. Notification access is still settling; keep the iPhone Bluetooth settings open."
+      root.configured = true
+      root.targetSaved = true
+      root.targetBonded = true
+      root.bondStateKnown = true
+      root.configuredMac = parsed.device ? (parsed.device.mac || "") : ""
+      root.loadPairingDevices(false)
+      root.reload()
+      root.updateOnboarding()
+    } catch (error) {
+      root.pairingStatus = "Pairing returned invalid data."
+    }
+  }
+
   Process {
     id: statusProcess
     command: ["/usr/bin/blueferry", "status-json"]
@@ -197,7 +242,12 @@ ShellRoot {
         try {
           var parsed = JSON.parse(text)
           root.configured = parsed.configured === true
-          root.configuredMac = root.configured ? (parsed.mac || "") : ""
+          root.targetSaved = parsed.saved === true
+          root.bondStateKnown = typeof parsed.bonded === "boolean"
+          root.targetBonded = parsed.bonded === true
+          root.configuredMac = root.targetSaved ? (parsed.mac || "") : ""
+          if (root.targetSaved && root.bondStateKnown && !root.targetBonded)
+            root.pairingStatus = "This phone is no longer paired in BlueZ. Clear the saved phone, then scan and pair again."
           if (!root.configured) root.phoneSettingsVisible = true
           else root.reload()
           root.updateOnboarding()
@@ -318,7 +368,9 @@ ShellRoot {
               + (device.paired ? " (paired)" : "")
             return device
           })
-          root.pairingStatus = matching.length
+          if (root.targetSaved && root.bondStateKnown && !root.targetBonded) {
+            root.pairingStatus = "This phone is no longer paired in BlueZ. Clear the saved phone, then scan and pair again."
+          } else root.pairingStatus = matching.length
             ? root.configured
               ? "Linux pairing is complete. Check the required iPhone settings below."
               : "Step 2: select the iPhone, then choose Pair Selected iPhone."
@@ -364,24 +416,19 @@ ShellRoot {
 
   Process {
     id: pairProcess
-    stdout: StdioCollector {
-      onStreamFinished: {
-        try {
-          var parsed = JSON.parse(text)
-          if (!parsed.ok) {
-            root.pairingStatus = parsed.error || "Pairing failed; it is safe to retry."
-            return
-          }
-          root.pairingStatus = parsed.ancs_ready || !root.notificationsSupported
-            ? "Linux pairing complete. On the iPhone enable Show Message Notifications and Sync Contacts."
-            : "Pairing is complete. Notification access is still settling; keep the iPhone Bluetooth settings open."
-          root.configured = true
-          root.configuredMac = parsed.device ? (parsed.device.mac || "") : ""
-          root.loadPairingDevices(false)
-          root.reload()
-          root.updateOnboarding()
-        } catch (error) { root.pairingStatus = "Pairing returned invalid data." }
-      }
+    stdinEnabled: true
+    stdout: SplitParser {
+      onRead: function(line) { root.handlePairingLine(line) }
+    }
+    stderr: StdioCollector {
+      onStreamFinished: if (text.trim() !== "") root.pairingStatus = text.trim()
+    }
+    // qmllint disable signal-handler-parameters
+    onExited: function(code) {
+      root.pairingConfirmationPending = false
+      root.pairingPasskey = ""
+      if (code !== 0 && !root.pairingResultReceived)
+        root.pairingStatus = "Pairing did not complete; unlock the iPhone and try again."
     }
   }
 
@@ -396,6 +443,9 @@ ShellRoot {
             : (parsed.error || "Could not remove the bond.")
           if (parsed.ok) {
             root.configured = false
+            root.targetSaved = false
+            root.targetBonded = false
+            root.bondStateKnown = true
             root.configuredMac = ""
             root.backendStatus = ({})
             root.pairingDevices = []
@@ -412,7 +462,10 @@ ShellRoot {
     repeat: true
     running: true
     triggeredOnStart: true
-    onTriggered: root.reload()
+    onTriggered: {
+      root.reload()
+      if (!configurationProcess.running) configurationProcess.running = true
+    }
   }
 
   Component.onCompleted: {
@@ -449,7 +502,7 @@ ShellRoot {
       palette.toolTipText: theme.surfaceText
 
       background: Rectangle {
-        radius: theme.cornerRadius
+        radius: theme.panelRadius
         color: theme.windowSurface
         border.color: theme.surfaceBorder
       }
@@ -462,9 +515,9 @@ ShellRoot {
         RowLayout {
           Layout.fillWidth: true
           Item { Layout.fillWidth: true }
-          Button {
-            icon.name: "phone"
-            display: AbstractButton.IconOnly
+          FerryButton {
+            text: "󰏲"
+            implicitWidth: implicitHeight
             checkable: true
             checked: root.phoneSettingsVisible
             Accessible.name: "iPhone settings"
@@ -487,26 +540,52 @@ ShellRoot {
           visible: !root.phoneSettingsVisible
           Layout.fillWidth: true
           Layout.fillHeight: true
+          handle: Rectangle {
+            implicitWidth: 1
+            color: theme.surfaceBorder
+          }
 
           ListView {
             id: threadList
             SplitView.preferredWidth: 250
             clip: true
+            spacing: theme.scaled(2)
             model: root.threads
             delegate: ItemDelegate {
               id: threadDelegate
               required property var modelData
               width: threadList.width
+              implicitHeight: threadContent.implicitHeight + theme.scaled(18)
               highlighted: modelData.key === root.selectedThreadKey
-              contentItem: Label {
-                text: threadDelegate.modelData.name + "\n" +
-                      (threadDelegate.modelData.messages.length
-                        ? threadDelegate.modelData.messages[threadDelegate.modelData.messages.length - 1].body
-                        : "")
-                textFormat: Text.PlainText
-                maximumLineCount: 2
-                wrapMode: Text.Wrap
-                elide: Text.ElideRight
+              leftPadding: theme.scaled(10)
+              rightPadding: theme.scaled(10)
+              contentItem: Column {
+                id: threadContent
+                spacing: theme.scaled(2)
+                Text {
+                  width: parent.width
+                  text: threadDelegate.modelData.name
+                  color: theme.windowText
+                  font.family: theme.fontFamily
+                  font.pixelSize: theme.baseFontSize
+                  elide: Text.ElideRight
+                }
+                Text {
+                  width: parent.width
+                  text: threadDelegate.modelData.messages.length
+                    ? (threadDelegate.modelData.messages[threadDelegate.modelData.messages.length - 1].outgoing ? "You: " : "")
+                      + threadDelegate.modelData.messages[threadDelegate.modelData.messages.length - 1].body
+                    : "No messages"
+                  color: theme.muted
+                  font.family: theme.fontFamily
+                  font.pixelSize: theme.captionSize
+                  elide: Text.ElideRight
+                }
+              }
+              background: Rectangle {
+                color: threadDelegate.highlighted ? theme.selectedSurface
+                  : threadDelegate.hovered ? theme.hoverSurface : "transparent"
+                border.color: threadDelegate.highlighted ? theme.surfaceBorder : "transparent"
               }
               onClicked: {
                 root.selectedThreadKey = modelData.key
@@ -524,6 +603,8 @@ ShellRoot {
               text: parent.thread ? parent.thread.name : "Select a conversation"
               textFormat: Text.PlainText
               font.bold: true
+              font.pixelSize: theme.headingSize
+              leftPadding: theme.scaled(8)
               Layout.fillWidth: true
             }
             ListView {
@@ -532,17 +613,41 @@ ShellRoot {
               Layout.fillHeight: true
               clip: true
               model: parent.thread ? parent.thread.messages : []
-              delegate: Label {
+              delegate: Item {
+                id: messageRow
                 required property var modelData
                 width: messageList.width
-                padding: 8
-                text: (modelData.outgoing ? "You\n" : "") + modelData.body
-                textFormat: Text.PlainText
-                wrapMode: Text.Wrap
-                horizontalAlignment: modelData.outgoing ? Text.AlignRight : Text.AlignLeft
+                implicitHeight: messageContent.implicitHeight + theme.scaled(16)
+
+                Column {
+                  id: messageContent
+                  width: messageRow.width - theme.scaled(24)
+                  x: messageRow.modelData.outgoing ? theme.scaled(16) : theme.scaled(8)
+                  spacing: theme.scaled(2)
+                  Text {
+                    width: parent.width
+                    visible: messageRow.modelData.outgoing
+                    text: "YOU"
+                    color: theme.muted
+                    font.family: theme.fontFamily
+                    font.pixelSize: theme.captionSize
+                    horizontalAlignment: Text.AlignRight
+                  }
+                  Text {
+                    width: parent.width
+                    text: messageRow.modelData.body
+                    textFormat: Text.PlainText
+                    color: theme.windowText
+                    font.family: theme.fontFamily
+                    font.pixelSize: theme.baseFontSize
+                    wrapMode: Text.Wrap
+                    horizontalAlignment: messageRow.modelData.outgoing
+                      ? Text.AlignRight : Text.AlignLeft
+                  }
+                }
               }
             }
-            CheckBox {
+            FerryCheckBox {
               id: confirmGroup
               property string signature: root.groupSignature(parent.thread)
               visible: parent.thread && parent.thread.is_group
@@ -556,13 +661,13 @@ ShellRoot {
             }
             RowLayout {
               Layout.fillWidth: true
-              TextField {
+              FerryTextField {
                 id: composer
                 Layout.fillWidth: true
                 placeholderText: "Message"
                 enabled: conversationPane.thread && conversationPane.thread.reply_ready
               }
-              Button {
+              FerryButton {
                 text: "Send"
                 enabled: composer.enabled && composer.text.trim() !== "" &&
                          (!conversationPane.thread.is_group ||
@@ -588,8 +693,9 @@ ShellRoot {
           contentWidth: availableWidth
 
           ColumnLayout {
-            width: iphoneScroll.availableWidth
-            spacing: 12
+            width: Math.min(iphoneScroll.availableWidth, theme.scaled(560))
+            x: Math.max(0, (iphoneScroll.availableWidth - width) / 2)
+            spacing: theme.scaled(12)
 
           Label {
             text: root.configured ? "Your iPhone" : "Connect an iPhone"
@@ -614,24 +720,25 @@ ShellRoot {
             wrapMode: Text.Wrap
             Layout.fillWidth: true
           }
-          Label {
+          FerrySectionLabel {
             text: "Pair an iPhone"
-            font.bold: true
-            visible: !root.configured
+            visible: !root.configured && !root.targetSaved
           }
           Label {
             text: "Pairing takes two steps. Scan only finds nearby devices; it does not pair them. After scanning, select the iPhone and choose Pair Selected iPhone."
             wrapMode: Text.Wrap
             Layout.fillWidth: true
-            visible: !root.configured
+            visible: !root.configured && !root.targetSaved
           }
-          CheckBox {
+          FerryCheckBox {
             id: confirmBluetoothRestart
-            visible: !root.configured && root.notificationsSupported && !root.bluezActive
+            visible: !root.configured && !root.targetSaved
+                     && root.notificationsSupported && !root.bluezActive
             text: "I understand this briefly disconnects all Bluetooth devices"
           }
-          Button {
-            visible: !root.configured && root.notificationsSupported && !root.bluezActive
+          FerryButton {
+            visible: !root.configured && !root.targetSaved
+                     && root.notificationsSupported && !root.bluezActive
             text: bluezActivateProcess.running ? "Activating…" : "Activate Bluetooth support"
             enabled: confirmBluetoothRestart.checked && !bluezActivateProcess.running
             onClicked: {
@@ -640,21 +747,21 @@ ShellRoot {
               confirmBluetoothRestart.checked = false
             }
           }
-          Button {
-            visible: !root.configured
+          FerryButton {
+            visible: !root.configured && !root.targetSaved
             text: deviceProcess.running ? "Scanning…" : "1. Scan for iPhone"
             enabled: !deviceProcess.running && !pairProcess.running
             onClicked: root.loadPairingDevices(true)
           }
-          ComboBox {
+          FerryComboBox {
             id: pairingDeviceCombo
-            visible: !root.configured
+            visible: !root.configured && !root.targetSaved
             Layout.fillWidth: true
             model: root.pairingDevices
             textRole: "label"
           }
-          Button {
-            visible: !root.configured
+          FerryButton {
+            visible: !root.configured && !root.targetSaved
             text: pairProcess.running ? "Pairing…"
               : root.selectedPairingDevice() && root.selectedPairingDevice().paired
                 ? "Use existing pairing" : "2. Pair Selected iPhone"
@@ -664,17 +771,51 @@ ShellRoot {
             onClicked: {
               var device = root.selectedPairingDevice()
               root.pairingStatus = "Preparing secure pairing… The code can take about 15 seconds to appear."
-              pairProcess.command = ["/usr/bin/blueferry", "pairing-complete", device.mac]
+              root.pairingResultReceived = false
+              pairProcess.command = [
+                "/usr/bin/blueferry", "pairing-complete", device.mac, "--interactive-agent"
+              ]
               pairProcess.running = true
             }
           }
-          CheckBox {
-            id: confirmForget
-            text: "I will also forget this computer in the iPhone's Bluetooth settings"
-            visible: root.configured
+          Label {
+            text: root.pairingPasskey === "" ? "Pairing confirmation" : root.pairingPasskey
+            font.bold: true
+            font.pixelSize: root.pairingPasskey === "" ? theme.baseFontSize : theme.headingSize
+            horizontalAlignment: Text.AlignHCenter
+            Layout.fillWidth: true
+            visible: root.pairingConfirmationPending
           }
           RowLayout {
-            visible: root.configured
+            Layout.fillWidth: true
+            visible: root.pairingConfirmationPending
+            FerryButton {
+              text: "Cancel Pairing"
+              Layout.fillWidth: true
+              onClicked: {
+                pairProcess.write("no\n")
+                root.pairingConfirmationPending = false
+                root.pairingStatus = "Canceling pairing…"
+              }
+            }
+            FerryButton {
+              text: root.pairingPasskey === "" ? "Approve Pairing" : "Codes Match"
+              Layout.fillWidth: true
+              highlighted: true
+              onClicked: {
+                pairProcess.write("yes\n")
+                root.pairingConfirmationPending = false
+                root.pairingStatus = "Finishing Bluetooth setup…"
+              }
+            }
+          }
+          FerryCheckBox {
+            id: confirmForget
+            text: "I will also forget this computer in the iPhone's Bluetooth settings"
+            visible: root.targetSaved && !(root.bondStateKnown && !root.targetBonded)
+          }
+          RowLayout {
+            visible: root.targetSaved
             Layout.fillWidth: true
             Label {
               Layout.fillWidth: true
@@ -682,9 +823,13 @@ ShellRoot {
                 ? root.configuredPairingDevice().name : "iPhone"
               font.bold: true
             }
-            Button {
-              text: forgetProcess.running ? "Unpairing…" : "Unpair"
-              enabled: confirmForget.checked && root.configuredMac !== "" && !forgetProcess.running
+            FerryButton {
+              text: forgetProcess.running ? "Removing…"
+                : root.bondStateKnown && !root.targetBonded
+                  ? "Clear Saved Phone" : "Unpair"
+              enabled: root.configuredMac !== "" && !forgetProcess.running
+                       && ((root.bondStateKnown && !root.targetBonded)
+                           || confirmForget.checked)
               onClicked: {
                 forgetProcess.command = ["/usr/bin/blueferry", "pairing-forget", root.configuredMac]
                 forgetProcess.running = true
@@ -692,9 +837,8 @@ ShellRoot {
               }
             }
           }
-          Label {
+          FerrySectionLabel {
             text: "Finish Setup on the iPhone"
-            font.bold: true
             visible: root.configured && root.pendingIphoneSetupTasks().length > 0
           }
           Label {
@@ -703,15 +847,22 @@ ShellRoot {
             Layout.fillWidth: true
             visible: root.configured && root.pendingIphoneSetupTasks().length > 0
           }
-          Label {
+          FerrySectionLabel {
             text: "Connection health"
-            font.bold: true
           }
-          Label {
-            text: "Messages: " + (root.backendStatus.map ? "connected" : "unavailable")
-              + "   Contacts: " + (root.backendStatus.pbap ? "connected" : "unavailable")
-              + "   iPhone notifications: " + (root.backendStatus.ancs ? "connected" : "unavailable")
-            wrapMode: Text.Wrap
+          FerryInfoRow {
+            label: "Messages"
+            value: root.backendStatus.map ? "Connected" : "Unavailable"
+            Layout.fillWidth: true
+          }
+          FerryInfoRow {
+            label: "Contacts"
+            value: root.backendStatus.pbap ? "Connected" : "Unavailable"
+            Layout.fillWidth: true
+          }
+          FerryInfoRow {
+            label: "Notifications"
+            value: root.backendStatus.ancs ? "Connected" : "Unavailable"
             Layout.fillWidth: true
           }
           Label {
@@ -723,16 +874,15 @@ ShellRoot {
             color: root.bluezActive || !root.notificationsSupported
               ? theme.surfaceText : theme.warning
           }
-          Label {
+          FerrySectionLabel {
             text: "Desktop notifications"
-            font.bold: true
           }
           Label {
             text: "Choose which iPhone events create desktop popups. Messages only is the default."
             wrapMode: Text.Wrap
             Layout.fillWidth: true
           }
-          ComboBox {
+          FerryComboBox {
             id: notificationPolicyCombo
             Layout.fillWidth: true
             model: ["All iPhone notifications", "Messages only", "None"]
@@ -747,9 +897,8 @@ ShellRoot {
               notificationPolicyProcess.running = true
             }
           }
-          Label {
+          FerrySectionLabel {
             text: "Local data"
-            font.bold: true
           }
           Label {
             text: root.storageDetail
@@ -757,7 +906,7 @@ ShellRoot {
             wrapMode: Text.Wrap
             Layout.fillWidth: true
           }
-          ComboBox {
+          FerryComboBox {
             id: storagePolicyCombo
             Layout.fillWidth: true
             model: [
@@ -785,7 +934,7 @@ ShellRoot {
               confirmStorageChange.checked = false
             }
           }
-          CheckBox {
+          FerryCheckBox {
             id: confirmStorageChange
             text: "I understand that changing storage mode clears local messages and contacts"
           }
@@ -793,6 +942,181 @@ ShellRoot {
           }
         }
       }
+    }
+  }
+
+  component FerryButton: Button {
+    id: control
+    implicitHeight: theme.scaled(34)
+    leftPadding: theme.scaled(12)
+    rightPadding: theme.scaled(12)
+    topPadding: theme.scaled(7)
+    bottomPadding: theme.scaled(7)
+
+    contentItem: Text {
+      text: control.text
+      color: control.enabled ? theme.windowText : theme.muted
+      font.family: theme.fontFamily
+      font.pixelSize: theme.baseFontSize
+      horizontalAlignment: Text.AlignHCenter
+      verticalAlignment: Text.AlignVCenter
+      elide: Text.ElideRight
+    }
+    background: Rectangle {
+      color: control.down || control.highlighted || control.checked
+        ? theme.selectedSurface
+        : control.hovered ? theme.hoverSurface : "transparent"
+      border.color: control.activeFocus ? theme.accent : theme.surfaceBorder
+      radius: 0
+      opacity: control.enabled ? 1.0 : 0.55
+    }
+  }
+
+  component FerryTextField: TextField {
+    id: control
+    implicitHeight: theme.scaled(36)
+    leftPadding: theme.scaled(10)
+    rightPadding: theme.scaled(10)
+    color: theme.windowText
+    placeholderTextColor: theme.muted
+    selectionColor: theme.accent
+    selectedTextColor: theme.highlightedText
+    font.family: theme.fontFamily
+    font.pixelSize: theme.baseFontSize
+    selectByMouse: true
+    background: Rectangle {
+      color: "transparent"
+      border.color: control.activeFocus ? theme.accent : theme.surfaceBorder
+      radius: 0
+    }
+  }
+
+  component FerryCheckBox: CheckBox {
+    id: control
+    spacing: theme.scaled(8)
+    implicitHeight: Math.max(theme.scaled(24), contentItem.implicitHeight)
+    indicator: Rectangle {
+      x: control.leftPadding
+      y: (control.height - height) / 2
+      implicitWidth: theme.scaled(15)
+      implicitHeight: theme.scaled(15)
+      color: control.checked ? theme.selectedSurface : "transparent"
+      border.color: control.activeFocus ? theme.accent : theme.surfaceBorder
+      radius: 0
+      Text {
+        anchors.centerIn: parent
+        text: control.checked ? "✓" : ""
+        color: theme.windowText
+        font.family: theme.fontFamily
+        font.pixelSize: theme.captionSize
+      }
+    }
+    contentItem: Label {
+      leftPadding: control.indicator.width + control.spacing
+      text: control.text
+      color: control.enabled ? theme.windowText : theme.muted
+      font.family: theme.fontFamily
+      font.pixelSize: theme.bodySmallSize
+      wrapMode: Text.Wrap
+      verticalAlignment: Text.AlignVCenter
+    }
+  }
+
+  component FerryComboBox: ComboBox {
+    id: control
+    implicitHeight: theme.scaled(36)
+    leftPadding: theme.scaled(10)
+    rightPadding: theme.scaled(30)
+    font.family: theme.fontFamily
+    font.pixelSize: theme.baseFontSize
+
+    contentItem: Label {
+      text: control.displayText
+      color: control.enabled ? theme.windowText : theme.muted
+      font: control.font
+      verticalAlignment: Text.AlignVCenter
+      elide: Text.ElideRight
+    }
+    indicator: Text {
+      x: control.width - width - theme.scaled(10)
+      y: (control.height - height) / 2
+      text: "⌄"
+      color: theme.muted
+      font.family: theme.fontFamily
+      font.pixelSize: theme.baseFontSize
+    }
+    background: Rectangle {
+      color: control.hovered ? theme.hoverSurface : "transparent"
+      border.color: control.activeFocus ? theme.accent : theme.surfaceBorder
+      radius: 0
+    }
+    delegate: ItemDelegate {
+      id: option
+      required property var modelData
+      required property int index
+      width: control.width
+      highlighted: control.highlightedIndex === index
+      contentItem: Text {
+        text: option.modelData
+        color: theme.windowText
+        font: control.font
+        verticalAlignment: Text.AlignVCenter
+        elide: Text.ElideRight
+      }
+      background: Rectangle {
+        color: option.highlighted ? theme.selectedSurface
+          : option.hovered ? theme.hoverSurface : theme.windowSurface
+      }
+    }
+    popup: Popup {
+      y: control.height + 1
+      width: control.width
+      implicitHeight: Math.min(contentItem.implicitHeight, theme.scaled(240))
+      padding: 1
+      contentItem: ListView {
+        clip: true
+        implicitHeight: contentHeight
+        model: control.popup.visible ? control.delegateModel : null
+        currentIndex: control.highlightedIndex
+        ScrollIndicator.vertical: ScrollIndicator { }
+      }
+      background: Rectangle {
+        color: theme.windowSurface
+        border.color: theme.surfaceBorder
+        radius: 0
+      }
+    }
+  }
+
+  component FerrySectionLabel: Label {
+    color: theme.muted
+    font.family: theme.fontFamily
+    font.pixelSize: theme.captionSize
+    font.bold: true
+    font.capitalization: Font.AllUppercase
+    font.letterSpacing: 1
+    topPadding: theme.scaled(4)
+  }
+
+  component FerryInfoRow: Item {
+    property string label: ""
+    property string value: ""
+    implicitHeight: Math.max(infoLabel.implicitHeight, infoValue.implicitHeight)
+    Text {
+      id: infoLabel
+      anchors.left: parent.left
+      text: parent.label
+      color: theme.muted
+      font.family: theme.fontFamily
+      font.pixelSize: theme.bodySmallSize
+    }
+    Text {
+      id: infoValue
+      anchors.right: parent.right
+      text: parent.value
+      color: theme.windowText
+      font.family: theme.fontFamily
+      font.pixelSize: theme.bodySmallSize
     }
   }
 }

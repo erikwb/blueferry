@@ -87,7 +87,7 @@ def test_forget_stops_backend_removes_bond_and_clears_target(monkeypatch):
         def RemoveDevice(self, path, *, timeout):
             calls.append(("remove", str(path), timeout))
 
-    monkeypatch.setattr(pair_setup, "_device", lambda _mac: device)
+    monkeypatch.setattr(pair_setup, "_find_device", lambda _mac: device)
     monkeypatch.setattr(pair_setup, "_stop_user_service", lambda: calls.append("stop"))
     monkeypatch.setattr(pair_setup, "clear_local_target", lambda: calls.append("clear"))
     monkeypatch.setattr(pair_setup, "get_system_bus", Bus)
@@ -100,6 +100,43 @@ def test_forget_stops_backend_removes_bond_and_clears_target(monkeypatch):
         ("remove", device.device_path, 30.0),
         "clear",
     ]
+
+
+def test_forget_clears_target_when_another_bluetooth_ui_removed_bond(monkeypatch):
+    calls = []
+    monkeypatch.setattr(pair_setup, "_find_device", lambda _mac: None)
+    monkeypatch.setattr(pair_setup, "_stop_user_service", lambda: calls.append("stop"))
+    monkeypatch.setattr(pair_setup, "clear_local_target", lambda: calls.append("clear"))
+
+    pair_setup.forget_device("02:00:00:00:00:01")
+
+    assert calls == ["stop", "clear"]
+
+
+def test_forget_treats_bluez_race_as_already_removed(monkeypatch):
+    device = _device(paired=True)
+    calls = []
+
+    class Bus:
+        def get_object(self, _service, _path):
+            return object()
+
+    class Adapter:
+        def RemoveDevice(self, _path, *, timeout):
+            raise pair_setup.dbus.exceptions.DBusException(
+                "Already removed",
+                name="org.bluez.Error.DoesNotExist",
+            )
+
+    monkeypatch.setattr(pair_setup, "_find_device", lambda _mac: device)
+    monkeypatch.setattr(pair_setup, "_stop_user_service", lambda: calls.append("stop"))
+    monkeypatch.setattr(pair_setup, "clear_local_target", lambda: calls.append("clear"))
+    monkeypatch.setattr(pair_setup, "get_system_bus", Bus)
+    monkeypatch.setattr(pair_setup.dbus, "Interface", lambda *_args: Adapter())
+
+    pair_setup.forget_device(device.mac)
+
+    assert calls == ["stop", "clear"]
 
 
 def test_saved_mac_without_a_bluez_bond_returns_to_first_run(tmp_path, monkeypatch):
@@ -428,6 +465,84 @@ def test_complete_pairing_invokes_bluez_pair_for_new_device(monkeypatch):
     pair_setup.complete_pairing(unpaired.mac)
 
     assert paired_calls == [120.0]
+
+
+def test_interactive_pairing_replaces_competing_peer_transaction(monkeypatch):
+    from blueferry import pairing_agent
+
+    unpaired = _device(paired=False)
+    paired = _device(paired=True)
+    devices = iter([unpaired, paired, paired])
+    calls = []
+
+    class DeviceInterface:
+        def Pair(self, **kwargs):
+            calls.append(("pair", kwargs["timeout"]))
+            if calls.count(("pair", 120.0)) == 1:
+                raise pair_setup.dbus.exceptions.DBusException(
+                    "Pairing already in progress",
+                    name="org.bluez.Error.InProgress",
+                )
+
+        def CancelPairing(self, **kwargs):
+            calls.append(("cancel", kwargs["timeout"]))
+
+    class Agent:
+        def __init__(self, path, confirmation, display):
+            calls.append(("agent", path, confirmation, display))
+
+        def __enter__(self):
+            calls.append("agent-enter")
+
+        def __exit__(self, *_args):
+            calls.append("agent-exit")
+
+    class Bus:
+        @staticmethod
+        def get_object(*_args):
+            return object()
+
+    def confirmation(_passkey):
+        return True
+
+    def display(_passkey):
+        return None
+
+    monkeypatch.setattr(pair_setup, "_device", lambda _mac: next(devices))
+    monkeypatch.setattr(
+        pair_setup,
+        "bluetooth_compatibility",
+        lambda _adapter: {
+            "hardware_supported": True,
+            "notifications_supported": True,
+            "bearer_api_active": True,
+        },
+    )
+    monkeypatch.setattr(bluez_setup, "prepare", lambda **_kwargs: True)
+    monkeypatch.setattr(bluez_setup, "unregister_advert", lambda _adapter: None)
+    monkeypatch.setattr(pairing_agent, "RegisteredPairingAgent", Agent)
+    monkeypatch.setattr(pair_setup, "get_system_bus", Bus)
+    monkeypatch.setattr(pair_setup.dbus, "Interface", lambda *_args: DeviceInterface())
+    monkeypatch.setattr(pair_setup, "trust_device", lambda *_args: None)
+    monkeypatch.setattr(pair_setup, "write_local_env", lambda *_args: None)
+    monkeypatch.setattr(pair_setup, "_restart_user_service", lambda: None)
+    monkeypatch.setattr(pair_setup.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(pair_setup, "_connect_ancs", lambda _device: "connected")
+
+    pair_setup.complete_pairing(
+        unpaired.mac,
+        confirmation=confirmation,
+        display=display,
+    )
+
+    assert calls == [
+        ("agent", unpaired.device_path, confirmation, display),
+        "agent-enter",
+        ("pair", 120.0),
+        ("cancel", 10.0),
+        ("pair", 120.0),
+        "agent-exit",
+    ]
 
 
 def test_peer_initiated_pairing_is_allowed_to_finish(monkeypatch):

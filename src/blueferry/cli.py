@@ -274,15 +274,39 @@ def pairing_activate_bluez() -> None:
 
 
 @app.command("pairing-complete", hidden=True)
-def pairing_complete(mac: str) -> None:
+def pairing_complete(
+    mac: str,
+    interactive_agent: bool = typer.Option(False, "--interactive-agent", hidden=True),
+) -> None:
     """Pair and perform all Linux-side setup for graphical clients."""
     import json
+    import sys
 
     from blueferry.errors import PairingError
     from blueferry.setup_client import SetupClient
 
+    def emit(event: dict) -> None:
+        print(json.dumps(event), flush=True)
+
+    def confirm(passkey: int | None) -> bool:
+        emit(
+            {
+                "event": "confirmation",
+                "passkey": f"{passkey:06d}" if passkey is not None else "",
+            }
+        )
+        return sys.stdin.readline().strip().casefold() in {"yes", "y", "accept"}
+
+    def display(passkey: int) -> None:
+        emit({"event": "display", "passkey": f"{passkey:06d}"})
+
     try:
-        typer.echo(json.dumps(SetupClient().complete(mac).to_dict()))
+        result = SetupClient().complete(
+            mac,
+            confirmation=confirm if interactive_agent else None,
+            display=display if interactive_agent else None,
+        )
+        emit(result.to_dict())
     except PairingError as error:
         typer.echo(json.dumps({"ok": False, "error": str(error)}))
         raise typer.Exit(code=2) from None
