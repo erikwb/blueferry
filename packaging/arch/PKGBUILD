@@ -1,0 +1,191 @@
+# Maintainer: BlueFerry contributors
+pkgbase=blueferry
+pkgname=(
+  blueferry-backend
+  blueferry-gtk
+  blueferry-qt
+  blueferry-quickshell
+)
+pkgver=0.6.0
+pkgrel=1
+pkgdesc='BlueFerry Bluetooth bridge from iPhone to Linux'
+arch=('any')
+url='https://github.com/erikwb/blueferry'
+license=('GPL-2.0-only')
+makedepends=(
+  'dbus'
+  'python-build'
+  'python-installer'
+  'python-setuptools'
+  'python-wheel'
+)
+checkdepends=(
+  'appstream'
+  'bandit'
+  'desktop-file-utils'
+  'gtk4'
+  'libadwaita'
+  'kirigami'
+  'libsecret'
+  'mypy'
+  'python-cryptography'
+  'python-dbus'
+  'python-gobject'
+  'python-hypothesis'
+  'python-pytest'
+  'pyside6'
+  'qt6-declarative'
+  'quickshell'
+  'ruff'
+)
+source=("$pkgbase-$pkgver.tar.gz")
+# build.sh writes the digest beside this file after creating its deterministic
+# working-tree snapshot. The digest file is ignored and excluded from source.
+sha256sums=("$(<.source-sha256)")
+
+_site="usr/lib/python$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')/site-packages"
+_stage='package-stage'
+
+prepare() {
+  rm -rf -- "$srcdir/$_stage"
+}
+
+build() {
+  cd "$pkgbase-$pkgver"
+  rm -rf -- build dist
+  python -m build --wheel --no-isolation
+  python -m installer --destdir="$srcdir/$_stage" dist/*.whl
+}
+
+check() {
+  cd "$pkgbase-$pkgver"
+  ruff check .
+  bandit -r src/blueferry -q
+  mypy src/blueferry
+  BLUEFERRY_TEST_ROOT="$PWD" dbus-run-session \
+    --config-file="$PWD/tests/dbus-test.conf" -- sh -c '
+    cd "$BLUEFERRY_TEST_ROOT"
+    export DBUS_SYSTEM_BUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS"
+    export BLUEFERRY_TEST_DBUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS"
+    export PYTHONPATH="$BLUEFERRY_TEST_ROOT/src"
+    python -m pytest -q
+  '
+  desktop-file-validate data/io.weirdware.BlueFerry.Gtk.desktop
+  desktop-file-validate data/io.weirdware.BlueFerry.Qt.desktop
+  desktop-file-validate data/io.weirdware.BlueFerry.Quickshell.desktop
+  appstreamcli validate --no-net data/io.weirdware.BlueFerry.Gtk.metainfo.xml
+  appstreamcli validate --no-net data/io.weirdware.BlueFerry.Qt.metainfo.xml
+  appstreamcli validate --no-net data/io.weirdware.BlueFerry.Quickshell.metainfo.xml
+  PYTHONPATH="$PWD/src" python -c 'from blueferry.qt.app import main'
+  /usr/lib/qt6/bin/qmllint src/blueferry/qt/qml/*.qml
+  /usr/lib/qt6/bin/qmllint data/quickshell/*.qml
+}
+
+package_blueferry-backend() {
+  pkgdesc='iPhone Bluetooth bridge backend, daemon, and CLI'
+  depends=(
+    'bluez>=5.72'
+    'bluez-obex'
+    'bluez-utils'
+    'libsecret'
+    'org.freedesktop.secrets'
+    'polkit'
+    'python'
+    'python-cryptography>=42'
+    'python-dbus'
+    'python-gobject'
+    'python-typer>=0.12'
+  )
+  cd "$pkgbase-$pkgver"
+  install -d "$pkgdir/$_site"
+  cp -a "$srcdir/$_stage/$_site/blueferry" "$pkgdir/$_site/"
+  rm -rf -- "$pkgdir/$_site/blueferry/ui" "$pkgdir/$_site/blueferry/qt"
+  cp -a "$srcdir/$_stage/$_site/blueferry-$pkgver.dist-info" "$pkgdir/$_site/"
+  install -Dm755 "$srcdir/$_stage/usr/bin/blueferry" "$pkgdir/usr/bin/blueferry"
+
+  install -Dm644 systemd/blueferry.service \
+    "$pkgdir/usr/lib/systemd/user/blueferry.service"
+  install -d "$pkgdir/usr/lib/systemd/user/default.target.wants"
+  ln -s ../blueferry.service \
+    "$pkgdir/usr/lib/systemd/user/default.target.wants/blueferry.service"
+  install -Dm644 packaging/arch/io.weirdware.BlueFerry.service \
+    "$pkgdir/usr/share/dbus-1/services/io.weirdware.BlueFerry.service"
+  install -Dm644 data/io.weirdware.BlueFerry.xml \
+    "$pkgdir/usr/share/dbus-1/interfaces/io.weirdware.BlueFerry.xml"
+  install -d "$pkgdir/usr/share/blueferry"
+  printf '%s\n' "$pkgver-$pkgrel" \
+    > "$pkgdir/usr/share/blueferry/package-release"
+  install -Dm644 packaging/arch/blueferry-bluetooth.conf \
+    "$pkgdir/usr/lib/systemd/system/bluetooth.service.d/blueferry.conf"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+  install -Dm644 ARCHITECTURE.md \
+    "$pkgdir/usr/share/doc/$pkgname/ARCHITECTURE.md"
+  install -Dm644 PROTOCOL.md \
+    "$pkgdir/usr/share/doc/$pkgname/PROTOCOL.md"
+  install -Dm644 CHANGELOG.md "$pkgdir/usr/share/doc/$pkgname/CHANGELOG.md"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
+
+package_blueferry-gtk() {
+  pkgdesc='GTK4/libadwaita client for BlueFerry'
+  depends=(
+    "blueferry-backend=$pkgver-$pkgrel"
+    'gtk4'
+    'libadwaita>=1.6'
+    'python-gobject'
+  )
+
+  cd "$pkgbase-$pkgver"
+  install -d "$pkgdir/$_site/blueferry"
+  cp -a "$srcdir/$_stage/$_site/blueferry/ui" "$pkgdir/$_site/blueferry/"
+  install -Dm755 "$srcdir/$_stage/usr/bin/blueferry-ui" "$pkgdir/usr/bin/blueferry-ui"
+  install -Dm644 data/io.weirdware.BlueFerry.Gtk.desktop \
+    "$pkgdir/usr/share/applications/io.weirdware.BlueFerry.Gtk.desktop"
+  install -Dm644 data/io.weirdware.BlueFerry.Gtk.metainfo.xml \
+    "$pkgdir/usr/share/metainfo/io.weirdware.BlueFerry.Gtk.metainfo.xml"
+  install -Dm644 data/icons/io.weirdware.BlueFerry.Gtk.svg \
+    "$pkgdir/usr/share/icons/hicolor/scalable/apps/io.weirdware.BlueFerry.Gtk.svg"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
+
+package_blueferry-qt() {
+  pkgdesc='Qt/KDE client for BlueFerry'
+  depends=(
+    "blueferry-backend=$pkgver-$pkgrel"
+    'kirigami'
+    'pyside6'
+    'qqc2-desktop-style'
+  )
+
+  cd "$pkgbase-$pkgver"
+  install -d "$pkgdir/$_site/blueferry"
+  cp -a "$srcdir/$_stage/$_site/blueferry/qt" "$pkgdir/$_site/blueferry/"
+  install -Dm755 "$srcdir/$_stage/usr/bin/blueferry-qt" "$pkgdir/usr/bin/blueferry-qt"
+  install -Dm644 data/io.weirdware.BlueFerry.Qt.desktop \
+    "$pkgdir/usr/share/applications/io.weirdware.BlueFerry.Qt.desktop"
+  install -Dm644 data/io.weirdware.BlueFerry.Qt.metainfo.xml \
+    "$pkgdir/usr/share/metainfo/io.weirdware.BlueFerry.Qt.metainfo.xml"
+  install -Dm644 data/icons/io.weirdware.BlueFerry.Gtk.svg \
+    "$pkgdir/usr/share/icons/hicolor/scalable/apps/io.weirdware.BlueFerry.Qt.svg"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
+
+package_blueferry-quickshell() {
+  pkgdesc='Quickshell client for BlueFerry'
+  depends=("blueferry-backend=$pkgver-$pkgrel" 'quickshell')
+
+  cd "$pkgbase-$pkgver"
+  install -Dm755 data/blueferry-quickshell \
+    "$pkgdir/usr/bin/blueferry-quickshell"
+  install -Dm644 data/quickshell/shell.qml \
+    "$pkgdir/usr/share/blueferry/quickshell/shell.qml"
+  install -Dm644 data/quickshell/Theme.qml \
+    "$pkgdir/usr/share/blueferry/quickshell/Theme.qml"
+  install -Dm644 data/io.weirdware.BlueFerry.Quickshell.desktop \
+    "$pkgdir/usr/share/applications/io.weirdware.BlueFerry.Quickshell.desktop"
+  install -Dm644 data/io.weirdware.BlueFerry.Quickshell.metainfo.xml \
+    "$pkgdir/usr/share/metainfo/io.weirdware.BlueFerry.Quickshell.metainfo.xml"
+  install -Dm644 data/icons/io.weirdware.BlueFerry.Gtk.svg \
+    "$pkgdir/usr/share/icons/hicolor/scalable/apps/io.weirdware.BlueFerry.Quickshell.svg"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

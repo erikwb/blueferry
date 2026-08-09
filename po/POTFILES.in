@@ -1,0 +1,8 @@
+src/blueferry/ui/app.py
+src/blueferry/ui/window.py
+src/blueferry/ui/conversations.py
+src/blueferry/ui/status.py
+src/blueferry/ui/status_presenter.py
+src/blueferry/qt/controller.py
+src/blueferry/qt/qml/Main.qml
+src/blueferry/qt/qml/MessageBubble.qml

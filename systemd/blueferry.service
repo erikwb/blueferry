@@ -1,0 +1,44 @@
+[Unit]
+Description=BlueFerry — iPhone↔Linux Bluetooth bridge
+Documentation=https://github.com/erikwb/blueferry
+# The package enables this unit for every user in the vendor target. Only
+# users who completed pairing have configuration and should start a daemon.
+ConditionPathExists=%h/.config/blueferry/local.env
+
+[Service]
+Type=dbus
+BusName=io.weirdware.BlueFerry
+# BlueFerry reads and validates its owner-only config after Python starts.
+# Do not source it through systemd: EnvironmentFile would allow unrelated
+# loader/runtime variables to affect ExecStart if the file were tampered with.
+ExecStart=/usr/bin/blueferry run
+Restart=on-failure
+# EX_TEMPFAIL is the daemon's deliberate package-upgrade restart request.
+RestartForceExitStatus=75
+RestartSec=5
+# The worker cancels queued jobs, then lets one in-flight Bluetooth operation
+# and its session cleanup finish. Incoming transfers have a 120-second bound.
+TimeoutStopSec=180
+UMask=0077
+NoNewPrivileges=true
+CapabilityBoundingSet=
+PrivateDevices=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+# Python's D-Bus/GObject bindings may use libffi executable trampolines, so
+# MemoryDenyWriteExecute is intentionally omitted.
+RestrictNamespaces=true
+SystemCallArchitectures=native
+# The backend reaches Bluetooth exclusively through local D-Bus sockets; it
+# never needs IP networking or raw AF_BLUETOOTH sockets.
+RestrictAddressFamilies=AF_UNIX
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+StandardOutput=journal
+StandardError=journal

@@ -1,0 +1,88 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "blueferry"
+version = "0.6.0"
+description = "BlueFerry brings iPhone messages, notifications, and contacts to Linux"
+authors = [
+  {name = "Erik Bourget", email = "erik@ebourget.net"},
+  {name = "Gabe Shatunovsky", email = "gabriel@shatunovsky.com"},
+]
+license = "GPL-2.0-only"
+requires-python = ">=3.10"
+readme = "README.md"
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.14",
+]
+keywords = ["iphone", "bluetooth", "imessage", "bluez", "ancs", "map"]
+
+dependencies = [
+  "cryptography>=42",
+  "typer>=0.12",
+  # dbus-python, PyGObject, libsecret, and the Secret Service provider are
+  # native desktop dependencies supplied by the distribution. A development
+  # venv should therefore use --system-site-packages.
+]
+
+[project.urls]
+Homepage = "https://github.com/erikwb/blueferry"
+Issues = "https://github.com/erikwb/blueferry/issues"
+
+[project.optional-dependencies]
+dev = [
+  "bandit>=1.9",
+  "hypothesis>=6.100",
+  "mypy>=1.10",
+  "pytest>=7",
+  "ruff>=0.5",
+]
+
+[project.scripts]
+blueferry = "blueferry.cli:app"
+
+[project.gui-scripts]
+blueferry-ui = "blueferry.ui.app:main"
+blueferry-qt = "blueferry.qt.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"blueferry.qt" = ["qml/*.qml"]
+
+[tool.pytest.ini_options]
+# Without this, a bare `pytest` from the repo root recurses the whole tree
+# (src/, build directories, virtual environments, …) during collection and can hang. Scope
+# collection to the test suite — matches the package check.
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = [
+  "private_dbus: requires an explicitly isolated dbus-run-session",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "RUF"]
+ignore = [
+  "B904",   # `raise ... from err` not enforced — too pedantic for this size of project
+  "RUF005", # iterable unpacking vs `+` — readability is a wash here
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501"]  # tests can have long lines for readability of bMessage fixtures
+
+[tool.mypy]
+python_version = "3.10"
+exclude = "^src/blueferry/(ui|qt)/"
+ignore_missing_imports = true
+warn_unused_ignores = true
+check_untyped_defs = true

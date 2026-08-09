@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=BlueFerry
+GenericName=iPhone Bluetooth Bridge
+Comment=Your iPhone's messages and notifications on Plasma
+Exec=blueferry-qt
+Icon=io.weirdware.BlueFerry.Qt
+Terminal=false
+Type=Application
+Categories=Network;InstantMessaging;Qt;KDE;
+Keywords=iPhone;SMS;iMessage;Bluetooth;Notifications;Messages;
+StartupNotify=true

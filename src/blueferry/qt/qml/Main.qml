@@ -1,0 +1,736 @@
+pragma ComponentBehavior: Bound
+
+import QtQuick
+import QtQuick.Controls as Controls
+import QtQuick.Layouts
+import org.kde.kirigami as Kirigami
+
+Kirigami.ApplicationWindow {
+    id: root
+
+    required property var bridge
+    property string selectedThreadKey: ""
+    property var pendingThread: null
+    property string pendingBody: ""
+    property int currentSection: 0
+    property bool firstRunRedirected: false
+
+    visible: true
+    width: 980
+    height: 680
+    minimumWidth: 420
+    minimumHeight: 480
+    title: qsTr("BlueFerry")
+
+    function selectedThread() {
+        for (let index = 0; index < bridge.threads.length; ++index) {
+            if (bridge.threads[index].key === selectedThreadKey) {
+                return bridge.threads[index]
+            }
+        }
+        return null
+    }
+
+    function htmlEscape(value) {
+        return String(value || "")
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+    }
+
+    function showSection(index, page) {
+        currentSection = index
+        while (pageStack.depth > 0) {
+            pageStack.pop()
+        }
+        pageStack.push(page)
+    }
+
+    function onboardingTitle(stage) {
+        const titles = {
+            "checking": qsTr("Checking Bluetooth Support"),
+            "incompatible": qsTr("Bluetooth Controller Is Not Compatible"),
+            "activate-bluetooth": qsTr("Activate Bluetooth Support"),
+            "select-device": qsTr("Select and Pair an iPhone"),
+            "starting": qsTr("Starting the Background Service"),
+            "iphone-settings": qsTr("Finish Setup on the iPhone"),
+            "ready": qsTr("BlueFerry Is Ready"),
+            "ready-without-ancs": qsTr("Messages Are Ready")
+        }
+        return titles[stage] || qsTr("Set Up BlueFerry")
+    }
+
+    function onboardingDetail(stage) {
+        const details = {
+            "checking": qsTr("Inspecting the selected Bluetooth controller without changing it."),
+            "incompatible": bridge.compatibility.issue || qsTr("A controller with BR/EDR and secure pairing is required."),
+            "activate-bluetooth": qsTr("The packaged BlueZ bearer support needs one authorized Bluetooth restart."),
+            "select-device": qsTr("Keep Bluetooth settings open on the unlocked iPhone, then scan and confirm the matching code."),
+            "starting": qsTr("The configured backend is starting. This normally takes a few seconds."),
+            "iphone-settings": qsTr("Enable Show Message Notifications and Sync Contacts in the iPhone's Bluetooth entry. Verification updates automatically."),
+            "ready": qsTr("Messages, contacts, and iPhone notifications are connected."),
+            "ready-without-ancs": qsTr("Messages and contacts are connected. Per-app iPhone notifications are not available on this bond or controller.")
+        }
+        return details[stage] || ""
+    }
+
+    Connections {
+        target: root.bridge
+
+        function onThreadsChanged() {
+            if (root.selectedThreadKey !== "" && root.selectedThread() === null) {
+                root.selectedThreadKey = ""
+            }
+        }
+
+        function onSetupLoadedChanged() {
+            if (root.bridge.setupLoaded && !root.bridge.configured && !root.firstRunRedirected) {
+                root.firstRunRedirected = true
+                root.showSection(1, iphonePage)
+            }
+        }
+
+    }
+
+    Shortcut {
+        sequences: [StandardKey.Refresh]
+        onActivated: root.bridge.refresh()
+    }
+    Shortcut {
+        sequence: "Ctrl+Q"
+        onActivated: Qt.quit()
+    }
+    Shortcut {
+        sequence: "Ctrl+?"
+        onActivated: shortcutsDialog.open()
+    }
+
+    pageStack.initialPage: messagesPage
+
+    globalDrawer: Kirigami.GlobalDrawer {
+        actions: [
+            Kirigami.Action {
+                text: qsTr("Keyboard Shortcuts")
+                icon.name: "preferences-desktop-keyboard-shortcuts"
+                onTriggered: shortcutsDialog.open()
+            },
+            Kirigami.Action {
+                text: qsTr("About BlueFerry")
+                icon.name: "help-about"
+                onTriggered: {
+                    root.currentSection = -1
+                    root.pageStack.layers.push(aboutPage)
+                }
+            },
+            Kirigami.Action {
+                text: qsTr("Quit")
+                icon.name: "application-exit"
+                shortcut: StandardKey.Quit
+                onTriggered: Qt.quit()
+            }
+        ]
+    }
+
+    footer: Kirigami.NavigationTabBar {
+        actions: [
+            Kirigami.Action {
+                text: qsTr("Messages")
+                icon.name: "mail-message-new"
+                checked: root.currentSection === 0
+                onTriggered: root.showSection(0, messagesPage)
+            },
+            Kirigami.Action {
+                text: qsTr("iPhone")
+                icon.name: "phone"
+                checked: root.currentSection === 1
+                onTriggered: root.showSection(1, iphonePage)
+            }
+        ]
+    }
+
+    Kirigami.PromptDialog {
+        id: groupDialog
+        title: qsTr("Send Group Message?")
+        subtitle: root.pendingThread
+            ? qsTr("The iPhone will reply to these participants:\n\n")
+              + root.pendingThread.recipients.map(root.htmlEscape).join("\n")
+            : ""
+        standardButtons: Kirigami.Dialog.Cancel
+        customFooterActions: [Kirigami.Action {
+            text: qsTr("Send to Group")
+            icon.name: "document-send"
+            onTriggered: {
+                root.bridge.sendThread(root.pendingThread.key, root.pendingBody, true)
+                groupDialog.close()
+            }
+        }]
+    }
+
+    Kirigami.PromptDialog {
+        id: clearDialog
+        title: qsTr("Clear Local History?")
+        subtitle: qsTr("This deletes local message history and group metadata. Nothing is deleted from the iPhone.")
+        dialogType: Kirigami.PromptDialog.Warning
+        standardButtons: Kirigami.Dialog.Cancel
+        customFooterActions: [Kirigami.Action {
+            text: qsTr("Clear History")
+            icon.name: "edit-clear-history"
+            onTriggered: {
+                root.bridge.clearHistory()
+                clearDialog.close()
+            }
+        }]
+    }
+
+    Kirigami.PromptDialog {
+        id: noRetentionDialog
+        title: qsTr("Stop Retaining Local Data?")
+        subtitle: qsTr("This clears message history and cached contacts, then removes BlueFerry's storage key. Nothing on the iPhone is deleted.")
+        dialogType: Kirigami.PromptDialog.Warning
+        standardButtons: Kirigami.Dialog.Cancel
+        customFooterActions: [Kirigami.Action {
+            text: qsTr("Clear and Stop Retaining")
+            icon.name: "edit-delete"
+            onTriggered: {
+                root.bridge.setStoragePolicy("none")
+                noRetentionDialog.close()
+            }
+        }]
+        onClosed: root.bridge.refresh()
+    }
+
+    Kirigami.PromptDialog {
+        id: restartBluetoothDialog
+        title: qsTr("Restart Bluetooth?")
+        subtitle: qsTr("Bluetooth devices will disconnect briefly. Polkit may request authentication.")
+        dialogType: Kirigami.PromptDialog.Warning
+        standardButtons: Kirigami.Dialog.Cancel
+        customFooterActions: [Kirigami.Action {
+            text: qsTr("Restart Bluetooth")
+            icon.name: "network-bluetooth"
+            onTriggered: {
+                root.bridge.activateBluetooth()
+                restartBluetoothDialog.close()
+            }
+        }]
+    }
+
+    Kirigami.PromptDialog {
+        id: forgetDialog
+        property string mac: ""
+        title: qsTr("Forget This Device?")
+        subtitle: qsTr("Also forget this computer in the iPhone Bluetooth settings before pairing again.")
+        dialogType: Kirigami.PromptDialog.Warning
+        standardButtons: Kirigami.Dialog.Cancel
+        customFooterActions: [Kirigami.Action {
+            text: qsTr("Forget Device")
+            icon.name: "edit-delete-remove"
+            onTriggered: {
+                root.bridge.forgetDevice(forgetDialog.mac)
+                forgetDialog.close()
+            }
+        }]
+    }
+
+    Kirigami.PromptDialog {
+        id: shortcutsDialog
+        title: qsTr("Keyboard Shortcuts")
+        subtitle: qsTr("Refresh — Ctrl+R\nQuit — Ctrl+Q\nKeyboard Shortcuts — Ctrl+?")
+        standardButtons: Kirigami.Dialog.Close
+    }
+
+    Kirigami.Page {
+        id: messagesPage
+        visible: false
+        title: qsTr("Messages")
+        padding: 0
+        property bool narrow: width < 680
+        property var thread: root.selectedThread()
+
+        actions: [
+            Kirigami.Action {
+                text: qsTr("Refresh")
+                icon.name: "view-refresh"
+                onTriggered: root.bridge.refresh()
+            }
+        ]
+
+        ColumnLayout {
+            anchors.fill: parent
+            spacing: 0
+
+                Kirigami.InlineMessage {
+                    Layout.fillWidth: true
+                    visible: root.bridge.errorText !== ""
+                    text: root.htmlEscape(root.bridge.errorText)
+                    type: Kirigami.MessageType.Error
+                    position: Kirigami.InlineMessage.Position.Header
+                    actions: [
+                        Kirigami.Action {
+                            text: qsTr("Open iPhone")
+                            onTriggered: root.showSection(1, iphonePage)
+                        }
+                    ]
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    spacing: 0
+
+                    Item {
+                        Layout.fillHeight: true
+                        Layout.preferredWidth: messagesPage.narrow
+                            ? parent.width
+                            : Math.max(Kirigami.Units.gridUnit * 14, parent.width * 0.3)
+                        visible: !messagesPage.narrow || root.selectedThreadKey === ""
+
+                        ListView {
+                            id: threadList
+                            anchors.fill: parent
+                            clip: true
+                            model: root.bridge.threads
+                            currentIndex: -1
+
+                            delegate: Controls.ItemDelegate {
+                                id: threadDelegate
+                                required property var modelData
+                                width: threadList.width
+                                highlighted: root.selectedThreadKey === modelData.key
+                                Accessible.name: preview.text
+                                contentItem: RowLayout {
+                                    spacing: Kirigami.Units.smallSpacing
+
+                                    Kirigami.Icon {
+                                        source: threadDelegate.modelData.is_group
+                                            ? "system-users" : "user-identity"
+                                        implicitWidth: Kirigami.Units.iconSizes.smallMedium
+                                        implicitHeight: implicitWidth
+                                    }
+                                    Controls.Label {
+                                        id: preview
+                                        Layout.fillWidth: true
+                                        text: threadDelegate.modelData.name + "\n" + (
+                                            threadDelegate.modelData.messages.length
+                                                ? threadDelegate.modelData.messages[threadDelegate.modelData.messages.length - 1].body
+                                                : qsTr("No Messages")
+                                        )
+                                        textFormat: Text.PlainText
+                                        maximumLineCount: 2
+                                        wrapMode: Text.Wrap
+                                        elide: Text.ElideRight
+                                    }
+                                }
+                                onClicked: root.selectedThreadKey = modelData.key
+                            }
+
+                            Kirigami.PlaceholderMessage {
+                                anchors.centerIn: parent
+                                width: parent.width - Kirigami.Units.largeSpacing * 2
+                                visible: threadList.count === 0
+                                icon.name: "mail-message-new"
+                                text: qsTr("No Conversations Yet")
+                                explanation: qsTr("New iPhone messages will appear here.")
+                            }
+                        }
+                    }
+
+                    Kirigami.Separator {
+                        Layout.fillHeight: true
+                        visible: !messagesPage.narrow
+                    }
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        visible: !messagesPage.narrow || root.selectedThreadKey !== ""
+                        spacing: 0
+
+                        Controls.ToolBar {
+                            Layout.fillWidth: true
+
+                            contentItem: RowLayout {
+                                Controls.ToolButton {
+                                    visible: messagesPage.narrow
+                                    icon.name: "go-previous"
+                                    text: qsTr("Back")
+                                    display: Controls.AbstractButton.IconOnly
+                                    Accessible.name: text
+                                    Controls.ToolTip.text: text
+                                    Controls.ToolTip.visible: hovered
+                                    onClicked: root.selectedThreadKey = ""
+                                }
+                                Controls.Label {
+                                    Layout.fillWidth: true
+                                    text: messagesPage.thread ? messagesPage.thread.name : qsTr("Conversation")
+                                    textFormat: Text.PlainText
+                                    font.bold: true
+                                    elide: Text.ElideRight
+                                }
+                            }
+                        }
+
+                        ListView {
+                            id: messageList
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            clip: true
+                            spacing: Kirigami.Units.smallSpacing
+                            model: messagesPage.thread ? messagesPage.thread.messages : []
+                            verticalLayoutDirection: ListView.TopToBottom
+
+                            delegate: Item {
+                                id: messageDelegate
+                                required property var modelData
+                                width: messageList.width
+                                implicitHeight: bubble.implicitHeight + Kirigami.Units.smallSpacing * 2
+
+                                MessageBubble {
+                                    id: bubble
+                                    message: messageDelegate.modelData
+                                    availableWidth: messageList.width
+                                    anchors.right: messageDelegate.modelData.outgoing ? parent.right : undefined
+                                    anchors.left: messageDelegate.modelData.outgoing ? undefined : parent.left
+                                    anchors.margins: Kirigami.Units.largeSpacing
+                                }
+                            }
+
+                            Kirigami.PlaceholderMessage {
+                                anchors.centerIn: parent
+                                width: parent.width - Kirigami.Units.largeSpacing * 4
+                                visible: messagesPage.thread === null
+                                text: qsTr("Select a Conversation")
+                            }
+
+                            onCountChanged: positionViewAtEnd()
+                        }
+
+                        Kirigami.Separator { Layout.fillWidth: true }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Layout.margins: Kirigami.Units.smallSpacing
+
+                            Controls.TextField {
+                                id: composer
+                                Layout.fillWidth: true
+                                placeholderText: qsTr("Write a Message")
+                                enabled: messagesPage.thread !== null
+                                    && messagesPage.thread.reply_ready && !root.bridge.busy
+                                Accessible.name: qsTr("Message Text")
+                                onAccepted: sendButton.clicked()
+                            }
+                            Controls.Button {
+                                id: sendButton
+                                text: qsTr("Send")
+                                icon.name: "document-send"
+                                enabled: composer.enabled && composer.text.trim() !== ""
+                                Accessible.name: qsTr("Send Message")
+                                onClicked: {
+                                    if (messagesPage.thread.is_group) {
+                                        root.pendingThread = messagesPage.thread
+                                        root.pendingBody = composer.text.trim()
+                                        composer.clear()
+                                        groupDialog.open()
+                                    } else {
+                                        root.bridge.sendThread(messagesPage.thread.key, composer.text, false)
+                                        composer.clear()
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+        }
+    }
+
+    Component {
+        id: aboutPage
+
+        Kirigami.AboutPage {
+            aboutData: ({
+                displayName: qsTr("BlueFerry"),
+                productName: "BlueFerry",
+                componentName: "BlueFerry",
+                shortDescription: qsTr("Messages, contacts, and notifications from a paired iPhone"),
+                homepage: "https://github.com/erikwb/blueferry",
+                bugAddress: "https://github.com/erikwb/blueferry/issues",
+                version: root.bridge.version,
+                otherText: "",
+                authors: [],
+                credits: [],
+                translators: [],
+                licenses: [{name: "GPL-2.0-only", text: "", spdx: "GPL-2.0-only"}],
+                copyrightStatement: qsTr("Copyright © 2026 Erik Bourget <erik@ebourget.net>\nCopyright © 2026 Gabe Shatunovsky <gabriel@shatunovsky.com>"),
+                desktopFileName: "io.weirdware.BlueFerry.Qt"
+            })
+        }
+    }
+
+    Kirigami.ScrollablePage {
+        id: iphonePage
+        visible: false
+        title: qsTr("iPhone")
+        actions: [Kirigami.Action {
+            text: qsTr("Refresh")
+            icon.name: "view-refresh"
+            onTriggered: root.bridge.refresh()
+        }]
+        property int selectedDevice: -1
+        property var device: selectedDevice >= 0 && selectedDevice < root.bridge.devices.length
+            ? root.bridge.devices[selectedDevice]
+            : null
+        property string effectiveStage: root.bridge.onboardingStage
+
+        ColumnLayout {
+            width: parent.width
+            spacing: Kirigami.Units.largeSpacing
+
+                Kirigami.InlineMessage {
+                    Layout.fillWidth: true
+                    visible: root.bridge.errorText !== ""
+                    text: root.htmlEscape(root.bridge.errorText)
+                    type: Kirigami.MessageType.Error
+                }
+
+                Kirigami.Heading {
+                    text: root.bridge.configured
+                        ? qsTr("Your iPhone") : qsTr("Connect an iPhone")
+                    level: 2
+                }
+                Controls.Label {
+                    Layout.fillWidth: true
+                    wrapMode: Text.Wrap
+                    visible: !root.bridge.configured
+                    text: qsTr("Keep Bluetooth settings open on the unlocked iPhone, then scan and confirm the matching code on both devices.")
+                }
+
+                Kirigami.InlineMessage {
+                    Layout.fillWidth: true
+                    visible: true
+                    text: root.htmlEscape(root.onboardingTitle(iphonePage.effectiveStage))
+                        + "\n" + root.htmlEscape(root.onboardingDetail(iphonePage.effectiveStage))
+                    type: iphonePage.effectiveStage === "incompatible"
+                        ? Kirigami.MessageType.Warning
+                        : iphonePage.effectiveStage === "ready"
+                            || iphonePage.effectiveStage === "ready-without-ancs"
+                            ? Kirigami.MessageType.Positive
+                            : Kirigami.MessageType.Information
+                }
+
+                Kirigami.Heading { text: qsTr("Connection Health"); level: 2 }
+                Kirigami.FormLayout {
+                    Layout.fillWidth: true
+
+                    Controls.Label {
+                        Kirigami.FormData.label: qsTr("Background Service:")
+                        text: root.bridge.status.daemon ? qsTr("Running") : qsTr("Unavailable")
+                    }
+                    Controls.Label {
+                        Kirigami.FormData.label: qsTr("Messages:")
+                        text: root.bridge.status.map ? qsTr("Connected") : qsTr("Unavailable")
+                    }
+                    Controls.Label {
+                        Kirigami.FormData.label: qsTr("Contacts:")
+                        text: root.bridge.status.pbap ? qsTr("Connected") : qsTr("Unavailable")
+                    }
+                    Controls.Label {
+                        Kirigami.FormData.label: qsTr("iPhone Notifications:")
+                        text: root.bridge.status.ancs ? qsTr("Connected") : qsTr("Unavailable")
+                    }
+                    Controls.Label {
+                        Kirigami.FormData.label: qsTr("Contact Destinations:")
+                        text: root.bridge.status.contacts || "0"
+                    }
+                }
+
+                Kirigami.Heading { text: qsTr("Desktop Notifications"); level: 2 }
+                Controls.Label {
+                    Layout.fillWidth: true
+                    wrapMode: Text.Wrap
+                    text: qsTr("Choose which iPhone events create desktop popups. Messages only is the default.")
+                }
+                Kirigami.FormLayout {
+                    Layout.fillWidth: true
+
+                    Controls.ComboBox {
+                        Kirigami.FormData.label: qsTr("Show Popups:")
+                        textRole: "text"
+                        valueRole: "value"
+                        model: [
+                            { "text": qsTr("All iPhone Notifications"), "value": "all" },
+                            { "text": qsTr("Messages Only"), "value": "messages" },
+                            { "text": qsTr("None"), "value": "none" }
+                        ]
+                        currentIndex: root.bridge.status.notification_policy === "all" ? 0
+                            : root.bridge.status.notification_policy === "none" ? 2 : 1
+                        enabled: root.bridge.status.daemon === true && !root.bridge.busy
+                        onActivated: root.bridge.setNotificationPolicy(currentValue)
+                    }
+                }
+
+                Kirigami.Heading { text: qsTr("Pairing and Hardware"); level: 2 }
+
+                Kirigami.FormLayout {
+                    Layout.fillWidth: true
+
+                    Controls.Label {
+                        Kirigami.FormData.label: qsTr("Controller:")
+                        text: root.bridge.compatibility.adapter || qsTr("Checking…")
+                    }
+
+                    Controls.Label {
+                        Kirigami.FormData.label: qsTr("Hardware:")
+                        text: root.bridge.compatibility.hardware_supported
+                            ? qsTr("Compatible")
+                            : qsTr("Unsupported")
+                    }
+
+                    Controls.Label {
+                        Kirigami.FormData.label: qsTr("Messages and Contacts:")
+                        text: root.bridge.compatibility.messages_supported
+                            ? qsTr("Supported") : qsTr("Unsupported")
+                    }
+
+                    Controls.Label {
+                        Kirigami.FormData.label: qsTr("iPhone Notifications:")
+                        text: root.bridge.compatibility.notifications_supported
+                            ? qsTr("Supported") : qsTr("Unsupported")
+                    }
+
+                    Controls.Label {
+                        Kirigami.FormData.label: qsTr("Bluetooth Support:")
+                        text: !root.bridge.compatibility.notifications_supported
+                            ? qsTr("Not Required")
+                            : root.bridge.bluetoothActive
+                                ? qsTr("Active")
+                                : qsTr("Restart Required")
+                    }
+
+                    Controls.ComboBox {
+                        id: deviceCombo
+                        Kirigami.FormData.label: qsTr("Device:")
+                        model: root.bridge.devices
+                        textRole: "display_name"
+                        valueRole: "mac"
+                        enabled: !root.bridge.busy
+                        onCurrentIndexChanged: iphonePage.selectedDevice = currentIndex
+                    }
+                }
+
+                RowLayout {
+                    Controls.Button {
+                        visible: root.bridge.compatibility.notifications_supported === true
+                            && !root.bridge.bluetoothActive
+                        text: qsTr("Restart Bluetooth")
+                        icon.name: "network-bluetooth"
+                        enabled: !root.bridge.busy
+                        onClicked: restartBluetoothDialog.open()
+                    }
+                    Controls.Button {
+                        text: qsTr("Scan")
+                        icon.name: "edit-find"
+                        enabled: !root.bridge.busy
+                        onClicked: root.bridge.loadDevices(true)
+                    }
+                    Controls.Button {
+                        text: iphonePage.device !== null && iphonePage.device.paired
+                            ? qsTr("Use Existing Pairing") : qsTr("Pair iPhone")
+                        icon.name: "network-connect"
+                        enabled: iphonePage.device !== null
+                            && root.bridge.compatibility.pairing_ready
+                            && !root.bridge.busy
+                        onClicked: root.bridge.completePairing(iphonePage.device.mac)
+                    }
+                    Controls.Button {
+                        text: qsTr("Forget")
+                        icon.name: "edit-delete-remove"
+                        enabled: iphonePage.device !== null
+                            && iphonePage.device.paired && !root.bridge.busy
+                        onClicked: {
+                            forgetDialog.mac = iphonePage.device.mac
+                            forgetDialog.open()
+                        }
+                    }
+                    Controls.BusyIndicator {
+                        running: root.bridge.busy
+                        visible: running
+                    }
+                }
+
+                Kirigami.Heading { text: qsTr("Finish on the iPhone"); level: 2 }
+                Controls.Label {
+                    Layout.fillWidth: true
+                    wrapMode: Text.Wrap
+                    text: qsTr("In Settings → Bluetooth, tap ⓘ next to this computer. Enable Show Message Notifications and Sync Contacts.")
+                }
+                Controls.Label {
+                    Layout.fillWidth: true
+                    wrapMode: Text.Wrap
+                    visible: root.bridge.onboardingStage === "ready"
+                        || root.bridge.onboardingStage === "ready-without-ancs"
+                    text: qsTr("Setup is verified. Existing history may be empty; new incoming messages will appear automatically.")
+                }
+
+                Kirigami.Heading { text: qsTr("Local Data"); level: 2 }
+                Kirigami.FormLayout {
+                    Layout.fillWidth: true
+
+                    Controls.ComboBox {
+                        Kirigami.FormData.label: qsTr("Storage:")
+                        textRole: "text"
+                        valueRole: "value"
+                        model: [
+                            { "text": qsTr("Encrypted with Desktop Keyring"), "value": "encrypted" },
+                            { "text": qsTr("Do Not Retain Local Data"), "value": "none" }
+                        ]
+                        currentIndex: root.bridge.status.storage_policy === "none" ? 1 : 0
+                        enabled: root.bridge.status.daemon === true && !root.bridge.busy
+                        onActivated: {
+                            if (currentValue === "none") noRetentionDialog.open()
+                            else root.bridge.setStoragePolicy(currentValue)
+                        }
+                    }
+                    Controls.Label {
+                        Kirigami.FormData.label: qsTr("Security:")
+                        Layout.fillWidth: true
+                        wrapMode: Text.Wrap
+                        text: root.bridge.status.storage_detail || qsTr("Storage status unavailable")
+                    }
+                    Controls.Button {
+                        Kirigami.FormData.label: qsTr("Keyring:")
+                        visible: root.bridge.status.storage_policy !== "none"
+                            && root.bridge.status.storage_state !== "ready"
+                        text: root.bridge.status.storage_detail
+                            && root.bridge.status.storage_detail.indexOf("one-time") >= 0
+                            ? qsTr("Set Up") : qsTr("Unlock")
+                        icon.name: "unlock"
+                        enabled: !root.bridge.busy
+                        onClicked: root.bridge.unlockStorage()
+                    }
+                }
+
+                Kirigami.Heading { text: qsTr("Maintenance"); level: 2 }
+                RowLayout {
+                    Controls.Button {
+                        text: qsTr("Restart Service")
+                        icon.name: "system-reboot"
+                        enabled: !root.bridge.busy
+                        onClicked: root.bridge.restartBackend()
+                    }
+                    Controls.Button {
+                        text: qsTr("Sync Contacts")
+                        icon.name: "view-refresh"
+                        enabled: !root.bridge.busy
+                        onClicked: root.bridge.syncContacts()
+                    }
+                    Controls.Button {
+                        text: qsTr("Clear History")
+                        icon.name: "edit-clear-history"
+                        enabled: !root.bridge.busy
+                        onClicked: clearDialog.open()
+                    }
+                }
+        }
+    }
+}

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=BlueFerry
+GenericName=iPhone Bluetooth Bridge
+Comment=Your iPhone's messages and notifications on the Linux desktop
+Exec=blueferry-ui
+Icon=io.weirdware.BlueFerry.Gtk
+Terminal=false
+Type=Application
+Categories=Network;InstantMessaging;GTK;
+Keywords=iPhone;SMS;iMessage;Bluetooth;Notifications;Messages;
+StartupNotify=true

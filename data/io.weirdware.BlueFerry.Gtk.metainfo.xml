@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.weirdware.BlueFerry.Gtk</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-2.0-only</project_license>
+
+  <name>BlueFerry</name>
+  <summary>Your iPhone's messages and notifications on the Linux desktop</summary>
+
+  <description>
+    <p>
+      BlueFerry brings a paired iPhone to the Linux desktop over standard
+      Bluetooth profiles — no Mac relay, no cloud service, no subscription.
+    </p>
+    <p>This app is the graphical front-end for the BlueFerry daemon:</p>
+    <ul>
+      <li>Read SMS and iMessage conversations and send replies</li>
+      <li>Control which mirrored iPhone notifications create desktop popups</li>
+      <li>One iPhone page for connection health, pairing, and maintenance</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">io.weirdware.BlueFerry.Gtk.desktop</launchable>
+
+  <categories>
+    <category>Network</category>
+    <category>InstantMessaging</category>
+  </categories>
+
+  <url type="homepage">https://github.com/erikwb/blueferry</url>
+  <url type="bugtracker">https://github.com/erikwb/blueferry/issues</url>
+
+  <provides>
+    <binary>blueferry-ui</binary>
+  </provides>
+
+  <content_rating type="oars-1.1"/>
+  <developer id="io.weirdware">
+    <name>BlueFerry contributors</name>
+  </developer>
+
+  <releases>
+    <release version="0.6.0" date="2026-08-08">
+      <description>
+        <p>Backend-owned safe thread routing, group replies, Apple-ID contacts,
+        reconnect supervision, privacy controls, and split desktop clients.</p>
+      </description>
+    </release>
+    <release version="0.4.0" date="2026-05-20">
+      <description>
+        <p>First GTK4 / libadwaita desktop app — conversations, a notification
+        feed and a setup/status page.</p>
+      </description>
+    </release>
+  </releases>
+</component>

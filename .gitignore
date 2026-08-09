@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+
+# Local Arch package artifacts
+/packaging/arch/*.tar.gz
+/packaging/arch/*.pkg.tar.*
+/packaging/arch/pkg/
+/packaging/arch/src/
+/packaging/arch/.SRCINFO
+/packaging/arch/.source-sha256
+
+# Runtime data
+*.sqlite
+*.sqlite-journal
+*.db
+*.jsonl
+*.log
+contacts_cache/
+event_log/
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Per-machine config
+config.local.toml
+local.env
+.env
+.env.*
+!.env.example
+
+# Common credential material must never enter working-tree package snapshots
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+secrets.*
+credentials.*

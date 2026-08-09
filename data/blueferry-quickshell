@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+config=/usr/share/blueferry/quickshell
+if [[ -x /usr/bin/qs ]]; then
+    exec /usr/bin/qs -p "$config"
+fi
+exec /usr/bin/quickshell -p "$config"

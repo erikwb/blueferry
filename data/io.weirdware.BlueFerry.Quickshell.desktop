@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=BlueFerry (Quickshell)
+GenericName=iPhone Bluetooth Bridge
+Comment=Your iPhone's messages in a lightweight Quickshell panel
+Exec=blueferry-quickshell
+Icon=io.weirdware.BlueFerry.Quickshell
+Terminal=false
+Type=Application
+Categories=Network;InstantMessaging;
+Keywords=iPhone;SMS;iMessage;Bluetooth;Quickshell;Omarchy;
+StartupNotify=false

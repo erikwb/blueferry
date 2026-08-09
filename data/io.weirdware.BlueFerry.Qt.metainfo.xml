@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.weirdware.BlueFerry.Qt</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-2.0-only</project_license>
+  <name>BlueFerry</name>
+  <summary>Use your iPhone's messages and notifications on KDE</summary>
+  <description><p>A native Kirigami client for the local BlueFerry Bluetooth backend, with safe conversation replies and one adaptive iPhone page for setup, connection health, notification preferences, and maintenance.</p></description>
+  <launchable type="desktop-id">io.weirdware.BlueFerry.Qt.desktop</launchable>
+  <categories><category>Network</category><category>InstantMessaging</category></categories>
+  <url type="homepage">https://github.com/erikwb/blueferry</url>
+  <url type="bugtracker">https://github.com/erikwb/blueferry/issues</url>
+  <provides><binary>blueferry-qt</binary></provides>
+  <content_rating type="oars-1.1"/>
+  <developer id="io.weirdware"><name>BlueFerry contributors</name></developer>
+  <releases><release version="0.6.0" date="2026-08-08"><description><p>First Qt/KDE client.</p></description></release></releases>
+</component>

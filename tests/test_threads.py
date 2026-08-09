@@ -1,0 +1,79 @@
+from __future__ import annotations
+
+from blueferry import threads as threads_module
+from blueferry.threads import build_threads, thread_key
+
+
+def _sms(address: str, name: str, body: str, seen: str) -> dict:
+    return {
+        "kind": "sms_received",
+        "handle": address + body,
+        "sender_address": address,
+        "sender_phone_norm": None,
+        "contact_name": name,
+        "body": body,
+        "seen_at": seen,
+    }
+
+
+def test_same_name_different_addresses_are_separate_threads() -> None:
+    events = [
+        _sms("+15551111111", "Alex", "one", "2026-08-08T10:00:00+00:00"),
+        _sms("+15552222222", "Alex", "two", "2026-08-08T10:01:00+00:00"),
+    ]
+    threads = build_threads(events)
+    assert len(threads) == 2
+    assert {thread["key"] for thread in threads} == {
+        "address:phone:15551111111",
+        "address:phone:15552222222",
+    }
+    assert {thread["name"] for thread in threads} == {"Alex"}
+
+
+def test_email_thread_identity_is_case_insensitive() -> None:
+    first = _sms(
+        "Person@icloud.com", "Person", "one", "2026-08-08T10:00:00+00:00"
+    )
+    second = _sms(
+        "person@icloud.com", "Person", "two", "2026-08-08T10:01:00+00:00"
+    )
+    assert thread_key(first) == thread_key(second)
+    assert len(build_threads([first, second])) == 1
+
+
+def test_untrusted_non_address_cannot_become_reply_thread() -> None:
+    event = _sms("Mom<script>", "", "bad", "2026-08-08T10:00:00+00:00")
+    assert thread_key(event) is None
+    assert build_threads([event]) == []
+
+
+def test_historical_number_uses_the_current_contact_name() -> None:
+    class Resolver:
+        @staticmethod
+        def resolve(address):
+            return "Alice Example" if address == "+15551111111" else None
+
+    event = _sms(
+        "+15551111111", "", "before sync", "2026-08-08T10:00:00+00:00"
+    )
+
+    thread = build_threads([event], Resolver())[0]
+
+    assert thread["name"] == "Alice Example"
+
+
+def test_thread_snapshot_keeps_only_the_newest_bounded_messages(monkeypatch) -> None:
+    monkeypatch.setattr(threads_module, "MAX_THREAD_MESSAGES", 2)
+    events = [
+        _sms(
+            "+15551111111",
+            "Alice",
+            str(index),
+            f"2026-08-08T10:0{index}:00+00:00",
+        )
+        for index in range(4)
+    ]
+
+    messages = build_threads(events)[0]["messages"]
+
+    assert [message["body"] for message in messages] == ["2", "3"]

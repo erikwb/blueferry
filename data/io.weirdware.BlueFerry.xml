@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<node name="/io/weirdware/BlueFerry">
+  <interface name="io.weirdware.BlueFerry.Messages1">
+    <annotation name="org.freedesktop.DBus.Description"
+                value="Version 1 messaging, history, status, and contact operations"/>
+    <annotation name="io.weirdware.BlueFerry.Errors"
+                value="AuthorizationRequired,RateLimited"/>
+    <method name="Send">
+      <arg name="recipient" type="s" direction="in"/>
+      <arg name="body" type="s" direction="in"/>
+      <arg name="transfer_path" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady,SendFailed"/>
+    </method>
+    <method name="SendToThread">
+      <arg name="thread_key" type="s" direction="in"/>
+      <arg name="body" type="s" direction="in"/>
+      <arg name="confirm_group" type="b" direction="in"/>
+      <arg name="transfer_path" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotFound,NotReady,ConfirmationRequired,SendFailed"/>
+    </method>
+    <method name="ListEvents">
+      <arg name="kinds" type="as" direction="in"/>
+      <arg name="limit" type="u" direction="in"/>
+      <arg name="json" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,ResponseTooLarge"/>
+    </method>
+    <method name="ListThreads">
+      <arg name="limit" type="u" direction="in"/>
+      <arg name="json" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="ResponseTooLarge"/>
+    </method>
+    <method name="FindContacts">
+      <arg name="query" type="s" direction="in"/>
+      <arg name="json" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady,ResponseTooLarge"/>
+    </method>
+    <method name="GetStatus">
+      <arg name="json" type="s" direction="out"/>
+    </method>
+    <method name="ClearHistory">
+      <arg name="confirmed" type="b" direction="in"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="ConfirmationRequired"/>
+    </method>
+    <method name="GetNotificationPolicy">
+      <arg name="policy" type="s" direction="out"/>
+    </method>
+    <method name="SetNotificationPolicy">
+      <arg name="policy" type="s" direction="in"/>
+      <arg name="selected_policy" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady"/>
+    </method>
+    <method name="GetStoragePolicy">
+      <arg name="policy" type="s" direction="out"/>
+    </method>
+    <method name="SetStoragePolicy">
+      <arg name="policy" type="s" direction="in"/>
+      <arg name="status_json" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady"/>
+    </method>
+    <method name="UnlockStorage">
+      <arg name="status_json" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="NotReady"/>
+    </method>
+    <method name="ListRecent">
+      <arg name="folder" type="s" direction="in"/>
+      <arg name="limit" type="u" direction="in"/>
+      <arg name="json" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady,QueryFailed,ResponseTooLarge"/>
+    </method>
+    <method name="SyncContacts">
+      <arg name="cached_count" type="u" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="NotReady,ContactSyncFailed"/>
+    </method>
+    <method name="IsHealthy">
+      <arg name="healthy" type="b" direction="out"/>
+    </method>
+  </interface>
+  <interface name="io.weirdware.BlueFerry.Events1">
+    <annotation name="org.freedesktop.DBus.Description"
+                value="Content-free live invalidations; snapshots are fetched with Messages1"/>
+    <signal name="HistoryChanged">
+      <arg name="revision" type="a{sv}"/>
+    </signal>
+    <signal name="StatusChanged"/>
+  </interface>
+</node>
