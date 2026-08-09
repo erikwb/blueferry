@@ -9,6 +9,9 @@ import Quickshell.Io
 ShellRoot {
   id: root
   property var threads: []
+  property var contactResults: []
+  property string contactQuery: ""
+  property string contactsRequestedQuery: ""
   property string selectedThreadKey: ""
   property string confirmedGroupSignature: ""
   property string errorText: ""
@@ -48,6 +51,24 @@ ShellRoot {
     if (!configured) return
     if (!threadsProcess.running) threadsProcess.running = true
     if (!statusProcess.running) statusProcess.running = true
+  }
+
+  function searchContacts(query) {
+    contactQuery = query.trim()
+    if (contactQuery === "") {
+      contactResults = []
+      return
+    }
+    if (!contactsProcess.running) startContactSearch()
+  }
+
+  function startContactSearch() {
+    if (contactQuery === "" || contactsProcess.running) return
+    contactsRequestedQuery = contactQuery
+    contactsProcess.command = [
+      "/usr/bin/blueferry", "contacts-json", contactsRequestedQuery
+    ]
+    contactsProcess.running = true
   }
 
   function maybeUnlockStorage() {
@@ -290,6 +311,43 @@ ShellRoot {
     onExited: function(code) {
       if (code === 0) {
         composer.text = ""
+        root.reload()
+      }
+    }
+  }
+
+  Process {
+    id: contactsProcess
+    stdout: StdioCollector {
+      onStreamFinished: {
+        if (root.contactsRequestedQuery !== root.contactQuery) return
+        try {
+          var parsed = JSON.parse(text)
+          if (parsed.error) root.errorText = parsed.error
+          else root.contactResults = Array.isArray(parsed) ? parsed : []
+        } catch (error) { root.errorText = "Contact search returned invalid data" }
+      }
+    }
+    // qmllint disable signal-handler-parameters
+    onExited: function(code) {
+      if (code !== 0) root.errorText = "Contact search failed"
+      if (root.contactsRequestedQuery !== root.contactQuery)
+        Qt.callLater(root.startContactSearch)
+    }
+  }
+
+  Process {
+    id: newMessageSendProcess
+    stdout: StdioCollector { }
+    stderr: StdioCollector {
+      onStreamFinished: if (text.trim() !== "") root.errorText = text.trim()
+    }
+    // qmllint disable signal-handler-parameters
+    onExited: function(code) {
+      if (code === 0) {
+        newMessagePopup.close()
+        newRecipient.text = ""
+        newMessageBody.text = ""
         root.reload()
       }
     }
@@ -545,51 +603,75 @@ ShellRoot {
             color: theme.surfaceBorder
           }
 
-          ListView {
-            id: threadList
+          ColumnLayout {
             SplitView.preferredWidth: 250
-            clip: true
-            spacing: theme.scaled(2)
-            model: root.threads
-            delegate: ItemDelegate {
-              id: threadDelegate
-              required property var modelData
-              width: threadList.width
-              implicitHeight: threadContent.implicitHeight + theme.scaled(18)
-              highlighted: modelData.key === root.selectedThreadKey
-              leftPadding: theme.scaled(10)
-              rightPadding: theme.scaled(10)
-              contentItem: Column {
-                id: threadContent
-                spacing: theme.scaled(2)
-                Text {
-                  width: parent.width
-                  text: threadDelegate.modelData.name
-                  color: theme.windowText
-                  font.family: theme.fontFamily
-                  font.pixelSize: theme.baseFontSize
-                  elide: Text.ElideRight
-                }
-                Text {
-                  width: parent.width
-                  text: threadDelegate.modelData.messages.length
-                    ? (threadDelegate.modelData.messages[threadDelegate.modelData.messages.length - 1].outgoing ? "You: " : "")
-                      + threadDelegate.modelData.messages[threadDelegate.modelData.messages.length - 1].body
-                    : "No messages"
-                  color: theme.muted
-                  font.family: theme.fontFamily
-                  font.pixelSize: theme.captionSize
-                  elide: Text.ElideRight
-                }
+            spacing: 0
+
+            RowLayout {
+              Layout.fillWidth: true
+              Label {
+                Layout.fillWidth: true
+                text: "Conversations"
+                font.bold: true
+                leftPadding: theme.scaled(10)
               }
-              background: Rectangle {
-                color: threadDelegate.highlighted ? theme.selectedSurface
-                  : threadDelegate.hovered ? theme.hoverSurface : "transparent"
-                border.color: threadDelegate.highlighted ? theme.surfaceBorder : "transparent"
+              FerryButton {
+                text: "+"
+                implicitWidth: implicitHeight
+                Accessible.name: "New message"
+                ToolTip.visible: hovered
+                ToolTip.text: "New message"
+                onClicked: newMessagePopup.open()
               }
-              onClicked: {
-                root.selectedThreadKey = modelData.key
-                root.confirmedGroupSignature = ""
+            }
+
+            ListView {
+              id: threadList
+              Layout.fillWidth: true
+              Layout.fillHeight: true
+              clip: true
+              spacing: theme.scaled(2)
+              model: root.threads
+              delegate: ItemDelegate {
+                id: threadDelegate
+                required property var modelData
+                width: threadList.width
+                implicitHeight: threadContent.implicitHeight + theme.scaled(18)
+                highlighted: modelData.key === root.selectedThreadKey
+                leftPadding: theme.scaled(10)
+                rightPadding: theme.scaled(10)
+                contentItem: Column {
+                  id: threadContent
+                  spacing: theme.scaled(2)
+                  Text {
+                    width: parent.width
+                    text: threadDelegate.modelData.name
+                    color: theme.windowText
+                    font.family: theme.fontFamily
+                    font.pixelSize: theme.baseFontSize
+                    elide: Text.ElideRight
+                  }
+                  Text {
+                    width: parent.width
+                    text: threadDelegate.modelData.messages.length
+                      ? (threadDelegate.modelData.messages[threadDelegate.modelData.messages.length - 1].outgoing ? "You: " : "")
+                        + threadDelegate.modelData.messages[threadDelegate.modelData.messages.length - 1].body
+                      : "No messages"
+                    color: theme.muted
+                    font.family: theme.fontFamily
+                    font.pixelSize: theme.captionSize
+                    elide: Text.ElideRight
+                  }
+                }
+                background: Rectangle {
+                  color: threadDelegate.highlighted ? theme.selectedSurface
+                    : threadDelegate.hovered ? theme.hoverSurface : "transparent"
+                  border.color: threadDelegate.highlighted ? theme.surfaceBorder : "transparent"
+                }
+                onClicked: {
+                  root.selectedThreadKey = modelData.key
+                  root.confirmedGroupSignature = ""
+                }
               }
             }
           }
@@ -950,6 +1032,128 @@ ShellRoot {
             text: "I understand that changing storage mode clears local messages and contacts"
           }
             Item { Layout.fillHeight: true }
+          }
+        }
+      }
+
+      Popup {
+        id: newMessagePopup
+        parent: applicationSurface
+        x: Math.max(0, (applicationSurface.width - width) / 2)
+        y: Math.max(0, (applicationSurface.height - height) / 2)
+        width: Math.min(theme.scaled(440), applicationSurface.width - theme.scaled(24))
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        padding: theme.scaled(16)
+
+        onOpened: {
+          newRecipient.text = ""
+          newMessageBody.text = ""
+          root.searchContacts("")
+          newRecipient.forceActiveFocus()
+        }
+
+        Timer {
+          id: contactSearchTimer
+          interval: 180
+          onTriggered: root.searchContacts(newRecipient.text)
+        }
+
+        background: Rectangle {
+          color: theme.windowSurface
+          border.color: theme.surfaceBorder
+          radius: theme.panelRadius
+        }
+
+        contentItem: ColumnLayout {
+          spacing: theme.scaled(8)
+
+          Label {
+            text: "New message"
+            font.bold: true
+            font.pixelSize: theme.headingSize
+          }
+          Label {
+            text: "To"
+            color: theme.muted
+          }
+          FerryTextField {
+            id: newRecipient
+            Layout.fillWidth: true
+            placeholderText: "Contact, phone number, or email address"
+            Accessible.name: "Recipient"
+            onTextEdited: contactSearchTimer.restart()
+          }
+          ListView {
+            id: newContactResults
+            Layout.fillWidth: true
+            Layout.preferredHeight: count > 0
+              ? Math.min(contentHeight, theme.scaled(180)) : 0
+            visible: count > 0
+            clip: true
+            model: root.contactResults
+            delegate: ItemDelegate {
+              id: newContactDelegate
+              required property var modelData
+              width: newContactResults.width
+              implicitHeight: newContactText.implicitHeight + theme.scaled(12)
+              contentItem: Column {
+                id: newContactText
+                Text {
+                  text: newContactDelegate.modelData.name
+                  color: theme.windowText
+                  font.family: theme.fontFamily
+                  font.pixelSize: theme.baseFontSize
+                }
+                Text {
+                  text: newContactDelegate.modelData.address.indexOf("@") >= 0
+                    ? newContactDelegate.modelData.address
+                    : "+" + newContactDelegate.modelData.address
+                  color: theme.muted
+                  font.family: theme.fontFamily
+                  font.pixelSize: theme.captionSize
+                }
+              }
+              onClicked: {
+                newRecipient.text = modelData.address
+                root.searchContacts("")
+                newMessageBody.forceActiveFocus()
+              }
+            }
+          }
+          Label {
+            text: "Message"
+            color: theme.muted
+          }
+          FerryTextField {
+            id: newMessageBody
+            Layout.fillWidth: true
+            placeholderText: "Write a message"
+            Accessible.name: "Message text"
+            onAccepted: newMessageSendButton.clicked()
+          }
+          RowLayout {
+            Layout.alignment: Qt.AlignRight
+            FerryButton {
+              text: "Cancel"
+              onClicked: newMessagePopup.close()
+            }
+            FerryButton {
+              id: newMessageSendButton
+              text: newMessageSendProcess.running ? "Sending…" : "Send"
+              highlighted: true
+              enabled: newRecipient.text.trim() !== ""
+                && newMessageBody.text.trim() !== ""
+                && !newMessageSendProcess.running
+              onClicked: {
+                newMessageSendProcess.command = [
+                  "/usr/bin/blueferry", "message-send",
+                  newRecipient.text, newMessageBody.text
+                ]
+                newMessageSendProcess.running = true
+              }
+            }
           }
         }
       }

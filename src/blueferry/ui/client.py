@@ -282,6 +282,34 @@ class DaemonClient(GObject.Object):
 
         self._submit(operation, on_ok, on_err)
 
+    def find_contacts_async(self, query: str, on_ok, on_err=None) -> None:
+        """Find cached message destinations without blocking the GTK thread."""
+        selected = query.strip()
+        if not selected:
+            on_ok([])
+            return
+
+        def operation() -> list[tuple[str, str]]:
+            raw = str(
+                self._private_call(
+                    "FindContacts",
+                    selected,
+                    timeout=8,
+                )
+            )
+            value = json.loads(raw)
+            if not isinstance(value, list):
+                return []
+            return [
+                (str(item["name"]), str(item["address"]))
+                for item in value
+                if isinstance(item, Mapping)
+                and "name" in item
+                and "address" in item
+            ]
+
+        self._submit(operation, on_ok, on_err)
+
     def get_status_async(self, on_ok, on_err=None) -> None:
         def operation() -> BackendStatus:
             raw = str(self._private_call("GetStatus", timeout=10))

@@ -11,6 +11,9 @@ from blueferry.qt.controller import BridgeController
 
 
 class _Backend:
+    def __init__(self):
+        self.sent = []
+
     def status(self):
         return BackendStatus(daemon=True, map=True, contacts=4)
 
@@ -26,6 +29,14 @@ class _Backend:
                 last_ts="",
             )
         ]
+
+    def find_contacts(self, query):
+        assert query == "Ali"
+        return [("Alice", "15551234567"), ("Alice Work", "alice@example.com")]
+
+    def send(self, recipient, body):
+        self.sent.append((recipient, body))
+        return "/transfer/1"
 
 
 def test_snapshot_converts_typed_client_models_for_qml():
@@ -116,3 +127,32 @@ def test_non_encrypted_storage_does_not_open_keyring(monkeypatch):
     controller._maybe_unlock_storage()
 
     assert calls == []
+
+
+def test_new_message_searches_contacts_and_sends_directly(monkeypatch):
+    backend = _Backend()
+    controller = BridgeController(
+        backend=backend,
+        setup=object(),
+        subscribe=False,
+        autostart=False,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_run",
+        lambda operation, on_done=None, *_args, **_kwargs: (
+            on_done(operation()) if on_done is not None else operation()
+        ),
+    )
+    refreshes = []
+    monkeypatch.setattr(controller, "refresh", lambda: refreshes.append(True))
+
+    controller.findContacts(" Ali ")
+    controller.sendMessage(" 15551234567 ", " hello ")
+
+    assert controller.contactResults == [
+        {"name": "Alice", "address": "15551234567"},
+        {"name": "Alice Work", "address": "alice@example.com"},
+    ]
+    assert backend.sent == [("15551234567", "hello")]
+    assert refreshes == [True]

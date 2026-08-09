@@ -57,7 +57,20 @@ Kirigami.ApplicationWindow {
     }
 
     function openPhoneSettings() {
-        pageStack.layers.push(iphonePageComponent)
+        openLayer(iphonePageComponent)
+    }
+
+    function openLayer(component) {
+        // Kirigami's PageRow anchors its internal base layer, while Qt's
+        // StackView cannot animate anchored items. Use immediate layer
+        // operations so opening a utility page does not start a conflicting
+        // transition or emit a warning from PageRow.qml.
+        pageStack.layers.push(component, {}, Controls.StackView.Immediate)
+    }
+
+    function closeLayer(event) {
+        event.accepted = true
+        pageStack.layers.pop(Controls.StackView.Immediate)
     }
 
     function onboardingTitle(stage) {
@@ -136,9 +149,7 @@ Kirigami.ApplicationWindow {
             Kirigami.Action {
                 text: qsTr("About BlueFerry")
                 icon.name: "help-about"
-                onTriggered: {
-                    root.pageStack.layers.push(aboutPage)
-                }
+                onTriggered: root.openLayer(aboutPage)
             },
             Kirigami.Action {
                 text: qsTr("Quit")
@@ -253,6 +264,88 @@ Kirigami.ApplicationWindow {
         standardButtons: Kirigami.Dialog.Close
     }
 
+    Kirigami.Dialog {
+        id: newMessageDialog
+        title: qsTr("New Message")
+        preferredWidth: Kirigami.Units.gridUnit * 24
+        standardButtons: Kirigami.Dialog.Cancel
+        customFooterActions: [Kirigami.Action {
+            text: qsTr("Send")
+            icon.name: "document-send"
+            enabled: newRecipient.text.trim() !== ""
+                && newMessageBody.text.trim() !== "" && !root.bridge.busy
+            onTriggered: {
+                root.bridge.sendMessage(newRecipient.text, newMessageBody.text)
+                newMessageDialog.close()
+            }
+        }]
+
+        onOpened: {
+            newRecipient.clear()
+            newMessageBody.clear()
+            root.bridge.findContacts("")
+            newRecipient.forceActiveFocus()
+        }
+
+        Timer {
+            id: contactSearchTimer
+            interval: 180
+            onTriggered: root.bridge.findContacts(newRecipient.text)
+        }
+
+        ColumnLayout {
+            spacing: Kirigami.Units.smallSpacing
+
+            Controls.Label {
+                text: qsTr("To")
+                font.bold: true
+            }
+            Controls.TextField {
+                id: newRecipient
+                Layout.fillWidth: true
+                placeholderText: qsTr("Contact, phone number, or email address")
+                Accessible.name: qsTr("Recipient")
+                onTextEdited: contactSearchTimer.restart()
+            }
+            ListView {
+                id: contactResults
+                Layout.fillWidth: true
+                Layout.preferredHeight: count > 0
+                    ? Math.min(contentHeight, Kirigami.Units.gridUnit * 10) : 0
+                visible: count > 0
+                clip: true
+                model: root.bridge.contactResults
+
+                delegate: Controls.ItemDelegate {
+                    id: contactDelegate
+                    required property var modelData
+                    width: contactResults.width
+                    text: modelData.name + "\n" + (
+                        modelData.address.indexOf("@") >= 0
+                            ? modelData.address : "+" + modelData.address
+                    )
+                    onClicked: {
+                        newRecipient.text = modelData.address
+                        root.bridge.findContacts("")
+                        newMessageBody.forceActiveFocus()
+                    }
+                }
+            }
+            Controls.Label {
+                text: qsTr("Message")
+                font.bold: true
+            }
+            Controls.TextArea {
+                id: newMessageBody
+                Layout.fillWidth: true
+                Layout.preferredHeight: Kirigami.Units.gridUnit * 5
+                placeholderText: qsTr("Write a Message")
+                wrapMode: TextEdit.Wrap
+                Accessible.name: qsTr("Message Text")
+            }
+        }
+    }
+
     Kirigami.Page {
         id: messagesPage
         visible: false
@@ -292,16 +385,40 @@ Kirigami.ApplicationWindow {
                     Layout.fillHeight: true
                     spacing: 0
 
-                    Item {
+                    ColumnLayout {
                         Layout.fillHeight: true
                         Layout.preferredWidth: messagesPage.narrow
                             ? parent.width
                             : Math.max(Kirigami.Units.gridUnit * 14, parent.width * 0.3)
                         visible: !messagesPage.narrow || root.selectedThreadKey === ""
+                        spacing: 0
+
+                        Controls.ToolBar {
+                            Layout.fillWidth: true
+
+                            contentItem: RowLayout {
+                                Controls.Label {
+                                    Layout.fillWidth: true
+                                    text: qsTr("Conversations")
+                                    font.bold: true
+                                    leftPadding: Kirigami.Units.smallSpacing
+                                }
+                                Controls.ToolButton {
+                                    icon.name: "list-add"
+                                    text: qsTr("New Message")
+                                    display: Controls.AbstractButton.IconOnly
+                                    Accessible.name: text
+                                    Controls.ToolTip.text: text
+                                    Controls.ToolTip.visible: hovered
+                                    onClicked: newMessageDialog.open()
+                                }
+                            }
+                        }
 
                         ListView {
                             id: threadList
-                            anchors.fill: parent
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
                             clip: true
                             model: root.bridge.threads
                             currentIndex: -1
@@ -462,6 +579,7 @@ Kirigami.ApplicationWindow {
         id: aboutPage
 
         Kirigami.AboutPage {
+            onBackRequested: event => root.closeLayer(event)
             aboutData: ({
                 displayName: qsTr("BlueFerry"),
                 productName: "BlueFerry",
@@ -487,6 +605,7 @@ Kirigami.ApplicationWindow {
         Kirigami.ScrollablePage {
             id: iphonePage
             title: qsTr("iPhone Settings")
+            onBackRequested: event => root.closeLayer(event)
         property int selectedDevice: -1
         property var device: selectedDevice >= 0 && selectedDevice < root.bridge.devices.length
             ? root.bridge.devices[selectedDevice]

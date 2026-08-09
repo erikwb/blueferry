@@ -28,6 +28,7 @@ class ConversationsPage(Gtk.Box):
         self._confirmed_groups: set[str] = set()
         self._reload_pending = False
         self._reload_again = False
+        self._new_destination: str | None = None
 
         # ---- left: thread list ----------------------------------------
         self._thread_list = Gtk.ListBox(css_classes=["navigation-sidebar"])
@@ -35,10 +36,44 @@ class ConversationsPage(Gtk.Box):
             "row-selected", self._on_thread_selected
         )
         sidebar_scroll = Gtk.ScrolledWindow(
-            hscrollbar_policy=Gtk.PolicyType.NEVER, width_request=240, child=self._thread_list
+            hscrollbar_policy=Gtk.PolicyType.NEVER,
+            width_request=240,
+            hexpand=True,
+            vexpand=True,
+            child=self._thread_list,
         )
+        sidebar_header = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL,
+            spacing=6,
+            margin_top=6,
+            margin_bottom=6,
+            margin_start=10,
+            margin_end=6,
+        )
+        sidebar_header.append(
+            Gtk.Label(
+                label=_("Conversations"),
+                css_classes=["heading"],
+                hexpand=True,
+                xalign=0,
+            )
+        )
+        self._new_message_button = Gtk.Button(
+            icon_name="list-add-symbolic",
+            tooltip_text=_("New Message"),
+            css_classes=["flat"],
+        )
+        self._new_message_button.update_property(
+            [Gtk.AccessibleProperty.LABEL], [_("New Message")]
+        )
+        self._new_message_button.connect("clicked", self._open_new_message)
+        sidebar_header.append(self._new_message_button)
+        sidebar = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        sidebar.append(sidebar_header)
+        sidebar.append(Gtk.Separator())
+        sidebar.append(sidebar_scroll)
         sidebar_page = Adw.NavigationPage(
-            child=sidebar_scroll,
+            child=sidebar,
             title=_("Conversations"),
         )
 
@@ -129,8 +164,69 @@ class ConversationsPage(Gtk.Box):
         )
         self.append(self.split_view)
 
+        self._build_new_message_dialog()
+
         self._load_history()
         client.connect("history-changed", self._on_history_changed)
+
+    def _build_new_message_dialog(self) -> None:
+        content = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL,
+            spacing=8,
+            margin_top=18,
+            margin_bottom=18,
+            margin_start=18,
+            margin_end=18,
+        )
+
+        content.append(Gtk.Label(label=_("To"), xalign=0, css_classes=["heading"]))
+        self._new_recipient = Gtk.SearchEntry(
+            placeholder_text=_("Contact, phone number, or email address"),
+        )
+        self._new_recipient.connect("search-changed", self._on_contact_search_changed)
+        self._new_recipient.connect("activate", lambda _entry: self._new_body.grab_focus())
+        content.append(self._new_recipient)
+
+        self._contact_results = Gtk.ListBox(css_classes=["boxed-list"])
+        self._contact_results.connect("row-activated", self._on_contact_selected)
+        content.append(
+            Gtk.ScrolledWindow(
+                hscrollbar_policy=Gtk.PolicyType.NEVER,
+                min_content_height=150,
+                max_content_height=220,
+                propagate_natural_height=True,
+                child=self._contact_results,
+            )
+        )
+
+        content.append(Gtk.Label(label=_("Message"), xalign=0, css_classes=["heading"]))
+        self._new_body = Gtk.Entry(placeholder_text=_("Write a Message"))
+        self._new_body.connect("changed", lambda _entry: self._update_new_send_button())
+        self._new_body.connect("activate", self._send_new_message)
+        content.append(self._new_body)
+
+        cancel = Gtk.Button(label=_("Cancel"))
+        cancel.connect("clicked", lambda _button: self._new_message_dialog.close())
+        self._new_send_button = Gtk.Button(
+            label=_("Send"),
+            css_classes=["suggested-action"],
+            sensitive=False,
+        )
+        self._new_send_button.connect("clicked", self._send_new_message)
+        header = Adw.HeaderBar(
+            title_widget=Adw.WindowTitle(title=_("New Message")),
+        )
+        header.pack_start(cancel)
+        header.pack_end(self._new_send_button)
+        toolbar = Adw.ToolbarView()
+        toolbar.add_top_bar(header)
+        toolbar.set_content(content)
+        self._new_message_dialog = Adw.Dialog(
+            title=_("New Message"),
+            content_width=440,
+            content_height=390,
+            child=toolbar,
+        )
 
     # ---- data ----------------------------------------------------------
 
@@ -154,6 +250,98 @@ class ConversationsPage(Gtk.Box):
         if self._reload_again:
             self._reload_again = False
             self._reload_threads()
+
+    # ---- new message ---------------------------------------------------
+
+    def _open_new_message(self, _button) -> None:
+        self._new_destination = None
+        self._new_recipient.set_text("")
+        self._new_body.set_text("")
+        self._contact_results.remove_all()
+        self._update_new_send_button()
+        self._new_message_dialog.present(self.get_root())
+        self._new_recipient.grab_focus()
+
+    def _on_contact_search_changed(self, entry) -> None:
+        query = entry.get_text().strip()
+        self._new_destination = None
+        self._update_new_send_button()
+        if not query:
+            self._contact_results.remove_all()
+            return
+
+        def apply(matches) -> None:
+            if self._new_recipient.get_text().strip() != query:
+                return
+            self._contact_results.remove_all()
+            for name, address in matches:
+                row = Gtk.ListBoxRow()
+                row.contact_address = address
+                item = Gtk.Box(
+                    orientation=Gtk.Orientation.VERTICAL,
+                    spacing=2,
+                    margin_top=6,
+                    margin_bottom=6,
+                    margin_start=10,
+                    margin_end=10,
+                )
+                item.append(
+                    Gtk.Label(
+                        label=name,
+                        xalign=0,
+                        ellipsize=_ELLIPSIZE_END,
+                    )
+                )
+                display_address = address if "@" in address else f"+{address}"
+                item.append(
+                    Gtk.Label(
+                        label=display_address,
+                        xalign=0,
+                        ellipsize=_ELLIPSIZE_END,
+                        css_classes=["dim-label", "caption"],
+                    )
+                )
+                row.set_child(item)
+                self._contact_results.append(row)
+
+        self._client.find_contacts_async(query, apply, lambda _message: None)
+
+    def _on_contact_selected(self, _list, row) -> None:
+        address = str(row.contact_address)
+        self._new_recipient.set_text(address)
+        self._new_destination = address
+        self._contact_results.remove_all()
+        self._update_new_send_button()
+        self._new_body.grab_focus()
+
+    def _update_new_send_button(self) -> None:
+        if not hasattr(self, "_new_send_button"):
+            return
+        self._new_send_button.set_sensitive(
+            bool(self._new_recipient.get_text().strip() and self._new_body.get_text().strip())
+        )
+
+    def _send_new_message(self, _widget) -> None:
+        recipient = self._new_destination or self._new_recipient.get_text().strip()
+        body = self._new_body.get_text().strip()
+        if not recipient or not body:
+            return
+        self._new_recipient.set_sensitive(False)
+        self._new_body.set_sensitive(False)
+        self._new_send_button.set_sensitive(False)
+
+        def done(_transfer: str) -> None:
+            self._new_recipient.set_sensitive(True)
+            self._new_body.set_sensitive(True)
+            self._new_message_dialog.close()
+
+        def failed(text: str) -> None:
+            self._new_recipient.set_sensitive(True)
+            self._new_body.set_sensitive(True)
+            self._update_new_send_button()
+            self._toast(_("Send failed: {error}").format(error=text))
+
+        self._client.send_message(recipient, body, done, failed)
 
     def _apply_threads(self, loaded) -> bool:
         selected_handle = None

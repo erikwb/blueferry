@@ -327,6 +327,41 @@ def threads_json(limit: int = typer.Option(200, "--limit")) -> None:
         raise typer.Exit(code=2) from None
 
 
+@app.command("contacts-json", hidden=True)
+def contacts_json(query: str = typer.Argument(...)) -> None:
+    """Search cached contact destinations for non-Python clients."""
+    import json
+
+    client, error_type = _json_client()
+    try:
+        typer.echo(
+            json.dumps(
+                [
+                    {"name": name, "address": address}
+                    for name, address in client.find_contacts(query)
+                ],
+                ensure_ascii=False,
+            )
+        )
+    except error_type as error:
+        typer.echo(json.dumps({"error": str(error)}))
+        raise typer.Exit(code=2) from None
+
+
+@app.command("message-send", hidden=True)
+def message_send(
+    recipient: str = typer.Argument(...),
+    body: str = typer.Argument(...),
+) -> None:
+    """Send to an explicit destination for graphical shell clients."""
+    client, error_type = _json_client()
+    try:
+        typer.echo(client.send(recipient, body))
+    except error_type as error:
+        typer.echo(str(error), err=True)
+        raise typer.Exit(code=2) from None
+
+
 @app.command("notification-policy-set", hidden=True)
 def notification_policy_set(policy: str = typer.Argument(...)) -> None:
     """Set daemon-owned desktop popup policy for shell clients."""

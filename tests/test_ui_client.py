@@ -73,3 +73,41 @@ def test_thread_snapshot_runs_off_the_ui_thread(monkeypatch) -> None:
     assert worker_threads and worker_threads[0] != current_thread
     assert idle_calls == worker_threads
     assert received[0].key == "address:email:test@example.com"
+
+
+def test_contact_search_decodes_backend_destinations(monkeypatch) -> None:
+    monkeypatch.setattr(client_module, "get_session_bus", _Bus)
+    monkeypatch.setattr(
+        client_module,
+        "configuration_status",
+        lambda: {"configured": False},
+    )
+    client = client_module.DaemonClient()
+    calls = []
+    monkeypatch.setattr(
+        client,
+        "_private_call",
+        lambda method, query, **_kwargs: (
+            calls.append((method, query))
+            or json.dumps([
+                {"name": "Alice", "address": "15551234567"},
+                {"name": "Alice Work", "address": "alice@example.com"},
+            ])
+        ),
+    )
+    monkeypatch.setattr(
+        client,
+        "_submit",
+        lambda operation, on_ok, _on_err=None: on_ok(operation()),
+    )
+    received = []
+    try:
+        client.find_contacts_async(" Alice ", received.extend)
+    finally:
+        client.stop()
+
+    assert calls == [("FindContacts", "Alice")]
+    assert received == [
+        ("Alice", "15551234567"),
+        ("Alice Work", "alice@example.com"),
+    ]

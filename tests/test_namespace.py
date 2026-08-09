@@ -87,7 +87,8 @@ def test_qt_package_ships_the_kirigami_ui_and_dependencies() -> None:
     assert "'qqc2-desktop-style'" in pkgbuild
     assert "Kirigami.ApplicationWindow" in qml
     assert "Kirigami.NavigationTabBar" not in qml
-    assert "pageStack.layers.push(iphonePageComponent)" in qml
+    assert "openLayer(iphonePageComponent)" in qml
+    assert "Controls.StackView.Immediate" in qml
     assert "Kirigami.AboutPage" in qml
     assert "customFooterActions" in qml
     assert "interval: 3000" not in qml
@@ -103,6 +104,20 @@ def test_gui_clients_keep_phone_settings_out_of_primary_navigation() -> None:
     assert 'Accessible.name: "iPhone settings"' in quickshell
     assert 'text: "Messages"' not in quickshell
     assert 'text: "iPhone"' not in quickshell
+
+
+def test_all_gui_clients_offer_contacts_aware_new_messages() -> None:
+    gtk = (ROOT / "src/blueferry/ui/conversations.py").read_text()
+    qt_controller = (ROOT / "src/blueferry/qt/controller.py").read_text()
+    qt_qml = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
+    quickshell = (ROOT / "data/quickshell/shell.qml").read_text()
+
+    assert 'tooltip_text=_("New Message")' in gtk
+    assert "find_contacts_async" in gtk
+    assert "def findContacts" in qt_controller
+    assert 'text: qsTr("New Message")' in qt_qml
+    assert 'Accessible.name: "New message"' in quickshell
+    assert '"contacts-json"' in quickshell
 
 
 def test_all_gui_clients_offer_unencrypted_local_storage() -> None:

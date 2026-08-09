@@ -28,6 +28,7 @@ from blueferry.setup_client import SetupClient
 
 class BridgeController(QObject):
     threadsChanged = Signal()
+    contactResultsChanged = Signal()
     statusChanged = Signal()
     devicesChanged = Signal()
     bluetoothChanged = Signal()
@@ -57,6 +58,8 @@ class BridgeController(QObject):
         self._pool.setExpiryTimeout(-1)
         self._tasks: set[Task] = set()
         self._threads: list[dict] = []
+        self._contact_results: list[dict] = []
+        self._contact_query = ""
         self._status: dict = {}
         self._devices: list[dict] = []
         self._bluetooth_active = False
@@ -90,6 +93,10 @@ class BridgeController(QObject):
     @Property("QVariantList", notify=threadsChanged)
     def threads(self):
         return self._threads
+
+    @Property("QVariantList", notify=contactResultsChanged)
+    def contactResults(self):
+        return self._contact_results
 
     @Property("QVariantMap", notify=statusChanged)
     def status(self):
@@ -336,6 +343,43 @@ class BridgeController(QObject):
         self._run(
             lambda: self._backend.send_to_thread(key, body, confirm_group=confirm_group),
             completed,
+        )
+
+    @Slot(str)
+    def findContacts(self, query: str) -> None:
+        selected = query.strip()
+        self._contact_query = selected
+        if not selected:
+            self._contact_results = []
+            self.contactResultsChanged.emit()
+            return
+
+        def completed(value: object) -> None:
+            if self._contact_query != selected:
+                return
+            matches = list(value) if isinstance(value, list) else []
+            self._contact_results = [
+                {"name": str(name), "address": str(address)}
+                for name, address in matches
+            ]
+            self.contactResultsChanged.emit()
+
+        self._run(
+            lambda: self._backend.find_contacts(selected),
+            completed,
+            busy=False,
+        )
+
+    @Slot(str, str)
+    def sendMessage(self, recipient: str, body: str) -> None:
+        recipient = recipient.strip()
+        body = body.strip()
+        if not recipient or not body:
+            return
+
+        self._run(
+            lambda: self._backend.send(recipient, body),
+            lambda _value: self.refresh(),
         )
 
     @Slot()
