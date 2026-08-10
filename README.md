@@ -1,6 +1,12 @@
 # BlueFerry
 
-![Blue Star ferry at Rhodes](https://upload.wikimedia.org/wikipedia/commons/thumb/9/90/Ferry_Blue_star_1_Rhodes.jpg/1920px-Ferry_Blue_star_1_Rhodes.jpg)
+![BlueFerry messaging client](screenshot.png)
+
+iMessage Bluetooth bridge for Linux
+
+<p align="center">
+  <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/9/90/Ferry_Blue_star_1_Rhodes.jpg/1920px-Ferry_Blue_star_1_Rhodes.jpg" width="320" alt="Blue Star ferry at Rhodes">
+</p>
 
 BlueFerry brings messages from a paired iPhone to a Linux desktop. It can
 receive and send SMS and iMessage, use the phone's contacts, and optionally
