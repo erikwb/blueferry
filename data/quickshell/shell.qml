@@ -111,8 +111,10 @@ ShellRoot {
   }
 
   function pendingIphoneSetupText() {
+    var tasks = pendingIphoneSetupTasks().join("\n• ")
+    if (root.configured) return "• " + tasks
     return "On the iPhone open Settings → Bluetooth, tap ⓘ next to this computer, then finish:\n• "
-      + pendingIphoneSetupTasks().join("\n• ")
+      + tasks
   }
 
   function updateOnboarding() {
@@ -542,8 +544,8 @@ ShellRoot {
   FloatingWindow {
     id: window
     title: "BlueFerry"
-    implicitWidth: 760
-    implicitHeight: 620
+    implicitWidth: 900
+    implicitHeight: 660
     color: theme.windowSurface
 
     Pane {
@@ -569,36 +571,30 @@ ShellRoot {
       background: Rectangle {
         radius: theme.panelRadius
         color: theme.windowSurface
-        border.color: theme.surfaceBorder
       }
 
       ColumnLayout {
         anchors.fill: parent
         anchors.margins: theme.panelPadding
-        spacing: theme.smallGap
+        spacing: theme.scaled(14)
 
-        RowLayout {
-          Layout.fillWidth: true
-          Item { Layout.fillWidth: true }
-          FerryButton {
-            text: "󰏲"
-            implicitWidth: implicitHeight
-            checkable: true
-            checked: root.phoneSettingsVisible
-            Accessible.name: "iPhone settings"
-            ToolTip.visible: hovered
-            ToolTip.text: "iPhone settings"
-            onToggled: root.phoneSettingsVisible = checked
-          }
-        }
-
-        Label {
+        FerryLabel {
           visible: root.errorText !== "" || root.statusErrorText !== ""
           text: root.errorText !== "" ? root.errorText : root.statusErrorText
           textFormat: Text.PlainText
           color: theme.urgent
           wrapMode: Text.Wrap
           Layout.fillWidth: true
+          leftPadding: theme.scaled(14)
+          rightPadding: theme.scaled(14)
+          topPadding: theme.scaled(10)
+          bottomPadding: theme.scaled(10)
+
+          background: Rectangle {
+            color: Qt.rgba(theme.urgent.r, theme.urgent.g, theme.urgent.b, 0.12)
+            border.color: theme.urgent
+            radius: theme.controlRadius
+          }
         }
 
         Rectangle {
@@ -607,9 +603,9 @@ ShellRoot {
           visible: !root.phoneSettingsVisible && root.mapConnectionRefused()
           color: Qt.rgba(theme.warning.r, theme.warning.g, theme.warning.b, 0.14)
           border.color: theme.warning
-          radius: theme.panelRadius
+          radius: theme.controlRadius
 
-          Label {
+          FerryLabel {
             id: mapRefusedLabel
             anchors.fill: parent
             anchors.margins: theme.scaled(8)
@@ -626,216 +622,413 @@ ShellRoot {
           Layout.fillWidth: true
           Layout.fillHeight: true
           handle: Rectangle {
-            implicitWidth: 1
-            color: theme.surfaceBorder
+            implicitWidth: theme.scaled(14)
+            color: "transparent"
+            Rectangle {
+              anchors.centerIn: parent
+              width: 1
+              height: parent.height - theme.scaled(24)
+              color: theme.divider
+            }
           }
 
-          ColumnLayout {
-            SplitView.preferredWidth: 250
-            spacing: 0
+          Rectangle {
+            SplitView.preferredWidth: theme.scaled(250)
+            SplitView.minimumWidth: theme.scaled(190)
+            color: theme.cardSurface
+            radius: theme.panelRadius
+            border.color: theme.divider
 
-            RowLayout {
-              Layout.fillWidth: true
-              Label {
+            ColumnLayout {
+              anchors.fill: parent
+              anchors.margins: theme.scaled(10)
+              spacing: theme.scaled(6)
+
+              RowLayout {
                 Layout.fillWidth: true
-                text: "Conversations"
-                font.bold: true
-                leftPadding: theme.scaled(10)
+                FerryLabel {
+                  Layout.fillWidth: true
+                  text: "CONVERSATIONS"
+                  color: theme.muted
+                  font.family: theme.fontFamily
+                  font.pixelSize: theme.captionSize
+                  font.bold: true
+                  font.letterSpacing: 1
+                  leftPadding: theme.scaled(4)
+                }
+                FerryButton {
+                  text: "+"
+                  implicitWidth: implicitHeight
+                  highlighted: true
+                  Accessible.name: "New message"
+                  ToolTip.visible: hovered
+                  ToolTip.text: "New message"
+                  onClicked: newMessagePopup.open()
+                }
               }
-              FerryButton {
-                text: "+"
-                implicitWidth: implicitHeight
-                Accessible.name: "New message"
-                ToolTip.visible: hovered
-                ToolTip.text: "New message"
-                onClicked: newMessagePopup.open()
-              }
-            }
 
-            ListView {
-              id: threadList
-              Layout.fillWidth: true
-              Layout.fillHeight: true
-              clip: true
-              spacing: theme.scaled(2)
-              model: root.threads
-              delegate: ItemDelegate {
-                id: threadDelegate
-                required property var modelData
-                width: threadList.width
-                implicitHeight: threadContent.implicitHeight + theme.scaled(18)
-                highlighted: modelData.key === root.selectedThreadKey
-                leftPadding: theme.scaled(10)
-                rightPadding: theme.scaled(10)
-                contentItem: Column {
-                  id: threadContent
-                  spacing: theme.scaled(2)
-                  Text {
-                    width: parent.width
-                    text: threadDelegate.modelData.name
-                    color: theme.windowText
-                    font.family: theme.fontFamily
-                    font.pixelSize: theme.baseFontSize
-                    elide: Text.ElideRight
+              ListView {
+                id: threadList
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                clip: true
+                spacing: theme.scaled(5)
+                model: root.threads
+                delegate: ItemDelegate {
+                  id: threadDelegate
+                  required property var modelData
+                  width: threadList.width
+                  implicitHeight: theme.scaled(62)
+                  highlighted: modelData.key === root.selectedThreadKey
+                  leftPadding: theme.scaled(8)
+                  rightPadding: theme.scaled(8)
+                  contentItem: Row {
+                    spacing: theme.scaled(10)
+
+                    Rectangle {
+                      width: theme.scaled(34)
+                      height: width
+                      anchors.verticalCenter: parent.verticalCenter
+                      radius: width / 2
+                      color: threadDelegate.highlighted
+                        ? theme.primarySurface : theme.raisedSurface
+                      Text {
+                        anchors.centerIn: parent
+                        text: threadDelegate.modelData.is_group ? "#"
+                          : String(threadDelegate.modelData.name || "?").charAt(0).toUpperCase()
+                        color: threadDelegate.highlighted
+                          ? theme.primaryText : theme.windowText
+                        font.family: theme.fontFamily
+                        font.pixelSize: theme.baseFontSize
+                        font.bold: true
+                      }
+                    }
+
+                    Column {
+                      id: threadContent
+                      width: parent.width - x
+                      anchors.verticalCenter: parent.verticalCenter
+                      spacing: theme.scaled(3)
+                      Text {
+                        width: parent.width
+                        text: threadDelegate.modelData.name
+                        color: theme.windowText
+                        font.family: theme.fontFamily
+                        font.pixelSize: theme.baseFontSize
+                        font.bold: threadDelegate.highlighted
+                        elide: Text.ElideRight
+                      }
+                      Text {
+                        width: parent.width
+                        text: threadDelegate.modelData.messages.length
+                          ? (threadDelegate.modelData.messages[threadDelegate.modelData.messages.length - 1].outgoing ? "You: " : "")
+                            + threadDelegate.modelData.messages[threadDelegate.modelData.messages.length - 1].body
+                          : "No messages"
+                        color: theme.muted
+                        font.family: theme.fontFamily
+                        font.pixelSize: theme.captionSize
+                        elide: Text.ElideRight
+                      }
+                    }
                   }
-                  Text {
-                    width: parent.width
-                    text: threadDelegate.modelData.messages.length
-                      ? (threadDelegate.modelData.messages[threadDelegate.modelData.messages.length - 1].outgoing ? "You: " : "")
-                        + threadDelegate.modelData.messages[threadDelegate.modelData.messages.length - 1].body
-                      : "No messages"
-                    color: theme.muted
-                    font.family: theme.fontFamily
-                    font.pixelSize: theme.captionSize
-                    elide: Text.ElideRight
+                  background: Rectangle {
+                    color: threadDelegate.highlighted ? theme.selectedSurface
+                      : threadDelegate.hovered ? theme.hoverSurface : "transparent"
+                    border.color: threadDelegate.highlighted ? theme.divider : "transparent"
+                    radius: theme.controlRadius
+                  }
+                  onClicked: {
+                    root.selectedThreadKey = modelData.key
+                    root.confirmedGroupSignature = ""
                   }
                 }
-                background: Rectangle {
-                  color: threadDelegate.highlighted ? theme.selectedSurface
-                    : threadDelegate.hovered ? theme.hoverSurface : "transparent"
-                  border.color: threadDelegate.highlighted ? theme.surfaceBorder : "transparent"
-                }
-                onClicked: {
-                  root.selectedThreadKey = modelData.key
-                  root.confirmedGroupSignature = ""
-                }
-              }
-            }
-          }
-
-          ColumnLayout {
-            id: conversationPane
-            SplitView.fillWidth: true
-            property var thread: root.selectedThread()
-
-            Label {
-              text: parent.thread ? parent.thread.name : "Select a conversation"
-              textFormat: Text.PlainText
-              font.bold: true
-              font.pixelSize: theme.headingSize
-              leftPadding: theme.scaled(8)
-              Layout.fillWidth: true
-            }
-            ListView {
-              id: messageList
-              Layout.fillWidth: true
-              Layout.fillHeight: true
-              clip: true
-              model: parent.thread ? parent.thread.messages : []
-              delegate: Item {
-                id: messageRow
-                required property var modelData
-                width: messageList.width
-                implicitHeight: messageContent.implicitHeight + theme.scaled(16)
 
                 Column {
-                  id: messageContent
-                  width: messageRow.width - theme.scaled(24)
-                  x: messageRow.modelData.outgoing ? theme.scaled(16) : theme.scaled(8)
-                  spacing: theme.scaled(2)
-                  Text {
-                    width: parent.width
-                    visible: messageRow.modelData.outgoing
-                    text: "YOU"
-                    color: theme.muted
-                    font.family: theme.fontFamily
-                    font.pixelSize: theme.captionSize
-                    horizontalAlignment: Text.AlignRight
-                  }
-                  Text {
-                    width: parent.width
-                    text: messageRow.modelData.body
-                    textFormat: Text.PlainText
+                  anchors.centerIn: parent
+                  visible: threadList.count === 0
+                  spacing: theme.scaled(6)
+                  FerryLabel {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    text: "NO CONVERSATIONS"
                     color: theme.windowText
-                    font.family: theme.fontFamily
-                    font.pixelSize: theme.baseFontSize
-                    wrapMode: Text.Wrap
-                    horizontalAlignment: messageRow.modelData.outgoing
-                      ? Text.AlignRight : Text.AlignLeft
+                    font.bold: true
+                    font.letterSpacing: 1
                   }
-                  Text {
-                    width: parent.width
-                    visible: text !== ""
-                    text: messageRow.modelData.display_timestamp || ""
-                    textFormat: Text.PlainText
+                  FerryLabel {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    text: "New messages will dock here."
                     color: theme.muted
-                    font.family: theme.fontFamily
                     font.pixelSize: theme.captionSize
-                    horizontalAlignment: messageRow.modelData.outgoing
-                      ? Text.AlignRight : Text.AlignLeft
                   }
                 }
               }
-            }
-            FerryCheckBox {
-              id: confirmGroup
-              property string signature: root.groupSignature(parent.thread)
-              visible: parent.thread && parent.thread.is_group
-              text: parent.thread ? "Confirm group: " + parent.thread.recipients.join(", ") : ""
-              checked: signature !== "" && root.confirmedGroupSignature === signature
-              onToggled: {
-                if (checked) root.confirmedGroupSignature = signature
-                else if (root.confirmedGroupSignature === signature) root.confirmedGroupSignature = ""
-              }
-              Layout.fillWidth: true
-            }
-            RowLayout {
-              Layout.fillWidth: true
-              FerryTextField {
-                id: composer
+
+              RowLayout {
                 Layout.fillWidth: true
-                placeholderText: "Message"
-                enabled: conversationPane.thread && conversationPane.thread.reply_ready
+                FerryButton {
+                  text: "⚙"
+                  implicitWidth: implicitHeight
+                  labelSize: theme.displaySize
+                  bare: true
+                  Accessible.name: "iPhone settings"
+                  ToolTip.visible: hovered
+                  ToolTip.text: "iPhone settings"
+                  onClicked: root.phoneSettingsVisible = true
+                }
+                Item { Layout.fillWidth: true }
               }
-              FerryButton {
-                text: "Send"
-                enabled: composer.enabled && composer.text.trim() !== "" &&
-                         (!conversationPane.thread.is_group ||
-                          root.confirmedGroupSignature === root.groupSignature(conversationPane.thread)) &&
-                         !sendProcess.running
-                onClicked: {
-                  var thread = conversationPane.thread
-                  var args = ["/usr/bin/blueferry", "thread-send", thread.key, composer.text]
-                  if (thread.is_group) args.push("--confirm-group")
-                  sendProcess.command = args
-                  sendProcess.running = true
+            }
+          }
+
+          Rectangle {
+            id: conversationPane
+            SplitView.fillWidth: true
+            SplitView.minimumWidth: theme.scaled(320)
+            property var thread: root.selectedThread()
+            color: theme.cardSurface
+            radius: theme.panelRadius
+            border.color: theme.divider
+
+            ColumnLayout {
+              anchors.fill: parent
+              anchors.margins: theme.scaled(12)
+              spacing: theme.scaled(10)
+
+              RowLayout {
+                Layout.fillWidth: true
+                FerryLabel {
+                  Layout.fillWidth: true
+                  text: conversationPane.thread
+                    ? conversationPane.thread.name : "SELECT A CONVERSATION"
+                  textFormat: Text.PlainText
+                  color: conversationPane.thread ? theme.windowText : theme.muted
+                  font.bold: true
+                  font.pixelSize: theme.headingSize
+                  elide: Text.ElideRight
+                }
+                FerryLabel {
+                  visible: conversationPane.thread !== null
+                  text: conversationPane.thread && conversationPane.thread.is_group
+                    ? "GROUP" : "DIRECT"
+                  color: theme.muted
+                  font.pixelSize: theme.captionSize
+                  font.bold: true
+                  font.letterSpacing: 1
+                }
+              }
+
+              Rectangle {
+                Layout.fillWidth: true
+                implicitHeight: 1
+                color: theme.divider
+              }
+
+              ListView {
+                id: messageList
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                clip: true
+                spacing: theme.scaled(8)
+                model: conversationPane.thread ? conversationPane.thread.messages : []
+                delegate: Item {
+                  id: messageRow
+                  required property var modelData
+                  width: messageList.width
+                  implicitHeight: bubble.implicitHeight + theme.scaled(3)
+
+                  Rectangle {
+                    id: bubble
+                    readonly property int bubblePadding: theme.scaled(12)
+                    width: Math.min(messageList.width * 0.76,
+                                    Math.max(theme.scaled(92),
+                                      Math.max(messageBody.implicitWidth,
+                                               messageTimestamp.implicitWidth)
+                                        + bubblePadding * 2))
+                    implicitHeight: bubbleContent.implicitHeight + bubblePadding * 2
+                    anchors.right: messageRow.modelData.outgoing ? parent.right : undefined
+                    anchors.left: messageRow.modelData.outgoing ? undefined : parent.left
+                    color: messageRow.modelData.outgoing
+                      ? theme.primarySurface : theme.raisedSurface
+                    border.color: messageRow.modelData.outgoing
+                      ? "transparent" : theme.divider
+                    radius: theme.controlRadius
+
+                    Column {
+                      id: bubbleContent
+                      anchors.left: parent.left
+                      anchors.right: parent.right
+                      anchors.top: parent.top
+                      anchors.margins: bubble.bubblePadding
+                      spacing: theme.scaled(5)
+
+                      Text {
+                        id: messageBody
+                        width: parent.width
+                        text: messageRow.modelData.body
+                        textFormat: Text.PlainText
+                        color: messageRow.modelData.outgoing
+                          ? theme.primaryText : theme.windowText
+                        font.family: theme.fontFamily
+                        font.pixelSize: theme.baseFontSize
+                        wrapMode: Text.Wrap
+                      }
+                      Text {
+                        id: messageTimestamp
+                        width: parent.width
+                        visible: text !== ""
+                        text: messageRow.modelData.display_timestamp || ""
+                        textFormat: Text.PlainText
+                        color: messageRow.modelData.outgoing
+                          ? Qt.rgba(theme.primaryText.r, theme.primaryText.g,
+                                    theme.primaryText.b, 0.62)
+                          : theme.muted
+                        font.family: theme.fontFamily
+                        font.pixelSize: theme.captionSize
+                        horizontalAlignment: Text.AlignRight
+                      }
+                    }
+                  }
+                }
+
+                Column {
+                  anchors.centerIn: parent
+                  visible: conversationPane.thread === null
+                  spacing: theme.scaled(8)
+                  FerryLabel {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    text: "✦"
+                    color: theme.muted
+                    font.pixelSize: theme.displaySize
+                  }
+                  FerryLabel {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    text: "PICK A THREAD"
+                    color: theme.windowText
+                    font.bold: true
+                    font.letterSpacing: 1
+                  }
+                  FerryLabel {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    text: "Your messages stay local to this machine."
+                    color: theme.muted
+                    font.pixelSize: theme.captionSize
+                  }
+                }
+              }
+
+              FerryCheckBox {
+                id: confirmGroup
+                property string signature: root.groupSignature(conversationPane.thread)
+                visible: conversationPane.thread && conversationPane.thread.is_group
+                text: conversationPane.thread
+                  ? "Confirm group: " + conversationPane.thread.recipients.join(", ") : ""
+                checked: signature !== "" && root.confirmedGroupSignature === signature
+                onToggled: {
+                  if (checked) root.confirmedGroupSignature = signature
+                  else if (root.confirmedGroupSignature === signature)
+                    root.confirmedGroupSignature = ""
+                }
+                Layout.fillWidth: true
+              }
+
+              Rectangle {
+                Layout.fillWidth: true
+                implicitHeight: composerRow.implicitHeight + theme.scaled(12)
+                color: theme.raisedSurface
+                border.color: theme.divider
+                radius: theme.controlRadius
+
+                RowLayout {
+                  id: composerRow
+                  anchors.fill: parent
+                  anchors.margins: theme.scaled(6)
+                  FerryTextField {
+                    id: composer
+                    Layout.fillWidth: true
+                    placeholderText: "Write a message…"
+                    flat: true
+                    enabled: conversationPane.thread && conversationPane.thread.reply_ready
+                    onAccepted: {
+                      if (sendMessageButton.enabled) sendMessageButton.clicked()
+                    }
+                  }
+                  FerryButton {
+                    id: sendMessageButton
+                    text: sendProcess.running ? "SENDING" : "SEND"
+                    highlighted: true
+                    enabled: composer.enabled && composer.text.trim() !== "" &&
+                             (!conversationPane.thread.is_group ||
+                              root.confirmedGroupSignature === root.groupSignature(conversationPane.thread)) &&
+                             !sendProcess.running
+                    onClicked: {
+                      var thread = conversationPane.thread
+                      var args = ["/usr/bin/blueferry", "thread-send", thread.key, composer.text]
+                      if (thread.is_group) args.push("--confirm-group")
+                      sendProcess.command = args
+                      sendProcess.running = true
+                    }
+                  }
                 }
               }
             }
           }
         }
 
-        ScrollView {
-          id: iphoneScroll
+        Rectangle {
+          id: settingsDeck
           visible: root.phoneSettingsVisible
           Layout.fillWidth: true
           Layout.fillHeight: true
-          contentWidth: availableWidth
+          color: theme.cardSurface
+          radius: theme.panelRadius
+          border.color: theme.divider
 
           ColumnLayout {
-            width: Math.min(iphoneScroll.availableWidth, theme.scaled(560))
-            x: Math.max(0, (iphoneScroll.availableWidth - width) / 2)
-            spacing: theme.scaled(12)
+            anchors.fill: parent
+            anchors.margins: theme.scaled(10)
+            spacing: theme.scaled(6)
 
-          Label {
+            ScrollView {
+              id: iphoneScroll
+              Layout.fillWidth: true
+              Layout.fillHeight: true
+              contentWidth: availableWidth
+
+              ColumnLayout {
+                width: Math.min(iphoneScroll.availableWidth, theme.scaled(620))
+                x: Math.max(0, (iphoneScroll.availableWidth - width) / 2)
+                spacing: theme.scaled(12)
+
+          FerrySectionLabel {
+            text: "iPhone settings"
+            topPadding: 0
+          }
+          FerryLabel {
             text: root.configured ? "Your iPhone" : "Connect an iPhone"
-            font.pixelSize: theme.headingSize
+            font.pixelSize: theme.displaySize
             font.bold: true
           }
-          Label {
+          Rectangle {
+            Layout.fillWidth: true
+            implicitHeight: 1
+            color: theme.divider
+          }
+          FerryLabel {
             text: root.pairingStatus
             textFormat: Text.PlainText
             wrapMode: Text.Wrap
             Layout.fillWidth: true
             visible: !root.configured
           }
-          Label {
+          FerryLabel {
             text: root.onboardingStage === "ready"
               ? "Bluetooth services and iPhone permissions have been verified."
               : root.onboardingStage === "ready-without-ancs"
                 ? "Messages and contacts have been verified; per-app notifications are unavailable."
                 : root.onboardingStage === "iphone-settings"
-                    ? root.pendingIphoneSetupText()
+                    ? root.mapConnectionRefused()
+                      ? "Cannot retrieve or send messages - are you connected to another computer? We will reconnect once your phone is free"
+                      : "Connected. Finish the remaining iPhone permissions below."
                     : "Controller: " + (root.adapterName || "checking…")
             wrapMode: Text.Wrap
             Layout.fillWidth: true
@@ -844,8 +1037,8 @@ ShellRoot {
             text: "Pair an iPhone"
             visible: !root.configured && !root.targetSaved
           }
-          Label {
-            text: "Pairing takes two steps. Scan only finds nearby devices; it does not pair them. After scanning, select the iPhone and choose Pair Selected iPhone."
+          FerryLabel {
+            text: "Open your Bluetooth settings, click Scan, pick your phone, then hit Pair. When this computer shows up in \"Other Devices\", tap it and approve the prompts."
             wrapMode: Text.Wrap
             Layout.fillWidth: true
             visible: !root.configured && !root.targetSaved
@@ -898,7 +1091,7 @@ ShellRoot {
               pairProcess.running = true
             }
           }
-          Label {
+          FerryLabel {
             text: root.pairingPasskey === "" ? "Pairing confirmation" : root.pairingPasskey
             font.bold: true
             font.pixelSize: root.pairingPasskey === "" ? theme.baseFontSize : theme.headingSize
@@ -929,15 +1122,10 @@ ShellRoot {
               }
             }
           }
-          FerryCheckBox {
-            id: confirmForget
-            text: "I will also forget this computer in the iPhone's Bluetooth settings"
-            visible: root.targetSaved && !(root.bondStateKnown && !root.targetBonded)
-          }
           RowLayout {
             visible: root.targetSaved
             Layout.fillWidth: true
-            Label {
+            FerryLabel {
               Layout.fillWidth: true
               text: root.configuredPairingDevice()
                 ? root.configuredPairingDevice().name : "iPhone"
@@ -948,12 +1136,9 @@ ShellRoot {
                 : root.bondStateKnown && !root.targetBonded
                   ? "Clear Saved Phone" : "Unpair"
               enabled: root.configuredMac !== "" && !forgetProcess.running
-                       && ((root.bondStateKnown && !root.targetBonded)
-                           || confirmForget.checked)
               onClicked: {
                 forgetProcess.command = ["/usr/bin/blueferry", "pairing-forget", root.configuredMac]
                 forgetProcess.running = true
-                confirmForget.checked = false
               }
             }
           }
@@ -961,7 +1146,7 @@ ShellRoot {
             text: "Finish Setup on the iPhone"
             visible: root.configured && root.pendingIphoneSetupTasks().length > 0
           }
-          Label {
+          FerryLabel {
             text: root.pendingIphoneSetupText()
             wrapMode: Text.Wrap
             Layout.fillWidth: true
@@ -977,7 +1162,7 @@ ShellRoot {
               : root.backendStatus.map ? "Connected" : "Unavailable"
             Layout.fillWidth: true
           }
-          Label {
+          FerryLabel {
             visible: root.mapConnectionRefused()
             text: "iPhone is refusing message connections; is it connected to another computer?"
             textFormat: Text.PlainText
@@ -995,7 +1180,7 @@ ShellRoot {
             value: root.backendStatus.ancs ? "Connected" : "Unavailable"
             Layout.fillWidth: true
           }
-          Label {
+          FerryLabel {
             text: !root.notificationsSupported
               ? "Bluetooth bearer API: not required"
               : root.bluezActive
@@ -1006,11 +1191,6 @@ ShellRoot {
           }
           FerrySectionLabel {
             text: "Desktop notifications"
-          }
-          Label {
-            text: "Choose which iPhone events create desktop popups. Messages only is the default."
-            wrapMode: Text.Wrap
-            Layout.fillWidth: true
           }
           FerryComboBox {
             id: notificationPolicyCombo
@@ -1029,12 +1209,6 @@ ShellRoot {
           }
           FerrySectionLabel {
             text: "Local data"
-          }
-          Label {
-            text: root.storageDetail
-            textFormat: Text.PlainText
-            wrapMode: Text.Wrap
-            Layout.fillWidth: true
           }
           FerryComboBox {
             id: storagePolicyCombo
@@ -1068,7 +1242,23 @@ ShellRoot {
             id: confirmStorageChange
             text: "I understand that changing storage mode clears local messages and contacts"
           }
-            Item { Layout.fillHeight: true }
+              }
+            }
+
+            RowLayout {
+              Layout.fillWidth: true
+              FerryButton {
+                text: "⚙"
+                implicitWidth: implicitHeight
+                labelSize: theme.displaySize
+                bare: true
+                Accessible.name: "Back to messages"
+                ToolTip.visible: hovered
+                ToolTip.text: "Back to messages"
+                onClicked: root.phoneSettingsVisible = false
+              }
+              Item { Layout.fillWidth: true }
+            }
           }
         }
       }
@@ -1082,7 +1272,7 @@ ShellRoot {
         modal: true
         focus: true
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
-        padding: theme.scaled(16)
+        padding: theme.scaled(18)
 
         onOpened: {
           newRecipient.text = ""
@@ -1098,20 +1288,25 @@ ShellRoot {
         }
 
         background: Rectangle {
-          color: theme.windowSurface
-          border.color: theme.surfaceBorder
+          color: theme.cardSurface
+          border.color: theme.divider
           radius: theme.panelRadius
+        }
+
+        Overlay.modal: Rectangle {
+          color: Qt.rgba(theme.windowSurface.r, theme.windowSurface.g,
+                         theme.windowSurface.b, 0.72)
         }
 
         contentItem: ColumnLayout {
           spacing: theme.scaled(8)
 
-          Label {
+          FerryLabel {
             text: "New message"
             font.bold: true
             font.pixelSize: theme.headingSize
           }
-          Label {
+          FerryLabel {
             text: "To"
             color: theme.muted
           }
@@ -1159,7 +1354,7 @@ ShellRoot {
               }
             }
           }
-          Label {
+          FerryLabel {
             text: "Message"
             color: theme.muted
           }
@@ -1197,8 +1392,16 @@ ShellRoot {
     }
   }
 
+  component FerryLabel: Label {
+    color: theme.windowText
+    font.family: theme.fontFamily
+    font.pixelSize: theme.baseFontSize
+  }
+
   component FerryButton: Button {
     id: control
+    property real labelSize: theme.baseFontSize
+    property bool bare: false
     implicitHeight: theme.scaled(34)
     leftPadding: theme.scaled(12)
     rightPadding: theme.scaled(12)
@@ -1207,25 +1410,34 @@ ShellRoot {
 
     contentItem: Text {
       text: control.text
-      color: control.enabled ? theme.windowText : theme.muted
+      color: !control.enabled ? theme.muted
+        : control.bare && control.hovered ? theme.accent
+        : control.highlighted ? theme.primaryText : theme.windowText
       font.family: theme.fontFamily
-      font.pixelSize: theme.baseFontSize
+      font.pixelSize: control.labelSize
+      font.bold: control.highlighted
       horizontalAlignment: Text.AlignHCenter
       verticalAlignment: Text.AlignVCenter
       elide: Text.ElideRight
     }
     background: Rectangle {
-      color: control.down || control.highlighted || control.checked
-        ? theme.selectedSurface
-        : control.hovered ? theme.hoverSurface : "transparent"
-      border.color: control.activeFocus ? theme.accent : theme.surfaceBorder
-      radius: 0
+      color: control.bare ? "transparent"
+        : control.highlighted
+        ? theme.primarySurface
+        : control.down || control.checked ? theme.selectedSurface
+          : control.hovered ? theme.hoverSurface : theme.control
+      border.color: control.bare
+        ? control.activeFocus ? theme.accent : "transparent"
+        : control.activeFocus ? theme.accent
+        : control.highlighted ? "transparent" : theme.divider
+      radius: theme.controlRadius
       opacity: control.enabled ? 1.0 : 0.55
     }
   }
 
   component FerryTextField: TextField {
     id: control
+    property bool flat: false
     implicitHeight: theme.scaled(36)
     leftPadding: theme.scaled(10)
     rightPadding: theme.scaled(10)
@@ -1237,9 +1449,10 @@ ShellRoot {
     font.pixelSize: theme.baseFontSize
     selectByMouse: true
     background: Rectangle {
-      color: "transparent"
-      border.color: control.activeFocus ? theme.accent : theme.surfaceBorder
-      radius: 0
+      color: control.flat ? "transparent" : theme.control
+      border.color: control.activeFocus ? theme.accent
+        : control.flat ? "transparent" : theme.divider
+      radius: theme.controlRadius
     }
   }
 
@@ -1252,18 +1465,18 @@ ShellRoot {
       y: (control.height - height) / 2
       implicitWidth: theme.scaled(15)
       implicitHeight: theme.scaled(15)
-      color: control.checked ? theme.selectedSurface : "transparent"
-      border.color: control.activeFocus ? theme.accent : theme.surfaceBorder
-      radius: 0
+      color: control.checked ? theme.primarySurface : theme.control
+      border.color: control.activeFocus ? theme.accent : theme.divider
+      radius: theme.scaled(4)
       Text {
         anchors.centerIn: parent
         text: control.checked ? "✓" : ""
-        color: theme.windowText
+        color: control.checked ? theme.primaryText : theme.windowText
         font.family: theme.fontFamily
         font.pixelSize: theme.captionSize
       }
     }
-    contentItem: Label {
+    contentItem: FerryLabel {
       leftPadding: control.indicator.width + control.spacing
       text: control.text
       color: control.enabled ? theme.windowText : theme.muted
@@ -1282,7 +1495,7 @@ ShellRoot {
     font.family: theme.fontFamily
     font.pixelSize: theme.baseFontSize
 
-    contentItem: Label {
+    contentItem: FerryLabel {
       text: control.displayText
       color: control.enabled ? theme.windowText : theme.muted
       font: control.font
@@ -1298,9 +1511,9 @@ ShellRoot {
       font.pixelSize: theme.baseFontSize
     }
     background: Rectangle {
-      color: control.hovered ? theme.hoverSurface : "transparent"
-      border.color: control.activeFocus ? theme.accent : theme.surfaceBorder
-      radius: 0
+      color: control.hovered ? theme.hoverSurface : theme.control
+      border.color: control.activeFocus ? theme.accent : theme.divider
+      radius: theme.controlRadius
     }
     delegate: ItemDelegate {
       id: option
@@ -1334,29 +1547,39 @@ ShellRoot {
       }
       background: Rectangle {
         color: theme.windowSurface
-        border.color: theme.surfaceBorder
-        radius: 0
+        border.color: theme.divider
+        radius: theme.controlRadius
       }
     }
   }
 
-  component FerrySectionLabel: Label {
+  component FerrySectionLabel: FerryLabel {
     color: theme.muted
     font.family: theme.fontFamily
     font.pixelSize: theme.captionSize
     font.bold: true
     font.capitalization: Font.AllUppercase
     font.letterSpacing: 1
-    topPadding: theme.scaled(4)
+    topPadding: theme.scaled(12)
+    bottomPadding: theme.scaled(2)
   }
 
   component FerryInfoRow: Item {
     property string label: ""
     property string value: ""
     implicitHeight: Math.max(infoLabel.implicitHeight, infoValue.implicitHeight)
+      + theme.scaled(18)
+    Rectangle {
+      anchors.fill: parent
+      color: theme.cardSurface
+      border.color: theme.divider
+      radius: theme.controlRadius
+    }
     Text {
       id: infoLabel
       anchors.left: parent.left
+      anchors.leftMargin: theme.scaled(12)
+      anchors.verticalCenter: parent.verticalCenter
       text: parent.label
       color: theme.muted
       font.family: theme.fontFamily
@@ -1365,6 +1588,8 @@ ShellRoot {
     Text {
       id: infoValue
       anchors.right: parent.right
+      anchors.rightMargin: theme.scaled(12)
+      anchors.verticalCenter: parent.verticalCenter
       text: parent.value
       color: theme.windowText
       font.family: theme.fontFamily

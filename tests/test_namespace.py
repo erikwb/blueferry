@@ -169,10 +169,32 @@ def test_quickshell_package_ships_its_quattro_theme_adapter() -> None:
     assert "/.local/state/omarchy/current/theme" in theme
     assert "fallbackPalette" in theme
     assert "readonly property color windowSurface" in theme
+    assert "readonly property color cardSurface" in theme
+    assert "readonly property color primarySurface" in theme
+    assert "readonly property color muted: blend(foreground, background, 0.62)" in theme
     assert "readonly property color selectedSurface" in theme
     assert "readonly property int panelRadius" in theme
+    assert "readonly property int controlRadius" in theme
     assert "color: theme.windowSurface" in shell
+    assert "component FerryLabel: Label" in shell
     assert "component FerryButton: Button" in shell
-    assert "component FerrySectionLabel: Label" in shell
+    assert "id: bubble" in shell
+    assert "messageTimestamp.implicitWidth" in shell
+    assert "theme.primarySurface" in shell
+    assert 'text: "BLUEFERRY"' not in shell
+    assert shell.count('text: "⚙"') == 2
+    assert "labelSize: theme.displaySize" in shell
+    assert "bare: true" in shell
+    assert "if (sendMessageButton.enabled) sendMessageButton.clicked()" in shell
+    assert "id: settingsDeck" in shell
+    assert 'text: "← MESSAGES"' not in shell
+    assert "Choose which iPhone events create desktop popups" not in shell
+    assert 'if (root.configured) return "• " + tasks' in shell
+    assert "I will also forget this computer" not in shell
+    assert "text: root.storageDetail" not in shell
+    assert "Cannot retrieve or send messages - are you connected to another computer?" in shell
+    assert "? root.mapConnectionRefused()" in shell
+    assert 'text: root.phoneSettingsVisible ? "MESSAGES" : "IPHONE"' not in shell
+    assert "component FerrySectionLabel: FerryLabel" in shell
     window_declaration = shell.split("FloatingWindow {", 1)[1].split("Pane {", 1)[0]
     assert 'color: "transparent"' not in window_declaration

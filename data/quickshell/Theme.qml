@@ -40,9 +40,10 @@ QtObject {
   readonly property color warning: quattroActive
     ? baseColor(["yellow", "orange"], urgent)
     : fallbackPalette.text
-  readonly property color muted: quattroActive
-    ? baseColor(["muted", "color8"], withAlpha(foreground, 0.65))
-    : fallbackPalette.mid
+  // SystemPalette.mid can be darker than a dark SystemPalette.window (the
+  // Qt fallback observed here was #1c1f21 over #202326). Derive secondary
+  // text from the actual foreground/background pair in every theme mode.
+  readonly property color muted: blend(foreground, background, 0.62)
 
   // BlueFerry is a normal application window, not a shell flyout. Quattro
   // themes may deliberately make popups translucent, but the app needs an
@@ -64,13 +65,18 @@ QtObject {
     : fallbackPalette.mid
   readonly property color control: quattroActive
     ? blend(windowText, windowSurface,
-            shellNumber("controls.normal-fill-alpha", 0.04))
+            shellNumber("controls.normal-fill-alpha", 0.055))
     : fallbackPalette.button
   readonly property color alternate: quattroActive
     ? blend(windowText, windowSurface, 0.07)
     : fallbackPalette.alternateBase
-  readonly property color hoverSurface: blend(windowText, windowSurface, 0.06)
-  readonly property color selectedSurface: blend(accent, windowSurface, 0.16)
+  readonly property color cardSurface: blend(windowText, windowSurface, 0.045)
+  readonly property color raisedSurface: blend(windowText, windowSurface, 0.12)
+  readonly property color hoverSurface: blend(windowText, windowSurface, 0.09)
+  readonly property color selectedSurface: blend(accent, windowSurface, 0.22)
+  readonly property color primarySurface: windowText
+  readonly property color primaryText: windowSurface
+  readonly property color divider: blend(windowText, windowSurface, 0.14)
   readonly property color highlightedText: quattroActive ? background : fallbackPalette.highlightedText
 
   readonly property real baseFontSize: shellNumber("font.base-size", 12)
@@ -80,12 +86,16 @@ QtObject {
   readonly property int panelPadding: shellPixels("spacing.panel-padding", 18)
   readonly property int smallGap: shellPixels("spacing.lg", 8)
   readonly property int cornerRadius: quattroActive ? hyprlandRadius : 14
-  readonly property int panelRadius: quattroActive ? 0 : cornerRadius
+  // App controls retain Omarchy's soft geometry even when compositor window
+  // rounding is disabled. The reference Quattro apps use rounded in-window
+  // surfaces independently of the outer Hyprland window decoration.
+  readonly property int panelRadius: Math.max(scaled(12), cornerRadius)
+  readonly property int controlRadius: Math.max(scaled(9), Math.round(panelRadius * 0.72))
   readonly property int headingSize: Math.max(1, Math.round(baseFontSize * 1.5))
   readonly property int displaySize: Math.max(1, Math.round(baseFontSize * 1.85))
   readonly property int captionSize: Math.max(1, Math.round(baseFontSize * 0.82))
   readonly property int bodySmallSize: Math.max(1, Math.round(baseFontSize * 0.9))
-  readonly property string fontFamily: "monospace"
+  readonly property string fontFamily: "iA Writer Mono S"
 
   function scaled(px) {
     var scale = spacingScale * (spacingFollowsFont ? fontScale : 1.0)
