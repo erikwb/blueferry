@@ -70,10 +70,11 @@ On first launch it opens the iPhone setup page.
 1. Let BlueFerry check the Bluetooth controller. If it offers to activate
    Bluetooth support, approve the Polkit prompt. Bluetooth will restart once,
    briefly disconnecting other devices.
-2. Keep the iPhone unlocked with its Bluetooth settings open. Choose **Scan**,
-   select the phone, and choose **Pair iPhone**. The confirmation code can take
-   around 15 seconds to appear on some controllers.
-3. Confirm the same code on both devices.
+2. Open your Bluetooth settings, click **Scan**, pick your phone, then hit
+   **Pair**. When this computer shows up in **Other Devices**, tap it and
+   approve the prompts. The confirmation code can take around 15 seconds to
+   appear on some controllers.
+3. Confirm the same code on both devices when prompted.
 4. On the iPhone, open **Settings → Bluetooth → ⓘ** beside the computer and
    enable **Show Message Notifications** and **Sync Contacts**.
 5. Wait for Messages and Contacts to show as connected. For the default

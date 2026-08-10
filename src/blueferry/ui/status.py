@@ -49,10 +49,11 @@ class IPhonePage(Gtk.Box):
         self.append(page)
 
         self._pairing_group = Adw.PreferencesGroup(
-            title=_("iPhone Pairing"),
+            title=_("Pair an iPhone"),
             description=_(
-                "Discovery and pairing are handled here. Confirm the matching "
-                "Bluetooth code when your desktop and iPhone display it."
+                "Open your Bluetooth settings, click Scan, pick your phone, then "
+                'hit Pair. When this computer shows up in "Other Devices", tap it '
+                "and approve the prompts."
             ),
         )
         self._device_model = Gtk.StringList()

@@ -13,6 +13,7 @@ Kirigami.ApplicationWindow {
     property var pendingThread: null
     property string pendingBody: ""
     property bool firstRunRedirected: false
+    property var iphoneSettingsPage: null
 
     visible: true
     width: 980
@@ -70,7 +71,26 @@ Kirigami.ApplicationWindow {
         // Utility pages belong in Kirigami's PageRow. Its modal layers are an
         // anchored StackView internally: animated pushes warn about those
         // anchors, while forcing an Immediate push can create an empty layer.
-        pageStack.push(iphonePageComponent)
+        if (iphoneSettingsPage !== null) {
+            pageStack.currentIndex = pageStack.depth - 1
+            return
+        }
+        iphoneSettingsPage = pageStack.push(iphonePageComponent)
+    }
+
+    function closePhoneSettings() {
+        if (iphoneSettingsPage === null)
+            return
+        const page = iphoneSettingsPage
+        iphoneSettingsPage = null
+        pageStack.removePage(page)
+    }
+
+    function togglePhoneSettings() {
+        if (iphoneSettingsPage !== null)
+            closePhoneSettings()
+        else
+            openPhoneSettings()
     }
 
     function onboardingTitle(stage) {
@@ -92,7 +112,7 @@ Kirigami.ApplicationWindow {
             "checking": qsTr("Inspecting the selected Bluetooth controller without changing it."),
             "incompatible": bridge.compatibility.issue || qsTr("A controller with BR/EDR and secure pairing is required."),
             "activate-bluetooth": qsTr("The packaged BlueZ bearer support needs one authorized Bluetooth restart."),
-            "select-device": qsTr("First scan for the phone, then select it and choose Pair Selected iPhone."),
+            "select-device": qsTr("Open your Bluetooth settings, click Scan, pick your phone, then hit Pair. When this computer shows up in \"Other Devices\", tap it and approve the prompts."),
             "starting": qsTr("The configured backend is starting. This normally takes a few seconds."),
             "iphone-settings": pendingIphoneSetupText(),
             "ready": qsTr("Bluetooth services and iPhone permissions have been verified."),
@@ -154,7 +174,10 @@ Kirigami.ApplicationWindow {
             Kirigami.Action {
                 text: qsTr("About BlueFerry")
                 icon.name: "help-about"
-                onTriggered: root.pageStack.push(aboutPage)
+                onTriggered: {
+                    root.closePhoneSettings()
+                    root.pageStack.push(aboutPage)
+                }
             },
             Kirigami.Action {
                 text: qsTr("Quit")
@@ -392,9 +415,9 @@ Kirigami.ApplicationWindow {
 
         actions: [
             Kirigami.Action {
-                text: qsTr("Refresh")
-                icon.name: "view-refresh"
-                onTriggered: root.bridge.refresh()
+                text: qsTr("Settings")
+                icon.name: "settings-configure"
+                onTriggered: root.togglePhoneSettings()
             }
         ]
 
@@ -654,6 +677,13 @@ Kirigami.ApplicationWindow {
         Kirigami.ScrollablePage {
             id: iphonePage
             title: qsTr("iPhone Settings")
+        actions: [
+            Kirigami.Action {
+                text: qsTr("Close Settings")
+                icon.name: "window-close"
+                onTriggered: root.closePhoneSettings()
+            }
+        ]
         property int selectedDevice: -1
         property var device: selectedDevice >= 0 && selectedDevice < root.bridge.devices.length
             ? root.bridge.devices[selectedDevice]
@@ -687,7 +717,7 @@ Kirigami.ApplicationWindow {
                     Layout.fillWidth: true
                     wrapMode: Text.Wrap
                     visible: !root.bridge.configured
-                    text: qsTr("Keep Bluetooth settings open on the unlocked iPhone. Scan for it first, then explicitly pair the selected device.")
+                    text: qsTr("Keep the iPhone unlocked with its Bluetooth settings open during pairing.")
                 }
 
                 Kirigami.InlineMessage {
@@ -712,7 +742,7 @@ Kirigami.ApplicationWindow {
                     Layout.fillWidth: true
                     visible: !root.bridge.configured
                     wrapMode: Text.Wrap
-                    text: qsTr("Pairing takes two steps. Scan only finds nearby devices; it does not pair them. After scanning, select the iPhone and choose Pair Selected iPhone.")
+                    text: qsTr("Open your Bluetooth settings, click Scan, pick your phone, then hit Pair. When this computer shows up in \"Other Devices\", tap it and approve the prompts.")
                 }
 
                 Kirigami.FormLayout {

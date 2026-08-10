@@ -97,6 +97,16 @@ def test_qt_package_ships_the_kirigami_ui_and_dependencies() -> None:
     assert "QtWidgets" not in (ROOT / "src" / "blueferry" / "qt" / "app.py").read_text()
 
 
+def test_qt_messages_toolbar_toggles_dismissible_settings_pane() -> None:
+    qml = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
+
+    assert 'text: qsTr("Settings")' in qml
+    assert "onTriggered: root.togglePhoneSettings()" in qml
+    assert 'text: qsTr("Close Settings")' in qml
+    assert "pageStack.removePage(page)" in qml
+    assert 'text: qsTr("Refresh")' not in qml
+
+
 def test_gui_clients_keep_phone_settings_out_of_primary_navigation() -> None:
     gtk_window = (ROOT / "src/blueferry/ui/window.py").read_text()
     quickshell = (ROOT / "data/quickshell/shell.qml").read_text()
@@ -120,6 +130,17 @@ def test_all_gui_clients_offer_contacts_aware_new_messages() -> None:
     assert 'text: qsTr("New Message")' in qt_qml
     assert 'Accessible.name: "New message"' in quickshell
     assert '"contacts-json"' in quickshell
+
+
+def test_all_gui_clients_explain_phone_side_pairing_step() -> None:
+    gtk = (ROOT / "src/blueferry/ui/status.py").read_text()
+    qt = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
+    quickshell = (ROOT / "data/quickshell/shell.qml").read_text()
+
+    for client in (gtk, qt, quickshell):
+        assert "When this computer shows up" in client
+        assert "Other Devices" in client
+        assert "tap it" in client
 
 
 def test_all_gui_clients_explain_map_connection_refusal() -> None:
