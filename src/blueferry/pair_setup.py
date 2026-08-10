@@ -435,28 +435,40 @@ def complete_pairing(
                         "org.bluez.Device1",
                     ).Pair(timeout=120.0)
                 else:
-                    from blueferry.pairing_agent import RegisteredPairingAgent
+                    from blueferry.pairing_agent import (
+                        RegisteredPairingAgent,
+                        desktop_pairing_manager_present,
+                    )
 
-                    # Connecting the unpaired ACL makes iOS initiate the
-                    # pairing itself, and the authentication initiator is the
-                    # side that derives the cross-transport LE keys. A
-                    # Linux-initiated Device1.Pair() left an Intel AX210 with
-                    # a BR/EDR-only bond because the iPhone role-switches to
-                    # central and then neither side runs SMP-over-BREDR.
-                    # Driving pairing through Connect gets the dual bond on
-                    # every tested controller, with the user only confirming
-                    # the numeric comparison on both screens.
-                    with RegisteredPairingAgent(
-                        device.device_path,
-                        confirmation,
-                        display,
-                    ) as registered:
-                        _connect_classic(
+                    if desktop_pairing_manager_present():
+                        # KDE BlueDevil, GNOME Shell, and Blueman own both the
+                        # confirmation UI and the surrounding post-pair
+                        # connection lifecycle. Preserve the desktop-proven
+                        # Device1.Pair flow instead of racing that manager
+                        # with BlueFerry's Connect-driven transaction.
+                        dbus.Interface(
+                            get_system_bus().get_object(
+                                "org.bluez", device.device_path
+                            ),
+                            "org.bluez.Device1",
+                        ).Pair(timeout=120.0)
+                    else:
+                        # Connecting the unpaired ACL makes iOS initiate the
+                        # pairing itself, and the authentication initiator is
+                        # the side that derives the cross-transport LE keys.
+                        # Use this fallback when no interactive desktop agent
+                        # owns the full pairing lifecycle.
+                        with RegisteredPairingAgent(
                             device.device_path,
-                            timeout=60.0,
-                            settle=False,
-                        )
-                        registered.wait_for_pair(timeout=120.0)
+                            confirmation,
+                            display,
+                        ) as registered:
+                            _connect_classic(
+                                device.device_path,
+                                timeout=60.0,
+                                settle=False,
+                            )
+                            registered.wait_for_pair(timeout=120.0)
             except dbus.exceptions.DBusException as error:
                 name = error.get_dbus_name() or ""
                 if name in {

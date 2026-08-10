@@ -89,6 +89,44 @@ def test_agent_rejects_requests_for_any_other_device():
     assert raised.value.get_dbus_name() == "org.bluez.Error.Rejected"
 
 
+def test_gnome_shell_is_recognized_as_desktop_pairing_manager():
+    class Bus:
+        @staticmethod
+        def list_names():
+            return ["org.gnome.Shell", "org.bluez.obex"]
+
+    assert pairing_agent.desktop_pairing_manager_present(Bus()) is True
+
+
+def test_kde_requires_loaded_bluedevil_module(monkeypatch):
+    class Bus:
+        @staticmethod
+        def list_names():
+            return ["org.kde.kded6"]
+
+        @staticmethod
+        def get_object(*_args):
+            return object()
+
+    class Kded:
+        @staticmethod
+        def loadedModules(**_kwargs):
+            return ["networkmanagement", "bluedevil"]
+
+    monkeypatch.setattr(pairing_agent.dbus, "Interface", lambda *_args: Kded())
+
+    assert pairing_agent.desktop_pairing_manager_present(Bus()) is True
+
+
+def test_headless_bluez_services_are_not_treated_as_interactive_manager():
+    class Bus:
+        @staticmethod
+        def list_names():
+            return ["org.bluez.obex", "io.weirdware.BlueFerry"]
+
+    assert pairing_agent.desktop_pairing_manager_present(Bus()) is False
+
+
 def test_registered_agent_does_not_displace_desktop_default():
     calls = []
 

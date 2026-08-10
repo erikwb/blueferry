@@ -20,6 +20,48 @@ AGENT_PATH = "/io/weirdware/BlueFerry/PairingAgent"
 ConfirmationCallback = Callable[[int | None], bool]
 DisplayCallback = Callable[[int], None]
 
+_DESKTOP_AGENT_BUS_NAMES = {
+    "org.blueman.Applet",
+    "org.cinnamon",
+    "org.Cinnamon",
+    "org.gnome.Shell",
+}
+_KDE_AGENT_MODULES = {
+    "org.kde.kded5": "org.kde.kded5",
+    "org.kde.kded6": "org.kde.kded6",
+}
+
+
+def desktop_pairing_manager_present(bus=None) -> bool:
+    """Return whether a common interactive desktop pairing agent is active.
+
+    BlueZ does not expose its registered/default agent list. Recognize the
+    session services that own pairing UI on the desktops BlueFerry supports;
+    deliberately ignore generic headless agents such as ``bt-agent`` because
+    they may advertise NoInputNoOutput and cannot show numeric comparison.
+    """
+    try:
+        session = bus or dbus.SessionBus()
+        names = {str(name) for name in session.list_names()}
+    except dbus.exceptions.DBusException:
+        return False
+    if names & _DESKTOP_AGENT_BUS_NAMES:
+        return True
+    for name, interface_name in _KDE_AGENT_MODULES.items():
+        if name not in names:
+            continue
+        try:
+            interface = dbus.Interface(
+                session.get_object(name, "/kded"),
+                interface_name,
+            )
+            modules = interface.loadedModules(timeout=2.0)
+        except dbus.exceptions.DBusException:
+            continue
+        if "bluedevil" in {str(module).casefold() for module in modules}:
+            return True
+    return False
+
 
 class _Rejected(dbus.exceptions.DBusException):
     _dbus_error_name = "org.bluez.Error.Rejected"

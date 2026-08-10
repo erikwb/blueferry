@@ -638,6 +638,9 @@ def test_interactive_pairing_connects_and_lets_the_iphone_initiate(monkeypatch):
     monkeypatch.setattr(bluez_setup, "register_advert", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(bluez_setup, "unregister_advert", lambda _adapter: None)
     monkeypatch.setattr(pairing_agent, "RegisteredPairingAgent", Agent)
+    monkeypatch.setattr(
+        pairing_agent, "desktop_pairing_manager_present", lambda: False
+    )
 
     def connect_classic(path, **kwargs):
         if "timeout" in kwargs:
@@ -666,6 +669,53 @@ def test_interactive_pairing_connects_and_lets_the_iphone_initiate(monkeypatch):
         "agent-exit",
         "settled",
     ]
+
+
+def test_interactive_pairing_uses_device_pair_with_desktop_manager(monkeypatch):
+    from blueferry import pairing_agent
+
+    unpaired = _device(paired=False)
+    paired = _device(paired=True)
+    calls = []
+
+    class DeviceInterface:
+        def Pair(self, **kwargs):
+            calls.append(("pair", kwargs["timeout"]))
+
+    class Bus:
+        @staticmethod
+        def get_object(*_args):
+            return object()
+
+    monkeypatch.setattr(pair_setup, "_device", lambda _mac: unpaired)
+    monkeypatch.setattr(pair_setup, "_wait_for_paired_device", lambda _mac: paired)
+    _compatible(monkeypatch)
+    monkeypatch.setattr(bluez_setup, "prepare_classic", lambda **_kwargs: True)
+    monkeypatch.setattr(bluez_setup, "register_advert", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(bluez_setup, "unregister_advert", lambda _adapter: None)
+    monkeypatch.setattr(pair_setup, "get_system_bus", Bus)
+    monkeypatch.setattr(pair_setup.dbus, "Interface", lambda *_args: DeviceInterface())
+    monkeypatch.setattr(
+        pairing_agent, "desktop_pairing_manager_present", lambda: True
+    )
+    monkeypatch.setattr(
+        pairing_agent,
+        "RegisteredPairingAgent",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("agent must not register")),
+    )
+    monkeypatch.setattr(pair_setup, "trust_device", lambda *_args: None)
+    monkeypatch.setattr(pair_setup, "_connect_classic", lambda _path: None)
+    monkeypatch.setattr(pair_setup, "_connect_ancs", lambda _device: "connected")
+    monkeypatch.setattr(pair_setup, "write_local_env", lambda *_args: None)
+    monkeypatch.setattr(pair_setup, "_restart_user_service", lambda: None)
+
+    result = pair_setup.complete_pairing(
+        unpaired.mac,
+        confirmation=lambda _passkey: True,
+    )
+
+    assert calls == [("pair", 120.0)]
+    assert result["ok"] is True
 
 
 def test_peer_initiated_pairing_is_allowed_to_finish(monkeypatch):
