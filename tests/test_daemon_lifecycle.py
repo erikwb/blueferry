@@ -33,6 +33,7 @@ def _bare_daemon():
     instance._packaged = False
     instance._startup_id = None
     instance._initialization_retry_id = None
+    instance._target_config_check_id = None
     instance._initializing = True
     instance._running_release = "0.6.0-6"
     instance._release_missing_checks = 0
@@ -60,6 +61,11 @@ def test_start_publishes_dbus_before_scheduling_bluetooth(monkeypatch):
         daemon_mod.GLib,
         "timeout_add",
         lambda _delay, callback: scheduled.append(callback) or 1,
+    )
+    monkeypatch.setattr(
+        daemon_mod.GLib,
+        "timeout_add_seconds",
+        lambda _delay, _callback: 2,
     )
     monkeypatch.setattr(daemon_mod.signal, "signal", lambda *_args: None)
     monkeypatch.setattr(
@@ -140,4 +146,34 @@ def test_persistent_missing_release_marker_stops_cleanly(monkeypatch):
     assert instance._check_package_release() is True
     assert instance._check_package_release() is False
     assert instance._restart_after_upgrade is False
+    assert stopped == [True]
+
+
+def test_clearing_saved_target_stops_daemon_without_restart(monkeypatch):
+    instance = _bare_daemon()
+    stopped = []
+    monkeypatch.setattr(daemon_mod.config, "current_target", lambda: ("", "hci0"))
+    monkeypatch.setattr(daemon_mod.config, "IPHONE_MAC", "02:00:00:00:00:01")
+    monkeypatch.setattr(daemon_mod.config, "ADAPTER", "hci0")
+    monkeypatch.setattr(daemon_mod.main_loop, "quit", lambda: stopped.append(True))
+
+    assert instance._check_target_config() is False
+    assert instance._restart_after_upgrade is False
+    assert stopped == [True]
+
+
+def test_changing_saved_target_requests_restart(monkeypatch):
+    instance = _bare_daemon()
+    stopped = []
+    monkeypatch.setattr(
+        daemon_mod.config,
+        "current_target",
+        lambda: ("02:00:00:00:00:02", "hci1"),
+    )
+    monkeypatch.setattr(daemon_mod.config, "IPHONE_MAC", "02:00:00:00:00:01")
+    monkeypatch.setattr(daemon_mod.config, "ADAPTER", "hci0")
+    monkeypatch.setattr(daemon_mod.main_loop, "quit", lambda: stopped.append(True))
+
+    assert instance._check_target_config() is False
+    assert instance._restart_after_upgrade is True
     assert stopped == [True]

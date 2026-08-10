@@ -53,6 +53,7 @@ CONTACTS_REFRESH_SEC = 24 * 60 * 60  # 24h
 # Notice package replacement promptly without relying on pacman to reach into
 # every logged-in user's systemd instance.
 PACKAGE_RELEASE_CHECK_SEC = 10
+TARGET_CONFIG_CHECK_SEC = 2
 RESTART_AFTER_UPGRADE_EXIT = 75
 
 
@@ -94,6 +95,7 @@ class Daemon:
         self._packaged = packaged_release is not None
         self._running_release = packaged_release or __version__
         self._release_check_id: int | None = None
+        self._target_config_check_id: int | None = None
         self._restart_after_upgrade = False
         self._release_missing_checks = 0
         self._startup_id: int | None = None
@@ -159,6 +161,9 @@ class Daemon:
             self._release_check_id = GLib.timeout_add_seconds(
                 PACKAGE_RELEASE_CHECK_SEC, self._check_package_release
             )
+        self._target_config_check_id = GLib.timeout_add_seconds(
+            TARGET_CONFIG_CHECK_SEC, self._check_target_config
+        )
 
         for sig in (signal.SIGINT, signal.SIGTERM):
             signal.signal(sig, self._signal)
@@ -411,6 +416,22 @@ class Daemon:
         main_loop.quit()
         return False
 
+    def _check_target_config(self) -> bool:
+        mac, adapter = config.current_target()
+        if mac == config.IPHONE_MAC and adapter == config.ADAPTER:
+            return True
+        if not mac:
+            log.info("saved iPhone target was cleared; stopping daemon")
+        else:
+            log.info(
+                "saved iPhone target changed; restarting daemon for %s on %s",
+                mac,
+                adapter,
+            )
+            self._restart_after_upgrade = True
+        main_loop.quit()
+        return False
+
     def stop(self) -> None:
         log.info("=== BlueFerry stopping ===")
         self.bearers.stop()
@@ -418,6 +439,7 @@ class Daemon:
         for tid_attr in (
             "_contacts_refresh_id",
             "_release_check_id",
+            "_target_config_check_id",
             "_startup_id",
             "_initialization_retry_id",
         ):

@@ -22,6 +22,10 @@ CONFIG_DIR: Path = Path(
     os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config")
 ) / "blueferry"
 LOCAL_ENV_PATH: Path = CONFIG_DIR / "local.env"
+# Preserve which values genuinely came from the process environment before
+# ``_load_local_env`` copies file-backed values into ``os.environ``. Runtime
+# configuration checks must continue to honor explicit environment overrides.
+EXPLICIT_ENV_KEYS = frozenset(key for key in LOCAL_ENV_KEYS if key in os.environ)
 
 
 def read_local_env(path: Path | None = None) -> dict[str, str]:
@@ -80,6 +84,25 @@ def _configured_mac() -> str:
 def _configured_adapter() -> str:
     value = os.environ.get("BLUEFERRY_ADAPTER", "hci0").strip()
     return value if is_valid_adapter(value) else "hci0"
+
+
+def current_target() -> tuple[str, str]:
+    """Read the target that a newly started process would use right now."""
+    values = read_local_env()
+    mac = (
+        os.environ.get("BLUEFERRY_MAC", "")
+        if "BLUEFERRY_MAC" in EXPLICIT_ENV_KEYS
+        else values.get("BLUEFERRY_MAC", "")
+    ).strip().upper()
+    adapter = (
+        os.environ.get("BLUEFERRY_ADAPTER", "hci0")
+        if "BLUEFERRY_ADAPTER" in EXPLICIT_ENV_KEYS
+        else values.get("BLUEFERRY_ADAPTER", "hci0")
+    ).strip()
+    return (
+        mac if is_valid_mac(mac) else "",
+        adapter if is_valid_adapter(adapter) else "hci0",
+    )
 
 
 IPHONE_MAC: str = _configured_mac()
