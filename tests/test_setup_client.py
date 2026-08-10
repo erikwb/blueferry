@@ -1,6 +1,8 @@
 """The shared setup facade stays typed and delegates without touching BlueZ."""
 from __future__ import annotations
 
+import io
+
 from blueferry import pair_setup, setup_client
 
 
@@ -126,3 +128,39 @@ def test_complete_pairing_decodes_result_and_forget_delegates(monkeypatch):
     assert result.ancs_ready is True
     assert result.to_dict()["device"]["mac"] == device.mac
     assert forgotten == [device.mac]
+
+
+def test_isolated_pairing_answers_helper_confirmation(monkeypatch):
+    device = _device()
+
+    class Input(io.StringIO):
+        def flush(self):
+            pass
+
+    class Process:
+        def __init__(self):
+            self.stdin = Input()
+            self.stdout = iter([
+                '{"event":"confirmation","passkey":"123456"}\n',
+                '{"ok":true,"device":' + __import__("json").dumps(device.to_dict())
+                + ',"ancs_ready":true}\n',
+            ])
+
+        @staticmethod
+        def wait(*_args, **_kwargs):
+            return 0
+
+        @staticmethod
+        def poll():
+            return 0
+
+    process = Process()
+    monkeypatch.setattr(setup_client.subprocess, "Popen", lambda *_args, **_kwargs: process)
+
+    result = setup_client.SetupClient().complete_isolated(
+        device.mac,
+        confirmation=lambda passkey: passkey == 123456,
+    )
+
+    assert process.stdin.getvalue() == "yes\n"
+    assert result.ancs_ready is True

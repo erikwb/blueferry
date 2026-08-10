@@ -4,6 +4,7 @@ from __future__ import annotations
 import threading
 
 import dbus
+import dbus.mainloop
 import dbus.mainloop.glib
 from gi.repository import GLib
 
@@ -13,25 +14,41 @@ dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
 # connection is shared with a process that dispatches D-Bus from threads.
 dbus.mainloop.glib.threads_init()
 
-_system_bus: dbus.SystemBus | None = None
-_session_bus: dbus.SessionBus | None = None
 _thread_state = threading.local()
 
 
+def _worker_mainloop():
+    """Keep synchronous worker connections out of GTK's GLib dispatcher."""
+    if threading.current_thread() is threading.main_thread():
+        return None
+    return dbus.mainloop.NULL_MAIN_LOOP
+
+
 def get_system_bus() -> dbus.SystemBus:
-    """Return the process-wide system-bus connection, creating it lazily."""
-    global _system_bus
-    if _system_bus is None:
-        _system_bus = dbus.SystemBus()
-    return _system_bus
+    """Return a system-bus connection owned by the current thread."""
+    connection = getattr(_thread_state, "system_bus", None)
+    if connection is None:
+        # dbus-python's default shared connection is process-wide. GTK setup
+        # work runs beside the GLib UI loop, and dispatching that connection
+        # on one thread while another uses it can corrupt libdbus state.
+        connection = dbus.SystemBus(
+            private=True,
+            mainloop=_worker_mainloop(),
+        )
+        _thread_state.system_bus = connection
+    return connection
 
 
 def get_session_bus() -> dbus.SessionBus:
-    """Return the process-wide session-bus connection, creating it lazily."""
-    global _session_bus
-    if _session_bus is None:
-        _session_bus = dbus.SessionBus()
-    return _session_bus
+    """Return a session-bus connection owned by the current thread."""
+    connection = getattr(_thread_state, "session_bus", None)
+    if connection is None:
+        connection = dbus.SessionBus(
+            private=True,
+            mainloop=_worker_mainloop(),
+        )
+        _thread_state.session_bus = connection
+    return connection
 
 main_loop: GLib.MainLoop = GLib.MainLoop()
 

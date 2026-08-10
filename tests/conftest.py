@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import threading
 
 import dbus
 import pytest
@@ -50,7 +51,6 @@ def isolate_dbus(monkeypatch, request):
 
     monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", _unreachable_bus)
     monkeypatch.setenv("DBUS_SYSTEM_BUS_ADDRESS", _unreachable_bus)
-    monkeypatch.setattr(bus_module, "_session_bus", None)
-    monkeypatch.setattr(bus_module, "_system_bus", None)
+    monkeypatch.setattr(bus_module, "_thread_state", threading.local())
     monkeypatch.setattr(dbus, "SessionBus", _forbid_live_bus("session"))
     monkeypatch.setattr(dbus, "SystemBus", _forbid_live_bus("system"))

@@ -63,7 +63,7 @@ Kirigami.ApplicationWindow {
 
     function pendingIphoneSetupText() {
         const tasks = pendingIphoneSetupTasks()
-        return qsTr("Open Settings → Bluetooth on the iPhone, tap ⓘ next to this computer, then finish:\n• ")
+        return qsTr("Open Settings → Bluetooth on the iPhone, tap ⓘ next to this computer, then finish the settings below. After approving “Allow System Notifications,” you may need to return to the Bluetooth device list and reopen this computer before the other settings appear:\n• ")
             + tasks.join("\n• ")
     }
 
@@ -112,7 +112,7 @@ Kirigami.ApplicationWindow {
             "checking": qsTr("Inspecting the selected Bluetooth controller without changing it."),
             "incompatible": bridge.compatibility.issue || qsTr("A controller with BR/EDR and secure pairing is required."),
             "activate-bluetooth": qsTr("The packaged BlueZ bearer support needs one authorized Bluetooth restart."),
-            "select-device": qsTr("Open your Bluetooth settings, click Scan, pick your phone, then hit Pair. When this computer shows up in \"Other Devices\", tap it and approve the prompts."),
+            "select-device": qsTr("Scan for and select your iPhone here, then choose Pair. On the iPhone, open Settings → Bluetooth, find this computer under \"Other Devices\", tap it, and approve the matching codes. Pairing may appear idle for up to 15 seconds."),
             "starting": qsTr("The configured backend is starting. This normally takes a few seconds."),
             "iphone-settings": pendingIphoneSetupText(),
             "ready": qsTr("Bluetooth services and iPhone permissions have been verified."),
@@ -742,7 +742,7 @@ Kirigami.ApplicationWindow {
                     Layout.fillWidth: true
                     visible: !root.bridge.configured
                     wrapMode: Text.Wrap
-                    text: qsTr("Open your Bluetooth settings, click Scan, pick your phone, then hit Pair. When this computer shows up in \"Other Devices\", tap it and approve the prompts.")
+                    text: qsTr("Scan for and select your iPhone here, then choose Pair. On the iPhone, open Settings → Bluetooth, find this computer under \"Other Devices\", tap it, and approve the matching codes. Pairing may appear idle for up to 15 seconds.")
                 }
 
                 Kirigami.FormLayout {

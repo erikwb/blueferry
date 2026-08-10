@@ -51,9 +51,10 @@ class IPhonePage(Gtk.Box):
         self._pairing_group = Adw.PreferencesGroup(
             title=_("Pair an iPhone"),
             description=_(
-                "Open your Bluetooth settings, click Scan, pick your phone, then "
-                'hit Pair. When this computer shows up in "Other Devices", tap it '
-                "and approve the prompts."
+                "Scan for and select your iPhone here, then choose Pair. On the "
+                "iPhone, open Settings → Bluetooth, find this computer under "
+                '"Other Devices", tap it, and approve the matching codes. Pairing '
+                "may appear idle for up to 15 seconds."
             ),
         )
         self._device_model = Gtk.StringList()
@@ -96,7 +97,7 @@ class IPhonePage(Gtk.Box):
 
         pair = Adw.ActionRow(
             title=_("2. Pair the Selected iPhone"),
-            subtitle=_("Then confirm the matching code on both devices"),
+            subtitle=_("Confirm the code, then allow up to 15 seconds to finish"),
         )
         self._setup_spinner = Gtk.Spinner(valign=Gtk.Align.CENTER)
         pair.add_suffix(self._setup_spinner)
@@ -144,7 +145,10 @@ class IPhonePage(Gtk.Box):
             description=_(
                 "Linux pairing is only the first half. Even when BlueFerry "
                 "shows Connected, open Settings → Bluetooth, tap ⓘ next to "
-                "this computer, and check these options:"
+                "this computer, and check these options. After approving “Allow "
+                "System Notifications,” you may need to go back to the Bluetooth "
+                "device list and reopen this computer before the other settings "
+                "appear:"
             ),
         )
         self._iphone_setup_rows = {}
@@ -515,7 +519,7 @@ class IPhonePage(Gtk.Box):
             )
 
         self._run_setup(
-            lambda: self._setup.complete(
+            lambda: self._setup.complete_isolated(
                 device.mac,
                 confirmation=confirm,
                 display=display,

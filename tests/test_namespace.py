@@ -138,7 +138,7 @@ def test_all_gui_clients_explain_phone_side_pairing_step() -> None:
     quickshell = (ROOT / "data/quickshell/shell.qml").read_text()
 
     for client in (gtk, qt, quickshell):
-        assert "When this computer shows up" in client
+        assert "find this computer" in client
         assert "Other Devices" in client
         assert "tap it" in client
 
@@ -210,7 +210,7 @@ def test_quickshell_package_ships_its_quattro_theme_adapter() -> None:
     assert "id: settingsDeck" in shell
     assert 'text: "← MESSAGES"' not in shell
     assert "Choose which iPhone events create desktop popups" not in shell
-    assert 'if (root.configured) return "• " + tasks' in shell
+    assert "After approving “Allow System Notifications,”" in shell
     assert "I will also forget this computer" not in shell
     assert "text: root.storageDetail" not in shell
     assert "Cannot retrieve or send messages - are you connected to another computer?" in shell

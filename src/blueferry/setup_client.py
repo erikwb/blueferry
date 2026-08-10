@@ -1,12 +1,18 @@
 """Typed setup API shared by native clients and JSON command adapters."""
 from __future__ import annotations
 
+import json
+
+# This fixed, shell-free invocation launches BlueFerry's own helper module.
+import subprocess  # nosec B404
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
 from blueferry import pair_setup
 from blueferry.bluetooth_devices import PairedDevice
+from blueferry.errors import PairingError
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,6 +192,59 @@ class SetupClient:
                 display=display,
             )
         )
+
+    def complete_isolated(
+        self,
+        mac: str,
+        *,
+        confirmation: pair_setup.ConfirmationCallback,
+        display: pair_setup.DisplayCallback | None = None,
+    ) -> PairingResult:
+        """Run interactive pairing in a D-Bus/GLib-isolated child process."""
+        process = subprocess.Popen(  # nosec B603
+            [
+                sys.executable,
+                "-m",
+                "blueferry",
+                "pairing-complete",
+                mac,
+                "--interactive-agent",
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            bufsize=1,
+        )
+        if process.stdin is None or process.stdout is None:
+            process.terminate()
+            raise PairingError("Could not open the pairing helper pipes")
+        try:
+            for line in process.stdout:
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                if event.get("event") == "confirmation":
+                    raw = str(event.get("passkey", ""))
+                    accepted = confirmation(int(raw) if raw else None)
+                    process.stdin.write("yes\n" if accepted else "no\n")
+                    process.stdin.flush()
+                elif event.get("event") == "display":
+                    if display is not None:
+                        display(int(str(event["passkey"])))
+                elif event.get("ok") is True:
+                    process.wait()
+                    return PairingResult.from_dict(event)
+                elif event.get("ok") is False:
+                    raise PairingError(str(event.get("error", "Pairing failed")))
+            raise PairingError("Pairing helper exited without a result")
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                process.wait(timeout=5)
 
     def forget(self, mac: str) -> None:
         pair_setup.forget_device(mac)

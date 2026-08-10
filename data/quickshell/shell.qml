@@ -112,8 +112,9 @@ ShellRoot {
 
   function pendingIphoneSetupText() {
     var tasks = pendingIphoneSetupTasks().join("\n• ")
-    if (root.configured) return "• " + tasks
-    return "On the iPhone open Settings → Bluetooth, tap ⓘ next to this computer, then finish:\n• "
+    var instructions = "After approving “Allow System Notifications,” you may need to return to the Bluetooth device list and reopen this computer before the other settings appear."
+    if (root.configured) return instructions + "\n• " + tasks
+    return "On the iPhone open Settings → Bluetooth, tap ⓘ next to this computer, then finish the settings below. " + instructions + "\n• "
       + tasks
   }
 
@@ -1038,7 +1039,7 @@ ShellRoot {
             visible: !root.configured && !root.targetSaved
           }
           FerryLabel {
-            text: "Open your Bluetooth settings, click Scan, pick your phone, then hit Pair. When this computer shows up in \"Other Devices\", tap it and approve the prompts."
+            text: "Scan for and select your iPhone here, then choose Pair. On the iPhone, open Settings → Bluetooth, find this computer under \"Other Devices\", tap it, and approve the matching codes. Pairing may appear idle for up to 15 seconds."
             wrapMode: Text.Wrap
             Layout.fillWidth: true
             visible: !root.configured && !root.targetSaved

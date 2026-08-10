@@ -20,6 +20,7 @@ from typing import ClassVar
 
 import dbus
 import dbus.exceptions
+import dbus.mainloop
 from gi.repository import GLib, GObject
 
 from blueferry.backend_lifecycle import ensure_backend_current
@@ -126,7 +127,10 @@ class DaemonClient(GObject.Object):
     @staticmethod
     def _private_call(method: str, *args, timeout: int):
         """Make a blocking call on a worker-owned connection."""
-        bus = dbus.SessionBus(private=True)
+        bus = dbus.SessionBus(
+            private=True,
+            mainloop=dbus.mainloop.NULL_MAIN_LOOP,
+        )
         try:
             iface = dbus.Interface(bus.get_object(BUS_NAME, OBJECT_PATH), MESSAGES_IFACE)
             return getattr(iface, method)(*args, timeout=timeout)

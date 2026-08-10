@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -32,27 +33,56 @@ def test_bus_module_imports_without_reachable_dbus() -> None:
 
 
 @pytest.mark.parametrize(
-    ("cache_name", "factory_name", "getter_name"),
+    ("factory_name", "getter_name"),
     [
-        ("_system_bus", "SystemBus", "get_system_bus"),
-        ("_session_bus", "SessionBus", "get_session_bus"),
+        ("SystemBus", "get_system_bus"),
+        ("SessionBus", "get_session_bus"),
     ],
 )
-def test_process_bus_connections_are_reused(
-    monkeypatch, cache_name, factory_name, getter_name,
+def test_bus_connections_are_reused_within_their_owning_thread(
+    monkeypatch, factory_name, getter_name,
 ) -> None:
     connection = object()
     creations = 0
 
-    def create():
+    def create(*, private, mainloop):
         nonlocal creations
+        assert private is True
+        assert mainloop is None
         creations += 1
         return connection
 
-    monkeypatch.setattr(bus, cache_name, None)
+    monkeypatch.setattr(bus, "_thread_state", __import__("threading").local())
     monkeypatch.setattr(bus.dbus, factory_name, create)
     getter = getattr(bus, getter_name)
 
     assert getter() is connection
     assert getter() is connection
     assert creations == 1
+
+
+def test_system_bus_connection_is_not_shared_with_worker_thread(monkeypatch) -> None:
+    connections = []
+    mainloops = []
+
+    def create(*, private, mainloop):
+        assert private is True
+        mainloops.append(mainloop)
+        connection = object()
+        connections.append(connection)
+        return connection
+
+    monkeypatch.setattr(bus, "_thread_state", threading.local())
+    monkeypatch.setattr(bus.dbus, "SystemBus", create)
+
+    main_connection = bus.get_system_bus()
+    worker_connections = []
+    worker = threading.Thread(
+        target=lambda: worker_connections.append(bus.get_system_bus())
+    )
+    worker.start()
+    worker.join()
+
+    assert worker_connections[0] is not main_connection
+    assert len(connections) == 2
+    assert mainloops == [None, bus.dbus.mainloop.NULL_MAIN_LOOP]

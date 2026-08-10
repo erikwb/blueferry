@@ -51,6 +51,27 @@ during pairing. The reliable setup has these properties:
   device record for the computer. The user confirms one numeric comparison
   on both screens; the adapter never needs to become discoverable.
 
+There are two reliable client transactions, depending on who owns the pairing
+UI. On a desktop running KDE BlueDevil, GNOME Shell, Cinnamon, or Blueman,
+BlueFerry leaves confirmation and its surrounding connection lifecycle to that
+desktop manager and starts pairing with `Device1.Pair()`. Registering
+BlueFerry's agent and issuing the unpaired `Device1.Connect()` at the same time
+races the desktop manager; on KDE/BlueDevil this produced
+`le-connection-abort-by-local`. In a session without an interactive Bluetooth
+manager, BlueFerry registers its `DisplayYesNo` agent and uses the unpaired
+`Device1.Connect()` transaction described above. This is the path that produces
+the dual bond reliably on the Intel AX210 and supplies confirmation UI on
+minimal desktops.
+
+BlueZ exposes neither its registered-agent list nor the identity of its default
+agent. Clients therefore select between these transactions using a deliberately
+narrow session-bus heuristic: known interactive manager names are recognized,
+and KDE counts only when the `bluedevil` module is loaded in `kded5` or `kded6`.
+Generic headless agents such as a `NoInputNoOutput` `bt-agent` do not count;
+they cannot display numeric comparison and must not suppress BlueFerry's agent.
+This choice lives in the shared setup implementation, so the GTK, Qt, and
+Quickshell clients all use the same transaction on a given desktop.
+
 After pairing, the iPhone offers **Show Message Notifications** and
 **Sync Contacts** in the computer's Bluetooth entry. These permissions are
 independent, and three behaviors were observed on iOS 26.5:
