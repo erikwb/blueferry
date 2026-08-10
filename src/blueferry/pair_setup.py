@@ -342,6 +342,11 @@ def complete_pairing(
     if not compatibility["hardware_supported"]:
         raise PairingError(compatibility["issue"] or "Bluetooth controller is incompatible")
     notifications_supported = compatibility["notifications_supported"]
+    if not notifications_supported:
+        raise PairingError(
+            "BlueFerry requires a successful ANCS/LE connection before it can "
+            "save an iPhone for MAP"
+        )
     if notifications_supported and not compatibility["bearer_api_active"]:
         raise PairingError("Activate Bluetooth support before pairing or re-pairing the iPhone")
     # No LE advertisement during pairing: iOS would connect the unbonded
@@ -402,28 +407,32 @@ def complete_pairing(
                     raise PairingError(detail) from error
             device = _wait_for_paired_device(mac)
         trust_device(device.mac, device.adapter_path)
-        write_local_env(device.mac, device.adapter_path.rsplit("/", 1)[-1])
 
-        ancs = "unsupported by Bluetooth controller"
-        ancs_ready = False
-        if notifications_supported:
-            _connect_classic(device.device_path)
-            # Two-phase LE setup, matching the proven desktop sequence: only
-            # after the Classic bearer is connected does the ANCS solicitation
-            # advert appear, inviting the bonded iPhone to establish LE.
-            if not bluez_setup.register_advert(adapter, settle_for_pairing=True):
-                raise PairingError("The ANCS advertisement did not activate")
-            try:
-                ancs = _connect_ancs(_device(mac))
-                ancs_ready = ancs in {"connected", "already connected"}
-            except PairingError as error:
-                ancs = f"pending: {error}"
+        _connect_classic(device.device_path)
+        # Two-phase LE setup, matching the proven desktop sequence: only
+        # after the Classic bearer is connected does the ANCS solicitation
+        # advert appear, inviting the bonded iPhone to establish LE.
+        if not bluez_setup.register_advert(adapter, settle_for_pairing=True):
+            raise PairingError("The ANCS advertisement did not activate")
+        try:
+            ancs = _connect_ancs(_device(mac))
+        except PairingError as error:
+            raise PairingError(
+                f"ANCS/LE connection did not complete; the iPhone was not saved: {error}"
+            ) from error
+        ancs_ready = ancs in {"connected", "already connected"}
+        if not ancs_ready:
+            raise PairingError("ANCS/LE connection did not complete; the iPhone was not saved")
     finally:
         # The temporary setup process owns this advertisement. Remove it
         # before starting the daemon so ownership transfers without a gap or
         # an AlreadyExists false-positive.
         bluez_setup.unregister_advert(adapter)
 
+    # The selected MAC is a capability-bearing target, not merely discovery
+    # data. Persist it only after ANCS proves that the LE half of this exact
+    # bond works; until then the daemon must have no MAP target to connect to.
+    write_local_env(device.mac, device.adapter_path.rsplit("/", 1)[-1])
     _restart_user_service()
     device = _device(mac)
     return {
@@ -432,8 +441,8 @@ def complete_pairing(
         "config": str(LOCAL_ENV_PATH),
         "service": "package-enabled and restarted",
         "ancs": ancs,
-        # The daemon owns connection and ANCS subscription retries, while
-        # clients verify its eventual readiness through GetStatus.
+        # Reaching this result means ANCS/LE was established before the target
+        # was persisted and the daemon was started.
         "ancs_ready": ancs_ready,
         "iphone_steps": [
             "Open Settings → Bluetooth and tap ⓘ next to this computer",

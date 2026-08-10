@@ -31,3 +31,27 @@ def test_forbidden_profile_failure_is_user_actionable():
         "retry_attempt": 1,
         "retry_delay_seconds": 5,
     }
+
+
+def test_map_refusal_preserves_detail_with_an_explicit_retry_interval():
+    connectivity = Connectivity()
+
+    delay = connectivity.failed(
+        "Connection refused (111)",
+        map_connection_refused=True,
+        retry_delay_seconds=15,
+    )
+
+    assert delay == 15
+    assert connectivity.snapshot() == {
+        "connectivity_state": "map-connection-refused",
+        "connectivity_detail": "Connection refused (111)",
+        "retry_attempt": 1,
+        "retry_delay_seconds": 15,
+    }
+
+    connectivity.connecting()
+
+    assert connectivity.state is ConnectivityState.MAP_CONNECTION_REFUSED
+    assert connectivity.detail == "Connection refused (111)"
+    assert connectivity.retry_delay_seconds is None

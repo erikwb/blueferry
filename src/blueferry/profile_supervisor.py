@@ -17,6 +17,19 @@ from blueferry.obex.sessions import ObexSession, SessionError
 
 log = logging.getLogger(__name__)
 
+INITIAL_MAP_CONNECT_POLL_SECONDS = 5
+MAP_RECONNECT_POLL_SECONDS = 15
+
+
+def _is_map_connection_refused(error: Exception | str) -> bool:
+    """Recognize the iPhone's explicit MAP RFCOMM refusal."""
+    message = str(error).casefold()
+    return (
+        "createsession(map)" in message
+        and "connection refused" in message
+        and "111" in message
+    )
+
 
 class ProfileSessions(Protocol):
     map: ObexSession | None
@@ -70,6 +83,7 @@ class ProfileSupervisor:
         self._opening = False
         self._closing = False
         self._ready = False
+        self._ever_ready = False
         self._stopping = False
         self._generation = 0
         self.sessions.set_on_lost(self.session_lost)
@@ -162,6 +176,7 @@ class ProfileSupervisor:
             self._retry_id = None
         self.connectivity.ready()
         self._on_status()
+        self._ever_ready = True
         if self._ready:
             return
         self._ready = True
@@ -179,8 +194,16 @@ class ProfileSupervisor:
         if authorization_required:
             log.warning("  → Check Show Message Notifications and Sync Contacts")
             log.warning("    under the iPhone's Bluetooth entry for this computer.")
+        map_connection_refused = _is_map_connection_refused(error)
+        if map_connection_refused:
+            log.warning(
+                "  → iPhone refused MAP; it may be connected to another computer."
+            )
         delay = self.connectivity.failed(
-            error, authorization_required=authorization_required
+            error,
+            authorization_required=authorization_required,
+            map_connection_refused=map_connection_refused,
+            retry_delay_seconds=self._poll_seconds,
         )
         self._on_status()
         self._schedule_retry(delay)
@@ -189,7 +212,7 @@ class ProfileSupervisor:
         if self._stopping or generation != self._generation:
             return
         self._closing = False
-        self._schedule_retry(2)
+        self._schedule_retry(self._poll_seconds)
 
     def _close_failed(self, generation: int, error: Exception) -> None:
         log.warning("OBEX session cleanup failed: %s", error)
@@ -200,6 +223,12 @@ class ProfileSupervisor:
             return
         self._retry_id = self._schedule(delay, self._retry)
         log.warning("daemon stays available; retrying profiles in %ds", delay)
+
+    @property
+    def _poll_seconds(self) -> int:
+        if self._ever_ready:
+            return MAP_RECONNECT_POLL_SECONDS
+        return INITIAL_MAP_CONNECT_POLL_SECONDS
 
     def _retry(self) -> bool:
         self._retry_id = None

@@ -77,10 +77,13 @@ Startup publishes the D-Bus control surface before beginning hardware work.
 Bluetooth initialization is deferred until the GLib loop is dispatching, and
 `GetStatus` reports `initializing` and degraded profile state explicitly.
 MAP/PBAP connectivity moves through explicit initializing, connecting, ready,
-degraded, reconnecting, authorization-required, and stopping states. Failed
-profile opens retry with bounded exponential backoff; a successful open resets
-the failure count. Suspend/resume and observed OBEX loss enter the same
-reconnection path.
+degraded, reconnecting, authorization-required, map-connection-refused, and
+stopping states. Failed profile opens poll every 5 seconds until the first
+successful MAP/PBAP connection, then every 15 seconds for later reconnects.
+Suspend/resume and observed OBEX loss enter the same reconnection path. The
+refusal state preserves the iPhone's
+`Connection refused (111)` detail so clients can explain that another computer
+may currently own its single MAP connection.
 
 Arch packages install a release marker owned by the backend package. A running
 daemon notices a changed marker and exits with a failure status so systemd

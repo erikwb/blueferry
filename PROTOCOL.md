@@ -167,13 +167,29 @@ than one address must remain ambiguous.
 iOS and obexd behave poorly when MAP/PBAP sessions or operations are repeatedly
 created, destroyed, or overlapped:
 
+An iPhone permits only one computer to hold its MAP session at a time. If MAP
+is already in use by another computer, iOS rejects `CreateSession(MAP)` with
+`Connection refused (111)`. This is not a pairing or authorization failure:
+keep the daemon available, expose the refusal to clients, and continue polling
+so Blueferry connects when the competing session is released.
+
+The saved target MAC is also the MAP trust boundary. Discovery or a Classic
+bond alone must never put a phone into Blueferry's configuration. The pairing
+flow persists the MAC and starts the daemon only after it has successfully
+connected the same bond over LE for ANCS. If ANCS/LE setup is incomplete, the
+phone may remain paired in BlueZ, but Blueferry does not persist that target
+MAC and therefore cannot attempt a MAP session to it.
+
 - Keep one MAP and one PBAP session open for the daemon lifetime.
 - Serialize blocking MAP/PBAP operations on one worker.
 - Before opening, remove only stale sessions for the target phone and profile.
 - On `Forbidden`, retry once after targeted stale-session cleanup rather than
   restarting all of obexd.
 - Treat disappearance of a session object or the `org.bluez.obex` bus owner as
-  connection loss and reconnect with bounded backoff.
+  connection loss. Poll MAP/PBAP every 5 seconds until the first successful
+  connection, then every 15 seconds for later reconnects. Preserve an iPhone
+  `Connection refused (111)` response as a distinct MAP refusal state because
+  another computer may currently own the phone's single MAP connection.
 - A transfer object can disappear after successful completion. `complete` and
   a disappearance after observable progress are successful terminal outcomes;
   explicit `error`, a timeout, or a missing output file is not.

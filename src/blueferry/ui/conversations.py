@@ -9,6 +9,11 @@ from __future__ import annotations
 from gi.repository import Adw, GLib, Gtk, Pango
 
 from blueferry.i18n import _
+from blueferry.models import BackendStatus
+from blueferry.ui.status_presenter import (
+    map_connection_refused,
+    map_connection_refused_message,
+)
 from blueferry.ui.util import format_ts
 
 _ELLIPSIZE_END = Pango.EllipsizeMode.END
@@ -17,7 +22,7 @@ _ELLIPSIZE_END = Pango.EllipsizeMode.END
 class ConversationsPage(Gtk.Box):
     def __init__(self, client, toast) -> None:
         super().__init__(
-            orientation=Gtk.Orientation.HORIZONTAL,
+            orientation=Gtk.Orientation.VERTICAL,
             hexpand=True,
             vexpand=True,
         )
@@ -29,6 +34,11 @@ class ConversationsPage(Gtk.Box):
         self._reload_pending = False
         self._reload_again = False
         self._new_destination: str | None = None
+        self._map_refused_banner = Adw.Banner(
+            title=map_connection_refused_message(),
+        )
+        self._map_refused_banner.set_revealed(False)
+        self.append(self._map_refused_banner)
 
         # ---- left: thread list ----------------------------------------
         self._thread_list = Gtk.ListBox(css_classes=["navigation-sidebar"])
@@ -168,6 +178,8 @@ class ConversationsPage(Gtk.Box):
 
         self._load_history()
         client.connect("history-changed", self._on_history_changed)
+        client.connect("status-invalidated", self._on_status_invalidated)
+        self._refresh_status()
 
     def _build_new_message_dialog(self) -> None:
         content = Gtk.Box(
@@ -250,6 +262,22 @@ class ConversationsPage(Gtk.Box):
         if self._reload_again:
             self._reload_again = False
             self._reload_threads()
+
+    def _refresh_status(self) -> None:
+        self._client.get_status_async(self._apply_status, self._status_failed)
+
+    def _apply_status(self, status: BackendStatus) -> bool:
+        self._map_refused_banner.set_revealed(
+            map_connection_refused(status.to_dict())
+        )
+        return False
+
+    def _status_failed(self, _message: str) -> bool:
+        self._map_refused_banner.set_revealed(False)
+        return False
+
+    def _on_status_invalidated(self, _client) -> None:
+        self._refresh_status()
 
     # ---- new message ---------------------------------------------------
 

@@ -7,6 +7,24 @@ from collections.abc import Mapping
 from blueferry.i18n import _
 
 
+def map_connection_refused(status: Mapping) -> bool:
+    """Accept the structured state and the legacy raw server detail."""
+    if str(status.get("connectivity_state", "")) == "map-connection-refused":
+        return True
+    detail = str(status.get("connectivity_detail", "")).casefold()
+    return (
+        "createsession(map)" in detail
+        and "connection refused" in detail
+        and "111" in detail
+    )
+
+
+def map_connection_refused_message() -> str:
+    return _(
+        "iPhone is refusing message connections; is it connected to another computer?"
+    )
+
+
 def connection_subtitle(status: Mapping, *, reachable: bool) -> str:
     if not reachable:
         return _("Not Reachable — Retrying Automatically")
@@ -18,6 +36,7 @@ def connection_subtitle(status: Mapping, *, reachable: bool) -> str:
         "degraded": _("Limited Connectivity"),
         "reconnecting": _("Reconnecting"),
         "authorization-required": _("Authorization Required"),
+        "map-connection-refused": _("Message Connection Refused"),
         "stopping": _("Stopping"),
     }
     subtitle = labels.get(state, state.replace("-", " ").title())

@@ -12,6 +12,7 @@ class ConnectivityState(str, Enum):
     DEGRADED = "degraded"
     RECONNECTING = "reconnecting"
     AUTHORIZATION_REQUIRED = "authorization-required"
+    MAP_CONNECTION_REFUSED = "map-connection-refused"
     STOPPING = "stopping"
 
 
@@ -40,6 +41,14 @@ class Connectivity:
         self.retry_delay_seconds: int | None = None
 
     def connecting(self, detail: str = "opening MAP/PBAP sessions") -> None:
+        if (
+            self.failure_count > 0
+            and self.state is ConnectivityState.MAP_CONNECTION_REFUSED
+        ):
+            # Keep the actionable refusal visible while the next poll is in
+            # flight. Success or a different failure will replace it.
+            self.retry_delay_seconds = None
+            return
         self.state = (
             ConnectivityState.CONNECTING
             if self.failure_count == 0
@@ -54,14 +63,26 @@ class Connectivity:
         self.failure_count = 0
         self.retry_delay_seconds = None
 
-    def failed(self, error: Exception | str, *, authorization_required: bool = False) -> int:
+    def failed(
+        self,
+        error: Exception | str,
+        *,
+        authorization_required: bool = False,
+        map_connection_refused: bool = False,
+        retry_delay_seconds: int | None = None,
+    ) -> int:
         self.failure_count += 1
-        self.retry_delay_seconds = self.policy.delay(self.failure_count)
-        self.state = (
-            ConnectivityState.AUTHORIZATION_REQUIRED
-            if authorization_required
-            else ConnectivityState.DEGRADED
+        self.retry_delay_seconds = (
+            max(1, int(retry_delay_seconds))
+            if retry_delay_seconds is not None
+            else self.policy.delay(self.failure_count)
         )
+        if map_connection_refused:
+            self.state = ConnectivityState.MAP_CONNECTION_REFUSED
+        elif authorization_required:
+            self.state = ConnectivityState.AUTHORIZATION_REQUIRED
+        else:
+            self.state = ConnectivityState.DEGRADED
         self.detail = str(error) or "Bluetooth profiles unavailable"
         return self.retry_delay_seconds
 

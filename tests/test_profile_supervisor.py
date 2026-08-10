@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from blueferry.connectivity import Connectivity, ConnectivityState
 from blueferry.obex.sessions import ObexSession, SessionError
-from blueferry.profile_supervisor import ProfileSupervisor
+from blueferry.profile_supervisor import (
+    INITIAL_MAP_CONNECT_POLL_SECONDS,
+    MAP_RECONNECT_POLL_SECONDS,
+    ProfileSupervisor,
+)
 
 
 class FakeSessions:
@@ -92,7 +96,7 @@ def test_open_is_serialized_and_readiness_is_edge_triggered() -> None:
     assert ready == [True]
 
 
-def test_forbidden_failure_backs_off_and_retries() -> None:
+def test_forbidden_failure_polls_and_retries() -> None:
     supervisor, _sessions, worker, scheduled, _ready, _lost, _statuses = (
         make_supervisor()
     )
@@ -100,9 +104,34 @@ def test_forbidden_failure_backs_off_and_retries() -> None:
     worker.fail(SessionError("org.bluez.obex.Error.Forbidden"))
 
     assert supervisor.connectivity.state is ConnectivityState.AUTHORIZATION_REQUIRED
-    assert scheduled[0][0] == 5
+    assert scheduled[0][0] == INITIAL_MAP_CONNECT_POLL_SECONDS
     assert scheduled[0][1]() is False
     assert len(worker.jobs) == 1
+
+
+def test_map_connection_refusal_is_exposed_and_polls_quickly_until_ready() -> None:
+    supervisor, _sessions, worker, scheduled, _ready, _lost, _statuses = (
+        make_supervisor()
+    )
+    supervisor.start()
+    error = SessionError(
+        "CreateSession(MAP) failed: org.bluez.obex.Error.Failed: "
+        "Connection refused (111)"
+    )
+
+    worker.fail(error)
+
+    assert supervisor.connectivity.state is ConnectivityState.MAP_CONNECTION_REFUSED
+    assert supervisor.connectivity.detail == str(error)
+    assert (
+        supervisor.connectivity.retry_delay_seconds
+        == INITIAL_MAP_CONNECT_POLL_SECONDS
+    )
+    assert scheduled[-1][0] == INITIAL_MAP_CONNECT_POLL_SECONDS
+
+    scheduled[-1][1]()
+    worker.fail(RuntimeError("still offline"))
+    assert scheduled[-1][0] == INITIAL_MAP_CONNECT_POLL_SECONDS
 
 
 def test_loss_closes_once_then_reconnects() -> None:
@@ -120,7 +149,11 @@ def test_loss_closes_once_then_reconnects() -> None:
     assert len(worker.jobs) == 1
     worker.succeed()
     assert sessions.closes == 1
-    assert scheduled[-1][0] == 2
+    assert scheduled[-1][0] == MAP_RECONNECT_POLL_SECONDS
+    scheduled[-1][1]()
+    worker.fail(RuntimeError("still offline"))
+    assert scheduled[-1][0] == MAP_RECONNECT_POLL_SECONDS
+
     scheduled[-1][1]()
     worker.succeed()
     assert ready == [True, True]

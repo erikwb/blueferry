@@ -468,11 +468,11 @@ def test_complete_pairing_advertises_only_after_bond_then_hands_to_daemon(monkey
     assert calls == [
         ("prepare_classic", "hci0"),
         "trust",
-        "config",
         "classic-connect",
         ("advert", "hci0"),
         "ancs",
         ("unregister", "hci0"),
+        "config",
         "restart",
     ]
 
@@ -493,12 +493,15 @@ def test_complete_pairing_headless_pairs_from_linux(monkeypatch):
 
     monkeypatch.setattr(pair_setup, "_device", lambda _mac: unpaired)
     monkeypatch.setattr(pair_setup, "_wait_for_paired_device", lambda _mac: paired)
-    _compatible(monkeypatch, notifications=False)
+    _compatible(monkeypatch)
     monkeypatch.setattr(bluez_setup, "prepare_classic", lambda **_kwargs: True)
+    monkeypatch.setattr(bluez_setup, "register_advert", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(bluez_setup, "unregister_advert", lambda _adapter: None)
     monkeypatch.setattr(pair_setup, "get_system_bus", Bus)
     monkeypatch.setattr(pair_setup.dbus, "Interface", lambda *_args: DeviceInterface())
     monkeypatch.setattr(pair_setup, "trust_device", lambda *_args: None)
+    monkeypatch.setattr(pair_setup, "_connect_classic", lambda _path: None)
+    monkeypatch.setattr(pair_setup, "_connect_ancs", lambda _device: "connected")
     monkeypatch.setattr(pair_setup, "write_local_env", lambda *_args: None)
     monkeypatch.setattr(pair_setup, "_restart_user_service", lambda: None)
 
@@ -506,7 +509,7 @@ def test_complete_pairing_headless_pairs_from_linux(monkeypatch):
 
     assert calls == [("pair", 120.0)]
     assert result["ok"] is True
-    assert result["ancs"] == "unsupported by Bluetooth controller"
+    assert result["ancs"] == "connected"
 
 
 def test_interactive_pairing_connects_and_lets_the_iphone_initiate(monkeypatch):
@@ -542,15 +545,18 @@ def test_interactive_pairing_connects_and_lets_the_iphone_initiate(monkeypatch):
         "_wait_for_paired_device",
         lambda _mac: calls.append("settled") or paired,
     )
-    _compatible(monkeypatch, notifications=False)
+    _compatible(monkeypatch)
     monkeypatch.setattr(bluez_setup, "prepare_classic", lambda **_kwargs: True)
+    monkeypatch.setattr(bluez_setup, "register_advert", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(bluez_setup, "unregister_advert", lambda _adapter: None)
     monkeypatch.setattr(pairing_agent, "RegisteredPairingAgent", Agent)
-    monkeypatch.setattr(
-        pair_setup,
-        "_connect_classic",
-        lambda path, **kwargs: calls.append(("connect", path, kwargs["timeout"])),
-    )
+
+    def connect_classic(path, **kwargs):
+        if "timeout" in kwargs:
+            calls.append(("connect", path, kwargs["timeout"]))
+
+    monkeypatch.setattr(pair_setup, "_connect_classic", connect_classic)
+    monkeypatch.setattr(pair_setup, "_connect_ancs", lambda _device: "connected")
     monkeypatch.setattr(pair_setup, "trust_device", lambda *_args: None)
     monkeypatch.setattr(pair_setup, "write_local_env", lambda *_args: None)
     monkeypatch.setattr(pair_setup, "_restart_user_service", lambda: None)
@@ -594,12 +600,15 @@ def test_peer_initiated_pairing_is_allowed_to_finish(monkeypatch):
 
     monkeypatch.setattr(pair_setup, "_device", lambda _mac: unpaired)
     monkeypatch.setattr(pair_setup, "_wait_for_paired_device", lambda _mac: paired)
-    _compatible(monkeypatch, notifications=False)
+    _compatible(monkeypatch)
     monkeypatch.setattr(bluez_setup, "prepare_classic", lambda **_kwargs: True)
+    monkeypatch.setattr(bluez_setup, "register_advert", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(bluez_setup, "unregister_advert", lambda _adapter: None)
     monkeypatch.setattr(pair_setup, "get_system_bus", Bus)
     monkeypatch.setattr(pair_setup.dbus, "Interface", lambda *_args: DeviceInterface())
     monkeypatch.setattr(pair_setup, "trust_device", lambda *_args: None)
+    monkeypatch.setattr(pair_setup, "_connect_classic", lambda _path: None)
+    monkeypatch.setattr(pair_setup, "_connect_ancs", lambda _device: "connected")
     monkeypatch.setattr(pair_setup, "write_local_env", lambda *_args: None)
     monkeypatch.setattr(pair_setup, "_restart_user_service", lambda: None)
 
@@ -609,7 +618,7 @@ def test_peer_initiated_pairing_is_allowed_to_finish(monkeypatch):
     assert result["ok"] is True
 
 
-def test_pairing_reports_pending_ancs_when_le_bond_is_missing(monkeypatch):
+def test_pairing_does_not_save_or_start_daemon_when_ancs_is_missing(monkeypatch):
     device = _device(paired=True)
     device.uuids = frozenset()
     monkeypatch.setattr(pair_setup, "_device", lambda _mac: device)
@@ -618,17 +627,55 @@ def test_pairing_reports_pending_ancs_when_le_bond_is_missing(monkeypatch):
     monkeypatch.setattr(bluez_setup, "register_advert", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(bluez_setup, "unregister_advert", lambda _adapter: None)
     monkeypatch.setattr(pair_setup, "trust_device", lambda *_args: None)
-    monkeypatch.setattr(pair_setup, "write_local_env", lambda *_args: None)
+    saved = []
+    restarted = []
+    monkeypatch.setattr(pair_setup, "write_local_env", lambda *_args: saved.append(True))
     monkeypatch.setattr(pair_setup, "_connect_classic", lambda _path: None)
 
     def no_le(_device):
         raise pair_setup.PairingError("LE bond missing")
 
     monkeypatch.setattr(pair_setup, "_connect_ancs", no_le)
-    monkeypatch.setattr(pair_setup, "_restart_user_service", lambda: None)
+    monkeypatch.setattr(pair_setup, "_restart_user_service", lambda: restarted.append(True))
 
-    result = pair_setup.complete_pairing(device.mac)
+    with pytest.raises(pair_setup.PairingError, match="iPhone was not saved"):
+        pair_setup.complete_pairing(device.mac)
 
-    assert result["ok"] is True
-    assert result["ancs_ready"] is False
-    assert result["ancs"].startswith("pending:")
+    assert saved == []
+    assert restarted == []
+
+
+def test_pairing_does_not_save_while_waiting_for_inbound_ancs(monkeypatch):
+    device = _device(paired=True)
+    monkeypatch.setattr(pair_setup, "_device", lambda _mac: device)
+    _compatible(monkeypatch)
+    monkeypatch.setattr(bluez_setup, "prepare_classic", lambda **_kwargs: True)
+    monkeypatch.setattr(bluez_setup, "register_advert", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(bluez_setup, "unregister_advert", lambda _adapter: None)
+    monkeypatch.setattr(pair_setup, "trust_device", lambda *_args: None)
+    monkeypatch.setattr(pair_setup, "_connect_classic", lambda _path: None)
+    monkeypatch.setattr(
+        pair_setup,
+        "_connect_ancs",
+        lambda _device: "waiting for iPhone to connect",
+    )
+    saved = []
+    monkeypatch.setattr(pair_setup, "write_local_env", lambda *_args: saved.append(True))
+
+    with pytest.raises(pair_setup.PairingError, match="iPhone was not saved"):
+        pair_setup.complete_pairing(device.mac)
+
+    assert saved == []
+
+
+def test_pairing_rejects_controller_without_ancs_before_saving_target(monkeypatch):
+    device = _device(paired=True)
+    monkeypatch.setattr(pair_setup, "_device", lambda _mac: device)
+    _compatible(monkeypatch, notifications=False)
+    saved = []
+    monkeypatch.setattr(pair_setup, "write_local_env", lambda *_args: saved.append(True))
+
+    with pytest.raises(pair_setup.PairingError, match="successful ANCS/LE connection"):
+        pair_setup.complete_pairing(device.mac)
+
+    assert saved == []

@@ -20,7 +20,11 @@ from blueferry.setup_verification import (
     remaining_iphone_setup_tasks,
 )
 from blueferry.ui.setup_runner import SetupRunner
-from blueferry.ui.status_presenter import connection_subtitle
+from blueferry.ui.status_presenter import (
+    connection_subtitle,
+    map_connection_refused,
+    map_connection_refused_message,
+)
 
 
 class IPhonePage(Gtk.Box):
@@ -524,9 +528,13 @@ class IPhonePage(Gtk.Box):
         )
 
         healthy = status.map
-        self._map_row.set_subtitle(
-            _("Connected") if healthy else _("Unavailable — Check the iPhone Settings Below")
-        )
+        if map_connection_refused(values):
+            map_subtitle = map_connection_refused_message()
+        elif healthy:
+            map_subtitle = _("Connected")
+        else:
+            map_subtitle = _("Unavailable — Check the iPhone Settings Below")
+        self._map_row.set_subtitle(map_subtitle)
         self._map_icon.set_from_icon_name(
             "emblem-ok-symbolic" if healthy else "dialog-warning-symbolic"
         )

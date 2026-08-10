@@ -13,6 +13,9 @@ def test_status_defaults_missing_fields_and_preserves_new_fields():
             "storage_policy": "none",
             "storage_state": "disabled",
             "verified_iphone_setup": ["contacts"],
+            "connectivity_state": "map-connection-refused",
+            "connectivity_detail": "Connection refused (111)",
+            "retry_delay_seconds": 15,
             "future_capability": "supported",
         }
     )
@@ -23,6 +26,9 @@ def test_status_defaults_missing_fields_and_preserves_new_fields():
     assert status.notification_policy == "all"
     assert status.storage_policy == "none"
     assert status.storage_state == "disabled"
+    assert status.connectivity_state == "map-connection-refused"
+    assert status.connectivity_detail == "Connection refused (111)"
+    assert status.retry_delay_seconds == 15
     assert status.verified_iphone_setup == ("contacts",)
     assert status.to_dict()["verified_iphone_setup"] == ["contacts"]
     assert status.extra["future_capability"] == "supported"

@@ -120,6 +120,21 @@ def test_all_gui_clients_offer_contacts_aware_new_messages() -> None:
     assert '"contacts-json"' in quickshell
 
 
+def test_all_gui_clients_explain_map_connection_refusal() -> None:
+    message = (
+        "iPhone is refusing message connections; is it connected to another computer?"
+    )
+    gtk_messages = (ROOT / "src/blueferry/ui/conversations.py").read_text()
+    gtk_settings = (ROOT / "src/blueferry/ui/status.py").read_text()
+    qt = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
+    quickshell = (ROOT / "data/quickshell/shell.qml").read_text()
+
+    assert "map_connection_refused_message" in gtk_messages
+    assert "map_connection_refused_message" in gtk_settings
+    assert qt.count(message) >= 2
+    assert quickshell.count(message) >= 2
+
+
 def test_all_gui_clients_offer_unencrypted_local_storage() -> None:
     gtk = (ROOT / "src/blueferry/ui/status.py").read_text()
     qt = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()

@@ -37,6 +37,16 @@ Kirigami.ApplicationWindow {
             .replace(/>/g, "&gt;")
     }
 
+    function mapConnectionRefused() {
+        const status = bridge.status || ({})
+        if (status.connectivity_state === "map-connection-refused")
+            return true
+        const detail = String(status.connectivity_detail || "").toLowerCase()
+        return detail.indexOf("createsession(map)") >= 0
+            && detail.indexOf("connection refused") >= 0
+            && detail.indexOf("111") >= 0
+    }
+
     function pendingIphoneSetupTasks() {
         const verified = bridge.status.verified_iphone_setup || []
         const tasks = []
@@ -371,6 +381,20 @@ Kirigami.ApplicationWindow {
                     visible: root.bridge.errorText !== ""
                     text: root.htmlEscape(root.bridge.errorText)
                     type: Kirigami.MessageType.Error
+                    position: Kirigami.InlineMessage.Position.Header
+                    actions: [
+                        Kirigami.Action {
+                            text: qsTr("Open iPhone Settings")
+                            onTriggered: root.openPhoneSettings()
+                        }
+                    ]
+                }
+
+                Kirigami.InlineMessage {
+                    Layout.fillWidth: true
+                    visible: root.mapConnectionRefused()
+                    text: qsTr("iPhone is refusing message connections; is it connected to another computer?")
+                    type: Kirigami.MessageType.Warning
                     position: Kirigami.InlineMessage.Position.Header
                     actions: [
                         Kirigami.Action {
@@ -796,7 +820,11 @@ Kirigami.ApplicationWindow {
                     }
                     Controls.Label {
                         Kirigami.FormData.label: qsTr("Messages:")
-                        text: root.bridge.status.map ? qsTr("Connected") : qsTr("Unavailable")
+                        Layout.fillWidth: true
+                        wrapMode: Text.Wrap
+                        text: root.mapConnectionRefused()
+                            ? qsTr("iPhone is refusing message connections; is it connected to another computer?")
+                            : root.bridge.status.map ? qsTr("Connected") : qsTr("Unavailable")
                     }
                     Controls.Label {
                         Kirigami.FormData.label: qsTr("Contacts:")

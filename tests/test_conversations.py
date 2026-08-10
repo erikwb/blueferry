@@ -7,6 +7,7 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 
+from blueferry.models import BackendStatus  # noqa: E402
 from blueferry.ui import conversations  # noqa: E402
 
 
@@ -81,3 +82,25 @@ def test_sidebar_rebuild_does_not_fire_selection_callback(monkeypatch):
     assert len(thread_list.rows) == 1
     assert thread_list.selection_callbacks == 0
     assert thread_list.blocked is False
+
+
+def test_map_refusal_reveals_prominent_message_banner() -> None:
+    class Banner:
+        revealed = False
+
+        def set_revealed(self, value):
+            self.revealed = value
+
+    banner = Banner()
+    page = SimpleNamespace(_map_refused_banner=banner)
+
+    result = conversations.ConversationsPage._apply_status(
+        page,
+        BackendStatus(
+            connectivity_state="map-connection-refused",
+            connectivity_detail="Connection refused (111)",
+        ),
+    )
+
+    assert result is False
+    assert banner.revealed is True

@@ -91,6 +91,13 @@ ShellRoot {
     return thread.key + "\n" + JSON.stringify(thread.recipients || [])
   }
 
+  function mapConnectionRefused() {
+    if (backendStatus.connectivity_state === "map-connection-refused") return true
+    var detail = String(backendStatus.connectivity_detail || "").toLowerCase()
+    return detail.indexOf("createsession(map)") >= 0
+      && detail.indexOf("connection refused") >= 0 && detail.indexOf("111") >= 0
+  }
+
   function pendingIphoneSetupTasks() {
     var verified = backendStatus.verified_iphone_setup || []
     var tasks = []
@@ -594,6 +601,26 @@ ShellRoot {
           Layout.fillWidth: true
         }
 
+        Rectangle {
+          Layout.fillWidth: true
+          implicitHeight: mapRefusedLabel.implicitHeight + theme.scaled(16)
+          visible: !root.phoneSettingsVisible && root.mapConnectionRefused()
+          color: Qt.rgba(theme.warning.r, theme.warning.g, theme.warning.b, 0.14)
+          border.color: theme.warning
+          radius: theme.panelRadius
+
+          Label {
+            id: mapRefusedLabel
+            anchors.fill: parent
+            anchors.margins: theme.scaled(8)
+            text: "iPhone is refusing message connections; is it connected to another computer?"
+            textFormat: Text.PlainText
+            color: theme.windowText
+            font.bold: true
+            wrapMode: Text.Wrap
+          }
+        }
+
         SplitView {
           visible: !root.phoneSettingsVisible
           Layout.fillWidth: true
@@ -945,7 +972,17 @@ ShellRoot {
           }
           FerryInfoRow {
             label: "Messages"
-            value: root.backendStatus.map ? "Connected" : "Unavailable"
+            value: root.mapConnectionRefused()
+              ? "Connection refused"
+              : root.backendStatus.map ? "Connected" : "Unavailable"
+            Layout.fillWidth: true
+          }
+          Label {
+            visible: root.mapConnectionRefused()
+            text: "iPhone is refusing message connections; is it connected to another computer?"
+            textFormat: Text.PlainText
+            color: theme.warning
+            wrapMode: Text.Wrap
             Layout.fillWidth: true
           }
           FerryInfoRow {
