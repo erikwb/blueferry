@@ -187,13 +187,10 @@ class RegisteredPairingAgent:
                 timeout=10.0,
             )
             self._registered = True
-            # Own incoming requests the way desktop pairing managers do, so
-            # an iPhone-initiated transaction reaches this confirmation UI
-            # instead of racing whichever desktop agent happens to exist.
-            self._manager.RequestDefaultAgent(
-                dbus.ObjectPath(AGENT_PATH),
-                timeout=10.0,
-            )
+            # Do not displace an existing desktop pairing agent such as
+            # BlueDevil, GNOME Bluetooth, or Blueman. BlueZ keeps that agent
+            # as the default; when none exists, the first registered agent is
+            # automatically used for incoming pairing requests.
         except dbus.exceptions.DBusException as error:
             self._unregister()
             self._agent.remove_from_connection()

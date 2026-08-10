@@ -89,7 +89,7 @@ def test_agent_rejects_requests_for_any_other_device():
     assert raised.value.get_dbus_name() == "org.bluez.Error.Rejected"
 
 
-def test_registered_agent_becomes_default_to_own_incoming_pairing():
+def test_registered_agent_does_not_displace_desktop_default():
     calls = []
 
     class Manager:
@@ -97,7 +97,7 @@ def test_registered_agent_becomes_default_to_own_incoming_pairing():
             calls.append(("register", str(path), capability, kwargs["timeout"]))
 
         def RequestDefaultAgent(self, path, **kwargs):
-            calls.append(("default", str(path), kwargs["timeout"]))
+            raise AssertionError(f"must not take default-agent ownership: {path} {kwargs}")
 
     registered = pairing_agent.RegisteredPairingAgent.__new__(
         pairing_agent.RegisteredPairingAgent
@@ -107,20 +107,15 @@ def test_registered_agent_becomes_default_to_own_incoming_pairing():
     registered._registered = False
 
     assert registered.__enter__() is registered
-    assert calls == [
-        ("register", pairing_agent.AGENT_PATH, "DisplayYesNo", 10.0),
-        ("default", pairing_agent.AGENT_PATH, 10.0),
-    ]
+    assert calls == [("register", pairing_agent.AGENT_PATH, "DisplayYesNo", 10.0)]
 
 
-def test_registered_agent_unregisters_when_default_request_fails():
+def test_registered_agent_cleans_up_when_registration_fails():
     calls = []
 
     class Manager:
         def RegisterAgent(self, path, _capability, **_kwargs):
             calls.append(("register", str(path)))
-
-        def RequestDefaultAgent(self, _path, **_kwargs):
             raise dbus.exceptions.DBusException(
                 "no", name="org.bluez.Error.DoesNotExist"
             )
@@ -144,7 +139,6 @@ def test_registered_agent_unregisters_when_default_request_fails():
 
     assert calls == [
         ("register", pairing_agent.AGENT_PATH),
-        ("unregister", pairing_agent.AGENT_PATH),
         "removed",
     ]
     assert registered._registered is False
