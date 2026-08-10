@@ -34,6 +34,11 @@ iMessage, or a synced contact. BlueFerry only knows about messages it has seen;
 it is not an iCloud history browser and pairing will not download your complete
 Messages archive.
 
+Message popups are actionable: clicking one presents every currently running
+BlueFerry client and selects the matching conversation. The KDE client also
+provides a system-tray item; closing its window leaves it available there until
+you choose **Quit**.
+
 Group chats work when BlueFerry can safely reconstruct the participants from
 the message and its matching iPhone notification. Bluetooth MAP does not send
 a group identifier or roster, so ambiguous groups remain read-only rather than
@@ -100,13 +105,20 @@ Once pairing is complete, opening a client starts the backend automatically.
 It also reconnects after normal Bluetooth interruptions and restarts itself
 after package upgrades; routine use should not require `systemctl --user`.
 
+The terminal client is included in `blueferry-backend` and needs no optional
+UI dependencies. After pairing with a graphical client or
+`blueferry pair-setup`, start it with `blueferry-tui` (or `blueferry tui`). Use
+the arrow keys or `j`/`k` to select a conversation, **Enter** to reply, `n` for
+a new message, `r` to refresh, and `q` to quit. Group replies show the
+backend-owned participant list and require typing `YES` before the first send.
+
 ### Omarchy Quattro
 
 The native bar panel lives in
-[omarchy-iphone](https://github.com/erikwb/omarchy-iphone):
+[omarchy-blueferry](https://github.com/erikwb/omarchy-blueferry):
 
 ```bash
-omarchy plugin add https://github.com/erikwb/omarchy-iphone.git
+omarchy plugin add https://github.com/erikwb/omarchy-blueferry.git
 ```
 
 Its popup follows Quattro's own panel controls and shows connection health and
@@ -123,6 +135,8 @@ The iPhone page can show message notifications only (the default), all iPhone
 notifications, or none. Ordinary app notifications are shown and discarded;
 they are not added to message history or exposed as a notification feed.
 Messages arriving through both MAP and ANCS are deduplicated.
+Because ordinary mirrored app notifications have no corresponding local view,
+only message notifications offer the open-conversation action.
 
 By default, message history and synced contacts are encrypted with a random key
 stored in GNOME Keyring or KDE Wallet. If the wallet is locked, live messages
