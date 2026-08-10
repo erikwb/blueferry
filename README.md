@@ -1,5 +1,7 @@
 # BlueFerry
 
+![Blue Star ferry at Rhodes](https://upload.wikimedia.org/wikipedia/commons/thumb/9/90/Ferry_Blue_star_1_Rhodes.jpg/1920px-Ferry_Blue_star_1_Rhodes.jpg)
+
 BlueFerry brings messages from a paired iPhone to a Linux desktop. It can
 receive and send SMS and iMessage, use the phone's contacts, and optionally
 mirror other iPhone notifications. It talks directly to the phone over
