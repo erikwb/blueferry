@@ -20,6 +20,7 @@ from blueferry.private_files import atomic_write_private_text
 from blueferry.setup_verification import clear_setup_verification
 
 LOCAL_ENV_PATH = config.LOCAL_ENV_PATH
+CLASSIC_SETTLE_SECONDS = 3.0
 
 ConfirmationCallback = Callable[[int | None], bool]
 DisplayCallback = Callable[[int], None]
@@ -240,7 +241,51 @@ def _dispatching_wait(deadline: float, done: Callable[[], bool]) -> bool:
         time.sleep(0.1)
 
 
-def _connect_classic(device_path: str, *, timeout: float = 45.0) -> None:
+def _wait_for_classic_settled(
+    device_path: str,
+    *,
+    timeout: float = 45.0,
+    settle_seconds: float = CLASSIC_SETTLE_SECONDS,
+) -> None:
+    """Require an observably stable Classic connection before starting LE."""
+    props = dbus.Interface(
+        get_system_bus().get_object("org.bluez", device_path),
+        "org.freedesktop.DBus.Properties",
+    )
+    context = GLib.MainContext.default()
+    deadline = time.monotonic() + timeout
+    connected_since: float | None = None
+    while True:
+        while context.pending():
+            context.iteration(False)
+        now = time.monotonic()
+        try:
+            connected = bool(
+                props.Get("org.bluez.Device1", "Connected", timeout=5.0)
+            )
+        except dbus.exceptions.DBusException:
+            connected = False
+        if connected:
+            if connected_since is None:
+                connected_since = now
+            if now - connected_since >= settle_seconds:
+                return
+        else:
+            connected_since = None
+        if now >= deadline:
+            raise PairingError(
+                "The iPhone's Classic Bluetooth connection did not settle "
+                "before notification setup."
+            )
+        time.sleep(0.1)
+
+
+def _connect_classic(
+    device_path: str,
+    *,
+    timeout: float = 45.0,
+    settle: bool = True,
+) -> None:
     """Connect the Classic bearer without blocking agent dispatch."""
     interface = dbus.Interface(
         get_system_bus().get_object("org.bluez", device_path),
@@ -254,16 +299,15 @@ def _connect_classic(device_path: str, *, timeout: float = 45.0) -> None:
     )
     _dispatching_wait(time.monotonic() + timeout + 5.0, lambda: bool(results))
     error = results[0] if results else None
-    if error is None:
-        return
-    if error.get_dbus_name() in {
+    if error is not None and error.get_dbus_name() not in {
         "org.bluez.Error.AlreadyConnected",
         "org.bluez.Error.InProgress",
     }:
-        return
-    raise PairingError(
-        error.get_dbus_message() or error.get_dbus_name() or str(error)
-    ) from error
+        raise PairingError(
+            error.get_dbus_message() or error.get_dbus_name() or str(error)
+        ) from error
+    if settle:
+        _wait_for_classic_settled(device_path, timeout=timeout)
 
 
 def _connect_ancs(device: PairedDevice, *, timeout: float = 30.0) -> str:
@@ -285,25 +329,46 @@ def _connect_ancs(device: PairedDevice, *, timeout: float = 30.0) -> str:
     props = dbus.Interface(obj, "org.freedesktop.DBus.Properties")
     try:
         props.Set("org.bluez.Device1", "PreferredBearer", dbus.String("le"))
-        dbus.Interface(obj, "org.bluez.Bearer.LE1").Connect(timeout=45.0)
     except dbus.exceptions.DBusException as error:
         name = error.get_dbus_name() or ""
-        detail = error.get_dbus_message() or ""
-        if name in {
-            "org.bluez.Error.AlreadyConnected",
-            "org.bluez.Error.InProgress",
-        } or detail.casefold() == "operation already in progress":
-            return "already connected"
         if name in {
             "org.freedesktop.DBus.Error.UnknownInterface",
             "org.freedesktop.DBus.Error.UnknownMethod",
             "org.freedesktop.DBus.Error.UnknownProperty",
         }:
-            # Marker-only bearer API: the advert invites the bonded iPhone
-            # to establish LE inbound instead.
             return "waiting for iPhone to connect"
-        raise PairingError(detail or name or str(error)) from error
-    return "connected"
+        raise PairingError(
+            error.get_dbus_message() or name or str(error)
+        ) from error
+    for attempt in range(2):
+        try:
+            dbus.Interface(obj, "org.bluez.Bearer.LE1").Connect(timeout=45.0)
+            return "connected"
+        except dbus.exceptions.DBusException as error:
+            name = error.get_dbus_name() or ""
+            detail = error.get_dbus_message() or ""
+            if name in {
+                "org.bluez.Error.AlreadyConnected",
+                "org.bluez.Error.InProgress",
+            } or detail.casefold() == "operation already in progress":
+                return "already connected"
+            if name in {
+                "org.freedesktop.DBus.Error.UnknownInterface",
+                "org.freedesktop.DBus.Error.UnknownMethod",
+                "org.freedesktop.DBus.Error.UnknownProperty",
+            }:
+                # Marker-only bearer API: the advert invites the bonded iPhone
+                # to establish LE inbound instead.
+                return "waiting for iPhone to connect"
+            failure = f"{name} {detail}".casefold()
+            if attempt == 0 and "le-connection-abort-by-local" in failure:
+                # Desktop managers often connect the newly paired Classic
+                # device themselves. Let that link settle again before one
+                # bounded retry instead of racing their post-pair work.
+                _wait_for_classic_settled(device.device_path, timeout=15.0)
+                continue
+            raise PairingError(detail or name or str(error)) from error
+    raise PairingError("LE connection did not complete")
 
 
 def _restart_user_service() -> None:
@@ -386,7 +451,11 @@ def complete_pairing(
                         confirmation,
                         display,
                     ) as registered:
-                        _connect_classic(device.device_path, timeout=60.0)
+                        _connect_classic(
+                            device.device_path,
+                            timeout=60.0,
+                            settle=False,
+                        )
                         registered.wait_for_pair(timeout=120.0)
             except dbus.exceptions.DBusException as error:
                 name = error.get_dbus_name() or ""

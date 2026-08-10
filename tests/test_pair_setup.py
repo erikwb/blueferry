@@ -477,6 +477,94 @@ def test_complete_pairing_advertises_only_after_bond_then_hands_to_daemon(monkey
     ]
 
 
+def test_classic_connect_requires_observable_settled_connection(monkeypatch):
+    calls = []
+
+    class Interface:
+        def Connect(self, *, reply_handler, **_kwargs):
+            calls.append("connect")
+            reply_handler()
+
+    class Bus:
+        @staticmethod
+        def get_object(*_args):
+            return object()
+
+    monkeypatch.setattr(pair_setup, "get_system_bus", Bus)
+    monkeypatch.setattr(pair_setup.dbus, "Interface", lambda *_args: Interface())
+    monkeypatch.setattr(
+        pair_setup,
+        "_wait_for_classic_settled",
+        lambda path, **kwargs: calls.append(("settled", path, kwargs["timeout"])),
+    )
+
+    pair_setup._connect_classic(
+        "/org/bluez/hci0/dev_02_00_00_00_00_01",
+        settle=True,
+        timeout=1.0,
+    )
+
+    assert calls == [
+        "connect",
+        ("settled", "/org/bluez/hci0/dev_02_00_00_00_00_01", 1.0),
+    ]
+
+
+def test_ancs_retries_local_abort_after_classic_resettles(monkeypatch):
+    device = _device(paired=True)
+    connects = []
+    settled = []
+
+    class Manager:
+        @staticmethod
+        def GetManagedObjects():
+            return {
+                pair_setup.dbus.ObjectPath(device.device_path): {
+                    "org.bluez.Bearer.LE1": {},
+                }
+            }
+
+    class Properties:
+        @staticmethod
+        def Set(*_args, **_kwargs):
+            return None
+
+    class LeBearer:
+        @staticmethod
+        def Connect(**_kwargs):
+            connects.append(True)
+            if len(connects) == 1:
+                raise pair_setup.dbus.exceptions.DBusException(
+                    "le-connection-abort-by-local",
+                    name="org.bluez.Error.Failed",
+                )
+
+    monkeypatch.setattr(pair_setup, "_object_manager", lambda: Manager())
+    monkeypatch.setattr(
+        pair_setup,
+        "_wait_for_classic_settled",
+        lambda path, **_kwargs: settled.append(path),
+    )
+    monkeypatch.setattr(
+        pair_setup,
+        "get_system_bus",
+        lambda: type("Bus", (), {"get_object": staticmethod(lambda *_args: object())})(),
+    )
+    monkeypatch.setattr(
+        pair_setup.dbus,
+        "Interface",
+        lambda _obj, interface: (
+            Properties()
+            if interface == "org.freedesktop.DBus.Properties"
+            else LeBearer()
+        ),
+    )
+
+    assert pair_setup._connect_ancs(device) == "connected"
+    assert len(connects) == 2
+    assert settled == [device.device_path]
+
+
 def test_complete_pairing_headless_pairs_from_linux(monkeypatch):
     unpaired = _device(paired=False)
     paired = _device(paired=True)
