@@ -87,8 +87,10 @@ def test_qt_package_ships_the_kirigami_ui_and_dependencies() -> None:
     assert "'qqc2-desktop-style'" in pkgbuild
     assert "Kirigami.ApplicationWindow" in qml
     assert "Kirigami.NavigationTabBar" not in qml
-    assert "openLayer(iphonePageComponent)" in qml
-    assert "Controls.StackView.Immediate" in qml
+    assert "pageStack.push(iphonePageComponent)" in qml
+    assert "root.pageStack.push(aboutPage)" in qml
+    assert "pageStack.layers.push" not in qml
+    assert "Controls.StackView.Immediate" not in qml
     assert "Kirigami.AboutPage" in qml
     assert "customFooterActions" in qml
     assert "interval: 3000" not in qml

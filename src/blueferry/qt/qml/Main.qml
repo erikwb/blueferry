@@ -67,20 +67,10 @@ Kirigami.ApplicationWindow {
     }
 
     function openPhoneSettings() {
-        openLayer(iphonePageComponent)
-    }
-
-    function openLayer(component) {
-        // Kirigami's PageRow anchors its internal base layer, while Qt's
-        // StackView cannot animate anchored items. Use immediate layer
-        // operations so opening a utility page does not start a conflicting
-        // transition or emit a warning from PageRow.qml.
-        pageStack.layers.push(component, {}, Controls.StackView.Immediate)
-    }
-
-    function closeLayer(event) {
-        event.accepted = true
-        pageStack.layers.pop(Controls.StackView.Immediate)
+        // Utility pages belong in Kirigami's PageRow. Its modal layers are an
+        // anchored StackView internally: animated pushes warn about those
+        // anchors, while forcing an Immediate push can create an empty layer.
+        pageStack.push(iphonePageComponent)
     }
 
     function onboardingTitle(stage) {
@@ -159,7 +149,7 @@ Kirigami.ApplicationWindow {
             Kirigami.Action {
                 text: qsTr("About BlueFerry")
                 icon.name: "help-about"
-                onTriggered: root.openLayer(aboutPage)
+                onTriggered: root.pageStack.push(aboutPage)
             },
             Kirigami.Action {
                 text: qsTr("Quit")
@@ -603,7 +593,6 @@ Kirigami.ApplicationWindow {
         id: aboutPage
 
         Kirigami.AboutPage {
-            onBackRequested: event => root.closeLayer(event)
             aboutData: ({
                 displayName: qsTr("BlueFerry"),
                 productName: "BlueFerry",
@@ -629,7 +618,6 @@ Kirigami.ApplicationWindow {
         Kirigami.ScrollablePage {
             id: iphonePage
             title: qsTr("iPhone Settings")
-            onBackRequested: event => root.closeLayer(event)
         property int selectedDevice: -1
         property var device: selectedDevice >= 0 && selectedDevice < root.bridge.devices.length
             ? root.bridge.devices[selectedDevice]
