@@ -156,3 +156,70 @@ def test_new_message_searches_contacts_and_sends_directly(monkeypatch):
     ]
     assert backend.sent == [("15551234567", "hello")]
     assert refreshes == [True]
+
+
+def test_pairing_uses_interactive_agent_and_accepts_matching_code(monkeypatch):
+    observed = []
+
+    class Setup:
+        def complete(self, mac, *, confirmation, display):
+            observed.append((mac, confirmation(12345)))
+            display(12345)
+            return object()
+
+    controller = BridgeController(
+        backend=_Backend(),
+        setup=Setup(),
+        subscribe=False,
+        autostart=False,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_run",
+        lambda operation, on_done=None, *_args, **_kwargs: (
+            on_done(operation()) if on_done is not None else operation()
+        ),
+    )
+    monkeypatch.setattr(controller, "loadDevices", lambda _scan: None)
+    monkeypatch.setattr(controller, "loadSetupState", lambda: None)
+    monkeypatch.setattr(controller, "refresh", lambda: None)
+    passkeys = []
+
+    def confirm(passkey):
+        passkeys.append(passkey)
+        controller.answerPairingConfirmation(True)
+
+    controller.pairingConfirmationRequested.connect(confirm)
+
+    controller.completePairing("02:00:00:00:00:01")
+
+    assert passkeys == ["012345"]
+    assert observed == [("02:00:00:00:00:01", True)]
+
+
+def test_pairing_rejects_when_confirmation_is_declined(monkeypatch):
+    observed = []
+
+    class Setup:
+        def complete(self, _mac, *, confirmation, display):
+            observed.append(confirmation(None))
+            return object()
+
+    controller = BridgeController(
+        backend=_Backend(),
+        setup=Setup(),
+        subscribe=False,
+        autostart=False,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_run",
+        lambda operation, on_done=None, *_args, **_kwargs: operation(),
+    )
+    controller.pairingConfirmationRequested.connect(
+        lambda passkey: controller.answerPairingConfirmation(False)
+    )
+
+    controller.completePairing("02:00:00:00:00:01")
+
+    assert observed == [False]

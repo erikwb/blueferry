@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
 
 from PySide6.QtCore import (
@@ -38,6 +39,7 @@ class BridgeController(QObject):
     configuredChanged = Signal()
     setupLoadedChanged = Signal()
     onboardingStageChanged = Signal()
+    pairingConfirmationRequested = Signal(str)
 
     def __init__(
         self,
@@ -80,6 +82,8 @@ class BridgeController(QObject):
         self._refreshing = False
         self._refresh_again = False
         self._storage_unlock_attempted = False
+        self._pairing_confirmation_lock = threading.Lock()
+        self._pairing_confirmation: tuple[threading.Event, list[bool]] | None = None
         self._refresh_timer = QTimer(self)
         self._refresh_timer.setSingleShot(True)
         self._refresh_timer.setInterval(100)
@@ -511,7 +515,48 @@ class BridgeController(QObject):
             self.loadSetupState()
             self.refresh()
 
-        self._run(lambda: self._setup.complete(mac), completed)
+        def confirm(passkey: int | None) -> bool:
+            event = threading.Event()
+            decision = [False]
+            with self._pairing_confirmation_lock:
+                self._pairing_confirmation = (event, decision)
+            self.pairingConfirmationRequested.emit(
+                f"{passkey:06d}" if passkey is not None else ""
+            )
+            answered = event.wait(60.0)
+            with self._pairing_confirmation_lock:
+                if self._pairing_confirmation is not None:
+                    pending_event, _pending_decision = self._pairing_confirmation
+                    if pending_event is event:
+                        self._pairing_confirmation = None
+            return answered and decision[0]
+
+        def display(passkey: int) -> None:
+            # RequestConfirmation normally follows DisplayPasskey. The former
+            # opens the actionable dialog and carries the same numeric code.
+            # Keeping this callback present gives BlueZ DisplayYesNo capability
+            # without prompting the user twice.
+            _ = passkey
+
+        self._run(
+            lambda: self._setup.complete(
+                mac,
+                confirmation=confirm,
+                display=display,
+            ),
+            completed,
+        )
+
+    @Slot(bool)
+    def answerPairingConfirmation(self, accepted: bool) -> None:
+        with self._pairing_confirmation_lock:
+            pending = self._pairing_confirmation
+            self._pairing_confirmation = None
+        if pending is None:
+            return
+        event, decision = pending
+        decision[0] = accepted
+        event.set()
 
     @Slot(str)
     def forgetDevice(self, mac: str) -> None:

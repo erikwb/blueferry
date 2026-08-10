@@ -104,6 +104,11 @@ Kirigami.ApplicationWindow {
     Connections {
         target: root.bridge
 
+        function onPairingConfirmationRequested(passkey) {
+            pairingConfirmationDialog.passkey = passkey
+            pairingConfirmationDialog.open()
+        }
+
         function onThreadsChanged() {
             if (root.selectedThreadKey !== "" && root.selectedThread() === null) {
                 root.selectedThreadKey = ""
@@ -238,6 +243,37 @@ Kirigami.ApplicationWindow {
                 restartBluetoothDialog.close()
             }
         }]
+    }
+
+    Kirigami.PromptDialog {
+        id: pairingConfirmationDialog
+        property string passkey: ""
+        title: passkey === "" ? qsTr("Approve Bluetooth Pairing?")
+            : qsTr("Do the Bluetooth Codes Match?")
+        subtitle: passkey === ""
+            ? qsTr("Approve only if you started this pairing from BlueFerry.")
+            : qsTr("Confirm that %1 is shown on both this computer and the iPhone.").arg(passkey)
+        dialogType: Kirigami.PromptDialog.Information
+        standardButtons: Kirigami.Dialog.NoButton
+        closePolicy: Kirigami.Popup.NoAutoClose
+        customFooterActions: [
+            Kirigami.Action {
+                text: qsTr("Cancel Pairing")
+                onTriggered: {
+                    root.bridge.answerPairingConfirmation(false)
+                    pairingConfirmationDialog.close()
+                }
+            },
+            Kirigami.Action {
+                text: pairingConfirmationDialog.passkey === ""
+                    ? qsTr("Approve Pairing") : qsTr("Codes Match")
+                icon.name: "dialog-ok-apply"
+                onTriggered: {
+                    root.bridge.answerPairingConfirmation(true)
+                    pairingConfirmationDialog.close()
+                }
+            }
+        ]
     }
 
     Kirigami.PromptDialog {

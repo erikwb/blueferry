@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+
 from gi.repository import Adw, GLib, Gtk
 
 from blueferry.bluetooth_devices import PairedDevice, iphone_candidates
@@ -461,7 +463,64 @@ class IPhonePage(Gtk.Box):
             self._update_onboarding()
             self._refresh()
 
-        self._run_setup(lambda: self._setup.complete(device.mac), completed)
+        def confirm(passkey: int | None) -> bool:
+            decided = threading.Event()
+            accepted = False
+
+            def present_confirmation() -> bool:
+                dialog = Adw.AlertDialog(
+                    heading=(
+                        _("Do the Bluetooth codes match?")
+                        if passkey is not None
+                        else _("Approve Bluetooth pairing?")
+                    ),
+                    body=(
+                        _("Confirm that {passkey} is shown on both this computer "
+                          "and the iPhone.").format(passkey=f"{passkey:06d}")
+                        if passkey is not None
+                        else _("Approve only if you started this pairing from BlueFerry.")
+                    ),
+                )
+                dialog.add_response("reject", _("Cancel Pairing"))
+                dialog.add_response(
+                    "accept",
+                    _("Codes Match") if passkey is not None else _("Approve Pairing"),
+                )
+                dialog.set_close_response("reject")
+                dialog.set_response_appearance(
+                    "accept", Adw.ResponseAppearance.SUGGESTED
+                )
+
+                def responded(_current, response: str) -> None:
+                    nonlocal accepted
+                    accepted = response == "accept"
+                    decided.set()
+
+                dialog.connect("response", responded)
+                dialog.present(self.get_root())
+                return GLib.SOURCE_REMOVE
+
+            GLib.idle_add(present_confirmation)
+            # BlueZ's agent request timeout is 60 seconds. Return a secure
+            # rejection if the window disappears or the UI never answers.
+            return decided.wait(60.0) and accepted
+
+        def display(passkey: int) -> None:
+            GLib.idle_add(
+                self._toast,
+                _("Bluetooth pairing code: {passkey}").format(
+                    passkey=f"{passkey:06d}"
+                ),
+            )
+
+        self._run_setup(
+            lambda: self._setup.complete(
+                device.mac,
+                confirmation=confirm,
+                display=display,
+            ),
+            completed,
+        )
 
     def _confirm_forget(self, _button) -> None:
         device = self._configured_device() or self._selected_device()
