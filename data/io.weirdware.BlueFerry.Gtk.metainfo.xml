@@ -40,6 +40,12 @@
   </developer>
 
   <releases>
+    <release version="0.6.2" date="2026-08-10">
+      <description>
+        <p>Improves interactive Bluetooth pairing, diagnostics, and handling
+        when a saved device is forgotten outside BlueFerry.</p>
+      </description>
+    </release>
     <release version="0.6.1" date="2026-08-10">
       <description>
         <p>Adds the Textual terminal client, notification deep links, KDE tray
