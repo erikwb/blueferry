@@ -62,10 +62,12 @@ orchestrates lifecycle, while `event_dispatcher` owns persistence/notification
 fan-out. `ProfileSupervisor` owns MAP/PBAP open, close, retry, loss, and resume
 transitions; its worker, session, and timer protocols make those races testable
 without BlueZ. Interactive pairing rendering lives separately from the BlueZ
-pairing service, and CLI message commands use the same backend client as
-graphical UIs. Group replies use `SendToThread`, so routing always comes from
-the backend's current conversation projection rather than client-supplied
-recipients.
+pairing service. An interactive client owns a device-scoped agent, promotes it
+over any desktop default for the complete pairing and Classic-to-LE handoff,
+then unregisters it before persistence and daemon startup. CLI message commands
+use the same backend client as graphical UIs. Group replies use `SendToThread`,
+so routing always comes from the backend's current conversation projection
+rather than client-supplied recipients.
 
 ## Lifecycle
 

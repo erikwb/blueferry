@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import logging
+
+from blueferry import bearer_supervisor
 from blueferry.bearer_supervisor import BearerSupervisor
 
 
-def test_connects_classic_before_le() -> None:
+def test_connects_classic_before_le(caplog) -> None:
     state = {"bredr": False, "le": False}
     connections = []
     scheduled = []
+    caplog.set_level(logging.DEBUG, logger="blueferry.bearer_supervisor")
 
     def connect(kind, on_success, _on_error):
         connections.append(kind)
@@ -35,6 +39,10 @@ def test_connects_classic_before_le() -> None:
     state["le"] = True
     scheduled[0][1]()
     assert supervisor.snapshot() == {"bredr": True, "le": True}
+    assert "probing iPhone BR/EDR and LE bearer state" in caplog.text
+    assert "iPhone BREDR bearer state: disconnected" in caplog.text
+    assert "iPhone BREDR bearer state: connected" in caplog.text
+    assert "iPhone LE bearer state: connected" in caplog.text
 
 
 def test_le_is_not_connected_if_classic_drops_during_settling() -> None:
@@ -59,6 +67,86 @@ def test_le_is_not_connected_if_classic_drops_during_settling() -> None:
 
     assert connections == ["bredr"]
     assert "le" not in connections
+
+
+def test_le_can_be_held_until_classic_profile_attempt_finishes() -> None:
+    state = {"bredr": True, "le": False}
+    connections = []
+    scheduled = []
+    supervisor = BearerSupervisor(
+        "/device",
+        le_enabled=False,
+        read_connected=state.get,
+        connect=lambda kind, on_success, _on_error: (
+            connections.append(kind),
+            on_success(),
+        ),
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+    )
+
+    supervisor.start()
+    assert connections == []
+    assert [delay for delay, _callback in scheduled] == [5]
+
+    supervisor.enable_le()
+    assert [delay for delay, _callback in scheduled] == [5, 3]
+    scheduled[-1][1]()
+    assert connections == ["le"]
+
+
+def test_selects_each_bearer_before_requesting_its_connection() -> None:
+    state = {"bredr": False, "le": False}
+    calls = []
+    scheduled = []
+    supervisor = BearerSupervisor(
+        "/device",
+        read_connected=state.get,
+        prefer=lambda kind: calls.append(("prefer", kind)),
+        connect=lambda kind, on_success, _on_error: (
+            calls.append(("connect", kind)),
+            on_success(),
+        ),
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+    )
+
+    supervisor.start()
+    assert calls == [("prefer", "bredr"), ("connect", "bredr")]
+
+    state["bredr"] = True
+    scheduled[0][1]()
+    scheduled[1][1]()
+    assert calls[-2:] == [("prefer", "le"), ("connect", "le")]
+
+
+def test_bluez_preference_selects_requested_bearer(monkeypatch) -> None:
+    calls = []
+
+    class Properties:
+        @staticmethod
+        def Set(interface, name, value, *, timeout):
+            calls.append((interface, name, str(value), timeout))
+
+    class Bus:
+        @staticmethod
+        def get_object(service, path):
+            calls.append((service, path))
+            return object()
+
+    monkeypatch.setattr(bearer_supervisor, "get_system_bus", Bus)
+    monkeypatch.setattr(
+        bearer_supervisor.dbus,
+        "Interface",
+        lambda _object, interface: calls.append(("interface", interface)) or Properties(),
+    )
+    supervisor = BearerSupervisor("/device")
+
+    supervisor._prefer_bluez("le")
+
+    assert calls == [
+        ("org.bluez", "/device"),
+        ("interface", "org.freedesktop.DBus.Properties"),
+        ("org.bluez.Device1", "PreferredBearer", "le", 5.0),
+    ]
 
 
 def test_failed_connection_is_retried_after_backoff() -> None:

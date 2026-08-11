@@ -177,10 +177,14 @@ def test_pairing_uses_interactive_agent_and_accepts_matching_code(monkeypatch):
     observed = []
 
     class Setup:
-        def complete(self, mac, *, confirmation, display):
+        def complete_isolated(self, mac, *, confirmation, display):
             observed.append((mac, confirmation(12345)))
             display(12345)
             return object()
+
+        @staticmethod
+        def complete(*_args, **_kwargs):
+            raise AssertionError("Qt pairing must not host the D-Bus agent on its worker")
 
     controller = BridgeController(
         backend=_Backend(),
@@ -216,7 +220,7 @@ def test_pairing_rejects_when_confirmation_is_declined(monkeypatch):
     observed = []
 
     class Setup:
-        def complete(self, _mac, *, confirmation, display):
+        def complete_isolated(self, _mac, *, confirmation, display):
             observed.append(confirmation(None))
             return object()
 

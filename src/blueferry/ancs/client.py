@@ -66,6 +66,7 @@ log = logging.getLogger(__name__)
 REQUEST_TIMEOUT_SECONDS = 15
 DBUS_CALL_TIMEOUT_SECONDS = 10
 SUBSCRIBE_RETRY_SECONDS = 2
+AUTHORIZATION_RETRY_SECONDS = 5
 
 
 @dataclass(slots=True)
@@ -76,6 +77,7 @@ class _PendingRequest:
     notification: Notification | None = None
     app_probe: bool = False
     expected_app_id: str | None = None
+    authorization_probe: bool = False
 
 
 _APP_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")
@@ -118,6 +120,7 @@ class AncsClient:
         self._ds_path: str | None = None
         self._cp_path: str | None = None
         self._notify_started = False
+        self._authorized = False
 
         # In-flight per-notification attribute requests + app-name cache
         self._app_name_cache: OrderedDict[str, str] = OrderedDict()
@@ -135,6 +138,7 @@ class AncsClient:
         self._manager_signal_matches: list = []
         self._characteristic_signal_matches: list = []
         self._subscribe_retry_id: int | None = None
+        self._authorization_retry_id: int | None = None
         self._started = False
 
     # ---- lifecycle ------------------------------------------------------
@@ -172,12 +176,16 @@ class AncsClient:
 
     @property
     def connected(self) -> bool:
-        return self._notify_started
+        # StartNotify only proves that BlueZ subscribed to the GATT
+        # characteristics. iOS notification access is usable only after an
+        # authorized Control Point round trip succeeds.
+        return self._notify_started and self._authorized
 
     def stop(self) -> None:
         log.info("ANCS client stopping")
-        was_connected = self._notify_started
+        was_connected = self.connected
         self._cancel_subscribe_retry()
+        self._cancel_authorization_retry()
         self._clear_characteristic_subscription()
         for m in self._manager_signal_matches:
             try:
@@ -217,9 +225,10 @@ class AncsClient:
         path_s = str(path)
         for attr in ("_ns_path", "_ds_path", "_cp_path"):
             if getattr(self, attr) == path_s:
-                was_connected = self._notify_started
+                was_connected = self.connected
                 setattr(self, attr, None)
                 self._cancel_subscribe_retry()
+                self._cancel_authorization_retry()
                 self._clear_characteristic_subscription()
                 log.warning("ANCS char gone: %s", path_s)
                 if was_connected and self.on_status is not None:
@@ -228,6 +237,7 @@ class AncsClient:
 
     def _clear_characteristic_subscription(self) -> None:
         """Remove receivers and notification ownership before rediscovery."""
+        self._cancel_authorization_retry()
         for match in self._characteristic_signal_matches:
             try:
                 match.remove()
@@ -245,6 +255,7 @@ class AncsClient:
                     except dbus.exceptions.DBusException:
                         pass
         self._notify_started = False
+        self._authorized = False
         self._reset_requests()
 
     def _try_subscribe(self) -> None:
@@ -301,9 +312,10 @@ class AncsClient:
         self._cancel_subscribe_retry()
         self._characteristic_signal_matches = matches
         self._notify_started = True
-        log.info("ANCS subscription active for %s", self.device_path)
-        if self.on_status is not None:
-            self.on_status()
+        log.info(
+            "ANCS characteristic subscriptions active; requesting notification access"
+        )
+        self._queue_authorization_probe()
 
     def _schedule_subscribe_retry(self) -> None:
         if (
@@ -331,6 +343,62 @@ class AncsClient:
         except Exception:
             log.debug("could not remove ANCS subscription retry", exc_info=True)
         self._subscribe_retry_id = None
+
+    def _queue_authorization_probe(self) -> None:
+        if not self._notify_started or self._authorized:
+            return
+        request = _PendingRequest(
+            key="authorization",
+            packet=build_get_app_attributes(MESSAGES_APP_ID),
+            assembler=DataSourceAssembler(
+                CommandID.GetAppAttributes,
+                [0],
+                app_id=MESSAGES_APP_ID,
+            ),
+            authorization_probe=True,
+        )
+        if self._request_queue.enqueue(request.key, request):
+            self._pump_requests()
+
+    def _schedule_authorization_retry(self) -> None:
+        if (
+            not self._started
+            or not self._notify_started
+            or self._authorized
+            or self._authorization_retry_id is not None
+        ):
+            return
+        self._authorization_retry_id = self._schedule(
+            AUTHORIZATION_RETRY_SECONDS,
+            self._retry_authorization,
+        )
+        log.info(
+            "ANCS notification access is not authorized yet; retrying in %ds",
+            AUTHORIZATION_RETRY_SECONDS,
+        )
+
+    def _retry_authorization(self) -> bool:
+        self._authorization_retry_id = None
+        self._queue_authorization_probe()
+        return False
+
+    def _cancel_authorization_retry(self) -> None:
+        if self._authorization_retry_id is None:
+            return
+        try:
+            self._cancel(self._authorization_retry_id)
+        except Exception:
+            log.debug("could not remove ANCS authorization retry", exc_info=True)
+        self._authorization_retry_id = None
+
+    def _mark_authorized(self) -> None:
+        if self._authorized:
+            return
+        self._authorized = True
+        self._cancel_authorization_retry()
+        log.info("ANCS notification access authorized for %s", self.device_path)
+        if self.on_status is not None:
+            self.on_status()
 
     # ---- Notification Source: new/modified/removed events --------------
 
@@ -412,7 +480,9 @@ class AncsClient:
                 timeout=DBUS_CALL_TIMEOUT_SECONDS,
             )
         except dbus.exceptions.DBusException as error:
-            log.warning("ANCS CP WriteValue failed: %s", error.get_dbus_name())
+            name = error.get_dbus_name() or type(error).__name__
+            detail = error.get_dbus_message() or str(error)
+            log.warning("ANCS CP WriteValue failed: %s: %s", name, detail)
             self._abandon_request(request)
             self._active_request = None
             self._pump_requests()
@@ -451,6 +521,9 @@ class AncsClient:
         if request is None:
             return
         self._request_queue.finish(request.key)
+        if request.authorization_probe:
+            self._schedule_authorization_retry()
+            return
         app_id = request.assembler.app_id
         if request.notification is not None or not app_id:
             return
@@ -541,6 +614,8 @@ class AncsClient:
                 self._abandon_request(request)
                 self._pump_requests()
                 return
+            if request.authorization_probe:
+                self._mark_authorized()
             self._handle_app_attrs(app_attrs)
         self._pump_requests()
 

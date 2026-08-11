@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 
 import dbus
@@ -89,63 +90,86 @@ def test_agent_rejects_requests_for_any_other_device():
     assert raised.value.get_dbus_name() == "org.bluez.Error.Rejected"
 
 
-def test_gnome_shell_is_recognized_as_desktop_pairing_manager():
-    class Bus:
-        @staticmethod
-        def list_names():
-            return ["org.gnome.Shell", "org.bluez.obex"]
-
-    assert pairing_agent.desktop_pairing_manager_present(Bus()) is True
-
-
-def test_kde_requires_loaded_bluedevil_module(monkeypatch):
-    class Bus:
-        @staticmethod
-        def list_names():
-            return ["org.kde.kded6"]
-
-        @staticmethod
-        def get_object(*_args):
-            return object()
-
-    class Kded:
-        @staticmethod
-        def loadedModules(**_kwargs):
-            return ["networkmanagement", "bluedevil"]
-
-    monkeypatch.setattr(pairing_agent.dbus, "Interface", lambda *_args: Kded())
-
-    assert pairing_agent.desktop_pairing_manager_present(Bus()) is True
-
-
-def test_headless_bluez_services_are_not_treated_as_interactive_manager():
-    class Bus:
-        @staticmethod
-        def list_names():
-            return ["org.bluez.obex", "io.weirdware.BlueFerry"]
-
-    assert pairing_agent.desktop_pairing_manager_present(Bus()) is False
-
-
-def test_registered_agent_does_not_displace_desktop_default():
+def test_registered_agent_is_default_only_for_context_lifetime(caplog):
     calls = []
+    caplog.set_level(logging.DEBUG, logger="blueferry.pairing_agent")
 
     class Manager:
         def RegisterAgent(self, path, capability, **kwargs):
             calls.append(("register", str(path), capability, kwargs["timeout"]))
 
         def RequestDefaultAgent(self, path, **kwargs):
-            raise AssertionError(f"must not take default-agent ownership: {path} {kwargs}")
+            calls.append(("default", str(path), kwargs["timeout"]))
+
+        def UnregisterAgent(self, path, **kwargs):
+            calls.append(("unregister", str(path), kwargs["timeout"]))
+
+    class Agent:
+        def remove_from_connection(self):
+            calls.append("removed")
 
     registered = pairing_agent.RegisteredPairingAgent.__new__(
         pairing_agent.RegisteredPairingAgent
     )
     registered._manager = Manager()
-    registered._agent = object()
+    registered._agent = Agent()
     registered._registered = False
+    registered._expected_device = "/device"
 
-    assert registered.__enter__() is registered
-    assert calls == [("register", pairing_agent.AGENT_PATH, "DisplayYesNo", 10.0)]
+    with registered:
+        calls.append("pairing")
+
+    assert calls == [
+        ("register", pairing_agent.AGENT_PATH, "DisplayYesNo", 10.0),
+        ("default", pairing_agent.AGENT_PATH, 10.0),
+        "pairing",
+        ("unregister", pairing_agent.AGENT_PATH, 10.0),
+        "removed",
+    ]
+    assert registered._registered is False
+    assert "registering device-scoped pairing agent" in caplog.text
+    assert "pairing agent is now the BlueZ default" in caplog.text
+    assert "restoring previous default" in caplog.text
+
+
+def test_registered_agent_cleans_up_when_default_request_fails():
+    calls = []
+
+    class Manager:
+        def RegisterAgent(self, path, _capability, **_kwargs):
+            calls.append(("register", str(path)))
+
+        def RequestDefaultAgent(self, path, **_kwargs):
+            calls.append(("default", str(path)))
+            raise dbus.exceptions.DBusException(
+                "not authorized", name="org.bluez.Error.Rejected"
+            )
+
+        def UnregisterAgent(self, path, **_kwargs):
+            calls.append(("unregister", str(path)))
+
+    class Agent:
+        def remove_from_connection(self):
+            calls.append("removed")
+
+    registered = pairing_agent.RegisteredPairingAgent.__new__(
+        pairing_agent.RegisteredPairingAgent
+    )
+    registered._manager = Manager()
+    registered._agent = Agent()
+    registered._registered = False
+    registered._expected_device = "/device"
+
+    with pytest.raises(pairing_agent.PairingError, match="not authorized"):
+        registered.__enter__()
+
+    assert calls == [
+        ("register", pairing_agent.AGENT_PATH),
+        ("default", pairing_agent.AGENT_PATH),
+        ("unregister", pairing_agent.AGENT_PATH),
+        "removed",
+    ]
+    assert registered._registered is False
 
 
 def test_registered_agent_cleans_up_when_registration_fails():
@@ -171,6 +195,7 @@ def test_registered_agent_cleans_up_when_registration_fails():
     registered._manager = Manager()
     registered._agent = Agent()
     registered._registered = False
+    registered._expected_device = "/device"
 
     with pytest.raises(pairing_agent.PairingError):
         registered.__enter__()

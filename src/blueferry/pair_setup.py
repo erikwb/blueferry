@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Callable
+from contextlib import ExitStack
 from pathlib import Path
 
 import dbus
@@ -13,11 +15,13 @@ from gi.repository import GLib
 from blueferry import bluetooth_capabilities as capabilities
 from blueferry import config
 from blueferry.bluetooth_devices import PairedDevice
-from blueferry.bus import get_system_bus
+from blueferry.bus import get_session_bus, get_system_bus
 from blueferry.commands import run_command
 from blueferry.errors import CommandError, PairingError
 from blueferry.private_files import atomic_write_private_text
 from blueferry.setup_verification import clear_setup_verification
+
+log = logging.getLogger(__name__)
 
 LOCAL_ENV_PATH = config.LOCAL_ENV_PATH
 CLASSIC_SETTLE_SECONDS = 3.0
@@ -210,6 +214,7 @@ def _device(mac: str) -> PairedDevice:
 
 def _wait_for_paired_device(mac: str, *, timeout: float = 120) -> PairedDevice:
     """Wait for a local or iPhone-initiated pairing transaction to settle."""
+    log.debug("waiting up to %.0fs for the %s pairing record to settle", timeout, mac)
     deadline = time.monotonic() + timeout
     device = _device(mac)
     while not device.paired and time.monotonic() < deadline:
@@ -220,6 +225,7 @@ def _wait_for_paired_device(mac: str, *, timeout: float = 120) -> PairedDevice:
             "Bluetooth pairing did not finish. Keep the iPhone unlocked with "
             "Bluetooth settings open, then retry."
         )
+    log.debug("pairing record settled for %s", device.device_path)
     return device
 
 
@@ -255,6 +261,12 @@ def _wait_for_classic_settled(
     context = GLib.MainContext.default()
     deadline = time.monotonic() + timeout
     connected_since: float | None = None
+    previous_connected: bool | None = None
+    log.debug(
+        "probing Classic connection state for up to %.0fs (%.1fs stable required)",
+        timeout,
+        settle_seconds,
+    )
     while True:
         while context.pending():
             context.iteration(False)
@@ -265,10 +277,17 @@ def _wait_for_classic_settled(
             )
         except dbus.exceptions.DBusException:
             connected = False
+        if connected != previous_connected:
+            log.debug(
+                "Classic connection state: %s",
+                "connected" if connected else "disconnected",
+            )
+            previous_connected = connected
         if connected:
             if connected_since is None:
                 connected_since = now
             if now - connected_since >= settle_seconds:
+                log.info("Classic connection is settled")
                 return
         else:
             connected_since = None
@@ -287,6 +306,7 @@ def _connect_classic(
     settle: bool = True,
 ) -> None:
     """Connect the Classic bearer without blocking agent dispatch."""
+    log.info("sending Device1.Connect for Classic bearer: %s", device_path)
     interface = dbus.Interface(
         get_system_bus().get_object("org.bluez", device_path),
         "org.bluez.Device1",
@@ -306,19 +326,110 @@ def _connect_classic(
         raise PairingError(
             error.get_dbus_message() or error.get_dbus_name() or str(error)
         ) from error
+    if error is None:
+        log.debug("Device1.Connect completed successfully")
+    else:
+        log.debug("Device1.Connect reports %s", error.get_dbus_name())
     if settle:
         _wait_for_classic_settled(device_path, timeout=timeout)
+
+
+def _prefer_bredr(device_path: str) -> None:
+    """Force the post-pair Device1.Connect transaction onto BR/EDR."""
+    log.info(
+        "setting Device1.PreferredBearer=bredr before post-pair connection"
+    )
+    obj = get_system_bus().get_object("org.bluez", device_path)
+    props = dbus.Interface(obj, "org.freedesktop.DBus.Properties")
+    try:
+        props.Set(
+            "org.bluez.Device1",
+            "PreferredBearer",
+            dbus.String("bredr"),
+        )
+    except dbus.exceptions.DBusException as error:
+        name = error.get_dbus_name() or ""
+        detail = error.get_dbus_message() or name or str(error)
+        raise PairingError(
+            f"Could not select the BR/EDR bearer for the post-pair "
+            f"connection: {detail}"
+        ) from error
+
+
+def _activate_obex_mns() -> None:
+    """Activate obexd so its local MAP notification service is advertised.
+
+    BlueZ's obexd publishes the Message Notification Server SDP record when
+    it starts.  Activating it before pairing gives iOS the same stable MAP
+    capability presentation used by automotive accessories instead of
+    waiting for BlueFerry's daemon to start after pairing.
+    """
+    log.info("activating BlueZ OBEX/MNS service before pairing")
+    try:
+        peer = dbus.Interface(
+            get_session_bus().get_object("org.bluez.obex", "/org/bluez/obex"),
+            "org.freedesktop.DBus.Peer",
+        )
+        peer.Ping(timeout=10.0)
+    except dbus.exceptions.DBusException as error:
+        detail = error.get_dbus_message() or error.get_dbus_name() or str(error)
+        raise PairingError(
+            f"Could not activate BlueZ's MAP notification service: {detail}"
+        ) from error
+    log.info("BlueZ OBEX/MNS service is available during pairing")
+
+
+def _wait_for_daemon_transports(*, timeout: float = 45.0) -> tuple[bool, bool, bool]:
+    """Observe the daemon while the pairing advert and agent remain active."""
+    from blueferry.client import BackendClient, BackendError
+
+    deadline = time.monotonic() + timeout
+    previous: tuple[bool, bool, bool] | None = None
+    while time.monotonic() < deadline:
+        try:
+            status = BackendClient().status()
+        except BackendError:
+            time.sleep(0.5)
+            continue
+        current = (status.map, status.pbap, status.ancs)
+        if current != previous:
+            log.debug(
+                "daemon transport state: MAP=%s PBAP=%s ANCS=%s",
+                *current,
+            )
+            previous = current
+        if status.ancs:
+            return current
+        time.sleep(0.5)
+    return previous or (False, False, False)
 
 
 def _connect_ancs(device: PairedDevice, *, timeout: float = 30.0) -> str:
     """Connect the bonded LE bearer exposed by bluetoothd's experimental API."""
     manager = _object_manager()
+    previous_state: tuple[bool, bool, bool] | None = None
 
     def bearer_present() -> bool:
+        nonlocal previous_state
         objects = manager.GetManagedObjects()
         interfaces = objects.get(dbus.ObjectPath(device.device_path), {})
-        return "org.bluez.Bearer.LE1" in interfaces
+        bearer = interfaces.get("org.bluez.Bearer.LE1")
+        if bearer is None:
+            return False
+        state = (
+            bool(bearer.get("Paired", False)),
+            bool(bearer.get("Bonded", False)),
+            bool(bearer.get("Connected", False)),
+        )
+        if state != previous_state:
+            log.debug(
+                "LE bearer probe: paired=%s bonded=%s connected=%s",
+                *state,
+            )
+            previous_state = state
+        return True
 
+    log.debug("probing for Bearer.LE1 on %s", device.device_path)
     if not _dispatching_wait(time.monotonic() + timeout, bearer_present):
         raise PairingError(
             "The iPhone has not established the low-energy half of this "
@@ -328,6 +439,7 @@ def _connect_ancs(device: PairedDevice, *, timeout: float = 30.0) -> str:
     obj = get_system_bus().get_object("org.bluez", device.device_path)
     props = dbus.Interface(obj, "org.freedesktop.DBus.Properties")
     try:
+        log.debug("setting Device1.PreferredBearer=le")
         props.Set("org.bluez.Device1", "PreferredBearer", dbus.String("le"))
     except dbus.exceptions.DBusException as error:
         name = error.get_dbus_name() or ""
@@ -342,7 +454,9 @@ def _connect_ancs(device: PairedDevice, *, timeout: float = 30.0) -> str:
         ) from error
     for attempt in range(2):
         try:
+            log.info("sending Bearer.LE1.Connect (attempt %d/2)", attempt + 1)
             dbus.Interface(obj, "org.bluez.Bearer.LE1").Connect(timeout=45.0)
+            log.info("LE bearer connected")
             return "connected"
         except dbus.exceptions.DBusException as error:
             name = error.get_dbus_name() or ""
@@ -351,6 +465,10 @@ def _connect_ancs(device: PairedDevice, *, timeout: float = 30.0) -> str:
                 "org.bluez.Error.AlreadyConnected",
                 "org.bluez.Error.InProgress",
             } or detail.casefold() == "operation already in progress":
+                log.info(
+                    "LE bearer connection is already active (%s)",
+                    name or detail,
+                )
                 return "already connected"
             if name in {
                 "org.freedesktop.DBus.Error.UnknownInterface",
@@ -359,7 +477,13 @@ def _connect_ancs(device: PairedDevice, *, timeout: float = 30.0) -> str:
             }:
                 # Marker-only bearer API: the advert invites the bonded iPhone
                 # to establish LE inbound instead.
+                log.debug("Bearer.LE1.Connect is unavailable: %s", name)
                 return "waiting for iPhone to connect"
+            log.debug(
+                "Bearer.LE1.Connect failed: %s: %s",
+                name or "unknown error",
+                detail or "(no detail)",
+            )
             failure = f"{name} {detail}".casefold()
             if attempt == 0 and "le-connection-abort-by-local" in failure:
                 # Desktop managers often connect the newly paired Classic
@@ -402,6 +526,14 @@ def complete_pairing(
     from blueferry import bluez_setup
 
     device = _device(mac)
+    log.info(
+        "starting setup for %s (%s): paired=%s trusted=%s connected=%s",
+        device.name,
+        device.mac,
+        device.paired,
+        device.trusted,
+        device.connected,
+    )
     adapter = device.adapter_path.rsplit("/", 1)[-1]
     compatibility = bluetooth_compatibility(adapter)
     if not compatibility["hardware_supported"]:
@@ -422,7 +554,9 @@ def complete_pairing(
             "Could not prepare the Bluetooth adapter; check that "
             "blueferry-backend is installed and run doctor."
         )
+    _activate_obex_mns()
 
+    pairing_agents = ExitStack()
     try:
         if not device.paired:
             try:
@@ -430,45 +564,33 @@ def complete_pairing(
                     # Headless fallback: a Linux-initiated transaction pairs
                     # the Classic bearer. Controllers whose Classic pairing
                     # derives LE keys (CTKD) get the dual bond this way too.
+                    log.info("sending Device1.Pair using the headless pairing path")
                     dbus.Interface(
                         get_system_bus().get_object("org.bluez", device.device_path),
                         "org.bluez.Device1",
                     ).Pair(timeout=120.0)
                 else:
-                    from blueferry.pairing_agent import (
-                        RegisteredPairingAgent,
-                        desktop_pairing_manager_present,
-                    )
+                    from blueferry.pairing_agent import RegisteredPairingAgent
 
-                    if desktop_pairing_manager_present():
-                        # KDE BlueDevil, GNOME Shell, and Blueman own both the
-                        # confirmation UI and the surrounding post-pair
-                        # connection lifecycle. Preserve the desktop-proven
-                        # Device1.Pair flow instead of racing that manager
-                        # with BlueFerry's Connect-driven transaction.
-                        dbus.Interface(
-                            get_system_bus().get_object(
-                                "org.bluez", device.device_path
-                            ),
-                            "org.bluez.Device1",
-                        ).Pair(timeout=120.0)
-                    else:
-                        # Connecting the unpaired ACL makes iOS initiate the
-                        # pairing itself, and the authentication initiator is
-                        # the side that derives the cross-transport LE keys.
-                        # Use this fallback when no interactive desktop agent
-                        # owns the full pairing lifecycle.
-                        with RegisteredPairingAgent(
+                    # Connecting the unpaired ACL makes iOS initiate pairing,
+                    # and the authentication initiator is the side that derives
+                    # the cross-transport LE keys. The client has explicit
+                    # confirmation UI, so its device-scoped agent temporarily
+                    # becomes BlueZ default for this transaction even when a
+                    # desktop agent is already registered.
+                    registered = pairing_agents.enter_context(
+                        RegisteredPairingAgent(
                             device.device_path,
                             confirmation,
                             display,
-                        ) as registered:
-                            _connect_classic(
-                                device.device_path,
-                                timeout=60.0,
-                                settle=False,
-                            )
-                            registered.wait_for_pair(timeout=120.0)
+                        )
+                    )
+                    _connect_classic(
+                        device.device_path,
+                        timeout=60.0,
+                        settle=False,
+                    )
+                    registered.wait_for_pair(timeout=120.0)
             except dbus.exceptions.DBusException as error:
                 name = error.get_dbus_name() or ""
                 if name in {
@@ -487,34 +609,48 @@ def complete_pairing(
                         detail = f"Bluetooth confirmation did not complete: {detail}"
                     raise PairingError(detail) from error
             device = _wait_for_paired_device(mac)
+        log.debug("setting Device1.Trusted=true for %s", device.device_path)
         trust_device(device.mac, device.adapter_path)
 
-        _connect_classic(device.device_path)
-        # Two-phase LE setup, matching the proven desktop sequence: only
-        # after the Classic bearer is connected does the ANCS solicitation
-        # advert appear, inviting the bonded iPhone to establish LE.
+        _prefer_bredr(device.device_path)
+        # The pairing transaction already established the Classic ACL.  A
+        # second generic Device1.Connect can wander into LE and hangs on the
+        # observed iOS 18 path, so only require that existing ACL to settle.
+        _wait_for_classic_settled(device.device_path)
+
+        # Keep ANCS solicitation active because iOS 26 testing found that it
+        # surfaced the MAP/PBAP permission toggles.  It is a pairing signal,
+        # not a prerequisite connection: the daemon below attempts MAP/PBAP
+        # before it is allowed to connect the LE bearer.
+        log.debug("registering ANCS solicitation advertisement on %s", adapter)
         if not bluez_setup.register_advert(adapter, settle_for_pairing=True):
             raise PairingError("The ANCS advertisement did not activate")
-        try:
-            ancs = _connect_ancs(_device(mac))
-        except PairingError as error:
-            raise PairingError(
-                f"ANCS/LE connection did not complete; the iPhone was not saved: {error}"
-            ) from error
-        ancs_ready = ancs in {"connected", "already connected"}
-        if not ancs_ready:
-            raise PairingError("ANCS/LE connection did not complete; the iPhone was not saved")
+
+        # Start the long-lived owner while both the advert and temporary
+        # pairing agent are still present.  Its first operation is a Classic
+        # MAP/PBAP open; only when that attempt completes does it enable LE.
+        write_local_env(device.mac, device.adapter_path.rsplit("/", 1)[-1])
+        log.debug("saved paired target %s; restarting user service", device.mac)
+        _restart_user_service()
+        map_ready, pbap_ready, ancs_ready = _wait_for_daemon_transports()
+        ancs = "connected" if ancs_ready else "daemon connecting"
+        log.info(
+            "pairing-window result: MAP=%s PBAP=%s ANCS=%s",
+            map_ready,
+            pbap_ready,
+            ancs_ready,
+        )
     finally:
         # The temporary setup process owns this advertisement. Remove it
-        # before starting the daemon so ownership transfers without a gap or
-        # an AlreadyExists false-positive.
-        bluez_setup.unregister_advert(adapter)
+        # before releasing our device-scoped default agent. Restoring a
+        # desktop agent as soon as Device1.Paired flips can let its post-pair
+        # work race BlueFerry's Classic-to-LE handoff.
+        try:
+            log.debug("removing ANCS solicitation advertisement from %s", adapter)
+            bluez_setup.unregister_advert(adapter)
+        finally:
+            pairing_agents.close()
 
-    # The selected MAC is a capability-bearing target, not merely discovery
-    # data. Persist it only after ANCS proves that the LE half of this exact
-    # bond works; until then the daemon must have no MAP target to connect to.
-    write_local_env(device.mac, device.adapter_path.rsplit("/", 1)[-1])
-    _restart_user_service()
     device = _device(mac)
     return {
         "ok": True,
@@ -522,16 +658,12 @@ def complete_pairing(
         "config": str(LOCAL_ENV_PATH),
         "service": "package-enabled and restarted",
         "ancs": ancs,
-        # Reaching this result means ANCS/LE was established before the target
-        # was persisted and the daemon was started.
         "ancs_ready": ancs_ready,
         "iphone_steps": [
             "Open Settings → Bluetooth and tap ⓘ next to this computer",
-            "If the toggles below are missing, go back and reopen this "
-            "screen — iOS adds them with a delay, sometimes after minutes",
             "If this computer is listed twice, check both entries",
-            "Enable Show Message Notifications",
-            "Enable Sync Contacts",
+            "Toggle on Show Message Notifications and Sync Contacts",
+            "You may need to back out and tap ⓘ again to make these toggles appear",
         ],
     }
 
@@ -542,9 +674,11 @@ def forget_device(mac: str) -> None:
     if not config.is_valid_mac(normalized):
         raise PairingError("invalid Bluetooth device address")
     device = _find_device(normalized)
+    log.info("stopping the user service before forgetting target %s", normalized)
     _stop_user_service()
     if device is not None:
         try:
+            log.info("sending Adapter1.RemoveDevice for %s", device.device_path)
             dbus.Interface(
                 get_system_bus().get_object("org.bluez", device.adapter_path),
                 "org.bluez.Adapter1",
@@ -554,7 +688,10 @@ def forget_device(mac: str) -> None:
                 raise PairingError(
                     error.get_dbus_message() or error.get_dbus_name() or str(error)
                 ) from error
+    else:
+        log.debug("no BlueZ device record remains for %s", normalized)
     clear_local_target()
+    log.info("cleared configured BlueFerry target %s", normalized)
 
 
 def clear_local_target() -> Path:

@@ -552,7 +552,11 @@ class BridgeController(QObject):
             _ = passkey
 
         self._run(
-            lambda: self._setup.complete(
+            # PairingAgent callbacks require a dispatching GLib D-Bus loop.
+            # Qt setup work runs on a worker whose private dbus-python
+            # connection deliberately uses NULL_MAIN_LOOP, so host the agent
+            # in the same isolated helper used by the GTK client.
+            lambda: self._setup.complete_isolated(
                 mac,
                 confirmation=confirm,
                 display=display,

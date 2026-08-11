@@ -250,6 +250,7 @@ def unregister_advert(adapter: str | None = None) -> None:
         ad_mgr = bluez(f"/org/bluez/{adapter}",
                        "org.bluez.LEAdvertisingManager1")
         ad_mgr.UnregisterAdvertisement(_AncsAdvert.PATH)
+        log.info("BLE advert unregistered: %s", _AncsAdvert.PATH)
     except dbus.exceptions.DBusException as e:
         log.debug("UnregisterAdvertisement: %s", e.get_dbus_name())
     finally:

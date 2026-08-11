@@ -28,6 +28,7 @@ _INTERFACES = {
 
 ReadConnected = Callable[[str], bool | None]
 Connect = Callable[[str, Callable[[], None], Callable[[Exception], None]], None]
+Prefer = Callable[[str], None]
 Schedule = Callable[[int, Callable[[], bool]], int]
 Cancel = Callable[[int], object]
 Clock = Callable[[], float]
@@ -45,9 +46,11 @@ class BearerSupervisor:
         self,
         device_path: str,
         *,
+        le_enabled: bool = True,
         on_status: Callable[[], None] | None = None,
         read_connected: ReadConnected | None = None,
         connect: Connect | None = None,
+        prefer: Prefer | None = None,
         schedule: Schedule = GLib.timeout_add_seconds,
         cancel: Cancel = GLib.source_remove,
         clock: Clock = time.monotonic,
@@ -56,9 +59,13 @@ class BearerSupervisor:
         self._on_status = on_status
         self._read_connected = read_connected or self._read_bluez_connected
         self._connect = connect or self._connect_bluez
+        self._prefer = prefer or (
+            self._prefer_bluez if connect is None else lambda _kind: None
+        )
         self._schedule = schedule
         self._cancel = cancel
         self._clock = clock
+        self._le_enabled = le_enabled
         self._timer_id: int | None = None
         self._le_settle_id: int | None = None
         self._running = False
@@ -82,6 +89,20 @@ class BearerSupervisor:
         self._running = True
         self._tick()
         self._timer_id = self._schedule(POLL_SECONDS, self._tick)
+
+    def enable_le(self) -> None:
+        """Allow the LE bearer after the first Classic profile attempt.
+
+        Pairing-time callers can hold LE back long enough for MAP/PBAP to be
+        the first post-pair profile transaction.  Calling this more than once
+        is harmless.
+        """
+        if self._le_enabled:
+            return
+        self._le_enabled = True
+        log.info("MAP/PBAP attempt completed; enabling iPhone LE bearer")
+        if self._running:
+            self._tick()
 
     def poke(self) -> None:
         """Run a health check now, for example after system resume."""
@@ -109,6 +130,7 @@ class BearerSupervisor:
         if not self._running:
             return False
 
+        log.debug("probing iPhone BR/EDR and LE bearer state")
         bredr = self._read("bredr")
         le = self._read("le")
         self._update_state("bredr", bredr)
@@ -121,7 +143,7 @@ class BearerSupervisor:
             self._cancel_le_settle()
         if bredr is False:
             self._request_connect("bredr")
-        elif bredr is True and le is False:
+        elif bredr is True and le is False and self._le_enabled:
             self._schedule_le_connect()
         elif le is True:
             self._cancel_le_settle()
@@ -147,7 +169,7 @@ class BearerSupervisor:
         le = self._read("le")
         self._update_state("bredr", bredr)
         self._update_state("le", le)
-        if bredr is True and le is False:
+        if bredr is True and le is False and self._le_enabled:
             self._request_connect("le")
         elif bredr is False:
             self._request_connect("bredr")
@@ -176,6 +198,9 @@ class BearerSupervisor:
     def _update_state(self, kind: str, value: bool | None) -> None:
         previous = self._states[kind]
         self._states[kind] = value
+        if previous != value:
+            label = "unknown" if value is None else ("connected" if value else "disconnected")
+            log.debug("iPhone %s bearer state: %s", kind.upper(), label)
         if value is True:
             self._last_errors.pop(kind, None)
             self._failures[kind] = 0
@@ -191,6 +216,10 @@ class BearerSupervisor:
         self._connecting.add(kind)
         log.info("connecting iPhone %s bearer", kind.upper())
         try:
+            # Pairing pins the device to BR/EDR so iOS sees MAP/PBAP first.
+            # Switch that preference explicitly for the deferred LE handoff;
+            # restore it just as explicitly before a later Classic reconnect.
+            self._prefer(kind)
             self._connect(
                 kind,
                 lambda: self._connect_succeeded(kind),
@@ -262,3 +291,28 @@ class BearerSupervisor:
             error_handler=on_error,
             timeout=45.0,
         )
+
+    def _prefer_bluez(self, kind: str) -> None:
+        properties = dbus.Interface(
+            get_system_bus().get_object("org.bluez", self.device_path),
+            "org.freedesktop.DBus.Properties",
+        )
+        try:
+            properties.Set(
+                "org.bluez.Device1",
+                "PreferredBearer",
+                dbus.String(kind),
+                timeout=5.0,
+            )
+            log.debug("set iPhone PreferredBearer=%s", kind)
+        except dbus.exceptions.DBusException as error:
+            if error.get_dbus_name() in {
+                "org.freedesktop.DBus.Error.UnknownInterface",
+                "org.freedesktop.DBus.Error.UnknownMethod",
+                "org.freedesktop.DBus.Error.UnknownProperty",
+            }:
+                # Older BlueZ releases can still accept inbound ANCS without
+                # exposing their experimental bearer-selection API.
+                log.debug("PreferredBearer is unavailable on this BlueZ build")
+                return
+            raise

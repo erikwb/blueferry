@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from collections.abc import Callable
@@ -14,54 +15,13 @@ from gi.repository import GLib
 from blueferry.bus import get_system_bus
 from blueferry.errors import PairingError
 
+log = logging.getLogger(__name__)
+
 AGENT_INTERFACE = "org.bluez.Agent1"
 AGENT_PATH = "/io/weirdware/BlueFerry/PairingAgent"
 
 ConfirmationCallback = Callable[[int | None], bool]
 DisplayCallback = Callable[[int], None]
-
-_DESKTOP_AGENT_BUS_NAMES = {
-    "org.blueman.Applet",
-    "org.cinnamon",
-    "org.Cinnamon",
-    "org.gnome.Shell",
-}
-_KDE_AGENT_MODULES = {
-    "org.kde.kded5": "org.kde.kded5",
-    "org.kde.kded6": "org.kde.kded6",
-}
-
-
-def desktop_pairing_manager_present(bus=None) -> bool:
-    """Return whether a common interactive desktop pairing agent is active.
-
-    BlueZ does not expose its registered/default agent list. Recognize the
-    session services that own pairing UI on the desktops BlueFerry supports;
-    deliberately ignore generic headless agents such as ``bt-agent`` because
-    they may advertise NoInputNoOutput and cannot show numeric comparison.
-    """
-    try:
-        session = bus or dbus.SessionBus()
-        names = {str(name) for name in session.list_names()}
-    except dbus.exceptions.DBusException:
-        return False
-    if names & _DESKTOP_AGENT_BUS_NAMES:
-        return True
-    for name, interface_name in _KDE_AGENT_MODULES.items():
-        if name not in names:
-            continue
-        try:
-            interface = dbus.Interface(
-                session.get_object(name, "/kded"),
-                interface_name,
-            )
-            modules = interface.loadedModules(timeout=2.0)
-        except dbus.exceptions.DBusException:
-            continue
-        if "bluedevil" in {str(module).casefold() for module in modules}:
-            return True
-    return False
-
 
 class _Rejected(dbus.exceptions.DBusException):
     _dbus_error_name = "org.bluez.Error.Rejected"
@@ -84,6 +44,10 @@ class PairingAgent(dbus.service.Object):
 
     def _require_expected(self, device: dbus.ObjectPath) -> None:
         if str(device) != self._expected_device:
+            log.warning(
+                "rejecting pairing-agent request for unexpected device %s",
+                device,
+            )
             raise _Rejected("BlueFerry did not request pairing with this device")
 
     def _confirm_deferred(
@@ -100,10 +64,13 @@ class PairingAgent(dbus.service.Object):
         def confirm() -> None:
             try:
                 if self._confirmation(passkey):
+                    log.debug("pairing-agent confirmation accepted")
                     return_cb()
                 else:
+                    log.debug("pairing-agent confirmation rejected")
                     error_cb(_Rejected(rejection))
             except Exception as error:  # callback/UI failures reject securely
+                log.debug("pairing-agent confirmation callback failed", exc_info=True)
                 error_cb(error)
 
         threading.Thread(
@@ -114,7 +81,7 @@ class PairingAgent(dbus.service.Object):
 
     @dbus.service.method(AGENT_INTERFACE, in_signature="", out_signature="")
     def Release(self) -> None:
-        pass
+        log.debug("BlueZ released the BlueFerry pairing agent")
 
     @dbus.service.method(AGENT_INTERFACE, in_signature="o", out_signature="s")
     def RequestPinCode(self, device: dbus.ObjectPath) -> str:
@@ -155,6 +122,7 @@ class PairingAgent(dbus.service.Object):
         error_cb: Callable[[Exception], None],
     ) -> None:
         self._require_expected(device)
+        log.debug("BlueZ requested numeric confirmation for %s", device)
         self._confirm_deferred(
             int(passkey),
             "Pairing code was not confirmed",
@@ -175,6 +143,7 @@ class PairingAgent(dbus.service.Object):
         error_cb: Callable[[Exception], None],
     ) -> None:
         self._require_expected(device)
+        log.debug("BlueZ requested pairing authorization for %s", device)
         self._confirm_deferred(
             None,
             "Pairing was not authorized",
@@ -185,14 +154,15 @@ class PairingAgent(dbus.service.Object):
     @dbus.service.method(AGENT_INTERFACE, in_signature="os", out_signature="")
     def AuthorizeService(self, device: dbus.ObjectPath, uuid: str) -> None:
         self._require_expected(device)
+        log.debug("authorizing Bluetooth service %s for %s", uuid, device)
 
     @dbus.service.method(AGENT_INTERFACE, in_signature="", out_signature="")
     def Cancel(self) -> None:
-        pass
+        log.debug("BlueZ cancelled the pairing-agent request")
 
 
 class RegisteredPairingAgent:
-    """Register a same-thread agent for one interactive pairing transaction.
+    """Register the default agent for one interactive pairing transaction.
 
     The agent's D-Bus callbacks are dispatched by a GLib loop running on the
     caller's thread (``wait_for_pair``). An earlier design ran the loop on a
@@ -223,16 +193,26 @@ class RegisteredPairingAgent:
 
     def __enter__(self) -> RegisteredPairingAgent:
         try:
+            log.info(
+                "registering device-scoped pairing agent for %s",
+                self._expected_device,
+            )
             self._manager.RegisterAgent(
                 dbus.ObjectPath(AGENT_PATH),
                 "DisplayYesNo",
                 timeout=10.0,
             )
             self._registered = True
-            # Do not displace an existing desktop pairing agent such as
-            # BlueDevil, GNOME Bluetooth, or Blueman. BlueZ keeps that agent
-            # as the default; when none exists, the first registered agent is
-            # automatically used for incoming pairing requests.
+            # The BlueFerry client owns the confirmation UI for this explicit
+            # transaction. Become default so an iPhone-initiated request
+            # reaches this scoped agent even if a desktop or headless agent was
+            # registered first. UnregisterAgent removes us from BlueZ's
+            # default-agent queue and restores the previous agent afterward.
+            self._manager.RequestDefaultAgent(
+                dbus.ObjectPath(AGENT_PATH),
+                timeout=10.0,
+            )
+            log.info("BlueFerry pairing agent is now the BlueZ default")
         except dbus.exceptions.DBusException as error:
             self._unregister()
             self._agent.remove_from_connection()
@@ -248,16 +228,27 @@ class RegisteredPairingAgent:
         if not self._registered:
             return
         try:
+            log.info(
+                "unregistering BlueFerry pairing agent; restoring previous default"
+            )
             self._manager.UnregisterAgent(
                 dbus.ObjectPath(AGENT_PATH),
                 timeout=10.0,
             )
-        except dbus.exceptions.DBusException:
-            pass
+        except dbus.exceptions.DBusException as error:
+            log.debug(
+                "could not unregister pairing agent: %s",
+                error.get_dbus_name() or str(error),
+            )
         self._registered = False
 
     def wait_for_pair(self, timeout: float = 120.0) -> None:
         """Dispatch Agent1 callbacks until BlueZ reports the device paired."""
+        log.debug(
+            "waiting up to %.0fs for Device1.Paired on %s",
+            timeout,
+            self._expected_device,
+        )
         loop = GLib.MainLoop()
         deadline = time.monotonic() + timeout
         failure: list[PairingError] = []
@@ -281,6 +272,7 @@ class RegisteredPairingAgent:
                     loop.quit()
                     return GLib.SOURCE_REMOVE
             if paired:
+                log.info("BlueZ reports the selected device paired")
                 loop.quit()
                 return GLib.SOURCE_REMOVE
             if time.monotonic() >= deadline:

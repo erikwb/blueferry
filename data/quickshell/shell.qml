@@ -151,9 +151,13 @@ ShellRoot {
   function pendingIphoneSetupText() {
     var tasks = pendingIphoneSetupTasks().join("\n• ")
     var instructions = "After approving “Allow System Notifications,” you may need to return to the Bluetooth device list and reopen this computer before the other settings appear."
-    if (root.configured) return instructions + "\n• " + tasks
-    return "On the iPhone open Settings → Bluetooth, tap ⓘ next to this computer, then finish the settings below. " + instructions + "\n• "
-      + tasks
+    var text = root.configured
+      ? instructions + "\n• " + tasks
+      : "On the iPhone open Settings → Bluetooth, tap ⓘ next to this computer, then finish the settings below. " + instructions + "\n• " + tasks
+    var verified = backendStatus.verified_iphone_setup || []
+    if (notificationsSupported && verified.indexOf("notification-access") < 0)
+      text += "\n\nWithout System Notification access, group texts appear as individual conversations with their sender."
+    return text
   }
 
   function updateOnboarding() {
@@ -1078,7 +1082,7 @@ ShellRoot {
             text: root.onboardingStage === "ready"
               ? "Bluetooth services and iPhone permissions have been verified."
               : root.onboardingStage === "ready-without-ancs"
-                ? "Messages and contacts have been verified; per-app notifications are unavailable."
+                ? "Messages and contacts have been verified. System notifications are unavailable, so group texts may appear as individual conversations."
                 : root.onboardingStage === "iphone-settings"
                     ? root.mapConnectionRefused()
                       ? "Cannot retrieve or send messages - are you connected to another computer? We will reconnect once your phone is free"
@@ -1092,7 +1096,7 @@ ShellRoot {
             visible: !root.configured && !root.targetSaved
           }
           FerryLabel {
-            text: "Scan for and select your iPhone here, then choose Pair. On the iPhone, open Settings → Bluetooth, find this computer under \"Other Devices\", tap it, and approve the matching codes. Pairing may appear idle for up to 15 seconds."
+            text: "Scan for and select your iPhone here, then choose Pair. On the iPhone, open Settings → Bluetooth, find this computer under \"Other Devices\", tap it, and approve the matching codes. Pairing may appear idle for up to 15 seconds. System Notification access is also how BlueFerry recognizes group text threads; without it, a group text appears as a one-to-one conversation with its sender."
             wrapMode: Text.Wrap
             Layout.fillWidth: true
             visible: !root.configured && !root.targetSaved

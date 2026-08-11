@@ -7,7 +7,22 @@ from types import SimpleNamespace
 
 from typer.testing import CliRunner
 
-from blueferry import cli, setup_client
+from blueferry import cli, pairing_cli, setup_client
+
+
+def test_pair_setup_debug_enables_diagnostic_logging(monkeypatch):
+    calls = []
+    monkeypatch.setattr(cli, "_setup_logging", lambda enabled: calls.append(("debug", enabled)))
+    monkeypatch.setattr(
+        pairing_cli,
+        "run_wizard",
+        lambda *, verify_after: calls.append(("wizard", verify_after)) or 0,
+    )
+
+    result = CliRunner().invoke(cli.app, ["pair-setup", "--debug", "--no-verify"])
+
+    assert result.exit_code == 0
+    assert calls == [("debug", True), ("wizard", False)]
 
 
 def test_interactive_pairing_emits_code_and_waits_for_acceptance(monkeypatch):

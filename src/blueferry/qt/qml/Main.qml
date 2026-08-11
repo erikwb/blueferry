@@ -80,8 +80,13 @@ Kirigami.ApplicationWindow {
 
     function pendingIphoneSetupText() {
         const tasks = pendingIphoneSetupTasks()
-        return qsTr("Open Settings → Bluetooth on the iPhone, tap ⓘ next to this computer, then finish the settings below. After approving “Allow System Notifications,” you may need to return to the Bluetooth device list and reopen this computer before the other settings appear:\n• ")
+        let detail = qsTr("Open Settings → Bluetooth on the iPhone, tap ⓘ next to this computer, then finish the settings below. After approving “Allow System Notifications,” you may need to return to the Bluetooth device list and reopen this computer before the other settings appear:\n• ")
             + tasks.join("\n• ")
+        const verified = bridge.status.verified_iphone_setup || []
+        if (bridge.compatibility.notifications_supported
+                && verified.indexOf("notification-access") < 0)
+            detail += qsTr("\n\nWithout System Notification access, group texts appear as individual conversations with their sender.")
+        return detail
     }
 
     function openPhoneSettings() {
@@ -129,11 +134,11 @@ Kirigami.ApplicationWindow {
             "checking": qsTr("Inspecting the selected Bluetooth controller without changing it."),
             "incompatible": bridge.compatibility.issue || qsTr("A controller with BR/EDR and secure pairing is required."),
             "activate-bluetooth": qsTr("The packaged BlueZ bearer support needs one authorized Bluetooth restart."),
-            "select-device": qsTr("Scan for and select your iPhone here, then choose Pair. On the iPhone, open Settings → Bluetooth, find this computer under \"Other Devices\", tap it, and approve the matching codes. Pairing may appear idle for up to 15 seconds."),
+            "select-device": qsTr("Scan for and select your iPhone here, then choose Pair. On the iPhone, open Settings → Bluetooth, find this computer under \"Other Devices\", tap it, and approve the matching codes. Pairing may appear idle for up to 15 seconds. System Notification access is also how BlueFerry recognizes group text threads; without it, a group text appears as a one-to-one conversation with its sender."),
             "starting": qsTr("The configured backend is starting. This normally takes a few seconds."),
             "iphone-settings": pendingIphoneSetupText(),
             "ready": qsTr("Bluetooth services and iPhone permissions have been verified."),
-            "ready-without-ancs": qsTr("Messages and contacts have been verified; per-app notifications are unavailable.")
+            "ready-without-ancs": qsTr("Messages and contacts have been verified. System notifications are unavailable, so group texts may appear as individual conversations.")
         }
         return details[stage] || ""
     }

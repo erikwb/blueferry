@@ -162,6 +162,41 @@ def test_clearing_saved_target_stops_daemon_without_restart(monkeypatch):
     assert stopped == [True]
 
 
+def test_removing_bond_stops_active_daemon_without_restart(monkeypatch):
+    instance = _bare_daemon()
+    stopped = []
+    monkeypatch.setattr(
+        daemon_mod.config,
+        "current_target",
+        lambda: ("02:00:00:00:00:01", "hci0"),
+    )
+    monkeypatch.setattr(daemon_mod.config, "IPHONE_MAC", "02:00:00:00:00:01")
+    monkeypatch.setattr(daemon_mod.config, "ADAPTER", "hci0")
+    monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args: False)
+    monkeypatch.setattr(daemon_mod.main_loop, "quit", lambda: stopped.append(True))
+
+    assert instance._check_target_config() is False
+    assert instance._restart_after_upgrade is False
+    assert stopped == [True]
+
+
+def test_transient_bond_inspection_failure_keeps_daemon_running(monkeypatch):
+    instance = _bare_daemon()
+    stopped = []
+    monkeypatch.setattr(
+        daemon_mod.config,
+        "current_target",
+        lambda: ("02:00:00:00:00:01", "hci0"),
+    )
+    monkeypatch.setattr(daemon_mod.config, "IPHONE_MAC", "02:00:00:00:00:01")
+    monkeypatch.setattr(daemon_mod.config, "ADAPTER", "hci0")
+    monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args: None)
+    monkeypatch.setattr(daemon_mod.main_loop, "quit", lambda: stopped.append(True))
+
+    assert instance._check_target_config() is True
+    assert stopped == []
+
+
 def test_changing_saved_target_requests_restart(monkeypatch):
     instance = _bare_daemon()
     stopped = []

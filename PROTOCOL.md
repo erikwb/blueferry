@@ -83,6 +83,36 @@ independent, and three behaviors were observed on iOS 26.5:
   either record. Users must check both entries.
 - Closing and reopening the entry's detail page refreshes iOS's view.
 
+An iOS 18 test did not follow the same post-pair behavior: an outbound LE
+connection hung and ended in `le-connection-abort-by-local`, while MAP/PBAP
+worked when attempted first. BlueZ still reported its LE bearer as paired and
+bonded, so those properties cannot predict whether the phone will answer.
+
+The experimental pairing flow therefore keeps the ANCS solicitation
+advertisement active, activates obexd's local Message Notification Server
+before pairing, and makes MAP/PBAP the first post-pair profile attempt. LE is
+enabled after that attempt completes, whether it succeeds or fails. Before
+each connection request the daemon explicitly selects the corresponding BlueZ
+`PreferredBearer`; otherwise the pairing-time BR/EDR preference prevents the
+later LE request from completing.
+
+On a clean iOS 26 test this ordering opened MAP/PBAP first; the pending LE
+request completed three seconds later, resolved all three ANCS characteristics,
+and presented the system-notification consent prompt. The first Control Point
+request returned `NotPermitted`; the retry five seconds later succeeded after
+the prompt was approved. MAP, PBAP, and authorized ANCS then shared one
+iPhone-side record. Failed or partial pairing attempts can still leave two
+same-named records on the phone, so both must be removed before another clean
+test.
+
+Starting notifications on the ANCS Notification Source and Data Source proves
+only that the GATT subscriptions exist. It does not prove that iOS authorized
+notification contents. During setup BlueFerry therefore sends a minimal
+Control Point request for the Messages app's display name and reports ANCS
+ready only after the corresponding Data Source response arrives. This probe
+contains no notification identifier or notification content. A rejected or
+interrupted probe is retried while MAP/PBAP remains available.
+
 Without the relevant permission, MAP or PBAP can be visible at the SDP level
 but reject an OBEX connection with `Forbidden`/`0x43`; that state resolves
 once the toggle is enabled and is not a reason to re-pair. A MAP `Connection

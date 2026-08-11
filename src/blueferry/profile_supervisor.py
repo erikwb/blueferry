@@ -68,6 +68,7 @@ class ProfileSupervisor:
         on_ready: Callable[[], None],
         on_lost: Callable[[str], None],
         on_status: Callable[[], None],
+        on_first_attempt_complete: Callable[[], None] | None = None,
         schedule: Schedule = GLib.timeout_add_seconds,
         cancel: Cancel = GLib.source_remove,
     ) -> None:
@@ -77,6 +78,7 @@ class ProfileSupervisor:
         self._on_ready = on_ready
         self._on_lost = on_lost
         self._on_status = on_status
+        self._on_first_attempt_complete = on_first_attempt_complete
         self._schedule = schedule
         self._cancel = cancel
         self._retry_id: int | None = None
@@ -86,6 +88,7 @@ class ProfileSupervisor:
         self._ever_ready = False
         self._stopping = False
         self._generation = 0
+        self._first_attempt_completed = False
         self.sessions.set_on_lost(self.session_lost)
 
     @property
@@ -164,6 +167,7 @@ class ProfileSupervisor:
         if self._stopping or generation != self._generation or self._closing:
             return
         self._opening = False
+        self._complete_first_attempt()
         log.info("MAP/PBAP sessions opened")
         self._mark_ready()
 
@@ -186,6 +190,7 @@ class ProfileSupervisor:
         if self._stopping or generation != self._generation:
             return
         self._opening = False
+        self._complete_first_attempt()
         message = str(error)
         log.warning("could not open MAP/PBAP sessions: %s", message)
         authorization_required = isinstance(error, SessionError) and (
@@ -207,6 +212,13 @@ class ProfileSupervisor:
         )
         self._on_status()
         self._schedule_retry(delay)
+
+    def _complete_first_attempt(self) -> None:
+        if self._first_attempt_completed:
+            return
+        self._first_attempt_completed = True
+        if self._on_first_attempt_complete is not None:
+            self._on_first_attempt_complete()
 
     def _closed(self, generation: int) -> None:
         if self._stopping or generation != self._generation:
