@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import stat
 
 import pytest
@@ -510,10 +511,11 @@ def test_classic_connect_requires_observable_settled_connection(monkeypatch):
     ]
 
 
-def test_ancs_retries_local_abort_after_classic_resettles(monkeypatch):
+def test_ancs_retries_local_abort_after_classic_resettles(monkeypatch, caplog):
     device = _device(paired=True)
     connects = []
     settled = []
+    caplog.set_level(logging.DEBUG, logger="blueferry.pair_setup")
 
     class Manager:
         @staticmethod
@@ -563,6 +565,11 @@ def test_ancs_retries_local_abort_after_classic_resettles(monkeypatch):
     assert pair_setup._connect_ancs(device) == "connected"
     assert len(connects) == 2
     assert settled == [device.device_path]
+    assert "LE bearer probe: paired=False bonded=False connected=False" in caplog.text
+    assert "sending Bearer.LE1.Connect (attempt 1/2)" in caplog.text
+    assert "le-connection-abort-by-local" in caplog.text
+    assert "sending Bearer.LE1.Connect (attempt 2/2)" in caplog.text
+    assert "LE bearer connected" in caplog.text
 
 
 def test_complete_pairing_headless_pairs_from_linux(monkeypatch):
@@ -636,21 +643,40 @@ def test_interactive_pairing_connects_and_lets_the_iphone_initiate(monkeypatch):
     _compatible(monkeypatch)
     monkeypatch.setattr(bluez_setup, "prepare_classic", lambda **_kwargs: True)
     monkeypatch.setattr(bluez_setup, "register_advert", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(bluez_setup, "unregister_advert", lambda _adapter: None)
-    monkeypatch.setattr(pairing_agent, "RegisteredPairingAgent", Agent)
     monkeypatch.setattr(
-        pairing_agent, "desktop_pairing_manager_present", lambda: False
+        bluez_setup,
+        "unregister_advert",
+        lambda _adapter: calls.append("advert-exit"),
     )
+    monkeypatch.setattr(pairing_agent, "RegisteredPairingAgent", Agent)
 
     def connect_classic(path, **kwargs):
         if "timeout" in kwargs:
             calls.append(("connect", path, kwargs["timeout"]))
+        else:
+            calls.append(("post-pair-connect", path))
 
     monkeypatch.setattr(pair_setup, "_connect_classic", connect_classic)
-    monkeypatch.setattr(pair_setup, "_connect_ancs", lambda _device: "connected")
-    monkeypatch.setattr(pair_setup, "trust_device", lambda *_args: None)
-    monkeypatch.setattr(pair_setup, "write_local_env", lambda *_args: None)
-    monkeypatch.setattr(pair_setup, "_restart_user_service", lambda: None)
+    monkeypatch.setattr(
+        pair_setup,
+        "_connect_ancs",
+        lambda _device: calls.append("ancs") or "connected",
+    )
+    monkeypatch.setattr(
+        pair_setup,
+        "trust_device",
+        lambda *_args: calls.append("trust"),
+    )
+    monkeypatch.setattr(
+        pair_setup,
+        "write_local_env",
+        lambda *_args: calls.append("persist"),
+    )
+    monkeypatch.setattr(
+        pair_setup,
+        "_restart_user_service",
+        lambda: calls.append("daemon"),
+    )
 
     pair_setup.complete_pairing(
         unpaired.mac,
@@ -659,63 +685,23 @@ def test_interactive_pairing_connects_and_lets_the_iphone_initiate(monkeypatch):
     )
 
     # Connecting the unpaired ACL makes iOS initiate pairing (and derive the
-    # LE keys); there must be no competing Linux-side Device1.Pair() call,
-    # and the agent must be alive before the connect provokes iOS.
+    # LE keys); there must be no competing Linux-side Device1.Pair() call.
+    # Keep our agent default until the Classic-to-LE handoff finishes so a
+    # restored desktop agent cannot race the remainder of the transaction.
     assert calls == [
         ("agent", unpaired.device_path, confirmation, display),
         "agent-enter",
         ("connect", unpaired.device_path, 60.0),
         ("wait", 120.0),
-        "agent-exit",
         "settled",
+        "trust",
+        ("post-pair-connect", unpaired.device_path),
+        "ancs",
+        "advert-exit",
+        "agent-exit",
+        "persist",
+        "daemon",
     ]
-
-
-def test_interactive_pairing_uses_device_pair_with_desktop_manager(monkeypatch):
-    from blueferry import pairing_agent
-
-    unpaired = _device(paired=False)
-    paired = _device(paired=True)
-    calls = []
-
-    class DeviceInterface:
-        def Pair(self, **kwargs):
-            calls.append(("pair", kwargs["timeout"]))
-
-    class Bus:
-        @staticmethod
-        def get_object(*_args):
-            return object()
-
-    monkeypatch.setattr(pair_setup, "_device", lambda _mac: unpaired)
-    monkeypatch.setattr(pair_setup, "_wait_for_paired_device", lambda _mac: paired)
-    _compatible(monkeypatch)
-    monkeypatch.setattr(bluez_setup, "prepare_classic", lambda **_kwargs: True)
-    monkeypatch.setattr(bluez_setup, "register_advert", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(bluez_setup, "unregister_advert", lambda _adapter: None)
-    monkeypatch.setattr(pair_setup, "get_system_bus", Bus)
-    monkeypatch.setattr(pair_setup.dbus, "Interface", lambda *_args: DeviceInterface())
-    monkeypatch.setattr(
-        pairing_agent, "desktop_pairing_manager_present", lambda: True
-    )
-    monkeypatch.setattr(
-        pairing_agent,
-        "RegisteredPairingAgent",
-        lambda *_args: (_ for _ in ()).throw(AssertionError("agent must not register")),
-    )
-    monkeypatch.setattr(pair_setup, "trust_device", lambda *_args: None)
-    monkeypatch.setattr(pair_setup, "_connect_classic", lambda _path: None)
-    monkeypatch.setattr(pair_setup, "_connect_ancs", lambda _device: "connected")
-    monkeypatch.setattr(pair_setup, "write_local_env", lambda *_args: None)
-    monkeypatch.setattr(pair_setup, "_restart_user_service", lambda: None)
-
-    result = pair_setup.complete_pairing(
-        unpaired.mac,
-        confirmation=lambda _passkey: True,
-    )
-
-    assert calls == [("pair", 120.0)]
-    assert result["ok"] is True
 
 
 def test_peer_initiated_pairing_is_allowed_to_finish(monkeypatch):

@@ -419,7 +419,18 @@ class Daemon:
     def _check_target_config(self) -> bool:
         mac, adapter = config.current_target()
         if mac == config.IPHONE_MAC and adapter == config.ADAPTER:
-            return True
+            bonded = bond_status(mac, adapter)
+            if bonded is not False:
+                return True
+            # The daemon may already have initialized its supervisors when a
+            # user removes the bond through a desktop Bluetooth client. Stop
+            # the current process so those supervisors cannot keep issuing
+            # Connect/CreateSession calls for an explicitly forgotten phone.
+            # ``None`` is deliberately ignored above because it represents an
+            # unavailable adapter or transient BlueZ inspection failure.
+            log.info("saved iPhone bond was removed; stopping daemon")
+            main_loop.quit()
+            return False
         if not mac:
             log.info("saved iPhone target was cleared; stopping daemon")
         else:

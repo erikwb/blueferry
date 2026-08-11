@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import logging
+
 from blueferry.bearer_supervisor import BearerSupervisor
 
 
-def test_connects_classic_before_le() -> None:
+def test_connects_classic_before_le(caplog) -> None:
     state = {"bredr": False, "le": False}
     connections = []
     scheduled = []
+    caplog.set_level(logging.DEBUG, logger="blueferry.bearer_supervisor")
 
     def connect(kind, on_success, _on_error):
         connections.append(kind)
@@ -35,6 +38,10 @@ def test_connects_classic_before_le() -> None:
     state["le"] = True
     scheduled[0][1]()
     assert supervisor.snapshot() == {"bredr": True, "le": True}
+    assert "probing iPhone BR/EDR and LE bearer state" in caplog.text
+    assert "iPhone BREDR bearer state: disconnected" in caplog.text
+    assert "iPhone BREDR bearer state: connected" in caplog.text
+    assert "iPhone LE bearer state: connected" in caplog.text
 
 
 def test_le_is_not_connected_if_classic_drops_during_settling() -> None:

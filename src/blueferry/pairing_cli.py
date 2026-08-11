@@ -12,12 +12,22 @@ from blueferry.client import BackendClient, BackendError
 from blueferry.errors import PairingError
 from blueferry.setup_client import SetupClient
 from blueferry.setup_verification import (
-    CONTACTS,
-    MESSAGE_NOTIFICATIONS,
     NOTIFICATION_ACCESS,
     remaining_iphone_setup_tasks,
 )
 from blueferry.text_safety import terminal_text
+
+
+def _confirm_pairing(passkey: int | None) -> bool:
+    if passkey is None:
+        prompt = "Approve this Bluetooth pairing request?"
+    else:
+        prompt = f"Do both devices show Bluetooth code {passkey:06d}?"
+    return typer.confirm(prompt, default=False)
+
+
+def _display_pairing_code(passkey: int) -> None:
+    typer.echo(f"Bluetooth pairing code: {passkey:06d}")
 
 
 def run_wizard(*, verify_after: bool = True) -> int:
@@ -27,6 +37,34 @@ def run_wizard(*, verify_after: bool = True) -> int:
     )
 
     setup = SetupClient()
+    try:
+        configuration = setup.configuration()
+    except PairingError as error:
+        typer.echo(typer.style(str(error), fg=typer.colors.RED))
+        return 1
+    if configuration.saved:
+        typer.echo(
+            typer.style(
+                f"\nBlueFerry already has {configuration.mac} configured.",
+                fg=typer.colors.YELLOW,
+            )
+        )
+        typer.echo("Before answering Yes, forget this PC on the iPhone too:")
+        typer.echo("Settings → Bluetooth → (i) next to this PC → Forget This Device")
+        if not typer.confirm(
+            "Forget BlueFerry's configured target and start fresh?",
+            default=False,
+        ):
+            typer.echo("Existing pairing and configuration left unchanged.")
+            return 0
+        try:
+            setup.forget(configuration.mac)
+        except PairingError as error:
+            typer.echo(typer.style(str(error), fg=typer.colors.RED))
+            return 1
+        typer.echo(typer.style("✓ Previous target forgotten", fg=typer.colors.GREEN))
+        configuration = setup.configuration()
+
     try:
         compatibility = setup.compatibility()
     except PairingError as error:
@@ -80,7 +118,7 @@ def run_wizard(*, verify_after: bool = True) -> int:
     candidates = iphone_candidates(
         devices,
         adapter=compatibility.adapter,
-        configured_mac=setup.configuration().mac,
+        configured_mac=configuration.mac,
         include_unpaired=True,
     )
     if not candidates:
@@ -124,7 +162,11 @@ def run_wizard(*, verify_after: bool = True) -> int:
 
     typer.echo("\nActivating Bluetooth, then starting secure pairing…")
     try:
-        result = setup.complete(chosen.mac)
+        result = setup.complete(
+            chosen.mac,
+            confirmation=_confirm_pairing,
+            display=_display_pairing_code,
+        )
     except PairingError as error:
         typer.echo(typer.style(str(error), fg=typer.colors.RED))
         return 1
@@ -195,23 +237,20 @@ def _print_iphone_steps(
     typer.echo(typer.style("\n=== On the iPhone ===\n", fg=typer.colors.CYAN, bold=True))
     typer.echo("  1. Open Settings → Bluetooth")
     typer.echo("  2. Tap the (i) next to your computer's name in My Devices")
-    labels = {
-        MESSAGE_NOTIFICATIONS: "Enable: Show Message Notifications",
-        CONTACTS: "Enable: Sync Contacts",
-        NOTIFICATION_ACCESS: "Allow Notification Access when prompted",
-    }
-    for number, task in enumerate(remaining, 3):
-        typer.echo(
-            typer.style(
-                f"  {number}. {labels[task]}",
-                fg=typer.colors.WHITE,
-                bold=True,
-            )
+    typer.echo("  3. Allow Notification Access when prompted")
+    typer.echo(
+        typer.style(
+            "  4. Toggle on Show Message Notifications and Sync Contacts",
+            fg=typer.colors.WHITE,
+            bold=True,
         )
+    )
+    typer.echo("     Note: You may need to back out and tap the (i) again to make")
+    typer.echo("     these toggles appear.")
     if NOTIFICATION_ACCESS in remaining:
         typer.echo("\nANCS notification access is negotiated during pairing. Some")
         typer.echo("iOS versions do not show a separate system-notification toggle.")
-    typer.echo("If an expected toggle is missing, run `blueferry doctor` before re-pairing.")
+    typer.echo("If the toggles still do not appear, run `blueferry doctor` before re-pairing.")
 
     ancs_uuid = "7905f431-b5ce-4e99-a40f-4b1e122d00d0"
     if not notifications_supported:

@@ -87,7 +87,8 @@ On first launch it opens the iPhone setup page.
    appear on some controllers.
 3. Confirm the same code on both devices when prompted.
 4. On the iPhone, open **Settings → Bluetooth → ⓘ** beside the computer and
-   enable **Show Message Notifications** and **Sync Contacts**.
+   enable **Show Message Notifications** and **Sync Contacts**. You may need
+   to back out and tap **ⓘ** again before these toggles appear.
 5. Wait for Messages and Contacts to show as connected. For the default
    encrypted storage, approve the desktop wallet prompt that opens automatically.
 

@@ -109,6 +109,7 @@ class BearerSupervisor:
         if not self._running:
             return False
 
+        log.debug("probing iPhone BR/EDR and LE bearer state")
         bredr = self._read("bredr")
         le = self._read("le")
         self._update_state("bredr", bredr)
@@ -176,6 +177,9 @@ class BearerSupervisor:
     def _update_state(self, kind: str, value: bool | None) -> None:
         previous = self._states[kind]
         self._states[kind] = value
+        if previous != value:
+            label = "unknown" if value is None else ("connected" if value else "disconnected")
+            log.debug("iPhone %s bearer state: %s", kind.upper(), label)
         if value is True:
             self._last_errors.pop(kind, None)
             self._failures[kind] = 0

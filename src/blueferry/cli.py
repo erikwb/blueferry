@@ -32,7 +32,7 @@ def _find_obexd() -> str | None:
 
 
 @app.command()
-def run(verbose: bool = typer.Option(False, "-v", "--verbose")):
+def run(verbose: bool = typer.Option(False, "-v", "--verbose", "--debug")):
     """Start the BlueFerry daemon (runs until Ctrl+C / SIGTERM)."""
     _setup_logging(verbose)
     # Import inside command to avoid loading dbus stack just to print --help
@@ -124,9 +124,17 @@ def pair_setup(
     no_verify: bool = typer.Option(
         False, "--no-verify", help="Don't wait for profile verification at the end"
     ),
+    debug: bool = typer.Option(
+        False,
+        "--debug",
+        help="Print detailed Bluetooth pairing and connection activity",
+    ),
 ):
     """First-run wizard: pick a paired iPhone, write the local config,
     walk through the iPhone-side toggle steps."""
+    if debug:
+        _setup_logging(True)
+
     from blueferry.pairing_cli import run_wizard
 
     raise typer.Exit(code=run_wizard(verify_after=not no_verify))
@@ -217,6 +225,7 @@ def pairing_activate_bluez() -> None:
 def pairing_complete(
     mac: str,
     interactive_agent: bool = typer.Option(False, "--interactive-agent", hidden=True),
+    debug: bool = typer.Option(False, "--debug"),
 ) -> None:
     """Pair and perform all Linux-side setup for graphical clients."""
     import json
@@ -224,6 +233,9 @@ def pairing_complete(
 
     from blueferry.errors import PairingError
     from blueferry.setup_client import SetupClient
+
+    if debug:
+        _setup_logging(True)
 
     def emit(event: dict) -> None:
         print(json.dumps(event), flush=True)
