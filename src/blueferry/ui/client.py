@@ -71,6 +71,7 @@ class DaemonClient(GObject.Object):
         "history-changed": (GObject.SignalFlags.RUN_FIRST, None, (object,)),
         "status-invalidated": (GObject.SignalFlags.RUN_FIRST, None, ()),
         "availability-changed": (GObject.SignalFlags.RUN_FIRST, None, (bool,)),
+        "open-message-requested": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
     }
 
     def __init__(self) -> None:
@@ -95,6 +96,15 @@ class DaemonClient(GObject.Object):
                 lambda props: self.emit("history-changed", _plain(props)),
                 dbus_interface=EVENTS_IFACE,
                 signal_name="HistoryChanged",
+                bus_name=BUS_NAME,
+                path=OBJECT_PATH,
+            )
+        )
+        self._matches.append(
+            self._bus.add_signal_receiver(
+                lambda handle: self.emit("open-message-requested", str(handle)),
+                dbus_interface=EVENTS_IFACE,
+                signal_name="OpenMessageRequested",
                 bus_name=BUS_NAME,
                 path=OBJECT_PATH,
             )

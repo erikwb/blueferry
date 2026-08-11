@@ -40,6 +40,7 @@ class BridgeController(QObject):
     setupLoadedChanged = Signal()
     onboardingStageChanged = Signal()
     pairingConfirmationRequested = Signal(str)
+    messageOpenRequested = Signal(str)
 
     def __init__(
         self,
@@ -218,6 +219,14 @@ class BridgeController(QObject):
             self,
             SLOT("_statusInvalidated()"),
         )
+        self._bus.connect(
+            BUS_NAME,
+            OBJECT_PATH,
+            EVENTS_IFACE,
+            "OpenMessageRequested",
+            self,
+            SLOT("_openMessageRequested(QString)"),
+        )
 
     @Slot("QVariantMap")
     def _historyChanged(self, _revision) -> None:
@@ -226,6 +235,10 @@ class BridgeController(QObject):
     @Slot()
     def _statusInvalidated(self) -> None:
         self._refresh_timer.start()
+
+    @Slot(str)
+    def _openMessageRequested(self, handle: str) -> None:
+        self.messageOpenRequested.emit(handle)
 
     @Slot()
     def start(self) -> None:

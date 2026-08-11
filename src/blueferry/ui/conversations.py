@@ -31,6 +31,7 @@ class ConversationsPage(Gtk.Box):
         self._threads: dict[str, dict] = {}
         self._current: str | None = None
         self._confirmed_groups: set[str] = set()
+        self._pending_open_handle: str | None = None
         self._reload_pending = False
         self._reload_again = False
         self._new_destination: str | None = None
@@ -245,6 +246,39 @@ class ConversationsPage(Gtk.Box):
     def _load_history(self) -> None:
         self._reload_threads()
 
+    def open_message(self, handle: str) -> None:
+        """Select a notification's message, refreshing if it is not loaded."""
+        self._pending_open_handle = handle
+        if not self._select_pending_message():
+            self._reload_threads()
+
+    def _select_pending_message(self) -> bool:
+        handle = self._pending_open_handle
+        if not handle:
+            return False
+        selected_key = next(
+            (
+                key
+                for key, thread in self._threads.items()
+                if any(message.get("handle") == handle for message in thread["messages"])
+            ),
+            None,
+        )
+        if selected_key is None:
+            return False
+
+        row = self._thread_list.get_first_child()
+        while row is not None and getattr(row, "thread_key", None) != selected_key:
+            row = row.get_next_sibling()
+        if row is None:
+            return False
+        self._pending_open_handle = None
+        if self._thread_list.get_selected_row() is row:
+            self._on_thread_selected(self._thread_list, row)
+        else:
+            self._thread_list.select_row(row)
+        return True
+
     def _reload_threads(self) -> None:
         """Refresh the canonical backend model while preserving selection."""
         if self._reload_pending:
@@ -418,6 +452,7 @@ class ConversationsPage(Gtk.Box):
             self._send_btn.set_sensitive(False)
             self._stack.set_visible_child_name("empty")
         self._reload_finished()
+        self._select_pending_message()
         return False
 
     # ---- thread list ---------------------------------------------------

@@ -1,0 +1,531 @@
+Screen {
+    background: #0a0f1d;
+    color: #dbeafe;
+}
+
+#masthead {
+    height: 2;
+    padding: 0 2;
+    align-vertical: middle;
+    background: #111a2e;
+    border-bottom: solid #1e3a5f;
+}
+
+#brand {
+    width: 24;
+}
+
+#connection-summary {
+    width: 1fr;
+    text-align: center;
+    color: #94a3b8;
+}
+
+#connection-summary.ok {
+    color: #86efac;
+}
+
+#connection-summary.warn {
+    color: #fcd34d;
+}
+
+#connection-summary.bad {
+    color: #fca5a5;
+}
+
+#release {
+    width: 24;
+    text-align: right;
+    color: #64748b;
+}
+
+#service-strip {
+    height: 2;
+    padding: 0 2;
+    align-vertical: middle;
+    background: #0d1425;
+}
+
+.status-pill {
+    width: auto;
+    height: 1;
+    margin-right: 2;
+    padding: 0 1;
+    background: #1a2439;
+    color: #94a3b8;
+    text-style: bold;
+}
+
+.status-pill.ok {
+    background: #123526;
+    color: #86efac;
+}
+
+.status-pill.warn {
+    background: #403313;
+    color: #fde68a;
+}
+
+.status-pill.bad {
+    background: #37202a;
+    color: #fda4af;
+}
+
+#workspace {
+    height: 1fr;
+    background: #0a0f1d;
+}
+
+#sidebar {
+    width: 35;
+    min-width: 28;
+    background: #0f1729;
+    border-right: solid #243656;
+}
+
+#sidebar:focus-within {
+    border-right: heavy #38bdf8;
+}
+
+#sidebar-heading {
+    height: 4;
+    padding: 1 1 0 2;
+    align-vertical: middle;
+}
+
+#sidebar-title {
+    width: 1fr;
+    color: #f8fafc;
+    text-style: bold;
+}
+
+#new-message {
+    width: 5;
+    height: 3;
+    min-width: 5;
+    margin-top: -1;
+    border: none;
+    background: #1d4ed8;
+    color: #eff6ff;
+    text-style: bold;
+}
+
+#new-message:hover,
+#new-message:focus {
+    background: #2563eb;
+}
+
+#thread-search {
+    height: 3;
+    margin: 0 1 1 1;
+    padding: 0 1;
+    background: #151f35;
+    border: tall #263957;
+}
+
+#thread-search:focus {
+    border: tall #38bdf8;
+}
+
+#thread-list {
+    height: 1fr;
+    background: #0f1729;
+    scrollbar-color: #2e4d72;
+    scrollbar-color-hover: #38bdf8;
+}
+
+ConversationItem {
+    height: 6;
+    padding: 1;
+    border-left: solid transparent;
+    background: #0f1729;
+    color: #cbd5e1;
+}
+
+ConversationItem.-hovered {
+    background: #15223a;
+}
+
+ConversationItem.-highlight,
+#thread-list:focus > ConversationItem.-highlight {
+    background: #172b49;
+    border-left: heavy #38bdf8;
+    color: #f8fafc;
+    text-style: none;
+}
+
+.avatar {
+    width: 5;
+    height: 3;
+    margin-right: 1;
+    content-align: center middle;
+    background: #1e3a5f;
+    color: #bae6fd;
+    text-style: bold;
+}
+
+ConversationItem.-highlight .avatar {
+    background: #075985;
+    color: #e0f2fe;
+}
+
+.thread-copy {
+    width: 1fr;
+    height: 4;
+}
+
+.thread-heading {
+    width: 1fr;
+    height: 1;
+}
+
+.thread-name {
+    width: 1fr;
+    height: 1;
+    color: #f1f5f9;
+    text-overflow: ellipsis;
+}
+
+.thread-time {
+    width: 11;
+    height: 1;
+    color: #64748b;
+}
+
+.thread-preview {
+    height: 1;
+    color: #94a3b8;
+    text-overflow: ellipsis;
+}
+
+.thread-detail {
+    height: 1;
+    color: #52627b;
+    text-style: italic;
+}
+
+.thread-detail.unread {
+    color: #7dd3fc;
+    text-style: bold;
+}
+
+#conversation {
+    width: 1fr;
+    background: #0a0f1d;
+}
+
+#conversation-heading {
+    height: 4;
+    padding: 0 2;
+    background: #10192b;
+    border-bottom: solid #1e2d47;
+    align-vertical: middle;
+}
+
+#back-to-list {
+    display: none;
+    width: 5;
+    min-width: 5;
+    height: 3;
+    margin-right: 1;
+    border: none;
+    background: #1a2942;
+    color: #bae6fd;
+}
+
+#conversation-title-wrap {
+    width: 1fr;
+    height: 3;
+}
+
+#conversation-title {
+    height: 1;
+    color: #f8fafc;
+    text-style: bold;
+}
+
+#conversation-subtitle {
+    height: 1;
+    margin-top: 1;
+    color: #64748b;
+    text-overflow: ellipsis;
+}
+
+#conversation-badge {
+    width: auto;
+    max-width: 16;
+    height: 1;
+    padding: 0 1;
+    background: #132b3e;
+    color: #7dd3fc;
+}
+
+#message-timeline {
+    height: 1fr;
+    padding: 1 2;
+    background: #0a0f1d;
+    scrollbar-color: #263c5b;
+    scrollbar-color-hover: #38bdf8;
+}
+
+#empty-conversation {
+    width: 1fr;
+    height: 1fr;
+    content-align: center middle;
+    color: #52627b;
+    text-style: italic;
+}
+
+.date-separator {
+    width: 1fr;
+    height: 3;
+    padding-top: 1;
+    color: #52627b;
+    text-style: bold;
+}
+
+.message-row {
+    width: 1fr;
+    height: auto;
+    min-height: 4;
+    margin-bottom: 1;
+}
+
+.message-row.incoming {
+    align-horizontal: left;
+}
+
+.message-row.outgoing {
+    align-horizontal: right;
+}
+
+.message-bubble {
+    width: auto;
+    max-width: 80%;
+    height: auto;
+    padding: 1 2;
+}
+
+.message-bubble.incoming {
+    background: #18243a;
+    border-left: solid #334a6a;
+}
+
+.message-bubble.outgoing {
+    background: #123c66;
+    border-right: solid #38bdf8;
+}
+
+.message-meta {
+    width: auto;
+    height: 1;
+    margin-bottom: 1;
+    color: #7dd3fc;
+    text-style: bold;
+}
+
+.message-bubble.outgoing .message-meta {
+    color: #bae6fd;
+}
+
+.message-body {
+    width: auto;
+    height: auto;
+    color: #e5edf8;
+}
+
+#composer-wrap {
+    height: 8;
+    padding: 1 2 0 2;
+    background: #10192b;
+    border-top: solid #233551;
+}
+
+#composer-wrap:focus-within {
+    border-top: heavy #38bdf8;
+}
+
+#composer {
+    height: 4;
+    background: #151f35;
+    border: tall #2a3d5c;
+    color: #f8fafc;
+}
+
+#composer:focus {
+    border: tall #38bdf8;
+}
+
+#composer-meta {
+    height: 3;
+    padding-top: 1;
+    align-vertical: middle;
+}
+
+#send-hint {
+    width: 1fr;
+    color: #64748b;
+}
+
+#character-count {
+    width: 13;
+    text-align: right;
+    color: #64748b;
+}
+
+#character-count.over-limit {
+    color: #f87171;
+    text-style: bold;
+}
+
+#send-reply {
+    width: 13;
+    min-width: 13;
+    height: 3;
+    margin: -1 0 0 2;
+    border: none;
+    background: #1d4ed8;
+    color: #eff6ff;
+    text-style: bold;
+}
+
+#send-reply:hover,
+#send-reply:focus {
+    background: #2563eb;
+}
+
+#send-reply:disabled {
+    background: #1e293b;
+    color: #52627b;
+}
+
+#notice-bar {
+    height: 2;
+    padding: 0 2;
+    content-align-vertical: middle;
+    background: #0d1425;
+    color: #64748b;
+}
+
+#notice-bar.success {
+    color: #86efac;
+}
+
+#notice-bar.error {
+    background: #321c28;
+    color: #fda4af;
+    text-style: bold;
+}
+
+Footer {
+    background: #17233a;
+    color: #94a3b8;
+}
+
+Footer .footer--key {
+    background: #1d4ed8;
+    color: #eff6ff;
+}
+
+ModalScreen {
+    align: center middle;
+    background: #030712 75%;
+}
+
+.dialog {
+    width: 64;
+    max-width: 92%;
+    height: auto;
+    max-height: 85%;
+    padding: 1 2;
+    background: #111a2e;
+    border: heavy #38bdf8;
+}
+
+.dialog-title {
+    height: 2;
+    color: #f8fafc;
+    text-style: bold;
+}
+
+.dialog-copy {
+    height: auto;
+    min-height: 4;
+    padding: 1;
+    color: #cbd5e1;
+    background: #0d1425;
+}
+
+.field-label {
+    height: 2;
+    padding-top: 1;
+    color: #7dd3fc;
+    text-style: bold;
+}
+
+#new-recipient {
+    height: 3;
+}
+
+#new-body {
+    height: 8;
+    background: #151f35;
+}
+
+.dialog-actions {
+    width: 1fr;
+    height: 4;
+    padding-top: 1;
+    align-horizontal: right;
+}
+
+.dialog-actions Button {
+    margin-left: 1;
+}
+
+#help-dialog {
+    width: 46;
+}
+
+#help-close {
+    width: 12;
+    min-width: 12;
+    height: 3;
+    margin-top: 1;
+    align-horizontal: center;
+}
+
+#workspace.narrow #sidebar {
+    width: 1fr;
+    border-right: none;
+}
+
+#workspace.narrow #conversation {
+    display: none;
+}
+
+#workspace.narrow.chat-open #sidebar {
+    display: none;
+}
+
+#workspace.narrow.chat-open #conversation {
+    display: block;
+    width: 1fr;
+}
+
+#workspace.narrow.chat-open #back-to-list {
+    display: block;
+}
+
+#workspace.narrow #message-timeline {
+    padding: 1;
+}
+
+#workspace.narrow #composer-wrap {
+    padding-left: 1;
+    padding-right: 1;
+}
+
+#workspace.narrow .message-bubble {
+    max-width: 92%;
+}

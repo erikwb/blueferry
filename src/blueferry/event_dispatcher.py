@@ -74,6 +74,7 @@ class EventDispatcher:
                 LibnotifySink(
                     submit_obex=self.submit_obex,
                     notification_policy=self.notification_policy,
+                    on_open_message=self._open_message,
                 )
             )
         except Exception:
@@ -86,6 +87,10 @@ class EventDispatcher:
 
     def set_dbus_service(self, service) -> None:
         self.dbus_service = service
+
+    def _open_message(self, handle: str) -> None:
+        if self.dbus_service is not None:
+            self.dbus_service.emit_open_message(handle)
 
     def message(self, event) -> None:
         if getattr(event, "kind", "") == "sms_received" and self.on_incoming_message is not None:

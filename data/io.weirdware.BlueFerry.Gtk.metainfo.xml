@@ -40,6 +40,12 @@
   </developer>
 
   <releases>
+    <release version="0.6.1" date="2026-08-10">
+      <description>
+        <p>Adds the Textual terminal client, notification deep links, KDE tray
+        integration, and automatic daemon restarts after package upgrades.</p>
+      </description>
+    </release>
     <release version="0.6.0" date="2026-08-08">
       <description>
         <p>Backend-owned safe thread routing, group replies, Apple-ID contacts,

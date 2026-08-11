@@ -88,6 +88,21 @@ def test_configured_mac_is_exposed_for_the_paired_phone_summary():
     assert controller.configuredMac == "02:00:00:00:00:01"
 
 
+def test_notification_open_request_is_relayed_to_qml():
+    controller = BridgeController(
+        backend=_Backend(),
+        setup=object(),
+        subscribe=False,
+        autostart=False,
+    )
+    opened = []
+    controller.messageOpenRequested.connect(opened.append)
+
+    controller._openMessageRequested("message-opaque-42")
+
+    assert opened == ["message-opaque-42"]
+
+
 def test_encrypted_storage_unlock_is_requested_only_once(monkeypatch):
     controller = BridgeController(
         backend=_Backend(),

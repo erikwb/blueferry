@@ -66,7 +66,38 @@ def test_sms_and_imessage_popup_also_expires(monkeypatch) -> None:
     sink.handle(event)
 
     assert len(sink._notif.calls) == 1
+    assert list(sink._notif.calls[0][5]) == []
     assert int(sink._notif.calls[0][-1]) == _MESSAGE_EXPIRE_MS
+
+
+def test_clicking_message_popup_requests_opaque_message_handle(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "blueferry.sinks.libnotify.config.SHOW_NOTIFICATION_CONTENT", True
+    )
+    opened = []
+    sink = LibnotifySink.__new__(LibnotifySink)
+    sink._notif = _FakeNotifications()
+    sink._pending = {}
+    sink._open_messages = {}
+    sink._msg_subs = {}
+    sink._on_open_message = opened.append
+    event = SimpleNamespace(
+        kind="sms_received",
+        handle="message-opaque-42",
+        display_sender="Alice",
+        body="Hello",
+        message_path=None,
+    )
+
+    sink.handle(event)
+
+    assert list(sink._notif.calls[0][5]) == ["default", "Open conversation"]
+    sink._on_action(1, "default")
+    assert opened == ["message-opaque-42"]
+
+    sink._on_closed(1, 1)
+    sink._on_action(1, "default")
+    assert opened == ["message-opaque-42"]
 
 
 def test_remote_markup_is_escaped_before_notification(monkeypatch) -> None:

@@ -309,6 +309,10 @@ class MessagesService(dbus.service.Object):
     def StatusChanged(self):
         """Backend status changed; clients fetch a private snapshot."""
 
+    @dbus.service.signal(EVENTS_IFACE, signature="s")
+    def OpenMessageRequested(self, handle: str):
+        """A desktop notification requested an opaque message handle."""
+
     def emit_history_changed(self) -> None:
         try:
             self._change_revision += 1
@@ -323,6 +327,12 @@ class MessagesService(dbus.service.Object):
             self.StatusChanged()
         except Exception:
             log.exception("StatusChanged emit failed")
+
+    def emit_open_message(self, handle: str) -> None:
+        try:
+            self.OpenMessageRequested(str(handle)[:1024])
+        except Exception:
+            log.exception("OpenMessageRequested emit failed")
 
     def close(self) -> None:
         self._caller_guard.close()

@@ -105,12 +105,16 @@ Once pairing is complete, opening a client starts the backend automatically.
 It also reconnects after normal Bluetooth interruptions and restarts itself
 after package upgrades; routine use should not require `systemctl --user`.
 
-The terminal client is included in `blueferry-backend` and needs no optional
-UI dependencies. After pairing with a graphical client or
-`blueferry pair-setup`, start it with `blueferry-tui` (or `blueferry tui`). Use
-the arrow keys or `j`/`k` to select a conversation, **Enter** to reply, `n` for
-a new message, `r` to refresh, and `q` to quit. Group replies show the
-backend-owned participant list and require typing `YES` before the first send.
+The Textual terminal client and its UI dependency are included in
+`blueferry-backend`. After pairing with a graphical client or
+`blueferry pair-setup`, start it with `blueferry-tui` (or `blueferry tui`). It
+provides searchable conversation previews, a message timeline, mouse support,
+a multiline composer, responsive narrow-terminal navigation, themes, and a
+command palette. Use the arrow keys or `j`/`k` to select a conversation,
+**Enter** to open it and to send from the composer, **Shift+Enter** for a new
+line, `/` to search, `n` for a new message, `?` for the keyboard map, and
+**Ctrl+P** for every command. Group
+replies show the backend-owned participant list in a confirmation dialog.
 
 ### Omarchy Quattro
 

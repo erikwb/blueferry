@@ -6,7 +6,8 @@ sessions or persistent message state.
 
 ```text
 GTK client ───────┐
-Qt client ────────┼── session D-Bus ── backend daemon ── BlueZ system D-Bus
+Qt client ────────┤
+TUI client ───────┼── session D-Bus ── backend daemon ── BlueZ system D-Bus
 Quickshell client ┘                         │
                                            ├── BlueZ OBEX session D-Bus
                                            └── private state and notifications
@@ -16,8 +17,8 @@ Quickshell client ┘                         │
 
 - `blueferry-backend` owns MAP, PBAP, ANCS, contact resolution, thread
   identity, history retention, notification policy, and the private D-Bus API.
-- GTK, Qt, and Quickshell are replaceable clients. They receive opaque thread
-  keys and cannot construct different recipients for an existing thread.
+- GTK, Qt, TUI, and Quickshell are replaceable clients. They receive opaque
+  thread keys and cannot construct different recipients for an existing thread.
 - `pair_setup` is the low-level setup boundary. `setup_client` exposes its
   typed operations to GTK and Qt, and the hidden JSON commands adapt the same
   operations for Quickshell. It discovers and pairs devices, writes the
@@ -32,17 +33,18 @@ Quickshell client ┘                         │
 
 Stable D-Bus identifiers live in `blueferry.protocol`. The service exports
 `Messages1` for commands and snapshots and `Events1` for content-free live
-invalidations. A future
+coordination. A future
 incompatible API must use a new interface suffix rather than silently changing
 existing method contracts. `data/io.weirdware.BlueFerry.xml` is the
 canonical introspection contract, is installed under `dbus-1/interfaces`, and
 is checked against the dbus-python decorators in the service implementation.
 
 `Events1.HistoryChanged` carries only a daemon-local revision and
-`Events1.StatusChanged` has no arguments. Clients respond by fetching the
-corresponding private snapshot with a unicast `Messages1` method call. Complete
-message records, ANCS fields, contacts, and connectivity details are never
-broadcast on the session bus. The daemon emits invalidations at message,
+`Events1.StatusChanged` has no arguments. `Events1.OpenMessageRequested`
+carries only a bounded, opaque MAP handle after the user invokes a desktop
+message notification; clients locate it in their own private thread snapshot.
+Complete message records, sender identities, ANCS fields, contacts, and
+connectivity details are never broadcast on the session bus. The daemon emits invalidations at message,
 contact-cache, connectivity, ANCS subscription, initialization, and storage
 transitions. Clients verify MAP/PBAP success without mistaking Linux-side bond
 creation for end-to-end success.
@@ -165,6 +167,13 @@ asynchronous controller to Kirigami, serializes work in a QThreadPool, and
 coalesces Events1 invalidations into snapshot refreshes. Neither presentation main loop waits
 on the backend, BlueZ, or systemd.
 
+The Textual TUI and stylesheet are packaged with the backend. Blocking snapshot
+reads and sends run in Textual workers with thread-owned D-Bus connections;
+content-free HistoryChanged and StatusChanged signals trigger coalesced refreshes,
+with a bounded periodic refresh as a fallback. The client pumps its GLib signal
+context without blocking Textual, follows notification-open requests, adapts to
+narrow terminals, and preserves backend-owned direct and group reply routing.
+
 GTK follows the GNOME stack with GTK4, libadwaita navigation, adaptive
 breakpoints, application actions, and Adwaita dialogs. KDE follows the Plasma
 stack with Qt Quick Controls, Kirigami navigation and pages, KDE's desktop
@@ -202,7 +211,8 @@ not on one-off experiment scripts.
 - Add protocol behavior behind the D-Bus boundary before adding UI controls.
 - Change a versioned interface only compatibly and update the canonical XML and
   typed client models in the same patch; use a new suffix for incompatible
-  changes. The initially shipped `Events1` contract is invalidation-only.
+  changes. Keep `Events1` payloads content-free; private records remain behind
+  unicast `Messages1` snapshot calls.
 - Split `cli.py` or the Qt page module when a new feature would add another
   independent domain; avoid moving code solely to reduce line counts.
 - Prefer narrowly tested helpers over broad exception handling. Best-effort

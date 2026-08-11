@@ -6,7 +6,7 @@ pkgname=(
   blueferry-qt
   blueferry-quickshell
 )
-pkgver=0.6.0
+pkgver=0.6.1
 pkgrel=1
 pkgdesc='BlueFerry Bluetooth bridge from iPhone to Linux'
 arch=('any')
@@ -33,6 +33,7 @@ checkdepends=(
   'python-gobject'
   'python-hypothesis'
   'python-pytest'
+  'python-textual>=8.0'
   'python-typer>=0.12'
   'pyside6'
   'qt6-declarative'
@@ -95,6 +96,7 @@ package_blueferry-backend() {
     'python-cryptography>=42'
     'python-dbus'
     'python-gobject'
+    'python-textual>=8.0'
     'python-typer>=0.12'
   )
   cd "$pkgbase-$pkgver"
@@ -103,6 +105,8 @@ package_blueferry-backend() {
   rm -rf -- "$pkgdir/$_site/blueferry/ui" "$pkgdir/$_site/blueferry/qt"
   cp -a "$srcdir/$_stage/$_site/blueferry-$pkgver.dist-info" "$pkgdir/$_site/"
   install -Dm755 "$srcdir/$_stage/usr/bin/blueferry" "$pkgdir/usr/bin/blueferry"
+  install -Dm755 "$srcdir/$_stage/usr/bin/blueferry-tui" \
+    "$pkgdir/usr/bin/blueferry-tui"
 
   install -Dm644 systemd/blueferry.service \
     "$pkgdir/usr/lib/systemd/user/blueferry.service"

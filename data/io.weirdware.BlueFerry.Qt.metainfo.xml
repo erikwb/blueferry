@@ -13,5 +13,8 @@
   <provides><binary>blueferry-qt</binary></provides>
   <content_rating type="oars-1.1"/>
   <developer id="io.weirdware"><name>BlueFerry contributors</name></developer>
-  <releases><release version="0.6.0" date="2026-08-08"><description><p>First Qt/KDE client.</p></description></release></releases>
+  <releases>
+    <release version="0.6.1" date="2026-08-10"><description><p>Adds KDE tray integration and notification deep links.</p></description></release>
+    <release version="0.6.0" date="2026-08-08"><description><p>First Qt/KDE client.</p></description></release>
+  </releases>
 </component>

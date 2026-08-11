@@ -73,9 +73,16 @@ class LibnotifySink:
     # only to create an immediate transient popup; it retains no event data.
     accepts_system_ancs = True
 
-    def __init__(self, *, submit_obex, notification_policy=None) -> None:
+    def __init__(
+        self,
+        *,
+        submit_obex,
+        notification_policy=None,
+        on_open_message=None,
+    ) -> None:
         self._submit_obex = submit_obex
         self._notification_policy = notification_policy
+        self._on_open_message = on_open_message
         self._notif = dbus.Interface(
             get_session_bus().get_object(
                 "org.freedesktop.Notifications",
@@ -85,6 +92,10 @@ class LibnotifySink:
         )
         # notification_id (uint32 from Notify) -> Message1 DBus path
         self._pending: dict[int, str] = {}
+        # notification_id -> opaque MAP handle.  Handles let clients locate
+        # the message in their private thread snapshot without broadcasting a
+        # phone number or message body on the session bus.
+        self._open_messages: dict[int, str] = {}
         # notification_id -> SignalMatch for the per-Message1 PropertiesChanged sub
         self._msg_subs: dict[int, _SignalMatch] = {}
 
@@ -92,6 +103,9 @@ class LibnotifySink:
         # or programmatically closed).
         self._match = self._notif.connect_to_signal(
             "NotificationClosed", self._on_closed,
+        )
+        self._action_match = self._notif.connect_to_signal(
+            "ActionInvoked", self._on_action,
         )
         log.info("libnotify sink ready (expiring + bidirectional read-sync)")
 
@@ -122,19 +136,26 @@ class LibnotifySink:
         try:
             # A deliberate dismissal is propagated as mark-read. Expiration
             # is reason=1 and therefore leaves the iPhone's read state alone.
+            handle = str(getattr(event, "handle", "") or "")
+            actions = ["default", "Open conversation"] if handle else []
             nid = int(self._notif.Notify(
                 _APP_NAME,
                 dbus.UInt32(0),
                 "phone-symbolic",
                 title,
                 body,
-                dbus.Array([], signature="s"),
+                dbus.Array(actions, signature="s"),
                 dbus.Dictionary({"urgency": dbus.Byte(1)}, signature="sv"),
                 dbus.Int32(_MESSAGE_EXPIRE_MS),
             ))
         except dbus.exceptions.DBusException as e:
             log.error("libnotify Notify failed: %s", e.get_dbus_name())
             return
+
+        if handle:
+            if not hasattr(self, "_open_messages"):
+                self._open_messages = {}
+            self._open_messages[nid] = handle
 
         if event.message_path:
             self._pending[nid] = event.message_path
@@ -155,13 +176,16 @@ class LibnotifySink:
                     "could not watch message read state: %s",
                     error.get_dbus_name(),
                 )
-            self._prune_trackers()
+        self._prune_trackers()
 
     def _prune_trackers(self) -> None:
         """Bound read-state subscriptions if close signals never arrive."""
-        while len(self._pending) > MAX_DESKTOP_MESSAGE_TRACKERS:
-            oldest = next(iter(self._pending))
+        open_messages = getattr(self, "_open_messages", {})
+        while len(set(self._pending) | set(open_messages)) > MAX_DESKTOP_MESSAGE_TRACKERS:
+            tracked = open_messages or self._pending
+            oldest = next(iter(tracked))
             self._pending.pop(oldest, None)
+            open_messages.pop(oldest, None)
             subscription = self._msg_subs.pop(oldest, None)
             if subscription is not None:
                 try:
@@ -239,6 +263,19 @@ class LibnotifySink:
 
     # ---- Linux user dismisses → mark-read on iPhone ----------------------
 
+    def _on_action(self, nid, action) -> None:
+        """Route a notification click to every currently running client."""
+        try:
+            nid_i = int(nid)
+        except (TypeError, ValueError):
+            return
+        if str(action) != "default":
+            return
+        handle = getattr(self, "_open_messages", {}).get(nid_i)
+        callback = getattr(self, "_on_open_message", None)
+        if handle and callback is not None:
+            callback(handle)
+
     def _on_closed(self, nid, reason) -> None:
         try:
             nid_i = int(nid)
@@ -246,6 +283,7 @@ class LibnotifySink:
         except (TypeError, ValueError):
             return
 
+        getattr(self, "_open_messages", {}).pop(nid_i, None)
         message_path = self._pending.pop(nid_i, None)
 
         # Always remove the per-message subscription, no matter the reason

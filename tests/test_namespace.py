@@ -22,6 +22,21 @@ def test_graphical_commands_follow_client_package_names() -> None:
     assert "blueferry-ui" not in project + pkgbuild + desktop
 
 
+def test_tui_entry_point_is_shipped_by_backend_package() -> None:
+    project = (ROOT / "pyproject.toml").read_text()
+    pkgbuild = (ROOT / "packaging" / "arch" / "PKGBUILD").read_text()
+    backend = pkgbuild.split("package_blueferry-backend()", 1)[1].split(
+        "package_blueferry-gtk()", 1
+    )[0]
+
+    assert 'blueferry-tui = "blueferry.tui:main"' in project
+    assert '"textual>=8.0"' in project
+    assert '"blueferry" = ["tui.tcss"]' in project
+    assert "'python-textual>=8.0'" in backend
+    assert '$_stage/usr/bin/blueferry-tui' in backend
+    assert '$pkgdir/usr/bin/blueferry-tui' in backend
+
+
 def test_dbus_activation_and_systemd_publish_the_runtime_bus_name() -> None:
     activation = (ROOT / "packaging" / "arch" / f"{BUS_NAME}.service").read_text()
     unit = (ROOT / "systemd" / "blueferry.service").read_text()
@@ -63,6 +78,7 @@ def test_arch_check_dependencies_cover_cli_test_imports() -> None:
     checkdepends = pkgbuild.split("checkdepends=(", 1)[1].split("\n)", 1)[0]
 
     assert "'python-typer>=0.12'" in checkdepends
+    assert "'python-textual>=8.0'" in checkdepends
 
 
 @pytest.mark.parametrize("suffix", ["Gtk", "Qt", "Quickshell"])
@@ -94,7 +110,9 @@ def test_qt_package_ships_the_kirigami_ui_and_dependencies() -> None:
     assert "Kirigami.AboutPage" in qml
     assert "customFooterActions" in qml
     assert "interval: 3000" not in qml
-    assert "QtWidgets" not in (ROOT / "src" / "blueferry" / "qt" / "app.py").read_text()
+    qt_app = (ROOT / "src" / "blueferry" / "qt" / "app.py").read_text()
+    assert "QSystemTrayIcon" in qt_app
+    assert "setQuitOnLastWindowClosed(False)" in qt_app
 
 
 def test_qt_messages_toolbar_toggles_dismissible_settings_pane() -> None:

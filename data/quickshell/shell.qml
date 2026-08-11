@@ -13,6 +13,8 @@ ShellRoot {
   property string contactQuery: ""
   property string contactsRequestedQuery: ""
   property string selectedThreadKey: ""
+  property string pendingMessageHandle: ""
+  property bool awaitingOpenMessageHandle: false
   property string confirmedGroupSignature: ""
   property string errorText: ""
   property bool phoneSettingsVisible: false
@@ -84,6 +86,42 @@ ShellRoot {
       if (threads[index].key === selectedThreadKey) return threads[index]
     }
     return null
+  }
+
+  function selectMessage(handle) {
+    for (var threadIndex = 0; threadIndex < threads.length; ++threadIndex) {
+      var thread = threads[threadIndex]
+      for (var messageIndex = 0; messageIndex < thread.messages.length; ++messageIndex) {
+        if (thread.messages[messageIndex].handle === handle) {
+          selectedThreadKey = thread.key
+          confirmedGroupSignature = ""
+          pendingMessageHandle = ""
+          phoneSettingsVisible = false
+          return true
+        }
+      }
+    }
+    return false
+  }
+
+  function openMessage(handle) {
+    pendingMessageHandle = handle
+    phoneSettingsVisible = false
+    window.visible = true
+    if (!selectMessage(handle)) reload()
+  }
+
+  function handleOpenRequestLine(line) {
+    if (line.indexOf("member=OpenMessageRequested") >= 0) {
+      awaitingOpenMessageHandle = true
+      return
+    }
+    if (!awaitingOpenMessageHandle) return
+    var match = /^\s*string "([^"]*)"\s*$/.exec(line)
+    if (match !== null) {
+      awaitingOpenMessageHandle = false
+      openMessage(match[1])
+    }
   }
 
   function groupSignature(thread) {
@@ -299,6 +337,8 @@ ShellRoot {
             root.selectedThreadKey = ""
             root.confirmedGroupSignature = ""
           }
+          if (root.pendingMessageHandle !== "")
+            root.selectMessage(root.pendingMessageHandle)
           root.errorText = ""
         } catch (error) { root.errorText = "Backend response was invalid" }
       }
@@ -307,6 +347,19 @@ ShellRoot {
     // qmllint disable signal-handler-parameters
     onExited: function(code) {
       if (code !== 0) root.errorText = "BlueFerry daemon is unavailable"
+    }
+  }
+
+  Process {
+    id: openRequestMonitor
+    running: true
+    command: [
+      "/usr/bin/dbus-monitor",
+      "--session",
+      "type='signal',sender='io.weirdware.BlueFerry',path='/io/weirdware/BlueFerry',interface='io.weirdware.BlueFerry.Events1',member='OpenMessageRequested'"
+    ]
+    stdout: SplitParser {
+      onRead: function(line) { root.handleOpenRequestLine(line) }
     }
   }
 

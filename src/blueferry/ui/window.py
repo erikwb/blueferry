@@ -84,6 +84,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.add_breakpoint(compact)
 
         client.connect("availability-changed", self._on_availability)
+        client.connect("open-message-requested", self._on_open_message_requested)
         self._on_availability(client, client.available)
 
     def toast(self, text: str) -> None:
@@ -100,6 +101,11 @@ class MainWindow(Adw.ApplicationWindow):
             return
         self._initial_setup_pending = False
         self.present_phone_settings()
+
+    def _on_open_message_requested(self, _client, handle: str) -> None:
+        self._phone_dialog.close()
+        self.present()
+        self.messages.open_message(handle)
 
     def _on_availability(self, _client, available: bool) -> None:
         if available:

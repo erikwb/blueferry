@@ -93,5 +93,8 @@
       <arg name="revision" type="a{sv}"/>
     </signal>
     <signal name="StatusChanged"/>
+    <signal name="OpenMessageRequested">
+      <arg name="handle" type="s"/>
+    </signal>
   </interface>
 </node>

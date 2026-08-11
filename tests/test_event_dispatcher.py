@@ -25,6 +25,9 @@ class _Service:
     def emit_history_changed(self) -> None:
         self.events.append("changed")
 
+    def emit_open_message(self, handle: str) -> None:
+        self.events.append(("open", handle))
+
 
 def _event(body: str = "hello"):
     return SimpleNamespace(
@@ -138,3 +141,16 @@ def test_only_an_incoming_map_message_verifies_message_notifications():
     dispatcher.message(SimpleNamespace(kind="sms_received", handle="received"))
 
     assert verified == [True]
+
+
+def test_notification_action_is_broadcast_through_current_dbus_service():
+    dispatcher = EventDispatcher(
+        object(),
+        submit_obex=lambda *_args, **_kwargs: None,
+    )
+    service = _Service()
+    dispatcher.set_dbus_service(service)
+
+    dispatcher._open_message("message-opaque-42")
+
+    assert service.events == [("open", "message-opaque-42")]

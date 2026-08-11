@@ -14,6 +14,7 @@ Kirigami.ApplicationWindow {
     property string pendingBody: ""
     property bool firstRunRedirected: false
     property var iphoneSettingsPage: null
+    property string pendingMessageHandle: ""
 
     visible: true
     width: 980
@@ -29,6 +30,22 @@ Kirigami.ApplicationWindow {
             }
         }
         return null
+    }
+
+    function selectMessage(handle) {
+        for (let threadIndex = 0; threadIndex < bridge.threads.length; ++threadIndex) {
+            const thread = bridge.threads[threadIndex]
+            for (let messageIndex = 0; messageIndex < thread.messages.length; ++messageIndex) {
+                if (thread.messages[messageIndex].handle === handle) {
+                    closePhoneSettings()
+                    pageStack.currentIndex = 0
+                    selectedThreadKey = thread.key
+                    pendingMessageHandle = ""
+                    return true
+                }
+            }
+        }
+        return false
     }
 
     function htmlEscape(value) {
@@ -133,6 +150,14 @@ Kirigami.ApplicationWindow {
             if (root.selectedThreadKey !== "" && root.selectedThread() === null) {
                 root.selectedThreadKey = ""
             }
+            if (root.pendingMessageHandle !== "")
+                root.selectMessage(root.pendingMessageHandle)
+        }
+
+        function onMessageOpenRequested(handle) {
+            root.pendingMessageHandle = handle
+            if (!root.selectMessage(handle))
+                root.bridge.refresh()
         }
 
         function onSetupLoadedChanged() {
@@ -278,7 +303,7 @@ Kirigami.ApplicationWindow {
             : qsTr("Confirm that %1 is shown on both this computer and the iPhone.").arg(passkey)
         dialogType: Kirigami.PromptDialog.Information
         standardButtons: Kirigami.Dialog.NoButton
-        closePolicy: Kirigami.Popup.NoAutoClose
+        closePolicy: Controls.Popup.NoAutoClose
         customFooterActions: [
             Kirigami.Action {
                 text: qsTr("Cancel Pairing")

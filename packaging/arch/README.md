@@ -27,8 +27,8 @@ archives are left in `packaging/arch/`.
 
 The resulting packages are:
 
-- `blueferry-backend` for the daemon, CLI, D-Bus service, BlueZ setup, and
-  pairing support;
+- `blueferry-backend` for the daemon, CLI, Textual terminal client
+  (`blueferry-tui`), D-Bus service, BlueZ setup, and pairing support;
 - `blueferry-gtk` for the GTK/libadwaita client;
 - `blueferry-qt` for the Qt/Kirigami client;
 - `blueferry-quickshell` for the standalone Quickshell client.
