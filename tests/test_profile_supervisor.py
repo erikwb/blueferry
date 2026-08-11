@@ -58,7 +58,7 @@ class FakeWorker:
         failure(error)
 
 
-def make_supervisor():
+def make_supervisor(*, first_attempt=None):
     sessions = FakeSessions()
     worker = FakeWorker()
     scheduled = []
@@ -72,6 +72,7 @@ def make_supervisor():
         on_ready=lambda: ready.append(True),
         on_lost=lost.append,
         on_status=lambda: statuses.append(True),
+        on_first_attempt_complete=first_attempt,
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 99,
         cancel=lambda _source: True,
     )
@@ -107,6 +108,21 @@ def test_forbidden_failure_polls_and_retries() -> None:
     assert scheduled[0][0] == INITIAL_MAP_CONNECT_POLL_SECONDS
     assert scheduled[0][1]() is False
     assert len(worker.jobs) == 1
+
+
+def test_first_attempt_callback_runs_once_across_failure_and_retry() -> None:
+    attempted = []
+    supervisor, _sessions, worker, scheduled, _ready, _lost, _statuses = (
+        make_supervisor(first_attempt=lambda: attempted.append(True))
+    )
+
+    supervisor.start()
+    worker.fail(RuntimeError("not authorized yet"))
+    assert attempted == [True]
+
+    scheduled[-1][1]()
+    worker.succeed()
+    assert attempted == [True]
 
 
 def test_map_connection_refusal_is_exposed_and_polls_quickly_until_ready() -> None:

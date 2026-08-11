@@ -54,7 +54,10 @@ class IPhonePage(Gtk.Box):
                 "Scan for and select your iPhone here, then choose Pair. On the "
                 "iPhone, open Settings → Bluetooth, find this computer under "
                 '"Other Devices", tap it, and approve the matching codes. Pairing '
-                "may appear idle for up to 15 seconds."
+                "may appear idle for up to 15 seconds. System Notification "
+                "access is also how BlueFerry recognizes group text threads; "
+                "without it, a group text appears as a one-to-one conversation "
+                "with its sender."
             ),
         )
         self._device_model = Gtk.StringList()
@@ -167,7 +170,10 @@ class IPhonePage(Gtk.Box):
             (
                 NOTIFICATION_ACCESS,
                 _("Notification Access"),
-                _("Authorized during pairing; some iOS versions show no separate toggle"),
+                _(
+                    "Required for system notifications and group text identification; "
+                    "without it, groups look like individual conversations"
+                ),
             ),
         ):
             row = Adw.ActionRow(title=item, subtitle=sub)

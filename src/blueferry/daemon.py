@@ -86,7 +86,14 @@ class Daemon:
             f"/org/bluez/{config.ADAPTER}/"
             f"dev_{config.IPHONE_MAC.replace(':', '_')}"
         )
-        self.bearers = BearerSupervisor(device_path, on_status=self._emit_status)
+        # Keep LE out of the initial post-pair window.  The first OBEX
+        # attempt below either establishes ordinary Classic MAP/PBAP or gives
+        # iOS a chance to reject it before ANCS is allowed to connect.
+        self.bearers = BearerSupervisor(
+            device_path,
+            le_enabled=False,
+            on_status=self._emit_status,
+        )
         self._contacts_refresh_id: int | None = None
         self._bus_name = None
         self._dbus_service: MessagesService | None = None
@@ -109,6 +116,7 @@ class Daemon:
             on_ready=self._post_sessions_setup,
             on_lost=self._profiles_lost,
             on_status=self._emit_status,
+            on_first_attempt_complete=self.bearers.enable_le,
         )
 
     def _emit_status(self) -> None:
@@ -232,9 +240,8 @@ class Daemon:
             )
 
         # A bond records trust but does not guarantee a live connection.
-        # Connect classic Bluetooth first for MAP/PBAP, then LE for ANCS.
-        # Keeping this in the daemon avoids relying on a desktop Bluetooth
-        # applet to connect a newly paired phone as a side effect.
+        # The bearer supervisor establishes BR/EDR but deliberately holds LE
+        # until ProfileSupervisor completes its first MAP/PBAP attempt.
         self.bearers.start()
 
         # ANCS — per-app notifications via BLE GATT. Independent of MAP/PBAP.

@@ -33,6 +33,20 @@ def test_cli_setup_always_prints_required_bluetooth_toggles(capsys) -> None:
     assert "Show Message Notifications" in output
 
 
+def test_cli_explains_group_threads_need_notification_access(capsys) -> None:
+    _print_iphone_steps(
+        frozenset(),
+        remaining=("notification-access",),
+        notifications_supported=True,
+        ancs_ready=False,
+    )
+
+    assert (
+        "Without System Notification access, group texts appear as individual "
+        "conversations with their sender."
+    ) in capsys.readouterr().out
+
+
 def test_cli_just_works_pairing_still_requires_confirmation(monkeypatch) -> None:
     prompts = []
     monkeypatch.setattr(

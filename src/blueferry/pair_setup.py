@@ -15,7 +15,7 @@ from gi.repository import GLib
 from blueferry import bluetooth_capabilities as capabilities
 from blueferry import config
 from blueferry.bluetooth_devices import PairedDevice
-from blueferry.bus import get_system_bus
+from blueferry.bus import get_session_bus, get_system_bus
 from blueferry.commands import run_command
 from blueferry.errors import CommandError, PairingError
 from blueferry.private_files import atomic_write_private_text
@@ -334,6 +334,76 @@ def _connect_classic(
         _wait_for_classic_settled(device_path, timeout=timeout)
 
 
+def _prefer_bredr(device_path: str) -> None:
+    """Force the post-pair Device1.Connect transaction onto BR/EDR."""
+    log.info(
+        "setting Device1.PreferredBearer=bredr before post-pair connection"
+    )
+    obj = get_system_bus().get_object("org.bluez", device_path)
+    props = dbus.Interface(obj, "org.freedesktop.DBus.Properties")
+    try:
+        props.Set(
+            "org.bluez.Device1",
+            "PreferredBearer",
+            dbus.String("bredr"),
+        )
+    except dbus.exceptions.DBusException as error:
+        name = error.get_dbus_name() or ""
+        detail = error.get_dbus_message() or name or str(error)
+        raise PairingError(
+            f"Could not select the BR/EDR bearer for the post-pair "
+            f"connection: {detail}"
+        ) from error
+
+
+def _activate_obex_mns() -> None:
+    """Activate obexd so its local MAP notification service is advertised.
+
+    BlueZ's obexd publishes the Message Notification Server SDP record when
+    it starts.  Activating it before pairing gives iOS the same stable MAP
+    capability presentation used by automotive accessories instead of
+    waiting for BlueFerry's daemon to start after pairing.
+    """
+    log.info("activating BlueZ OBEX/MNS service before pairing")
+    try:
+        peer = dbus.Interface(
+            get_session_bus().get_object("org.bluez.obex", "/org/bluez/obex"),
+            "org.freedesktop.DBus.Peer",
+        )
+        peer.Ping(timeout=10.0)
+    except dbus.exceptions.DBusException as error:
+        detail = error.get_dbus_message() or error.get_dbus_name() or str(error)
+        raise PairingError(
+            f"Could not activate BlueZ's MAP notification service: {detail}"
+        ) from error
+    log.info("BlueZ OBEX/MNS service is available during pairing")
+
+
+def _wait_for_daemon_transports(*, timeout: float = 45.0) -> tuple[bool, bool, bool]:
+    """Observe the daemon while the pairing advert and agent remain active."""
+    from blueferry.client import BackendClient, BackendError
+
+    deadline = time.monotonic() + timeout
+    previous: tuple[bool, bool, bool] | None = None
+    while time.monotonic() < deadline:
+        try:
+            status = BackendClient().status()
+        except BackendError:
+            time.sleep(0.5)
+            continue
+        current = (status.map, status.pbap, status.ancs)
+        if current != previous:
+            log.debug(
+                "daemon transport state: MAP=%s PBAP=%s ANCS=%s",
+                *current,
+            )
+            previous = current
+        if status.ancs:
+            return current
+        time.sleep(0.5)
+    return previous or (False, False, False)
+
+
 def _connect_ancs(device: PairedDevice, *, timeout: float = 30.0) -> str:
     """Connect the bonded LE bearer exposed by bluetoothd's experimental API."""
     manager = _object_manager()
@@ -484,6 +554,7 @@ def complete_pairing(
             "Could not prepare the Bluetooth adapter; check that "
             "blueferry-backend is installed and run doctor."
         )
+    _activate_obex_mns()
 
     pairing_agents = ExitStack()
     try:
@@ -541,22 +612,34 @@ def complete_pairing(
         log.debug("setting Device1.Trusted=true for %s", device.device_path)
         trust_device(device.mac, device.adapter_path)
 
-        _connect_classic(device.device_path)
-        # Two-phase LE setup, matching the proven desktop sequence: only
-        # after the Classic bearer is connected does the ANCS solicitation
-        # advert appear, inviting the bonded iPhone to establish LE.
+        _prefer_bredr(device.device_path)
+        # The pairing transaction already established the Classic ACL.  A
+        # second generic Device1.Connect can wander into LE and hangs on the
+        # observed iOS 18 path, so only require that existing ACL to settle.
+        _wait_for_classic_settled(device.device_path)
+
+        # Keep ANCS solicitation active because iOS 26 testing found that it
+        # surfaced the MAP/PBAP permission toggles.  It is a pairing signal,
+        # not a prerequisite connection: the daemon below attempts MAP/PBAP
+        # before it is allowed to connect the LE bearer.
         log.debug("registering ANCS solicitation advertisement on %s", adapter)
         if not bluez_setup.register_advert(adapter, settle_for_pairing=True):
             raise PairingError("The ANCS advertisement did not activate")
-        try:
-            ancs = _connect_ancs(_device(mac))
-        except PairingError as error:
-            raise PairingError(
-                f"ANCS/LE connection did not complete; the iPhone was not saved: {error}"
-            ) from error
-        ancs_ready = ancs in {"connected", "already connected"}
-        if not ancs_ready:
-            raise PairingError("ANCS/LE connection did not complete; the iPhone was not saved")
+
+        # Start the long-lived owner while both the advert and temporary
+        # pairing agent are still present.  Its first operation is a Classic
+        # MAP/PBAP open; only when that attempt completes does it enable LE.
+        write_local_env(device.mac, device.adapter_path.rsplit("/", 1)[-1])
+        log.debug("saved paired target %s; restarting user service", device.mac)
+        _restart_user_service()
+        map_ready, pbap_ready, ancs_ready = _wait_for_daemon_transports()
+        ancs = "connected" if ancs_ready else "daemon connecting"
+        log.info(
+            "pairing-window result: MAP=%s PBAP=%s ANCS=%s",
+            map_ready,
+            pbap_ready,
+            ancs_ready,
+        )
     finally:
         # The temporary setup process owns this advertisement. Remove it
         # before releasing our device-scoped default agent. Restoring a
@@ -568,12 +651,6 @@ def complete_pairing(
         finally:
             pairing_agents.close()
 
-    # The selected MAC is a capability-bearing target, not merely discovery
-    # data. Persist it only after ANCS proves that the LE half of this exact
-    # bond works; until then the daemon must have no MAP target to connect to.
-    write_local_env(device.mac, device.adapter_path.rsplit("/", 1)[-1])
-    log.debug("saved paired target %s; restarting user service", device.mac)
-    _restart_user_service()
     device = _device(mac)
     return {
         "ok": True,
@@ -581,8 +658,6 @@ def complete_pairing(
         "config": str(LOCAL_ENV_PATH),
         "service": "package-enabled and restarted",
         "ancs": ancs,
-        # Reaching this result means ANCS/LE was established before the target
-        # was persisted and the daemon was started.
         "ancs_ready": ancs_ready,
         "iphone_steps": [
             "Open Settings → Bluetooth and tap ⓘ next to this computer",

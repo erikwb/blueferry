@@ -5,7 +5,7 @@ import struct
 
 from blueferry.ancs import client as client_module
 from blueferry.ancs.client import AncsClient
-from blueferry.ancs.constants import CommandID, EventFlag, EventID
+from blueferry.ancs.constants import MESSAGES_APP_ID, CommandID, EventFlag, EventID
 from blueferry.ancs.parsers import Notification
 
 
@@ -43,6 +43,21 @@ def _complete_full_response(
         + _attribute(1, "Alice")
         + _attribute(2, "To you & Bob")
         + _attribute(3, "hello")
+    )
+    client._on_ds_changed(
+        "org.bluez.GattCharacteristic1", {"Value": response}, []
+    )
+
+
+def _complete_authorization_probe(client: AncsClient) -> None:
+    request = client._active_request
+    assert request is not None
+    assert request.authorization_probe is True
+    response = (
+        bytes([CommandID.GetAppAttributes])
+        + MESSAGES_APP_ID.encode()
+        + b"\0"
+        + _attribute(0, "Messages")
     )
     client._on_ds_changed(
         "org.bluez.GattCharacteristic1", {"Value": response}, []
@@ -239,6 +254,7 @@ def test_characteristic_removal_discards_all_characteristic_receivers(
 
 def test_start_notify_failure_retries_without_rediscovery(monkeypatch) -> None:
     scheduled = []
+    writes = []
 
     class _Characteristic:
         def __init__(self, *, fail_once: bool = False) -> None:
@@ -257,11 +273,23 @@ def test_start_notify_failure_retries_without_rediscovery(monkeypatch) -> None:
         def StopNotify(self, **_kwargs) -> None:
             pass
 
+        def WriteValue(self, value, _options, **_kwargs) -> None:
+            writes.append(bytes(value))
+
     ns = _Characteristic(fail_once=True)
     ds = _Characteristic()
-    bus = _CharacteristicBus({"/device/ns": ns, "/device/ds": ds})
+    cp = _Characteristic()
+    bus = _CharacteristicBus(
+        {"/device/ns": ns, "/device/ds": ds, "/device/cp": cp}
+    )
     monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
     monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
+    monkeypatch.setattr(
+        client_module.GLib,
+        "timeout_add_seconds",
+        lambda _delay, _callback: 9,
+    )
+    monkeypatch.setattr(client_module.GLib, "source_remove", lambda _timer: None)
     client = AncsClient(
         "/device",
         lambda _event: None,
@@ -280,6 +308,57 @@ def test_start_notify_failure_retries_without_rediscovery(monkeypatch) -> None:
 
     scheduled[0][1]()
 
+    assert client.connected is False
+    assert len(writes) == 1
+    _complete_authorization_probe(client)
     assert client.connected is True
     assert ns.start_calls == 2
     assert ds.start_calls == 1
+
+
+def test_control_point_failure_keeps_ancs_unready_and_retries(
+    monkeypatch, caplog,
+) -> None:
+    scheduled = []
+
+    class _ControlPoint:
+        def __init__(self) -> None:
+            self.fail = True
+
+        def WriteValue(self, _value, _options, **_kwargs) -> None:
+            if self.fail:
+                self.fail = False
+                raise client_module.dbus.exceptions.DBusException(
+                    "Insufficient authorization",
+                    name="org.bluez.Error.Failed",
+                )
+
+    cp = _ControlPoint()
+    bus = _CharacteristicBus({"/device/cp": cp})
+    monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
+    monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
+    monkeypatch.setattr(
+        client_module.GLib,
+        "timeout_add_seconds",
+        lambda _delay, _callback: 9,
+    )
+    monkeypatch.setattr(client_module.GLib, "source_remove", lambda _timer: None)
+    client = AncsClient(
+        "/device",
+        lambda _event: None,
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+    )
+    client._started = True
+    client._notify_started = True
+    client._cp_path = "/device/cp"
+
+    client._queue_authorization_probe()
+
+    assert client.connected is False
+    assert scheduled[0][0] == client_module.AUTHORIZATION_RETRY_SECONDS
+    assert "org.bluez.Error.Failed: Insufficient authorization" in caplog.text
+
+    scheduled[0][1]()
+    assert client.connected is False
+    _complete_authorization_probe(client)
+    assert client.connected is True

@@ -250,6 +250,11 @@ def _print_iphone_steps(
     if NOTIFICATION_ACCESS in remaining:
         typer.echo("\nANCS notification access is negotiated during pairing. Some")
         typer.echo("iOS versions do not show a separate system-notification toggle.")
+    if NOTIFICATION_ACCESS in remaining or not notifications_supported:
+        typer.echo(
+            "Without System Notification access, group texts appear as "
+            "individual conversations with their sender."
+        )
     typer.echo("If the toggles still do not appear, run `blueferry doctor` before re-pairing.")
 
     ancs_uuid = "7905f431-b5ce-4e99-a40f-4b1e122d00d0"
