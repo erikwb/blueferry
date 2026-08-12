@@ -212,6 +212,30 @@ def test_group_message_bubbles_show_the_individual_sender() -> None:
     assert '? "You" : (messageRow.modelData.sender || "")' in quickshell
 
 
+def test_group_roster_editors_explain_local_and_same_name_limits() -> None:
+    clients = (
+        (ROOT / "src/blueferry/ui/conversations.py").read_text(),
+        _qml_bundle(ROOT / "src/blueferry/qt/qml"),
+        _qml_bundle(ROOT / "data/quickshell"),
+        (ROOT / "src/blueferry/tui.py").read_text(),
+    )
+
+    for client in clients:
+        lowered = client.casefold()
+        assert "multiple groups" in lowered
+        assert "does not add or remove anyone" in lowered
+        assert "group membership may have changed" in lowered
+        assert "roster_changed" in client
+
+
+def test_qt_escaped_roster_names_are_forced_to_rich_text() -> None:
+    qml = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
+
+    assert 'return "<span>" + value + "</span>"' in qml
+    assert "root.escapedRichText(" in qml
+    assert "root.htmlEscape(thread.name)" in qml
+
+
 def test_qt_messages_toolbar_toggles_dismissible_settings_pane() -> None:
     qml = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
 

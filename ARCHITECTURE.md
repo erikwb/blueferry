@@ -113,7 +113,10 @@ user-unit metadata.
   confirm a group's participants before the first reply. Named-group ANCS
   notifications initially produce a read-only thread; only the backend can
   retain a user-supplied route, and it requires all observed senders to remain
-  in that route.
+  in that route. A sender outside an established route produces a distinct
+  roster-change warning and disables replies. Routes are local metadata and do
+  not modify iPhone groups; named groups with the same name necessarily share
+  one key because ANCS provides no conversation identifier.
 - Message history and the contact cache are user-private (`0700` directories,
   `0600` SQLite files). Their sensitive records are authenticated and encrypted
   with AES-256-GCM under one random application key held by the desktop Secret

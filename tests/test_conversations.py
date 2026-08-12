@@ -110,3 +110,15 @@ def test_participant_editor_keeps_unique_nonempty_lines() -> None:
     assert conversations._participant_lines(
         " +15551111111 \n\nbeau@example.com\n+15551111111\n"
     ) == ["+15551111111", "beau@example.com"]
+
+
+def test_roster_banner_keeps_unexpected_sender_after_later_known_sender() -> None:
+    title = conversations._group_roster_banner_title({
+        "name": "Crew",
+        "roster_changed": True,
+        "unexpected_sender": "Casey",
+        "prompt_sender": "Beau",
+    })
+
+    assert title.startswith("Casey is not")
+    assert "Beau" not in title

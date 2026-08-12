@@ -153,6 +153,7 @@ def test_confirmed_named_group_route_enables_replies() -> None:
             "group_name": "Crew",
             "group_members": ["Beau", "Alice"],
             "group_recipients": ["+15551111111", "+15552222222"],
+            "seen_at": "2026-08-12T09:00:00+00:00",
         },
         _sms("+15551111111", "Beau", "hello", "2026-08-12T10:00:00+00:00"),
         _ancs("Beau", "Crew", "hello", "2026-08-12T10:00:23+00:00"),
@@ -166,6 +167,8 @@ def test_confirmed_named_group_route_enables_replies() -> None:
     ]
     assert message["group_reply_ready"] is True
     assert message["group_participants_required"] is False
+    assert message["group_roster_changed"] is False
+    assert message["group_roster_warning_id"] == ""
 
 
 def test_new_named_group_sender_invalidates_saved_route() -> None:
@@ -177,6 +180,7 @@ def test_new_named_group_sender_invalidates_saved_route() -> None:
             "group_name": "Crew",
             "group_members": ["Beau", "Alice"],
             "group_recipients": ["+15551111111", "+15552222222"],
+            "seen_at": "2026-08-12T09:00:00+00:00",
         },
         _sms("+15553333333", "Casey", "new here", "2026-08-12T10:00:00+00:00"),
         _ancs("Casey", "Crew", "new here", "2026-08-12T10:00:23+00:00"),
@@ -186,9 +190,41 @@ def test_new_named_group_sender_invalidates_saved_route() -> None:
 
     assert message["group_reply_ready"] is False
     assert message["group_participants_required"] is True
+    assert message["group_roster_changed"] is True
+    assert message["group_unexpected_sender"] == "Casey"
+    assert message["group_roster_warning_id"].endswith(":phone:15553333333")
     assert message["group_recipients"] == [
         "+15551111111", "+15552222222", "+15553333333"
     ]
+
+    thread = build_threads(events)[0]
+    assert thread["roster_changed"] is True
+    assert thread["unexpected_sender"] == "Casey"
+    assert thread["roster_warning_id"] == message["group_roster_warning_id"]
+
+
+def test_later_known_sender_does_not_replace_roster_warning_sender() -> None:
+    key = named_group_key("Crew")
+    events = [
+        {
+            "kind": "group_route",
+            "group_key": key,
+            "group_name": "Crew",
+            "group_members": ["Beau", "Alice"],
+            "group_recipients": ["+15551111111", "+15552222222"],
+            "seen_at": "2026-08-12T09:00:00+00:00",
+        },
+        _sms("+15553333333", "Casey", "new here", "2026-08-12T10:00:00+00:00"),
+        _ancs("Casey", "Crew", "new here", "2026-08-12T10:00:03+00:00"),
+        _sms("+15551111111", "Beau", "welcome", "2026-08-12T10:01:00+00:00"),
+        _ancs("Beau", "Crew", "welcome", "2026-08-12T10:01:03+00:00"),
+    ]
+
+    thread = build_threads(events)[0]
+
+    assert thread["roster_changed"] is True
+    assert thread["unexpected_sender"] == "Casey"
+    assert thread["prompt_sender"] == "Beau"
 
 
 def test_named_group_messages_from_different_senders_share_one_thread() -> None:

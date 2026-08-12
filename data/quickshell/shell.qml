@@ -17,6 +17,8 @@ ShellRoot {
   property bool awaitingOpenMessageHandle: false
   property string confirmedGroupSignature: ""
   property var groupParticipantsThread: null
+  property var rosterChangedThread: null
+  property var warnedRosterChanges: ({})
   property string errorText: ""
   property bool phoneSettingsVisible: false
   property var pairingDevices: []
@@ -147,6 +149,20 @@ ShellRoot {
       if (address !== "" && result.indexOf(address) < 0) result.push(address)
     }
     return result
+  }
+
+  function warnAboutRosterChanges() {
+    for (var index = 0; index < threads.length; ++index) {
+      var thread = threads[index]
+      if (!thread.roster_changed) continue
+      var warningId = thread.roster_warning_id
+        || thread.key + ":" + (thread.unexpected_sender || "unknown")
+      if (warnedRosterChanges[warningId] === true) continue
+      warnedRosterChanges[warningId] = true
+      rosterChangedThread = thread
+      rosterChangedPopup.open()
+      return
+    }
   }
 
   function loadPairingDevices(scan) {
@@ -323,6 +339,7 @@ ShellRoot {
           }
           if (root.pendingMessageHandle !== "")
             root.selectMessage(root.pendingMessageHandle)
+          root.warnAboutRosterChanges()
           root.errorText = ""
         } catch (error) { root.errorText = "Backend response was invalid" }
       }
@@ -1014,10 +1031,15 @@ ShellRoot {
                     Layout.fillWidth: true
                     wrapMode: Text.Wrap
                     text: conversationPane.thread
-                      ? (conversationPane.thread.prompt_sender || "Someone")
-                        + " has sent a message to the group "
-                        + conversationPane.thread.name
-                        + ". BlueFerry needs its participant list before you can reply."
+                      ? conversationPane.thread.roster_changed
+                        ? (conversationPane.thread.unexpected_sender || "Someone new")
+                          + " is not in BlueFerry's saved participant list for "
+                          + conversationPane.thread.name
+                          + ". Review the list before replying."
+                        : (conversationPane.thread.prompt_sender || "Someone")
+                          + " has sent a message to the group "
+                          + conversationPane.thread.name
+                          + ". BlueFerry needs its participant list before you can reply."
                       : ""
                   }
                   FerryButton {
@@ -1560,6 +1582,65 @@ ShellRoot {
       }
 
       Popup {
+        id: rosterChangedPopup
+        parent: applicationSurface
+        x: Math.max(0, (applicationSurface.width - width) / 2)
+        y: Math.max(0, (applicationSurface.height - height) / 2)
+        width: Math.min(theme.scaled(500), applicationSurface.width - theme.scaled(24))
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        padding: theme.scaled(18)
+
+        background: Rectangle {
+          color: theme.cardSurface
+          border.color: theme.warning
+          radius: theme.panelRadius
+        }
+
+        Overlay.modal: Rectangle {
+          color: Qt.rgba(theme.windowSurface.r, theme.windowSurface.g,
+                         theme.windowSurface.b, 0.72)
+        }
+
+        contentItem: ColumnLayout {
+          spacing: theme.scaled(12)
+          FerryLabel {
+            text: "Group membership may have changed"
+            font.bold: true
+            font.pixelSize: theme.headingSize
+          }
+          FerryLabel {
+            Layout.fillWidth: true
+            wrapMode: Text.Wrap
+            text: root.rosterChangedThread
+              ? (root.rosterChangedThread.unexpected_sender || "Someone new")
+                + " sent a message to " + root.rosterChangedThread.name
+                + ", but is not in BlueFerry's saved participant list. Replies are disabled until you review the list. This can also happen if you have multiple groups named "
+                + root.rosterChangedThread.name
+                + ", because BlueFerry cannot distinguish them."
+              : ""
+          }
+          RowLayout {
+            Layout.alignment: Qt.AlignRight
+            FerryButton {
+              text: "Not now"
+              onClicked: rosterChangedPopup.close()
+            }
+            FerryButton {
+              text: "Review participants"
+              highlighted: true
+              onClicked: {
+                root.groupParticipantsThread = root.rosterChangedThread
+                rosterChangedPopup.close()
+                groupParticipantsPopup.open()
+              }
+            }
+          }
+        }
+      }
+
+      Popup {
         id: groupParticipantsPopup
         parent: applicationSurface
         x: Math.max(0, (applicationSurface.width - width) / 2)
@@ -1612,6 +1693,12 @@ ShellRoot {
             color: theme.muted
             text: "Enter every other participant's phone number or Apple ID email, one per line."
           }
+          FerryLabel {
+            Layout.fillWidth: true
+            wrapMode: Text.Wrap
+            color: theme.windowText
+            text: "Changing this list only updates BlueFerry's local understanding of the group. It does not add or remove anyone in Messages on your iPhone."
+          }
           Rectangle {
             Layout.fillWidth: true
             Layout.preferredHeight: theme.scaled(150)
@@ -1641,7 +1728,11 @@ ShellRoot {
             Layout.fillWidth: true
             wrapMode: Text.Wrap
             color: theme.warning
-            text: "This will become out of sync if the group is renamed or members are added or removed."
+            text: root.groupParticipantsThread
+              ? "BlueFerry identifies named groups by name. If you have multiple groups named "
+                + root.groupParticipantsThread.name
+                + ", BlueFerry may combine them and use the wrong participant list. This list can also become outdated if the group is renamed or its membership changes."
+              : ""
           }
           RowLayout {
             Layout.alignment: Qt.AlignRight

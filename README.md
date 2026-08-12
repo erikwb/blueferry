@@ -45,6 +45,11 @@ a group identifier or roster, so ambiguous groups remain read-only rather than
 risk replying to the wrong people. For a named group, BlueFerry can identify
 the thread but asks you to supply the other participants before enabling
 replies. That saved roster must be updated after membership changes.
+The roster is only BlueFerry's local reply map: editing it does not change the
+group in Messages on the iPhone. Named groups are keyed by their name because
+iOS exposes no conversation identifier, so two groups with the same name are
+ambiguous and may be combined. If a sender outside a saved roster appears,
+BlueFerry disables replies and warns that the roster needs review.
 
 Attachments, reactions, typing indicators, FaceTime, calls, and a complete
 sent-message history are not supported. MMS and RCS have not been tested well

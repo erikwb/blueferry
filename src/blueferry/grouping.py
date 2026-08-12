@@ -357,6 +357,8 @@ def correlate_group_events(events: list[dict], resolver=None) -> list[dict]:
             named_member_names = [sender_title] if sender_title else []
             reply_ready = False
             participants_required = True
+            roster_changed = False
+            roster_warning_id = ""
             if route is not None:
                 routed_recipients = [
                     str(value)
@@ -384,6 +386,10 @@ def correlate_group_events(events: list[dict], resolver=None) -> list[dict]:
                     ]
                     if sender_address and sender_address not in named_recipients:
                         named_recipients.append(sender_address)
+                    if sender_identity is not None:
+                        roster_changed = True
+                        route_version = str(route.get("seen_at") or key)
+                        roster_warning_id = f"{route_version}:{sender_identity}"
             sms.update({
                 "group_key": key,
                 "group_name": named_group,
@@ -394,6 +400,9 @@ def correlate_group_events(events: list[dict], resolver=None) -> list[dict]:
                 "group_participants_required": participants_required,
                 "group_observed_recipient": sender_address or "",
                 "group_observed_sender": sender_title,
+                "group_roster_changed": roster_changed,
+                "group_unexpected_sender": sender_title if roster_changed else "",
+                "group_roster_warning_id": roster_warning_id,
             })
             continue
 

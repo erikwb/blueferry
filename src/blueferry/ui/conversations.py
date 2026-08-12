@@ -29,6 +29,23 @@ def _participant_lines(value: str) -> list[str]:
     return result
 
 
+def _group_roster_banner_title(thread: dict) -> str:
+    """Describe why this named group currently needs roster review."""
+    if thread.get("roster_changed"):
+        sender = str(thread.get("unexpected_sender") or _("Someone new"))
+        template = _(
+            "{sender} is not in BlueFerry's saved participant list for "
+            "{group}. Review the list before replying."
+        )
+    else:
+        sender = str(thread.get("prompt_sender") or _("Someone"))
+        template = _(
+            "{sender} has sent a message to the group {group}. "
+            "BlueFerry needs its participant list before you can reply."
+        )
+    return template.format(sender=sender, group=thread["name"])
+
+
 class ConversationsPage(Gtk.Box):
     def __init__(self, client, toast) -> None:
         super().__init__(
@@ -41,6 +58,7 @@ class ConversationsPage(Gtk.Box):
         self._threads: dict[str, dict] = {}
         self._current: str | None = None
         self._confirmed_groups: set[str] = set()
+        self._warned_roster_changes: set[str] = set()
         self._pending_open_handle: str | None = None
         self._reload_pending = False
         self._reload_again = False
@@ -488,6 +506,7 @@ class ConversationsPage(Gtk.Box):
             self._stack.set_visible_child_name("empty")
         self._reload_finished()
         self._select_pending_message()
+        self._maybe_warn_roster_change()
         return False
 
     # ---- thread list ---------------------------------------------------
@@ -562,16 +581,50 @@ class ConversationsPage(Gtk.Box):
         self._group_roster_banner.set_revealed(required)
         if not required or thread is None:
             return
-        sender = str(thread.get("prompt_sender") or _("Someone"))
-        self._group_roster_banner.set_title(
-            _(
-                "{sender} has sent a message to the group {group}. "
-                "BlueFerry needs its participant list before you can reply."
-            ).format(sender=sender, group=thread["name"])
+        self._group_roster_banner.set_title(_group_roster_banner_title(thread))
+
+    def _maybe_warn_roster_change(self) -> None:
+        thread = next(
+            (
+                candidate for candidate in self._threads.values()
+                if candidate.get("roster_changed")
+                and str(candidate.get("roster_warning_id") or "")
+                    not in self._warned_roster_changes
+            ),
+            None,
+        )
+        if thread is None or self.get_root() is None:
+            return
+        warning_id = str(thread.get("roster_warning_id") or thread["key"])
+        self._warned_roster_changes.add(warning_id)
+        sender = str(thread.get("unexpected_sender") or _("Someone new"))
+        dialog = Adw.AlertDialog(
+            heading=_("Group Membership May Have Changed"),
+            body=_(
+                "{sender} sent a message to {group}, but is not in BlueFerry's "
+                "saved participant list. Replies are disabled until you review "
+                "the list. This can also happen if you have multiple groups "
+                "named {group}, because BlueFerry cannot distinguish them."
+            ).format(sender=sender, group=thread["name"]),
+        )
+        dialog.add_response("later", _("Not Now"))
+        dialog.add_response("review", _("Review Participants"))
+        dialog.set_default_response("review")
+        dialog.set_response_appearance(
+            "review", Adw.ResponseAppearance.SUGGESTED
         )
 
-    def _open_group_roster_dialog(self, _banner) -> None:
-        thread = self._threads.get(self._current or "")
+        def response(_dialog, selected: str) -> None:
+            if selected == "review":
+                self._open_group_roster_dialog(None, thread)
+
+        dialog.connect("response", response)
+        dialog.present(self.get_root())
+
+    def _open_group_roster_dialog(
+        self, _source, selected_thread: dict | None = None,
+    ) -> None:
+        thread = selected_thread or self._threads.get(self._current or "")
         if not thread or thread.get("group_origin") != "named":
             return
         sender = str(thread.get("prompt_sender") or _("Someone"))
@@ -582,8 +635,13 @@ class ConversationsPage(Gtk.Box):
                 "a member of. BlueFerry can't determine the participants of "
                 "this group chat, but if you fill in the members, it can work.\n\n"
                 "Enter every other participant's phone number or Apple ID email, "
-                "one per line. This will become out of sync if the group is "
-                "renamed or members are added or removed."
+                "one per line. Changing this list only updates BlueFerry's local "
+                "understanding of the group; it does not add or remove anyone in "
+                "Messages on your iPhone.\n\nBlueFerry identifies named groups by "
+                "name. If you have multiple groups named {group}, BlueFerry may "
+                "combine them and use the wrong participant list. The list can "
+                "also become outdated if the group is renamed or its membership "
+                "changes."
             ).format(sender=sender, group=thread["name"]),
         )
         editor = Gtk.TextView(

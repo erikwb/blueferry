@@ -353,6 +353,39 @@ class GroupConfirmScreen(ModalScreen[bool]):
         self.dismiss(False)
 
 
+class RosterChangedScreen(ModalScreen[None]):
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("escape", "close", "Close", show=False)
+    ]
+
+    def __init__(self, thread: Thread) -> None:
+        super().__init__()
+        self.thread = thread
+
+    def compose(self) -> ComposeResult:
+        sender = str(self.thread.extra.get("unexpected_sender") or "Someone new")
+        copy = (
+            f"{sender} sent a message to {self.thread.name}, but is not in "
+            "BlueFerry's saved participant list. Replies are disabled until "
+            "you review it. This may also mean you have multiple groups with "
+            f"the name {self.thread.name}, which BlueFerry cannot distinguish.\n\n"
+            "Changing BlueFerry's saved list does not add or remove anyone in "
+            "Messages on your iPhone."
+        )
+        with Vertical(id="roster-changed-dialog", classes="dialog"):
+            yield Static("Group membership may have changed", classes="dialog-title")
+            yield Static(Text(terminal_text(copy)), classes="dialog-copy")
+            with Horizontal(classes="dialog-actions"):
+                yield Button("Got it", variant="primary", id="roster-changed-close")
+
+    @on(Button.Pressed, "#roster-changed-close")
+    def close_button(self) -> None:
+        self.dismiss(None)
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+
 class NewMessageScreen(ModalScreen[tuple[str, str] | None]):
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Cancel", show=False),
@@ -463,6 +496,7 @@ class BlueFerryApp(App[None]):
         self._monitor: _Monitor | None = None
         self._pending_open_handle: str | None = None
         self._sending = False
+        self._warned_roster_changes: set[str] = set()
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="masthead"):
@@ -575,6 +609,21 @@ class BlueFerryApp(App[None]):
         await self._render_conversation()
         self._update_status()
         self._update_notice()
+        self._warn_about_roster_changes()
+
+    def _warn_about_roster_changes(self) -> None:
+        for thread in self.state.threads:
+            if not thread.extra.get("roster_changed"):
+                continue
+            warning_id = str(
+                thread.extra.get("roster_warning_id")
+                or f"{thread.key}:{thread.extra.get('unexpected_sender') or 'unknown'}"
+            )
+            if warning_id in self._warned_roster_changes:
+                continue
+            self._warned_roster_changes.add(warning_id)
+            self.push_screen(RosterChangedScreen(thread))
+            return
 
     def _filtered_threads(self) -> list[Thread]:
         query = self.query_one("#thread-search", Input).value.strip().casefold()

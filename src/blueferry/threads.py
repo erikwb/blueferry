@@ -147,6 +147,15 @@ def build_threads(events: list[dict], resolver=None) -> list[dict]:
                 "prompt_sender": str(
                     event.get("group_observed_sender") or ""
                 ),
+                "roster_changed": bool(
+                    event.get("group_roster_changed", False)
+                ),
+                "unexpected_sender": str(
+                    event.get("group_unexpected_sender") or ""
+                ),
+                "roster_warning_id": str(
+                    event.get("group_roster_warning_id") or ""
+                ),
                 "messages": [],
                 "last_ts": "",
             }
@@ -173,6 +182,14 @@ def build_threads(events: list[dict], resolver=None) -> list[dict]:
             )
             if event.get("group_origin"):
                 thread["group_origin"] = str(event["group_origin"])
+            if event.get("group_roster_changed"):
+                thread["roster_changed"] = True
+                thread["unexpected_sender"] = str(
+                    event.get("group_unexpected_sender") or ""
+                )
+                thread["roster_warning_id"] = str(
+                    event.get("group_roster_warning_id") or ""
+                )
 
         message = {
             "handle": str(event.get("handle") or ""),

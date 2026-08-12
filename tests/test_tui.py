@@ -10,7 +10,15 @@ from textual.widgets import Input, ListView, Static, TextArea
 from blueferry import tui as tui_module
 from blueferry.client import BackendError
 from blueferry.models import BackendStatus, Thread, ThreadMessage
-from blueferry.tui import BlueFerryApp, ConversationItem, MessageRow, TuiState, _initials, _one_line
+from blueferry.tui import (
+    BlueFerryApp,
+    ConversationItem,
+    MessageRow,
+    RosterChangedScreen,
+    TuiState,
+    _initials,
+    _one_line,
+)
 
 
 def _thread(
@@ -20,6 +28,7 @@ def _thread(
     *,
     group: bool = False,
     reply_ready: bool = True,
+    roster_changed: bool = False,
 ) -> Thread:
     return Thread(
         key=key,
@@ -38,6 +47,11 @@ def _thread(
             ),
         ),
         last_ts="2026-08-10T10:00:00-04:00",
+        extra={
+            "roster_changed": roster_changed,
+            "unexpected_sender": "Beau" if roster_changed else "",
+            "roster_warning_id": "route-1:beau" if roster_changed else "",
+        },
     )
 
 
@@ -200,6 +214,29 @@ def test_textual_app_renders_status_threads_and_messages() -> None:
             assert app.query_one("#conversation-title").render().plain == "Friends  ·  Group"
             meta = app.query_one(MessageRow).query_one(".message-meta", Static)
             assert meta.render().plain.startswith("Beau  ·  ")
+
+    _run_headless(scenario())
+
+
+def test_textual_warns_once_when_saved_group_roster_changes() -> None:
+    async def scenario() -> None:
+        backend = _Backend()
+        backend.loaded = [
+            _thread(
+                "group", "Friends", "new here", group=True,
+                reply_ready=False, roster_changed=True,
+            )
+        ]
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
+
+        async with app.run_test(size=(120, 36)) as pilot:
+            await _wait_for_threads(app, pilot, 1)
+            await pilot.pause(0.1)
+            assert isinstance(app.screen, RosterChangedScreen)
+            await pilot.press("escape")
+            app.action_refresh()
+            await pilot.pause(0.2)
+            assert not isinstance(app.screen, RosterChangedScreen)
 
     _run_headless(scenario())
 

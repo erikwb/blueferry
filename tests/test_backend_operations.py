@@ -359,6 +359,7 @@ def test_named_group_key_survives_roster_save_and_history_reload(
     assert updated["key"] == key
     assert updated["reply_ready"] is True
     assert updated["participants_required"] is False
+    assert updated["roster_changed"] is False
 
 
 def test_history_snapshot_validates_kinds_and_caps_bodies(monkeypatch) -> None:

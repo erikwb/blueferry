@@ -195,8 +195,12 @@ one address before enabling an unnamed-group reply. Named groups remain
 read-only until the user supplies a recipient roster. The route is invalidated
 when a previously unseen sender appears, but iOS provides no event when a
 silent member is added or removed, so the user must maintain that roster. This
-is a conservative observation-based heuristic, not a general iMessage group
-protocol; alternative iOS notification formats remain uncharacterized.
+local roster affects only BlueFerry's reply routing and never modifies the
+Messages group itself. Because iOS supplies a group name but no conversation
+identifier, distinct named groups with the same normalized name cannot be
+distinguished and are projected as one local thread. This is a conservative
+observation-based heuristic, not a general iMessage group protocol;
+alternative iOS notification formats remain uncharacterized.
 
 ## PBAP behavior
 
