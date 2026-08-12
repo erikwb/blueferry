@@ -530,16 +530,29 @@ Kirigami.ApplicationWindow {
                     ]
                 }
 
-                RowLayout {
+                Controls.SplitView {
+                    id: messagesSplit
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    spacing: 0
+                    orientation: Qt.Horizontal
+
+                    handle: Item {
+                        implicitWidth: messagesPage.narrow
+                            ? 0 : Kirigami.Units.smallSpacing
+                        visible: !messagesPage.narrow
+
+                        Kirigami.Separator {
+                            anchors.centerIn: parent
+                            height: parent.height
+                        }
+                    }
 
                     ColumnLayout {
-                        Layout.fillHeight: true
-                        Layout.preferredWidth: messagesPage.narrow
-                            ? parent.width
-                            : Math.max(Kirigami.Units.gridUnit * 14, parent.width * 0.3)
+                        Controls.SplitView.fillWidth: messagesPage.narrow
+                        Controls.SplitView.preferredWidth: messagesPage.narrow
+                            ? messagesSplit.width : messagesSplit.width * 0.35
+                        Controls.SplitView.minimumWidth: messagesPage.narrow
+                            ? 0 : Kirigami.Units.gridUnit * 12
                         visible: !messagesPage.narrow || root.selectedThreadKey === ""
                         spacing: 0
 
@@ -616,14 +629,10 @@ Kirigami.ApplicationWindow {
                         }
                     }
 
-                    Kirigami.Separator {
-                        Layout.fillHeight: true
-                        visible: !messagesPage.narrow
-                    }
-
                     ColumnLayout {
-                        Layout.fillWidth: true
-                        Layout.fillHeight: true
+                        Controls.SplitView.fillWidth: true
+                        Controls.SplitView.minimumWidth: messagesPage.narrow
+                            ? 0 : Kirigami.Units.gridUnit * 18
                         visible: !messagesPage.narrow || root.selectedThreadKey !== ""
                         spacing: 0
 

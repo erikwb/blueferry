@@ -222,6 +222,15 @@ def test_qt_messages_toolbar_toggles_dismissible_settings_pane() -> None:
     assert 'text: qsTr("Refresh")' not in qml
 
 
+def test_qt_conversation_panes_start_compact_and_are_resizable() -> None:
+    qml = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
+
+    assert "Controls.SplitView {" in qml
+    assert "messagesSplit.width * 0.35" in qml
+    assert "Controls.SplitView.fillWidth: true" in qml
+    assert "handle: Item {" in qml
+
+
 def test_gui_clients_keep_phone_settings_out_of_primary_navigation() -> None:
     gtk_window = (ROOT / "src/blueferry/ui/window.py").read_text()
     quickshell = (ROOT / "data/quickshell/shell.qml").read_text()
