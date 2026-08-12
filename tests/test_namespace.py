@@ -81,6 +81,25 @@ def test_arch_check_dependencies_cover_cli_test_imports() -> None:
     assert "'python-textual>=8.0'" in checkdepends
 
 
+def test_arch_bluetooth_dropin_warns_about_other_executable_paths() -> None:
+    dropin = (ROOT / "packaging/arch/blueferry-bluetooth.conf").read_text()
+
+    assert "Arch Linux only" in dropin
+    assert "/usr/lib/bluetooth/bluetoothd" in dropin
+    assert "/usr/libexec/bluetooth/bluetoothd" in dropin
+    assert "prevents Bluetooth from starting" in dropin
+
+
+def test_gtk_client_styles_messages_with_libadwaita_1_5_colors() -> None:
+    app = (ROOT / "src/blueferry/ui/app.py").read_text()
+    pkgbuild = (ROOT / "packaging/arch/PKGBUILD").read_text()
+
+    assert "@accent_bg_color" in app
+    assert "@accent_fg_color" in app
+    assert "var(--accent-bg-color)" not in app
+    assert "'libadwaita>=1.5'" in pkgbuild
+
+
 @pytest.mark.parametrize("suffix", ["Gtk", "Qt", "Quickshell"])
 def test_desktop_and_appstream_ids_match(suffix: str) -> None:
     app_id = f"{BUS_NAME}.{suffix}"

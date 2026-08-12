@@ -35,6 +35,7 @@ def wait_for_transfer(
     property_timeout_s: float | None = None,
     get_status: Callable[[], str] | None = None,
     check_progress: Callable[[], None] | None = None,
+    get_progress: Callable[[], object] | None = None,
     monotonic: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
 ) -> str:
@@ -43,7 +44,9 @@ def wait_for_transfer(
     BlueZ removes short-lived transfer objects soon after completion. Only an
     explicit UnknownObject/NotFound error represents that successful race;
     unrelated bus failures remain failures. A non-terminal status at the
-    deadline is always a timeout, never an implicit success.
+    deadline is always a timeout, never an implicit success. When
+    ``get_progress`` is supplied, the deadline measures inactivity and is
+    restarted whenever its value changes.
     """
     status = str(initial_status or "queued").casefold()
     if check_progress is not None:
@@ -61,8 +64,15 @@ def wait_for_transfer(
 
         status_reader = read_status
 
-    deadline = monotonic() + max(0.0, float(timeout_s))
+    timeout = max(0.0, float(timeout_s))
+    deadline = monotonic() + timeout
+    last_progress = get_progress() if get_progress is not None else None
     while status not in {"complete", "error"}:
+        if get_progress is not None:
+            progress = get_progress()
+            if progress != last_progress:
+                last_progress = progress
+                deadline = monotonic() + timeout
         if monotonic() >= deadline:
             raise TimeoutError(
                 f"OBEX transfer {transfer_path} timed out after {timeout_s:g}s "

@@ -38,6 +38,26 @@ def test_nonterminal_status_at_deadline_is_not_success() -> None:
         )
 
 
+def test_transfer_timeout_restarts_when_progress_advances() -> None:
+    clock = _Clock()
+    polls = 0
+
+    def status() -> str:
+        nonlocal polls
+        polls += 1
+        return "complete" if polls == 8 else "active"
+
+    assert wait_for_transfer(
+        "/transfer/long",
+        timeout_s=0.2,
+        get_status=status,
+        get_progress=lambda: int(clock.now / 0.2),
+        monotonic=clock,
+        sleep=clock.sleep,
+    ) == "complete"
+    assert clock.now > 0.2
+
+
 def test_explicit_transfer_error_fails() -> None:
     with pytest.raises(TransferFailed):
         wait_for_transfer(

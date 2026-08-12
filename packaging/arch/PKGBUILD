@@ -135,7 +135,7 @@ package_blueferry-gtk() {
   depends=(
     "blueferry-backend=$pkgver-$pkgrel"
     'gtk4'
-    'libadwaita>=1.6'
+    'libadwaita>=1.5'
     'python-gobject'
   )
 

@@ -3,6 +3,10 @@ from __future__ import annotations
 
 import textwrap
 from contextlib import closing
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 from blueferry import config, contacts
 from blueferry.contacts import (
@@ -22,6 +26,34 @@ def test_pbap_filters_use_phonebook_access_names():
     assert set(filters) == {"MaxCount", "Format"}
     assert int(filters["MaxCount"]) == 123
     assert str(filters["Format"]) == "vcard30"
+
+
+def test_phonebook_transfer_uses_runtime_dir_and_cleans_up_on_failure(
+    tmp_path, monkeypatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    target = None
+
+    class _Pbap:
+        def Select(self, *_args, **_kwargs):
+            pass
+
+        def PullAll(self, path, *_args, **_kwargs):
+            nonlocal target
+            target = Path(path)
+            raise RuntimeError("transfer setup failed")
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime_dir))
+    monkeypatch.setattr(contacts, "obex", lambda *_args: _Pbap())
+
+    with pytest.raises(RuntimeError, match="transfer setup failed"):
+        contacts.pull_phonebook(SimpleNamespace(pbap_path="/pbap"))
+
+    assert target is not None
+    assert target.parent.parent == runtime_dir / "blueferry"
+    assert not target.parent.exists()
+    assert (runtime_dir / "blueferry").stat().st_mode & 0o777 == 0o700
 
 
 def test_single_vcard():

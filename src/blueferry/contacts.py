@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import sqlite3
 import tempfile
@@ -30,6 +31,7 @@ from blueferry.limits import (
 )
 from blueferry.obex.sessions import SessionManager
 from blueferry.obex.transfer import wait_for_transfer
+from blueferry.private_files import ensure_private_directory
 from blueferry.storage_security import CorruptStorageError
 
 if TYPE_CHECKING:
@@ -155,6 +157,17 @@ def clear_contact_cache() -> None:
 
 # ---- PBAP pull ----------------------------------------------------------
 
+def _phonebook_temp_root() -> Path:
+    """Return an owner-only location for transient plaintext phonebooks."""
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime_dir:
+        root = Path(runtime_dir) / "blueferry"
+        ensure_private_directory(root)
+        return root
+    config.ensure_dirs()
+    return config.STATE_DIR
+
+
 def pull_phonebook(
     sessions: SessionManager,
     *,
@@ -172,9 +185,10 @@ def pull_phonebook(
     log.info("PBAP Select(int, pb)")
     pbap.Select("int", "pb", timeout=10.0)
 
-    temp_dir = Path(tempfile.mkdtemp(prefix="blueferry_pb_"))
-    out = temp_dir / "pb.vcf"
-    try:
+    with tempfile.TemporaryDirectory(
+        prefix="phonebook-", dir=_phonebook_temp_root()
+    ) as temporary_name:
+        out = Path(temporary_name) / "pb.vcf"
         log.info("PBAP PullAll → %s (max=%d)", out, max_contacts)
         ret = pbap.PullAll(
             str(out), _pbap_pull_filters(max_contacts), timeout=30.0
@@ -197,18 +211,20 @@ def pull_phonebook(
             raise RuntimeError(
                 f"phonebook exceeds {MAX_PHONEBOOK_BYTES} byte safety limit"
             )
-        def check_size() -> None:
-            if out.exists() and out.stat().st_size > MAX_PHONEBOOK_BYTES:
+        def phonebook_size() -> int:
+            size = out.stat().st_size if out.exists() else 0
+            if size > MAX_PHONEBOOK_BYTES:
                 raise RuntimeError(
                     f"phonebook exceeds {MAX_PHONEBOOK_BYTES} byte safety limit"
                 )
+            return size
 
         status = wait_for_transfer(
             transfer_path,
             initial_status=initial_status,
             timeout_s=60,
             property_timeout_s=10.0,
-            check_progress=check_size,
+            get_progress=phonebook_size,
         )
 
         # obexd may remove a completed transfer object just before its output
@@ -228,7 +244,7 @@ def pull_phonebook(
                 "iPhone returned an empty phonebook; verify Settings → "
                 "Bluetooth → this computer → Sync Contacts is enabled"
             )
-        check_size()
+        phonebook_size()
 
         blob = out.read_text(errors="replace")
         parsed = _parse_vcard_records(blob, maximum=max_contacts)
@@ -279,12 +295,6 @@ def pull_phonebook(
             if storage is not None:
                 db.execute("VACUUM")
         return len(parsed)
-    finally:
-        try:
-            out.unlink(missing_ok=True)
-            temp_dir.rmdir()
-        except OSError:
-            pass
 
 
 # ---- Lookup -------------------------------------------------------------

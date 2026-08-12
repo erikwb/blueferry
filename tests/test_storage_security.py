@@ -1,8 +1,11 @@
 """Local encryption behavior without contacting a desktop keyring."""
 from __future__ import annotations
 
+import base64
 import json
+import logging
 import sqlite3
+from types import SimpleNamespace
 
 import pytest
 
@@ -12,10 +15,22 @@ from blueferry.history import append_event, prune_events, read_events
 from blueferry.settings_store import SettingsStore
 from blueferry.storage_security import (
     CorruptStorageError,
+    SecretServiceKeyProvider,
     StorageSecurity,
     StorageUnavailableError,
     is_encrypted_value,
 )
+
+
+def _secret_module(*, get_service):
+    return SimpleNamespace(
+        Service=SimpleNamespace(get_sync=get_service),
+        ServiceFlags=SimpleNamespace(LOAD_COLLECTIONS=1, OPEN_SESSION=2),
+        Schema=SimpleNamespace(new=lambda *_args: object()),
+        SchemaFlags=SimpleNamespace(NONE=0),
+        SchemaAttributeType=SimpleNamespace(STRING=0),
+        SearchFlags=SimpleNamespace(ALL=1, LOAD_SECRETS=2, UNLOCK=4),
+    )
 
 
 class _KeyProvider:
@@ -39,6 +54,47 @@ class _LockedProvider:
     def delete(self, *, allow_prompt: bool) -> bool:
         raise StorageUnavailableError("wallet locked")
 
+
+def test_secret_service_does_not_eagerly_load_unrelated_collections(
+    monkeypatch,
+) -> None:
+    calls = []
+    encoded = base64.b64encode(b"K" * 32).decode("ascii")
+    item = SimpleNamespace(
+        get_locked=lambda: False,
+        get_secret=lambda: SimpleNamespace(get_text=lambda: encoded),
+    )
+    service = SimpleNamespace(search_sync=lambda *_args: [item])
+
+    def get_service(flags, cancellable):
+        calls.append((flags, cancellable))
+        if flags & 1:
+            raise RuntimeError("dangling item in an unrelated collection")
+        return service
+
+    provider = SecretServiceKeyProvider()
+    monkeypatch.setattr(
+        provider, "_secret_module", lambda: _secret_module(get_service=get_service)
+    )
+
+    assert provider.get_or_create(allow_prompt=False) == b"K" * 32
+    assert calls == [(2, None)]
+
+
+def test_secret_service_log_includes_the_provider_error(monkeypatch, caplog) -> None:
+    def get_service(_flags, _cancellable):
+        raise RuntimeError("No such secret item at path /collection/login/27")
+
+    provider = SecretServiceKeyProvider()
+    monkeypatch.setattr(
+        provider, "_secret_module", lambda: _secret_module(get_service=get_service)
+    )
+
+    with caplog.at_level(logging.INFO, logger="blueferry.storage_security"):
+        with pytest.raises(StorageUnavailableError):
+            provider.get_or_create(allow_prompt=False)
+
+    assert "No such secret item at path /collection/login/27" in caplog.text
 
 def _storage(tmp_path, provider=None) -> StorageSecurity:
     return StorageSecurity(
