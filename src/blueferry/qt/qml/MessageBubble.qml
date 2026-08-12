@@ -10,6 +10,7 @@ Rectangle {
 
     required property var message
     required property real availableWidth
+    required property bool showSender
     readonly property color outgoingBackground: Qt.rgba(
         Kirigami.Theme.backgroundColor.r * 0.78
             + Kirigami.Theme.highlightColor.r * 0.22,
@@ -36,6 +37,15 @@ Rectangle {
         anchors.margins: Kirigami.Units.smallSpacing
         width: Math.min(implicitWidth, root.availableWidth * 0.72)
 
+        Controls.Label {
+            Layout.maximumWidth: root.availableWidth * 0.7
+            text: root.message.outgoing ? qsTr("You") : (root.message.sender || "")
+            visible: root.showSender
+            textFormat: Text.PlainText
+            font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+            font.weight: Font.DemiBold
+            color: Kirigami.Theme.textColor
+        }
         Controls.TextArea {
             Layout.maximumWidth: root.availableWidth * 0.7
             text: root.message.body

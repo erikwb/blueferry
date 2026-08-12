@@ -28,6 +28,7 @@ from blueferry.client_wire import (
     decode_contacts,
     decode_mapping,
     decode_status,
+    decode_thread,
     decode_threads,
 )
 from blueferry.models import BackendStatus, Thread
@@ -37,6 +38,7 @@ from blueferry.protocol import (
     CLEAR_CALL_TIMEOUT_SEC,
     CONTACT_CALL_TIMEOUT_SEC,
     EVENTS_IFACE,
+    GROUP_ROUTE_CALL_TIMEOUT_SEC,
     MESSAGES_IFACE,
     OBEX_CALL_TIMEOUT_SEC,
     OBJECT_PATH,
@@ -309,6 +311,21 @@ class DaemonClient(GObject.Object):
             return decode_contacts(
                 self._private_call(
                     "FindContacts", selected, timeout=CONTACT_CALL_TIMEOUT_SEC,
+                )
+            )
+
+        self._submit(operation, on_ok, on_err)
+
+    def set_group_participants_async(
+        self, thread_key: str, recipients: list[str], on_ok, on_err=None
+    ) -> None:
+        def operation() -> Thread:
+            return decode_thread(
+                self._private_call(
+                    "SetGroupParticipants",
+                    thread_key,
+                    dbus.Array(recipients, signature="s"),
+                    timeout=GROUP_ROUTE_CALL_TIMEOUT_SEC,
                 )
             )
 

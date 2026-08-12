@@ -369,6 +369,16 @@ class BridgeController(QObject):
             completed,
         )
 
+    @Slot(str, "QVariantList")
+    def setGroupParticipants(self, key: str, recipients) -> None:
+        selected = [str(value).strip() for value in recipients if str(value).strip()]
+        if not key or not selected:
+            return
+        self._run(
+            lambda: self._backend.set_group_participants(key, selected),
+            lambda _value: self.refresh(),
+        )
+
     @Slot(str)
     def findContacts(self, query: str) -> None:
         selected = query.strip()

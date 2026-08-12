@@ -16,6 +16,7 @@ ShellRoot {
   property string pendingMessageHandle: ""
   property bool awaitingOpenMessageHandle: false
   property string confirmedGroupSignature: ""
+  property var groupParticipantsThread: null
   property string errorText: ""
   property bool phoneSettingsVisible: false
   property var pairingDevices: []
@@ -136,6 +137,16 @@ ShellRoot {
   function groupSignature(thread) {
     if (!thread || !thread.is_group) return ""
     return thread.key + "\n" + JSON.stringify(thread.recipients || [])
+  }
+
+  function participantLines(value) {
+    var result = []
+    var lines = value.split(/\r?\n/)
+    for (var index = 0; index < lines.length; ++index) {
+      var address = lines[index].trim()
+      if (address !== "" && result.indexOf(address) < 0) result.push(address)
+    }
+    return result
   }
 
   function loadPairingDevices(scan) {
@@ -384,6 +395,21 @@ ShellRoot {
         newMessagePopup.close()
         newRecipient.text = ""
         newMessageBody.text = ""
+        root.reload()
+      }
+    }
+  }
+
+  Process {
+    id: groupParticipantsProcess
+    stdout: StdioCollector { }
+    stderr: StdioCollector {
+      onStreamFinished: if (text.trim() !== "") root.errorText = text.trim()
+    }
+    // qmllint disable signal-handler-parameters
+    onExited: function(code) {
+      if (code === 0) {
+        groupParticipantsPopup.close()
         root.reload()
       }
     }
@@ -834,6 +860,16 @@ ShellRoot {
                   font.pixelSize: theme.headingSize
                   elide: Text.ElideRight
                 }
+                FerryButton {
+                  visible: conversationPane.thread
+                    && conversationPane.thread.group_origin === "named"
+                  text: "Members"
+                  bare: true
+                  onClicked: {
+                    root.groupParticipantsThread = conversationPane.thread
+                    groupParticipantsPopup.open()
+                  }
+                }
                 FerryLabel {
                   visible: conversationPane.thread !== null
                   text: conversationPane.thread && conversationPane.thread.is_group
@@ -869,8 +905,9 @@ ShellRoot {
                     readonly property int bubblePadding: theme.scaled(12)
                     width: Math.min(messageList.width * 0.76,
                                     Math.max(theme.scaled(92),
-                                      Math.max(messageBody.implicitWidth,
-                                               messageTimestamp.implicitWidth)
+                                      Math.max(messageSender.implicitWidth,
+                                        Math.max(messageBody.implicitWidth,
+                                                 messageTimestamp.implicitWidth))
                                         + bubblePadding * 2))
                     implicitHeight: bubbleContent.implicitHeight + bubblePadding * 2
                     anchors.right: messageRow.modelData.outgoing ? parent.right : undefined
@@ -889,6 +926,19 @@ ShellRoot {
                       anchors.margins: bubble.bubblePadding
                       spacing: theme.scaled(5)
 
+                      Text {
+                        id: messageSender
+                        width: parent.width
+                        visible: conversationPane.thread
+                          && conversationPane.thread.is_group
+                        text: messageRow.modelData.outgoing
+                          ? "You" : (messageRow.modelData.sender || "")
+                        textFormat: Text.PlainText
+                        color: theme.windowText
+                        font.family: theme.fontFamily
+                        font.pixelSize: theme.captionSize
+                        font.bold: true
+                      }
                       Text {
                         id: messageBody
                         width: parent.width
@@ -943,10 +993,49 @@ ShellRoot {
                 }
               }
 
+              Rectangle {
+                Layout.fillWidth: true
+                implicitHeight: groupRosterPrompt.implicitHeight + theme.scaled(20)
+                visible: conversationPane.thread
+                  && conversationPane.thread.participants_required === true
+                color: theme.raisedSurface
+                border.color: theme.accent
+                radius: theme.controlRadius
+
+                RowLayout {
+                  id: groupRosterPrompt
+                  anchors.left: parent.left
+                  anchors.right: parent.right
+                  anchors.verticalCenter: parent.verticalCenter
+                  anchors.margins: theme.scaled(10)
+                  spacing: theme.scaled(10)
+
+                  FerryLabel {
+                    Layout.fillWidth: true
+                    wrapMode: Text.Wrap
+                    text: conversationPane.thread
+                      ? (conversationPane.thread.prompt_sender || "Someone")
+                        + " has sent a message to the group "
+                        + conversationPane.thread.name
+                        + ". BlueFerry needs its participant list before you can reply."
+                      : ""
+                  }
+                  FerryButton {
+                    text: "Add participants"
+                    highlighted: true
+                    onClicked: {
+                      root.groupParticipantsThread = conversationPane.thread
+                      groupParticipantsPopup.open()
+                    }
+                  }
+                }
+              }
+
               FerryCheckBox {
                 id: confirmGroup
                 property string signature: root.groupSignature(conversationPane.thread)
                 visible: conversationPane.thread && conversationPane.thread.is_group
+                  && conversationPane.thread.reply_ready
                 text: conversationPane.thread
                   ? "Confirm group: " + conversationPane.thread.recipients.join(", ") : ""
                 checked: signature !== "" && root.confirmedGroupSignature === signature
@@ -1464,6 +1553,117 @@ ShellRoot {
                   newRecipient.text, newMessageBody.text
                 ]
                 newMessageSendProcess.running = true
+              }
+            }
+          }
+        }
+      }
+
+      Popup {
+        id: groupParticipantsPopup
+        parent: applicationSurface
+        x: Math.max(0, (applicationSurface.width - width) / 2)
+        y: Math.max(0, (applicationSurface.height - height) / 2)
+        width: Math.min(theme.scaled(520), applicationSurface.width - theme.scaled(24))
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        padding: theme.scaled(18)
+
+        onOpened: {
+          groupParticipantsEditor.text = root.groupParticipantsThread
+            ? (root.groupParticipantsThread.recipients || []).join("\n") : ""
+          groupParticipantsEditor.forceActiveFocus()
+        }
+
+        background: Rectangle {
+          color: theme.cardSurface
+          border.color: theme.divider
+          radius: theme.panelRadius
+        }
+
+        Overlay.modal: Rectangle {
+          color: Qt.rgba(theme.windowSurface.r, theme.windowSurface.g,
+                         theme.windowSurface.b, 0.72)
+        }
+
+        contentItem: ColumnLayout {
+          spacing: theme.scaled(10)
+
+          FerryLabel {
+            text: root.groupParticipantsThread
+              ? "Who is in " + root.groupParticipantsThread.name + "?" : "Group participants"
+            font.bold: true
+            font.pixelSize: theme.headingSize
+          }
+          FerryLabel {
+            Layout.fillWidth: true
+            wrapMode: Text.Wrap
+            text: root.groupParticipantsThread
+              ? (root.groupParticipantsThread.prompt_sender || "Someone")
+                + " has sent a message to a group named "
+                + root.groupParticipantsThread.name
+                + ", which you're a member of. BlueFerry can't determine the participants of this group chat, but if you fill in the members, it can work."
+              : ""
+          }
+          FerryLabel {
+            Layout.fillWidth: true
+            wrapMode: Text.Wrap
+            color: theme.muted
+            text: "Enter every other participant's phone number or Apple ID email, one per line."
+          }
+          Rectangle {
+            Layout.fillWidth: true
+            Layout.preferredHeight: theme.scaled(150)
+            color: theme.control
+            border.color: groupParticipantsEditor.activeFocus
+              ? theme.accent : theme.divider
+            radius: theme.controlRadius
+            ScrollView {
+              anchors.fill: parent
+              anchors.margins: theme.scaled(2)
+              TextArea {
+                id: groupParticipantsEditor
+                color: theme.windowText
+                selectionColor: theme.accent
+                selectedTextColor: theme.highlightedText
+                font.family: theme.fontFamily
+                font.pixelSize: theme.baseFontSize
+                placeholderText: "One participant per line"
+                placeholderTextColor: theme.muted
+                wrapMode: TextEdit.NoWrap
+                background: null
+                Accessible.name: "Group participants"
+              }
+            }
+          }
+          FerryLabel {
+            Layout.fillWidth: true
+            wrapMode: Text.Wrap
+            color: theme.warning
+            text: "This will become out of sync if the group is renamed or members are added or removed."
+          }
+          RowLayout {
+            Layout.alignment: Qt.AlignRight
+            FerryButton {
+              text: "Cancel"
+              onClicked: groupParticipantsPopup.close()
+            }
+            FerryButton {
+              text: groupParticipantsProcess.running ? "Saving…" : "Save participants"
+              highlighted: true
+              enabled: root.participantLines(groupParticipantsEditor.text).length >= 2
+                && !groupParticipantsProcess.running
+              onClicked: {
+                var args = [
+                  "/usr/bin/blueferry", "group-participants-set",
+                  root.groupParticipantsThread.key
+                ]
+                var recipients = root.participantLines(groupParticipantsEditor.text)
+                for (var index = 0; index < recipients.length; ++index)
+                  args.push(recipients[index])
+                groupParticipantsProcess.command = args
+                groupParticipantsProcess.running = true
               }
             }
           }

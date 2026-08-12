@@ -200,6 +200,18 @@ def test_quickshell_outgoing_bubbles_match_qt_accent_tint() -> None:
     assert "color: theme.windowText" in quickshell
 
 
+def test_group_message_bubbles_show_the_individual_sender() -> None:
+    gtk = (ROOT / "src/blueferry/ui/conversations.py").read_text()
+    qt_bubble = (ROOT / "src/blueferry/qt/qml/MessageBubble.qml").read_text()
+    qt_view = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
+    quickshell = (ROOT / "data/quickshell/shell.qml").read_text()
+
+    assert 'label=_("You") if msg["outgoing"] else msg.get("sender", "")' in gtk
+    assert 'text: root.message.outgoing ? qsTr("You")' in qt_bubble
+    assert "&& messagesPage.thread.is_group" in qt_view
+    assert '? "You" : (messageRow.modelData.sender || "")' in quickshell
+
+
 def test_qt_messages_toolbar_toggles_dismissible_settings_pane() -> None:
     qml = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
 

@@ -57,6 +57,10 @@ explicitly converts them to dictionaries. Quickshell's CLI adapter converts
 the same models back to JSON rather than defining a separate backend client.
 All Python transports share `client_wire` for response-shape validation and
 model conversion; synchronous and toolkit-specific scheduling remain separate.
+Group-thread messages include a display-only sender label derived from the
+resolved MAP contact or the correlated Messages notification. It never
+participates in thread identity or reply routing; outgoing labels are localized
+by each client from the existing `outgoing` flag.
 
 `backend_operations` owns validation, thread routing, and application policy.
 `dbus_service` is only a wire-type adapter over those operations. `daemon`
@@ -106,7 +110,10 @@ user-unit metadata.
 - Contact names are display metadata; normalized phone or email addresses are
   identities. This keeps same-name contacts and group participants distinct.
 - The backend owns reply routing. Clients use an opaque thread key and must
-  confirm a group's participants before the first reply.
+  confirm a group's participants before the first reply. Named-group ANCS
+  notifications initially produce a read-only thread; only the backend can
+  retain a user-supplied route, and it requires all observed senders to remain
+  in that route.
 - Message history and the contact cache are user-private (`0700` directories,
   `0600` SQLite files). Their sensitive records are authenticated and encrypted
   with AES-256-GCM under one random application key held by the desktop Secret

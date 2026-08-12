@@ -77,3 +77,28 @@ def test_thread_snapshot_keeps_only_the_newest_bounded_messages(monkeypatch) -> 
     messages = build_threads(events)[0]["messages"]
 
     assert [message["body"] for message in messages] == ["2", "3"]
+
+
+def test_group_messages_identify_incoming_senders_and_outgoing_author() -> None:
+    incoming = _sms(
+        "+15551111111", "Alice", "hello", "2026-08-08T10:00:00+00:00"
+    )
+    incoming.update({
+        "group_key": "group:test",
+        "group_name": "Crew",
+        "group_members": ["Alice", "Bob"],
+        "group_recipients": ["+15551111111", "+15552222222"],
+    })
+    outgoing = {
+        **incoming,
+        "kind": "sms_sent",
+        "handle": "sent-1",
+        "body": "hi everyone",
+        "seen_at": "2026-08-08T10:01:00+00:00",
+    }
+
+    messages = build_threads([incoming, outgoing])[0]["messages"]
+
+    assert messages[0]["sender"] == "Alice"
+    # Clients localize the outgoing label as "You".
+    assert messages[1]["sender"] == ""

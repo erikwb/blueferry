@@ -38,6 +38,10 @@ class _Backend:
         self.sent.append((recipient, body))
         return "/transfer/1"
 
+    def set_group_participants(self, key, recipients):
+        self.group_participants = (key, recipients)
+        return object()
+
 
 def test_snapshot_converts_typed_client_models_for_qml():
     controller = BridgeController(
@@ -171,6 +175,32 @@ def test_new_message_searches_contacts_and_sends_directly(monkeypatch):
     ]
     assert backend.sent == [("15551234567", "hello")]
     assert refreshes == [True]
+
+
+def test_named_group_participants_are_forwarded_to_backend(monkeypatch):
+    backend = _Backend()
+    controller = BridgeController(
+        backend=backend,
+        setup=object(),
+        subscribe=False,
+        autostart=False,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_run",
+        lambda operation, on_done=None, *_args, **_kwargs: (
+            on_done(operation()) if on_done is not None else operation()
+        ),
+    )
+    monkeypatch.setattr(controller, "refresh", lambda: None)
+
+    controller.setGroupParticipants(
+        "group:named:test", [" +15551111111 ", "beau@example.com"]
+    )
+
+    assert backend.group_participants == (
+        "group:named:test", ["+15551111111", "beau@example.com"]
+    )
 
 
 def test_pairing_uses_interactive_agent_and_accepts_matching_code(monkeypatch):

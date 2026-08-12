@@ -53,6 +53,7 @@ def test_thread_normalizes_nested_messages(monkeypatch):
                     "body": "hello",
                     "timestamp": "today",
                     "outgoing": False,
+                    "sender": "Alice",
                     "read": True,
                 }
             ],
@@ -61,6 +62,7 @@ def test_thread_normalizes_nested_messages(monkeypatch):
 
     assert thread.key == "address:phone:15551234567"
     assert thread.messages[0].body == "hello"
+    assert thread.messages[0].sender == "Alice"
     assert thread.to_dict()["messages"][0]["display_timestamp"] == "friendly:today"
     assert thread.to_dict()["messages"][0]["body"] == "hello"
     assert thread.to_dict()["recipients"] == ["+15551234567"]

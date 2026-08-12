@@ -42,11 +42,13 @@ you choose **Quit**.
 Group chats work when BlueFerry can safely reconstruct the participants from
 the message and its matching iPhone notification. Bluetooth MAP does not send
 a group identifier or roster, so ambiguous groups remain read-only rather than
-risk replying to the wrong people.
+risk replying to the wrong people. For a named group, BlueFerry can identify
+the thread but asks you to supply the other participants before enabling
+replies. That saved roster must be updated after membership changes.
 
 Attachments, reactions, typing indicators, FaceTime, calls, and a complete
-sent-message history are not supported. MMS, RCS, and named groups have not
-been tested well enough to promise anything.
+sent-message history are not supported. MMS and RCS have not been tested well
+enough to promise anything.
 
 ## Install on Arch Linux
 

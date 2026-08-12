@@ -38,6 +38,10 @@ def decode_threads(value: object) -> list[Thread]:
     return [Thread.from_dict(item) for item in items if isinstance(item, Mapping)]
 
 
+def decode_thread(value: object) -> Thread:
+    return Thread.from_dict(decode_mapping(value))
+
+
 def decode_events(value: object) -> list[EventRecord]:
     items = decode_json(value, list)
     return [EventRecord.from_dict(item) for item in items if isinstance(item, Mapping)]

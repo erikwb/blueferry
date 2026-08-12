@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Callable, Iterable
+import sqlite3
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Protocol
 
 from blueferry.contacts import clear_contact_cache
@@ -19,12 +21,15 @@ from blueferry.errors import (
     NotReadyError,
     OperationFailedError,
 )
+from blueferry.events import canonical_address
 from blueferry.history import (
+    append_event,
     clear_events,
     history_revision,
     read_events,
 )
 from blueferry.limits import (
+    MAX_CONTACT_ADDRESS_CHARS,
     MAX_CONTACT_QUERY_CHARS,
     MAX_CONTACT_RESULTS,
     MAX_CONVERSATION_EVENTS,
@@ -291,6 +296,77 @@ class BackendOperations:
                 :MAX_CONTACT_RESULTS
             ]
         ]
+
+    def set_group_participants(
+        self, thread_key: str, recipients: Sequence[object]
+    ) -> dict:
+        """Persist an explicit reply roster for one named iOS group."""
+        if not thread_key.strip() or len(thread_key) > 1024:
+            raise InvalidArgumentsError("invalid thread key")
+        thread = self._conversations.find(thread_key)
+        if thread is None:
+            raise NotFoundError("thread no longer exists in local history")
+        if not thread.get("is_group") or thread.get("group_origin") != "named":
+            raise InvalidArgumentsError(
+                "participants can only be supplied for a named group"
+            )
+
+        if isinstance(recipients, str | bytes) or not 2 <= len(recipients) <= 20:
+            raise InvalidArgumentsError(
+                "a group requires 2 to 20 recipients other than you"
+            )
+        supplied = [str(value) for value in recipients]
+        if any(len(value) > MAX_CONTACT_ADDRESS_CHARS for value in supplied):
+            raise InvalidArgumentsError("a group recipient is too long")
+        try:
+            normalized = [validate_recipient(value) for value in supplied]
+        except InvalidRecipient as error:
+            raise InvalidArgumentsError(str(error)) from error
+        identities = [canonical_address(value) for value in normalized]
+        if len(set(identities)) != len(identities):
+            raise InvalidArgumentsError("group recipients must be unique")
+
+        observed = {
+            canonical_address(str(value))
+            for value in thread.get("observed_recipients", [])
+        }
+        observed.discard(None)
+        if not observed.issubset(set(identities)):
+            raise InvalidArgumentsError(
+                "the participant list must include every observed sender"
+            )
+        storage = self.dependencies.storage
+        if storage is not None and not storage.status.can_write:
+            raise NotReadyError(storage.status.detail)
+
+        members: list[str] = []
+        for recipient in normalized:
+            name = (
+                self.dependencies.contacts.resolve(recipient)
+                if self.dependencies.contacts is not None else None
+            )
+            members.append(str(name or recipient))
+        route = {
+            "kind": "group_route",
+            "group_key": thread_key,
+            "group_name": str(thread["name"]),
+            "group_members": members,
+            "group_recipients": normalized,
+            "seen_at": datetime.now(timezone.utc).isoformat(),
+        }
+        try:
+            append_event(route, storage=storage)
+        except (OSError, RuntimeError, ValueError, sqlite3.Error) as error:
+            log.error("could not retain named group participants: %s", error)
+            raise NotReadyError(
+                "could not retain the group participant list"
+            ) from error
+        self._confirmed_group_keys.discard(thread_key)
+        self.invalidate_conversations()
+        updated = self._conversations.find(thread_key)
+        if updated is None:
+            raise NotFoundError("thread no longer exists in local history")
+        return updated
 
     def invalidate_conversations(self) -> None:
         self._conversations.invalidate()

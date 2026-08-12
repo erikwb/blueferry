@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from blueferry.grouping import correlate_group_events, group_members_from_ancs
+from blueferry.grouping import (
+    correlate_group_events,
+    group_members_from_ancs,
+    named_group_key,
+)
 from blueferry.threads import build_threads
 
 
@@ -123,6 +127,124 @@ def test_contact_name_must_agree_with_ancs_sender_title() -> None:
               "2026-08-08T16:21:22+00:00"),
     ]
     assert "group_key" not in correlate_group_events(events)[0]
+
+
+def test_named_group_notification_creates_safe_provisional_thread() -> None:
+    events = [
+        _sms("+15551111111", "Beau", "hello", "2026-08-12T10:00:00+00:00"),
+        _ancs("Beau", "Crew", "hello", "2026-08-12T10:00:23+00:00"),
+    ]
+
+    message = correlate_group_events(events)[0]
+
+    assert message["group_key"] == named_group_key("Crew")
+    assert message["group_name"] == "Crew"
+    assert message["group_recipients"] == ["+15551111111"]
+    assert message["group_reply_ready"] is False
+    assert message["group_participants_required"] is True
+
+
+def test_confirmed_named_group_route_enables_replies() -> None:
+    key = named_group_key("Crew")
+    events = [
+        {
+            "kind": "group_route",
+            "group_key": key,
+            "group_name": "Crew",
+            "group_members": ["Beau", "Alice"],
+            "group_recipients": ["+15551111111", "+15552222222"],
+        },
+        _sms("+15551111111", "Beau", "hello", "2026-08-12T10:00:00+00:00"),
+        _ancs("Beau", "Crew", "hello", "2026-08-12T10:00:23+00:00"),
+    ]
+
+    message = correlate_group_events(events)[1]
+
+    assert message["group_key"] == key
+    assert message["group_recipients"] == [
+        "+15551111111", "+15552222222"
+    ]
+    assert message["group_reply_ready"] is True
+    assert message["group_participants_required"] is False
+
+
+def test_new_named_group_sender_invalidates_saved_route() -> None:
+    key = named_group_key("Crew")
+    events = [
+        {
+            "kind": "group_route",
+            "group_key": key,
+            "group_name": "Crew",
+            "group_members": ["Beau", "Alice"],
+            "group_recipients": ["+15551111111", "+15552222222"],
+        },
+        _sms("+15553333333", "Casey", "new here", "2026-08-12T10:00:00+00:00"),
+        _ancs("Casey", "Crew", "new here", "2026-08-12T10:00:23+00:00"),
+    ]
+
+    message = correlate_group_events(events)[1]
+
+    assert message["group_reply_ready"] is False
+    assert message["group_participants_required"] is True
+    assert message["group_recipients"] == [
+        "+15551111111", "+15552222222", "+15553333333"
+    ]
+
+
+def test_named_group_messages_from_different_senders_share_one_thread() -> None:
+    events = [
+        _sms("+15551111111", "Beau", "one", "2026-08-12T10:00:00+00:00"),
+        _ancs("Beau", "Crew", "one", "2026-08-12T10:00:03+00:00"),
+        _sms("+15552222222", None, "two", "2026-08-12T10:01:00+00:00"),
+        _ancs("Alice", "Crew", "two", "2026-08-12T10:01:03+00:00"),
+    ]
+
+    threads = build_threads(events)
+
+    assert len(threads) == 1
+    assert threads[0]["name"] == "Crew"
+    assert threads[0]["recipients"] == ["+15551111111", "+15552222222"]
+    assert threads[0]["observed_recipients"] == [
+        "+15551111111", "+15552222222"
+    ]
+    assert threads[0]["participants_required"] is True
+    assert threads[0]["reply_ready"] is False
+    assert [message["sender"] for message in threads[0]["messages"]] == [
+        "Beau", "Alice"
+    ]
+
+
+def test_new_named_group_route_replaces_historical_outgoing_roster() -> None:
+    key = named_group_key("Crew")
+    events = [
+        {
+            "kind": "sms_sent",
+            "handle": "sent-old",
+            "body": "old reply",
+            "timestamp": "2026-08-12T09:00:00+00:00",
+            "group_key": key,
+            "group_name": "Crew",
+            "group_members": ["Beau", "Alice", "Former Member"],
+            "group_recipients": [
+                "+15551111111", "+15552222222", "+15553333333"
+            ],
+            "group_reply_ready": True,
+        },
+        {
+            "kind": "group_route",
+            "group_key": key,
+            "group_name": "Crew",
+            "group_members": ["Beau", "Alice"],
+            "group_recipients": ["+15551111111", "+15552222222"],
+        },
+        _sms("+15551111111", "Beau", "hello", "2026-08-12T10:00:00+00:00"),
+        _ancs("Beau", "Crew", "hello", "2026-08-12T10:00:03+00:00"),
+    ]
+
+    thread = build_threads(events)[0]
+
+    assert thread["recipients"] == ["+15551111111", "+15552222222"]
+    assert thread["reply_ready"] is True
 
 
 def test_ready_group_key_uses_addresses_not_names() -> None:

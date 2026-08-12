@@ -31,6 +31,16 @@ class _Messages:
     def SetNotificationPolicy(self, policy, **_kwargs):
         return policy
 
+    def SetGroupParticipants(self, key, recipients, **_kwargs):
+        return json.dumps({
+            "key": key,
+            "name": "Crew",
+            "is_group": True,
+            "recipients": list(recipients),
+            "reply_ready": True,
+            "messages": [],
+        })
+
 
 def test_backend_client_returns_shared_models(monkeypatch):
     client = BackendClient()
@@ -44,6 +54,11 @@ def test_backend_client_returns_shared_models(monkeypatch):
     assert client.events([])[0].title == "Test"
     assert client.notification_policy() == "messages"
     assert client.set_notification_policy("none") == "none"
+    group = client.set_group_participants(
+        "group:named:test", ["+15551111111", "+15552222222"]
+    )
+    assert group.reply_ready is True
+    assert group.recipients == ("+15551111111", "+15552222222")
 
 
 def test_backend_client_rejects_wrong_json_shape(monkeypatch):

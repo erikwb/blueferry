@@ -186,12 +186,17 @@ Messages ANCS notification supplies the missing display information:
 - For the observed unnamed group, the title is the sender and the subtitle is
   shaped like `To you & participant` (with further names separated by commas
   or ampersands).
+- For the observed named group, the title is the sender and the subtitle is the
+  group name. This identifies the conversation but contains no member roster.
 
 BlueFerry correlates these records only within a bounded time window, refuses
 ambiguous repeated-body matches, and requires every name to resolve to exactly
-one address before enabling a reply. This is a conservative observation-based
-heuristic, not a general iMessage group protocol. Named groups and alternative
-iOS notification formats remain uncharacterized.
+one address before enabling an unnamed-group reply. Named groups remain
+read-only until the user supplies a recipient roster. The route is invalidated
+when a previously unseen sender appears, but iOS provides no event when a
+silent member is added or removed, so the user must maintain that roster. This
+is a conservative observation-based heuristic, not a general iMessage group
+protocol; alternative iOS notification formats remain uncharacterized.
 
 ## PBAP behavior
 

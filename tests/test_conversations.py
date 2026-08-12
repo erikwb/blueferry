@@ -104,3 +104,9 @@ def test_map_refusal_reveals_prominent_message_banner() -> None:
 
     assert result is False
     assert banner.revealed is True
+
+
+def test_participant_editor_keeps_unique_nonempty_lines() -> None:
+    assert conversations._participant_lines(
+        " +15551111111 \n\nbeau@example.com\n+15551111111\n"
+    ) == ["+15551111111", "beau@example.com"]

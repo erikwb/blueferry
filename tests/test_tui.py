@@ -5,7 +5,7 @@ import asyncio
 from collections.abc import Coroutine
 from typing import Any
 
-from textual.widgets import Input, ListView, TextArea
+from textual.widgets import Input, ListView, Static, TextArea
 
 from blueferry import tui as tui_module
 from blueferry.client import BackendError
@@ -34,6 +34,7 @@ def _thread(
                 timestamp="2026-08-10T10:00:00-04:00",
                 outgoing=False,
                 read=False,
+                sender="Beau" if group else "",
             ),
         ),
         last_ts="2026-08-10T10:00:00-04:00",
@@ -197,6 +198,8 @@ def test_textual_app_renders_status_threads_and_messages() -> None:
             await pilot.pause(0.1)
             assert state.selected_key == "group"
             assert app.query_one("#conversation-title").render().plain == "Friends  ·  Group"
+            meta = app.query_one(MessageRow).query_one(".message-meta", Static)
+            assert meta.render().plain.startswith("Beau  ·  ")
 
     _run_headless(scenario())
 

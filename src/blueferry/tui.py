@@ -282,9 +282,9 @@ class ConversationItem(ListItem):
 
 
 class MessageRow(Horizontal):
-    def __init__(self, message: ThreadMessage, incoming_name: str) -> None:
+    def __init__(self, message: ThreadMessage, fallback_name: str) -> None:
         direction = "outgoing" if message.outgoing else "incoming"
-        sender = "You" if message.outgoing else incoming_name
+        sender = "You" if message.outgoing else (message.sender or fallback_name)
         meta = f"{sender}  ·  {_short_timestamp(message.timestamp)}"
         bubble = Vertical(
             Static(Text(meta), classes="message-meta"),
