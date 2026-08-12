@@ -233,6 +233,8 @@ def _reconcile_group_identities(
         key = "group:addresses:" + "|".join(verified_signature)
         name = str(source.get("group_name") or "")
         for event in grouped:
+            if event.get("group_sender_verified") is False:
+                continue
             event["group_key"] = key
             event["group_name"] = name
             event["group_recipients"] = recipients
@@ -338,6 +340,11 @@ def correlate_group_events(events: list[dict], resolver=None) -> list[dict]:
 
         sender_title = str(event.get("title") or "").strip()
         trusted_sender_name = str(sms.get("contact_name") or "").strip()
+        sender_name_verified = bool(
+            sender_title
+            and trusted_sender_name
+            and sender_title.casefold() == trusted_sender_name.casefold()
+        )
         if (sender_title and trusted_sender_name
                 and sender_title.casefold() != trusted_sender_name.casefold()):
             # The notification title should name the MAP sender. A mismatch
@@ -345,7 +352,7 @@ def correlate_group_events(events: list[dict], resolver=None) -> list[dict]:
             matched.remove(sms_index)
             continue
         sender_address = _safe_address(sms)
-        if sender_title and sender_address:
+        if sender_name_verified and sender_address:
             addresses_by_name.setdefault(sender_title.casefold(), set()).add(
                 sender_address
             )
@@ -411,18 +418,33 @@ def correlate_group_events(events: list[dict], resolver=None) -> list[dict]:
         recipients: list[str] = []
         unresolved = False
         for member in members:
-            known = addresses_by_name.get(member.casefold(), set())
-            if len(known) == 1:
-                address = next(iter(known))
+            if sender_title and member.casefold() == sender_title.casefold():
+                # ANCS display names are remote, unauthenticated metadata. Do
+                # not let a claimed title redirect the live MAP sender to a
+                # contact with that name.
+                address = sender_address if sender_name_verified else None
             else:
-                address = _contact_address(resolver, member)
+                known = addresses_by_name.get(member.casefold(), set())
+                if len(known) == 1:
+                    address = next(iter(known))
+                else:
+                    address = _contact_address(resolver, member)
             if not address:
                 unresolved = True
                 continue
             if address not in recipients:
                 recipients.append(address)
 
-        reply_ready = not unresolved and len(recipients) >= 2
+        sender_identity = canonical_address(sender_address)
+        recipient_identities = {
+            canonical_address(address) for address in recipients
+        }
+        reply_ready = (
+            not unresolved
+            and len(recipients) >= 2
+            and sender_identity is not None
+            and sender_identity in recipient_identities
+        )
         key, name = _group_identity(
             members, recipients, reply_ready=reply_ready
         )
@@ -434,6 +456,7 @@ def correlate_group_events(events: list[dict], resolver=None) -> list[dict]:
             "group_recipients": recipients,
             "group_reply_ready": reply_ready,
             "group_observed_sender": sender_title,
+            "group_sender_verified": sender_name_verified,
         })
 
     _reconcile_group_identities(out, addresses_by_name, resolver)

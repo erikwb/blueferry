@@ -752,7 +752,10 @@ class ConversationsPage(Gtk.Box):
         if not body or self._current is None:
             return
         thread = self._threads[self._current]
-        if thread.get("is_group") and thread["key"] not in self._confirmed_groups:
+        if thread.get("is_group") and (
+            thread.get("group_origin") == "named"
+            or thread["key"] not in self._confirmed_groups
+        ):
             self._confirm_group_send(thread, body)
             return
         self._dispatch_send(thread, body, confirm_group=False)
@@ -773,7 +776,8 @@ class ConversationsPage(Gtk.Box):
 
         def responded(_dialog, response: str) -> None:
             if response == "send":
-                self._confirmed_groups.add(thread["key"])
+                if thread.get("group_origin") != "named":
+                    self._confirmed_groups.add(thread["key"])
                 self._dispatch_send(thread, body, confirm_group=True)
 
         dialog.connect("response", responded)

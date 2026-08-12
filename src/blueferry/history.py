@@ -10,7 +10,11 @@ from typing import TYPE_CHECKING, Any
 
 from blueferry import config
 from blueferry.ancs.constants import MESSAGES_APP_ID
-from blueferry.storage_security import CorruptStorageError
+from blueferry.storage_security import (
+    ENCRYPTED_STORAGE,
+    CorruptStorageError,
+    is_encrypted_value,
+)
 
 if TYPE_CHECKING:
     from blueferry.storage_security import StorageSecurity
@@ -293,6 +297,40 @@ def clear_events(*, path: Path | None = None) -> None:
         with database:
             database.execute("DELETE FROM events")
         database.execute("VACUUM")
+
+
+def scrub_unprotected_events(
+    *, path: Path | None = None, storage: StorageSecurity
+) -> int:
+    """Remove legacy plaintext rows before encrypted history is read.
+
+    Ciphertext with a valid BlueFerry frame is retained even if its key no
+    longer works. That distinction avoids turning a keyring problem into data
+    loss while ensuring plaintext left by an older policy is erased.
+    """
+    if (
+        storage.status.policy != ENCRYPTED_STORAGE
+        or not storage.status.can_read
+    ):
+        return 0
+    with closing(_open_database(path)) as database:
+        plaintext_ids = [
+            int(event_id)
+            for event_id, payload in database.execute(
+                "SELECT id, payload_json FROM events"
+            )
+            if not is_encrypted_value(str(payload))
+        ]
+        if not plaintext_ids:
+            return 0
+        database.execute("PRAGMA secure_delete = ON")
+        with database:
+            database.executemany(
+                "DELETE FROM events WHERE id = ?",
+                ((event_id,) for event_id in plaintext_ids),
+            )
+        database.execute("VACUUM")
+    return len(plaintext_ids)
 
 
 _ANCS_CORRELATION_FIELDS = (

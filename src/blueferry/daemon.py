@@ -19,14 +19,16 @@ from blueferry.backend_operations import BackendDependencies
 from blueferry.bearer_supervisor import BearerSupervisor
 from blueferry.bus import get_system_bus, main_loop
 from blueferry.connectivity import Connectivity
-from blueferry.contacts import ContactsResolver, pull_phonebook
+from blueferry.contacts import ContactsResolver, clear_contact_cache, pull_phonebook
 from blueferry.dbus_service import MessagesService, claim_bus_name
 from blueferry.event_dispatcher import EventDispatcher
 from blueferry.history import (
+    clear_events,
     history_count,
     minimize_ancs_history,
     prune_events,
     read_events,
+    scrub_unprotected_events,
 )
 from blueferry.notification_policy import (
     ALL_NOTIFICATIONS,
@@ -44,7 +46,7 @@ from blueferry.setup_verification import (
     NOTIFICATION_ACCESS,
     SetupVerification,
 )
-from blueferry.storage_security import StorageSecurity
+from blueferry.storage_security import NO_STORAGE, StorageSecurity
 
 log = logging.getLogger(__name__)
 
@@ -185,9 +187,16 @@ class Daemon:
 
     def _initialize_storage(self) -> None:
         status = self.storage.refresh(allow_prompt=False)
+        if status.policy == NO_STORAGE:
+            clear_events()
+            clear_contact_cache()
+            return
         if not status.can_read:
             log.info("private storage unavailable: %s", status.detail)
             return
+        scrubbed = scrub_unprotected_events(storage=self.storage)
+        if scrubbed:
+            log.info("scrubbed %d unprotected history events", scrubbed)
         prune_events(storage=self.storage)
         discarded, minimized = minimize_ancs_history(storage=self.storage)
         if discarded or minimized:

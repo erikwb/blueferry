@@ -225,14 +225,19 @@ class BackendOperations:
                 raise NotReadyError("group thread must have 2 to 20 recipients")
             if len(set(group_recipients)) != len(group_recipients):
                 raise NotReadyError("group thread contains duplicate recipients")
-            if thread_key not in self._confirmed_group_keys and not confirm_group:
+            named_group = thread.get("group_origin") == "named"
+            if (
+                (named_group or thread_key not in self._confirmed_group_keys)
+                and not confirm_group
+            ):
                 raise ConfirmationRequiredError(
-                    "confirm the displayed participant list before the first reply "
+                    "confirm the displayed participant list before replying "
                     "to this group"
                 )
 
             def succeeded(transfer: str) -> None:
-                self._confirmed_group_keys.add(thread_key)
+                if not named_group:
+                    self._confirmed_group_keys.add(thread_key)
                 if self.dependencies.on_group_sent is not None:
                     try:
                         self.dependencies.on_group_sent(

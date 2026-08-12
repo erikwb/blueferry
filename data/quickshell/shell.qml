@@ -1104,6 +1104,8 @@ ShellRoot {
                       if (thread.is_group) args.push("--confirm-group")
                       sendProcess.command = args
                       sendProcess.running = true
+                      if (thread.group_origin === "named")
+                        root.confirmedGroupSignature = ""
                     }
                   }
                 }
