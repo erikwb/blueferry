@@ -68,11 +68,13 @@ class IPhonePage(Gtk.Box):
             title=_("Found iPhone"),
             subtitle=_("Choose the phone to pair"),
             model=self._device_model,
+            use_markup=False,
         )
         self._device_row.connect("notify::selected", lambda *_args: self._selection_changed())
         self._hardware_row = Adw.ActionRow(
             title=_("Bluetooth Controller"),
             subtitle=_("Checking compatibility…"),
+            use_markup=False,
         )
         self._bluez_row = Adw.ActionRow(
             title=_("Bluetooth Support"),
@@ -133,6 +135,7 @@ class IPhonePage(Gtk.Box):
         self._paired_row = Adw.ActionRow(
             title=_("Paired iPhone"),
             subtitle=_("Checking device name…"),
+            use_markup=False,
         )
         self._unpair_button = Gtk.Button(
             label=_("Unpair"),
@@ -592,6 +595,8 @@ class IPhonePage(Gtk.Box):
             body=_(
                 "For a clean re-pair, also forget this computer in the iPhone's Bluetooth settings."
             ),
+            heading_use_markup=False,
+            body_use_markup=False,
         )
         dialog.add_response("cancel", _("Cancel"))
         dialog.add_response("forget", _("Unpair"))

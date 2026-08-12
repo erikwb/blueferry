@@ -375,6 +375,7 @@ ShellRoot {
     onExited: function(code) {
       if (code === 0) {
         composer.text = ""
+        messageList.stickToBottom = true
         root.reload()
       }
     }
@@ -906,11 +907,27 @@ ShellRoot {
 
               ListView {
                 id: messageList
+                property bool stickToBottom: true
+                property string threadKey: conversationPane.thread
+                  ? conversationPane.thread.key : ""
+
+                function scrollToBottom() {
+                  if (stickToBottom && count > 0) positionViewAtEnd()
+                }
+
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 clip: true
                 spacing: theme.scaled(8)
                 model: conversationPane.thread ? conversationPane.thread.messages : []
+                onThreadKeyChanged: {
+                  stickToBottom = true
+                  Qt.callLater(scrollToBottom)
+                }
+                onCountChanged: Qt.callLater(scrollToBottom)
+                onContentHeightChanged: Qt.callLater(scrollToBottom)
+                onMovementStarted: stickToBottom = false
+                onMovementEnded: stickToBottom = atYEnd
                 delegate: Item {
                   id: messageRow
                   required property var modelData
@@ -1104,6 +1121,8 @@ ShellRoot {
                       if (thread.is_group) args.push("--confirm-group")
                       sendProcess.command = args
                       sendProcess.running = true
+                      if (thread.group_origin === "named")
+                        root.confirmedGroupSignature = ""
                     }
                   }
                 }

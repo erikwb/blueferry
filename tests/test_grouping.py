@@ -32,7 +32,7 @@ def _ancs(title: str, subtitle: str, body: str, seen_at: str) -> dict:
     }
 
 
-def test_captured_group_notification_correlates_with_map_sender() -> None:
+def test_unnamed_group_without_trusted_map_sender_name_is_read_only() -> None:
     events = [
         # Earlier 1:1 history teaches the resolver Alice's address.
         _sms("+15551111111", "Alice Example", "earlier",
@@ -46,10 +46,47 @@ def test_captured_group_notification_correlates_with_map_sender() -> None:
     correlated = correlate_group_events(events)
     group_sms = correlated[1]
     assert group_sms["group_name"] == "Alice Example, Bob Example"
-    assert group_sms["group_recipients"] == [
-        "+15551111111", "bob@icloud.com"
+    assert group_sms["group_recipients"] == ["+15551111111"]
+    assert group_sms["group_reply_ready"] is False
+
+
+def test_ancs_title_cannot_replace_an_unverified_map_sender() -> None:
+    events = [
+        _sms("+15551111111", "Alice", "earlier",
+             "2026-08-08T16:20:00+00:00"),
+        _sms("+15552222222", "Bob", "earlier too",
+             "2026-08-08T16:20:05+00:00"),
+        _sms("mallory@example.com", None, "attack",
+             "2026-08-08T16:21:20+00:00"),
+        _ancs("Alice", "To you & Bob", "attack",
+              "2026-08-08T16:21:22+00:00"),
     ]
-    assert group_sms["group_reply_ready"] is True
+
+    message = correlate_group_events(events)[2]
+
+    assert message["group_reply_ready"] is False
+    assert "mallory@example.com" not in message["group_recipients"]
+
+
+def test_verified_history_cannot_upgrade_an_unverified_group_sender() -> None:
+    events = [
+        _sms("+15552222222", "Bob", "earlier",
+             "2026-08-08T16:19:00+00:00"),
+        _sms("+15551111111", "Alice", "legitimate",
+             "2026-08-08T16:20:00+00:00"),
+        _ancs("Alice", "To you & Bob", "legitimate",
+              "2026-08-08T16:20:02+00:00"),
+        _sms("mallory@example.com", None, "attack",
+             "2026-08-08T16:21:20+00:00"),
+        _ancs("Alice", "To you & Bob", "attack",
+              "2026-08-08T16:21:22+00:00"),
+    ]
+
+    correlated = correlate_group_events(events)
+
+    assert correlated[1]["group_reply_ready"] is True
+    assert correlated[3]["group_reply_ready"] is False
+    assert correlated[3]["group_sender_verified"] is False
 
 
 def test_group_key_is_stable_when_a_different_member_speaks() -> None:

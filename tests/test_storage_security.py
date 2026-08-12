@@ -12,7 +12,12 @@ import pytest
 
 from blueferry import config, contact_repository
 from blueferry.contacts import ContactsResolver
-from blueferry.history import append_event, prune_events, read_events
+from blueferry.history import (
+    append_event,
+    prune_events,
+    read_events,
+    scrub_unprotected_events,
+)
 from blueferry.settings_store import SettingsStore
 from blueferry.storage_security import (
     CorruptStorageError,
@@ -96,6 +101,108 @@ def test_secret_service_log_includes_the_provider_error(monkeypatch, caplog) -> 
             provider.get_or_create(allow_prompt=False)
 
     assert "No such secret item at path /collection/login/27" in caplog.text
+
+
+def test_secret_service_rejects_duplicate_matching_keys(monkeypatch) -> None:
+    item = SimpleNamespace(get_locked=lambda: False)
+    service = SimpleNamespace(search_sync=lambda *_args: [item, item])
+    provider = SecretServiceKeyProvider()
+    monkeypatch.setattr(
+        provider,
+        "_secret_module",
+        lambda: _secret_module(get_service=lambda *_args: service),
+    )
+
+    with pytest.raises(StorageUnavailableError, match="multiple BlueFerry"):
+        provider.get_or_create(allow_prompt=False)
+
+
+def test_locked_matching_key_is_never_replaced(monkeypatch) -> None:
+    item = SimpleNamespace(get_locked=lambda: True)
+    stored = []
+    service = SimpleNamespace(
+        search_sync=lambda *_args: [item],
+        unlock_sync=lambda *_args: None,
+        store_sync=lambda *_args: stored.append(True),
+    )
+    provider = SecretServiceKeyProvider()
+    monkeypatch.setattr(
+        provider,
+        "_secret_module",
+        lambda: _secret_module(get_service=lambda *_args: service),
+    )
+
+    with pytest.raises(StorageUnavailableError, match="keyring is locked"):
+        provider.get_or_create(allow_prompt=True)
+
+    assert stored == []
+
+
+def test_secret_service_creates_and_reloads_exactly_one_key(monkeypatch) -> None:
+    retained = []
+    collection = SimpleNamespace(get_locked=lambda: False)
+
+    def item_for(value):
+        return SimpleNamespace(
+            get_locked=lambda: False,
+            get_secret=lambda: SimpleNamespace(get_text=lambda: value),
+        )
+
+    service = SimpleNamespace()
+    service.search_sync = lambda *_args: [item_for(retained[0])] if retained else []
+    service.store_sync = lambda *_args: retained.append(_args[4]) or True
+    secret = _secret_module(get_service=lambda *_args: service)
+    secret.Collection = SimpleNamespace(
+        for_alias_sync=lambda *_args: collection,
+    )
+    secret.CollectionFlags = SimpleNamespace(NONE=0)
+    secret.COLLECTION_DEFAULT = "default"
+    secret.Value = SimpleNamespace(new=lambda text, *_args: text)
+    provider = SecretServiceKeyProvider()
+    monkeypatch.setattr(provider, "_secret_module", lambda: secret)
+
+    key = provider.get_or_create(allow_prompt=True)
+
+    assert len(retained) == 1
+    assert key == base64.b64decode(retained[0])
+
+
+def test_secret_service_rechecks_after_collection_unlock(monkeypatch) -> None:
+    encoded = base64.b64encode(b"R" * 32).decode("ascii")
+    unlocked = False
+    search_count = 0
+    stored = []
+    item = SimpleNamespace(
+        get_locked=lambda: False,
+        get_secret=lambda: SimpleNamespace(get_text=lambda: encoded),
+    )
+    collection = SimpleNamespace(get_locked=lambda: not unlocked)
+
+    def search(*_args):
+        nonlocal search_count
+        search_count += 1
+        return [] if search_count == 1 else [item]
+
+    def unlock(*_args):
+        nonlocal unlocked
+        unlocked = True
+
+    service = SimpleNamespace(
+        search_sync=search,
+        unlock_sync=unlock,
+        store_sync=lambda *_args: stored.append(True),
+    )
+    secret = _secret_module(get_service=lambda *_args: service)
+    secret.Collection = SimpleNamespace(
+        for_alias_sync=lambda *_args: collection,
+    )
+    secret.CollectionFlags = SimpleNamespace(NONE=0)
+    secret.COLLECTION_DEFAULT = "default"
+    provider = SecretServiceKeyProvider()
+    monkeypatch.setattr(provider, "_secret_module", lambda: secret)
+
+    assert provider.get_or_create(allow_prompt=True) == b"R" * 32
+    assert stored == []
 
 def _storage(tmp_path, provider=None) -> StorageSecurity:
     return StorageSecurity(
@@ -186,15 +293,36 @@ def test_history_database_contains_ciphertext_and_round_trips(tmp_path) -> None:
     assert read_events(path=path, storage=storage) == [event]
 
 
-def test_plaintext_history_is_rejected_in_encrypted_mode(tmp_path) -> None:
+def test_plaintext_history_is_scrubbed_in_encrypted_mode(tmp_path) -> None:
     path = tmp_path / "events.sqlite"
     event = {"kind": "sms_received", "body": "old plaintext"}
     append_event(event, path=path)
     storage = _storage(tmp_path)
 
+    assert scrub_unprotected_events(path=path, storage=storage) == 1
     assert read_events(path=path, storage=storage) == []
-    assert storage.status.state == "error"
-    assert b"old plaintext" in path.read_bytes()
+    assert storage.status.state == "ready"
+    assert b"old plaintext" not in path.read_bytes()
+
+
+def test_plaintext_scrub_preserves_framed_ciphertext(tmp_path) -> None:
+    path = tmp_path / "events.sqlite"
+    storage = _storage(tmp_path)
+    append_event(
+        {"kind": "sms_received", "body": "encrypted"},
+        path=path,
+        storage=storage,
+    )
+    append_event(
+        {"kind": "sms_received", "body": "legacy plaintext"},
+        path=path,
+    )
+
+    assert scrub_unprotected_events(path=path, storage=storage) == 1
+    assert read_events(path=path, storage=storage) == [
+        {"kind": "sms_received", "body": "encrypted"}
+    ]
+    assert b"legacy plaintext" not in path.read_bytes()
 
 
 def test_pruning_reasserts_private_encrypted_metadata(tmp_path) -> None:

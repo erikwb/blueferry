@@ -387,3 +387,13 @@ def test_remote_qml_text_is_rendered_as_plain_text() -> None:
         "text: newContactDelegate.modelData.name\n"
         "                  textFormat: Text.PlainText"
     ) in quickshell
+
+
+def test_quickshell_message_timeline_stays_at_the_latest_message() -> None:
+    quickshell = (ROOT / "data/quickshell/shell.qml").read_text()
+
+    assert "property bool stickToBottom: true" in quickshell
+    assert "positionViewAtEnd()" in quickshell
+    assert "onThreadKeyChanged" in quickshell
+    assert "onMovementStarted: stickToBottom = false" in quickshell
+    assert "messageList.stickToBottom = true" in quickshell

@@ -87,20 +87,53 @@ class SecretServiceKeyProvider:
                 {"purpose": Secret.SchemaAttributeType.STRING,
                  "version": Secret.SchemaAttributeType.STRING},
             )
-            flags = Secret.SearchFlags.ALL | Secret.SearchFlags.LOAD_SECRETS
-            if allow_prompt:
-                flags |= Secret.SearchFlags.UNLOCK
-            items = service.search_sync(schema, _ATTRIBUTES, flags, None)
-            locked_match = False
-            for item in items:
+
+            def search(*, load_secrets: bool = False):
+                flags = Secret.SearchFlags.ALL
+                if load_secrets:
+                    flags |= Secret.SearchFlags.LOAD_SECRETS
+                return list(service.search_sync(schema, _ATTRIBUTES, flags, None))
+
+            def load_existing(items) -> bytes:
+                if not items:
+                    raise StorageUnavailableError(
+                        "the BlueFerry storage key disappeared from the desktop keyring"
+                    )
+                if len(items) > 1:
+                    raise StorageUnavailableError(
+                        "multiple BlueFerry storage keys exist in the desktop keyring"
+                    )
+                item = items[0]
                 if item.get_locked():
-                    locked_match = True
-                    continue
+                    if not allow_prompt:
+                        raise StorageUnavailableError("the desktop keyring is locked")
+                    service.unlock_sync([item], None)
+                loaded = search(load_secrets=True)
+                if len(loaded) != 1:
+                    if len(loaded) > 1:
+                        raise StorageUnavailableError(
+                            "multiple BlueFerry storage keys exist in the desktop keyring"
+                        )
+                    raise StorageUnavailableError(
+                        "the BlueFerry storage key disappeared from the desktop keyring"
+                    )
+                item = loaded[0]
+                if item.get_locked():
+                    raise StorageUnavailableError("the desktop keyring is locked")
                 secret = item.get_secret()
-                if secret is not None:
-                    return self._decode_key(secret.get_text())
-            if locked_match:
-                raise StorageUnavailableError("the desktop keyring is locked")
+                if secret is None:
+                    raise StorageUnavailableError(
+                        "the desktop keyring did not return the BlueFerry key"
+                    )
+                return self._decode_key(secret.get_text())
+
+            items = search()
+            if len(items) > 1:
+                raise StorageUnavailableError(
+                    "multiple BlueFerry storage keys exist in the desktop keyring"
+                )
+            if items:
+                return load_existing(items)
             if not allow_prompt:
                 raise StorageUnavailableError(
                     "Encrypted storage needs one-time keyring setup"
@@ -114,8 +147,21 @@ class SecretServiceKeyProvider:
             )
             if collection is None:
                 raise StorageUnavailableError("no default keyring is configured")
-            if collection.get_locked() and not allow_prompt:
-                raise StorageUnavailableError("the desktop keyring is locked")
+            if collection.get_locked():
+                service.unlock_sync([collection], None)
+                if collection.get_locked():
+                    raise StorageUnavailableError("the desktop keyring is locked")
+
+            # Unlocking a collection can reveal an item that was not returned
+            # by a non-conforming Secret Service implementation. It also
+            # narrows the race between the first lookup and key creation.
+            items = search()
+            if len(items) > 1:
+                raise StorageUnavailableError(
+                    "multiple BlueFerry storage keys exist in the desktop keyring"
+                )
+            if items:
+                return load_existing(items)
 
             key = os.urandom(_KEY_BYTES)
             encoded = base64.b64encode(key).decode("ascii")
@@ -129,7 +175,9 @@ class SecretServiceKeyProvider:
                 None,
             ):
                 raise StorageUnavailableError("the desktop keyring rejected the key")
-            return key
+            # Return what the service actually retained, and fail closed if a
+            # concurrent creator produced a duplicate item.
+            return load_existing(search())
         except StorageUnavailableError:
             raise
         except Exception as error:
@@ -310,5 +358,5 @@ class StorageSecurity:
 
 
 def is_encrypted_value(value: str) -> bool:
-    """Introspection helper used by tests."""
+    """Return whether a stored value has BlueFerry's ciphertext frame."""
     return value.startswith(_PREFIX)

@@ -87,6 +87,28 @@ def test_start_publishes_dbus_before_scheduling_bluetooth(monkeypatch):
     assert instance._initializing is False
 
 
+def test_no_storage_policy_reasserts_empty_local_data(monkeypatch):
+    instance = _bare_daemon()
+    status = SimpleNamespace(
+        policy="none", state="disabled", detail="", can_read=False
+    )
+    instance.storage = SimpleNamespace(
+        status=status,
+        refresh=lambda **_kwargs: status,
+    )
+    cleared = []
+    monkeypatch.setattr(
+        daemon_mod, "clear_events", lambda: cleared.append("events")
+    )
+    monkeypatch.setattr(
+        daemon_mod, "clear_contact_cache", lambda: cleared.append("contacts")
+    )
+
+    instance._initialize_storage()
+
+    assert cleared == ["events", "contacts"]
+
+
 def test_failed_hardware_initialization_leaves_control_service_alive(monkeypatch):
     instance = _bare_daemon()
     scheduled = []

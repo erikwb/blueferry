@@ -154,7 +154,30 @@ def test_replies_use_opaque_thread_key_and_explicit_group_confirmation() -> None
     assert state.send_reply("hello all", confirm_group=True) is True
 
     assert backend.sent == [("group", "hello all", True)]
-    assert state.confirmed_groups == {"group"}
+    assert state.confirmed_groups == set()
+    assert state.send_reply("not without another confirmation") is False
+
+
+def test_message_sender_metadata_is_sanitized() -> None:
+    async def scenario() -> None:
+        backend = _Backend()
+        unsafe = replace(
+            backend.loaded[1].messages[0],
+            sender="Beau\x1b[31m\u202e\nforged",
+        )
+        backend.loaded[1] = replace(backend.loaded[1], messages=(unsafe,))
+        state = TuiState(backend)
+        state.selected_key = "group"
+        app = BlueFerryApp(state, monitor_factory=lambda: None)
+
+        async with app.run_test(size=(120, 36)) as pilot:
+            await _wait_for_threads(app, pilot, 2)
+            app.action_next_thread()
+            await pilot.pause(0.1)
+            meta = app.query_one(MessageRow).query_one(".message-meta", Static)
+            assert meta.render().plain.startswith("Beau�[31m� forged  ·  ")
+
+    _run_headless(scenario())
 
 
 def test_read_only_thread_cannot_send() -> None:
@@ -261,6 +284,26 @@ def test_textual_app_renders_status_threads_and_messages() -> None:
             assert app.query_one("#conversation-title").render().plain == "Friends  ·  Group"
             meta = app.query_one(MessageRow).query_one(".message-meta", Static)
             assert meta.render().plain.startswith("Beau  ·  ")
+
+    _run_headless(scenario())
+
+
+def test_unchanged_poll_does_not_rebuild_the_terminal_view() -> None:
+    async def scenario() -> None:
+        state = TuiState(_Backend())
+        app = BlueFerryApp(state, monitor_factory=lambda: None)
+
+        async with app.run_test(size=(120, 36)) as pilot:
+            await _wait_for_threads(app, pilot, 2)
+            thread_items = tuple(app.query_one("#thread-list", ListView).children)
+            message_items = tuple(
+                app.query_one("#message-timeline").children
+            )
+
+            await app._apply_snapshot(state.fetch_snapshot())
+
+            assert tuple(app.query_one("#thread-list", ListView).children) == thread_items
+            assert tuple(app.query_one("#message-timeline").children) == message_items
 
     _run_headless(scenario())
 

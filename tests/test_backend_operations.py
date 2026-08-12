@@ -93,6 +93,31 @@ def test_confirmed_group_reply_uses_backend_recipient_set(monkeypatch):
     assert thread["key"] in operations._confirmed_group_keys
 
 
+def test_named_group_requires_confirmation_for_every_reply(monkeypatch):
+    operations = _operations()
+    thread = {**_group(), "group_origin": "named"}
+    _stub_group(operations, thread)
+    monkeypatch.setattr(
+        backend_operations,
+        "send_group_message",
+        lambda *_args: "/transfer/named",
+    )
+
+    operations.send_to_thread(
+        thread["key"], "first", True,
+        lambda _result: None,
+        lambda error: pytest.fail(str(error)),
+    )
+
+    assert thread["key"] not in operations._confirmed_group_keys
+    with pytest.raises(ConfirmationRequiredError):
+        operations.send_to_thread(
+            thread["key"], "second", False,
+            lambda _result: pytest.fail("unexpected successful reply"),
+            lambda error: pytest.fail(str(error)),
+        )
+
+
 def test_group_reply_records_the_projected_member_roster(monkeypatch):
     recorded = []
     operations = _operations(

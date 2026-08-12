@@ -183,7 +183,10 @@ class TuiState:
             return False
         if (
             thread.is_group
-            and thread.key not in self.confirmed_groups
+            and (
+                thread.extra.get("group_origin") == "named"
+                or thread.key not in self.confirmed_groups
+            )
             and not confirm_group
         ):
             self.error = "Group reply requires participant confirmation"
@@ -197,7 +200,11 @@ class TuiState:
         except BackendError as error:
             self.error = str(error)
             return False
-        if thread.is_group and confirm_group:
+        if (
+            thread.is_group
+            and confirm_group
+            and thread.extra.get("group_origin") != "named"
+        ):
             self.confirmed_groups.add(thread.key)
         self.selected_key = thread.key
         self.error = ""
@@ -306,7 +313,9 @@ class ConversationItem(ListItem):
 class MessageRow(Horizontal):
     def __init__(self, message: ThreadMessage, fallback_name: str) -> None:
         direction = "outgoing" if message.outgoing else "incoming"
-        sender = "You" if message.outgoing else (message.sender or fallback_name)
+        sender = _one_line(
+            "You" if message.outgoing else (message.sender or fallback_name)
+        )
         meta = f"{sender}  ·  {_short_timestamp(message.timestamp)}"
         bubble = Vertical(
             Static(Text(meta), classes="message-meta"),
@@ -614,7 +623,7 @@ class BlueFerryApp(App[None]):
         except Exception:
             self._monitor = None
         self.set_interval(_SIGNAL_PUMP_SECONDS, self._pump_events)
-        self.set_interval(_REFRESH_SECONDS, self.action_refresh)
+        self.set_interval(_REFRESH_SECONDS, self._load_data)
         self._update_responsive(self.size.width)
         self._load_data()
 
@@ -669,15 +678,25 @@ class BlueFerryApp(App[None]):
         )
 
     async def _apply_snapshot(self, snapshot: TuiSnapshot) -> None:
+        previous_status = self.state.status
+        previous_threads = tuple(self.state.threads)
+        previous_selection = self.state.selected_key
+        previous_error = self.state.error
         self.state.apply_snapshot(snapshot)
         if self._pending_open_handle and self.state.select_message(self._pending_open_handle):
             self._pending_open_handle = None
             self.query_one("#workspace").add_class("chat-open")
-        await self._populate_threads()
-        await self._render_conversation()
-        self._update_status()
-        self._update_notice()
-        self._warn_about_roster_changes()
+        threads_changed = tuple(self.state.threads) != previous_threads
+        selection_changed = self.state.selected_key != previous_selection
+        if threads_changed or selection_changed:
+            await self._populate_threads()
+            await self._render_conversation()
+        if self.state.status != previous_status:
+            self._update_status()
+        if self.state.error != previous_error:
+            self._update_notice()
+        if threads_changed:
+            self._warn_about_roster_changes()
 
     def _warn_about_roster_changes(self) -> None:
         for thread in self.state.threads:
@@ -951,7 +970,10 @@ class BlueFerryApp(App[None]):
         if len(body) > _MAX_INPUT:
             self.notify(f"Messages are limited to {_MAX_INPUT} characters", severity="error")
             return
-        if thread.is_group and thread.key not in self.state.confirmed_groups:
+        if thread.is_group and (
+            thread.extra.get("group_origin") == "named"
+            or thread.key not in self.state.confirmed_groups
+        ):
             self.push_screen(
                 GroupConfirmScreen(thread),
                 lambda confirmed: self._group_reply_ready(confirmed, thread.key, body),
