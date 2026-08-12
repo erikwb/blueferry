@@ -413,6 +413,11 @@ Kirigami.ApplicationWindow {
                         modelData.address.indexOf("@") >= 0
                             ? modelData.address : "+" + modelData.address
                     )
+                    contentItem: Controls.Label {
+                        text: contactDelegate.text
+                        textFormat: Text.PlainText
+                        elide: Text.ElideRight
+                    }
                     onClicked: {
                         newRecipient.text = modelData.address
                         root.bridge.findContacts("")
@@ -782,6 +787,7 @@ Kirigami.ApplicationWindow {
                     Controls.Label {
                         Kirigami.FormData.label: qsTr("Controller:")
                         text: root.bridge.compatibility.adapter || qsTr("Checking…")
+                        textFormat: Text.PlainText
                     }
 
                     Controls.Label {
@@ -846,6 +852,23 @@ Kirigami.ApplicationWindow {
                         textRole: "display_name"
                         valueRole: "mac"
                         enabled: !root.bridge.busy
+                        delegate: Controls.ItemDelegate {
+                            id: deviceOption
+                            required property var modelData
+                            width: deviceCombo.width
+                            text: modelData.display_name
+                            contentItem: Controls.Label {
+                                text: deviceOption.text
+                                textFormat: Text.PlainText
+                                elide: Text.ElideRight
+                            }
+                        }
+                        contentItem: Controls.Label {
+                            text: deviceCombo.displayText
+                            textFormat: Text.PlainText
+                            verticalAlignment: Text.AlignVCenter
+                            elide: Text.ElideRight
+                        }
                         onCurrentIndexChanged: iphonePage.selectedDevice = currentIndex
                     }
                 }
@@ -882,6 +905,7 @@ Kirigami.ApplicationWindow {
                         text: iphonePage.configuredDevice !== null
                             ? iphonePage.configuredDevice.name
                             : qsTr("iPhone")
+                        textFormat: Text.PlainText
                     }
                     Controls.Button {
                         text: qsTr("Unpair")

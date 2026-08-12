@@ -235,6 +235,11 @@ def test_quickshell_package_ships_its_quattro_theme_adapter() -> None:
     assert "readonly property int controlRadius" in theme
     assert "color: theme.windowSurface" in shell
     assert "component FerryLabel: Label" in shell
+    assert (
+        "component FerryLabel: Label {\n"
+        "    color: theme.windowText\n"
+        "    textFormat: Text.PlainText"
+    ) in shell
     assert "component FerryButton: Button" in shell
     assert "id: bubble" in shell
     assert "messageTimestamp.implicitWidth" in shell
@@ -256,3 +261,25 @@ def test_quickshell_package_ships_its_quattro_theme_adapter() -> None:
     assert "component FerrySectionLabel: FerryLabel" in shell
     window_declaration = shell.split("FloatingWindow {", 1)[1].split("Pane {", 1)[0]
     assert 'color: "transparent"' not in window_declaration
+
+
+def test_remote_qml_text_is_rendered_as_plain_text() -> None:
+    qt_qml = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
+    quickshell = (ROOT / "data/quickshell/shell.qml").read_text()
+
+    assert (
+        "text: contactDelegate.text\n"
+        "                        textFormat: Text.PlainText"
+    ) in qt_qml
+    assert (
+        "text: deviceCombo.displayText\n"
+        "                            textFormat: Text.PlainText"
+    ) in qt_qml
+    assert (
+        "text: threadDelegate.modelData.name\n"
+        "                        textFormat: Text.PlainText"
+    ) in quickshell
+    assert (
+        "text: newContactDelegate.modelData.name\n"
+        "                  textFormat: Text.PlainText"
+    ) in quickshell

@@ -31,11 +31,12 @@ def wait_for_transfer(
     *,
     initial_status: str = "queued",
     timeout_s: float,
+    overall_timeout_s: float | None = None,
     poll_interval_s: float = 0.1,
     property_timeout_s: float | None = None,
     get_status: Callable[[], str] | None = None,
     check_progress: Callable[[], None] | None = None,
-    get_progress: Callable[[], object] | None = None,
+    get_progress: Callable[[], int] | None = None,
     monotonic: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
 ) -> str:
@@ -46,7 +47,8 @@ def wait_for_transfer(
     unrelated bus failures remain failures. A non-terminal status at the
     deadline is always a timeout, never an implicit success. When
     ``get_progress`` is supplied, the deadline measures inactivity and is
-    restarted whenever its value changes.
+    restarted whenever its integer value increases. ``overall_timeout_s``
+    optionally imposes a hard deadline that progress cannot extend.
     """
     status = str(initial_status or "queued").casefold()
     if check_progress is not None:
@@ -65,15 +67,28 @@ def wait_for_transfer(
         status_reader = read_status
 
     timeout = max(0.0, float(timeout_s))
-    deadline = monotonic() + timeout
+    started_at = monotonic()
+    deadline = started_at + timeout
+    overall_deadline = (
+        started_at + max(0.0, float(overall_timeout_s))
+        if overall_timeout_s is not None
+        else None
+    )
     last_progress = get_progress() if get_progress is not None else None
     while status not in {"complete", "error"}:
         if get_progress is not None:
             progress = get_progress()
-            if progress != last_progress:
+            if last_progress is None or progress > last_progress:
                 last_progress = progress
                 deadline = monotonic() + timeout
-        if monotonic() >= deadline:
+        now = monotonic()
+        if overall_deadline is not None and now >= overall_deadline:
+            raise TimeoutError(
+                f"OBEX transfer {transfer_path} exceeded its "
+                f"{overall_timeout_s:g}s overall limit "
+                f"(last status: {status or 'unknown'})"
+            )
+        if now >= deadline:
             raise TimeoutError(
                 f"OBEX transfer {transfer_path} timed out after {timeout_s:g}s "
                 f"(last status: {status or 'unknown'})"

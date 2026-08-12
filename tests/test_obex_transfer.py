@@ -58,6 +58,35 @@ def test_transfer_timeout_restarts_when_progress_advances() -> None:
     assert clock.now > 0.2
 
 
+def test_progress_regression_does_not_restart_inactivity_timeout() -> None:
+    clock = _Clock()
+
+    with pytest.raises(TimeoutError, match=r"timed out after 0\.2s"):
+        wait_for_transfer(
+            "/transfer/regressing",
+            timeout_s=0.2,
+            get_status=lambda: "active",
+            get_progress=lambda: 10 if clock.now < 0.1 else 9,
+            monotonic=clock,
+            sleep=clock.sleep,
+        )
+
+
+def test_progress_cannot_extend_overall_timeout() -> None:
+    clock = _Clock()
+
+    with pytest.raises(TimeoutError, match=r"0\.5s overall limit"):
+        wait_for_transfer(
+            "/transfer/slow-loris",
+            timeout_s=0.2,
+            overall_timeout_s=0.5,
+            get_status=lambda: "active",
+            get_progress=lambda: int(clock.now * 100),
+            monotonic=clock,
+            sleep=clock.sleep,
+        )
+
+
 def test_explicit_transfer_error_fails() -> None:
     with pytest.raises(TransferFailed):
         wait_for_transfer(

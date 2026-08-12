@@ -754,6 +754,7 @@ ShellRoot {
                         anchors.centerIn: parent
                         text: threadDelegate.modelData.is_group ? "#"
                           : String(threadDelegate.modelData.name || "?").charAt(0).toUpperCase()
+                        textFormat: Text.PlainText
                         color: threadDelegate.highlighted
                           ? theme.primaryText : theme.windowText
                         font.family: theme.fontFamily
@@ -770,6 +771,7 @@ ShellRoot {
                       Text {
                         width: parent.width
                         text: threadDelegate.modelData.name
+                        textFormat: Text.PlainText
                         color: theme.windowText
                         font.family: theme.fontFamily
                         font.pixelSize: theme.baseFontSize
@@ -782,6 +784,7 @@ ShellRoot {
                           ? (threadDelegate.modelData.messages[threadDelegate.modelData.messages.length - 1].outgoing ? "You: " : "")
                             + threadDelegate.modelData.messages[threadDelegate.modelData.messages.length - 1].body
                           : "No messages"
+                        textFormat: Text.PlainText
                         color: theme.muted
                         font.family: theme.fontFamily
                         font.pixelSize: theme.captionSize
@@ -1392,6 +1395,7 @@ ShellRoot {
                 id: newContactText
                 Text {
                   text: newContactDelegate.modelData.name
+                  textFormat: Text.PlainText
                   color: theme.windowText
                   font.family: theme.fontFamily
                   font.pixelSize: theme.baseFontSize
@@ -1400,6 +1404,7 @@ ShellRoot {
                   text: newContactDelegate.modelData.address.indexOf("@") >= 0
                     ? newContactDelegate.modelData.address
                     : "+" + newContactDelegate.modelData.address
+                  textFormat: Text.PlainText
                   color: theme.muted
                   font.family: theme.fontFamily
                   font.pixelSize: theme.captionSize
@@ -1452,6 +1457,7 @@ ShellRoot {
 
   component FerryLabel: Label {
     color: theme.windowText
+    textFormat: Text.PlainText
     font.family: theme.fontFamily
     font.pixelSize: theme.baseFontSize
   }
@@ -1468,6 +1474,7 @@ ShellRoot {
 
     contentItem: Text {
       text: control.text
+      textFormat: Text.PlainText
       color: !control.enabled ? theme.muted
         : control.bare && control.hovered ? theme.accent
         : control.highlighted ? theme.primaryText : theme.windowText
@@ -1581,6 +1588,7 @@ ShellRoot {
       highlighted: control.highlightedIndex === index
       contentItem: Text {
         text: option.modelData
+        textFormat: Text.PlainText
         color: theme.windowText
         font: control.font
         verticalAlignment: Text.AlignVCenter

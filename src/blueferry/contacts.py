@@ -39,6 +39,8 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+_PHONEBOOK_TRANSFER_MAX_SECONDS = 30 * 60
+
 
 # ---- vCard parsing ------------------------------------------------------
 
@@ -160,12 +162,14 @@ def clear_contact_cache() -> None:
 def _phonebook_temp_root() -> Path:
     """Return an owner-only location for transient plaintext phonebooks."""
     runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
-    if runtime_dir:
-        root = Path(runtime_dir) / "blueferry"
-        ensure_private_directory(root)
-        return root
-    config.ensure_dirs()
-    return config.STATE_DIR
+    if not runtime_dir:
+        raise RuntimeError(
+            "contact sync requires XDG_RUNTIME_DIR so its plaintext "
+            "phonebook cannot be written to persistent storage"
+        )
+    root = Path(runtime_dir) / "blueferry"
+    ensure_private_directory(root)
+    return root
 
 
 def pull_phonebook(
@@ -181,12 +185,13 @@ def pull_phonebook(
     max_contacts = max(1, min(int(max_contacts), MAX_PHONEBOOK_CONTACTS))
     if storage is not None and not storage.status.can_write:
         raise RuntimeError(storage.status.detail)
+    temporary_root = _phonebook_temp_root()
     pbap = obex(sessions.pbap_path, "org.bluez.obex.PhonebookAccess1")
     log.info("PBAP Select(int, pb)")
     pbap.Select("int", "pb", timeout=10.0)
 
     with tempfile.TemporaryDirectory(
-        prefix="phonebook-", dir=_phonebook_temp_root()
+        prefix="phonebook-", dir=temporary_root
     ) as temporary_name:
         out = Path(temporary_name) / "pb.vcf"
         log.info("PBAP PullAll → %s (max=%d)", out, max_contacts)
@@ -223,6 +228,7 @@ def pull_phonebook(
             transfer_path,
             initial_status=initial_status,
             timeout_s=60,
+            overall_timeout_s=_PHONEBOOK_TRANSFER_MAX_SECONDS,
             property_timeout_s=10.0,
             get_progress=phonebook_size,
         )

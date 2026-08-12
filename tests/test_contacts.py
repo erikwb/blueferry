@@ -56,6 +56,50 @@ def test_phonebook_transfer_uses_runtime_dir_and_cleans_up_on_failure(
     assert (runtime_dir / "blueferry").stat().st_mode & 0o777 == 0o700
 
 
+def test_phonebook_transfer_fails_closed_without_runtime_dir(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    monkeypatch.setattr(config, "STATE_DIR", tmp_path / "persistent-state")
+
+    with pytest.raises(RuntimeError, match="requires XDG_RUNTIME_DIR"):
+        contacts.pull_phonebook(SimpleNamespace(pbap_path="/pbap"))
+
+    assert not config.STATE_DIR.exists()
+
+
+def test_phonebook_transfer_wires_idle_and_overall_timeouts(
+    tmp_path, monkeypatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    captured = {}
+
+    class _Pbap:
+        def Select(self, *_args, **_kwargs):
+            pass
+
+        def PullAll(self, *_args, **_kwargs):
+            return "/transfer/phonebook", {"Status": "active", "Size": 0}
+
+    def capture_wait(transfer_path, **kwargs):
+        captured["transfer_path"] = transfer_path
+        captured.update(kwargs)
+        raise RuntimeError("stop after timeout wiring")
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime_dir))
+    monkeypatch.setattr(contacts, "obex", lambda *_args: _Pbap())
+    monkeypatch.setattr(contacts, "wait_for_transfer", capture_wait)
+
+    with pytest.raises(RuntimeError, match="stop after timeout wiring"):
+        contacts.pull_phonebook(SimpleNamespace(pbap_path="/pbap"))
+
+    assert captured["transfer_path"] == "/transfer/phonebook"
+    assert captured["timeout_s"] == 60
+    assert captured["overall_timeout_s"] == 30 * 60
+    assert callable(captured["get_progress"])
+
+
 def test_single_vcard():
     blob = textwrap.dedent("""\
         BEGIN:VCARD
