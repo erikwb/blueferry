@@ -32,6 +32,7 @@ ShellRoot {
   property bool pairingConfirmationPending: false
   property string pairingPasskey: ""
   property bool pairingResultReceived: false
+  property var pendingPairingDevice: null
   property string adapterName: ""
   property string onboardingStage: onboarding.stage
   property var backendStatus: ({})
@@ -149,6 +150,17 @@ ShellRoot {
   function selectedPairingDevice() {
     var index = pairingDeviceCombo.currentIndex
     return index >= 0 && index < pairingDevices.length ? pairingDevices[index] : null
+  }
+
+  function startPairing(device, replaceSavedTarget) {
+    pairingStatus = "Activating Bluetooth, then starting secure pairing…"
+    pairingResultReceived = false
+    pairProcess.command = [
+      "/usr/bin/blueferry", "pairing-complete", device.mac, "--interactive-agent"
+    ]
+    if (replaceSavedTarget)
+      pairProcess.command.push("--replace-saved-mac", configuredMac)
+    pairProcess.running = true
   }
 
   function configuredPairingDevice() {
@@ -864,7 +876,7 @@ ShellRoot {
                     anchors.right: messageRow.modelData.outgoing ? parent.right : undefined
                     anchors.left: messageRow.modelData.outgoing ? undefined : parent.left
                     color: messageRow.modelData.outgoing
-                      ? theme.primarySurface : theme.raisedSurface
+                      ? theme.selectedSurface : theme.raisedSurface
                     border.color: messageRow.modelData.outgoing
                       ? "transparent" : theme.divider
                     radius: theme.controlRadius
@@ -882,8 +894,7 @@ ShellRoot {
                         width: parent.width
                         text: messageRow.modelData.body
                         textFormat: Text.PlainText
-                        color: messageRow.modelData.outgoing
-                          ? theme.primaryText : theme.windowText
+                        color: theme.windowText
                         font.family: theme.fontFamily
                         font.pixelSize: theme.baseFontSize
                         wrapMode: Text.Wrap
@@ -895,8 +906,8 @@ ShellRoot {
                         text: messageRow.modelData.display_timestamp || ""
                         textFormat: Text.PlainText
                         color: messageRow.modelData.outgoing
-                          ? Qt.rgba(theme.primaryText.r, theme.primaryText.g,
-                                    theme.primaryText.b, 0.62)
+                          ? Qt.rgba(theme.windowText.r, theme.windowText.g,
+                                    theme.windowText.b, 0.62)
                           : theme.muted
                         font.family: theme.fontFamily
                         font.pixelSize: theme.captionSize
@@ -1051,22 +1062,22 @@ ShellRoot {
           }
           FerrySectionLabel {
             text: "Pair an iPhone"
-            visible: !root.configured && !root.targetSaved
+            visible: !root.configured
           }
           FerryLabel {
-            text: "Scan for and select your iPhone here, then choose Pair. On the iPhone, open Settings → Bluetooth, find this computer under \"Other Devices\", tap it, and approve the matching codes. Pairing may appear idle for up to 15 seconds. System Notification access is also how BlueFerry recognizes group text threads; without it, a group text appears as a one-to-one conversation with its sender."
+            text: "Scan for and select your iPhone here, then choose Pair. On the iPhone, open Settings → Bluetooth, find this computer under \"Other Devices\", tap it, and approve the matching codes. Pairing may appear idle for up to 15 seconds. While it does, return to the Bluetooth device list and reopen this computer's ⓘ page a few times; turn on any new toggles that appear. System Notification access is also how BlueFerry recognizes group text threads; without it, a group text appears as a one-to-one conversation with its sender."
             wrapMode: Text.Wrap
             Layout.fillWidth: true
-            visible: !root.configured && !root.targetSaved
+            visible: !root.configured
           }
           FerryCheckBox {
             id: confirmBluetoothRestart
-            visible: !root.configured && !root.targetSaved
+            visible: !root.configured
                      && root.notificationsSupported && !root.bluezActive
             text: "I understand this briefly disconnects all Bluetooth devices"
           }
           FerryButton {
-            visible: !root.configured && !root.targetSaved
+            visible: !root.configured
                      && root.notificationsSupported && !root.bluezActive
             text: bluezActivateProcess.running ? "Activating…" : "Activate Bluetooth support"
             enabled: confirmBluetoothRestart.checked && !bluezActivateProcess.running
@@ -1077,20 +1088,20 @@ ShellRoot {
             }
           }
           FerryButton {
-            visible: !root.configured && !root.targetSaved
+            visible: !root.configured
             text: deviceProcess.running ? "Scanning…" : "1. Scan for iPhone"
             enabled: !deviceProcess.running && !pairProcess.running
             onClicked: root.loadPairingDevices(true)
           }
           FerryComboBox {
             id: pairingDeviceCombo
-            visible: !root.configured && !root.targetSaved
+            visible: !root.configured
             Layout.fillWidth: true
             model: root.pairingDevices
             textRole: "label"
           }
           FerryButton {
-            visible: !root.configured && !root.targetSaved
+            visible: !root.configured
             text: pairProcess.running ? "Pairing…"
               : root.selectedPairingDevice() && root.selectedPairingDevice().paired
                 ? "Use existing pairing" : "2. Pair Selected iPhone"
@@ -1099,12 +1110,10 @@ ShellRoot {
                      && !deviceProcess.running && !pairProcess.running
             onClicked: {
               var device = root.selectedPairingDevice()
-              root.pairingStatus = "Activating Bluetooth, then starting secure pairing…"
-              root.pairingResultReceived = false
-              pairProcess.command = [
-                "/usr/bin/blueferry", "pairing-complete", device.mac, "--interactive-agent"
-              ]
-              pairProcess.running = true
+              if (!device.paired && root.targetSaved) {
+                root.pendingPairingDevice = device
+                replaceTargetPopup.open()
+              } else root.startPairing(device, false)
             }
           }
           FerryLabel {
@@ -1274,6 +1283,59 @@ ShellRoot {
                 onClicked: root.phoneSettingsVisible = false
               }
               Item { Layout.fillWidth: true }
+            }
+          }
+        }
+      }
+
+      Popup {
+        id: replaceTargetPopup
+        parent: applicationSurface
+        x: Math.max(0, (applicationSurface.width - width) / 2)
+        y: Math.max(0, (applicationSurface.height - height) / 2)
+        width: Math.min(theme.scaled(440), applicationSurface.width - theme.scaled(24))
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        padding: theme.scaled(18)
+
+        background: Rectangle {
+          color: theme.cardSurface
+          border.color: theme.divider
+          radius: theme.panelRadius
+        }
+
+        Overlay.modal: Rectangle {
+          color: Qt.rgba(theme.windowSurface.r, theme.windowSurface.g,
+                         theme.windowSurface.b, 0.72)
+        }
+
+        contentItem: ColumnLayout {
+          spacing: theme.scaled(12)
+          FerryLabel {
+            text: "Replace the saved iPhone?"
+            font.bold: true
+            font.pixelSize: theme.headingSize
+          }
+          FerryLabel {
+            Layout.fillWidth: true
+            wrapMode: Text.Wrap
+            text: "Pairing this iPhone will remove BlueFerry's saved phone and its local Bluetooth bond. Before continuing, also forget this computer in the old iPhone's Bluetooth settings."
+          }
+          RowLayout {
+            Layout.alignment: Qt.AlignRight
+            FerryButton {
+              text: "Cancel"
+              onClicked: replaceTargetPopup.close()
+            }
+            FerryButton {
+              text: "Replace and pair"
+              highlighted: true
+              onClicked: {
+                var device = root.pendingPairingDevice
+                replaceTargetPopup.close()
+                if (device !== null) root.startPairing(device, true)
+              }
             }
           }
         }

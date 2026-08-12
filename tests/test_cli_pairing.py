@@ -29,6 +29,9 @@ def test_interactive_pairing_emits_code_and_waits_for_acceptance(monkeypatch):
     observed = []
 
     class Setup:
+        def prepare_replacement(self, previous_mac, next_mac):
+            observed.append(("replace", previous_mac, next_mac))
+
         def complete(self, mac, *, confirmation, display):
             observed.append((mac, confirmation(12345)))
             return SimpleNamespace(to_dict=lambda: {"ok": True, "device": {"mac": mac}})
@@ -37,7 +40,13 @@ def test_interactive_pairing_emits_code_and_waits_for_acceptance(monkeypatch):
 
     result = CliRunner().invoke(
         cli.app,
-        ["pairing-complete", "02:00:00:00:00:01", "--interactive-agent"],
+        [
+            "pairing-complete",
+            "02:00:00:00:00:01",
+            "--interactive-agent",
+            "--replace-saved-mac",
+            "02:00:00:00:00:02",
+        ],
         input="yes\n",
     )
 
@@ -47,4 +56,7 @@ def test_interactive_pairing_emits_code_and_waits_for_acceptance(monkeypatch):
         {"event": "confirmation", "passkey": "012345"},
         {"ok": True, "device": {"mac": "02:00:00:00:00:01"}},
     ]
-    assert observed == [("02:00:00:00:00:01", True)]
+    assert observed == [
+        ("replace", "02:00:00:00:00:02", "02:00:00:00:00:01"),
+        ("02:00:00:00:00:01", True),
+    ]

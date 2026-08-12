@@ -5,6 +5,7 @@ import base64
 import json
 import logging
 import sqlite3
+from contextlib import closing
 from types import SimpleNamespace
 
 import pytest
@@ -173,7 +174,7 @@ def test_history_database_contains_ciphertext_and_round_trips(tmp_path) -> None:
 
     append_event(event, path=path, storage=storage)
 
-    with sqlite3.connect(path) as database:
+    with closing(sqlite3.connect(path)) as database:
         kind, occurred_at, payload = database.execute(
             "SELECT kind, occurred_at, payload_json FROM events"
         ).fetchone()
@@ -208,14 +209,14 @@ def test_pruning_reasserts_private_encrypted_metadata(tmp_path) -> None:
         path=path,
         storage=storage,
     )
-    with sqlite3.connect(path) as database:
+    with closing(sqlite3.connect(path)) as database, database:
         database.execute(
             "UPDATE events SET kind = 'sms_received', occurred_at = 123"
         )
 
     prune_events(path=path, storage=storage)
 
-    with sqlite3.connect(path) as database:
+    with closing(sqlite3.connect(path)) as database:
         assert database.execute(
             "SELECT kind, occurred_at FROM events"
         ).fetchone() == ("private", None)
@@ -244,16 +245,15 @@ def test_plaintext_secure_contact_record_fails_closed(
     monkeypatch.setattr(config, "STATE_DIR", tmp_path)
     monkeypatch.setattr(config, "CONTACTS_DB", tmp_path / "contacts.sqlite")
     monkeypatch.setattr(config, "EVENTS_DB", tmp_path / "events.sqlite")
-    with contact_repository._open_db() as database:
-        with database:
-            database.execute(
-                "INSERT INTO secure_contacts(payload) VALUES (?)",
-                (json.dumps({
-                    "name": "Alice Example",
-                    "phones": ["15551234567"],
-                    "emails": [],
-                }),),
-            )
+    with closing(contact_repository._open_db()) as database, database:
+        database.execute(
+            "INSERT INTO secure_contacts(payload) VALUES (?)",
+            (json.dumps({
+                "name": "Alice Example",
+                "phones": ["15551234567"],
+                "emails": [],
+            }),),
+        )
     storage = _storage(tmp_path)
 
     resolver = ContactsResolver(storage=storage)
@@ -269,16 +269,15 @@ def test_unencrypted_policy_reads_plaintext_contact_records(
     monkeypatch.setattr(config, "STATE_DIR", tmp_path)
     monkeypatch.setattr(config, "CONTACTS_DB", tmp_path / "contacts.sqlite")
     monkeypatch.setattr(config, "EVENTS_DB", tmp_path / "events.sqlite")
-    with contact_repository._open_db() as database:
-        with database:
-            database.execute(
-                "INSERT INTO secure_contacts(payload) VALUES (?)",
-                (json.dumps({
-                    "name": "Alice Example",
-                    "phones": ["15551234567"],
-                    "emails": [],
-                }),),
-            )
+    with closing(contact_repository._open_db()) as database, database:
+        database.execute(
+            "INSERT INTO secure_contacts(payload) VALUES (?)",
+            (json.dumps({
+                "name": "Alice Example",
+                "phones": ["15551234567"],
+                "emails": [],
+            }),),
+        )
     settings = SettingsStore(tmp_path / "settings.json")
     settings.update(local_data="plaintext")
 
@@ -293,21 +292,20 @@ def test_plaintext_contact_tables_are_discarded_in_encrypted_mode(
     monkeypatch.setattr(config, "STATE_DIR", tmp_path)
     monkeypatch.setattr(config, "CONTACTS_DB", tmp_path / "contacts.sqlite")
     monkeypatch.setattr(config, "EVENTS_DB", tmp_path / "events.sqlite")
-    with contact_repository._open_db() as database:
-        with database:
-            cursor = database.execute(
-                "INSERT INTO contacts(full_name, updated_at) VALUES (?, ?)",
-                ("Plaintext Alice", 0),
-            )
-            database.execute(
-                "INSERT INTO phones(phone_norm, contact_id) VALUES (?, ?)",
-                ("15551234567", cursor.lastrowid),
-            )
+    with closing(contact_repository._open_db()) as database, database:
+        cursor = database.execute(
+            "INSERT INTO contacts(full_name, updated_at) VALUES (?, ?)",
+            ("Plaintext Alice", 0),
+        )
+        database.execute(
+            "INSERT INTO phones(phone_norm, contact_id) VALUES (?, ?)",
+            ("15551234567", cursor.lastrowid),
+        )
 
     resolver = ContactsResolver(storage=_storage(tmp_path))
 
     assert resolver.resolve("15551234567") is None
-    with sqlite3.connect(config.CONTACTS_DB) as database:
+    with closing(sqlite3.connect(config.CONTACTS_DB)) as database:
         assert database.execute("SELECT COUNT(*) FROM contacts").fetchone()[0] == 0
     assert b"Plaintext Alice" not in config.CONTACTS_DB.read_bytes()
 

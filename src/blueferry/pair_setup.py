@@ -694,6 +694,24 @@ def forget_device(mac: str) -> None:
     log.info("cleared configured BlueFerry target %s", normalized)
 
 
+def prepare_target_replacement(previous_mac: str, next_mac: str) -> None:
+    """Clear the saved target without losing the unpaired device being selected."""
+    previous = previous_mac.strip().upper()
+    selected = next_mac.strip().upper()
+    if not config.is_valid_mac(previous) or not config.is_valid_mac(selected):
+        raise PairingError("invalid Bluetooth device address")
+    device = _find_device(previous)
+    if previous != selected or (device is not None and device.paired):
+        forget_device(previous)
+        return
+    # A stale saved MAC can refer to the unpaired device just discovered for
+    # this attempt. Removing that BlueZ object would also remove the scan
+    # result before complete_pairing() can address it.
+    _stop_user_service()
+    clear_local_target()
+    log.info("cleared stale BlueFerry target %s before pairing", previous)
+
+
 def clear_local_target() -> Path:
     """Forget the selected phone without discarding unrelated preferences."""
     existing = config.read_local_env(LOCAL_ENV_PATH)

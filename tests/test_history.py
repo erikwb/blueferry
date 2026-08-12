@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 
 from blueferry.history import (
@@ -18,7 +19,7 @@ def test_reader_filters_and_ignores_corrupt_payload_rows(tmp_path) -> None:
     path = tmp_path / "events.sqlite"
     append_event({"kind": "sms_received", "body": "one"}, path=path)
     append_event({"kind": "ancs_notification", "body": "two"}, path=path)
-    with sqlite3.connect(path) as database:
+    with closing(sqlite3.connect(path)) as database, database:
         database.execute(
             "INSERT INTO events(kind, payload_json) VALUES (?, ?)",
             ("sms_received", "not json"),

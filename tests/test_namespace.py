@@ -151,6 +151,55 @@ def test_qt_package_ships_the_kirigami_ui_and_dependencies() -> None:
     assert "setQuitOnLastWindowClosed(False)" in qt_app
 
 
+def test_gui_pairing_requires_confirmation_before_replacing_saved_target() -> None:
+    gtk = (ROOT / "src/blueferry/ui/status.py").read_text()
+    qt = _qml_bundle(ROOT / "src/blueferry/qt/qml")
+    quickshell = _qml_bundle(ROOT / "data/quickshell")
+
+    for client in (gtk, qt, quickshell):
+        assert "Replace" in client
+        assert "saved phone" in client
+        assert "old iPhone's Bluetooth settings" in client
+    assert "replaceAndPair" in qt
+    assert "--replace-saved-mac" in quickshell
+
+
+def test_gui_pairing_guidance_tells_users_to_recheck_iphone_toggles() -> None:
+    clients = (
+        (ROOT / "src/blueferry/ui/status.py").read_text(),
+        _qml_bundle(ROOT / "src/blueferry/qt/qml"),
+        _qml_bundle(ROOT / "data/quickshell"),
+    )
+
+    for client in clients:
+        assert "reopen this computer's ⓘ page a" in client
+        assert "few times; turn on any new toggles that appear" in client
+
+
+def test_gtk_connection_rows_all_have_status_icons() -> None:
+    gtk = (ROOT / "src/blueferry/ui/status.py").read_text()
+
+    for profile in ("daemon", "map", "pbap", "ancs"):
+        assert f"self._{profile}_icon = Gtk.Image()" in gtk
+        assert f"self._{profile}_row.add_suffix(self._{profile}_icon)" in gtk
+
+
+def test_qt_message_bubbles_do_not_use_full_selection_color() -> None:
+    bubble = (ROOT / "src/blueferry/qt/qml/MessageBubble.qml").read_text()
+
+    assert "backgroundColor.r * 0.78" in bubble
+    assert "highlightColor.r * 0.22" in bubble
+    assert "? Kirigami.Theme.highlightColor" not in bubble
+    assert "Kirigami.Theme.highlightedTextColor" not in bubble
+
+
+def test_quickshell_outgoing_bubbles_match_qt_accent_tint() -> None:
+    quickshell = (ROOT / "data/quickshell/shell.qml").read_text()
+
+    assert "? theme.selectedSurface : theme.raisedSurface" in quickshell
+    assert "color: theme.windowText" in quickshell
+
+
 def test_qt_messages_toolbar_toggles_dismissible_settings_pane() -> None:
     qml = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
 

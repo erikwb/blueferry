@@ -199,17 +199,21 @@ class SetupClient:
         *,
         confirmation: pair_setup.ConfirmationCallback,
         display: pair_setup.DisplayCallback | None = None,
+        replace_saved_mac: str = "",
     ) -> PairingResult:
         """Run interactive pairing in a D-Bus/GLib-isolated child process."""
+        command = [
+            sys.executable,
+            "-m",
+            "blueferry",
+            "pairing-complete",
+            mac,
+            "--interactive-agent",
+        ]
+        if replace_saved_mac:
+            command.extend(["--replace-saved-mac", replace_saved_mac])
         process = subprocess.Popen(  # nosec B603
-            [
-                sys.executable,
-                "-m",
-                "blueferry",
-                "pairing-complete",
-                mac,
-                "--interactive-agent",
-            ],
+            command,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -248,3 +252,6 @@ class SetupClient:
 
     def forget(self, mac: str) -> None:
         pair_setup.forget_device(mac)
+
+    def prepare_replacement(self, previous_mac: str, next_mac: str) -> None:
+        pair_setup.prepare_target_replacement(previous_mac, next_mac)

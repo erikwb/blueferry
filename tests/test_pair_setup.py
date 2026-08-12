@@ -117,6 +117,39 @@ def test_clear_local_target_preserves_unrelated_preferences(tmp_path, monkeypatc
     assert cleared == [True]
 
 
+def test_replacing_stale_target_keeps_selected_unpaired_scan_result(monkeypatch):
+    device = _device(paired=False)
+    calls = []
+    monkeypatch.setattr(pair_setup, "_find_device", lambda _mac: device)
+    monkeypatch.setattr(
+        pair_setup, "forget_device", lambda _mac: calls.append("forget")
+    )
+    monkeypatch.setattr(
+        pair_setup, "_stop_user_service", lambda: calls.append("stop")
+    )
+    monkeypatch.setattr(
+        pair_setup, "clear_local_target", lambda: calls.append("clear")
+    )
+
+    pair_setup.prepare_target_replacement(device.mac, device.mac)
+
+    assert calls == ["stop", "clear"]
+
+
+def test_replacing_a_different_target_removes_its_bluez_device(monkeypatch):
+    calls = []
+    monkeypatch.setattr(pair_setup, "_find_device", lambda _mac: None)
+    monkeypatch.setattr(
+        pair_setup, "forget_device", lambda mac: calls.append(mac)
+    )
+
+    pair_setup.prepare_target_replacement(
+        "02:00:00:00:00:01", "02:00:00:00:00:02"
+    )
+
+    assert calls == ["02:00:00:00:00:01"]
+
+
 def test_forget_stops_backend_removes_bond_and_clears_target(monkeypatch):
     device = _device(paired=True)
     calls = []

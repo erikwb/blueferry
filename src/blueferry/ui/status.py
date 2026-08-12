@@ -54,7 +54,9 @@ class IPhonePage(Gtk.Box):
                 "Scan for and select your iPhone here, then choose Pair. On the "
                 "iPhone, open Settings → Bluetooth, find this computer under "
                 '"Other Devices", tap it, and approve the matching codes. Pairing '
-                "may appear idle for up to 15 seconds. System Notification "
+                "may appear idle for up to 15 seconds. While it does, return to "
+                "the Bluetooth device list and reopen this computer's ⓘ page a "
+                "few times; turn on any new toggles that appear. System Notification "
                 "access is also how BlueFerry recognizes group text threads; "
                 "without it, a group text appears as a one-to-one conversation "
                 "with its sender."
@@ -100,7 +102,7 @@ class IPhonePage(Gtk.Box):
 
         pair = Adw.ActionRow(
             title=_("2. Pair the Selected iPhone"),
-            subtitle=_("Confirm the code, then allow up to 15 seconds to finish"),
+            subtitle=_("Confirm the code, then watch the iPhone for new toggles"),
         )
         self._setup_spinner = Gtk.Spinner(valign=Gtk.Align.CENTER)
         pair.add_suffix(self._setup_spinner)
@@ -195,7 +197,11 @@ class IPhonePage(Gtk.Box):
         daemon_group.add(self._daemon_row)
         daemon_group.add(self._map_row)
         self._pbap_row = Adw.ActionRow(title=_("Contacts"))
+        self._pbap_icon = Gtk.Image()
+        self._pbap_row.add_suffix(self._pbap_icon)
         self._ancs_row = Adw.ActionRow(title=_("iPhone Notifications"))
+        self._ancs_icon = Gtk.Image()
+        self._ancs_row.add_suffix(self._ancs_icon)
         daemon_group.add(self._pbap_row)
         daemon_group.add(self._ancs_row)
         page.add(daemon_group)
@@ -449,6 +455,42 @@ class IPhonePage(Gtk.Box):
         if not device:
             self._toast(_("Scan for and select an iPhone first"))
             return
+        configuration = self._configuration
+        if device.paired or configuration is None or not configuration.saved:
+            self._start_pairing(device)
+            return
+
+        dialog = Adw.AlertDialog(
+            heading=_("Replace the Saved iPhone?"),
+            body=_(
+                "Pairing this iPhone will remove BlueFerry's saved phone and "
+                "its local Bluetooth bond. Before continuing, also forget this "
+                "computer in the old iPhone's Bluetooth settings."
+            ),
+        )
+        dialog.add_response("cancel", _("Cancel"))
+        dialog.add_response("replace", _("Replace and Pair"))
+        dialog.set_close_response("cancel")
+        dialog.set_response_appearance(
+            "replace", Adw.ResponseAppearance.DESTRUCTIVE
+        )
+
+        def responded(_current, response: str) -> None:
+            if response == "replace":
+                self._start_pairing(
+                    device,
+                    replace_saved_mac=configuration.mac,
+                )
+
+        dialog.connect("response", responded)
+        dialog.present(self.get_root())
+
+    def _start_pairing(
+        self,
+        device: PairedDevice,
+        *,
+        replace_saved_mac: str = "",
+    ) -> None:
         self._toast(_("Activating Bluetooth, then starting secure pairing…"))
 
         def completed(result) -> None:
@@ -529,6 +571,7 @@ class IPhonePage(Gtk.Box):
                 device.mac,
                 confirmation=confirm,
                 display=display,
+                replace_saved_mac=replace_saved_mac,
             ),
             completed,
         )
@@ -609,11 +652,15 @@ class IPhonePage(Gtk.Box):
             "emblem-ok-symbolic" if healthy else "dialog-warning-symbolic"
         )
 
-        for row, key in (
-            (self._pbap_row, "pbap"),
-            (self._ancs_row, "ancs"),
+        for row, icon, key in (
+            (self._pbap_row, self._pbap_icon, "pbap"),
+            (self._ancs_row, self._ancs_icon, "ancs"),
         ):
-            row.set_subtitle(_("Connected") if values.get(key) else _("Unavailable"))
+            connected = bool(values.get(key))
+            row.set_subtitle(_("Connected") if connected else _("Unavailable"))
+            icon.set_from_icon_name(
+                "emblem-ok-symbolic" if connected else "dialog-warning-symbolic"
+            )
         self._contacts_row.set_subtitle(str(status.contacts))
         self._events_row.set_subtitle(str(status.events))
         policy = status.notification_policy

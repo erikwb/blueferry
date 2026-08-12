@@ -132,6 +132,7 @@ def test_complete_pairing_decodes_result_and_forget_delegates(monkeypatch):
 
 def test_isolated_pairing_answers_helper_confirmation(monkeypatch):
     device = _device()
+    commands = []
 
     class Input(io.StringIO):
         def flush(self):
@@ -155,12 +156,18 @@ def test_isolated_pairing_answers_helper_confirmation(monkeypatch):
             return 0
 
     process = Process()
-    monkeypatch.setattr(setup_client.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    monkeypatch.setattr(
+        setup_client.subprocess,
+        "Popen",
+        lambda command, **_kwargs: commands.append(command) or process,
+    )
 
     result = setup_client.SetupClient().complete_isolated(
         device.mac,
         confirmation=lambda passkey: passkey == 123456,
+        replace_saved_mac="02:00:00:00:00:02",
     )
 
     assert process.stdin.getvalue() == "yes\n"
     assert result.ancs_ready is True
+    assert commands[0][-2:] == ["--replace-saved-mac", "02:00:00:00:00:02"]

@@ -290,6 +290,23 @@ Kirigami.ApplicationWindow {
     }
 
     Kirigami.PromptDialog {
+        id: replaceTargetDialog
+        property string mac: ""
+        title: qsTr("Replace the Saved iPhone?")
+        subtitle: qsTr("Pairing this iPhone will remove BlueFerry's saved phone and its local Bluetooth bond. Before continuing, also forget this computer in the old iPhone's Bluetooth settings.")
+        dialogType: Kirigami.PromptDialog.Warning
+        standardButtons: Kirigami.Dialog.Cancel
+        customFooterActions: [Kirigami.Action {
+            text: qsTr("Replace and Pair")
+            icon.name: "edit-delete-remove"
+            onTriggered: {
+                root.bridge.replaceAndPair(root.bridge.configuredMac, replaceTargetDialog.mac)
+                replaceTargetDialog.close()
+            }
+        }]
+    }
+
+    Kirigami.PromptDialog {
         id: shortcutsDialog
         title: qsTr("Keyboard Shortcuts")
         subtitle: qsTr("Refresh — Ctrl+R\nQuit — Ctrl+Q\nKeyboard Shortcuts — Ctrl+?")
@@ -714,7 +731,7 @@ Kirigami.ApplicationWindow {
                     Layout.fillWidth: true
                     visible: !root.bridge.configured
                     wrapMode: Text.Wrap
-                    text: qsTr("Scan for and select your iPhone here, then choose Pair. On the iPhone, open Settings → Bluetooth, find this computer under \"Other Devices\", tap it, and approve the matching codes. Pairing may appear idle for up to 15 seconds.")
+                    text: qsTr("Scan for and select your iPhone here, then choose Pair. On the iPhone, open Settings → Bluetooth, find this computer under \"Other Devices\", tap it, and approve the matching codes. Pairing may appear idle for up to 15 seconds. While it does, return to the Bluetooth device list and reopen this computer's ⓘ page a few times; turn on any new toggles that appear.")
                 }
 
                 Kirigami.FormLayout {
@@ -819,7 +836,14 @@ Kirigami.ApplicationWindow {
                         enabled: iphonePage.device !== null
                             && root.bridge.compatibility.pairing_ready
                             && !root.bridge.busy
-                        onClicked: root.bridge.completePairing(iphonePage.device.mac)
+                        onClicked: {
+                            if (!iphonePage.device.paired && root.bridge.targetSaved) {
+                                replaceTargetDialog.mac = iphonePage.device.mac
+                                replaceTargetDialog.open()
+                            } else {
+                                root.bridge.completePairing(iphonePage.device.mac)
+                            }
+                        }
                     }
                     Controls.Button {
                         text: qsTr("Forget")
