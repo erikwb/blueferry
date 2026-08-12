@@ -44,6 +44,10 @@ class _Client(Protocol):
 
     def send(self, recipient: str, body: str) -> str: ...
 
+    def set_group_participants(
+        self, thread_key: str, recipients: list[str],
+    ) -> Thread: ...
+
 
 class _Monitor(Protocol):
     def pump(self) -> tuple[bool, str | None]: ...
@@ -212,6 +216,24 @@ class TuiState:
         self.refresh()
         return True
 
+    def save_group_participants(
+        self, thread_key: str, recipients: list[str],
+    ) -> bool:
+        try:
+            updated = self.client.set_group_participants(thread_key, recipients)
+        except BackendError as error:
+            self.error = str(error)
+            return False
+        self.threads = [
+            updated if thread.key == thread_key else thread
+            for thread in self.threads
+        ]
+        self.selected_key = thread_key
+        self.confirmed_groups.discard(thread_key)
+        self.error = ""
+        self.notice = "Group participants saved locally"
+        return True
+
 
 class _EventMonitor:
     """Bridge GLib-dispatched daemon signals into Textual's event loop."""
@@ -353,9 +375,9 @@ class GroupConfirmScreen(ModalScreen[bool]):
         self.dismiss(False)
 
 
-class RosterChangedScreen(ModalScreen[None]):
+class RosterChangedScreen(ModalScreen[tuple[str, ...] | None]):
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("escape", "close", "Close", show=False)
+        Binding("escape", "cancel", "Cancel", show=False)
     ]
 
     def __init__(self, thread: Thread) -> None:
@@ -364,25 +386,66 @@ class RosterChangedScreen(ModalScreen[None]):
 
     def compose(self) -> ComposeResult:
         sender = str(self.thread.extra.get("unexpected_sender") or "Someone new")
-        copy = (
-            f"{sender} sent a message to {self.thread.name}, but is not in "
-            "BlueFerry's saved participant list. Replies are disabled until "
-            "you review it. This may also mean you have multiple groups with "
-            f"the name {self.thread.name}, which BlueFerry cannot distinguish.\n\n"
-            "Changing BlueFerry's saved list does not add or remove anyone in "
-            "Messages on your iPhone."
+        if self.thread.extra.get("roster_changed"):
+            title = "Group membership may have changed"
+            copy = (
+                f"{sender} sent a message to {self.thread.name}, but is not in "
+                "BlueFerry's saved participant list. Replies are disabled until "
+                "you review it. This may also mean you have multiple groups with "
+                f"the name {self.thread.name}, which BlueFerry cannot distinguish."
+            )
+        else:
+            title = "Edit group participants"
+            copy = (
+                "BlueFerry uses this local list when replying to "
+                f"{self.thread.name}. Groups with the same name cannot be "
+                "distinguished."
+            )
+        copy += (
+            "\n\nChanging BlueFerry's saved list does not add or remove anyone "
+            "in Messages on your iPhone."
         )
         with Vertical(id="roster-changed-dialog", classes="dialog"):
-            yield Static("Group membership may have changed", classes="dialog-title")
+            yield Static(title, classes="dialog-title")
             yield Static(Text(terminal_text(copy)), classes="dialog-copy")
+            yield Static("BlueFerry participant list", classes="field-label")
+            yield TextArea(
+                soft_wrap=False,
+                show_line_numbers=False,
+                id="roster-participants",
+            )
             with Horizontal(classes="dialog-actions"):
-                yield Button("Got it", variant="primary", id="roster-changed-close")
+                yield Button("Not now", id="roster-changed-cancel")
+                yield Button(
+                    "Save participants", variant="primary",
+                    id="roster-changed-save",
+                )
 
-    @on(Button.Pressed, "#roster-changed-close")
-    def close_button(self) -> None:
+    def on_mount(self) -> None:
+        editor = self.query_one("#roster-participants", TextArea)
+        editor.text = "\n".join(self.thread.recipients)
+        editor.focus()
+
+    @on(Button.Pressed, "#roster-changed-cancel")
+    def cancel_button(self) -> None:
         self.dismiss(None)
 
-    def action_close(self) -> None:
+    @on(Button.Pressed, "#roster-changed-save")
+    def save_button(self) -> None:
+        recipients: list[str] = []
+        for line in self.query_one("#roster-participants", TextArea).text.splitlines():
+            address = line.strip()
+            if address and address not in recipients:
+                recipients.append(address)
+        if not 2 <= len(recipients) <= 20:
+            self.notify(
+                "Enter 2 to 20 participants, one per line",
+                severity="warning",
+            )
+            return
+        self.dismiss(tuple(recipients))
+
+    def action_cancel(self) -> None:
         self.dismiss(None)
 
 
@@ -521,6 +584,11 @@ class BlueFerryApp(App[None]):
                     with Vertical(id="conversation-title-wrap"):
                         yield Static("Select a conversation", id="conversation-title")
                         yield Static("", id="conversation-subtitle")
+                    yield Button(
+                        "Participants",
+                        id="edit-group-participants",
+                        tooltip="Edit BlueFerry's local participant list",
+                    )
                     yield Static("", id="conversation-badge")
                 yield VerticalScroll(
                     Static("Choose a conversation to start", id="empty-conversation"),
@@ -622,8 +690,25 @@ class BlueFerryApp(App[None]):
             if warning_id in self._warned_roster_changes:
                 continue
             self._warned_roster_changes.add(warning_id)
-            self.push_screen(RosterChangedScreen(thread))
+            self._open_roster_editor(thread)
             return
+
+    def _open_roster_editor(self, thread: Thread) -> None:
+        self.push_screen(
+            RosterChangedScreen(thread),
+            lambda recipients, key=thread.key: self._roster_review_ready(
+                key, recipients
+            ),
+        )
+
+    def _roster_review_ready(
+        self, thread_key: str, recipients: tuple[str, ...] | None,
+    ) -> None:
+        if recipients is None:
+            return
+        self.state.notice = "Saving group participants…"
+        self._update_notice()
+        self._save_group_participants_worker(thread_key, list(recipients))
 
     def _filtered_threads(self) -> list[Thread]:
         query = self.query_one("#thread-search", Input).value.strip().casefold()
@@ -666,6 +751,7 @@ class BlueFerryApp(App[None]):
             timeline = self.query_one("#message-timeline", VerticalScroll)
             composer = self.query_one("#composer", TextArea)
             send_button = self.query_one("#send-reply", Button)
+            roster_button = self.query_one("#edit-group-participants", Button)
         except NoMatches:
             return
         await timeline.remove_children()
@@ -678,6 +764,7 @@ class BlueFerryApp(App[None]):
             )
             composer.disabled = True
             send_button.disabled = True
+            roster_button.display = False
             return
 
         title = thread.name + ("  ·  Group" if thread.is_group else "")
@@ -687,6 +774,10 @@ class BlueFerryApp(App[None]):
         unread = _unread_count(thread)
         self.query_one("#conversation-badge", Static).update(
             Text(f"{unread} unread" if unread else "up to date")
+        )
+        roster_button.display = bool(
+            thread.extra.get("group_origin") == "named"
+            or thread.key.startswith("group:named:")
         )
 
         widgets: list[Static | MessageRow] = []
@@ -790,6 +881,12 @@ class BlueFerryApp(App[None]):
     @on(Button.Pressed, "#back-to-list")
     def back_button(self) -> None:
         self.action_return_to_list()
+
+    @on(Button.Pressed, "#edit-group-participants")
+    def edit_group_participants_button(self) -> None:
+        thread = self.state.selected
+        if thread is not None:
+            self._open_roster_editor(thread)
 
     @on(Button.Pressed, "#send-reply")
     def send_button(self) -> None:
@@ -897,6 +994,34 @@ class BlueFerryApp(App[None]):
     def _send_new_worker(self, recipient: str, body: str) -> None:
         succeeded = self.state.send_new(recipient, body)
         self.call_from_thread(self._schedule_send_finished, succeeded, "")
+
+    @work(thread=True, group="roster", exclusive=True, exit_on_error=False)
+    def _save_group_participants_worker(
+        self, thread_key: str, recipients: list[str],
+    ) -> None:
+        succeeded = self.state.save_group_participants(thread_key, recipients)
+        self.call_from_thread(self._schedule_roster_finished, succeeded)
+
+    def _schedule_roster_finished(self, succeeded: bool) -> None:
+        self.run_worker(
+            self._roster_finished(succeeded),
+            name="render-roster-result",
+            group="render",
+            exclusive=True,
+        )
+
+    async def _roster_finished(self, succeeded: bool) -> None:
+        await self._populate_threads()
+        await self._render_conversation()
+        self._update_notice()
+        if not succeeded:
+            thread = self.state.selected
+            if thread is not None:
+                self.notify(
+                    self.state.error or "Could not save group participants",
+                    severity="error",
+                )
+                self._open_roster_editor(thread)
 
     def _schedule_send_finished(self, succeeded: bool, sent_body: str) -> None:
         self.run_worker(

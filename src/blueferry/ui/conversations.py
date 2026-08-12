@@ -46,6 +46,14 @@ def _group_roster_banner_title(thread: dict) -> str:
     return template.format(sender=sender, group=thread["name"])
 
 
+def _roster_warning_id(thread: dict) -> str:
+    """Return one stable dedup key even for older partial thread payloads."""
+    return str(
+        thread.get("roster_warning_id")
+        or f"{thread.get('key', '')}:{thread.get('unexpected_sender') or 'unknown'}"
+    )
+
+
 class ConversationsPage(Gtk.Box):
     def __init__(self, client, toast) -> None:
         super().__init__(
@@ -588,14 +596,13 @@ class ConversationsPage(Gtk.Box):
             (
                 candidate for candidate in self._threads.values()
                 if candidate.get("roster_changed")
-                and str(candidate.get("roster_warning_id") or "")
-                    not in self._warned_roster_changes
+                and _roster_warning_id(candidate) not in self._warned_roster_changes
             ),
             None,
         )
         if thread is None or self.get_root() is None:
             return
-        warning_id = str(thread.get("roster_warning_id") or thread["key"])
+        warning_id = _roster_warning_id(thread)
         self._warned_roster_changes.add(warning_id)
         sender = str(thread.get("unexpected_sender") or _("Someone new"))
         dialog = Adw.AlertDialog(

@@ -236,6 +236,14 @@ def test_qt_escaped_roster_names_are_forced_to_rich_text() -> None:
     assert "root.htmlEscape(thread.name)" in qml
 
 
+def test_qt_group_confirmation_preserves_escaped_recipient_lines() -> None:
+    qml = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
+
+    assert 'replace(/\\n/g, "<br/>")' in qml
+    assert "? root.escapedRichTextWithBreaks(" in qml
+    assert 'recipients.map(root.htmlEscape).join("\\n")' in qml
+
+
 def test_qt_messages_toolbar_toggles_dismissible_settings_pane() -> None:
     qml = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
 

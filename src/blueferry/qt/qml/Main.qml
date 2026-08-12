@@ -62,6 +62,10 @@ Kirigami.ApplicationWindow {
         return "<span>" + value + "</span>"
     }
 
+    function escapedRichTextWithBreaks(value) {
+        return escapedRichText(String(value).replace(/\n/g, "<br/>"))
+    }
+
     function mapConnectionRefused() {
         const status = bridge.status || ({})
         return status.map_connection_refused === true
@@ -189,7 +193,7 @@ Kirigami.ApplicationWindow {
         id: groupDialog
         title: qsTr("Send Group Message?")
         subtitle: root.pendingThread
-            ? root.escapedRichText(
+            ? root.escapedRichTextWithBreaks(
                 qsTr("The iPhone will reply to these participants:\n\n")
                 + root.pendingThread.recipients.map(root.htmlEscape).join("\n")
               )

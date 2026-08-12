@@ -122,3 +122,15 @@ def test_roster_banner_keeps_unexpected_sender_after_later_known_sender() -> Non
 
     assert title.startswith("Casey is not")
     assert "Beau" not in title
+
+
+def test_roster_warning_fallback_id_is_stable_for_partial_payload() -> None:
+    thread = {
+        "key": "group:named:crew",
+        "unexpected_sender": "Casey",
+        "roster_warning_id": "",
+    }
+
+    assert conversations._roster_warning_id(thread) == (
+        "group:named:crew:Casey"
+    )
