@@ -8,6 +8,7 @@ import threading
 import time
 
 import dbus
+import dbus.mainloop
 import dbus.service
 import pytest
 from gi.repository import GLib
@@ -69,7 +70,14 @@ def public_service():
 
 
 def _client(name: str):
-    connection = dbus.SessionBus(private=True)
+    # These clients make synchronous calls from Python worker threads while
+    # the test's main thread dispatches the service's GLib context. Keeping
+    # their private connections off that context avoids concurrent libdbus
+    # dispatch of the same connection.
+    connection = dbus.SessionBus(
+        private=True,
+        mainloop=dbus.mainloop.NULL_MAIN_LOOP,
+    )
     interface = dbus.Interface(
         connection.get_object(name, OBJECT_PATH), MESSAGES_IFACE
     )
