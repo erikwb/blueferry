@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+from typing import Annotated
 
 import typer
 
@@ -428,6 +429,23 @@ def thread_send(
     client, error_type = _json_client()
     try:
         typer.echo(client.send_to_thread(thread_key, body, confirm_group=confirm_group))
+    except error_type as error:
+        typer.echo(str(error), err=True)
+        raise typer.Exit(code=2) from None
+
+
+@app.command("group-participants-set", hidden=True)
+def group_participants_set(
+    thread_key: Annotated[str, typer.Argument()],
+    recipients: Annotated[list[str], typer.Argument()],
+) -> None:
+    """Save an explicit recipient roster for a named group thread."""
+    import json
+
+    client, error_type = _json_client()
+    try:
+        thread = client.set_group_participants(thread_key, recipients)
+        typer.echo(json.dumps(thread.to_dict(), ensure_ascii=False))
     except error_type as error:
         typer.echo(str(error), err=True)
         raise typer.Exit(code=2) from None

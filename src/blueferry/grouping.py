@@ -13,7 +13,9 @@ updates can replay the same deterministic correlation.
 """
 from __future__ import annotations
 
+import hashlib
 import re
+import unicodedata
 from datetime import datetime
 
 from blueferry.ancs.constants import MESSAGES_APP_ID
@@ -72,6 +74,57 @@ def group_members_from_ancs(event: dict) -> list[str] | None:
         return None
     remainder = _TO_PREFIX.sub("", subtitle, count=1)
     return _unique_names([title, *_MEMBER_SEPARATOR.split(remainder)])
+
+
+def named_group_from_ancs(event: dict) -> str | None:
+    """Return the group name carried by the named-group ANCS layout.
+
+    Named Messages groups use the sender as the title and the group name as
+    the subtitle. Unlike the unnamed ``To ... & ...`` layout, this proves the
+    conversation identity but does not disclose a safe reply roster.
+    """
+    if event.get("app_id") != MESSAGES_APP_ID:
+        return None
+    title = str(event.get("title") or "").strip()
+    subtitle = str(event.get("subtitle") or "").strip()
+    if not title or not subtitle or group_members_from_ancs(event):
+        return None
+    return subtitle
+
+
+def named_group_key(name: str) -> str:
+    """Build an opaque stable key from the normalized iOS group name."""
+    normalized = " ".join(
+        unicodedata.normalize("NFKC", name).strip().casefold().split()
+    )
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    return f"group:named:{digest}"
+
+
+def _named_group_routes(events: list[dict]) -> dict[str, dict]:
+    """Load the newest structurally valid user-confirmed route per group."""
+    routes: dict[str, dict] = {}
+    for event in events:
+        if event.get("kind") != "group_route":
+            continue
+        key = str(event.get("group_key") or "")
+        name = str(event.get("group_name") or "").strip()
+        recipients = [
+            str(value).strip()
+            for value in event.get("group_recipients", [])
+            if str(value).strip()
+        ]
+        identities = [canonical_address(value) for value in recipients]
+        if (
+            not name
+            or key != named_group_key(name)
+            or not 2 <= len(recipients) <= 20
+            or any(identity is None for identity in identities)
+            or len(set(identities)) != len(identities)
+        ):
+            continue
+        routes[key] = event
+    return routes
 
 
 def _group_identity(
@@ -139,6 +192,11 @@ def _reconcile_group_identities(
     for event in events:
         if not str(event.get("kind") or "").startswith("sms_"):
             continue
+        # Named groups use their normalized iOS name as the persistent lookup
+        # key. Rewriting it after a roster is saved would invalidate the UI
+        # thread the user just configured.
+        if event.get("group_origin") == "named":
+            continue
         members = _unique_names([
             str(value) for value in event.get("group_members", [])
         ])
@@ -196,6 +254,31 @@ def correlate_group_events(events: list[dict], resolver=None) -> list[dict]:
         if event.get("kind") == "sms_received"
     ]
     matched: set[int] = set()
+    named_routes = _named_group_routes(out)
+    # A later roster edit is authoritative for locally recorded replies too;
+    # otherwise an old outgoing event could silently re-add a removed member
+    # when the thread projection unions its historical recipients.
+    for stored in out:
+        key = str(stored.get("group_key") or "")
+        if not str(stored.get("kind") or "").startswith("sms_"):
+            continue
+        if not key.startswith("group:named:"):
+            continue
+        stored["group_origin"] = "named"
+        route = named_routes.get(key)
+        if route is None:
+            continue
+        stored.update({
+            "group_name": str(route.get("group_name") or ""),
+            "group_members": [
+                str(value) for value in route.get("group_members", [])
+            ],
+            "group_recipients": [
+                str(value) for value in route.get("group_recipients", [])
+            ],
+            "group_reply_ready": True,
+            "group_participants_required": False,
+        })
     addresses_by_name: dict[str, set[str]] = {}
     sms_by_body: dict[str, list[int]] = {}
     sms_by_ancs_prefix: dict[str, list[int]] = {}
@@ -221,7 +304,8 @@ def correlate_group_events(events: list[dict], resolver=None) -> list[dict]:
             continue
 
         members = group_members_from_ancs(event)
-        if not members:
+        named_group = None if members else named_group_from_ancs(event)
+        if not members and not named_group:
             continue
         ancs_body = str(event.get("body") or "")
         ancs_time = _seen_at(event)
@@ -266,6 +350,64 @@ def correlate_group_events(events: list[dict], resolver=None) -> list[dict]:
                 sender_address
             )
 
+        if named_group:
+            key = named_group_key(named_group)
+            route = named_routes.get(key)
+            named_recipients = [sender_address] if sender_address else []
+            named_member_names = [sender_title] if sender_title else []
+            reply_ready = False
+            participants_required = True
+            roster_changed = False
+            roster_warning_id = ""
+            if route is not None:
+                routed_recipients = [
+                    str(value)
+                    for value in route.get("group_recipients", [])
+                ]
+                routed_identities = {
+                    canonical_address(value) for value in routed_recipients
+                }
+                sender_identity = canonical_address(sender_address)
+                # A previously unseen sender is evidence that the saved
+                # membership changed. Fail closed until the user reviews it.
+                if sender_identity is not None and sender_identity in routed_identities:
+                    named_recipients = routed_recipients
+                    named_member_names = [
+                        str(value)
+                        for value in route.get("group_members", [])
+                    ]
+                    reply_ready = True
+                    participants_required = False
+                else:
+                    named_recipients = list(routed_recipients)
+                    named_member_names = [
+                        str(value)
+                        for value in route.get("group_members", [])
+                    ]
+                    if sender_address and sender_address not in named_recipients:
+                        named_recipients.append(sender_address)
+                    if sender_identity is not None:
+                        roster_changed = True
+                        route_version = str(route.get("seen_at") or key)
+                        roster_warning_id = f"{route_version}:{sender_identity}"
+            sms.update({
+                "group_key": key,
+                "group_name": named_group,
+                "group_members": named_member_names,
+                "group_recipients": named_recipients,
+                "group_reply_ready": reply_ready,
+                "group_origin": "named",
+                "group_participants_required": participants_required,
+                "group_observed_recipient": sender_address or "",
+                "group_observed_sender": sender_title,
+                "group_roster_changed": roster_changed,
+                "group_unexpected_sender": sender_title if roster_changed else "",
+                "group_roster_warning_id": roster_warning_id,
+            })
+            continue
+
+        if members is None:  # Defensive: named groups return above.
+            continue
         recipients: list[str] = []
         unresolved = False
         for member in members:
@@ -291,6 +433,7 @@ def correlate_group_events(events: list[dict], resolver=None) -> list[dict]:
             "group_members": members,
             "group_recipients": recipients,
             "group_reply_ready": reply_ready,
+            "group_observed_sender": sender_title,
         })
 
     _reconcile_group_identities(out, addresses_by_name, resolver)

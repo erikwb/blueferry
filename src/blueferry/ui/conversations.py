@@ -19,6 +19,41 @@ from blueferry.ui.util import format_ts
 _ELLIPSIZE_END = Pango.EllipsizeMode.END
 
 
+def _participant_lines(value: str) -> list[str]:
+    """Return unique non-empty addresses from the one-per-line editor."""
+    result: list[str] = []
+    for line in value.splitlines():
+        address = line.strip()
+        if address and address not in result:
+            result.append(address)
+    return result
+
+
+def _group_roster_banner_title(thread: dict) -> str:
+    """Describe why this named group currently needs roster review."""
+    if thread.get("roster_changed"):
+        sender = str(thread.get("unexpected_sender") or _("Someone new"))
+        template = _(
+            "{sender} is not in BlueFerry's saved participant list for "
+            "{group}. Review the list before replying."
+        )
+    else:
+        sender = str(thread.get("prompt_sender") or _("Someone"))
+        template = _(
+            "{sender} has sent a message to the group {group}. "
+            "BlueFerry needs its participant list before you can reply."
+        )
+    return template.format(sender=sender, group=thread["name"])
+
+
+def _roster_warning_id(thread: dict) -> str:
+    """Return one stable dedup key even for older partial thread payloads."""
+    return str(
+        thread.get("roster_warning_id")
+        or f"{thread.get('key', '')}:{thread.get('unexpected_sender') or 'unknown'}"
+    )
+
+
 class ConversationsPage(Gtk.Box):
     def __init__(self, client, toast) -> None:
         super().__init__(
@@ -31,6 +66,7 @@ class ConversationsPage(Gtk.Box):
         self._threads: dict[str, dict] = {}
         self._current: str | None = None
         self._confirmed_groups: set[str] = set()
+        self._warned_roster_changes: set[str] = set()
         self._pending_open_handle: str | None = None
         self._reload_pending = False
         self._reload_again = False
@@ -134,10 +170,30 @@ class ConversationsPage(Gtk.Box):
             xalign=0,
             ellipsize=_ELLIPSIZE_END,
         )
+        self._group_roster_button = Gtk.Button(
+            icon_name="system-users-symbolic",
+            tooltip_text=_("Edit Group Participants"),
+            css_classes=["flat"],
+            visible=False,
+        )
+        self._group_roster_button.update_property(
+            [Gtk.AccessibleProperty.LABEL], [_("Edit Group Participants")]
+        )
+        self._group_roster_button.connect(
+            "clicked", self._open_group_roster_dialog
+        )
         conversation_header.append(self.back_button)
         conversation_header.append(self._conversation_title)
+        conversation_header.append(self._group_roster_button)
         right.append(conversation_header)
         right.append(Gtk.Separator())
+        self._group_roster_banner = Adw.Banner()
+        self._group_roster_banner.set_button_label(_("Add Participants"))
+        self._group_roster_banner.set_revealed(False)
+        self._group_roster_banner.connect(
+            "button-clicked", self._open_group_roster_dialog
+        )
+        right.append(self._group_roster_banner)
         right.append(self._stack)
 
         compose = Gtk.Box(
@@ -441,18 +497,24 @@ class ConversationsPage(Gtk.Box):
         if self._current in self._threads:
             self._msg_list.remove_all()
             for message in self._threads[self._current]["messages"]:
-                self._append_bubble(message)
+                self._append_bubble(
+                    message,
+                    is_group=bool(self._threads[self._current].get("is_group")),
+                )
             can_reply = bool(self._threads[self._current].get("reply_ready", True))
             self._entry.set_sensitive(can_reply)
             self._send_btn.set_sensitive(can_reply)
+            self._update_group_roster_banner(self._threads[self._current])
             self._stack.set_visible_child_name("messages")
             self._scroll_to_bottom()
         else:
             self._entry.set_sensitive(False)
             self._send_btn.set_sensitive(False)
+            self._update_group_roster_banner(None)
             self._stack.set_visible_child_name("empty")
         self._reload_finished()
         self._select_pending_message()
+        self._maybe_warn_roster_change()
         return False
 
     # ---- thread list ---------------------------------------------------
@@ -510,17 +572,138 @@ class ConversationsPage(Gtk.Box):
         can_reply = bool(thread and thread.get("reply_ready", True))
         self._entry.set_sensitive(can_reply)
         self._send_btn.set_sensitive(can_reply)
+        self._update_group_roster_banner(thread)
         self._stack.set_visible_child_name("messages")
         self._conversation_title.set_label(thread["name"])
         self.split_view.set_show_content(True)
         self._msg_list.remove_all()
         for msg in thread["messages"]:
-            self._append_bubble(msg)
+            self._append_bubble(msg, is_group=bool(thread.get("is_group")))
         self._scroll_to_bottom()
+
+    def _update_group_roster_banner(self, thread: dict | None) -> None:
+        required = bool(thread and thread.get("participants_required"))
+        self._group_roster_button.set_visible(
+            bool(thread and thread.get("group_origin") == "named")
+        )
+        self._group_roster_banner.set_revealed(required)
+        if not required or thread is None:
+            return
+        self._group_roster_banner.set_title(_group_roster_banner_title(thread))
+
+    def _maybe_warn_roster_change(self) -> None:
+        thread = next(
+            (
+                candidate for candidate in self._threads.values()
+                if candidate.get("roster_changed")
+                and _roster_warning_id(candidate) not in self._warned_roster_changes
+            ),
+            None,
+        )
+        if thread is None or self.get_root() is None:
+            return
+        warning_id = _roster_warning_id(thread)
+        self._warned_roster_changes.add(warning_id)
+        sender = str(thread.get("unexpected_sender") or _("Someone new"))
+        dialog = Adw.AlertDialog(
+            heading=_("Group Membership May Have Changed"),
+            body=_(
+                "{sender} sent a message to {group}, but is not in BlueFerry's "
+                "saved participant list. Replies are disabled until you review "
+                "the list. This can also happen if you have multiple groups "
+                "named {group}, because BlueFerry cannot distinguish them."
+            ).format(sender=sender, group=thread["name"]),
+        )
+        dialog.add_response("later", _("Not Now"))
+        dialog.add_response("review", _("Review Participants"))
+        dialog.set_default_response("review")
+        dialog.set_response_appearance(
+            "review", Adw.ResponseAppearance.SUGGESTED
+        )
+
+        def response(_dialog, selected: str) -> None:
+            if selected == "review":
+                self._open_group_roster_dialog(None, thread)
+
+        dialog.connect("response", response)
+        dialog.present(self.get_root())
+
+    def _open_group_roster_dialog(
+        self, _source, selected_thread: dict | None = None,
+    ) -> None:
+        thread = selected_thread or self._threads.get(self._current or "")
+        if not thread or thread.get("group_origin") != "named":
+            return
+        sender = str(thread.get("prompt_sender") or _("Someone"))
+        dialog = Adw.AlertDialog(
+            heading=_("Who is in {group}?").format(group=thread["name"]),
+            body=_(
+                "{sender} has sent a message to a group named {group}, which you're "
+                "a member of. BlueFerry can't determine the participants of "
+                "this group chat, but if you fill in the members, it can work.\n\n"
+                "Enter every other participant's phone number or Apple ID email, "
+                "one per line. Changing this list only updates BlueFerry's local "
+                "understanding of the group; it does not add or remove anyone in "
+                "Messages on your iPhone.\n\nBlueFerry identifies named groups by "
+                "name. If you have multiple groups named {group}, BlueFerry may "
+                "combine them and use the wrong participant list. The list can "
+                "also become outdated if the group is renamed or its membership "
+                "changes."
+            ).format(sender=sender, group=thread["name"]),
+        )
+        editor = Gtk.TextView(
+            accepts_tab=False,
+            monospace=True,
+            top_margin=8,
+            bottom_margin=8,
+            left_margin=8,
+            right_margin=8,
+            wrap_mode=Gtk.WrapMode.NONE,
+        )
+        editor.get_buffer().set_text("\n".join(thread.get("recipients", [])))
+        dialog.set_extra_child(
+            Gtk.ScrolledWindow(
+                min_content_height=120,
+                max_content_height=220,
+                child=editor,
+            )
+        )
+        dialog.add_response("cancel", _("Cancel"))
+        dialog.add_response("save", _("Save Participants"))
+        dialog.set_close_response("cancel")
+        dialog.set_default_response("save")
+        dialog.set_response_appearance(
+            "save", Adw.ResponseAppearance.SUGGESTED
+        )
+
+        def response(_dialog, selected: str) -> None:
+            if selected != "save":
+                return
+            buffer = editor.get_buffer()
+            recipients = _participant_lines(
+                buffer.get_text(
+                    buffer.get_start_iter(), buffer.get_end_iter(), False
+                )
+            )
+
+            def saved(_thread) -> None:
+                self._reload_threads()
+
+            self._client.set_group_participants_async(
+                thread["key"],
+                recipients,
+                saved,
+                lambda error: self._toast(
+                    _("Could not save participants: {error}").format(error=error)
+                ),
+            )
+
+        dialog.connect("response", response)
+        dialog.present(self.get_root())
 
     # ---- message bubbles ----------------------------------------------
 
-    def _append_bubble(self, msg: dict) -> None:
+    def _append_bubble(self, msg: dict, *, is_group: bool) -> None:
         row = Gtk.ListBoxRow(activatable=False, selectable=False)
         outer = Gtk.Box(
             orientation=Gtk.Orientation.VERTICAL,
@@ -535,6 +718,14 @@ class ConversationsPage(Gtk.Box):
         bubble.set_halign(Gtk.Align.END if msg["outgoing"] else Gtk.Align.START)
         if msg["outgoing"]:
             bubble.add_css_class("msg-out")
+        if is_group:
+            bubble.append(
+                Gtk.Label(
+                    label=_("You") if msg["outgoing"] else msg.get("sender", ""),
+                    xalign=0,
+                    css_classes=["dim-label", "caption", "heading"],
+                )
+            )
         body = Gtk.Label(
             label=msg["body"], xalign=0, wrap=True, selectable=True, max_width_chars=46
         )

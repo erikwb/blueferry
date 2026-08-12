@@ -122,3 +122,32 @@ def test_shell_contact_search_and_direct_send_helpers(monkeypatch) -> None:
     assert contacts_result.stdout == '[{"name": "Alice", "address": "15551234567"}]\n'
     assert send_result.exit_code == 0
     assert backend.sent == [("15551234567", "hello")]
+
+
+def test_shell_named_group_roster_helper_accepts_multiple_recipients(
+    monkeypatch,
+) -> None:
+    class _Thread:
+        @staticmethod
+        def to_dict():
+            return {"key": "group:named:test", "reply_ready": True}
+
+    class _Backend:
+        def set_group_participants(self, key, recipients):
+            self.saved = (key, recipients)
+            return _Thread()
+
+    backend = _Backend()
+    monkeypatch.setattr(cli, "_json_client", lambda: (backend, RuntimeError))
+
+    result = CliRunner().invoke(cli.app, [
+        "group-participants-set",
+        "group:named:test",
+        "+15551111111",
+        "alice@example.com",
+    ])
+
+    assert result.exit_code == 0
+    assert backend.saved == (
+        "group:named:test", ["+15551111111", "alice@example.com"]
+    )

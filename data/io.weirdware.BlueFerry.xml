@@ -39,6 +39,13 @@
       <annotation name="io.weirdware.BlueFerry.Errors"
                   value="InvalidArgs,NotReady,ResponseTooLarge"/>
     </method>
+    <method name="SetGroupParticipants">
+      <arg name="thread_key" type="s" direction="in"/>
+      <arg name="recipients" type="as" direction="in"/>
+      <arg name="thread_json" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotFound,NotReady,ResponseTooLarge"/>
+    </method>
     <method name="GetStatus">
       <arg name="json" type="s" direction="out"/>
     </method>

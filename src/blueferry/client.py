@@ -11,6 +11,7 @@ from blueferry.client_wire import (
     decode_json,
     decode_mapping,
     decode_status,
+    decode_thread,
     decode_threads,
 )
 from blueferry.errors import BlueFerryError
@@ -19,6 +20,7 @@ from blueferry.protocol import (
     BUS_NAME,
     CLEAR_CALL_TIMEOUT_SEC,
     CONTACT_CALL_TIMEOUT_SEC,
+    GROUP_ROUTE_CALL_TIMEOUT_SEC,
     MESSAGES_IFACE,
     OBEX_CALL_TIMEOUT_SEC,
     OBJECT_PATH,
@@ -70,6 +72,20 @@ class BackendClient:
             return decode_contacts(self._iface(MESSAGES_IFACE).FindContacts(
                 query, timeout=CONTACT_CALL_TIMEOUT_SEC
             ))
+        except (dbus.exceptions.DBusException, ValueError) as error:
+            raise BackendError(str(error)) from error
+
+    def set_group_participants(
+        self, thread_key: str, recipients: list[str]
+    ) -> Thread:
+        try:
+            return decode_thread(
+                self._iface(MESSAGES_IFACE).SetGroupParticipants(
+                    thread_key,
+                    dbus.Array(recipients, signature="s"),
+                    timeout=GROUP_ROUTE_CALL_TIMEOUT_SEC,
+                )
+            )
         except (dbus.exceptions.DBusException, ValueError) as error:
             raise BackendError(str(error)) from error
 

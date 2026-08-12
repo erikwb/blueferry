@@ -5,13 +5,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from blueferry import backend_operations
+from blueferry import backend_operations, config
 from blueferry.backend_operations import BackendDependencies, BackendOperations
 from blueferry.errors import (
     ConfirmationRequiredError,
     InvalidArgumentsError,
     OperationFailedError,
 )
+from blueferry.grouping import named_group_key
+from blueferry.history import append_event
 from blueferry.limits import (
     MAX_EVENT_QUERY_LIMIT,
     MAX_OUTGOING_BODY_BYTES,
@@ -260,6 +262,104 @@ def test_contact_lookup_stays_behind_backend_boundary() -> None:
         "name": "Alice Example",
         "address": "15551234567",
     }]
+
+
+def test_named_group_roster_is_validated_and_persisted(monkeypatch) -> None:
+    class Contacts:
+        @staticmethod
+        def resolve(address):
+            return {
+                "+15551111111": "Beau",
+                "+15552222222": "Alice",
+            }.get(address)
+
+    operations = _operations(contacts=Contacts())
+    provisional = {
+        "key": "group:named:test",
+        "name": "Crew",
+        "is_group": True,
+        "group_origin": "named",
+        "observed_recipients": ["+15551111111"],
+        "recipients": ["+15551111111"],
+        "reply_ready": False,
+    }
+    updated = {**provisional, "reply_ready": True}
+    retained = []
+    monkeypatch.setattr(
+        operations._conversations,
+        "find",
+        lambda _key: updated if retained else provisional,
+    )
+    monkeypatch.setattr(
+        backend_operations,
+        "append_event",
+        lambda event, **_kwargs: retained.append(event),
+    )
+
+    result = operations.set_group_participants(
+        provisional["key"], ["+1 (555) 111-1111", "+15552222222"]
+    )
+
+    assert result["reply_ready"] is True
+    assert retained[0]["group_name"] == "Crew"
+    assert retained[0]["group_members"] == ["Beau", "Alice"]
+    assert retained[0]["group_recipients"] == [
+        "+15551111111", "+15552222222"
+    ]
+
+
+def test_named_group_roster_cannot_omit_an_observed_sender(monkeypatch) -> None:
+    operations = _operations()
+    thread = {
+        "key": "group:named:test",
+        "name": "Crew",
+        "is_group": True,
+        "group_origin": "named",
+        "observed_recipients": ["+15551111111"],
+        "recipients": ["+15551111111"],
+        "reply_ready": False,
+    }
+    monkeypatch.setattr(operations._conversations, "find", lambda _key: thread)
+
+    with pytest.raises(InvalidArgumentsError, match="observed sender"):
+        operations.set_group_participants(
+            thread["key"], ["+15552222222", "+15553333333"]
+        )
+
+
+def test_named_group_key_survives_roster_save_and_history_reload(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setattr(config, "EVENTS_DB", tmp_path / "events.sqlite")
+    key = named_group_key("Crew")
+    append_event({
+        "kind": "sms_received",
+        "handle": "message-1",
+        "sender_address": "+15551111111",
+        "contact_name": "Beau",
+        "body": "hello",
+        "seen_at": "2026-08-12T10:00:00+00:00",
+    })
+    append_event({
+        "kind": "ancs_notification",
+        "notification_id": 42,
+        "app_id": "com.apple.MobileSMS",
+        "title": "Beau",
+        "subtitle": "Crew",
+        "body": "hello",
+        "seen_at": "2026-08-12T10:00:23+00:00",
+    })
+    operations = _operations()
+
+    assert operations.list_threads(10)[0]["key"] == key
+    updated = operations.set_group_participants(
+        key, ["+15551111111", "+15552222222"]
+    )
+
+    assert updated["key"] == key
+    assert updated["reply_ready"] is True
+    assert updated["participants_required"] is False
+    assert updated["roster_changed"] is False
 
 
 def test_history_snapshot_validates_kinds_and_caps_bodies(monkeypatch) -> None:

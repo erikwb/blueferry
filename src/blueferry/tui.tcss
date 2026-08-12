@@ -260,6 +260,14 @@ ConversationItem.-highlight .avatar {
     color: #7dd3fc;
 }
 
+#edit-group-participants {
+    display: none;
+    width: 16;
+    min-width: 16;
+    height: 3;
+    margin-right: 1;
+}
+
 #message-timeline {
     height: 1fr;
     padding: 1 2;
@@ -469,6 +477,11 @@ ModalScreen {
 
 #new-body {
     height: 8;
+    background: #151f35;
+}
+
+#roster-participants {
+    height: 10;
     background: #151f35;
 }
 

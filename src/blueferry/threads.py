@@ -75,6 +75,21 @@ def _thread_name(event: dict, address: str | None, resolver) -> str:
     return display_sender_from_dict(event)
 
 
+def _message_sender(event: dict, address: str | None, resolver) -> str:
+    """Return the person who sent a group message, not the group name."""
+    if resolver is not None and address:
+        resolved = resolver.resolve(address)
+        if resolved:
+            return str(resolved)
+    contact = str(event.get("contact_name") or "").strip()
+    if contact:
+        return contact
+    observed = str(event.get("group_observed_sender") or "").strip()
+    if observed:
+        return observed
+    return address or "(unknown)"
+
+
 def thread_key(event: dict) -> str | None:
     """Return a stable key that never relies on a contact display name."""
     if event.get("group_key"):
@@ -102,6 +117,9 @@ def build_threads(events: list[dict], resolver=None) -> list[dict]:
         is_group = bool(event.get("group_key"))
         address = safe_event_address(event)
         recipients = [str(value) for value in event.get("group_recipients", [])]
+        observed_recipient = str(
+            event.get("group_observed_recipient") or ""
+        ).strip()
         thread = by_key.get(key)
         if thread is None:
             thread = {
@@ -112,9 +130,31 @@ def build_threads(events: list[dict], resolver=None) -> list[dict]:
                     str(value) for value in event.get("group_members", [])
                 ] if is_group else [],
                 "recipients": recipients if is_group else ([address] if address else []),
+                "observed_recipients": (
+                    [observed_recipient] if observed_recipient else []
+                ) if is_group else [],
                 "reply_ready": (
                     bool(event.get("group_reply_ready")) if is_group
                     else address is not None
+                ),
+                "group_origin": str(
+                    event.get("group_origin")
+                    or ("named" if key.startswith("group:named:") else "")
+                ),
+                "participants_required": bool(
+                    event.get("group_participants_required", False)
+                ),
+                "prompt_sender": str(
+                    event.get("group_observed_sender") or ""
+                ),
+                "roster_changed": bool(
+                    event.get("group_roster_changed", False)
+                ),
+                "unexpected_sender": str(
+                    event.get("group_unexpected_sender") or ""
+                ),
+                "roster_warning_id": str(
+                    event.get("group_roster_warning_id") or ""
                 ),
                 "messages": [],
                 "last_ts": "",
@@ -124,28 +164,54 @@ def build_threads(events: list[dict], resolver=None) -> list[dict]:
             members = [
                 str(value) for value in event.get("group_members", [])
             ]
-            if len(members) > len(thread["members"]):
-                thread["members"] = members
-            if len(recipients) > len(thread["recipients"]):
-                thread["recipients"] = recipients
-                thread["name"] = _thread_name(event, address, resolver)
+            for member in members:
+                if member not in thread["members"]:
+                    thread["members"].append(member)
+            for recipient in recipients:
+                if recipient not in thread["recipients"]:
+                    thread["recipients"].append(recipient)
+                    thread["name"] = _thread_name(event, address, resolver)
+            if observed_recipient and observed_recipient not in thread["observed_recipients"]:
+                thread["observed_recipients"].append(observed_recipient)
             thread["reply_ready"] = (
                 thread["reply_ready"] or bool(event.get("group_reply_ready"))
             )
+            thread["participants_required"] = (
+                thread["participants_required"]
+                or bool(event.get("group_participants_required", False))
+            )
+            if event.get("group_origin"):
+                thread["group_origin"] = str(event["group_origin"])
+            if event.get("group_roster_changed"):
+                thread["roster_changed"] = True
+                thread["unexpected_sender"] = str(
+                    event.get("group_unexpected_sender") or ""
+                )
+                thread["roster_warning_id"] = str(
+                    event.get("group_roster_warning_id") or ""
+                )
 
         message = {
             "handle": str(event.get("handle") or ""),
             "body": str(event.get("body") or ""),
             "timestamp": _event_time(event),
             "outgoing": event.get("kind") == "sms_sent",
+            "sender": (
+                "" if event.get("kind") == "sms_sent"
+                else _message_sender(event, address, resolver)
+            ) if is_group else "",
             "read": bool(event.get("is_read", False)),
             "body_truncated": bool(event.get("body_truncated", False)),
         }
         thread["messages"].append(message)
         if message["timestamp"] >= thread["last_ts"]:
             thread["last_ts"] = message["timestamp"]
+            if event.get("group_observed_sender"):
+                thread["prompt_sender"] = str(event["group_observed_sender"])
 
     for thread in by_key.values():
+        if thread.get("participants_required"):
+            thread["reply_ready"] = False
         if len(thread["messages"]) > MAX_THREAD_MESSAGES:
             thread["messages"] = thread["messages"][-MAX_THREAD_MESSAGES:]
     return sorted(by_key.values(), key=lambda item: item["last_ts"], reverse=True)

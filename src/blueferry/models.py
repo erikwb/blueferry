@@ -142,16 +142,21 @@ class ThreadMessage:
     timestamp: str
     outgoing: bool
     read: bool
+    sender: str = ""
     extra: Mapping[str, Any] = field(default_factory=dict, repr=False)
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> ThreadMessage:
-        known = {"handle", "body", "timestamp", "display_timestamp", "outgoing", "read"}
+        known = {
+            "handle", "body", "timestamp", "display_timestamp", "outgoing",
+            "sender", "read",
+        }
         return cls(
             handle=_str(value.get("handle")),
             body=_str(value.get("body")),
             timestamp=_str(value.get("timestamp")),
             outgoing=_bool(value.get("outgoing")),
+            sender=_str(value.get("sender")),
             read=_bool(value.get("read")),
             extra={key: item for key, item in value.items() if key not in known},
         )
@@ -164,6 +169,7 @@ class ThreadMessage:
             "timestamp": self.timestamp,
             "display_timestamp": format_message_timestamp(self.timestamp),
             "outgoing": self.outgoing,
+            "sender": self.sender,
             "read": self.read,
         }
 

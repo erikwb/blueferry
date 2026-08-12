@@ -156,6 +156,19 @@ class MessagesService(dbus.service.Object):
         ))
 
     @dbus.service.method(
+        IFACE, in_signature="sas", out_signature="s", sender_keyword="sender"
+    )
+    def SetGroupParticipants(self, thread_key: str, recipients, sender=None) -> str:
+        def update() -> str:
+            result = self._json_response(
+                self.operations.set_group_participants(thread_key, recipients)
+            )
+            self.emit_history_changed()
+            return result
+
+        return self._sync(lambda: self._authorized(sender, "settings", update))
+
+    @dbus.service.method(
         IFACE, in_signature="", out_signature="s", sender_keyword="sender"
     )
     def GetStatus(self, sender=None) -> str:

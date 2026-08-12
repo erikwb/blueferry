@@ -15,6 +15,7 @@ Kirigami.ApplicationWindow {
     property bool firstRunRedirected: false
     property var iphoneSettingsPage: null
     property string pendingMessageHandle: ""
+    property var warnedRosterChanges: ({})
 
     visible: true
     width: 980
@@ -55,6 +56,16 @@ Kirigami.ApplicationWindow {
             .replace(/>/g, "&gt;")
     }
 
+    function escapedRichText(value) {
+        // SelectableLabel uses AutoText. The wrapper makes escaped entities
+        // render as text instead of appearing literally as "&amp;".
+        return "<span>" + value + "</span>"
+    }
+
+    function escapedRichTextWithBreaks(value) {
+        return escapedRichText(String(value).replace(/\n/g, "<br/>"))
+    }
+
     function mapConnectionRefused() {
         const status = bridge.status || ({})
         return status.map_connection_refused === true
@@ -86,6 +97,22 @@ Kirigami.ApplicationWindow {
             openPhoneSettings()
     }
 
+    function warnAboutRosterChanges() {
+        for (let index = 0; index < bridge.threads.length; ++index) {
+            const thread = bridge.threads[index]
+            if (!thread.roster_changed)
+                continue
+            const warningId = thread.roster_warning_id
+                || thread.key + ":" + (thread.unexpected_sender || "unknown")
+            if (warnedRosterChanges[warningId] === true)
+                continue
+            warnedRosterChanges[warningId] = true
+            rosterChangedDialog.thread = thread
+            rosterChangedDialog.open()
+            return
+        }
+    }
+
     Connections {
         target: root.bridge
 
@@ -100,6 +127,7 @@ Kirigami.ApplicationWindow {
             }
             if (root.pendingMessageHandle !== "")
                 root.selectMessage(root.pendingMessageHandle)
+            root.warnAboutRosterChanges()
         }
 
         function onMessageOpenRequested(handle) {
@@ -165,8 +193,10 @@ Kirigami.ApplicationWindow {
         id: groupDialog
         title: qsTr("Send Group Message?")
         subtitle: root.pendingThread
-            ? qsTr("The iPhone will reply to these participants:\n\n")
-              + root.pendingThread.recipients.map(root.htmlEscape).join("\n")
+            ? root.escapedRichTextWithBreaks(
+                qsTr("The iPhone will reply to these participants:\n\n")
+                + root.pendingThread.recipients.map(root.htmlEscape).join("\n")
+              )
             : ""
         standardButtons: Kirigami.Dialog.Cancel
         customFooterActions: [Kirigami.Action {
@@ -177,6 +207,115 @@ Kirigami.ApplicationWindow {
                 groupDialog.close()
             }
         }]
+    }
+
+    Kirigami.PromptDialog {
+        id: rosterChangedDialog
+        property var thread: null
+        title: qsTr("Group Membership May Have Changed")
+        subtitle: thread
+            ? root.escapedRichText(
+                qsTr("%1 sent a message to %2, but is not in BlueFerry's saved participant list. Replies are disabled until you review the list. This can also happen if you have multiple groups named %2, because BlueFerry cannot distinguish them.")
+                    .arg(root.htmlEscape(thread.unexpected_sender || qsTr("Someone new")))
+                    .arg(root.htmlEscape(thread.name))
+              )
+            : ""
+        dialogType: Kirigami.PromptDialog.Warning
+        standardButtons: Kirigami.Dialog.Cancel
+        customFooterActions: [Kirigami.Action {
+            text: qsTr("Review Participants")
+            icon.name: "system-users"
+            onTriggered: {
+                const selected = rosterChangedDialog.thread
+                rosterChangedDialog.close()
+                groupParticipantsDialog.thread = selected
+                groupParticipantsDialog.open()
+            }
+        }]
+    }
+
+    Kirigami.Dialog {
+        id: groupParticipantsDialog
+        property var thread: null
+        title: thread ? qsTr("Who is in %1?").arg(thread.name) : ""
+        preferredWidth: Kirigami.Units.gridUnit * 28
+        standardButtons: Kirigami.Dialog.Cancel
+
+        function recipients() {
+            const result = []
+            const lines = groupParticipantEditor.text.split(/\r?\n/)
+            for (let index = 0; index < lines.length; ++index) {
+                const address = lines[index].trim()
+                if (address !== "" && result.indexOf(address) < 0)
+                    result.push(address)
+            }
+            return result
+        }
+
+        customFooterActions: [Kirigami.Action {
+            text: qsTr("Save Participants")
+            icon.name: "document-save"
+            enabled: groupParticipantsDialog.recipients().length >= 2
+                && !root.bridge.busy
+            onTriggered: {
+                root.bridge.setGroupParticipants(
+                    groupParticipantsDialog.thread.key,
+                    groupParticipantsDialog.recipients()
+                )
+                groupParticipantsDialog.close()
+            }
+        }]
+
+        onOpened: {
+            groupParticipantEditor.text = thread
+                ? (thread.recipients || []).join("\n") : ""
+            groupParticipantEditor.forceActiveFocus()
+        }
+
+        ColumnLayout {
+            spacing: Kirigami.Units.smallSpacing
+
+            Controls.Label {
+                Layout.fillWidth: true
+                text: groupParticipantsDialog.thread
+                    ? qsTr("%1 has sent a message to a group named %2, which you're a member of. BlueFerry can't determine the participants of this group chat, but if you fill in the members, it can work.")
+                        .arg(groupParticipantsDialog.thread.prompt_sender || qsTr("Someone"))
+                        .arg(groupParticipantsDialog.thread.name)
+                    : ""
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+            }
+            Controls.Label {
+                Layout.fillWidth: true
+                text: qsTr("Enter every other participant's phone number or Apple ID email, one per line.")
+                wrapMode: Text.Wrap
+            }
+            Kirigami.InlineMessage {
+                Layout.fillWidth: true
+                visible: true
+                type: Kirigami.MessageType.Information
+                text: qsTr("Changing this list only updates BlueFerry's local understanding of the group. It does not add or remove anyone in Messages on your iPhone.")
+            }
+            Controls.TextArea {
+                id: groupParticipantEditor
+                Layout.fillWidth: true
+                Layout.preferredHeight: Kirigami.Units.gridUnit * 7
+                placeholderText: qsTr("One participant per line")
+                wrapMode: TextEdit.NoWrap
+                Accessible.name: qsTr("Group Participants")
+            }
+            Kirigami.InlineMessage {
+                Layout.fillWidth: true
+                visible: true
+                type: Kirigami.MessageType.Warning
+                text: groupParticipantsDialog.thread
+                    ? root.escapedRichText(
+                        qsTr("BlueFerry identifies named groups by name. If you have multiple groups named %1, BlueFerry may combine them and use the wrong participant list. This list can also become outdated if the group is renamed or its membership changes.")
+                            .arg(root.htmlEscape(groupParticipantsDialog.thread.name))
+                      )
+                    : ""
+            }
+        }
     }
 
     Kirigami.PromptDialog {
@@ -410,6 +549,16 @@ Kirigami.ApplicationWindow {
 
         actions: [
             Kirigami.Action {
+                text: qsTr("Edit Group Participants")
+                icon.name: "system-users"
+                visible: messagesPage.thread !== null
+                    && messagesPage.thread.group_origin === "named"
+                onTriggered: {
+                    groupParticipantsDialog.thread = messagesPage.thread
+                    groupParticipantsDialog.open()
+                }
+            },
+            Kirigami.Action {
                 text: qsTr("Settings")
                 icon.name: "settings-configure"
                 onTriggered: root.togglePhoneSettings()
@@ -448,16 +597,29 @@ Kirigami.ApplicationWindow {
                     ]
                 }
 
-                RowLayout {
+                Controls.SplitView {
+                    id: messagesSplit
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    spacing: 0
+                    orientation: Qt.Horizontal
+
+                    handle: Item {
+                        implicitWidth: messagesPage.narrow
+                            ? 0 : Kirigami.Units.smallSpacing
+                        visible: !messagesPage.narrow
+
+                        Kirigami.Separator {
+                            anchors.centerIn: parent
+                            height: parent.height
+                        }
+                    }
 
                     ColumnLayout {
-                        Layout.fillHeight: true
-                        Layout.preferredWidth: messagesPage.narrow
-                            ? parent.width
-                            : Math.max(Kirigami.Units.gridUnit * 14, parent.width * 0.3)
+                        Controls.SplitView.fillWidth: messagesPage.narrow
+                        Controls.SplitView.preferredWidth: messagesPage.narrow
+                            ? messagesSplit.width : messagesSplit.width * 0.35
+                        Controls.SplitView.minimumWidth: messagesPage.narrow
+                            ? 0 : Kirigami.Units.gridUnit * 12
                         visible: !messagesPage.narrow || root.selectedThreadKey === ""
                         spacing: 0
 
@@ -534,14 +696,10 @@ Kirigami.ApplicationWindow {
                         }
                     }
 
-                    Kirigami.Separator {
-                        Layout.fillHeight: true
-                        visible: !messagesPage.narrow
-                    }
-
                     ColumnLayout {
-                        Layout.fillWidth: true
-                        Layout.fillHeight: true
+                        Controls.SplitView.fillWidth: true
+                        Controls.SplitView.minimumWidth: messagesPage.narrow
+                            ? 0 : Kirigami.Units.gridUnit * 18
                         visible: !messagesPage.narrow || root.selectedThreadKey !== ""
                         spacing: 0
 
@@ -588,6 +746,8 @@ Kirigami.ApplicationWindow {
                                     id: bubble
                                     message: messageDelegate.modelData
                                     availableWidth: messageList.width
+                                    showSender: messagesPage.thread !== null
+                                        && messagesPage.thread.is_group
                                     anchors.right: messageDelegate.modelData.outgoing ? parent.right : undefined
                                     anchors.left: messageDelegate.modelData.outgoing ? undefined : parent.left
                                     anchors.margins: Kirigami.Units.largeSpacing
@@ -605,6 +765,35 @@ Kirigami.ApplicationWindow {
                         }
 
                         Kirigami.Separator { Layout.fillWidth: true }
+
+                        Kirigami.InlineMessage {
+                            Layout.fillWidth: true
+                            Layout.margins: Kirigami.Units.smallSpacing
+                            visible: messagesPage.thread !== null
+                                && messagesPage.thread.participants_required === true
+                            type: Kirigami.MessageType.Information
+                            text: messagesPage.thread
+                                ? messagesPage.thread.roster_changed
+                                    ? root.escapedRichText(
+                                        qsTr("%1 is not in BlueFerry's saved participant list for %2. Review the list before replying.")
+                                            .arg(root.htmlEscape(messagesPage.thread.unexpected_sender || qsTr("Someone new")))
+                                            .arg(root.htmlEscape(messagesPage.thread.name))
+                                      )
+                                    : root.escapedRichText(
+                                        qsTr("%1 has sent a message to the group %2. BlueFerry needs its participant list before you can reply.")
+                                            .arg(root.htmlEscape(messagesPage.thread.prompt_sender || qsTr("Someone")))
+                                            .arg(root.htmlEscape(messagesPage.thread.name))
+                                      )
+                                : ""
+                            actions: [Kirigami.Action {
+                                text: qsTr("Add Participants")
+                                icon.name: "list-add-user"
+                                onTriggered: {
+                                    groupParticipantsDialog.thread = messagesPage.thread
+                                    groupParticipantsDialog.open()
+                                }
+                            }]
+                        }
 
                         RowLayout {
                             Layout.fillWidth: true

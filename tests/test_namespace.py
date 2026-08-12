@@ -200,6 +200,50 @@ def test_quickshell_outgoing_bubbles_match_qt_accent_tint() -> None:
     assert "color: theme.windowText" in quickshell
 
 
+def test_group_message_bubbles_show_the_individual_sender() -> None:
+    gtk = (ROOT / "src/blueferry/ui/conversations.py").read_text()
+    qt_bubble = (ROOT / "src/blueferry/qt/qml/MessageBubble.qml").read_text()
+    qt_view = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
+    quickshell = (ROOT / "data/quickshell/shell.qml").read_text()
+
+    assert 'label=_("You") if msg["outgoing"] else msg.get("sender", "")' in gtk
+    assert 'text: root.message.outgoing ? qsTr("You")' in qt_bubble
+    assert "&& messagesPage.thread.is_group" in qt_view
+    assert '? "You" : (messageRow.modelData.sender || "")' in quickshell
+
+
+def test_group_roster_editors_explain_local_and_same_name_limits() -> None:
+    clients = (
+        (ROOT / "src/blueferry/ui/conversations.py").read_text(),
+        _qml_bundle(ROOT / "src/blueferry/qt/qml"),
+        _qml_bundle(ROOT / "data/quickshell"),
+        (ROOT / "src/blueferry/tui.py").read_text(),
+    )
+
+    for client in clients:
+        lowered = client.casefold()
+        assert "multiple groups" in lowered
+        assert "does not add or remove anyone" in lowered
+        assert "group membership may have changed" in lowered
+        assert "roster_changed" in client
+
+
+def test_qt_escaped_roster_names_are_forced_to_rich_text() -> None:
+    qml = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
+
+    assert 'return "<span>" + value + "</span>"' in qml
+    assert "root.escapedRichText(" in qml
+    assert "root.htmlEscape(thread.name)" in qml
+
+
+def test_qt_group_confirmation_preserves_escaped_recipient_lines() -> None:
+    qml = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
+
+    assert 'replace(/\\n/g, "<br/>")' in qml
+    assert "? root.escapedRichTextWithBreaks(" in qml
+    assert 'recipients.map(root.htmlEscape).join("\\n")' in qml
+
+
 def test_qt_messages_toolbar_toggles_dismissible_settings_pane() -> None:
     qml = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
 
@@ -208,6 +252,15 @@ def test_qt_messages_toolbar_toggles_dismissible_settings_pane() -> None:
     assert 'text: qsTr("Close Settings")' in qml
     assert "pageStack.removePage(page)" in qml
     assert 'text: qsTr("Refresh")' not in qml
+
+
+def test_qt_conversation_panes_start_compact_and_are_resizable() -> None:
+    qml = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
+
+    assert "Controls.SplitView {" in qml
+    assert "messagesSplit.width * 0.35" in qml
+    assert "Controls.SplitView.fillWidth: true" in qml
+    assert "handle: Item {" in qml
 
 
 def test_gui_clients_keep_phone_settings_out_of_primary_navigation() -> None:
