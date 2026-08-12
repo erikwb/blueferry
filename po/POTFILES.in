@@ -6,3 +6,4 @@ src/blueferry/ui/status_presenter.py
 src/blueferry/qt/controller.py
 src/blueferry/qt/qml/Main.qml
 src/blueferry/qt/qml/MessageBubble.qml
+src/blueferry/qt/qml/OnboardingSummary.qml

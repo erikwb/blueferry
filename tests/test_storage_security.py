@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from blueferry import config, contacts
+from blueferry import config, contact_repository
 from blueferry.contacts import ContactsResolver
 from blueferry.history import append_event, prune_events, read_events
 from blueferry.settings_store import SettingsStore
@@ -244,7 +244,7 @@ def test_plaintext_secure_contact_record_fails_closed(
     monkeypatch.setattr(config, "STATE_DIR", tmp_path)
     monkeypatch.setattr(config, "CONTACTS_DB", tmp_path / "contacts.sqlite")
     monkeypatch.setattr(config, "EVENTS_DB", tmp_path / "events.sqlite")
-    with contacts._open_db() as database:
+    with contact_repository._open_db() as database:
         with database:
             database.execute(
                 "INSERT INTO secure_contacts(payload) VALUES (?)",
@@ -269,7 +269,7 @@ def test_unencrypted_policy_reads_plaintext_contact_records(
     monkeypatch.setattr(config, "STATE_DIR", tmp_path)
     monkeypatch.setattr(config, "CONTACTS_DB", tmp_path / "contacts.sqlite")
     monkeypatch.setattr(config, "EVENTS_DB", tmp_path / "events.sqlite")
-    with contacts._open_db() as database:
+    with contact_repository._open_db() as database:
         with database:
             database.execute(
                 "INSERT INTO secure_contacts(payload) VALUES (?)",
@@ -293,7 +293,7 @@ def test_plaintext_contact_tables_are_discarded_in_encrypted_mode(
     monkeypatch.setattr(config, "STATE_DIR", tmp_path)
     monkeypatch.setattr(config, "CONTACTS_DB", tmp_path / "contacts.sqlite")
     monkeypatch.setattr(config, "EVENTS_DB", tmp_path / "events.sqlite")
-    with contacts._open_db() as database:
+    with contact_repository._open_db() as database:
         with database:
             cursor = database.execute(
                 "INSERT INTO contacts(full_name, updated_at) VALUES (?, ?)",

@@ -6,21 +6,18 @@ not `SetFolder`. Then `PullAll(targetfile, filters)`.
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
-import sqlite3
 import tempfile
 import time
-from contextlib import closing
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import dbus
 
-from blueferry import config
 from blueferry.bus import obex
+from blueferry.contact_repository import ContactRecord, ContactRepository
 from blueferry.events import is_email_shaped, normalize_phone
 from blueferry.limits import (
     MAX_CONTACT_ADDRESS_CHARS,
@@ -32,7 +29,6 @@ from blueferry.limits import (
 from blueferry.obex.sessions import SessionManager
 from blueferry.obex.transfer import wait_for_transfer
 from blueferry.private_files import ensure_private_directory
-from blueferry.storage_security import CorruptStorageError
 
 if TYPE_CHECKING:
     from blueferry.storage_security import StorageSecurity
@@ -104,57 +100,9 @@ def _parse_vcard_records(
     return out
 
 
-# ---- SQLite schema ------------------------------------------------------
-
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS contacts (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    full_name    TEXT NOT NULL,
-    updated_at   REAL NOT NULL
-);
-CREATE TABLE IF NOT EXISTS phones (
-    phone_norm   TEXT NOT NULL,
-    contact_id   INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-    UNIQUE(phone_norm, contact_id)
-);
-CREATE INDEX IF NOT EXISTS idx_phones_norm ON phones(phone_norm);
-
-CREATE TABLE IF NOT EXISTS emails (
-    email        TEXT NOT NULL,
-    contact_id   INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-    UNIQUE(email, contact_id)
-);
-CREATE INDEX IF NOT EXISTS idx_emails_address ON emails(email);
-
-CREATE TABLE IF NOT EXISTS secure_contacts (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    payload      TEXT NOT NULL
-);
-
-"""
-
-
-def _open_db() -> sqlite3.Connection:
-    config.ensure_dirs()
-    # Create/repair the database through the same fail-closed 0600 path used by
-    # message history before SQLite opens it.
-    with config.open_state_file(config.CONTACTS_DB, "a"):
-        pass
-    conn = sqlite3.connect(config.CONTACTS_DB)
-    conn.executescript(_SCHEMA)
-    return conn
-
-
 def clear_contact_cache() -> None:
     """Erase every retained contact representation."""
-    with closing(_open_db()) as db:
-        db.execute("PRAGMA secure_delete = ON")
-        with db:
-            db.execute("DELETE FROM phones")
-            db.execute("DELETE FROM emails")
-            db.execute("DELETE FROM contacts")
-            db.execute("DELETE FROM secure_contacts")
-        db.execute("VACUUM")
+    ContactRepository().clear()
 
 
 # ---- PBAP pull ----------------------------------------------------------
@@ -256,51 +204,7 @@ def pull_phonebook(
         parsed = _parse_vcard_records(blob, maximum=max_contacts)
         log.info("parsed %d contacts from %d bytes", len(parsed), size)
 
-        now = time.time()
-        with closing(_open_db()) as db:
-            db.execute("PRAGMA secure_delete = ON")
-            with db:  # transaction
-                db.execute("DELETE FROM phones")
-                db.execute("DELETE FROM emails")
-                db.execute("DELETE FROM contacts")
-                db.execute("DELETE FROM secure_contacts")
-                for fn, phones, emails in parsed:
-                    if not fn and not phones and not emails:
-                        continue
-                    if storage is not None:
-                        payload = json.dumps(
-                            {"name": fn or "", "phones": phones, "emails": emails},
-                            ensure_ascii=False,
-                            separators=(",", ":"),
-                        )
-                        db.execute(
-                            "INSERT INTO secure_contacts(payload) VALUES (?)",
-                            (storage.encrypt(
-                                payload, purpose="contact-record-v1"
-                            ),),
-                        )
-                        continue
-                    cur = db.execute(
-                        "INSERT INTO contacts(full_name, updated_at) "
-                        "VALUES (?, ?)",
-                        (fn or "", now),
-                    )
-                    cid = cur.lastrowid
-                    for p in phones:
-                        db.execute(
-                            "INSERT OR IGNORE INTO phones"
-                            "(phone_norm, contact_id) VALUES (?, ?)",
-                            (p, cid),
-                        )
-                    for email in emails:
-                        db.execute(
-                            "INSERT OR IGNORE INTO emails"
-                            "(email, contact_id) VALUES (?, ?)",
-                            (email, cid),
-                        )
-            if storage is not None:
-                db.execute("VACUUM")
-        return len(parsed)
+        return ContactRepository(storage).replace(parsed)
 
 
 # ---- Lookup -------------------------------------------------------------
@@ -315,109 +219,17 @@ class ContactsResolver:
 
     def __init__(self, *, storage: StorageSecurity | None = None) -> None:
         self.storage = storage
+        self._repository = ContactRepository(storage)
         self._mem: dict[str, str] = {}
-        self._records: list[tuple[str, list[str], list[str]]] = []
+        self._records: list[ContactRecord] = []
         self._warm()
 
-    @staticmethod
-    def _plaintext_records(db: sqlite3.Connection) -> list[tuple[str, list[str], list[str]]]:
-        records: list[tuple[str, list[str], list[str]]] = []
-        for contact_id, name in db.execute(
-            "SELECT id, full_name FROM contacts ORDER BY id"
-        ):
-            phones = [str(row[0]) for row in db.execute(
-                "SELECT phone_norm FROM phones WHERE contact_id = ? ORDER BY rowid",
-                (contact_id,),
-            )]
-            emails = [str(row[0]) for row in db.execute(
-                "SELECT email FROM emails WHERE contact_id = ? ORDER BY rowid",
-                (contact_id,),
-            )]
-            records.append((str(name), phones, emails))
-        return records
-
-    def _load_secure(self, db: sqlite3.Connection) -> None:
-        if self.storage is None or not self.storage.status.can_read:
-            return
-        for (payload,) in db.execute(
-            "SELECT payload FROM secure_contacts ORDER BY id LIMIT ?",
-            (MAX_PHONEBOOK_CONTACTS,),
-        ):
-            try:
-                plaintext = self.storage.decrypt(
-                    str(payload), purpose="contact-record-v1"
-                )
-                value = json.loads(plaintext)
-                if not isinstance(value, dict):
-                    continue
-                name = str(value.get("name") or "")[:MAX_CONTACT_NAME_CHARS]
-                phones = [
-                    str(item) for item in value.get("phones", [])
-                    if isinstance(item, str) and len(item) <= MAX_CONTACT_ADDRESS_CHARS
-                ]
-                emails = [
-                    str(item).casefold() for item in value.get("emails", [])
-                    if isinstance(item, str)
-                    and len(item) <= MAX_CONTACT_ADDRESS_CHARS
-                    and is_email_shaped(item)
-                ]
-            except CorruptStorageError:
-                self.storage.fail_closed(
-                    "Encrypted contacts could not be authenticated"
-                )
-                self._mem.clear()
-                self._records.clear()
-                return
-            except (ValueError, RuntimeError, TypeError):
-                continue
-            self._records.append((name, phones, emails))
+    def _warm(self) -> None:
+        self._records.extend(self._repository.load())
+        for name, phones, emails in self._records:
             if name:
                 for address in (*phones, *emails):
                     self._mem[address] = name
-
-    @staticmethod
-    def _discard_plaintext(db: sqlite3.Connection) -> bool:
-        """Remove legacy rows when policy-managed contact storage is active."""
-        count = int(db.execute(
-            "SELECT (SELECT COUNT(*) FROM contacts) + "
-            "(SELECT COUNT(*) FROM phones) + "
-            "(SELECT COUNT(*) FROM emails)"
-        ).fetchone()[0])
-        if not count:
-            return False
-        db.execute("PRAGMA secure_delete = ON")
-        with db:
-            db.execute("DELETE FROM phones")
-            db.execute("DELETE FROM emails")
-            db.execute("DELETE FROM contacts")
-        return True
-
-    def _warm(self) -> None:
-        if self.storage is not None and not self.storage.status.can_read:
-            return
-        try:
-            with closing(_open_db()) as db:
-                if self.storage is not None:
-                    discarded = self._discard_plaintext(db)
-                    self._load_secure(db)
-                    if discarded:
-                        db.execute("VACUUM")
-                    return
-                for phone, name in db.execute(
-                    "SELECT p.phone_norm, c.full_name "
-                    "FROM phones p JOIN contacts c ON c.id = p.contact_id "
-                    "WHERE c.full_name != ''"
-                ):
-                    self._mem[phone] = name
-                for email, name in db.execute(
-                    "SELECT e.email, c.full_name "
-                    "FROM emails e JOIN contacts c ON c.id = e.contact_id "
-                    "WHERE c.full_name != ''"
-                ):
-                    self._mem[email.casefold()] = name
-                self._records.extend(self._plaintext_records(db))
-        except sqlite3.Error as e:
-            log.warning("contacts cache warm failed: %s", e)
 
     def refresh(self) -> int:
         """Re-read the SQLite cache into memory. Returns new count."""

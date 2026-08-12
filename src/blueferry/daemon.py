@@ -15,6 +15,7 @@ from gi.repository import GLib
 from blueferry import __version__, bluez_setup, config
 from blueferry.ancs.client import AncsClient
 from blueferry.backend_lifecycle import installed_release
+from blueferry.backend_operations import BackendDependencies
 from blueferry.bearer_supervisor import BearerSupervisor
 from blueferry.bus import get_system_bus, main_loop
 from blueferry.connectivity import Connectivity
@@ -149,17 +150,19 @@ class Daemon:
         self._dbus_service = MessagesService(
             self._bus_name,
             self.sessions,
-            on_sent=self.events.sent,
-            on_group_sent=self.events.group_sent,
-            submit_obex=self.obex_worker.submit,
-            pull_contacts=self._pull_contacts,
-            on_contacts_pulled=self._contacts_pulled,
-            contacts=self.contacts,
-            status_provider=self._status,
-            notification_policy=self.notification_policy,
-            on_notification_policy_changed=self._emit_status,
-            storage=self.storage,
-            on_storage_changed=self._emit_status,
+            BackendDependencies(
+                on_sent=self.events.sent,
+                on_group_sent=self.events.group_sent,
+                submit_obex=self.obex_worker.submit,
+                pull_contacts=self._pull_contacts,
+                on_contacts_pulled=self._contacts_pulled,
+                contacts=self.contacts,
+                status_provider=self._status,
+                notification_policy=self.notification_policy,
+                on_notification_policy_changed=self._emit_status,
+                storage=self.storage,
+                on_storage_changed=self._emit_status,
+            ),
         )
         self.events.set_dbus_service(self._dbus_service)
         log.info("DBus service ready: %s", BUS_NAME)

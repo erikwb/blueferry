@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from blueferry import backend_operations
-from blueferry.backend_operations import BackendOperations
+from blueferry.backend_operations import BackendDependencies, BackendOperations
 from blueferry.errors import (
     ConfirmationRequiredError,
     InvalidArgumentsError,
@@ -29,14 +29,15 @@ class _Sessions:
         pass
 
 
-def _operations() -> BackendOperations:
+def _operations(**dependencies) -> BackendOperations:
     def submit(operation, *, on_success, on_error):
         try:
             on_success(operation())
         except Exception as error:
             on_error(error)
 
-    return BackendOperations(_Sessions(), submit_obex=submit)
+    dependencies.setdefault("submit_obex", submit)
+    return BackendOperations(_Sessions(), BackendDependencies(**dependencies))
 
 
 def _group() -> dict:
@@ -92,8 +93,9 @@ def test_confirmed_group_reply_uses_backend_recipient_set(monkeypatch):
 
 def test_group_reply_records_the_projected_member_roster(monkeypatch):
     recorded = []
-    operations = _operations()
-    operations._on_group_sent = lambda *values: recorded.append(values)
+    operations = _operations(
+        on_group_sent=lambda *values: recorded.append(values)
+    )
     thread = _group()
     _stub_group(operations, thread)
     monkeypatch.setattr(
@@ -142,9 +144,10 @@ def test_notification_policy_is_backend_owned_and_notifies_status() -> None:
             return value
 
     changes = []
-    operations = _operations()
-    operations._notification_policy = Policy()
-    operations._on_notification_policy_changed = lambda: changes.append(True)
+    operations = _operations(
+        notification_policy=Policy(),
+        on_notification_policy_changed=lambda: changes.append(True),
+    )
 
     assert operations.get_notification_policy() == "messages"
     assert operations.set_notification_policy("all") == "all"
@@ -160,8 +163,7 @@ def test_invalid_notification_policy_has_public_invalid_args_error() -> None:
         def set(_value):
             raise ValueError("bad policy")
 
-    operations = _operations()
-    operations._notification_policy = Policy()
+    operations = _operations(notification_policy=Policy())
 
     with pytest.raises(InvalidArgumentsError) as caught:
         operations.set_notification_policy("bad")
@@ -192,7 +194,9 @@ def test_storage_policy_change_clears_data_before_switching(monkeypatch) -> None
     monkeypatch.setattr(
         backend_operations, "clear_contact_cache", lambda: calls.append("contacts")
     )
-    operations = BackendOperations(_Sessions(), storage=Storage())
+    operations = BackendOperations(
+        _Sessions(), BackendDependencies(storage=Storage())
+    )
 
     result = operations.set_storage_policy("plaintext")
 
@@ -203,7 +207,9 @@ def test_storage_policy_change_clears_data_before_switching(monkeypatch) -> None
 def test_invalid_storage_policy_does_not_clear_data(monkeypatch) -> None:
     cleared = []
     storage = SimpleNamespace(status=SimpleNamespace(policy="encrypted"))
-    operations = BackendOperations(_Sessions(), storage=storage)
+    operations = BackendOperations(
+        _Sessions(), BackendDependencies(storage=storage)
+    )
     monkeypatch.setattr(
         backend_operations, "clear_events", lambda: cleared.append("events")
     )
@@ -248,8 +254,7 @@ def test_contact_lookup_stays_behind_backend_boundary() -> None:
             assert query == "Alice"
             return [("Alice Example", "15551234567")]
 
-    operations = _operations()
-    operations._contacts = _Contacts()
+    operations = _operations(contacts=_Contacts())
 
     assert operations.find_contacts("Alice") == [{
         "name": "Alice Example",

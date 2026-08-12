@@ -12,7 +12,6 @@ Slow methods are issued asynchronously so the UI never blocks.
 
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -25,14 +24,26 @@ from gi.repository import GLib, GObject
 
 from blueferry.backend_lifecycle import ensure_backend_current
 from blueferry.bus import get_session_bus
+from blueferry.client_wire import (
+    decode_contacts,
+    decode_mapping,
+    decode_status,
+    decode_threads,
+)
 from blueferry.models import BackendStatus, Thread
 from blueferry.pair_setup import configuration_status
 from blueferry.protocol import (
     BUS_NAME,
+    CLEAR_CALL_TIMEOUT_SEC,
+    CONTACT_CALL_TIMEOUT_SEC,
     EVENTS_IFACE,
     MESSAGES_IFACE,
     OBEX_CALL_TIMEOUT_SEC,
     OBJECT_PATH,
+    POLICY_CALL_TIMEOUT_SEC,
+    SNAPSHOT_CALL_TIMEOUT_SEC,
+    STATUS_CALL_TIMEOUT_SEC,
+    STORAGE_CALL_TIMEOUT_SEC,
 )
 
 log = logging.getLogger(__name__)
@@ -192,11 +203,9 @@ class DaemonClient(GObject.Object):
     def ensure_backend_current_async(self) -> None:
         def operation() -> Mapping:
             def private_status() -> dict:
-                raw = str(self._private_call("GetStatus", timeout=20))
-                value = json.loads(raw)
-                if not isinstance(value, dict):
-                    raise ValueError("backend returned an invalid status response")
-                return value
+                return decode_mapping(self._private_call(
+                    "GetStatus", timeout=SNAPSHOT_CALL_TIMEOUT_SEC
+                ))
 
             return ensure_backend_current(status_reader=private_status)
 
@@ -280,18 +289,11 @@ class DaemonClient(GObject.Object):
 
     def list_threads_async(self, on_ok, on_err=None, limit: int = 1000) -> None:
         def operation() -> list[Thread]:
-            raw = str(
+            return decode_threads(
                 self._private_call(
-                    "ListThreads",
-                    dbus.UInt32(limit),
-                    timeout=20,
+                    "ListThreads", dbus.UInt32(limit),
+                    timeout=SNAPSHOT_CALL_TIMEOUT_SEC,
                 )
-            )
-            value = json.loads(raw)
-            return (
-                [Thread.from_dict(item) for item in value if isinstance(item, Mapping)]
-                if isinstance(value, list)
-                else []
             )
 
         self._submit(operation, on_ok, on_err)
@@ -304,60 +306,52 @@ class DaemonClient(GObject.Object):
             return
 
         def operation() -> list[tuple[str, str]]:
-            raw = str(
+            return decode_contacts(
                 self._private_call(
-                    "FindContacts",
-                    selected,
-                    timeout=8,
+                    "FindContacts", selected, timeout=CONTACT_CALL_TIMEOUT_SEC,
                 )
             )
-            value = json.loads(raw)
-            if not isinstance(value, list):
-                return []
-            return [
-                (str(item["name"]), str(item["address"]))
-                for item in value
-                if isinstance(item, Mapping)
-                and "name" in item
-                and "address" in item
-            ]
 
         self._submit(operation, on_ok, on_err)
 
     def get_status_async(self, on_ok, on_err=None) -> None:
         def operation() -> BackendStatus:
-            raw = str(self._private_call("GetStatus", timeout=10))
-            value = json.loads(raw)
-            return BackendStatus.from_dict(value) if isinstance(value, dict) else BackendStatus()
+            return decode_status(self._private_call(
+                "GetStatus", timeout=STATUS_CALL_TIMEOUT_SEC
+            ))
 
         self._submit(operation, on_ok, on_err)
 
     def clear_history_async(self, on_ok, on_err) -> None:
         self._submit(
-            lambda: self._private_call("ClearHistory", dbus.Boolean(True), timeout=20),
+            lambda: self._private_call(
+                "ClearHistory", dbus.Boolean(True), timeout=CLEAR_CALL_TIMEOUT_SEC
+            ),
             lambda _value: on_ok(),
             on_err,
         )
 
     def set_notification_policy_async(self, policy: str, on_ok, on_err) -> None:
         self._submit(
-            lambda: str(self._private_call("SetNotificationPolicy", policy, timeout=10)),
+            lambda: str(self._private_call(
+                "SetNotificationPolicy", policy, timeout=POLICY_CALL_TIMEOUT_SEC
+            )),
             on_ok,
             on_err,
         )
 
     def set_storage_policy_async(self, policy: str, on_ok, on_err) -> None:
         def operation() -> dict:
-            raw = str(self._private_call("SetStoragePolicy", policy, timeout=30))
-            value = json.loads(raw)
-            return value if isinstance(value, dict) else {}
+            return decode_mapping(self._private_call(
+                "SetStoragePolicy", policy, timeout=STORAGE_CALL_TIMEOUT_SEC
+            ))
 
         self._submit(operation, on_ok, on_err)
 
     def unlock_storage_async(self, on_ok, on_err) -> None:
         def operation() -> dict:
-            raw = str(self._private_call("UnlockStorage", timeout=30))
-            value = json.loads(raw)
-            return value if isinstance(value, dict) else {}
+            return decode_mapping(self._private_call(
+                "UnlockStorage", timeout=STORAGE_CALL_TIMEOUT_SEC
+            ))
 
         self._submit(operation, on_ok, on_err)

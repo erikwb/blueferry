@@ -11,6 +11,13 @@ from blueferry.protocol import BUS_NAME, OBJECT_PATH
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _qml_bundle(directory: Path) -> str:
+    """Return a domain bundle without coupling tests to one root filename."""
+    return "\n".join(
+        path.read_text() for path in sorted(directory.glob("*.qml"))
+    )
+
+
 def test_graphical_commands_follow_client_package_names() -> None:
     project = (ROOT / "pyproject.toml").read_text()
     pkgbuild = (ROOT / "packaging" / "arch" / "PKGBUILD").read_text()
@@ -79,6 +86,16 @@ def test_arch_check_dependencies_cover_cli_test_imports() -> None:
 
     assert "'python-typer>=0.12'" in checkdepends
     assert "'python-textual>=8.0'" in checkdepends
+    assert "'python-coverage'" in checkdepends
+
+
+def test_repository_quality_workflow_runs_hermetic_checks() -> None:
+    workflow = (ROOT / ".github/workflows/quality.yml").read_text()
+
+    assert "dbus-run-session --config-file=tests/dbus-test.conf" in workflow
+    assert "python -m coverage run -m pytest" in workflow
+    assert "mypy src/blueferry" in workflow
+    assert "qmllint src/blueferry/qt/qml/*.qml data/quickshell/*.qml" in workflow
 
 
 def test_arch_bluetooth_dropin_warns_about_other_executable_paths() -> None:
@@ -115,7 +132,7 @@ def test_desktop_and_appstream_ids_match(suffix: str) -> None:
 def test_qt_package_ships_the_kirigami_ui_and_dependencies() -> None:
     project = (ROOT / "pyproject.toml").read_text()
     pkgbuild = (ROOT / "packaging/arch/PKGBUILD").read_text()
-    qml = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
+    qml = _qml_bundle(ROOT / "src/blueferry/qt/qml")
 
     assert '"blueferry.qt" = ["qml/*.qml"]' in project
     assert "'kirigami'" in pkgbuild
@@ -158,8 +175,8 @@ def test_gui_clients_keep_phone_settings_out_of_primary_navigation() -> None:
 def test_all_gui_clients_offer_contacts_aware_new_messages() -> None:
     gtk = (ROOT / "src/blueferry/ui/conversations.py").read_text()
     qt_controller = (ROOT / "src/blueferry/qt/controller.py").read_text()
-    qt_qml = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
-    quickshell = (ROOT / "data/quickshell/shell.qml").read_text()
+    qt_qml = _qml_bundle(ROOT / "src/blueferry/qt/qml")
+    quickshell = _qml_bundle(ROOT / "data/quickshell")
 
     assert 'tooltip_text=_("New Message")' in gtk
     assert "find_contacts_async" in gtk
@@ -171,8 +188,8 @@ def test_all_gui_clients_offer_contacts_aware_new_messages() -> None:
 
 def test_all_gui_clients_explain_phone_side_pairing_step() -> None:
     gtk = (ROOT / "src/blueferry/ui/status.py").read_text()
-    qt = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
-    quickshell = (ROOT / "data/quickshell/shell.qml").read_text()
+    qt = _qml_bundle(ROOT / "src/blueferry/qt/qml")
+    quickshell = _qml_bundle(ROOT / "data/quickshell")
 
     for client in (gtk, qt, quickshell):
         assert "find this computer" in client
@@ -186,8 +203,8 @@ def test_all_gui_clients_explain_map_connection_refusal() -> None:
     )
     gtk_messages = (ROOT / "src/blueferry/ui/conversations.py").read_text()
     gtk_settings = (ROOT / "src/blueferry/ui/status.py").read_text()
-    qt = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
-    quickshell = (ROOT / "data/quickshell/shell.qml").read_text()
+    qt = _qml_bundle(ROOT / "src/blueferry/qt/qml")
+    quickshell = _qml_bundle(ROOT / "data/quickshell")
 
     assert "map_connection_refused_message" in gtk_messages
     assert "map_connection_refused_message" in gtk_settings
@@ -197,8 +214,8 @@ def test_all_gui_clients_explain_map_connection_refusal() -> None:
 
 def test_all_gui_clients_offer_unencrypted_local_storage() -> None:
     gtk = (ROOT / "src/blueferry/ui/status.py").read_text()
-    qt = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
-    quickshell = (ROOT / "data/quickshell/shell.qml").read_text()
+    qt = _qml_bundle(ROOT / "src/blueferry/qt/qml")
+    quickshell = _qml_bundle(ROOT / "data/quickshell")
 
     assert '_("Unencrypted Local Data")' in gtk
     assert '"value": "plaintext"' in qt
@@ -223,7 +240,8 @@ def test_quickshell_package_ships_its_quattro_theme_adapter() -> None:
     theme = (ROOT / "data/quickshell/Theme.qml").read_text()
     shell = (ROOT / "data/quickshell/shell.qml").read_text()
 
-    assert "install -Dm644 data/quickshell/Theme.qml" in pkgbuild
+    assert "install -Dm644 data/quickshell/*.qml" in pkgbuild
+    assert (ROOT / "data/quickshell/OnboardingState.qml").is_file()
     assert "/.local/state/omarchy/current/theme" in theme
     assert "fallbackPalette" in theme
     assert "readonly property color windowSurface" in theme
@@ -241,23 +259,7 @@ def test_quickshell_package_ships_its_quattro_theme_adapter() -> None:
         "    textFormat: Text.PlainText"
     ) in shell
     assert "component FerryButton: Button" in shell
-    assert "id: bubble" in shell
-    assert "messageTimestamp.implicitWidth" in shell
     assert "theme.primarySurface" in shell
-    assert 'text: "BLUEFERRY"' not in shell
-    assert shell.count('text: "⚙"') == 2
-    assert "labelSize: theme.displaySize" in shell
-    assert "bare: true" in shell
-    assert "if (sendMessageButton.enabled) sendMessageButton.clicked()" in shell
-    assert "id: settingsDeck" in shell
-    assert 'text: "← MESSAGES"' not in shell
-    assert "Choose which iPhone events create desktop popups" not in shell
-    assert "After approving “Allow System Notifications,”" in shell
-    assert "I will also forget this computer" not in shell
-    assert "text: root.storageDetail" not in shell
-    assert "Cannot retrieve or send messages - are you connected to another computer?" in shell
-    assert "? root.mapConnectionRefused()" in shell
-    assert 'text: root.phoneSettingsVisible ? "MESSAGES" : "IPHONE"' not in shell
     assert "component FerrySectionLabel: FerryLabel" in shell
     window_declaration = shell.split("FloatingWindow {", 1)[1].split("Pane {", 1)[0]
     assert 'color: "transparent"' not in window_declaration

@@ -1,5 +1,23 @@
 """Connectivity state and bounded backoff contracts."""
-from blueferry.connectivity import Connectivity, ConnectivityState, RetryPolicy
+from blueferry.connectivity import (
+    Connectivity,
+    ConnectivityState,
+    RetryPolicy,
+    is_map_connection_refused,
+)
+
+
+def test_map_refusal_classifier_accepts_state_and_legacy_detail():
+    assert is_map_connection_refused(state="map-connection-refused") is True
+    assert is_map_connection_refused(
+        "CreateSession(MAP) failed: Connection refused (111)"
+    ) is True
+    assert is_map_connection_refused(
+        "CreateSession(PBAP) failed: Connection refused (111)"
+    ) is False
+    assert is_map_connection_refused(
+        "CreateSession(MAP) failed: Connection timed out (110)"
+    ) is False
 
 
 def test_failures_back_off_to_a_bound_and_success_resets_them():

@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from blueferry.connectivity import is_map_connection_refused
 from blueferry.time_display import format_message_timestamp
 
 
@@ -49,6 +50,14 @@ class BackendStatus:
     storage_detail: str = ""
     extra: Mapping[str, Any] = field(default_factory=dict, repr=False)
 
+    @property
+    def map_connection_refused(self) -> bool:
+        """Normalize current and legacy MAP refusal status representations."""
+        return is_map_connection_refused(
+            self.connectivity_detail,
+            state=self.connectivity_state,
+        )
+
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> BackendStatus:
         known = {
@@ -71,6 +80,7 @@ class BackendStatus:
             "storage_policy",
             "storage_state",
             "storage_detail",
+            "map_connection_refused",
         }
         return cls(
             daemon=_bool(value.get("daemon")),
@@ -121,6 +131,7 @@ class BackendStatus:
             "storage_policy": self.storage_policy,
             "storage_state": self.storage_state,
             "storage_detail": self.storage_detail,
+            "map_connection_refused": self.map_connection_refused,
         }
 
 

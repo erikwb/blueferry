@@ -12,6 +12,7 @@ import dbus.service
 import pytest
 from gi.repository import GLib
 
+from blueferry.backend_operations import BackendDependencies
 from blueferry.dbus_service import MessagesService
 from blueferry.protocol import BUS_NAME, EVENTS_IFACE, MESSAGES_IFACE, OBJECT_PATH
 
@@ -52,10 +53,12 @@ def public_service():
     service = MessagesService(
         bus_name,
         _Sessions(),
-        submit_obex=submit,
-        status_provider=lambda: {"initializing": False},
-        notification_policy=policy,
-        on_notification_policy_changed=lambda: policy_changes.append(True),
+        BackendDependencies(
+            submit_obex=submit,
+            status_provider=lambda: {"initializing": False},
+            notification_policy=policy,
+            on_notification_policy_changed=lambda: policy_changes.append(True),
+        ),
     )
     try:
         yield name, pending, policy, policy_changes, service

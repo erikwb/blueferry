@@ -12,23 +12,13 @@ from typing import Any, Protocol
 
 from gi.repository import GLib
 
-from blueferry.connectivity import Connectivity
+from blueferry.connectivity import Connectivity, is_map_connection_refused
 from blueferry.obex.sessions import ObexSession, SessionError
 
 log = logging.getLogger(__name__)
 
 INITIAL_MAP_CONNECT_POLL_SECONDS = 5
 MAP_RECONNECT_POLL_SECONDS = 15
-
-
-def _is_map_connection_refused(error: Exception | str) -> bool:
-    """Recognize the iPhone's explicit MAP RFCOMM refusal."""
-    message = str(error).casefold()
-    return (
-        "createsession(map)" in message
-        and "connection refused" in message
-        and "111" in message
-    )
 
 
 class ProfileSessions(Protocol):
@@ -199,7 +189,7 @@ class ProfileSupervisor:
         if authorization_required:
             log.warning("  → Check Show Message Notifications and Sync Contacts")
             log.warning("    under the iPhone's Bluetooth entry for this computer.")
-        map_connection_refused = _is_map_connection_refused(error)
+        map_connection_refused = is_map_connection_refused(error)
         if map_connection_refused:
             log.warning(
                 "  → iPhone refused MAP; it may be connected to another computer."

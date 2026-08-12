@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from blueferry import config, contacts
+from blueferry import config, contact_repository, contacts
 from blueferry.contacts import (
     ContactsResolver,
     _parse_vcard_records,
@@ -260,7 +260,7 @@ def test_find_by_name_returns_phone_and_email_destinations(tmp_path, monkeypatch
     monkeypatch.setattr(config, "STATE_DIR", tmp_path)
     monkeypatch.setattr(config, "CONTACTS_DB", tmp_path / "contacts.sqlite")
     monkeypatch.setattr(config, "EVENTS_DB", tmp_path / "events.sqlite")
-    with closing(contacts._open_db()) as database:
+    with closing(contact_repository._open_db()) as database:
         with database:
             cursor = database.execute(
                 "INSERT INTO contacts(full_name, updated_at) VALUES (?, ?)",
