@@ -614,7 +614,7 @@ class BlueFerryApp(App[None]):
         except Exception:
             self._monitor = None
         self.set_interval(_SIGNAL_PUMP_SECONDS, self._pump_events)
-        self.set_interval(_REFRESH_SECONDS, self.action_refresh)
+        self.set_interval(_REFRESH_SECONDS, self._load_data)
         self._update_responsive(self.size.width)
         self._load_data()
 
@@ -669,15 +669,25 @@ class BlueFerryApp(App[None]):
         )
 
     async def _apply_snapshot(self, snapshot: TuiSnapshot) -> None:
+        previous_status = self.state.status
+        previous_threads = tuple(self.state.threads)
+        previous_selection = self.state.selected_key
+        previous_error = self.state.error
         self.state.apply_snapshot(snapshot)
         if self._pending_open_handle and self.state.select_message(self._pending_open_handle):
             self._pending_open_handle = None
             self.query_one("#workspace").add_class("chat-open")
-        await self._populate_threads()
-        await self._render_conversation()
-        self._update_status()
-        self._update_notice()
-        self._warn_about_roster_changes()
+        threads_changed = tuple(self.state.threads) != previous_threads
+        selection_changed = self.state.selected_key != previous_selection
+        if threads_changed or selection_changed:
+            await self._populate_threads()
+            await self._render_conversation()
+        if self.state.status != previous_status:
+            self._update_status()
+        if self.state.error != previous_error:
+            self._update_notice()
+        if threads_changed:
+            self._warn_about_roster_changes()
 
     def _warn_about_roster_changes(self) -> None:
         for thread in self.state.threads:

@@ -265,6 +265,26 @@ def test_textual_app_renders_status_threads_and_messages() -> None:
     _run_headless(scenario())
 
 
+def test_unchanged_poll_does_not_rebuild_the_terminal_view() -> None:
+    async def scenario() -> None:
+        state = TuiState(_Backend())
+        app = BlueFerryApp(state, monitor_factory=lambda: None)
+
+        async with app.run_test(size=(120, 36)) as pilot:
+            await _wait_for_threads(app, pilot, 2)
+            thread_items = tuple(app.query_one("#thread-list", ListView).children)
+            message_items = tuple(
+                app.query_one("#message-timeline").children
+            )
+
+            await app._apply_snapshot(state.fetch_snapshot())
+
+            assert tuple(app.query_one("#thread-list", ListView).children) == thread_items
+            assert tuple(app.query_one("#message-timeline").children) == message_items
+
+    _run_headless(scenario())
+
+
 def test_textual_warns_once_when_saved_group_roster_changes() -> None:
     async def scenario() -> None:
         backend = _Backend()
