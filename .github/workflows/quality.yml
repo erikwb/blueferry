@@ -28,7 +28,7 @@ jobs:
           mypy src/blueferry
       - name: Hermetic tests and coverage
         run: |
-          dbus-run-session --config-file=tests/dbus-test.conf -- sh -c '
+          dbus-run-session --config-file=tests/dbus-test.conf -- sh -ec '
             export DBUS_SYSTEM_BUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS"
             export BLUEFERRY_TEST_DBUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS"
             export PYTHONPATH="$PWD/src"
