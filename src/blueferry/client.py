@@ -1,19 +1,31 @@
 """Toolkit-neutral synchronous client for the BlueFerry daemon."""
 from __future__ import annotations
 
-import json
-
 import dbus
 import dbus.exceptions
 
 from blueferry.bus import get_session_bus
+from blueferry.client_wire import (
+    decode_contacts,
+    decode_events,
+    decode_json,
+    decode_mapping,
+    decode_status,
+    decode_threads,
+)
 from blueferry.errors import BlueFerryError
 from blueferry.models import BackendStatus, EventRecord, Thread
 from blueferry.protocol import (
     BUS_NAME,
+    CLEAR_CALL_TIMEOUT_SEC,
+    CONTACT_CALL_TIMEOUT_SEC,
     MESSAGES_IFACE,
     OBEX_CALL_TIMEOUT_SEC,
     OBJECT_PATH,
+    POLICY_CALL_TIMEOUT_SEC,
+    SNAPSHOT_CALL_TIMEOUT_SEC,
+    STATUS_CALL_TIMEOUT_SEC,
+    STORAGE_CALL_TIMEOUT_SEC,
 )
 
 
@@ -26,54 +38,38 @@ class BackendClient:
         bus = get_session_bus()
         return dbus.Interface(bus.get_object(BUS_NAME, OBJECT_PATH), name)
 
-    @staticmethod
-    def _json(value, expected_type):
-        parsed = json.loads(str(value))
-        if not isinstance(parsed, expected_type):
-            raise ValueError(f"backend returned {type(parsed).__name__}, expected "
-                             f"{expected_type.__name__}")
-        return parsed
-
     def status(self) -> BackendStatus:
         try:
-            value = self._json(
-                self._iface(MESSAGES_IFACE).GetStatus(timeout=8), dict,
+            return decode_status(
+                self._iface(MESSAGES_IFACE).GetStatus(
+                    timeout=STATUS_CALL_TIMEOUT_SEC
+                )
             )
-            return BackendStatus.from_dict(value)
         except (dbus.exceptions.DBusException, ValueError) as error:
             raise BackendError(str(error)) from error
 
     def threads(self, limit: int = 1000) -> list[Thread]:
         try:
-            values = self._json(self._iface(MESSAGES_IFACE).ListThreads(
-                dbus.UInt32(limit), timeout=15,
-            ), list)
-            return [Thread.from_dict(value) for value in values
-                    if isinstance(value, dict)]
+            return decode_threads(self._iface(MESSAGES_IFACE).ListThreads(
+                dbus.UInt32(limit), timeout=SNAPSHOT_CALL_TIMEOUT_SEC,
+            ))
         except (dbus.exceptions.DBusException, ValueError) as error:
             raise BackendError(str(error)) from error
 
     def events(self, kinds: list[str], limit: int = 1000) -> list[EventRecord]:
         try:
-            values = self._json(self._iface(MESSAGES_IFACE).ListEvents(
-                dbus.Array(kinds, signature="s"), dbus.UInt32(limit), timeout=15,
-            ), list)
-            return [EventRecord.from_dict(value) for value in values
-                    if isinstance(value, dict)]
+            return decode_events(self._iface(MESSAGES_IFACE).ListEvents(
+                dbus.Array(kinds, signature="s"), dbus.UInt32(limit),
+                timeout=SNAPSHOT_CALL_TIMEOUT_SEC,
+            ))
         except (dbus.exceptions.DBusException, ValueError) as error:
             raise BackendError(str(error)) from error
 
     def find_contacts(self, query: str) -> list[tuple[str, str]]:
         try:
-            values = self._json(self._iface(MESSAGES_IFACE).FindContacts(
-                query, timeout=8
-            ), list)
-            return [
-                (str(value["name"]), str(value["address"]))
-                for value in values
-                if isinstance(value, dict)
-                and "name" in value and "address" in value
-            ]
+            return decode_contacts(self._iface(MESSAGES_IFACE).FindContacts(
+                query, timeout=CONTACT_CALL_TIMEOUT_SEC
+            ))
         except (dbus.exceptions.DBusException, ValueError) as error:
             raise BackendError(str(error)) from error
 
@@ -98,7 +94,7 @@ class BackendClient:
 
     def recent(self, folder: str, limit: int) -> list[dict]:
         try:
-            return self._json(self._iface(MESSAGES_IFACE).ListRecent(
+            return decode_json(self._iface(MESSAGES_IFACE).ListRecent(
                 folder, dbus.UInt32(limit), timeout=OBEX_CALL_TIMEOUT_SEC,
             ), list)
         except (dbus.exceptions.DBusException, ValueError) as error:
@@ -115,43 +111,49 @@ class BackendClient:
     def clear_history(self) -> None:
         try:
             self._iface(MESSAGES_IFACE).ClearHistory(
-                dbus.Boolean(True), timeout=15
+                dbus.Boolean(True), timeout=CLEAR_CALL_TIMEOUT_SEC
             )
         except dbus.exceptions.DBusException as error:
             raise BackendError(error.get_dbus_message() or str(error)) from error
 
     def notification_policy(self) -> str:
         try:
-            return str(self._iface(MESSAGES_IFACE).GetNotificationPolicy(timeout=8))
+            return str(self._iface(MESSAGES_IFACE).GetNotificationPolicy(
+                timeout=POLICY_CALL_TIMEOUT_SEC
+            ))
         except dbus.exceptions.DBusException as error:
             raise BackendError(error.get_dbus_message() or str(error)) from error
 
     def set_notification_policy(self, policy: str) -> str:
         try:
             return str(self._iface(MESSAGES_IFACE).SetNotificationPolicy(
-                policy, timeout=8
+                policy, timeout=POLICY_CALL_TIMEOUT_SEC
             ))
         except dbus.exceptions.DBusException as error:
             raise BackendError(error.get_dbus_message() or str(error)) from error
 
     def storage_policy(self) -> str:
         try:
-            return str(self._iface(MESSAGES_IFACE).GetStoragePolicy(timeout=8))
+            return str(self._iface(MESSAGES_IFACE).GetStoragePolicy(
+                timeout=POLICY_CALL_TIMEOUT_SEC
+            ))
         except dbus.exceptions.DBusException as error:
             raise BackendError(error.get_dbus_message() or str(error)) from error
 
     def set_storage_policy(self, policy: str) -> dict:
         try:
-            return self._json(self._iface(MESSAGES_IFACE).SetStoragePolicy(
-                policy, timeout=30
-            ), dict)
+            return decode_mapping(self._iface(MESSAGES_IFACE).SetStoragePolicy(
+                policy, timeout=STORAGE_CALL_TIMEOUT_SEC
+            ))
         except (dbus.exceptions.DBusException, ValueError) as error:
             raise BackendError(str(error)) from error
 
     def unlock_storage(self) -> dict:
         try:
-            return self._json(
-                self._iface(MESSAGES_IFACE).UnlockStorage(timeout=30), dict
+            return decode_mapping(
+                self._iface(MESSAGES_IFACE).UnlockStorage(
+                    timeout=STORAGE_CALL_TIMEOUT_SEC
+                )
             )
         except (dbus.exceptions.DBusException, ValueError) as error:
             raise BackendError(str(error)) from error

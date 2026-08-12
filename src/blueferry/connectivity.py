@@ -16,6 +16,23 @@ class ConnectivityState(str, Enum):
     STOPPING = "stopping"
 
 
+def is_map_connection_refused(
+    detail: Exception | str = "",
+    *,
+    state: ConnectivityState | str = "",
+) -> bool:
+    """Recognize current state and legacy MAP RFCOMM refusal details."""
+    state_value = state.value if isinstance(state, ConnectivityState) else state
+    if state_value == ConnectivityState.MAP_CONNECTION_REFUSED.value:
+        return True
+    message = str(detail).casefold()
+    return (
+        "createsession(map)" in message
+        and "connection refused" in message
+        and "111" in message
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class RetryPolicy:
     initial_seconds: int = 5

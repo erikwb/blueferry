@@ -78,8 +78,7 @@ class SecretServiceKeyProvider:
         Secret = self._secret_module()
         try:
             service = Secret.Service.get_sync(
-                Secret.ServiceFlags.LOAD_COLLECTIONS
-                | Secret.ServiceFlags.OPEN_SESSION,
+                Secret.ServiceFlags.OPEN_SESSION,
                 None,
             )
             schema = Secret.Schema.new(
@@ -134,8 +133,9 @@ class SecretServiceKeyProvider:
         except StorageUnavailableError:
             raise
         except Exception as error:
-            # Do not leak provider-specific D-Bus details through status or logs.
-            log.info("Secret Service is not ready: %s", type(error).__name__)
+            # Keep provider-specific details out of the public status while
+            # retaining the actionable D-Bus error in the local journal.
+            log.info("Secret Service is not ready: %s", error)
             raise StorageUnavailableError("the desktop keyring is unavailable") from error
 
     def delete(self, *, allow_prompt: bool) -> bool:

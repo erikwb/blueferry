@@ -3,8 +3,12 @@ from __future__ import annotations
 
 import textwrap
 from contextlib import closing
+from pathlib import Path
+from types import SimpleNamespace
 
-from blueferry import config, contacts
+import pytest
+
+from blueferry import config, contact_repository, contacts
 from blueferry.contacts import (
     ContactsResolver,
     _parse_vcard_records,
@@ -22,6 +26,78 @@ def test_pbap_filters_use_phonebook_access_names():
     assert set(filters) == {"MaxCount", "Format"}
     assert int(filters["MaxCount"]) == 123
     assert str(filters["Format"]) == "vcard30"
+
+
+def test_phonebook_transfer_uses_runtime_dir_and_cleans_up_on_failure(
+    tmp_path, monkeypatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    target = None
+
+    class _Pbap:
+        def Select(self, *_args, **_kwargs):
+            pass
+
+        def PullAll(self, path, *_args, **_kwargs):
+            nonlocal target
+            target = Path(path)
+            raise RuntimeError("transfer setup failed")
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime_dir))
+    monkeypatch.setattr(contacts, "obex", lambda *_args: _Pbap())
+
+    with pytest.raises(RuntimeError, match="transfer setup failed"):
+        contacts.pull_phonebook(SimpleNamespace(pbap_path="/pbap"))
+
+    assert target is not None
+    assert target.parent.parent == runtime_dir / "blueferry"
+    assert not target.parent.exists()
+    assert (runtime_dir / "blueferry").stat().st_mode & 0o777 == 0o700
+
+
+def test_phonebook_transfer_fails_closed_without_runtime_dir(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    monkeypatch.setattr(config, "STATE_DIR", tmp_path / "persistent-state")
+
+    with pytest.raises(RuntimeError, match="requires XDG_RUNTIME_DIR"):
+        contacts.pull_phonebook(SimpleNamespace(pbap_path="/pbap"))
+
+    assert not config.STATE_DIR.exists()
+
+
+def test_phonebook_transfer_wires_idle_and_overall_timeouts(
+    tmp_path, monkeypatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    captured = {}
+
+    class _Pbap:
+        def Select(self, *_args, **_kwargs):
+            pass
+
+        def PullAll(self, *_args, **_kwargs):
+            return "/transfer/phonebook", {"Status": "active", "Size": 0}
+
+    def capture_wait(transfer_path, **kwargs):
+        captured["transfer_path"] = transfer_path
+        captured.update(kwargs)
+        raise RuntimeError("stop after timeout wiring")
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime_dir))
+    monkeypatch.setattr(contacts, "obex", lambda *_args: _Pbap())
+    monkeypatch.setattr(contacts, "wait_for_transfer", capture_wait)
+
+    with pytest.raises(RuntimeError, match="stop after timeout wiring"):
+        contacts.pull_phonebook(SimpleNamespace(pbap_path="/pbap"))
+
+    assert captured["transfer_path"] == "/transfer/phonebook"
+    assert captured["timeout_s"] == 60
+    assert captured["overall_timeout_s"] == 30 * 60
+    assert callable(captured["get_progress"])
 
 
 def test_single_vcard():
@@ -184,7 +260,7 @@ def test_find_by_name_returns_phone_and_email_destinations(tmp_path, monkeypatch
     monkeypatch.setattr(config, "STATE_DIR", tmp_path)
     monkeypatch.setattr(config, "CONTACTS_DB", tmp_path / "contacts.sqlite")
     monkeypatch.setattr(config, "EVENTS_DB", tmp_path / "events.sqlite")
-    with closing(contacts._open_db()) as database:
+    with closing(contact_repository._open_db()) as database:
         with database:
             cursor = database.execute(
                 "INSERT INTO contacts(full_name, updated_at) VALUES (?, ?)",

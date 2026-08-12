@@ -5,18 +5,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from blueferry.i18n import _
+from blueferry.models import BackendStatus
 
 
 def map_connection_refused(status: Mapping) -> bool:
     """Accept the structured state and the legacy raw server detail."""
-    if str(status.get("connectivity_state", "")) == "map-connection-refused":
-        return True
-    detail = str(status.get("connectivity_detail", "")).casefold()
-    return (
-        "createsession(map)" in detail
-        and "connection refused" in detail
-        and "111" in detail
-    )
+    return BackendStatus.from_dict(status).map_connection_refused
 
 
 def map_connection_refused_message() -> str:

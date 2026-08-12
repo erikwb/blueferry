@@ -242,3 +242,46 @@ def test_pairing_rejects_when_confirmation_is_declined(monkeypatch):
     controller.completePairing("02:00:00:00:00:01")
 
     assert observed == [False]
+
+
+def test_replacing_saved_target_is_forwarded_to_pairing_helper(monkeypatch):
+    observed = []
+
+    class Setup:
+        def complete_isolated(
+            self,
+            mac,
+            *,
+            confirmation,
+            display,
+            replace_saved_mac,
+        ):
+            observed.append((replace_saved_mac, mac))
+            return object()
+
+    controller = BridgeController(
+        backend=_Backend(),
+        setup=Setup(),
+        subscribe=False,
+        autostart=False,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_run",
+        lambda operation, on_done=None, *_args, **_kwargs: (
+            on_done(operation()) if on_done is not None else operation()
+        ),
+    )
+    monkeypatch.setattr(controller, "loadDevices", lambda _scan: None)
+    monkeypatch.setattr(controller, "loadSetupState", lambda: None)
+    monkeypatch.setattr(controller, "refresh", lambda: None)
+
+    controller.replaceAndPair(
+        "02:00:00:00:00:01",
+        "02:00:00:00:00:02",
+    )
+
+    assert observed == [
+        ("02:00:00:00:00:01", "02:00:00:00:00:02")
+    ]
+    assert controller.targetSaved is True

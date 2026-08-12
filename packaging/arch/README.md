@@ -4,6 +4,11 @@ BlueFerry builds as four split pacman packages: the backend plus one client
 each for GNOME, KDE, and Quickshell. All build and runtime dependencies come
 from the official Arch repositories.
 
+The `blueferry-bluetooth.conf` systemd drop-in is Arch-specific. In particular,
+its `/usr/lib/bluetooth/bluetoothd` executable path must not be copied to
+Debian or Ubuntu, where the usual path is `/usr/libexec/bluetooth/bluetoothd`.
+Using the wrong path prevents the entire Bluetooth service from starting.
+
 From the repository root, build and install everything with:
 
 ```bash

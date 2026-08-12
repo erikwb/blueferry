@@ -26,6 +26,10 @@ dbus-run-session --config-file=tests/dbus-test.conf -- sh -c '
 '
 ```
 
+The repository quality workflow runs the same hermetic suite on Arch Linux,
+along with Ruff, Bandit, mypy, QML linting, and a coverage report. The package
+build remains the final split-package and desktop-metadata integration check.
+
 ## What belongs in the suite
 
 - Protocol tests use inert strings or captured, reviewed fixtures and assert

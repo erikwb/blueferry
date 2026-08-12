@@ -225,6 +225,7 @@ def pairing_activate_bluez() -> None:
 def pairing_complete(
     mac: str,
     interactive_agent: bool = typer.Option(False, "--interactive-agent", hidden=True),
+    replace_saved_mac: str = typer.Option("", "--replace-saved-mac", hidden=True),
     debug: bool = typer.Option(False, "--debug"),
 ) -> None:
     """Pair and perform all Linux-side setup for graphical clients."""
@@ -253,7 +254,10 @@ def pairing_complete(
         emit({"event": "display", "passkey": f"{passkey:06d}"})
 
     try:
-        result = SetupClient().complete(
+        setup = SetupClient()
+        if replace_saved_mac:
+            setup.prepare_replacement(replace_saved_mac, mac)
+        result = setup.complete(
             mac,
             confirmation=confirm if interactive_agent else None,
             display=display if interactive_agent else None,

@@ -32,8 +32,9 @@ ShellRoot {
   property bool pairingConfirmationPending: false
   property string pairingPasskey: ""
   property bool pairingResultReceived: false
+  property var pendingPairingDevice: null
   property string adapterName: ""
-  property string onboardingStage: "checking"
+  property string onboardingStage: onboarding.stage
   property var backendStatus: ({})
   property string notificationPolicy: "messages"
   property string storagePolicy: "encrypted"
@@ -43,6 +44,14 @@ ShellRoot {
   property string statusErrorText: ""
 
   Theme { id: theme }
+  OnboardingState {
+    id: onboarding
+    hardwareSupported: root.hardwareSupported
+    notificationsSupported: root.notificationsSupported
+    bluezActive: root.bluezActive
+    configured: root.configured
+    backendStatus: root.backendStatus
+  }
 
   Connections {
     target: Quickshell
@@ -129,51 +138,6 @@ ShellRoot {
     return thread.key + "\n" + JSON.stringify(thread.recipients || [])
   }
 
-  function mapConnectionRefused() {
-    if (backendStatus.connectivity_state === "map-connection-refused") return true
-    var detail = String(backendStatus.connectivity_detail || "").toLowerCase()
-    return detail.indexOf("createsession(map)") >= 0
-      && detail.indexOf("connection refused") >= 0 && detail.indexOf("111") >= 0
-  }
-
-  function pendingIphoneSetupTasks() {
-    var verified = backendStatus.verified_iphone_setup || []
-    var tasks = []
-    if (verified.indexOf("message-notifications") < 0)
-      tasks.push("Enable Show Message Notifications")
-    if (verified.indexOf("contacts") < 0)
-      tasks.push("Enable Sync Contacts")
-    if (notificationsSupported && verified.indexOf("notification-access") < 0)
-      tasks.push("Allow Notification Access when prompted")
-    return tasks
-  }
-
-  function pendingIphoneSetupText() {
-    var tasks = pendingIphoneSetupTasks().join("\n• ")
-    var instructions = "After approving “Allow System Notifications,” you may need to return to the Bluetooth device list and reopen this computer before the other settings appear."
-    var text = root.configured
-      ? instructions + "\n• " + tasks
-      : "On the iPhone open Settings → Bluetooth, tap ⓘ next to this computer, then finish the settings below. " + instructions + "\n• " + tasks
-    var verified = backendStatus.verified_iphone_setup || []
-    if (notificationsSupported && verified.indexOf("notification-access") < 0)
-      text += "\n\nWithout System Notification access, group texts appear as individual conversations with their sender."
-    return text
-  }
-
-  function updateOnboarding() {
-    var device = selectedPairingDevice()
-    if (!hardwareSupported) onboardingStage = "incompatible"
-    else if (notificationsSupported && !bluezActive) onboardingStage = "activate-bluetooth"
-    else if (!configured) onboardingStage = "select-device"
-    else if (backendStatus.map && backendStatus.pbap) {
-      if (pendingIphoneSetupTasks().length > 0) onboardingStage = "iphone-settings"
-      else if (!notificationsSupported) onboardingStage = "ready-without-ancs"
-      else onboardingStage = "ready"
-    }
-    else if (backendStatus.daemon) onboardingStage = "iphone-settings"
-    else onboardingStage = "starting"
-  }
-
   function loadPairingDevices(scan) {
     if (deviceProcess.running) return
     deviceProcess.command = scan
@@ -188,6 +152,17 @@ ShellRoot {
     return index >= 0 && index < pairingDevices.length ? pairingDevices[index] : null
   }
 
+  function startPairing(device, replaceSavedTarget) {
+    pairingStatus = "Activating Bluetooth, then starting secure pairing…"
+    pairingResultReceived = false
+    pairProcess.command = [
+      "/usr/bin/blueferry", "pairing-complete", device.mac, "--interactive-agent"
+    ]
+    if (replaceSavedTarget)
+      pairProcess.command.push("--replace-saved-mac", configuredMac)
+    pairProcess.running = true
+  }
+
   function configuredPairingDevice() {
     for (var index = 0; index < pairingDevices.length; ++index) {
       if (pairingDevices[index].mac === configuredMac) return pairingDevices[index]
@@ -198,7 +173,6 @@ ShellRoot {
   function markStatusUnavailable(message) {
     backendStatus = ({})
     statusErrorText = message
-    updateOnboarding()
   }
 
   function markCompatibilityUnavailable(message) {
@@ -208,7 +182,6 @@ ShellRoot {
     bluezActive = false
     adapterName = ""
     pairingStatus = message
-    updateOnboarding()
   }
 
   function handlePairingLine(line) {
@@ -244,7 +217,6 @@ ShellRoot {
       root.configuredMac = parsed.device ? (parsed.device.mac || "") : ""
       root.loadPairingDevices(false)
       root.reload()
-      root.updateOnboarding()
     } catch (error) {
       root.pairingStatus = "Pairing returned invalid data."
     }
@@ -267,7 +239,6 @@ ShellRoot {
           root.storageState = parsed.storage_state || "locked"
           root.storageDetail = parsed.storage_detail || "Storage status unavailable"
           root.statusErrorText = ""
-          root.updateOnboarding()
           root.maybeUnlockStorage()
         } catch (error) {
           root.markStatusUnavailable("BlueFerry backend returned invalid status data")
@@ -293,7 +264,6 @@ ShellRoot {
           root.bluezActive = parsed.bearer_api_active === true
           root.adapterName = parsed.adapter || ""
           if (!root.hardwareSupported) root.pairingStatus = parsed.issue || "Bluetooth controller is incompatible."
-          root.updateOnboarding()
           root.loadPairingDevices(false)
         } catch (error) {
           root.markCompatibilityUnavailable("Bluetooth compatibility check returned invalid data.")
@@ -323,7 +293,6 @@ ShellRoot {
             root.pairingStatus = "This phone is no longer paired in BlueZ. Clear the saved phone, then scan and pair again."
           if (!root.configured) root.phoneSettingsVisible = true
           else root.reload()
-          root.updateOnboarding()
         } catch (error) { root.phoneSettingsVisible = true }
       }
     }
@@ -500,7 +469,6 @@ ShellRoot {
               ? "Linux pairing is complete. Check the required iPhone settings below."
               : "Step 2: select the iPhone, then choose Pair Selected iPhone."
             : "No devices found. Unlock the iPhone, keep Bluetooth settings open, and scan again."
-          root.updateOnboarding()
         } catch (error) { root.pairingStatus = "Bluetooth scan returned invalid data." }
       }
     }
@@ -574,7 +542,6 @@ ShellRoot {
             root.configuredMac = ""
             root.backendStatus = ({})
             root.pairingDevices = []
-            root.updateOnboarding()
             root.loadPairingDevices(false)
           }
         } catch (error) { root.pairingStatus = "Forget operation returned invalid data." }
@@ -658,7 +625,7 @@ ShellRoot {
         Rectangle {
           Layout.fillWidth: true
           implicitHeight: mapRefusedLabel.implicitHeight + theme.scaled(16)
-          visible: !root.phoneSettingsVisible && root.mapConnectionRefused()
+          visible: !root.phoneSettingsVisible && onboarding.mapConnectionRefused()
           color: Qt.rgba(theme.warning.r, theme.warning.g, theme.warning.b, 0.14)
           border.color: theme.warning
           radius: theme.controlRadius
@@ -754,6 +721,7 @@ ShellRoot {
                         anchors.centerIn: parent
                         text: threadDelegate.modelData.is_group ? "#"
                           : String(threadDelegate.modelData.name || "?").charAt(0).toUpperCase()
+                        textFormat: Text.PlainText
                         color: threadDelegate.highlighted
                           ? theme.primaryText : theme.windowText
                         font.family: theme.fontFamily
@@ -770,6 +738,7 @@ ShellRoot {
                       Text {
                         width: parent.width
                         text: threadDelegate.modelData.name
+                        textFormat: Text.PlainText
                         color: theme.windowText
                         font.family: theme.fontFamily
                         font.pixelSize: theme.baseFontSize
@@ -782,6 +751,7 @@ ShellRoot {
                           ? (threadDelegate.modelData.messages[threadDelegate.modelData.messages.length - 1].outgoing ? "You: " : "")
                             + threadDelegate.modelData.messages[threadDelegate.modelData.messages.length - 1].body
                           : "No messages"
+                        textFormat: Text.PlainText
                         color: theme.muted
                         font.family: theme.fontFamily
                         font.pixelSize: theme.captionSize
@@ -906,7 +876,7 @@ ShellRoot {
                     anchors.right: messageRow.modelData.outgoing ? parent.right : undefined
                     anchors.left: messageRow.modelData.outgoing ? undefined : parent.left
                     color: messageRow.modelData.outgoing
-                      ? theme.primarySurface : theme.raisedSurface
+                      ? theme.selectedSurface : theme.raisedSurface
                     border.color: messageRow.modelData.outgoing
                       ? "transparent" : theme.divider
                     radius: theme.controlRadius
@@ -924,8 +894,7 @@ ShellRoot {
                         width: parent.width
                         text: messageRow.modelData.body
                         textFormat: Text.PlainText
-                        color: messageRow.modelData.outgoing
-                          ? theme.primaryText : theme.windowText
+                        color: theme.windowText
                         font.family: theme.fontFamily
                         font.pixelSize: theme.baseFontSize
                         wrapMode: Text.Wrap
@@ -937,8 +906,8 @@ ShellRoot {
                         text: messageRow.modelData.display_timestamp || ""
                         textFormat: Text.PlainText
                         color: messageRow.modelData.outgoing
-                          ? Qt.rgba(theme.primaryText.r, theme.primaryText.g,
-                                    theme.primaryText.b, 0.62)
+                          ? Qt.rgba(theme.windowText.r, theme.windowText.g,
+                                    theme.windowText.b, 0.62)
                           : theme.muted
                         font.family: theme.fontFamily
                         font.pixelSize: theme.captionSize
@@ -1084,7 +1053,7 @@ ShellRoot {
               : root.onboardingStage === "ready-without-ancs"
                 ? "Messages and contacts have been verified. System notifications are unavailable, so group texts may appear as individual conversations."
                 : root.onboardingStage === "iphone-settings"
-                    ? root.mapConnectionRefused()
+                    ? onboarding.mapConnectionRefused()
                       ? "Cannot retrieve or send messages - are you connected to another computer? We will reconnect once your phone is free"
                       : "Connected. Finish the remaining iPhone permissions below."
                     : "Controller: " + (root.adapterName || "checking…")
@@ -1093,22 +1062,22 @@ ShellRoot {
           }
           FerrySectionLabel {
             text: "Pair an iPhone"
-            visible: !root.configured && !root.targetSaved
+            visible: !root.configured
           }
           FerryLabel {
-            text: "Scan for and select your iPhone here, then choose Pair. On the iPhone, open Settings → Bluetooth, find this computer under \"Other Devices\", tap it, and approve the matching codes. Pairing may appear idle for up to 15 seconds. System Notification access is also how BlueFerry recognizes group text threads; without it, a group text appears as a one-to-one conversation with its sender."
+            text: "Scan for and select your iPhone here, then choose Pair. On the iPhone, open Settings → Bluetooth, find this computer under \"Other Devices\", tap it, and approve the matching codes. Pairing may appear idle for up to 15 seconds. While it does, return to the Bluetooth device list and reopen this computer's ⓘ page a few times; turn on any new toggles that appear. System Notification access is also how BlueFerry recognizes group text threads; without it, a group text appears as a one-to-one conversation with its sender."
             wrapMode: Text.Wrap
             Layout.fillWidth: true
-            visible: !root.configured && !root.targetSaved
+            visible: !root.configured
           }
           FerryCheckBox {
             id: confirmBluetoothRestart
-            visible: !root.configured && !root.targetSaved
+            visible: !root.configured
                      && root.notificationsSupported && !root.bluezActive
             text: "I understand this briefly disconnects all Bluetooth devices"
           }
           FerryButton {
-            visible: !root.configured && !root.targetSaved
+            visible: !root.configured
                      && root.notificationsSupported && !root.bluezActive
             text: bluezActivateProcess.running ? "Activating…" : "Activate Bluetooth support"
             enabled: confirmBluetoothRestart.checked && !bluezActivateProcess.running
@@ -1119,20 +1088,20 @@ ShellRoot {
             }
           }
           FerryButton {
-            visible: !root.configured && !root.targetSaved
+            visible: !root.configured
             text: deviceProcess.running ? "Scanning…" : "1. Scan for iPhone"
             enabled: !deviceProcess.running && !pairProcess.running
             onClicked: root.loadPairingDevices(true)
           }
           FerryComboBox {
             id: pairingDeviceCombo
-            visible: !root.configured && !root.targetSaved
+            visible: !root.configured
             Layout.fillWidth: true
             model: root.pairingDevices
             textRole: "label"
           }
           FerryButton {
-            visible: !root.configured && !root.targetSaved
+            visible: !root.configured
             text: pairProcess.running ? "Pairing…"
               : root.selectedPairingDevice() && root.selectedPairingDevice().paired
                 ? "Use existing pairing" : "2. Pair Selected iPhone"
@@ -1141,12 +1110,10 @@ ShellRoot {
                      && !deviceProcess.running && !pairProcess.running
             onClicked: {
               var device = root.selectedPairingDevice()
-              root.pairingStatus = "Activating Bluetooth, then starting secure pairing…"
-              root.pairingResultReceived = false
-              pairProcess.command = [
-                "/usr/bin/blueferry", "pairing-complete", device.mac, "--interactive-agent"
-              ]
-              pairProcess.running = true
+              if (!device.paired && root.targetSaved) {
+                root.pendingPairingDevice = device
+                replaceTargetPopup.open()
+              } else root.startPairing(device, false)
             }
           }
           FerryLabel {
@@ -1202,26 +1169,26 @@ ShellRoot {
           }
           FerrySectionLabel {
             text: "Finish Setup on the iPhone"
-            visible: root.configured && root.pendingIphoneSetupTasks().length > 0
+            visible: root.configured && onboarding.pendingIphoneSetupTasks().length > 0
           }
           FerryLabel {
-            text: root.pendingIphoneSetupText()
+            text: onboarding.pendingIphoneSetupText()
             wrapMode: Text.Wrap
             Layout.fillWidth: true
-            visible: root.configured && root.pendingIphoneSetupTasks().length > 0
+            visible: root.configured && onboarding.pendingIphoneSetupTasks().length > 0
           }
           FerrySectionLabel {
             text: "Connection health"
           }
           FerryInfoRow {
             label: "Messages"
-            value: root.mapConnectionRefused()
+            value: onboarding.mapConnectionRefused()
               ? "Connection refused"
               : root.backendStatus.map ? "Connected" : "Unavailable"
             Layout.fillWidth: true
           }
           FerryLabel {
-            visible: root.mapConnectionRefused()
+            visible: onboarding.mapConnectionRefused()
             text: "iPhone is refusing message connections; is it connected to another computer?"
             textFormat: Text.PlainText
             color: theme.warning
@@ -1322,6 +1289,59 @@ ShellRoot {
       }
 
       Popup {
+        id: replaceTargetPopup
+        parent: applicationSurface
+        x: Math.max(0, (applicationSurface.width - width) / 2)
+        y: Math.max(0, (applicationSurface.height - height) / 2)
+        width: Math.min(theme.scaled(440), applicationSurface.width - theme.scaled(24))
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        padding: theme.scaled(18)
+
+        background: Rectangle {
+          color: theme.cardSurface
+          border.color: theme.divider
+          radius: theme.panelRadius
+        }
+
+        Overlay.modal: Rectangle {
+          color: Qt.rgba(theme.windowSurface.r, theme.windowSurface.g,
+                         theme.windowSurface.b, 0.72)
+        }
+
+        contentItem: ColumnLayout {
+          spacing: theme.scaled(12)
+          FerryLabel {
+            text: "Replace the saved iPhone?"
+            font.bold: true
+            font.pixelSize: theme.headingSize
+          }
+          FerryLabel {
+            Layout.fillWidth: true
+            wrapMode: Text.Wrap
+            text: "Pairing this iPhone will remove BlueFerry's saved phone and its local Bluetooth bond. Before continuing, also forget this computer in the old iPhone's Bluetooth settings."
+          }
+          RowLayout {
+            Layout.alignment: Qt.AlignRight
+            FerryButton {
+              text: "Cancel"
+              onClicked: replaceTargetPopup.close()
+            }
+            FerryButton {
+              text: "Replace and pair"
+              highlighted: true
+              onClicked: {
+                var device = root.pendingPairingDevice
+                replaceTargetPopup.close()
+                if (device !== null) root.startPairing(device, true)
+              }
+            }
+          }
+        }
+      }
+
+      Popup {
         id: newMessagePopup
         parent: applicationSurface
         x: Math.max(0, (applicationSurface.width - width) / 2)
@@ -1392,6 +1412,7 @@ ShellRoot {
                 id: newContactText
                 Text {
                   text: newContactDelegate.modelData.name
+                  textFormat: Text.PlainText
                   color: theme.windowText
                   font.family: theme.fontFamily
                   font.pixelSize: theme.baseFontSize
@@ -1400,6 +1421,7 @@ ShellRoot {
                   text: newContactDelegate.modelData.address.indexOf("@") >= 0
                     ? newContactDelegate.modelData.address
                     : "+" + newContactDelegate.modelData.address
+                  textFormat: Text.PlainText
                   color: theme.muted
                   font.family: theme.fontFamily
                   font.pixelSize: theme.captionSize
@@ -1452,6 +1474,7 @@ ShellRoot {
 
   component FerryLabel: Label {
     color: theme.windowText
+    textFormat: Text.PlainText
     font.family: theme.fontFamily
     font.pixelSize: theme.baseFontSize
   }
@@ -1468,6 +1491,7 @@ ShellRoot {
 
     contentItem: Text {
       text: control.text
+      textFormat: Text.PlainText
       color: !control.enabled ? theme.muted
         : control.bare && control.hovered ? theme.accent
         : control.highlighted ? theme.primaryText : theme.windowText
@@ -1581,6 +1605,7 @@ ShellRoot {
       highlighted: control.highlightedIndex === index
       contentItem: Text {
         text: option.modelData
+        textFormat: Text.PlainText
         color: theme.windowText
         font: control.font
         verticalAlignment: Text.AlignVCenter

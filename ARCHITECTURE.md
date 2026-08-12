@@ -55,10 +55,13 @@ in `blueferry.models`; those records retain unknown fields for forward
 compatibility. Toolkit presentation code either consumes their typed fields or
 explicitly converts them to dictionaries. Quickshell's CLI adapter converts
 the same models back to JSON rather than defining a separate backend client.
+All Python transports share `client_wire` for response-shape validation and
+model conversion; synchronous and toolkit-specific scheduling remain separate.
 
 `backend_operations` owns validation, thread routing, and application policy.
 `dbus_service` is only a wire-type adapter over those operations. `daemon`
-orchestrates lifecycle, while `event_dispatcher` owns persistence/notification
+orchestrates lifecycle and supplies one typed `BackendDependencies` object,
+while `event_dispatcher` owns persistence/notification
 fan-out. `ProfileSupervisor` owns MAP/PBAP open, close, retry, loss, and resume
 transitions; its worker, session, and timer protocols make those races testable
 without BlueZ. Interactive pairing rendering lives separately from the BlueZ
@@ -160,6 +163,10 @@ touching daemon state. Bluetooth transfers, parsers, contact cardinality,
 desktop read-state watches, D-Bus replies, and retained payload bytes all have
 explicit resource ceilings.
 
+PBAP download and vCard parsing live in `contacts`; `contact_repository` owns
+the contact schema, replacement transaction, encrypted records, and legacy
+plaintext cleanup. This keeps Bluetooth failure handling outside persistence.
+
 Slow public D-Bus methods use deferred replies, so Bluetooth waits never block
 the daemon's event loop. Status, lifecycle signals, and incoming BlueZ events
 remain dispatchable while an OBEX transfer is active. The GTK client serializes
@@ -217,5 +224,8 @@ not on one-off experiment scripts.
   unicast `Messages1` snapshot calls.
 - Split `cli.py` or the Qt page module when a new feature would add another
   independent domain; avoid moving code solely to reduce line counts.
+- Keep toolkit root files focused on navigation and composition. Put cohesive
+  state derivation and presentation in loadable QML components with behavioral
+  tests rather than growing root-level functions.
 - Prefer narrowly tested helpers over broad exception handling. Best-effort
   cleanup may catch broadly, but command paths must return actionable errors.

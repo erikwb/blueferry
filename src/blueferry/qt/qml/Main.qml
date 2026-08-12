@@ -57,36 +57,7 @@ Kirigami.ApplicationWindow {
 
     function mapConnectionRefused() {
         const status = bridge.status || ({})
-        if (status.connectivity_state === "map-connection-refused")
-            return true
-        const detail = String(status.connectivity_detail || "").toLowerCase()
-        return detail.indexOf("createsession(map)") >= 0
-            && detail.indexOf("connection refused") >= 0
-            && detail.indexOf("111") >= 0
-    }
-
-    function pendingIphoneSetupTasks() {
-        const verified = bridge.status.verified_iphone_setup || []
-        const tasks = []
-        if (verified.indexOf("message-notifications") < 0)
-            tasks.push(qsTr("Enable Show Message Notifications"))
-        if (verified.indexOf("contacts") < 0)
-            tasks.push(qsTr("Enable Sync Contacts"))
-        if (bridge.compatibility.notifications_supported
-                && verified.indexOf("notification-access") < 0)
-            tasks.push(qsTr("Allow Notification Access when prompted"))
-        return tasks
-    }
-
-    function pendingIphoneSetupText() {
-        const tasks = pendingIphoneSetupTasks()
-        let detail = qsTr("Open Settings → Bluetooth on the iPhone, tap ⓘ next to this computer, then finish the settings below. After approving “Allow System Notifications,” you may need to return to the Bluetooth device list and reopen this computer before the other settings appear:\n• ")
-            + tasks.join("\n• ")
-        const verified = bridge.status.verified_iphone_setup || []
-        if (bridge.compatibility.notifications_supported
-                && verified.indexOf("notification-access") < 0)
-            detail += qsTr("\n\nWithout System Notification access, group texts appear as individual conversations with their sender.")
-        return detail
+        return status.map_connection_refused === true
     }
 
     function openPhoneSettings() {
@@ -113,34 +84,6 @@ Kirigami.ApplicationWindow {
             closePhoneSettings()
         else
             openPhoneSettings()
-    }
-
-    function onboardingTitle(stage) {
-        const titles = {
-            "checking": qsTr("Checking Bluetooth Support"),
-            "incompatible": qsTr("Bluetooth Controller Is Not Compatible"),
-            "activate-bluetooth": qsTr("Activate Bluetooth Support"),
-            "select-device": qsTr("Pair an iPhone"),
-            "starting": qsTr("Starting the Background Service"),
-            "iphone-settings": qsTr("Finish Setup on the iPhone"),
-            "ready": qsTr("BlueFerry Is Connected"),
-            "ready-without-ancs": qsTr("Messages Are Connected")
-        }
-        return titles[stage] || qsTr("Set Up BlueFerry")
-    }
-
-    function onboardingDetail(stage) {
-        const details = {
-            "checking": qsTr("Inspecting the selected Bluetooth controller without changing it."),
-            "incompatible": bridge.compatibility.issue || qsTr("A controller with BR/EDR and secure pairing is required."),
-            "activate-bluetooth": qsTr("The packaged BlueZ bearer support needs one authorized Bluetooth restart."),
-            "select-device": qsTr("Scan for and select your iPhone here, then choose Pair. On the iPhone, open Settings → Bluetooth, find this computer under \"Other Devices\", tap it, and approve the matching codes. Pairing may appear idle for up to 15 seconds. System Notification access is also how BlueFerry recognizes group text threads; without it, a group text appears as a one-to-one conversation with its sender."),
-            "starting": qsTr("The configured backend is starting. This normally takes a few seconds."),
-            "iphone-settings": pendingIphoneSetupText(),
-            "ready": qsTr("Bluetooth services and iPhone permissions have been verified."),
-            "ready-without-ancs": qsTr("Messages and contacts have been verified. System notifications are unavailable, so group texts may appear as individual conversations.")
-        }
-        return details[stage] || ""
     }
 
     Connections {
@@ -347,6 +290,23 @@ Kirigami.ApplicationWindow {
     }
 
     Kirigami.PromptDialog {
+        id: replaceTargetDialog
+        property string mac: ""
+        title: qsTr("Replace the Saved iPhone?")
+        subtitle: qsTr("Pairing this iPhone will remove BlueFerry's saved phone and its local Bluetooth bond. Before continuing, also forget this computer in the old iPhone's Bluetooth settings.")
+        dialogType: Kirigami.PromptDialog.Warning
+        standardButtons: Kirigami.Dialog.Cancel
+        customFooterActions: [Kirigami.Action {
+            text: qsTr("Replace and Pair")
+            icon.name: "edit-delete-remove"
+            onTriggered: {
+                root.bridge.replaceAndPair(root.bridge.configuredMac, replaceTargetDialog.mac)
+                replaceTargetDialog.close()
+            }
+        }]
+    }
+
+    Kirigami.PromptDialog {
         id: shortcutsDialog
         title: qsTr("Keyboard Shortcuts")
         subtitle: qsTr("Refresh — Ctrl+R\nQuit — Ctrl+Q\nKeyboard Shortcuts — Ctrl+?")
@@ -413,6 +373,11 @@ Kirigami.ApplicationWindow {
                         modelData.address.indexOf("@") >= 0
                             ? modelData.address : "+" + modelData.address
                     )
+                    contentItem: Controls.Label {
+                        text: contactDelegate.text
+                        textFormat: Text.PlainText
+                        elide: Text.ElideRight
+                    }
                     onClicked: {
                         newRecipient.text = modelData.address
                         root.bridge.findContacts("")
@@ -750,17 +715,11 @@ Kirigami.ApplicationWindow {
                     text: qsTr("Keep the iPhone unlocked with its Bluetooth settings open during pairing.")
                 }
 
-                Kirigami.InlineMessage {
+                OnboardingSummary {
                     Layout.fillWidth: true
-                    visible: true
-                    text: root.htmlEscape(root.onboardingTitle(iphonePage.effectiveStage))
-                        + "\n" + root.htmlEscape(root.onboardingDetail(iphonePage.effectiveStage))
-                    type: iphonePage.effectiveStage === "incompatible"
-                        ? Kirigami.MessageType.Warning
-                        : iphonePage.effectiveStage === "ready"
-                            || iphonePage.effectiveStage === "ready-without-ancs"
-                            ? Kirigami.MessageType.Positive
-                            : Kirigami.MessageType.Information
+                    stage: iphonePage.effectiveStage
+                    compatibility: root.bridge.compatibility
+                    status: root.bridge.status
                 }
 
                 Kirigami.Heading {
@@ -772,7 +731,7 @@ Kirigami.ApplicationWindow {
                     Layout.fillWidth: true
                     visible: !root.bridge.configured
                     wrapMode: Text.Wrap
-                    text: qsTr("Scan for and select your iPhone here, then choose Pair. On the iPhone, open Settings → Bluetooth, find this computer under \"Other Devices\", tap it, and approve the matching codes. Pairing may appear idle for up to 15 seconds.")
+                    text: qsTr("Scan for and select your iPhone here, then choose Pair. On the iPhone, open Settings → Bluetooth, find this computer under \"Other Devices\", tap it, and approve the matching codes. Pairing may appear idle for up to 15 seconds. While it does, return to the Bluetooth device list and reopen this computer's ⓘ page a few times; turn on any new toggles that appear.")
                 }
 
                 Kirigami.FormLayout {
@@ -782,6 +741,7 @@ Kirigami.ApplicationWindow {
                     Controls.Label {
                         Kirigami.FormData.label: qsTr("Controller:")
                         text: root.bridge.compatibility.adapter || qsTr("Checking…")
+                        textFormat: Text.PlainText
                     }
 
                     Controls.Label {
@@ -846,6 +806,23 @@ Kirigami.ApplicationWindow {
                         textRole: "display_name"
                         valueRole: "mac"
                         enabled: !root.bridge.busy
+                        delegate: Controls.ItemDelegate {
+                            id: deviceOption
+                            required property var modelData
+                            width: deviceCombo.width
+                            text: modelData.display_name
+                            contentItem: Controls.Label {
+                                text: deviceOption.text
+                                textFormat: Text.PlainText
+                                elide: Text.ElideRight
+                            }
+                        }
+                        contentItem: Controls.Label {
+                            text: deviceCombo.displayText
+                            textFormat: Text.PlainText
+                            verticalAlignment: Text.AlignVCenter
+                            elide: Text.ElideRight
+                        }
                         onCurrentIndexChanged: iphonePage.selectedDevice = currentIndex
                     }
                 }
@@ -859,7 +836,14 @@ Kirigami.ApplicationWindow {
                         enabled: iphonePage.device !== null
                             && root.bridge.compatibility.pairing_ready
                             && !root.bridge.busy
-                        onClicked: root.bridge.completePairing(iphonePage.device.mac)
+                        onClicked: {
+                            if (!iphonePage.device.paired && root.bridge.targetSaved) {
+                                replaceTargetDialog.mac = iphonePage.device.mac
+                                replaceTargetDialog.open()
+                            } else {
+                                root.bridge.completePairing(iphonePage.device.mac)
+                            }
+                        }
                     }
                     Controls.Button {
                         text: qsTr("Forget")
@@ -882,6 +866,7 @@ Kirigami.ApplicationWindow {
                         text: iphonePage.configuredDevice !== null
                             ? iphonePage.configuredDevice.name
                             : qsTr("iPhone")
+                        textFormat: Text.PlainText
                     }
                     Controls.Button {
                         text: qsTr("Unpair")

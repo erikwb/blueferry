@@ -38,6 +38,7 @@ Issues = "https://github.com/erikwb/blueferry/issues"
 [project.optional-dependencies]
 dev = [
   "bandit>=1.9",
+  "coverage[toml]>=7.6",
   "hypothesis>=6.100",
   "mypy>=1.10",
   "pytest>=7",
@@ -89,3 +90,22 @@ exclude = "^src/blueferry/(ui|qt)/"
 ignore_missing_imports = true
 warn_unused_ignores = true
 check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = [
+  "blueferry.backend_operations",
+  "blueferry.client",
+  "blueferry.client_wire",
+  "blueferry.contact_repository",
+  "blueferry.contacts",
+  "blueferry.protocol",
+]
+disallow_untyped_defs = true
+
+[tool.coverage.run]
+branch = true
+source = ["blueferry"]
+
+[tool.coverage.report]
+skip_covered = true
+show_missing = true

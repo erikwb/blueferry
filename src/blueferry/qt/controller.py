@@ -70,6 +70,7 @@ class BridgeController(QObject):
         self._error_text = ""
         self._compatibility: dict = {}
         self._configured = False
+        self._target_saved = False
         self._configured_mac = ""
         self._setup_loaded = False
         self._onboarding_stage = str(
@@ -130,6 +131,10 @@ class BridgeController(QObject):
     @Property(bool, notify=configuredChanged)
     def configured(self) -> bool:
         return self._configured
+
+    @Property(bool, notify=configuredChanged)
+    def targetSaved(self) -> bool:
+        return self._target_saved
 
     @Property(str, notify=configuredChanged)
     def configuredMac(self) -> str:
@@ -250,6 +255,7 @@ class BridgeController(QObject):
         def ready(result: object) -> None:
             configuration, status = result
             self._configured = configuration.configured
+            self._target_saved = configuration.saved
             self._configured_mac = configuration.mac
             self._setup_loaded = True
             self.configuredChanged.emit()
@@ -284,6 +290,7 @@ class BridgeController(QObject):
             compatibility, configuration = value
             self._compatibility = compatibility.to_dict()
             self._configured = configuration.configured
+            self._target_saved = configuration.saved
             self._configured_mac = configuration.mac
             self._setup_loaded = True
             self._bluetooth_active = compatibility.bearer_api_active
@@ -519,8 +526,16 @@ class BridgeController(QObject):
 
     @Slot(str)
     def completePairing(self, mac: str) -> None:
+        self._start_pairing(mac)
+
+    @Slot(str, str)
+    def replaceAndPair(self, previous_mac: str, mac: str) -> None:
+        self._start_pairing(mac, replace_saved_mac=previous_mac)
+
+    def _start_pairing(self, mac: str, *, replace_saved_mac: str = "") -> None:
         def completed(_value: object) -> None:
             self._configured = True
+            self._target_saved = True
             self._configured_mac = mac
             self.configuredChanged.emit()
             self._update_onboarding_stage()
@@ -551,17 +566,34 @@ class BridgeController(QObject):
             # without prompting the user twice.
             _ = passkey
 
+        def operation():
+            if replace_saved_mac:
+                return self._setup.complete_isolated(
+                    mac,
+                    confirmation=confirm,
+                    display=display,
+                    replace_saved_mac=replace_saved_mac,
+                )
+            return self._setup.complete_isolated(
+                mac,
+                confirmation=confirm,
+                display=display,
+            )
+
+        def failed(message: str) -> None:
+            self._operation_failed(message)
+            if replace_saved_mac:
+                self.loadSetupState()
+                self.loadDevices(False)
+
         self._run(
             # PairingAgent callbacks require a dispatching GLib D-Bus loop.
             # Qt setup work runs on a worker whose private dbus-python
             # connection deliberately uses NULL_MAIN_LOOP, so host the agent
             # in the same isolated helper used by the GTK client.
-            lambda: self._setup.complete_isolated(
-                mac,
-                confirmation=confirm,
-                display=display,
-            ),
+            operation,
             completed,
+            failed,
         )
 
     @Slot(bool)
@@ -579,6 +611,7 @@ class BridgeController(QObject):
     def forgetDevice(self, mac: str) -> None:
         def completed(_value: object) -> None:
             self._configured = False
+            self._target_saved = False
             self._configured_mac = ""
             self._status = {}
             self._threads = []

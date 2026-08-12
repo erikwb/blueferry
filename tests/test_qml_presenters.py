@@ -1,0 +1,73 @@
+"""Behavioral checks for extracted QML presentation components."""
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+import pytest
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+pytest.importorskip("PySide6")
+
+from PySide6.QtCore import QUrl
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQml import QQmlComponent, QQmlEngine
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture(scope="module")
+def qml_engine():
+    application = QGuiApplication.instance() or QGuiApplication([])
+    engine = QQmlEngine()
+    yield engine
+    engine.deleteLater()
+    application.processEvents()
+
+
+def _component(engine: QQmlEngine, relative_path: str) -> QQmlComponent:
+    component = QQmlComponent(
+        engine, QUrl.fromLocalFile(str((ROOT / relative_path).resolve()))
+    )
+    assert not component.isError(), "\n".join(
+        error.toString() for error in component.errors()
+    )
+    return component
+
+
+def test_quickshell_onboarding_state_derives_ready_stage(qml_engine) -> None:
+    component = _component(qml_engine, "data/quickshell/OnboardingState.qml")
+    presenter = component.createWithInitialProperties({
+        "hardwareSupported": True,
+        "notificationsSupported": True,
+        "bluezActive": True,
+        "configured": True,
+        "backendStatus": {
+            "daemon": True,
+            "map": True,
+            "pbap": True,
+            "verified_iphone_setup": [
+                "message-notifications", "contacts", "notification-access",
+            ],
+        },
+    })
+
+    assert presenter is not None
+    assert presenter.property("stage") == "ready"
+    presenter.deleteLater()
+
+
+def test_qt_onboarding_summary_renders_stage_from_properties(qml_engine) -> None:
+    component = _component(
+        qml_engine, "src/blueferry/qt/qml/OnboardingSummary.qml"
+    )
+    summary = component.createWithInitialProperties({
+        "stage": "ready",
+        "compatibility": {"notifications_supported": True},
+        "status": {"verified_iphone_setup": []},
+    })
+
+    assert summary is not None
+    assert "BlueFerry Is Connected" in summary.property("text")
+    summary.deleteLater()

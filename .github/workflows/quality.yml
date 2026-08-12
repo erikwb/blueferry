@@ -1,0 +1,39 @@
+name: Quality
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - name: Install system and test dependencies
+        run: >-
+          pacman -Syu --noconfirm
+          appstream bandit dbus desktop-file-utils git gtk4 kirigami
+          libadwaita libsecret mypy python-build python-coverage
+          python-cryptography python-dbus python-gobject python-hypothesis
+          python-installer python-pytest python-setuptools python-textual
+          python-typer python-wheel pyside6 qt6-declarative quickshell ruff
+      - uses: actions/checkout@v6
+      - name: Static analysis
+        run: |
+          ruff check .
+          bandit -r src/blueferry -q
+          mypy src/blueferry
+      - name: Hermetic tests and coverage
+        run: |
+          dbus-run-session --config-file=tests/dbus-test.conf -- sh -ec '
+            export DBUS_SYSTEM_BUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS"
+            export BLUEFERRY_TEST_DBUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS"
+            export PYTHONPATH="$PWD/src"
+            python -m coverage run -m pytest -q
+            python -m coverage report
+          '
+      - name: QML syntax
+        run: /usr/lib/qt6/bin/qmllint src/blueferry/qt/qml/*.qml data/quickshell/*.qml

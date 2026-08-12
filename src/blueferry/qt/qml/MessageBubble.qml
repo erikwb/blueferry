@@ -10,6 +10,15 @@ Rectangle {
 
     required property var message
     required property real availableWidth
+    readonly property color outgoingBackground: Qt.rgba(
+        Kirigami.Theme.backgroundColor.r * 0.78
+            + Kirigami.Theme.highlightColor.r * 0.22,
+        Kirigami.Theme.backgroundColor.g * 0.78
+            + Kirigami.Theme.highlightColor.g * 0.22,
+        Kirigami.Theme.backgroundColor.b * 0.78
+            + Kirigami.Theme.highlightColor.b * 0.22,
+        1
+    )
 
     width: Math.min(
         availableWidth * 0.78,
@@ -18,7 +27,7 @@ Rectangle {
     implicitHeight: bodyColumn.implicitHeight + Kirigami.Units.largeSpacing
     radius: Kirigami.Units.cornerRadius
     color: message.outgoing
-        ? Kirigami.Theme.highlightColor
+        ? outgoingBackground
         : Kirigami.Theme.alternateBackgroundColor
 
     ColumnLayout {
@@ -35,9 +44,7 @@ Rectangle {
             selectByMouse: true
             wrapMode: Text.Wrap
             background: null
-            color: root.message.outgoing
-                ? Kirigami.Theme.highlightedTextColor
-                : Kirigami.Theme.textColor
+            color: Kirigami.Theme.textColor
             Accessible.name: qsTr("Message: ") + text
         }
         Controls.Label {
@@ -46,9 +53,7 @@ Rectangle {
             textFormat: Text.PlainText
             font: Kirigami.Theme.smallFont
             opacity: 0.7
-            color: root.message.outgoing
-                ? Kirigami.Theme.highlightedTextColor
-                : Kirigami.Theme.textColor
+            color: Kirigami.Theme.textColor
         }
     }
 }

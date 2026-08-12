@@ -8,7 +8,7 @@ import dbus
 import dbus.exceptions
 import dbus.service
 
-from blueferry.backend_operations import BackendOperations
+from blueferry.backend_operations import BackendDependencies, BackendOperations, SessionState
 from blueferry.bus import get_session_bus
 from blueferry.dbus_security import CallerGuard
 from blueferry.errors import BlueFerryError, OperationFailedError, ResponseTooLargeError
@@ -32,38 +32,15 @@ class MessagesService(dbus.service.Object):
     def __init__(
         self,
         bus_name: dbus.service.BusName,
-        sessions,
-        on_sent=None,
-        on_group_sent=None,
-        submit_obex=None,
-        pull_contacts=None,
-        on_contacts_pulled=None,
-        contacts=None,
-        status_provider=None,
-        notification_policy=None,
-        on_notification_policy_changed=None,
-        storage=None,
-        on_storage_changed=None,
+        sessions: SessionState,
+        dependencies: BackendDependencies | None = None,
         operations: BackendOperations | None = None,
         caller_guard: CallerGuard | None = None,
     ) -> None:
         super().__init__(bus_name, OBJECT_PATH)
         self._caller_guard = caller_guard or CallerGuard(bus_name.get_bus())
         self._change_revision = 0
-        self.operations = operations or BackendOperations(
-            sessions,
-            on_sent=on_sent,
-            on_group_sent=on_group_sent,
-            submit_obex=submit_obex,
-            pull_contacts=pull_contacts,
-            on_contacts_pulled=on_contacts_pulled,
-            contacts=contacts,
-            status_provider=status_provider,
-            notification_policy=notification_policy,
-            on_notification_policy_changed=on_notification_policy_changed,
-            storage=storage,
-            on_storage_changed=on_storage_changed,
-        )
+        self.operations = operations or BackendOperations(sessions, dependencies)
 
     @staticmethod
     def _dbus_error(error: Exception) -> dbus.exceptions.DBusException:

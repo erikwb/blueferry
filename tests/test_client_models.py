@@ -54,3 +54,14 @@ def test_backend_client_rejects_wrong_json_shape(monkeypatch):
 
     with pytest.raises(BackendError, match="expected dict"):
         client.status()
+
+
+def test_status_model_normalizes_legacy_map_refusal_detail() -> None:
+    status = BackendStatus.from_dict({
+        "connectivity_detail": (
+            "CreateSession(MAP) failed: Connection refused (111)"
+        )
+    })
+
+    assert status.map_connection_refused is True
+    assert status.to_dict()["map_connection_refused"] is True

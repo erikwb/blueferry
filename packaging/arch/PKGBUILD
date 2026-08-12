@@ -29,6 +29,7 @@ checkdepends=(
   'libsecret'
   'mypy'
   'python-cryptography'
+  'python-coverage'
   'python-dbus'
   'python-gobject'
   'python-hypothesis'
@@ -70,7 +71,8 @@ check() {
     export DBUS_SYSTEM_BUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS"
     export BLUEFERRY_TEST_DBUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS"
     export PYTHONPATH="$BLUEFERRY_TEST_ROOT/src"
-    python -m pytest -q
+    python -m coverage run -m pytest -q
+    python -m coverage report
   '
   desktop-file-validate data/io.weirdware.BlueFerry.Gtk.desktop
   desktop-file-validate data/io.weirdware.BlueFerry.Qt.desktop
@@ -135,7 +137,7 @@ package_blueferry-gtk() {
   depends=(
     "blueferry-backend=$pkgver-$pkgrel"
     'gtk4'
-    'libadwaita>=1.6'
+    'libadwaita>=1.5'
     'python-gobject'
   )
 
@@ -181,10 +183,8 @@ package_blueferry-quickshell() {
   cd "$pkgbase-$pkgver"
   install -Dm755 data/blueferry-quickshell \
     "$pkgdir/usr/bin/blueferry-quickshell"
-  install -Dm644 data/quickshell/shell.qml \
-    "$pkgdir/usr/share/blueferry/quickshell/shell.qml"
-  install -Dm644 data/quickshell/Theme.qml \
-    "$pkgdir/usr/share/blueferry/quickshell/Theme.qml"
+  install -Dm644 data/quickshell/*.qml \
+    -t "$pkgdir/usr/share/blueferry/quickshell"
   install -Dm644 data/io.weirdware.BlueFerry.Quickshell.desktop \
     "$pkgdir/usr/share/applications/io.weirdware.BlueFerry.Quickshell.desktop"
   install -Dm644 data/io.weirdware.BlueFerry.Quickshell.metainfo.xml \

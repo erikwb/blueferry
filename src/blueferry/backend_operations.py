@@ -7,8 +7,9 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Callable
-from typing import Any
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
+from typing import Any, Protocol
 
 from blueferry.contacts import clear_contact_cache
 from blueferry.errors import (
@@ -42,7 +43,7 @@ from blueferry.obex.map_send import (
     send_message,
     validate_recipient,
 )
-from blueferry.storage_security import STORAGE_POLICIES
+from blueferry.storage_security import STORAGE_POLICIES, StorageSecurity
 from blueferry.threads import ConversationIndex, build_threads
 
 log = logging.getLogger(__name__)
@@ -53,6 +54,52 @@ _PUBLIC_EVENT_KINDS = frozenset({"sms_received", "sms_sent", "sms_seen"})
 
 Success = Callable[[Any], None]
 Failure = Callable[[Exception], None]
+Operation = Callable[[], Any]
+
+
+class SessionState(Protocol):
+    @property
+    def map(self) -> object | None: ...
+
+    @property
+    def pbap(self) -> object | None: ...
+
+    @property
+    def map_path(self) -> str: ...
+
+    def report_error(self, error: Exception) -> None: ...
+
+
+class ContactIndex(Protocol):
+    def find_by_name(self, query: str) -> list[tuple[str, str]]: ...
+
+    def resolve(self, address: str | None) -> str | None: ...
+
+    def refresh(self) -> int: ...
+
+
+class NotificationPolicy(Protocol):
+    @property
+    def value(self) -> str: ...
+
+    def set(self, value: str) -> str: ...
+
+
+@dataclass(frozen=True, slots=True)
+class BackendDependencies:
+    """Explicit optional capabilities supplied by the daemon composition root."""
+
+    submit_obex: Callable[..., object] | None = None
+    on_sent: Callable[[str, str, str], None] | None = None
+    on_group_sent: Callable[..., None] | None = None
+    pull_contacts: Callable[[], int] | None = None
+    on_contacts_pulled: Callable[[int], int] | None = None
+    contacts: ContactIndex | None = None
+    status_provider: Callable[[], dict[str, Any]] | None = None
+    notification_policy: NotificationPolicy | None = None
+    on_notification_policy_changed: Callable[[], None] | None = None
+    storage: StorageSecurity | None = None
+    on_storage_changed: Callable[[], None] | None = None
 
 
 class BackendOperations:
@@ -60,41 +107,20 @@ class BackendOperations:
 
     def __init__(
         self,
-        sessions,
-        *,
-        submit_obex=None,
-        on_sent=None,
-        on_group_sent=None,
-        pull_contacts=None,
-        on_contacts_pulled=None,
-        contacts=None,
-        status_provider=None,
-        notification_policy=None,
-        on_notification_policy_changed=None,
-        storage=None,
-        on_storage_changed=None,
+        sessions: SessionState,
+        dependencies: BackendDependencies | None = None,
     ) -> None:
         self.sessions = sessions
-        self._submit_obex = submit_obex
-        self._on_sent = on_sent
-        self._on_group_sent = on_group_sent
-        self._pull_contacts = pull_contacts
-        self._on_contacts_pulled = on_contacts_pulled
-        self._contacts = contacts
-        self._status_provider = status_provider
-        self._notification_policy = notification_policy
-        self._on_notification_policy_changed = on_notification_policy_changed
-        self._storage = storage
-        self._on_storage_changed = on_storage_changed
+        self.dependencies = dependencies or BackendDependencies()
         self._confirmed_group_keys: set[str] = set()
         self._conversations = ConversationIndex(
             lambda: read_events(
                 limit=MAX_CONVERSATION_EVENTS,
                 max_body_chars=MAX_THREAD_BODY_CHARS,
-                storage=self._storage,
+                storage=self.dependencies.storage,
             ),
-            lambda events: build_threads(events, self._contacts),
-            revision=lambda: history_revision(storage=self._storage),
+            lambda events: build_threads(events, self.dependencies.contacts),
+            revision=lambda: history_revision(storage=self.dependencies.storage),
         )
 
     def _require_map(self) -> None:
@@ -113,12 +139,16 @@ class BackendOperations:
             )
         return body
 
-    def _queue(self, operation, success: Success, failure: Failure) -> None:
-        if self._submit_obex is None:
+    def _queue(
+        self, operation: Operation, success: Success, failure: Failure
+    ) -> None:
+        if self.dependencies.submit_obex is None:
             failure(NotReadyError("OBEX worker is unavailable"))
             return
         try:
-            self._submit_obex(operation, on_success=success, on_error=failure)
+            self.dependencies.submit_obex(
+                operation, on_success=success, on_error=failure
+            )
         except Exception as error:
             failure(error)
 
@@ -134,9 +164,9 @@ class BackendOperations:
         map_path = self.sessions.map_path
 
         def succeeded(transfer: str) -> None:
-            if self._on_sent is not None:
+            if self.dependencies.on_sent is not None:
                 try:
-                    self._on_sent(recipient, body, transfer)
+                    self.dependencies.on_sent(recipient, body, transfer)
                 except Exception:
                     log.exception("on_sent hook failed (message was still sent)")
             success(transfer)
@@ -198,9 +228,9 @@ class BackendOperations:
 
             def succeeded(transfer: str) -> None:
                 self._confirmed_group_keys.add(thread_key)
-                if self._on_group_sent is not None:
+                if self.dependencies.on_group_sent is not None:
                     try:
-                        self._on_group_sent(
+                        self.dependencies.on_group_sent(
                             group_recipients, thread["key"],
                             thread["name"], body, transfer,
                             thread["members"],
@@ -221,7 +251,7 @@ class BackendOperations:
             raise NotReadyError("one-to-one thread has an invalid recipient set")
         self._queue_send(thread["recipients"][0], body, success, failure)
 
-    def list_events(self, kinds, limit: int) -> list[dict]:
+    def list_events(self, kinds: Iterable[object], limit: int) -> list[dict]:
         raw_kinds = list(kinds)
         if len(raw_kinds) > MAX_EVENT_KINDS:
             raise InvalidArgumentsError("too many event kinds")
@@ -240,7 +270,7 @@ class BackendOperations:
             kinds=selected or set(_PUBLIC_EVENT_KINDS),
             limit=bounded,
             max_body_chars=MAX_THREAD_BODY_CHARS,
-            storage=self._storage,
+            storage=self.dependencies.storage,
         )
 
     def list_threads(self, limit: int) -> list[dict]:
@@ -253,11 +283,13 @@ class BackendOperations:
             return []
         if len(selected) > MAX_CONTACT_QUERY_CHARS:
             raise InvalidArgumentsError("contact query is too long")
-        if self._contacts is None:
+        if self.dependencies.contacts is None:
             raise NotReadyError("contact cache is unavailable")
         return [
             {"name": name, "address": address}
-            for name, address in self._contacts.find_by_name(selected)[:MAX_CONTACT_RESULTS]
+            for name, address in self.dependencies.contacts.find_by_name(selected)[
+                :MAX_CONTACT_RESULTS
+            ]
         ]
 
     def invalidate_conversations(self) -> None:
@@ -270,8 +302,8 @@ class BackendOperations:
             "pbap": self.sessions.pbap is not None,
             "notification_policy": self.get_notification_policy(),
         }
-        if self._status_provider is not None:
-            status.update(self._status_provider())
+        if self.dependencies.status_provider is not None:
+            status.update(self.dependencies.status_provider())
         return status
 
     def clear_history(self, confirmed: bool) -> None:
@@ -283,12 +315,12 @@ class BackendOperations:
         self.invalidate_conversations()
 
     def get_storage_policy(self) -> str:
-        if self._storage is None:
+        if self.dependencies.storage is None:
             return "encrypted"
-        return self._storage.status.policy
+        return self.dependencies.storage.status.policy
 
     def set_storage_policy(self, value: str) -> dict:
-        if self._storage is None:
+        if self.dependencies.storage is None:
             raise NotReadyError("local storage is unavailable")
         selected = str(value).strip().casefold()
         if selected not in STORAGE_POLICIES:
@@ -296,25 +328,27 @@ class BackendOperations:
             raise InvalidArgumentsError(
                 f"local data policy must be one of: {choices}"
             )
-        if selected != self._storage.status.policy:
+        if selected != self.dependencies.storage.status.policy:
             # Never mix plaintext and ciphertext in one archive. Clear before
             # changing policy so a crash can leave stale settings or an empty
             # archive, but never private data under the wrong policy.
             clear_events()
             clear_contact_cache()
         try:
-            status = self._storage.set_policy(selected, allow_prompt=True)
+            status = self.dependencies.storage.set_policy(
+                selected, allow_prompt=True
+            )
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         if status.policy == "none":
-            if self._contacts is not None:
-                self._contacts.refresh()
+            if self.dependencies.contacts is not None:
+                self.dependencies.contacts.refresh()
         elif status.can_read:
-            if self._contacts is not None:
-                self._contacts.refresh()
+            if self.dependencies.contacts is not None:
+                self.dependencies.contacts.refresh()
         self.invalidate_conversations()
-        if self._on_storage_changed is not None:
-            self._on_storage_changed()
+        if self.dependencies.on_storage_changed is not None:
+            self.dependencies.on_storage_changed()
         return {
             "storage_policy": status.policy,
             "storage_state": status.state,
@@ -322,15 +356,15 @@ class BackendOperations:
         }
 
     def unlock_storage(self) -> dict:
-        if self._storage is None:
+        if self.dependencies.storage is None:
             raise NotReadyError("local storage is unavailable")
-        status = self._storage.refresh(allow_prompt=True)
+        status = self.dependencies.storage.refresh(allow_prompt=True)
         if status.can_read:
-            if self._contacts is not None:
-                self._contacts.refresh()
+            if self.dependencies.contacts is not None:
+                self.dependencies.contacts.refresh()
             self.invalidate_conversations()
-        if self._on_storage_changed is not None:
-            self._on_storage_changed()
+        if self.dependencies.on_storage_changed is not None:
+            self.dependencies.on_storage_changed()
         return {
             "storage_policy": status.policy,
             "storage_state": status.state,
@@ -338,19 +372,19 @@ class BackendOperations:
         }
 
     def get_notification_policy(self) -> str:
-        if self._notification_policy is None:
+        if self.dependencies.notification_policy is None:
             return "messages"
-        return str(self._notification_policy.value)
+        return str(self.dependencies.notification_policy.value)
 
     def set_notification_policy(self, value: str) -> str:
-        if self._notification_policy is None:
+        if self.dependencies.notification_policy is None:
             raise NotReadyError("notification policy storage is unavailable")
         try:
-            selected = self._notification_policy.set(value)
+            selected = self.dependencies.notification_policy.set(value)
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
-        if self._on_notification_policy_changed is not None:
-            self._on_notification_policy_changed()
+        if self.dependencies.on_notification_policy_changed is not None:
+            self.dependencies.on_notification_policy_changed()
         return selected
 
     def list_recent(
@@ -364,14 +398,14 @@ class BackendOperations:
         map_path = self.sessions.map_path
 
         def succeeded(messages: list[dict]) -> None:
-            if self._contacts is not None:
+            if self.dependencies.contacts is not None:
                 for message in messages:
                     address = (
                         message.get("sender")
                         or message.get("sender_address")
                         or message.get("sender_phone_norm")
                     )
-                    resolved = self._contacts.resolve(address)
+                    resolved = self.dependencies.contacts.resolve(address)
                     if resolved:
                         message["contact_name"] = resolved
             success(messages)
@@ -389,19 +423,24 @@ class BackendOperations:
             raise NotReadyError(
                 "PBAP session not open — check Sync Contacts on the iPhone"
             )
-        if self._pull_contacts is None or self._on_contacts_pulled is None:
+        if (
+            self.dependencies.pull_contacts is None
+            or self.dependencies.on_contacts_pulled is None
+        ):
             raise NotReadyError("contact sync is unavailable")
+        pull_contacts = self.dependencies.pull_contacts
+        on_contacts_pulled = self.dependencies.on_contacts_pulled
 
         def succeeded(pulled: int) -> None:
             try:
-                count = self._on_contacts_pulled(pulled)
+                count = on_contacts_pulled(pulled)
                 self.invalidate_conversations()
                 success(count)
             except Exception as error:
                 self._operation_failed("ContactSync", error, failure)
 
         self._queue(
-            self._pull_contacts,
+            pull_contacts,
             succeeded,
             lambda error: self._operation_failed("ContactSync", error, failure),
         )

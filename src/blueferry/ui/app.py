@@ -27,8 +27,8 @@ APP_ID = "io.weirdware.BlueFerry.Gtk"
 _CSS = """
 .msg-bubble { padding: 6px 10px; }
 .msg-out {
-  background: var(--accent-bg-color);
-  color: var(--accent-fg-color);
+  background: @accent_bg_color;
+  color: @accent_fg_color;
 }
 """
 
