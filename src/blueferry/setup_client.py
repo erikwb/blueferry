@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from blueferry import pair_setup
+from blueferry import pair_setup, quirks_report
 from blueferry.bluetooth_devices import PairedDevice
 from blueferry.errors import PairingError
 
@@ -90,6 +90,7 @@ class ConfigurationState:
     path: str
     saved: bool = False
     bonded: bool | None = None
+    pairing_issue_report: str = ""
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> ConfigurationState:
@@ -104,6 +105,7 @@ class ConfigurationState:
                 if isinstance(value.get("bonded"), bool)
                 else None
             ),
+            pairing_issue_report=str(value.get("pairing_issue_report", "")),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -114,6 +116,7 @@ class ConfigurationState:
             "path": self.path,
             "saved": self.saved,
             "bonded": self.bonded,
+            "pairing_issue_report": self.pairing_issue_report,
         }
 
 
@@ -126,6 +129,7 @@ class PairingResult:
     ancs: str
     ancs_ready: bool
     iphone_steps: tuple[str, ...]
+    quirks_report: str = ""
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> PairingResult:
@@ -142,6 +146,7 @@ class PairingResult:
             ancs_ready=bool(value.get("ancs_ready", False)),
             iphone_steps=tuple(str(item) for item in raw_steps)
             if isinstance(raw_steps, list | tuple) else (),
+            quirks_report=str(value.get("quirks_report", "")),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -153,6 +158,7 @@ class PairingResult:
             "ancs": self.ancs,
             "ancs_ready": self.ancs_ready,
             "iphone_steps": list(self.iphone_steps),
+            "quirks_report": self.quirks_report,
         }
 
 
@@ -168,7 +174,10 @@ class SetupClient:
         )
 
     def configuration(self) -> ConfigurationState:
-        return ConfigurationState.from_dict(pair_setup.configuration_status())
+        value = dict(pair_setup.configuration_status())
+        report = quirks_report.issue_report()
+        value["pairing_issue_report"] = str(report) if report is not None else ""
+        return ConfigurationState.from_dict(value)
 
     def activate_bluez(self) -> BluezSupport:
         return BluezSupport.from_dict(pair_setup.activate_bluez_support())
@@ -243,7 +252,11 @@ class SetupClient:
                     process.wait()
                     return PairingResult.from_dict(event)
                 elif event.get("ok") is False:
-                    raise PairingError(str(event.get("error", "Pairing failed")))
+                    path = str(event.get("report_path") or "").strip()
+                    raise PairingError(
+                        str(event.get("error", "Pairing failed")),
+                        report_path=path or None,
+                    )
             raise PairingError("Pairing helper exited without a result")
         finally:
             if process.poll() is None:

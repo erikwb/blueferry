@@ -288,6 +288,20 @@ def test_all_gui_clients_offer_contacts_aware_new_messages() -> None:
     assert '"contacts-json"' in quickshell
 
 
+def test_all_gui_clients_offer_a_pairing_issue_button() -> None:
+    gtk = (ROOT / "src/blueferry/ui/status.py").read_text()
+    qt = _qml_bundle(ROOT / "src/blueferry/qt/qml")
+    quickshell = _qml_bundle(ROOT / "data/quickshell")
+
+    for client in (gtk, qt, quickshell):
+        assert "Report Pairing Issue" in client
+        assert "iPhone model" in client
+        assert "iOS version" in client
+    assert "blueferry pairing-issue" in (ROOT / "src/blueferry/quirks_report.py").read_text()
+    assert '"pairing-issue"' in quickshell
+    assert '"--print-url"' in quickshell
+
+
 def test_all_gui_clients_explain_phone_side_pairing_step() -> None:
     gtk = (ROOT / "src/blueferry/ui/status.py").read_text()
     qt = _qml_bundle(ROOT / "src/blueferry/qt/qml")

@@ -302,15 +302,21 @@ def test_start_notify_failure_retries_without_rediscovery(monkeypatch) -> None:
 
     client._try_subscribe()
 
+    assert client.subscribed is False
+    assert client.authorized is False
     assert client.connected is False
     assert len(scheduled) == 1
     assert scheduled[0][0] == client_module.SUBSCRIBE_RETRY_SECONDS
 
     scheduled[0][1]()
 
+    assert client.subscribed is True
+    assert client.authorized is False
     assert client.connected is False
     assert len(writes) == 1
     _complete_authorization_probe(client)
+    assert client.subscribed is True
+    assert client.authorized is True
     assert client.connected is True
     assert ns.start_calls == 2
     assert ds.start_calls == 1
@@ -354,6 +360,8 @@ def test_control_point_failure_keeps_ancs_unready_and_retries(
 
     client._queue_authorization_probe()
 
+    assert client.subscribed is True
+    assert client.authorized is False
     assert client.connected is False
     assert scheduled[0][0] == client_module.AUTHORIZATION_RETRY_SECONDS
     assert "org.bluez.Error.Failed: Insufficient authorization" in caplog.text
@@ -361,4 +369,5 @@ def test_control_point_failure_keeps_ancs_unready_and_retries(
     scheduled[0][1]()
     assert client.connected is False
     _complete_authorization_probe(client)
+    assert client.authorized is True
     assert client.connected is True

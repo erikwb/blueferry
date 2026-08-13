@@ -35,6 +35,7 @@ ShellRoot {
   property bool pairingConfirmationPending: false
   property string pairingPasskey: ""
   property bool pairingResultReceived: false
+  property string pairingIssueReport: ""
   property var pendingPairingDevice: null
   property string adapterName: ""
   property string onboardingStage: onboarding.stage
@@ -231,12 +232,14 @@ ShellRoot {
       if (!parsed.ok) {
         root.pairingResultReceived = true
         root.pairingStatus = parsed.error || "Pairing failed; it is safe to retry."
+        root.pairingIssueReport = parsed.report_path || parsed.quirks_report || ""
         return
       }
       root.pairingResultReceived = true
       root.pairingStatus = parsed.ancs_ready || !root.notificationsSupported
         ? "Linux pairing complete. On the iPhone enable Show Message Notifications and Sync Contacts."
         : "Pairing is complete. Notification access is still settling; keep the iPhone Bluetooth settings open."
+      root.pairingIssueReport = parsed.quirks_report || parsed.report_path || ""
       root.configured = true
       root.targetSaved = true
       root.targetBonded = true
@@ -316,6 +319,8 @@ ShellRoot {
           root.bondStateKnown = typeof parsed.bonded === "boolean"
           root.targetBonded = parsed.bonded === true
           root.configuredMac = root.targetSaved ? (parsed.mac || "") : ""
+          if (typeof parsed.pairing_issue_report === "string")
+            root.pairingIssueReport = parsed.pairing_issue_report
           if (root.targetSaved && root.bondStateKnown && !root.targetBonded)
             root.pairingStatus = "This phone is no longer paired in BlueZ. Clear the saved phone, then scan and pair again."
           if (!root.configured) root.phoneSettingsVisible = true
@@ -566,6 +571,18 @@ ShellRoot {
       root.pairingPasskey = ""
       if (code !== 0 && !root.pairingResultReceived)
         root.pairingStatus = "Pairing did not complete; unlock the iPhone and try again."
+    }
+  }
+
+  Process {
+    id: pairingIssueUrlProcess
+    command: ["/usr/bin/blueferry", "pairing-issue", "--print-url"]
+    stdout: StdioCollector {
+      onStreamFinished: {
+        var url = text.trim().split("\n").pop()
+        if (url.indexOf("https://") === 0)
+          Qt.openUrlExternally(url)
+      }
     }
   }
 
@@ -1246,6 +1263,11 @@ ShellRoot {
               } else root.startPairing(device, false)
             }
           }
+          FerryButton {
+            visible: root.pairingIssueReport !== ""
+            text: "Report Pairing Issue"
+            onClicked: pairingIssuePopup.open()
+          }
           FerryLabel {
             text: root.pairingPasskey === "" ? "Pairing confirmation" : root.pairingPasskey
             font.bold: true
@@ -1465,6 +1487,59 @@ ShellRoot {
                 var device = root.pendingPairingDevice
                 replaceTargetPopup.close()
                 if (device !== null) root.startPairing(device, true)
+              }
+            }
+          }
+        }
+      }
+
+      Popup {
+        id: pairingIssuePopup
+        parent: applicationSurface
+        x: Math.max(0, (applicationSurface.width - width) / 2)
+        y: Math.max(0, (applicationSurface.height - height) / 2)
+        width: Math.min(theme.scaled(440), applicationSurface.width - theme.scaled(24))
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        padding: theme.scaled(18)
+
+        background: Rectangle {
+          color: theme.cardSurface
+          border.color: theme.divider
+          radius: theme.panelRadius
+        }
+
+        Overlay.modal: Rectangle {
+          color: Qt.rgba(theme.windowSurface.r, theme.windowSurface.g,
+                         theme.windowSurface.b, 0.72)
+        }
+
+        contentItem: ColumnLayout {
+          spacing: theme.scaled(12)
+          FerryLabel {
+            text: "Report pairing issue"
+            font.bold: true
+            font.pixelSize: theme.headingSize
+          }
+          FerryLabel {
+            Layout.fillWidth: true
+            wrapMode: Text.Wrap
+            text: "A pairing report was saved at " + root.pairingIssueReport
+              + ". Attach that file to a GitHub issue and include the iPhone model and iOS version."
+          }
+          RowLayout {
+            Layout.alignment: Qt.AlignRight
+            FerryButton {
+              text: "Cancel"
+              onClicked: pairingIssuePopup.close()
+            }
+            FerryButton {
+              text: "Open GitHub"
+              highlighted: true
+              onClicked: {
+                pairingIssuePopup.close()
+                pairingIssueUrlProcess.running = true
               }
             }
           }

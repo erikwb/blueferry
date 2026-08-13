@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import threading
 
-from gi.repository import Adw, GLib, Gtk
+from gi.repository import Adw, Gio, GLib, Gtk
 
 from blueferry.bluetooth_devices import PairedDevice, iphone_candidates
 from blueferry.i18n import _
 from blueferry.models import BackendStatus
 from blueferry.onboarding import OnboardingStage, derive_stage
+from blueferry.quirks_report import issue_report, issue_url
 from blueferry.setup_client import (
     BluetoothCompatibility,
     ConfigurationState,
@@ -44,6 +45,7 @@ class IPhonePage(Gtk.Box):
         self._applying_notification_policy = False
         self._applying_storage_policy = False
         self._storage_unlock_attempted = False
+        self._pairing_issue_report = ""
 
         page = Adw.PreferencesPage()
         self.append(page)
@@ -130,6 +132,22 @@ class IPhonePage(Gtk.Box):
         forget.add_suffix(self._forget_button)
         self._pairing_group.add(forget)
         page.add(self._pairing_group)
+
+        self._issue_group = Adw.PreferencesGroup()
+        self._issue_row = Adw.ActionRow(
+            title=_("Pairing Report"),
+            subtitle=_("Attach the last pairing report if notifications stay unavailable"),
+            use_markup=False,
+        )
+        self._issue_button = Gtk.Button(
+            label=_("Report Pairing Issue"),
+            valign=Gtk.Align.CENTER,
+        )
+        self._issue_button.connect("clicked", self._file_pairing_issue)
+        self._issue_row.add_suffix(self._issue_button)
+        self._issue_group.add(self._issue_row)
+        self._issue_group.set_visible(False)
+        page.add(self._issue_group)
 
         self._paired_group = Adw.PreferencesGroup(title=_("Paired Phone"))
         self._paired_row = Adw.ActionRow(
@@ -340,8 +358,46 @@ class IPhonePage(Gtk.Box):
             self._setup_failed,
         )
 
+    def _refresh_issue_offer(self, report_path: str = "") -> None:
+        path = report_path.strip()
+        if not path:
+            found = issue_report()
+            path = str(found) if found is not None else ""
+        self._pairing_issue_report = path
+        self._issue_group.set_visible(bool(path))
+
+    def _file_pairing_issue(self, _button) -> None:
+        path = self._pairing_issue_report
+        if not path:
+            return
+        dialog = Adw.AlertDialog(
+            heading=_("Report Pairing Issue"),
+            body=_(
+                "A pairing report was saved at {path}. Attach that file to a "
+                "GitHub issue and include the iPhone model and iOS version."
+            ).format(path=path),
+            heading_use_markup=False,
+            body_use_markup=False,
+        )
+        dialog.add_response("cancel", _("Cancel"))
+        dialog.add_response("open", _("Open GitHub"))
+        dialog.set_close_response("cancel")
+        dialog.set_response_appearance("open", Adw.ResponseAppearance.SUGGESTED)
+
+        def responded(_current, response: str) -> None:
+            if response != "open":
+                return
+            try:
+                Gio.AppInfo.launch_default_for_uri(issue_url(path), None)
+            except Exception:
+                self._toast(_("Could not open GitHub. The report is at {path}.").format(path=path))
+
+        dialog.connect("response", responded)
+        dialog.present(self.get_root())
+
     def _setup_failed(self, message: str) -> bool:
         self._set_pairing_busy(False)
+        self._refresh_issue_offer()
         self._toast(_("Setup failed: {error}").format(error=message))
         return False
 
@@ -384,6 +440,7 @@ class IPhonePage(Gtk.Box):
             self._set_pairing_busy(False)
             self._update_phone_controls()
             self._update_onboarding()
+            self._refresh_issue_offer(configuration.pairing_issue_report)
             if scan_after or not self._devices:
                 self._load_devices(scan=scan_after)
 
@@ -515,6 +572,7 @@ class IPhonePage(Gtk.Box):
             else:
                 message = _("Linux setup is complete; finish the two iPhone settings")
             self._toast(message)
+            self._refresh_issue_offer()
             self._load_devices(scan=False)
             self._update_onboarding()
             self._refresh()
@@ -614,6 +672,7 @@ class IPhonePage(Gtk.Box):
                         path="",
                     )
                     self._apply_status(BackendStatus())
+                    self._refresh_issue_offer()
                     self._load_devices(scan=False)
                     self._update_phone_controls()
 
@@ -689,6 +748,7 @@ class IPhonePage(Gtk.Box):
             self._unlock_storage()
         self._update_iphone_setup_tasks()
         self._update_onboarding()
+        self._refresh_issue_offer()
         return False
 
     def _notification_policy_changed(self, _row, _property) -> None:

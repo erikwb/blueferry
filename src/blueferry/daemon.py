@@ -371,10 +371,13 @@ class Daemon:
             self._mark_setup_task(CONTACTS)
         if self.ancs and self.ancs.connected:
             self._mark_setup_task(NOTIFICATION_ACCESS)
+        ancs = self.ancs
         return {
             "backend_release": self._running_release,
             "initializing": self._initializing,
-            "ancs": bool(self.ancs and self.ancs.connected),
+            "ancs": bool(ancs and ancs.connected),
+            "ancs_subscribed": bool(ancs and ancs.subscribed),
+            "ancs_authorized": bool(ancs and ancs.authorized),
             **self.bearers.snapshot(),
             "contacts": self.contacts.count(),
             "events": history_count(storage=self.storage),

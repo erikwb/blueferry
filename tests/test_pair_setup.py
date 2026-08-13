@@ -11,6 +11,22 @@ from blueferry import bluez_setup, config, pair_setup
 from blueferry.bluetooth_devices import iphone_candidates
 
 
+@pytest.fixture(autouse=True)
+def _pairing_reports_in_tmp(tmp_path, monkeypatch):
+    state = tmp_path / "blueferry-state"
+    monkeypatch.setattr(config, "STATE_DIR", state)
+    monkeypatch.setattr(config, "EVENTS_DB", state / "events.sqlite")
+    monkeypatch.setattr(config, "CONTACTS_DB", state / "contacts.sqlite")
+    monkeypatch.setattr(pair_setup, "_adapter_identity", lambda adapter, *_args, **_kwargs: {"name": adapter})
+    monkeypatch.setattr(
+        pair_setup,
+        "_le_bearer_snapshot",
+        lambda _path: {
+            "present": False, "paired": False, "bonded": False, "connected": False,
+        },
+    )
+
+
 def _device(*, paired: bool) -> pair_setup.PairedDevice:
     return pair_setup.PairedDevice(
         mac="02:00:00:00:00:01",
@@ -373,6 +389,11 @@ def test_compatibility_is_based_on_controller_features_not_vendor(monkeypatch):
     assert status["adapter"] == "hci7"
     assert status["hardware_supported"] is True
     assert status["pairing_ready"] is True
+    assert status["secure_conn"] is False
+    assert "secure-conn" in status["supported_settings"]
+    assert status["current_settings"] == [
+        "advertising", "br/edr", "le", "powered",
+    ]
 
 
 def test_compatibility_explains_missing_classic_transport(monkeypatch):
@@ -436,6 +457,48 @@ def test_classic_only_controller_supports_core_without_ancs(monkeypatch):
     assert status["pairing_ready"] is True
 
 
+def test_controller_snapshot_does_not_repeat_btmgmt_or_systemctl(monkeypatch):
+    calls = []
+
+    def run_command(argv, **_kwargs):
+        calls.append(list(argv))
+        return type(
+            "Result",
+            (),
+            {"returncode": 0, "stdout": "bluetoothctl: 5.87\n", "stderr": ""},
+        )()
+
+    monkeypatch.setattr(pair_setup, "run_command", run_command)
+    snapshot = pair_setup._controller_snapshot(
+        "hci0",
+        {
+            "available": True,
+            "powered": True,
+            "classic": True,
+            "low_energy": True,
+            "advertising": True,
+            "secure_pairing": True,
+            "secure_conn": True,
+            "hardware_supported": True,
+            "messages_supported": True,
+            "notifications_supported": True,
+            "bearer_api_active": True,
+            "manufacturer_id": 93,
+            "hci_version": 11,
+            "supported_settings": ["advertising", "br/edr", "le", "powered", "secure-conn"],
+            "current_settings": ["br/edr", "le", "powered", "secure-conn"],
+        },
+    )
+
+    assert calls == [["bluetoothctl", "--version"]]
+    assert snapshot["secure_conn"] is True
+    assert snapshot["current_settings"] == ["br/edr", "le", "powered", "secure-conn"]
+    assert snapshot["manufacturer_id"] == 93
+    assert snapshot["hci_version"] == 11
+    assert snapshot["experimental"] is True
+    assert snapshot["bluez_version"] == "5.87"
+
+
 def test_backend_restart_does_not_create_per_user_enablement(monkeypatch):
     calls = []
     monkeypatch.setattr(
@@ -464,11 +527,11 @@ def _compatible(monkeypatch, *, notifications: bool = True) -> None:
     )
     monkeypatch.setattr(pair_setup, "_prefer_bredr", lambda _path: None)
     monkeypatch.setattr(pair_setup, "_activate_obex_mns", lambda: None)
-    monkeypatch.setattr(pair_setup, "_wait_for_classic_settled", lambda _path: None)
+    monkeypatch.setattr(pair_setup, "_wait_for_classic_settled", lambda _path, **_kwargs: None)
     monkeypatch.setattr(
         pair_setup,
         "_wait_for_daemon_transports",
-        lambda: (True, True, True),
+        lambda **_kwargs: (True, True, True),
     )
 
 
@@ -502,7 +565,7 @@ def test_complete_pairing_starts_profiles_while_pairing_advert_is_active(monkeyp
     monkeypatch.setattr(
         pair_setup,
         "_wait_for_classic_settled",
-        lambda path: calls.append(("classic-settled", path)),
+        lambda path, **_kwargs: calls.append(("classic-settled", path)),
     )
     monkeypatch.setattr(pair_setup, "_restart_user_service", lambda: calls.append("restart"))
 
@@ -762,7 +825,7 @@ def test_interactive_pairing_connects_and_lets_the_iphone_initiate(monkeypatch):
     monkeypatch.setattr(
         pair_setup,
         "_wait_for_classic_settled",
-        lambda path: calls.append(("classic-settled", path)),
+        lambda path, **_kwargs: calls.append(("classic-settled", path)),
     )
     monkeypatch.setattr(
         pair_setup,
@@ -795,8 +858,11 @@ def test_interactive_pairing_connects_and_lets_the_iphone_initiate(monkeypatch):
     # LE keys); there must be no competing Linux-side Device1.Pair() call.
     # Keep our agent default while the daemon makes the first MAP/PBAP attempt
     # and only then enables LE.
-    assert calls == [
-        ("agent", unpaired.device_path, confirmation, display),
+    assert calls[0][0] == "agent"
+    assert calls[0][1] == unpaired.device_path
+    assert calls[0][2] is not confirmation
+    assert calls[0][2](12) is True
+    assert calls[1:] == [
         "agent-enter",
         ("connect", unpaired.device_path, 60.0),
         ("wait", 120.0),
@@ -862,7 +928,7 @@ def test_pairing_starts_daemon_even_when_ancs_is_still_missing(monkeypatch):
     monkeypatch.setattr(
         pair_setup,
         "_wait_for_daemon_transports",
-        lambda: (True, True, False),
+        lambda **_kwargs: (True, True, False),
     )
     monkeypatch.setattr(pair_setup, "_restart_user_service", lambda: restarted.append(True))
 
@@ -885,7 +951,7 @@ def test_pairing_does_not_gate_map_on_inbound_ancs(monkeypatch):
     monkeypatch.setattr(
         pair_setup,
         "_wait_for_daemon_transports",
-        lambda: (False, False, False),
+        lambda **_kwargs: (False, False, False),
     )
     saved = []
     monkeypatch.setattr(pair_setup, "write_local_env", lambda *_args: saved.append(True))

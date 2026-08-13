@@ -160,4 +160,65 @@ def test_cli_wizard_supplies_its_own_pairing_agent_ui(monkeypatch, capsys) -> No
         ("\nUse this device?", {"default": True}),
         ("Do both devices show Bluetooth code 012345?", {"default": False}),
     ]
-    assert "Bluetooth pairing code: 012345" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "Bluetooth pairing code: 012345" in output
+    assert "pairing-issue" not in output
+
+
+def test_cli_wizard_points_at_pairing_issue_when_ancs_stays_down(
+    monkeypatch, capsys,
+) -> None:
+    device = PairedDevice(
+        mac="02:00:00:00:00:01",
+        name="iPhone",
+        icon="phone",
+        trusted=True,
+        connected=True,
+        paired=True,
+        adapter_path="/org/bluez/hci0",
+        device_path="/org/bluez/hci0/dev_02_00_00_00_00_01",
+        uuids=frozenset(),
+    )
+    compatibility = SimpleNamespace(
+        adapter="hci0",
+        hardware_supported=True,
+        issue="",
+        notifications_supported=True,
+        bearer_api_active=True,
+    )
+
+    class Setup:
+        @staticmethod
+        def compatibility():
+            return compatibility
+
+        @staticmethod
+        def devices(*, scan_seconds):
+            return [device]
+
+        @staticmethod
+        def configuration():
+            return SimpleNamespace(saved=False, mac="")
+
+        @staticmethod
+        def complete(mac, *, confirmation, display):
+            return SimpleNamespace(
+                device=device,
+                ancs_ready=False,
+                quirks_report="/tmp/quirks-test.json",
+            )
+
+    class Backend:
+        @staticmethod
+        def status():
+            return SimpleNamespace(verified_iphone_setup=())
+
+    monkeypatch.setattr(pairing_cli, "SetupClient", Setup)
+    monkeypatch.setattr(pairing_cli, "BackendClient", Backend)
+    monkeypatch.setattr(pairing_cli.typer, "confirm", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(pairing_cli, "_print_iphone_steps", lambda *_args, **_kwargs: None)
+
+    assert pairing_cli.run_wizard(verify_after=False) == 0
+    output = capsys.readouterr().out
+    assert "blueferry pairing-issue" in output
+    assert "GitHub issue" not in output

@@ -10,6 +10,7 @@ from blueferry.backend_lifecycle import ensure_backend_current
 from blueferry.bluetooth_devices import iphone_candidates
 from blueferry.client import BackendClient, BackendError
 from blueferry.errors import PairingError
+from blueferry.quirks_report import cli_issue_hint
 from blueferry.setup_client import SetupClient
 from blueferry.setup_verification import (
     NOTIFICATION_ACCESS,
@@ -169,8 +170,12 @@ def run_wizard(*, verify_after: bool = True) -> int:
         )
     except PairingError as error:
         typer.echo(typer.style(str(error), fg=typer.colors.RED))
+        if getattr(error, "report_path", None):
+            typer.echo(cli_issue_hint())
         return 1
     typer.echo(typer.style("✓ Linux-side setup complete", fg=typer.colors.GREEN))
+    if getattr(result, "quirks_report", "") and not result.ancs_ready:
+        typer.echo(cli_issue_hint())
     try:
         verified = BackendClient().status().verified_iphone_setup
     except BackendError:
