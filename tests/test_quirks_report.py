@@ -245,6 +245,7 @@ def test_save_report_scrubs_home_paths_from_error_text(monkeypatch, tmp_path) ->
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     path = quirks_report.save_report(
         {"outcome": {"error": f"could not clear {home / '.config/blueferry/local.env'}"}},
         directory=tmp_path / "reports",

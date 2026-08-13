@@ -6,7 +6,10 @@ from pathlib import Path
 
 import pytest
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# These checks instantiate QML components without displaying them.  Do not
+# inherit a developer session's Wayland/X11 backend inside makepkg's private
+# D-Bus test session; Qt can otherwise wait indefinitely for desktop services.
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
 pytest.importorskip("PySide6")
 

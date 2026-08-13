@@ -71,7 +71,11 @@ check() {
     export DBUS_SYSTEM_BUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS"
     export BLUEFERRY_TEST_DBUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS"
     export PYTHONPATH="$BLUEFERRY_TEST_ROOT/src"
-    python -m coverage run -m pytest -q
+    # GTK and Qt cannot safely initialize their GUI stacks in the same Python
+    # process: Qt can deadlock while creating the second QML component after
+    # the GTK conversation tests have run. Keep the QML checks isolated.
+    python -m coverage run -m pytest -q --ignore=tests/test_qml_presenters.py
+    python -m pytest -q tests/test_qml_presenters.py
     python -m coverage report
   '
   desktop-file-validate data/io.weirdware.BlueFerry.Gtk.desktop
