@@ -187,6 +187,30 @@ def test_bluez_preference_selects_requested_bearer(monkeypatch) -> None:
     ]
 
 
+def test_bluez_preference_ignores_a_missing_preferred_bearer_property(monkeypatch) -> None:
+    class Properties:
+        @staticmethod
+        def Set(_interface, _name, _value, *, timeout):
+            raise bearer_supervisor.dbus.exceptions.DBusException(
+                "No such property 'PreferredBearer'",
+                name="org.bluez.Error.InvalidArguments",
+            )
+
+    class Bus:
+        @staticmethod
+        def get_object(_service, _path):
+            return object()
+
+    monkeypatch.setattr(bearer_supervisor, "get_system_bus", Bus)
+    monkeypatch.setattr(
+        bearer_supervisor.dbus,
+        "Interface",
+        lambda _object, _interface: Properties(),
+    )
+
+    BearerSupervisor("/device")._prefer_bluez("bredr")
+
+
 def test_failed_connection_is_retried_after_backoff() -> None:
     attempts = []
     scheduled = []

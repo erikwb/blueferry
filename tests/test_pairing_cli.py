@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from blueferry import pairing_cli
 from blueferry.bluetooth_devices import PairedDevice
 from blueferry.pairing_cli import _print_iphone_steps
+from blueferry.setup_client import DISCOVERY_SECONDS
 from blueferry.setup_verification import CONTACTS
 
 
@@ -71,11 +72,11 @@ def test_cli_requires_phone_side_forget_before_clearing_saved_target(
     class Setup:
         @staticmethod
         def configuration():
-            return SimpleNamespace(saved=True, mac="02:00:00:00:00:01")
+            return SimpleNamespace(saved=True, mac="02:00:00:00:00:01", adapter="hci1")
 
         @staticmethod
-        def forget(mac):
-            forgotten.append(mac)
+        def forget(mac, *, adapter=None):
+            forgotten.append((mac, adapter))
             raise pairing_cli.PairingError("stop after forget")
 
     monkeypatch.setattr(pairing_cli, "SetupClient", Setup)
@@ -86,7 +87,7 @@ def test_cli_requires_phone_side_forget_before_clearing_saved_target(
     )
 
     assert pairing_cli.run_wizard(verify_after=False) == 1
-    assert forgotten == ["02:00:00:00:00:01"]
+    assert forgotten == [("02:00:00:00:00:01", "hci1")]
     assert prompts == [
         (
             "Forget BlueFerry's configured target and start fresh?",
@@ -118,6 +119,7 @@ def test_cli_wizard_supplies_its_own_pairing_agent_ui(monkeypatch, capsys) -> No
         issue="",
         notifications_supported=True,
         bearer_api_active=True,
+        adapters=(),
     )
 
     class Setup:
@@ -126,8 +128,8 @@ def test_cli_wizard_supplies_its_own_pairing_agent_ui(monkeypatch, capsys) -> No
             return compatibility
 
         @staticmethod
-        def devices(*, scan_seconds):
-            assert scan_seconds == 8
+        def devices(*, scan_seconds, adapter=None):
+            assert scan_seconds == DISCOVERY_SECONDS
             return [device]
 
         @staticmethod
@@ -135,8 +137,8 @@ def test_cli_wizard_supplies_its_own_pairing_agent_ui(monkeypatch, capsys) -> No
             return SimpleNamespace(saved=False, mac="")
 
         @staticmethod
-        def complete(mac, *, confirmation, display):
-            observed.append((mac, confirmation(12345)))
+        def complete(mac, *, confirmation, display, adapter=None):
+            observed.append((mac, adapter, confirmation(12345)))
             display(12345)
             return SimpleNamespace(device=device, ancs_ready=True)
 
@@ -155,7 +157,7 @@ def test_cli_wizard_supplies_its_own_pairing_agent_ui(monkeypatch, capsys) -> No
     monkeypatch.setattr(pairing_cli, "_print_iphone_steps", lambda *_args, **_kwargs: None)
 
     assert pairing_cli.run_wizard(verify_after=False) == 0
-    assert observed == [(device.mac, True)]
+    assert observed == [(device.mac, "hci0", True)]
     assert prompts == [
         ("\nUse this device?", {"default": True}),
         ("Do both devices show Bluetooth code 012345?", {"default": False}),
@@ -185,6 +187,7 @@ def test_cli_wizard_points_at_pairing_issue_when_ancs_stays_down(
         issue="",
         notifications_supported=True,
         bearer_api_active=True,
+        adapters=(),
     )
 
     class Setup:
@@ -193,7 +196,7 @@ def test_cli_wizard_points_at_pairing_issue_when_ancs_stays_down(
             return compatibility
 
         @staticmethod
-        def devices(*, scan_seconds):
+        def devices(*, scan_seconds, adapter=None):
             return [device]
 
         @staticmethod
@@ -201,7 +204,7 @@ def test_cli_wizard_points_at_pairing_issue_when_ancs_stays_down(
             return SimpleNamespace(saved=False, mac="")
 
         @staticmethod
-        def complete(mac, *, confirmation, display):
+        def complete(mac, *, confirmation, display, adapter=None):
             return SimpleNamespace(
                 device=device,
                 ancs_ready=False,

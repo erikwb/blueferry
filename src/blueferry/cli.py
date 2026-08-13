@@ -144,6 +144,7 @@ def pair_setup(
 @app.command("pairing-devices-json", hidden=True)
 def pairing_devices_json(
     scan_seconds: int = typer.Option(0, "--scan-seconds", min=0, max=30),
+    adapter: str = typer.Option("", "--adapter"),
 ) -> None:
     """List Bluetooth devices for graphical setup clients."""
     import json
@@ -155,8 +156,10 @@ def pairing_devices_json(
     try:
         setup = SetupClient()
         configuration = setup.configuration()
+        selected = adapter.strip() or None
         devices = iphone_candidates(
-            setup.devices(scan_seconds=scan_seconds),
+            setup.devices(scan_seconds=scan_seconds, adapter=selected),
+            adapter=selected or "",
             configured_mac=configuration.mac,
             include_unpaired=scan_seconds > 0,
         )
@@ -182,7 +185,9 @@ def pairing_bluez_status_json() -> None:
 
 
 @app.command("pairing-compatibility-json", hidden=True)
-def pairing_compatibility_json() -> None:
+def pairing_compatibility_json(
+    adapter: str = typer.Option("", "--adapter"),
+) -> None:
     """Report controller capabilities for graphical setup clients."""
     import json
 
@@ -190,7 +195,8 @@ def pairing_compatibility_json() -> None:
     from blueferry.setup_client import SetupClient
 
     try:
-        typer.echo(json.dumps(SetupClient().compatibility().to_dict()))
+        selected = adapter.strip() or None
+        typer.echo(json.dumps(SetupClient().compatibility(selected).to_dict()))
     except PairingError as error:
         typer.echo(json.dumps({"hardware_supported": False, "error": str(error)}))
         raise typer.Exit(code=2) from None
@@ -226,6 +232,7 @@ def pairing_activate_bluez() -> None:
 def pairing_complete(
     mac: str,
     interactive_agent: bool = typer.Option(False, "--interactive-agent", hidden=True),
+    adapter: str = typer.Option("", "--adapter"),
     replace_saved_mac: str = typer.Option("", "--replace-saved-mac", hidden=True),
     debug: bool = typer.Option(False, "--debug"),
 ) -> None:
@@ -256,10 +263,13 @@ def pairing_complete(
 
     try:
         setup = SetupClient()
+        selected = adapter.strip() or None
         if replace_saved_mac:
-            setup.prepare_replacement(replace_saved_mac, mac)
+            saved = setup.configuration().adapter or None
+            setup.prepare_replacement(replace_saved_mac, mac, adapter=saved)
         result = setup.complete(
             mac,
+            adapter=selected,
             confirmation=confirm if interactive_agent else None,
             display=display if interactive_agent else None,
         )
@@ -307,7 +317,10 @@ def pairing_issue(
 
 
 @app.command("pairing-forget", hidden=True)
-def pairing_forget(mac: str) -> None:
+def pairing_forget(
+    mac: str,
+    adapter: str = typer.Option("", "--adapter"),
+) -> None:
     """Unpair the phone and clear it from BlueFerry configuration."""
     import json
 
@@ -315,7 +328,9 @@ def pairing_forget(mac: str) -> None:
     from blueferry.setup_client import SetupClient
 
     try:
-        SetupClient().forget(mac)
+        setup = SetupClient()
+        selected = adapter.strip() or setup.configuration().adapter or None
+        setup.forget(mac, adapter=selected)
         typer.echo(json.dumps({"ok": True, "mac": mac.upper()}))
     except PairingError as error:
         typer.echo(json.dumps({"ok": False, "error": str(error)}))

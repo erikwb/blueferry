@@ -83,6 +83,120 @@ def test_discovery_stops_as_soon_as_an_iphone_appears(monkeypatch):
     assert elapsed < 8
 
 
+def test_discover_devices_starts_on_the_requested_adapter(monkeypatch):
+    started = []
+    stopped = []
+
+    class Adapter:
+        def __init__(self, path):
+            self.path = path
+
+        def Set(self, *_args):
+            pass
+
+        def StartDiscovery(self):
+            started.append(self.path)
+
+        def StopDiscovery(self):
+            stopped.append(self.path)
+
+    class ObjectManager:
+        def GetManagedObjects(self):
+            return {
+                "/org/bluez/hci0": {"org.bluez.Adapter1": {}},
+                "/org/bluez/hci1": {"org.bluez.Adapter1": {}},
+            }
+
+    class Bus:
+        def get_object(self, _service, path):
+            return Adapter(path)
+
+    monkeypatch.setattr(pair_setup, "_object_manager", ObjectManager)
+    monkeypatch.setattr(pair_setup, "get_system_bus", Bus)
+    monkeypatch.setattr(pair_setup.dbus, "Interface", lambda value, _iface: value)
+    monkeypatch.setattr(pair_setup, "list_devices", lambda: [])
+    now = iter([0.0, 2.0])
+    monkeypatch.setattr(pair_setup.time, "monotonic", lambda: next(now, 2.0))
+
+    pair_setup.discover_devices(1, adapter="hci1")
+
+    assert started == ["/org/bluez/hci1"]
+    assert "/org/bluez/hci0" in stopped
+    assert "/org/bluez/hci1" in stopped
+
+
+def test_discover_devices_waits_for_an_iphone_on_the_requested_adapter(monkeypatch):
+    leftover = _device(paired=False)
+    phone = pair_setup.PairedDevice(
+        mac="02:00:00:00:00:02",
+        name="Test iPhone",
+        icon="phone",
+        trusted=False,
+        connected=False,
+        paired=False,
+        adapter_path="/org/bluez/hci1",
+        device_path="/org/bluez/hci1/dev_02_00_00_00_00_02",
+        uuids=frozenset(),
+        services_resolved=False,
+    )
+    scans = [[leftover], [leftover], [leftover, phone]]
+    sleeps = []
+    elapsed = 0.0
+
+    class Adapter:
+        def Set(self, *_args):
+            pass
+
+        def StartDiscovery(self):
+            pass
+
+        def StopDiscovery(self):
+            pass
+
+    class ObjectManager:
+        def GetManagedObjects(self):
+            return {
+                "/org/bluez/hci0": {"org.bluez.Adapter1": {}},
+                "/org/bluez/hci1": {"org.bluez.Adapter1": {}},
+            }
+
+    class Bus:
+        def get_object(self, *_args):
+            return Adapter()
+
+    def sleep(seconds):
+        nonlocal elapsed
+        sleeps.append(seconds)
+        elapsed += seconds
+
+    monkeypatch.setattr(pair_setup, "_object_manager", ObjectManager)
+    monkeypatch.setattr(pair_setup, "get_system_bus", Bus)
+    monkeypatch.setattr(pair_setup.dbus, "Interface", lambda value, _iface: value)
+    monkeypatch.setattr(pair_setup, "list_devices", lambda: scans.pop(0))
+    monkeypatch.setattr(pair_setup.time, "monotonic", lambda: elapsed)
+    monkeypatch.setattr(pair_setup.time, "sleep", sleep)
+
+    assert pair_setup.discover_devices(8, adapter="hci1") == [phone]
+    assert sleeps == [0.25, 0.25]
+    assert elapsed < 8
+
+
+def test_discover_devices_rejects_a_missing_requested_adapter(monkeypatch):
+    class ObjectManager:
+        def GetManagedObjects(self):
+            return {"/org/bluez/hci0": {"org.bluez.Adapter1": {}}}
+
+    monkeypatch.setattr(pair_setup, "_object_manager", ObjectManager)
+
+    with pytest.raises(pair_setup.PairingError, match="hci1"):
+        pair_setup.discover_devices(1, adapter="hci1")
+
+
+def test_discover_devices_rejects_an_invalid_adapter_name():
+    with pytest.raises(pair_setup.PairingError, match="invalid Bluetooth adapter"):
+        pair_setup.discover_devices(1, adapter="not an adapter")
+
+
 def test_write_local_env_preserves_settings_and_is_private(tmp_path, monkeypatch):
     destination = tmp_path / "blueferry" / "local.env"
     destination.parent.mkdir()
@@ -136,9 +250,9 @@ def test_clear_local_target_preserves_unrelated_preferences(tmp_path, monkeypatc
 def test_replacing_stale_target_keeps_selected_unpaired_scan_result(monkeypatch):
     device = _device(paired=False)
     calls = []
-    monkeypatch.setattr(pair_setup, "_find_device", lambda _mac: device)
+    monkeypatch.setattr(pair_setup, "_find_device", lambda _mac, **_kwargs: device)
     monkeypatch.setattr(
-        pair_setup, "forget_device", lambda _mac: calls.append("forget")
+        pair_setup, "forget_device", lambda _mac, **_kwargs: calls.append("forget")
     )
     monkeypatch.setattr(
         pair_setup, "_stop_user_service", lambda: calls.append("stop")
@@ -154,9 +268,9 @@ def test_replacing_stale_target_keeps_selected_unpaired_scan_result(monkeypatch)
 
 def test_replacing_a_different_target_removes_its_bluez_device(monkeypatch):
     calls = []
-    monkeypatch.setattr(pair_setup, "_find_device", lambda _mac: None)
+    monkeypatch.setattr(pair_setup, "_find_device", lambda _mac, **_kwargs: None)
     monkeypatch.setattr(
-        pair_setup, "forget_device", lambda mac: calls.append(mac)
+        pair_setup, "forget_device", lambda mac, **_kwargs: calls.append(mac)
     )
 
     pair_setup.prepare_target_replacement(
@@ -164,6 +278,30 @@ def test_replacing_a_different_target_removes_its_bluez_device(monkeypatch):
     )
 
     assert calls == ["02:00:00:00:00:01"]
+
+
+def test_find_device_stays_on_the_requested_adapter(monkeypatch):
+    leftover = _device(paired=True)
+    phone = pair_setup.PairedDevice(
+        mac=leftover.mac,
+        name=leftover.name,
+        icon=leftover.icon,
+        trusted=True,
+        connected=True,
+        paired=True,
+        adapter_path="/org/bluez/hci1",
+        device_path="/org/bluez/hci1/dev_02_00_00_00_00_01",
+        uuids=leftover.uuids,
+        services_resolved=True,
+    )
+    monkeypatch.setattr(pair_setup, "list_devices", lambda: [leftover, phone])
+
+    with pytest.raises(pair_setup.PairingError, match="more than one"):
+        pair_setup._find_device(leftover.mac)
+    assert pair_setup._find_device(leftover.mac, adapter="hci0") == leftover
+    assert pair_setup._find_device(leftover.mac, adapter="hci1") == phone
+    assert pair_setup._find_device(leftover.mac, adapter="hci2") is None
+    assert pair_setup._device(leftover.mac, adapter="hci1") == phone
 
 
 def test_forget_stops_backend_removes_bond_and_clears_target(monkeypatch):
@@ -178,13 +316,13 @@ def test_forget_stops_backend_removes_bond_and_clears_target(monkeypatch):
         def RemoveDevice(self, path, *, timeout):
             calls.append(("remove", str(path), timeout))
 
-    monkeypatch.setattr(pair_setup, "_find_device", lambda _mac: device)
+    monkeypatch.setattr(pair_setup, "_find_device", lambda _mac, **_kwargs: device)
     monkeypatch.setattr(pair_setup, "_stop_user_service", lambda: calls.append("stop"))
     monkeypatch.setattr(pair_setup, "clear_local_target", lambda: calls.append("clear"))
     monkeypatch.setattr(pair_setup, "get_system_bus", Bus)
     monkeypatch.setattr(pair_setup.dbus, "Interface", lambda *_args: Adapter())
 
-    pair_setup.forget_device(device.mac)
+    pair_setup.forget_device(device.mac, adapter="hci0")
 
     assert calls == [
         "stop",
@@ -193,9 +331,50 @@ def test_forget_stops_backend_removes_bond_and_clears_target(monkeypatch):
     ]
 
 
+def test_forget_removes_the_bond_on_the_saved_adapter(monkeypatch):
+    leftover = _device(paired=True)
+    phone = pair_setup.PairedDevice(
+        mac=leftover.mac,
+        name=leftover.name,
+        icon=leftover.icon,
+        trusted=True,
+        connected=True,
+        paired=True,
+        adapter_path="/org/bluez/hci1",
+        device_path="/org/bluez/hci1/dev_02_00_00_00_00_01",
+        uuids=leftover.uuids,
+        services_resolved=True,
+    )
+    calls = []
+
+    class Bus:
+        def get_object(self, _service, path):
+            calls.append(("object", path))
+            return object()
+
+    class Adapter:
+        def RemoveDevice(self, path, *, timeout):
+            calls.append(("remove", str(path), timeout))
+
+    monkeypatch.setattr(pair_setup, "list_devices", lambda: [leftover, phone])
+    monkeypatch.setattr(pair_setup, "_stop_user_service", lambda: calls.append("stop"))
+    monkeypatch.setattr(pair_setup, "clear_local_target", lambda: calls.append("clear"))
+    monkeypatch.setattr(pair_setup, "get_system_bus", Bus)
+    monkeypatch.setattr(pair_setup.dbus, "Interface", lambda *_args: Adapter())
+
+    pair_setup.forget_device(leftover.mac, adapter="hci1")
+
+    assert calls == [
+        "stop",
+        ("object", phone.adapter_path),
+        ("remove", phone.device_path, 30.0),
+        "clear",
+    ]
+
+
 def test_forget_clears_target_when_another_bluetooth_ui_removed_bond(monkeypatch):
     calls = []
-    monkeypatch.setattr(pair_setup, "_find_device", lambda _mac: None)
+    monkeypatch.setattr(pair_setup, "_find_device", lambda _mac, **_kwargs: None)
     monkeypatch.setattr(pair_setup, "_stop_user_service", lambda: calls.append("stop"))
     monkeypatch.setattr(pair_setup, "clear_local_target", lambda: calls.append("clear"))
 
@@ -219,7 +398,7 @@ def test_forget_treats_bluez_race_as_already_removed(monkeypatch):
                 name="org.bluez.Error.DoesNotExist",
             )
 
-    monkeypatch.setattr(pair_setup, "_find_device", lambda _mac: device)
+    monkeypatch.setattr(pair_setup, "_find_device", lambda _mac, **_kwargs: device)
     monkeypatch.setattr(pair_setup, "_stop_user_service", lambda: calls.append("stop"))
     monkeypatch.setattr(pair_setup, "clear_local_target", lambda: calls.append("clear"))
     monkeypatch.setattr(pair_setup, "get_system_bus", Bus)
@@ -394,6 +573,86 @@ def test_compatibility_is_based_on_controller_features_not_vendor(monkeypatch):
     assert status["current_settings"] == [
         "advertising", "br/edr", "le", "powered",
     ]
+    assert [item["name"] for item in status["adapters"]] == ["hci7"]
+
+
+def test_compatibility_ignores_a_configured_adapter_bluez_does_not_have(
+    monkeypatch,
+):
+    probed = []
+
+    class Manager:
+        def GetManagedObjects(self):
+            return {"/org/bluez/hci7": {"org.bluez.Adapter1": {}}}
+
+    def controller_info(command, **_kwargs):
+        index = command[2]
+        probed.append(index)
+        if index != "7":
+            return type("Result", (), {"returncode": 0, "stdout": (
+                f"hci{index}: Primary controller\n"
+                "supported settings: powered ssp br/edr le advertising secure-conn\n"
+            )})()
+        return type("Result", (), {"returncode": 0, "stdout": (
+            "hci7: Primary controller\n"
+            "supported settings: powered ssp br/edr le advertising secure-conn\n"
+        )})()
+
+    monkeypatch.setattr(pair_setup, "_object_manager", lambda: Manager())
+    monkeypatch.setattr(pair_setup, "run_command", controller_info)
+    monkeypatch.setattr(pair_setup, "bluez_support_status", lambda: {"active": True})
+    monkeypatch.setattr(pair_setup.config, "ADAPTER", "hci1")
+
+    status = pair_setup.bluetooth_compatibility()
+
+    assert probed == ["7"]
+    assert status["adapter"] == "hci7"
+    assert [item["name"] for item in status["adapters"]] == ["hci7"]
+
+
+def test_compatibility_lists_every_adapter_and_honors_an_explicit_choice(monkeypatch):
+    monkeypatch.setattr(pair_setup.config, "ADAPTER", "hci0")
+
+    class Manager:
+        def GetManagedObjects(self):
+            return {
+                "/org/bluez/hci0": {"org.bluez.Adapter1": {}},
+                "/org/bluez/hci1": {"org.bluez.Adapter1": {}},
+            }
+
+    monkeypatch.setattr(pair_setup, "_object_manager", lambda: Manager())
+
+    def controller_info(command, **_kwargs):
+        index = command[2]
+        settings = (
+            "powered ssp br/edr le advertising secure-conn"
+            if index in {"0", "1"}
+            else ""
+        )
+        return type(
+            "Result",
+            (),
+            {
+                "returncode": 0 if settings else 1,
+                "stdout": f"hci{index}: Primary controller\nsupported settings: {settings}\n",
+            },
+        )()
+
+    monkeypatch.setattr(pair_setup, "run_command", controller_info)
+    monkeypatch.setattr(pair_setup, "bluez_support_status", lambda: {"active": True})
+
+    automatic = pair_setup.bluetooth_compatibility()
+    assert automatic["adapter"] == "hci0"
+    assert [item["name"] for item in automatic["adapters"]] == ["hci0", "hci1"]
+
+    selected = pair_setup.bluetooth_compatibility("hci1")
+    assert selected["adapter"] == "hci1"
+    assert selected["hardware_supported"] is True
+    assert [item["name"] for item in selected["adapters"]] == ["hci0", "hci1"]
+
+    monkeypatch.setattr(pair_setup.config, "ADAPTER", "hci1")
+    remembered = pair_setup.bluetooth_compatibility()
+    assert remembered["adapter"] == "hci1"
 
 
 def test_compatibility_explains_missing_classic_transport(monkeypatch):
@@ -469,6 +728,7 @@ def test_controller_snapshot_does_not_repeat_btmgmt_or_systemctl(monkeypatch):
         )()
 
     monkeypatch.setattr(pair_setup, "run_command", run_command)
+    monkeypatch.setattr(pair_setup, "_adapter_dbus_fields", lambda _adapter: {})
     snapshot = pair_setup._controller_snapshot(
         "hci0",
         {
@@ -497,6 +757,128 @@ def test_controller_snapshot_does_not_repeat_btmgmt_or_systemctl(monkeypatch):
     assert snapshot["hci_version"] == 11
     assert snapshot["experimental"] is True
     assert snapshot["bluez_version"] == "5.87"
+    assert "cod" not in snapshot
+    assert "uuids" not in snapshot
+    assert "experimental_features" not in snapshot
+
+
+def test_adapter_dbus_fields_record_cod_uuids_and_experimental_features(
+    monkeypatch,
+):
+    class Properties:
+        @staticmethod
+        def GetAll(_interface, *, timeout):
+            assert timeout == 5.0
+            return {
+                "Class": 0x7C0408,
+                "UUIDs": [
+                    "00001133-0000-1000-8000-00805F9B34FB",
+                    "0000111E-0000-1000-8000-00805f9b34fb",
+                    "00005005-0000-1000-8000-0002ee000001",
+                ],
+                "ExperimentalFeatures": [
+                    "d4992530-b9ec-469f-ab01-6c481c47da1c",
+                    "15c0a148-c273-11ea-b3de-0242ac130004",
+                    "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                ],
+                "Address": "AA:BB:CC:DD:EE:FF",
+                "Alias": "erik-laptop",
+            }
+
+    class Bus:
+        @staticmethod
+        def get_object(_service, path):
+            assert path == "/org/bluez/hci1"
+            return object()
+
+    monkeypatch.setattr(pair_setup, "get_system_bus", Bus)
+    monkeypatch.setattr(pair_setup.dbus, "Interface", lambda *_args: Properties())
+
+    fields = pair_setup._adapter_dbus_fields("hci1")
+
+    assert fields["cod"] == "0x7c0408"
+    assert fields["cod_handsfree"] is True
+    assert fields["uuids"] == [
+        "00005005-0000-1000-8000-0002ee000001",
+        "handsfree",
+        "message-notification-server",
+    ]
+    assert fields["experimental_features"] == [
+        "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        "debug",
+        "ll-privacy",
+    ]
+    assert "Address" not in fields
+    assert "Alias" not in fields
+
+
+def test_adapter_dbus_fields_omit_missing_experimental_features(monkeypatch):
+    class Properties:
+        @staticmethod
+        def GetAll(_interface, *, timeout):
+            return {"Class": 0x000000, "UUIDs": []}
+
+    monkeypatch.setattr(
+        pair_setup, "get_system_bus",
+        lambda: type("Bus", (), {"get_object": staticmethod(lambda *_args: object())})(),
+    )
+    monkeypatch.setattr(pair_setup.dbus, "Interface", lambda *_args: Properties())
+
+    fields = pair_setup._adapter_dbus_fields("hci0")
+
+    assert fields["cod"] == "0x000000"
+    assert fields["cod_handsfree"] is False
+    assert fields["uuids"] == []
+    assert "experimental_features" not in fields
+
+
+def test_adapter_dbus_fields_are_empty_when_bluez_is_unavailable(monkeypatch):
+    monkeypatch.setattr(
+        pair_setup,
+        "get_system_bus",
+        lambda: (_ for _ in ()).throw(pair_setup.dbus.exceptions.DBusException()),
+    )
+
+    assert pair_setup._adapter_dbus_fields("hci0") == {}
+
+
+def test_controller_snapshot_includes_adapter_dbus_fields(monkeypatch):
+    monkeypatch.setattr(
+        pair_setup,
+        "run_command",
+        lambda *_args, **_kwargs: type(
+            "Result", (), {"returncode": 0, "stdout": "bluetoothctl: 5.87\n", "stderr": ""},
+        )(),
+    )
+    monkeypatch.setattr(
+        pair_setup,
+        "_adapter_dbus_fields",
+        lambda adapter: {
+            "cod": "0x240408",
+            "cod_handsfree": True,
+            "uuids": ["message-notification-server"],
+            "experimental_features": ["debug"],
+        } if adapter == "hci0" else {},
+    )
+
+    snapshot = pair_setup._controller_snapshot(
+        "hci0",
+        {
+            "available": True,
+            "powered": True,
+            "classic": True,
+            "low_energy": True,
+            "advertising": True,
+            "secure_pairing": True,
+            "hardware_supported": True,
+            "bearer_api_active": True,
+        },
+    )
+
+    assert snapshot["cod"] == "0x240408"
+    assert snapshot["cod_handsfree"] is True
+    assert snapshot["uuids"] == ["message-notification-server"]
+    assert snapshot["experimental_features"] == ["debug"]
 
 
 def test_backend_restart_does_not_create_per_user_enablement(monkeypatch):
@@ -538,7 +920,7 @@ def _compatible(monkeypatch, *, notifications: bool = True) -> None:
 def test_complete_pairing_starts_profiles_while_pairing_advert_is_active(monkeypatch):
     device = _device(paired=True)
     calls = []
-    monkeypatch.setattr(pair_setup, "_device", lambda _mac: device)
+    monkeypatch.setattr(pair_setup, "_device", lambda _mac, **_kwargs: device)
     _compatible(monkeypatch)
     monkeypatch.setattr(
         bluez_setup,
@@ -584,6 +966,59 @@ def test_complete_pairing_starts_profiles_while_pairing_advert_is_active(monkeyp
         "restart",
         ("unregister", "hci0"),
     ]
+
+
+def test_complete_pairing_prepares_the_selected_adapter_not_a_leftover_bond(
+    monkeypatch,
+):
+    leftover = _device(paired=True)
+    phone = pair_setup.PairedDevice(
+        mac=leftover.mac,
+        name=leftover.name,
+        icon=leftover.icon,
+        trusted=True,
+        connected=False,
+        paired=True,
+        adapter_path="/org/bluez/hci1",
+        device_path="/org/bluez/hci1/dev_02_00_00_00_00_01",
+        uuids=leftover.uuids,
+        services_resolved=True,
+    )
+    prepared = []
+    saved = []
+    monkeypatch.setattr(pair_setup, "list_devices", lambda: [leftover, phone])
+    _compatible(monkeypatch)
+    monkeypatch.setattr(
+        bluez_setup,
+        "prepare_classic",
+        lambda **kwargs: prepared.append(kwargs["adapter"]) or True,
+    )
+    monkeypatch.setattr(bluez_setup, "register_advert", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(bluez_setup, "unregister_advert", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(pair_setup, "trust_device", lambda *_args: None)
+    monkeypatch.setattr(pair_setup, "_prefer_bredr", lambda *_args: None)
+    monkeypatch.setattr(pair_setup, "_activate_obex_mns", lambda: None)
+    monkeypatch.setattr(pair_setup, "_wait_for_classic_settled", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        pair_setup, "write_local_env",
+        lambda mac, adapter=None: saved.append((mac, adapter)),
+    )
+    monkeypatch.setattr(pair_setup, "_restart_user_service", lambda: None)
+    monkeypatch.setattr(
+        pair_setup, "_wait_for_daemon_transports",
+        lambda **_kwargs: (True, True, True),
+    )
+    monkeypatch.setattr(pair_setup, "_adapter_dbus_fields", lambda _adapter: {})
+    monkeypatch.setattr(pair_setup, "_le_bearer_snapshot", lambda _path: {
+        "present": False, "paired": False, "bonded": False, "connected": False,
+    })
+    monkeypatch.setattr(pair_setup, "_bluetooth_session_owners", lambda: [])
+
+    result = pair_setup.complete_pairing(phone.mac, adapter="hci1")
+
+    assert result["ok"] is True
+    assert prepared == ["hci1"]
+    assert saved == [(phone.mac, "hci1")]
 
 
 def test_classic_connect_requires_observable_settled_connection(monkeypatch):
@@ -649,6 +1084,47 @@ def test_post_pair_bearer_preference_is_forced_to_bredr(monkeypatch):
         ("interface", "org.freedesktop.DBus.Properties"),
         ("org.bluez.Device1", "PreferredBearer", "bredr"),
     ]
+
+
+def test_post_pair_bearer_preference_is_optional_when_bluez_omits_it(monkeypatch):
+    class Properties:
+        @staticmethod
+        def Set(_interface, _name, _value):
+            raise pair_setup.dbus.exceptions.DBusException(
+                "No such property 'PreferredBearer'",
+                name="org.bluez.Error.InvalidArguments",
+            )
+
+    class Bus:
+        @staticmethod
+        def get_object(_service, _path):
+            return object()
+
+    monkeypatch.setattr(pair_setup, "get_system_bus", Bus)
+    monkeypatch.setattr(pair_setup.dbus, "Interface", lambda _obj, _iface: Properties())
+
+    pair_setup._prefer_bredr("/org/bluez/hci0/dev_02_00_00_00_00_01")
+
+
+def test_post_pair_bearer_preference_still_fails_on_unexpected_errors(monkeypatch):
+    class Properties:
+        @staticmethod
+        def Set(_interface, _name, _value):
+            raise pair_setup.dbus.exceptions.DBusException(
+                "Permission denied",
+                name="org.freedesktop.DBus.Error.AccessDenied",
+            )
+
+    class Bus:
+        @staticmethod
+        def get_object(_service, _path):
+            return object()
+
+    monkeypatch.setattr(pair_setup, "get_system_bus", Bus)
+    monkeypatch.setattr(pair_setup.dbus, "Interface", lambda _obj, _iface: Properties())
+
+    with pytest.raises(pair_setup.PairingError, match="Permission denied"):
+        pair_setup._prefer_bredr("/org/bluez/hci0/dev_02_00_00_00_00_01")
 
 
 def test_obex_mns_is_activated_before_pairing(monkeypatch):
@@ -742,6 +1218,52 @@ def test_ancs_retries_local_abort_after_classic_resettles(monkeypatch, caplog):
     assert "LE bearer connected" in caplog.text
 
 
+def test_connect_ancs_continues_when_preferred_bearer_is_missing(monkeypatch):
+    device = _device(paired=True)
+    connects = []
+
+    class Manager:
+        @staticmethod
+        def GetManagedObjects():
+            return {
+                pair_setup.dbus.ObjectPath(device.device_path): {
+                    "org.bluez.Bearer.LE1": {},
+                }
+            }
+
+    class Properties:
+        @staticmethod
+        def Set(*_args, **_kwargs):
+            raise pair_setup.dbus.exceptions.DBusException(
+                "No such property 'PreferredBearer'",
+                name="org.bluez.Error.InvalidArguments",
+            )
+
+    class LeBearer:
+        @staticmethod
+        def Connect(**_kwargs):
+            connects.append(True)
+
+    monkeypatch.setattr(pair_setup, "_object_manager", lambda: Manager())
+    monkeypatch.setattr(
+        pair_setup,
+        "get_system_bus",
+        lambda: type("Bus", (), {"get_object": staticmethod(lambda *_args: object())})(),
+    )
+    monkeypatch.setattr(
+        pair_setup.dbus,
+        "Interface",
+        lambda _obj, interface: (
+            Properties()
+            if interface == "org.freedesktop.DBus.Properties"
+            else LeBearer()
+        ),
+    )
+
+    assert pair_setup._connect_ancs(device) == "connected"
+    assert connects == [True]
+
+
 def test_complete_pairing_headless_pairs_from_linux(monkeypatch):
     unpaired = _device(paired=False)
     paired = _device(paired=True)
@@ -756,8 +1278,8 @@ def test_complete_pairing_headless_pairs_from_linux(monkeypatch):
         def get_object(*_args):
             return object()
 
-    monkeypatch.setattr(pair_setup, "_device", lambda _mac: unpaired)
-    monkeypatch.setattr(pair_setup, "_wait_for_paired_device", lambda _mac: paired)
+    monkeypatch.setattr(pair_setup, "_device", lambda _mac, **_kwargs: unpaired)
+    monkeypatch.setattr(pair_setup, "_wait_for_paired_device", lambda _mac, **_kwargs: paired)
     _compatible(monkeypatch)
     monkeypatch.setattr(bluez_setup, "prepare_classic", lambda **_kwargs: True)
     monkeypatch.setattr(bluez_setup, "register_advert", lambda *_args, **_kwargs: True)
@@ -802,11 +1324,11 @@ def test_interactive_pairing_connects_and_lets_the_iphone_initiate(monkeypatch):
     def display(_passkey):
         return None
 
-    monkeypatch.setattr(pair_setup, "_device", lambda _mac: unpaired)
+    monkeypatch.setattr(pair_setup, "_device", lambda _mac, **_kwargs: unpaired)
     monkeypatch.setattr(
         pair_setup,
         "_wait_for_paired_device",
-        lambda _mac: calls.append("settled") or paired,
+        lambda _mac, **_kwargs: calls.append("settled") or paired,
     )
     _compatible(monkeypatch)
     monkeypatch.setattr(bluez_setup, "prepare_classic", lambda **_kwargs: True)
@@ -895,8 +1417,8 @@ def test_peer_initiated_pairing_is_allowed_to_finish(monkeypatch):
         def get_object(*_args):
             return object()
 
-    monkeypatch.setattr(pair_setup, "_device", lambda _mac: unpaired)
-    monkeypatch.setattr(pair_setup, "_wait_for_paired_device", lambda _mac: paired)
+    monkeypatch.setattr(pair_setup, "_device", lambda _mac, **_kwargs: unpaired)
+    monkeypatch.setattr(pair_setup, "_wait_for_paired_device", lambda _mac, **_kwargs: paired)
     _compatible(monkeypatch)
     monkeypatch.setattr(bluez_setup, "prepare_classic", lambda **_kwargs: True)
     monkeypatch.setattr(bluez_setup, "register_advert", lambda *_args, **_kwargs: True)
@@ -916,7 +1438,7 @@ def test_peer_initiated_pairing_is_allowed_to_finish(monkeypatch):
 def test_pairing_starts_daemon_even_when_ancs_is_still_missing(monkeypatch):
     device = _device(paired=True)
     device.uuids = frozenset()
-    monkeypatch.setattr(pair_setup, "_device", lambda _mac: device)
+    monkeypatch.setattr(pair_setup, "_device", lambda _mac, **_kwargs: device)
     _compatible(monkeypatch)
     monkeypatch.setattr(bluez_setup, "prepare_classic", lambda **_kwargs: True)
     monkeypatch.setattr(bluez_setup, "register_advert", lambda *_args, **_kwargs: True)
@@ -942,7 +1464,7 @@ def test_pairing_starts_daemon_even_when_ancs_is_still_missing(monkeypatch):
 
 def test_pairing_does_not_gate_map_on_inbound_ancs(monkeypatch):
     device = _device(paired=True)
-    monkeypatch.setattr(pair_setup, "_device", lambda _mac: device)
+    monkeypatch.setattr(pair_setup, "_device", lambda _mac, **_kwargs: device)
     _compatible(monkeypatch)
     monkeypatch.setattr(bluez_setup, "prepare_classic", lambda **_kwargs: True)
     monkeypatch.setattr(bluez_setup, "register_advert", lambda *_args, **_kwargs: True)
@@ -965,7 +1487,7 @@ def test_pairing_does_not_gate_map_on_inbound_ancs(monkeypatch):
 
 def test_pairing_rejects_controller_without_ancs_before_saving_target(monkeypatch):
     device = _device(paired=True)
-    monkeypatch.setattr(pair_setup, "_device", lambda _mac: device)
+    monkeypatch.setattr(pair_setup, "_device", lambda _mac, **_kwargs: device)
     _compatible(monkeypatch, notifications=False)
     saved = []
     monkeypatch.setattr(pair_setup, "write_local_env", lambda *_args: saved.append(True))

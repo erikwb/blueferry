@@ -887,6 +887,18 @@ Kirigami.ApplicationWindow {
         property var device: selectedDevice >= 0 && selectedDevice < root.bridge.devices.length
             ? root.bridge.devices[selectedDevice]
             : null
+        property bool hasMultipleAdapters: (root.bridge.compatibility.adapters || []).length > 1
+
+        function syncAdapterCombo() {
+            const adapters = root.bridge.compatibility.adapters || []
+            const current = root.bridge.compatibility.adapter
+            for (let index = 0; index < adapters.length; ++index) {
+                if (adapters[index].name === current) {
+                    adapterCombo.currentIndex = index
+                    return
+                }
+            }
+        }
         property var configuredDevice: {
             for (let index = 0; index < root.bridge.devices.length; ++index) {
                 if (root.bridge.devices[index].mac === root.bridge.configuredMac)
@@ -919,6 +931,15 @@ Kirigami.ApplicationWindow {
                     text: qsTr("Keep the iPhone unlocked with its Bluetooth settings open during pairing.")
                 }
 
+                Connections {
+                    target: root.bridge
+                    function onCompatibilityChanged() { iphonePage.syncAdapterCombo() }
+                    function onDevicesChanged() {
+                        deviceCombo.currentIndex = root.bridge.devices.length > 0 ? 0 : -1
+                        iphonePage.selectedDevice = deviceCombo.currentIndex
+                    }
+                }
+
                 OnboardingSummary {
                     Layout.fillWidth: true
                     stage: iphonePage.effectiveStage
@@ -944,8 +965,24 @@ Kirigami.ApplicationWindow {
 
                     Controls.Label {
                         Kirigami.FormData.label: qsTr("Controller:")
+                        visible: !iphonePage.hasMultipleAdapters
                         text: root.bridge.compatibility.adapter || qsTr("Checking…")
                         textFormat: Text.PlainText
+                    }
+
+                    Controls.ComboBox {
+                        id: adapterCombo
+                        Kirigami.FormData.label: qsTr("Controller:")
+                        visible: iphonePage.hasMultipleAdapters
+                        model: root.bridge.compatibility.adapters || []
+                        textRole: "label"
+                        valueRole: "name"
+                        enabled: !root.bridge.busy
+                        onActivated: {
+                            if (currentValue)
+                                root.bridge.selectAdapter(currentValue)
+                        }
+                        Component.onCompleted: iphonePage.syncAdapterCombo()
                     }
 
                     Controls.Label {
@@ -1010,22 +1047,18 @@ Kirigami.ApplicationWindow {
                         textRole: "display_name"
                         valueRole: "mac"
                         enabled: !root.bridge.busy
+                        // org.kde.desktop paints displayText in the StyleItem
+                        // background. A contentItem Label would overlay a second copy.
                         delegate: Controls.ItemDelegate {
                             id: deviceOption
                             required property var modelData
                             width: deviceCombo.width
-                            text: modelData.display_name
+                            Accessible.name: deviceOption.modelData.display_name
                             contentItem: Controls.Label {
-                                text: deviceOption.text
+                                text: deviceOption.modelData.display_name
                                 textFormat: Text.PlainText
                                 elide: Text.ElideRight
                             }
-                        }
-                        contentItem: Controls.Label {
-                            text: deviceCombo.displayText
-                            textFormat: Text.PlainText
-                            verticalAlignment: Text.AlignVCenter
-                            elide: Text.ElideRight
                         }
                         onCurrentIndexChanged: iphonePage.selectedDevice = currentIndex
                     }

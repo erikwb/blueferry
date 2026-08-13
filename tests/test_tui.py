@@ -295,12 +295,14 @@ def test_unchanged_poll_does_not_rebuild_the_terminal_view() -> None:
 
         async with app.run_test(size=(120, 36)) as pilot:
             await _wait_for_threads(app, pilot, 2)
+            await pilot.pause(0.1)
             thread_items = tuple(app.query_one("#thread-list", ListView).children)
             message_items = tuple(
                 app.query_one("#message-timeline").children
             )
 
             await app._apply_snapshot(state.fetch_snapshot())
+            await pilot.pause(0.1)
 
             assert tuple(app.query_one("#thread-list", ListView).children) == thread_items
             assert tuple(app.query_one("#message-timeline").children) == message_items

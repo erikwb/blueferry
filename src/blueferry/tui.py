@@ -771,13 +771,16 @@ class BlueFerryApp(App[None]):
             composer = self.query_one("#composer", TextArea)
             send_button = self.query_one("#send-reply", Button)
             roster_button = self.query_one("#edit-group-participants", Button)
+            title_view = self.query_one("#conversation-title", Static)
+            subtitle_view = self.query_one("#conversation-subtitle", Static)
+            badge_view = self.query_one("#conversation-badge", Static)
         except NoMatches:
             return
         await timeline.remove_children()
         if thread is None:
-            self.query_one("#conversation-title", Static).update("Select a conversation")
-            self.query_one("#conversation-subtitle", Static).update("")
-            self.query_one("#conversation-badge", Static).update("")
+            title_view.update("Select a conversation")
+            subtitle_view.update("")
+            badge_view.update("")
             await timeline.mount(
                 Static("Choose a conversation to start", id="empty-conversation")
             )
@@ -788,10 +791,10 @@ class BlueFerryApp(App[None]):
 
         title = thread.name + ("  ·  Group" if thread.is_group else "")
         recipients = ", ".join(thread.recipients)
-        self.query_one("#conversation-title", Static).update(Text(_one_line(title)))
-        self.query_one("#conversation-subtitle", Static).update(Text(_one_line(recipients)))
+        title_view.update(Text(_one_line(title)))
+        subtitle_view.update(Text(_one_line(recipients)))
         unread = _unread_count(thread)
-        self.query_one("#conversation-badge", Static).update(
+        badge_view.update(
             Text(f"{unread} unread" if unread else "up to date")
         )
         roster_button.display = bool(

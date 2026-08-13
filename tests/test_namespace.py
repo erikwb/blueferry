@@ -288,6 +288,34 @@ def test_all_gui_clients_offer_contacts_aware_new_messages() -> None:
     assert '"contacts-json"' in quickshell
 
 
+def test_all_gui_clients_can_choose_a_bluetooth_controller() -> None:
+    gtk = (ROOT / "src/blueferry/ui/status.py").read_text()
+    qt = _qml_bundle(ROOT / "src/blueferry/qt/qml")
+    quickshell = _qml_bundle(ROOT / "data/quickshell")
+
+    assert "_adapter_row" in gtk
+    assert "selectAdapter" in qt
+    assert "Bluetooth Controller" in gtk
+    assert "Controller:" in qt
+    assert "adapterCombo" in quickshell
+    assert "--adapter" in quickshell
+    assert 'pairProcess.command.push("--adapter", root.adapterName)' in quickshell
+    assert 'forgetProcess.command.push("--adapter", root.configuredAdapter)' in quickshell
+    assert "property string configuredAdapter" in quickshell
+    assert (
+        "root.configuredAdapter = root.targetSaved ? (parsed.adapter || \"\") : \"\""
+    ) in quickshell
+    assert "if (root.targetSaved && parsed.adapter)" not in quickshell
+    assert "scanAfterCompatibility" in quickshell
+    assert 'command.push("--scan-seconds", "24")' in quickshell
+    assert "scan_seconds=DISCOVERY_SECONDS if scan else 0" in (
+        ROOT / "src/blueferry/ui/status.py"
+    ).read_text()
+    assert "scan_seconds=DISCOVERY_SECONDS if scan else 0" in (
+        ROOT / "src/blueferry/qt/controller.py"
+    ).read_text()
+
+
 def test_all_gui_clients_offer_a_pairing_issue_button() -> None:
     gtk = (ROOT / "src/blueferry/ui/status.py").read_text()
     qt = _qml_bundle(ROOT / "src/blueferry/qt/qml")
@@ -389,9 +417,10 @@ def test_remote_qml_text_is_rendered_as_plain_text() -> None:
         "text: contactDelegate.text\n"
         "                        textFormat: Text.PlainText"
     ) in qt_qml
+    assert "text: deviceCombo.displayText" not in qt_qml
     assert (
-        "text: deviceCombo.displayText\n"
-        "                            textFormat: Text.PlainText"
+        "text: deviceOption.modelData.display_name\n"
+        "                                textFormat: Text.PlainText"
     ) in qt_qml
     assert (
         "text: threadDelegate.modelData.name\n"

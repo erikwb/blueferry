@@ -37,6 +37,25 @@ def _connect_error_parts(error: Exception) -> tuple[str, str]:
     return name[:256], message[:256]
 
 
+def preferred_bearer_unavailable(error: Exception) -> bool:
+    """True when this BlueZ build does not expose Device1.PreferredBearer.
+
+    Packaged bluetoothd reports that as UnknownProperty. Some experimental
+    trees raise org.bluez.Error.InvalidArguments with "No such property".
+    """
+    if not isinstance(error, dbus.exceptions.DBusException):
+        return False
+    name = error.get_dbus_name() or ""
+    if name in {
+        "org.freedesktop.DBus.Error.UnknownInterface",
+        "org.freedesktop.DBus.Error.UnknownMethod",
+        "org.freedesktop.DBus.Error.UnknownProperty",
+    }:
+        return True
+    detail = (error.get_dbus_message() or "").casefold()
+    return "no such property" in detail and "preferredbearer" in detail
+
+
 ReadConnected = Callable[[str], bool | None]
 Connect = Callable[[str, Callable[[], None], Callable[[Exception], None]], None]
 Prefer = Callable[[str], None]
@@ -317,13 +336,9 @@ class BearerSupervisor:
             )
             log.debug("set iPhone PreferredBearer=%s", kind)
         except dbus.exceptions.DBusException as error:
-            if error.get_dbus_name() in {
-                "org.freedesktop.DBus.Error.UnknownInterface",
-                "org.freedesktop.DBus.Error.UnknownMethod",
-                "org.freedesktop.DBus.Error.UnknownProperty",
-            }:
-                # Older BlueZ releases can still accept inbound ANCS without
-                # exposing their experimental bearer-selection API.
+            if preferred_bearer_unavailable(error):
+                # Older or partial experimental BlueZ builds can still accept
+                # inbound ANCS without exposing PreferredBearer.
                 log.debug("PreferredBearer is unavailable on this BlueZ build")
                 return
             raise

@@ -14,6 +14,7 @@ from gi.repository import GLib
 
 from blueferry import bluetooth_capabilities as capabilities
 from blueferry import config, quirks_report
+from blueferry.bearer_supervisor import preferred_bearer_unavailable
 from blueferry.bluetooth_devices import PairedDevice
 from blueferry.bus import get_session_bus, get_system_bus
 from blueferry.commands import run_command
@@ -33,6 +34,10 @@ _SESSION_BLUETOOTH_NAMES = (
     "org.gnome.SettingsDaemon.Rfkill",
 )
 CLASSIC_SETTLE_SECONDS = 3.0
+# One BR/EDR inquiry is 10.24s. USB dongles also need a moment to start
+# after another adapter is stopped; 8s was aborting mid-inquiry.
+DISCOVERY_SECONDS = 24
+MAX_DISCOVERY_SECONDS = 30
 
 ConfirmationCallback = Callable[[int | None], bool]
 DisplayCallback = Callable[[int], None]
@@ -152,32 +157,81 @@ def list_devices(*, paired_only: bool = False) -> list[PairedDevice]:
     )
 
 
-def discover_devices(seconds: int = 8) -> list[PairedDevice]:
-    """Scan through BlueZ and return paired and newly discovered devices."""
-    seconds = max(1, min(int(seconds), 30))
-    adapter_path = f"/org/bluez/{config.ADAPTER}"
-    discovered: list[PairedDevice] = []
+def _adapter_paths(objects: dict) -> list[str]:
+    return [
+        str(path) for path, ifaces in objects.items() if "org.bluez.Adapter1" in ifaces
+    ]
+
+
+def _resolve_adapter_path(
+    adapters: list[str], preferred: str, *, required: bool,
+) -> str:
+    match = next((path for path in adapters if path.endswith(f"/{preferred}")), None)
+    if match is not None:
+        return match
+    if required:
+        raise PairingError(f"Bluetooth adapter {preferred} is not available")
+    if adapters:
+        return adapters[0]
+    return f"/org/bluez/{preferred}"
+
+
+def _stop_discovery(path: str) -> None:
     try:
-        objects = _object_manager().GetManagedObjects()
-        adapters = [str(path) for path, ifaces in objects.items() if "org.bluez.Adapter1" in ifaces]
-        if adapters:
-            adapter_path = next(
-                (path for path in adapters if path.endswith(f"/{config.ADAPTER}")),
-                adapters[0],
-            )
-        obj = get_system_bus().get_object("org.bluez", adapter_path)
+        radio = dbus.Interface(
+            get_system_bus().get_object("org.bluez", path),
+            "org.bluez.Adapter1",
+        )
+        radio.StopDiscovery()
+    except dbus.exceptions.DBusException as error:
+        log.debug("Could not stop discovery on %s: %s", path, error)
+
+
+def _on_adapter(device: PairedDevice, adapter: str) -> bool:
+    return device.adapter_path.endswith(f"/{adapter}")
+
+
+def discover_devices(
+    seconds: int = DISCOVERY_SECONDS, *, adapter: str | None = None,
+) -> list[PairedDevice]:
+    """Scan through BlueZ and return devices seen on the selected adapter."""
+    seconds = max(1, min(int(seconds), MAX_DISCOVERY_SECONDS))
+    if adapter:
+        if not config.is_valid_adapter(adapter):
+            raise PairingError("invalid Bluetooth adapter name")
+        preferred = adapter
+        required = True
+    else:
+        preferred = config.ADAPTER
+        required = False
+    adapter_path = f"/org/bluez/{preferred}"
+    selected = preferred
+    discovered: list[PairedDevice] = []
+    radio = None
+    try:
+        adapters = _adapter_paths(_object_manager().GetManagedObjects())
+        adapter_path = _resolve_adapter_path(adapters, preferred, required=required)
+        selected = adapter_path.rsplit("/", 1)[-1]
+        bus = get_system_bus()
+        for other in adapters:
+            if other != adapter_path:
+                _stop_discovery(other)
+        obj = bus.get_object("org.bluez", adapter_path)
         props = dbus.Interface(obj, "org.freedesktop.DBus.Properties")
-        adapter = dbus.Interface(obj, "org.bluez.Adapter1")
+        radio = dbus.Interface(obj, "org.bluez.Adapter1")
         props.Set("org.bluez.Adapter1", "Powered", dbus.Boolean(True))
         try:
-            adapter.StartDiscovery()
+            radio.StartDiscovery()
         except dbus.exceptions.DBusException as error:
             if error.get_dbus_name() != "org.bluez.Error.InProgress":
                 raise
         deadline = time.monotonic() + seconds
         while True:
             discovered = list_devices()
-            if any(device.likely_iphone for device in discovered):
+            if any(
+                device.likely_iphone and _on_adapter(device, selected)
+                for device in discovered
+            ):
                 break
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -188,11 +242,12 @@ def discover_devices(seconds: int = 8) -> list[PairedDevice]:
             error.get_dbus_message() or error.get_dbus_name() or str(error)
         ) from error
     finally:
-        try:
-            adapter.StopDiscovery()
-        except (UnboundLocalError, dbus.exceptions.DBusException):
-            pass
-    return discovered or list_devices()
+        if radio is not None:
+            try:
+                radio.StopDiscovery()
+            except dbus.exceptions.DBusException:
+                pass
+    return [device for device in discovered if _on_adapter(device, selected)]
 
 
 def trust_device(mac: str, adapter_path: str) -> None:
@@ -204,30 +259,53 @@ def trust_device(mac: str, adapter_path: str) -> None:
     props.Set("org.bluez.Device1", "Trusted", dbus.Boolean(True))
 
 
-def _find_device(mac: str) -> PairedDevice | None:
-    normalized = mac.strip().upper()
-    for device in list_devices():
-        if device.mac.upper() == normalized:
-            return device
-    return None
+def _requested_adapter(adapter: str | None) -> str:
+    value = (adapter or "").strip()
+    if not value:
+        return ""
+    if not config.is_valid_adapter(value):
+        raise PairingError("invalid Bluetooth adapter name")
+    return value
 
 
-def _device(mac: str) -> PairedDevice:
+def _find_device(mac: str, *, adapter: str | None = None) -> PairedDevice | None:
     normalized = mac.strip().upper()
-    device = _find_device(normalized)
+    selected = _requested_adapter(adapter)
+    matches = [
+        device for device in list_devices() if device.mac.upper() == normalized
+    ]
+    if selected:
+        return next(
+            (device for device in matches if _on_adapter(device, selected)),
+            None,
+        )
+    adapters = {device.adapter_path for device in matches}
+    if len(adapters) > 1:
+        raise PairingError(
+            "This iPhone is present on more than one Bluetooth controller; "
+            "select a controller and pair again"
+        )
+    return matches[0] if matches else None
+
+
+def _device(mac: str, *, adapter: str | None = None) -> PairedDevice:
+    normalized = mac.strip().upper()
+    device = _find_device(normalized, adapter=adapter)
     if device is not None:
         return device
     raise PairingError(f"Bluetooth device {normalized} is no longer available; scan again")
 
 
-def _wait_for_paired_device(mac: str, *, timeout: float = 120) -> PairedDevice:
+def _wait_for_paired_device(
+    mac: str, *, adapter: str | None = None, timeout: float = 120,
+) -> PairedDevice:
     """Wait for a local or iPhone-initiated pairing transaction to settle."""
     log.debug("waiting up to %.0fs for the %s pairing record to settle", timeout, mac)
     deadline = time.monotonic() + timeout
-    device = _device(mac)
+    device = _device(mac, adapter=adapter)
     while not device.paired and time.monotonic() < deadline:
         time.sleep(0.25)
-        device = _device(mac)
+        device = _device(mac, adapter=adapter)
     if not device.paired:
         raise PairingError(
             "Bluetooth pairing did not finish. Keep the iPhone unlocked with "
@@ -358,7 +436,7 @@ def _connect_classic(
 
 
 def _prefer_bredr(device_path: str) -> None:
-    """Force the post-pair Device1.Connect transaction onto BR/EDR."""
+    """Prefer BR/EDR after pairing when BlueZ exposes PreferredBearer."""
     log.info(
         "setting Device1.PreferredBearer=bredr before post-pair connection"
     )
@@ -371,8 +449,13 @@ def _prefer_bredr(device_path: str) -> None:
             dbus.String("bredr"),
         )
     except dbus.exceptions.DBusException as error:
-        name = error.get_dbus_name() or ""
-        detail = error.get_dbus_message() or name or str(error)
+        if preferred_bearer_unavailable(error):
+            log.info(
+                "Device1.PreferredBearer is unavailable; "
+                "continuing with the existing Classic connection"
+            )
+            return
+        detail = error.get_dbus_message() or error.get_dbus_name() or str(error)
         raise PairingError(
             f"Could not select the BR/EDR bearer for the post-pair "
             f"connection: {detail}"
@@ -477,16 +560,15 @@ def _connect_ancs(device: PairedDevice, *, timeout: float = 30.0) -> str:
         log.debug("setting Device1.PreferredBearer=le")
         props.Set("org.bluez.Device1", "PreferredBearer", dbus.String("le"))
     except dbus.exceptions.DBusException as error:
-        name = error.get_dbus_name() or ""
-        if name in {
-            "org.freedesktop.DBus.Error.UnknownInterface",
-            "org.freedesktop.DBus.Error.UnknownMethod",
-            "org.freedesktop.DBus.Error.UnknownProperty",
-        }:
-            return "waiting for iPhone to connect"
-        raise PairingError(
-            error.get_dbus_message() or name or str(error)
-        ) from error
+        if preferred_bearer_unavailable(error):
+            log.debug(
+                "Device1.PreferredBearer is unavailable; connecting LE without it"
+            )
+        else:
+            name = error.get_dbus_name() or ""
+            raise PairingError(
+                error.get_dbus_message() or name or str(error)
+            ) from error
     for attempt in range(2):
         try:
             log.info("sending Bearer.LE1.Connect (attempt %d/2)", attempt + 1)
@@ -554,6 +636,7 @@ def _stop_user_service() -> None:
 def complete_pairing(
     mac: str,
     *,
+    adapter: str | None = None,
     confirmation: ConfirmationCallback | None = None,
     display: DisplayCallback | None = None,
 ) -> dict:
@@ -561,7 +644,11 @@ def complete_pairing(
     attempt = quirks_report.start_attempt(interactive=confirmation is not None)
     try:
         result = _execute_pairing(
-            mac, confirmation=confirmation, display=display, attempt=attempt,
+            mac,
+            adapter=adapter,
+            confirmation=confirmation,
+            display=display,
+            attempt=attempt,
         )
     except PairingError as error:
         path = _record_pairing_report(attempt, error=error)
@@ -658,6 +745,101 @@ def _compatibility_fields(compatibility: dict) -> dict:
     }
 
 
+def _bluetooth_uuid(code: int) -> str:
+    return f"0000{code:04x}-0000-1000-8000-00805f9b34fb"
+
+
+_LOCAL_SERVICE_NAMES = {
+    _bluetooth_uuid(0x1101): "serial-port",
+    _bluetooth_uuid(0x1105): "obex-object-push",
+    _bluetooth_uuid(0x1106): "obex-file-transfer",
+    _bluetooth_uuid(0x1108): "headset",
+    _bluetooth_uuid(0x110A): "audio-source",
+    _bluetooth_uuid(0x110B): "audio-sink",
+    _bluetooth_uuid(0x110C): "avrcp-target",
+    _bluetooth_uuid(0x110E): "avrcp",
+    _bluetooth_uuid(0x1112): "headset-audio-gateway",
+    _bluetooth_uuid(0x111E): "handsfree",
+    _bluetooth_uuid(0x111F): "handsfree-audio-gateway",
+    _bluetooth_uuid(0x112E): "phonebook-access-client",
+    _bluetooth_uuid(0x112F): "phonebook-access-server",
+    _bluetooth_uuid(0x1132): "message-access-server",
+    _bluetooth_uuid(0x1133): "message-notification-server",
+    _bluetooth_uuid(0x1134): "message-access-client",
+    _bluetooth_uuid(0x1200): "pnp-information",
+    _bluetooth_uuid(0x1800): "generic-access",
+    _bluetooth_uuid(0x1801): "generic-attribute",
+    _bluetooth_uuid(0x180A): "device-information",
+}
+
+# Kernel experimental features published as Adapter1.ExperimentalFeatures.
+# These are not the same as bluetoothd -E D-Bus APIs such as PreferredBearer.
+_EXPERIMENTAL_FEATURE_NAMES = {
+    "d4992530-b9ec-469f-ab01-6c481c47da1c": "debug",
+    "671b10b5-42c0-4696-9227-eb28d1b049d6": "simultaneous-central-peripheral",
+    "15c0a148-c273-11ea-b3de-0242ac130004": "ll-privacy",
+    "330859bc-7506-492d-9370-9a6f0614037f": "bluetooth-quality-report",
+    "a6695ace-ee7f-4fb9-881a-5fac66c629af": "offload-codecs",
+    "6fbaf188-05e0-496a-9885-d6ddfdb4e03e": "iso-socket",
+}
+
+
+def _decode_uuid_list(value: object, names: dict[str, str]) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    decoded: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        uuid = str(item).strip().casefold()
+        if not uuid:
+            continue
+        label = names.get(uuid, uuid)
+        if label in seen:
+            continue
+        seen.add(label)
+        decoded.append(label)
+    decoded.sort()
+    return decoded
+
+
+def _cod_handsfree(cod: int) -> bool:
+    major = (cod >> 8) & 0x1F
+    minor = (cod >> 2) & 0x3F
+    return major == config.COD_MAJOR and (minor << 2) == config.COD_MINOR
+
+
+def _adapter_dbus_fields(adapter: str) -> dict[str, object]:
+    """Read Adapter1 Class, local UUIDs, and kernel experimental features."""
+    if not config.is_valid_adapter(adapter):
+        return {}
+    try:
+        props = dbus.Interface(
+            get_system_bus().get_object("org.bluez", f"/org/bluez/{adapter}"),
+            "org.freedesktop.DBus.Properties",
+        )
+        values = dict(props.GetAll("org.bluez.Adapter1", timeout=5.0))
+    except Exception:
+        log.debug("could not read adapter D-Bus properties", exc_info=True)
+        return {}
+    fields: dict[str, object] = {}
+    raw_class = values.get("Class")
+    if raw_class is not None:
+        try:
+            cod = int(raw_class)
+        except (TypeError, ValueError):
+            pass
+        else:
+            fields["cod"] = f"0x{cod:06x}"
+            fields["cod_handsfree"] = _cod_handsfree(cod)
+    if "UUIDs" in values:
+        fields["uuids"] = _decode_uuid_list(values.get("UUIDs"), _LOCAL_SERVICE_NAMES)
+    if "ExperimentalFeatures" in values:
+        fields["experimental_features"] = _decode_uuid_list(
+            values.get("ExperimentalFeatures"), _EXPERIMENTAL_FEATURE_NAMES,
+        )
+    return fields
+
+
 def _controller_snapshot(adapter: str, compatibility: dict) -> dict:
     controller = _adapter_identity(adapter, compatibility)
     controller.update(_compatibility_fields(compatibility))
@@ -671,6 +853,7 @@ def _controller_snapshot(adapter: str, compatibility: dict) -> dict:
         )
     except Exception:
         log.debug("could not inspect the BlueZ stack", exc_info=True)
+    controller.update(_adapter_dbus_fields(adapter))
     return controller
 
 
@@ -855,22 +1038,25 @@ def _pairing_outcome(
 def _execute_pairing(
     mac: str,
     *,
+    adapter: str | None = None,
     confirmation: ConfirmationCallback | None = None,
     display: DisplayCallback | None = None,
     attempt: dict,
 ) -> dict:
     from blueferry import bluez_setup
 
-    device = _device(mac)
+    requested = _requested_adapter(adapter)
+    device = _device(mac, adapter=requested or None)
+    adapter = requested or device.adapter_path.rsplit("/", 1)[-1]
     log.info(
-        "starting setup for %s (%s): paired=%s trusted=%s connected=%s",
+        "starting setup for %s (%s) on %s: paired=%s trusted=%s connected=%s",
         device.name,
         device.mac,
+        adapter,
         device.paired,
         device.trusted,
         device.connected,
     )
-    adapter = device.adapter_path.rsplit("/", 1)[-1]
     session = attempt.setdefault("session", quirks_report.session_environment())
     if isinstance(session, dict):
         session["bluetooth_owners"] = _bluetooth_session_owners()
@@ -979,7 +1165,7 @@ def _execute_pairing(
                     }:
                         detail = f"Bluetooth confirmation did not complete: {detail}"
                     raise PairingError(detail) from error
-            device = _wait_for_paired_device(mac)
+            device = _wait_for_paired_device(mac, adapter=adapter)
             quirks_report.mark(attempt, "paired")
             _snapshot_phone(attempt, device)
         log.debug("setting Device1.Trusted=true for %s", device.device_path)
@@ -1007,7 +1193,7 @@ def _execute_pairing(
         # Start the long-lived owner while both the advert and temporary
         # pairing agent are still present.  Its first operation is a Classic
         # MAP/PBAP open; only when that attempt completes does it enable LE.
-        write_local_env(device.mac, device.adapter_path.rsplit("/", 1)[-1])
+        write_local_env(device.mac, adapter)
         log.debug("saved paired target %s; restarting user service", device.mac)
         quirks_report.mark(attempt, "daemon_restart_sent")
         _restart_user_service()
@@ -1037,7 +1223,7 @@ def _execute_pairing(
             if agent_registered:
                 quirks_report.mark(attempt, "agent_released")
 
-    device = _device(mac)
+    device = _device(mac, adapter=adapter)
     _snapshot_phone(attempt, device)
     return {
         "ok": True,
@@ -1056,12 +1242,12 @@ def _execute_pairing(
     }
 
 
-def forget_device(mac: str) -> None:
+def forget_device(mac: str, *, adapter: str | None = None) -> None:
     """Stop BlueFerry, remove the local bond, and clear the selected phone."""
     normalized = mac.strip().upper()
     if not config.is_valid_mac(normalized):
         raise PairingError("invalid Bluetooth device address")
-    device = _find_device(normalized)
+    device = _find_device(normalized, adapter=adapter)
     log.info("stopping the user service before forgetting target %s", normalized)
     _stop_user_service()
     if device is not None:
@@ -1082,15 +1268,17 @@ def forget_device(mac: str) -> None:
     log.info("cleared configured BlueFerry target %s", normalized)
 
 
-def prepare_target_replacement(previous_mac: str, next_mac: str) -> None:
+def prepare_target_replacement(
+    previous_mac: str, next_mac: str, *, adapter: str | None = None,
+) -> None:
     """Clear the saved target without losing the unpaired device being selected."""
     previous = previous_mac.strip().upper()
     selected = next_mac.strip().upper()
     if not config.is_valid_mac(previous) or not config.is_valid_mac(selected):
         raise PairingError("invalid Bluetooth device address")
-    device = _find_device(previous)
+    device = _find_device(previous, adapter=adapter)
     if previous != selected or (device is not None and device.paired):
-        forget_device(previous)
+        forget_device(previous, adapter=adapter)
         return
     # A stale saved MAC can refer to the unpaired device just discovered for
     # this attempt. Removing that BlueZ object would also remove the scan

@@ -339,7 +339,7 @@ def test_complete_pairing_writes_a_scrubbed_success_report(
     device = _paired_device()
     monkeypatch.setenv("XDG_CURRENT_DESKTOP", "KDE")
     monkeypatch.setenv("XDG_SESSION_TYPE", "wayland")
-    monkeypatch.setattr(pair_setup, "_device", lambda _mac: device)
+    monkeypatch.setattr(pair_setup, "_device", lambda _mac, **_kwargs: device)
     monkeypatch.setattr(
         pair_setup,
         "bluetooth_compatibility",
@@ -439,7 +439,7 @@ def test_pairing_report_keeps_last_le_error_when_ancs_stays_down(
     report_dir, monkeypatch,
 ) -> None:
     device = _paired_device()
-    monkeypatch.setattr(pair_setup, "_device", lambda _mac: device)
+    monkeypatch.setattr(pair_setup, "_device", lambda _mac, **_kwargs: device)
     monkeypatch.setattr(
         pair_setup,
         "bluetooth_compatibility",
@@ -507,7 +507,7 @@ def test_pairing_report_keeps_last_le_error_when_ancs_stays_down(
 
 def test_failed_pairing_still_writes_a_report(report_dir, monkeypatch) -> None:
     device = _paired_device()
-    monkeypatch.setattr(pair_setup, "_device", lambda _mac: device)
+    monkeypatch.setattr(pair_setup, "_device", lambda _mac, **_kwargs: device)
     monkeypatch.setattr(
         pair_setup,
         "bluetooth_compatibility",
@@ -577,7 +577,7 @@ def test_unexpected_pairing_exception_still_writes_a_report(
     report_dir, monkeypatch,
 ) -> None:
     device = _paired_device()
-    monkeypatch.setattr(pair_setup, "_device", lambda _mac: device)
+    monkeypatch.setattr(pair_setup, "_device", lambda _mac, **_kwargs: device)
     monkeypatch.setattr(
         pair_setup,
         "bluetooth_compatibility",
