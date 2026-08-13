@@ -12,6 +12,7 @@ from blueferry.models import BackendStatus
 from blueferry.onboarding import OnboardingStage, derive_stage
 from blueferry.quirks_report import issue_report, issue_url
 from blueferry.setup_client import (
+    DISCOVERY_SECONDS,
     BluetoothCompatibility,
     ConfigurationState,
     SetupClient,
@@ -78,6 +79,16 @@ class IPhonePage(Gtk.Box):
             subtitle=_("Checking compatibility…"),
             use_markup=False,
         )
+        self._adapter_model = Gtk.StringList()
+        self._adapter_row = Adw.ComboRow(
+            title=_("Bluetooth Controller"),
+            subtitle=_("Choose which radio to pair with"),
+            model=self._adapter_model,
+            use_markup=False,
+        )
+        self._adapter_row.set_visible(False)
+        self._adapter_row.connect("notify::selected", self._adapter_changed)
+        self._applying_adapter = False
         self._bluez_row = Adw.ActionRow(
             title=_("Bluetooth Support"),
             subtitle=_("Checking system configuration…"),
@@ -89,6 +100,7 @@ class IPhonePage(Gtk.Box):
         self._activate_button.connect("clicked", self._confirm_activate_bluez)
         self._bluez_row.add_suffix(self._activate_button)
         self._pairing_group.add(self._hardware_row)
+        self._pairing_group.add(self._adapter_row)
         self._pairing_group.add(self._bluez_row)
 
         scan = Adw.ActionRow(
@@ -207,7 +219,10 @@ class IPhonePage(Gtk.Box):
 
         daemon_group = Adw.PreferencesGroup(title=_("Connection Details"))
         recheck = Gtk.Button(label=_("Recheck"), valign=Gtk.Align.CENTER)
-        recheck.connect("clicked", lambda _b: self._refresh())
+        recheck.connect(
+            "clicked",
+            lambda _b: (self._load_setup_state(), self._refresh()),
+        )
         daemon_group.set_header_suffix(recheck)
         self._daemon_row = Adw.ActionRow(title=_("Background Service"))
         self._daemon_icon = Gtk.Image()
@@ -335,6 +350,7 @@ class IPhonePage(Gtk.Box):
         self._setup_spinner.set_spinning(busy)
         self._activate_button.set_sensitive(not busy)
         self._scan_button.set_sensitive(not busy)
+        self._adapter_row.set_sensitive(not busy)
         selected = self._selected_device()
         pairing_ready = bool(self._compatibility and self._compatibility.pairing_ready)
         self._pair_button.set_sensitive(not busy and pairing_ready and bool(selected))
@@ -347,6 +363,77 @@ class IPhonePage(Gtk.Box):
     def _selection_changed(self) -> None:
         self._set_pairing_busy(False)
         self._update_onboarding()
+
+    def _selected_adapter_name(self) -> str:
+        if self._compatibility is None:
+            return ""
+        return self._compatibility.adapter
+
+    def _apply_compatibility(self, compatibility) -> None:
+        self._compatibility = compatibility
+        adapters = list(compatibility.adapters)
+        self._applying_adapter = True
+        if len(adapters) > 1:
+            self._hardware_row.set_visible(False)
+            self._adapter_row.set_visible(True)
+            labels = [option.label for option in adapters]
+            self._adapter_model.splice(0, self._adapter_model.get_n_items(), labels)
+            selected = next(
+                (index for index, option in enumerate(adapters)
+                 if option.name == compatibility.adapter),
+                0,
+            )
+            self._adapter_row.set_selected(selected)
+        else:
+            self._adapter_row.set_visible(False)
+            self._hardware_row.set_visible(True)
+            if not compatibility.hardware_supported:
+                hardware = _("Unsupported")
+            elif compatibility.notifications_supported:
+                hardware = _("Compatible")
+            else:
+                hardware = _("Compatible for Messages and Contacts")
+            self._hardware_row.set_subtitle(
+                _("{adapter} — {status}").format(
+                    adapter=compatibility.adapter or _("No Adapter"),
+                    status=hardware,
+                )
+            )
+        self._applying_adapter = False
+        active = compatibility.bearer_api_active
+        if not compatibility.notifications_supported:
+            self._bluez_row.set_subtitle(
+                _("Not required; per-app notifications are unsupported")
+            )
+        else:
+            self._bluez_row.set_subtitle(
+                _("Active") if active else _("A one-time Bluetooth restart is required")
+            )
+        self._activate_button.set_visible(
+            compatibility.notifications_supported and not active
+        )
+
+    def _adapter_changed(self, *_args) -> None:
+        if self._applying_adapter or self._compatibility is None:
+            return
+        adapters = list(self._compatibility.adapters)
+        index = self._adapter_row.get_selected()
+        if index >= len(adapters):
+            return
+        name = adapters[index].name
+        if name == self._compatibility.adapter:
+            return
+
+        def loaded(compatibility) -> None:
+            had_devices = bool(self._devices)
+            self._apply_compatibility(compatibility)
+            self._set_pairing_busy(False)
+            self._update_onboarding()
+            self._load_devices(scan=False)
+            if had_devices:
+                self._toast(_("Scan again to find an iPhone on this controller"))
+
+        self._run_setup(lambda: self._setup.compatibility(name), loaded)
 
     def _run_setup(self, operation, on_done) -> None:
         """Run blocking BlueZ setup work away from GTK's main loop."""
@@ -408,35 +495,14 @@ class IPhonePage(Gtk.Box):
 
     def _load_setup_state(self, *, scan_after: bool = False) -> None:
         def operation():
-            return self._setup.compatibility(), self._setup.configuration()
+            adapter = self._selected_adapter_name() or None
+            return self._setup.compatibility(adapter), self._setup.configuration()
 
         def loaded(value) -> None:
             compatibility, configuration = value
-            self._compatibility = compatibility
             self._configuration = configuration
             self._setup_loaded = True
-            active = compatibility.bearer_api_active
-            if not compatibility.hardware_supported:
-                hardware = _("Unsupported")
-            elif compatibility.notifications_supported:
-                hardware = _("Compatible")
-            else:
-                hardware = _("Compatible for Messages and Contacts")
-            self._hardware_row.set_subtitle(
-                _("{adapter} — {status}").format(
-                    adapter=compatibility.adapter or _("No Adapter"),
-                    status=hardware,
-                )
-            )
-            if not compatibility.notifications_supported:
-                self._bluez_row.set_subtitle(
-                    _("Not required; per-app notifications are unsupported")
-                )
-            else:
-                self._bluez_row.set_subtitle(
-                    _("Active") if active else _("A one-time Bluetooth restart is required")
-                )
-            self._activate_button.set_visible(compatibility.notifications_supported and not active)
+            self._apply_compatibility(compatibility)
             self._set_pairing_busy(False)
             self._update_phone_controls()
             self._update_onboarding()
@@ -505,8 +571,11 @@ class IPhonePage(Gtk.Box):
                     )
                 )
 
+        adapter = self._selected_adapter_name() or None
         self._run_setup(
-            lambda: self._setup.devices(scan_seconds=8 if scan else 0),
+            lambda: self._setup.devices(
+                scan_seconds=DISCOVERY_SECONDS if scan else 0, adapter=adapter,
+            ),
             loaded,
         )
 
@@ -632,6 +701,7 @@ class IPhonePage(Gtk.Box):
                 device.mac,
                 confirmation=confirm,
                 display=display,
+                adapter=device.adapter_path.rsplit("/", 1)[-1],
                 replace_saved_mac=replace_saved_mac,
             ),
             completed,
@@ -677,7 +747,14 @@ class IPhonePage(Gtk.Box):
                     self._update_phone_controls()
 
                 self._run_setup(
-                    lambda: self._setup.forget(mac),
+                    lambda: self._setup.forget(
+                        mac,
+                        adapter=(
+                            self._configuration.adapter
+                            if self._configuration
+                            else None
+                        ) or None,
+                    ),
                     forgotten,
                 )
 

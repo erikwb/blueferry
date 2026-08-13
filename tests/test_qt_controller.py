@@ -207,8 +207,8 @@ def test_pairing_uses_interactive_agent_and_accepts_matching_code(monkeypatch):
     observed = []
 
     class Setup:
-        def complete_isolated(self, mac, *, confirmation, display):
-            observed.append((mac, confirmation(12345)))
+        def complete_isolated(self, mac, *, confirmation, display, adapter=None, **_kwargs):
+            observed.append((mac, adapter, confirmation(12345)))
             display(12345)
             return object()
 
@@ -240,17 +240,18 @@ def test_pairing_uses_interactive_agent_and_accepts_matching_code(monkeypatch):
 
     controller.pairingConfirmationRequested.connect(confirm)
 
+    controller._compatibility = {"adapter": "hci1"}
     controller.completePairing("02:00:00:00:00:01")
 
     assert passkeys == ["012345"]
-    assert observed == [("02:00:00:00:00:01", True)]
+    assert observed == [("02:00:00:00:00:01", "hci1", True)]
 
 
 def test_pairing_rejects_when_confirmation_is_declined(monkeypatch):
     observed = []
 
     class Setup:
-        def complete_isolated(self, _mac, *, confirmation, display):
+        def complete_isolated(self, _mac, *, confirmation, display, **_kwargs):
             observed.append(confirmation(None))
             return object()
 
@@ -284,9 +285,10 @@ def test_replacing_saved_target_is_forwarded_to_pairing_helper(monkeypatch):
             *,
             confirmation,
             display,
-            replace_saved_mac,
+            adapter=None,
+            replace_saved_mac="",
         ):
-            observed.append((replace_saved_mac, mac))
+            observed.append((replace_saved_mac, mac, adapter))
             return object()
 
     controller = BridgeController(
@@ -306,13 +308,14 @@ def test_replacing_saved_target_is_forwarded_to_pairing_helper(monkeypatch):
     monkeypatch.setattr(controller, "loadSetupState", lambda: None)
     monkeypatch.setattr(controller, "refresh", lambda: None)
 
+    controller._compatibility = {"adapter": "hci1"}
     controller.replaceAndPair(
         "02:00:00:00:00:01",
         "02:00:00:00:00:02",
     )
 
     assert observed == [
-        ("02:00:00:00:00:01", "02:00:00:00:00:02")
+        ("02:00:00:00:00:01", "02:00:00:00:00:02", "hci1")
     ]
     assert controller.targetSaved is True
 
@@ -336,3 +339,101 @@ def test_pairing_issue_offer_stays_when_ancs_connects(monkeypatch, tmp_path) -> 
     controller._refresh_pairing_issue_report()
 
     assert controller.pairingIssueReport == str(path)
+
+
+def test_select_adapter_reloads_compatibility_for_that_radio(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    calls = []
+
+    class Setup:
+        def compatibility(self, adapter=None):
+            calls.append(adapter)
+            return SimpleNamespace(
+                to_dict=lambda: {
+                    "adapter": adapter or "hci0",
+                    "bearer_api_active": True,
+                    "adapters": [
+                        {"name": "hci0", "label": "hci0"},
+                        {"name": "hci1", "label": "hci1"},
+                    ],
+                },
+                bearer_api_active=True,
+            )
+
+    controller = BridgeController(
+        backend=_Backend(),
+        setup=Setup(),
+        subscribe=False,
+        autostart=False,
+    )
+    controller._compatibility = {"adapter": "hci0"}
+    controller._devices = [{"mac": "02:00:00:00:00:01", "display_name": "iPhone"}]
+    monkeypatch.setattr(
+        controller,
+        "_run",
+        lambda operation, on_done=None, *_args, **_kwargs: (
+            on_done(operation()) if on_done is not None else operation()
+        ),
+    )
+    loaded = []
+    monkeypatch.setattr(controller, "loadDevices", lambda scan: loaded.append(scan))
+
+    controller.selectAdapter("hci1")
+
+    assert calls == ["hci1"]
+    assert controller.compatibility["adapter"] == "hci1"
+    assert controller.devices == []
+    assert loaded == [False]
+
+
+def test_activating_bluetooth_reloads_the_selected_adapter_before_scanning(
+    monkeypatch,
+) -> None:
+    from types import SimpleNamespace
+
+    calls = []
+
+    class Setup:
+        def activate_bluez(self):
+            calls.append("activate")
+            return SimpleNamespace(active=True)
+
+        def compatibility(self, adapter=None):
+            calls.append(("compatibility", adapter))
+            return SimpleNamespace(
+                to_dict=lambda: {"adapter": adapter or "hci0", "bearer_api_active": True},
+                bearer_api_active=True,
+            )
+
+        def configuration(self):
+            return SimpleNamespace(
+                configured=False,
+                saved=False,
+                mac="",
+                adapter="hci0",
+                pairing_issue_report="",
+            )
+
+    controller = BridgeController(
+        backend=_Backend(),
+        setup=Setup(),
+        subscribe=False,
+        autostart=False,
+    )
+    controller._compatibility = {"adapter": "hci1"}
+    monkeypatch.setattr(
+        controller,
+        "_run",
+        lambda operation, on_done=None, *_args, **_kwargs: (
+            on_done(operation()) if on_done is not None else operation()
+        ),
+    )
+    loaded = []
+    monkeypatch.setattr(controller, "loadDevices", lambda scan: loaded.append(scan))
+
+    controller.activateBluetooth()
+
+    assert calls == ["activate", ("compatibility", "hci1")]
+    assert controller.compatibility["adapter"] == "hci1"
+    assert loaded == [True]

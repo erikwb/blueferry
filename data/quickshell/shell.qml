@@ -32,12 +32,15 @@ ShellRoot {
   property bool targetBonded: false
   property bool bondStateKnown: false
   property string configuredMac: ""
+  property string configuredAdapter: ""
   property bool pairingConfirmationPending: false
   property string pairingPasskey: ""
   property bool pairingResultReceived: false
   property string pairingIssueReport: ""
   property var pendingPairingDevice: null
   property string adapterName: ""
+  property bool scanAfterCompatibility: false
+  property var adapters: []
   property string onboardingStage: onboarding.stage
   property var backendStatus: ({})
   property string notificationPolicy: "messages"
@@ -166,11 +169,20 @@ ShellRoot {
     }
   }
 
+  function loadCompatibility(adapter) {
+    if (compatibilityProcess.running) return
+    compatibilityProcess.command = adapter
+      ? ["/usr/bin/blueferry", "pairing-compatibility-json", "--adapter", adapter]
+      : ["/usr/bin/blueferry", "pairing-compatibility-json"]
+    compatibilityProcess.running = true
+  }
+
   function loadPairingDevices(scan) {
     if (deviceProcess.running) return
-    deviceProcess.command = scan
-      ? ["/usr/bin/blueferry", "pairing-devices-json", "--scan-seconds", "8"]
-      : ["/usr/bin/blueferry", "pairing-devices-json"]
+    var command = ["/usr/bin/blueferry", "pairing-devices-json"]
+    if (scan) command.push("--scan-seconds", "24")
+    if (root.adapterName) command.push("--adapter", root.adapterName)
+    deviceProcess.command = command
     pairingStatus = scan ? "Scanning for Bluetooth devices…" : pairingStatus
     deviceProcess.running = true
   }
@@ -186,6 +198,8 @@ ShellRoot {
     pairProcess.command = [
       "/usr/bin/blueferry", "pairing-complete", device.mac, "--interactive-agent"
     ]
+    if (root.adapterName)
+      pairProcess.command.push("--adapter", root.adapterName)
     if (replaceSavedTarget)
       pairProcess.command.push("--replace-saved-mac", configuredMac)
     pairProcess.running = true
@@ -245,6 +259,12 @@ ShellRoot {
       root.targetBonded = true
       root.bondStateKnown = true
       root.configuredMac = parsed.device ? (parsed.device.mac || "") : ""
+      root.configuredAdapter = root.adapterName
+      if (parsed.device && parsed.device.adapter_path) {
+        var parts = String(parsed.device.adapter_path).split("/")
+        if (parts.length)
+          root.configuredAdapter = parts[parts.length - 1]
+      }
       root.loadPairingDevices(false)
       root.reload()
     } catch (error) {
@@ -293,8 +313,19 @@ ShellRoot {
           root.pairingReady = parsed.pairing_ready === true
           root.bluezActive = parsed.bearer_api_active === true
           root.adapterName = parsed.adapter || ""
+          root.adapters = Array.isArray(parsed.adapters) ? parsed.adapters : []
+          if (adapterCombo.count > 0) {
+            for (var index = 0; index < root.adapters.length; ++index) {
+              if (root.adapters[index].name === root.adapterName) {
+                adapterCombo.currentIndex = index
+                break
+              }
+            }
+          }
           if (!root.hardwareSupported) root.pairingStatus = parsed.issue || "Bluetooth controller is incompatible."
-          root.loadPairingDevices(false)
+          var scan = root.scanAfterCompatibility
+          root.scanAfterCompatibility = false
+          root.loadPairingDevices(scan)
         } catch (error) {
           root.markCompatibilityUnavailable("Bluetooth compatibility check returned invalid data.")
         }
@@ -319,6 +350,7 @@ ShellRoot {
           root.bondStateKnown = typeof parsed.bonded === "boolean"
           root.targetBonded = parsed.bonded === true
           root.configuredMac = root.targetSaved ? (parsed.mac || "") : ""
+          root.configuredAdapter = root.targetSaved ? (parsed.adapter || "") : ""
           if (typeof parsed.pairing_issue_report === "string")
             root.pairingIssueReport = parsed.pairing_issue_report
           if (root.targetSaved && root.bondStateKnown && !root.targetBonded)
@@ -546,8 +578,8 @@ ShellRoot {
           if (parsed.ok) {
             root.bluezActive = true
             root.pairingStatus = "Bluetooth support activated. Scan for the iPhone."
-            root.loadPairingDevices(true)
-            compatibilityProcess.running = true
+            root.scanAfterCompatibility = true
+            root.loadCompatibility(root.adapterName)
           } else {
             root.pairingStatus = parsed.error || "Bluetooth activation failed."
           }
@@ -601,6 +633,7 @@ ShellRoot {
             root.targetBonded = false
             root.bondStateKnown = true
             root.configuredMac = ""
+            root.configuredAdapter = ""
             root.backendStatus = ({})
             root.pairingDevices = []
             root.loadPairingDevices(false)
@@ -1234,6 +1267,18 @@ ShellRoot {
               confirmBluetoothRestart.checked = false
             }
           }
+          FerryComboBox {
+            id: adapterCombo
+            visible: !root.configured && root.adapters.length > 1
+            Layout.fillWidth: true
+            model: root.adapters
+            textRole: "label"
+            onActivated: {
+              var option = root.adapters[currentIndex]
+              if (option && option.name && option.name !== root.adapterName)
+                root.loadCompatibility(option.name)
+            }
+          }
           FerryButton {
             visible: !root.configured
             text: deviceProcess.running ? "Scanning…" : "1. Scan for iPhone"
@@ -1315,6 +1360,8 @@ ShellRoot {
               enabled: root.configuredMac !== "" && !forgetProcess.running
               onClicked: {
                 forgetProcess.command = ["/usr/bin/blueferry", "pairing-forget", root.configuredMac]
+                if (root.configuredAdapter)
+                  forgetProcess.command.push("--adapter", root.configuredAdapter)
                 forgetProcess.running = true
               }
             }

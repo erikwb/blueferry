@@ -25,7 +25,7 @@ from blueferry.onboarding import derive_stage
 from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH
 from blueferry.qt.tasks import Task
 from blueferry.quirks_report import issue_report, issue_url
-from blueferry.setup_client import SetupClient
+from blueferry.setup_client import DISCOVERY_SECONDS, SetupClient
 
 
 class BridgeController(QObject):
@@ -75,6 +75,7 @@ class BridgeController(QObject):
         self._configured = False
         self._target_saved = False
         self._configured_mac = ""
+        self._configured_adapter = ""
         self._setup_loaded = False
         self._onboarding_stage = str(
             derive_stage(
@@ -282,6 +283,7 @@ class BridgeController(QObject):
             self._configured = configuration.configured
             self._target_saved = configuration.saved
             self._configured_mac = configuration.mac
+            self._configured_adapter = configuration.adapter
             self._setup_loaded = True
             self.configuredChanged.emit()
             self.setupLoadedChanged.emit()
@@ -308,8 +310,13 @@ class BridgeController(QObject):
 
     @Slot()
     def loadSetupState(self) -> None:
+        self._reload_setup_state(scan_after=False)
+
+    def _reload_setup_state(self, *, scan_after: bool = False) -> None:
+        selected = str(self._compatibility.get("adapter", "")).strip() or None
+
         def operation():
-            return self._setup.compatibility(), self._setup.configuration()
+            return self._setup.compatibility(selected), self._setup.configuration()
 
         def completed(value: object) -> None:
             compatibility, configuration = value
@@ -317,6 +324,7 @@ class BridgeController(QObject):
             self._configured = configuration.configured
             self._target_saved = configuration.saved
             self._configured_mac = configuration.mac
+            self._configured_adapter = configuration.adapter
             self._setup_loaded = True
             self._bluetooth_active = compatibility.bearer_api_active
             self.compatibilityChanged.emit()
@@ -325,10 +333,32 @@ class BridgeController(QObject):
             self.bluetoothChanged.emit()
             self._update_onboarding_stage()
             self._set_pairing_issue_report(configuration.pairing_issue_report)
-            if self._devices:
+            if scan_after:
+                self.loadDevices(True)
+            elif self._devices:
                 self.loadDevices(False)
 
         self._run(operation, completed, busy=False)
+
+    @Slot(str)
+    def selectAdapter(self, name: str) -> None:
+        selected = name.strip()
+        if not selected or selected == str(self._compatibility.get("adapter", "")):
+            return
+        if self._devices:
+            self._devices = []
+            self.devicesChanged.emit()
+
+        def completed(value: object) -> None:
+            compatibility = value
+            self._compatibility = compatibility.to_dict()
+            self._bluetooth_active = bool(getattr(compatibility, "bearer_api_active", False))
+            self.compatibilityChanged.emit()
+            self.bluetoothChanged.emit()
+            self._update_onboarding_stage()
+            self.loadDevices(False)
+
+        self._run(lambda: self._setup.compatibility(selected), completed)
 
     def _snapshot(self) -> dict:
         def safely(operation, fallback):
@@ -548,16 +578,18 @@ class BridgeController(QObject):
                     )
                 )
 
+        adapter = str(self._compatibility.get("adapter", "")).strip() or None
         self._run(
-            lambda: self._setup.devices(scan_seconds=8 if scan else 0),
+            lambda: self._setup.devices(
+                scan_seconds=DISCOVERY_SECONDS if scan else 0, adapter=adapter,
+            ),
             completed,
         )
 
     @Slot()
     def activateBluetooth(self) -> None:
         def completed(_value: object) -> None:
-            self.loadSetupState()
-            self.loadDevices(True)
+            self._reload_setup_state(scan_after=True)
 
         self._run(self._setup.activate_bluez, completed)
 
@@ -574,6 +606,7 @@ class BridgeController(QObject):
             self._configured = True
             self._target_saved = True
             self._configured_mac = mac
+            self._configured_adapter = str(self._compatibility.get("adapter", ""))
             self.configuredChanged.emit()
             self._update_onboarding_stage()
             self.loadDevices(False)
@@ -605,17 +638,21 @@ class BridgeController(QObject):
             _ = passkey
 
         def operation():
-            if replace_saved_mac:
-                return self._setup.complete_isolated(
-                    mac,
-                    confirmation=confirm,
-                    display=display,
-                    replace_saved_mac=replace_saved_mac,
-                )
+            adapter = str(self._compatibility.get("adapter", "")).strip() or None
+            wanted = mac.strip().upper()
+            for item in self._devices:
+                if str(item.get("mac", "")).upper() != wanted:
+                    continue
+                path = str(item.get("adapter_path", ""))
+                if path:
+                    adapter = path.rsplit("/", 1)[-1]
+                break
             return self._setup.complete_isolated(
                 mac,
                 confirmation=confirm,
                 display=display,
+                adapter=adapter,
+                replace_saved_mac=replace_saved_mac,
             )
 
         def failed(message: str) -> None:
@@ -652,6 +689,7 @@ class BridgeController(QObject):
             self._configured = False
             self._target_saved = False
             self._configured_mac = ""
+            self._configured_adapter = ""
             self._status = {}
             self._threads = []
             self.configuredChanged.emit()
@@ -661,4 +699,5 @@ class BridgeController(QObject):
             self.loadDevices(False)
             self.loadSetupState()
 
-        self._run(lambda: self._setup.forget(mac), completed)
+        adapter = self._configured_adapter.strip() or None
+        self._run(lambda: self._setup.forget(mac, adapter=adapter), completed)

@@ -14,6 +14,8 @@ from blueferry import pair_setup, quirks_report
 from blueferry.bluetooth_devices import PairedDevice
 from blueferry.errors import PairingError
 
+DISCOVERY_SECONDS = pair_setup.DISCOVERY_SECONDS
+
 
 @dataclass(frozen=True, slots=True)
 class BluezSupport:
@@ -38,6 +40,43 @@ class BluezSupport:
 
 
 @dataclass(frozen=True, slots=True)
+class AdapterOption:
+    name: str
+    label: str
+    available: bool = False
+    powered: bool = False
+    hardware_supported: bool = False
+    notifications_supported: bool = False
+    pairing_ready: bool = False
+    issue: str = ""
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> AdapterOption:
+        return cls(
+            name=str(value.get("name", "")),
+            label=str(value.get("label") or value.get("name") or ""),
+            available=bool(value.get("available", False)),
+            powered=bool(value.get("powered", False)),
+            hardware_supported=bool(value.get("hardware_supported", False)),
+            notifications_supported=bool(value.get("notifications_supported", False)),
+            pairing_ready=bool(value.get("pairing_ready", False)),
+            issue=str(value.get("issue", "")),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "label": self.label,
+            "available": self.available,
+            "powered": self.powered,
+            "hardware_supported": self.hardware_supported,
+            "notifications_supported": self.notifications_supported,
+            "pairing_ready": self.pairing_ready,
+            "issue": self.issue,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class BluetoothCompatibility:
     adapter: str
     available: bool
@@ -53,9 +92,11 @@ class BluetoothCompatibility:
     pairing_ready: bool
     issue: str
     supported_settings: tuple[str, ...]
+    adapters: tuple[AdapterOption, ...] = ()
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> BluetoothCompatibility:
+        raw_adapters = value.get("adapters", ())
         return cls(
             adapter=str(value.get("adapter", "")),
             available=bool(value.get("available", False)),
@@ -73,13 +114,21 @@ class BluetoothCompatibility:
             supported_settings=tuple(
                 str(item) for item in value.get("supported_settings", ())
             ),
+            adapters=tuple(
+                AdapterOption.from_dict(item)
+                for item in raw_adapters
+                if isinstance(item, dict)
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
         return {
             field: getattr(self, field)
             for field in self.__dataclass_fields__
-        } | {"supported_settings": list(self.supported_settings)}
+        } | {
+            "supported_settings": list(self.supported_settings),
+            "adapters": [item.to_dict() for item in self.adapters],
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,9 +217,9 @@ class SetupClient:
     def bluez_status(self) -> BluezSupport:
         return BluezSupport.from_dict(pair_setup.bluez_support_status())
 
-    def compatibility(self) -> BluetoothCompatibility:
+    def compatibility(self, adapter: str | None = None) -> BluetoothCompatibility:
         return BluetoothCompatibility.from_dict(
-            pair_setup.bluetooth_compatibility()
+            pair_setup.bluetooth_compatibility(adapter)
         )
 
     def configuration(self) -> ConfigurationState:
@@ -182,21 +231,25 @@ class SetupClient:
     def activate_bluez(self) -> BluezSupport:
         return BluezSupport.from_dict(pair_setup.activate_bluez_support())
 
-    def devices(self, *, scan_seconds: int = 0) -> list[PairedDevice]:
+    def devices(
+        self, *, scan_seconds: int = 0, adapter: str | None = None,
+    ) -> list[PairedDevice]:
         if scan_seconds:
-            return pair_setup.discover_devices(scan_seconds)
+            return pair_setup.discover_devices(scan_seconds, adapter=adapter)
         return pair_setup.list_devices()
 
     def complete(
         self,
         mac: str,
         *,
+        adapter: str | None = None,
         confirmation: pair_setup.ConfirmationCallback | None = None,
         display: pair_setup.DisplayCallback | None = None,
     ) -> PairingResult:
         return PairingResult.from_dict(
             pair_setup.complete_pairing(
                 mac,
+                adapter=adapter,
                 confirmation=confirmation,
                 display=display,
             )
@@ -208,6 +261,7 @@ class SetupClient:
         *,
         confirmation: pair_setup.ConfirmationCallback,
         display: pair_setup.DisplayCallback | None = None,
+        adapter: str | None = None,
         replace_saved_mac: str = "",
     ) -> PairingResult:
         """Run interactive pairing in a D-Bus/GLib-isolated child process."""
@@ -219,6 +273,8 @@ class SetupClient:
             mac,
             "--interactive-agent",
         ]
+        if adapter:
+            command.extend(["--adapter", adapter])
         if replace_saved_mac:
             command.extend(["--replace-saved-mac", replace_saved_mac])
         process = subprocess.Popen(  # nosec B603
@@ -263,8 +319,12 @@ class SetupClient:
                 process.terminate()
                 process.wait(timeout=5)
 
-    def forget(self, mac: str) -> None:
-        pair_setup.forget_device(mac)
+    def forget(self, mac: str, *, adapter: str | None = None) -> None:
+        pair_setup.forget_device(mac, adapter=adapter)
 
-    def prepare_replacement(self, previous_mac: str, next_mac: str) -> None:
-        pair_setup.prepare_target_replacement(previous_mac, next_mac)
+    def prepare_replacement(
+        self, previous_mac: str, next_mac: str, *, adapter: str | None = None,
+    ) -> None:
+        pair_setup.prepare_target_replacement(
+            previous_mac, next_mac, adapter=adapter,
+        )

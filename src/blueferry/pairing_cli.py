@@ -11,7 +11,7 @@ from blueferry.bluetooth_devices import iphone_candidates
 from blueferry.client import BackendClient, BackendError
 from blueferry.errors import PairingError
 from blueferry.quirks_report import cli_issue_hint
-from blueferry.setup_client import SetupClient
+from blueferry.setup_client import DISCOVERY_SECONDS, SetupClient
 from blueferry.setup_verification import (
     NOTIFICATION_ACCESS,
     remaining_iphone_setup_tasks,
@@ -59,7 +59,10 @@ def run_wizard(*, verify_after: bool = True) -> int:
             typer.echo("Existing pairing and configuration left unchanged.")
             return 0
         try:
-            setup.forget(configuration.mac)
+            setup.forget(
+                configuration.mac,
+                adapter=getattr(configuration, "adapter", "") or None,
+            )
         except PairingError as error:
             typer.echo(typer.style(str(error), fg=typer.colors.RED))
             return 1
@@ -71,6 +74,23 @@ def run_wizard(*, verify_after: bool = True) -> int:
     except PairingError as error:
         typer.echo(typer.style(str(error), fg=typer.colors.RED))
         return 1
+    if len(compatibility.adapters) > 1:
+        typer.echo("Bluetooth controllers:\n")
+        for index, option in enumerate(compatibility.adapters, 1):
+            marker = " (selected)" if option.name == compatibility.adapter else ""
+            typer.echo(f"  [{index}] {option.label}{marker}")
+        raw = typer.prompt("Use which controller?", default="").strip()
+        if raw:
+            try:
+                picked = compatibility.adapters[int(raw) - 1]
+            except (ValueError, IndexError):
+                typer.echo(typer.style("Invalid choice.", fg=typer.colors.RED))
+                return 1
+            try:
+                compatibility = setup.compatibility(picked.name)
+            except PairingError as error:
+                typer.echo(typer.style(str(error), fg=typer.colors.RED))
+                return 1
     typer.echo(f"Controller: {compatibility.adapter}")
     if not compatibility.hardware_supported:
         typer.echo(
@@ -101,13 +121,16 @@ def run_wizard(*, verify_after: bool = True) -> int:
             return 0
         try:
             setup.activate_bluez()
+            compatibility = setup.compatibility(compatibility.adapter)
         except PairingError as error:
             typer.echo(typer.style(str(error), fg=typer.colors.RED))
             return 1
 
     typer.echo("\nUnlock the iPhone and keep Settings → Bluetooth open while scanning.")
     try:
-        devices = setup.devices(scan_seconds=8)
+        devices = setup.devices(
+            scan_seconds=DISCOVERY_SECONDS, adapter=compatibility.adapter,
+        )
     except PairingError as error:
         typer.echo(typer.style(str(error), fg=typer.colors.RED))
         return 1
@@ -165,6 +188,7 @@ def run_wizard(*, verify_after: bool = True) -> int:
     try:
         result = setup.complete(
             chosen.mac,
+            adapter=compatibility.adapter,
             confirmation=_confirm_pairing,
             display=_display_pairing_code,
         )

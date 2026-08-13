@@ -44,7 +44,7 @@ def test_compatibility_and_configuration_are_typed(monkeypatch):
     monkeypatch.setattr(
         setup_client.pair_setup,
         "bluetooth_compatibility",
-        lambda: {
+        lambda *_args, **_kwargs: {
             "adapter": "hci2",
             "available": True,
             "powered": True,
@@ -87,7 +87,7 @@ def test_device_operations_delegate_with_requested_scan(monkeypatch):
     monkeypatch.setattr(
         setup_client.pair_setup,
         "discover_devices",
-        lambda seconds: calls.append(seconds) or [device],
+        lambda seconds, adapter=None: calls.append((seconds, adapter)) or [device],
     )
     monkeypatch.setattr(
         setup_client.pair_setup,
@@ -98,17 +98,19 @@ def test_device_operations_delegate_with_requested_scan(monkeypatch):
     client = setup_client.SetupClient()
 
     assert client.devices(scan_seconds=8) == [device]
+    assert client.devices(scan_seconds=8, adapter="hci1") == [device]
     assert client.devices() == [device]
-    assert calls == [8, "list"]
+    assert calls == [(8, None), (8, "hci1"), "list"]
 
 
 def test_complete_pairing_decodes_result_and_forget_delegates(monkeypatch):
     device = _device()
     forgotten = []
+    paired = []
     monkeypatch.setattr(
         setup_client.pair_setup,
         "complete_pairing",
-        lambda mac, **_kwargs: {
+        lambda mac, **kwargs: paired.append((mac, kwargs.get("adapter"))) or {
             "ok": True,
             "device": device.to_dict(),
             "config": "/tmp/test-config",
@@ -121,18 +123,19 @@ def test_complete_pairing_decodes_result_and_forget_delegates(monkeypatch):
     monkeypatch.setattr(
         setup_client.pair_setup,
         "forget_device",
-        lambda mac: forgotten.append(mac),
+        lambda mac, **kwargs: forgotten.append((mac, kwargs.get("adapter"))),
     )
 
     client = setup_client.SetupClient()
-    result = client.complete(device.mac)
-    client.forget(device.mac)
+    result = client.complete(device.mac, adapter="hci1")
+    client.forget(device.mac, adapter="hci1")
 
     assert result.device.device_path == device.device_path
     assert result.iphone_steps == ("Enable notifications",)
     assert result.ancs_ready is True
     assert result.to_dict()["device"]["mac"] == device.mac
-    assert forgotten == [device.mac]
+    assert paired == [(device.mac, "hci1")]
+    assert forgotten == [(device.mac, "hci1")]
 
 
 def test_isolated_pairing_answers_helper_confirmation(monkeypatch):
@@ -170,12 +173,15 @@ def test_isolated_pairing_answers_helper_confirmation(monkeypatch):
     result = setup_client.SetupClient().complete_isolated(
         device.mac,
         confirmation=lambda passkey: passkey == 123456,
+        adapter="hci1",
         replace_saved_mac="02:00:00:00:00:02",
     )
 
     assert process.stdin.getvalue() == "yes\n"
     assert result.ancs_ready is True
-    assert commands[0][-2:] == ["--replace-saved-mac", "02:00:00:00:00:02"]
+    assert commands[0][-4:] == [
+        "--adapter", "hci1", "--replace-saved-mac", "02:00:00:00:00:02",
+    ]
 
 
 def test_isolated_pairing_preserves_report_path_on_failure(monkeypatch):

@@ -362,60 +362,55 @@ def bluez_stack(
     return stack
 
 
-def compatibility(
-    requested: str,
-    *,
-    adapter_name: str | None,
-    object_manager,
-    run_command: RunCommand,
-    support_status: Callable[[], dict],
-) -> dict:
-    """Describe supported profiles from capabilities, never vendor names."""
-    try:
-        managed = object_manager().GetManagedObjects()
-        adapters = [
-            str(path).rsplit("/", 1)[-1]
-            for path, interfaces in managed.items()
-            if "org.bluez.Adapter1" in interfaces
-        ]
-    except dbus.exceptions.DBusException:
-        adapters = []
-    candidates = (
-        [adapter_name]
-        if adapter_name is not None
-        else list(dict.fromkeys([requested, *adapters]))
+def _hci_sort_key(name: str) -> tuple[int, int | str]:
+    suffix = name[3:] if name.startswith("hci") else name
+    if suffix.isdigit():
+        return (0, int(suffix))
+    return (1, name)
+
+
+def _pairing_capable(inspected: tuple | None) -> bool:
+    if inspected is None:
+        return False
+    available, _supported, _current, _error, _identity, fields = inspected
+    return bool(available and fields["classic"] and fields["secure_pairing"])
+
+
+def adapter_label(name: str, hardware: dict[str, object] | None = None) -> str:
+    """Human controller name plus the hci index so two cards stay distinct."""
+    hardware = hardware or {}
+    vendor = str(hardware.get("vendor") or "").strip()
+    product = str(hardware.get("product") or "").strip()
+    chip = chipset_name(
+        usb_id=str(hardware.get("usb_id") or ""),
+        pci_id=str(hardware.get("pci_id") or ""),
+        driver=str(hardware.get("driver") or ""),
+        product=product,
     )
-    selected = None
-    fallback = None
-    for candidate in candidates:
-        inspected = (
-            candidate,
-            *controller_settings(candidate, run_command=run_command),
-        )
-        if fallback is None:
-            fallback = inspected
-        _name, available, settings, _current, _error, _identity = inspected
-        classic = bool({"br/edr", "bredr"} & settings)
-        secure = bool({"ssp", "secure-conn"} & settings)
-        if available and classic and secure:
-            selected = inspected
-            break
-    adapter, available, supported, current, command_error, identity = (
-        selected
-        or fallback
-        or (requested, False, set(), set(), "No adapter found", {})
-    )
+    pretty = chip or (product if product and not is_generic_product(product) else "")
+    if vendor and pretty:
+        pretty = pretty if vendor.casefold() in pretty.casefold() else f"{vendor} {pretty}"
+    else:
+        pretty = pretty or vendor
+    if pretty:
+        return f"{pretty} ({name})"
+    return name
+
+
+def _profile_fields(
+    adapter: str,
+    available: bool,
+    supported: set[str],
+    current: set[str],
+    command_error: str,
+    bearer_active: bool,
+) -> dict[str, object]:
     classic = bool({"br/edr", "bredr"} & supported)
     low_energy = "le" in supported
     advertising = "advertising" in supported
     secure_pairing = bool({"ssp", "secure-conn"} & supported)
     messages_supported = available and classic and secure_pairing
     notifications_supported = available and low_energy and advertising
-    try:
-        bearer_active = bool(support_status()["active"])
-    except PairingError:
-        bearer_active = False
-
     missing = [
         label for present, label in (
             (classic, "BR/EDR"), (secure_pairing, "secure pairing")
@@ -431,8 +426,7 @@ def compatibility(
         issue = "Messages and contacts are supported; per-app notifications are not"
     else:
         issue = ""
-    result: dict[str, object] = {
-        "adapter": adapter,
+    return {
         "available": available,
         "powered": "powered" in current,
         "classic": classic,
@@ -450,6 +444,91 @@ def compatibility(
         "issue": issue,
         "supported_settings": sorted(supported),
         "current_settings": sorted(current),
+    }
+
+
+def compatibility(
+    requested: str,
+    *,
+    adapter_name: str | None,
+    object_manager,
+    run_command: RunCommand,
+    support_status: Callable[[], dict],
+) -> dict:
+    """Describe supported profiles from capabilities, never vendor names."""
+    try:
+        managed = object_manager().GetManagedObjects()
+        discovered = [
+            str(path).rsplit("/", 1)[-1]
+            for path, interfaces in managed.items()
+            if "org.bluez.Adapter1" in interfaces
+        ]
+    except dbus.exceptions.DBusException:
+        discovered = []
+    names: list[str] = []
+    for name in discovered:
+        if name and is_valid_adapter(name) and name not in names:
+            names.append(name)
+    if (
+        adapter_name
+        and is_valid_adapter(adapter_name)
+        and adapter_name not in names
+    ):
+        names.append(adapter_name)
+    if not names and requested and is_valid_adapter(requested):
+        names = [requested]
+    names.sort(key=_hci_sort_key)
+    try:
+        bearer_active = bool(support_status()["active"])
+    except PairingError:
+        bearer_active = False
+    options: list[dict[str, object]] = []
+    inspected: dict[str, tuple] = {}
+    for name in names:
+        available, supported, current, error, identity = controller_settings(
+            name, run_command=run_command,
+        )
+        hardware = controller_hardware(name, run_command=None)
+        manufacturer_id = identity.get("manufacturer_id")
+        if isinstance(manufacturer_id, int):
+            apply_company_id(hardware, manufacturer_id)
+        else:
+            apply_chipset(hardware)
+            hardware["summary"] = _hardware_summary(hardware)
+        fields = _profile_fields(
+            name, available, supported, current, error, bearer_active,
+        )
+        options.append(
+            {
+                "name": name,
+                "label": adapter_label(name, hardware),
+                "available": bool(fields["available"]),
+                "powered": bool(fields["powered"]),
+                "hardware_supported": bool(fields["hardware_supported"]),
+                "notifications_supported": bool(fields["notifications_supported"]),
+                "pairing_ready": bool(fields["pairing_ready"]),
+                "issue": str(fields["issue"]),
+            }
+        )
+        inspected[name] = (available, supported, current, error, identity, fields)
+    if adapter_name is not None and adapter_name in inspected:
+        chosen = adapter_name
+    elif _pairing_capable(inspected.get(requested)):
+        chosen = requested
+    else:
+        chosen = next(
+            (
+                str(option["name"])
+                for option in options
+                if _pairing_capable(inspected.get(str(option["name"])))
+            ),
+            names[0],
+        )
+    _available, _supported, _current, _error, identity, fields = inspected[str(chosen)]
+    result: dict[str, object] = {
+        "adapter": chosen,
+        **fields,
+        "adapters": options,
     }
     if "manufacturer_id" in identity:
         result["manufacturer_id"] = identity["manufacturer_id"]

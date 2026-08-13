@@ -29,11 +29,14 @@ def test_interactive_pairing_emits_code_and_waits_for_acceptance(monkeypatch):
     observed = []
 
     class Setup:
-        def prepare_replacement(self, previous_mac, next_mac):
-            observed.append(("replace", previous_mac, next_mac))
+        def configuration(self):
+            return SimpleNamespace(adapter="hci0")
 
-        def complete(self, mac, *, confirmation, display):
-            observed.append((mac, confirmation(12345)))
+        def prepare_replacement(self, previous_mac, next_mac, *, adapter=None):
+            observed.append(("replace", previous_mac, next_mac, adapter))
+
+        def complete(self, mac, *, confirmation, display, adapter=None):
+            observed.append((mac, adapter, confirmation(12345)))
             return SimpleNamespace(to_dict=lambda: {"ok": True, "device": {"mac": mac}})
 
     monkeypatch.setattr(setup_client, "SetupClient", Setup)
@@ -44,6 +47,8 @@ def test_interactive_pairing_emits_code_and_waits_for_acceptance(monkeypatch):
             "pairing-complete",
             "02:00:00:00:00:01",
             "--interactive-agent",
+            "--adapter",
+            "hci1",
             "--replace-saved-mac",
             "02:00:00:00:00:02",
         ],
@@ -57,8 +62,8 @@ def test_interactive_pairing_emits_code_and_waits_for_acceptance(monkeypatch):
         {"ok": True, "device": {"mac": "02:00:00:00:00:01"}},
     ]
     assert observed == [
-        ("replace", "02:00:00:00:00:02", "02:00:00:00:00:01"),
-        ("02:00:00:00:00:01", True),
+        ("replace", "02:00:00:00:00:02", "02:00:00:00:00:01", "hci0"),
+        ("02:00:00:00:00:01", "hci1", True),
     ]
 
 

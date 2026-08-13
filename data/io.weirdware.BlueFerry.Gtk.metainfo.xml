@@ -40,6 +40,12 @@
   </developer>
 
   <releases>
+    <release version="0.6.3" date="2026-08-13">
+      <description>
+        <p>Lets you pick a Bluetooth controller when more than one is present
+        and keeps pairing, scanning, and forget on that radio.</p>
+      </description>
+    </release>
     <release version="0.6.2" date="2026-08-10">
       <description>
         <p>Improves interactive Bluetooth pairing, diagnostics, and handling
