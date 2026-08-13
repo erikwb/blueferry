@@ -37,6 +37,10 @@ MAX_EVENT_KINDS = 16
 MAX_EVENT_KIND_CHARS = 64
 MAX_CONTACT_QUERY_CHARS = 256
 MAX_CONTACT_RESULTS = 100
+# Enumeration is paged so a large phonebook cannot exceed MAX_DBUS_JSON_BYTES
+# in one reply. A record carries every address for one person, so the page cap
+# is well below the search-result cap.
+MAX_CONTACT_PAGE = 250
 MAX_DBUS_JSON_BYTES = 8 * 1024 * 1024
 
 # Long-lived daemon queues and subscriptions must remain bounded even if a

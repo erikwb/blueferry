@@ -256,6 +256,23 @@ class ContactsResolver:
         }
         return sorted(seen, key=lambda item: (item[0].casefold(), item[1]))
 
+    def records(self, offset: int = 0, limit: int | None = None) -> list[ContactRecord]:
+        """Stable page of complete records — name with all of its addresses.
+
+        `find_by_name` answers "who owns this destination"; this answers "who
+        is in the phonebook", which a caller cannot reconstruct from searches.
+        Ordering is by display name so paging stays stable between calls on an
+        unchanged cache.
+        """
+        ordered = sorted(
+            self._records,
+            key=lambda record: ((record[0] or "").casefold(), record[1], record[2]),
+        )
+        start = max(0, int(offset))
+        if limit is None:
+            return ordered[start:]
+        return ordered[start:start + max(0, int(limit))]
+
     def resolve(self, raw: str | None) -> str | None:
         value = (raw or "").strip()
         if is_email_shaped(value):

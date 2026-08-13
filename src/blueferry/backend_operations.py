@@ -30,6 +30,7 @@ from blueferry.history import (
 )
 from blueferry.limits import (
     MAX_CONTACT_ADDRESS_CHARS,
+    MAX_CONTACT_PAGE,
     MAX_CONTACT_QUERY_CHARS,
     MAX_CONTACT_RESULTS,
     MAX_CONVERSATION_EVENTS,
@@ -77,6 +78,10 @@ class SessionState(Protocol):
 
 class ContactIndex(Protocol):
     def find_by_name(self, query: str) -> list[tuple[str, str]]: ...
+
+    def records(
+        self, offset: int = 0, limit: int | None = None
+    ) -> list[tuple[str | None, list[str], list[str]]]: ...
 
     def resolve(self, address: str | None) -> str | None: ...
 
@@ -300,6 +305,23 @@ class BackendOperations:
             for name, address in self.dependencies.contacts.find_by_name(selected)[
                 :MAX_CONTACT_RESULTS
             ]
+        ]
+
+    def list_contacts(self, offset: int, limit: int) -> list[dict[str, object]]:
+        """Enumerate the cached phonebook one bounded page at a time.
+
+        Search cannot answer "who is in the phonebook" — a caller that wants
+        the whole set would have to guess queries. Each record keeps its
+        addresses grouped, so one person stays one record.
+        """
+        if self.dependencies.contacts is None:
+            raise NotReadyError("contact cache is unavailable")
+        bounded = max(1, min(int(limit), MAX_CONTACT_PAGE))
+        return [
+            {"name": name or "", "phones": list(phones), "emails": list(emails)}
+            for name, phones, emails in self.dependencies.contacts.records(
+                max(0, int(offset)), bounded
+            )
         ]
 
     def set_group_participants(

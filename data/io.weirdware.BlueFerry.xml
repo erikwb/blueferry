@@ -39,6 +39,13 @@
       <annotation name="io.weirdware.BlueFerry.Errors"
                   value="InvalidArgs,NotReady,ResponseTooLarge"/>
     </method>
+    <method name="ListContacts">
+      <arg name="offset" type="u" direction="in"/>
+      <arg name="limit" type="u" direction="in"/>
+      <arg name="json" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="NotReady,ResponseTooLarge"/>
+    </method>
     <method name="SetGroupParticipants">
       <arg name="thread_key" type="s" direction="in"/>
       <arg name="recipients" type="as" direction="in"/>
