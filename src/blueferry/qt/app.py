@@ -16,15 +16,15 @@ from blueferry.qt.controller import BridgeController
 
 APP_ID = "io.weirdware.BlueFerry.Qt"
 TRANSLATION_DIR = os.environ.get(
-    "BLUEFERRY_QT_LOCALE_DIR", "/usr/share/blueferry/translations"
-)
+        "BLUEFERRY_QT_LOCALE_DIR", "/usr/share/blueferry/translations"
+        )
 
 
 def _install_translation(application: QGuiApplication) -> None:
     translator = QTranslator(application)
     if translator.load(
-        QLocale.system(), "blueferry", "_", TRANSLATION_DIR,
-    ):
+            QLocale.system(), "blueferry", "_", TRANSLATION_DIR,
+            ):
         application.installTranslator(translator)
 
 
@@ -59,16 +59,18 @@ def _present_window(window: QWindow) -> None:
 
 
 def _create_system_tray(
-    application: QApplication,
-    window: QWindow,
-) -> QSystemTrayIcon | None:
+        application: QApplication,
+        window: QWindow,
+        ) -> QSystemTrayIcon | None:
     """Expose the KDE/desktop status-notifier item for the Qt client."""
     if not QSystemTrayIcon.isSystemTrayAvailable():
         return None
 
-    icon = QIcon.fromTheme(APP_ID)
+    icon = QIcon.fromTheme("smartphone-symbolic")
     if icon.isNull():
-        icon = QIcon.fromTheme("phone-symbolic")
+        icon = QIcon.fromTheme("smartphone")
+    if icon.isNull():
+        icon = QIcon.fromTheme(APP_ID)
     tray = QSystemTrayIcon(icon, application)
     tray.setToolTip("BlueFerry")
 
@@ -86,9 +88,9 @@ def _create_system_tray(
 
     def activated(reason) -> None:
         if reason in (
-            QSystemTrayIcon.ActivationReason.Trigger,
-            QSystemTrayIcon.ActivationReason.DoubleClick,
-        ):
+                QSystemTrayIcon.ActivationReason.Trigger,
+                QSystemTrayIcon.ActivationReason.DoubleClick,
+                ):
             _present_window(window)
 
     tray.activated.connect(activated)
