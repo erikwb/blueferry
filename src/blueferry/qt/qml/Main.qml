@@ -429,6 +429,21 @@ Kirigami.ApplicationWindow {
     }
 
     Kirigami.PromptDialog {
+        id: pairingIssueDialog
+        title: qsTr("Report Pairing Issue")
+        subtitle: qsTr("A pairing report was saved at %1. Attach that file to a GitHub issue and include the iPhone model and iOS version.").arg(root.bridge.pairingIssueReport)
+        standardButtons: Kirigami.Dialog.Cancel
+        customFooterActions: [Kirigami.Action {
+            text: qsTr("Open GitHub")
+            icon.name: "internet-web-browser"
+            onTriggered: {
+                root.bridge.filePairingIssue()
+                pairingIssueDialog.close()
+            }
+        }]
+    }
+
+    Kirigami.PromptDialog {
         id: replaceTargetDialog
         property string mac: ""
         title: qsTr("Replace the Saved iPhone?")
@@ -1044,6 +1059,13 @@ Kirigami.ApplicationWindow {
                             forgetDialog.open()
                         }
                     }
+                }
+
+                Controls.Button {
+                    visible: root.bridge.pairingIssueReport !== ""
+                    text: qsTr("Report Pairing Issue")
+                    icon.name: "help-about"
+                    onClicked: pairingIssueDialog.open()
                 }
 
                 RowLayout {

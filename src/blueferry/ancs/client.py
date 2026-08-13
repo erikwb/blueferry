@@ -175,11 +175,21 @@ class AncsClient:
             self._on_iface_added(path, ifaces)
 
     @property
+    def subscribed(self) -> bool:
+        """GATT Notification Source/Data Source subscriptions are active."""
+        return self._notify_started
+
+    @property
+    def authorized(self) -> bool:
+        """iOS accepted a content-free Control Point probe."""
+        return self._authorized
+
+    @property
     def connected(self) -> bool:
         # StartNotify only proves that BlueZ subscribed to the GATT
         # characteristics. iOS notification access is usable only after an
         # authorized Control Point round trip succeeds.
-        return self._notify_started and self._authorized
+        return self.subscribed and self.authorized
 
     def stop(self) -> None:
         log.info("ANCS client stopping")

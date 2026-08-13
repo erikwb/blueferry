@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import io
+import json
+
+import pytest
 
 from blueferry import pair_setup, setup_client
 
@@ -68,12 +71,14 @@ def test_compatibility_and_configuration_are_typed(monkeypatch):
             "path": "/tmp/local.env",
         },
     )
+    monkeypatch.setattr(setup_client.quirks_report, "issue_report", lambda: None)
 
     client = setup_client.SetupClient()
 
     assert client.compatibility().pairing_ready is True
     assert client.compatibility().adapter == "hci2"
     assert client.configuration().configured is False
+    assert client.configuration().pairing_issue_report == ""
 
 
 def test_device_operations_delegate_with_requested_scan(monkeypatch):
@@ -171,3 +176,43 @@ def test_isolated_pairing_answers_helper_confirmation(monkeypatch):
     assert process.stdin.getvalue() == "yes\n"
     assert result.ancs_ready is True
     assert commands[0][-2:] == ["--replace-saved-mac", "02:00:00:00:00:02"]
+
+
+def test_isolated_pairing_preserves_report_path_on_failure(monkeypatch):
+    device = _device()
+
+    class Process:
+        def __init__(self):
+            self.stdin = io.StringIO()
+            self.stdout = iter([
+                json.dumps({
+                    "ok": False,
+                    "error": "Bluetooth confirmation did not complete",
+                    "report_path": "/tmp/quirks-test.json",
+                }) + "\n"
+            ])
+
+        @staticmethod
+        def wait(*_args, **_kwargs):
+            return 2
+
+        @staticmethod
+        def poll():
+            return 2
+
+        @staticmethod
+        def terminate():
+            return None
+
+    monkeypatch.setattr(
+        setup_client.subprocess, "Popen", lambda *_args, **_kwargs: Process(),
+    )
+
+    with pytest.raises(setup_client.PairingError) as raised:
+        setup_client.SetupClient().complete_isolated(
+            device.mac,
+            confirmation=lambda _passkey: True,
+        )
+
+    assert raised.value.report_path == "/tmp/quirks-test.json"
+    assert str(raised.value) == "Bluetooth confirmation did not complete"

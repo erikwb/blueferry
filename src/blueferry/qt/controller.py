@@ -24,6 +24,7 @@ from blueferry.i18n import _
 from blueferry.onboarding import derive_stage
 from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH
 from blueferry.qt.tasks import Task
+from blueferry.quirks_report import issue_report, issue_url
 from blueferry.setup_client import SetupClient
 
 
@@ -40,6 +41,7 @@ class BridgeController(QObject):
     setupLoadedChanged = Signal()
     onboardingStageChanged = Signal()
     pairingConfirmationRequested = Signal(str)
+    pairingIssueReportChanged = Signal()
     messageOpenRequested = Signal(str)
 
     def __init__(
@@ -68,6 +70,7 @@ class BridgeController(QObject):
         self._bluetooth_active = False
         self._busy_count = 0
         self._error_text = ""
+        self._pairing_issue_report = ""
         self._compatibility: dict = {}
         self._configured = False
         self._target_saved = False
@@ -124,6 +127,10 @@ class BridgeController(QObject):
     def errorText(self) -> str:
         return self._error_text
 
+    @Property(str, notify=pairingIssueReportChanged)
+    def pairingIssueReport(self) -> str:
+        return self._pairing_issue_report
+
     @Property("QVariantMap", notify=compatibilityChanged)
     def compatibility(self):
         return self._compatibility
@@ -171,6 +178,24 @@ class BridgeController(QObject):
             return
         self._error_text = message
         self.errorTextChanged.emit()
+
+    def _set_pairing_issue_report(self, path: str) -> None:
+        value = str(path or "").strip()
+        if value == self._pairing_issue_report:
+            return
+        self._pairing_issue_report = value
+        self.pairingIssueReportChanged.emit()
+
+    def _refresh_pairing_issue_report(self) -> None:
+        found = issue_report()
+        self._set_pairing_issue_report(str(found) if found is not None else "")
+
+    @Slot()
+    def filePairingIssue(self) -> None:
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        QDesktopServices.openUrl(QUrl(issue_url(self._pairing_issue_report or None)))
 
     def _set_busy(self, delta: int) -> None:
         was_busy = self.busy
@@ -299,6 +324,7 @@ class BridgeController(QObject):
             self.setupLoadedChanged.emit()
             self.bluetoothChanged.emit()
             self._update_onboarding_stage()
+            self._set_pairing_issue_report(configuration.pairing_issue_report)
             if self._devices:
                 self.loadDevices(False)
 
@@ -336,6 +362,7 @@ class BridgeController(QObject):
             self.statusChanged.emit()
             self._maybe_unlock_storage()
             self._update_onboarding_stage()
+            self._refresh_pairing_issue_report()
             if self._status.get("daemon"):
                 self._set_error("")
 
@@ -543,7 +570,7 @@ class BridgeController(QObject):
         self._start_pairing(mac, replace_saved_mac=previous_mac)
 
     def _start_pairing(self, mac: str, *, replace_saved_mac: str = "") -> None:
-        def completed(_value: object) -> None:
+        def completed(value: object) -> None:
             self._configured = True
             self._target_saved = True
             self._configured_mac = mac
@@ -552,6 +579,7 @@ class BridgeController(QObject):
             self.loadDevices(False)
             self.loadSetupState()
             self.refresh()
+            self._refresh_pairing_issue_report()
 
         def confirm(passkey: int | None) -> bool:
             event = threading.Event()
@@ -592,6 +620,7 @@ class BridgeController(QObject):
 
         def failed(message: str) -> None:
             self._operation_failed(message)
+            self._refresh_pairing_issue_report()
             if replace_saved_mac:
                 self.loadSetupState()
                 self.loadDevices(False)

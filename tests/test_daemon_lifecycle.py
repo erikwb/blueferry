@@ -109,6 +109,34 @@ def test_no_storage_policy_reasserts_empty_local_data(monkeypatch):
     assert cleared == ["events", "contacts"]
 
 
+def test_status_exposes_split_ancs_and_last_le_error(monkeypatch):
+    instance = _bare_daemon()
+    instance.contacts = SimpleNamespace(count=lambda: 0)
+    instance.ancs = SimpleNamespace(
+        connected=False, subscribed=True, authorized=False,
+    )
+    instance.bearers = SimpleNamespace(
+        snapshot=lambda: {
+            "bredr": True,
+            "le": False,
+            "last_le_error": "org.bluez.Error.Failed",
+            "last_le_error_message": "le-connection-abort-by-local",
+        }
+    )
+    instance.setup_verification = SimpleNamespace(verified=())
+    monkeypatch.setattr(daemon_mod, "history_count", lambda **_kwargs: 0)
+
+    status = instance._status()
+
+    assert status["ancs"] is False
+    assert status["ancs_subscribed"] is True
+    assert status["ancs_authorized"] is False
+    assert status["bredr"] is True
+    assert status["le"] is False
+    assert status["last_le_error"] == "org.bluez.Error.Failed"
+    assert status["last_le_error_message"] == "le-connection-abort-by-local"
+
+
 def test_failed_hardware_initialization_leaves_control_service_alive(monkeypatch):
     instance = _bare_daemon()
     scheduled = []

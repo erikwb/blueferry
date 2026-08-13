@@ -265,8 +265,45 @@ def pairing_complete(
         )
         emit(result.to_dict())
     except PairingError as error:
-        typer.echo(json.dumps({"ok": False, "error": str(error)}))
+        payload = {"ok": False, "error": str(error)}
+        if error.report_path:
+            payload["report_path"] = error.report_path
+        typer.echo(json.dumps(payload))
         raise typer.Exit(code=2) from None
+
+
+@app.command("pairing-issue")
+def pairing_issue(
+    no_open: bool = typer.Option(
+        False,
+        "--no-open",
+        help="Print the GitHub URL without opening a browser",
+    ),
+    print_url: bool = typer.Option(
+        False,
+        "--print-url",
+        hidden=True,
+        help="Print only the GitHub new-issue URL",
+    ),
+) -> None:
+    """File a GitHub issue using the latest pairing report."""
+    from blueferry import quirks_report
+
+    path = quirks_report.latest_report()
+    if path is None:
+        typer.echo("No pairing report found. Pair an iPhone first.")
+        raise typer.Exit(code=1)
+    url = quirks_report.issue_url(path)
+    if print_url:
+        typer.echo(url)
+        return
+    typer.echo(f"Pairing report: {path}")
+    typer.echo(quirks_report.issue_instructions(path))
+    typer.echo(url)
+    if no_open:
+        return
+    if not quirks_report.open_issue_page(url):
+        typer.echo("Open that URL in a browser to file the issue.")
 
 
 @app.command("pairing-forget", hidden=True)

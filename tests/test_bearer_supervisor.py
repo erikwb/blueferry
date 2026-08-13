@@ -38,11 +38,49 @@ def test_connects_classic_before_le(caplog) -> None:
 
     state["le"] = True
     scheduled[0][1]()
-    assert supervisor.snapshot() == {"bredr": True, "le": True}
+    assert supervisor.snapshot() == {
+        "bredr": True,
+        "le": True,
+        "last_le_error": "",
+        "last_le_error_message": "",
+    }
     assert "probing iPhone BR/EDR and LE bearer state" in caplog.text
     assert "iPhone BREDR bearer state: disconnected" in caplog.text
     assert "iPhone BREDR bearer state: connected" in caplog.text
     assert "iPhone LE bearer state: connected" in caplog.text
+
+
+def test_snapshot_includes_the_last_le_connect_error() -> None:
+    import dbus
+
+    state = {"bredr": True, "le": False}
+
+    def connect(kind, on_success, on_error):
+        if kind == "le":
+            on_error(
+                dbus.exceptions.DBusException(
+                    "le-connection-abort-by-local",
+                    name="org.bluez.Error.Failed",
+                )
+            )
+            return
+        on_success()
+
+    scheduled = []
+    supervisor = BearerSupervisor(
+        "/device",
+        read_connected=state.get,
+        connect=connect,
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+    )
+    supervisor.start()
+    scheduled[0][1]()
+    assert supervisor.snapshot() == {
+        "bredr": True,
+        "le": False,
+        "last_le_error": "org.bluez.Error.Failed",
+        "last_le_error_message": "le-connection-abort-by-local",
+    }
 
 
 def test_le_is_not_connected_if_classic_drops_during_settling() -> None:

@@ -26,6 +26,17 @@ _INTERFACES = {
     "le": "org.bluez.Bearer.LE1",
 }
 
+def _connect_error_parts(error: Exception) -> tuple[str, str]:
+    """Split a connect failure into D-Bus name and message."""
+    if isinstance(error, dbus.exceptions.DBusException):
+        name = error.get_dbus_name() or type(error).__name__
+        message = error.get_dbus_message() or ""
+    else:
+        name = type(error).__name__
+        message = str(error)
+    return name[:256], message[:256]
+
+
 ReadConnected = Callable[[str], bool | None]
 Connect = Callable[[str, Callable[[], None], Callable[[Exception], None]], None]
 Prefer = Callable[[str], None]
@@ -70,7 +81,7 @@ class BearerSupervisor:
         self._le_settle_id: int | None = None
         self._running = False
         self._connecting: set[str] = set()
-        self._last_errors: dict[str, str] = {}
+        self._last_errors: dict[str, tuple[str, str]] = {}
         self._states: dict[str, bool | None] = {"bredr": None, "le": None}
         self._failures: dict[str, int] = {"bredr": 0, "le": 0}
         self._next_attempt: dict[str, float] = {"bredr": 0.0, "le": 0.0}
@@ -120,10 +131,13 @@ class BearerSupervisor:
                 log.debug("could not remove bearer health timer", exc_info=True)
             self._timer_id = None
 
-    def snapshot(self) -> dict[str, bool]:
+    def snapshot(self) -> dict[str, object]:
+        name, message = self._last_errors.get("le", ("", ""))
         return {
             "bredr": self.bredr_connected,
             "le": self.le_connected,
+            "last_le_error": name,
+            "last_le_error_message": message,
         }
 
     def _tick(self) -> bool:
@@ -237,11 +251,7 @@ class BearerSupervisor:
 
     def _connect_failed(self, kind: str, error: Exception) -> None:
         self._connecting.discard(kind)
-        name = (
-            error.get_dbus_name()
-            if isinstance(error, dbus.exceptions.DBusException)
-            else type(error).__name__
-        ) or str(error)
+        name, message = _connect_error_parts(error)
         if name in {
             "org.bluez.Error.AlreadyConnected",
             "org.bluez.Error.InProgress",
@@ -254,14 +264,15 @@ class BearerSupervisor:
             BACKOFF_CAP_SECONDS,
         )
         self._next_attempt[kind] = self._clock() + delay
-        if self._last_errors.get(kind) != name:
+        if self._last_errors.get(kind) != (name, message):
+            detail = f"{name}: {message}" if message else name
             log.warning(
                 "could not connect iPhone %s bearer: %s (next attempt in %ds)",
                 kind.upper(),
-                name,
+                detail,
                 delay,
             )
-            self._last_errors[kind] = name
+            self._last_errors[kind] = (name, message)
 
     def _read_bluez_connected(self, kind: str) -> bool | None:
         obj = get_system_bus().get_object("org.bluez", self.device_path)

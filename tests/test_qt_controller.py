@@ -315,3 +315,24 @@ def test_replacing_saved_target_is_forwarded_to_pairing_helper(monkeypatch):
         ("02:00:00:00:00:01", "02:00:00:00:00:02")
     ]
     assert controller.targetSaved is True
+
+
+def test_pairing_issue_offer_stays_when_ancs_connects(monkeypatch, tmp_path) -> None:
+    from blueferry import config, quirks_report
+
+    monkeypatch.setattr(config, "STATE_DIR", tmp_path)
+    path = quirks_report.save_report(
+        {"outcome": {"setup_complete": True, "ancs": True}},
+        directory=tmp_path,
+    )
+    controller = BridgeController(
+        backend=_Backend(),
+        setup=object(),
+        subscribe=False,
+        autostart=False,
+    )
+    controller._status = {"ancs": True}
+
+    controller._refresh_pairing_issue_report()
+
+    assert controller.pairingIssueReport == str(path)
