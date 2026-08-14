@@ -1,0 +1,5 @@
+usr/bin/blueferry-gtk
+usr/lib/python3*/dist-packages/blueferry/ui
+usr/share/applications/io.weirdware.BlueFerry.Gtk.desktop
+usr/share/icons/hicolor/scalable/apps/io.weirdware.BlueFerry.Gtk.svg
+usr/share/metainfo/io.weirdware.BlueFerry.Gtk.metainfo.xml

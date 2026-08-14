@@ -1,0 +1,50 @@
+#!/usr/bin/make -f
+
+export PYBUILD_SYSTEM = pyproject
+
+%:
+	dh $@ --buildsystem=pybuild
+
+override_dh_auto_test:
+	cd packaging/vendor/textual && sha256sum -c SHA256SUMS
+	rm -rf debian/vendor
+	install -d debian/vendor
+	set -e; for wheel in packaging/vendor/textual/wheels/*.whl; do \
+		python3 -m zipfile -e "$$wheel" debian/vendor; \
+	done
+	dbus-run-session --config-file=tests/dbus-test.conf -- sh -ec '\
+		export DBUS_SYSTEM_BUS_ADDRESS="$$DBUS_SESSION_BUS_ADDRESS"; \
+		export BLUEFERRY_TEST_DBUS_ADDRESS="$$DBUS_SESSION_BUS_ADDRESS"; \
+		export PYTHONPATH="$$PWD/debian/vendor:$$PWD/src"; \
+		python3 -m pytest -q --ignore=tests/test_qml_presenters.py'
+
+override_dh_auto_install:
+	dh_auto_install --destdir=debian/tmp
+	cd packaging/vendor/textual && sha256sum -c SHA256SUMS
+	install -d debian/tmp/usr/lib/blueferry/vendor
+	set -e; for wheel in packaging/vendor/textual/wheels/*.whl; do \
+		python3 -m zipfile -e "$$wheel" debian/tmp/usr/lib/blueferry/vendor; \
+	done
+	install -Dm644 systemd/blueferry.service \
+		debian/tmp/usr/lib/systemd/user/blueferry.service
+	install -d debian/tmp/usr/lib/systemd/user/default.target.wants
+	ln -s ../blueferry.service \
+		debian/tmp/usr/lib/systemd/user/default.target.wants/blueferry.service
+	install -Dm644 packaging/deb/io.weirdware.BlueFerry.service \
+		debian/tmp/usr/share/dbus-1/services/io.weirdware.BlueFerry.service
+	install -Dm644 data/io.weirdware.BlueFerry.xml \
+		debian/tmp/usr/share/dbus-1/interfaces/io.weirdware.BlueFerry.xml
+	install -d debian/tmp/usr/share/blueferry
+	dpkg-parsechangelog -S Version > debian/tmp/usr/share/blueferry/package-release
+	install -Dm644 data/io.weirdware.BlueFerry.Gtk.desktop \
+		debian/tmp/usr/share/applications/io.weirdware.BlueFerry.Gtk.desktop
+	install -Dm644 data/io.weirdware.BlueFerry.Gtk.metainfo.xml \
+		debian/tmp/usr/share/metainfo/io.weirdware.BlueFerry.Gtk.metainfo.xml
+	install -Dm644 data/icons/io.weirdware.BlueFerry.Gtk.svg \
+		debian/tmp/usr/share/icons/hicolor/scalable/apps/io.weirdware.BlueFerry.Gtk.svg
+	install -Dm644 data/io.weirdware.BlueFerry.Qt.desktop \
+		debian/tmp/usr/share/applications/io.weirdware.BlueFerry.Qt.desktop
+	install -Dm644 data/io.weirdware.BlueFerry.Qt.metainfo.xml \
+		debian/tmp/usr/share/metainfo/io.weirdware.BlueFerry.Qt.metainfo.xml
+	install -Dm644 data/icons/io.weirdware.BlueFerry.Gtk.svg \
+		debian/tmp/usr/share/icons/hicolor/scalable/apps/io.weirdware.BlueFerry.Qt.svg

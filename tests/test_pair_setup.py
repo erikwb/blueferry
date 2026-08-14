@@ -516,21 +516,53 @@ def test_early_service_resolution_does_not_claim_ancs_is_bonded():
     assert device.ancs_bonded is False
 
 
-def test_bluez_support_status_detects_experimental_execstart(monkeypatch):
-    monkeypatch.setattr(
-        pair_setup,
-        "run_command",
-        lambda *_args, **_kwargs: type(
+def test_bluez_support_status_detects_experimental_running_daemon(
+    monkeypatch, tmp_path,
+):
+    daemon = tmp_path / "812"
+    daemon.mkdir()
+    daemon.joinpath("cmdline").write_bytes(
+        b"/usr/lib/bluetooth/bluetoothd\0-E\0",
+    )
+
+    def service_status(argv, **_kwargs):
+        stdout = (
+            "812\n" if "--property=MainPID" in argv
+            else "{ argv[]=/usr/lib/bluetooth/bluetoothd -E ; }\n"
+        )
+        return type(
             "Result",
             (),
             {
                 "returncode": 0,
-                "stdout": "{ argv[]=/usr/lib/bluetooth/bluetoothd -E ; }\n",
+                "stdout": stdout,
             },
-        )(),
+        )()
+
+    monkeypatch.setattr(pair_setup, "run_command", service_status)
+
+    assert pair_setup.bluez_support_status(proc_root=tmp_path)["active"] is True
+
+
+def test_bluez_support_status_rejects_configured_but_unrestarted_daemon(
+    monkeypatch, tmp_path,
+):
+    daemon = tmp_path / "812"
+    daemon.mkdir()
+    daemon.joinpath("cmdline").write_bytes(
+        b"/usr/lib/bluetooth/bluetoothd\0",
     )
 
-    assert pair_setup.bluez_support_status()["active"] is True
+    def service_status(argv, **_kwargs):
+        stdout = (
+            "812\n" if "--property=MainPID" in argv
+            else "{ argv[]=/usr/lib/bluetooth/bluetoothd -E ; }\n"
+        )
+        return type("Result", (), {"returncode": 0, "stdout": stdout})()
+
+    monkeypatch.setattr(pair_setup, "run_command", service_status)
+
+    assert pair_setup.bluez_support_status(proc_root=tmp_path)["active"] is False
 
 
 def test_compatibility_is_based_on_controller_features_not_vendor(monkeypatch):
@@ -541,6 +573,8 @@ def test_compatibility_is_based_on_controller_features_not_vendor(monkeypatch):
     monkeypatch.setattr(pair_setup, "_object_manager", lambda: Manager())
 
     def controller_info(command, **_kwargs):
+        if command[0] == "bluetoothctl":
+            return type("Result", (), {"returncode": 0, "stdout": "5.87\n"})()
         if command[2] == "0":
             return type("Result", (), {"returncode": 1, "stdout": ""})()
         return type(
@@ -576,6 +610,49 @@ def test_compatibility_is_based_on_controller_features_not_vendor(monkeypatch):
     assert [item["name"] for item in status["adapters"]] == ["hci7"]
 
 
+def test_bluez_5_87_without_experimental_api_stays_map_pbap_only(monkeypatch):
+    class Manager:
+        def GetManagedObjects(self):
+            return {"/org/bluez/hci0": {"org.bluez.Adapter1": {}}}
+
+    def controller_info(command, **_kwargs):
+        if command[0] == "bluetoothctl":
+            return type(
+                "Result",
+                (),
+                {"returncode": 0, "stdout": "bluetoothctl: 5.87\n", "stderr": ""},
+            )()
+        return type(
+            "Result",
+            (),
+            {
+                "returncode": 0,
+                "stdout": (
+                    "hci0: Primary controller\n"
+                    "supported settings: powered ssp br/edr le advertising secure-conn\n"
+                    "current settings: powered br/edr le advertising\n"
+                ),
+            },
+        )()
+
+    monkeypatch.setattr(pair_setup, "_object_manager", lambda: Manager())
+    monkeypatch.setattr(pair_setup, "run_command", controller_info)
+    monkeypatch.setattr(
+        pair_setup,
+        "bluez_support_status",
+        lambda: {"active": False, "packaged_drop_in": False},
+    )
+
+    status = pair_setup.bluetooth_compatibility()
+
+    assert status["bluez_version"] == "5.87"
+    assert status["messages_supported"] is True
+    assert status["notifications_supported"] is False
+    assert status["bearer_api_supported"] is False
+    assert status["bearer_api_active"] is False
+    assert status["pairing_ready"] is True
+
+
 def test_compatibility_ignores_a_configured_adapter_bluez_does_not_have(
     monkeypatch,
 ):
@@ -586,6 +663,8 @@ def test_compatibility_ignores_a_configured_adapter_bluez_does_not_have(
             return {"/org/bluez/hci7": {"org.bluez.Adapter1": {}}}
 
     def controller_info(command, **_kwargs):
+        if command[0] == "bluetoothctl":
+            return type("Result", (), {"returncode": 0, "stdout": "5.87\n"})()
         index = command[2]
         probed.append(index)
         if index != "7":
@@ -623,6 +702,8 @@ def test_compatibility_lists_every_adapter_and_honors_an_explicit_choice(monkeyp
     monkeypatch.setattr(pair_setup, "_object_manager", lambda: Manager())
 
     def controller_info(command, **_kwargs):
+        if command[0] == "bluetoothctl":
+            return type("Result", (), {"returncode": 0, "stdout": "5.87\n"})()
         index = command[2]
         settings = (
             "powered ssp br/edr le advertising secure-conn"
@@ -1485,14 +1566,42 @@ def test_pairing_does_not_gate_map_on_inbound_ancs(monkeypatch):
     assert result["ancs_ready"] is False
 
 
-def test_pairing_rejects_controller_without_ancs_before_saving_target(monkeypatch):
+def test_pairing_without_bearer_api_continues_with_map_and_pbap(monkeypatch):
     device = _device(paired=True)
     monkeypatch.setattr(pair_setup, "_device", lambda _mac, **_kwargs: device)
     _compatible(monkeypatch, notifications=False)
+    monkeypatch.setattr(bluez_setup, "prepare_classic", lambda **_kwargs: True)
+    monkeypatch.setattr(
+        bluez_setup,
+        "register_advert",
+        lambda *_args, **_kwargs: pytest.fail("ANCS advert must not be registered"),
+    )
+    monkeypatch.setattr(
+        bluez_setup,
+        "unregister_advert",
+        lambda *_args: pytest.fail("absent ANCS advert must not be removed"),
+    )
+    monkeypatch.setattr(pair_setup, "trust_device", lambda *_args: None)
+    monkeypatch.setattr(
+        pair_setup,
+        "_prefer_bredr",
+        lambda *_args: pytest.fail("PreferredBearer must not be used"),
+    )
+    monkeypatch.setattr(
+        pair_setup,
+        "_wait_for_daemon_transports",
+        lambda **kwargs: (
+            pytest.fail("MAP/PBAP-only flag was not passed")
+            if kwargs.get("notifications_supported") is not False
+            else (True, True, False)
+        ),
+    )
     saved = []
     monkeypatch.setattr(pair_setup, "write_local_env", lambda *_args: saved.append(True))
+    monkeypatch.setattr(pair_setup, "_restart_user_service", lambda: None)
 
-    with pytest.raises(pair_setup.PairingError, match="successful ANCS/LE connection"):
-        pair_setup.complete_pairing(device.mac)
+    result = pair_setup.complete_pairing(device.mac)
 
-    assert saved == []
+    assert saved == [True]
+    assert result["ancs"] == "unsupported"
+    assert result["ancs_ready"] is False

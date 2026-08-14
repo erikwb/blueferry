@@ -82,9 +82,12 @@ def bluetooth_compatibility(adapter_name: str | None = None) -> dict:
     )
 
 
-def bluez_support_status() -> dict:
+def bluez_support_status(*, proc_root: Path = Path("/proc")) -> dict:
     """Report whether the packaged experimental bearer API is active."""
-    return capabilities.bluez_support_status(run_command=run_command)
+    return capabilities.bluez_support_status(
+        run_command=run_command,
+        proc_root=proc_root,
+    )
 
 
 def activate_bluez_support() -> dict:
@@ -486,7 +489,10 @@ def _activate_obex_mns() -> None:
 
 
 def _wait_for_daemon_transports(
-    *, timeout: float = 45.0, attempt: dict | None = None,
+    *,
+    timeout: float = 45.0,
+    attempt: dict | None = None,
+    notifications_supported: bool = True,
 ) -> tuple[bool, bool, bool]:
     """Observe the daemon while the pairing advert and agent remain active."""
     from blueferry.client import BackendClient, BackendError
@@ -516,7 +522,9 @@ def _wait_for_daemon_transports(
                 if current[2] and not was[2]:
                     quirks_report.mark(attempt, "ancs_ready")
             previous = current
-        if status.ancs:
+        if status.ancs or (
+            not notifications_supported and status.map and status.pbap
+        ):
             return current
         time.sleep(0.5)
     return previous or (False, False, False)
@@ -729,6 +737,7 @@ _COMPATIBILITY_REPORT_KEYS = (
     "hardware_supported",
     "messages_supported",
     "notifications_supported",
+    "bearer_api_supported",
     "bearer_api_active",
     "supported_settings",
     "current_settings",
@@ -843,16 +852,22 @@ def _adapter_dbus_fields(adapter: str) -> dict[str, object]:
 def _controller_snapshot(adapter: str, compatibility: dict) -> dict:
     controller = _adapter_identity(adapter, compatibility)
     controller.update(_compatibility_fields(compatibility))
-    try:
-        controller.update(
-            capabilities.bluez_stack(
-                run_command=run_command,
-                experimental=compatibility.get("bearer_api_active"),
-                timeout=2,
-            )
+    if compatibility.get("bluez_version"):
+        controller["bluez_version"] = compatibility["bluez_version"]
+        controller["experimental"] = bool(
+            compatibility.get("experimental")
         )
-    except Exception:
-        log.debug("could not inspect the BlueZ stack", exc_info=True)
+    else:
+        try:
+            controller.update(
+                capabilities.bluez_stack(
+                    run_command=run_command,
+                    experimental=compatibility.get("bearer_api_active"),
+                    timeout=2,
+                )
+            )
+        except Exception:
+            log.debug("could not inspect the BlueZ stack", exc_info=True)
     controller.update(_adapter_dbus_fields(adapter))
     return controller
 
@@ -1068,11 +1083,6 @@ def _execute_pairing(
     if not compatibility["hardware_supported"]:
         raise PairingError(compatibility["issue"] or "Bluetooth controller is incompatible")
     notifications_supported = compatibility["notifications_supported"]
-    if not notifications_supported:
-        raise PairingError(
-            "BlueFerry requires a successful ANCS/LE connection before it can "
-            "save an iPhone for MAP"
-        )
     if notifications_supported and not compatibility["bearer_api_active"]:
         raise PairingError("Activate Bluetooth support before pairing or re-pairing the iPhone")
     # No LE advertisement during pairing: iOS would connect the unbonded
@@ -1172,8 +1182,9 @@ def _execute_pairing(
         trust_device(device.mac, device.adapter_path)
         quirks_report.mark(attempt, "trusted")
 
-        _prefer_bredr(device.device_path)
-        quirks_report.mark(attempt, "preferred_bearer_bredr")
+        if notifications_supported:
+            _prefer_bredr(device.device_path)
+            quirks_report.mark(attempt, "preferred_bearer_bredr")
         # The pairing transaction already established the Classic ACL.  A
         # second generic Device1.Connect can wander into LE and hangs on the
         # observed iOS 18 path, so only require that existing ACL to settle.
@@ -1183,12 +1194,18 @@ def _execute_pairing(
         # surfaced the MAP/PBAP permission toggles.  It is a pairing signal,
         # not a prerequisite connection: the daemon below attempts MAP/PBAP
         # before it is allowed to connect the LE bearer.
-        log.debug("registering ANCS solicitation advertisement on %s", adapter)
-        quirks_report.mark(attempt, "advert_register_sent")
-        if not bluez_setup.register_advert(adapter, settle_for_pairing=True):
-            raise PairingError("The ANCS advertisement did not activate")
-        advert_registered = True
-        quirks_report.mark(attempt, "advert_ready")
+        if notifications_supported:
+            log.debug("registering ANCS solicitation advertisement on %s", adapter)
+            quirks_report.mark(attempt, "advert_register_sent")
+            if not bluez_setup.register_advert(adapter, settle_for_pairing=True):
+                raise PairingError("The ANCS advertisement did not activate")
+            advert_registered = True
+            quirks_report.mark(attempt, "advert_ready")
+        else:
+            log.info(
+                "BlueZ lacks usable per-bearer controls; continuing with "
+                "MAP/PBAP without ANCS"
+            )
 
         # Start the long-lived owner while both the advert and temporary
         # pairing agent are still present.  Its first operation is a Classic
@@ -1200,8 +1217,12 @@ def _execute_pairing(
         quirks_report.mark(attempt, "daemon_restarted")
         map_ready, pbap_ready, ancs_ready = _wait_for_daemon_transports(
             attempt=attempt,
+            notifications_supported=notifications_supported,
         )
-        ancs = "connected" if ancs_ready else "daemon connecting"
+        if not notifications_supported:
+            ancs = "unsupported"
+        else:
+            ancs = "connected" if ancs_ready else "daemon connecting"
         log.info(
             "pairing-window result: MAP=%s PBAP=%s ANCS=%s",
             map_ready,
@@ -1214,9 +1235,9 @@ def _execute_pairing(
         # desktop agent as soon as Device1.Paired flips can let its post-pair
         # work race BlueFerry's Classic-to-LE handoff.
         try:
-            log.debug("removing ANCS solicitation advertisement from %s", adapter)
-            bluez_setup.unregister_advert(adapter)
             if advert_registered:
+                log.debug("removing ANCS solicitation advertisement from %s", adapter)
+                bluez_setup.unregister_advert(adapter)
                 quirks_report.mark(attempt, "advert_removed")
         finally:
             pairing_agents.close()

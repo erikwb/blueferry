@@ -4,6 +4,7 @@ pkgname=(
   blueferry-backend
   blueferry-gtk
   blueferry-qt
+  blueferry-tui
   blueferry-quickshell
 )
 pkgver=0.6.3
@@ -66,7 +67,7 @@ check() {
   bandit -r src/blueferry -q
   mypy src/blueferry
   BLUEFERRY_TEST_ROOT="$PWD" dbus-run-session \
-    --config-file="$PWD/tests/dbus-test.conf" -- sh -c '
+    --config-file="$PWD/tests/dbus-test.conf" -- sh -ec '
     cd "$BLUEFERRY_TEST_ROOT"
     export DBUS_SYSTEM_BUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS"
     export BLUEFERRY_TEST_DBUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS"
@@ -91,8 +92,9 @@ check() {
 
 package_blueferry-backend() {
   pkgdesc='iPhone Bluetooth bridge backend, daemon, and CLI'
+  install=blueferry-backend.install
   depends=(
-    'bluez>=5.72'
+    'bluez>=5.86'
     'bluez-obex'
     'bluez-utils'
     'libsecret'
@@ -102,17 +104,16 @@ package_blueferry-backend() {
     'python-cryptography>=42'
     'python-dbus'
     'python-gobject'
-    'python-textual>=8.0'
     'python-typer>=0.12'
   )
   cd "$pkgbase-$pkgver"
   install -d "$pkgdir/$_site"
   cp -a "$srcdir/$_stage/$_site/blueferry" "$pkgdir/$_site/"
   rm -rf -- "$pkgdir/$_site/blueferry/ui" "$pkgdir/$_site/blueferry/qt"
+  rm -f -- "$pkgdir/$_site/blueferry/tui.py" "$pkgdir/$_site/blueferry/tui.tcss"
+  rm -f -- "$pkgdir/$_site/blueferry/__pycache__/tui."*.pyc
   cp -a "$srcdir/$_stage/$_site/blueferry-$pkgver.dist-info" "$pkgdir/$_site/"
   install -Dm755 "$srcdir/$_stage/usr/bin/blueferry" "$pkgdir/usr/bin/blueferry"
-  install -Dm755 "$srcdir/$_stage/usr/bin/blueferry-tui" \
-    "$pkgdir/usr/bin/blueferry-tui"
 
   install -Dm644 systemd/blueferry.service \
     "$pkgdir/usr/lib/systemd/user/blueferry.service"
@@ -128,6 +129,8 @@ package_blueferry-backend() {
     > "$pkgdir/usr/share/blueferry/package-release"
   install -Dm644 packaging/arch/blueferry-bluetooth.conf \
     "$pkgdir/usr/lib/systemd/system/bluetooth.service.d/blueferry.conf"
+  install -Dm644 packaging/arch/70-blueferry-restart-bluetooth.hook \
+    "$pkgdir/usr/share/libalpm/hooks/70-blueferry-restart-bluetooth.hook"
   install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
   install -Dm644 ARCHITECTURE.md \
     "$pkgdir/usr/share/doc/$pkgname/ARCHITECTURE.md"
@@ -177,6 +180,24 @@ package_blueferry-qt() {
     "$pkgdir/usr/share/metainfo/io.weirdware.BlueFerry.Qt.metainfo.xml"
   install -Dm644 data/icons/io.weirdware.BlueFerry.Gtk.svg \
     "$pkgdir/usr/share/icons/hicolor/scalable/apps/io.weirdware.BlueFerry.Qt.svg"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
+
+package_blueferry-tui() {
+  pkgdesc='Textual terminal client for BlueFerry'
+  depends=(
+    "blueferry-backend=$pkgver-$pkgrel"
+    'python-textual>=8.0'
+  )
+
+  cd "$pkgbase-$pkgver"
+  install -d "$pkgdir/$_site/blueferry"
+  install -Dm644 "$srcdir/$_stage/$_site/blueferry/tui.py" \
+    "$pkgdir/$_site/blueferry/tui.py"
+  install -Dm644 "$srcdir/$_stage/$_site/blueferry/tui.tcss" \
+    "$pkgdir/$_site/blueferry/tui.tcss"
+  install -Dm755 "$srcdir/$_stage/usr/bin/blueferry-tui" \
+    "$pkgdir/usr/bin/blueferry-tui"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }
 

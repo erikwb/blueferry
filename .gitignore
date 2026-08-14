@@ -18,6 +18,15 @@ dist/
 /packaging/arch/.SRCINFO
 /packaging/arch/.source-sha256
 
+# Local Debian/RPM package artifacts
+/dist/deb/
+/dist/rpm/
+/packaging/deb/*.debhelper.log
+/packaging/deb/*.substvars
+/packaging/deb/files
+/packaging/deb/.debhelper/
+/packaging/rpm/rpmbuild/
+
 # Runtime data
 *.sqlite
 *.sqlite-journal
@@ -26,6 +35,9 @@ dist/
 *.log
 contacts_cache/
 event_log/
+
+# Local working notes (not for the repo)
+notes/
 
 # Editor / OS
 .vscode/

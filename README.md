@@ -64,14 +64,19 @@ Clone this repository and run:
 ```
 
 The build uses dependencies from the official Arch repositories—nothing from
-the AUR or PyPI—and produces four ordinary pacman packages:
-`blueferry-backend`, `blueferry-gtk`, `blueferry-qt`, and
+the AUR or PyPI—and produces five ordinary pacman packages:
+`blueferry-backend`, `blueferry-gtk`, `blueferry-qt`, `blueferry-tui`, and
 `blueferry-quickshell`. Running `./build.sh` without `-i` builds them without
 installing them. The finished package archives are written to
 `packaging/arch/`.
 
 See [packaging/arch/README.md](packaging/arch/README.md) if you want to build
 individual packages or understand exactly what pacman owns.
+
+Native package scaffolding is also available for Debian 13, Ubuntu 24.04 and 26.04,
+Linux Mint 22.3, Pop!_OS 24.04, PikaOS IV, and Fedora. See the
+[packaging support matrix](packaging/README.md) for the tested distributions,
+package split, and local build commands.
 
 ## Pair an iPhone
 
@@ -85,9 +90,12 @@ blueferry-quickshell  # Quickshell
 
 On first launch it opens the iPhone setup page.
 
-1. Let BlueFerry check the Bluetooth controller. If it offers to activate
-   Bluetooth support, approve the Polkit prompt. Bluetooth will restart once,
-   briefly disconnecting other devices.
+1. Let BlueFerry check the Bluetooth controller. Arch and Fedora packages
+   configure BlueZ's experimental bearer API and restart a running Bluetooth
+   service during installation. If that restart was suppressed, BlueFerry
+   offers to activate it through Polkit. Debian-family packages leave
+   Bluetooth unchanged and support MAP messages and PBAP contacts without
+   ANCS system notifications.
 2. Open your Bluetooth settings, click **Scan**, pick your phone, then hit
    **Pair**. When this computer shows up in **Other Devices**, tap it and
    approve the prompts. The confirmation code can take around 15 seconds to
@@ -116,9 +124,11 @@ Once pairing is complete, opening a client starts the backend automatically.
 It also reconnects after normal Bluetooth interruptions and restarts itself
 after package upgrades; routine use should not require `systemctl --user`.
 
-The Textual terminal client and its UI dependency are included in
-`blueferry-backend`. After pairing with a graphical client or
-`blueferry pair-setup`, start it with `blueferry-tui` (or `blueferry tui`). It
+On Arch, the Textual terminal client and its UI dependency are supplied by the
+separate `blueferry-tui` package. DEB and RPM builds include the client and a
+private Textual runtime in `blueferry-backend`. After pairing with a graphical
+client or `blueferry pair-setup`, start it with `blueferry-tui` (or
+`blueferry tui`). It
 provides searchable conversation previews, a message timeline, mouse support,
 a multiline composer, responsive narrow-terminal navigation, themes, and a
 command palette. Use the arrow keys or `j`/`k` to select a conversation,

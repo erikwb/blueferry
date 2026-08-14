@@ -1,0 +1,302 @@
+name: Native packages
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/packages.yml"
+      - "data/**"
+      - "packaging/**"
+      - "src/**"
+      - "systemd/**"
+      - "tests/**"
+      - "build.sh"
+      - "pyproject.toml"
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-arch:
+    name: Build Arch packages
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - name: Install package dependencies
+        run: >-
+          pacman -Syu --noconfirm
+          appstream bandit dbus desktop-file-utils git gtk4 kirigami
+          libadwaita libsecret mypy python-build python-coverage
+          python-cryptography python-dbus python-gobject python-hypothesis
+          python-installer python-pytest python-setuptools python-textual
+          python-typer python-wheel pyside6 qt6-declarative quickshell ruff
+      - uses: actions/checkout@v6
+      - name: Build split packages as an unprivileged user
+        run: |
+          useradd --create-home builder
+          chown -R builder:builder .
+          su builder -c './build.sh -- --noconfirm'
+      - name: Smoke-test the backend-only Arch install
+        run: |
+          backend=$(find packaging/arch -name 'blueferry-backend-*.pkg.tar.zst' -print -quit)
+          ! bsdtar -tf "$backend" | grep -E '/(tui\.py|tui\.tcss|__pycache__/tui\..*\.pyc)$'
+          pacman -U --noconfirm "$backend"
+          set +e
+          blueferry tui 2>tui.err
+          status=$?
+          set -e
+          test "$status" -eq 2
+          grep -F 'install the blueferry-tui package' tui.err
+      - name: Install the built artifacts
+        run: pacman -U --noconfirm packaging/arch/*.pkg.tar.zst
+      - name: Smoke test
+        run: |
+          if command -v systemd-analyze >/dev/null; then
+            systemd-analyze verify bluetooth.service
+          fi
+          grep -Fx 'ExecStart=/usr/lib/bluetooth/bluetoothd -E' \
+            /usr/lib/systemd/system/bluetooth.service.d/blueferry.conf
+          test -x /usr/lib/bluetooth/bluetoothd
+          /usr/lib/bluetooth/bluetoothd --help 2>&1 | grep -F experimental
+          grep -F 'restart bluetooth.service' \
+            /usr/share/libalpm/hooks/70-blueferry-restart-bluetooth.hook
+          blueferry version
+          python -c 'import blueferry; print(blueferry.__version__)'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages-arch
+          path: packaging/arch/*.pkg.tar.zst
+          if-no-files-found: error
+
+  test-cachyos:
+    name: Install Arch artifacts on CachyOS
+    needs: build-arch
+    runs-on: ubuntu-latest
+    container: cachyos/cachyos:latest
+    steps:
+      - name: Update the package database
+        run: pacman -Syu --noconfirm ca-certificates
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages-arch
+          path: packages
+      - name: Install and smoke-test the exact Arch artifacts
+        run: |
+          pacman -U --noconfirm packages/*.pkg.tar.zst
+          if command -v systemd-analyze >/dev/null; then
+            systemd-analyze verify bluetooth.service
+          fi
+          grep -Fx 'ExecStart=/usr/lib/bluetooth/bluetoothd -E' \
+            /usr/lib/systemd/system/bluetooth.service.d/blueferry.conf
+          test -x /usr/lib/bluetooth/bluetoothd
+          /usr/lib/bluetooth/bluetoothd --help 2>&1 | grep -F experimental
+          blueferry version
+          python -c 'import blueferry; print(blueferry.__version__)'
+
+  build-deb:
+    name: Build Debian packages
+    runs-on: ubuntu-latest
+    container: debian:13
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - name: Install package tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates devscripts equivs git
+      - uses: actions/checkout@v6
+      - name: Install declared build dependencies
+        run: >-
+          mk-build-deps --install --remove
+          --tool 'apt-get -y --no-install-recommends'
+          packaging/deb/control
+      - name: Build packages and run recipe checks
+        run: ./packaging/build-deb.sh
+      - name: Install the built artifacts
+        run: apt-get install -y ./dist/deb/*.deb
+      - name: Smoke test
+        run: |
+          test ! -e /usr/lib/systemd/system/bluetooth.service.d/blueferry.conf
+          ! dpkg-query -L blueferry-backend | grep -F '/bluetooth.service.d/'
+          blueferry version
+          python3 -c 'import blueferry; print(blueferry.__version__)'
+          python3 -c 'import gi; gi.require_version("Secret", "1"); from gi.repository import Secret'
+          PYTHONPATH=/usr/lib/blueferry/vendor python3 -c 'import textual; assert textual.__version__ == "8.2.8"'
+          smoke_tui() {
+            "$@" </dev/null 2>tui.err && status=0 || status=$?
+            test "$status" -eq 2
+            grep -Fx 'blueferry-tui requires an interactive terminal' tui.err
+          }
+          smoke_tui blueferry-tui
+          smoke_tui blueferry tui
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages-deb
+          path: |
+            dist/deb/*.deb
+            dist/deb/*.buildinfo
+            dist/deb/*.changes
+          if-no-files-found: error
+
+  test-deb:
+    name: Install Debian artifacts on ${{ matrix.name }}
+    needs: build-deb
+    runs-on: ubuntu-latest
+    container: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Debian 13
+            image: debian:13
+            packages: ./packages/*.deb
+          - name: Ubuntu 24.04
+            image: ubuntu:24.04
+            packages: ./packages/blueferry-backend_*.deb ./packages/blueferry-gtk_*.deb
+          - name: Ubuntu 26.04
+            image: ubuntu:26.04
+            packages: ./packages/*.deb
+          - name: PikaOS IV
+            image: ghcr.io/pikaos-linux/pikaos-builder:nestv3
+            packages: ./packages/*.deb
+          - name: Linux Mint 22.3
+            image: linuxmintd/mint22.3-amd64:latest
+            packages: ./packages/blueferry-backend_*.deb ./packages/blueferry-gtk_*.deb
+          - name: Pop!_OS 24.04
+            image: ubuntu:24.04
+            packages: ./packages/blueferry-backend_*.deb ./packages/blueferry-gtk_*.deb
+            pop_repository: true
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - name: Add the Pop!_OS 24.04 package repository
+        if: matrix.pop_repository == true
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl gpg
+          curl -fsSL 'https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x63C46DF0140D738961429F4E204DD8AEC33A7AFF' \
+            | gpg --dearmor -o /usr/share/keyrings/pop-os-archive-keyring.gpg
+          echo 'deb [signed-by=/usr/share/keyrings/pop-os-archive-keyring.gpg] http://apt.pop-os.org/release noble main' \
+            > /etc/apt/sources.list.d/pop-os-release.list
+      - name: Update package metadata
+        run: apt-get update
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages-deb
+          path: packages
+      - name: Install and smoke-test the exact Debian artifacts
+        run: |
+          apt-get install -y ${{ matrix.packages }}
+          test ! -e /usr/lib/systemd/system/bluetooth.service.d/blueferry.conf
+          ! dpkg-query -L blueferry-backend | grep -F '/bluetooth.service.d/'
+          dpkg --compare-versions "$(dpkg-query -W -f='${Version}' bluez)" ge 5.72
+          test -x /usr/libexec/bluetooth/bluetoothd
+          blueferry version
+          python3 -c 'import blueferry; print(blueferry.__version__)'
+          python3 -c 'import gi; gi.require_version("Secret", "1"); from gi.repository import Secret'
+          PYTHONPATH=/usr/lib/blueferry/vendor python3 -c 'import textual; assert textual.__version__ == "8.2.8"'
+          smoke_tui() {
+            "$@" </dev/null 2>tui.err && status=0 || status=$?
+            test "$status" -eq 2
+            grep -Fx 'blueferry-tui requires an interactive terminal' tui.err
+          }
+          smoke_tui blueferry-tui
+          smoke_tui blueferry tui
+
+  build-rpm:
+    name: Build Fedora RPMs
+    runs-on: ubuntu-latest
+    container: fedora:43
+    steps:
+      - name: Install package tools
+        run: dnf install -y dnf-plugins-core git rpm-build
+      - uses: actions/checkout@v6
+      - name: Install declared build dependencies
+        run: dnf builddep -y packaging/rpm/blueferry.spec
+      - name: Build packages and run recipe checks
+        run: ./packaging/build-rpm.sh
+      - name: Install the built artifacts
+        run: dnf install -y dist/rpm/*.noarch.rpm
+      - name: Smoke test
+        run: |
+          blueferry version
+          python3 -c 'import blueferry; print(blueferry.__version__)'
+          python3 -c 'import gi; gi.require_version("Secret", "1"); from gi.repository import Secret'
+          PYTHONPATH=/usr/lib/blueferry/vendor python3 -c 'import textual; assert textual.__version__ == "8.2.8"'
+          smoke_tui() {
+            "$@" </dev/null 2>tui.err && status=0 || status=$?
+            test "$status" -eq 2
+            grep -Fx 'blueferry-tui requires an interactive terminal' tui.err
+          }
+          smoke_tui blueferry-tui
+          smoke_tui blueferry tui
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages-rpm
+          path: dist/rpm/*.rpm
+          if-no-files-found: error
+
+  test-rpm:
+    name: Install Fedora 43 artifacts on ${{ matrix.name }}
+    needs: build-rpm
+    runs-on: ubuntu-latest
+    container: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Fedora 43
+            image: fedora:43
+          - name: Fedora 44
+            image: fedora:44
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages-rpm
+          path: packages
+      - name: Install and smoke-test the exact Fedora artifacts
+        run: |
+          dnf install -y packages/*.noarch.rpm
+          if command -v systemd-analyze >/dev/null; then
+            systemd-analyze verify bluetooth.service
+          fi
+          grep -Fx 'ExecStart=/usr/libexec/bluetooth/bluetoothd -E' \
+            /usr/lib/systemd/system/bluetooth.service.d/blueferry.conf
+          test -x /usr/libexec/bluetooth/bluetoothd
+          /usr/libexec/bluetooth/bluetoothd --help 2>&1 | grep -F experimental
+          blueferry version
+          python3 -c 'import blueferry; print(blueferry.__version__)'
+          python3 -c 'import gi; gi.require_version("Secret", "1"); from gi.repository import Secret'
+          PYTHONPATH=/usr/lib/blueferry/vendor python3 -c 'import textual; assert textual.__version__ == "8.2.8"'
+          smoke_tui() {
+            "$@" </dev/null 2>tui.err && status=0 || status=$?
+            test "$status" -eq 2
+            grep -Fx 'blueferry-tui requires an interactive terminal' tui.err
+          }
+          smoke_tui blueferry-tui
+          smoke_tui blueferry tui
+
+  release:
+    name: Attach packages to tagged release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test-cachyos, test-deb, test-rpm]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: packages-*
+          path: release
+          merge-multiple: true
+      - name: Create or update the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view "$GITHUB_REF_NAME"; then
+            gh release create "$GITHUB_REF_NAME" --generate-notes --verify-tag
+          fi
+          gh release upload "$GITHUB_REF_NAME" release/* --clobber

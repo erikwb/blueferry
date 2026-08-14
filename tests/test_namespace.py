@@ -29,19 +29,25 @@ def test_graphical_commands_follow_client_package_names() -> None:
     assert "blueferry-ui" not in project + pkgbuild + desktop
 
 
-def test_tui_entry_point_is_shipped_by_backend_package() -> None:
+def test_tui_entry_point_is_shipped_by_separate_arch_package() -> None:
     project = (ROOT / "pyproject.toml").read_text()
     pkgbuild = (ROOT / "packaging" / "arch" / "PKGBUILD").read_text()
     backend = pkgbuild.split("package_blueferry-backend()", 1)[1].split(
         "package_blueferry-gtk()", 1
     )[0]
+    tui = pkgbuild.split("package_blueferry-tui()", 1)[1].split(
+        "package_blueferry-quickshell()", 1
+    )[0]
 
-    assert 'blueferry-tui = "blueferry.tui:main"' in project
+    assert 'blueferry-tui = "blueferry.tui_launcher:main"' in project
     assert '"textual>=8.0"' in project
     assert '"blueferry" = ["tui.tcss"]' in project
-    assert "'python-textual>=8.0'" in backend
-    assert '$_stage/usr/bin/blueferry-tui' in backend
-    assert '$pkgdir/usr/bin/blueferry-tui' in backend
+    assert "'python-textual>=8.0'" not in backend
+    assert "blueferry/tui.py" in backend
+    assert "blueferry/tui.tcss" in backend
+    assert "'python-textual>=8.0'" in tui
+    assert '$_stage/usr/bin/blueferry-tui' in tui
+    assert '$pkgdir/usr/bin/blueferry-tui' in tui
 
 
 def test_dbus_activation_and_systemd_publish_the_runtime_bus_name() -> None:

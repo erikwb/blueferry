@@ -1,10 +1,22 @@
 from __future__ import annotations
 
-from blueferry.bluetooth_capabilities import bluez_stack, controller_hardware
+from blueferry.bluetooth_capabilities import (
+    bluez_bearer_api_supported,
+    bluez_stack,
+    controller_hardware,
+)
 
 
 def _btmgmt(stdout: str):
     return type("Result", (), {"returncode": 0, "stdout": stdout, "stderr": ""})()
+
+
+def test_bluez_bearer_api_requires_5_86_or_newer() -> None:
+    assert bluez_bearer_api_supported("5.85") is False
+    assert bluez_bearer_api_supported("") is False
+    assert bluez_bearer_api_supported("unknown") is False
+    assert bluez_bearer_api_supported("5.86") is True
+    assert bluez_bearer_api_supported("5.87") is True
 
 
 def test_controller_hardware_describes_a_realtek_usb_stick(tmp_path) -> None:
@@ -71,18 +83,25 @@ def test_controller_hardware_describes_an_intel_pci_card(tmp_path) -> None:
     assert "11:22:33:44:55:66" not in str(identity)
 
 
-def test_bluez_stack_reports_version_and_experimental_flag() -> None:
+def test_bluez_stack_reports_version_and_experimental_flag(tmp_path) -> None:
     commands = []
+    daemon = tmp_path / "812"
+    daemon.mkdir()
+    daemon.joinpath("cmdline").write_bytes(
+        b"/usr/lib/bluetooth/bluetoothd\0-E\0",
+    )
 
     def run_command(argv, **_kwargs):
         commands.append(list(argv))
         if argv[0] == "bluetoothctl":
             return _btmgmt("bluetoothctl: 5.87\n")
+        if "--property=MainPID" in argv:
+            return _btmgmt("812\n")
         return _btmgmt(
             "{ path=/usr/lib/bluetooth/bluetoothd ; argv[]=/usr/lib/bluetooth/bluetoothd -E ; }\n"
         )
 
-    stack = bluez_stack(run_command=run_command)
+    stack = bluez_stack(run_command=run_command, proc_root=tmp_path)
     assert stack["bluez_version"] == "5.87"
     assert stack["experimental"] is True
     assert commands[0] == ["bluetoothctl", "--version"]

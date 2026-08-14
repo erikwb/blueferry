@@ -1,0 +1,11 @@
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Operation = Remove
+Type = Path
+Target = usr/lib/systemd/system/bluetooth.service.d/blueferry.conf
+
+[Action]
+Description = Restarting running Bluetooth service for BlueFerry...
+When = PostTransaction
+Exec = /usr/share/libalpm/scripts/systemd-hook restart bluetooth.service

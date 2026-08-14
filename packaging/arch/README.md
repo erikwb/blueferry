@@ -1,13 +1,20 @@
 # Arch packages
 
-BlueFerry builds as four split pacman packages: the backend plus one client
-each for GNOME, KDE, and Quickshell. All build and runtime dependencies come
-from the official Arch repositories.
+BlueFerry builds as five split pacman packages: the backend plus clients for
+GNOME, KDE, the terminal, and Quickshell. All build and runtime dependencies
+come from the official Arch repositories. The same packages are intended for
+Arch Linux and CachyOS and are built in both environments in package CI.
+The backend requires BlueZ 5.86 or newer because that is the first upstream
+release with working per-bearer connection methods.
 
 The `blueferry-bluetooth.conf` systemd drop-in is Arch-specific. In particular,
 its `/usr/lib/bluetooth/bluetoothd` executable path must not be copied to
 Debian or Ubuntu, where the usual path is `/usr/libexec/bluetooth/bluetoothd`.
 Using the wrong path prevents the entire Bluetooth service from starting.
+The backend also installs a pacman hook. Arch's standard systemd hook reloads
+the manager first; BlueFerry's later hook then restarts `bluetooth.service` if
+it is running. This applies the drop-in on install and upgrade and restores the
+vendor unit on removal without starting a stopped service.
 
 From the repository root, build and install everything with:
 
@@ -25,17 +32,19 @@ makepkg --cleanbuild --force -si
 ```
 
 `build.sh` snapshots the current working tree, including uncommitted files,
-and writes the checksum used by the PKGBUILD. It does not pair a phone, change
-the live Bluetooth configuration, or start a service. Package checks run the
-linters and device-isolated test suite before building. Finished package
-archives are left in `packaging/arch/`.
+and writes the checksum used by the PKGBUILD. Building alone does not pair a
+phone or change the live Bluetooth configuration. Installing the backend
+restarts Bluetooth if it is already running, briefly disconnecting active
+devices. Package checks run the linters and device-isolated test suite before
+building. Finished package archives are left in `packaging/arch/`.
 
 The resulting packages are:
 
-- `blueferry-backend` for the daemon, CLI, Textual terminal client
-  (`blueferry-tui`), D-Bus service, BlueZ setup, and pairing support;
+- `blueferry-backend` for the daemon, CLI, D-Bus service, BlueZ setup, and
+  pairing support;
 - `blueferry-gtk` for the GTK/libadwaita client;
 - `blueferry-qt` for the Qt/Kirigami client;
+- `blueferry-tui` for the Textual terminal client;
 - `blueferry-quickshell` for the standalone Quickshell client.
 
 Install only the clients you use. Each graphical client can perform first-run
@@ -48,10 +57,10 @@ The optional Omarchy bar widget is distributed separately from
 
 ## Removing BlueFerry
 
-For example, to remove all four packages:
+For example, to remove all five packages:
 
 ```bash
-sudo pacman -Rns blueferry-backend blueferry-gtk blueferry-qt blueferry-quickshell
+sudo pacman -Rns blueferry-backend blueferry-gtk blueferry-qt blueferry-tui blueferry-quickshell
 ```
 
 Pacman removes the daemon, clients, units, BlueZ drop-in, and application

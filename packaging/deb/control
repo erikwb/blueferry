@@ -1,0 +1,81 @@
+Source: blueferry
+Section: utils
+Priority: optional
+Maintainer: BlueFerry Contributors <noreply@weirdware.io>
+Build-Depends:
+ debhelper-compat (= 13),
+ dh-sequence-python3,
+ pybuild-plugin-pyproject,
+ python3-all,
+ python3-cryptography (>= 41),
+ python3-dbus,
+ python3-gi,
+ python3-hypothesis,
+ python3-pytest,
+ python3-setuptools,
+ python3-typer (>= 0.9),
+ python3-wheel,
+ dbus-daemon,
+ gir1.2-adw-1,
+ gir1.2-gtk-4.0,
+Standards-Version: 4.7.2
+Rules-Requires-Root: no
+Homepage: https://github.com/erikwb/blueferry
+Vcs-Browser: https://github.com/erikwb/blueferry
+Vcs-Git: https://github.com/erikwb/blueferry.git
+
+Package: blueferry-backend
+Architecture: all
+Depends:
+ ${misc:Depends},
+ ${python3:Depends},
+ bluez (>= 5.72),
+ bluez-obexd,
+ dbus,
+ gir1.2-secret-1,
+ libsecret-1-0,
+ pkexec,
+ python3-cryptography (>= 41),
+ python3-dbus,
+ python3-gi,
+ python3-typer (>= 0.9),
+Recommends: gnome-keyring | keepassxc
+Description: iPhone Bluetooth bridge backend, daemon, and CLI
+ BlueFerry connects an iPhone to a Linux desktop over Bluetooth for messages
+ and contacts. This package contains the backend service,
+ command-line and terminal clients, a private Textual runtime, D-Bus
+ activation, and command-line tools.
+
+Package: blueferry-gtk
+Architecture: all
+Depends:
+ ${misc:Depends},
+ ${python3:Depends},
+ blueferry-backend (= ${binary:Version}),
+ gir1.2-adw-1,
+ gir1.2-gtk-4.0,
+ python3-gi,
+Description: GTK4/libadwaita client for BlueFerry
+ This package contains BlueFerry's GTK4 graphical client for GNOME and other
+ GTK-based desktops.
+
+Package: blueferry-qt
+Architecture: all
+Depends:
+ ${misc:Depends},
+ ${python3:Depends},
+ blueferry-backend (= ${binary:Version}),
+ python3-pyside6.qtcore,
+ python3-pyside6.qtgui,
+ python3-pyside6.qtqml,
+ python3-pyside6.qtquick,
+ python3-pyside6.qtquickcontrols2,
+ python3-pyside6.qtwidgets,
+ qml6-module-org-kde-kirigami,
+ qml6-module-qtqml,
+ qml6-module-qtquick,
+ qml6-module-qtquick-controls,
+ qml6-module-qtquick-layouts,
+Description: Qt/Kirigami client for BlueFerry
+ This package contains BlueFerry's Qt 6 and Kirigami graphical client for KDE
+ Plasma and other Qt-based desktops.

@@ -1,0 +1,17 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: BlueFerry
+Source: https://github.com/erikwb/blueferry
+
+Files: *
+Copyright: 2026 BlueFerry contributors
+License: GPL-2.0-only
+
+Files: packaging/vendor/textual/wheels/*
+Copyright: Textual and dependency contributors
+License: MIT and BSD-2-Clause and PSF-2.0
+Comment: Each wheel retains its authoritative upstream license file and
+ package metadata under its *.dist-info directory.
+
+License: GPL-2.0-only
+ On Debian systems, the complete text of the GNU General Public License,
+ version 2, is available in /usr/share/common-licenses/GPL-2.
