@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=io.weirdware.BlueFerry
+Exec=/usr/bin/blueferry run
+SystemdService=blueferry.service

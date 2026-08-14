@@ -1,4 +1,4 @@
-"""Modern terminal client shipped with the backend package."""
+"""Modern terminal client for BlueFerry."""
 from __future__ import annotations
 
 import sys

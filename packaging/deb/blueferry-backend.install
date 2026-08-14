@@ -1,0 +1,14 @@
+usr/bin/blueferry
+usr/bin/blueferry-tui
+usr/lib/python3*/dist-packages/blueferry/*.py
+usr/lib/python3*/dist-packages/blueferry/tui.tcss
+usr/lib/python3*/dist-packages/blueferry/ancs
+usr/lib/python3*/dist-packages/blueferry/obex
+usr/lib/python3*/dist-packages/blueferry/sinks
+usr/lib/python3*/dist-packages/blueferry-*.dist-info
+usr/lib/blueferry/vendor
+usr/lib/systemd/user/blueferry.service
+usr/lib/systemd/user/default.target.wants/blueferry.service
+usr/share/blueferry/package-release
+usr/share/dbus-1/interfaces/io.weirdware.BlueFerry.xml
+usr/share/dbus-1/services/io.weirdware.BlueFerry.service

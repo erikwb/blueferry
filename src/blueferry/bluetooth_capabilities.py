@@ -301,20 +301,36 @@ def _hardware_summary(identity: dict[str, object]) -> str:
     return chip
 
 
-def bluez_support_status(*, run_command: RunCommand) -> dict:
-    """Report whether the packaged experimental bearer API is active."""
+def bluez_support_status(
+    *,
+    run_command: RunCommand,
+    proc_root: Path = Path("/proc"),
+) -> dict:
+    """Report whether the running daemon has the experimental API enabled."""
     try:
-        result = run_command(
+        configured = run_command(
             ["/usr/bin/systemctl", "show", "bluetooth.service", "--property=ExecStart", "--value"],
+            timeout=15,
+            check=False,
+        )
+        pid_result = run_command(
+            ["/usr/bin/systemctl", "show", "bluetooth.service", "--property=MainPID", "--value"],
             timeout=15,
             check=False,
         )
     except CommandError as error:
         raise PairingError(f"Could not inspect bluetooth.service: {error}") from error
-    command = result.stdout.strip()
-    active = result.returncode == 0 and (
-        " --experimental" in f" {command} " or " -E" in f" {command} "
-    )
+    command = configured.stdout.strip()
+    active = False
+    pid_text = pid_result.stdout.strip()
+    if configured.returncode == 0 and pid_result.returncode == 0 and pid_text.isdigit():
+        pid = int(pid_text)
+        if pid > 0:
+            try:
+                argv = (proc_root / str(pid) / "cmdline").read_bytes().split(b"\0")
+            except OSError:
+                argv = []
+            active = b"-E" in argv or b"--experimental" in argv
     drop_in = Path("/usr/lib/systemd/system/bluetooth.service.d/blueferry.conf")
     return {
         "active": active,
@@ -329,6 +345,16 @@ _BLUEZ_DAEMONS = (
     "/usr/sbin/bluetoothd",
 )
 _BLUEZ_VERSION = re.compile(r"(\d+\.\d+(?:\.\d+)?)")
+_MIN_BLUEZ_BEARER_API = (5, 86)
+
+
+def bluez_bearer_api_supported(version: object) -> bool:
+    """Return whether BlueZ has working per-bearer Connect/Disconnect methods."""
+    match = _BLUEZ_VERSION.fullmatch(str(version).strip())
+    if match is None:
+        return False
+    parts = tuple(int(part) for part in match.group(1).split("."))
+    return (parts + (0, 0))[:2] >= _MIN_BLUEZ_BEARER_API
 
 
 def bluez_stack(
@@ -336,6 +362,7 @@ def bluez_stack(
     run_command: RunCommand,
     experimental: bool | None = None,
     timeout: float = 10,
+    proc_root: Path = Path("/proc"),
 ) -> dict[str, object]:
     """Return the running BlueZ version and whether ``-E`` is enabled."""
     version = ""
@@ -346,14 +373,16 @@ def bluez_stack(
             result = run_command(argv, timeout=timeout, check=False)
         except CommandError:
             continue
-        text = f"{result.stdout} {result.stderr}"
+        text = f"{getattr(result, 'stdout', '')} {getattr(result, 'stderr', '')}"
         match = _BLUEZ_VERSION.search(text)
         if match:
             version = match.group(1)
             break
     if experimental is None:
         try:
-            experimental = bool(bluez_support_status(run_command=run_command)["active"])
+            experimental = bool(
+                bluez_support_status(run_command=run_command, proc_root=proc_root)["active"]
+            )
         except PairingError:
             experimental = False
     stack: dict[str, object] = {"experimental": bool(experimental)}
@@ -404,13 +433,16 @@ def _profile_fields(
     current: set[str],
     command_error: str,
     bearer_active: bool,
+    bearer_supported: bool,
 ) -> dict[str, object]:
     classic = bool({"br/edr", "bredr"} & supported)
     low_energy = "le" in supported
     advertising = "advertising" in supported
     secure_pairing = bool({"ssp", "secure-conn"} & supported)
     messages_supported = available and classic and secure_pairing
-    notifications_supported = available and low_energy and advertising
+    notifications_supported = (
+        available and low_energy and advertising and bearer_supported
+    )
     missing = [
         label for present, label in (
             (classic, "BR/EDR"), (secure_pairing, "secure pairing")
@@ -437,6 +469,7 @@ def _profile_fields(
         "hardware_supported": messages_supported,
         "messages_supported": messages_supported,
         "notifications_supported": notifications_supported,
+        "bearer_api_supported": bearer_supported,
         "bearer_api_active": bearer_active,
         "pairing_ready": messages_supported and (
             bearer_active or not notifications_supported
@@ -479,9 +512,16 @@ def compatibility(
         names = [requested]
     names.sort(key=_hci_sort_key)
     try:
-        bearer_active = bool(support_status()["active"])
+        support = support_status()
     except PairingError:
-        bearer_active = False
+        support = {}
+    bearer_active = bool(support.get("active"))
+    bearer_configurable = bearer_active or bool(support.get("packaged_drop_in"))
+    stack = bluez_stack(run_command=run_command, experimental=bearer_active)
+    bearer_supported = (
+        bluez_bearer_api_supported(stack.get("bluez_version"))
+        and bearer_configurable
+    )
     options: list[dict[str, object]] = []
     inspected: dict[str, tuple] = {}
     for name in names:
@@ -496,7 +536,13 @@ def compatibility(
             apply_chipset(hardware)
             hardware["summary"] = _hardware_summary(hardware)
         fields = _profile_fields(
-            name, available, supported, current, error, bearer_active,
+            name,
+            available,
+            supported,
+            current,
+            error,
+            bearer_active and bearer_supported,
+            bearer_supported,
         )
         options.append(
             {
@@ -528,6 +574,7 @@ def compatibility(
     result: dict[str, object] = {
         "adapter": chosen,
         **fields,
+        **stack,
         "adapters": options,
     }
     if "manufacturer_id" in identity:

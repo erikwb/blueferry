@@ -11,7 +11,7 @@ usage() {
     cat <<'EOF'
 Usage:
   ./build.sh                  Prepare the snapshot and run makepkg -C -f -s
-  ./build.sh -si              Build/install backend + GTK + Qt + Quickshell
+  ./build.sh -si              Build/install all five split packages
   ./build.sh --prepare-only   Only refresh packaging/arch/blueferry-*.tar.gz
   ./build.sh -- <args...>     Pass arbitrary arguments to makepkg
 
@@ -65,6 +65,10 @@ mapfile -d '' candidates < <(
 files=()
 for file in "${candidates[@]}"; do
     # Deleted tracked files remain in the index until committed.
+    # DEB/RPM-only private wheels must not enter the Arch source archive.
+    if [[ "$file" == packaging/vendor/textual/* ]]; then
+        continue
+    fi
     if [[ -e "$ROOT/$file" || -L "$ROOT/$file" ]]; then
         files+=("$file")
     fi

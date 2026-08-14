@@ -528,7 +528,7 @@ app.command("sms-send")(sms_send)
 @app.command()
 def tui() -> None:
     """Open the interactive terminal messaging client."""
-    from blueferry.tui import main as tui_main
+    from blueferry.tui_launcher import main as tui_main
 
     exit_code = tui_main()
     if exit_code:

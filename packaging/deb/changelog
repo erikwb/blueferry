@@ -1,0 +1,6 @@
+blueferry (0.6.3-1) unstable; urgency=medium
+
+  * Initial native package scaffold.
+  * Support MAP and PBAP without changing the system Bluetooth service.
+
+ -- BlueFerry Contributors <noreply@weirdware.io>  Thu, 13 Aug 2026 00:00:00 -0400
