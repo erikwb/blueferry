@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 from blueferry import pairing_cli
 from blueferry.bluetooth_devices import PairedDevice
-from blueferry.pairing_cli import _print_iphone_steps
+from blueferry.pairing_cli import _print_ancs_repair_hint, _print_iphone_steps
 from blueferry.setup_client import DISCOVERY_SECONDS
 from blueferry.setup_verification import CONTACTS
 
@@ -17,6 +17,16 @@ def test_verified_cli_setup_omits_the_iphone_section(capsys) -> None:
     )
 
     assert capsys.readouterr().out == ""
+
+
+def test_cli_ancs_repair_hint_restarts_bluez_before_repairing(capsys) -> None:
+    _print_ancs_repair_hint()
+
+    output = capsys.readouterr().out
+    assert "If ANCS remains unavailable after setup" in output
+    assert "sudo systemctl restart bluetooth.service" in output
+    assert "forget this computer on the iPhone and pair again" in output
+    assert "briefly disconnects all Bluetooth devices" in output
 
 
 def test_cli_setup_always_prints_required_bluetooth_toggles(capsys) -> None:
@@ -275,3 +285,4 @@ def test_cli_wizard_points_at_pairing_issue_when_ancs_stays_down(
     output = capsys.readouterr().out
     assert "blueferry pairing-issue" in output
     assert "GitHub issue" not in output
+    assert "sudo systemctl restart bluetooth.service" in output

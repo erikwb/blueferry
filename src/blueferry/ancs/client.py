@@ -67,6 +67,11 @@ REQUEST_TIMEOUT_SECONDS = 15
 DBUS_CALL_TIMEOUT_SECONDS = 10
 SUBSCRIBE_RETRY_SECONDS = 2
 AUTHORIZATION_RETRY_SECONDS = 5
+MANAGER_RETRY_SECONDS = 2
+
+_BLUEZ_BUS_NAME = "org.bluez"
+_DBUS_BUS_NAME = "org.freedesktop.DBus"
+_DBUS_INTERFACE = "org.freedesktop.DBus"
 
 
 @dataclass(slots=True)
@@ -136,7 +141,13 @@ class AncsClient:
         # subscriptions are shorter-lived and are rebuilt as one unit whenever
         # BlueZ removes any part of the ANCS service.
         self._manager_signal_matches: list = []
+        self._owner_signal_match = None
         self._characteristic_signal_matches: list = []
+        self._bluez_owner_generation = 0
+        self._bluez_owner_available = True
+        self._manager_bind_in_progress = False
+        self._manager_rebind_pending = False
+        self._manager_retry_id: int | None = None
         self._subscribe_retry_id: int | None = None
         self._authorization_retry_id: int | None = None
         self._started = False
@@ -147,8 +158,55 @@ class AncsClient:
         if self._started:
             return
         log.info("ANCS client starting; watching %s", self.device_path)
+        bus = get_system_bus()
+        owner_match = bus.add_signal_receiver(
+            self._on_bluez_owner_changed,
+            dbus_interface=_DBUS_INTERFACE,
+            signal_name="NameOwnerChanged",
+            bus_name=_DBUS_BUS_NAME,
+            arg0=_BLUEZ_BUS_NAME,
+        )
+        self._owner_signal_match = owner_match
+        self._bluez_owner_available = True
+        self._started = True
+        try:
+            self._bind_manager_and_rescan()
+        except Exception:
+            self._started = False
+            self._owner_signal_match = None
+            try:
+                owner_match.remove()
+            except Exception:
+                log.debug("could not remove partial BlueZ owner watch", exc_info=True)
+            raise
+
+    def _bind_manager_and_rescan(self) -> None:
+        """Reconnect ObjectManager signals and sweep the current object tree."""
+        if self._manager_bind_in_progress:
+            self._manager_rebind_pending = True
+            return
+        self._manager_bind_in_progress = True
+        try:
+            while self._started and self._bluez_owner_available:
+                self._manager_rebind_pending = False
+                generation = self._bluez_owner_generation
+                try:
+                    self._bind_manager_once(generation)
+                except Exception:
+                    if generation == self._bluez_owner_generation:
+                        raise
+                if (
+                    not self._manager_rebind_pending
+                    and generation == self._bluez_owner_generation
+                ):
+                    return
+        finally:
+            self._manager_bind_in_progress = False
+
+    def _bind_manager_once(self, generation: int) -> None:
+        self._remove_manager_watches()
         om = dbus.Interface(
-            get_system_bus().get_object("org.bluez", "/"),
+            get_system_bus().get_object(_BLUEZ_BUS_NAME, "/"),
             "org.freedesktop.DBus.ObjectManager",
         )
         matches = []
@@ -169,10 +227,104 @@ class AncsClient:
                 except Exception:
                     log.debug("could not remove partial ANCS manager watch", exc_info=True)
             raise
+        if (
+            generation != self._bluez_owner_generation
+            or not self._bluez_owner_available
+        ):
+            for match in matches:
+                try:
+                    match.remove()
+                except Exception:
+                    log.debug("could not remove stale ANCS manager watch", exc_info=True)
+            return
         self._manager_signal_matches = matches
-        self._started = True
         for path, ifaces in managed.items():
             self._on_iface_added(path, ifaces)
+        if (
+            generation != self._bluez_owner_generation
+            or not self._bluez_owner_available
+        ):
+            self._remove_manager_watches()
+            self._cancel_subscribe_retry()
+            self._clear_characteristic_subscription(stop_notify=False)
+            self._ns_path = self._ds_path = self._cp_path = None
+
+    def _remove_manager_watches(self) -> None:
+        for match in self._manager_signal_matches:
+            try:
+                match.remove()
+            except Exception:
+                log.debug("could not remove ANCS manager watch", exc_info=True)
+        self._manager_signal_matches = []
+
+    def _on_bluez_owner_changed(self, _name, old_owner, new_owner) -> None:
+        """Rebuild discovery when bluetoothd replaces its D-Bus owner.
+
+        BlueZ can recreate cached GATT objects before dbus-python retargets an
+        existing well-known-name signal match.  Connecting fresh manager
+        watches and then sweeping GetManagedObjects closes both sides of that
+        race.
+        """
+        if not self._started:
+            return
+        self._bluez_owner_generation += 1
+        self._bluez_owner_available = bool(new_owner)
+        if self._manager_bind_in_progress:
+            self._manager_rebind_pending = True
+        if old_owner:
+            was_connected = self.connected
+            log.info("BlueZ owner disappeared; resetting ANCS discovery")
+            self._cancel_manager_retry()
+            self._remove_manager_watches()
+            self._cancel_subscribe_retry()
+            self._clear_characteristic_subscription(stop_notify=False)
+            self._ns_path = self._ds_path = self._cp_path = None
+            if was_connected and self.on_status is not None:
+                self.on_status()
+        if not new_owner:
+            return
+        log.info("BlueZ owner available; rebuilding ANCS discovery")
+        if self._manager_bind_in_progress:
+            log.debug("deferring ANCS discovery rebuild until the current sweep finishes")
+            return
+        try:
+            self._bind_manager_and_rescan()
+        except Exception as error:
+            log.warning(
+                "could not rebuild ANCS discovery after BlueZ restart: %s; "
+                "retrying in %ds",
+                error,
+                MANAGER_RETRY_SECONDS,
+            )
+            self._schedule_manager_retry()
+
+    def _schedule_manager_retry(self) -> None:
+        if not self._started or self._manager_retry_id is not None:
+            return
+        self._manager_retry_id = self._schedule(
+            MANAGER_RETRY_SECONDS,
+            self._retry_manager_bind,
+        )
+
+    def _retry_manager_bind(self) -> bool:
+        self._manager_retry_id = None
+        if not self._started:
+            return False
+        try:
+            self._bind_manager_and_rescan()
+        except Exception as error:
+            log.warning("ANCS discovery rebuild still unavailable: %s", error)
+            self._schedule_manager_retry()
+        return False
+
+    def _cancel_manager_retry(self) -> None:
+        if self._manager_retry_id is None:
+            return
+        try:
+            self._cancel(self._manager_retry_id)
+        except Exception:
+            log.debug("could not remove ANCS manager retry", exc_info=True)
+        self._manager_retry_id = None
 
     @property
     def subscribed(self) -> bool:
@@ -194,16 +346,20 @@ class AncsClient:
     def stop(self) -> None:
         log.info("ANCS client stopping")
         was_connected = self.connected
+        self._started = False
+        self._bluez_owner_available = False
+        self._manager_rebind_pending = False
+        self._cancel_manager_retry()
         self._cancel_subscribe_retry()
         self._cancel_authorization_retry()
         self._clear_characteristic_subscription()
-        for m in self._manager_signal_matches:
+        self._remove_manager_watches()
+        if self._owner_signal_match is not None:
             try:
-                m.remove()
+                self._owner_signal_match.remove()
             except Exception:
-                log.debug("could not remove ANCS manager watch", exc_info=True)
-        self._manager_signal_matches = []
-        self._started = False
+                log.debug("could not remove BlueZ owner watch", exc_info=True)
+            self._owner_signal_match = None
         self._ns_path = self._ds_path = self._cp_path = None
         if was_connected and self.on_status is not None:
             self.on_status()
@@ -245,7 +401,7 @@ class AncsClient:
                     self.on_status()
                 break
 
-    def _clear_characteristic_subscription(self) -> None:
+    def _clear_characteristic_subscription(self, *, stop_notify: bool = True) -> None:
         """Remove receivers and notification ownership before rediscovery."""
         self._cancel_authorization_retry()
         for match in self._characteristic_signal_matches:
@@ -254,7 +410,7 @@ class AncsClient:
             except Exception:
                 log.debug("could not remove ANCS characteristic watch", exc_info=True)
         self._characteristic_signal_matches = []
-        if self._notify_started:
+        if self._notify_started and stop_notify:
             for path in (self._ns_path, self._ds_path):
                 if path:
                     try:
@@ -273,6 +429,20 @@ class AncsClient:
             return
         if not (self._ns_path and self._ds_path and self._cp_path):
             return
+        generation = self._bluez_owner_generation
+        ns_path = self._ns_path
+        ds_path = self._ds_path
+
+        def current_attempt() -> bool:
+            return self._started and generation == self._bluez_owner_generation
+
+        def remove_attempt_matches(matches) -> None:
+            for match in matches:
+                try:
+                    match.remove()
+                except Exception:
+                    log.debug("could not remove stale ANCS signal watch", exc_info=True)
+
         # Install receivers before StartNotify so the first value cannot arrive
         # in the gap between notification activation and signal registration.
         matches = []
@@ -284,28 +454,38 @@ class AncsClient:
                 dbus_interface="org.freedesktop.DBus.Properties",
                 signal_name="PropertiesChanged",
                 bus_name="org.bluez",
-                path=self._ns_path,
+                path=ns_path,
             ))
             matches.append(bus.add_signal_receiver(
                 self._on_ds_changed,
                 dbus_interface="org.freedesktop.DBus.Properties",
                 signal_name="PropertiesChanged",
                 bus_name="org.bluez",
-                path=self._ds_path,
+                path=ds_path,
             ))
+            if not current_attempt():
+                remove_attempt_matches(matches)
+                return
             ns = dbus.Interface(
-                bus.get_object("org.bluez", self._ns_path),
+                bus.get_object("org.bluez", ns_path),
                 "org.bluez.GattCharacteristic1",
             )
             ds = dbus.Interface(
-                bus.get_object("org.bluez", self._ds_path),
+                bus.get_object("org.bluez", ds_path),
                 "org.bluez.GattCharacteristic1",
             )
             ns.StartNotify(timeout=DBUS_CALL_TIMEOUT_SECONDS)
             started.append(ns)
+            if not current_attempt():
+                remove_attempt_matches(matches)
+                return
             ds.StartNotify(timeout=DBUS_CALL_TIMEOUT_SECONDS)
             started.append(ds)
         except dbus.exceptions.DBusException as e:
+            if not current_attempt():
+                remove_attempt_matches(matches)
+                log.debug("discarded stale ANCS subscribe attempt after BlueZ changed owner")
+                return
             log.warning("ANCS StartNotify failed: %s", e.get_dbus_name())
             for characteristic in started:
                 try:
@@ -318,6 +498,9 @@ class AncsClient:
                 except Exception:
                     log.debug("could not roll back ANCS signal watch", exc_info=True)
             self._schedule_subscribe_retry()
+            return
+        if not current_attempt():
+            remove_attempt_matches(matches)
             return
         self._cancel_subscribe_retry()
         self._characteristic_signal_matches = matches
@@ -478,11 +661,21 @@ class AncsClient:
             return
         if not self._cp_path:
             return
+        generation = self._bluez_owner_generation
+        cp_path = self._cp_path
         request = self._request_queue.popleft()
         self._active_request = request
+
+        def current_attempt() -> bool:
+            return (
+                self._started
+                and generation == self._bluez_owner_generation
+                and self._active_request is request
+            )
+
         try:
             dbus.Interface(
-                get_system_bus().get_object("org.bluez", self._cp_path),
+                get_system_bus().get_object("org.bluez", cp_path),
                 "org.bluez.GattCharacteristic1",
             ).WriteValue(
                 [dbus.Byte(value) for value in request.packet],
@@ -490,12 +683,18 @@ class AncsClient:
                 timeout=DBUS_CALL_TIMEOUT_SECONDS,
             )
         except dbus.exceptions.DBusException as error:
+            if not current_attempt():
+                log.debug("discarded stale ANCS write failure after BlueZ changed owner")
+                return
             name = error.get_dbus_name() or type(error).__name__
             detail = error.get_dbus_message() or str(error)
             log.warning("ANCS CP WriteValue failed: %s: %s", name, detail)
             self._abandon_request(request)
             self._active_request = None
             self._pump_requests()
+            return
+        if not current_attempt():
+            log.debug("discarded stale ANCS write completion after BlueZ changed owner")
             return
         self._request_timeout_id = GLib.timeout_add_seconds(
             REQUEST_TIMEOUT_SECONDS, self._request_timed_out

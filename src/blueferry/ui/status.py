@@ -269,8 +269,25 @@ class IPhonePage(Gtk.Box):
         self._ancs_row = Adw.ActionRow(title=_("iPhone Notifications"))
         self._ancs_icon = Gtk.Image()
         self._ancs_row.add_suffix(self._ancs_icon)
+        self._ancs_recovery_label = Gtk.Label(
+            label=_(
+                "FYI: If ANCS remains unavailable, BlueZ may be retaining stale "
+                "Bluetooth state. Before re-pairing, run sudo systemctl restart "
+                "bluetooth.service, then forget this computer on the iPhone and "
+                "pair again. This briefly disconnects all Bluetooth devices."
+            ),
+            selectable=True,
+            wrap=True,
+            xalign=0,
+        )
+        self._ancs_recovery_label.set_margin_start(12)
+        self._ancs_recovery_label.set_margin_end(12)
+        self._ancs_recovery_label.set_margin_top(6)
+        self._ancs_recovery_label.set_margin_bottom(6)
+        self._ancs_recovery_label.set_visible(False)
         daemon_group.add(self._pbap_row)
         daemon_group.add(self._ancs_row)
+        daemon_group.add(self._ancs_recovery_label)
         page.add(daemon_group)
 
         notification_group = Adw.PreferencesGroup(
@@ -580,6 +597,9 @@ class IPhonePage(Gtk.Box):
             self._apply_compatibility(compatibility)
             self._set_pairing_busy(False)
             self._update_phone_controls()
+            # Configuration and daemon status load independently. Re-render
+            # status-dependent setup guidance after both sides are available.
+            self._apply_status(self._last_status)
             self._update_onboarding()
             self._refresh_issue_offer(configuration.pairing_issue_report)
             if scan_after or not self._devices:
@@ -869,15 +889,31 @@ class IPhonePage(Gtk.Box):
             "emblem-ok-symbolic" if healthy else "dialog-warning-symbolic"
         )
 
-        for row, icon, key in (
-            (self._pbap_row, self._pbap_icon, "pbap"),
-            (self._ancs_row, self._ancs_icon, "ancs"),
-        ):
-            connected = bool(values.get(key))
-            row.set_subtitle(_("Connected") if connected else _("Unavailable"))
-            icon.set_from_icon_name(
-                "emblem-ok-symbolic" if connected else "dialog-warning-symbolic"
+        pbap_connected = bool(values.get("pbap"))
+        self._pbap_row.set_subtitle(_("Connected") if pbap_connected else _("Unavailable"))
+        self._pbap_icon.set_from_icon_name(
+            "emblem-ok-symbolic" if pbap_connected else "dialog-warning-symbolic"
+        )
+
+        ancs_connected = bool(values.get("ancs"))
+        ancs_expected = bool(
+            self._configuration
+            and self._configuration.configured
+            and self._configuration.ancs_enabled
+            and (
+                self._compatibility is None
+                or self._compatibility.notifications_supported
             )
+        )
+        show_ancs_recovery = bool(
+            status.map and status.pbap and not ancs_connected and ancs_expected
+        )
+        ancs_subtitle = _("Connected") if ancs_connected else _("Unavailable")
+        self._ancs_row.set_subtitle(ancs_subtitle)
+        self._ancs_icon.set_from_icon_name(
+            "emblem-ok-symbolic" if ancs_connected else "dialog-warning-symbolic"
+        )
+        self._ancs_recovery_label.set_visible(show_ancs_recovery)
         self._contacts_row.set_subtitle(str(status.contacts))
         self._events_row.set_subtitle(str(status.events))
         policy = status.notification_policy

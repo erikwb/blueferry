@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import time
+from collections import Counter
 from collections.abc import Callable
 from contextlib import ExitStack
 from pathlib import Path
@@ -14,13 +16,14 @@ from gi.repository import GLib
 
 from blueferry import bluetooth_capabilities as capabilities
 from blueferry import config, quirks_report
+from blueferry.ancs.constants import ANCS_CHAR_UUIDS, ANCS_SERVICE_UUID
 from blueferry.bearer_supervisor import preferred_bearer_unavailable
 from blueferry.bluetooth_devices import PairedDevice
 from blueferry.bus import get_session_bus, get_system_bus
 from blueferry.commands import run_command
 from blueferry.errors import CommandError, PairingError
 from blueferry.pairing_policy import resolve_pairing_policy
-from blueferry.private_files import atomic_write_private_text
+from blueferry.private_files import atomic_write_private_text, read_private_text
 from blueferry.setup_verification import clear_setup_verification
 
 log = logging.getLogger(__name__)
@@ -35,6 +38,8 @@ _SESSION_BLUETOOTH_NAMES = (
     "org.gnome.SettingsDaemon.Rfkill",
 )
 CLASSIC_SETTLE_SECONDS = 3.0
+BLUEZ_SNAPSHOT_TIMEOUT_SECONDS = 5.0
+BLUEZ_TRACE_POLL_SECONDS = 2.0
 # One BR/EDR inquiry is 10.24s. USB dongles also need a moment to start
 # after another adapter is stopped; 8s was aborting mid-inquiry.
 DISCOVERY_SECONDS = 24
@@ -42,6 +47,13 @@ MAX_DISCOVERY_SECONDS = 30
 
 ConfirmationCallback = Callable[[int | None], bool]
 DisplayCallback = Callable[[int], None]
+
+
+# Quickshell runs forget and pair in separate helper processes.
+_pending_teardown_traces: dict[str, dict[str, object]] = {}
+_TEARDOWN_TRACE_FILE = "pairing-teardown.json"
+_TEARDOWN_TRACE_MAX_BYTES = 16 * 1024
+_TEARDOWN_TRACE_MAX_AGE_SECONDS = 60 * 60
 
 
 def configuration_status() -> dict:
@@ -108,6 +120,201 @@ def _object_manager():
         get_system_bus().get_object("org.bluez", "/"),
         "org.freedesktop.DBus.ObjectManager",
     )
+
+
+def _bluez_device_snapshot(device_path: str) -> dict[str, object]:
+    """Return a public, bounded snapshot of one BlueZ device subtree.
+
+    Object paths and addresses are intentionally omitted.  The report needs
+    to distinguish a retained Device1/Battery1/GATT tree from a newly
+    discovered one, but it does not need the phone's Bluetooth address.
+    """
+    snapshot: dict[str, object] = {
+        "object_present": False,
+        "device_present": False,
+        "child_objects": 0,
+        "root_interfaces": [],
+        "child_interfaces": {},
+        "device": {
+            "paired": False,
+            "trusted": False,
+            "connected": False,
+            "services_resolved": False,
+            "ancs_uuid": False,
+            "uuid_count": 0,
+        },
+        "bearers": {
+            "bredr": {"present": False},
+            "le": {"present": False},
+        },
+        "gatt": {
+            "services": 0,
+            "characteristics": 0,
+            "ancs_service": False,
+            "ancs_characteristics": [],
+        },
+        "battery_objects": 0,
+    }
+    try:
+        objects = _object_manager().GetManagedObjects(
+            timeout=BLUEZ_SNAPSHOT_TIMEOUT_SECONDS,
+        )
+    except Exception as error:
+        snapshot["error"] = type(error).__name__
+        return snapshot
+
+    root_ifaces: dict = {}
+    subtree: list[tuple[str, dict]] = []
+    prefix = f"{device_path}/"
+    for raw_path, raw_ifaces in objects.items():
+        path = str(raw_path)
+        if path == device_path:
+            root_ifaces = raw_ifaces
+        if path == device_path or path.startswith(prefix):
+            subtree.append((path, raw_ifaces))
+
+    snapshot["object_present"] = bool(root_ifaces)
+    snapshot["child_objects"] = sum(path != device_path for path, _ in subtree)
+    snapshot["root_interfaces"] = sorted(str(name) for name in root_ifaces)
+    child_interfaces: Counter[str] = Counter()
+    service_uuids: set[str] = set()
+    characteristic_uuids: set[str] = set()
+    battery_objects = 0
+    for path, ifaces in subtree:
+        if path != device_path:
+            child_interfaces.update(str(name) for name in ifaces)
+        if "org.bluez.Battery1" in ifaces:
+            battery_objects += 1
+        service = ifaces.get("org.bluez.GattService1")
+        if service is not None:
+            uuid = str(service.get("UUID", "")).casefold()
+            if uuid:
+                service_uuids.add(uuid)
+        characteristic = ifaces.get("org.bluez.GattCharacteristic1")
+        if characteristic is not None:
+            uuid = str(characteristic.get("UUID", "")).casefold()
+            if uuid:
+                characteristic_uuids.add(uuid)
+
+    device = root_ifaces.get("org.bluez.Device1")
+    snapshot["device_present"] = device is not None
+    if device is not None:
+        uuids = sorted({str(value).casefold() for value in device.get("UUIDs", ())})
+        snapshot["device"] = {
+            "paired": bool(device.get("Paired", False)),
+            "trusted": bool(device.get("Trusted", False)),
+            "connected": bool(device.get("Connected", False)),
+            "services_resolved": bool(device.get("ServicesResolved", False)),
+            "ancs_uuid": ANCS_SERVICE_UUID in uuids,
+            "uuid_count": len(uuids),
+        }
+
+    bearers: dict[str, dict[str, object]] = {}
+    for label, interface in (
+        ("bredr", "org.bluez.Bearer.BREDR1"),
+        ("le", "org.bluez.Bearer.LE1"),
+    ):
+        bearer = root_ifaces.get(interface)
+        state: dict[str, object] = {"present": bearer is not None}
+        if bearer is not None:
+            for field in ("Paired", "Bonded", "Connected"):
+                if field in bearer:
+                    state[field.casefold()] = bool(bearer[field])
+        bearers[label] = state
+    snapshot["bearers"] = bearers
+    snapshot["child_interfaces"] = dict(sorted(child_interfaces.items()))
+    snapshot["battery_objects"] = battery_objects
+    snapshot["gatt"] = {
+        "services": child_interfaces["org.bluez.GattService1"],
+        "characteristics": child_interfaces["org.bluez.GattCharacteristic1"],
+        "ancs_service": ANCS_SERVICE_UUID in service_uuids,
+        "ancs_characteristics": sorted(ANCS_CHAR_UUIDS & characteristic_uuids),
+    }
+    return snapshot
+
+
+def _trace_time(attempt: dict) -> float:
+    origin = attempt.get("_t0")
+    if not isinstance(origin, (int, float)):
+        return 0.0
+    return round(time.monotonic() - origin, 3)
+
+
+def _record_bluez_state(
+    attempt: dict | None,
+    device_path: str | None,
+    phase: str,
+    *,
+    force: bool = False,
+) -> None:
+    """Append a BlueZ snapshot when the device subtree changes."""
+    if attempt is None or not device_path:
+        return
+    snapshot = _bluez_device_snapshot(device_path)
+    trace = attempt.setdefault("bluez_trace", [])
+    if not isinstance(trace, list):
+        return
+    if trace and not force and trace[-1].get("state") == snapshot:
+        return
+    trace.append({"t": _trace_time(attempt), "phase": phase, "state": snapshot})
+    # Bound pathological churn while retaining both the beginning and the
+    # most recent transitions that explain the final outcome.
+    if len(trace) > 32:
+        del trace[1]
+    log.debug("BlueZ device state (%s): %s", phase, snapshot)
+
+
+def _teardown_trace_path() -> Path:
+    return config.STATE_DIR / _TEARDOWN_TRACE_FILE
+
+
+def _save_pending_teardown(adapter: str, trace: dict[str, object]) -> None:
+    """Retain teardown diagnostics across Quickshell helper processes."""
+    _pending_teardown_traces[adapter] = trace
+    payload = json.dumps(
+        {
+            "adapter": adapter,
+            "recorded_at": time.time(),
+            "trace": trace,
+        },
+        sort_keys=True,
+    )
+    try:
+        atomic_write_private_text(
+            _teardown_trace_path(),
+            payload,
+            maximum_bytes=_TEARDOWN_TRACE_MAX_BYTES,
+        )
+    except (OSError, ValueError):
+        log.debug("could not persist BlueZ teardown trace", exc_info=True)
+
+
+def _take_pending_teardown(adapter: str) -> dict[str, object] | None:
+    """Consume a recent teardown trace for the adapter being paired."""
+    trace = _pending_teardown_traces.pop(adapter, None)
+    path = _teardown_trace_path()
+    if trace is None:
+        try:
+            payload = json.loads(
+                read_private_text(path, maximum_bytes=_TEARDOWN_TRACE_MAX_BYTES)
+            )
+            age = time.time() - float(payload.get("recorded_at", 0))
+            candidate = payload.get("trace")
+            if (
+                payload.get("adapter") == adapter
+                and 0 <= age <= _TEARDOWN_TRACE_MAX_AGE_SECONDS
+                and isinstance(candidate, dict)
+            ):
+                trace = candidate
+                trace["capture_age_s"] = round(age, 3)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            log.debug("could not load BlueZ teardown trace", exc_info=True)
+    if trace is not None:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            log.debug("could not consume BlueZ teardown trace", exc_info=True)
+    return trace
 
 
 def bond_status(mac: str, adapter: str) -> bool | None:
@@ -498,14 +705,20 @@ def _wait_for_daemon_transports(
     timeout: float = 45.0,
     attempt: dict | None = None,
     notifications_supported: bool = True,
+    device_path: str | None = None,
 ) -> tuple[bool, bool, bool]:
     """Observe the daemon while the pairing advert and agent remain active."""
     from blueferry.client import BackendClient, BackendError
 
     deadline = time.monotonic() + timeout
+    next_bluez_snapshot = 0.0
     previous: tuple[bool, bool, bool] | None = None
     quirks_report.mark(attempt, "waiting_for_transports")
     while time.monotonic() < deadline:
+        now = time.monotonic()
+        if now >= next_bluez_snapshot:
+            _record_bluez_state(attempt, device_path, "transport_wait")
+            next_bluez_snapshot = now + BLUEZ_TRACE_POLL_SECONDS
         try:
             status = BackendClient().status()
         except BackendError:
@@ -1086,8 +1299,13 @@ def _execute_pairing(
     session = attempt.setdefault("session", quirks_report.session_environment())
     if isinstance(session, dict):
         session["bluetooth_owners"] = _bluetooth_session_owners()
+    teardown = _take_pending_teardown(adapter)
+    if teardown is not None:
+        teardown["before_new_pairing"] = _bluez_device_snapshot(device.device_path)
+        attempt["previous_teardown"] = teardown
     quirks_report.mark(attempt, "device_loaded", already_paired=device.paired)
     _snapshot_phone(attempt, device)
+    _record_bluez_state(attempt, device.device_path, "device_loaded", force=True)
     compatibility = bluetooth_compatibility(adapter)
     attempt["controller"] = _controller_snapshot(adapter, compatibility)
     quirks_report.mark(attempt, "compatibility_ready")
@@ -1210,6 +1428,7 @@ def _execute_pairing(
             device = _wait_for_paired_device(mac, adapter=adapter)
             quirks_report.mark(attempt, "paired")
             _snapshot_phone(attempt, device)
+            _record_bluez_state(attempt, device.device_path, "paired", force=True)
         log.debug("setting Device1.Trusted=true for %s", device.device_path)
         trust_device(device.mac, device.adapter_path)
         quirks_report.mark(attempt, "trusted")
@@ -1220,6 +1439,9 @@ def _execute_pairing(
         # second generic Device1.Connect can wander into LE, so only require
         # that the existing ACL settle.
         _wait_for_classic_settled(device.device_path, attempt=attempt)
+        _record_bluez_state(
+            attempt, device.device_path, "classic_settled", force=True,
+        )
 
         # Keep ANCS solicitation active because iOS 26 testing found that it
         # surfaced the MAP/PBAP permission toggles.  It is a pairing signal,
@@ -1232,6 +1454,9 @@ def _execute_pairing(
                 raise PairingError("The ANCS advertisement did not activate")
             advert_registered = True
             quirks_report.mark(attempt, "advert_ready")
+            _record_bluez_state(
+                attempt, device.device_path, "advert_ready", force=True,
+            )
         else:
             log.info(
                 "the controller cannot advertise ANCS solicitation; "
@@ -1250,9 +1475,13 @@ def _execute_pairing(
         quirks_report.mark(attempt, "daemon_restart_sent")
         _restart_user_service()
         quirks_report.mark(attempt, "daemon_restarted")
+        _record_bluez_state(
+            attempt, device.device_path, "daemon_restarted", force=True,
+        )
         map_ready, pbap_ready, ancs_ready = _wait_for_daemon_transports(
             attempt=attempt,
             notifications_supported=policy.ancs_enabled,
+            device_path=device.device_path,
         )
         if not policy.ancs_enabled:
             ancs = "disabled"
@@ -1274,6 +1503,9 @@ def _execute_pairing(
                 log.debug("removing ANCS solicitation advertisement from %s", adapter)
                 bluez_setup.unregister_advert(adapter)
                 quirks_report.mark(attempt, "advert_removed")
+                _record_bluez_state(
+                    attempt, device.device_path, "advert_removed", force=True,
+                )
         finally:
             pairing_agents.close()
             if agent_registered:
@@ -1281,6 +1513,7 @@ def _execute_pairing(
 
     device = _device(mac, adapter=adapter)
     _snapshot_phone(attempt, device)
+    _record_bluez_state(attempt, device.device_path, "finished", force=True)
     return {
         "ok": True,
         "device": device.to_dict(),
@@ -1305,6 +1538,22 @@ def forget_device(mac: str, *, adapter: str | None = None) -> None:
     if not config.is_valid_mac(normalized):
         raise PairingError("invalid Bluetooth device address")
     device = _find_device(normalized, adapter=adapter)
+    adapter_name = (
+        device.adapter_path.rsplit("/", 1)[-1]
+        if device is not None
+        else (adapter or config.ADAPTER)
+    )
+    device_path = (
+        device.device_path
+        if device is not None
+        else f"/org/bluez/{adapter_name}/dev_{normalized.replace(':', '_')}"
+    )
+    teardown: dict[str, object] = {
+        "reason": "forget_device",
+        "remove_requested": device is not None,
+        "before_remove": _bluez_device_snapshot(device_path),
+    }
+    started = time.monotonic()
     log.info("stopping the user service before forgetting target %s", normalized)
     _stop_user_service()
     if device is not None:
@@ -1314,13 +1563,25 @@ def forget_device(mac: str, *, adapter: str | None = None) -> None:
                 get_system_bus().get_object("org.bluez", device.adapter_path),
                 "org.bluez.Adapter1",
             ).RemoveDevice(dbus.ObjectPath(device.device_path), timeout=30.0)
+            teardown["remove_result"] = "replied"
         except dbus.exceptions.DBusException as error:
             if error.get_dbus_name() != "org.bluez.Error.DoesNotExist":
+                teardown["remove_result"] = "failed"
+                teardown["remove_error"] = error.get_dbus_name() or type(error).__name__
+                teardown["after_remove_reply"] = _bluez_device_snapshot(device_path)
+                teardown["remove_elapsed_s"] = round(time.monotonic() - started, 3)
+                _save_pending_teardown(adapter_name, teardown)
                 raise PairingError(
                     error.get_dbus_message() or error.get_dbus_name() or str(error)
                 ) from error
+            teardown["remove_result"] = "already_absent"
     else:
         log.debug("no BlueZ device record remains for %s", normalized)
+        teardown["remove_result"] = "not_found"
+    teardown["after_remove_reply"] = _bluez_device_snapshot(device_path)
+    teardown["remove_elapsed_s"] = round(time.monotonic() - started, 3)
+    _save_pending_teardown(adapter_name, teardown)
+    log.debug("BlueZ teardown trace: %s", teardown)
     clear_local_target()
     log.info("cleared configured BlueFerry target %s", normalized)
 
@@ -1341,6 +1602,23 @@ def prepare_target_replacement(
     # this attempt. Removing that BlueZ object would also remove the scan
     # result before complete_pairing() can address it.
     _stop_user_service()
+    adapter_name = (
+        device.adapter_path.rsplit("/", 1)[-1]
+        if device is not None
+        else (adapter or config.ADAPTER)
+    )
+    device_path = (
+        device.device_path
+        if device is not None
+        else f"/org/bluez/{adapter_name}/dev_{previous.replace(':', '_')}"
+    )
+    teardown = {
+        "reason": "same_unpaired_scan_result_retained",
+        "remove_requested": False,
+        "before_clear": _bluez_device_snapshot(device_path),
+    }
+    _save_pending_teardown(adapter_name, teardown)
+    log.debug("BlueZ teardown trace: %s", teardown)
     clear_local_target()
     log.info("cleared stale BlueFerry target %s before pairing", previous)
 

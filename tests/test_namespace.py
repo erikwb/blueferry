@@ -184,6 +184,24 @@ def test_gui_pairing_guidance_tells_users_to_recheck_iphone_toggles() -> None:
         assert "few times; turn on any new toggles that appear" in client
 
 
+def test_all_clients_offer_bluez_restart_as_ancs_repair_recovery() -> None:
+    clients = (
+        (ROOT / "src/blueferry/ui/status.py").read_text(),
+        _qml_bundle(ROOT / "src/blueferry/qt/qml"),
+        _qml_bundle(ROOT / "data/quickshell"),
+        (ROOT / "src/blueferry/tui.py").read_text(),
+        (ROOT / "src/blueferry/pairing_cli.py").read_text(),
+    )
+
+    for client in clients:
+        assert "ANCS remains unavailable" in client
+        assert "sudo systemctl restart " in client
+        assert "bluetooth.service" in client
+        assert "forget this computer on the iPhone and" in client
+        assert "pair again" in client
+        assert "briefly disconnects all Bluetooth devices" in client
+
+
 def test_all_pairing_clients_expose_compatibility_mode() -> None:
     gtk = (ROOT / "src/blueferry/ui/status.py").read_text()
     qt = _qml_bundle(ROOT / "src/blueferry/qt/qml")
@@ -216,6 +234,9 @@ def test_gtk_connection_rows_all_have_status_icons() -> None:
     for profile in ("daemon", "map", "pbap", "ancs"):
         assert f"self._{profile}_icon = Gtk.Image()" in gtk
         assert f"self._{profile}_row.add_suffix(self._{profile}_icon)" in gtk
+    assert "self._ancs_recovery_label = Gtk.Label(" in gtk
+    assert "self._ancs_recovery_label.set_visible(show_ancs_recovery)" in gtk
+    assert "self._apply_status(self._last_status)" in gtk
 
 
 def test_qt_message_bubbles_do_not_use_full_selection_color() -> None:

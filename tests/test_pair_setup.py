@@ -10,6 +10,8 @@ import pytest
 from blueferry import bluez_setup, config, pair_setup
 from blueferry.bluetooth_devices import iphone_candidates
 
+_BLUEZ_DEVICE_SNAPSHOT = pair_setup._bluez_device_snapshot
+
 
 @pytest.fixture(autouse=True)
 def _pairing_reports_in_tmp(tmp_path, monkeypatch):
@@ -24,6 +26,12 @@ def _pairing_reports_in_tmp(tmp_path, monkeypatch):
         lambda _path: {
             "present": False, "paired": False, "bonded": False, "connected": False,
         },
+    )
+    pair_setup._pending_teardown_traces.clear()
+    monkeypatch.setattr(
+        pair_setup,
+        "_bluez_device_snapshot",
+        lambda _path: {"device_present": False},
     )
 
 
@@ -283,6 +291,11 @@ def test_replacing_stale_target_keeps_selected_unpaired_scan_result(monkeypatch)
     pair_setup.prepare_target_replacement(device.mac, device.mac)
 
     assert calls == ["stop", "clear"]
+    assert pair_setup._pending_teardown_traces["hci0"] == {
+        "reason": "same_unpaired_scan_result_retained",
+        "remove_requested": False,
+        "before_clear": {"device_present": False},
+    }
 
 
 def test_replacing_a_different_target_removes_its_bluez_device(monkeypatch):
@@ -321,6 +334,183 @@ def test_find_device_stays_on_the_requested_adapter(monkeypatch):
     assert pair_setup._find_device(leftover.mac, adapter="hci1") == phone
     assert pair_setup._find_device(leftover.mac, adapter="hci2") is None
     assert pair_setup._device(leftover.mac, adapter="hci1") == phone
+
+
+def test_bluez_device_snapshot_captures_bearers_battery_and_ancs(monkeypatch):
+    device = _device(paired=True)
+    objects = {
+        device.device_path: {
+            "org.bluez.Device1": {
+                "Paired": True,
+                "Trusted": True,
+                "Connected": True,
+                "ServicesResolved": False,
+                "UUIDs": [config.ANCS_SOLICIT_UUID, "0000180f-0000-1000-8000-00805f9b34fb"],
+            },
+            "org.bluez.Bearer.BREDR1": {"Connected": True},
+            "org.bluez.Bearer.LE1": {
+                "Paired": True, "Bonded": True, "Connected": True,
+            },
+        },
+        f"{device.device_path}/service0010": {
+            "org.bluez.GattService1": {"UUID": config.ANCS_SOLICIT_UUID},
+        },
+        f"{device.device_path}/service0010/char0011": {
+            "org.bluez.GattCharacteristic1": {
+                "UUID": "69d1d8f3-45e1-49a8-9821-9bbdfdaad9d9",
+            },
+        },
+        f"{device.device_path}/battery": {
+            "org.bluez.Battery1": {"Percentage": 75},
+        },
+        "/org/bluez/hci0/dev_FF_FF_FF_FF_FF_FF": {
+            "org.bluez.Device1": {"Paired": False},
+        },
+    }
+
+    class Manager:
+        @staticmethod
+        def GetManagedObjects(*, timeout):
+            assert timeout == pair_setup.BLUEZ_SNAPSHOT_TIMEOUT_SECONDS
+            return objects
+
+    monkeypatch.setattr(pair_setup, "_object_manager", lambda: Manager())
+
+    snapshot = _BLUEZ_DEVICE_SNAPSHOT(device.device_path)
+
+    assert snapshot["object_present"] is True
+    assert snapshot["device"]["ancs_uuid"] is True
+    assert snapshot["bearers"]["bredr"] == {
+        "present": True, "connected": True,
+    }
+    assert snapshot["bearers"]["le"] == {
+        "present": True, "paired": True, "bonded": True, "connected": True,
+    }
+    assert snapshot["battery_objects"] == 1
+    assert snapshot["gatt"]["services"] == 1
+    assert snapshot["gatt"]["characteristics"] == 1
+    assert snapshot["gatt"]["ancs_service"] is True
+    assert snapshot["gatt"]["ancs_characteristics"] == [
+        "69d1d8f3-45e1-49a8-9821-9bbdfdaad9d9",
+    ]
+
+
+def test_forget_records_bluez_state_before_and_after_remove(monkeypatch):
+    device = _device(paired=True)
+    snapshots = iter([
+        {"device_present": True, "battery_objects": 1},
+        {"device_present": False, "battery_objects": 0},
+    ])
+
+    class Bus:
+        @staticmethod
+        def get_object(_service, _path):
+            return object()
+
+    class Adapter:
+        @staticmethod
+        def RemoveDevice(_path, *, timeout):
+            assert timeout == 30.0
+
+    monkeypatch.setattr(pair_setup, "_find_device", lambda _mac, **_kwargs: device)
+    monkeypatch.setattr(pair_setup, "_stop_user_service", lambda: None)
+    monkeypatch.setattr(pair_setup, "clear_local_target", lambda: None)
+    monkeypatch.setattr(pair_setup, "get_system_bus", Bus)
+    monkeypatch.setattr(pair_setup.dbus, "Interface", lambda *_args: Adapter())
+    monkeypatch.setattr(pair_setup, "_bluez_device_snapshot", lambda _path: next(snapshots))
+
+    pair_setup.forget_device(device.mac, adapter="hci0")
+
+    trace = pair_setup._pending_teardown_traces["hci0"]
+    assert trace["reason"] == "forget_device"
+    assert trace["remove_requested"] is True
+    assert trace["remove_result"] == "replied"
+    assert trace["before_remove"] == {"device_present": True, "battery_objects": 1}
+    assert trace["after_remove_reply"] == {
+        "device_present": False, "battery_objects": 0,
+    }
+    assert trace["remove_elapsed_s"] >= 0
+
+
+def test_bluez_trace_records_only_state_transitions(monkeypatch):
+    states = iter([
+        {"device_present": True, "device": {"ancs_uuid": False}},
+        {"device_present": True, "device": {"ancs_uuid": False}},
+        {"device_present": True, "device": {"ancs_uuid": True}},
+    ])
+    monkeypatch.setattr(pair_setup, "_bluez_device_snapshot", lambda _path: next(states))
+    monkeypatch.setattr(pair_setup.time, "monotonic", lambda: 12.5)
+    attempt = {"_t0": 10.0}
+
+    pair_setup._record_bluez_state(attempt, "/device", "waiting")
+    pair_setup._record_bluez_state(attempt, "/device", "waiting")
+    pair_setup._record_bluez_state(attempt, "/device", "waiting")
+
+    assert attempt["bluez_trace"] == [
+        {
+            "t": 2.5,
+            "phase": "waiting",
+            "state": {"device_present": True, "device": {"ancs_uuid": False}},
+        },
+        {
+            "t": 2.5,
+            "phase": "waiting",
+            "state": {"device_present": True, "device": {"ancs_uuid": True}},
+        },
+    ]
+
+
+def test_transport_wait_samples_bluez_at_a_bounded_rate(monkeypatch):
+    from blueferry.models import BackendStatus
+
+    now = [0.0]
+    statuses = [
+        BackendStatus(map=True, pbap=True, ancs=False)
+        for _index in range(5)
+    ] + [BackendStatus(map=True, pbap=True, ancs=True)]
+    snapshots = []
+
+    class FakeClient:
+        @staticmethod
+        def status():
+            return statuses.pop(0)
+
+    monkeypatch.setattr("blueferry.client.BackendClient", FakeClient)
+    monkeypatch.setattr(pair_setup.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(pair_setup.time, "sleep", lambda seconds: now.__setitem__(0, now[0] + seconds))
+    monkeypatch.setattr(
+        pair_setup,
+        "_record_bluez_state",
+        lambda _attempt, _path, _phase: snapshots.append(now[0]),
+    )
+
+    result = pair_setup._wait_for_daemon_transports(
+        timeout=10,
+        attempt={},
+        device_path="/device",
+    )
+
+    assert result == (True, True, True)
+    assert snapshots == [0.0, 2.0]
+
+
+def test_teardown_trace_survives_quickshell_helper_processes(monkeypatch):
+    now = iter([100.0, 105.25])
+    monkeypatch.setattr(pair_setup.time, "time", lambda: next(now))
+    trace = {
+        "reason": "forget_device",
+        "after_remove_reply": {"device_present": False},
+    }
+
+    pair_setup._save_pending_teardown("hci0", trace)
+    pair_setup._pending_teardown_traces.clear()
+    restored = pair_setup._take_pending_teardown("hci0")
+
+    assert restored == {
+        **trace,
+        "capture_age_s": 5.25,
+    }
+    assert not pair_setup._teardown_trace_path().exists()
 
 
 def test_forget_stops_backend_removes_bond_and_clears_target(monkeypatch):

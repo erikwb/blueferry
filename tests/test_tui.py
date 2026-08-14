@@ -173,7 +173,7 @@ def test_message_sender_metadata_is_sanitized() -> None:
         async with app.run_test(size=(120, 36)) as pilot:
             await _wait_for_threads(app, pilot, 2)
             app.action_next_thread()
-            await pilot.pause(0.1)
+            await _wait_for_conversation_title(app, pilot, "Friends  ·  Group")
             meta = app.query_one(MessageRow).query_one(".message-meta", Static)
             assert meta.render().plain.startswith("Beau�[31m� forged  ·  ")
 
@@ -255,6 +255,17 @@ async def _wait_for_threads(app: BlueFerryApp, pilot, count: int) -> None:
     assert len(app.query(ConversationItem)) == count
 
 
+async def _wait_for_conversation_title(
+    app: BlueFerryApp, pilot, expected: str,
+) -> None:
+    title = app.query_one("#conversation-title", Static)
+    for _attempt in range(30):
+        if title.render().plain == expected:
+            return
+        await pilot.pause(0.05)
+    assert title.render().plain == expected
+
+
 def _run_headless(coroutine: Coroutine[Any, Any, None]) -> None:
     # Python 3.14's asyncio.Runner waits unnecessarily for Textual's already
     # drained async generators. A directly-owned loop is deterministic here;
@@ -279,12 +290,34 @@ def test_textual_app_renders_status_threads_and_messages() -> None:
             assert len(app.query(MessageRow)) == 1
 
             app.action_next_thread()
-            await pilot.pause(0.1)
+            await _wait_for_conversation_title(app, pilot, "Friends  ·  Group")
             assert state.selected_key == "group"
             assert app.query_one("#conversation-title").render().plain == "Friends  ·  Group"
             meta = app.query_one(MessageRow).query_one(".message-meta", Static)
             assert meta.render().plain.startswith("Beau  ·  ")
 
+    _run_headless(scenario())
+
+
+def test_textual_warns_about_bluez_restart_when_only_ancs_is_missing(
+    monkeypatch,
+) -> None:
+    class MissingAncsBackend(_Backend):
+        @staticmethod
+        def status() -> BackendStatus:
+            return BackendStatus(daemon=True, map=True, pbap=True, ancs=False)
+
+    async def scenario() -> None:
+        app = BlueFerryApp(TuiState(MissingAncsBackend()), monitor_factory=lambda: None)
+
+        async with app.run_test(size=(70, 36)) as pilot:
+            await _wait_for_threads(app, pilot, 2)
+            notice = app.query_one("#notice-bar", Static)
+            assert "sudo systemctl restart bluetooth.service" in notice.render().plain
+            assert notice.has_class("warn")
+            assert notice.region.height >= 3
+
+    monkeypatch.setattr(tui_module.config, "ANCS_ENABLED", True)
     _run_headless(scenario())
 
 

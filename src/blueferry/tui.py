@@ -19,6 +19,7 @@ from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import Button, Footer, Input, ListItem, ListView, Static, TextArea
 
+from blueferry import config
 from blueferry.backend_lifecycle import BackendLifecycleError, ensure_backend_current
 from blueferry.bus import get_session_bus
 from blueferry.client import BackendClient, BackendError
@@ -693,7 +694,8 @@ class BlueFerryApp(App[None]):
             await self._render_conversation()
         if self.state.status != previous_status:
             self._update_status()
-        if self.state.error != previous_error:
+            self._update_notice()
+        elif self.state.error != previous_error:
             self._update_notice()
         if threads_changed:
             self._warn_about_roster_changes()
@@ -862,6 +864,19 @@ class BlueFerryApp(App[None]):
         elif self.state.notice:
             notice.update(f"✓  {self.state.notice}")
             notice.set_classes("success")
+        elif (
+            config.ANCS_ENABLED
+            and self.state.status.map
+            and self.state.status.pbap
+            and not self.state.status.ancs
+        ):
+            notice.update(
+                "FYI: If ANCS remains unavailable, BlueZ may be retaining stale "
+                "Bluetooth state. Before re-pairing, run sudo systemctl restart "
+                "bluetooth.service, then forget this computer on the iPhone and "
+                "pair again. This briefly disconnects all Bluetooth devices."
+            )
+            notice.set_classes("warn")
         else:
             notice.update("Ready  ·  Ctrl+P: Help")
             notice.set_classes("")

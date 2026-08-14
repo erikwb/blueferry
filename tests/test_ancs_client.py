@@ -5,7 +5,15 @@ import struct
 
 from blueferry.ancs import client as client_module
 from blueferry.ancs.client import AncsClient
-from blueferry.ancs.constants import MESSAGES_APP_ID, CommandID, EventFlag, EventID
+from blueferry.ancs.constants import (
+    CONTROL_POINT_CHAR,
+    DATA_SOURCE_CHAR,
+    MESSAGES_APP_ID,
+    NOTIFICATION_SOURCE_CHAR,
+    CommandID,
+    EventFlag,
+    EventID,
+)
 from blueferry.ancs.parsers import Notification
 
 
@@ -173,8 +181,10 @@ class _Match:
 
 
 class _ObjectManager:
-    def __init__(self) -> None:
+    def __init__(self, managed=None) -> None:
         self.matches = []
+        self.managed = managed or {}
+        self.sweeps = 0
 
     def connect_to_signal(self, _name, _callback):
         match = _Match()
@@ -182,12 +192,24 @@ class _ObjectManager:
         return match
 
     def GetManagedObjects(self, **_kwargs):
-        return {}
+        self.sweeps += 1
+        return self.managed
 
 
 class _Bus:
     def __init__(self, manager) -> None:
         self.manager = manager
+        self.owner_callback = None
+        self.owner_match = None
+
+    def add_signal_receiver(self, callback, **kwargs):
+        assert kwargs["dbus_interface"] == "org.freedesktop.DBus"
+        assert kwargs["signal_name"] == "NameOwnerChanged"
+        assert kwargs["bus_name"] == "org.freedesktop.DBus"
+        assert kwargs["arg0"] == "org.bluez"
+        self.owner_callback = callback
+        self.owner_match = _Match()
+        return self.owner_match
 
     def get_object(self, _name, path):
         assert path == "/"
@@ -207,7 +229,8 @@ class _CharacteristicBus:
 
 def test_start_is_idempotent(monkeypatch) -> None:
     manager = _ObjectManager()
-    monkeypatch.setattr(client_module, "get_system_bus", lambda: _Bus(manager))
+    bus = _Bus(manager)
+    monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
     monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
     client = AncsClient("/device", lambda _event: None)
 
@@ -217,6 +240,129 @@ def test_start_is_idempotent(monkeypatch) -> None:
     assert len(manager.matches) == 2
     client.stop()
     assert all(match.removed for match in manager.matches)
+    assert bus.owner_match.removed is True
+
+
+def test_bluez_restart_rebinds_manager_and_rescans_cached_ancs_objects(
+    monkeypatch,
+) -> None:
+    paths = {
+        "/device/service0023/char0024": {
+            "org.bluez.GattCharacteristic1": {"UUID": CONTROL_POINT_CHAR},
+        },
+        "/device/service0023/char0027": {
+            "org.bluez.GattCharacteristic1": {"UUID": NOTIFICATION_SOURCE_CHAR},
+        },
+        "/device/service0023/char002a": {
+            "org.bluez.GattCharacteristic1": {"UUID": DATA_SOURCE_CHAR},
+        },
+    }
+    old_manager = _ObjectManager()
+    new_manager = _ObjectManager(paths)
+    bus = _Bus(old_manager)
+    monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
+    monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
+    statuses = []
+    client = AncsClient("/device", lambda _event: None, on_status=lambda: statuses.append(True))
+    monkeypatch.setattr(client, "_try_subscribe", lambda: None)
+
+    client.start()
+    client._notify_started = True
+    client._authorized = True
+    characteristic_matches = [_Match(), _Match()]
+    client._characteristic_signal_matches = characteristic_matches
+
+    assert bus.owner_callback is not None
+    bus.owner_callback("org.bluez", ":1.10", "")
+
+    assert client.connected is False
+    assert client._ns_path is None
+    assert client._ds_path is None
+    assert client._cp_path is None
+    assert all(match.removed for match in old_manager.matches)
+    assert all(match.removed for match in characteristic_matches)
+    assert statuses == [True]
+
+    bus.manager = new_manager
+    bus.owner_callback("org.bluez", "", ":1.11")
+
+    assert new_manager.sweeps == 1
+    assert len(new_manager.matches) == 2
+    assert client._ns_path == "/device/service0023/char0027"
+    assert client._ds_path == "/device/service0023/char002a"
+    assert client._cp_path == "/device/service0023/char0024"
+
+
+def test_bluez_restart_retries_when_object_manager_is_not_ready(monkeypatch) -> None:
+    scheduled = []
+
+    class _UnavailableManager(_ObjectManager):
+        def GetManagedObjects(self, **_kwargs):
+            raise RuntimeError("ObjectManager is not ready")
+
+    old_manager = _ObjectManager()
+    bus = _Bus(old_manager)
+    monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
+    monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
+    client = AncsClient(
+        "/device",
+        lambda _event: None,
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 17,
+    )
+    client.start()
+
+    bus.manager = _UnavailableManager()
+    assert bus.owner_callback is not None
+    bus.owner_callback("org.bluez", ":1.10", ":1.11")
+
+    assert scheduled[0][0] == client_module.MANAGER_RETRY_SECONDS
+    assert client._manager_retry_id == 17
+
+    ready_manager = _ObjectManager()
+    bus.manager = ready_manager
+    assert scheduled[0][1]() is False
+
+    assert client._manager_retry_id is None
+    assert ready_manager.sweeps == 1
+    assert len(ready_manager.matches) == 2
+
+
+def test_nested_owner_change_cannot_restore_the_losing_owner_objects(monkeypatch) -> None:
+    stale_paths = {
+        "/device/service-old/char-old": {
+            "org.bluez.GattCharacteristic1": {"UUID": CONTROL_POINT_CHAR},
+        },
+    }
+    current_paths = {
+        "/device/service-new/char-new": {
+            "org.bluez.GattCharacteristic1": {"UUID": CONTROL_POINT_CHAR},
+        },
+    }
+    current_manager = _ObjectManager(current_paths)
+
+    class _ReentrantManager(_ObjectManager):
+        def GetManagedObjects(self, **_kwargs):
+            bus.manager = current_manager
+            assert bus.owner_callback is not None
+            bus.owner_callback("org.bluez", ":1.10", ":1.11")
+            return stale_paths
+
+    initial_manager = _ObjectManager()
+    bus = _Bus(initial_manager)
+    monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
+    monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
+    client = AncsClient("/device", lambda _event: None)
+    monkeypatch.setattr(client, "_try_subscribe", lambda: None)
+    client.start()
+
+    bus.manager = _ReentrantManager()
+    assert bus.owner_callback is not None
+    bus.owner_callback("org.bluez", "", ":1.10")
+
+    assert current_manager.sweeps == 1
+    assert client._cp_path == "/device/service-new/char-new"
+    assert client._cp_path != "/device/service-old/char-old"
+    assert len(client._manager_signal_matches) == 2
 
 
 def test_characteristic_removal_discards_all_characteristic_receivers(
@@ -320,6 +466,89 @@ def test_start_notify_failure_retries_without_rediscovery(monkeypatch) -> None:
     assert client.connected is True
     assert ns.start_calls == 2
     assert ds.start_calls == 1
+
+
+def test_owner_change_during_start_notify_preserves_new_subscription(
+    monkeypatch,
+) -> None:
+    outer_matches = []
+    replacement_matches = [_Match(), _Match()]
+
+    class _Characteristic:
+        def __init__(self, *, changes_owner=False) -> None:
+            self.changes_owner = changes_owner
+            self.start_calls = 0
+
+        def StartNotify(self, **_kwargs) -> None:
+            self.start_calls += 1
+            if self.changes_owner:
+                client._bluez_owner_generation += 1
+                client._characteristic_signal_matches = replacement_matches
+                client._notify_started = True
+
+    ns = _Characteristic(changes_owner=True)
+    ds = _Characteristic()
+
+    class _SubscribeBus:
+        @staticmethod
+        def add_signal_receiver(*_args, **_kwargs):
+            match = _Match()
+            outer_matches.append(match)
+            return match
+
+        @staticmethod
+        def get_object(_name, path):
+            return {"/device/ns": ns, "/device/ds": ds}[path]
+
+    monkeypatch.setattr(client_module, "get_system_bus", lambda: _SubscribeBus())
+    monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
+    client = AncsClient("/device", lambda _event: None)
+    client._started = True
+    client._ns_path = "/device/ns"
+    client._ds_path = "/device/ds"
+    client._cp_path = "/device/cp"
+
+    client._try_subscribe()
+
+    assert ns.start_calls == 1
+    assert ds.start_calls == 0
+    assert all(match.removed for match in outer_matches)
+    assert client._characteristic_signal_matches == replacement_matches
+    assert client.subscribed is True
+
+
+def test_owner_change_during_control_point_write_preserves_new_request(
+    monkeypatch,
+) -> None:
+    timeout_calls = []
+    replacement_request = object()
+
+    class _ControlPoint:
+        @staticmethod
+        def WriteValue(_value, _options, **_kwargs) -> None:
+            client._bluez_owner_generation += 1
+            client._request_queue.clear()
+            client._active_request = replacement_request
+            client._request_timeout_id = 91
+
+    bus = _CharacteristicBus({"/device/cp": _ControlPoint()})
+    monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
+    monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
+    monkeypatch.setattr(
+        client_module.GLib,
+        "timeout_add_seconds",
+        lambda *args: timeout_calls.append(args) or 92,
+    )
+    client = AncsClient("/device", lambda _event: None)
+    client._started = True
+    client._notify_started = True
+    client._cp_path = "/device/cp"
+
+    client._queue_authorization_probe()
+
+    assert client._active_request is replacement_request
+    assert client._request_timeout_id == 91
+    assert timeout_calls == []
 
 
 def test_control_point_failure_keeps_ancs_unready_and_retries(

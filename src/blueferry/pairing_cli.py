@@ -39,6 +39,19 @@ def _verification_detail(*, ancs_ready: bool, compatibility_mode: bool) -> str:
     return "messages and contacts; this controller has no ANCS support"
 
 
+def _print_ancs_repair_hint() -> None:
+    typer.echo(
+        typer.style(
+            "\nFYI: If ANCS remains unavailable after setup, BlueZ may be "
+            "retaining stale Bluetooth state.",
+            fg=typer.colors.YELLOW,
+        )
+    )
+    typer.echo("Before re-pairing, run: sudo systemctl restart bluetooth.service")
+    typer.echo("Then forget this computer on the iPhone and pair again.")
+    typer.echo("This briefly disconnects all Bluetooth devices.")
+
+
 def run_wizard(
     *,
     verify_after: bool = True,
@@ -246,6 +259,8 @@ def run_wizard(
         ancs_enabled=ancs_enabled,
         ancs_ready=result.ancs_ready,
     )
+    if ancs_enabled and not result.ancs_ready:
+        _print_ancs_repair_hint()
 
     prompt = (
         "Have you completed the remaining iPhone steps? Verify the connection now?"
