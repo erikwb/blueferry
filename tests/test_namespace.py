@@ -228,6 +228,30 @@ def test_all_pairing_clients_expose_explicit_pairing_mode() -> None:
     assert '"--explicit-pairing"' in quickshell
 
 
+def test_capability_checks_do_not_disable_pairing_buttons() -> None:
+    gtk = (ROOT / "src/blueferry/ui/status.py").read_text()
+    qt = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
+    quickshell = (ROOT / "data/quickshell/shell.qml").read_text()
+
+    assert "self._pair_button.set_sensitive(not busy and bool(selected))" in gtk
+    assert "root.bridge.compatibility.pairing_ready" not in qt
+    assert "root.bridge.compatibility.messages_supported" not in qt.split(
+        'text: iphonePage.device !== null', 1
+    )[1].split("onClicked:", 1)[0]
+    assert "root.bridge.compatibilityLoaded" in qt.split(
+        'text: iphonePage.device !== null', 1
+    )[1].split("onClicked:", 1)[0]
+    assert "root.pairingReady" not in quickshell.split(
+        'text: pairProcess.running ? "Pairing…"', 1
+    )[1].split("onClicked:", 1)[0]
+    assert "root.messagesSupported" not in quickshell.split(
+        'text: pairProcess.running ? "Pairing…"', 1
+    )[1].split("onClicked:", 1)[0]
+    assert "root.compatibilityLoaded" in quickshell.split(
+        'text: pairProcess.running ? "Pairing…"', 1
+    )[1].split("onClicked:", 1)[0]
+
+
 def test_gtk_connection_rows_all_have_status_icons() -> None:
     gtk = (ROOT / "src/blueferry/ui/status.py").read_text()
 

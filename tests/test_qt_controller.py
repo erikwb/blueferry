@@ -57,6 +57,29 @@ def test_snapshot_converts_typed_client_models_for_qml():
     assert snapshot["threads"][0]["key"] == "address:email:test@example.com"
 
 
+def test_failed_capability_probe_is_loaded_and_pairable(monkeypatch):
+    controller = BridgeController(
+        backend=_Backend(),
+        setup=object(),
+        subscribe=False,
+        autostart=False,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_run",
+        lambda _operation, _done, failed, **_kwargs: failed("probe failed"),
+    )
+
+    assert controller.compatibilityLoaded is False
+
+    controller.loadSetupState()
+
+    assert controller.compatibilityLoaded is True
+    assert controller.compatibility["pairing_ready"] is True
+    assert controller.compatibility["notifications_supported"] is False
+    assert controller.compatibility["issue"] == "probe failed"
+
+
 def test_onboarding_stage_signal_only_fires_when_stage_changes():
     controller = BridgeController(
         backend=_Backend(),

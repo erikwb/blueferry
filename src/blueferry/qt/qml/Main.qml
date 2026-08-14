@@ -985,21 +985,25 @@ Kirigami.ApplicationWindow {
 
                     Controls.Label {
                         Kirigami.FormData.label: qsTr("Hardware:")
-                        text: root.bridge.compatibility.hardware_supported
-                            ? qsTr("Compatible")
-                            : qsTr("Unsupported")
+                        text: !root.bridge.compatibilityLoaded
+                            ? qsTr("Checking…")
+                            : root.bridge.compatibility.available !== true
+                            ? qsTr("Could Not Verify — Pairing Still Available")
+                            : root.bridge.compatibility.hardware_supported
+                                ? qsTr("Compatible")
+                                : qsTr("Compatibility Warning — Pairing Still Available")
                     }
 
                     Controls.Label {
                         Kirigami.FormData.label: qsTr("Messages and Contacts:")
                         text: root.bridge.compatibility.messages_supported
-                            ? qsTr("Supported") : qsTr("Unsupported")
+                            ? qsTr("Supported") : qsTr("Not Detected")
                     }
 
                     Controls.Label {
                         Kirigami.FormData.label: qsTr("iPhone Notifications:")
                         text: root.bridge.compatibility.notifications_supported
-                            ? qsTr("Supported") : qsTr("Unsupported")
+                            ? qsTr("Supported") : qsTr("Unavailable")
                     }
 
                     Controls.Label {
@@ -1069,9 +1073,11 @@ Kirigami.ApplicationWindow {
                     Layout.fillWidth: true
                     visible: !root.bridge.configured
                     text: qsTr("Compatibility pairing for iOS 18 or earlier")
-                    checked: root.bridge.compatibility.notifications_supported !== true
-                        || iphonePage.compatibilityModeOverride
-                    enabled: root.bridge.compatibility.notifications_supported === true
+                    checked: root.bridge.compatibilityLoaded
+                        && (root.bridge.compatibility.notifications_supported !== true
+                            || iphonePage.compatibilityModeOverride)
+                    enabled: root.bridge.compatibilityLoaded
+                        && root.bridge.compatibility.notifications_supported === true
                         && !root.bridge.busy
                     onClicked: iphonePage.compatibilityModeOverride = checked
                     Accessible.description: qsTr("Sets up Messages and Contacts without connecting ANCS.")
@@ -1093,9 +1099,7 @@ Kirigami.ApplicationWindow {
                             ? qsTr("Use Existing Pairing") : qsTr("2. Pair Selected iPhone")
                         icon.name: "network-connect"
                         enabled: iphonePage.device !== null
-                            && (compatibilityMode.checked
-                                ? root.bridge.compatibility.messages_supported
-                                : root.bridge.compatibility.pairing_ready)
+                            && root.bridge.compatibilityLoaded
                             && !root.bridge.busy
                         onClicked: {
                             if (!iphonePage.device.paired && root.bridge.targetSaved) {

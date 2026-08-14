@@ -25,10 +25,9 @@ ShellRoot {
   property string pairingStatus: "Step 1: scan for the iPhone. Scanning does not pair it."
   property bool bluezActive: false
   property bool hardwareSupported: false
-  property bool messagesSupported: false
   property bool notificationsSupported: false
+  property bool compatibilityLoaded: false
   property bool ancsEnabled: true
-  property bool pairingReady: false
   property bool compatibilityModeOverride: false
   property bool explicitPairingOverride: false
   property bool configured: false
@@ -57,7 +56,6 @@ ShellRoot {
   Theme { id: theme }
   OnboardingState {
     id: onboarding
-    hardwareSupported: root.hardwareSupported
     notificationsSupported: root.notificationsSupported
                             && root.ancsEnabled
                             && !root.compatibilityModeOverride
@@ -177,6 +175,7 @@ ShellRoot {
 
   function loadCompatibility(adapter) {
     if (compatibilityProcess.running) return
+    compatibilityLoaded = false
     compatibilityProcess.command = adapter
       ? ["/usr/bin/blueferry", "pairing-compatibility-json", "--adapter", adapter]
       : ["/usr/bin/blueferry", "pairing-compatibility-json"]
@@ -229,9 +228,8 @@ ShellRoot {
 
   function markCompatibilityUnavailable(message) {
     hardwareSupported = false
-    messagesSupported = false
     notificationsSupported = false
-    pairingReady = false
+    compatibilityLoaded = true
     bluezActive = false
     adapterName = ""
     pairingStatus = message
@@ -321,9 +319,8 @@ ShellRoot {
         try {
           var parsed = JSON.parse(text)
           root.hardwareSupported = parsed.hardware_supported === true
-          root.messagesSupported = parsed.messages_supported === true
           root.notificationsSupported = parsed.notifications_supported === true
-          root.pairingReady = parsed.pairing_ready === true
+          root.compatibilityLoaded = true
           root.bluezActive = parsed.bearer_api_active === true
           root.adapterName = parsed.adapter || ""
           root.adapters = Array.isArray(parsed.adapters) ? parsed.adapters : []
@@ -335,7 +332,10 @@ ShellRoot {
               }
             }
           }
-          if (!root.hardwareSupported) root.pairingStatus = parsed.issue || "Bluetooth controller is incompatible."
+          if (!root.hardwareSupported) {
+            root.pairingStatus = (parsed.issue || "Bluetooth controller capabilities could not be verified.")
+              + " Pairing is still available in compatibility mode."
+          }
           var scan = root.scanAfterCompatibility
           root.scanAfterCompatibility = false
           root.loadPairingDevices(scan)
@@ -1313,8 +1313,10 @@ ShellRoot {
             id: compatibilityMode
             visible: !root.configured
             text: "Compatibility pairing for iOS 18 or earlier"
-            checked: !root.notificationsSupported || root.compatibilityModeOverride
-            enabled: root.notificationsSupported && !pairProcess.running
+            checked: root.compatibilityLoaded
+                     && (!root.notificationsSupported || root.compatibilityModeOverride)
+            enabled: root.compatibilityLoaded && root.notificationsSupported
+                     && !pairProcess.running
             onClicked: root.compatibilityModeOverride = checked
           }
           FerryCheckBox {
@@ -1337,8 +1339,7 @@ ShellRoot {
               : root.selectedPairingDevice() && root.selectedPairingDevice().paired
                 ? "Use existing pairing" : "2. Pair Selected iPhone"
             enabled: root.selectedPairingDevice() !== null
-                     && (compatibilityMode.checked
-                         ? root.messagesSupported : root.pairingReady)
+                     && root.compatibilityLoaded
                      && !deviceProcess.running && !pairProcess.running
             onClicked: {
               var device = root.selectedPairingDevice()

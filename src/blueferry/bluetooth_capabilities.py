@@ -471,9 +471,9 @@ def _profile_fields(
         "notifications_supported": notifications_supported,
         "bearer_api_supported": bearer_supported,
         "bearer_api_active": bearer_active,
-        "pairing_ready": messages_supported and (
-            bearer_active or not notifications_supported
-        ),
+        # Capability discovery selects a mode; the pairing transaction decides
+        # whether the adapter actually works.
+        "pairing_ready": True,
         "issue": issue,
         "supported_settings": sorted(supported),
         "current_settings": sorted(current),

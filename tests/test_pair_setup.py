@@ -972,7 +972,37 @@ def test_compatibility_explains_missing_classic_transport(monkeypatch):
     status = pair_setup.bluetooth_compatibility("hci0")
 
     assert status["hardware_supported"] is False
+    assert status["pairing_ready"] is True
     assert "BR/EDR" in status["issue"]
+
+
+def test_btmgmt_timeout_is_advisory_and_keeps_pairing_available(monkeypatch):
+    class Manager:
+        @staticmethod
+        def GetManagedObjects():
+            return {"/org/bluez/hci0": {"org.bluez.Adapter1": {}}}
+
+    def controller_info(command, **_kwargs):
+        if command[0] == "bluetoothctl":
+            return type(
+                "Result",
+                (),
+                {"returncode": 0, "stdout": "bluetoothctl: 5.87\n", "stderr": ""},
+            )()
+        raise pair_setup.CommandError(tuple(command), "btmgmt timed out")
+
+    monkeypatch.setattr(pair_setup, "_object_manager", Manager)
+    monkeypatch.setattr(pair_setup, "run_command", controller_info)
+    monkeypatch.setattr(pair_setup, "bluez_support_status", lambda: {"active": True})
+
+    status = pair_setup.bluetooth_compatibility("hci0")
+
+    assert status["available"] is False
+    assert status["hardware_supported"] is False
+    assert status["notifications_supported"] is False
+    assert status["pairing_ready"] is True
+    assert status["issue"] == "btmgmt timed out"
+    assert status["adapters"][0]["pairing_ready"] is True
 
 
 def test_classic_only_controller_supports_core_without_ancs(monkeypatch):
@@ -1187,16 +1217,23 @@ def test_backend_restart_does_not_create_per_user_enablement(monkeypatch):
     ]
 
 
-def _compatible(monkeypatch, *, notifications: bool = True) -> None:
+def _compatible(
+    monkeypatch,
+    *,
+    notifications: bool = True,
+    hardware: bool = True,
+    issue: str = "",
+) -> None:
     monkeypatch.setattr(
         pair_setup,
         "bluetooth_compatibility",
         lambda _adapter: {
-            "hardware_supported": True,
+            "hardware_supported": hardware,
             "notifications_supported": notifications,
             "bearer_api_active": True,
             "low_energy": True,
             "advertising": True,
+            "issue": issue,
         },
     )
     monkeypatch.setattr(pair_setup, "_prefer_bredr", lambda _path: None)
@@ -1258,6 +1295,32 @@ def test_complete_pairing_starts_profiles_while_pairing_advert_is_active(monkeyp
         "restart",
         ("unregister", "hci0"),
     ]
+
+
+def test_unverified_controller_reaches_the_real_pairing_transaction(
+    monkeypatch,
+    caplog,
+):
+    device = _device(paired=True)
+    monkeypatch.setattr(pair_setup, "_device", lambda _mac, **_kwargs: device)
+    _compatible(
+        monkeypatch,
+        notifications=False,
+        hardware=False,
+        issue="btmgmt timed out",
+    )
+    monkeypatch.setattr(
+        bluez_setup,
+        "prepare_classic",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            pair_setup.PairingError("real Bluetooth operation failed")
+        ),
+    )
+
+    with pytest.raises(pair_setup.PairingError, match="real Bluetooth operation failed"):
+        pair_setup.complete_pairing(device.mac)
+
+    assert "continuing with pairing" in caplog.text
 
 
 def test_complete_pairing_prepares_the_selected_adapter_not_a_leftover_bond(
