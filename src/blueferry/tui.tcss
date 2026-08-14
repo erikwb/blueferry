@@ -408,7 +408,8 @@ ConversationItem.-highlight .avatar {
 }
 
 #notice-bar {
-    height: 2;
+    height: auto;
+    min-height: 2;
     padding: 0 2;
     content-align-vertical: middle;
     background: #0d1425;
@@ -417,6 +418,11 @@ ConversationItem.-highlight .avatar {
 
 #notice-bar.success {
     color: #86efac;
+}
+
+#notice-bar.warn {
+    background: #403313;
+    color: #fde68a;
 }
 
 #notice-bar.error {

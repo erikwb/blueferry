@@ -11,6 +11,16 @@ from blueferry import bluez_setup, config, pair_setup, quirks_report
 from blueferry.quirks_report import MAX_REPORTS
 
 
+@pytest.fixture(autouse=True)
+def _pairing_diagnostics(monkeypatch):
+    pair_setup._pending_teardown_traces.clear()
+    monkeypatch.setattr(
+        pair_setup,
+        "_bluez_device_snapshot",
+        lambda _path: {"device_present": False},
+    )
+
+
 @pytest.fixture
 def report_dir(tmp_path, monkeypatch):
     state = tmp_path / "blueferry-state"
@@ -398,6 +408,13 @@ def test_complete_pairing_writes_a_scrubbed_success_report(
             "present": True, "paired": True, "bonded": True, "connected": True,
         },
     )
+    pair_setup._pending_teardown_traces["hci0"] = {
+        "reason": "forget_device",
+        "remove_requested": True,
+        "remove_result": "replied",
+        "before_remove": {"device_present": True, "battery_objects": 1},
+        "after_remove_reply": {"device_present": False, "battery_objects": 0},
+    }
 
     result = pair_setup.complete_pairing(device.mac)
     payload = Path(result["quirks_report"]).read_text()
@@ -426,6 +443,14 @@ def test_complete_pairing_writes_a_scrubbed_success_report(
     assert "id" not in parsed["phone"]
     assert parsed["phone"]["likely_iphone"] is True
     assert parsed["controller"]["name"] == "hci0"
+    assert parsed["previous_teardown"] == {
+        "reason": "forget_device",
+        "remove_requested": True,
+        "remove_result": "replied",
+        "before_remove": {"device_present": True, "battery_objects": 1},
+        "after_remove_reply": {"device_present": False, "battery_objects": 0},
+        "before_new_pairing": {"device_present": False},
+    }
     assert parsed["pairing_policy"] == {
         "ancs_capable": True,
         "ancs_enabled": True,

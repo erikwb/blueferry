@@ -1445,6 +1445,17 @@ ShellRoot {
             Layout.fillWidth: true
           }
           FerryLabel {
+            visible: root.configured
+              && onboarding.notificationsSupported
+              && root.backendStatus.map
+              && root.backendStatus.pbap
+              && !root.backendStatus.ancs
+            text: "FYI: If ANCS remains unavailable, BlueZ may be retaining stale Bluetooth state. Before re-pairing, run sudo systemctl restart bluetooth.service, then forget this computer on the iPhone and pair again. This briefly disconnects all Bluetooth devices."
+            color: theme.warning
+            wrapMode: Text.Wrap
+            Layout.fillWidth: true
+          }
+          FerryLabel {
             text: !root.notificationsSupported
               ? "Bluetooth bearer API: not required"
               : root.bluezActive

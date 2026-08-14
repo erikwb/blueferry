@@ -288,6 +288,28 @@ def test_textual_app_renders_status_threads_and_messages() -> None:
     _run_headless(scenario())
 
 
+def test_textual_warns_about_bluez_restart_when_only_ancs_is_missing(
+    monkeypatch,
+) -> None:
+    class MissingAncsBackend(_Backend):
+        @staticmethod
+        def status() -> BackendStatus:
+            return BackendStatus(daemon=True, map=True, pbap=True, ancs=False)
+
+    async def scenario() -> None:
+        app = BlueFerryApp(TuiState(MissingAncsBackend()), monitor_factory=lambda: None)
+
+        async with app.run_test(size=(70, 36)) as pilot:
+            await _wait_for_threads(app, pilot, 2)
+            notice = app.query_one("#notice-bar", Static)
+            assert "sudo systemctl restart bluetooth.service" in notice.render().plain
+            assert notice.has_class("warn")
+            assert notice.region.height >= 3
+
+    monkeypatch.setattr(tui_module.config, "ANCS_ENABLED", True)
+    _run_headless(scenario())
+
+
 def test_unchanged_poll_does_not_rebuild_the_terminal_view() -> None:
     async def scenario() -> None:
         state = TuiState(_Backend())
