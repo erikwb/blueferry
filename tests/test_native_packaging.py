@@ -143,3 +143,8 @@ def test_package_workflow_installs_identical_artifacts_on_targets() -> None:
     assert workflow.count("smoke_tui blueferry-tui") == 4
     assert workflow.count("smoke_tui blueferry tui") == 4
     assert workflow.count('gi.require_version("Secret", "1")') == 4
+    assert workflow.count('safe.directory "$GITHUB_WORKSPACE"') == 2
+    assert workflow.count("dnf install -y --allowerasing") == 2
+    assert workflow.count(
+        "systemd-analyze verify --man=no bluetooth.service"
+    ) == 3

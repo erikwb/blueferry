@@ -87,7 +87,7 @@ jobs:
         run: |
           pacman -U --noconfirm packages/*.pkg.tar.zst
           if command -v systemd-analyze >/dev/null; then
-            systemd-analyze verify bluetooth.service
+            systemd-analyze verify --man=no bluetooth.service
           fi
           grep -Fx 'ExecStart=/usr/lib/bluetooth/bluetoothd -E' \
             /usr/lib/systemd/system/bluetooth.service.d/blueferry.conf
@@ -223,7 +223,7 @@ jobs:
       - name: Build packages and run recipe checks
         run: ./packaging/build-rpm.sh
       - name: Install the built artifacts
-        run: dnf install -y dist/rpm/*.noarch.rpm
+        run: dnf install -y --allowerasing dist/rpm/*.noarch.rpm
       - name: Smoke test
         run: |
           blueferry version
@@ -263,9 +263,9 @@ jobs:
           path: packages
       - name: Install and smoke-test the exact Fedora artifacts
         run: |
-          dnf install -y packages/*.noarch.rpm
+          dnf install -y --allowerasing packages/*.noarch.rpm
           if command -v systemd-analyze >/dev/null; then
-            systemd-analyze verify bluetooth.service
+            systemd-analyze verify --man=no bluetooth.service
           fi
           grep -Fx 'ExecStart=/usr/libexec/bluetooth/bluetoothd -E' \
             /usr/lib/systemd/system/bluetooth.service.d/blueferry.conf
