@@ -1266,20 +1266,6 @@ ShellRoot {
             visible: !root.configured
           }
           FerryCheckBox {
-            id: compatibilityMode
-            visible: !root.configured
-            text: "Compatibility pairing for iOS 18 or earlier"
-            checked: !root.notificationsSupported || root.compatibilityModeOverride
-            enabled: root.notificationsSupported && !pairProcess.running
-            onClicked: root.compatibilityModeOverride = checked
-          }
-          FerryLabel {
-            visible: !root.configured && compatibilityMode.checked
-            text: "BlueFerry will still advertise ANCS solicitation so Messages and Contacts permissions appear, but it will not connect system notifications."
-            wrapMode: Text.Wrap
-            Layout.fillWidth: true
-          }
-          FerryCheckBox {
             id: confirmBluetoothRestart
             visible: !root.configured
                      && root.notificationsSupported && !root.bluezActive
@@ -1324,12 +1310,26 @@ ShellRoot {
             textRole: "label"
           }
           FerryCheckBox {
+            id: compatibilityMode
+            visible: !root.configured
+            text: "Compatibility pairing for iOS 18 or earlier"
+            checked: !root.notificationsSupported || root.compatibilityModeOverride
+            enabled: root.notificationsSupported && !pairProcess.running
+            onClicked: root.compatibilityModeOverride = checked
+          }
+          FerryCheckBox {
             id: explicitPairing
             visible: !root.configured
             text: "Use explicit Bluetooth pairing"
             checked: root.explicitPairingOverride
             enabled: !pairProcess.running
             onClicked: root.explicitPairingOverride = checked
+          }
+          FerryLabel {
+            visible: !root.configured && compatibilityMode.checked
+            text: "BlueFerry will still advertise ANCS solicitation so Messages and Contacts permissions appear, but it will not connect system notifications."
+            wrapMode: Text.Wrap
+            Layout.fillWidth: true
           }
           FerryButton {
             visible: !root.configured
