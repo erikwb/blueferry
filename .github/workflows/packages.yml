@@ -55,7 +55,7 @@ jobs:
       - name: Smoke test
         run: |
           if command -v systemd-analyze >/dev/null; then
-            systemd-analyze verify bluetooth.service
+            systemd-analyze verify --man=no bluetooth.service
           fi
           grep -Fx 'ExecStart=/usr/lib/bluetooth/bluetoothd -E' \
             /usr/lib/systemd/system/bluetooth.service.d/blueferry.conf
@@ -108,6 +108,8 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends ca-certificates devscripts equivs git
       - uses: actions/checkout@v6
+      - name: Mark the container checkout as safe for Git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Install declared build dependencies
         run: >-
           mk-build-deps --install --remove
@@ -214,6 +216,8 @@ jobs:
       - name: Install package tools
         run: dnf install -y dnf-plugins-core git rpm-build
       - uses: actions/checkout@v6
+      - name: Mark the container checkout as safe for Git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Install declared build dependencies
         run: dnf builddep -y packaging/rpm/blueferry.spec
       - name: Build packages and run recipe checks
