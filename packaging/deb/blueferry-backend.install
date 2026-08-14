@@ -10,5 +10,6 @@ usr/lib/blueferry/vendor
 usr/lib/systemd/user/blueferry.service
 usr/lib/systemd/user/default.target.wants/blueferry.service
 usr/share/blueferry/package-release
+usr/share/blueferry/build-sha
 usr/share/dbus-1/interfaces/io.weirdware.BlueFerry.xml
 usr/share/dbus-1/services/io.weirdware.BlueFerry.service

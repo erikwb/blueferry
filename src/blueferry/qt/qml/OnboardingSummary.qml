@@ -65,7 +65,7 @@ Kirigami.InlineMessage {
             "checking": qsTr("Inspecting the selected Bluetooth controller without changing it."),
             "incompatible": compatibility.issue || qsTr("A controller with BR/EDR and secure pairing is required."),
             "activate-bluetooth": qsTr("The packaged BlueZ bearer support needs one authorized Bluetooth restart."),
-            "select-device": qsTr("Scan for and select your iPhone here, then choose Pair. On the iPhone, open Settings → Bluetooth, find this computer under \"Other Devices\", tap it, and approve the matching codes. Pairing may appear idle for up to 15 seconds. While it does, return to the Bluetooth device list and reopen this computer's ⓘ page a few times; turn on any new toggles that appear. System Notification access is also how BlueFerry recognizes group text threads; without it, a group text appears as a one-to-one conversation with its sender."),
+            "select-device": qsTr("Scan for and select your iPhone here, then choose Pair. When the pairing request appears on the iPhone, approve it and confirm that the codes match. Pairing may appear idle for up to 15 seconds. After it completes, return to the Bluetooth device list and open this computer's ⓘ page a few times; turn on any new toggles that appear. System Notification access is also how BlueFerry recognizes group text threads; without it, a group text appears as a one-to-one conversation with its sender."),
             "starting": qsTr("The configured backend is starting. This normally takes a few seconds."),
             "iphone-settings": pendingTasksText(),
             "ready": qsTr("Bluetooth services and iPhone permissions have been verified."),

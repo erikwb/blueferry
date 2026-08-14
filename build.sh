@@ -11,7 +11,7 @@ usage() {
     cat <<'EOF'
 Usage:
   ./build.sh                  Prepare the snapshot and run makepkg -C -f -s
-  ./build.sh -si              Build/install all five split packages
+  ./build.sh -si              Build/install all four split packages
   ./build.sh --prepare-only   Only refresh packaging/arch/blueferry-*.tar.gz
   ./build.sh -- <args...>     Pass arbitrary arguments to makepkg
 
@@ -57,7 +57,8 @@ fi
 
 archive="$ARCH_DIR/blueferry-$version.tar.gz"
 temporary="$archive.tmp.$$"
-trap 'rm -f -- "$temporary"' EXIT
+snapshot_work=$(mktemp -d)
+trap 'rm -f -- "$temporary"; rm -rf -- "$snapshot_work"' EXIT
 
 mapfile -d '' candidates < <(
     git -C "$ROOT" ls-files --cached --others --exclude-standard -z
@@ -80,13 +81,25 @@ if (( ${#files[@]} == 0 )); then
 fi
 
 source_epoch=$(git -C "$ROOT" log -1 --format=%ct)
-tar -C "$ROOT" \
+snapshot_dir="$snapshot_work/blueferry-$version"
+mkdir -p "$snapshot_dir"
+tar -C "$ROOT" -cf - -- "${files[@]}" | tar -C "$snapshot_dir" -xf -
+build_sha=$(
+    tar -C "$snapshot_dir" \
+        --sort=name \
+        --mtime="@$source_epoch" \
+        --owner=0 --group=0 --numeric-owner \
+        -cf - . | sha256sum | cut -d' ' -f1
+)
+printf '%s\n' "$build_sha" > "$snapshot_dir/.blueferry-build-sha"
+
+tar -C "$snapshot_work" \
     --sort=name \
     --mtime="@$source_epoch" \
     --owner=0 --group=0 --numeric-owner \
-    --transform="s|^|blueferry-$version/|" \
-    -cf - -- "${files[@]}" | gzip -n > "$temporary"
+    -cf - "blueferry-$version" | gzip -n > "$temporary"
 mv -f -- "$temporary" "$archive"
+rm -rf -- "$snapshot_work"
 trap - EXIT
 
 # makepkg must verify exactly the snapshot it is about to compile. Keep this
@@ -96,6 +109,7 @@ printf '%s\n' "$digest" > "$ARCH_DIR/.source-sha256"
 
 echo "Prepared $archive"
 echo "SHA-256: $digest"
+echo "Build SHA: $build_sha"
 echo "Snapshot files: ${#files[@]}"
 
 if "$prepare_only"; then

@@ -36,6 +36,8 @@ override_dh_auto_install:
 		debian/tmp/usr/share/dbus-1/interfaces/io.weirdware.BlueFerry.xml
 	install -d debian/tmp/usr/share/blueferry
 	dpkg-parsechangelog -S Version > debian/tmp/usr/share/blueferry/package-release
+	install -Dm644 .blueferry-build-sha \
+		debian/tmp/usr/share/blueferry/build-sha
 	install -Dm644 data/io.weirdware.BlueFerry.Gtk.desktop \
 		debian/tmp/usr/share/applications/io.weirdware.BlueFerry.Gtk.desktop
 	install -Dm644 data/io.weirdware.BlueFerry.Gtk.metainfo.xml \

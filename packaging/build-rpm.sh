@@ -8,7 +8,7 @@ OUTPUT="$ROOT/dist/rpm"
 WORK=$(mktemp -d)
 trap 'rm -rf -- "$WORK"' EXIT
 
-for command in git gzip python3 rpmbuild tar; do
+for command in git gzip python3 rpmbuild sha256sum tar; do
     command -v "$command" >/dev/null || {
         echo "error: required command not found: $command" >&2
         exit 127
@@ -49,10 +49,18 @@ mkdir -p "$topdir"/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS}
 archive="$topdir/SOURCES/blueferry-$version.tar.gz"
 temporary="$archive.tmp"
 source_epoch=$(git -C "$ROOT" log -1 --format=%ct)
-tar -C "$ROOT" --sort=name --mtime="@$source_epoch" \
+source_dir="$WORK/blueferry-$version"
+mkdir -p "$source_dir"
+tar -C "$ROOT" -cf - -- "${files[@]}" | tar -C "$source_dir" -xf -
+build_sha=$(
+    tar -C "$source_dir" --sort=name --mtime="@$source_epoch" \
+        --owner=0 --group=0 --numeric-owner -cf - . \
+        | sha256sum | cut -d' ' -f1
+)
+printf '%s\n' "$build_sha" > "$source_dir/.blueferry-build-sha"
+tar -C "$WORK" --sort=name --mtime="@$source_epoch" \
     --owner=0 --group=0 --numeric-owner \
-    --transform="s|^|blueferry-$version/|" \
-    -cf - -- "${files[@]}" | gzip -n > "$temporary"
+    -cf - "blueferry-$version" | gzip -n > "$temporary"
 mv -f -- "$temporary" "$archive"
 cp "$ROOT/packaging/rpm/blueferry.spec" "$topdir/SPECS/"
 

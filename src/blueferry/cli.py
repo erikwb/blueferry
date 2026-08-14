@@ -130,6 +130,19 @@ def pair_setup(
         "--debug",
         help="Print detailed Bluetooth pairing and connection activity",
     ),
+    compatibility_mode: bool = typer.Option(
+        False,
+        "--compatibility-mode",
+        help=(
+            "Skip ANCS connection attempts and use MAP/PBAP only "
+            "(recommended for iOS 18 or earlier)"
+        ),
+    ),
+    explicit_pairing: bool = typer.Option(
+        False,
+        "--explicit-pairing",
+        help="Call Pair immediately instead of initiating pairing with Connect",
+    ),
 ):
     """First-run wizard: pick a paired iPhone, write the local config,
     walk through the iPhone-side toggle steps."""
@@ -138,7 +151,12 @@ def pair_setup(
 
     from blueferry.pairing_cli import run_wizard
 
-    raise typer.Exit(code=run_wizard(verify_after=not no_verify))
+    code = run_wizard(
+        verify_after=not no_verify,
+        compatibility_mode=compatibility_mode,
+        explicit_pairing=explicit_pairing,
+    )
+    raise typer.Exit(code=code)
 
 
 @app.command("pairing-devices-json", hidden=True)
@@ -234,6 +252,12 @@ def pairing_complete(
     interactive_agent: bool = typer.Option(False, "--interactive-agent", hidden=True),
     adapter: str = typer.Option("", "--adapter"),
     replace_saved_mac: str = typer.Option("", "--replace-saved-mac", hidden=True),
+    compatibility_mode: bool = typer.Option(
+        False, "--compatibility-mode", hidden=True,
+    ),
+    explicit_pairing: bool = typer.Option(
+        False, "--explicit-pairing", hidden=True,
+    ),
     debug: bool = typer.Option(False, "--debug"),
 ) -> None:
     """Pair and perform all Linux-side setup for graphical clients."""
@@ -272,6 +296,8 @@ def pairing_complete(
             adapter=selected,
             confirmation=confirm if interactive_agent else None,
             display=display if interactive_agent else None,
+            compatibility_mode=compatibility_mode,
+            explicit_pairing=explicit_pairing,
         )
         emit(result.to_dict())
     except PairingError as error:

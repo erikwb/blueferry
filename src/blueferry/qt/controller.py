@@ -74,6 +74,7 @@ class BridgeController(QObject):
         self._compatibility: dict = {}
         self._configured = False
         self._target_saved = False
+        self._ancs_enabled = True
         self._configured_mac = ""
         self._configured_adapter = ""
         self._setup_loaded = False
@@ -81,7 +82,7 @@ class BridgeController(QObject):
             derive_stage(
                 setup_loaded=self._setup_loaded,
                 configured=self._configured,
-                compatibility=self._compatibility,
+                compatibility=self._onboarding_compatibility(),
                 status=self._status,
             )
         )
@@ -136,6 +137,16 @@ class BridgeController(QObject):
     def compatibility(self):
         return self._compatibility
 
+    def _onboarding_compatibility(self) -> dict:
+        compatibility = dict(self._compatibility)
+        if self._target_saved and not self._ancs_enabled:
+            compatibility["notifications_supported"] = False
+        return compatibility
+
+    @Property("QVariantMap", notify=compatibilityChanged)
+    def onboardingCompatibility(self):
+        return self._onboarding_compatibility()
+
     @Property(bool, notify=configuredChanged)
     def configured(self) -> bool:
         return self._configured
@@ -161,7 +172,7 @@ class BridgeController(QObject):
             derive_stage(
                 setup_loaded=self._setup_loaded,
                 configured=self._configured,
-                compatibility=self._compatibility,
+                compatibility=self._onboarding_compatibility(),
                 status=self._status,
             )
         )
@@ -282,10 +293,12 @@ class BridgeController(QObject):
             configuration, status = result
             self._configured = configuration.configured
             self._target_saved = configuration.saved
+            self._ancs_enabled = bool(getattr(configuration, "ancs_enabled", True))
             self._configured_mac = configuration.mac
             self._configured_adapter = configuration.adapter
             self._setup_loaded = True
             self.configuredChanged.emit()
+            self.compatibilityChanged.emit()
             self.setupLoadedChanged.emit()
             if status:
                 self._status = dict(status)
@@ -323,6 +336,7 @@ class BridgeController(QObject):
             self._compatibility = compatibility.to_dict()
             self._configured = configuration.configured
             self._target_saved = configuration.saved
+            self._ancs_enabled = bool(getattr(configuration, "ancs_enabled", True))
             self._configured_mac = configuration.mac
             self._configured_adapter = configuration.adapter
             self._setup_loaded = True
@@ -593,21 +607,50 @@ class BridgeController(QObject):
 
         self._run(self._setup.activate_bluez, completed)
 
-    @Slot(str)
-    def completePairing(self, mac: str) -> None:
-        self._start_pairing(mac)
+    @Slot(str, bool, bool)
+    def completePairing(
+        self,
+        mac: str,
+        compatibility_mode: bool = False,
+        explicit_pairing: bool = False,
+    ) -> None:
+        self._start_pairing(
+            mac,
+            compatibility_mode=compatibility_mode,
+            explicit_pairing=explicit_pairing,
+        )
 
-    @Slot(str, str)
-    def replaceAndPair(self, previous_mac: str, mac: str) -> None:
-        self._start_pairing(mac, replace_saved_mac=previous_mac)
+    @Slot(str, str, bool, bool)
+    def replaceAndPair(
+        self,
+        previous_mac: str,
+        mac: str,
+        compatibility_mode: bool = False,
+        explicit_pairing: bool = False,
+    ) -> None:
+        self._start_pairing(
+            mac,
+            replace_saved_mac=previous_mac,
+            compatibility_mode=compatibility_mode,
+            explicit_pairing=explicit_pairing,
+        )
 
-    def _start_pairing(self, mac: str, *, replace_saved_mac: str = "") -> None:
+    def _start_pairing(
+        self,
+        mac: str,
+        *,
+        replace_saved_mac: str = "",
+        compatibility_mode: bool = False,
+        explicit_pairing: bool = False,
+    ) -> None:
         def completed(value: object) -> None:
             self._configured = True
             self._target_saved = True
+            self._ancs_enabled = bool(getattr(value, "ancs_enabled", True))
             self._configured_mac = mac
             self._configured_adapter = str(self._compatibility.get("adapter", ""))
             self.configuredChanged.emit()
+            self.compatibilityChanged.emit()
             self._update_onboarding_stage()
             self.loadDevices(False)
             self.loadSetupState()
@@ -647,13 +690,17 @@ class BridgeController(QObject):
                 if path:
                     adapter = path.rsplit("/", 1)[-1]
                 break
-            return self._setup.complete_isolated(
-                mac,
-                confirmation=confirm,
-                display=display,
-                adapter=adapter,
-                replace_saved_mac=replace_saved_mac,
-            )
+            options = {
+                "confirmation": confirm,
+                "display": display,
+                "adapter": adapter,
+                "replace_saved_mac": replace_saved_mac,
+            }
+            if compatibility_mode:
+                options["compatibility_mode"] = True
+            if explicit_pairing:
+                options["explicit_pairing"] = True
+            return self._setup.complete_isolated(mac, **options)
 
         def failed(message: str) -> None:
             self._operation_failed(message)
@@ -688,11 +735,13 @@ class BridgeController(QObject):
         def completed(_value: object) -> None:
             self._configured = False
             self._target_saved = False
+            self._ancs_enabled = True
             self._configured_mac = ""
             self._configured_adapter = ""
             self._status = {}
             self._threads = []
             self.configuredChanged.emit()
+            self.compatibilityChanged.emit()
             self.statusChanged.emit()
             self.threadsChanged.emit()
             self._update_onboarding_stage()

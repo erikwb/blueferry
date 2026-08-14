@@ -17,6 +17,7 @@ from blueferry.ancs.client import AncsClient
 from blueferry.backend_lifecycle import installed_release
 from blueferry.backend_operations import BackendDependencies
 from blueferry.bearer_supervisor import BearerSupervisor
+from blueferry.build_info import build_id, installed_build_sha, running_build_sha
 from blueferry.bus import get_system_bus, main_loop
 from blueferry.connectivity import Connectivity
 from blueferry.contacts import ContactsResolver, clear_contact_cache, pull_phonebook
@@ -104,6 +105,13 @@ class Daemon:
         packaged_release = installed_release()
         self._packaged = packaged_release is not None
         self._running_release = packaged_release or __version__
+        self._running_build_sha = (
+            installed_build_sha() if self._packaged else running_build_sha()
+        )
+        self._running_build_id = build_id(
+            self._running_release,
+            self._running_build_sha,
+        )
         self._release_check_id: int | None = None
         self._target_config_check_id: int | None = None
         self._restart_after_upgrade = False
@@ -119,7 +127,9 @@ class Daemon:
             on_ready=self._post_sessions_setup,
             on_lost=self._profiles_lost,
             on_status=self._emit_status,
-            on_first_attempt_complete=self.bearers.enable_le,
+            on_first_attempt_complete=(
+                self.bearers.enable_le if config.ANCS_ENABLED else None
+            ),
         )
 
     def _emit_status(self) -> None:
@@ -260,7 +270,7 @@ class Daemon:
         # The bearer supervisor connects LE alongside BR/EDR; the client waits
         # for the three ANCS characteristics and subscribes when they appear.
         device_path = f"/org/bluez/{config.ADAPTER}/dev_{config.IPHONE_MAC.replace(':', '_')}"
-        if self.ancs is None:
+        if config.ANCS_ENABLED and self.ancs is None:
             candidate = AncsClient(
                 device_path,
                 on_event=self.events.ancs,
@@ -275,6 +285,8 @@ class Daemon:
                 candidate.stop()
                 raise
             self.ancs = candidate
+        elif not config.ANCS_ENABLED:
+            log.info("ANCS connection disabled by pairing compatibility policy")
         self._watch_sleep_resume()
 
         # Sinks don't need the OBEX sessions — set them up now so ANCS events
@@ -374,6 +386,7 @@ class Daemon:
         ancs = self.ancs
         return {
             "backend_release": self._running_release,
+            "_build_id": self._running_build_id,
             "initializing": self._initializing,
             "ancs": bool(ancs and ancs.connected),
             "ancs_subscribed": bool(ancs and ancs.subscribed),
@@ -416,10 +429,14 @@ class Daemon:
 
     def _check_package_release(self) -> bool:
         current = installed_release()
-        if current == self._running_release:
+        current_sha = installed_build_sha()
+        current_build = build_id(current, current_sha) if current is not None else None
+        if current_build == self._running_build_id:
             self._release_missing_checks = 0
             return True
-        if current is None:
+        if current is None or (
+            self._running_build_sha is not None and current_sha is None
+        ):
             # Pacman may briefly replace the marker during an upgrade. Three
             # consecutive misses distinguish removal from that transient.
             self._release_missing_checks += 1
@@ -431,8 +448,8 @@ class Daemon:
         self._release_missing_checks = 0
         log.info(
             "installed backend changed from %s to %s; restarting",
-            self._running_release,
-            current,
+            self._running_build_id,
+            current_build,
         )
         self._restart_after_upgrade = True
         main_loop.quit()

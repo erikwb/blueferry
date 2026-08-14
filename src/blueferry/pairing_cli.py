@@ -31,7 +31,20 @@ def _display_pairing_code(passkey: int) -> None:
     typer.echo(f"Bluetooth pairing code: {passkey:06d}")
 
 
-def run_wizard(*, verify_after: bool = True) -> int:
+def _verification_detail(*, ancs_ready: bool, compatibility_mode: bool) -> str:
+    if ancs_ready:
+        return "including iPhone notifications"
+    if compatibility_mode:
+        return "messages and contacts; ANCS was disabled by compatibility mode"
+    return "messages and contacts; this controller has no ANCS support"
+
+
+def run_wizard(
+    *,
+    verify_after: bool = True,
+    compatibility_mode: bool = False,
+    explicit_pairing: bool = False,
+) -> int:
     """Run the same full pairing workflow exposed by the graphical clients."""
     typer.echo(
         typer.style("\n=== BlueFerry first-run setup ===\n", fg=typer.colors.CYAN, bold=True)
@@ -113,7 +126,11 @@ def run_wizard(*, verify_after: bool = True) -> int:
                 fg=typer.colors.YELLOW,
             )
         )
-    if compatibility.notifications_supported and not compatibility.bearer_api_active:
+    if (
+        not compatibility_mode
+        and compatibility.notifications_supported
+        and not compatibility.bearer_api_active
+    ):
         if not typer.confirm(
             "Activate Bluetooth support? This briefly disconnects Bluetooth devices.",
             default=True,
@@ -185,12 +202,21 @@ def run_wizard(*, verify_after: bool = True) -> int:
             return 1
 
     typer.echo("\nActivating Bluetooth, then starting secure pairing…")
+    if compatibility_mode:
+        typer.echo(
+            "Compatibility mode: BlueFerry will set up Messages and Contacts "
+            "without connecting ANCS."
+        )
+    if explicit_pairing:
+        typer.echo("Explicit pairing: skipping the initial Device1.Connect attempt.")
     try:
         result = setup.complete(
             chosen.mac,
             adapter=compatibility.adapter,
             confirmation=_confirm_pairing,
             display=_display_pairing_code,
+            compatibility_mode=compatibility_mode,
+            explicit_pairing=explicit_pairing,
         )
     except PairingError as error:
         typer.echo(typer.style(str(error), fg=typer.colors.RED))
@@ -204,14 +230,20 @@ def run_wizard(*, verify_after: bool = True) -> int:
         verified = BackendClient().status().verified_iphone_setup
     except BackendError:
         verified = ()
+    ancs_enabled = getattr(
+        result,
+        "ancs_enabled",
+        compatibility.notifications_supported and not compatibility_mode,
+    )
     remaining = remaining_iphone_setup_tasks(
         verified,
-        notifications_supported=compatibility.notifications_supported,
+        notifications_supported=ancs_enabled,
     )
     _print_iphone_steps(
         result.device.uuids,
         remaining=remaining,
         notifications_supported=compatibility.notifications_supported,
+        ancs_enabled=ancs_enabled,
         ancs_ready=result.ancs_ready,
     )
 
@@ -233,12 +265,11 @@ def run_wizard(*, verify_after: bool = True) -> int:
                 time.sleep(2)
                 continue
             profiles_ready = status.map and status.pbap
-            notification_ready = status.ancs or not compatibility.notifications_supported
+            notification_ready = status.ancs or not ancs_enabled
             if profiles_ready and notification_ready:
-                detail = (
-                    "including iPhone notifications"
-                    if status.ancs
-                    else ("messages and contacts; this controller has no ANCS support")
+                detail = _verification_detail(
+                    ancs_ready=status.ancs,
+                    compatibility_mode=compatibility_mode,
                 )
                 typer.echo(typer.style(f"✓ Setup verified: {detail}", fg=typer.colors.GREEN))
                 typer.echo("New incoming messages will appear automatically.")
@@ -259,6 +290,7 @@ def _print_iphone_steps(
     *,
     remaining: tuple[str, ...],
     notifications_supported: bool,
+    ancs_enabled: bool,
     ancs_ready: bool,
 ) -> None:
     if not remaining:
@@ -279,7 +311,7 @@ def _print_iphone_steps(
     if NOTIFICATION_ACCESS in remaining:
         typer.echo("\nANCS notification access is negotiated during pairing. Some")
         typer.echo("iOS versions do not show a separate system-notification toggle.")
-    if NOTIFICATION_ACCESS in remaining or not notifications_supported:
+    if NOTIFICATION_ACCESS in remaining or not ancs_enabled:
         typer.echo(
             "Without System Notification access, group texts appear as "
             "individual conversations with their sender."

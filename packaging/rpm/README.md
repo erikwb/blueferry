@@ -23,8 +23,8 @@ sudo dnf install dist/rpm/blueferry-backend-*.noarch.rpm \
   dist/rpm/blueferry-gtk-*.noarch.rpm
 ```
 
-`blueferry-backend` includes `blueferry-tui` and a pinned private Textual 8
-runtime under `/usr/lib/blueferry/vendor`. The package build is offline: its
+`blueferry-backend` includes the `blueferry-tui` command and a pinned private
+Textual 8 runtime under `/usr/lib/blueferry/vendor`. The package build is offline: its
 wheel bundle is stored in the source tree and verified against committed
 SHA-256 checksums. Nothing is installed into Python's system package directory,
 so the bundle cannot replace or conflict with Fedora's `python3-textual`.

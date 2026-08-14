@@ -7,7 +7,7 @@ described below.
 
 | Package recipe | Tested distributions | Output |
 | --- | --- | --- |
-| `arch/PKGBUILD` | Arch Linux, CachyOS | backend, GTK, Qt, TUI, Quickshell |
+| `arch/PKGBUILD` | Arch Linux, CachyOS | backend with TUI, GTK, Qt, Quickshell |
 | `deb/` | Debian 13, Ubuntu 26.04, PikaOS IV | MAP/PBAP backend with TUI, GTK, Qt |
 | `deb/` | Ubuntu 24.04, Linux Mint 22.3, Pop!_OS 24.04 | MAP/PBAP backend with TUI, GTK |
 | `rpm/blueferry.spec` | Fedora 43, Fedora 44 | backend with TUI, GTK, Qt |

@@ -13,7 +13,9 @@ from typing import Any
 from urllib.parse import urlencode
 
 from blueferry import config
+from blueferry.backend_lifecycle import installed_release
 from blueferry.bluetooth_capabilities import chipset_name, is_generic_product
+from blueferry.build_info import build_id, running_build_sha
 from blueferry.private_files import atomic_write_private_text, ensure_private_directory
 
 log = logging.getLogger(__name__)
@@ -123,9 +125,13 @@ def session_environment() -> dict[str, str]:
 def start_attempt(*, interactive: bool) -> dict[str, Any]:
     from blueferry import __version__
 
+    build_sha = running_build_sha()
+    release = installed_release() or __version__
     attempt: dict[str, Any] = {
         "started_at": datetime.now(timezone.utc).isoformat(),
         "blueferry": __version__,
+        "blueferry_build": build_id(release, build_sha),
+        "blueferry_sha": build_sha or "unknown",
         "pairing_path": "interactive" if interactive else "headless",
         "session": session_environment(),
         "_t0": time.monotonic(),

@@ -21,6 +21,26 @@ def test_native_recipes_track_project_version() -> None:
     assert f"Version:        {version}\n" in rpm_spec
 
 
+def test_native_packages_bake_and_ship_a_source_build_sha() -> None:
+    scripts = [
+        (ROOT / "build.sh").read_text(),
+        (ROOT / "packaging/build-deb.sh").read_text(),
+        (ROOT / "packaging/build-rpm.sh").read_text(),
+    ]
+    arch = (ROOT / "packaging/arch/PKGBUILD").read_text()
+    deb_rules = (ROOT / "packaging/deb/rules").read_text()
+    deb_install = (ROOT / "packaging/deb/blueferry-backend.install").read_text()
+    rpm = (ROOT / "packaging/rpm/blueferry.spec").read_text()
+
+    for script in scripts:
+        assert ".blueferry-build-sha" in script
+        assert "sha256sum" in script
+    assert "usr/share/blueferry/build-sha" in arch
+    assert "usr/share/blueferry/build-sha" in deb_rules
+    assert "usr/share/blueferry/build-sha" in deb_install
+    assert "%{_datadir}/blueferry/build-sha" in rpm
+
+
 def test_notification_capable_native_families_use_their_own_bluetoothd_path() -> None:
     arch = (ROOT / "packaging/arch/blueferry-bluetooth.conf").read_text()
     rpm = (ROOT / "packaging/rpm/blueferry-bluetooth.conf").read_text()
@@ -115,7 +135,10 @@ def test_arch_snapshot_excludes_deb_rpm_only_vendor_bundle() -> None:
     arch_recipe = (ROOT / "packaging/arch/PKGBUILD").read_text()
 
     assert '[[ "$file" == packaging/vendor/textual/* ]]' in build_script
-    assert 'blueferry/__pycache__/tui."*.pyc' in arch_recipe
+    assert "packaging/vendor/textual" not in arch_recipe
+    assert build_script.index('rm -rf -- "$snapshot_work"') < build_script.index(
+        'exec makepkg --cleanbuild --force "$@"'
+    )
 
 
 def test_package_workflow_installs_identical_artifacts_on_targets() -> None:
@@ -138,10 +161,10 @@ def test_package_workflow_installs_identical_artifacts_on_targets() -> None:
     assert "name: packages-arch" in workflow
     assert "name: packages-deb" in workflow
     assert "name: packages-rpm" in workflow
-    assert "Smoke-test the backend-only Arch install" in workflow
-    assert "install the blueferry-tui package" in workflow
-    assert workflow.count("smoke_tui blueferry-tui") == 4
-    assert workflow.count("smoke_tui blueferry tui") == 4
+    assert "Smoke-test the Arch backend and bundled TUI" in workflow
+    assert "install the blueferry-tui package" not in workflow
+    assert workflow.count("smoke_tui blueferry-tui") == 6
+    assert workflow.count("smoke_tui blueferry tui") == 6
     assert workflow.count('gi.require_version("Secret", "1")') == 4
     assert workflow.count('safe.directory "$GITHUB_WORKSPACE"') == 2
     assert workflow.count("dnf install -y --allowerasing") == 2

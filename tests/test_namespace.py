@@ -29,25 +29,27 @@ def test_graphical_commands_follow_client_package_names() -> None:
     assert "blueferry-ui" not in project + pkgbuild + desktop
 
 
-def test_tui_entry_point_is_shipped_by_separate_arch_package() -> None:
+def test_tui_entry_point_is_shipped_by_arch_backend() -> None:
     project = (ROOT / "pyproject.toml").read_text()
     pkgbuild = (ROOT / "packaging" / "arch" / "PKGBUILD").read_text()
     backend = pkgbuild.split("package_blueferry-backend()", 1)[1].split(
         "package_blueferry-gtk()", 1
     )[0]
-    tui = pkgbuild.split("package_blueferry-tui()", 1)[1].split(
-        "package_blueferry-quickshell()", 1
-    )[0]
+    package_names = pkgbuild.split("pkgname=(", 1)[1].split("\n)", 1)[0]
 
     assert 'blueferry-tui = "blueferry.tui_launcher:main"' in project
     assert '"textual>=8.0"' in project
     assert '"blueferry" = ["tui.tcss"]' in project
-    assert "'python-textual>=8.0'" not in backend
-    assert "blueferry/tui.py" in backend
-    assert "blueferry/tui.tcss" in backend
-    assert "'python-textual>=8.0'" in tui
-    assert '$_stage/usr/bin/blueferry-tui' in tui
-    assert '$pkgdir/usr/bin/blueferry-tui' in tui
+    assert "blueferry-tui" not in package_names
+    assert "package_blueferry-tui()" not in pkgbuild
+    assert "conflicts=('blueferry-tui')" in backend
+    assert "provides=('blueferry-tui')" in backend
+    assert "replaces=('blueferry-tui')" in backend
+    assert "'python-textual>=8.0'" in backend
+    assert "blueferry/tui.py" not in backend
+    assert "blueferry/tui.tcss" not in backend
+    assert '$_stage/usr/bin/blueferry-tui' in backend
+    assert '$pkgdir/usr/bin/blueferry-tui' in backend
 
 
 def test_dbus_activation_and_systemd_publish_the_runtime_bus_name() -> None:
@@ -178,8 +180,34 @@ def test_gui_pairing_guidance_tells_users_to_recheck_iphone_toggles() -> None:
     )
 
     for client in clients:
-        assert "reopen this computer's ⓘ page a" in client
+        assert "this computer's ⓘ page a" in client
         assert "few times; turn on any new toggles that appear" in client
+
+
+def test_all_pairing_clients_expose_compatibility_mode() -> None:
+    gtk = (ROOT / "src/blueferry/ui/status.py").read_text()
+    qt = _qml_bundle(ROOT / "src/blueferry/qt/qml")
+    quickshell = _qml_bundle(ROOT / "data/quickshell")
+
+    for client in (gtk, qt, quickshell):
+        assert "Compatibility pairing" in client
+        assert "iOS 18 or earlier" in client
+    assert "compatibility_mode=" in gtk
+    assert "compatibilityMode.checked" in qt
+    assert "text: compatibilityMode.checked" in qt
+    assert '"--compatibility-mode"' in quickshell
+
+
+def test_all_pairing_clients_expose_explicit_pairing_mode() -> None:
+    gtk = (ROOT / "src/blueferry/ui/status.py").read_text()
+    qt = _qml_bundle(ROOT / "src/blueferry/qt/qml")
+    quickshell = _qml_bundle(ROOT / "data/quickshell")
+
+    for client in (gtk, qt, quickshell):
+        assert "Use explicit Bluetooth pairing" in client
+    assert "explicit_pairing=" in gtk
+    assert "explicitPairing.checked" in qt
+    assert '"--explicit-pairing"' in quickshell
 
 
 def test_gtk_connection_rows_all_have_status_icons() -> None:
@@ -336,15 +364,15 @@ def test_all_gui_clients_offer_a_pairing_issue_button() -> None:
     assert '"--print-url"' in quickshell
 
 
-def test_all_gui_clients_explain_phone_side_pairing_step() -> None:
+def test_all_gui_clients_explain_desktop_initiated_pairing() -> None:
     gtk = (ROOT / "src/blueferry/ui/status.py").read_text()
     qt = _qml_bundle(ROOT / "src/blueferry/qt/qml")
     quickshell = _qml_bundle(ROOT / "data/quickshell")
 
     for client in (gtk, qt, quickshell):
-        assert "find this computer" in client
-        assert "Other Devices" in client
-        assert "tap it" in client
+        assert "select your iPhone here, then choose Pair" in client
+        assert "pairing request appears on the iPhone" in client
+        assert "Other Devices" not in client
 
 
 def test_all_gui_clients_explain_map_connection_refusal() -> None:

@@ -47,6 +47,8 @@ class IPhonePage(Gtk.Box):
         self._applying_storage_policy = False
         self._storage_unlock_attempted = False
         self._pairing_issue_report = ""
+        self._compatibility_override = False
+        self._applying_pairing_mode = False
 
         page = Adw.PreferencesPage()
         self.append(page)
@@ -54,11 +56,11 @@ class IPhonePage(Gtk.Box):
         self._pairing_group = Adw.PreferencesGroup(
             title=_("Pair an iPhone"),
             description=_(
-                "Scan for and select your iPhone here, then choose Pair. On the "
-                "iPhone, open Settings → Bluetooth, find this computer under "
-                '"Other Devices", tap it, and approve the matching codes. Pairing '
-                "may appear idle for up to 15 seconds. While it does, return to "
-                "the Bluetooth device list and reopen this computer's ⓘ page a "
+                "Scan for and select your iPhone here, then choose Pair. When the "
+                "pairing request appears on the iPhone, approve it and confirm that "
+                "the codes match. Pairing may appear idle for up to 15 seconds. "
+                "After it completes, return to the Bluetooth device list and open "
+                "this computer's ⓘ page a "
                 "few times; turn on any new toggles that appear. System Notification "
                 "access is also how BlueFerry recognizes group text threads; "
                 "without it, a group text appears as a one-to-one conversation "
@@ -115,6 +117,35 @@ class IPhonePage(Gtk.Box):
         scan.add_suffix(self._scan_button)
         self._pairing_group.add(scan)
         self._pairing_group.add(self._device_row)
+
+        self._compatibility_row = Adw.ActionRow(
+            title=_("Compatibility pairing"),
+            subtitle=_(
+                "For iOS 18 or earlier: set up Messages and Contacts without "
+                "connecting ANCS"
+            ),
+        )
+        self._compatibility_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
+        self._compatibility_switch.connect(
+            "notify::active", self._pairing_mode_changed
+        )
+        self._compatibility_row.add_suffix(self._compatibility_switch)
+        self._compatibility_row.set_activatable_widget(self._compatibility_switch)
+        self._pairing_group.add(self._compatibility_row)
+
+        self._explicit_pairing_row = Adw.ActionRow(
+            title=_("Use explicit Bluetooth pairing"),
+            subtitle=_(
+                "Skip the initial connection attempt for controllers that "
+                "cancel normal pairing"
+            ),
+        )
+        self._explicit_pairing_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
+        self._explicit_pairing_row.add_suffix(self._explicit_pairing_switch)
+        self._explicit_pairing_row.set_activatable_widget(
+            self._explicit_pairing_switch
+        )
+        self._pairing_group.add(self._explicit_pairing_row)
 
         pair = Adw.ActionRow(
             title=_("2. Pair the Selected iPhone"),
@@ -336,6 +367,10 @@ class IPhonePage(Gtk.Box):
         notifications_supported = bool(
             self._compatibility and self._compatibility.notifications_supported
         )
+        if self._configuration and self._configuration.saved:
+            notifications_supported = (
+                notifications_supported and self._configuration.ancs_enabled
+            )
         remaining = set(
             remaining_iphone_setup_tasks(
                 self._last_status.verified_iphone_setup,
@@ -351,8 +386,23 @@ class IPhonePage(Gtk.Box):
         self._activate_button.set_sensitive(not busy)
         self._scan_button.set_sensitive(not busy)
         self._adapter_row.set_sensitive(not busy)
+        automatic_compatibility = bool(
+            self._compatibility
+            and not self._compatibility.notifications_supported
+        )
+        self._compatibility_switch.set_sensitive(
+            not busy and not automatic_compatibility
+        )
+        self._explicit_pairing_switch.set_sensitive(not busy)
         selected = self._selected_device()
-        pairing_ready = bool(self._compatibility and self._compatibility.pairing_ready)
+        pairing_ready = bool(
+            self._compatibility
+            and (
+                self._compatibility.messages_supported
+                if self._compatibility_switch.get_active()
+                else self._compatibility.pairing_ready
+            )
+        )
         self._pair_button.set_sensitive(not busy and pairing_ready and bool(selected))
         self._pair_button.set_label(
             _("Use Existing Pairing") if selected and selected.paired else _("Pair Selected iPhone")
@@ -363,6 +413,36 @@ class IPhonePage(Gtk.Box):
     def _selection_changed(self) -> None:
         self._set_pairing_busy(False)
         self._update_onboarding()
+
+    def _pairing_mode_changed(self, *_args) -> None:
+        if self._applying_pairing_mode:
+            return
+        self._compatibility_override = self._compatibility_switch.get_active()
+        self._set_pairing_busy(False)
+        if self._compatibility is not None:
+            self._apply_bluetooth_support_status(self._compatibility)
+        self._update_onboarding()
+
+    def _apply_bluetooth_support_status(self, compatibility) -> None:
+        active = compatibility.bearer_api_active
+        compatibility_mode = self._compatibility_switch.get_active()
+        if compatibility_mode:
+            self._bluez_row.set_subtitle(
+                _("Not required in compatibility mode")
+            )
+        elif not compatibility.notifications_supported:
+            self._bluez_row.set_subtitle(
+                _("Not required; per-app notifications are unsupported")
+            )
+        else:
+            self._bluez_row.set_subtitle(
+                _("Active") if active else _("A one-time Bluetooth restart is required")
+            )
+        self._activate_button.set_visible(
+            not compatibility_mode
+            and compatibility.notifications_supported
+            and not active
+        )
 
     def _selected_adapter_name(self) -> str:
         if self._compatibility is None:
@@ -400,18 +480,13 @@ class IPhonePage(Gtk.Box):
                 )
             )
         self._applying_adapter = False
-        active = compatibility.bearer_api_active
-        if not compatibility.notifications_supported:
-            self._bluez_row.set_subtitle(
-                _("Not required; per-app notifications are unsupported")
-            )
-        else:
-            self._bluez_row.set_subtitle(
-                _("Active") if active else _("A one-time Bluetooth restart is required")
-            )
-        self._activate_button.set_visible(
-            compatibility.notifications_supported and not active
+        self._applying_pairing_mode = True
+        self._compatibility_switch.set_active(
+            self._compatibility_override
+            or not compatibility.notifications_supported
         )
+        self._applying_pairing_mode = False
+        self._apply_bluetooth_support_status(compatibility)
 
     def _adapter_changed(self, *_args) -> None:
         if self._applying_adapter or self._compatibility is None:
@@ -628,12 +703,11 @@ class IPhonePage(Gtk.Box):
                 mac=device.mac,
                 adapter=device.adapter_path.rsplit("/", 1)[-1],
                 path="",
+                saved=True,
+                bonded=True,
+                ancs_enabled=result.ancs_enabled,
             )
-            if (
-                self._compatibility
-                and self._compatibility.notifications_supported
-                and not result.ancs_ready
-            ):
+            if result.ancs_enabled and not result.ancs_ready:
                 message = _(
                     "Pairing is complete; iPhone notification access is still "
                     "settling. Keep Bluetooth settings open."
@@ -703,6 +777,8 @@ class IPhonePage(Gtk.Box):
                 display=display,
                 adapter=device.adapter_path.rsplit("/", 1)[-1],
                 replace_saved_mac=replace_saved_mac,
+                compatibility_mode=self._compatibility_switch.get_active(),
+                explicit_pairing=self._explicit_pairing_switch.get_active(),
             ),
             completed,
         )
@@ -934,6 +1010,10 @@ class IPhonePage(Gtk.Box):
     def _update_onboarding(self) -> None:
         compatibility = self._compatibility.to_dict() if self._compatibility else {}
         configured = bool(self._configuration and self._configuration.configured)
+        if self._compatibility_switch.get_active() or (
+            configured and self._configuration and not self._configuration.ancs_enabled
+        ):
+            compatibility["notifications_supported"] = False
         stage = derive_stage(
             setup_loaded=self._setup_loaded,
             configured=configured,

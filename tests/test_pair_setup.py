@@ -212,6 +212,7 @@ def test_write_local_env_preserves_settings_and_is_private(tmp_path, monkeypatch
     assert destination.read_text() == (
         "BLUEFERRY_MAC=02:00:00:00:00:01\n"
         "BLUEFERRY_ADAPTER=hci7\n"
+        "BLUEFERRY_ANCS_ENABLED=true\n"
         "BLUEFERRY_SHOW_NOTIFICATION_CONTENT=false\n"
     )
     assert stat.S_IMODE(destination.stat().st_mode) == 0o600
@@ -226,11 +227,29 @@ def test_write_local_env_rejects_environment_injection(tmp_path, monkeypatch):
         pair_setup.write_local_env("02:00:00:00:00:01", "hci0\nEVIL=1")
 
 
+def test_write_local_env_persists_compatibility_ancs_policy(tmp_path, monkeypatch):
+    destination = tmp_path / "local.env"
+    monkeypatch.setattr(pair_setup, "LOCAL_ENV_PATH", destination)
+
+    pair_setup.write_local_env(
+        "02:00:00:00:00:01",
+        "hci0",
+        False,
+    )
+
+    assert destination.read_text() == (
+        "BLUEFERRY_MAC=02:00:00:00:00:01\n"
+        "BLUEFERRY_ADAPTER=hci0\n"
+        "BLUEFERRY_ANCS_ENABLED=false\n"
+    )
+
+
 def test_clear_local_target_preserves_unrelated_preferences(tmp_path, monkeypatch):
     destination = tmp_path / "local.env"
     destination.write_text(
         "BLUEFERRY_MAC=02:00:00:00:00:01\n"
         "BLUEFERRY_ADAPTER=hci7\n"
+        "BLUEFERRY_ANCS_ENABLED=false\n"
         "BLUEFERRY_HISTORY_RETENTION_DAYS=14\n"
         "BLUEFERRY_SHOW_NOTIFICATION_CONTENT=false\n"
     )
@@ -986,6 +1005,8 @@ def _compatible(monkeypatch, *, notifications: bool = True) -> None:
             "hardware_supported": True,
             "notifications_supported": notifications,
             "bearer_api_active": True,
+            "low_energy": True,
+            "advertising": True,
         },
     )
     monkeypatch.setattr(pair_setup, "_prefer_bredr", lambda _path: None)
@@ -1378,7 +1399,7 @@ def test_complete_pairing_headless_pairs_from_linux(monkeypatch):
     assert result["ancs"] == "connected"
 
 
-def test_interactive_pairing_connects_and_lets_the_iphone_initiate(monkeypatch):
+def test_compatibility_pairing_connects_and_lets_the_iphone_initiate(monkeypatch):
     from blueferry import pairing_agent
 
     unpaired = _device(paired=False)
@@ -1386,8 +1407,8 @@ def test_interactive_pairing_connects_and_lets_the_iphone_initiate(monkeypatch):
     calls = []
 
     class Agent:
-        def __init__(self, path, confirmation, display):
-            calls.append(("agent", path, confirmation, display))
+        def __init__(self, path, confirmation, display, *, make_default):
+            calls.append(("agent", path, confirmation, display, make_default))
 
         def __enter__(self):
             calls.append("agent-enter")
@@ -1398,6 +1419,9 @@ def test_interactive_pairing_connects_and_lets_the_iphone_initiate(monkeypatch):
 
         def wait_for_pair(self, *, timeout):
             calls.append(("wait", timeout))
+
+        def pair(self, *, timeout):
+            pytest.fail(f"compatibility mode must not call Pair ({timeout})")
 
     def confirmation(_passkey):
         return True
@@ -1455,16 +1479,18 @@ def test_interactive_pairing_connects_and_lets_the_iphone_initiate(monkeypatch):
         unpaired.mac,
         confirmation=confirmation,
         display=display,
+        compatibility_mode=True,
     )
 
-    # Connecting the unpaired ACL makes iOS initiate pairing (and derive the
-    # LE keys); there must be no competing Linux-side Device1.Pair() call.
-    # Keep our agent default while the daemon makes the first MAP/PBAP attempt
-    # and only then enables LE.
+    # Compatibility mode uses Connect so iOS initiates authentication; there
+    # must be no competing Linux-side Device1.Pair() call. After the Classic
+    # bond is trusted and settled, the solicitation is advertised before the
+    # daemon's first MAP/PBAP attempt, while ANCS remains disabled.
     assert calls[0][0] == "agent"
     assert calls[0][1] == unpaired.device_path
     assert calls[0][2] is not confirmation
     assert calls[0][2](12) is True
+    assert calls[0][4] is True
     assert calls[1:] == [
         "agent-enter",
         ("connect", unpaired.device_path, 60.0),
@@ -1478,6 +1504,161 @@ def test_interactive_pairing_connects_and_lets_the_iphone_initiate(monkeypatch):
         "advert-exit",
         "agent-exit",
     ]
+
+
+def test_default_interactive_pairing_lets_the_iphone_initiate(monkeypatch):
+    from blueferry import pairing_agent
+
+    unpaired = _device(paired=False)
+    paired = _device(paired=True)
+    calls = []
+
+    class Agent:
+        def __init__(self, path, confirmation, display, *, make_default):
+            calls.append(("agent", path, make_default))
+
+        def __enter__(self):
+            calls.append("agent-enter")
+            return self
+
+        def __exit__(self, *_args):
+            calls.append("agent-exit")
+
+        def pair(self, *, timeout):
+            pytest.fail(f"successful Connect must not call Pair ({timeout})")
+
+        def wait_for_pair(self, *, timeout):
+            calls.append(("wait", timeout))
+
+    monkeypatch.setattr(pair_setup, "_device", lambda _mac, **_kwargs: unpaired)
+    monkeypatch.setattr(
+        pair_setup,
+        "_wait_for_paired_device",
+        lambda _mac, **_kwargs: calls.append("settled") or paired,
+    )
+    _compatible(monkeypatch)
+    monkeypatch.setattr(bluez_setup, "prepare_classic", lambda **_kwargs: True)
+    monkeypatch.setattr(bluez_setup, "register_advert", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        bluez_setup,
+        "unregister_advert",
+        lambda _adapter: calls.append("advert-exit"),
+    )
+    monkeypatch.setattr(pairing_agent, "RegisteredPairingAgent", Agent)
+    monkeypatch.setattr(
+        pair_setup,
+        "_connect_classic",
+        lambda path, **kwargs: calls.append(("connect", path, kwargs["timeout"])),
+    )
+    monkeypatch.setattr(
+        pair_setup,
+        "_wait_for_classic_settled",
+        lambda path, **_kwargs: calls.append(("classic-settled", path)),
+    )
+    monkeypatch.setattr(pair_setup, "trust_device", lambda *_args: calls.append("trust"))
+    monkeypatch.setattr(
+        pair_setup,
+        "_prefer_bredr",
+        lambda path: calls.append(("prefer-bredr", path)),
+    )
+    monkeypatch.setattr(pair_setup, "write_local_env", lambda *_args: calls.append("persist"))
+    monkeypatch.setattr(pair_setup, "_restart_user_service", lambda: calls.append("daemon"))
+
+    pair_setup.complete_pairing(
+        unpaired.mac,
+        confirmation=lambda _passkey: True,
+    )
+
+    assert calls == [
+        ("agent", unpaired.device_path, True),
+        "agent-enter",
+        ("connect", unpaired.device_path, 60.0),
+        ("wait", 120.0),
+        "settled",
+        "trust",
+        ("prefer-bredr", paired.device_path),
+        ("classic-settled", paired.device_path),
+        "persist",
+        "daemon",
+        "advert-exit",
+        "agent-exit",
+    ]
+
+
+def test_interactive_pairing_can_use_explicit_pair_without_connecting(monkeypatch):
+    from blueferry import pairing_agent
+
+    unpaired = _device(paired=False)
+    paired = _device(paired=True)
+    calls = []
+
+    class Agent:
+        def __init__(self, path, confirmation, display, *, make_default):
+            calls.append(("agent", path, make_default))
+
+        def __enter__(self):
+            calls.append("agent-enter")
+            return self
+
+        def __exit__(self, *_args):
+            calls.append("agent-exit")
+
+        def pair(self, *, timeout):
+            calls.append(("pair", timeout))
+
+        def wait_for_pair(self, *, timeout):
+            pytest.fail(f"explicit pairing must not wait for peer pairing ({timeout})")
+
+    device_results = iter([unpaired])
+    monkeypatch.setattr(
+        pair_setup,
+        "_device",
+        lambda _mac, **_kwargs: next(device_results, paired),
+    )
+    monkeypatch.setattr(
+        pair_setup,
+        "_wait_for_paired_device",
+        lambda _mac, **_kwargs: calls.append("settled") or paired,
+    )
+    _compatible(monkeypatch)
+    monkeypatch.setattr(bluez_setup, "prepare_classic", lambda **_kwargs: True)
+    monkeypatch.setattr(bluez_setup, "register_advert", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        bluez_setup,
+        "unregister_advert",
+        lambda _adapter: calls.append("advert-exit"),
+    )
+    monkeypatch.setattr(pairing_agent, "RegisteredPairingAgent", Agent)
+    monkeypatch.setattr(
+        pair_setup,
+        "_connect_classic",
+        lambda *_args, **_kwargs: pytest.fail(
+            "explicit pairing must not call Connect"
+        ),
+    )
+    monkeypatch.setattr(pair_setup, "trust_device", lambda *_args: calls.append("trust"))
+    monkeypatch.setattr(pair_setup, "write_local_env", lambda *_args: calls.append("persist"))
+    monkeypatch.setattr(pair_setup, "_restart_user_service", lambda: calls.append("daemon"))
+
+    result = pair_setup.complete_pairing(
+        unpaired.mac,
+        confirmation=lambda _passkey: True,
+        explicit_pairing=True,
+    )
+
+    assert result["ok"] is True
+    assert calls[:5] == [
+        ("agent", unpaired.device_path, False),
+        "agent-enter",
+        ("pair", 120.0),
+        "settled",
+        "trust",
+    ]
+    report = pair_setup.quirks_report.issue_report()
+    assert report is not None
+    payload = report.read_text()
+    assert '"pairing_transaction": "explicit-device-pair"' in payload
+    assert '"event": "pair_fallback"' not in payload
 
 
 def test_peer_initiated_pairing_is_allowed_to_finish(monkeypatch):
@@ -1571,22 +1752,19 @@ def test_pairing_without_bearer_api_continues_with_map_and_pbap(monkeypatch):
     monkeypatch.setattr(pair_setup, "_device", lambda _mac, **_kwargs: device)
     _compatible(monkeypatch, notifications=False)
     monkeypatch.setattr(bluez_setup, "prepare_classic", lambda **_kwargs: True)
+    adverts = []
     monkeypatch.setattr(
         bluez_setup,
         "register_advert",
-        lambda *_args, **_kwargs: pytest.fail("ANCS advert must not be registered"),
+        lambda *_args, **_kwargs: adverts.append("registered") or True,
     )
     monkeypatch.setattr(
         bluez_setup,
         "unregister_advert",
-        lambda *_args: pytest.fail("absent ANCS advert must not be removed"),
+        lambda *_args: adverts.append("removed"),
     )
     monkeypatch.setattr(pair_setup, "trust_device", lambda *_args: None)
-    monkeypatch.setattr(
-        pair_setup,
-        "_prefer_bredr",
-        lambda *_args: pytest.fail("PreferredBearer must not be used"),
-    )
+    monkeypatch.setattr(pair_setup, "_prefer_bredr", lambda *_args: None)
     monkeypatch.setattr(
         pair_setup,
         "_wait_for_daemon_transports",
@@ -1603,5 +1781,7 @@ def test_pairing_without_bearer_api_continues_with_map_and_pbap(monkeypatch):
     result = pair_setup.complete_pairing(device.mac)
 
     assert saved == [True]
-    assert result["ancs"] == "unsupported"
+    assert adverts == ["registered", "removed"]
+    assert result["ancs"] == "disabled"
+    assert result["ancs_enabled"] is False
     assert result["ancs_ready"] is False

@@ -56,7 +56,7 @@ def main() -> int:
         if error.name != "blueferry.tui":
             raise
         print(
-            "The BlueFerry TUI is not installed; install the blueferry-tui package.",
+            "The BlueFerry TUI is not installed; reinstall blueferry-backend.",
             file=sys.stderr,
         )
         return 2

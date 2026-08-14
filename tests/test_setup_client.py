@@ -222,3 +222,38 @@ def test_isolated_pairing_preserves_report_path_on_failure(monkeypatch):
 
     assert raised.value.report_path == "/tmp/quirks-test.json"
     assert str(raised.value) == "Bluetooth confirmation did not complete"
+
+
+def test_isolated_pairing_adds_pairing_mode_helper_flags(monkeypatch):
+    device = _device()
+    commands = []
+
+    class Process:
+        stdin = io.StringIO()
+        stdout = iter([
+            '{"ok":true,"device":' + json.dumps(device.to_dict()) + "}\n",
+        ])
+
+        @staticmethod
+        def wait(*_args, **_kwargs):
+            return 0
+
+        @staticmethod
+        def poll():
+            return 0
+
+    monkeypatch.setattr(
+        setup_client.subprocess,
+        "Popen",
+        lambda command, **_kwargs: commands.append(command) or Process(),
+    )
+
+    setup_client.SetupClient().complete_isolated(
+        device.mac,
+        confirmation=lambda _passkey: True,
+        compatibility_mode=True,
+        explicit_pairing=True,
+    )
+
+    assert "--compatibility-mode" in commands[0]
+    assert commands[0][-1] == "--explicit-pairing"

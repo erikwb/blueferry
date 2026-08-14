@@ -41,6 +41,16 @@ def test_issue_instructions_ask_for_iphone_model_and_ios_version() -> None:
     assert "blueferry pairing-issue" in quirks_report.cli_issue_hint()
 
 
+def test_pairing_report_includes_the_running_build_sha(monkeypatch) -> None:
+    monkeypatch.setattr(quirks_report, "running_build_sha", lambda: "a" * 64)
+    monkeypatch.setattr(quirks_report, "installed_release", lambda: "0.6.3-1")
+
+    attempt = quirks_report.start_attempt(interactive=True)
+
+    assert attempt["blueferry_sha"] == "a" * 64
+    assert attempt["blueferry_build"] == "0.6.3-1+sha." + "a" * 12
+
+
 def test_issue_url_labels_a_pairing_issue_with_adapter_and_outcome() -> None:
     url = quirks_report.issue_url(
         {
@@ -416,6 +426,15 @@ def test_complete_pairing_writes_a_scrubbed_success_report(
     assert "id" not in parsed["phone"]
     assert parsed["phone"]["likely_iphone"] is True
     assert parsed["controller"]["name"] == "hci0"
+    assert parsed["pairing_policy"] == {
+        "ancs_capable": True,
+        "ancs_enabled": True,
+        "mode": "full",
+        "pairing_strategy": "explicit-device-pair",
+        "reason": "ancs-available",
+        "solicitation_enabled": True,
+        "user_forced": False,
+    }
     assert "adapter" not in parsed
     assert "compatibility" not in parsed
     assert Path(result["quirks_report"]).is_relative_to(report_dir)
