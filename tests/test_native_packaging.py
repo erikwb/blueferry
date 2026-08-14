@@ -171,3 +171,4 @@ def test_package_workflow_installs_identical_artifacts_on_targets() -> None:
     assert workflow.count(
         "systemd-analyze verify --man=no bluetooth.service"
     ) == 3
+    assert "GH_REPO: ${{ github.repository }}" in workflow
