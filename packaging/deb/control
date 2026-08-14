@@ -1,7 +1,7 @@
 Source: blueferry
 Section: utils
 Priority: optional
-Maintainer: BlueFerry Contributors <noreply@weirdware.io>
+Maintainer: BlueFerry Contributors <blueferry@weirdware.io>
 Build-Depends:
  debhelper-compat (= 13),
  dh-sequence-python3,

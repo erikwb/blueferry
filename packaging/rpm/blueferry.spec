@@ -1,5 +1,5 @@
 Name:           blueferry-backend
-Version:        0.6.3
+Version:        0.7.0
 Release:        1%{?dist}
 Summary:        iPhone Bluetooth bridge backend, daemon, and CLI
 License:        GPL-2.0-only AND MIT AND BSD-2-Clause AND PSF-2.0
@@ -188,5 +188,11 @@ fi
 %{_metainfodir}/io.weirdware.BlueFerry.Qt.metainfo.xml
 
 %changelog
-* Thu Aug 13 2026 BlueFerry Contributors <noreply@weirdware.io> - 0.6.3-1
+* Fri Aug 14 2026 BlueFerry Contributors <blueferry@weirdware.io> - 0.7.0-1
+- Add native packages for supported Arch, Debian, and Fedora systems.
+- Add compatibility and explicit iPhone pairing modes.
+- Restart stale backend builds and recover ANCS after BlueZ restarts.
+- Ship the terminal client as part of every backend package.
+
+* Thu Aug 13 2026 BlueFerry Contributors <blueferry@weirdware.io> - 0.6.3-1
 - Initial Fedora package scaffold with private Textual runtime.
