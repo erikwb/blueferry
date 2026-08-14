@@ -8,7 +8,7 @@ OUTPUT="$ROOT/dist/deb"
 WORK=$(mktemp -d)
 trap 'rm -rf -- "$WORK"' EXIT
 
-for command in dpkg-buildpackage git python3 tar; do
+for command in dpkg-buildpackage git python3 sha256sum tar; do
     command -v "$command" >/dev/null || {
         echo "error: required command not found: $command" >&2
         exit 127
@@ -47,10 +47,16 @@ if (( ${#files[@]} == 0 )); then
 fi
 
 tar -C "$ROOT" -cf - -- "${files[@]}" | tar -C "$source_dir" -xf -
+source_epoch=$(git -C "$ROOT" log -1 --format=%ct)
+build_sha=$(
+    tar -C "$source_dir" --sort=name --mtime="@$source_epoch" \
+        --owner=0 --group=0 --numeric-owner -cf - . \
+        | sha256sum | cut -d' ' -f1
+)
+printf '%s\n' "$build_sha" > "$source_dir/.blueferry-build-sha"
 mkdir "$source_dir/debian"
 cp -a "$source_dir/packaging/deb/." "$source_dir/debian/"
 
-source_epoch=$(git -C "$ROOT" log -1 --format=%ct)
 tar -C "$WORK" --sort=name --mtime="@$source_epoch" \
     --owner=0 --group=0 --numeric-owner \
     --exclude="blueferry-$version/debian" \

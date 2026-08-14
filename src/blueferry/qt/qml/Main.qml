@@ -446,6 +446,8 @@ Kirigami.ApplicationWindow {
     Kirigami.PromptDialog {
         id: replaceTargetDialog
         property string mac: ""
+        property bool compatibilityMode: false
+        property bool explicitPairing: false
         title: qsTr("Replace the Saved iPhone?")
         subtitle: qsTr("Pairing this iPhone will remove BlueFerry's saved phone and its local Bluetooth bond. Before continuing, also forget this computer in the old iPhone's Bluetooth settings.")
         dialogType: Kirigami.PromptDialog.Warning
@@ -454,7 +456,12 @@ Kirigami.ApplicationWindow {
             text: qsTr("Replace and Pair")
             icon.name: "edit-delete-remove"
             onTriggered: {
-                root.bridge.replaceAndPair(root.bridge.configuredMac, replaceTargetDialog.mac)
+                root.bridge.replaceAndPair(
+                    root.bridge.configuredMac,
+                    replaceTargetDialog.mac,
+                    replaceTargetDialog.compatibilityMode,
+                    replaceTargetDialog.explicitPairing
+                )
                 replaceTargetDialog.close()
             }
         }]
@@ -907,6 +914,7 @@ Kirigami.ApplicationWindow {
             return null
         }
         property string effectiveStage: root.bridge.onboardingStage
+        property bool compatibilityModeOverride: false
 
         ColumnLayout {
             width: parent.width
@@ -942,21 +950,11 @@ Kirigami.ApplicationWindow {
 
                 OnboardingSummary {
                     Layout.fillWidth: true
-                    stage: iphonePage.effectiveStage
-                    compatibility: root.bridge.compatibility
+                    stage: compatibilityMode.checked
+                        && iphonePage.effectiveStage === "activate-bluetooth"
+                        ? "select-device" : iphonePage.effectiveStage
+                    compatibility: root.bridge.onboardingCompatibility
                     status: root.bridge.status
-                }
-
-                Kirigami.Heading {
-                    visible: !root.bridge.configured
-                    text: qsTr("Pair an iPhone")
-                    level: 2
-                }
-                Controls.Label {
-                    Layout.fillWidth: true
-                    visible: !root.bridge.configured
-                    wrapMode: Text.Wrap
-                    text: qsTr("Scan for and select your iPhone here, then choose Pair. On the iPhone, open Settings → Bluetooth, find this computer under \"Other Devices\", tap it, and approve the matching codes. Pairing may appear idle for up to 15 seconds. While it does, return to the Bluetooth device list and reopen this computer's ⓘ page a few times; turn on any new toggles that appear.")
                 }
 
                 Kirigami.FormLayout {
@@ -1006,7 +1004,8 @@ Kirigami.ApplicationWindow {
 
                     Controls.Label {
                         Kirigami.FormData.label: qsTr("Bluetooth Support:")
-                        text: !root.bridge.compatibility.notifications_supported
+                        text: compatibilityMode.checked
+                            || !root.bridge.compatibility.notifications_supported
                             ? qsTr("Not Required")
                             : root.bridge.bluetoothActive
                                 ? qsTr("Active")
@@ -1019,6 +1018,7 @@ Kirigami.ApplicationWindow {
                     Controls.Button {
                         visible: root.bridge.compatibility.notifications_supported === true
                             && !root.bridge.bluetoothActive
+                            && !compatibilityMode.checked
                         text: qsTr("Restart Bluetooth")
                         icon.name: "network-bluetooth"
                         enabled: !root.bridge.busy
@@ -1064,6 +1064,28 @@ Kirigami.ApplicationWindow {
                     }
                 }
 
+                Controls.CheckBox {
+                    id: compatibilityMode
+                    Layout.fillWidth: true
+                    visible: !root.bridge.configured
+                    text: qsTr("Compatibility pairing for iOS 18 or earlier")
+                    checked: root.bridge.compatibility.notifications_supported !== true
+                        || iphonePage.compatibilityModeOverride
+                    enabled: root.bridge.compatibility.notifications_supported === true
+                        && !root.bridge.busy
+                    onClicked: iphonePage.compatibilityModeOverride = checked
+                    Accessible.description: qsTr("Sets up Messages and Contacts without connecting ANCS.")
+                }
+
+                Controls.CheckBox {
+                    id: explicitPairing
+                    Layout.fillWidth: true
+                    visible: !root.bridge.configured
+                    text: qsTr("Use explicit Bluetooth pairing")
+                    enabled: !root.bridge.busy
+                    Accessible.description: qsTr("Skips the initial Bluetooth connection attempt and calls Pair immediately. Try this for controllers that cancel normal pairing.")
+                }
+
                 RowLayout {
                     visible: !root.bridge.configured
                     Controls.Button {
@@ -1071,14 +1093,22 @@ Kirigami.ApplicationWindow {
                             ? qsTr("Use Existing Pairing") : qsTr("2. Pair Selected iPhone")
                         icon.name: "network-connect"
                         enabled: iphonePage.device !== null
-                            && root.bridge.compatibility.pairing_ready
+                            && (compatibilityMode.checked
+                                ? root.bridge.compatibility.messages_supported
+                                : root.bridge.compatibility.pairing_ready)
                             && !root.bridge.busy
                         onClicked: {
                             if (!iphonePage.device.paired && root.bridge.targetSaved) {
                                 replaceTargetDialog.mac = iphonePage.device.mac
+                                replaceTargetDialog.compatibilityMode = compatibilityMode.checked
+                                replaceTargetDialog.explicitPairing = explicitPairing.checked
                                 replaceTargetDialog.open()
                             } else {
-                                root.bridge.completePairing(iphonePage.device.mac)
+                                root.bridge.completePairing(
+                                    iphonePage.device.mac,
+                                    compatibilityMode.checked,
+                                    explicitPairing.checked
+                                )
                             }
                         }
                     }
@@ -1092,6 +1122,13 @@ Kirigami.ApplicationWindow {
                             forgetDialog.open()
                         }
                     }
+                }
+
+                Controls.Label {
+                    Layout.fillWidth: true
+                    visible: !root.bridge.configured && compatibilityMode.checked
+                    wrapMode: Text.Wrap
+                    text: qsTr("BlueFerry will still advertise ANCS solicitation so the iPhone exposes its Messages and Contacts permissions, but it will not connect system notifications.")
                 }
 
                 Controls.Button {

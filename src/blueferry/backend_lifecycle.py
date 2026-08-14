@@ -18,6 +18,7 @@ from pathlib import Path
 import dbus
 import dbus.exceptions
 
+from blueferry.build_info import build_id, installed_build_sha
 from blueferry.bus import get_session_bus
 from blueferry.commands import run_command
 from blueferry.errors import BlueFerryError, CommandError
@@ -101,6 +102,8 @@ def ensure_backend_current(
     """
     read_status = status_reader or _status
     expected = installed_release()
+    expected_sha = installed_build_sha()
+    expected_build = build_id(expected, expected_sha) if expected is not None else None
     try:
         status = read_status()
     except (dbus.exceptions.DBusException, ValueError) as first_error:
@@ -116,7 +119,10 @@ def ensure_backend_current(
 
     # No marker means a source checkout or a package transaction currently
     # replacing the file. Neither case justifies restarting a live service.
-    if expected is None or status.get("backend_release") == expected:
+    if expected is None or (
+        status.get("backend_release") == expected
+        and (expected_sha is None or status.get("_build_id") == expected_build)
+    ):
         return status
 
     # A missing key is expected from versions released before lifecycle
@@ -128,15 +134,22 @@ def ensure_backend_current(
             status = read_status()
         except (dbus.exceptions.DBusException, ValueError):
             status = {}
-        if status.get("backend_release") != expected:
+        if status.get("backend_release") != expected or (
+            expected_sha is not None and status.get("_build_id") != expected_build
+        ):
             restart_backend()
             try:
                 status = read_status()
             except (dbus.exceptions.DBusException, ValueError) as error:
                 raise BackendLifecycleError(str(error)) from error
     actual = status.get("backend_release")
-    if actual != expected:
+    actual_build = status.get("_build_id")
+    if actual != expected or (
+        expected_sha is not None and actual_build != expected_build
+    ):
         raise BackendLifecycleError(
-            f"backend release is {actual or 'unknown'}; installed release is {expected}"
+            "backend build is "
+            f"{actual_build or actual or 'unknown'}; installed build is "
+            f"{expected_build or expected}"
         )
     return status

@@ -162,13 +162,12 @@ class PairingAgent(dbus.service.Object):
 
 
 class RegisteredPairingAgent:
-    """Register the default agent for one interactive pairing transaction.
+    """Register a device-scoped agent for one interactive transaction.
 
-    The agent's D-Bus callbacks are dispatched by a GLib loop running on the
-    caller's thread (``wait_for_pair``). An earlier design ran the loop on a
-    background thread next to a synchronous ``Device1.Pair()``; dbus-python
-    intermittently lost the confirmation reply in that arrangement, producing
-    spurious authentication failures.
+    iPhone-initiated pairing makes this agent temporarily default so the
+    authentication request reaches it. Explicit ``Device1.Pair`` instead
+    selects the agent through its D-Bus connection. Both paths dispatch
+    callbacks on this thread's GLib loop.
     """
 
     def __init__(
@@ -176,6 +175,8 @@ class RegisteredPairingAgent:
         expected_device: str,
         confirmation: ConfirmationCallback,
         display: DisplayCallback | None = None,
+        *,
+        make_default: bool = False,
     ) -> None:
         self._bus = get_system_bus()
         self._expected_device = expected_device
@@ -190,6 +191,7 @@ class RegisteredPairingAgent:
             "org.bluez.AgentManager1",
         )
         self._registered = False
+        self._make_default = make_default
 
     def __enter__(self) -> RegisteredPairingAgent:
         try:
@@ -203,16 +205,15 @@ class RegisteredPairingAgent:
                 timeout=10.0,
             )
             self._registered = True
-            # The BlueFerry client owns the confirmation UI for this explicit
-            # transaction. Become default so an iPhone-initiated request
-            # reaches this scoped agent even if a desktop or headless agent was
-            # registered first. UnregisterAgent removes us from BlueZ's
-            # default-agent queue and restores the previous agent afterward.
-            self._manager.RequestDefaultAgent(
-                dbus.ObjectPath(AGENT_PATH),
-                timeout=10.0,
-            )
-            log.info("BlueFerry pairing agent is now the BlueZ default")
+            if self._make_default:
+                # The transaction is initiated by the iPhone, so BlueZ must
+                # route its confirmation to this scoped agent.
+                # UnregisterAgent restores the previous default afterward.
+                self._manager.RequestDefaultAgent(
+                    dbus.ObjectPath(AGENT_PATH),
+                    timeout=10.0,
+                )
+                log.info("BlueFerry pairing agent is now the BlueZ default")
         except dbus.exceptions.DBusException as error:
             self._unregister()
             self._agent.remove_from_connection()
@@ -229,7 +230,8 @@ class RegisteredPairingAgent:
             return
         try:
             log.info(
-                "unregistering BlueFerry pairing agent; restoring previous default"
+                "unregistering BlueFerry pairing agent%s",
+                "; restoring previous default" if self._make_default else "",
             )
             self._manager.UnregisterAgent(
                 dbus.ObjectPath(AGENT_PATH),
@@ -241,6 +243,53 @@ class RegisteredPairingAgent:
                 error.get_dbus_name() or str(error),
             )
         self._registered = False
+
+    def pair(self, timeout: float = 120.0) -> None:
+        """Run explicit Device1.Pair while dispatching Agent1 callbacks."""
+        log.info("sending Device1.Pair for %s", self._expected_device)
+        loop = GLib.MainLoop()
+        failure: list[Exception] = []
+        finished = False
+
+        def paired() -> None:
+            nonlocal finished
+            finished = True
+            log.info("Device1.Pair completed successfully")
+            loop.quit()
+
+        def failed(error: Exception) -> None:
+            nonlocal finished
+            finished = True
+            failure.append(error)
+            loop.quit()
+
+        def timed_out() -> bool:
+            if finished:
+                return GLib.SOURCE_REMOVE
+            failure.append(PairingError(
+                "Timed out waiting for the iPhone to pair. Keep Bluetooth "
+                "settings open on the phone and retry."
+            ))
+            loop.quit()
+            return GLib.SOURCE_REMOVE
+
+        interface = dbus.Interface(
+            self._bus.get_object("org.bluez", self._expected_device),
+            "org.bluez.Device1",
+        )
+        interface.Pair(
+            reply_handler=paired,
+            error_handler=failed,
+            timeout=timeout,
+        )
+        timeout_source = GLib.timeout_add(int(timeout * 1000), timed_out)
+        try:
+            loop.run()
+        finally:
+            if finished:
+                GLib.source_remove(timeout_source)
+        if failure:
+            raise failure[0]
 
     def wait_for_pair(self, timeout: float = 120.0) -> None:
         """Dispatch Agent1 callbacks until BlueZ reports the device paired."""

@@ -140,6 +140,7 @@ class ConfigurationState:
     saved: bool = False
     bonded: bool | None = None
     pairing_issue_report: str = ""
+    ancs_enabled: bool = True
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> ConfigurationState:
@@ -155,6 +156,7 @@ class ConfigurationState:
                 else None
             ),
             pairing_issue_report=str(value.get("pairing_issue_report", "")),
+            ancs_enabled=bool(value.get("ancs_enabled", True)),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -166,6 +168,7 @@ class ConfigurationState:
             "saved": self.saved,
             "bonded": self.bonded,
             "pairing_issue_report": self.pairing_issue_report,
+            "ancs_enabled": self.ancs_enabled,
         }
 
 
@@ -177,6 +180,7 @@ class PairingResult:
     service: str
     ancs: str
     ancs_ready: bool
+    ancs_enabled: bool
     iphone_steps: tuple[str, ...]
     quirks_report: str = ""
 
@@ -193,6 +197,7 @@ class PairingResult:
             service=str(value.get("service", "")),
             ancs=str(value.get("ancs", "")),
             ancs_ready=bool(value.get("ancs_ready", False)),
+            ancs_enabled=bool(value.get("ancs_enabled", True)),
             iphone_steps=tuple(str(item) for item in raw_steps)
             if isinstance(raw_steps, list | tuple) else (),
             quirks_report=str(value.get("quirks_report", "")),
@@ -206,6 +211,7 @@ class PairingResult:
             "service": self.service,
             "ancs": self.ancs,
             "ancs_ready": self.ancs_ready,
+            "ancs_enabled": self.ancs_enabled,
             "iphone_steps": list(self.iphone_steps),
             "quirks_report": self.quirks_report,
         }
@@ -245,6 +251,8 @@ class SetupClient:
         adapter: str | None = None,
         confirmation: pair_setup.ConfirmationCallback | None = None,
         display: pair_setup.DisplayCallback | None = None,
+        compatibility_mode: bool = False,
+        explicit_pairing: bool = False,
     ) -> PairingResult:
         return PairingResult.from_dict(
             pair_setup.complete_pairing(
@@ -252,6 +260,8 @@ class SetupClient:
                 adapter=adapter,
                 confirmation=confirmation,
                 display=display,
+                compatibility_mode=compatibility_mode,
+                explicit_pairing=explicit_pairing,
             )
         )
 
@@ -263,6 +273,8 @@ class SetupClient:
         display: pair_setup.DisplayCallback | None = None,
         adapter: str | None = None,
         replace_saved_mac: str = "",
+        compatibility_mode: bool = False,
+        explicit_pairing: bool = False,
     ) -> PairingResult:
         """Run interactive pairing in a D-Bus/GLib-isolated child process."""
         command = [
@@ -277,6 +289,10 @@ class SetupClient:
             command.extend(["--adapter", adapter])
         if replace_saved_mac:
             command.extend(["--replace-saved-mac", replace_saved_mac])
+        if compatibility_mode:
+            command.append("--compatibility-mode")
+        if explicit_pairing:
+            command.append("--explicit-pairing")
         process = subprocess.Popen(  # nosec B603
             command,
             stdin=subprocess.PIPE,

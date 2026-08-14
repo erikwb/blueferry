@@ -19,6 +19,7 @@ from blueferry.bluetooth_devices import PairedDevice
 from blueferry.bus import get_session_bus, get_system_bus
 from blueferry.commands import run_command
 from blueferry.errors import CommandError, PairingError
+from blueferry.pairing_policy import resolve_pairing_policy
 from blueferry.private_files import atomic_write_private_text
 from blueferry.setup_verification import clear_setup_verification
 
@@ -60,6 +61,10 @@ def configuration_status() -> dict:
         "bonded": bonded,
         "mac": mac if saved else "",
         "adapter": adapter,
+        "ancs_enabled": (
+            values.get("BLUEFERRY_ANCS_ENABLED", "true").casefold()
+            not in {"0", "false", "no", "off"}
+        ),
         "path": str(LOCAL_ENV_PATH),
     }
 
@@ -647,6 +652,8 @@ def complete_pairing(
     adapter: str | None = None,
     confirmation: ConfirmationCallback | None = None,
     display: DisplayCallback | None = None,
+    compatibility_mode: bool = False,
+    explicit_pairing: bool = False,
 ) -> dict:
     """Pair if needed and finish every Linux-side BlueFerry setup step."""
     attempt = quirks_report.start_attempt(interactive=confirmation is not None)
@@ -656,6 +663,8 @@ def complete_pairing(
             adapter=adapter,
             confirmation=confirmation,
             display=display,
+            compatibility_mode=compatibility_mode,
+            explicit_pairing=explicit_pairing,
             attempt=attempt,
         )
     except PairingError as error:
@@ -1056,6 +1065,8 @@ def _execute_pairing(
     adapter: str | None = None,
     confirmation: ConfirmationCallback | None = None,
     display: DisplayCallback | None = None,
+    compatibility_mode: bool = False,
+    explicit_pairing: bool = False,
     attempt: dict,
 ) -> dict:
     from blueferry import bluez_setup
@@ -1082,8 +1093,22 @@ def _execute_pairing(
     quirks_report.mark(attempt, "compatibility_ready")
     if not compatibility["hardware_supported"]:
         raise PairingError(compatibility["issue"] or "Bluetooth controller is incompatible")
-    notifications_supported = compatibility["notifications_supported"]
-    if notifications_supported and not compatibility["bearer_api_active"]:
+    policy = resolve_pairing_policy(
+        compatibility,
+        force_compatibility=compatibility_mode,
+        force_explicit_pairing=explicit_pairing,
+        interactive=confirmation is not None,
+    )
+    attempt["pairing_policy"] = policy.to_dict()
+    log.info(
+        "pairing policy: mode=%s strategy=%s ANCS=%s solicitation=%s (%s)",
+        policy.mode.value,
+        policy.pairing_strategy,
+        "enabled" if policy.ancs_enabled else "disabled",
+        "enabled" if policy.solicitation_enabled else "unavailable",
+        policy.reason,
+    )
+    if policy.ancs_enabled and not compatibility["bearer_api_active"]:
         raise PairingError("Activate Bluetooth support before pairing or re-pairing the iPhone")
     # No LE advertisement during pairing: iOS would connect the unbonded
     # advert as a separate accessory and keep two device records. The advert
@@ -1135,28 +1160,35 @@ def _execute_pairing(
                         if display is not None:
                             display(passkey)
 
-                    # Connecting the unpaired ACL makes iOS initiate pairing,
-                    # and the authentication initiator is the side that derives
-                    # the cross-transport LE keys. The client has explicit
-                    # confirmation UI, so its device-scoped agent temporarily
-                    # becomes BlueZ default for this transaction even when a
-                    # desktop agent is already registered.
+                    # Normally the iPhone initiates authentication so it owns
+                    # cross-transport key derivation. The explicit option
+                    # instead skips Connect for controllers known to cancel it.
                     registered = pairing_agents.enter_context(
                         RegisteredPairingAgent(
                             device.device_path,
                             timed_confirmation,
                             timed_display,
+                            make_default=policy.iphone_initiated,
                         )
                     )
                     agent_registered = True
                     quirks_report.mark(attempt, "agent_registered")
-                    _connect_classic(
-                        device.device_path,
-                        timeout=60.0,
-                        settle=False,
-                        attempt=attempt,
-                    )
-                    registered.wait_for_pair(timeout=120.0)
+                    if policy.iphone_initiated:
+                        _connect_classic(
+                            device.device_path,
+                            timeout=60.0,
+                            settle=False,
+                            attempt=attempt,
+                        )
+                        registered.wait_for_pair(timeout=120.0)
+                        attempt["pairing_transaction"] = (
+                            "iphone-initiated-connect"
+                        )
+                    else:
+                        quirks_report.mark(attempt, "pair_sent")
+                        registered.pair(timeout=120.0)
+                        quirks_report.mark(attempt, "pair_replied")
+                        attempt["pairing_transaction"] = "explicit-device-pair"
             except dbus.exceptions.DBusException as error:
                 name = error.get_dbus_name() or ""
                 if name in {
@@ -1182,19 +1214,18 @@ def _execute_pairing(
         trust_device(device.mac, device.adapter_path)
         quirks_report.mark(attempt, "trusted")
 
-        if notifications_supported:
-            _prefer_bredr(device.device_path)
-            quirks_report.mark(attempt, "preferred_bearer_bredr")
-        # The pairing transaction already established the Classic ACL.  A
-        # second generic Device1.Connect can wander into LE and hangs on the
-        # observed iOS 18 path, so only require that existing ACL to settle.
+        _prefer_bredr(device.device_path)
+        quirks_report.mark(attempt, "preferred_bearer_bredr")
+        # Both pairing transactions should leave a Classic ACL behind. A
+        # second generic Device1.Connect can wander into LE, so only require
+        # that the existing ACL settle.
         _wait_for_classic_settled(device.device_path, attempt=attempt)
 
         # Keep ANCS solicitation active because iOS 26 testing found that it
         # surfaced the MAP/PBAP permission toggles.  It is a pairing signal,
         # not a prerequisite connection: the daemon below attempts MAP/PBAP
         # before it is allowed to connect the LE bearer.
-        if notifications_supported:
+        if policy.solicitation_enabled:
             log.debug("registering ANCS solicitation advertisement on %s", adapter)
             quirks_report.mark(attempt, "advert_register_sent")
             if not bluez_setup.register_advert(adapter, settle_for_pairing=True):
@@ -1203,24 +1234,28 @@ def _execute_pairing(
             quirks_report.mark(attempt, "advert_ready")
         else:
             log.info(
-                "BlueZ lacks usable per-bearer controls; continuing with "
-                "MAP/PBAP without ANCS"
+                "the controller cannot advertise ANCS solicitation; "
+                "continuing with MAP/PBAP"
             )
 
         # Start the long-lived owner while both the advert and temporary
-        # pairing agent are still present.  Its first operation is a Classic
-        # MAP/PBAP open; only when that attempt completes does it enable LE.
-        write_local_env(device.mac, adapter)
+        # pairing agent are still present. Its first operation is a Classic
+        # MAP/PBAP open; full mode enables LE only after that attempt, while
+        # compatibility mode leaves LE disabled permanently.
+        if policy.ancs_enabled:
+            write_local_env(device.mac, adapter)
+        else:
+            write_local_env(device.mac, adapter, False)
         log.debug("saved paired target %s; restarting user service", device.mac)
         quirks_report.mark(attempt, "daemon_restart_sent")
         _restart_user_service()
         quirks_report.mark(attempt, "daemon_restarted")
         map_ready, pbap_ready, ancs_ready = _wait_for_daemon_transports(
             attempt=attempt,
-            notifications_supported=notifications_supported,
+            notifications_supported=policy.ancs_enabled,
         )
-        if not notifications_supported:
-            ancs = "unsupported"
+        if not policy.ancs_enabled:
+            ancs = "disabled"
         else:
             ancs = "connected" if ancs_ready else "daemon connecting"
         log.info(
@@ -1252,6 +1287,7 @@ def _execute_pairing(
         "config": str(LOCAL_ENV_PATH),
         "service": "package-enabled and restarted",
         "ancs": ancs,
+        "ancs_enabled": policy.ancs_enabled,
         "ancs_ready": ancs_ready,
         "iphone_steps": [
             "Open Settings → Bluetooth and tap ⓘ next to this computer",
@@ -1314,6 +1350,7 @@ def clear_local_target() -> Path:
     existing = config.read_local_env(LOCAL_ENV_PATH)
     existing.pop("BLUEFERRY_MAC", None)
     existing.pop("BLUEFERRY_ADAPTER", None)
+    existing.pop("BLUEFERRY_ANCS_ENABLED", None)
     content = "".join(
         f"{key}={existing[key]}\n" for key in sorted(config.LOCAL_ENV_KEYS) if key in existing
     )
@@ -1332,7 +1369,11 @@ def clear_local_target() -> Path:
     return LOCAL_ENV_PATH
 
 
-def write_local_env(mac: str, adapter: str | None = None) -> Path:
+def write_local_env(
+    mac: str,
+    adapter: str | None = None,
+    ancs_enabled: bool = True,
+) -> Path:
     normalized_mac = mac.strip().upper()
     if not config.is_valid_mac(normalized_mac):
         raise PairingError("invalid Bluetooth device address")
@@ -1342,7 +1383,8 @@ def write_local_env(mac: str, adapter: str | None = None) -> Path:
     existing["BLUEFERRY_MAC"] = normalized_mac
     if adapter:
         existing["BLUEFERRY_ADAPTER"] = adapter
-    ordered = ["BLUEFERRY_MAC", "BLUEFERRY_ADAPTER"]
+    existing["BLUEFERRY_ANCS_ENABLED"] = "true" if ancs_enabled else "false"
+    ordered = ["BLUEFERRY_MAC", "BLUEFERRY_ADAPTER", "BLUEFERRY_ANCS_ENABLED"]
     ordered.extend(sorted(config.LOCAL_ENV_KEYS - set(ordered)))
     content = "".join(f"{key}={existing[key]}\n" for key in ordered if key in existing)
     try:

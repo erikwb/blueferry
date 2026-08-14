@@ -1,7 +1,7 @@
 # Arch packages
 
-BlueFerry builds as five split pacman packages: the backend plus clients for
-GNOME, KDE, the terminal, and Quickshell. All build and runtime dependencies
+BlueFerry builds as four split pacman packages: the backend with its terminal
+client, plus clients for GNOME, KDE, and Quickshell. All build and runtime dependencies
 come from the official Arch repositories. The same packages are intended for
 Arch Linux and CachyOS and are built in both environments in package CI.
 The backend requires BlueZ 5.86 or newer because that is the first upstream
@@ -40,11 +40,10 @@ building. Finished package archives are left in `packaging/arch/`.
 
 The resulting packages are:
 
-- `blueferry-backend` for the daemon, CLI, D-Bus service, BlueZ setup, and
-  pairing support;
+- `blueferry-backend` for the daemon, CLI, terminal client, D-Bus service,
+  BlueZ setup, and pairing support;
 - `blueferry-gtk` for the GTK/libadwaita client;
 - `blueferry-qt` for the Qt/Kirigami client;
-- `blueferry-tui` for the Textual terminal client;
 - `blueferry-quickshell` for the standalone Quickshell client.
 
 Install only the clients you use. Each graphical client can perform first-run
@@ -57,10 +56,10 @@ The optional Omarchy bar widget is distributed separately from
 
 ## Removing BlueFerry
 
-For example, to remove all five packages:
+For example, to remove all four packages:
 
 ```bash
-sudo pacman -Rns blueferry-backend blueferry-gtk blueferry-qt blueferry-tui blueferry-quickshell
+sudo pacman -Rns blueferry-backend blueferry-gtk blueferry-qt blueferry-quickshell
 ```
 
 Pacman removes the daemon, clients, units, BlueZ drop-in, and application

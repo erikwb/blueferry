@@ -102,6 +102,8 @@ install -Dm0644 packaging/rpm/blueferry-bluetooth.conf \
 install -d %{buildroot}%{_datadir}/blueferry
 printf '%s\n' '%{version}-%{release}' \
     > %{buildroot}%{_datadir}/blueferry/package-release
+install -Dm0644 .blueferry-build-sha \
+    %{buildroot}%{_datadir}/blueferry/build-sha
 
 install -Dm0644 data/io.weirdware.BlueFerry.Gtk.desktop \
     %{buildroot}%{_datadir}/applications/io.weirdware.BlueFerry.Gtk.desktop
@@ -165,6 +167,7 @@ fi
 %{_userunitdir}/default.target.wants/blueferry.service
 %{_unitdir}/bluetooth.service.d/blueferry.conf
 %{_datadir}/blueferry/package-release
+%{_datadir}/blueferry/build-sha
 %{_datadir}/dbus-1/interfaces/io.weirdware.BlueFerry.xml
 %{_datadir}/dbus-1/services/io.weirdware.BlueFerry.service
 

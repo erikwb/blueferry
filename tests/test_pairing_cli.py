@@ -12,6 +12,7 @@ def test_verified_cli_setup_omits_the_iphone_section(capsys) -> None:
         frozenset(),
         remaining=(),
         notifications_supported=True,
+        ancs_enabled=True,
         ancs_ready=True,
     )
 
@@ -23,6 +24,7 @@ def test_cli_setup_always_prints_required_bluetooth_toggles(capsys) -> None:
         frozenset(),
         remaining=(CONTACTS,),
         notifications_supported=True,
+        ancs_enabled=True,
         ancs_ready=True,
     )
 
@@ -39,6 +41,7 @@ def test_cli_explains_group_threads_need_notification_access(capsys) -> None:
         frozenset(),
         remaining=("notification-access",),
         notifications_supported=True,
+        ancs_enabled=True,
         ancs_ready=False,
     )
 
@@ -46,6 +49,22 @@ def test_cli_explains_group_threads_need_notification_access(capsys) -> None:
         "Without System Notification access, group texts appear as individual "
         "conversations with their sender."
     ) in capsys.readouterr().out
+
+
+def test_cli_compatibility_mode_does_not_claim_the_controller_lacks_ancs(
+    capsys,
+) -> None:
+    _print_iphone_steps(
+        frozenset(),
+        remaining=(CONTACTS,),
+        notifications_supported=True,
+        ancs_enabled=False,
+        ancs_ready=False,
+    )
+
+    output = capsys.readouterr().out
+    assert "Without System Notification access" in output
+    assert "controller supports Messages and Contacts, but not" not in output
 
 
 def test_cli_just_works_pairing_still_requires_confirmation(monkeypatch) -> None:
@@ -60,6 +79,17 @@ def test_cli_just_works_pairing_still_requires_confirmation(monkeypatch) -> None
     assert prompts == [
         ("Approve this Bluetooth pairing request?", {"default": False})
     ]
+
+
+def test_cli_verification_distinguishes_compatibility_mode_from_missing_ancs() -> None:
+    assert pairing_cli._verification_detail(
+        ancs_ready=False,
+        compatibility_mode=True,
+    ) == "messages and contacts; ANCS was disabled by compatibility mode"
+    assert pairing_cli._verification_detail(
+        ancs_ready=False,
+        compatibility_mode=False,
+    ) == "messages and contacts; this controller has no ANCS support"
 
 
 def test_cli_requires_phone_side_forget_before_clearing_saved_target(
@@ -137,7 +167,17 @@ def test_cli_wizard_supplies_its_own_pairing_agent_ui(monkeypatch, capsys) -> No
             return SimpleNamespace(saved=False, mac="")
 
         @staticmethod
-        def complete(mac, *, confirmation, display, adapter=None):
+        def complete(
+            mac,
+            *,
+            confirmation,
+            display,
+            adapter=None,
+            compatibility_mode=False,
+            explicit_pairing=False,
+        ):
+            assert compatibility_mode is False
+            assert explicit_pairing is False
             observed.append((mac, adapter, confirmation(12345)))
             display(12345)
             return SimpleNamespace(device=device, ancs_ready=True)
@@ -204,7 +244,17 @@ def test_cli_wizard_points_at_pairing_issue_when_ancs_stays_down(
             return SimpleNamespace(saved=False, mac="")
 
         @staticmethod
-        def complete(mac, *, confirmation, display, adapter=None):
+        def complete(
+            mac,
+            *,
+            confirmation,
+            display,
+            adapter=None,
+            compatibility_mode=False,
+            explicit_pairing=False,
+        ):
+            assert compatibility_mode is False
+            assert explicit_pairing is False
             return SimpleNamespace(
                 device=device,
                 ancs_ready=False,

@@ -2,142 +2,154 @@
 
 ![BlueFerry messaging client](screenshot.png)
 
-iMessage Bluetooth bridge for Linux
+Use your iPhone's messages on Linux over Bluetooth.
 
 <p align="center">
   <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/9/90/Ferry_Blue_star_1_Rhodes.jpg/1920px-Ferry_Blue_star_1_Rhodes.jpg" width="320" alt="Blue Star ferry at Rhodes">
 </p>
 
-BlueFerry brings messages from a paired iPhone to a Linux desktop. It can
-receive and send SMS and iMessage, use the phone's contacts, and optionally
-mirror other iPhone notifications. It talks directly to the phone over
-Bluetooth; there is no Mac relay, Apple login, cloud service, or subscription.
+BlueFerry brings SMS and iMessage from a paired iPhone to your Linux desktop.
+You can read and reply to messages, start a conversation, search synced
+contacts, and optionally mirror other iPhone notifications. There is no Mac
+relay, Apple login, cloud service, or subscription.
 
-This is experimental software. Development has mostly used an iPhone 16 Pro
-Max running iOS 26.5, and Apple may change the behavior BlueFerry relies on.
-Don't make it your only way to receive an important message yet.
+This is still experimental software. Most development has used an iPhone 16
+Pro Max on iOS 26.5, with additional successful testing on an iPhone 17 Pro Max
+running an iOS 27 beta. Apple can change the Bluetooth behavior BlueFerry relies
+on, so don't make it your only way to receive an important message yet.
 
-## How it works
+## What works
 
-BlueFerry is not a reimplementation of Apple's private Messages protocol. It
-uses the Bluetooth accessory services exposed by the iPhone. On the tested
-phone, the Message Access Profile carries both SMS and iMessage; iOS still
-decides how an outgoing message is delivered.
+- Receive and send SMS and iMessage through the iPhone.
+- Sync contacts, including phone numbers and Apple-ID email addresses.
+- Mark messages read from the desktop.
+- Use native GTK, KDE/Kirigami, Quickshell, or terminal clients.
+- Keep local history encrypted with GNOME Keyring or KDE Wallet.
+- Reply to group chats when BlueFerry can identify the participants safely.
 
-There are native clients for GNOME, KDE, and Quickshell. They share one local
-backend, so pairing, contacts, preferences, and message history are the same
-whichever client you open.
+BlueFerry only knows about messages it sees while connected; it does not
+download your iCloud Messages archive. Attachments, reactions, typing
+indicators, FaceTime, calls, and complete sent-message history are not
+supported. MMS and RCS need more testing.
 
-New messages appear as they arrive and can be answered from the conversation.
-You can write to a phone number, an Apple-ID email address registered with
-iMessage, or a synced contact. BlueFerry only knows about messages it has seen;
-it is not an iCloud history browser and pairing will not download your complete
-Messages archive.
+Group replies are deliberately cautious. Bluetooth does not give BlueFerry a
+reliable group ID or complete roster, so it disables replies when the
+participants are unclear. Named groups may ask you to confirm a local reply
+roster. This does not change the group on the iPhone.
 
-Message popups are actionable: clicking one presents every currently running
-BlueFerry client and selects the matching conversation. The KDE client also
-provides a system-tray item; closing its window leaves it available there until
-you choose **Quit**.
+## Install
 
-Group chats work when BlueFerry can safely reconstruct the participants from
-the message and its matching iPhone notification. Bluetooth MAP does not send
-a group identifier or roster, so ambiguous groups remain read-only rather than
-risk replying to the wrong people. For a named group, BlueFerry can identify
-the thread but asks you to supply the other participants before enabling
-replies. That saved roster must be updated after membership changes.
-The roster is only BlueFerry's local reply map: editing it does not change the
-group in Messages on the iPhone. Named groups are keyed by their name because
-iOS exposes no conversation identifier, so two groups with the same name are
-ambiguous and may be combined. If a sender outside a saved roster appears,
-BlueFerry disables replies and warns that the roster needs review.
+### Arch Linux and CachyOS
 
-Attachments, reactions, typing indicators, FaceTime, calls, and a complete
-sent-message history are not supported. MMS and RCS have not been tested well
-enough to promise anything.
-
-## Install on Arch Linux
-
-Clone this repository and run:
+Clone the repository and run:
 
 ```bash
 ./build.sh -si
 ```
 
-The build uses dependencies from the official Arch repositories—nothing from
-the AUR or PyPI—and produces five ordinary pacman packages:
-`blueferry-backend`, `blueferry-gtk`, `blueferry-qt`, `blueferry-tui`, and
-`blueferry-quickshell`. Running `./build.sh` without `-i` builds them without
-installing them. The finished package archives are written to
-`packaging/arch/`.
+This builds and installs four normal pacman packages: `blueferry-backend`
+(including the terminal client), `blueferry-gtk`, `blueferry-qt`, and
+`blueferry-quickshell`. It uses repository dependencies rather than downloading
+from the AUR or PyPI.
 
-See [packaging/arch/README.md](packaging/arch/README.md) if you want to build
-individual packages or understand exactly what pacman owns.
+Run `./build.sh` without `-i` if you only want the package files. They are
+written to `packaging/arch/`. More details are in
+[packaging/arch/README.md](packaging/arch/README.md).
 
-Native package scaffolding is also available for Debian 13, Ubuntu 24.04 and 26.04,
-Linux Mint 22.3, Pop!_OS 24.04, PikaOS IV, and Fedora. See the
-[packaging support matrix](packaging/README.md) for the tested distributions,
-package split, and local build commands.
+### Debian, Ubuntu, Mint, Pop!_OS, PikaOS, and Fedora
+
+Native DEB and RPM recipes are included too. The tested matrix currently covers
+Debian 13, Ubuntu 24.04 and 26.04, Linux Mint 22.3, Pop!_OS 24.04, PikaOS IV,
+and Fedora 43 and 44. Some older Debian-family releases do not have the Qt
+dependencies, but the GTK client, backend, and TUI are still supported.
+
+See [packaging/README.md](packaging/README.md) for the exact support matrix and
+local build commands.
+
+Arch and Fedora packages can set up the newer Bluetooth support needed for
+iPhone system notifications. Debian-family packages do not change or restart
+Bluetooth; messages and contacts still work, and notifications are added only
+when that machine already supports them.
 
 ## Pair an iPhone
 
-Open the client for your desktop:
+Start the client that fits your desktop:
 
 ```bash
-blueferry-gtk         # GNOME
-blueferry-qt          # KDE
+blueferry-gtk         # GNOME, Cinnamon, and similar desktops
+blueferry-qt          # KDE Plasma
 blueferry-quickshell  # Quickshell
 ```
 
-On first launch it opens the iPhone setup page.
+Then:
 
-1. Let BlueFerry check the Bluetooth controller. Arch and Fedora packages
-   configure BlueZ's experimental bearer API and restart a running Bluetooth
-   service during installation. If that restart was suppressed, BlueFerry
-   offers to activate it through Polkit. Debian-family packages leave
-   Bluetooth unchanged and support MAP messages and PBAP contacts without
-   ANCS system notifications.
-2. Open your Bluetooth settings, click **Scan**, pick your phone, then hit
-   **Pair**. When this computer shows up in **Other Devices**, tap it and
-   approve the prompts. The confirmation code can take around 15 seconds to
-   appear on some controllers.
-3. Confirm the same code on both devices when prompted.
-4. On the iPhone, open **Settings → Bluetooth → ⓘ** beside the computer and
-   enable **Show Message Notifications** and **Sync Contacts**. You may need
-   to back out and tap **ⓘ** again before these toggles appear.
-   **Allow System Notifications** is also required to identify group text
-   threads; without it, a group text appears as a one-to-one conversation with
-   its sender.
-5. Wait for Messages and Contacts to show as connected. For the default
-   encrypted storage, approve the desktop wallet prompt that opens automatically.
+1. Keep the iPhone unlocked with **Settings → Bluetooth** open.
+2. Let BlueFerry check your Bluetooth controller.
+3. In BlueFerry, choose **Scan**, select the iPhone, and choose **Pair**.
+   BlueFerry starts the pairing request; you do not need to find and tap the
+   computer under **Other Devices** on the phone.
+4. When the request appears on the iPhone, approve it and confirm that both
+   devices show the same code. It can take around 15 seconds to appear.
+5. After pairing, tap **ⓘ** beside the computer on the iPhone and enable
+   **Show Message Notifications** and **Sync Contacts**. If the toggles are
+   missing, return to the Bluetooth device list and reopen the **ⓘ** page a few
+   times. If iOS asks to **Allow System Notifications**, approve that too.
+6. Wait for Messages and Contacts to show as connected. If you use the default
+   encrypted storage, approve the desktop wallet prompt.
 
-BlueFerry keeps a valid existing bond and will not repeatedly re-pair the
-phone. If you need a truly clean repair, forget the device on both sides and
-start again with the iPhone's Bluetooth page open.
+System Notification access lets BlueFerry recognize group-message metadata.
+When it is unavailable, ordinary messages and contacts still work, but a group
+message may look like a direct conversation with its sender.
 
-For a machine without a graphical client, the same setup is available from:
+### Pairing options
+
+Most people should leave both options unchecked.
+
+- **Compatibility pairing for iOS 18 or earlier** keeps the signal that makes
+  the Messages and Contacts permissions appear, but does not connect iPhone
+  system notifications. BlueFerry also chooses this automatically when the
+  local BlueZ stack cannot support them.
+- **Use explicit Bluetooth pairing** skips the normal connection-first
+  approach and asks BlueZ to pair immediately. Try it only if normal pairing
+  keeps getting canceled on that Bluetooth controller. It is independent of
+  iOS compatibility mode.
+
+For a clean retry, forget the computer on the iPhone and forget the iPhone on
+Linux before pairing again. Stale phone-side Bluetooth state can survive a
+one-sided forget, so reset both sides rather than repeatedly pairing over the
+old record.
+
+The terminal wizard exposes the same flow:
 
 ```bash
 blueferry pair-setup
+blueferry pair-setup --compatibility-mode
+blueferry pair-setup --explicit-pairing
 ```
 
-Once pairing is complete, opening a client starts the backend automatically.
-It also reconnects after normal Bluetooth interruptions and restarts itself
-after package upgrades; routine use should not require `systemctl --user`.
+Once setup is complete, the backend starts automatically and reconnects after
+normal Bluetooth interruptions. Package upgrades and same-version local
+rebuilds are detected automatically, so an old backend process is restarted
+when needed.
 
-On Arch, the Textual terminal client and its UI dependency are supplied by the
-separate `blueferry-tui` package. DEB and RPM builds include the client and a
-private Textual runtime in `blueferry-backend`. After pairing with a graphical
-client or `blueferry pair-setup`, start it with `blueferry-tui` (or
-`blueferry tui`). It
-provides searchable conversation previews, a message timeline, mouse support,
-a multiline composer, responsive narrow-terminal navigation, themes, and a
-command palette. Use the arrow keys or `j`/`k` to select a conversation,
-**Enter** to open it and to send from the composer, **Shift+Enter** for a new
-line, `/` to search, `n` for a new message, `?` for the keyboard map, and
-**Ctrl+P** for every command. Group
-replies show the backend-owned participant list in a confirmation dialog.
+## Terminal client
 
-### Omarchy Quattro
+The TUI is included in `blueferry-backend` on every supported package format.
+Arch uses its repository Textual package; DEB and RPM builds carry a private
+Textual 8 runtime for the TUI.
+
+Start it with either:
+
+```bash
+blueferry-tui
+blueferry tui
+```
+
+Press `?` for the keyboard map or `Ctrl+P` for the command palette. The TUI has
+conversation search, a multiline composer, mouse support, themes, and a layout
+that adapts to narrow terminals.
+
+## Omarchy Quattro
 
 The native bar panel lives in
 [omarchy-blueferry](https://github.com/erikwb/omarchy-blueferry):
@@ -146,39 +158,29 @@ The native bar panel lives in
 omarchy plugin add https://github.com/erikwb/omarchy-blueferry.git
 ```
 
-Its popup follows Quattro's own panel controls and shows connection health and
-recent conversations. The full Quickshell client handles messages, pairing,
-and preferences.
-
-Enable it from **Setup › Plugins**. If BlueFerry is not installed, clicking
-the widget opens a terminal with the source-build instructions. The standalone
-Quickshell client also follows the active Quattro theme.
+Enable it from **Setup › Plugins**. Its popup shows connection health and recent
+conversations; the full Quickshell client handles pairing, messages, and
+preferences.
 
 ## Notifications and local data
 
-The iPhone page can show message notifications only (the default), all iPhone
-notifications, or none. Ordinary app notifications are shown and discarded;
-they are not added to message history or exposed as a notification feed.
-Messages arriving through both MAP and ANCS are deduplicated.
-Because ordinary mirrored app notifications have no corresponding local view,
-only message notifications offer the open-conversation action.
+BlueFerry can show message notifications only—the default—all iPhone
+notifications, or none. Other app notifications are displayed and discarded;
+they are not added to message history. Messages seen through both MAP and ANCS
+are deduplicated.
 
-By default, message history and synced contacts are encrypted with a random key
-stored in GNOME Keyring or KDE Wallet. If the wallet is locked, live messages
-still work but history and contact lookup remain unavailable until you unlock
-it. The iPhone settings also offer unencrypted local storage, with an explicit
-warning, or **Do not retain local data**, which clears the cache and keeps new
-events ephemeral. Changing storage modes clears existing local history and
-cached contacts so encrypted and plaintext records are never mixed.
+Message history and contacts are encrypted by default with a random key stored
+in GNOME Keyring or KDE Wallet. If the wallet is locked, live messages continue
+to work, but retained history and contact lookup wait until you unlock it. You
+can also choose unencrypted storage or **Do not retain local data**. Changing
+storage modes clears the existing cache so encrypted and plaintext records are
+never mixed.
 
-BlueFerry stores configuration in `~/.config/blueferry` and local state in
-`~/.local/state/blueferry`. Pacman leaves those directories alone when the
-packages are removed. Delete them yourself if you want a complete reset; the
-encrypted mode's key is named “BlueFerry local storage key” in your wallet
-manager.
+Configuration lives in `~/.config/blueferry`; local state lives in
+`~/.local/state/blueferry`. Uninstalling packages does not delete either
+directory.
 
-The default popup lifetime and history limits can be changed in
-`~/.config/blueferry/local.env`:
+The common retention settings live in `~/.config/blueferry/local.env`:
 
 ```bash
 BLUEFERRY_SHOW_NOTIFICATION_CONTENT=false
@@ -188,11 +190,11 @@ BLUEFERRY_HISTORY_MAX_EVENTS=10000
 BLUEFERRY_HISTORY_MAX_PAYLOAD_BYTES=268435456
 ```
 
-Restart the user service after changing those environment settings.
+Restart the user service after editing those settings.
 
 ## Command line
 
-The graphical clients cover normal use, but the CLI is handy for diagnostics
+The graphical clients cover normal use, but the CLI is useful for diagnostics
 and scripts:
 
 ```bash
@@ -205,13 +207,13 @@ blueferry history-clear
 blueferry doctor
 ```
 
-`sms-list` asks the live phone first and falls back to retained history.
-Ambiguous contact names are resolved interactively rather than guessed.
+Ambiguous contact names are presented for you to choose from rather than
+guessed.
 
 ## Troubleshooting
 
-Start with the iPhone page in the app. It reports Messages, Contacts, and ANCS
-separately, which matters: messages and contact sync can work even when the
+Start with the iPhone page in the app. It reports Messages, Contacts, and iPhone
+Notifications separately; messages and contact sync can work even when the
 optional notification connection does not.
 
 For logs and prerequisite checks:
@@ -221,48 +223,37 @@ blueferry doctor
 journalctl --user -u blueferry -f
 ```
 
-If messages work but names do not, run **Sync Contacts** or
-`blueferry contacts-sync`. When reporting a hardware problem, include the
-iPhone model, iOS and BlueZ versions, and Bluetooth controller model. Remove
-phone numbers, names, message bodies, and Bluetooth addresses from logs first.
+If messages work but names do not, use **Sync Contacts** or run
+`blueferry contacts-sync`.
 
-## Technical notes
+Pairing failures save a scrubbed report that can be attached to a GitHub issue.
+It includes the package build and source SHA, pairing mode, controller details,
+and an ordered setup timeline. Please also include the iPhone model and iOS
+version. Reports remove Bluetooth addresses and home-directory paths, but it is
+still sensible to inspect anything before posting it publicly.
 
-BlueFerry uses three Bluetooth paths:
+## Technical details
 
-- MAP over OBEX carries messages, inbox queries, read state, and sends.
-- PBAP over OBEX supplies vCard contacts.
-- ANCS over BLE supplies optional app notifications and sometimes enough
-  display information to identify an unnamed group.
+BlueFerry uses three standard Bluetooth services:
 
-MAP and PBAP need a BR/EDR-capable controller. ANCS additionally needs usable
-Bluetooth LE support. The full path has been tested with a MediaTek MT7922, but
-BlueFerry checks controller capabilities rather than requiring a particular
-vendor.
+- MAP over Bluetooth Classic carries messages, read state, and sends.
+- PBAP over Bluetooth Classic supplies contacts.
+- ANCS over Bluetooth LE supplies optional notifications and group-message
+  display information.
 
-One unprivileged user daemon owns the Bluetooth sessions and exposes a small
-session D-Bus API to the clients. Private records are returned by method call,
-not broadcast in signals. Clients reply through opaque thread identities so a
-UI cannot silently change the recipients of an existing conversation. The
-default local encryption protects data at rest; unencrypted storage
-deliberately gives up that protection, and neither mode is a sandbox against
-another process already running as the same Unix user.
+One unprivileged per-user backend owns those connections and exposes a small
+session D-Bus API to the clients. Pairing uses normal Bluetooth confirmation
+and Polkit for the one system-level setup step; there is no sudoers rule or
+hidden Apple protocol.
 
-The pairing helper configures BlueZ through Polkit and presents the computer as
-an ordinary accessory. It does not exploit the phone, bypass pairing consent,
-or speak a hidden iCloud protocol. The long-running daemon is unprivileged and
-there is no sudoers rule.
+The deeper design and protocol notes live in
+[ARCHITECTURE.md](ARCHITECTURE.md), [PROTOCOL.md](PROTOCOL.md), and
+[TESTING.md](TESTING.md).
 
-BlueFerry used
+BlueFerry began from
 [iphonebridge](https://github.com/gabrielmeir53/iphonebridge), created by Gabe
-Shatunovsky, as its initial implementation point.
-
-The ANCS constants and wire-format
-parser/builders are adapted from
+Shatunovsky. The ANCS constants and wire-format code are adapted from
 [ANCS4Linux](https://github.com/bmh129/ancs4linux), by Paweł Zmarzły and
 Bradley Harmon, under GPL-2.0-or-later.
-
-The details live in [ARCHITECTURE.md](ARCHITECTURE.md),
-[PROTOCOL.md](PROTOCOL.md), and [TESTING.md](TESTING.md).
 
 BlueFerry is licensed under [GPL-2.0-only](LICENSE).

@@ -39,17 +39,20 @@ jobs:
           useradd --create-home builder
           chown -R builder:builder .
           su builder -c './build.sh -- --noconfirm'
-      - name: Smoke-test the backend-only Arch install
+      - name: Smoke-test the Arch backend and bundled TUI
         run: |
           backend=$(find packaging/arch -name 'blueferry-backend-*.pkg.tar.zst' -print -quit)
-          ! bsdtar -tf "$backend" | grep -E '/(tui\.py|tui\.tcss|__pycache__/tui\..*\.pyc)$'
+          bsdtar -tf "$backend" | grep -E '(^|/)blueferry/tui\.py$'
+          bsdtar -tf "$backend" | grep -E '(^|/)blueferry/tui\.tcss$'
+          bsdtar -tf "$backend" | grep -E '(^|/)usr/bin/blueferry-tui$'
           pacman -U --noconfirm "$backend"
-          set +e
-          blueferry tui 2>tui.err
-          status=$?
-          set -e
-          test "$status" -eq 2
-          grep -F 'install the blueferry-tui package' tui.err
+          smoke_tui() {
+            "$@" </dev/null 2>tui.err && status=0 || status=$?
+            test "$status" -eq 2
+            grep -Fx 'blueferry-tui requires an interactive terminal' tui.err
+          }
+          smoke_tui blueferry-tui
+          smoke_tui blueferry tui
       - name: Install the built artifacts
         run: pacman -U --noconfirm packaging/arch/*.pkg.tar.zst
       - name: Smoke test
@@ -95,6 +98,13 @@ jobs:
           /usr/lib/bluetooth/bluetoothd --help 2>&1 | grep -F experimental
           blueferry version
           python -c 'import blueferry; print(blueferry.__version__)'
+          smoke_tui() {
+            "$@" </dev/null 2>tui.err && status=0 || status=$?
+            test "$status" -eq 2
+            grep -Fx 'blueferry-tui requires an interactive terminal' tui.err
+          }
+          smoke_tui blueferry-tui
+          smoke_tui blueferry tui
 
   build-deb:
     name: Build Debian packages

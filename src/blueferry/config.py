@@ -12,6 +12,7 @@ MAX_CONFIG_FILE_BYTES = 64 * 1024
 LOCAL_ENV_KEYS = frozenset({
     "BLUEFERRY_MAC",
     "BLUEFERRY_ADAPTER",
+    "BLUEFERRY_ANCS_ENABLED",
     "BLUEFERRY_SHOW_NOTIFICATION_CONTENT",
     "BLUEFERRY_NOTIFICATION_TIMEOUT_MS",
     "BLUEFERRY_HISTORY_RETENTION_DAYS",
@@ -142,6 +143,13 @@ def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
         value = default
     return max(minimum, min(value, maximum))
 
+
+ANCS_ENABLED: bool = _env_bool("BLUEFERRY_ANCS_ENABLED", True)
+"""Whether the daemon should connect and subscribe to ANCS over LE.
+
+The pairing solicitation advertisement is deliberately independent: even
+compatibility mode broadcasts it so iOS exposes MAP/PBAP permissions.
+"""
 
 SHOW_NOTIFICATION_CONTENT: bool = _env_bool(
     "BLUEFERRY_SHOW_NOTIFICATION_CONTENT", True

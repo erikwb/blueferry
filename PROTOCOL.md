@@ -5,10 +5,13 @@ the original one-off experiment scripts with conclusions that are useful to
 maintainers. These are empirical observations, not promises made by Apple.
 
 Unless stated otherwise, the behavior was observed with an iPhone 16 Pro Max
-running iOS 26.5, BlueZ 5.72 or newer, and Linux controllers supporting both
-BR/EDR and LE. The complete MAP, PBAP, and ANCS combination has been exercised
-with a MediaTek MT7922. Other iPhone, iOS, BlueZ, and controller versions need
-independent verification.
+running iOS 26.5 and Linux controllers supporting both BR/EDR and LE. MAP/PBAP
+behavior spans BlueZ 5.72 or newer; the dual-bearer ANCS flow requires BlueZ
+5.86 or newer with its bearer API exposed. The complete MAP, PBAP, and ANCS
+combination has been exercised with a MediaTek MT7922. A later first-attempt
+clean test also completed all three on a previously tested Intel controller
+with an iPhone 17 Pro Max running an iOS 27 beta. Other iPhone, iOS, BlueZ, and
+controller versions need independent verification.
 
 ## Pairing and iPhone permissions
 
@@ -28,8 +31,11 @@ during pairing. The reliable setup has these properties:
 - The working advertisement also contains inert private/test manufacturer and
   service identifiers `0xffff` and `0x9999`, following the behavior established
   by ancs4linux. They do not claim an Apple or hardware-vendor identity.
-- The adapter is powered, pairable, and discoverable while the user confirms
-  the same passkey on Linux and the iPhone.
+- Linux discovers the iPhone and initiates the connection to that selected
+  device; the user does not start pairing by tapping the computer under iOS
+  **Other Devices**. The pre-bond Linux identity does not need a globally
+  discoverable LE advertisement. The post-bond solicitation advert carries its
+  own bounded discoverability window.
 - Which side initiates the *authentication* decides whether one pairing
   covers both transports: the authentication initiator derives the LE keys
   over SMP-on-BR/EDR after encryption, and only the link central can. The
@@ -40,7 +46,8 @@ during pairing. The reliable setup has these properties:
   btmon capture shows neither side opening the SMP channel despite both
   advertising it and the link key being Secure Connections (`Type=8`). The
   same `Pair()` produced a dual bond on a MediaTek MT7922.
-- The sequence that produces the dual bond on every tested controller is to
+- The sequence that produced a dual bond on the tested Intel and MediaTek
+  controllers, when the transaction completed, is to
   register the pairing agent and then call `Device1.Connect()` on the
   *unpaired* device: iOS refuses the profile connection without security,
   initiates the pairing itself over the existing ACL, and — as central and
@@ -51,26 +58,22 @@ during pairing. The reliable setup has these properties:
   device record for the computer. The user confirms one numeric comparison
   on both screens; the adapter never needs to become discoverable.
 
-There are two reliable client transactions, depending on who owns the pairing
-UI. On a desktop running KDE BlueDevil, GNOME Shell, Cinnamon, or Blueman,
-BlueFerry leaves confirmation and its surrounding connection lifecycle to that
-desktop manager and starts pairing with `Device1.Pair()`. Registering
-BlueFerry's agent and issuing the unpaired `Device1.Connect()` at the same time
-races the desktop manager; on KDE/BlueDevil this produced
-`le-connection-abort-by-local`. In a session without an interactive Bluetooth
-manager, BlueFerry registers its `DisplayYesNo` agent and uses the unpaired
-`Device1.Connect()` transaction described above. This is the path that produces
-the dual bond reliably on the Intel AX210 and supplies confirmation UI on
-minimal desktops.
+Interactive BlueFerry clients now default to that Connect-first transaction.
+They register their device-scoped `DisplayYesNo` agent as the default, call
+`Device1.Connect()` on the unpaired device, and wait for iOS to initiate
+authentication. BlueZ exposes neither its registered-agent list nor the
+identity of its default agent, so automatic desktop-agent heuristics proved too
+indirect to choose a reliable transaction.
 
-BlueZ exposes neither its registered-agent list nor the identity of its default
-agent. Clients therefore select between these transactions using a deliberately
-narrow session-bus heuristic: known interactive manager names are recognized,
-and KDE counts only when the `bluedevil` module is loaded in `kded5` or `kded6`.
-Generic headless agents such as a `NoInputNoOutput` `bt-agent` do not count;
-they cannot display numeric comparison and must not suppress BlueFerry's agent.
-This choice lives in the shared setup implementation, so the GTK, Qt, and
-Quickshell clients all use the same transaction on a given desktop.
+Some controllers instead cancel the Connect-first transaction before pairing
+finishes. For those systems the independent **Use explicit Bluetooth pairing**
+override registers the same device-scoped agent but calls `Device1.Pair()`
+directly. Headless callers also use explicit Pair because they cannot present
+BlueFerry's interactive confirmation UI. Explicit Pair may produce only a
+Classic bond on controllers such as the tested Intel device, so it is a
+controller workaround rather than the full-mode default. Delivery mode and
+authentication strategy are independent: either full or compatibility mode
+can use Connect-first or explicit Pair.
 
 After pairing, the iPhone offers **Show Message Notifications** and
 **Sync Contacts** in the computer's Bluetooth entry. These permissions are
@@ -88,13 +91,27 @@ connection hung and ended in `le-connection-abort-by-local`, while MAP/PBAP
 worked when attempted first. BlueZ still reported its LE bearer as paired and
 bonded, so those properties cannot predict whether the phone will answer.
 
-The experimental pairing flow therefore keeps the ANCS solicitation
-advertisement active, activates obexd's local Message Notification Server
-before pairing, and makes MAP/PBAP the first post-pair profile attempt. LE is
-enabled after that attempt completes, whether it succeeds or fails. Before
-each connection request the daemon explicitly selects the corresponding BlueZ
-`PreferredBearer`; otherwise the pairing-time BR/EDR preference prevents the
-later LE request from completing.
+BlueFerry therefore resolves two delivery modes. Full mode requires a
+controller with BR/EDR, LE, and advertising plus BlueZ 5.86 or newer. Its
+bearer API must already be active or be activatable through the package's
+systemd drop-in before pairing proceeds. Compatibility mode is selected
+automatically when ANCS is unavailable or explicitly for iOS 18 and earlier.
+It still broadcasts ANCS solicitation when the controller can advertise,
+because that signal exposes the MAP/PBAP permissions, but persists
+`BLUEFERRY_ANCS_ENABLED=false` and never enables an outbound LE/ANCS
+connection. MAP and PBAP are its successful end state; absence of Notification
+Access is expected and group messages may consequently lack ANCS-derived group
+metadata.
+
+Both modes activate obexd's local Message Notification Server before pairing.
+After authentication, setup trusts the bond, selects BR/EDR as the preferred
+bearer, lets the existing Classic ACL settle, and only then registers the
+short-lived solicitation advertisement. The daemon starts while that advert
+and BlueFerry's temporary pairing agent are still present, and its first
+profile operation is MAP/PBAP. Full mode enables LE after that first profile
+attempt completes, whether it succeeds or fails; compatibility mode leaves LE
+disabled. Before later connection requests the daemon selects the corresponding
+BlueZ `PreferredBearer` when that property is available.
 
 On a clean iOS 26 test this ordering opened MAP/PBAP first; the pending LE
 request completed three seconds later, resolved all three ANCS characteristics,
@@ -116,10 +133,11 @@ interrupted probe is retried while MAP/PBAP remains available.
 Without the relevant permission, MAP or PBAP can be visible at the SDP level
 but reject an OBEX connection with `Forbidden`/`0x43`; that state resolves
 once the toggle is enabled and is not a reason to re-pair. A MAP `Connection
-refused (111)` at the transport level is a different, unrecoverable state
-observed with stale or incomplete bonds. BlueFerry therefore treats a
-completed bond as only the beginning of setup and verifies the live profiles
-before reporting success.
+refused (111)` at the transport level is different: another computer may own
+the iPhone's single MAP session, although stale or incomplete bonds can look
+similar. BlueFerry exposes that state distinctly and keeps polling rather than
+misreporting a permissions failure. A completed bond is therefore only the
+beginning of setup; clients verify the live profiles before reporting success.
 
 ## MAP receive behavior
 
@@ -233,12 +251,15 @@ is already in use by another computer, iOS rejects `CreateSession(MAP)` with
 keep the daemon available, expose the refusal to clients, and continue polling
 so Blueferry connects when the competing session is released.
 
-The saved target MAC is also the MAP trust boundary. Discovery or a Classic
-bond alone must never put a phone into Blueferry's configuration. The pairing
-flow persists the MAC and starts the daemon only after it has successfully
-connected the same bond over LE for ANCS. If ANCS/LE setup is incomplete, the
-phone may remain paired in BlueZ, but Blueferry does not persist that target
-MAC and therefore cannot attempt a MAP session to it.
+The saved target MAC is also the MAP trust boundary. Discovery alone must never
+put a phone into BlueFerry's configuration. Setup persists only the device it
+just authenticated, trusted, and settled over Classic, together with the
+resolved ANCS policy, then starts the daemon so MAP/PBAP can be verified.
+Compatibility mode intentionally persists a Classic-only target. Full mode may
+also persist before ANCS authorization finishes: the daemon continues the
+bounded LE connection, GATT discovery, and authorization probe while MAP/PBAP
+remain available. Removing the bond invalidates the saved runtime target and
+stops the daemon's connection attempts.
 
 - Keep one MAP and one PBAP session open for the daemon lifetime.
 - Serialize blocking MAP/PBAP operations on one worker.
@@ -274,11 +295,11 @@ method or `Connected` property) depending on the packaged BlueZ build, so the
 Classic bearer is driven and observed through `org.bluez.Device1` instead.
 During first-time setup, `Device1.PreferredBearer=le` followed by
 `Bearer.LE1.Connect` established (or confirmed) the LE connection on BlueZ
-5.87; the supervising daemon afterwards does not keep re-setting
-`PreferredBearer`, since BlueZ only applies that property while disconnected
-and preferring LE removes the device from the normal auto-connect list.
-BlueFerry supervises both connections for the daemon lifetime, repeats the
-sequence after disconnects and system resume, and backs off exponentially
+5.87. `PreferredBearer` is treated as an instruction for the next outbound
+connection, not a durable preference: the supervisor selects `bredr` or `le`
+immediately before requesting that bearer and does not leave LE preferred while
+idle. BlueFerry supervises both connections for the daemon lifetime, repeats
+the sequence after disconnects and system resume, and backs off exponentially
 when a bearer keeps refusing to connect: a rejected `Connect` repeated every
 five seconds against the iPhone was observed to keep the bond in a
 half-connected flapping state.
@@ -292,8 +313,13 @@ This works on the MediaTek MT7922 and the Intel AX210 while MAP and PBAP stay
 connected over BR/EDR; on the AX210 the LE half of the bond exists only when
 the iPhone initiated the authentication (see "Pairing and iPhone
 permissions").
-BlueFerry's Arch package enables the necessary bluetoothd experimental API. The
-requirement is based on controller capabilities, not an Intel vendor check.
+BlueFerry's Arch and RPM packages enable the necessary bluetoothd experimental
+API and require BlueZ 5.86 or newer. DEB packages target several distributions
+with older or divergent BlueZ releases and deliberately do not modify the
+system Bluetooth unit; full ANCS is offered there only when the installed
+daemon already exposes the 5.86+ bearer API. Otherwise pairing falls back to
+MAP/PBAP compatibility mode instead of blocking. The requirement is based on
+observed capabilities and the live API, not a controller-vendor check.
 
 ANCS responses have no outer total-length field and may arrive fragmented.
 Control Point requests must be serialized and reassembled according to the
@@ -323,6 +349,21 @@ oFono and PipeWire's native HFP backend race to register the same BlueZ
 profile, making startup ordering and distribution integration fragile. That
 complexity, dependency burden, and the project's messaging focus are why the
 feature was removed despite protocol feasibility.
+
+## Pairing diagnostics
+
+Each pairing attempt records the resolved delivery mode, authentication
+strategy, controller capability, phone/bearer observations, daemon transport
+state, and an ordered monotonic timeline. Reports redact device addresses,
+object paths, and user directories before they are retained or embedded in a
+GitHub issue URL.
+
+Native packages also bake a SHA-256 of their deterministic source snapshot.
+The report's `blueferry_build` uses the same package-release plus short-SHA
+format as the daemon's private `_build_id` status field, while
+`blueferry_sha` retains the complete digest. Source checkouts fall back to the
+Git commit SHA. These fields distinguish same-version local rebuilds without
+changing the public D-Bus interface version.
 
 ## Maintenance rule
 

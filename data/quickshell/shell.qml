@@ -25,8 +25,12 @@ ShellRoot {
   property string pairingStatus: "Step 1: scan for the iPhone. Scanning does not pair it."
   property bool bluezActive: false
   property bool hardwareSupported: false
+  property bool messagesSupported: false
   property bool notificationsSupported: false
+  property bool ancsEnabled: true
   property bool pairingReady: false
+  property bool compatibilityModeOverride: false
+  property bool explicitPairingOverride: false
   property bool configured: false
   property bool targetSaved: false
   property bool targetBonded: false
@@ -55,6 +59,8 @@ ShellRoot {
     id: onboarding
     hardwareSupported: root.hardwareSupported
     notificationsSupported: root.notificationsSupported
+                            && root.ancsEnabled
+                            && !root.compatibilityModeOverride
     bluezActive: root.bluezActive
     configured: root.configured
     backendStatus: root.backendStatus
@@ -202,6 +208,10 @@ ShellRoot {
       pairProcess.command.push("--adapter", root.adapterName)
     if (replaceSavedTarget)
       pairProcess.command.push("--replace-saved-mac", configuredMac)
+    if (!notificationsSupported || compatibilityModeOverride)
+      pairProcess.command.push("--compatibility-mode")
+    if (explicitPairingOverride)
+      pairProcess.command.push("--explicit-pairing")
     pairProcess.running = true
   }
 
@@ -219,6 +229,7 @@ ShellRoot {
 
   function markCompatibilityUnavailable(message) {
     hardwareSupported = false
+    messagesSupported = false
     notificationsSupported = false
     pairingReady = false
     bluezActive = false
@@ -250,7 +261,8 @@ ShellRoot {
         return
       }
       root.pairingResultReceived = true
-      root.pairingStatus = parsed.ancs_ready || !root.notificationsSupported
+      root.ancsEnabled = parsed.ancs_enabled !== false
+      root.pairingStatus = parsed.ancs_ready || !root.ancsEnabled
         ? "Linux pairing complete. On the iPhone enable Show Message Notifications and Sync Contacts."
         : "Pairing is complete. Notification access is still settling; keep the iPhone Bluetooth settings open."
       root.pairingIssueReport = parsed.quirks_report || parsed.report_path || ""
@@ -309,6 +321,7 @@ ShellRoot {
         try {
           var parsed = JSON.parse(text)
           root.hardwareSupported = parsed.hardware_supported === true
+          root.messagesSupported = parsed.messages_supported === true
           root.notificationsSupported = parsed.notifications_supported === true
           root.pairingReady = parsed.pairing_ready === true
           root.bluezActive = parsed.bearer_api_active === true
@@ -351,6 +364,7 @@ ShellRoot {
           root.targetBonded = parsed.bonded === true
           root.configuredMac = root.targetSaved ? (parsed.mac || "") : ""
           root.configuredAdapter = root.targetSaved ? (parsed.adapter || "") : ""
+          root.ancsEnabled = parsed.ancs_enabled !== false
           if (typeof parsed.pairing_issue_report === "string")
             root.pairingIssueReport = parsed.pairing_issue_report
           if (root.targetSaved && root.bondStateKnown && !root.targetBonded)
@@ -634,6 +648,7 @@ ShellRoot {
             root.bondStateKnown = true
             root.configuredMac = ""
             root.configuredAdapter = ""
+            root.ancsEnabled = true
             root.backendStatus = ({})
             root.pairingDevices = []
             root.loadPairingDevices(false)
@@ -1245,20 +1260,36 @@ ShellRoot {
             visible: !root.configured
           }
           FerryLabel {
-            text: "Scan for and select your iPhone here, then choose Pair. On the iPhone, open Settings → Bluetooth, find this computer under \"Other Devices\", tap it, and approve the matching codes. Pairing may appear idle for up to 15 seconds. While it does, return to the Bluetooth device list and reopen this computer's ⓘ page a few times; turn on any new toggles that appear. System Notification access is also how BlueFerry recognizes group text threads; without it, a group text appears as a one-to-one conversation with its sender."
+            text: "Scan for and select your iPhone here, then choose Pair. When the pairing request appears on the iPhone, approve it and confirm that the codes match. Pairing may appear idle for up to 15 seconds. After it completes, return to the Bluetooth device list and open this computer's ⓘ page a few times; turn on any new toggles that appear. System Notification access is also how BlueFerry recognizes group text threads; without it, a group text appears as a one-to-one conversation with its sender."
             wrapMode: Text.Wrap
             Layout.fillWidth: true
             visible: !root.configured
           }
           FerryCheckBox {
+            id: compatibilityMode
+            visible: !root.configured
+            text: "Compatibility pairing for iOS 18 or earlier"
+            checked: !root.notificationsSupported || root.compatibilityModeOverride
+            enabled: root.notificationsSupported && !pairProcess.running
+            onClicked: root.compatibilityModeOverride = checked
+          }
+          FerryLabel {
+            visible: !root.configured && compatibilityMode.checked
+            text: "BlueFerry will still advertise ANCS solicitation so Messages and Contacts permissions appear, but it will not connect system notifications."
+            wrapMode: Text.Wrap
+            Layout.fillWidth: true
+          }
+          FerryCheckBox {
             id: confirmBluetoothRestart
             visible: !root.configured
                      && root.notificationsSupported && !root.bluezActive
+                     && !compatibilityMode.checked
             text: "I understand this briefly disconnects all Bluetooth devices"
           }
           FerryButton {
             visible: !root.configured
                      && root.notificationsSupported && !root.bluezActive
+                     && !compatibilityMode.checked
             text: bluezActivateProcess.running ? "Activating…" : "Activate Bluetooth support"
             enabled: confirmBluetoothRestart.checked && !bluezActivateProcess.running
             onClicked: {
@@ -1292,13 +1323,22 @@ ShellRoot {
             model: root.pairingDevices
             textRole: "label"
           }
+          FerryCheckBox {
+            id: explicitPairing
+            visible: !root.configured
+            text: "Use explicit Bluetooth pairing"
+            checked: root.explicitPairingOverride
+            enabled: !pairProcess.running
+            onClicked: root.explicitPairingOverride = checked
+          }
           FerryButton {
             visible: !root.configured
             text: pairProcess.running ? "Pairing…"
               : root.selectedPairingDevice() && root.selectedPairingDevice().paired
                 ? "Use existing pairing" : "2. Pair Selected iPhone"
             enabled: root.selectedPairingDevice() !== null
-                     && root.pairingReady
+                     && (compatibilityMode.checked
+                         ? root.messagesSupported : root.pairingReady)
                      && !deviceProcess.running && !pairProcess.running
             onClicked: {
               var device = root.selectedPairingDevice()

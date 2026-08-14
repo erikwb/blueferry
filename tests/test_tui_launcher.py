@@ -73,7 +73,7 @@ def test_launcher_drops_every_module_shadowed_by_the_vendor_bundle(monkeypatch) 
     assert set(modules) == {"blueferry", "typer"}
 
 
-def test_missing_arch_tui_returns_an_install_hint(monkeypatch, capsys) -> None:
+def test_missing_packaged_tui_returns_a_reinstall_hint(monkeypatch, capsys) -> None:
     real_import = builtins.__import__
 
     def missing_tui(name, *args, **kwargs):
@@ -87,10 +87,10 @@ def test_missing_arch_tui_returns_an_install_hint(monkeypatch, capsys) -> None:
     monkeypatch.setattr(builtins, "__import__", missing_tui)
 
     assert tui_launcher.main() == 2
-    assert "install the blueferry-tui package" in capsys.readouterr().err
+    assert "reinstall blueferry-backend" in capsys.readouterr().err
 
 
-def test_backend_cli_reports_how_to_install_the_arch_tui(monkeypatch) -> None:
+def test_backend_cli_reports_how_to_restore_a_missing_tui(monkeypatch) -> None:
     real_import = builtins.__import__
 
     def missing_tui(name, *args, **kwargs):
@@ -106,4 +106,4 @@ def test_backend_cli_reports_how_to_install_the_arch_tui(monkeypatch) -> None:
     result = CliRunner().invoke(cli.app, ["tui"])
 
     assert result.exit_code == 2
-    assert "install the blueferry-tui package" in result.output
+    assert "reinstall blueferry-backend" in result.output

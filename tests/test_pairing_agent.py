@@ -115,6 +115,7 @@ def test_registered_agent_is_default_only_for_context_lifetime(caplog):
     registered._agent = Agent()
     registered._registered = False
     registered._expected_device = "/device"
+    registered._make_default = True
 
     with registered:
         calls.append("pairing")
@@ -159,6 +160,7 @@ def test_registered_agent_cleans_up_when_default_request_fails():
     registered._agent = Agent()
     registered._registered = False
     registered._expected_device = "/device"
+    registered._make_default = True
 
     with pytest.raises(pairing_agent.PairingError, match="not authorized"):
         registered.__enter__()
@@ -205,3 +207,117 @@ def test_registered_agent_cleans_up_when_registration_fails():
         "removed",
     ]
     assert registered._registered is False
+
+
+def test_registered_agent_does_not_replace_default_for_explicit_pairing():
+    calls = []
+
+    class Manager:
+        def RegisterAgent(self, path, capability, **_kwargs):
+            calls.append(("register", str(path), capability))
+
+        def RequestDefaultAgent(self, _path, **_kwargs):
+            calls.append("unexpected-default")
+
+        def UnregisterAgent(self, path, **_kwargs):
+            calls.append(("unregister", str(path)))
+
+    class Agent:
+        def remove_from_connection(self):
+            calls.append("removed")
+
+    registered = pairing_agent.RegisteredPairingAgent.__new__(
+        pairing_agent.RegisteredPairingAgent
+    )
+    registered._manager = Manager()
+    registered._agent = Agent()
+    registered._registered = False
+    registered._expected_device = "/device"
+    registered._make_default = False
+
+    with registered:
+        calls.append("pairing")
+
+    assert calls == [
+        ("register", pairing_agent.AGENT_PATH, "DisplayYesNo"),
+        "pairing",
+        ("unregister", pairing_agent.AGENT_PATH),
+        "removed",
+    ]
+
+
+def test_registered_agent_pairs_asynchronously_on_its_own_bus(monkeypatch):
+    calls = []
+
+    class Loop:
+        def run(self):
+            calls.append("loop-run")
+
+        def quit(self):
+            calls.append("loop-quit")
+
+    class Device:
+        def Pair(self, **kwargs):
+            calls.append(("pair", kwargs["timeout"]))
+            kwargs["reply_handler"]()
+
+    class Bus:
+        def get_object(self, service, path):
+            calls.append(("object", service, path))
+            return object()
+
+    monkeypatch.setattr(pairing_agent.GLib, "MainLoop", Loop)
+    monkeypatch.setattr(pairing_agent.GLib, "timeout_add", lambda *_args: 7)
+    monkeypatch.setattr(
+        pairing_agent.GLib,
+        "source_remove",
+        lambda source: calls.append(("source-remove", source)),
+    )
+    monkeypatch.setattr(pairing_agent.dbus, "Interface", lambda *_args: Device())
+    registered = pairing_agent.RegisteredPairingAgent.__new__(
+        pairing_agent.RegisteredPairingAgent
+    )
+    registered._bus = Bus()
+    registered._expected_device = "/device"
+
+    registered.pair(timeout=42.0)
+
+    assert calls == [
+        ("object", "org.bluez", "/device"),
+        ("pair", 42.0),
+        "loop-quit",
+        "loop-run",
+        ("source-remove", 7),
+    ]
+
+
+def test_registered_agent_propagates_async_pairing_failure(monkeypatch):
+    error = dbus.exceptions.DBusException(
+        "rejected", name="org.bluez.Error.AuthenticationRejected"
+    )
+
+    class Loop:
+        def run(self):
+            pass
+
+        def quit(self):
+            pass
+
+    class Device:
+        def Pair(self, **kwargs):
+            kwargs["error_handler"](error)
+
+    monkeypatch.setattr(pairing_agent.GLib, "MainLoop", Loop)
+    monkeypatch.setattr(pairing_agent.GLib, "timeout_add", lambda *_args: 7)
+    monkeypatch.setattr(pairing_agent.GLib, "source_remove", lambda _source: None)
+    monkeypatch.setattr(pairing_agent.dbus, "Interface", lambda *_args: Device())
+    registered = pairing_agent.RegisteredPairingAgent.__new__(
+        pairing_agent.RegisteredPairingAgent
+    )
+    registered._bus = type("Bus", (), {"get_object": lambda *_args: object()})()
+    registered._expected_device = "/device"
+
+    with pytest.raises(dbus.exceptions.DBusException) as raised:
+        registered.pair()
+
+    assert raised.value is error

@@ -16,13 +16,20 @@ def test_pair_setup_debug_enables_diagnostic_logging(monkeypatch):
     monkeypatch.setattr(
         pairing_cli,
         "run_wizard",
-        lambda *, verify_after: calls.append(("wizard", verify_after)) or 0,
+        lambda **kwargs: calls.append(("wizard", kwargs)) or 0,
     )
 
     result = CliRunner().invoke(cli.app, ["pair-setup", "--debug", "--no-verify"])
 
     assert result.exit_code == 0
-    assert calls == [("debug", True), ("wizard", False)]
+    assert calls == [
+        ("debug", True),
+        ("wizard", {
+            "verify_after": False,
+            "compatibility_mode": False,
+            "explicit_pairing": False,
+        }),
+    ]
 
 
 def test_interactive_pairing_emits_code_and_waits_for_acceptance(monkeypatch):
@@ -35,7 +42,18 @@ def test_interactive_pairing_emits_code_and_waits_for_acceptance(monkeypatch):
         def prepare_replacement(self, previous_mac, next_mac, *, adapter=None):
             observed.append(("replace", previous_mac, next_mac, adapter))
 
-        def complete(self, mac, *, confirmation, display, adapter=None):
+        def complete(
+            self,
+            mac,
+            *,
+            confirmation,
+            display,
+            adapter=None,
+            compatibility_mode=False,
+            explicit_pairing=False,
+        ):
+            assert compatibility_mode is False
+            assert explicit_pairing is False
             observed.append((mac, adapter, confirmation(12345)))
             return SimpleNamespace(to_dict=lambda: {"ok": True, "device": {"mac": mac}})
 
@@ -89,6 +107,32 @@ def test_pairing_complete_failure_includes_report_path(monkeypatch):
     assert payload["ok"] is False
     assert payload["error"] == "adapter setup failed"
     assert payload["report_path"] == "/tmp/quirks-fail.json"
+
+
+def test_pairing_complete_forwards_independent_pairing_modes(monkeypatch):
+    observed = []
+
+    class Setup:
+        @staticmethod
+        def complete(mac, **kwargs):
+            observed.append((mac, kwargs))
+            return SimpleNamespace(to_dict=lambda: {"ok": True})
+
+    monkeypatch.setattr(setup_client, "SetupClient", Setup)
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "pairing-complete",
+            "02:00:00:00:00:01",
+            "--compatibility-mode",
+            "--explicit-pairing",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert observed[0][1]["compatibility_mode"] is True
+    assert observed[0][1]["explicit_pairing"] is True
 
 
 def test_pairing_issue_prints_the_latest_report_without_opening(tmp_path, monkeypatch):

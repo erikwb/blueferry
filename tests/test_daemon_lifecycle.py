@@ -9,6 +9,11 @@ from blueferry import daemon as daemon_mod
 from blueferry.connectivity import Connectivity
 
 
+@pytest.fixture(autouse=True)
+def _ignore_the_hosts_installed_build_sha(monkeypatch):
+    monkeypatch.setattr(daemon_mod, "installed_build_sha", lambda: None)
+
+
 def _bare_daemon():
     instance = object.__new__(daemon_mod.Daemon)
     instance.sessions = object()
@@ -36,6 +41,8 @@ def _bare_daemon():
     instance._target_config_check_id = None
     instance._initializing = True
     instance._running_release = "0.6.0-6"
+    instance._running_build_sha = None
+    instance._running_build_id = "0.6.0-6"
     instance._release_missing_checks = 0
     instance._restart_after_upgrade = False
     return instance
@@ -135,6 +142,7 @@ def test_status_exposes_split_ancs_and_last_le_error(monkeypatch):
     assert status["le"] is False
     assert status["last_le_error"] == "org.bluez.Error.Failed"
     assert status["last_le_error_message"] == "le-connection-abort-by-local"
+    assert status["_build_id"] == "0.6.0-6"
 
 
 def test_failed_hardware_initialization_leaves_control_service_alive(monkeypatch):
@@ -196,6 +204,20 @@ def test_persistent_missing_release_marker_stops_cleanly(monkeypatch):
     assert instance._check_package_release() is True
     assert instance._check_package_release() is False
     assert instance._restart_after_upgrade is False
+    assert stopped == [True]
+
+
+def test_changed_build_sha_restarts_the_packaged_daemon(monkeypatch):
+    instance = _bare_daemon()
+    instance._running_build_sha = "a" * 64
+    instance._running_build_id = "0.6.0-6+sha." + "a" * 12
+    stopped = []
+    monkeypatch.setattr(daemon_mod, "installed_release", lambda: "0.6.0-6")
+    monkeypatch.setattr(daemon_mod, "installed_build_sha", lambda: "b" * 64)
+    monkeypatch.setattr(daemon_mod.main_loop, "quit", lambda: stopped.append(True))
+
+    assert instance._check_package_release() is False
+    assert instance._restart_after_upgrade is True
     assert stopped == [True]
 
 

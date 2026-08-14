@@ -275,6 +275,128 @@ def test_pairing_rejects_when_confirmation_is_declined(monkeypatch):
     assert observed == [False]
 
 
+def test_pairing_forwards_independent_pairing_modes(monkeypatch):
+    from types import SimpleNamespace
+
+    observed = []
+
+    class Setup:
+        def complete_isolated(self, _mac, **kwargs):
+            observed.append((
+                kwargs.get("compatibility_mode"),
+                kwargs.get("explicit_pairing"),
+            ))
+            return SimpleNamespace(ancs_enabled=False)
+
+    controller = BridgeController(
+        backend=_Backend(),
+        setup=Setup(),
+        subscribe=False,
+        autostart=False,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_run",
+        lambda operation, on_done=None, *_args, **_kwargs: (
+            on_done(operation()) if on_done is not None else operation()
+        ),
+    )
+    monkeypatch.setattr(controller, "loadDevices", lambda _scan: None)
+    monkeypatch.setattr(controller, "loadSetupState", lambda: None)
+    monkeypatch.setattr(controller, "refresh", lambda: None)
+
+    controller._compatibility = {
+        "adapter": "hci0",
+        "notifications_supported": True,
+    }
+    controller.completePairing("02:00:00:00:00:01", True, True)
+
+    assert observed == [(True, True)]
+    assert controller.compatibility["notifications_supported"] is True
+
+
+def test_saved_pairing_policy_does_not_overwrite_adapter_capability(monkeypatch):
+    from types import SimpleNamespace
+
+    class Setup:
+        @staticmethod
+        def compatibility(_adapter=None):
+            return SimpleNamespace(
+                to_dict=lambda: {
+                    "adapter": "hci0",
+                    "hardware_supported": True,
+                    "messages_supported": True,
+                    "notifications_supported": True,
+                    "pairing_ready": True,
+                    "bearer_api_active": True,
+                },
+                bearer_api_active=True,
+            )
+
+        @staticmethod
+        def configuration():
+            return SimpleNamespace(
+                configured=False,
+                saved=True,
+                bonded=False,
+                mac="02:00:00:00:00:01",
+                adapter="hci0",
+                pairing_issue_report="",
+                ancs_enabled=False,
+            )
+
+    controller = BridgeController(
+        backend=_Backend(),
+        setup=Setup(),
+        subscribe=False,
+        autostart=False,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_run",
+        lambda operation, on_done=None, *_args, **_kwargs: (
+            on_done(operation()) if on_done is not None else operation()
+        ),
+    )
+
+    controller.loadSetupState()
+
+    assert controller.targetSaved is True
+    assert controller.configured is False
+    assert controller.compatibility["notifications_supported"] is True
+
+
+def test_compatibility_pairing_adjusts_only_the_qt_onboarding_view():
+    controller = BridgeController(
+        backend=_Backend(),
+        setup=object(),
+        subscribe=False,
+        autostart=False,
+    )
+    controller._compatibility = {
+        "hardware_supported": True,
+        "messages_supported": True,
+        "notifications_supported": True,
+        "bearer_api_active": True,
+    }
+    controller._configured = True
+    controller._target_saved = True
+    controller._ancs_enabled = False
+    controller._setup_loaded = True
+    controller._status = {
+        "daemon": True,
+        "map": True,
+        "pbap": True,
+        "verified_iphone_setup": ["message-notifications", "contacts"],
+    }
+
+    controller._update_onboarding_stage()
+
+    assert controller.compatibility["notifications_supported"] is True
+    assert controller.onboardingCompatibility["notifications_supported"] is False
+    assert controller.onboardingStage == "ready-without-ancs"
+
+
 def test_replacing_saved_target_is_forwarded_to_pairing_helper(monkeypatch):
     observed = []
 

@@ -21,14 +21,18 @@ Quickshell client ┘                         │
   thread keys and cannot construct different recipients for an existing thread.
 - `pair_setup` is the low-level setup boundary. `setup_client` exposes its
   typed operations to GTK and Qt, and the hidden JSON commands adapt the same
-  operations for Quickshell. It discovers and pairs devices, writes the
-  selected MAC to the user's configuration, and requests explicit Polkit
-  authorization for system-level setup operations.
+  operations for Quickshell. `pairing_policy` resolves controller capability
+  and user overrides into one concrete recipe. Setup discovers and pairs
+  devices, writes the selected MAC and ANCS policy to the user's configuration,
+  and requests explicit Polkit authorization for system-level setup operations.
 - `onboarding` derives a toolkit-neutral first-run stage from configuration,
   controller capabilities, the selected bond, and backend status. Controller
-  support is detected from read-only capabilities instead of vendor names.
-  GTK, Kirigami, Quickshell, and the CLI share pair/configure/re-pair and
-  verified-readiness semantics.
+  support is detected from read-only capabilities instead of vendor names. A
+  raw hardware view remains separate from the saved target's ANCS policy so a
+  compatibility pairing can reach `ready-without-ancs` without making the
+  controller appear permanently incapable of full pairing. GTK, Kirigami,
+  Quickshell, and the CLI share pair/configure/re-pair and verified-readiness
+  semantics.
 - The daemon runs unprivileged and has no sudo command path.
 
 Stable D-Bus identifiers live in `blueferry.protocol`. The service exports
@@ -44,10 +48,10 @@ is checked against the dbus-python decorators in the service implementation.
 carries only a bounded, opaque MAP handle after the user invokes a desktop
 message notification; clients locate it in their own private thread snapshot.
 Complete message records, sender identities, ANCS fields, contacts, and
-connectivity details are never broadcast on the session bus. The daemon emits invalidations at message,
-contact-cache, connectivity, ANCS subscription, initialization, and storage
-transitions. Clients verify MAP/PBAP success without mistaking Linux-side bond
-creation for end-to-end success.
+connectivity details are never broadcast on the session bus. The daemon emits
+invalidations at message, contact-cache, connectivity, ANCS subscription,
+initialization, and storage transitions. Clients verify MAP/PBAP success
+without mistaking Linux-side bond creation for end-to-end success.
 
 Backend payloads cross D-Bus as JSON to keep the wire contract simple. Both
 Python client implementations decode them immediately into the shared models
@@ -69,12 +73,39 @@ while `event_dispatcher` owns persistence/notification
 fan-out. `ProfileSupervisor` owns MAP/PBAP open, close, retry, loss, and resume
 transitions; its worker, session, and timer protocols make those races testable
 without BlueZ. Interactive pairing rendering lives separately from the BlueZ
-pairing service. An interactive client owns a device-scoped agent, promotes it
-over any desktop default for the complete pairing and Classic-to-LE handoff,
-then unregisters it before persistence and daemon startup. CLI message commands
-use the same backend client as graphical UIs. Group replies use `SendToThread`,
-so routing always comes from the backend's current conversation projection
-rather than client-supplied recipients.
+pairing service. GTK and Qt run the agent workflow in a GLib/D-Bus-isolated
+helper and reserve stdout for its JSON interaction protocol. The normal
+interactive transaction registers a device-scoped default agent and calls
+`Device1.Connect()` so the iPhone initiates authentication. A separate
+explicit-pairing override calls `Device1.Pair()` for controllers that cancel
+Connect-first. The temporary agent remains present while the bond is trusted,
+Classic settles, solicitation is registered, and the daemon makes its first
+MAP/PBAP attempt; cleanup then releases the advertisement and agent in order.
+CLI message commands use the same backend client as graphical UIs. Group
+replies use `SendToThread`, so routing always comes from the backend's current
+conversation projection rather than client-supplied recipients.
+
+## Pairing policy
+
+Pairing has two independent axes rather than a growing table of device quirks:
+
+- Delivery mode is `full` when ANCS is supported and selected. Compatibility
+  mode, selected explicitly for older iOS or automatically when ANCS is
+  unavailable, persists `BLUEFERRY_ANCS_ENABLED=false`; MAP and PBAP remain the
+  success boundary and the daemon never enables LE/ANCS for that target.
+- Authentication strategy is normally `iphone-initiated-connect`. The user may
+  independently select `explicit-device-pair`; non-interactive callers also use
+  that strategy because they cannot present BlueFerry's confirmation UI.
+
+ANCS connection policy and ANCS solicitation are deliberately separate. After
+the Classic bond is trusted and settled, setup broadcasts the short-lived
+solicitation whenever the controller can advertise, including compatibility
+mode. Real-device testing indicates that older iOS uses this signal to expose
+its MAP/PBAP permission toggles even though BlueFerry must not connect ANCS.
+Full mode starts the daemon with LE held back until its first MAP/PBAP attempt
+completes; compatibility mode leaves LE disabled. Pairing reports record the
+resolved policy, controller capability, ordered timeline, package build ID, and
+full source-content SHA.
 
 ## Lifecycle
 
@@ -96,12 +127,18 @@ refusal state preserves the iPhone's
 `Connection refused (111)` detail so clients can explain that another computer
 may currently own its single MAP connection.
 
-Arch packages install a release marker owned by the backend package. A running
-daemon notices a changed marker and exits with a failure status so systemd
-restarts it. Clients perform a serialized fallback restart for daemons released
-before self-restart support. Pacman scripts never try to address arbitrary
-logged-in users' service managers; Arch's systemd package hook reloads changed
-user-unit metadata.
+Native packages install release and source-content SHA markers owned by the
+backend package. The daemon publishes their combined identity as the private
+`_build_id` status field, formatted as the package release plus a twelve-digit
+SHA prefix; pairing reports retain that ID and the complete SHA. A running
+daemon notices a changed marker and exits with status 75 so systemd restarts
+it; clients compare `_build_id` and perform a serialized fallback restart if an
+older process is still running. Missing SHA markers retain compatibility with
+older/source builds, and lifecycle tests replace marker reads and command
+runners so installed host state can never restart a real service. Content
+hashing distinguishes local rebuilds that retain the same package version.
+Package scripts never try to address arbitrary logged-in users' service
+managers; distro systemd hooks reload changed user-unit metadata.
 
 ## Data and trust
 
@@ -186,8 +223,12 @@ asynchronous controller to Kirigami, serializes work in a QThreadPool, and
 coalesces Events1 invalidations into snapshot refreshes. Neither presentation main loop waits
 on the backend, BlueZ, or systemd.
 
-The Textual TUI and stylesheet are packaged with the backend. Blocking snapshot
-reads and sends run in Textual workers with thread-owned D-Bus connections;
+Every native backend package includes the TUI. Arch uses the distribution's
+`python-textual` package, while DEB and RPM backend packages carry the Textual
+runtime in a private vendor directory. The launcher activates that private
+runtime only from packaged entry points, so
+it cannot hijack a venv or source checkout. Blocking snapshot reads and sends
+run in Textual workers with thread-owned D-Bus connections;
 content-free HistoryChanged and StatusChanged signals trigger coalesced refreshes,
 with a bounded periodic refresh as a fallback. The client pumps its GLib signal
 context without blocking Textual, follows notification-open requests, adapts to
