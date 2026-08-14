@@ -42,7 +42,6 @@ def _component(engine: QQmlEngine, relative_path: str) -> QQmlComponent:
 def test_quickshell_onboarding_state_derives_ready_stage(qml_engine) -> None:
     component = _component(qml_engine, "data/quickshell/OnboardingState.qml")
     presenter = component.createWithInitialProperties({
-        "hardwareSupported": True,
         "notificationsSupported": True,
         "bluezActive": True,
         "configured": True,
@@ -58,6 +57,22 @@ def test_quickshell_onboarding_state_derives_ready_stage(qml_engine) -> None:
 
     assert presenter is not None
     assert presenter.property("stage") == "ready"
+    presenter.deleteLater()
+
+
+def test_quickshell_unverified_controller_still_reaches_device_selection(
+    qml_engine,
+) -> None:
+    component = _component(qml_engine, "data/quickshell/OnboardingState.qml")
+    presenter = component.createWithInitialProperties({
+        "notificationsSupported": False,
+        "bluezActive": False,
+        "configured": False,
+        "backendStatus": {},
+    })
+
+    assert presenter is not None
+    assert presenter.property("stage") == "select-device"
     presenter.deleteLater()
 
 

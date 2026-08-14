@@ -1310,7 +1310,12 @@ def _execute_pairing(
     attempt["controller"] = _controller_snapshot(adapter, compatibility)
     quirks_report.mark(attempt, "compatibility_ready")
     if not compatibility["hardware_supported"]:
-        raise PairingError(compatibility["issue"] or "Bluetooth controller is incompatible")
+        issue = compatibility["issue"] or "Controller capabilities could not be verified"
+        log.warning(
+            "controller capability advisory: %s; continuing with pairing",
+            issue,
+        )
+        quirks_report.mark(attempt, "compatibility_advisory", issue=issue)
     policy = resolve_pairing_policy(
         compatibility,
         force_compatibility=compatibility_mode,

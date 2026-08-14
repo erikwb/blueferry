@@ -1,14 +1,12 @@
 import QtQuick
 
 QtObject {
-  required property bool hardwareSupported
   required property bool notificationsSupported
   required property bool bluezActive
   required property bool configured
   required property var backendStatus
 
   readonly property string stage: {
-    if (!hardwareSupported) return "incompatible"
     if (notificationsSupported && !bluezActive) return "activate-bluetooth"
     if (!configured) return "select-device"
     if (backendStatus.map && backendStatus.pbap) {

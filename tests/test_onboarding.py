@@ -24,6 +24,22 @@ def test_unconfigured_compatible_install_requests_a_device() -> None:
     )
 
 
+def test_unverified_controller_still_requests_a_device() -> None:
+    assert (
+        derive_stage(
+            setup_loaded=True,
+            configured=False,
+            compatibility={
+                "hardware_supported": False,
+                "notifications_supported": False,
+                "bearer_api_active": False,
+            },
+            status={},
+        )
+        is OnboardingStage.SELECT_DEVICE
+    )
+
+
 def test_optional_ancs_transport_controls_activation_step() -> None:
     inactive = {**COMPATIBLE, "bearer_api_active": False}
     assert (

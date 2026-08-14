@@ -11,7 +11,6 @@ from blueferry.setup_verification import remaining_iphone_setup_tasks
 
 class OnboardingStage(str, Enum):
     CHECKING = "checking"
-    INCOMPATIBLE = "incompatible"
     ACTIVATE_BLUETOOTH = "activate-bluetooth"
     SELECT_DEVICE = "select-device"
     STARTING = "starting"
@@ -34,8 +33,6 @@ def derive_stage(
     status_values = status.to_dict() if isinstance(status, BackendStatus) else status
     if not setup_loaded:
         return OnboardingStage.CHECKING
-    if not compatibility.get("hardware_supported"):
-        return OnboardingStage.INCOMPATIBLE
     if compatibility.get("notifications_supported") and not compatibility.get("bearer_api_active"):
         return OnboardingStage.ACTIVATE_BLUETOOTH
     if not configured:

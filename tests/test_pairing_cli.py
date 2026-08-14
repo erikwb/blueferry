@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from blueferry import pairing_cli
 from blueferry.bluetooth_devices import PairedDevice
 from blueferry.pairing_cli import _print_ancs_repair_hint, _print_iphone_steps
@@ -139,7 +141,21 @@ def test_cli_requires_phone_side_forget_before_clearing_saved_target(
     assert "Forget This Device" in output
 
 
-def test_cli_wizard_supplies_its_own_pairing_agent_ui(monkeypatch, capsys) -> None:
+@pytest.mark.parametrize(
+    ("hardware_supported", "notifications_supported", "issue", "expected_mode"),
+    [
+        (True, True, "", False),
+        (False, False, "btmgmt timed out", True),
+    ],
+)
+def test_cli_wizard_supplies_its_own_pairing_agent_ui(
+    monkeypatch,
+    capsys,
+    hardware_supported,
+    notifications_supported,
+    issue,
+    expected_mode,
+) -> None:
     prompts = []
     observed = []
     device = PairedDevice(
@@ -155,9 +171,9 @@ def test_cli_wizard_supplies_its_own_pairing_agent_ui(monkeypatch, capsys) -> No
     )
     compatibility = SimpleNamespace(
         adapter="hci0",
-        hardware_supported=True,
-        issue="",
-        notifications_supported=True,
+        hardware_supported=hardware_supported,
+        issue=issue,
+        notifications_supported=notifications_supported,
         bearer_api_active=True,
         adapters=(),
     )
@@ -186,7 +202,7 @@ def test_cli_wizard_supplies_its_own_pairing_agent_ui(monkeypatch, capsys) -> No
             compatibility_mode=False,
             explicit_pairing=False,
         ):
-            assert compatibility_mode is False
+            assert compatibility_mode is expected_mode
             assert explicit_pairing is False
             observed.append((mac, adapter, confirmation(12345)))
             display(12345)
@@ -215,6 +231,10 @@ def test_cli_wizard_supplies_its_own_pairing_agent_ui(monkeypatch, capsys) -> No
     output = capsys.readouterr().out
     assert "Bluetooth pairing code: 012345" in output
     assert "pairing-issue" not in output
+    if not hardware_supported:
+        assert "btmgmt timed out" in output
+        assert "Pairing will still be attempted in compatibility mode" in output
+        assert "Automatic compatibility mode" in output
 
 
 def test_cli_wizard_points_at_pairing_issue_when_ancs_stays_down(

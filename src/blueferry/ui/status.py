@@ -412,15 +412,7 @@ class IPhonePage(Gtk.Box):
         )
         self._explicit_pairing_switch.set_sensitive(not busy)
         selected = self._selected_device()
-        pairing_ready = bool(
-            self._compatibility
-            and (
-                self._compatibility.messages_supported
-                if self._compatibility_switch.get_active()
-                else self._compatibility.pairing_ready
-            )
-        )
-        self._pair_button.set_sensitive(not busy and pairing_ready and bool(selected))
+        self._pair_button.set_sensitive(not busy and bool(selected))
         self._pair_button.set_label(
             _("Use Existing Pairing") if selected and selected.paired else _("Pair Selected iPhone")
         )
@@ -484,8 +476,10 @@ class IPhonePage(Gtk.Box):
         else:
             self._adapter_row.set_visible(False)
             self._hardware_row.set_visible(True)
-            if not compatibility.hardware_supported:
-                hardware = _("Unsupported")
+            if not compatibility.available:
+                hardware = _("Capabilities could not be verified; pairing is still available")
+            elif not compatibility.hardware_supported:
+                hardware = _("Compatibility warning; pairing is still available")
             elif compatibility.notifications_supported:
                 hardware = _("Compatible")
             else:

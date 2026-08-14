@@ -121,26 +121,34 @@ def run_wizard(
     if not compatibility.hardware_supported:
         typer.echo(
             typer.style(
-                compatibility.issue or "Bluetooth controller is incompatible.",
-                fg=typer.colors.RED,
-            )
-        )
-        return 1
-    typer.echo(
-        typer.style(
-            "✓ Controller supports Messages and Contacts over BR/EDR",
-            fg=typer.colors.GREEN,
-        )
-    )
-    if not compatibility.notifications_supported:
-        typer.echo(
-            typer.style(
-                "⚠ This controller cannot provide per-app iPhone notifications",
+                "⚠ "
+                + (
+                    compatibility.issue
+                    or "Bluetooth controller capabilities could not be verified."
+                )
+                + " Pairing will still be attempted in compatibility mode.",
                 fg=typer.colors.YELLOW,
             )
         )
+    else:
+        typer.echo(
+            typer.style(
+                "✓ Controller supports Messages and Contacts over BR/EDR",
+                fg=typer.colors.GREEN,
+            )
+        )
+    if not compatibility.notifications_supported:
+        typer.echo(
+            typer.style(
+                "⚠ Per-app iPhone notifications are unavailable; pairing will use "
+                "Messages and Contacts compatibility mode",
+                fg=typer.colors.YELLOW,
+            )
+        )
+    automatic_compatibility = not compatibility.notifications_supported
+    effective_compatibility_mode = compatibility_mode or automatic_compatibility
     if (
-        not compatibility_mode
+        not effective_compatibility_mode
         and compatibility.notifications_supported
         and not compatibility.bearer_api_active
     ):
@@ -220,6 +228,11 @@ def run_wizard(
             "Compatibility mode: BlueFerry will set up Messages and Contacts "
             "without connecting ANCS."
         )
+    elif automatic_compatibility:
+        typer.echo(
+            "Automatic compatibility mode: ANCS support was not detected; "
+            "BlueFerry will still try Messages and Contacts."
+        )
     if explicit_pairing:
         typer.echo("Explicit pairing: skipping the initial Device1.Connect attempt.")
     try:
@@ -228,7 +241,7 @@ def run_wizard(
             adapter=compatibility.adapter,
             confirmation=_confirm_pairing,
             display=_display_pairing_code,
-            compatibility_mode=compatibility_mode,
+            compatibility_mode=effective_compatibility_mode,
             explicit_pairing=explicit_pairing,
         )
     except PairingError as error:
@@ -246,7 +259,7 @@ def run_wizard(
     ancs_enabled = getattr(
         result,
         "ancs_enabled",
-        compatibility.notifications_supported and not compatibility_mode,
+        compatibility.notifications_supported and not effective_compatibility_mode,
     )
     remaining = remaining_iphone_setup_tasks(
         verified,
@@ -337,8 +350,8 @@ def _print_iphone_steps(
     if not notifications_supported:
         typer.echo(
             typer.style(
-                "\n⚠ This controller supports Messages and Contacts, but not "
-                "per-app iPhone notifications.",
+                "\n⚠ Per-app iPhone notifications were not enabled for this "
+                "pairing.",
                 fg=typer.colors.YELLOW,
             )
         )

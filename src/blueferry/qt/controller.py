@@ -137,6 +137,26 @@ class BridgeController(QObject):
     def compatibility(self):
         return self._compatibility
 
+    @Property(bool, notify=compatibilityChanged)
+    def compatibilityLoaded(self) -> bool:
+        return bool(self._compatibility)
+
+    def _set_compatibility_unavailable(self, adapter: str | None, message: str) -> None:
+        self._compatibility = {
+            "adapter": adapter or "",
+            "available": False,
+            "hardware_supported": False,
+            "messages_supported": False,
+            "notifications_supported": False,
+            "bearer_api_active": False,
+            "pairing_ready": True,
+            "issue": message,
+            "adapters": [],
+        }
+        self.compatibilityChanged.emit()
+        self._update_onboarding_stage()
+        self._operation_failed(message)
+
     def _onboarding_compatibility(self) -> dict:
         compatibility = dict(self._compatibility)
         if self._target_saved and not self._ancs_enabled:
@@ -327,6 +347,8 @@ class BridgeController(QObject):
 
     def _reload_setup_state(self, *, scan_after: bool = False) -> None:
         selected = str(self._compatibility.get("adapter", "")).strip() or None
+        self._compatibility = {}
+        self.compatibilityChanged.emit()
 
         def operation():
             return self._setup.compatibility(selected), self._setup.configuration()
@@ -352,7 +374,12 @@ class BridgeController(QObject):
             elif self._devices:
                 self.loadDevices(False)
 
-        self._run(operation, completed, busy=False)
+        def failed(message: str) -> None:
+            self._set_compatibility_unavailable(selected, message)
+            if scan_after:
+                self.loadDevices(True)
+
+        self._run(operation, completed, failed, busy=False)
 
     @Slot(str)
     def selectAdapter(self, name: str) -> None:
@@ -362,6 +389,8 @@ class BridgeController(QObject):
         if self._devices:
             self._devices = []
             self.devicesChanged.emit()
+        self._compatibility = {}
+        self.compatibilityChanged.emit()
 
         def completed(value: object) -> None:
             compatibility = value
@@ -372,7 +401,11 @@ class BridgeController(QObject):
             self._update_onboarding_stage()
             self.loadDevices(False)
 
-        self._run(lambda: self._setup.compatibility(selected), completed)
+        def failed(message: str) -> None:
+            self._set_compatibility_unavailable(selected, message)
+            self.loadDevices(False)
+
+        self._run(lambda: self._setup.compatibility(selected), completed, failed)
 
     def _snapshot(self) -> dict:
         def safely(operation, fallback):
