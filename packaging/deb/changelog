@@ -1,6 +1,15 @@
+blueferry (0.7.0-1) unstable; urgency=medium
+
+  * Add native packages for supported Arch, Debian, and Fedora systems.
+  * Add compatibility and explicit iPhone pairing modes.
+  * Restart stale backend builds and recover ANCS after BlueZ restarts.
+  * Ship the terminal client as part of every backend package.
+
+ -- BlueFerry Contributors <blueferry@weirdware.io>  Fri, 14 Aug 2026 00:00:00 -0400
+
 blueferry (0.6.3-1) unstable; urgency=medium
 
   * Initial native package scaffold.
   * Support MAP and PBAP without changing the system Bluetooth service.
 
- -- BlueFerry Contributors <noreply@weirdware.io>  Thu, 13 Aug 2026 00:00:00 -0400
+ -- BlueFerry Contributors <blueferry@weirdware.io>  Thu, 13 Aug 2026 00:00:00 -0400

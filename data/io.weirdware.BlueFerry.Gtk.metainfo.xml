@@ -40,6 +40,13 @@
   </developer>
 
   <releases>
+    <release version="0.7.0" date="2026-08-14">
+      <description>
+        <p>Adds native Linux packages, compatibility and explicit pairing
+        modes, build-aware daemon restarts, and ANCS recovery after BlueZ
+        restarts.</p>
+      </description>
+    </release>
     <release version="0.6.3" date="2026-08-13">
       <description>
         <p>Lets you pick a Bluetooth controller when more than one is present
