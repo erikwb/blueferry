@@ -74,6 +74,17 @@ def test_prune_enforces_serialized_payload_budget(tmp_path) -> None:
     assert [event["body"] for event in read_events(path=path)] == [bodies[-1]]
 
 
+def test_plaintext_prune_scrubs_deleted_payload_bytes(tmp_path) -> None:
+    path = tmp_path / "events.sqlite"
+    secret = "expired plaintext body with unique forensic marker"
+    append_event({"kind": "sms_received", "body": secret}, path=path)
+    append_event({"kind": "sms_received", "body": "retained"}, path=path)
+
+    assert prune_events(path=path, max_events=1) == 1
+
+    assert secret.encode() not in path.read_bytes()
+
+
 def test_clear_preserves_private_database_and_changes_revision(tmp_path) -> None:
     path = tmp_path / "events.sqlite"
     append_event({"kind": "sms_received", "body": "secret"}, path=path)
@@ -157,3 +168,6 @@ def test_ancs_history_retains_only_minimal_messages_correlation_data(
         "body": "hello",
         "seen_at": "2026-08-08T12:00:00+00:00",
     }]
+    database_bytes = path.read_bytes()
+    assert b"Secret system body" not in database_bytes
+    assert b"/private/device/path" not in database_bytes
