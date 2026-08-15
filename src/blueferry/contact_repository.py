@@ -16,6 +16,7 @@ from blueferry import config
 from blueferry.events import is_email_shaped
 from blueferry.limits import (
     MAX_CONTACT_ADDRESS_CHARS,
+    MAX_CONTACT_ADDRESSES_PER_CARD,
     MAX_CONTACT_NAME_CHARS,
     MAX_PHONEBOOK_CONTACTS,
 )
@@ -50,6 +51,13 @@ CREATE TABLE IF NOT EXISTS secure_contacts (
     payload      TEXT NOT NULL
 );
 """
+
+
+def _stored_address_items(value: object) -> list[object] | tuple[object, ...]:
+    """Return one bounded stored collection without iterating scalar values."""
+    if not isinstance(value, list | tuple):
+        return []
+    return value[:MAX_CONTACT_ADDRESSES_PER_CARD]
 
 
 def _open_db() -> sqlite3.Connection:
@@ -172,14 +180,20 @@ class ContactRepository:
                 value = json.loads(plaintext)
                 if not isinstance(value, dict):
                     continue
-                name = str(value.get("name") or "")[:MAX_CONTACT_NAME_CHARS]
+                raw_name = value.get("name")
+                name = (
+                    raw_name[:MAX_CONTACT_NAME_CHARS]
+                    if isinstance(raw_name, str)
+                    else ""
+                )
                 phones = [
-                    str(item) for item in value.get("phones", [])
+                    item for item in _stored_address_items(value.get("phones"))
                     if isinstance(item, str)
                     and len(item) <= MAX_CONTACT_ADDRESS_CHARS
                 ]
                 emails = [
-                    str(item).casefold() for item in value.get("emails", [])
+                    item.casefold()
+                    for item in _stored_address_items(value.get("emails"))
                     if isinstance(item, str)
                     and len(item) <= MAX_CONTACT_ADDRESS_CHARS
                     and is_email_shaped(item)
