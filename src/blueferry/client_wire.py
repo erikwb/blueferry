@@ -10,6 +10,11 @@ import json
 from collections.abc import Mapping
 from typing import Any, TypeVar, cast
 
+from blueferry.limits import (
+    MAX_CONTACT_ADDRESS_CHARS,
+    MAX_CONTACT_ADDRESSES_PER_CARD,
+    MAX_CONTACT_NAME_CHARS,
+)
 from blueferry.models import BackendStatus, EventRecord, Thread
 
 T = TypeVar("T")
@@ -56,14 +61,29 @@ def decode_contacts(value: object) -> list[tuple[str, str]]:
     ]
 
 
+def _decode_contact_addresses(value: object) -> list[str]:
+    if not isinstance(value, list | tuple):
+        return []
+    return [
+        address
+        for address in value[:MAX_CONTACT_ADDRESSES_PER_CARD]
+        if isinstance(address, str)
+        and len(address) <= MAX_CONTACT_ADDRESS_CHARS
+    ]
+
+
+def _decode_contact_name(value: object) -> str:
+    return value[:MAX_CONTACT_NAME_CHARS] if isinstance(value, str) else ""
+
+
 def decode_contact_records(value: object) -> list[tuple[str, list[str], list[str]]]:
     """Decode whole-phonebook records, keeping one person as one record."""
     items = decode_json(value, list)
     return [
         (
-            str(item.get("name", "")),
-            [str(address) for address in item.get("phones", [])],
-            [str(address) for address in item.get("emails", [])],
+            _decode_contact_name(item.get("name")),
+            _decode_contact_addresses(item.get("phones")),
+            _decode_contact_addresses(item.get("emails")),
         )
         for item in items
         if isinstance(item, Mapping)

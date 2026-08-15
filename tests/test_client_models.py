@@ -6,6 +6,7 @@ import json
 import pytest
 
 from blueferry.client import BackendClient, BackendError
+from blueferry.limits import MAX_CONTACT_ADDRESSES_PER_CARD
 from blueferry.models import BackendStatus, EventRecord, Thread
 
 
@@ -24,6 +25,13 @@ class _Messages:
 
     def ListEvents(self, *_args, **_kwargs):
         return json.dumps([{"kind": "ancs_notification", "title": "Test"}])
+
+    def ListContacts(self, *_args, **_kwargs):
+        return json.dumps([{
+            "name": "Alice Example",
+            "phones": ["15551234567"],
+            "emails": ["alice@example.com"],
+        }])
 
     def GetNotificationPolicy(self, **_kwargs):
         return "messages"
@@ -52,6 +60,9 @@ def test_backend_client_returns_shared_models(monkeypatch):
     assert client.threads()[0].recipients == ("test@example.com",)
     assert isinstance(client.events([])[0], EventRecord)
     assert client.events([])[0].title == "Test"
+    assert client.list_contacts() == [
+        ("Alice Example", ["15551234567"], ["alice@example.com"]),
+    ]
     assert client.notification_policy() == "messages"
     assert client.set_notification_policy("none") == "none"
     group = client.set_group_participants(
@@ -69,6 +80,39 @@ def test_backend_client_rejects_wrong_json_shape(monkeypatch):
 
     with pytest.raises(BackendError, match="expected dict"):
         client.status()
+
+
+def test_backend_client_discards_malformed_contact_address_collections(
+    monkeypatch,
+) -> None:
+    client = BackendClient()
+    messages = _Messages()
+    monkeypatch.setattr(messages, "ListContacts", lambda *_args, **_kwargs: json.dumps([
+        {"name": "Alice", "phones": None, "emails": "alice@example.com"},
+        {
+            "name": "Bob",
+            "phones": ["15551234567", None, 42],
+            "emails": ["bob@example.com", {"address": "wrong shape"}],
+        },
+        {
+            "name": None,
+            "phones": [str(index) for index in range(
+                MAX_CONTACT_ADDRESSES_PER_CARD + 1
+            )],
+            "emails": [],
+        },
+    ]))
+    monkeypatch.setattr(client, "_iface", lambda _name: messages)
+
+    assert client.list_contacts() == [
+        ("Alice", [], []),
+        ("Bob", ["15551234567"], ["bob@example.com"]),
+        (
+            "",
+            [str(index) for index in range(MAX_CONTACT_ADDRESSES_PER_CARD)],
+            [],
+        ),
+    ]
 
 
 def test_status_model_normalizes_legacy_map_refusal_detail() -> None:

@@ -18,6 +18,7 @@ from blueferry.history import (
     read_events,
     scrub_unprotected_events,
 )
+from blueferry.limits import MAX_CONTACT_ADDRESSES_PER_CARD
 from blueferry.settings_store import SettingsStore
 from blueferry.storage_security import (
     CorruptStorageError,
@@ -389,6 +390,50 @@ def test_plaintext_secure_contact_record_fails_closed(
     assert resolver.resolve("+1 555 123 4567") is None
     assert resolver.find_by_name("alice") == []
     assert storage.status.state == "error"
+
+
+def test_encrypted_contact_record_bounds_and_validates_address_lists(
+    tmp_path, monkeypatch,
+) -> None:
+    monkeypatch.setattr(config, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(config, "CONTACTS_DB", tmp_path / "contacts.sqlite")
+    monkeypatch.setattr(config, "EVENTS_DB", tmp_path / "events.sqlite")
+    storage = _storage(tmp_path)
+    records = [
+        {"name": "Alice", "phones": "15551234567", "emails": None},
+        {
+            "name": "Bob",
+            "phones": ["15557654321", None, 42],
+            "emails": ["BOB@example.com", {"address": "wrong shape"}],
+        },
+        {
+            "name": None,
+            "phones": [str(index) for index in range(
+                MAX_CONTACT_ADDRESSES_PER_CARD + 1
+            )],
+            "emails": [],
+        },
+    ]
+    with closing(contact_repository._open_db()) as database, database:
+        for record in records:
+            database.execute(
+                "INSERT INTO secure_contacts(payload) VALUES (?)",
+                (storage.encrypt(
+                    json.dumps(record), purpose="contact-record-v1"
+                ),),
+            )
+
+    resolver = ContactsResolver(storage=storage)
+
+    assert resolver.records() == [
+        (
+            "",
+            [str(index) for index in range(MAX_CONTACT_ADDRESSES_PER_CARD)],
+            [],
+        ),
+        ("Alice", [], []),
+        ("Bob", ["15557654321"], ["bob@example.com"]),
+    ]
 
 
 def test_unencrypted_policy_reads_plaintext_contact_records(
