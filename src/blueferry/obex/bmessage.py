@@ -36,10 +36,8 @@ from blueferry.limits import (
     MAX_CONTACT_NAME_CHARS,
     MAX_REMOTE_PROPERTY_CHARS,
 )
+from blueferry.vcard import iter_vcard_bodies
 
-_VCARD_RE = re.compile(
-    r"BEGIN:VCARD(?P<body>.*?)END:VCARD", re.DOTALL | re.IGNORECASE
-)
 _MSG_BODY_RE = re.compile(
     r"^(?P<indent>[ \t]*)BEGIN:MSG[ \t]*\r?\n"
     r"(?P<body>.*?)(?:\r?\n)?^(?P=indent)END:MSG[ \t]*\r?$",
@@ -65,9 +63,8 @@ def parse(blob: str) -> ParsedBMessage:
     phone_address: str | None = None
     sender_email: str | None = None
     sender_name: str | None = None
-    m = _VCARD_RE.search(blob)
-    if m:
-        vc = m.group("body")
+    vc = next(iter_vcard_bodies(blob, maximum=1), None)
+    if vc is not None:
         for line in vc.splitlines():
             line = line.strip()
             if not line:

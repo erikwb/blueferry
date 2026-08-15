@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 import tempfile
 import time
 from pathlib import Path
@@ -29,6 +28,7 @@ from blueferry.limits import (
 from blueferry.obex.sessions import SessionManager
 from blueferry.obex.transfer import wait_for_transfer
 from blueferry.private_files import ensure_private_directory
+from blueferry.vcard import iter_vcard_bodies
 
 if TYPE_CHECKING:
     from blueferry.storage_security import StorageSecurity
@@ -39,11 +39,6 @@ _PHONEBOOK_TRANSFER_MAX_SECONDS = 30 * 60
 
 
 # ---- vCard parsing ------------------------------------------------------
-
-_VCARD_BLOCK = re.compile(
-    r"BEGIN:VCARD(?P<body>.*?)END:VCARD", re.DOTALL | re.IGNORECASE
-)
-
 
 def _pbap_pull_filters(max_contacts: int) -> dict:
     """Build filters using the PhonebookAccess1 API's exact spelling.
@@ -62,10 +57,7 @@ def _parse_vcard_records(
 ) -> list[tuple[str | None, list[str], list[str]]]:
     """Return names with every safe phone and email messaging address."""
     out: list[tuple[str | None, list[str], list[str]]] = []
-    for m in _VCARD_BLOCK.finditer(blob):
-        if len(out) >= maximum:
-            break
-        body = m.group("body")
+    for body in iter_vcard_bodies(blob, maximum=maximum):
         fn: str | None = None
         phones: list[str] = []
         emails: list[str] = []

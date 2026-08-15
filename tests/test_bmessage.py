@@ -96,6 +96,19 @@ class TestBasicParsing:
 
 
 class TestEdgeCases:
+    def test_many_unterminated_vcard_markers_are_skipped_linearly(self):
+        blob = (
+            ("BEGIN:VCARD\n" * 10_000)
+            + "BEGIN:VCARD\nFN:Alice\nTEL:+15551234567\nEND:VCARD\n"
+            + "BEGIN:BENV\nBEGIN:BBODY\nBEGIN:MSG\nhello\n"
+            + "END:MSG\nEND:BBODY\nEND:BENV\n"
+        )
+
+        parsed = parse(blob)
+
+        assert parsed.sender_address == "+15551234567"
+        assert parsed.sender_name == "Alice"
+
     def test_remote_metadata_is_bounded(self):
         blob = _bmsg("1" * (MAX_CONTACT_ADDRESS_CHARS + 1), "hello")
         blob = blob.replace(

@@ -256,6 +256,18 @@ def test_phonebook_card_and_address_counts_are_bounded() -> None:
     assert len(parsed[0][1]) == MAX_CONTACT_ADDRESSES_PER_CARD
 
 
+def test_oversized_or_unterminated_vcards_do_not_hide_later_contacts() -> None:
+    blob = (
+        ("BEGIN:VCARD\n" * 10_000)
+        + "FN:" + ("x" * (1024 * 1024 + 1)) + "\nEND:VCARD\n"
+        + "BEGIN:VCARD\nFN:Safe\nTEL:+15551234567\nEND:VCARD\n"
+    )
+
+    assert _parse_vcard_records(blob) == [
+        ("Safe", ["15551234567"], []),
+    ]
+
+
 def test_find_by_name_returns_phone_and_email_destinations(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "STATE_DIR", tmp_path)
     monkeypatch.setattr(config, "CONTACTS_DB", tmp_path / "contacts.sqlite")
