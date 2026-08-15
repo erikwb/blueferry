@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from blueferry.bluetooth_capabilities import (
+    activate_bluez_support,
     bluez_bearer_api_supported,
     bluez_stack,
     controller_hardware,
 )
+from blueferry.errors import PairingError
 
 
 def _btmgmt(stdout: str):
@@ -154,3 +156,43 @@ def test_controller_hardware_ignores_invalid_adapter_names(tmp_path) -> None:
         sys_root=tmp_path,
     )
     assert identity == {"name": "../etc"}
+
+
+def test_activate_bluez_support_delegates_authorization_to_systemctl(tmp_path) -> None:
+    systemctl = tmp_path / "systemctl"
+    systemctl.write_text("")
+    systemctl.chmod(0o755)
+    statuses = iter(
+        [
+            {"active": False, "packaged_drop_in": True},
+            {"active": True, "packaged_drop_in": True},
+        ]
+    )
+    commands = []
+    sleeps = []
+
+    result = activate_bluez_support(
+        status=lambda: next(statuses),
+        run_command=lambda args, **kwargs: commands.append((args, kwargs)),
+        systemctl_path=systemctl,
+        sleep=sleeps.append,
+    )
+
+    assert result["active"] is True
+    assert commands == [
+        ([str(systemctl), "restart", "bluetooth.service"], {"timeout": 120})
+    ]
+    assert sleeps == [2]
+
+
+def test_activate_bluez_support_requires_systemctl(tmp_path) -> None:
+    try:
+        activate_bluez_support(
+            status=lambda: {"active": False, "packaged_drop_in": True},
+            run_command=lambda *_args, **_kwargs: None,
+            systemctl_path=tmp_path / "missing-systemctl",
+        )
+    except PairingError as error:
+        assert str(error) == "systemctl is unavailable"
+    else:
+        raise AssertionError("activate_bluez_support accepted a missing systemctl")

@@ -242,9 +242,8 @@ BlueFerry uses three standard Bluetooth services:
   display information.
 
 One unprivileged per-user backend owns those connections and exposes a small
-session D-Bus API to the clients. Pairing uses normal Bluetooth confirmation
-and Polkit for the one system-level setup step; there is no sudoers rule or
-hidden Apple protocol.
+session D-Bus API to the clients. Pairing uses normal Bluetooth confirmation;
+there is no hidden Apple protocol.
 
 The deeper design and protocol notes live in
 [ARCHITECTURE.md](ARCHITECTURE.md), [PROTOCOL.md](PROTOCOL.md), and

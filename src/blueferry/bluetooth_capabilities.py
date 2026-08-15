@@ -588,10 +588,10 @@ def activate_bluez_support(
     *,
     status: Callable[[], dict],
     run_command: RunCommand,
-    pkexec_path: Path = Path("/usr/bin/pkexec"),
+    systemctl_path: Path = Path("/usr/bin/systemctl"),
     sleep: Callable[[float], None] = time.sleep,
 ) -> dict:
-    """Restart Bluetooth through Polkit so the packaged drop-in takes effect."""
+    """Restart Bluetooth through systemd so the packaged drop-in takes effect."""
     current = status()
     if current["active"]:
         return current
@@ -599,11 +599,11 @@ def activate_bluez_support(
         raise PairingError(
             "The blueferry-backend Bluetooth service drop-in is not installed."
         )
-    if not pkexec_path.is_file() or not pkexec_path.stat().st_mode & 0o111:
-        raise PairingError("Polkit's pkexec command is unavailable")
+    if not systemctl_path.is_file() or not systemctl_path.stat().st_mode & 0o111:
+        raise PairingError("systemctl is unavailable")
     try:
         run_command(
-            [str(pkexec_path), "/usr/bin/systemctl", "restart", "bluetooth.service"],
+            [str(systemctl_path), "restart", "bluetooth.service"],
             timeout=120,
         )
     except CommandError as error:

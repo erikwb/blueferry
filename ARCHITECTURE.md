@@ -24,7 +24,7 @@ Quickshell client ┘                         │
   operations for Quickshell. `pairing_policy` resolves controller capability
   and user overrides into one concrete recipe. Setup discovers and pairs
   devices, writes the selected MAC and ANCS policy to the user's configuration,
-  and requests explicit Polkit authorization for system-level setup operations.
+  and asks systemd to authorize and run system-level setup operations.
 - `onboarding` derives a toolkit-neutral first-run stage from configuration,
   controller capabilities, the selected bond, and backend status. Controller
   support is detected from read-only capabilities instead of vendor names. A

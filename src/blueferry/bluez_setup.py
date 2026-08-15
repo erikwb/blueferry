@@ -11,7 +11,7 @@ the Linux side:
 
 This module owns those three concerns. The daemon may verify them on startup,
 but privileged Class-of-Device changes are limited to the explicit pairing
-flow and authorized through Polkit.
+flow and run through a packaged systemd service after Polkit authorization.
 """
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ import dbus.service
 from blueferry import config
 from blueferry.bus import bluez, get_system_bus
 from blueferry.commands import run_command
-from blueferry.errors import CommandError
+from blueferry.errors import CommandError, PairingError
 
 log = logging.getLogger(__name__)
 
@@ -35,6 +35,18 @@ ADVERT_DBUS_TIMEOUT_SECONDS = 1
 ADVERT_ACTIVATION_TIMEOUT_SECONDS = 15
 ADVERT_POLL_INTERVAL_SECONDS = 0.25
 PAIRING_ADVERT_SETTLE_SECONDS = 5
+POLKIT_UNAVAILABLE_MESSAGE = (
+    "No Polkit authentication is available to set device class, "
+    "please use the blueferry pair-setup command from a terminal"
+)
+DEVICE_CLASS_SERVICE_MISSING_MESSAGE = (
+    "The BlueFerry device-class service is not installed; "
+    "install blueferry-backend before pairing."
+)
+_POLKIT_UNAVAILABLE_MARKERS = (
+    "interactive authentication required",
+    "no authentication agent",
+)
 
 
 # ---- Class-of-Device ----------------------------------------------------
@@ -62,41 +74,67 @@ def desired_cod_matches(cod: int | None) -> bool:
     return major == config.COD_MAJOR and (minor << 2) == config.COD_MINOR
 
 
+def _polkit_authentication_unavailable(output: str) -> bool:
+    normalized = output.casefold()
+    return any(marker in normalized for marker in _POLKIT_UNAVAILABLE_MARKERS)
+
+
 def set_cod(
     *,
     adapter: str | None = None,
     authorize: bool = False,
     dry_run: bool = False,
 ) -> bool:
-    """Apply the required CoD, optionally requesting Polkit authorization."""
+    """Apply the required CoD, optionally requesting system authorization."""
     adapter = adapter or config.ADAPTER
+    if not config.is_valid_adapter(adapter):
+        log.error("invalid Bluetooth adapter name: %s", adapter)
+        return False
+    index = adapter.removeprefix("hci")
     cmd = [
-        "/usr/bin/btmgmt", "--index", adapter.removeprefix("hci"), "class",
+        "/usr/bin/btmgmt", "--index", index, "class",
         str(config.COD_MAJOR), str(config.COD_MINOR),
     ]
     if os.geteuid() != 0:
         if not authorize:
             log.warning("adapter CoD differs; pairing setup must authorize the change")
             return False
-        pkexec = "/usr/bin/pkexec"
-        if not os.path.isfile(pkexec) or not os.access(pkexec, os.X_OK):
-            log.error("pkexec is unavailable; cannot authorize adapter setup")
+        systemctl = "/usr/bin/systemctl"
+        if not os.path.isfile(systemctl) or not os.access(systemctl, os.X_OK):
+            log.error("systemctl is unavailable; cannot authorize adapter setup")
             return False
-        cmd = [pkexec, *cmd]
+        cmd = [
+            systemctl,
+            "start",
+            f"blueferry-btmgmt-set-class@{index}.service",
+        ]
     log.info("setting adapter CoD via: %s", " ".join(cmd))
     if dry_run:
         return True
     try:
         r = run_command(
-            cmd, timeout=120 if authorize else 10, check=False
+            cmd,
+            timeout=120 if authorize else 10,
+            check=False,
+            env={**os.environ, "LC_ALL": "C"},
         )
     except CommandError as e:
         log.error("btmgmt failed: %s", e)
         return False
     if r.returncode != 0:
+        output = r.stderr.strip() or r.stdout.strip()
+        if cmd[0] == "/usr/bin/systemctl":
+            if _polkit_authentication_unavailable(output):
+                raise PairingError(POLKIT_UNAVAILABLE_MESSAGE)
+            normalized = output.casefold()
+            if (
+                "blueferry-btmgmt-set-class@" in normalized
+                and "not found" in normalized
+            ):
+                raise PairingError(DEVICE_CLASS_SERVICE_MISSING_MESSAGE)
         log.error("btmgmt class %d %d failed (rc=%d): %s",
                   config.COD_MAJOR, config.COD_MINOR, r.returncode,
-                  r.stderr.strip() or r.stdout.strip())
+                  output)
         return False
     log.info("CoD set ok: %s", r.stdout.strip())
     return True

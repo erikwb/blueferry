@@ -108,7 +108,7 @@ def bluez_support_status(*, proc_root: Path = Path("/proc")) -> dict:
 
 
 def activate_bluez_support() -> dict:
-    """Restart Bluetooth via Polkit so the packaged drop-in takes effect."""
+    """Restart Bluetooth via systemd so the packaged drop-in takes effect."""
     return capabilities.activate_bluez_support(
         status=bluez_support_status,
         run_command=run_command,

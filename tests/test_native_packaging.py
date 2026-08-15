@@ -108,6 +108,39 @@ def test_deb_and_rpm_install_secret_service_client_bindings() -> None:
     assert "Requires:       libsecret" in spec
 
 
+def test_native_backends_install_systemd_privilege_dependencies() -> None:
+    control = (ROOT / "packaging/deb/control").read_text()
+    arch = (ROOT / "packaging/arch/PKGBUILD").read_text()
+    spec = (ROOT / "packaging/rpm/blueferry.spec").read_text()
+
+    assert " polkitd,\n" in control
+    assert " systemd,\n" in control
+    assert "'polkit'" in arch
+    assert "'systemd'" in arch
+    assert "Requires:       polkit" in spec
+    assert "Requires:       systemd" in spec
+    assert "pkexec" not in control
+    assert "pkexec" not in arch
+    assert "pkexec" not in spec
+
+
+def test_native_backends_ship_the_btmgmt_system_unit_template() -> None:
+    unit_name = "blueferry-btmgmt-set-class@.service"
+    unit = (ROOT / "systemd" / unit_name).read_text()
+    deb_rules = (ROOT / "packaging/deb/rules").read_text()
+    deb_install = (ROOT / "packaging/deb/blueferry-backend.install").read_text()
+    arch = (ROOT / "packaging/arch/PKGBUILD").read_text()
+    spec = (ROOT / "packaging/rpm/blueferry.spec").read_text()
+
+    assert "Type=oneshot" in unit
+    assert "ExecStart=/usr/bin/btmgmt --index %i class 4 8" in unit
+    assert "[Install]" not in unit
+    assert f"systemd/{unit_name}" in deb_rules
+    assert f"usr/lib/systemd/system/{unit_name}" in deb_install
+    assert f"systemd/{unit_name}" in arch
+    assert f"%{{_unitdir}}/{unit_name}" in spec
+
+
 def test_deb_and_rpm_backend_ship_private_textual_runtime() -> None:
     control = (ROOT / "packaging/deb/control").read_text().lower()
     deb_install = (ROOT / "packaging/deb/blueferry-backend.install").read_text()

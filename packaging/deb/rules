@@ -27,6 +27,8 @@ override_dh_auto_install:
 	done
 	install -Dm644 systemd/blueferry.service \
 		debian/tmp/usr/lib/systemd/user/blueferry.service
+	install -Dm644 systemd/blueferry-btmgmt-set-class@.service \
+		debian/tmp/usr/lib/systemd/system/blueferry-btmgmt-set-class@.service
 	install -d debian/tmp/usr/lib/systemd/user/default.target.wants
 	ln -s ../blueferry.service \
 		debian/tmp/usr/lib/systemd/user/default.target.wants/blueferry.service
