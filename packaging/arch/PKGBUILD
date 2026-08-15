@@ -108,6 +108,7 @@ package_blueferry-backend() {
     'python-gobject'
     'python-textual>=8.0'
     'python-typer>=0.12'
+    'systemd'
   )
   cd "$pkgbase-$pkgver"
   install -d "$pkgdir/$_site"
@@ -120,6 +121,8 @@ package_blueferry-backend() {
 
   install -Dm644 systemd/blueferry.service \
     "$pkgdir/usr/lib/systemd/user/blueferry.service"
+  install -Dm644 systemd/blueferry-btmgmt-set-class@.service \
+    "$pkgdir/usr/lib/systemd/system/blueferry-btmgmt-set-class@.service"
   install -d "$pkgdir/usr/lib/systemd/user/default.target.wants"
   ln -s ../blueferry.service \
     "$pkgdir/usr/lib/systemd/user/default.target.wants/blueferry.service"

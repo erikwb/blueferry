@@ -34,11 +34,12 @@ Depends:
  dbus,
  gir1.2-secret-1,
  libsecret-1-0,
- pkexec,
+ polkitd,
  python3-cryptography (>= 41),
  python3-dbus,
  python3-gi,
  python3-typer (>= 0.9),
+ systemd,
 Recommends: gnome-keyring | keepassxc
 Description: iPhone Bluetooth bridge backend, daemon, and CLI
  BlueFerry connects an iPhone to a Linux desktop over Bluetooth for messages

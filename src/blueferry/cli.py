@@ -51,6 +51,7 @@ def doctor(verbose: bool = typer.Option(False, "-v", "--verbose")):
     log = logging.getLogger("doctor")
 
     ok = True
+    warnings = False
 
     # BLUEFERRY_MAC configured?
     if config.IPHONE_MAC.upper() in ("AA:BB:CC:DD:EE:FF", ""):
@@ -85,10 +86,10 @@ def doctor(verbose: bool = typer.Option(False, "-v", "--verbose")):
         else:
             log.warning(
                 "Adapter CoD = 0x%06x — not A/V Hands-Free. "
-                "Complete pairing in one of the graphical clients.",
+                "Pair in a graphical client or with blueferry pair-setup.",
                 cod,
             )
-            ok = False
+            warnings = True
 
     # State dir writable
     try:
@@ -98,11 +99,15 @@ def doctor(verbose: bool = typer.Option(False, "-v", "--verbose")):
         log.error("State dir not writable: %s", e)
         ok = False
 
-    if ok:
-        typer.echo(typer.style("All checks passed.", fg=typer.colors.GREEN))
-    else:
+    if not ok:
         typer.echo(typer.style("One or more checks FAILED.", fg=typer.colors.RED))
         raise typer.Exit(code=1)
+    if warnings:
+        typer.echo(
+            typer.style("Checks completed with warnings.", fg=typer.colors.YELLOW)
+        )
+    else:
+        typer.echo(typer.style("All checks passed.", fg=typer.colors.GREEN))
 
 
 @app.command()
@@ -232,7 +237,7 @@ def pairing_configuration_json() -> None:
 
 @app.command("pairing-activate-bluez", hidden=True)
 def pairing_activate_bluez() -> None:
-    """Activate the package's BlueZ drop-in through Polkit."""
+    """Activate the package's BlueZ drop-in through systemd."""
     import json
 
     from blueferry.errors import PairingError

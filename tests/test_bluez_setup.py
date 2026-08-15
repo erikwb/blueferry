@@ -63,7 +63,7 @@ def test_cod_change_requires_explicit_authorization(monkeypatch):
     assert calls == []
 
 
-def test_authorized_cod_change_uses_polkit_and_fixed_command(monkeypatch):
+def test_authorized_cod_change_uses_packaged_systemd_unit(monkeypatch):
     calls = []
     monkeypatch.setattr(bluez_setup.os, "geteuid", lambda: 1000)
     monkeypatch.setattr(bluez_setup.os.path, "isfile", lambda _path: True)
@@ -77,9 +77,100 @@ def test_authorized_cod_change_uses_polkit_and_fixed_command(monkeypatch):
 
     assert bluez_setup.set_cod(adapter="hci7", authorize=True) is True
     assert calls[0][0] == [
-        "/usr/bin/pkexec", "/usr/bin/btmgmt", "--index", "7", "class", "4", "8",
+        "/usr/bin/systemctl",
+        "start",
+        "blueferry-btmgmt-set-class@7.service",
     ]
     assert calls[0][1]["timeout"] == 120
+    assert calls[0][1]["env"]["LC_ALL"] == "C"
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        "Failed to start unit: Interactive authentication required.",
+        "Error: No authentication agent found.",
+    ],
+)
+def test_cod_change_explains_when_polkit_authentication_is_unavailable(
+    monkeypatch, stderr,
+):
+    monkeypatch.setattr(bluez_setup.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(bluez_setup.os.path, "isfile", lambda _path: True)
+    monkeypatch.setattr(bluez_setup.os, "access", lambda _path, _mode: True)
+    monkeypatch.setattr(
+        bluez_setup,
+        "run_command",
+        lambda _args, **_kwargs: type(
+            "Result",
+            (),
+            {"returncode": 1, "stdout": "", "stderr": stderr},
+        )(),
+    )
+
+    with pytest.raises(
+        bluez_setup.PairingError,
+        match="No Polkit authentication is available to set device class",
+    ) as failure:
+        bluez_setup.set_cod(adapter="hci7", authorize=True)
+
+    assert str(failure.value) == bluez_setup.POLKIT_UNAVAILABLE_MESSAGE
+
+
+def test_cod_change_explains_when_the_packaged_systemd_unit_is_missing(monkeypatch):
+    monkeypatch.setattr(bluez_setup.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(bluez_setup.os.path, "isfile", lambda _path: True)
+    monkeypatch.setattr(bluez_setup.os, "access", lambda _path, _mode: True)
+    monkeypatch.setattr(
+        bluez_setup,
+        "run_command",
+        lambda _args, **_kwargs: type(
+            "Result",
+            (),
+            {
+                "returncode": 1,
+                "stdout": "",
+                "stderr": (
+                    "Failed to start blueferry-btmgmt-set-class@7.service: "
+                    "Unit blueferry-btmgmt-set-class@7.service not found."
+                ),
+            },
+        )(),
+    )
+
+    with pytest.raises(bluez_setup.PairingError) as failure:
+        bluez_setup.set_cod(adapter="hci7", authorize=True)
+
+    assert str(failure.value) == bluez_setup.DEVICE_CLASS_SERVICE_MISSING_MESSAGE
+
+
+def test_cod_change_does_not_mislabel_an_unrelated_systemctl_failure(monkeypatch):
+    monkeypatch.setattr(bluez_setup.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(bluez_setup.os.path, "isfile", lambda _path: True)
+    monkeypatch.setattr(bluez_setup.os, "access", lambda _path, _mode: True)
+    monkeypatch.setattr(
+        bluez_setup,
+        "run_command",
+        lambda _args, **_kwargs: type(
+            "Result",
+            (),
+            {"returncode": 1, "stdout": "", "stderr": "Job failed"},
+        )(),
+    )
+
+    assert bluez_setup.set_cod(adapter="hci7", authorize=True) is False
+
+
+def test_cod_change_rejects_an_invalid_adapter(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        bluez_setup,
+        "run_command",
+        lambda args, **_kwargs: calls.append(args),
+    )
+
+    assert bluez_setup.set_cod(adapter="hci0/../../evil", authorize=True) is False
+    assert calls == []
 
 
 def test_pairing_advert_settles_after_activation_is_observed(

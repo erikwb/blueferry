@@ -1,0 +1,6 @@
+[Unit]
+Description=BlueFerry set Bluetooth adapter hci%i class with btmgmt
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/btmgmt --index %i class 4 8
