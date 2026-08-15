@@ -54,3 +54,17 @@ def decode_contacts(value: object) -> list[tuple[str, str]]:
         for item in items
         if isinstance(item, Mapping) and "name" in item and "address" in item
     ]
+
+
+def decode_contact_records(value: object) -> list[tuple[str, list[str], list[str]]]:
+    """Decode whole-phonebook records, keeping one person as one record."""
+    items = decode_json(value, list)
+    return [
+        (
+            str(item.get("name", "")),
+            [str(address) for address in item.get("phones", [])],
+            [str(address) for address in item.get("emails", [])],
+        )
+        for item in items
+        if isinstance(item, Mapping)
+    ]

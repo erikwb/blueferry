@@ -6,6 +6,7 @@ import dbus.exceptions
 
 from blueferry.bus import get_session_bus
 from blueferry.client_wire import (
+    decode_contact_records,
     decode_contacts,
     decode_events,
     decode_json,
@@ -15,6 +16,7 @@ from blueferry.client_wire import (
     decode_threads,
 )
 from blueferry.errors import BlueFerryError
+from blueferry.limits import MAX_CONTACT_PAGE
 from blueferry.models import BackendStatus, EventRecord, Thread
 from blueferry.protocol import (
     BUS_NAME,
@@ -71,6 +73,18 @@ class BackendClient:
         try:
             return decode_contacts(self._iface(MESSAGES_IFACE).FindContacts(
                 query, timeout=CONTACT_CALL_TIMEOUT_SEC
+            ))
+        except (dbus.exceptions.DBusException, ValueError) as error:
+            raise BackendError(str(error)) from error
+
+    def list_contacts(
+        self, offset: int = 0, limit: int = MAX_CONTACT_PAGE
+    ) -> list[tuple[str, list[str], list[str]]]:
+        """One page of the cached phonebook, addresses grouped per person."""
+        try:
+            return decode_contact_records(self._iface(MESSAGES_IFACE).ListContacts(
+                dbus.UInt32(offset), dbus.UInt32(limit),
+                timeout=CONTACT_CALL_TIMEOUT_SEC,
             ))
         except (dbus.exceptions.DBusException, ValueError) as error:
             raise BackendError(str(error)) from error

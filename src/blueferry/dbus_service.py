@@ -156,6 +156,17 @@ class MessagesService(dbus.service.Object):
         ))
 
     @dbus.service.method(
+        IFACE, in_signature="uu", out_signature="s", sender_keyword="sender"
+    )
+    def ListContacts(self, offset: int, limit: int, sender=None) -> str:
+        return self._sync(lambda: self._authorized(
+            sender, "read",
+            lambda: self._json_response(
+                self.operations.list_contacts(offset, limit)
+            ),
+        ))
+
+    @dbus.service.method(
         IFACE, in_signature="sas", out_signature="s", sender_keyword="sender"
     )
     def SetGroupParticipants(self, thread_key: str, recipients, sender=None) -> str:

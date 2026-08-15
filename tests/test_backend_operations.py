@@ -10,11 +10,13 @@ from blueferry.backend_operations import BackendDependencies, BackendOperations
 from blueferry.errors import (
     ConfirmationRequiredError,
     InvalidArgumentsError,
+    NotReadyError,
     OperationFailedError,
 )
 from blueferry.grouping import named_group_key
 from blueferry.history import append_event
 from blueferry.limits import (
+    MAX_CONTACT_PAGE,
     MAX_EVENT_QUERY_LIMIT,
     MAX_OUTGOING_BODY_BYTES,
     MAX_THREAD_BODY_CHARS,
@@ -287,6 +289,44 @@ def test_contact_lookup_stays_behind_backend_boundary() -> None:
         "name": "Alice Example",
         "address": "15551234567",
     }]
+
+
+def test_contact_enumeration_keeps_one_person_as_one_record() -> None:
+    class _Contacts:
+        @staticmethod
+        def records(offset, limit):
+            assert (offset, limit) == (0, MAX_CONTACT_PAGE)
+            return [("Alice Example", ["15551234567"], ["alice@example.com"])]
+
+    operations = _operations(contacts=_Contacts())
+
+    assert operations.list_contacts(0, MAX_CONTACT_PAGE) == [{
+        "name": "Alice Example",
+        "phones": ["15551234567"],
+        "emails": ["alice@example.com"],
+    }]
+
+
+def test_contact_page_is_bounded_and_offset_cannot_go_negative() -> None:
+    seen: list[tuple[int, int]] = []
+
+    class _Contacts:
+        @staticmethod
+        def records(offset, limit):
+            seen.append((offset, limit))
+            return []
+
+    operations = _operations(contacts=_Contacts())
+    operations.list_contacts(-5, MAX_CONTACT_PAGE * 10)
+
+    assert seen == [(0, MAX_CONTACT_PAGE)]
+
+
+def test_contact_enumeration_without_a_cache_is_not_ready() -> None:
+    operations = _operations(contacts=None)
+
+    with pytest.raises(NotReadyError):
+        operations.list_contacts(0, 10)
 
 
 def test_named_group_roster_is_validated_and_persisted(monkeypatch) -> None:
