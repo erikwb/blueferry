@@ -147,7 +147,8 @@ def test_qt_package_ships_the_kirigami_ui_and_dependencies() -> None:
     assert "'qqc2-desktop-style'" in pkgbuild
     assert "Kirigami.ApplicationWindow" in qml
     assert "Kirigami.NavigationTabBar" not in qml
-    assert "pageStack.push(iphonePageComponent)" in qml
+    assert "pageStack.push(iphonePageLoader.item)" in qml
+    assert "sourceComponent: iphonePageComponent" in qml
     assert "root.pageStack.push(aboutPage)" in qml
     assert "pageStack.layers.push" not in qml
     assert "Controls.StackView.Immediate" not in qml
@@ -315,22 +316,39 @@ def test_qt_escaped_roster_names_are_forced_to_rich_text() -> None:
     assert "root.htmlEscape(thread.name)" in qml
 
 
-def test_qt_group_confirmation_preserves_escaped_recipient_lines() -> None:
-    qml = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
-
-    assert 'replace(/\\n/g, "<br/>")' in qml
-    assert "? root.escapedRichTextWithBreaks(" in qml
-    assert 'recipients.map(root.htmlEscape).join("\\n")' in qml
-
-
 def test_qt_messages_toolbar_toggles_dismissible_settings_pane() -> None:
     qml = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
 
     assert 'text: qsTr("Settings")' in qml
-    assert "onTriggered: root.togglePhoneSettings()" in qml
+    assert "onClicked: root.togglePhoneSettings()" in qml
     assert 'text: qsTr("Close Settings")' in qml
+    assert "onClicked: root.closePhoneSettings()" in qml
+    assert "pageStack.push(iphonePageLoader.item)" in qml
     assert "pageStack.removePage(page)" in qml
+    assert "messagesPage.thread.group_origin" in qml
+    assert "messagesPage.actions" not in qml
+    assert "iphonePage.actions" not in qml
     assert 'text: qsTr("Refresh")' not in qml
+
+
+def test_qt_connection_health_stays_compact_and_centered() -> None:
+    qml = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
+    health = qml.split('text: qsTr("Connection Health")', 1)[1]
+    health = health.split('text: qsTr("Desktop Notifications")', 1)[0]
+
+    assert "Layout.fillWidth: root.mapConnectionRefused()" in health
+    assert 'Kirigami.FormData.label: qsTr("ANCS Recovery:")' not in health
+    assert "Kirigami.InlineMessage" in health
+
+
+def test_qt_sends_group_replies_without_a_confirmation_dialog() -> None:
+    qml = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
+
+    assert "messagesPage.thread.is_group" in qml
+    assert 'title: qsTr("Send Group Message?")' not in qml
+    assert "groupDialog.open()" not in qml
+    assert "pendingThread" not in qml
+    assert "pendingBody" not in qml
 
 
 def test_qt_conversation_panes_start_compact_and_are_resizable() -> None:

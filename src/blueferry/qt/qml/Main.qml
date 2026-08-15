@@ -10,8 +10,6 @@ Kirigami.ApplicationWindow {
 
     required property var bridge
     property string selectedThreadKey: ""
-    property var pendingThread: null
-    property string pendingBody: ""
     property bool firstRunRedirected: false
     property var iphoneSettingsPage: null
     property string pendingMessageHandle: ""
@@ -62,10 +60,6 @@ Kirigami.ApplicationWindow {
         return "<span>" + value + "</span>"
     }
 
-    function escapedRichTextWithBreaks(value) {
-        return escapedRichText(String(value).replace(/\n/g, "<br/>"))
-    }
-
     function mapConnectionRefused() {
         const status = bridge.status || ({})
         return status.map_connection_refused === true
@@ -79,7 +73,7 @@ Kirigami.ApplicationWindow {
             pageStack.currentIndex = pageStack.depth - 1
             return
         }
-        iphoneSettingsPage = pageStack.push(iphonePageComponent)
+        iphoneSettingsPage = pageStack.push(iphonePageLoader.item)
     }
 
     function closePhoneSettings() {
@@ -187,26 +181,6 @@ Kirigami.ApplicationWindow {
                 onTriggered: Qt.quit()
             }
         ]
-    }
-
-    Kirigami.PromptDialog {
-        id: groupDialog
-        title: qsTr("Send Group Message?")
-        subtitle: root.pendingThread
-            ? root.escapedRichTextWithBreaks(
-                qsTr("The iPhone will reply to these participants:\n\n")
-                + root.pendingThread.recipients.map(root.htmlEscape).join("\n")
-              )
-            : ""
-        standardButtons: Kirigami.Dialog.Cancel
-        customFooterActions: [Kirigami.Action {
-            text: qsTr("Send to Group")
-            icon.name: "document-send"
-            onTriggered: {
-                root.bridge.sendThread(root.pendingThread.key, root.pendingBody, true)
-                groupDialog.close()
-            }
-        }]
     }
 
     Kirigami.PromptDialog {
@@ -569,24 +543,6 @@ Kirigami.ApplicationWindow {
         property bool narrow: width < 680
         property var thread: root.selectedThread()
 
-        actions: [
-            Kirigami.Action {
-                text: qsTr("Edit Group Participants")
-                icon.name: "system-users"
-                visible: messagesPage.thread !== null
-                    && messagesPage.thread.group_origin === "named"
-                onTriggered: {
-                    groupParticipantsDialog.thread = messagesPage.thread
-                    groupParticipantsDialog.open()
-                }
-            },
-            Kirigami.Action {
-                text: qsTr("Settings")
-                icon.name: "settings-configure"
-                onTriggered: root.togglePhoneSettings()
-            }
-        ]
-
         ColumnLayout {
             anchors.fill: parent
             spacing: 0
@@ -663,6 +619,16 @@ Kirigami.ApplicationWindow {
                                     Controls.ToolTip.text: text
                                     Controls.ToolTip.visible: hovered
                                     onClicked: newMessageDialog.open()
+                                }
+                                Controls.ToolButton {
+                                    visible: messagesPage.narrow
+                                    icon.name: "settings-configure"
+                                    text: qsTr("Settings")
+                                    display: Controls.AbstractButton.IconOnly
+                                    Accessible.name: text
+                                    Controls.ToolTip.text: text
+                                    Controls.ToolTip.visible: hovered
+                                    onClicked: root.togglePhoneSettings()
                                 }
                             }
                         }
@@ -745,6 +711,29 @@ Kirigami.ApplicationWindow {
                                     textFormat: Text.PlainText
                                     font.bold: true
                                     elide: Text.ElideRight
+                                }
+                                Controls.ToolButton {
+                                    visible: messagesPage.thread !== null
+                                        && messagesPage.thread.group_origin === "named"
+                                    icon.name: "system-users"
+                                    text: qsTr("Edit Group Participants")
+                                    display: Controls.AbstractButton.IconOnly
+                                    Accessible.name: text
+                                    Controls.ToolTip.text: text
+                                    Controls.ToolTip.visible: hovered
+                                    onClicked: {
+                                        groupParticipantsDialog.thread = messagesPage.thread
+                                        groupParticipantsDialog.open()
+                                    }
+                                }
+                                Controls.ToolButton {
+                                    icon.name: "settings-configure"
+                                    text: qsTr("Settings")
+                                    display: Controls.AbstractButton.IconOnly
+                                    Accessible.name: text
+                                    Controls.ToolTip.text: text
+                                    Controls.ToolTip.visible: hovered
+                                    onClicked: root.togglePhoneSettings()
                                 }
                             }
                         }
@@ -837,15 +826,12 @@ Kirigami.ApplicationWindow {
                                 enabled: composer.enabled && composer.text.trim() !== ""
                                 Accessible.name: qsTr("Send Message")
                                 onClicked: {
-                                    if (messagesPage.thread.is_group) {
-                                        root.pendingThread = messagesPage.thread
-                                        root.pendingBody = composer.text.trim()
-                                        composer.clear()
-                                        groupDialog.open()
-                                    } else {
-                                        root.bridge.sendThread(messagesPage.thread.key, composer.text, false)
-                                        composer.clear()
-                                    }
+                                    root.bridge.sendThread(
+                                        messagesPage.thread.key,
+                                        composer.text,
+                                        messagesPage.thread.is_group
+                                    )
+                                    composer.clear()
                                 }
                             }
                         }
@@ -877,19 +863,22 @@ Kirigami.ApplicationWindow {
         }
     }
 
+    Loader {
+        id: iphonePageLoader
+        // PageRow creates Component-backed pages under an internal QtObject.
+        // Keep this page visually parented and alive so Qt does not warn while
+        // Kirigami is still incubating its toolbar delegates.
+        asynchronous: false
+        visible: false
+        sourceComponent: iphonePageComponent
+    }
+
     Component {
         id: iphonePageComponent
 
         Kirigami.ScrollablePage {
             id: iphonePage
             title: qsTr("iPhone Settings")
-        actions: [
-            Kirigami.Action {
-                text: qsTr("Close Settings")
-                icon.name: "window-close"
-                onTriggered: root.closePhoneSettings()
-            }
-        ]
         property int selectedDevice: -1
         property var device: selectedDevice >= 0 && selectedDevice < root.bridge.devices.length
             ? root.bridge.devices[selectedDevice]
@@ -919,6 +908,20 @@ Kirigami.ApplicationWindow {
         ColumnLayout {
             width: parent.width
             spacing: Kirigami.Units.largeSpacing
+
+                RowLayout {
+                    Layout.fillWidth: true
+
+                    Item { Layout.fillWidth: true }
+                    Controls.ToolButton {
+                        icon.name: "window-close"
+                        text: qsTr("Close Settings")
+                        Accessible.name: text
+                        Controls.ToolTip.text: text
+                        Controls.ToolTip.visible: hovered
+                        onClicked: root.closePhoneSettings()
+                    }
+                }
 
                 Kirigami.InlineMessage {
                     Layout.fillWidth: true
@@ -1174,7 +1177,7 @@ Kirigami.ApplicationWindow {
                     }
                     Controls.Label {
                         Kirigami.FormData.label: qsTr("Messages:")
-                        Layout.fillWidth: true
+                        Layout.fillWidth: root.mapConnectionRefused()
                         wrapMode: Text.Wrap
                         text: root.mapConnectionRefused()
                             ? qsTr("iPhone is refusing message connections; is it connected to another computer?")
@@ -1189,20 +1192,19 @@ Kirigami.ApplicationWindow {
                         text: root.bridge.status.ancs ? qsTr("Connected") : qsTr("Unavailable")
                     }
                     Controls.Label {
-                        Kirigami.FormData.label: qsTr("ANCS Recovery:")
-                        Layout.fillWidth: true
-                        visible: root.bridge.configured
-                            && root.bridge.onboardingCompatibility.notifications_supported
-                            && root.bridge.status.map
-                            && root.bridge.status.pbap
-                            && !root.bridge.status.ancs
-                        wrapMode: Text.Wrap
-                        text: qsTr("FYI: If ANCS remains unavailable, BlueZ may be retaining stale Bluetooth state. Before re-pairing, run sudo systemctl restart bluetooth.service, then forget this computer on the iPhone and pair again. This briefly disconnects all Bluetooth devices.")
-                    }
-                    Controls.Label {
                         Kirigami.FormData.label: qsTr("Contact Destinations:")
                         text: root.bridge.status.contacts || "0"
                     }
+                }
+                Kirigami.InlineMessage {
+                    Layout.fillWidth: true
+                    visible: root.bridge.configured === true
+                        && root.bridge.onboardingCompatibility.notifications_supported === true
+                        && root.bridge.status.map === true
+                        && root.bridge.status.pbap === true
+                        && root.bridge.status.ancs === false
+                    type: Kirigami.MessageType.Information
+                    text: qsTr("FYI: If ANCS remains unavailable, BlueZ may be retaining stale Bluetooth state. Before re-pairing, run sudo systemctl restart bluetooth.service, then forget this computer on the iPhone and pair again. This briefly disconnects all Bluetooth devices.")
                 }
 
                 Kirigami.Heading { text: qsTr("Desktop Notifications"); level: 2 }

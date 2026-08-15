@@ -174,7 +174,9 @@ def test_message_sender_metadata_is_sanitized() -> None:
             await _wait_for_threads(app, pilot, 2)
             app.action_next_thread()
             await _wait_for_conversation_title(app, pilot, "Friends  ·  Group")
-            meta = app.query_one(MessageRow).query_one(".message-meta", Static)
+            meta = await _wait_for_message_meta(
+                app, pilot, "Beau�[31m� forged  ·  "
+            )
             assert meta.render().plain.startswith("Beau�[31m� forged  ·  ")
 
     _run_headless(scenario())
@@ -258,12 +260,35 @@ async def _wait_for_threads(app: BlueFerryApp, pilot, count: int) -> None:
 async def _wait_for_conversation_title(
     app: BlueFerryApp, pilot, expected: str,
 ) -> None:
-    title = app.query_one("#conversation-title", Static)
+    await _wait_for_static_text(app, pilot, "#conversation-title", expected)
+
+
+async def _wait_for_static_text(
+    app: BlueFerryApp, pilot, selector: str, expected: str,
+) -> Static:
+    widget = app.query_one(selector, Static)
     for _attempt in range(30):
-        if title.render().plain == expected:
-            return
+        if widget.render().plain == expected:
+            return widget
         await pilot.pause(0.05)
-    assert title.render().plain == expected
+    assert widget.render().plain == expected
+    return widget
+
+
+async def _wait_for_message_meta(
+    app: BlueFerryApp, pilot, expected_prefix: str,
+) -> Static:
+    for _attempt in range(30):
+        for widget in app.query(".message-meta"):
+            if (
+                isinstance(widget, Static)
+                and widget.render().plain.startswith(expected_prefix)
+            ):
+                return widget
+        await pilot.pause(0.05)
+    meta = app.query_one(MessageRow).query_one(".message-meta", Static)
+    assert meta.render().plain.startswith(expected_prefix)
+    return meta
 
 
 def _run_headless(coroutine: Coroutine[Any, Any, None]) -> None:
@@ -285,15 +310,21 @@ def test_textual_app_renders_status_threads_and_messages() -> None:
         async with app.run_test(size=(120, 36)) as pilot:
             await _wait_for_threads(app, pilot, 2)
 
-            assert app.query_one("#connection-summary").render().plain == "iPhone connected"
-            assert app.query_one("#conversation-title").render().plain == "Alice"
+            connection = await _wait_for_static_text(
+                app, pilot, "#connection-summary", "iPhone connected"
+            )
+            title = await _wait_for_static_text(
+                app, pilot, "#conversation-title", "Alice"
+            )
+            assert connection.render().plain == "iPhone connected"
+            assert title.render().plain == "Alice"
             assert len(app.query(MessageRow)) == 1
 
             app.action_next_thread()
             await _wait_for_conversation_title(app, pilot, "Friends  ·  Group")
             assert state.selected_key == "group"
             assert app.query_one("#conversation-title").render().plain == "Friends  ·  Group"
-            meta = app.query_one(MessageRow).query_one(".message-meta", Static)
+            meta = await _wait_for_message_meta(app, pilot, "Beau  ·  ")
             assert meta.render().plain.startswith("Beau  ·  ")
 
     _run_headless(scenario())
