@@ -70,12 +70,13 @@ def test_interactive_pairing_emits_code_and_waits_for_acceptance(monkeypatch):
             "--replace-saved-mac",
             "02:00:00:00:00:02",
         ],
-        input="yes\n",
+        input="yes\nyes\n",
     )
 
     assert result.exit_code == 0
     events = [json.loads(line) for line in result.stdout.splitlines()]
     assert events == [
+        {"event": "confirmation", "passkey": "", "purpose": "bind"},
         {"event": "confirmation", "passkey": "012345"},
         {"ok": True, "device": {"mac": "02:00:00:00:00:01"}},
     ]
@@ -83,6 +84,27 @@ def test_interactive_pairing_emits_code_and_waits_for_acceptance(monkeypatch):
         ("replace", "02:00:00:00:00:02", "02:00:00:00:00:01", "hci0"),
         ("02:00:00:00:00:01", "hci1", True),
     ]
+
+
+def test_pairing_complete_refuses_the_headless_path(monkeypatch):
+    called = []
+
+    class Setup:
+        @staticmethod
+        def complete(*_args, **_kwargs):
+            called.append(True)
+
+    monkeypatch.setattr(setup_client, "SetupClient", Setup)
+
+    result = CliRunner().invoke(
+        cli.app, ["pairing-complete", "02:00:00:00:00:01"],
+    )
+
+    assert result.exit_code == 2
+    assert json.loads(result.stdout)["error"] == (
+        "pairing-complete requires an interactive BlueFerry client"
+    )
+    assert called == []
 
 
 def test_pairing_complete_failure_includes_report_path(monkeypatch):
@@ -99,11 +121,14 @@ def test_pairing_complete_failure_includes_report_path(monkeypatch):
     monkeypatch.setattr(setup_client, "SetupClient", Setup)
 
     result = CliRunner().invoke(
-        cli.app, ["pairing-complete", "02:00:00:00:00:01"],
+        cli.app, [
+            "pairing-complete", "02:00:00:00:00:01", "--interactive-agent",
+        ],
+        input="yes\n",
     )
 
     assert result.exit_code == 2
-    payload = json.loads(result.stdout)
+    payload = json.loads(result.stdout.splitlines()[-1])
     assert payload["ok"] is False
     assert payload["error"] == "adapter setup failed"
     assert payload["report_path"] == "/tmp/quirks-fail.json"
@@ -125,9 +150,11 @@ def test_pairing_complete_forwards_independent_pairing_modes(monkeypatch):
         [
             "pairing-complete",
             "02:00:00:00:00:01",
+            "--interactive-agent",
             "--compatibility-mode",
             "--explicit-pairing",
         ],
+        input="yes\n",
     )
 
     assert result.exit_code == 0

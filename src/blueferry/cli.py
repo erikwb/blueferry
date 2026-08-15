@@ -291,6 +291,15 @@ def pairing_complete(
         emit({"event": "display", "passkey": f"{passkey:06d}"})
 
     try:
+        if not interactive_agent:
+            raise PairingError(
+                "pairing-complete requires an interactive BlueFerry client"
+            )
+        emit({"event": "confirmation", "passkey": "", "purpose": "bind"})
+        if sys.stdin.readline().strip().casefold() not in {
+            "yes", "y", "accept"
+        }:
+            raise PairingError("Binding this phone was not approved")
         setup = SetupClient()
         selected = adapter.strip() or None
         if replace_saved_mac:
@@ -299,8 +308,8 @@ def pairing_complete(
         result = setup.complete(
             mac,
             adapter=selected,
-            confirmation=confirm if interactive_agent else None,
-            display=display if interactive_agent else None,
+            confirmation=confirm,
+            display=display,
             compatibility_mode=compatibility_mode,
             explicit_pairing=explicit_pairing,
         )
