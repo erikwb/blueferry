@@ -174,7 +174,9 @@ def test_message_sender_metadata_is_sanitized() -> None:
             await _wait_for_threads(app, pilot, 2)
             app.action_next_thread()
             await _wait_for_conversation_title(app, pilot, "Friends  ·  Group")
-            meta = app.query_one(MessageRow).query_one(".message-meta", Static)
+            meta = await _wait_for_message_meta(
+                app, pilot, "Beau�[31m� forged  ·  "
+            )
             assert meta.render().plain.startswith("Beau�[31m� forged  ·  ")
 
     _run_headless(scenario())
@@ -266,6 +268,22 @@ async def _wait_for_conversation_title(
     assert title.render().plain == expected
 
 
+async def _wait_for_message_meta(
+    app: BlueFerryApp, pilot, expected_prefix: str,
+) -> Static:
+    for _attempt in range(30):
+        for widget in app.query(".message-meta"):
+            if (
+                isinstance(widget, Static)
+                and widget.render().plain.startswith(expected_prefix)
+            ):
+                return widget
+        await pilot.pause(0.05)
+    meta = app.query_one(MessageRow).query_one(".message-meta", Static)
+    assert meta.render().plain.startswith(expected_prefix)
+    return meta
+
+
 def _run_headless(coroutine: Coroutine[Any, Any, None]) -> None:
     # Python 3.14's asyncio.Runner waits unnecessarily for Textual's already
     # drained async generators. A directly-owned loop is deterministic here;
@@ -293,7 +311,7 @@ def test_textual_app_renders_status_threads_and_messages() -> None:
             await _wait_for_conversation_title(app, pilot, "Friends  ·  Group")
             assert state.selected_key == "group"
             assert app.query_one("#conversation-title").render().plain == "Friends  ·  Group"
-            meta = app.query_one(MessageRow).query_one(".message-meta", Static)
+            meta = await _wait_for_message_meta(app, pilot, "Beau  ·  ")
             assert meta.render().plain.startswith("Beau  ·  ")
 
     _run_headless(scenario())
