@@ -316,9 +316,10 @@ def test_textual_app_renders_status_threads_and_messages() -> None:
             title = await _wait_for_static_text(
                 app, pilot, "#conversation-title", "Alice"
             )
+            direct_meta = await _wait_for_message_meta(app, pilot, "Alice  ·  ")
             assert connection.render().plain == "iPhone connected"
             assert title.render().plain == "Alice"
-            assert len(app.query(MessageRow)) == 1
+            assert direct_meta.render().plain.startswith("Alice  ·  ")
 
             app.action_next_thread()
             await _wait_for_conversation_title(app, pilot, "Friends  ·  Group")
