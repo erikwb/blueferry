@@ -1,9 +1,0 @@
-<svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
-  <title>BlueFerry</title>
-  <rect x="8" y="8" width="112" height="112" rx="26" fill="#3584e4"/>
-  <rect x="42" y="24" width="44" height="80" rx="9" fill="#ffffff"/>
-  <rect x="42" y="35" width="44" height="55" fill="#1c3f6e"/>
-  <rect x="57" y="28" width="14" height="3.5" rx="1.75" fill="#1c3f6e"/>
-  <rect x="56" y="96" width="16" height="3.5" rx="1.75" fill="#cdd3da"/>
-  <path d="M50 44 h28 a5 5 0 0 1 5 5 v15 a5 5 0 0 1 -5 5 h-16 l-9 8 v-8 h-3 a5 5 0 0 1 -5 -5 v-15 a5 5 0 0 1 5 -5 z" fill="#33d17a"/>
-</svg>

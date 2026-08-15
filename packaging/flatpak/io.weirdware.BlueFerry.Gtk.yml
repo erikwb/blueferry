@@ -50,7 +50,11 @@ modules:
       - pip3 install --prefix=/app --no-deps --no-build-isolation .
       - install -Dm644 data/io.weirdware.BlueFerry.Gtk.desktop /app/share/applications/io.weirdware.BlueFerry.Gtk.desktop
       - install -Dm644 data/io.weirdware.BlueFerry.Gtk.metainfo.xml /app/share/metainfo/io.weirdware.BlueFerry.Gtk.metainfo.xml
-      - install -Dm644 data/icons/io.weirdware.BlueFerry.Gtk.svg /app/share/icons/hicolor/scalable/apps/io.weirdware.BlueFerry.Gtk.svg
+      - install -Dm644 data/icons/io.weirdware.BlueFerry.svg /app/share/icons/hicolor/scalable/apps/io.weirdware.BlueFerry.svg
+      # Flatpak only exports app-ID-named icons to the host. The application
+      # itself still resolves the shared canonical icon inside the sandbox.
+      - install -Dm644 data/icons/io.weirdware.BlueFerry.svg /app/share/icons/hicolor/scalable/apps/io.weirdware.BlueFerry.Gtk.svg
+      - desktop-file-edit --set-icon=io.weirdware.BlueFerry.Gtk /app/share/applications/io.weirdware.BlueFerry.Gtk.desktop
     sources:
       - type: dir
         path: ../..

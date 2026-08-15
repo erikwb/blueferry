@@ -14,3 +14,4 @@ usr/share/blueferry/package-release
 usr/share/blueferry/build-sha
 usr/share/dbus-1/interfaces/io.weirdware.BlueFerry.xml
 usr/share/dbus-1/services/io.weirdware.BlueFerry.service
+usr/share/icons/hicolor/scalable/apps/io.weirdware.BlueFerry.svg

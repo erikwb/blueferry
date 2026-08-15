@@ -130,6 +130,8 @@ package_blueferry-backend() {
     "$pkgdir/usr/share/dbus-1/services/io.weirdware.BlueFerry.service"
   install -Dm644 data/io.weirdware.BlueFerry.xml \
     "$pkgdir/usr/share/dbus-1/interfaces/io.weirdware.BlueFerry.xml"
+  install -Dm644 data/icons/io.weirdware.BlueFerry.svg \
+    "$pkgdir/usr/share/icons/hicolor/scalable/apps/io.weirdware.BlueFerry.svg"
   install -d "$pkgdir/usr/share/blueferry"
   printf '%s\n' "$pkgver-$pkgrel" \
     > "$pkgdir/usr/share/blueferry/package-release"
@@ -164,8 +166,6 @@ package_blueferry-gtk() {
     "$pkgdir/usr/share/applications/io.weirdware.BlueFerry.Gtk.desktop"
   install -Dm644 data/io.weirdware.BlueFerry.Gtk.metainfo.xml \
     "$pkgdir/usr/share/metainfo/io.weirdware.BlueFerry.Gtk.metainfo.xml"
-  install -Dm644 data/icons/io.weirdware.BlueFerry.Gtk.svg \
-    "$pkgdir/usr/share/icons/hicolor/scalable/apps/io.weirdware.BlueFerry.Gtk.svg"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }
 
@@ -186,8 +186,6 @@ package_blueferry-qt() {
     "$pkgdir/usr/share/applications/io.weirdware.BlueFerry.Qt.desktop"
   install -Dm644 data/io.weirdware.BlueFerry.Qt.metainfo.xml \
     "$pkgdir/usr/share/metainfo/io.weirdware.BlueFerry.Qt.metainfo.xml"
-  install -Dm644 data/icons/io.weirdware.BlueFerry.Gtk.svg \
-    "$pkgdir/usr/share/icons/hicolor/scalable/apps/io.weirdware.BlueFerry.Qt.svg"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }
 
@@ -204,7 +202,5 @@ package_blueferry-quickshell() {
     "$pkgdir/usr/share/applications/io.weirdware.BlueFerry.Quickshell.desktop"
   install -Dm644 data/io.weirdware.BlueFerry.Quickshell.metainfo.xml \
     "$pkgdir/usr/share/metainfo/io.weirdware.BlueFerry.Quickshell.metainfo.xml"
-  install -Dm644 data/icons/io.weirdware.BlueFerry.Gtk.svg \
-    "$pkgdir/usr/share/icons/hicolor/scalable/apps/io.weirdware.BlueFerry.Quickshell.svg"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

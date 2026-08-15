@@ -23,6 +23,7 @@ from blueferry.ui.client import DaemonClient  # noqa: E402
 from blueferry.ui.window import MainWindow  # noqa: E402
 
 APP_ID = "io.weirdware.BlueFerry.Gtk"
+APP_ICON = "io.weirdware.BlueFerry"
 
 _CSS = """
 .msg-bubble { padding: 6px 10px; }
@@ -69,7 +70,7 @@ class BlueFerryApp(Adw.Application):
     def _show_about(self, *_args) -> None:
         dialog = Adw.AboutDialog(
             application_name=_("BlueFerry"),
-            application_icon=APP_ID,
+            application_icon=APP_ICON,
             version=__version__,
             developer_name=_("BlueFerry contributors"),
             website="https://github.com/erikwb/blueferry",

@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" aria-label="BlueFerry">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0A84FF"></stop>
+      <stop offset="100%" stop-color="#0055C4"></stop>
+    </linearGradient>
+  </defs>
+
+  <rect width="512" height="512" rx="100" ry="100" fill="url(#bg)"></rect>
+
+  <path fill="#FFFFFF" d="M 140 100
+    H 370
+    C 420 100 450 130 450 180
+    V 270
+    C 450 320 420 350 370 350
+    H 240
+    L 145 430
+    L 185 350
+    H 140
+    C 90 350 60 320 60 270
+    V 180
+    C 60 130 90 100 140 100
+    Z"></path>
+
+  <circle cx="185" cy="225" r="30" fill="#0A84FF"></circle>
+  <circle cx="255" cy="225" r="30" fill="#0A84FF"></circle>
+  <circle cx="325" cy="225" r="30" fill="#0A84FF"></circle>
+</svg>
