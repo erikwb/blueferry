@@ -317,3 +317,50 @@ def test_records_page_by_display_name_without_splitting_a_person(
     ]
     assert resolver.records(1, 1) == [("Zoe Last", ["15550000002"], [])]
     assert resolver.records(5, 1) == []
+
+
+def test_records_tolerate_a_malformed_stored_row(tmp_path, monkeypatch):
+    """A partially written row must not take the whole phonebook down."""
+    monkeypatch.setattr(config, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(config, "CONTACTS_DB", tmp_path / "contacts.sqlite")
+    monkeypatch.setattr(config, "EVENTS_DB", tmp_path / "events.sqlite")
+
+    resolver = ContactsResolver.__new__(ContactsResolver)
+    resolver.storage = None
+    resolver._repository = SimpleNamespace(load=lambda: [
+        ("Alice Example", None, ["alice@example.com"]),
+        ("Bob Other", "5551234567", None),
+        (None, ["15551112222"], []),
+    ])
+    resolver._mem = {}
+    resolver._records = []
+    resolver._warm()
+
+    assert resolver.records() == [
+        (None, ["15551112222"], []),
+        ("Alice Example", [], ["alice@example.com"]),
+        ("Bob Other", [], []),
+    ]
+
+
+def test_records_are_ordered_once_at_load(tmp_path, monkeypatch):
+    """Paging slices an already-sorted cache rather than re-sorting."""
+    monkeypatch.setattr(config, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(config, "CONTACTS_DB", tmp_path / "contacts.sqlite")
+    monkeypatch.setattr(config, "EVENTS_DB", tmp_path / "events.sqlite")
+
+    resolver = ContactsResolver.__new__(ContactsResolver)
+    resolver.storage = None
+    resolver._repository = SimpleNamespace(load=lambda: [
+        ("Zoe Last", ["15550000002"], []),
+        ("Alice Example", ["15551234567"], []),
+    ])
+    resolver._mem = {}
+    resolver._records = []
+    resolver._warm()
+
+    assert [record[0] for record in resolver._records] == [
+        "Alice Example", "Zoe Last",
+    ]
+    assert resolver.records(0, 1) is not resolver._records
+    assert resolver.records(0, 1) == [("Alice Example", ["15551234567"], [])]

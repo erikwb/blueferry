@@ -209,6 +209,27 @@ def pull_phonebook(
 
 # ---- Lookup -------------------------------------------------------------
 
+def _addresses(value: object) -> list[str]:
+    """Coerce a stored address list into strings, discarding anything else.
+
+    Records arrive from decrypted JSON, so a malformed or partially written
+    row can hold a null or a bare string where a list belongs. Treat that as
+    an absent field rather than letting it reach code that iterates it.
+    """
+    if isinstance(value, str) or not isinstance(value, (list, tuple)):
+        return []
+    return [item for item in value if isinstance(item, str)]
+
+
+def _sanitized(record: ContactRecord) -> ContactRecord:
+    name, phones, emails = record
+    return (
+        name if isinstance(name, str) else None,
+        _addresses(phones),
+        _addresses(emails),
+    )
+
+
 class ContactsResolver:
     """In-process cache + SQLite-backed resolver. Cheap to construct.
 
@@ -225,7 +246,13 @@ class ContactsResolver:
         self._warm()
 
     def _warm(self) -> None:
-        self._records.extend(self._repository.load())
+        loaded = [_sanitized(record) for record in self._repository.load()]
+        # Order once here rather than per page: the cache is rebuilt only by
+        # refresh(), and paging must not pay for a sort on every call.
+        loaded.sort(key=lambda record: (
+            (record[0] or "").casefold(), record[1], record[2]
+        ))
+        self._records.extend(loaded)
         for name, phones, emails in self._records:
             if name:
                 for address in (*phones, *emails):
@@ -261,17 +288,13 @@ class ContactsResolver:
 
         `find_by_name` answers "who owns this destination"; this answers "who
         is in the phonebook", which a caller cannot reconstruct from searches.
-        Ordering is by display name so paging stays stable between calls on an
-        unchanged cache.
+        The cache is already ordered by display name, so paging stays stable
+        between calls and costs a slice.
         """
-        ordered = sorted(
-            self._records,
-            key=lambda record: ((record[0] or "").casefold(), record[1], record[2]),
-        )
         start = max(0, int(offset))
         if limit is None:
-            return ordered[start:]
-        return ordered[start:start + max(0, int(limit))]
+            return self._records[start:]
+        return self._records[start:start + max(0, int(limit))]
 
     def resolve(self, raw: str | None) -> str | None:
         value = (raw or "").strip()
