@@ -58,12 +58,23 @@ class ParsedBMessage:
     folder: str | None
 
 
+def _originator_region(blob: str) -> str:
+    """Return only the bMessage header preceding the first envelope."""
+    offset = 0
+    for line in blob.splitlines(keepends=True):
+        if line.strip().casefold() == "begin:benv":
+            return blob[:offset]
+        offset += len(line)
+    return blob
+
+
 def parse(blob: str) -> ParsedBMessage:
-    # First VCARD = originator (for incoming SMS)
+    # Only a VCARD before BENV is an originator. Cards in the envelope are
+    # recipients, while card-shaped text in BEGIN:MSG is untrusted body data.
     phone_address: str | None = None
     sender_email: str | None = None
     sender_name: str | None = None
-    vc = next(iter_vcard_bodies(blob, maximum=1), None)
+    vc = next(iter_vcard_bodies(_originator_region(blob), maximum=1), None)
     if vc is not None:
         for line in vc.splitlines():
             line = line.strip()
