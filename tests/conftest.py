@@ -23,6 +23,15 @@ if not _running_private_suite:
     os.environ["DBUS_SESSION_BUS_ADDRESS"] = _unreachable_bus
     os.environ["DBUS_SYSTEM_BUS_ADDRESS"] = _unreachable_bus
 
+# Qt tests must not adopt the operator's desktop. A platform theme plugin is
+# the dangerous one: QT_QPA_PLATFORMTHEME=gtk3 pulls GTK3 into a process where
+# the GTK4 client tests have already initialized gi, and the two GLib
+# thread-default context stacks deadlock the suite. Force a headless platform
+# and no theme plugin before any test module can import PySide6.
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
+os.environ.pop("QT_QPA_PLATFORMTHEME", None)
+os.environ.pop("QT_STYLE_OVERRIDE", None)
+
 
 def _forbid_live_bus(kind: str):
     def forbidden(*_args, **_kwargs):
