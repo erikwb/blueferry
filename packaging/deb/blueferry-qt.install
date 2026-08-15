@@ -1,5 +1,4 @@
 usr/bin/blueferry-qt
 usr/lib/python3*/dist-packages/blueferry/qt
 usr/share/applications/io.weirdware.BlueFerry.Qt.desktop
-usr/share/icons/hicolor/scalable/apps/io.weirdware.BlueFerry.Qt.svg
 usr/share/metainfo/io.weirdware.BlueFerry.Qt.metainfo.xml

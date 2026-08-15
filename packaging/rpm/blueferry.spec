@@ -100,6 +100,8 @@ install -Dm0644 packaging/rpm/io.weirdware.BlueFerry.service \
     %{buildroot}%{_datadir}/dbus-1/services/io.weirdware.BlueFerry.service
 install -Dm0644 data/io.weirdware.BlueFerry.xml \
     %{buildroot}%{_datadir}/dbus-1/interfaces/io.weirdware.BlueFerry.xml
+install -Dm0644 data/icons/io.weirdware.BlueFerry.svg \
+    %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/io.weirdware.BlueFerry.svg
 install -Dm0644 packaging/rpm/blueferry-bluetooth.conf \
     %{buildroot}%{_unitdir}/bluetooth.service.d/blueferry.conf
 install -d %{buildroot}%{_datadir}/blueferry
@@ -112,14 +114,10 @@ install -Dm0644 data/io.weirdware.BlueFerry.Gtk.desktop \
     %{buildroot}%{_datadir}/applications/io.weirdware.BlueFerry.Gtk.desktop
 install -Dm0644 data/io.weirdware.BlueFerry.Gtk.metainfo.xml \
     %{buildroot}%{_metainfodir}/io.weirdware.BlueFerry.Gtk.metainfo.xml
-install -Dm0644 data/icons/io.weirdware.BlueFerry.Gtk.svg \
-    %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/io.weirdware.BlueFerry.Gtk.svg
 install -Dm0644 data/io.weirdware.BlueFerry.Qt.desktop \
     %{buildroot}%{_datadir}/applications/io.weirdware.BlueFerry.Qt.desktop
 install -Dm0644 data/io.weirdware.BlueFerry.Qt.metainfo.xml \
     %{buildroot}%{_metainfodir}/io.weirdware.BlueFerry.Qt.metainfo.xml
-install -Dm0644 data/icons/io.weirdware.BlueFerry.Gtk.svg \
-    %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/io.weirdware.BlueFerry.Qt.svg
 
 %check
 dbus-run-session --config-file=tests/dbus-test.conf -- sh -ec '
@@ -174,13 +172,13 @@ fi
 %{_datadir}/blueferry/build-sha
 %{_datadir}/dbus-1/interfaces/io.weirdware.BlueFerry.xml
 %{_datadir}/dbus-1/services/io.weirdware.BlueFerry.service
+%{_datadir}/icons/hicolor/scalable/apps/io.weirdware.BlueFerry.svg
 
 %files -n blueferry-gtk
 %license LICENSE
 %{_bindir}/blueferry-gtk
 %{python3_sitelib}/blueferry/ui
 %{_datadir}/applications/io.weirdware.BlueFerry.Gtk.desktop
-%{_datadir}/icons/hicolor/scalable/apps/io.weirdware.BlueFerry.Gtk.svg
 %{_metainfodir}/io.weirdware.BlueFerry.Gtk.metainfo.xml
 
 %files -n blueferry-qt
@@ -188,7 +186,6 @@ fi
 %{_bindir}/blueferry-qt
 %{python3_sitelib}/blueferry/qt
 %{_datadir}/applications/io.weirdware.BlueFerry.Qt.desktop
-%{_datadir}/icons/hicolor/scalable/apps/io.weirdware.BlueFerry.Qt.svg
 %{_metainfodir}/io.weirdware.BlueFerry.Qt.metainfo.xml
 
 %changelog

@@ -131,10 +131,33 @@ def test_desktop_and_appstream_ids_match(suffix: str) -> None:
     desktop = (ROOT / "data" / f"{app_id}.desktop").read_text()
     metainfo = (ROOT / "data" / f"{app_id}.metainfo.xml").read_text()
 
-    assert f"Icon={app_id}" in desktop
+    assert f"Icon={BUS_NAME}" in desktop
     assert f"<id>{app_id}</id>" in metainfo
     assert f">{app_id}.desktop</launchable>" in metainfo
     assert "Telephony" not in desktop
+
+
+def test_native_backend_owns_the_shared_application_icon() -> None:
+    icon = "icons/hicolor/scalable/apps/io.weirdware.BlueFerry.svg"
+    arch = (ROOT / "packaging" / "arch" / "PKGBUILD").read_text()
+    arch_backend = arch.split("package_blueferry-backend()", 1)[1].split(
+        "package_blueferry-gtk()", 1
+    )[0]
+    arch_clients = arch.split("package_blueferry-gtk()", 1)[1]
+    rpm = (ROOT / "packaging" / "rpm" / "blueferry.spec").read_text()
+    rpm_backend = rpm.split("%files\n", 1)[1].split(
+        "%files -n blueferry-gtk", 1
+    )[0]
+    rpm_clients = rpm.split("%files -n blueferry-gtk", 1)[1]
+    deb = ROOT / "packaging" / "deb"
+
+    assert icon in arch_backend
+    assert icon not in arch_clients
+    assert icon in rpm_backend
+    assert icon not in rpm_clients
+    assert icon in (deb / "blueferry-backend.install").read_text()
+    assert icon not in (deb / "blueferry-gtk.install").read_text()
+    assert icon not in (deb / "blueferry-qt.install").read_text()
 
 
 def test_qt_package_ships_the_kirigami_ui_and_dependencies() -> None:
@@ -156,7 +179,11 @@ def test_qt_package_ships_the_kirigami_ui_and_dependencies() -> None:
     assert "customFooterActions" in qml
     assert "interval: 3000" not in qml
     qt_app = (ROOT / "src" / "blueferry" / "qt" / "app.py").read_text()
+    assert f'APP_ICON = "{BUS_NAME}"' in qt_app
+    assert "setDesktopFileName(APP_ID)" in qt_app
+    assert "setWindowIcon(QIcon.fromTheme(APP_ICON))" in qt_app
     assert "QSystemTrayIcon" in qt_app
+    assert 'QIcon.fromTheme("smartphone-symbolic")' in qt_app
     assert "setQuitOnLastWindowClosed(False)" in qt_app
 
 

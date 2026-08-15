@@ -15,6 +15,7 @@ from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 from blueferry.qt.controller import BridgeController
 
 APP_ID = "io.weirdware.BlueFerry.Qt"
+APP_ICON = "io.weirdware.BlueFerry"
 TRANSLATION_DIR = os.environ.get(
         "BLUEFERRY_QT_LOCALE_DIR", "/usr/share/blueferry/translations"
         )
@@ -70,7 +71,7 @@ def _create_system_tray(
     if icon.isNull():
         icon = QIcon.fromTheme("smartphone")
     if icon.isNull():
-        icon = QIcon.fromTheme(APP_ID)
+        icon = QIcon.fromTheme(APP_ICON)
     tray = QSystemTrayIcon(icon, application)
     tray.setToolTip("BlueFerry")
 
@@ -108,7 +109,7 @@ def main() -> int:
     application.setApplicationDisplayName("BlueFerry")
     application.setOrganizationDomain("weirdware.io")
     application.setDesktopFileName(APP_ID)
-    application.setWindowIcon(QIcon.fromTheme(APP_ID))
+    application.setWindowIcon(QIcon.fromTheme(APP_ICON))
     _install_translation(application)
 
     controller = BridgeController(parent=application)
