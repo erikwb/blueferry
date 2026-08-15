@@ -7,7 +7,6 @@ not `SetFolder`. Then `PullAll(targetfile, filters)`.
 from __future__ import annotations
 
 import logging
-import os
 import tempfile
 import time
 from pathlib import Path
@@ -27,7 +26,7 @@ from blueferry.limits import (
 )
 from blueferry.obex.sessions import SessionManager
 from blueferry.obex.transfer import wait_for_transfer
-from blueferry.private_files import ensure_private_directory
+from blueferry.private_files import runtime_private_directory
 from blueferry.vcard import iter_vcard_bodies
 
 if TYPE_CHECKING:
@@ -101,15 +100,7 @@ def clear_contact_cache() -> None:
 
 def _phonebook_temp_root() -> Path:
     """Return an owner-only location for transient plaintext phonebooks."""
-    runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
-    if not runtime_dir:
-        raise RuntimeError(
-            "contact sync requires XDG_RUNTIME_DIR so its plaintext "
-            "phonebook cannot be written to persistent storage"
-        )
-    root = Path(runtime_dir) / "blueferry"
-    ensure_private_directory(root)
-    return root
+    return runtime_private_directory()
 
 
 def pull_phonebook(

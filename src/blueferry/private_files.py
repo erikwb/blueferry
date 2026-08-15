@@ -23,6 +23,35 @@ def ensure_private_directory(path: Path) -> None:
         raise PermissionError(f"could not secure private directory: {path}")
 
 
+def runtime_private_directory() -> Path:
+    """Return BlueFerry's owner-only volatile-data directory."""
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+    if not runtime_dir:
+        raise RuntimeError(
+            "temporary plaintext requires XDG_RUNTIME_DIR so it cannot be "
+            "written to persistent storage"
+        )
+    root = Path(runtime_dir) / "blueferry"
+    ensure_private_directory(root)
+    return root
+
+
+def create_runtime_private_file(*, prefix: str, suffix: str) -> tuple[int, Path]:
+    """Create a 0600 file below the volatile-data directory."""
+    descriptor, name = tempfile.mkstemp(
+        prefix=prefix,
+        suffix=suffix,
+        dir=runtime_private_directory(),
+    )
+    try:
+        os.fchmod(descriptor, PRIVATE_FILE_MODE)
+    except Exception:
+        os.close(descriptor)
+        Path(name).unlink(missing_ok=True)
+        raise
+    return descriptor, Path(name)
+
+
 def read_private_text(path: Path, *, maximum_bytes: int) -> str:
     """Read a regular owner-only file without following its final symlink."""
     if maximum_bytes < 1:

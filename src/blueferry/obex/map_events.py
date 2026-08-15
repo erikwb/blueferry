@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import logging
 import os
-import tempfile
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -16,6 +15,7 @@ from blueferry.limits import MAX_BMESSAGE_BYTES
 from blueferry.obex.bmessage import parse as parse_bmessage
 from blueferry.obex.sessions import SessionManager
 from blueferry.obex.transfer import wait_for_transfer
+from blueferry.private_files import create_runtime_private_file
 
 log = logging.getLogger(__name__)
 
@@ -25,9 +25,9 @@ FETCH_TIMEOUT_SEC = 120
 
 
 def _mkstemp_path(prefix: str, suffix: str) -> Path:
-    fd, path = tempfile.mkstemp(prefix=prefix, suffix=suffix)
+    fd, path = create_runtime_private_file(prefix=prefix, suffix=suffix)
     os.close(fd)
-    return Path(path)
+    return path
 
 
 def _fetch_bmessage(message_path: str, target: Path):

@@ -23,6 +23,7 @@ UMask=0077
 NoNewPrivileges=true
 CapabilityBoundingSet=
 PrivateDevices=true
+PrivateTmp=true
 ProtectClock=true
 ProtectControlGroups=true
 ProtectHostname=true

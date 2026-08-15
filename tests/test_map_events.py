@@ -1,6 +1,7 @@
 """Inert MAP download tests; fake interfaces only write local temporary files."""
 from __future__ import annotations
 
+import stat
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,29 @@ class _Message:
     def Get(self, destination: str, _attachment: bool, **_kwargs):
         Path(destination).write_bytes(self.payload)
         return "/transfer/test", {"Status": "complete"}
+
+
+def test_bmessage_download_path_uses_private_runtime_storage(
+    tmp_path, monkeypatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime_dir))
+
+    target = map_events._mkstemp_path("blueferry_msg_", ".bmsg")
+    try:
+        assert target.parent == runtime_dir / "blueferry"
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
+        assert stat.S_IMODE(target.parent.stat().st_mode) == 0o700
+    finally:
+        target.unlink(missing_ok=True)
+
+
+def test_bmessage_download_requires_runtime_storage(monkeypatch) -> None:
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+
+    with pytest.raises(RuntimeError, match="requires XDG_RUNTIME_DIR"):
+        map_events._mkstemp_path("blueferry_msg_", ".bmsg")
 
 
 def test_fetch_rejects_oversized_bmessage_before_parsing(tmp_path, monkeypatch) -> None:
