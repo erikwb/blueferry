@@ -118,6 +118,9 @@ def test_pairing_advert_settles_after_activation_is_observed(
     monkeypatch.setattr(bluez_setup.time, "sleep", sleep)
 
     assert bluez_setup.register_advert("hci7", settle_for_pairing=True) is True
+    assert isinstance(calls[0][0], dbus.ObjectPath)
+    assert isinstance(calls[0][1], dbus.Dictionary)
+    assert calls[0][1].signature == "sv"
     assert calls[0][2]["timeout"] == 1.0
     assert sleeps == [0.25, 0.25, bluez_setup.PAIRING_ADVERT_SETTLE_SECONDS]
     assert elapsed < bluez_setup.ADVERT_ACTIVATION_TIMEOUT_SECONDS

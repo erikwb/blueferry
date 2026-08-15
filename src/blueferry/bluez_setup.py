@@ -203,8 +203,8 @@ def register_advert(
         # timeout, then observe the actual controller state instead of making
         # pairing wait for a reply that may never arrive.
         ad_mgr.RegisterAdvertisement(
-            _AncsAdvert.PATH,
-            {},
+            dbus.ObjectPath(_AncsAdvert.PATH),
+            dbus.Dictionary({}, signature="sv"),
             timeout=float(ADVERT_DBUS_TIMEOUT_SECONDS),
         )
         _advert_registered = True
