@@ -79,8 +79,26 @@ def test_snapshot_includes_the_last_le_connect_error() -> None:
         "bredr": True,
         "le": False,
         "last_le_error": "org.bluez.Error.Failed",
-        "last_le_error_message": "le-connection-abort-by-local",
+        "last_le_error_message": "connection-aborted",
     }
+
+
+def test_snapshot_does_not_expose_device_paths_from_bluez_errors() -> None:
+    supervisor = BearerSupervisor(
+        "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF",
+        read_connected=lambda _kind: False,
+        connect=lambda *_args: None,
+    )
+    supervisor._last_errors["le"] = (
+        "org.bluez.Error.Failed",
+        "failure at /org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF",
+    )
+
+    snapshot = supervisor.snapshot()
+
+    assert snapshot["last_le_error"] == "org.bluez.Error.Failed"
+    assert snapshot["last_le_error_message"] == "connection-failed"
+    assert "dev_AA" not in str(snapshot)
 
 
 def test_le_is_not_connected_if_classic_drops_during_settling() -> None:

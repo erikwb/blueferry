@@ -16,6 +16,18 @@ class ConnectivityState(str, Enum):
     STOPPING = "stopping"
 
 
+_PUBLIC_DETAILS = {
+    ConnectivityState.INITIALIZING: "Backend initialization is in progress",
+    ConnectivityState.CONNECTING: "Opening Bluetooth message profiles",
+    ConnectivityState.READY: "Bluetooth message profiles are available",
+    ConnectivityState.DEGRADED: "Bluetooth message profiles are unavailable",
+    ConnectivityState.RECONNECTING: "Reopening Bluetooth message profiles",
+    ConnectivityState.AUTHORIZATION_REQUIRED: "iPhone authorization is required",
+    ConnectivityState.MAP_CONNECTION_REFUSED: "The iPhone refused the message connection",
+    ConnectivityState.STOPPING: "Backend shutdown is in progress",
+}
+
+
 def is_map_connection_refused(
     detail: Exception | str = "",
     *,
@@ -116,7 +128,9 @@ class Connectivity:
     def snapshot(self) -> dict[str, object]:
         return {
             "connectivity_state": self.state.value,
-            "connectivity_detail": self.detail,
+            # Raw BlueZ/OBEX errors can contain device object paths. They stay
+            # in the local journal; callers receive only stable state text.
+            "connectivity_detail": _PUBLIC_DETAILS[self.state],
             "retry_attempt": self.failure_count,
             "retry_delay_seconds": self.retry_delay_seconds or 0,
         }

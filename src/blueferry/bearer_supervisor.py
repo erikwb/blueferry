@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections.abc import Callable
 
@@ -25,6 +26,22 @@ _INTERFACES = {
     "bredr": "org.bluez.Bearer.BREDR1",
     "le": "org.bluez.Bearer.LE1",
 }
+_PUBLIC_ERROR_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]{0,255}$")
+
+
+def _public_error_token(name: str, message: str) -> str:
+    detail = f"{name} {message}".casefold()
+    if "forbidden" in detail or "not authorized" in detail:
+        return "authorization-required"
+    if "connection refused" in detail or "(111)" in detail:
+        return "connection-refused"
+    if "timed out" in detail or "timeout" in detail:
+        return "connection-timeout"
+    if "cancel" in detail or "abort" in detail:
+        return "connection-aborted"
+    if "not supported" in detail or "unsupported" in detail:
+        return "unsupported"
+    return "connection-failed"
 
 def _connect_error_parts(error: Exception) -> tuple[str, str]:
     """Split a connect failure into D-Bus name and message."""
@@ -155,8 +172,12 @@ class BearerSupervisor:
         return {
             "bredr": self.bredr_connected,
             "le": self.le_connected,
-            "last_le_error": name,
-            "last_le_error_message": message,
+            "last_le_error": (
+                name if _PUBLIC_ERROR_NAME.fullmatch(name) else "connection-failed"
+            ) if name else "",
+            "last_le_error_message": (
+                _public_error_token(name, message) if name or message else ""
+            ),
         }
 
     def _tick(self) -> bool:
