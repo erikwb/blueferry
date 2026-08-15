@@ -19,6 +19,19 @@ log = logging.getLogger(__name__)
 
 AGENT_INTERFACE = "org.bluez.Agent1"
 AGENT_PATH = "/io/weirdware/BlueFerry/PairingAgent"
+_BLUETOOTH_BASE_UUID = "0000{:04x}-0000-1000-8000-00805f9b34fb"
+_AUTHORIZED_SERVICE_UUIDS = frozenset({
+    _BLUETOOTH_BASE_UUID.format(code)
+    for code in (
+        0x112E,  # Phonebook Access client
+        0x112F,  # Phonebook Access server
+        0x1132,  # Message Access server
+        0x1133,  # Message Notification server
+        0x1134,  # Message Access client
+    )
+} | {
+    "7905f431-b5ce-4e99-a40f-4b1e122d00d0",  # Apple Notification Center Service
+})
 
 ConfirmationCallback = Callable[[int | None], bool]
 DisplayCallback = Callable[[int], None]
@@ -143,18 +156,22 @@ class PairingAgent(dbus.service.Object):
         error_cb: Callable[[Exception], None],
     ) -> None:
         self._require_expected(device)
-        log.debug("BlueZ requested pairing authorization for %s", device)
-        self._confirm_deferred(
-            None,
-            "Pairing was not authorized",
-            return_cb,
-            error_cb,
+        raise _Rejected(
+            "Pairing without numeric comparison is not supported"
         )
 
     @dbus.service.method(AGENT_INTERFACE, in_signature="os", out_signature="")
     def AuthorizeService(self, device: dbus.ObjectPath, uuid: str) -> None:
         self._require_expected(device)
-        log.debug("authorizing Bluetooth service %s for %s", uuid, device)
+        normalized = str(uuid).strip().casefold()
+        if normalized not in _AUTHORIZED_SERVICE_UUIDS:
+            log.warning(
+                "rejecting unexpected Bluetooth service %s for %s",
+                uuid,
+                device,
+            )
+            raise _Rejected("Bluetooth service is outside BlueFerry's profile allowlist")
+        log.debug("authorizing BlueFerry Bluetooth service %s for %s", uuid, device)
 
     @dbus.service.method(AGENT_INTERFACE, in_signature="", out_signature="")
     def Cancel(self) -> None:
