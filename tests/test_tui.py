@@ -260,12 +260,19 @@ async def _wait_for_threads(app: BlueFerryApp, pilot, count: int) -> None:
 async def _wait_for_conversation_title(
     app: BlueFerryApp, pilot, expected: str,
 ) -> None:
-    title = app.query_one("#conversation-title", Static)
+    await _wait_for_static_text(app, pilot, "#conversation-title", expected)
+
+
+async def _wait_for_static_text(
+    app: BlueFerryApp, pilot, selector: str, expected: str,
+) -> Static:
+    widget = app.query_one(selector, Static)
     for _attempt in range(30):
-        if title.render().plain == expected:
-            return
+        if widget.render().plain == expected:
+            return widget
         await pilot.pause(0.05)
-    assert title.render().plain == expected
+    assert widget.render().plain == expected
+    return widget
 
 
 async def _wait_for_message_meta(
@@ -303,8 +310,14 @@ def test_textual_app_renders_status_threads_and_messages() -> None:
         async with app.run_test(size=(120, 36)) as pilot:
             await _wait_for_threads(app, pilot, 2)
 
-            assert app.query_one("#connection-summary").render().plain == "iPhone connected"
-            assert app.query_one("#conversation-title").render().plain == "Alice"
+            connection = await _wait_for_static_text(
+                app, pilot, "#connection-summary", "iPhone connected"
+            )
+            title = await _wait_for_static_text(
+                app, pilot, "#conversation-title", "Alice"
+            )
+            assert connection.render().plain == "iPhone connected"
+            assert title.render().plain == "Alice"
             assert len(app.query(MessageRow)) == 1
 
             app.action_next_thread()
