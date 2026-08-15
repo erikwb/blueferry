@@ -93,6 +93,10 @@ install -Dm0644 systemd/blueferry.service \
     %{buildroot}%{_userunitdir}/blueferry.service
 install -Dm0644 systemd/blueferry-btmgmt-set-class@.service \
     %{buildroot}%{_unitdir}/blueferry-btmgmt-set-class@.service
+install -Dm0755 systemd/blueferry-set-cod \
+    %{buildroot}%{_prefix}/lib/blueferry/blueferry-set-cod
+install -Dm0644 systemd/49-blueferry-cod.rules \
+    %{buildroot}%{_datadir}/polkit-1/rules.d/49-blueferry-cod.rules
 install -d %{buildroot}%{_userunitdir}/default.target.wants
 ln -s ../blueferry.service \
     %{buildroot}%{_userunitdir}/default.target.wants/blueferry.service
@@ -168,6 +172,8 @@ fi
 %{_userunitdir}/blueferry.service
 %{_userunitdir}/default.target.wants/blueferry.service
 %{_unitdir}/blueferry-btmgmt-set-class@.service
+%{_prefix}/lib/blueferry/blueferry-set-cod
+%{_datadir}/polkit-1/rules.d/49-blueferry-cod.rules
 %{_unitdir}/bluetooth.service.d/blueferry.conf
 %{_datadir}/blueferry/package-release
 %{_datadir}/blueferry/build-sha

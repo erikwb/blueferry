@@ -1,0 +1,16 @@
+// Require a fresh administrator authorization for BlueFerry's one narrowly
+// scoped system unit. In particular, do not inherit systemd's usual
+// auth_admin_keep decision after a previous manage-units operation.
+polkit.addRule(function(action, subject) {
+    if (action.id !== "org.freedesktop.systemd1.manage-units" ||
+        action.lookup("verb") !== "start" ||
+        !subject.active || !subject.local) {
+        return polkit.Result.NOT_HANDLED;
+    }
+
+    var unit = action.lookup("unit");
+    if (unit && /^blueferry-btmgmt-set-class@[0-9]+\.service$/.test(unit)) {
+        return polkit.Result.AUTH_ADMIN;
+    }
+    return polkit.Result.NOT_HANDLED;
+});
