@@ -1,5 +1,5 @@
 Name:           blueferry-backend
-Version:        0.7.0
+Version:        0.7.1
 Release:        1%{?dist}
 Summary:        iPhone Bluetooth bridge backend, daemon, and CLI
 License:        GPL-2.0-only AND MIT AND BSD-2-Clause AND PSF-2.0
@@ -192,6 +192,12 @@ fi
 %{_metainfodir}/io.weirdware.BlueFerry.Qt.metainfo.xml
 
 %changelog
+* Sat Aug 15 2026 BlueFerry Contributors <blueferry@weirdware.io> - 0.7.1-1
+- Make controller capability checks advisory and fix D-Bus advertisement typing.
+- Use packaged systemd units for privileged Bluetooth setup.
+- Remove Qt startup warnings and polish connection health and group messaging.
+- Repair tagged release publication.
+
 * Fri Aug 14 2026 BlueFerry Contributors <blueferry@weirdware.io> - 0.7.0-1
 - Add native packages for supported Arch, Debian, and Fedora systems.
 - Add compatibility and explicit iPhone pairing modes.

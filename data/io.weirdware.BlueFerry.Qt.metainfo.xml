@@ -14,6 +14,7 @@
   <content_rating type="oars-1.1"/>
   <developer id="io.weirdware"><name>BlueFerry contributors</name></developer>
   <releases>
+    <release version="0.7.1" date="2026-08-15"><description><p>Improves cross-distro pairing and privileged setup, makes controller capability checks advisory, and polishes Qt startup, connection health, and group messaging.</p></description></release>
     <release version="0.7.0" date="2026-08-14"><description><p>Adds native Linux packages, compatibility and explicit pairing modes, build-aware daemon restarts, and ANCS recovery after BlueZ restarts.</p></description></release>
     <release version="0.6.3" date="2026-08-13"><description><p>Lets you pick a Bluetooth controller when more than one is present and keeps pairing, scanning, and forget on that radio.</p></description></release>
     <release version="0.6.2" date="2026-08-10"><description><p>Improves interactive Bluetooth pairing, diagnostics, and forgotten-device handling.</p></description></release>

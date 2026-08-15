@@ -1,3 +1,13 @@
+blueferry (0.7.1-1) unstable; urgency=medium
+
+  * Make controller capability checks advisory and fix D-Bus advertisement
+    typing.
+  * Use packaged systemd units for privileged Bluetooth setup.
+  * Remove Qt startup warnings and polish connection health and group messaging.
+  * Repair tagged release publication.
+
+ -- BlueFerry Contributors <blueferry@weirdware.io>  Sat, 15 Aug 2026 00:00:00 -0400
+
 blueferry (0.7.0-1) unstable; urgency=medium
 
   * Add native packages for supported Arch, Debian, and Fedora systems.
