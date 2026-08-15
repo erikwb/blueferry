@@ -9,5 +9,9 @@ def test_newlines_remain_available_for_caller_formatting() -> None:
     assert terminal_text("one\ntwo\tthree") == "one\ntwo�three"
 
 
+def test_unicode_line_separators_cannot_create_terminal_rows() -> None:
+    assert terminal_text("one\u2028two\u2029three") == "one�two�three"
+
+
 def test_emoji_joiners_are_not_destroyed_as_bidi_controls() -> None:
     assert terminal_text("👩\u200d💻") == "👩\u200d💻"

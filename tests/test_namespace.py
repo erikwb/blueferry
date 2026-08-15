@@ -301,6 +301,10 @@ def test_gtk_connection_rows_all_have_status_icons() -> None:
     for profile in ("daemon", "map", "pbap", "ancs"):
         assert f"self._{profile}_icon = Gtk.Image()" in gtk
         assert f"self._{profile}_row.add_suffix(self._{profile}_icon)" in gtk
+        row_definition = gtk.split(
+            f"self._{profile}_row = Adw.ActionRow(", 1
+        )[1].split(f"self._{profile}_icon", 1)[0]
+        assert "use_markup=False" in row_definition
     assert "self._ancs_recovery_label = Gtk.Label(" in gtk
     assert "self._ancs_recovery_label.set_visible(show_ancs_recovery)" in gtk
     assert "self._apply_status(self._last_status)" in gtk
