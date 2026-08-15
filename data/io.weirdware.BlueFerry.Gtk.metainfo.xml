@@ -40,6 +40,13 @@
   </developer>
 
   <releases>
+    <release version="0.7.1" date="2026-08-15">
+      <description>
+        <p>Improves cross-distro pairing and privileged setup, makes controller
+        capability checks advisory, and polishes Qt startup, connection health,
+        and group messaging.</p>
+      </description>
+    </release>
     <release version="0.7.0" date="2026-08-14">
       <description>
         <p>Adds native Linux packages, compatibility and explicit pairing
