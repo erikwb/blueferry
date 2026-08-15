@@ -1,9 +1,28 @@
-<svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
-  <title>BlueFerry</title>
-  <rect x="8" y="8" width="112" height="112" rx="26" fill="#3584e4"/>
-  <rect x="42" y="24" width="44" height="80" rx="9" fill="#ffffff"/>
-  <rect x="42" y="35" width="44" height="55" fill="#1c3f6e"/>
-  <rect x="57" y="28" width="14" height="3.5" rx="1.75" fill="#1c3f6e"/>
-  <rect x="56" y="96" width="16" height="3.5" rx="1.75" fill="#cdd3da"/>
-  <path d="M50 44 h28 a5 5 0 0 1 5 5 v15 a5 5 0 0 1 -5 5 h-16 l-9 8 v-8 h-3 a5 5 0 0 1 -5 -5 v-15 a5 5 0 0 1 5 -5 z" fill="#33d17a"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" aria-label="BlueFerry">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0A84FF"></stop>
+      <stop offset="100%" stop-color="#0055C4"></stop>
+    </linearGradient>
+  </defs>
+
+  <rect width="512" height="512" rx="100" ry="100" fill="url(#bg)"></rect>
+
+  <path fill="#FFFFFF" d="M 140 100
+    H 370
+    C 420 100 450 130 450 180
+    V 270
+    C 450 320 420 350 370 350
+    H 240
+    L 145 430
+    L 185 350
+    H 140
+    C 90 350 60 320 60 270
+    V 180
+    C 60 130 90 100 140 100
+    Z"></path>
+
+  <circle cx="185" cy="225" r="30" fill="#0A84FF"></circle>
+  <circle cx="255" cy="225" r="30" fill="#0A84FF"></circle>
+  <circle cx="325" cy="225" r="30" fill="#0A84FF"></circle>
 </svg>
