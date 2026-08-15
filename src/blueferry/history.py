@@ -131,7 +131,8 @@ def read_events(
     """Read valid events oldest-first, optionally filtering and tail-limiting.
 
     ``max_body_chars`` bounds presentation projections without altering the
-    private archive. A caller requesting raw history leaves it unset.
+    private archive. A caller requesting raw history leaves it unset. Bounded
+    reads scan newest-first and stop once enough matching events are retained.
     """
     if storage is not None and not storage.status.can_read:
         return []
@@ -139,10 +140,13 @@ def read_events(
     if bounded == 0:
         return []
     events: list[EventRecord] = []
+    query = (
+        "SELECT payload_json FROM events ORDER BY id DESC"
+        if bounded is not None
+        else "SELECT payload_json FROM events ORDER BY id ASC"
+    )
     with closing(_open_database(path)) as database:
-        for (payload,) in database.execute(
-            "SELECT payload_json FROM events ORDER BY id"
-        ):
+        for (payload,) in database.execute(query):
             try:
                 event = _deserialize(payload, storage)
             except CorruptStorageError:
@@ -169,7 +173,11 @@ def read_events(
                     )
                     event["body_truncated"] = True
                 events.append(event)
-    return events[-bounded:] if bounded is not None else events
+                if bounded is not None and len(events) >= bounded:
+                    break
+    if bounded is not None:
+        events.reverse()
+    return events
 
 
 def history_revision(

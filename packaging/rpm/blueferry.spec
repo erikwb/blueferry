@@ -155,6 +155,7 @@ fi
 %doc README.md ARCHITECTURE.md PROTOCOL.md
 %{_bindir}/blueferry
 %{_bindir}/blueferry-tui
+%{_bindir}/blueferry-quickshell-bridge
 %dir %{python3_sitelib}/blueferry
 %{python3_sitelib}/blueferry/*.py
 %{python3_sitelib}/blueferry/tui.tcss

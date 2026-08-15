@@ -50,6 +50,7 @@ dev = [
 [project.scripts]
 blueferry = "blueferry.cli:app"
 blueferry-tui = "blueferry.tui_launcher:main"
+blueferry-quickshell-bridge = "blueferry.quickshell_bridge:main"
 
 [project.gui-scripts]
 blueferry-gtk = "blueferry.ui.app:main"

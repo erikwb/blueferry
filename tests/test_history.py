@@ -4,6 +4,7 @@ import sqlite3
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 
+import blueferry.history as history_module
 from blueferry.history import (
     append_event,
     clear_events,
@@ -96,6 +97,29 @@ def test_reader_can_bound_bodies_for_presentation_without_changing_archive(
     assert projected[0]["body"] == "abc…"
     assert projected[0]["body_truncated"] is True
     assert read_events(path=path)[0]["body"] == "abcdefgh"
+
+
+def test_bounded_reader_stops_after_collecting_the_newest_matches(
+    tmp_path, monkeypatch
+) -> None:
+    path = tmp_path / "events.sqlite"
+    for index in range(10):
+        append_event({"kind": "sms_received", "body": str(index)}, path=path)
+
+    original_deserialize = history_module._deserialize
+    calls = 0
+
+    def counting_deserialize(payload, storage):
+        nonlocal calls
+        calls += 1
+        return original_deserialize(payload, storage)
+
+    monkeypatch.setattr(history_module, "_deserialize", counting_deserialize)
+
+    assert [event["body"] for event in read_events(path=path, limit=3)] == [
+        "7", "8", "9"
+    ]
+    assert calls == 3
 
 
 def test_ancs_history_retains_only_minimal_messages_correlation_data(

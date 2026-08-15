@@ -52,6 +52,21 @@ def test_tui_entry_point_is_shipped_by_arch_backend() -> None:
     assert '$pkgdir/usr/bin/blueferry-tui' in backend
 
 
+def test_quickshell_bridge_entry_point_is_shipped_by_arch_backend() -> None:
+    project = (ROOT / "pyproject.toml").read_text()
+    pkgbuild = (ROOT / "packaging" / "arch" / "PKGBUILD").read_text()
+    backend = pkgbuild.split("package_blueferry-backend()", 1)[1].split(
+        "package_blueferry-gtk()", 1
+    )[0]
+
+    assert (
+        'blueferry-quickshell-bridge = "blueferry.quickshell_bridge:main"'
+        in project
+    )
+    assert '$_stage/usr/bin/blueferry-quickshell-bridge' in backend
+    assert '$pkgdir/usr/bin/blueferry-quickshell-bridge' in backend
+
+
 def test_dbus_activation_and_systemd_publish_the_runtime_bus_name() -> None:
     activation = (ROOT / "packaging" / "arch" / f"{BUS_NAME}.service").read_text()
     unit = (ROOT / "systemd" / "blueferry.service").read_text()
@@ -409,7 +424,29 @@ def test_all_gui_clients_offer_contacts_aware_new_messages() -> None:
     assert "def findContacts" in qt_controller
     assert 'text: qsTr("New Message")' in qt_qml
     assert 'Accessible.name: "New message"' in quickshell
-    assert '"contacts-json"' in quickshell
+    assert 'backendBridge.request("contacts"' in quickshell
+
+
+def test_quickshell_keeps_private_dbus_values_out_of_process_arguments() -> None:
+    quickshell = _qml_bundle(ROOT / "data/quickshell")
+
+    assert 'command: ["/usr/bin/blueferry-quickshell-bridge"]' in quickshell
+    assert 'backendBridge.request("send"' in quickshell
+    assert 'backendBridge.request("send_to_thread"' in quickshell
+    assert 'backendBridge.request("set_group_participants"' in quickshell
+    for cli_adapter in (
+        '"contacts-json"',
+        '"message-send"',
+        '"thread-send"',
+        '"group-participants-set"',
+        '"notification-policy-set"',
+        '"storage-policy-set"',
+        '"storage-unlock"',
+        '"status-json"',
+        '"threads-json"',
+        '"/usr/bin/dbus-monitor"',
+    ):
+        assert cli_adapter not in quickshell
 
 
 def test_all_gui_clients_can_choose_a_bluetooth_controller() -> None:

@@ -150,8 +150,10 @@ def test_deb_and_rpm_backend_ship_private_textual_runtime() -> None:
     assert "package: blueferry-tui" not in control
     assert "requires:       python3dist(textual)" not in spec
     assert "usr/bin/blueferry-tui" in deb_install
+    assert "usr/bin/blueferry-quickshell-bridge" in deb_install
     assert "usr/lib/blueferry/vendor" in deb_install
     assert "%{_bindir}/blueferry-tui" in spec
+    assert "%{_bindir}/blueferry-quickshell-bridge" in spec
     assert "%{_prefix}/lib/blueferry/vendor" in spec
     if vendor.is_dir():
         assert "textual-8.2.8-py3-none-any.whl" in (

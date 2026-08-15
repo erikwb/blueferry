@@ -118,6 +118,8 @@ package_blueferry-backend() {
   install -Dm755 "$srcdir/$_stage/usr/bin/blueferry" "$pkgdir/usr/bin/blueferry"
   install -Dm755 "$srcdir/$_stage/usr/bin/blueferry-tui" \
     "$pkgdir/usr/bin/blueferry-tui"
+  install -Dm755 "$srcdir/$_stage/usr/bin/blueferry-quickshell-bridge" \
+    "$pkgdir/usr/bin/blueferry-quickshell-bridge"
 
   install -Dm644 systemd/blueferry.service \
     "$pkgdir/usr/lib/systemd/user/blueferry.service"
