@@ -364,3 +364,20 @@ def test_records_are_ordered_once_at_load(tmp_path, monkeypatch):
     ]
     assert resolver.records(0, 1) is not resolver._records
     assert resolver.records(0, 1) == [("Alice Example", ["15551234567"], [])]
+
+
+def test_resolver_only_equates_nanp_country_code_variants() -> None:
+    resolver = ContactsResolver.__new__(ContactsResolver)
+    resolver._mem = {"15551234567": {"Alice"}}
+
+    assert resolver.resolve("5551234567") == "Alice"
+    assert resolver.resolve("+1 555 123 4567") == "Alice"
+    assert resolver.resolve("+44 1 555 123 4567") is None
+
+
+def test_resolver_rejects_ambiguous_contact_names() -> None:
+    resolver = ContactsResolver.__new__(ContactsResolver)
+    resolver._mem = {"15551234567": {"Alice", "Other Alice"}}
+
+    assert resolver.resolve("15551234567") is None
+    assert resolver.resolve("5551234567") is None

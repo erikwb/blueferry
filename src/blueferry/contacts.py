@@ -241,7 +241,7 @@ class ContactsResolver:
     def __init__(self, *, storage: StorageSecurity | None = None) -> None:
         self.storage = storage
         self._repository = ContactRepository(storage)
-        self._mem: dict[str, str] = {}
+        self._mem: dict[str, set[str]] = {}
         self._records: list[ContactRecord] = []
         self._warm()
 
@@ -256,7 +256,7 @@ class ContactsResolver:
         for name, phones, emails in self._records:
             if name:
                 for address in (*phones, *emails):
-                    self._mem[address] = name
+                    self._mem.setdefault(address, set()).add(name)
 
     def refresh(self) -> int:
         """Re-read the SQLite cache into memory. Returns new count."""
@@ -297,24 +297,29 @@ class ContactsResolver:
         return self._records[start:start + max(0, int(limit))]
 
     def resolve(self, raw: str | None) -> str | None:
+        def unique_name(address: str) -> str | None:
+            names = self._mem.get(address, set())
+            return next(iter(names)) if len(names) == 1 else None
+
         value = (raw or "").strip()
         if is_email_shaped(value):
-            return self._mem.get(value.casefold())
+            return unique_name(value.casefold())
         norm = normalize_phone(raw)
         if not norm:
             return None
-        # Match exact, or suffix-match (US numbers might be stored 10 vs 11 digit
-        # depending on whether the country code +1 was included). Match in BOTH
-        # directions: a 10-digit incoming might match an 11-digit stored, and
-        # vice versa.
         if norm in self._mem:
-            return self._mem[norm]
-        if len(norm) >= 10:
-            tail = norm[-10:]
-            for k, v in self._mem.items():
-                if k.endswith(tail):
-                    return v
-        return None
+            return unique_name(norm)
+        # NANP numbers are commonly stored both with and without country code
+        # 1. Never generalize this to suffix matching: a longer international
+        # number can share its last ten digits with an unrelated NANP contact.
+        alternate = (
+            f"1{norm}"
+            if len(norm) == 10
+            else norm[1:]
+            if len(norm) == 11 and norm.startswith("1")
+            else ""
+        )
+        return unique_name(alternate) if alternate else None
 
     def count(self) -> int:
         return len(self._mem)
