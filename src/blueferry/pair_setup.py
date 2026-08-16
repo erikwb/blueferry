@@ -381,7 +381,11 @@ def trust_device(mac: str, adapter_path: str) -> None:
         get_system_bus().get_object("org.bluez", dev_path),
         "org.freedesktop.DBus.Properties",
     )
-    props.Set("org.bluez.Device1", "Trusted", dbus.Boolean(True))
+    try:
+        props.Set("org.bluez.Device1", "Trusted", dbus.Boolean(True))
+    except dbus.exceptions.DBusException as error:
+        detail = error.get_dbus_message() or error.get_dbus_name() or str(error)
+        raise PairingError(f"Could not trust the paired iPhone: {detail}") from error
 
 
 def _requested_adapter(adapter: str | None) -> str:
@@ -714,12 +718,17 @@ def complete_pairing(
         if path is not None:
             error.report_path = str(path)
         raise
+    except dbus.exceptions.DBusException as error:
+        detail = error.get_dbus_message() or error.get_dbus_name() or str(error)
+        pairing_error = PairingError(detail)
+        path = _record_pairing_report(attempt, error=pairing_error)
+        if path is not None:
+            pairing_error.report_path = str(path)
+        raise pairing_error from error
     except Exception as error:
         path = _record_pairing_report(attempt, error=error)
-        raise PairingError(
-            str(error) or type(error).__name__,
-            report_path=str(path) if path is not None else None,
-        ) from error
+        log.exception("unexpected pairing failure; report=%s", path or "unavailable")
+        raise
     path = _record_pairing_report(
         attempt, transports=outcome.transports,
     )

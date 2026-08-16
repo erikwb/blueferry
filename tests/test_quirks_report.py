@@ -652,11 +652,12 @@ def test_unexpected_pairing_exception_still_writes_a_report(
         lambda *_args: (_ for _ in ()).throw(RuntimeError("bluez properties vanished")),
     )
 
-    with pytest.raises(pair_setup.PairingError, match="bluez properties vanished") as raised:
+    with pytest.raises(RuntimeError, match="bluez properties vanished"):
         pair_setup.complete_pairing(device.mac, _allow_headless=True)
 
-    assert raised.value.report_path
-    parsed = json.loads(Path(raised.value.report_path).read_text())
+    report = quirks_report.latest_report(report_dir)
+    assert report is not None
+    parsed = json.loads(report.read_text())
     assert parsed["outcome"]["bonded"] is True
     assert parsed["outcome"]["setup_complete"] is False
     assert "bluez properties vanished" in str(parsed["outcome"]["error"])

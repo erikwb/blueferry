@@ -343,6 +343,30 @@ def test_find_device_stays_on_the_requested_adapter(monkeypatch):
     assert pair_setup._device(leftover.mac, adapter="hci1") == phone
 
 
+def test_trust_device_maps_bluez_failure_to_pairing_error(monkeypatch):
+    class Bus:
+        @staticmethod
+        def get_object(*_args):
+            return object()
+
+    class Properties:
+        @staticmethod
+        def Set(*_args):
+            raise pair_setup.dbus.exceptions.DBusException(
+                "Permission denied",
+                name="org.bluez.Error.NotPermitted",
+            )
+
+    monkeypatch.setattr(pair_setup, "get_system_bus", Bus)
+    monkeypatch.setattr(pair_setup.dbus, "Interface", lambda *_args: Properties())
+
+    with pytest.raises(
+        pair_setup.PairingError,
+        match=r"Could not trust.*Permission denied",
+    ):
+        pair_setup.trust_device("02:00:00:00:00:01", "/org/bluez/hci0")
+
+
 def test_bluez_device_snapshot_captures_bearers_battery_and_ancs(monkeypatch):
     device = _device(paired=True)
     objects = {
