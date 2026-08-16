@@ -1,5 +1,5 @@
 Name:           blueferry-backend
-Version:        0.7.1
+Version:        0.7.4
 Release:        1%{?dist}
 Summary:        iPhone Bluetooth bridge backend, daemon, and CLI
 License:        GPL-2.0-only AND MIT AND BSD-2-Clause AND PSF-2.0
@@ -196,6 +196,15 @@ fi
 %{_metainfodir}/io.weirdware.BlueFerry.Qt.metainfo.xml
 
 %changelog
+* Sun Aug 16 2026 BlueFerry Contributors <blueferry@weirdware.io> - 0.7.4-1
+- Recover ANCS after Bluetooth LE reconnects without stale session races.
+- Make message composers expand, wrap, and scroll in every client.
+- Repair Qt utility pages and expose unavailable conversation storage.
+- Verify Sync Contacts after successful empty phonebook pulls.
+
+* Sun Aug 16 2026 BlueFerry Contributors <blueferry@weirdware.io> - 0.7.2-1
+- Prevent the privileged btmgmt helper from hanging under systemd.
+
 * Sat Aug 15 2026 BlueFerry Contributors <blueferry@weirdware.io> - 0.7.1-1
 - Make controller capability checks advisory and fix D-Bus advertisement typing.
 - Use packaged systemd units for privileged Bluetooth setup.

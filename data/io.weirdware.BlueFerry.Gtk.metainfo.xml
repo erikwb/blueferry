@@ -40,6 +40,18 @@
   </developer>
 
   <releases>
+    <release version="0.7.4" date="2026-08-16">
+      <description>
+        <p>Recovers iPhone notifications after reconnects, makes message editors
+        expand and wrap, and improves conversation-storage recovery.</p>
+      </description>
+    </release>
+    <release version="0.7.2" date="2026-08-16">
+      <description>
+        <p>Prevents the privileged Bluetooth setup helper from hanging when
+        pairing under systemd.</p>
+      </description>
+    </release>
     <release version="0.7.1" date="2026-08-15">
       <description>
         <p>Improves cross-distro pairing and privileged setup, makes controller
