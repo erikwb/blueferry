@@ -408,21 +408,45 @@ class BridgeController(QObject):
         self._run(lambda: self._setup.compatibility(selected), completed, failed)
 
     def _snapshot(self) -> dict:
-        def safely(operation, fallback):
-            try:
-                return operation()
-            except BackendError:
-                return fallback
-
         status: dict
         try:
             status = self._backend.status().to_dict()
         except BackendError as error:
             status = {"daemon": False, "error": str(error)}
+        threads: list[dict] | None
+        thread_error = ""
+        try:
+            threads = [item.to_dict() for item in self._backend.threads()]
+        except BackendError as error:
+            # A failed snapshot is not evidence that history is empty. Keep
+            # the last successful projection visible and report the transient
+            # failure separately.
+            threads = None
+            thread_error = str(error)
         return {
-            "threads": safely(lambda: [item.to_dict() for item in self._backend.threads()], []),
+            "threads": threads,
             "status": status,
+            "thread_error": thread_error,
         }
+
+    def _apply_snapshot(self, snapshot: object) -> None:
+        value = snapshot if isinstance(snapshot, dict) else {}
+        threads = value.get("threads")
+        if isinstance(threads, list):
+            self._threads = list(threads)
+            self.threadsChanged.emit()
+        status = value.get("status")
+        if isinstance(status, dict):
+            self._status = dict(status)
+            self.statusChanged.emit()
+            self._maybe_unlock_storage()
+        self._update_onboarding_stage()
+        self._refresh_pairing_issue_report()
+        thread_error = str(value.get("thread_error") or "")
+        if thread_error:
+            self._set_error(thread_error)
+        elif self._status.get("daemon"):
+            self._set_error("")
 
     @Slot()
     def refresh(self) -> None:
@@ -432,16 +456,7 @@ class BridgeController(QObject):
         self._refreshing = True
 
         def completed(snapshot: object) -> None:
-            value = snapshot if isinstance(snapshot, dict) else {}
-            self._threads = list(value.get("threads", []))
-            self._status = dict(value.get("status", {}))
-            self.threadsChanged.emit()
-            self.statusChanged.emit()
-            self._maybe_unlock_storage()
-            self._update_onboarding_stage()
-            self._refresh_pairing_issue_report()
-            if self._status.get("daemon"):
-                self._set_error("")
+            self._apply_snapshot(snapshot)
 
         def failed(message: str) -> None:
             self._set_error(message)

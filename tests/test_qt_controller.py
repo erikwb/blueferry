@@ -6,6 +6,7 @@ import pytest
 
 pytest.importorskip("PySide6")
 
+from blueferry.client import BackendError
 from blueferry.models import BackendStatus, Thread
 from blueferry.qt.controller import BridgeController
 
@@ -55,6 +56,36 @@ def test_snapshot_converts_typed_client_models_for_qml():
 
     assert snapshot["status"]["contacts"] == 4
     assert snapshot["threads"][0]["key"] == "address:email:test@example.com"
+
+
+def test_failed_thread_snapshot_preserves_last_successful_projection():
+    class FailingBackend(_Backend):
+        def status(self):
+            return BackendStatus(
+                daemon=True,
+                map=True,
+                contacts=4,
+                storage_state="ready",
+            )
+
+        def threads(self):
+            raise BackendError("thread snapshot unavailable")
+
+    controller = BridgeController(
+        backend=FailingBackend(),
+        setup=object(),
+        subscribe=False,
+        autostart=False,
+    )
+    previous = [{"key": "address:phone:15551234567", "name": "Kept"}]
+    controller._threads = previous
+
+    snapshot = controller._snapshot()
+    controller._apply_snapshot(snapshot)
+
+    assert controller.threads == previous
+    assert controller.status["daemon"] is True
+    assert controller.errorText == "thread snapshot unavailable"
 
 
 def test_failed_capability_probe_is_loaded_and_pairable(monkeypatch):
