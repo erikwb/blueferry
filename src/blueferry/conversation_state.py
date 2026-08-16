@@ -43,7 +43,8 @@ class ContactSearch:
 class ConversationState:
     """Shared transitions for native conversation presentations."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, select_first: bool = True) -> None:
+        self.select_first = select_first
         self.threads: list[Thread] = []
         self.status = BackendStatus()
         self.selected_key = ""
@@ -99,7 +100,9 @@ class ConversationState:
                     "",
                 )
                 self.selected_key = retained or (
-                    self.threads[0].key if self.threads else ""
+                    self.threads[0].key
+                    if self.select_first and self.threads
+                    else ""
                 )
         self.error = "; ".join(
             failure for failure in snapshot.failures if failure

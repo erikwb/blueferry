@@ -76,6 +76,15 @@ def test_selection_follows_the_same_message_when_thread_key_changes() -> None:
     assert state.selected_key == "new"
 
 
+def test_presentations_can_leave_the_initial_selection_empty() -> None:
+    state = ConversationState(select_first=False)
+    state.apply_snapshot(
+        ConversationSnapshot(None, (_thread("one"), _thread("two")))
+    )
+
+    assert state.selected is None
+
+
 def test_reply_plan_enforces_read_only_and_group_confirmation() -> None:
     state = ConversationState()
     direct = _thread("direct", reply_ready=False)

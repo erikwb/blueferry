@@ -8,8 +8,14 @@ from __future__ import annotations
 
 from gi.repository import Adw, GLib, Gtk, Pango
 
+from blueferry.conversation_state import (
+    ConversationSnapshot,
+    ConversationState,
+    ReplyDisposition,
+    ReplyPlan,
+)
 from blueferry.i18n import _
-from blueferry.models import BackendStatus
+from blueferry.models import BackendStatus, Thread, ThreadMessage
 from blueferry.ui.status_presenter import (
     map_connection_refused,
     map_connection_refused_message,
@@ -29,29 +35,21 @@ def _participant_lines(value: str) -> list[str]:
     return result
 
 
-def _group_roster_banner_title(thread: dict) -> str:
+def _group_roster_banner_title(thread: Thread) -> str:
     """Describe why this named group currently needs roster review."""
-    if thread.get("roster_changed"):
-        sender = str(thread.get("unexpected_sender") or _("Someone new"))
+    if thread.roster_changed:
+        sender = thread.unexpected_sender or _("Someone new")
         template = _(
             "{sender} is not in BlueFerry's saved participant list for "
             "{group}. Review the list before replying."
         )
     else:
-        sender = str(thread.get("prompt_sender") or _("Someone"))
+        sender = thread.prompt_sender or _("Someone")
         template = _(
             "{sender} has sent a message to the group {group}. "
             "BlueFerry needs its participant list before you can reply."
         )
-    return template.format(sender=sender, group=thread["name"])
-
-
-def _roster_warning_id(thread: dict) -> str:
-    """Return one stable dedup key even for older partial thread payloads."""
-    return str(
-        thread.get("roster_warning_id")
-        or f"{thread.get('key', '')}:{thread.get('unexpected_sender') or 'unknown'}"
-    )
+    return template.format(sender=sender, group=thread.name)
 
 
 class ConversationsPage(Gtk.Box):
@@ -63,10 +61,7 @@ class ConversationsPage(Gtk.Box):
         )
         self._client = client
         self._toast = toast
-        self._threads: dict[str, dict] = {}
-        self._current: str | None = None
-        self._confirmed_groups: set[str] = set()
-        self._warned_roster_changes: set[str] = set()
+        self._state = ConversationState(select_first=False)
         self._pending_open_handle: str | None = None
         self._reload_pending = False
         self._reload_again = False
@@ -309,19 +304,14 @@ class ConversationsPage(Gtk.Box):
         handle = self._pending_open_handle
         if not handle:
             return False
-        selected_key = next(
-            (
-                key
-                for key, thread in self._threads.items()
-                if any(message.get("handle") == handle for message in thread["messages"])
-            ),
-            None,
-        )
-        if selected_key is None:
+        if not self._state.select_message(handle):
             return False
 
         row = self._thread_list.get_first_child()
-        while row is not None and getattr(row, "thread_key", None) != selected_key:
+        while (
+            row is not None
+            and getattr(row, "thread_key", None) != self._state.selected_key
+        ):
             row = row.get_next_sibling()
         if row is None:
             return False
@@ -354,6 +344,7 @@ class ConversationsPage(Gtk.Box):
         self._client.get_status_async(self._apply_status, self._status_failed)
 
     def _apply_status(self, status: BackendStatus) -> bool:
+        self._state.apply_snapshot(ConversationSnapshot(status, None))
         self._map_refused_banner.set_revealed(
             map_connection_refused(status.to_dict())
         )
@@ -370,6 +361,7 @@ class ConversationsPage(Gtk.Box):
 
     def _open_new_message(self, _button) -> None:
         self._new_destination = None
+        self._state.begin_contact_search("")
         self._new_recipient.set_text("")
         self._new_body.set_text("")
         self._contact_results.remove_all()
@@ -381,15 +373,16 @@ class ConversationsPage(Gtk.Box):
         query = entry.get_text().strip()
         self._new_destination = None
         self._update_new_send_button()
-        if not query:
-            self._contact_results.remove_all()
+        request = self._state.begin_contact_search(query)
+        self._contact_results.remove_all()
+        if request is None:
             return
 
         def apply(matches) -> None:
-            if self._new_recipient.get_text().strip() != query:
+            if not self._state.apply_contact_results(request, list(matches)):
                 return
             self._contact_results.remove_all()
-            for name, address in matches:
+            for name, address in self._state.contact_results:
                 row = Gtk.ListBoxRow()
                 row.contact_address = address
                 item = Gtk.Box(
@@ -419,12 +412,17 @@ class ConversationsPage(Gtk.Box):
                 row.set_child(item)
                 self._contact_results.append(row)
 
-        self._client.find_contacts_async(query, apply, lambda _message: None)
+        self._client.find_contacts_async(
+            request.query,
+            apply,
+            lambda _message: None,
+        )
 
     def _on_contact_selected(self, _list, row) -> None:
         address = str(row.contact_address)
         self._new_recipient.set_text(address)
         self._new_destination = address
+        self._state.begin_contact_search("")
         self._contact_results.remove_all()
         self._update_new_send_button()
         self._new_body.grab_focus()
@@ -459,49 +457,22 @@ class ConversationsPage(Gtk.Box):
         self._client.send_message(recipient, body, done, failed)
 
     def _apply_threads(self, loaded) -> bool:
-        selected_handle = None
-        if self._current in self._threads:
-            messages = self._threads[self._current]["messages"]
-            if messages:
-                selected_handle = messages[-1].get("handle")
-
-        self._threads = {}
-        for thread in loaded:
-            current = thread.to_dict()
-            key = str(current.get("key") or "")
-            if not key:
-                continue
-            messages = []
-            for message in current.get("messages", []):
-                messages.append(
-                    {
-                        **message,
-                        "ts": str(message.get("timestamp") or ""),
-                    }
-                )
-            self._threads[key] = {**current, "key": key, "messages": messages}
-
-        if self._current not in self._threads:
-            self._current = None
-            if selected_handle:
-                for key, thread in self._threads.items():
-                    if any(
-                        message.get("handle") == selected_handle for message in thread["messages"]
-                    ):
-                        self._current = key
-                        break
+        threads = tuple(
+            thread
+            for thread in loaded
+            if isinstance(thread, Thread) and thread.key
+        )
+        self._state.apply_snapshot(ConversationSnapshot(None, threads))
         self._rebuild_thread_list()
-        if self._current in self._threads:
+        current = self._state.selected
+        if current is not None:
             self._msg_list.remove_all()
-            for message in self._threads[self._current]["messages"]:
-                self._append_bubble(
-                    message,
-                    is_group=bool(self._threads[self._current].get("is_group")),
-                )
-            can_reply = bool(self._threads[self._current].get("reply_ready", True))
+            for message in current.messages:
+                self._append_bubble(message, is_group=current.is_group)
+            can_reply = current.reply_ready
             self._entry.set_sensitive(can_reply)
             self._send_btn.set_sensitive(can_reply)
-            self._update_group_roster_banner(self._threads[self._current])
+            self._update_group_roster_banner(current)
             self._stack.set_visible_child_name("messages")
             self._scroll_to_bottom()
         else:
@@ -517,7 +488,7 @@ class ConversationsPage(Gtk.Box):
     # ---- thread list ---------------------------------------------------
 
     def _rebuild_thread_list(self) -> None:
-        selected = self._current
+        selected = self._state.selected_key
         # Removing/recreating rows changes the ListBox selection. Without
         # blocking this handler, re-selecting the current row synchronously
         # redraws the conversation during the list rebuild. User-initiated
@@ -525,10 +496,14 @@ class ConversationsPage(Gtk.Box):
         self._thread_list.handler_block(self._thread_selected_handler)
         try:
             self._thread_list.remove_all()
-            order = sorted(self._threads.values(), key=lambda t: t.get("last_ts", ""), reverse=True)
+            order = sorted(
+                self._state.threads,
+                key=lambda thread: thread.last_ts,
+                reverse=True,
+            )
             for thread in order:
                 row = Gtk.ListBoxRow()
-                row.thread_key = thread["key"]
+                row.thread_key = thread.key
                 box = Gtk.Box(
                     orientation=Gtk.Orientation.VERTICAL,
                     spacing=2,
@@ -539,13 +514,13 @@ class ConversationsPage(Gtk.Box):
                 )
                 box.append(
                     Gtk.Label(
-                        label=thread["name"],
+                        label=thread.name,
                         xalign=0,
                         css_classes=["heading"],
                         ellipsize=_ELLIPSIZE_END,
                     )
                 )
-                last = thread["messages"][-1]["body"] if thread["messages"] else ""
+                last = thread.messages[-1].body if thread.messages else ""
                 box.append(
                     Gtk.Label(
                         label=last.replace("\n", " "),
@@ -556,7 +531,7 @@ class ConversationsPage(Gtk.Box):
                 )
                 row.set_child(box)
                 self._thread_list.append(row)
-                if thread["key"] == selected:
+                if thread.key == selected:
                     self._thread_list.select_row(row)
         finally:
             self._thread_list.handler_unblock(self._thread_selected_handler)
@@ -564,24 +539,26 @@ class ConversationsPage(Gtk.Box):
     def _on_thread_selected(self, _list, row) -> None:
         if row is None:
             return
-        self._current = row.thread_key
-        thread = self._threads.get(self._current)
-        can_reply = bool(thread and thread.get("reply_ready", True))
+        self._state.selected_key = row.thread_key
+        thread = self._state.selected
+        if thread is None:
+            return
+        can_reply = thread.reply_ready
         self._entry.set_sensitive(can_reply)
         self._send_btn.set_sensitive(can_reply)
         self._update_group_roster_banner(thread)
         self._stack.set_visible_child_name("messages")
-        self._conversation_title.set_label(thread["name"])
+        self._conversation_title.set_label(thread.name)
         self.split_view.set_show_content(True)
         self._msg_list.remove_all()
-        for msg in thread["messages"]:
-            self._append_bubble(msg, is_group=bool(thread.get("is_group")))
+        for message in thread.messages:
+            self._append_bubble(message, is_group=thread.is_group)
         self._scroll_to_bottom()
 
-    def _update_group_roster_banner(self, thread: dict | None) -> None:
-        required = bool(thread and thread.get("participants_required"))
+    def _update_group_roster_banner(self, thread: Thread | None) -> None:
+        required = bool(thread and thread.participants_required)
         self._group_roster_button.set_visible(
-            bool(thread and thread.get("group_origin") == "named")
+            bool(thread and thread.group_origin == "named")
         )
         self._group_roster_banner.set_revealed(required)
         if not required or thread is None:
@@ -589,19 +566,12 @@ class ConversationsPage(Gtk.Box):
         self._group_roster_banner.set_title(_group_roster_banner_title(thread))
 
     def _maybe_warn_roster_change(self) -> None:
-        thread = next(
-            (
-                candidate for candidate in self._threads.values()
-                if candidate.get("roster_changed")
-                and _roster_warning_id(candidate) not in self._warned_roster_changes
-            ),
-            None,
-        )
-        if thread is None or self.get_root() is None:
+        if self.get_root() is None:
             return
-        warning_id = _roster_warning_id(thread)
-        self._warned_roster_changes.add(warning_id)
-        sender = str(thread.get("unexpected_sender") or _("Someone new"))
+        thread = self._state.next_roster_warning()
+        if thread is None:
+            return
+        sender = thread.unexpected_sender or _("Someone new")
         dialog = Adw.AlertDialog(
             heading=_("Group Membership May Have Changed"),
             body=_(
@@ -609,7 +579,7 @@ class ConversationsPage(Gtk.Box):
                 "saved participant list. Replies are disabled until you review "
                 "the list. This can also happen if you have multiple groups "
                 "named {group}, because BlueFerry cannot distinguish them."
-            ).format(sender=sender, group=thread["name"]),
+            ).format(sender=sender, group=thread.name),
         )
         dialog.add_response("later", _("Not Now"))
         dialog.add_response("review", _("Review Participants"))
@@ -626,14 +596,14 @@ class ConversationsPage(Gtk.Box):
         dialog.present(self.get_root())
 
     def _open_group_roster_dialog(
-        self, _source, selected_thread: dict | None = None,
+        self, _source, selected_thread: Thread | None = None,
     ) -> None:
-        thread = selected_thread or self._threads.get(self._current or "")
-        if not thread or thread.get("group_origin") != "named":
+        thread = selected_thread or self._state.selected
+        if not thread or thread.group_origin != "named":
             return
-        sender = str(thread.get("prompt_sender") or _("Someone"))
+        sender = thread.prompt_sender or _("Someone")
         dialog = Adw.AlertDialog(
-            heading=_("Who is in {group}?").format(group=thread["name"]),
+            heading=_("Who is in {group}?").format(group=thread.name),
             body=_(
                 "{sender} has sent a message to a group named {group}, which you're "
                 "a member of. BlueFerry can't determine the participants of "
@@ -646,7 +616,7 @@ class ConversationsPage(Gtk.Box):
                 "combine them and use the wrong participant list. The list can "
                 "also become outdated if the group is renamed or its membership "
                 "changes."
-            ).format(sender=sender, group=thread["name"]),
+            ).format(sender=sender, group=thread.name),
         )
         editor = Gtk.TextView(
             accepts_tab=False,
@@ -657,7 +627,7 @@ class ConversationsPage(Gtk.Box):
             right_margin=8,
             wrap_mode=Gtk.WrapMode.NONE,
         )
-        editor.get_buffer().set_text("\n".join(thread.get("recipients", [])))
+        editor.get_buffer().set_text("\n".join(thread.recipients))
         dialog.set_extra_child(
             Gtk.ScrolledWindow(
                 min_content_height=120,
@@ -683,11 +653,12 @@ class ConversationsPage(Gtk.Box):
                 )
             )
 
-            def saved(_thread) -> None:
+            def saved(updated: Thread) -> None:
+                self._state.group_participants_saved(updated)
                 self._reload_threads()
 
             self._client.set_group_participants_async(
-                thread["key"],
+                thread.key,
                 recipients,
                 saved,
                 lambda error: self._toast(
@@ -700,7 +671,7 @@ class ConversationsPage(Gtk.Box):
 
     # ---- message bubbles ----------------------------------------------
 
-    def _append_bubble(self, msg: dict, *, is_group: bool) -> None:
+    def _append_bubble(self, message: ThreadMessage, *, is_group: bool) -> None:
         row = Gtk.ListBoxRow(activatable=False, selectable=False)
         outer = Gtk.Box(
             orientation=Gtk.Orientation.VERTICAL,
@@ -712,22 +683,28 @@ class ConversationsPage(Gtk.Box):
         bubble = Gtk.Box(
             orientation=Gtk.Orientation.VERTICAL, spacing=2, css_classes=["card", "msg-bubble"]
         )
-        bubble.set_halign(Gtk.Align.END if msg["outgoing"] else Gtk.Align.START)
-        if msg["outgoing"]:
+        bubble.set_halign(
+            Gtk.Align.END if message.outgoing else Gtk.Align.START
+        )
+        if message.outgoing:
             bubble.add_css_class("msg-out")
         if is_group:
             bubble.append(
                 Gtk.Label(
-                    label=_("You") if msg["outgoing"] else msg.get("sender", ""),
+                    label=_("You") if message.outgoing else message.sender,
                     xalign=0,
                     css_classes=["dim-label", "caption", "heading"],
                 )
             )
         body = Gtk.Label(
-            label=msg["body"], xalign=0, wrap=True, selectable=True, max_width_chars=46
+            label=message.body,
+            xalign=0,
+            wrap=True,
+            selectable=True,
+            max_width_chars=46,
         )
         bubble.append(body)
-        ts = format_ts(msg["ts"])
+        ts = format_ts(message.timestamp)
         if ts:
             bubble.append(Gtk.Label(label=ts, xalign=1, css_classes=["dim-label", "caption"]))
         outer.append(bubble)
@@ -746,21 +723,20 @@ class ConversationsPage(Gtk.Box):
 
     def _on_send(self, _widget) -> None:
         body = self._entry.get_text().strip()
-        if not body or self._current is None:
-            return
-        thread = self._threads[self._current]
-        if thread.get("is_group") and (
-            thread.get("group_origin") == "named"
-            or thread["key"] not in self._confirmed_groups
+        plan = self._state.plan_reply(body)
+        if (
+            plan.disposition is ReplyDisposition.CONFIRM_GROUP
+            and plan.thread is not None
         ):
-            self._confirm_group_send(thread, body)
+            self._confirm_group_send(plan.thread, plan.body)
             return
-        self._dispatch_send(thread, body, confirm_group=False)
+        if plan.ready:
+            self._dispatch_send(plan)
 
-    def _confirm_group_send(self, thread: dict, body: str) -> None:
-        recipients = "\n".join(f"• {value}" for value in thread["recipients"])
+    def _confirm_group_send(self, thread: Thread, body: str) -> None:
+        recipients = "\n".join(f"• {value}" for value in thread.recipients)
         dialog = Adw.AlertDialog(
-            heading=_("Reply to {name}?").format(name=thread["name"]),
+            heading=_("Reply to {name}?").format(name=thread.name),
             body=_(
                 "The iPhone identifies this group by this participant set:\n\n{recipients}"
             ).format(recipients=recipients),
@@ -773,20 +749,21 @@ class ConversationsPage(Gtk.Box):
 
         def responded(_dialog, response: str) -> None:
             if response == "send":
-                if thread.get("group_origin") != "named":
-                    self._confirmed_groups.add(thread["key"])
-                self._dispatch_send(thread, body, confirm_group=True)
+                plan = self._state.plan_reply(
+                    body,
+                    thread_key=thread.key,
+                    confirm_group=True,
+                )
+                if plan.ready:
+                    self._dispatch_send(plan)
 
         dialog.connect("response", responded)
         dialog.present(self.get_root())
 
-    def _dispatch_send(
-        self,
-        thread: dict,
-        body: str,
-        *,
-        confirm_group: bool,
-    ) -> None:
+    def _dispatch_send(self, plan: ReplyPlan) -> None:
+        if not plan.ready or plan.thread is None:
+            return
+        thread = plan.thread
         self._entry.set_sensitive(False)
         self._send_btn.set_sensitive(False)
 
@@ -795,24 +772,22 @@ class ConversationsPage(Gtk.Box):
             # content-free HistoryChanged invalidation. Avoid an optimistic
             # append so the same bubble cannot appear twice.
             self._entry.set_text("")
-            can_reply = bool(thread.get("reply_ready", True))
+            self._state.reply_sent(plan)
+            can_reply = thread.reply_ready
             self._entry.set_sensitive(can_reply)
             self._send_btn.set_sensitive(can_reply)
             self._entry.grab_focus()
 
         def failed(text: str) -> None:
-            can_reply = bool(thread.get("reply_ready", True))
+            can_reply = thread.reply_ready
             self._entry.set_sensitive(can_reply)
             self._send_btn.set_sensitive(can_reply)
             self._toast(_("Send failed: {error}").format(error=text))
 
-        if not thread.get("reply_ready"):
-            failed(_("This thread has no unambiguous reply destination"))
-            return
         self._client.send_to_thread(
-            thread["key"],
-            body,
-            confirm_group=confirm_group,
+            thread.key,
+            plan.body,
+            confirm_group=plan.confirm_group,
             on_ok=done,
             on_err=failed,
         )
