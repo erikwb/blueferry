@@ -476,10 +476,13 @@ def test_transport_wait_samples_bluez_at_a_bounded_rate(monkeypatch):
         for _index in range(5)
     ] + [BackendStatus(map=True, pbap=True, ancs=True)]
     snapshots = []
+    clients = []
 
     class FakeClient:
-        @staticmethod
-        def status():
+        def __init__(self):
+            clients.append(self)
+
+        def status(self):
             return statuses.pop(0)
 
     monkeypatch.setattr("blueferry.client.BackendClient", FakeClient)
@@ -499,6 +502,7 @@ def test_transport_wait_samples_bluez_at_a_bounded_rate(monkeypatch):
 
     assert result == (True, True, True)
     assert snapshots == [0.0, 2.0]
+    assert len(clients) == 1
 
 
 def test_teardown_trace_survives_quickshell_helper_processes(monkeypatch):

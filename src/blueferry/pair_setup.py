@@ -8,6 +8,7 @@ import time
 from collections.abc import Callable
 from contextlib import ExitStack
 from pathlib import Path
+from typing import Protocol
 
 import dbus
 import dbus.exceptions
@@ -45,6 +46,17 @@ MAX_DISCOVERY_SECONDS = 30
 
 ConfirmationCallback = Callable[[int | None], bool]
 DisplayCallback = Callable[[int], None]
+
+
+class _TransportStatus(Protocol):
+    @property
+    def map(self) -> bool: ...
+
+    @property
+    def pbap(self) -> bool: ...
+
+    @property
+    def ancs(self) -> bool: ...
 
 
 # Quickshell runs forget and pair in separate helper processes.
@@ -588,10 +600,16 @@ def _wait_for_daemon_transports(
     attempt: dict | None = None,
     notifications_supported: bool = True,
     device_path: str | None = None,
+    status_reader: Callable[[], _TransportStatus] | None = None,
 ) -> tuple[bool, bool, bool]:
     """Observe the daemon while the pairing advert and agent remain active."""
     from blueferry.client import BackendClient, BackendError
 
+    reader: Callable[[], _TransportStatus]
+    if status_reader is None:
+        reader = BackendClient().status
+    else:
+        reader = status_reader
     deadline = time.monotonic() + timeout
     next_bluez_snapshot = 0.0
     previous: tuple[bool, bool, bool] | None = None
@@ -602,7 +620,7 @@ def _wait_for_daemon_transports(
             _record_bluez_state(attempt, device_path, "transport_wait")
             next_bluez_snapshot = now + BLUEZ_TRACE_POLL_SECONDS
         try:
-            status = BackendClient().status()
+            status = reader()
         except BackendError:
             time.sleep(0.5)
             continue
