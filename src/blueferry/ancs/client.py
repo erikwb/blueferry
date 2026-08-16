@@ -138,6 +138,11 @@ class AncsClient:
         self._cp_path: str | None = None
         self._notify_started = False
         self._authorized = False
+        # Keep this across bearer/subscription resets. A silent Control Point
+        # probe can mean "permission not granted yet" during onboarding, but
+        # after this client has already received an authorized response it is
+        # evidence that the rebuilt GATT transport is stale.
+        self._was_authorized = False
         self._bearer_connected: bool | None = None
         self._bearer_ready = False
         self._transport_blocked = False
@@ -769,6 +774,7 @@ class AncsClient:
         if self._authorized:
             return
         self._authorized = True
+        self._was_authorized = True
         self._cancel_authorization_retry()
         log.info("ANCS notification access authorized for %s", self.device_path)
         if self.on_status is not None:
@@ -891,6 +897,13 @@ class AncsClient:
             request.assembler.command if request else "none",
         )
         self._request_timeout_id = None
+        if request is not None and request.authorization_probe and self._was_authorized:
+            log.warning(
+                "previously authorized ANCS transport stopped responding; "
+                "resetting the LE bearer"
+            )
+            self._mark_transport_failed()
+            return False
         self._abandon_request(request)
         self._active_request = None
         self._pump_requests()

@@ -685,6 +685,93 @@ def test_not_connected_control_point_failure_invalidates_ancs_health(
     assert resets == [True]
 
 
+def test_authorization_timeout_resets_previously_authorized_transport(
+    monkeypatch,
+) -> None:
+    scheduled = []
+    resets = []
+
+    class _ControlPoint:
+        @staticmethod
+        def WriteValue(_value, _options, **_kwargs) -> None:
+            pass
+
+    bus = _CharacteristicBus({"/device/cp": _ControlPoint()})
+    monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
+    monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
+    monkeypatch.setattr(
+        client_module.GLib,
+        "timeout_add_seconds",
+        lambda _delay, _callback: 91,
+    )
+    monkeypatch.setattr(client_module.GLib, "source_remove", lambda _timer: None)
+    client = AncsClient(
+        "/device",
+        lambda _event: None,
+        on_transport_failure=lambda: resets.append(True),
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+    )
+    client._started = True
+    client._notify_started = True
+    client._bearer_connected = True
+    client._bearer_ready = True
+    client._cp_path = "/device/cp"
+
+    client._queue_authorization_probe()
+    _complete_authorization_probe(client)
+    client._authorized = False
+    client._queue_authorization_probe()
+    client._request_timed_out()
+
+    assert client.connected is False
+    assert client.subscribed is False
+    assert client._transport_blocked is True
+    assert scheduled[0][0] == client_module.TRANSPORT_RESET_SECONDS
+
+    scheduled[0][1]()
+    assert resets == [True]
+
+
+def test_initial_authorization_timeout_keeps_retrying_without_transport_reset(
+    monkeypatch,
+) -> None:
+    scheduled = []
+    resets = []
+
+    class _ControlPoint:
+        @staticmethod
+        def WriteValue(_value, _options, **_kwargs) -> None:
+            pass
+
+    bus = _CharacteristicBus({"/device/cp": _ControlPoint()})
+    monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
+    monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
+    monkeypatch.setattr(
+        client_module.GLib,
+        "timeout_add_seconds",
+        lambda _delay, _callback: 91,
+    )
+    client = AncsClient(
+        "/device",
+        lambda _event: None,
+        on_transport_failure=lambda: resets.append(True),
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+    )
+    client._started = True
+    client._notify_started = True
+    client._bearer_connected = True
+    client._bearer_ready = True
+    client._cp_path = "/device/cp"
+
+    client._queue_authorization_probe()
+    client._request_timed_out()
+
+    assert client.subscribed is True
+    assert client._transport_blocked is False
+    assert scheduled[0][0] == client_module.AUTHORIZATION_RETRY_SECONDS
+    assert resets == []
+
+
 def test_owner_change_during_start_notify_preserves_new_subscription(
     monkeypatch,
 ) -> None:
