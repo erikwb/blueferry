@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import io
 import json
+import subprocess
+import threading
 
 import pytest
 
@@ -158,6 +160,7 @@ def test_isolated_pairing_answers_helper_confirmation(monkeypatch):
                 '{"ok":true,"device":' + __import__("json").dumps(device.to_dict())
                 + ',"ancs_ready":true}\n',
             ])
+            self.stderr = io.StringIO()
 
         @staticmethod
         def wait(*_args, **_kwargs):
@@ -201,6 +204,7 @@ def test_isolated_pairing_preserves_report_path_on_failure(monkeypatch):
                     "report_path": "/tmp/quirks-test.json",
                 }) + "\n"
             ])
+            self.stderr = io.StringIO()
 
         @staticmethod
         def wait(*_args, **_kwargs):
@@ -237,6 +241,7 @@ def test_isolated_pairing_adds_pairing_mode_helper_flags(monkeypatch):
         stdout = iter([
             '{"ok":true,"device":' + json.dumps(device.to_dict()) + "}\n",
         ])
+        stderr = io.StringIO()
 
         @staticmethod
         def wait(*_args, **_kwargs):
@@ -261,3 +266,99 @@ def test_isolated_pairing_adds_pairing_mode_helper_flags(monkeypatch):
 
     assert "--compatibility-mode" in commands[0]
     assert commands[0][-1] == "--explicit-pairing"
+
+
+def test_isolated_pairing_times_out_and_kills_a_stuck_helper(monkeypatch, caplog):
+    device = _device()
+    released = threading.Event()
+
+    class BlockingOutput:
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            released.wait()
+            raise StopIteration
+
+    class Process:
+        def __init__(self):
+            self.stdin = io.StringIO()
+            self.stdout = BlockingOutput()
+            self.stderr = io.StringIO("child diagnostic\n")
+            self.running = True
+            self.terminated = False
+            self.killed = False
+
+        def poll(self):
+            return None if self.running else -9
+
+        def terminate(self):
+            self.terminated = True
+
+        def kill(self):
+            self.killed = True
+            self.running = False
+            released.set()
+
+        def wait(self, timeout=None):
+            if self.running:
+                raise subprocess.TimeoutExpired("pairing-helper", timeout)
+            return -9
+
+    process = Process()
+    monkeypatch.setattr(
+        setup_client.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: process,
+    )
+    monkeypatch.setattr(setup_client, "PAIRING_HELPER_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(setup_client, "PAIRING_HELPER_STOP_TIMEOUT_SECONDS", 0.01)
+
+    with pytest.raises(setup_client.PairingError, match="Pairing helper timed out"):
+        setup_client.SetupClient().complete_isolated(
+            device.mac,
+            confirmation=lambda _passkey: True,
+        )
+
+    assert process.terminated is True
+    assert process.killed is True
+    assert "child diagnostic" in caplog.text
+
+
+def test_isolated_pairing_reports_exit_status_and_logs_bounded_stderr(
+    monkeypatch,
+    caplog,
+):
+    device = _device()
+    diagnostic = "x" * (setup_client.PAIRING_HELPER_DIAGNOSTIC_CHARS + 20)
+
+    class Process:
+        stdin = io.StringIO()
+        stdout = iter(())
+        stderr = io.StringIO("discarded-prefix" + diagnostic)
+
+        @staticmethod
+        def wait(*_args, **_kwargs):
+            return 7
+
+        @staticmethod
+        def poll():
+            return 7
+
+    monkeypatch.setattr(
+        setup_client.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: Process(),
+    )
+
+    with pytest.raises(
+        setup_client.PairingError,
+        match=r"Pairing helper exited without a result \(status 7\)",
+    ):
+        setup_client.SetupClient().complete_isolated(
+            device.mac,
+            confirmation=lambda _passkey: True,
+        )
+
+    assert "discarded-prefix" not in caplog.text
+    assert diagnostic[-100:] in caplog.text
