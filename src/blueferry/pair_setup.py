@@ -22,6 +22,7 @@ from blueferry.bus import get_session_bus, get_system_bus
 from blueferry.commands import run_command
 from blueferry.errors import CommandError, PairingError
 from blueferry.pairing_policy import resolve_pairing_policy
+from blueferry.pairing_types import PairingAttempt, PairingOutcome, PairingTransports
 from blueferry.private_files import atomic_write_private_text, read_private_text
 from blueferry.setup_verification import clear_setup_verification
 
@@ -142,7 +143,7 @@ def _bluez_device_snapshot(device_path: str) -> dict[str, object]:
 
 
 def _record_bluez_state(
-    attempt: dict | None,
+    attempt: PairingAttempt | None,
     device_path: str | None,
     phase: str,
     *,
@@ -447,7 +448,7 @@ def _wait_for_classic_settled(
     *,
     timeout: float = 45.0,
     settle_seconds: float = CLASSIC_SETTLE_SECONDS,
-    attempt: dict | None = None,
+    attempt: PairingAttempt | None = None,
 ) -> None:
     """Require an observably stable Classic connection before starting LE."""
     props = dbus.Interface(
@@ -503,7 +504,7 @@ def _connect_classic(
     *,
     timeout: float = 45.0,
     settle: bool = True,
-    attempt: dict | None = None,
+    attempt: PairingAttempt | None = None,
 ) -> None:
     """Connect the Classic bearer without blocking agent dispatch."""
     log.info("sending Device1.Connect for Classic bearer: %s", device_path)
@@ -597,11 +598,11 @@ def _activate_obex_mns() -> None:
 def _wait_for_daemon_transports(
     *,
     timeout: float = 45.0,
-    attempt: dict | None = None,
+    attempt: PairingAttempt | None = None,
     notifications_supported: bool = True,
     device_path: str | None = None,
     status_reader: Callable[[], _TransportStatus] | None = None,
-) -> tuple[bool, bool, bool]:
+) -> PairingTransports:
     """Observe the daemon while the pairing advert and agent remain active."""
     from blueferry.client import BackendClient, BackendError
 
@@ -612,7 +613,7 @@ def _wait_for_daemon_transports(
         reader = status_reader
     deadline = time.monotonic() + timeout
     next_bluez_snapshot = 0.0
-    previous: tuple[bool, bool, bool] | None = None
+    previous: PairingTransports | None = None
     quirks_report.mark(attempt, "waiting_for_transports")
     while time.monotonic() < deadline:
         now = time.monotonic()
@@ -625,19 +626,19 @@ def _wait_for_daemon_transports(
             time.sleep(0.5)
             continue
         _remember_daemon_status(attempt, status)
-        current = (status.map, status.pbap, status.ancs)
+        current = PairingTransports(status.map, status.pbap, status.ancs)
         if current != previous:
             log.debug(
                 "daemon transport state: MAP=%s PBAP=%s ANCS=%s",
-                *current,
+                *current.as_tuple(),
             )
             if attempt is not None:
-                was = previous or (False, False, False)
-                if current[0] and not was[0]:
+                was = previous or PairingTransports()
+                if current.map and not was.map:
                     quirks_report.mark(attempt, "map_ready")
-                if current[1] and not was[1]:
+                if current.pbap and not was.pbap:
                     quirks_report.mark(attempt, "pbap_ready")
-                if current[2] and not was[2]:
+                if current.ancs and not was.ancs:
                     quirks_report.mark(attempt, "ancs_ready")
             previous = current
         if status.ancs or (
@@ -645,7 +646,7 @@ def _wait_for_daemon_transports(
         ):
             return current
         time.sleep(0.5)
-    return previous or (False, False, False)
+    return previous or PairingTransports()
 
 
 def _restart_user_service() -> None:
@@ -684,7 +685,7 @@ def complete_pairing(
         raise PairingError("Pairing requires an interactive confirmation callback")
     attempt = quirks_report.start_attempt(interactive=confirmation is not None)
     try:
-        result = _execute_pairing(
+        outcome = _execute_pairing(
             mac,
             adapter=adapter,
             confirmation=confirmation,
@@ -705,8 +706,9 @@ def complete_pairing(
             report_path=str(path) if path is not None else None,
         ) from error
     path = _record_pairing_report(
-        attempt, transports=result.pop("_report_transports", None),
+        attempt, transports=outcome.transports,
     )
+    result = outcome.to_dict()
     if path is not None:
         result["quirks_report"] = str(path)
     return result
@@ -913,11 +915,11 @@ def _bluetooth_session_owners() -> list[str]:
     return owners
 
 
-def _remember_daemon_status(attempt: dict | None, status: object) -> None:
+def _remember_daemon_status(attempt: PairingAttempt | None, status: object) -> None:
     pairing_diagnostics.remember_daemon_status(attempt, status)
 
 
-def _snapshot_phone(attempt: dict, device: PairedDevice) -> None:
+def _snapshot_phone(attempt: PairingAttempt, device: PairedDevice) -> None:
     pairing_diagnostics.snapshot_phone(
         attempt,
         device,
@@ -926,9 +928,9 @@ def _snapshot_phone(attempt: dict, device: PairedDevice) -> None:
 
 
 def _record_pairing_report(
-    attempt: dict,
+    attempt: PairingAttempt,
     *,
-    transports: tuple[bool, bool, bool] | None = None,
+    transports: PairingTransports | None = None,
     error: Exception | None = None,
 ):
     return pairing_diagnostics.record_pairing_report(
@@ -938,13 +940,13 @@ def _record_pairing_report(
     )
 
 
-def _device_bonded(attempt: dict) -> bool:
+def _device_bonded(attempt: PairingAttempt) -> bool:
     return pairing_diagnostics.device_bonded(attempt)
 
 
 def _pairing_outcome(
-    attempt: dict,
-    transports: tuple[bool, bool, bool] | None,
+    attempt: PairingAttempt,
+    transports: PairingTransports | None,
     error: Exception | None,
 ) -> dict[str, object]:
     return pairing_diagnostics.pairing_outcome(attempt, transports, error)
@@ -958,8 +960,8 @@ def _execute_pairing(
     display: DisplayCallback | None = None,
     compatibility_mode: bool = False,
     explicit_pairing: bool = False,
-    attempt: dict,
-) -> dict:
+    attempt: PairingAttempt,
+) -> PairingOutcome:
     from blueferry import bluez_setup
 
     requested = _requested_adapter(adapter)
@@ -1161,7 +1163,7 @@ def _execute_pairing(
         _record_bluez_state(
             attempt, device.device_path, "daemon_restarted", force=True,
         )
-        map_ready, pbap_ready, ancs_ready = _wait_for_daemon_transports(
+        transports = _wait_for_daemon_transports(
             attempt=attempt,
             notifications_supported=policy.ancs_enabled,
             device_path=device.device_path,
@@ -1169,12 +1171,12 @@ def _execute_pairing(
         if not policy.ancs_enabled:
             ancs = "disabled"
         else:
-            ancs = "connected" if ancs_ready else "daemon connecting"
+            ancs = "connected" if transports.ancs else "daemon connecting"
         log.info(
             "pairing-window result: MAP=%s PBAP=%s ANCS=%s",
-            map_ready,
-            pbap_ready,
-            ancs_ready,
+            transports.map,
+            transports.pbap,
+            transports.ancs,
         )
     finally:
         # The temporary setup process owns this advertisement. Remove it
@@ -1197,22 +1199,20 @@ def _execute_pairing(
     device = _device(mac, adapter=adapter)
     _snapshot_phone(attempt, device)
     _record_bluez_state(attempt, device.device_path, "finished", force=True)
-    return {
-        "ok": True,
-        "device": device.to_dict(),
-        "config": str(LOCAL_ENV_PATH),
-        "service": "package-enabled and restarted",
-        "ancs": ancs,
-        "ancs_enabled": policy.ancs_enabled,
-        "ancs_ready": ancs_ready,
-        "iphone_steps": [
+    return PairingOutcome(
+        device=device,
+        config=str(LOCAL_ENV_PATH),
+        service="package-enabled and restarted",
+        ancs=ancs,
+        ancs_enabled=policy.ancs_enabled,
+        transports=transports,
+        iphone_steps=(
             "Open Settings → Bluetooth and tap ⓘ next to this computer",
             "If this computer is listed twice, check both entries",
             "Toggle on Show Message Notifications and Sync Contacts",
             "You may need to back out and tap ⓘ again to make these toggles appear",
-        ],
-        "_report_transports": (map_ready, pbap_ready, ancs_ready),
-    }
+        ),
+    )
 
 
 def forget_device(mac: str, *, adapter: str | None = None) -> None:

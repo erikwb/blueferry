@@ -207,7 +207,7 @@ def test_wait_for_daemon_transports_records_split_ancs(monkeypatch) -> None:
 
     result = pair_setup._wait_for_daemon_transports(timeout=5, attempt=attempt)
 
-    assert result == (True, True, True)
+    assert result.as_tuple() == (True, True, True)
     assert attempt["daemon"]["ancs_subscribed"] is True
     assert attempt["daemon"]["ancs_authorized"] is True
     assert "last_le_error" not in attempt["daemon"]
@@ -391,7 +391,7 @@ def test_complete_pairing_writes_a_scrubbed_success_report(
                 }
             ),
         )
-        return (True, True, True)
+        return pair_setup.PairingTransports(True, True, True)
 
     monkeypatch.setattr(pair_setup, "_wait_for_daemon_transports", _ready_transports)
     monkeypatch.setattr(bluez_setup, "prepare_classic", lambda **_kwargs: True)
@@ -526,7 +526,7 @@ def test_pairing_report_keeps_last_le_error_when_ancs_stays_down(
                 }
             ),
         )
-        return (True, True, False)
+        return pair_setup.PairingTransports(True, True, False)
 
     monkeypatch.setattr(pair_setup, "_wait_for_daemon_transports", _ancs_missing)
 

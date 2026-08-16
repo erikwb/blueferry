@@ -11,6 +11,7 @@ from typing import Any
 from blueferry import quirks_report
 from blueferry.ancs.constants import ANCS_CHAR_UUIDS, ANCS_SERVICE_UUID
 from blueferry.bluetooth_devices import PairedDevice
+from blueferry.pairing_types import PairingAttempt, PairingTransports
 
 BLUEZ_SNAPSHOT_TIMEOUT_SECONDS = 5.0
 
@@ -132,7 +133,7 @@ def bluez_device_snapshot(
 
 
 def record_bluez_state(
-    attempt: dict | None,
+    attempt: PairingAttempt | None,
     device_path: str | None,
     phase: str,
     *,
@@ -191,7 +192,7 @@ def le_bearer_snapshot(
     return state
 
 
-def remember_daemon_status(attempt: dict | None, status: object) -> None:
+def remember_daemon_status(attempt: PairingAttempt | None, status: object) -> None:
     if attempt is None:
         return
     extra = getattr(status, "extra", {}) or {}
@@ -245,7 +246,7 @@ def remember_daemon_status(attempt: dict | None, status: object) -> None:
 
 
 def snapshot_phone(
-    attempt: dict,
+    attempt: PairingAttempt,
     device: PairedDevice,
     *,
     bearer_snapshot: Callable[[str], dict[str, object]],
@@ -264,7 +265,7 @@ def snapshot_phone(
     attempt["phone"] = phone
 
 
-def device_bonded(attempt: dict) -> bool:
+def device_bonded(attempt: PairingAttempt) -> bool:
     """True once Device1.Paired is observed, even if later setup fails."""
     phone = attempt.get("phone")
     if isinstance(phone, dict) and phone.get("paired") is True:
@@ -280,8 +281,8 @@ def device_bonded(attempt: dict) -> bool:
 
 
 def pairing_outcome(
-    attempt: dict,
-    transports: tuple[bool, bool, bool] | None,
+    attempt: PairingAttempt,
+    transports: PairingTransports | None,
     error: Exception | None,
 ) -> dict[str, object]:
     """Record each profile separately; MAP-only is not a single degraded bit."""
@@ -303,7 +304,7 @@ def pairing_outcome(
         if daemon.get("last_le_error_message"):
             outcome["last_le_error_message"] = daemon["last_le_error_message"]
     if transports is not None:
-        outcome["map"], outcome["pbap"], outcome["ancs"] = transports
+        outcome["map"], outcome["pbap"], outcome["ancs"] = transports.as_tuple()
     else:
         events = {
             item.get("event")
@@ -322,13 +323,13 @@ def pairing_outcome(
 
 
 def record_pairing_report(
-    attempt: dict,
+    attempt: PairingAttempt,
     *,
-    transports: tuple[bool, bool, bool] | None = None,
+    transports: PairingTransports | None = None,
     error: Exception | None = None,
 ) -> Path | None:
     if transports is not None:
-        map_ready, pbap_ready, ancs_ready = transports
+        map_ready, pbap_ready, ancs_ready = transports.as_tuple()
         attempt["preferred_bearer"] = "bredr"
         seen = {
             item.get("event")

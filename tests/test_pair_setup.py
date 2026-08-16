@@ -500,7 +500,7 @@ def test_transport_wait_samples_bluez_at_a_bounded_rate(monkeypatch):
         device_path="/device",
     )
 
-    assert result == (True, True, True)
+    assert result.as_tuple() == (True, True, True)
     assert snapshots == [0.0, 2.0]
     assert len(clients) == 1
 
@@ -1253,7 +1253,7 @@ def _compatible(
     monkeypatch.setattr(
         pair_setup,
         "_wait_for_daemon_transports",
-        lambda **_kwargs: (True, True, True),
+        lambda **_kwargs: pair_setup.PairingTransports(True, True, True),
     )
 
 
@@ -1372,7 +1372,7 @@ def test_complete_pairing_prepares_the_selected_adapter_not_a_leftover_bond(
     monkeypatch.setattr(pair_setup, "_restart_user_service", lambda: None)
     monkeypatch.setattr(
         pair_setup, "_wait_for_daemon_transports",
-        lambda **_kwargs: (True, True, True),
+        lambda **_kwargs: pair_setup.PairingTransports(True, True, True),
     )
     monkeypatch.setattr(pair_setup, "_adapter_dbus_fields", lambda _adapter: {})
     monkeypatch.setattr(pair_setup, "_le_bearer_snapshot", lambda _path: {
@@ -1871,7 +1871,7 @@ def test_pairing_starts_daemon_even_when_ancs_is_still_missing(monkeypatch):
     monkeypatch.setattr(
         pair_setup,
         "_wait_for_daemon_transports",
-        lambda **_kwargs: (True, True, False),
+        lambda **_kwargs: pair_setup.PairingTransports(True, True, False),
     )
     monkeypatch.setattr(pair_setup, "_restart_user_service", lambda: restarted.append(True))
 
@@ -1894,7 +1894,7 @@ def test_pairing_does_not_gate_map_on_inbound_ancs(monkeypatch):
     monkeypatch.setattr(
         pair_setup,
         "_wait_for_daemon_transports",
-        lambda **_kwargs: (False, False, False),
+        lambda **_kwargs: pair_setup.PairingTransports(),
     )
     saved = []
     monkeypatch.setattr(pair_setup, "write_local_env", lambda *_args: saved.append(True))
@@ -1930,7 +1930,7 @@ def test_pairing_without_bearer_api_continues_with_map_and_pbap(monkeypatch):
         lambda **kwargs: (
             pytest.fail("MAP/PBAP-only flag was not passed")
             if kwargs.get("notifications_supported") is not False
-            else (True, True, False)
+            else pair_setup.PairingTransports(True, True, False)
         ),
     )
     saved = []
