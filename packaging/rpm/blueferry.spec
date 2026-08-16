@@ -1,5 +1,5 @@
 Name:           blueferry-backend
-Version:        0.7.4
+Version:        0.7.5
 Release:        1%{?dist}
 Summary:        iPhone Bluetooth bridge backend, daemon, and CLI
 License:        GPL-2.0-only AND MIT AND BSD-2-Clause AND PSF-2.0
@@ -196,6 +196,10 @@ fi
 %{_metainfodir}/io.weirdware.BlueFerry.Qt.metainfo.xml
 
 %changelog
+* Sun Aug 16 2026 BlueFerry Contributors <blueferry@weirdware.io> - 0.7.5-1
+- Recover ANCS when a previously authorized iPhone stops responding after a
+  Bluetooth reconnect.
+
 * Sun Aug 16 2026 BlueFerry Contributors <blueferry@weirdware.io> - 0.7.4-1
 - Recover ANCS after Bluetooth LE reconnects without stale session races.
 - Make message composers expand, wrap, and scroll in every client.
