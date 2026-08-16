@@ -1073,7 +1073,7 @@ def _run_pairing_transaction(
         return device
     try:
         if confirmation is None:
-            # Kept only for the explicitly enabled internal test path.
+            # complete_pairing permits this only with explicit _allow_headless.
             log.info("sending Device1.Pair using the headless pairing path")
             quirks_report.mark(attempt, "pair_sent")
             dbus.Interface(
