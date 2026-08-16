@@ -194,6 +194,48 @@ def test_isolated_pairing_answers_helper_confirmation(monkeypatch):
     ]
 
 
+def test_pairing_helper_timeout_resets_after_user_confirmation(monkeypatch):
+    device = _device()
+
+    class Process:
+        stdin = io.StringIO()
+        stdout = iter([
+            '{"event":"confirmation","passkey":"123456"}\n',
+            '{"ok":true,"device":' + json.dumps(device.to_dict()) + "}\n",
+        ])
+        stderr = io.StringIO()
+
+        @staticmethod
+        def wait(*_args, **_kwargs):
+            return 0
+
+        @staticmethod
+        def poll():
+            return 0
+
+    monkeypatch.setattr(
+        setup_client.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: Process(),
+    )
+    monkeypatch.setattr(
+        setup_client,
+        "PAIRING_HELPER_IDLE_TIMEOUT_SECONDS",
+        0.01,
+    )
+
+    def confirm(_passkey):
+        threading.Event().wait(0.03)
+        return True
+
+    result = setup_client.SetupClient().complete_isolated(
+        device.mac,
+        confirmation=confirm,
+    )
+
+    assert result.device.mac == device.mac
+
+
 def test_isolated_pairing_preserves_report_path_on_failure(monkeypatch):
     device = _device()
 
@@ -314,7 +356,11 @@ def test_isolated_pairing_times_out_and_kills_a_stuck_helper(monkeypatch, caplog
         "Popen",
         lambda *_args, **_kwargs: process,
     )
-    monkeypatch.setattr(setup_client, "PAIRING_HELPER_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(
+        setup_client,
+        "PAIRING_HELPER_IDLE_TIMEOUT_SECONDS",
+        0.01,
+    )
     monkeypatch.setattr(setup_client, "PAIRING_HELPER_STOP_TIMEOUT_SECONDS", 0.01)
 
     with pytest.raises(setup_client.PairingError, match="Pairing helper timed out"):

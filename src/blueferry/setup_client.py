@@ -9,7 +9,6 @@ import queue
 import subprocess  # nosec B404
 import sys
 import threading
-import time
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from typing import IO, Any
@@ -20,7 +19,7 @@ from blueferry.errors import PairingError
 from blueferry.pairing_types import PairingOutcome
 
 DISCOVERY_SECONDS = pair_setup.DISCOVERY_SECONDS
-PAIRING_HELPER_TIMEOUT_SECONDS = 300.0
+PAIRING_HELPER_IDLE_TIMEOUT_SECONDS = 300.0
 PAIRING_HELPER_STOP_TIMEOUT_SECONDS = 5.0
 PAIRING_HELPER_DIAGNOSTIC_CHARS = 4096
 
@@ -70,7 +69,7 @@ def _read_helper_stderr(stream: IO[str], diagnostics: _BoundedDiagnostics) -> No
 def _helper_lines(
     stream: IO[str],
     *,
-    deadline: float,
+    idle_timeout: float,
 ) -> Iterator[str]:
     pending: queue.Queue[object] = queue.Queue(maxsize=64)
     threading.Thread(
@@ -80,11 +79,8 @@ def _helper_lines(
         daemon=True,
     ).start()
     while True:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise PairingError("Pairing helper timed out")
         try:
-            item = pending.get(timeout=remaining)
+            item = pending.get(timeout=idle_timeout)
         except queue.Empty as exc:
             raise PairingError("Pairing helper timed out") from exc
         if item is _PAIRING_HELPER_EOF:
@@ -98,13 +94,10 @@ def _helper_lines(
 def _wait_for_helper(
     process: subprocess.Popen[str],
     *,
-    deadline: float,
+    timeout: float,
 ) -> int:
-    remaining = deadline - time.monotonic()
-    if remaining <= 0:
-        raise PairingError("Pairing helper timed out")
     try:
-        return process.wait(timeout=remaining)
+        return process.wait(timeout=timeout)
     except subprocess.TimeoutExpired as exc:
         raise PairingError("Pairing helper timed out") from exc
 
@@ -364,7 +357,6 @@ class SetupClient:
         if process.stdin is None or process.stdout is None:
             _stop_helper(process)
             raise PairingError("Could not open the pairing helper pipes")
-        deadline = time.monotonic() + PAIRING_HELPER_TIMEOUT_SECONDS
         diagnostics = _BoundedDiagnostics(PAIRING_HELPER_DIAGNOSTIC_CHARS)
         diagnostics_thread: threading.Thread | None = None
         if process.stderr is not None:
@@ -377,7 +369,10 @@ class SetupClient:
             diagnostics_thread.start()
         failed = False
         try:
-            for line in _helper_lines(process.stdout, deadline=deadline):
+            for line in _helper_lines(
+                process.stdout,
+                idle_timeout=PAIRING_HELPER_IDLE_TIMEOUT_SECONDS,
+            ):
                 try:
                     event = json.loads(line)
                 except json.JSONDecodeError:
@@ -393,7 +388,10 @@ class SetupClient:
                     if display is not None:
                         display(int(str(event["passkey"])))
                 elif event.get("ok") is True:
-                    status = _wait_for_helper(process, deadline=deadline)
+                    status = _wait_for_helper(
+                        process,
+                        timeout=PAIRING_HELPER_IDLE_TIMEOUT_SECONDS,
+                    )
                     if status != 0:
                         raise PairingError(f"Pairing helper exited unexpectedly (status {status})")
                     return PairingOutcome.from_dict(event)
@@ -403,7 +401,10 @@ class SetupClient:
                         str(event.get("error", "Pairing failed")),
                         report_path=path or None,
                     )
-            status = _wait_for_helper(process, deadline=deadline)
+            status = _wait_for_helper(
+                process,
+                timeout=PAIRING_HELPER_IDLE_TIMEOUT_SECONDS,
+            )
             raise PairingError(f"Pairing helper exited without a result (status {status})")
         except BaseException:
             failed = True
