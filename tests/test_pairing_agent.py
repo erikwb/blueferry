@@ -90,17 +90,35 @@ def test_agent_rejects_requests_for_any_other_device():
     assert raised.value.get_dbus_name() == "org.bluez.Error.Rejected"
 
 
-def test_agent_rejects_pairing_without_numeric_comparison():
-    agent = _agent(lambda _passkey: True)
+def test_pairing_without_numeric_comparison_requires_explicit_approval():
+    requested = []
+    replies = []
+    agent = _agent(lambda passkey: requested.append(passkey) or True)
 
-    with pytest.raises(dbus.exceptions.DBusException) as raised:
-        agent.RequestAuthorization(
-            dbus.ObjectPath("/org/bluez/hci0/dev_02_00_00_00_00_01"),
-            lambda: None,
-            lambda _error: None,
-        )
+    agent.RequestAuthorization(
+        dbus.ObjectPath("/org/bluez/hci0/dev_02_00_00_00_00_01"),
+        lambda: replies.append("accepted"),
+        lambda error: replies.append(error),
+    )
+    _wait_for(replies)
 
-    assert raised.value.get_dbus_name() == "org.bluez.Error.Rejected"
+    assert requested == [None]
+    assert replies == ["accepted"]
+
+
+def test_pairing_without_numeric_comparison_honors_rejection():
+    replies = []
+    agent = _agent(lambda _passkey: False)
+
+    agent.RequestAuthorization(
+        dbus.ObjectPath("/org/bluez/hci0/dev_02_00_00_00_00_01"),
+        lambda: replies.append("accepted"),
+        lambda error: replies.append(error),
+    )
+    _wait_for(replies)
+
+    assert isinstance(replies[0], dbus.exceptions.DBusException)
+    assert replies[0].get_dbus_name() == "org.bluez.Error.Rejected"
 
 
 @pytest.mark.parametrize("uuid", sorted(pairing_agent._AUTHORIZED_SERVICE_UUIDS))

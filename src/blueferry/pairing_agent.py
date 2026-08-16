@@ -156,8 +156,12 @@ class PairingAgent(dbus.service.Object):
         error_cb: Callable[[Exception], None],
     ) -> None:
         self._require_expected(device)
-        raise _Rejected(
-            "Pairing without numeric comparison is not supported"
+        log.debug("BlueZ requested pairing authorization for %s", device)
+        self._confirm_deferred(
+            None,
+            "Pairing was not authorized",
+            return_cb,
+            error_cb,
         )
 
     @dbus.service.method(AGENT_INTERFACE, in_signature="os", out_signature="")
