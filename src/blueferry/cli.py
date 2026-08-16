@@ -319,6 +319,14 @@ def pairing_complete(
             payload["report_path"] = error.report_path
         typer.echo(json.dumps(payload))
         raise typer.Exit(code=2) from None
+    except Exception as error:
+        from blueferry import quirks_report
+
+        payload = {"ok": False, "error": str(error) or type(error).__name__}
+        if report := quirks_report.latest_report():
+            payload["report_path"] = str(report)
+        typer.echo(json.dumps(payload))
+        raise typer.Exit(code=2) from None
 
 
 @app.command("pairing-issue")

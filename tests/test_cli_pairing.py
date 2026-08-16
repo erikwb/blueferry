@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 from typer.testing import CliRunner
 
-from blueferry import cli, pairing_cli, setup_client
+from blueferry import cli, pairing_cli, quirks_report, setup_client
 
 
 def test_pair_setup_debug_enables_diagnostic_logging(monkeypatch):
@@ -132,6 +133,38 @@ def test_pairing_complete_failure_includes_report_path(monkeypatch):
     assert payload["ok"] is False
     assert payload["error"] == "adapter setup failed"
     assert payload["report_path"] == "/tmp/quirks-fail.json"
+
+
+def test_pairing_complete_serializes_unexpected_failure_report(monkeypatch):
+    class Setup:
+        @staticmethod
+        def complete(*_args, **_kwargs):
+            raise RuntimeError("unexpected pairing failure")
+
+    monkeypatch.setattr(setup_client, "SetupClient", Setup)
+    monkeypatch.setattr(
+        quirks_report,
+        "latest_report",
+        lambda: Path("/tmp/quirks-unexpected.json"),
+    )
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "pairing-complete",
+            "02:00:00:00:00:01",
+            "--interactive-agent",
+        ],
+        input="yes\n",
+    )
+
+    assert result.exit_code == 2
+    payload = json.loads(result.stdout.splitlines()[-1])
+    assert payload == {
+        "ok": False,
+        "error": "unexpected pairing failure",
+        "report_path": "/tmp/quirks-unexpected.json",
+    }
 
 
 def test_pairing_complete_forwards_independent_pairing_modes(monkeypatch):
