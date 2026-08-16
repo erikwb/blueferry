@@ -7,6 +7,7 @@ import logging
 import time
 from collections.abc import Callable
 from contextlib import ExitStack
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
@@ -21,7 +22,7 @@ from blueferry.bluetooth_devices import PairedDevice
 from blueferry.bus import get_session_bus, get_system_bus
 from blueferry.commands import run_command
 from blueferry.errors import CommandError, PairingError
-from blueferry.pairing_policy import resolve_pairing_policy
+from blueferry.pairing_policy import PairingPolicy, resolve_pairing_policy
 from blueferry.pairing_types import PairingAttempt, PairingOutcome, PairingTransports
 from blueferry.private_files import atomic_write_private_text, read_private_text
 from blueferry.setup_verification import clear_setup_verification
@@ -58,6 +59,20 @@ class _TransportStatus(Protocol):
 
     @property
     def ancs(self) -> bool: ...
+
+
+@dataclass(frozen=True, slots=True)
+class _PairingPreparation:
+    device: PairedDevice
+    adapter: str
+    policy: PairingPolicy
+
+
+@dataclass(slots=True)
+class _PairingResources:
+    agents: ExitStack = field(default_factory=ExitStack)
+    advert_registered: bool = False
+    agent_registered: bool = False
 
 
 # Quickshell runs forget and pair in separate helper processes.
@@ -952,26 +967,23 @@ def _pairing_outcome(
     return pairing_diagnostics.pairing_outcome(attempt, transports, error)
 
 
-def _execute_pairing(
+def _prepare_pairing(
     mac: str,
     *,
-    adapter: str | None = None,
-    confirmation: ConfirmationCallback | None = None,
-    display: DisplayCallback | None = None,
-    compatibility_mode: bool = False,
-    explicit_pairing: bool = False,
+    adapter: str | None,
+    compatibility_mode: bool,
+    explicit_pairing: bool,
+    interactive: bool,
     attempt: PairingAttempt,
-) -> PairingOutcome:
-    from blueferry import bluez_setup
-
+) -> _PairingPreparation:
     requested = _requested_adapter(adapter)
     device = _device(mac, adapter=requested or None)
-    adapter = requested or device.adapter_path.rsplit("/", 1)[-1]
+    selected_adapter = requested or device.adapter_path.rsplit("/", 1)[-1]
     log.info(
         "starting setup for %s (%s) on %s: paired=%s trusted=%s connected=%s",
         device.name,
         device.mac,
-        adapter,
+        selected_adapter,
         device.paired,
         device.trusted,
         device.connected,
@@ -979,15 +991,16 @@ def _execute_pairing(
     session = attempt.setdefault("session", quirks_report.session_environment())
     if isinstance(session, dict):
         session["bluetooth_owners"] = _bluetooth_session_owners()
-    teardown = _take_pending_teardown(adapter)
+    teardown = _take_pending_teardown(selected_adapter)
     if teardown is not None:
         teardown["before_new_pairing"] = _bluez_device_snapshot(device.device_path)
         attempt["previous_teardown"] = teardown
     quirks_report.mark(attempt, "device_loaded", already_paired=device.paired)
     _snapshot_phone(attempt, device)
     _record_bluez_state(attempt, device.device_path, "device_loaded", force=True)
-    compatibility = bluetooth_compatibility(adapter)
-    attempt["controller"] = _controller_snapshot(adapter, compatibility)
+
+    compatibility = bluetooth_compatibility(selected_adapter)
+    attempt["controller"] = _controller_snapshot(selected_adapter, compatibility)
     quirks_report.mark(attempt, "compatibility_ready")
     if not compatibility["hardware_supported"]:
         issue = compatibility["issue"] or "Controller capabilities could not be verified"
@@ -1000,7 +1013,7 @@ def _execute_pairing(
         compatibility,
         force_compatibility=compatibility_mode,
         force_explicit_pairing=explicit_pairing,
-        interactive=confirmation is not None,
+        interactive=interactive,
     )
     attempt["pairing_policy"] = policy.to_dict()
     log.info(
@@ -1012,10 +1025,20 @@ def _execute_pairing(
         policy.reason,
     )
     if policy.ancs_enabled and not compatibility["bearer_api_active"]:
-        raise PairingError("Activate Bluetooth support before pairing or re-pairing the iPhone")
-    # No LE advertisement during pairing: iOS would connect the unbonded
-    # advert as a separate accessory and keep two device records. The advert
-    # is registered only after the bond exists.
+        raise PairingError(
+            "Activate Bluetooth support before pairing or re-pairing the iPhone"
+        )
+    return _PairingPreparation(
+        device=device,
+        adapter=selected_adapter,
+        policy=policy,
+    )
+
+
+def _prepare_classic_transport(adapter: str, attempt: PairingAttempt) -> None:
+    from blueferry import bluez_setup
+
+    # Advertising before the bond exists can make iOS retain two accessories.
     quirks_report.mark(attempt, "prepare_classic_sent")
     if not bluez_setup.prepare_classic(adapter=adapter, authorize=True):
         raise PairingError(
@@ -1026,184 +1049,268 @@ def _execute_pairing(
     _activate_obex_mns()
     quirks_report.mark(attempt, "obex_mns_ready")
 
-    pairing_agents = ExitStack()
-    advert_registered = False
-    agent_registered = False
+
+def _run_pairing_transaction(
+    mac: str,
+    device: PairedDevice,
+    adapter: str,
+    policy: PairingPolicy,
+    *,
+    confirmation: ConfirmationCallback | None,
+    display: DisplayCallback | None,
+    attempt: PairingAttempt,
+    resources: _PairingResources,
+) -> PairedDevice:
+    if device.paired:
+        return device
     try:
-        if not device.paired:
-            try:
-                if confirmation is None:
-                    # Headless fallback: a Linux-initiated transaction pairs
-                    # the Classic bearer. Controllers whose Classic pairing
-                    # derives LE keys (CTKD) get the dual bond this way too.
-                    log.info("sending Device1.Pair using the headless pairing path")
-                    quirks_report.mark(attempt, "pair_sent")
-                    dbus.Interface(
-                        get_system_bus().get_object("org.bluez", device.device_path),
-                        "org.bluez.Device1",
-                    ).Pair(timeout=120.0)
-                    quirks_report.mark(attempt, "pair_replied")
-                else:
-                    from blueferry.pairing_agent import RegisteredPairingAgent
+        if confirmation is None:
+            # Kept only for the explicitly enabled internal test path.
+            log.info("sending Device1.Pair using the headless pairing path")
+            quirks_report.mark(attempt, "pair_sent")
+            dbus.Interface(
+                get_system_bus().get_object("org.bluez", device.device_path),
+                "org.bluez.Device1",
+            ).Pair(timeout=120.0)
+            quirks_report.mark(attempt, "pair_replied")
+        else:
+            from blueferry.pairing_agent import RegisteredPairingAgent
 
-                    def timed_confirmation(passkey: int | None) -> bool:
-                        quirks_report.mark(
-                            attempt, "pairing_confirmation_requested",
-                            has_passkey=passkey is not None,
-                        )
-                        accepted = confirmation(passkey)
-                        quirks_report.mark(
-                            attempt, "pairing_confirmation_answered",
-                            accepted=accepted,
-                        )
-                        return accepted
+            def timed_confirmation(passkey: int | None) -> bool:
+                quirks_report.mark(
+                    attempt,
+                    "pairing_confirmation_requested",
+                    has_passkey=passkey is not None,
+                )
+                accepted = confirmation(passkey)
+                quirks_report.mark(
+                    attempt,
+                    "pairing_confirmation_answered",
+                    accepted=accepted,
+                )
+                return accepted
 
-                    def timed_display(passkey: int) -> None:
-                        quirks_report.mark(attempt, "pairing_passkey_displayed")
-                        if display is not None:
-                            display(passkey)
+            def timed_display(passkey: int) -> None:
+                quirks_report.mark(attempt, "pairing_passkey_displayed")
+                if display is not None:
+                    display(passkey)
 
-                    # Normally the iPhone initiates authentication so it owns
-                    # cross-transport key derivation. The explicit option
-                    # instead skips Connect for controllers known to cancel it.
-                    registered = pairing_agents.enter_context(
-                        RegisteredPairingAgent(
-                            device.device_path,
-                            timed_confirmation,
-                            timed_display,
-                            make_default=policy.iphone_initiated,
-                        )
-                    )
-                    agent_registered = True
-                    quirks_report.mark(attempt, "agent_registered")
-                    if policy.iphone_initiated:
-                        _connect_classic(
-                            device.device_path,
-                            timeout=60.0,
-                            settle=False,
-                            attempt=attempt,
-                        )
-                        registered.wait_for_pair(timeout=120.0)
-                        attempt["pairing_transaction"] = (
-                            "iphone-initiated-connect"
-                        )
-                    else:
-                        quirks_report.mark(attempt, "pair_sent")
-                        registered.pair(timeout=120.0)
-                        quirks_report.mark(attempt, "pair_replied")
-                        attempt["pairing_transaction"] = "explicit-device-pair"
-            except dbus.exceptions.DBusException as error:
-                name = error.get_dbus_name() or ""
-                if name in {
-                    "org.bluez.Error.AlreadyExists",
-                    "org.bluez.Error.InProgress",
-                }:
-                    # The iPhone initiated pairing on its own; settle below.
-                    quirks_report.mark(attempt, "peer_pairing_in_progress")
-                    pass
-                else:
-                    detail = error.get_dbus_message() or name or str(error)
-                    if name in {
-                        "org.bluez.Error.AuthenticationCanceled",
-                        "org.bluez.Error.AuthenticationFailed",
-                        "org.bluez.Error.AuthenticationRejected",
-                    }:
-                        detail = f"Bluetooth confirmation did not complete: {detail}"
-                    raise PairingError(detail) from error
-            device = _wait_for_paired_device(mac, adapter=adapter)
-            quirks_report.mark(attempt, "paired")
-            _snapshot_phone(attempt, device)
-            _record_bluez_state(attempt, device.device_path, "paired", force=True)
-        log.debug("setting Device1.Trusted=true for %s", device.device_path)
-        trust_device(device.mac, device.adapter_path)
-        quirks_report.mark(attempt, "trusted")
-
-        _prefer_bredr(device.device_path)
-        quirks_report.mark(attempt, "preferred_bearer_bredr")
-        # Both pairing transactions should leave a Classic ACL behind. A
-        # second generic Device1.Connect can wander into LE, so only require
-        # that the existing ACL settle.
-        _wait_for_classic_settled(device.device_path, attempt=attempt)
-        _record_bluez_state(
-            attempt, device.device_path, "classic_settled", force=True,
-        )
-
-        # Keep ANCS solicitation active because iOS 26 testing found that it
-        # surfaced the MAP/PBAP permission toggles.  It is a pairing signal,
-        # not a prerequisite connection: the daemon below attempts MAP/PBAP
-        # before it is allowed to connect the LE bearer.
-        if policy.solicitation_enabled:
-            log.debug("registering ANCS solicitation advertisement on %s", adapter)
-            quirks_report.mark(attempt, "advert_register_sent")
-            if not bluez_setup.register_advert(adapter, settle_for_pairing=True):
-                raise PairingError("The ANCS advertisement did not activate")
-            advert_registered = True
-            quirks_report.mark(attempt, "advert_ready")
-            _record_bluez_state(
-                attempt, device.device_path, "advert_ready", force=True,
+            registered = resources.agents.enter_context(
+                RegisteredPairingAgent(
+                    device.device_path,
+                    timed_confirmation,
+                    timed_display,
+                    make_default=policy.iphone_initiated,
+                )
             )
+            resources.agent_registered = True
+            quirks_report.mark(attempt, "agent_registered")
+            if policy.iphone_initiated:
+                _connect_classic(
+                    device.device_path,
+                    timeout=60.0,
+                    settle=False,
+                    attempt=attempt,
+                )
+                registered.wait_for_pair(timeout=120.0)
+                attempt["pairing_transaction"] = "iphone-initiated-connect"
+            else:
+                quirks_report.mark(attempt, "pair_sent")
+                registered.pair(timeout=120.0)
+                quirks_report.mark(attempt, "pair_replied")
+                attempt["pairing_transaction"] = "explicit-device-pair"
+    except dbus.exceptions.DBusException as error:
+        name = error.get_dbus_name() or ""
+        if name in {
+            "org.bluez.Error.AlreadyExists",
+            "org.bluez.Error.InProgress",
+        }:
+            quirks_report.mark(attempt, "peer_pairing_in_progress")
         else:
-            log.info(
-                "the controller cannot advertise ANCS solicitation; "
-                "continuing with MAP/PBAP"
-            )
+            detail = error.get_dbus_message() or name or str(error)
+            if name in {
+                "org.bluez.Error.AuthenticationCanceled",
+                "org.bluez.Error.AuthenticationFailed",
+                "org.bluez.Error.AuthenticationRejected",
+            }:
+                detail = f"Bluetooth confirmation did not complete: {detail}"
+            raise PairingError(detail) from error
+    paired = _wait_for_paired_device(mac, adapter=adapter)
+    quirks_report.mark(attempt, "paired")
+    _snapshot_phone(attempt, paired)
+    _record_bluez_state(attempt, paired.device_path, "paired", force=True)
+    return paired
 
-        # Start the long-lived owner while both the advert and temporary
-        # pairing agent are still present. Its first operation is a Classic
-        # MAP/PBAP open; full mode enables LE only after that attempt, while
-        # compatibility mode leaves LE disabled permanently.
-        if policy.ancs_enabled:
-            write_local_env(device.mac, adapter)
-        else:
-            write_local_env(device.mac, adapter, False)
-        log.debug("saved paired target %s; restarting user service", device.mac)
-        quirks_report.mark(attempt, "daemon_restart_sent")
-        _restart_user_service()
-        quirks_report.mark(attempt, "daemon_restarted")
-        _record_bluez_state(
-            attempt, device.device_path, "daemon_restarted", force=True,
-        )
-        transports = _wait_for_daemon_transports(
-            attempt=attempt,
-            notifications_supported=policy.ancs_enabled,
-            device_path=device.device_path,
-        )
-        if not policy.ancs_enabled:
-            ancs = "disabled"
-        else:
-            ancs = "connected" if transports.ancs else "daemon connecting"
+
+def _trust_and_settle(device: PairedDevice, attempt: PairingAttempt) -> None:
+    log.debug("setting Device1.Trusted=true for %s", device.device_path)
+    trust_device(device.mac, device.adapter_path)
+    quirks_report.mark(attempt, "trusted")
+    _prefer_bredr(device.device_path)
+    quirks_report.mark(attempt, "preferred_bearer_bredr")
+    _wait_for_classic_settled(device.device_path, attempt=attempt)
+    _record_bluez_state(
+        attempt,
+        device.device_path,
+        "classic_settled",
+        force=True,
+    )
+
+
+def _register_solicitation(
+    device: PairedDevice,
+    adapter: str,
+    policy: PairingPolicy,
+    attempt: PairingAttempt,
+    resources: _PairingResources,
+) -> None:
+    from blueferry import bluez_setup
+
+    if not policy.solicitation_enabled:
         log.info(
-            "pairing-window result: MAP=%s PBAP=%s ANCS=%s",
-            transports.map,
-            transports.pbap,
-            transports.ancs,
+            "the controller cannot advertise ANCS solicitation; "
+            "continuing with MAP/PBAP"
+        )
+        return
+    log.debug("registering ANCS solicitation advertisement on %s", adapter)
+    quirks_report.mark(attempt, "advert_register_sent")
+    if not bluez_setup.register_advert(adapter, settle_for_pairing=True):
+        raise PairingError("The ANCS advertisement did not activate")
+    resources.advert_registered = True
+    quirks_report.mark(attempt, "advert_ready")
+    _record_bluez_state(attempt, device.device_path, "advert_ready", force=True)
+
+
+def _handoff_to_daemon(
+    device: PairedDevice,
+    adapter: str,
+    policy: PairingPolicy,
+    attempt: PairingAttempt,
+) -> PairingTransports:
+    if policy.ancs_enabled:
+        write_local_env(device.mac, adapter)
+    else:
+        write_local_env(device.mac, adapter, False)
+    log.debug("saved paired target %s; restarting user service", device.mac)
+    quirks_report.mark(attempt, "daemon_restart_sent")
+    _restart_user_service()
+    quirks_report.mark(attempt, "daemon_restarted")
+    _record_bluez_state(
+        attempt,
+        device.device_path,
+        "daemon_restarted",
+        force=True,
+    )
+    transports = _wait_for_daemon_transports(
+        attempt=attempt,
+        notifications_supported=policy.ancs_enabled,
+        device_path=device.device_path,
+    )
+    log.info(
+        "pairing-window result: MAP=%s PBAP=%s ANCS=%s",
+        transports.map,
+        transports.pbap,
+        transports.ancs,
+    )
+    return transports
+
+
+def _cleanup_pairing_resources(
+    device: PairedDevice,
+    adapter: str,
+    attempt: PairingAttempt,
+    resources: _PairingResources,
+) -> None:
+    from blueferry import bluez_setup
+
+    try:
+        if resources.advert_registered:
+            log.debug("removing ANCS solicitation advertisement from %s", adapter)
+            bluez_setup.unregister_advert(adapter)
+            quirks_report.mark(attempt, "advert_removed")
+            _record_bluez_state(
+                attempt,
+                device.device_path,
+                "advert_removed",
+                force=True,
+            )
+    finally:
+        resources.agents.close()
+        if resources.agent_registered:
+            quirks_report.mark(attempt, "agent_released")
+
+
+def _execute_pairing(
+    mac: str,
+    *,
+    adapter: str | None = None,
+    confirmation: ConfirmationCallback | None = None,
+    display: DisplayCallback | None = None,
+    compatibility_mode: bool = False,
+    explicit_pairing: bool = False,
+    attempt: PairingAttempt,
+) -> PairingOutcome:
+    preparation = _prepare_pairing(
+        mac,
+        adapter=adapter,
+        compatibility_mode=compatibility_mode,
+        explicit_pairing=explicit_pairing,
+        interactive=confirmation is not None,
+        attempt=attempt,
+    )
+    device = preparation.device
+    selected_adapter = preparation.adapter
+    policy = preparation.policy
+    _prepare_classic_transport(selected_adapter, attempt)
+
+    resources = _PairingResources()
+    try:
+        device = _run_pairing_transaction(
+            mac,
+            device,
+            selected_adapter,
+            policy,
+            confirmation=confirmation,
+            display=display,
+            attempt=attempt,
+            resources=resources,
+        )
+        _trust_and_settle(device, attempt)
+        _register_solicitation(
+            device,
+            selected_adapter,
+            policy,
+            attempt,
+            resources,
+        )
+        transports = _handoff_to_daemon(
+            device,
+            selected_adapter,
+            policy,
+            attempt,
         )
     finally:
-        # The temporary setup process owns this advertisement. Remove it
-        # before releasing our device-scoped default agent. Restoring a
-        # desktop agent as soon as Device1.Paired flips can let its post-pair
-        # work race BlueFerry's Classic-to-LE handoff.
-        try:
-            if advert_registered:
-                log.debug("removing ANCS solicitation advertisement from %s", adapter)
-                bluez_setup.unregister_advert(adapter)
-                quirks_report.mark(attempt, "advert_removed")
-                _record_bluez_state(
-                    attempt, device.device_path, "advert_removed", force=True,
-                )
-        finally:
-            pairing_agents.close()
-            if agent_registered:
-                quirks_report.mark(attempt, "agent_released")
+        _cleanup_pairing_resources(
+            device,
+            selected_adapter,
+            attempt,
+            resources,
+        )
 
-    device = _device(mac, adapter=adapter)
+    device = _device(mac, adapter=selected_adapter)
     _snapshot_phone(attempt, device)
     _record_bluez_state(attempt, device.device_path, "finished", force=True)
     return PairingOutcome(
         device=device,
         config=str(LOCAL_ENV_PATH),
         service="package-enabled and restarted",
-        ancs=ancs,
+        ancs=(
+            "disabled"
+            if not policy.ancs_enabled
+            else "connected"
+            if transports.ancs
+            else "daemon connecting"
+        ),
         ancs_enabled=policy.ancs_enabled,
         transports=transports,
         iphone_steps=(
