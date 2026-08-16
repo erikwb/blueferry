@@ -75,6 +75,7 @@ def preferred_bearer_unavailable(error: Exception) -> bool:
 
 ReadConnected = Callable[[str], bool | None]
 Connect = Callable[[str, Callable[[], None], Callable[[Exception], None]], None]
+Disconnect = Callable[[str, Callable[[], None], Callable[[Exception], None]], None]
 Prefer = Callable[[str], None]
 ObserveLeState = Callable[[bool | None], None]
 Schedule = Callable[[int, Callable[[], bool]], int]
@@ -99,6 +100,7 @@ class BearerSupervisor:
         on_le_state: ObserveLeState | None = None,
         read_connected: ReadConnected | None = None,
         connect: Connect | None = None,
+        disconnect: Disconnect | None = None,
         prefer: Prefer | None = None,
         schedule: Schedule = GLib.timeout_add_seconds,
         cancel: Cancel = GLib.source_remove,
@@ -109,6 +111,7 @@ class BearerSupervisor:
         self._on_le_state = on_le_state
         self._read_connected = read_connected or self._read_bluez_connected
         self._connect = connect or self._connect_bluez
+        self._disconnect = disconnect or self._disconnect_bluez
         self._prefer = prefer or (
             self._prefer_bluez if connect is None else lambda _kind: None
         )
@@ -119,7 +122,12 @@ class BearerSupervisor:
         self._timer_id: int | None = None
         self._le_settle_id: int | None = None
         self._running = False
+        self._generation = 0
         self._connecting: set[str] = set()
+        self._disconnecting: set[str] = set()
+        self._le_reset_pending = False
+        self._le_reset_failures = 0
+        self._next_le_reset_attempt = 0.0
         self._last_errors: dict[str, tuple[str, str]] = {}
         self._states: dict[str, bool | None] = {"bredr": None, "le": None}
         self._failures: dict[str, int] = {"bredr": 0, "le": 0}
@@ -164,9 +172,45 @@ class BearerSupervisor:
         if self._running:
             self._tick()
 
+    def reset_after_bluez_restart(self) -> None:
+        """Forget callbacks and observations owned by the previous daemon."""
+        previous = dict(self._states)
+        self._generation += 1
+        self._connecting.clear()
+        self._disconnecting.clear()
+        self._le_reset_pending = False
+        self._le_reset_failures = 0
+        self._next_le_reset_attempt = 0.0
+        self._cancel_le_settle()
+        self._states = {"bredr": None, "le": None}
+        self._failures = {"bredr": 0, "le": 0}
+        self._next_attempt = {"bredr": 0.0, "le": 0.0}
+        self._last_errors.clear()
+        if self._on_le_state is not None:
+            self._on_le_state(None)
+        if any(value is not None for value in previous.values()) and self._on_status:
+            self._on_status()
+        if self._running:
+            self._tick()
+
+    def recover_le_transport(self) -> None:
+        """Request one serialized LE reset after GATT and bearer state diverge."""
+        if not self._running or not self._le_enabled:
+            return
+        if not self._le_reset_pending:
+            log.warning(
+                "ANCS transport disagrees with BlueZ; resetting the LE bearer"
+            )
+        self._le_reset_pending = True
+        self._cancel_le_settle()
+        self._request_le_disconnect()
+
     def stop(self) -> None:
         self._running = False
+        self._generation += 1
         self._connecting.clear()
+        self._disconnecting.clear()
+        self._le_reset_pending = False
         self._cancel_le_settle()
         if self._timer_id is not None:
             try:
@@ -197,6 +241,17 @@ class BearerSupervisor:
         le = self._read("le")
         self._update_state("bredr", bredr)
         self._update_state("le", le)
+
+        if self._le_reset_pending:
+            if le is False:
+                self._le_reset_pending = False
+                self._le_reset_failures = 0
+                self._next_le_reset_attempt = 0.0
+            elif le is True:
+                self._request_le_disconnect()
+                return True
+            else:
+                return True
 
         # Establish the normal Bluetooth ACL/profile connection before LE.
         # This is the order used by the proven manual setup flow and avoids
@@ -267,10 +322,10 @@ class BearerSupervisor:
             self._last_errors.pop(kind, None)
             self._failures[kind] = 0
             self._next_attempt[kind] = 0.0
-        # ANCS can independently discover a failed GATT transaction between
-        # polls. Repeat the latest observation so it can recover even when the
-        # supervisor itself did not observe the brief disconnect transition.
-        if kind == "le" and self._on_le_state is not None:
+        # Repeating stale Connected=true after a failed GATT operation can
+        # race BlueZ's pending CCC registration with ATT teardown. Consumers
+        # therefore receive only genuine bearer lifecycle transitions.
+        if previous != value and kind == "le" and self._on_le_state is not None:
             self._on_le_state(value)
         if previous != value and self._on_status is not None:
             self._on_status()
@@ -281,6 +336,7 @@ class BearerSupervisor:
         if self._clock() < self._next_attempt[kind]:
             return
         self._connecting.add(kind)
+        generation = self._generation
         log.info("connecting iPhone %s bearer", kind.upper())
         try:
             # Pairing pins the device to BR/EDR so iOS sees MAP/PBAP first.
@@ -289,20 +345,36 @@ class BearerSupervisor:
             self._prefer(kind)
             self._connect(
                 kind,
-                lambda: self._connect_succeeded(kind),
-                lambda error: self._connect_failed(kind, error),
+                lambda: self._connect_succeeded(kind, generation),
+                lambda error: self._connect_failed(kind, error, generation),
             )
         except Exception as error:
-            self._connect_failed(kind, error)
+            self._connect_failed(kind, error, generation)
 
-    def _connect_succeeded(self, kind: str) -> None:
+    def _connect_succeeded(self, kind: str, generation: int) -> None:
+        if generation != self._generation:
+            return
         self._connecting.discard(kind)
         self._last_errors.pop(kind, None)
-        self._failures[kind] = 0
-        self._next_attempt[kind] = 0.0
-        log.info("iPhone %s bearer connection requested successfully", kind.upper())
+        # A successful method reply only means BlueZ accepted the request; it
+        # does not mean the bearer connected. Keep widening the quiet window
+        # until an observed Connected=true resets it.
+        self._failures[kind] += 1
+        delay = min(
+            POLL_SECONDS * (2 ** self._failures[kind]),
+            BACKOFF_CAP_SECONDS,
+        )
+        self._next_attempt[kind] = self._clock() + delay
+        log.info(
+            "iPhone %s bearer connection requested successfully; "
+            "waiting up to %ds for state change",
+            kind.upper(),
+            delay,
+        )
 
-    def _connect_failed(self, kind: str, error: Exception) -> None:
+    def _connect_failed(self, kind: str, error: Exception, generation: int) -> None:
+        if generation != self._generation:
+            return
         self._connecting.discard(kind)
         name, message = _connect_error_parts(error)
         if name in {
@@ -310,6 +382,7 @@ class BearerSupervisor:
             "org.bluez.Error.InProgress",
         }:
             log.debug("%s bearer connection already active", kind.upper())
+            self._connect_succeeded(kind, generation)
             return
         self._failures[kind] += 1
         delay = min(
@@ -326,6 +399,65 @@ class BearerSupervisor:
                 delay,
             )
             self._last_errors[kind] = (name, message)
+
+    def _request_le_disconnect(self) -> None:
+        if "le" in self._disconnecting:
+            return
+        if self._clock() < self._next_le_reset_attempt:
+            return
+        self._disconnecting.add("le")
+        generation = self._generation
+        try:
+            self._disconnect(
+                "le",
+                lambda: self._disconnect_succeeded(generation),
+                lambda error: self._disconnect_failed(error, generation),
+            )
+        except Exception as error:
+            self._disconnect_failed(error, generation)
+
+    def _disconnect_succeeded(self, generation: int) -> None:
+        if generation != self._generation:
+            return
+        self._disconnecting.discard("le")
+        self._le_reset_failures += 1
+        delay = min(
+            POLL_SECONDS * (2 ** self._le_reset_failures),
+            BACKOFF_CAP_SECONDS,
+        )
+        self._next_le_reset_attempt = self._clock() + delay
+        log.info(
+            "iPhone LE bearer reset requested successfully; "
+            "waiting up to %ds for state change",
+            delay,
+        )
+
+    def _disconnect_failed(self, error: Exception, generation: int) -> None:
+        if generation != self._generation:
+            return
+        self._disconnecting.discard("le")
+        name, message = _connect_error_parts(error)
+        if name in {
+            "org.bluez.Error.NotConnected",
+            "org.bluez.Error.AlreadyDisconnected",
+        } or "not connected" in message.casefold():
+            self._le_reset_pending = False
+            self._update_state("le", False)
+            if self.bredr_connected:
+                self._schedule_le_connect()
+            return
+        self._le_reset_failures += 1
+        delay = min(
+            POLL_SECONDS * (2 ** self._le_reset_failures),
+            BACKOFF_CAP_SECONDS,
+        )
+        self._next_le_reset_attempt = self._clock() + delay
+        detail = f"{name}: {message}" if message else name
+        log.warning(
+            "could not reset iPhone LE bearer: %s (next attempt in %ds)",
+            detail,
+            delay,
+        )
 
     def _read_bluez_connected(self, kind: str) -> bool | None:
         obj = get_system_bus().get_object("org.bluez", self.device_path)
@@ -351,6 +483,22 @@ class BearerSupervisor:
             interface,
         )
         bearer.Connect(
+            reply_handler=on_success,
+            error_handler=on_error,
+            timeout=45.0,
+        )
+
+    def _disconnect_bluez(
+        self,
+        kind: str,
+        on_success: Callable[[], None],
+        on_error: Callable[[Exception], None],
+    ) -> None:
+        bearer = dbus.Interface(
+            get_system_bus().get_object("org.bluez", self.device_path),
+            _INTERFACES[kind],
+        )
+        bearer.Disconnect(
             reply_handler=on_success,
             error_handler=on_error,
             timeout=45.0,

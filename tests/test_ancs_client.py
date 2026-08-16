@@ -263,10 +263,18 @@ def test_bluez_restart_rebinds_manager_and_rescans_cached_ancs_objects(
     monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
     monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
     statuses = []
-    client = AncsClient("/device", lambda _event: None, on_status=lambda: statuses.append(True))
+    restarts = []
+    client = AncsClient(
+        "/device",
+        lambda _event: None,
+        on_status=lambda: statuses.append(True),
+        on_bluez_restart=lambda: restarts.append(True),
+    )
     monkeypatch.setattr(client, "_try_subscribe", lambda: None)
 
     client.start()
+    client._bearer_connected = True
+    client._bearer_ready = True
     client._notify_started = True
     client._authorized = True
     characteristic_matches = [_Match(), _Match()]
@@ -291,6 +299,7 @@ def test_bluez_restart_rebinds_manager_and_rescans_cached_ancs_objects(
     assert client._ns_path == "/device/service0023/char0027"
     assert client._ds_path == "/device/service0023/char002a"
     assert client._cp_path == "/device/service0023/char0024"
+    assert restarts == [True]
 
 
 def test_bluez_restart_retries_when_object_manager_is_not_ready(monkeypatch) -> None:
@@ -395,7 +404,9 @@ def test_characteristic_removal_discards_all_characteristic_receivers(
     assert client._notify_started is False
     assert client._characteristic_signal_matches == []
     assert all(match.removed for match in matches)
-    assert stopped == [True]
+    # The characteristic is already disappearing; issuing StopNotify here can
+    # race BlueZ's pending CCC completion with ATT teardown.
+    assert stopped == []
 
 
 def test_start_notify_failure_retries_without_rediscovery(monkeypatch) -> None:
@@ -442,6 +453,8 @@ def test_start_notify_failure_retries_without_rediscovery(monkeypatch) -> None:
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
     )
     client._started = True
+    client._bearer_connected = True
+    client._bearer_ready = True
     client._ns_path = "/device/ns"
     client._ds_path = "/device/ds"
     client._cp_path = "/device/cp"
@@ -468,11 +481,83 @@ def test_start_notify_failure_retries_without_rediscovery(monkeypatch) -> None:
     assert ds.start_calls == 1
 
 
+def test_partial_start_notify_failure_reuses_live_subscription(monkeypatch) -> None:
+    scheduled = []
+
+    class _Characteristic:
+        def __init__(self, *, fail_once: bool = False) -> None:
+            self.fail_once = fail_once
+            self.notifying = False
+            self.start_calls = 0
+            self.stop_calls = 0
+
+        def Get(self, _interface, name, **_kwargs):
+            assert name == "Notifying"
+            return self.notifying
+
+        def StartNotify(self, **_kwargs) -> None:
+            self.start_calls += 1
+            if self.fail_once:
+                self.fail_once = False
+                raise client_module.dbus.exceptions.DBusException(
+                    "not ready",
+                    name="org.bluez.Error.Failed",
+                )
+            self.notifying = True
+
+        def StopNotify(self, **_kwargs) -> None:
+            self.stop_calls += 1
+
+        @staticmethod
+        def WriteValue(_value, _options, **_kwargs) -> None:
+            return None
+
+    ns = _Characteristic()
+    ds = _Characteristic(fail_once=True)
+    cp = _Characteristic()
+    bus = _CharacteristicBus(
+        {"/device/ns": ns, "/device/ds": ds, "/device/cp": cp}
+    )
+    monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
+    monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
+    monkeypatch.setattr(
+        client_module.GLib,
+        "timeout_add_seconds",
+        lambda _delay, _callback: 9,
+    )
+    client = AncsClient(
+        "/device",
+        lambda _event: None,
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+    )
+    client._started = True
+    client._bearer_connected = True
+    client._bearer_ready = True
+    client._ns_path = "/device/ns"
+    client._ds_path = "/device/ds"
+    client._cp_path = "/device/cp"
+
+    client._try_subscribe()
+
+    assert ns.start_calls == 1
+    assert ns.stop_calls == 0
+    assert ds.start_calls == 1
+    assert client.subscribed is False
+
+    scheduled[0][1]()
+
+    assert ns.start_calls == 1
+    assert ns.stop_calls == 0
+    assert ds.start_calls == 2
+    assert client.subscribed is True
+
+
 def test_le_reconnect_replaces_stale_subscription_and_reauthorizes(
     monkeypatch,
 ) -> None:
     calls = []
     statuses = []
+    scheduled = []
 
     class _Characteristic:
         def __init__(self, name: str) -> None:
@@ -505,9 +590,11 @@ def test_le_reconnect_replaces_stale_subscription_and_reauthorizes(
         "/device",
         lambda _event: None,
         on_status=lambda: statuses.append(True),
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
     )
     client._started = True
     client._bearer_connected = True
+    client._bearer_ready = True
     client._ns_path = "/device/ns"
     client._ds_path = "/device/ds"
     client._cp_path = "/device/cp"
@@ -527,9 +614,11 @@ def test_le_reconnect_replaces_stale_subscription_and_reauthorizes(
 
     client.observe_bearer_state(True)
 
+    assert calls == []
+    assert scheduled[0][0] == client_module.BEARER_SETTLE_SECONDS
+    scheduled[0][1]()
+
     assert calls == [
-        ("stop", "ns"),
-        ("stop", "ds"),
         ("start", "ns"),
         ("start", "ds"),
         ("write", "cp"),
@@ -545,6 +634,8 @@ def test_not_connected_control_point_failure_invalidates_ancs_health(
     monkeypatch,
 ) -> None:
     statuses = []
+    scheduled = []
+    resets = []
 
     class _ControlPoint:
         @staticmethod
@@ -561,9 +652,12 @@ def test_not_connected_control_point_failure_invalidates_ancs_health(
         "/device",
         lambda _event: None,
         on_status=lambda: statuses.append(True),
+        on_transport_failure=lambda: resets.append(True),
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
     )
     client._started = True
     client._bearer_connected = True
+    client._bearer_ready = True
     client._ns_path = "/device/ns"
     client._ds_path = "/device/ds"
     client._cp_path = "/device/cp"
@@ -577,9 +671,18 @@ def test_not_connected_control_point_failure_invalidates_ancs_health(
     assert client.connected is False
     assert client.subscribed is False
     assert client.authorized is False
-    assert client._bearer_connected is False
+    assert client._bearer_connected is True
+    assert client._transport_blocked is True
     assert all(match.removed for match in matches)
     assert statuses == [True]
+    assert scheduled[0][0] == client_module.TRANSPORT_RESET_SECONDS
+
+    client.observe_bearer_state(True)
+    assert client.subscribed is False
+    assert len(scheduled) == 1
+
+    scheduled[0][1]()
+    assert resets == [True]
 
 
 def test_owner_change_during_start_notify_preserves_new_subscription(
@@ -618,6 +721,8 @@ def test_owner_change_during_start_notify_preserves_new_subscription(
     monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
     client = AncsClient("/device", lambda _event: None)
     client._started = True
+    client._bearer_connected = True
+    client._bearer_ready = True
     client._ns_path = "/device/ns"
     client._ds_path = "/device/ds"
     client._cp_path = "/device/cp"
@@ -656,6 +761,8 @@ def test_owner_change_during_control_point_write_preserves_new_request(
     client = AncsClient("/device", lambda _event: None)
     client._started = True
     client._notify_started = True
+    client._bearer_connected = True
+    client._bearer_ready = True
     client._cp_path = "/device/cp"
 
     client._queue_authorization_probe()
@@ -699,6 +806,8 @@ def test_control_point_failure_keeps_ancs_unready_and_retries(
     )
     client._started = True
     client._notify_started = True
+    client._bearer_connected = True
+    client._bearer_ready = True
     client._cp_path = "/device/cp"
 
     client._queue_authorization_probe()

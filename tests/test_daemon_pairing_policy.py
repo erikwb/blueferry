@@ -12,6 +12,12 @@ class _Bearer:
     def start(self):
         self.calls.append("bearers-start")
 
+    def reset_after_bluez_restart(self):
+        self.calls.append("bearers-reset")
+
+    def recover_le_transport(self):
+        self.calls.append("bearers-recover-le")
+
 
 class _Events:
     def __init__(self, calls):

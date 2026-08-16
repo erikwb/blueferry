@@ -280,6 +280,8 @@ class Daemon:
                 device_path,
                 on_event=self.events.ancs,
                 on_status=self._emit_status,
+                on_bluez_restart=self.bearers.reset_after_bluez_restart,
+                on_transport_failure=self.bearers.recover_le_transport,
                 include_non_message_notifications=lambda: (
                     self.notification_policy.value == ALL_NOTIFICATIONS
                 ),
