@@ -104,6 +104,7 @@ class PairingAgent(dbus.service.Object):
     @dbus.service.method(AGENT_INTERFACE, in_signature="os", out_signature="")
     def DisplayPinCode(self, device: dbus.ObjectPath, pincode: str) -> None:
         self._require_expected(device)
+        raise _Rejected("PIN display is not supported; use numeric comparison")
 
     @dbus.service.method(AGENT_INTERFACE, in_signature="o", out_signature="u")
     def RequestPasskey(self, device: dbus.ObjectPath) -> dbus.UInt32:

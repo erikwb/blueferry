@@ -90,6 +90,18 @@ def test_agent_rejects_requests_for_any_other_device():
     assert raised.value.get_dbus_name() == "org.bluez.Error.Rejected"
 
 
+def test_agent_rejects_a_pin_it_cannot_display():
+    agent = _agent(lambda _passkey: True)
+
+    with pytest.raises(dbus.exceptions.DBusException) as raised:
+        agent.DisplayPinCode(
+            dbus.ObjectPath("/org/bluez/hci0/dev_02_00_00_00_00_01"),
+            "123456",
+        )
+
+    assert raised.value.get_dbus_name() == "org.bluez.Error.Rejected"
+
+
 def test_pairing_without_numeric_comparison_requires_explicit_approval():
     requested = []
     replies = []
