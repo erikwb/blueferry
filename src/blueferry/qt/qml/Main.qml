@@ -15,6 +15,56 @@ Kirigami.ApplicationWindow {
     property string pendingMessageHandle: ""
     property var warnedRosterChanges: ({})
 
+    component ExpandingMessageComposer: Controls.ScrollView {
+        id: messageComposer
+
+        property alias text: editor.text
+        property alias placeholderText: editor.placeholderText
+        signal accepted()
+
+        Layout.fillWidth: true
+        Layout.minimumWidth: 0
+        Layout.minimumHeight: Kirigami.Units.gridUnit * 2.5
+        Layout.preferredHeight: Math.min(
+            Math.max(
+                editor.contentHeight + editor.topPadding + editor.bottomPadding + 2,
+                Layout.minimumHeight
+            ),
+            Layout.maximumHeight
+        )
+        Layout.maximumHeight: Kirigami.Units.gridUnit * 8
+        clip: true
+        Controls.ScrollBar.horizontal.policy: Controls.ScrollBar.AlwaysOff
+        Controls.ScrollBar.vertical.policy: Controls.ScrollBar.AsNeeded
+
+        function clear() {
+            editor.clear()
+        }
+
+        function forceActiveFocus() {
+            editor.forceActiveFocus()
+        }
+
+        function submit(event) {
+            if ((event.modifiers & Qt.ShiftModifier) !== 0) {
+                event.accepted = false
+                return
+            }
+            accepted()
+            event.accepted = true
+        }
+
+        Controls.TextArea {
+            id: editor
+            width: messageComposer.availableWidth
+            wrapMode: TextEdit.Wrap
+            selectByMouse: true
+            Accessible.name: messageComposer.Accessible.name
+            Keys.onReturnPressed: event => messageComposer.submit(event)
+            Keys.onEnterPressed: event => messageComposer.submit(event)
+        }
+    }
+
     visible: true
     width: 980
     height: 680
@@ -480,6 +530,7 @@ Kirigami.ApplicationWindow {
         preferredWidth: Kirigami.Units.gridUnit * 24
         standardButtons: Kirigami.Dialog.Cancel
         customFooterActions: [Kirigami.Action {
+            id: newMessageSendAction
             text: qsTr("Send")
             icon.name: "document-send"
             enabled: newRecipient.text.trim() !== ""
@@ -550,13 +601,14 @@ Kirigami.ApplicationWindow {
                 text: qsTr("Message")
                 font.bold: true
             }
-            Controls.TextArea {
+            ExpandingMessageComposer {
                 id: newMessageBody
-                Layout.fillWidth: true
-                Layout.preferredHeight: Kirigami.Units.gridUnit * 5
                 placeholderText: qsTr("Write a Message")
-                wrapMode: TextEdit.Wrap
                 Accessible.name: qsTr("Message Text")
+                onAccepted: {
+                    if (newMessageSendAction.enabled)
+                        newMessageSendAction.trigger()
+                }
             }
         }
     }
@@ -865,9 +917,8 @@ Kirigami.ApplicationWindow {
                             Layout.fillWidth: true
                             Layout.margins: Kirigami.Units.smallSpacing
 
-                            Controls.TextField {
+                            ExpandingMessageComposer {
                                 id: composer
-                                Layout.fillWidth: true
                                 placeholderText: qsTr("Write a Message")
                                 enabled: messagesPage.thread !== null
                                     && messagesPage.thread.reply_ready && !root.bridge.busy
@@ -876,6 +927,7 @@ Kirigami.ApplicationWindow {
                             }
                             Controls.Button {
                                 id: sendButton
+                                Layout.alignment: Qt.AlignBottom
                                 text: qsTr("Send")
                                 icon.name: "document-send"
                                 enabled: composer.enabled && composer.text.trim() !== ""

@@ -1123,7 +1123,7 @@ ShellRoot {
                   id: composerRow
                   anchors.fill: parent
                   anchors.margins: theme.scaled(6)
-                  FerryTextField {
+                  FerryMessageComposer {
                     id: composer
                     Layout.fillWidth: true
                     placeholderText: "Write a message…"
@@ -1135,6 +1135,7 @@ ShellRoot {
                   }
                   FerryButton {
                     id: sendMessageButton
+                    Layout.alignment: Qt.AlignBottom
                     text: root.sendBusy ? "SENDING" : "SEND"
                     highlighted: true
                     enabled: composer.enabled && composer.text.trim() !== "" &&
@@ -1726,12 +1727,14 @@ ShellRoot {
             text: "Message"
             color: theme.muted
           }
-          FerryTextField {
+          FerryMessageComposer {
             id: newMessageBody
             Layout.fillWidth: true
             placeholderText: "Write a message"
             Accessible.name: "Message text"
-            onAccepted: newMessageSendButton.clicked()
+            onAccepted: {
+              if (newMessageSendButton.enabled) newMessageSendButton.clicked()
+            }
           }
           RowLayout {
             Layout.alignment: Qt.AlignRight
@@ -2000,6 +2003,63 @@ ShellRoot {
       border.color: control.activeFocus ? theme.accent
         : control.flat ? "transparent" : theme.divider
       radius: theme.controlRadius
+    }
+  }
+
+  component FerryMessageComposer: ScrollView {
+    id: control
+    property alias text: editor.text
+    property alias placeholderText: editor.placeholderText
+    property bool flat: false
+    signal accepted()
+
+    Layout.minimumWidth: 0
+    Layout.minimumHeight: theme.scaled(36)
+    Layout.preferredHeight: Math.min(
+      Math.max(editor.contentHeight + editor.topPadding + editor.bottomPadding + 2,
+               Layout.minimumHeight),
+      Layout.maximumHeight
+    )
+    Layout.maximumHeight: theme.scaled(144)
+    clip: true
+    ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+    ScrollBar.vertical.policy: ScrollBar.AsNeeded
+
+    function clear() { editor.clear() }
+    function forceActiveFocus() { editor.forceActiveFocus() }
+    function submit(event) {
+      if ((event.modifiers & Qt.ShiftModifier) !== 0) {
+        event.accepted = false
+        return
+      }
+      accepted()
+      event.accepted = true
+    }
+
+    background: Rectangle {
+      color: control.flat ? "transparent" : theme.control
+      border.color: editor.activeFocus ? theme.accent
+        : control.flat ? "transparent" : theme.divider
+      radius: theme.controlRadius
+    }
+
+    TextArea {
+      id: editor
+      width: control.availableWidth
+      leftPadding: theme.scaled(10)
+      rightPadding: theme.scaled(10)
+      color: theme.windowText
+      placeholderTextColor: theme.muted
+      selectionColor: theme.accent
+      selectedTextColor: theme.highlightedText
+      font.family: theme.fontFamily
+      font.pixelSize: theme.baseFontSize
+      selectByMouse: true
+      wrapMode: TextEdit.Wrap
+      background: null
+      Accessible.name: control.Accessible.name
+      Keys.onReturnPressed: event => control.submit(event)
+      Keys.onEnterPressed: event => control.submit(event)
     }
   }
 

@@ -6,7 +6,7 @@ Live signals tell this page when to refresh that backend-owned model.
 
 from __future__ import annotations
 
-from gi.repository import Adw, GLib, Gtk, Pango
+from gi.repository import Adw, Gdk, GLib, Gtk, Pango
 
 from blueferry.conversation_state import (
     ConversationSnapshot,
@@ -23,6 +23,69 @@ from blueferry.ui.status_presenter import (
 from blueferry.ui.util import format_ts
 
 _ELLIPSIZE_END = Pango.EllipsizeMode.END
+
+
+class MessageComposer(Gtk.ScrolledWindow):
+    """A wrapping message editor that grows before it starts scrolling."""
+
+    def __init__(self, placeholder: str, on_submit) -> None:
+        super().__init__(
+            hscrollbar_policy=Gtk.PolicyType.NEVER,
+            vscrollbar_policy=Gtk.PolicyType.AUTOMATIC,
+            min_content_height=44,
+            max_content_height=150,
+            propagate_natural_height=True,
+            hexpand=True,
+        )
+        self._view = Gtk.TextView(
+            accepts_tab=False,
+            wrap_mode=Gtk.WrapMode.WORD_CHAR,
+            top_margin=8,
+            bottom_margin=8,
+            left_margin=10,
+            right_margin=10,
+        )
+        self._placeholder = Gtk.Label(
+            label=placeholder,
+            css_classes=["dim-label"],
+            halign=Gtk.Align.START,
+            valign=Gtk.Align.START,
+            margin_top=8,
+            margin_start=10,
+        )
+        self._placeholder.set_can_target(False)
+        overlay = Gtk.Overlay(child=self._view)
+        overlay.add_overlay(self._placeholder)
+        self.set_child(overlay)
+        self._on_submit = on_submit
+        self._view.get_buffer().connect("changed", self._content_changed)
+        keys = Gtk.EventControllerKey()
+        keys.connect("key-pressed", self._key_pressed)
+        self._view.add_controller(keys)
+
+    def _content_changed(self, buffer) -> None:
+        self._placeholder.set_visible(buffer.get_char_count() == 0)
+        self.queue_resize()
+
+    def _key_pressed(self, _controller, keyval, _keycode, state) -> bool:
+        enter = keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter)
+        if enter and not state & Gdk.ModifierType.SHIFT_MASK:
+            self._on_submit(self)
+            return True
+        return False
+
+    def connect_changed(self, callback) -> int:
+        return self._view.get_buffer().connect("changed", callback)
+
+    def get_text(self) -> str:
+        buffer = self._view.get_buffer()
+        return buffer.get_text(buffer.get_start_iter(), buffer.get_end_iter(), False)
+
+    def set_text(self, value: str) -> None:
+        self._view.get_buffer().set_text(value)
+
+    def grab_focus(self) -> bool:
+        return self._view.grab_focus()
 
 
 def _participant_lines(value: str) -> list[str]:
@@ -131,6 +194,7 @@ class ConversationsPage(Gtk.Box):
             hexpand=True,
         )
         self._msg_scroll = Gtk.ScrolledWindow(
+            hscrollbar_policy=Gtk.PolicyType.NEVER,
             hexpand=True,
             vexpand=True,
             child=self._msg_list,
@@ -199,13 +263,14 @@ class ConversationsPage(Gtk.Box):
             margin_start=6,
             margin_end=6,
         )
-        self._entry = Gtk.Entry(
-            placeholder_text=_("Write a Message"), hexpand=True, sensitive=False
+        self._entry = MessageComposer(
+            _("Write a Message"), self._on_send
         )
-        self._entry.connect("activate", self._on_send)
+        self._entry.set_sensitive(False)
         self._send_btn = Gtk.Button(
             icon_name="document-send-symbolic",
             sensitive=False,
+            valign=Gtk.Align.END,
             css_classes=["suggested-action"],
             tooltip_text=_("Send Message"),
         )
@@ -264,9 +329,12 @@ class ConversationsPage(Gtk.Box):
         )
 
         content.append(Gtk.Label(label=_("Message"), xalign=0, css_classes=["heading"]))
-        self._new_body = Gtk.Entry(placeholder_text=_("Write a Message"))
-        self._new_body.connect("changed", lambda _entry: self._update_new_send_button())
-        self._new_body.connect("activate", self._send_new_message)
+        self._new_body = MessageComposer(
+            _("Write a Message"), self._send_new_message
+        )
+        self._new_body.connect_changed(
+            lambda _buffer: self._update_new_send_button()
+        )
         content.append(self._new_body)
 
         cancel = Gtk.Button(label=_("Cancel"))
@@ -288,7 +356,7 @@ class ConversationsPage(Gtk.Box):
         self._new_message_dialog = Adw.Dialog(
             title=_("New Message"),
             content_width=440,
-            content_height=390,
+            follows_content_size=True,
             child=toolbar,
         )
 
@@ -693,6 +761,9 @@ class ConversationsPage(Gtk.Box):
                 Gtk.Label(
                     label=_("You") if message.outgoing else message.sender,
                     xalign=0,
+                    wrap=True,
+                    wrap_mode=Pango.WrapMode.WORD_CHAR,
+                    max_width_chars=46,
                     css_classes=["dim-label", "caption", "heading"],
                 )
             )
@@ -700,6 +771,7 @@ class ConversationsPage(Gtk.Box):
             label=message.body,
             xalign=0,
             wrap=True,
+            wrap_mode=Pango.WrapMode.WORD_CHAR,
             selectable=True,
             max_width_chars=46,
         )

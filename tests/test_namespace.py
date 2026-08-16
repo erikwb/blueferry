@@ -431,6 +431,44 @@ def test_all_gui_clients_offer_contacts_aware_new_messages() -> None:
     assert 'backendBridge.request("contacts"' in quickshell
 
 
+def test_all_clients_expand_and_scroll_long_message_drafts() -> None:
+    gtk = (ROOT / "src/blueferry/ui/conversations.py").read_text()
+    qt = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
+    quickshell = (ROOT / "data/quickshell/shell.qml").read_text()
+    tui_styles = (ROOT / "src/blueferry/tui.tcss").read_text()
+
+    assert gtk.count("= MessageComposer(") == 2
+    assert "Gtk.Overlay(child=self._view)" in gtk
+    assert "placeholder_text=placeholder" not in gtk
+    assert "propagate_natural_height=True" in gtk
+    assert "vscrollbar_policy=Gtk.PolicyType.AUTOMATIC" in gtk
+    assert "follows_content_size=True" in gtk
+    assert "Gdk.ModifierType.SHIFT_MASK" in gtk
+    assert gtk.count("wrap_mode=Pango.WrapMode.WORD_CHAR") == 2
+    message_viewport = gtk.split("self._msg_scroll = Gtk.ScrolledWindow(", 1)[1]
+    assert "hscrollbar_policy=Gtk.PolicyType.NEVER" in message_viewport.split(
+        ")", 1
+    )[0]
+
+    assert qt.count("ExpandingMessageComposer {") == 2
+    assert "Layout.minimumWidth: 0" in qt
+    assert "Controls.ScrollBar.vertical.policy: Controls.ScrollBar.AsNeeded" in qt
+    assert "Layout.maximumHeight: Kirigami.Units.gridUnit * 8" in qt
+    assert "Qt.ShiftModifier" in qt
+
+    assert quickshell.count("FerryMessageComposer {") == 2
+    assert "Layout.minimumWidth: 0" in quickshell
+    assert "ScrollBar.vertical.policy: ScrollBar.AsNeeded" in quickshell
+    assert "Layout.maximumHeight: theme.scaled(144)" in quickshell
+    assert "Qt.ShiftModifier" in quickshell
+
+    composer_styles = tui_styles.split("#composer {", maxsplit=1)[1].split(
+        "}", maxsplit=1
+    )[0]
+    assert "height: auto" in composer_styles
+    assert "max-height: 8" in composer_styles
+
+
 def test_quickshell_keeps_private_dbus_values_out_of_process_arguments() -> None:
     quickshell = _qml_bundle(ROOT / "data/quickshell")
 

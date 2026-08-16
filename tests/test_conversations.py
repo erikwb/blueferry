@@ -130,6 +130,58 @@ def test_map_refusal_reveals_prominent_message_banner() -> None:
     assert banner.revealed is True
 
 
+def test_gtk_message_composer_sends_on_enter_and_keeps_shift_enter() -> None:
+    submitted = []
+    composer = SimpleNamespace(
+        _on_submit=lambda widget: submitted.append(widget),
+    )
+
+    handled = conversations.MessageComposer._key_pressed(
+        composer,
+        None,
+        conversations.Gdk.KEY_Return,
+        0,
+        conversations.Gdk.ModifierType(0),
+    )
+    shift_handled = conversations.MessageComposer._key_pressed(
+        composer,
+        None,
+        conversations.Gdk.KEY_Return,
+        0,
+        conversations.Gdk.ModifierType.SHIFT_MASK,
+    )
+
+    assert handled is True
+    assert shift_handled is False
+    assert submitted == [composer]
+
+
+def test_gtk_message_composer_placeholder_tracks_empty_buffer() -> None:
+    class Placeholder:
+        visible = None
+
+        def set_visible(self, value) -> None:
+            self.visible = value
+
+    placeholder = Placeholder()
+    resize_requests = []
+    composer = SimpleNamespace(
+        _placeholder=placeholder,
+        queue_resize=lambda: resize_requests.append(True),
+    )
+
+    conversations.MessageComposer._content_changed(
+        composer, SimpleNamespace(get_char_count=lambda: 0)
+    )
+    assert placeholder.visible is True
+
+    conversations.MessageComposer._content_changed(
+        composer, SimpleNamespace(get_char_count=lambda: 12)
+    )
+    assert placeholder.visible is False
+    assert resize_requests == [True, True]
+
+
 def test_participant_editor_keeps_unique_nonempty_lines() -> None:
     assert conversations._participant_lines(
         " +15551111111 \n\nbeau@example.com\n+15551111111\n"

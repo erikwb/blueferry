@@ -515,6 +515,12 @@ def test_textual_composer_sends_without_blocking_ui() -> None:
             await _wait_for_threads(app, pilot, 2)
             composer = app.query_one("#composer", TextArea)
             composer.focus()
+            compact_height = composer.size.height
+            composer.text = "\n".join(f"Line {index}" for index in range(20))
+            await pilot.pause()
+            assert compact_height < composer.size.height <= 8
+            assert composer.max_scroll_y > 0
+
             composer.text = "Line one"
             await pilot.press("shift+enter")
             assert "\n" in composer.text
