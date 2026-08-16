@@ -1,19 +1,11 @@
 name: Native packages
 
 on:
-  pull_request:
-    paths:
-      - ".github/workflows/packages.yml"
-      - "data/**"
-      - "packaging/**"
-      - "src/**"
-      - "systemd/**"
-      - "tests/**"
-      - "build.sh"
-      - "pyproject.toml"
   push:
-    branches: [main]
     tags: ["v*"]
+  schedule:
+    # Exercise current distribution repositories without doing so on every commit.
+    - cron: "17 6 * * 1"
   workflow_dispatch:
 
 permissions:

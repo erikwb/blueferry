@@ -227,3 +227,14 @@ def test_package_workflow_installs_identical_artifacts_on_targets() -> None:
         "systemd-analyze verify --man=no bluetooth.service"
     ) == 3
     assert "GH_REPO: ${{ github.repository }}" in workflow
+
+
+def test_package_workflow_does_not_run_for_each_commit() -> None:
+    workflow = (ROOT / ".github/workflows/packages.yml").read_text()
+    triggers = workflow.split("permissions:", maxsplit=1)[0]
+
+    assert "pull_request:" not in triggers
+    assert "branches:" not in triggers
+    assert 'tags: ["v*"]' in triggers
+    assert "schedule:" in triggers
+    assert "workflow_dispatch:" in triggers
