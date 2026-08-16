@@ -1317,9 +1317,9 @@ def test_complete_pairing_starts_profiles_while_pairing_advert_is_active(monkeyp
 
     result = pair_setup.complete_pairing(device.mac, _allow_headless=True)
 
-    assert result["ok"] is True
-    assert result["ancs"] == "connected"
-    assert result["ancs_ready"] is True
+    assert result.device.mac == device.mac
+    assert result.ancs == "connected"
+    assert result.ancs_ready is True
     assert calls == [
         ("prepare_classic", "hci0"),
         "trust",
@@ -1408,7 +1408,7 @@ def test_complete_pairing_prepares_the_selected_adapter_not_a_leftover_bond(
         phone.mac, adapter="hci1", _allow_headless=True
     )
 
-    assert result["ok"] is True
+    assert result.device.mac == phone.mac
     assert prepared == ["hci1"]
     assert saved == [(phone.mac, "hci1")]
 
@@ -1578,8 +1578,8 @@ def test_complete_pairing_headless_pairs_from_linux(monkeypatch):
     result = pair_setup.complete_pairing(unpaired.mac, _allow_headless=True)
 
     assert calls == [("pair", 120.0)]
-    assert result["ok"] is True
-    assert result["ancs"] == "connected"
+    assert result.device.mac == unpaired.mac
+    assert result.ancs == "connected"
 
 
 def test_compatibility_pairing_connects_and_lets_the_iphone_initiate(monkeypatch):
@@ -1829,7 +1829,7 @@ def test_interactive_pairing_can_use_explicit_pair_without_connecting(monkeypatc
         explicit_pairing=True,
     )
 
-    assert result["ok"] is True
+    assert result.device.mac == unpaired.mac
     assert calls[:5] == [
         ("agent", unpaired.device_path, False),
         "agent-enter",
@@ -1877,7 +1877,7 @@ def test_peer_initiated_pairing_is_allowed_to_finish(monkeypatch):
     result = pair_setup.complete_pairing(unpaired.mac, _allow_headless=True)
 
     assert pair_calls == [True]
-    assert result["ok"] is True
+    assert result.device.mac == unpaired.mac
 
 
 def test_pairing_starts_daemon_even_when_ancs_is_still_missing(monkeypatch):
@@ -1903,8 +1903,8 @@ def test_pairing_starts_daemon_even_when_ancs_is_still_missing(monkeypatch):
 
     assert saved == [True]
     assert restarted == [True]
-    assert result["ancs"] == "daemon connecting"
-    assert result["ancs_ready"] is False
+    assert result.ancs == "daemon connecting"
+    assert result.ancs_ready is False
 
 
 def test_pairing_does_not_gate_map_on_inbound_ancs(monkeypatch):
@@ -1927,7 +1927,7 @@ def test_pairing_does_not_gate_map_on_inbound_ancs(monkeypatch):
     result = pair_setup.complete_pairing(device.mac, _allow_headless=True)
 
     assert saved == [True]
-    assert result["ancs_ready"] is False
+    assert result.ancs_ready is False
 
 
 def test_pairing_without_bearer_api_continues_with_map_and_pbap(monkeypatch):
@@ -1965,6 +1965,6 @@ def test_pairing_without_bearer_api_continues_with_map_and_pbap(monkeypatch):
 
     assert saved == [True]
     assert adverts == ["registered", "removed"]
-    assert result["ancs"] == "disabled"
-    assert result["ancs_enabled"] is False
-    assert result["ancs_ready"] is False
+    assert result.ancs == "disabled"
+    assert result.ancs_enabled is False
+    assert result.ancs_ready is False

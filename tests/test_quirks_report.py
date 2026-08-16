@@ -417,10 +417,10 @@ def test_complete_pairing_writes_a_scrubbed_success_report(
     }
 
     result = pair_setup.complete_pairing(device.mac, _allow_headless=True)
-    payload = Path(result["quirks_report"]).read_text()
+    payload = Path(result.quirks_report).read_text()
 
-    assert result["ok"] is True
-    assert result["ancs_ready"] is True
+    assert result.device.mac == device.mac
+    assert result.ancs_ready is True
     assert "02:00:00:00:00:01" not in payload
     assert "Alex" not in payload
     assert "dev_02_00" not in payload
@@ -462,7 +462,7 @@ def test_complete_pairing_writes_a_scrubbed_success_report(
     }
     assert "adapter" not in parsed
     assert "compatibility" not in parsed
-    assert Path(result["quirks_report"]).is_relative_to(report_dir)
+    assert Path(result.quirks_report).is_relative_to(report_dir)
     events = [item["event"] for item in parsed["timeline"]]
     assert events[0] == "start"
     assert events[-1] == "finished"
@@ -531,9 +531,9 @@ def test_pairing_report_keeps_last_le_error_when_ancs_stays_down(
     monkeypatch.setattr(pair_setup, "_wait_for_daemon_transports", _ancs_missing)
 
     result = pair_setup.complete_pairing(device.mac, _allow_headless=True)
-    parsed = json.loads(Path(result["quirks_report"]).read_text())
+    parsed = json.loads(Path(result.quirks_report).read_text())
 
-    assert result["ancs_ready"] is False
+    assert result.ancs_ready is False
     assert parsed["outcome"]["bonded"] is True
     assert parsed["outcome"]["setup_complete"] is True
     assert parsed["outcome"]["map"] is True

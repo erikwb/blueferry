@@ -9,6 +9,7 @@ import threading
 import pytest
 
 from blueferry import pair_setup, setup_client
+from blueferry.pairing_types import PairingOutcome, PairingTransports
 
 
 def _device() -> pair_setup.PairedDevice:
@@ -105,22 +106,23 @@ def test_device_operations_delegate_with_requested_scan(monkeypatch):
     assert calls == [(8, None), (8, "hci1"), "list"]
 
 
-def test_complete_pairing_decodes_result_and_forget_delegates(monkeypatch):
+def test_complete_pairing_preserves_typed_result_and_forget_delegates(monkeypatch):
     device = _device()
     forgotten = []
     paired = []
     monkeypatch.setattr(
         setup_client.pair_setup,
         "complete_pairing",
-        lambda mac, **kwargs: paired.append((mac, kwargs.get("adapter"))) or {
-            "ok": True,
-            "device": device.to_dict(),
-            "config": "/tmp/test-config",
-            "service": "restarted",
-            "ancs": "connected",
-            "ancs_ready": True,
-            "iphone_steps": ["Enable notifications"],
-        },
+        lambda mac, **kwargs: paired.append((mac, kwargs.get("adapter")))
+        or PairingOutcome(
+            device=device,
+            config="/tmp/test-config",
+            service="restarted",
+            ancs="connected",
+            ancs_enabled=True,
+            transports=PairingTransports(ancs=True),
+            iphone_steps=("Enable notifications",),
+        ),
     )
     monkeypatch.setattr(
         setup_client.pair_setup,
@@ -140,6 +142,7 @@ def test_complete_pairing_decodes_result_and_forget_delegates(monkeypatch):
     assert result.iphone_steps == ("Enable notifications",)
     assert result.ancs_ready is True
     assert result.to_dict()["device"]["mac"] == device.mac
+    assert PairingOutcome.from_dict(result.to_dict()) == result
     assert paired == [(device.mac, "hci1")]
     assert forgotten == [(device.mac, "hci1")]
 

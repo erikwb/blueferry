@@ -17,6 +17,7 @@ from typing import IO, Any
 from blueferry import pair_setup, quirks_report
 from blueferry.bluetooth_devices import PairedDevice
 from blueferry.errors import PairingError
+from blueferry.pairing_types import PairingOutcome
 
 DISCOVERY_SECONDS = pair_setup.DISCOVERY_SECONDS
 PAIRING_HELPER_TIMEOUT_SECONDS = 300.0
@@ -278,51 +279,6 @@ class ConfigurationState:
         }
 
 
-@dataclass(frozen=True, slots=True)
-class PairingResult:
-    ok: bool
-    device: PairedDevice
-    config: str
-    service: str
-    ancs: str
-    ancs_ready: bool
-    ancs_enabled: bool
-    iphone_steps: tuple[str, ...]
-    quirks_report: str = ""
-
-    @classmethod
-    def from_dict(cls, value: Mapping[str, Any]) -> PairingResult:
-        raw_device = value.get("device", {})
-        if not isinstance(raw_device, dict):
-            raw_device = {}
-        raw_steps = value.get("iphone_steps", ())
-        return cls(
-            ok=bool(value.get("ok", False)),
-            device=PairedDevice.from_dict(raw_device),
-            config=str(value.get("config", "")),
-            service=str(value.get("service", "")),
-            ancs=str(value.get("ancs", "")),
-            ancs_ready=bool(value.get("ancs_ready", False)),
-            ancs_enabled=bool(value.get("ancs_enabled", True)),
-            iphone_steps=tuple(str(item) for item in raw_steps)
-            if isinstance(raw_steps, list | tuple) else (),
-            quirks_report=str(value.get("quirks_report", "")),
-        )
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "ok": self.ok,
-            "device": self.device.to_dict(),
-            "config": self.config,
-            "service": self.service,
-            "ancs": self.ancs,
-            "ancs_ready": self.ancs_ready,
-            "ancs_enabled": self.ancs_enabled,
-            "iphone_steps": list(self.iphone_steps),
-            "quirks_report": self.quirks_report,
-        }
-
-
 class SetupClient:
     """Direct Python setup facade; operations may block and belong off the UI thread."""
 
@@ -359,16 +315,14 @@ class SetupClient:
         display: pair_setup.DisplayCallback | None = None,
         compatibility_mode: bool = False,
         explicit_pairing: bool = False,
-    ) -> PairingResult:
-        return PairingResult.from_dict(
-            pair_setup.complete_pairing(
-                mac,
-                adapter=adapter,
-                confirmation=confirmation,
-                display=display,
-                compatibility_mode=compatibility_mode,
-                explicit_pairing=explicit_pairing,
-            )
+    ) -> PairingOutcome:
+        return pair_setup.complete_pairing(
+            mac,
+            adapter=adapter,
+            confirmation=confirmation,
+            display=display,
+            compatibility_mode=compatibility_mode,
+            explicit_pairing=explicit_pairing,
         )
 
     def complete_isolated(
@@ -381,7 +335,7 @@ class SetupClient:
         replace_saved_mac: str = "",
         compatibility_mode: bool = False,
         explicit_pairing: bool = False,
-    ) -> PairingResult:
+    ) -> PairingOutcome:
         """Run interactive pairing in a D-Bus/GLib-isolated child process."""
         command = [
             sys.executable,
@@ -442,7 +396,7 @@ class SetupClient:
                     status = _wait_for_helper(process, deadline=deadline)
                     if status != 0:
                         raise PairingError(f"Pairing helper exited unexpectedly (status {status})")
-                    return PairingResult.from_dict(event)
+                    return PairingOutcome.from_dict(event)
                 elif event.get("ok") is False:
                     path = str(event.get("report_path") or "").strip()
                     raise PairingError(

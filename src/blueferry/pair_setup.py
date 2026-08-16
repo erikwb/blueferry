@@ -698,7 +698,7 @@ def complete_pairing(
     compatibility_mode: bool = False,
     explicit_pairing: bool = False,
     _allow_headless: bool = False,
-) -> dict:
+) -> PairingOutcome:
     """Pair if needed and finish every Linux-side BlueFerry setup step."""
     if confirmation is None and not _allow_headless:
         raise PairingError("Pairing requires an interactive confirmation callback")
@@ -732,10 +732,9 @@ def complete_pairing(
     path = _record_pairing_report(
         attempt, transports=outcome.transports,
     )
-    result = outcome.to_dict()
     if path is not None:
-        result["quirks_report"] = str(path)
-    return result
+        outcome = outcome.with_quirks_report(str(path))
+    return outcome
 
 
 def _adapter_identity(adapter: str, compatibility: dict | None = None) -> dict:
