@@ -43,12 +43,8 @@ from blueferry.limits import (
     MAX_THREAD_QUERY_LIMIT,
 )
 from blueferry.obex.map_query import list_recent_messages
-from blueferry.obex.map_send import (
-    InvalidRecipient,
-    send_group_message,
-    send_message,
-    validate_recipient,
-)
+from blueferry.obex.map_send import send_group_message, send_message
+from blueferry.recipients import InvalidRecipient, validate_recipient
 from blueferry.storage_security import STORAGE_POLICIES, StorageSecurity
 from blueferry.threads import ConversationIndex, build_threads
 

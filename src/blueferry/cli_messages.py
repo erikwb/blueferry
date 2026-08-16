@@ -8,7 +8,7 @@ import typer
 from blueferry.cli_common import setup_logging
 from blueferry.client import BackendClient, BackendError
 from blueferry.events import is_email_shaped, normalize_phone
-from blueferry.obex.map_send import InvalidRecipient, validate_recipient
+from blueferry.recipients import InvalidRecipient, validate_recipient
 from blueferry.text_safety import terminal_text
 from blueferry.time_display import format_message_timestamp
 
