@@ -29,6 +29,10 @@ if not _running_private_suite:
 # thread-default context stacks deadlock the suite. Force a headless platform
 # and no theme plugin before any test module can import PySide6.
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
+# Package builds can reuse Qt's per-user compiled QML cache even though they
+# are testing a newly extracted source tree at the same path. Always compile
+# the QML under test from its current source.
+os.environ["QML_DISABLE_DISK_CACHE"] = "1"
 os.environ.pop("QT_QPA_PLATFORMTHEME", None)
 os.environ.pop("QT_STYLE_OVERRIDE", None)
 

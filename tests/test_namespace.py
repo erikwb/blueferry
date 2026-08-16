@@ -187,8 +187,8 @@ def test_qt_package_ships_the_kirigami_ui_and_dependencies() -> None:
     assert "Kirigami.NavigationTabBar" not in qml
     assert "pageStack.push(iphonePageLoader.item)" in qml
     assert "sourceComponent: iphonePageComponent" in qml
-    assert "root.pageStack.push(aboutPage)" in qml
-    assert "pageStack.layers.push" not in qml
+    assert "root.pageStack.layers.push(aboutPage)" in qml
+    assert qml.count("pageStack.layers.push") == 1
     assert "Controls.StackView.Immediate" not in qml
     assert "Kirigami.AboutPage" in qml
     assert "customFooterActions" in qml
@@ -533,7 +533,7 @@ def test_all_gui_clients_offer_unencrypted_local_storage() -> None:
     assert '"Unencrypted local data"' in quickshell
 
 
-def test_gui_clients_open_encrypted_storage_without_setup_buttons() -> None:
+def test_gui_clients_handle_encrypted_storage_unlocks() -> None:
     gtk = (ROOT / "src/blueferry/ui/status.py").read_text()
     qt_controller = (ROOT / "src/blueferry/qt/controller.py").read_text()
     qt_qml = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
@@ -541,7 +541,9 @@ def test_gui_clients_open_encrypted_storage_without_setup_buttons() -> None:
 
     assert "_unlock_storage_button" not in gtk
     assert "_maybe_unlock_storage" in qt_controller
-    assert "onClicked: root.bridge.unlockStorage()" not in qt_qml
+    assert "onClicked: root.bridge.unlockStorage()" in qt_qml
+    assert 'qsTr("Conversation History Unavailable")' in qt_qml
+    assert 'qsTr("Unlock Local Data")' in qt_qml
     assert "root.maybeUnlockStorage()" in quickshell
     assert "onClicked: storageUnlockProcess.running" not in quickshell
 

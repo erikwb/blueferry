@@ -65,6 +65,32 @@ Kirigami.ApplicationWindow {
         return status.map_connection_refused === true
     }
 
+    function retainedStorageUnavailable() {
+        const status = bridge.status || ({})
+        return status.daemon === true
+            && status.storage_policy !== undefined
+            && status.storage_policy !== "none"
+            && status.storage_state !== "ready"
+    }
+
+    function storageDetail() {
+        const status = bridge.status || ({})
+        if (status.storage_detail)
+            return status.storage_detail
+        return qsTr("Local conversation history is unavailable.")
+    }
+
+    function storageStatusText() {
+        const status = bridge.status || ({})
+        if (status.storage_policy === "none")
+            return qsTr("Disabled")
+        if (status.storage_state === "ready")
+            return qsTr("Available")
+        if (status.storage_state === "locked")
+            return qsTr("Locked")
+        return qsTr("Unavailable")
+    }
+
     function openPhoneSettings() {
         // Utility pages belong in Kirigami's PageRow. Its modal layers are an
         // anchored StackView internally: animated pushes warn about those
@@ -171,7 +197,7 @@ Kirigami.ApplicationWindow {
                 icon.name: "help-about"
                 onTriggered: {
                     root.closePhoneSettings()
-                    root.pageStack.push(aboutPage)
+                    root.pageStack.layers.push(aboutPage)
                 }
             },
             Kirigami.Action {
@@ -575,6 +601,27 @@ Kirigami.ApplicationWindow {
                     ]
                 }
 
+                Kirigami.InlineMessage {
+                    Layout.fillWidth: true
+                    visible: root.retainedStorageUnavailable()
+                    text: root.htmlEscape(root.storageDetail())
+                    type: Kirigami.MessageType.Warning
+                    position: Kirigami.InlineMessage.Position.Header
+                    actions: [
+                        Kirigami.Action {
+                            visible: root.bridge.status.storage_policy === "encrypted"
+                            text: qsTr("Unlock Local Data")
+                            icon.name: "document-decrypt"
+                            enabled: !root.bridge.busy
+                            onTriggered: root.bridge.unlockStorage()
+                        },
+                        Kirigami.Action {
+                            text: qsTr("Open Settings")
+                            onTriggered: root.openPhoneSettings()
+                        }
+                    ]
+                }
+
                 Controls.SplitView {
                     id: messagesSplit
                     Layout.fillWidth: true
@@ -678,8 +725,16 @@ Kirigami.ApplicationWindow {
                                 width: parent.width - Kirigami.Units.largeSpacing * 2
                                 visible: threadList.count === 0
                                 icon.name: "mail-message-new"
-                                text: qsTr("No Conversations Yet")
-                                explanation: qsTr("New iPhone messages will appear here.")
+                                text: root.bridge.status.storage_policy === "none"
+                                    ? qsTr("Conversation History Disabled")
+                                    : root.retainedStorageUnavailable()
+                                        ? qsTr("Conversation History Unavailable")
+                                        : qsTr("No Conversations Yet")
+                                explanation: root.bridge.status.storage_policy === "none"
+                                    ? qsTr("Local messages are not being retained. Choose a storage option in Settings to keep conversation history.")
+                                    : root.retainedStorageUnavailable()
+                                        ? root.storageDetail()
+                                        : qsTr("New iPhone messages will appear here.")
                             }
                         }
                     }
@@ -958,6 +1013,8 @@ Kirigami.ApplicationWindow {
                         ? "select-device" : iphonePage.effectiveStage
                     compatibility: root.bridge.onboardingCompatibility
                     status: root.bridge.status
+                    storagePolicy: root.bridge.status.storage_policy || ""
+                    storageState: root.bridge.status.storage_state || ""
                 }
 
                 Kirigami.FormLayout {
@@ -1253,6 +1310,33 @@ Kirigami.ApplicationWindow {
                             storageChangeDialog.requestedPolicy = currentValue
                             storageChangeDialog.open()
                         }
+                    }
+
+                    Controls.Label {
+                        Kirigami.FormData.label: qsTr("Status:")
+                        Layout.fillWidth: true
+                        text: root.storageStatusText()
+                        textFormat: Text.PlainText
+                    }
+
+                    Controls.Label {
+                        Kirigami.FormData.label: qsTr("Details:")
+                        Layout.fillWidth: true
+                        visible: root.bridge.status.storage_detail !== undefined
+                            && root.bridge.status.storage_detail !== ""
+                        text: root.bridge.status.storage_detail || ""
+                        textFormat: Text.PlainText
+                        wrapMode: Text.Wrap
+                    }
+
+                    Controls.Button {
+                        Kirigami.FormData.label: qsTr("Keyring:")
+                        visible: root.bridge.status.storage_policy === "encrypted"
+                            && root.bridge.status.storage_state !== "ready"
+                        text: qsTr("Unlock Local Data")
+                        icon.name: "document-decrypt"
+                        enabled: root.bridge.status.daemon === true && !root.bridge.busy
+                        onClicked: root.bridge.unlockStorage()
                     }
                 }
 
