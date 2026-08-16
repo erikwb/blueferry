@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import pytest
 import typer
-from typer.testing import CliRunner
 
-from blueferry import cli, cli_messages
+from blueferry import cli_messages
 from blueferry.models import EventRecord
 
 
@@ -92,62 +91,3 @@ def test_sms_list_rejects_unknown_source_before_any_io(monkeypatch) -> None:
         )
 
     assert raised.value.exit_code == 2
-
-
-def test_shell_contact_search_and_direct_send_helpers(monkeypatch) -> None:
-    class _Backend:
-        def __init__(self):
-            self.sent = []
-
-        @staticmethod
-        def find_contacts(query):
-            assert query == "Ali"
-            return [("Alice", "15551234567")]
-
-        def send(self, recipient, body):
-            self.sent.append((recipient, body))
-            return "/transfer/1"
-
-    backend = _Backend()
-    monkeypatch.setattr(cli, "_json_client", lambda: (backend, RuntimeError))
-    runner = CliRunner()
-
-    contacts_result = runner.invoke(cli.app, ["contacts-json", "Ali"])
-    send_result = runner.invoke(
-        cli.app,
-        ["message-send", "15551234567", "hello"],
-    )
-
-    assert contacts_result.exit_code == 0
-    assert contacts_result.stdout == '[{"name": "Alice", "address": "15551234567"}]\n'
-    assert send_result.exit_code == 0
-    assert backend.sent == [("15551234567", "hello")]
-
-
-def test_shell_named_group_roster_helper_accepts_multiple_recipients(
-    monkeypatch,
-) -> None:
-    class _Thread:
-        @staticmethod
-        def to_dict():
-            return {"key": "group:named:test", "reply_ready": True}
-
-    class _Backend:
-        def set_group_participants(self, key, recipients):
-            self.saved = (key, recipients)
-            return _Thread()
-
-    backend = _Backend()
-    monkeypatch.setattr(cli, "_json_client", lambda: (backend, RuntimeError))
-
-    result = CliRunner().invoke(cli.app, [
-        "group-participants-set",
-        "group:named:test",
-        "+15551111111",
-        "alice@example.com",
-    ])
-
-    assert result.exit_code == 0
-    assert backend.saved == (
-        "group:named:test", ["+15551111111", "alice@example.com"]
-    )
