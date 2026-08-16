@@ -1,0 +1,16 @@
+#!/bin/sh
+set -eu
+
+if [ "$#" -ne 1 ]; then
+  echo "usage: blueferry-set-cod INDEX" >&2
+  exit 64
+fi
+
+case "$1" in
+  ''|*[!0-9]*)
+    echo "Bluetooth adapter index must contain only decimal digits" >&2
+    exit 64
+    ;;
+esac
+
+exec /usr/bin/btmgmt --index "$1" class 4 8

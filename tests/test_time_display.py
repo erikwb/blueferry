@@ -32,3 +32,9 @@ def test_timestamp_is_converted_to_the_reference_timezone() -> None:
 def test_missing_and_malformed_values_fail_readably() -> None:
     assert format_message_timestamp(None, now=NOW) == ""
     assert format_message_timestamp("not-a-date\nmarkup", now=NOW) == "not-a-date markup"
+
+
+def test_malformed_timestamp_cannot_emit_terminal_controls_or_new_rows() -> None:
+    assert format_message_timestamp("bad\x1b[31m\u2028next", now=NOW) == (
+        "bad�[31m�next"
+    )

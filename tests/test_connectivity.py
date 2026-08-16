@@ -45,7 +45,7 @@ def test_forbidden_profile_failure_is_user_actionable():
 
     assert connectivity.snapshot() == {
         "connectivity_state": "authorization-required",
-        "connectivity_detail": "Forbidden",
+        "connectivity_detail": "iPhone authorization is required",
         "retry_attempt": 1,
         "retry_delay_seconds": 5,
     }
@@ -63,7 +63,7 @@ def test_map_refusal_preserves_detail_with_an_explicit_retry_interval():
     assert delay == 15
     assert connectivity.snapshot() == {
         "connectivity_state": "map-connection-refused",
-        "connectivity_detail": "Connection refused (111)",
+        "connectivity_detail": "The iPhone refused the message connection",
         "retry_attempt": 1,
         "retry_delay_seconds": 15,
     }

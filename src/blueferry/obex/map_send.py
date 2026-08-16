@@ -17,9 +17,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-import tempfile
 from collections.abc import Sequence
-from pathlib import Path
 
 import dbus
 import dbus.exceptions
@@ -27,6 +25,7 @@ import dbus.exceptions
 from blueferry.bus import obex
 from blueferry.limits import MAX_OUTGOING_BODY_BYTES
 from blueferry.obex.transfer import wait_for_transfer
+from blueferry.private_files import create_runtime_private_file
 
 log = logging.getLogger(__name__)
 
@@ -196,11 +195,13 @@ def _push_bmessage(
     poll_timeout_s: float,
 ) -> str:
     """Write and push an already-validated bMessage."""
-    fd, tmp_name = tempfile.mkstemp(prefix="blueferry_send_", suffix=".bmsg")
-    os.close(fd)
-    tmp = Path(tmp_name)
-    tmp.write_text(bmsg, encoding="utf-8")
+    fd, tmp = create_runtime_private_file(
+        prefix="blueferry_send_", suffix=".bmsg"
+    )
     try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            fd = -1
+            stream.write(bmsg)
         map_iface = obex(session_path, "org.bluez.obex.MessageAccess1")
         log.info("PushMessage (%d-byte body, folder=%s)", len(body), folder)
         try:
@@ -225,6 +226,8 @@ def _push_bmessage(
         log.info("send result: status=%s", status)
         return transfer_path
     finally:
+        if fd >= 0:
+            os.close(fd)
         try:
             tmp.unlink(missing_ok=True)
         except OSError:

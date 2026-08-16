@@ -118,11 +118,17 @@ package_blueferry-backend() {
   install -Dm755 "$srcdir/$_stage/usr/bin/blueferry" "$pkgdir/usr/bin/blueferry"
   install -Dm755 "$srcdir/$_stage/usr/bin/blueferry-tui" \
     "$pkgdir/usr/bin/blueferry-tui"
+  install -Dm755 "$srcdir/$_stage/usr/bin/blueferry-quickshell-bridge" \
+    "$pkgdir/usr/bin/blueferry-quickshell-bridge"
 
   install -Dm644 systemd/blueferry.service \
     "$pkgdir/usr/lib/systemd/user/blueferry.service"
   install -Dm644 systemd/blueferry-btmgmt-set-class@.service \
     "$pkgdir/usr/lib/systemd/system/blueferry-btmgmt-set-class@.service"
+  install -Dm755 systemd/blueferry-set-cod \
+    "$pkgdir/usr/lib/blueferry/blueferry-set-cod"
+  install -Dm644 systemd/49-blueferry-cod.rules \
+    "$pkgdir/usr/share/polkit-1/rules.d/49-blueferry-cod.rules"
   install -d "$pkgdir/usr/lib/systemd/user/default.target.wants"
   ln -s ../blueferry.service \
     "$pkgdir/usr/lib/systemd/user/default.target.wants/blueferry.service"

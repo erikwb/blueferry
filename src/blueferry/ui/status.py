@@ -255,18 +255,24 @@ class IPhonePage(Gtk.Box):
             lambda _b: (self._load_setup_state(), self._refresh()),
         )
         daemon_group.set_header_suffix(recheck)
-        self._daemon_row = Adw.ActionRow(title=_("Background Service"))
+        self._daemon_row = Adw.ActionRow(
+            title=_("Background Service"), use_markup=False
+        )
         self._daemon_icon = Gtk.Image()
         self._daemon_row.add_suffix(self._daemon_icon)
-        self._map_row = Adw.ActionRow(title=_("Messages"), subtitle=_("Checking…"))
+        self._map_row = Adw.ActionRow(
+            title=_("Messages"), subtitle=_("Checking…"), use_markup=False
+        )
         self._map_icon = Gtk.Image()
         self._map_row.add_suffix(self._map_icon)
         daemon_group.add(self._daemon_row)
         daemon_group.add(self._map_row)
-        self._pbap_row = Adw.ActionRow(title=_("Contacts"))
+        self._pbap_row = Adw.ActionRow(title=_("Contacts"), use_markup=False)
         self._pbap_icon = Gtk.Image()
         self._pbap_row.add_suffix(self._pbap_icon)
-        self._ancs_row = Adw.ActionRow(title=_("iPhone Notifications"))
+        self._ancs_row = Adw.ActionRow(
+            title=_("iPhone Notifications"), use_markup=False
+        )
         self._ancs_icon = Gtk.Image()
         self._ancs_row.add_suffix(self._ancs_icon)
         self._ancs_recovery_label = Gtk.Label(

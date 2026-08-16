@@ -36,15 +36,8 @@ from blueferry.limits import (
     MAX_CONTACT_NAME_CHARS,
     MAX_REMOTE_PROPERTY_CHARS,
 )
+from blueferry.vcard import iter_vcard_bodies
 
-_VCARD_RE = re.compile(
-    r"BEGIN:VCARD(?P<body>.*?)END:VCARD", re.DOTALL | re.IGNORECASE
-)
-_MSG_BODY_RE = re.compile(
-    r"^(?P<indent>[ \t]*)BEGIN:MSG[ \t]*\r?\n"
-    r"(?P<body>.*?)(?:\r?\n)?^(?P=indent)END:MSG[ \t]*\r?$",
-    re.DOTALL | re.IGNORECASE | re.MULTILINE,
-)
 _BMSG_STATUS_RE = re.compile(r"^STATUS:(?P<v>\S+)", re.MULTILINE | re.IGNORECASE)
 _BMSG_TYPE_RE   = re.compile(r"^TYPE:(?P<v>\S+)",   re.MULTILINE | re.IGNORECASE)
 _BMSG_FOLDER_RE = re.compile(r"^FOLDER:(?P<v>\S+)", re.MULTILINE | re.IGNORECASE)
@@ -60,14 +53,64 @@ class ParsedBMessage:
     folder: str | None
 
 
+def _originator_region(blob: str) -> str:
+    """Return only the bMessage header preceding the first envelope."""
+    offset = 0
+    for line in blob.splitlines(keepends=True):
+        if line.strip().casefold() == "begin:benv":
+            return blob[:offset]
+        offset += len(line)
+    return blob
+
+
+def _message_body(blob: str) -> str | None:
+    """Extract the first complete MSG block in one forward scan.
+
+    MAP permits indentation around structural markers. Track the first open
+    marker for each indentation and choose the earliest one that has a matching
+    terminator. This recovers from malformed prefixes without rescanning them.
+    """
+    candidates: dict[str, tuple[int, int]] = {}
+    matches: list[tuple[int, int, int]] = []
+    cursor = 0
+    length = len(blob)
+
+    while cursor < length:
+        line_start = cursor
+        newline = blob.find("\n", cursor)
+        if newline < 0:
+            raw_line = blob[cursor:]
+            cursor = length
+            terminated = False
+        else:
+            raw_line = blob[cursor:newline]
+            cursor = newline + 1
+            terminated = True
+        line = raw_line[:-1] if raw_line.endswith("\r") else raw_line
+        content = line.lstrip(" \t")
+        indent = line[:len(line) - len(content)]
+        marker = content.rstrip(" \t").casefold()
+
+        if marker == "begin:msg" and terminated:
+            candidates.setdefault(indent, (line_start, cursor))
+        elif marker == "end:msg" and indent in candidates:
+            begin_start, body_start = candidates.pop(indent)
+            matches.append((begin_start, body_start, line_start))
+
+    if not matches:
+        return None
+    _begin_start, body_start, body_end = min(matches, key=lambda item: item[0])
+    return blob[body_start:body_end]
+
+
 def parse(blob: str) -> ParsedBMessage:
-    # First VCARD = originator (for incoming SMS)
+    # Only a VCARD before BENV is an originator. Cards in the envelope are
+    # recipients, while card-shaped text in BEGIN:MSG is untrusted body data.
     phone_address: str | None = None
     sender_email: str | None = None
     sender_name: str | None = None
-    m = _VCARD_RE.search(blob)
-    if m:
-        vc = m.group("body")
+    vc = next(iter_vcard_bodies(_originator_region(blob), maximum=1), None)
+    if vc is not None:
         for line in vc.splitlines():
             line = line.strip()
             if not line:
@@ -104,8 +147,8 @@ def parse(blob: str) -> ParsedBMessage:
     # EMAIL covers Apple-ID-only iMessage peers.
     sender_address = phone_address or sender_email
 
-    body_m = _MSG_BODY_RE.search(blob)
-    body = body_m.group("body").strip("\r\n ") if body_m else None
+    raw_body = _message_body(blob)
+    body = raw_body.strip("\r\n ") if raw_body is not None else None
     # Strip MAP byte-stuffing (the leading space convention for lines that
     # would otherwise start with `END:`).
     if body:

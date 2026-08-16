@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from blueferry.text_safety import terminal_text
+
 
 def _parse(value: str) -> datetime | None:
     try:
@@ -40,7 +42,8 @@ def format_message_timestamp(
     raw = str(value).strip()
     parsed = _parse(raw)
     if parsed is None:
-        return raw.replace("\r", " ").replace("\n", " ")[:32]
+        single_line = raw.replace("\r", " ").replace("\n", " ")
+        return terminal_text(single_line)[:32]
 
     reference = now or datetime.now().astimezone()
     local = _in_reference_timezone(parsed, reference)

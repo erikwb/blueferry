@@ -298,6 +298,14 @@ def test_replacing_stale_target_keeps_selected_unpaired_scan_result(monkeypatch)
     }
 
 
+def test_complete_pairing_refuses_an_implicit_headless_call() -> None:
+    with pytest.raises(
+        pair_setup.PairingError,
+        match="requires an interactive confirmation callback",
+    ):
+        pair_setup.complete_pairing("02:00:00:00:00:01")
+
+
 def test_replacing_a_different_target_removes_its_bluez_device(monkeypatch):
     calls = []
     monkeypatch.setattr(pair_setup, "_find_device", lambda _mac, **_kwargs: None)
@@ -1280,7 +1288,7 @@ def test_complete_pairing_starts_profiles_while_pairing_advert_is_active(monkeyp
     )
     monkeypatch.setattr(pair_setup, "_restart_user_service", lambda: calls.append("restart"))
 
-    result = pair_setup.complete_pairing(device.mac)
+    result = pair_setup.complete_pairing(device.mac, _allow_headless=True)
 
     assert result["ok"] is True
     assert result["ancs"] == "connected"
@@ -1318,7 +1326,7 @@ def test_unverified_controller_reaches_the_real_pairing_transaction(
     )
 
     with pytest.raises(pair_setup.PairingError, match="real Bluetooth operation failed"):
-        pair_setup.complete_pairing(device.mac)
+        pair_setup.complete_pairing(device.mac, _allow_headless=True)
 
     assert "continuing with pairing" in caplog.text
 
@@ -1369,7 +1377,9 @@ def test_complete_pairing_prepares_the_selected_adapter_not_a_leftover_bond(
     })
     monkeypatch.setattr(pair_setup, "_bluetooth_session_owners", lambda: [])
 
-    result = pair_setup.complete_pairing(phone.mac, adapter="hci1")
+    result = pair_setup.complete_pairing(
+        phone.mac, adapter="hci1", _allow_headless=True
+    )
 
     assert result["ok"] is True
     assert prepared == ["hci1"]
@@ -1645,7 +1655,7 @@ def test_complete_pairing_headless_pairs_from_linux(monkeypatch):
     monkeypatch.setattr(pair_setup, "write_local_env", lambda *_args: None)
     monkeypatch.setattr(pair_setup, "_restart_user_service", lambda: None)
 
-    result = pair_setup.complete_pairing(unpaired.mac)
+    result = pair_setup.complete_pairing(unpaired.mac, _allow_headless=True)
 
     assert calls == [("pair", 120.0)]
     assert result["ok"] is True
@@ -1944,7 +1954,7 @@ def test_peer_initiated_pairing_is_allowed_to_finish(monkeypatch):
     monkeypatch.setattr(pair_setup, "write_local_env", lambda *_args: None)
     monkeypatch.setattr(pair_setup, "_restart_user_service", lambda: None)
 
-    result = pair_setup.complete_pairing(unpaired.mac)
+    result = pair_setup.complete_pairing(unpaired.mac, _allow_headless=True)
 
     assert pair_calls == [True]
     assert result["ok"] is True
@@ -1969,7 +1979,7 @@ def test_pairing_starts_daemon_even_when_ancs_is_still_missing(monkeypatch):
     )
     monkeypatch.setattr(pair_setup, "_restart_user_service", lambda: restarted.append(True))
 
-    result = pair_setup.complete_pairing(device.mac)
+    result = pair_setup.complete_pairing(device.mac, _allow_headless=True)
 
     assert saved == [True]
     assert restarted == [True]
@@ -1994,7 +2004,7 @@ def test_pairing_does_not_gate_map_on_inbound_ancs(monkeypatch):
     monkeypatch.setattr(pair_setup, "write_local_env", lambda *_args: saved.append(True))
     monkeypatch.setattr(pair_setup, "_restart_user_service", lambda: None)
 
-    result = pair_setup.complete_pairing(device.mac)
+    result = pair_setup.complete_pairing(device.mac, _allow_headless=True)
 
     assert saved == [True]
     assert result["ancs_ready"] is False
@@ -2031,7 +2041,7 @@ def test_pairing_without_bearer_api_continues_with_map_and_pbap(monkeypatch):
     monkeypatch.setattr(pair_setup, "write_local_env", lambda *_args: saved.append(True))
     monkeypatch.setattr(pair_setup, "_restart_user_service", lambda: None)
 
-    result = pair_setup.complete_pairing(device.mac)
+    result = pair_setup.complete_pairing(device.mac, _allow_headless=True)
 
     assert saved == [True]
     assert adverts == ["registered", "removed"]

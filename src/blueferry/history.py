@@ -12,6 +12,7 @@ from blueferry import config
 from blueferry.ancs.constants import MESSAGES_APP_ID
 from blueferry.storage_security import (
     ENCRYPTED_STORAGE,
+    PLAINTEXT_STORAGE,
     CorruptStorageError,
     is_encrypted_value,
 )
@@ -101,6 +102,10 @@ def _open_database(path: Path | None = None) -> sqlite3.Connection:
     try:
         database.execute("PRAGMA foreign_keys = ON")
         database.execute("PRAGMA busy_timeout = 5000")
+        # Retention and minimization are privacy operations, not merely
+        # logical deletion. Ensure SQLite overwrites freed cells on every
+        # connection that may mutate the archive.
+        database.execute("PRAGMA secure_delete = ON")
         database.executescript(_SCHEMA)
         target.chmod(config.STATE_FILE_MODE)
         return database
@@ -131,7 +136,8 @@ def read_events(
     """Read valid events oldest-first, optionally filtering and tail-limiting.
 
     ``max_body_chars`` bounds presentation projections without altering the
-    private archive. A caller requesting raw history leaves it unset.
+    private archive. A caller requesting raw history leaves it unset. Bounded
+    reads scan newest-first and stop once enough matching events are retained.
     """
     if storage is not None and not storage.status.can_read:
         return []
@@ -139,10 +145,13 @@ def read_events(
     if bounded == 0:
         return []
     events: list[EventRecord] = []
+    query = (
+        "SELECT payload_json FROM events ORDER BY id DESC"
+        if bounded is not None
+        else "SELECT payload_json FROM events ORDER BY id ASC"
+    )
     with closing(_open_database(path)) as database:
-        for (payload,) in database.execute(
-            "SELECT payload_json FROM events ORDER BY id"
-        ):
+        for (payload,) in database.execute(query):
             try:
                 event = _deserialize(payload, storage)
             except CorruptStorageError:
@@ -169,7 +178,11 @@ def read_events(
                     )
                     event["body_truncated"] = True
                 events.append(event)
-    return events[-bounded:] if bounded is not None else events
+                if bounded is not None and len(events) >= bounded:
+                    break
+    if bounded is not None:
+        events.reverse()
+    return events
 
 
 def history_revision(
@@ -287,7 +300,13 @@ def prune_events(
         if delete_through is not None:
             database.execute("DELETE FROM events WHERE id <= ?", (delete_through,))
         after = int(database.execute("SELECT COUNT(*) FROM events").fetchone()[0])
-    return before - after
+        removed = before - after
+    if removed and (
+        storage is None or storage.status.policy == PLAINTEXT_STORAGE
+    ):
+        with closing(_open_database(path)) as database:
+            database.execute("VACUUM")
+    return removed
 
 
 def clear_events(*, path: Path | None = None) -> None:
@@ -394,4 +413,9 @@ def minimize_ancs_history(
                 "UPDATE events SET payload_json = ? WHERE id = ?",
                 minimized,
             )
+    if (deleted_ids or minimized) and (
+        storage is None or storage.status.policy == PLAINTEXT_STORAGE
+    ):
+        with closing(_open_database(path)) as database:
+            database.execute("VACUUM")
     return len(deleted_ids), len(minimized)

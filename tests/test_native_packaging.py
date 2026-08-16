@@ -133,12 +133,31 @@ def test_native_backends_ship_the_btmgmt_system_unit_template() -> None:
     spec = (ROOT / "packaging/rpm/blueferry.spec").read_text()
 
     assert "Type=oneshot" in unit
-    assert "ExecStart=/usr/bin/btmgmt --index %i class 4 8" in unit
+    helper = (ROOT / "systemd/blueferry-set-cod").read_text()
+    rule = (ROOT / "systemd/49-blueferry-cod.rules").read_text()
+
+    assert "ExecStart=/usr/lib/blueferry/blueferry-set-cod %i" in unit
+    assert "NoNewPrivileges=true" in unit
+    assert "CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW" in unit
+    assert "ProtectSystem=strict" in unit
+    assert "RestrictAddressFamilies=AF_BLUETOOTH" in unit
+    assert "*[!0-9]*" in helper
+    assert 'exec /usr/bin/btmgmt --index "$1" class 4 8' in helper
+    assert "org.freedesktop.systemd1.manage-units" in rule
+    assert "AUTH_ADMIN" in rule
+    assert "AUTH_ADMIN_KEEP" not in rule
+    assert "@[0-9]+\\.service" in rule
     assert "[Install]" not in unit
     assert f"systemd/{unit_name}" in deb_rules
     assert f"usr/lib/systemd/system/{unit_name}" in deb_install
     assert f"systemd/{unit_name}" in arch
     assert f"%{{_unitdir}}/{unit_name}" in spec
+    assert "usr/lib/blueferry/blueferry-set-cod" in deb_install
+    assert "usr/share/polkit-1/rules.d/49-blueferry-cod.rules" in deb_install
+    assert "systemd/blueferry-set-cod" in arch
+    assert "systemd/49-blueferry-cod.rules" in arch
+    assert "%{_prefix}/lib/blueferry/blueferry-set-cod" in spec
+    assert "%{_datadir}/polkit-1/rules.d/49-blueferry-cod.rules" in spec
 
 
 def test_deb_and_rpm_backend_ship_private_textual_runtime() -> None:
@@ -150,8 +169,10 @@ def test_deb_and_rpm_backend_ship_private_textual_runtime() -> None:
     assert "package: blueferry-tui" not in control
     assert "requires:       python3dist(textual)" not in spec
     assert "usr/bin/blueferry-tui" in deb_install
+    assert "usr/bin/blueferry-quickshell-bridge" in deb_install
     assert "usr/lib/blueferry/vendor" in deb_install
     assert "%{_bindir}/blueferry-tui" in spec
+    assert "%{_bindir}/blueferry-quickshell-bridge" in spec
     assert "%{_prefix}/lib/blueferry/vendor" in spec
     if vendor.is_dir():
         assert "textual-8.2.8-py3-none-any.whl" in (

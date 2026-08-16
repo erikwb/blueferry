@@ -4,12 +4,45 @@ Automated tests never call send_message or a live BlueZ OBEX service.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from blueferry.limits import MAX_OUTGOING_BODY_BYTES
+from blueferry.obex import map_send
 from blueferry.obex.map_send import (
     _byte_stuff,
     build_bmessage,
     build_group_bmessage,
 )
+
+
+class _MessageAccess:
+    def __init__(self) -> None:
+        self.source: Path | None = None
+
+    def PushMessage(self, source, _folder, _options, **_kwargs):
+        self.source = Path(source)
+        assert self.source.read_text(encoding="utf-8").startswith("BEGIN:BMSG")
+        return "/transfer/test", {"Status": "complete"}
+
+
+def test_outgoing_bmessage_uses_runtime_storage_and_is_removed(
+    tmp_path, monkeypatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    interface = _MessageAccess()
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime_dir))
+    monkeypatch.setattr(map_send, "obex", lambda *_args: interface)
+    monkeypatch.setattr(
+        map_send, "wait_for_transfer", lambda *_args, **_kwargs: "complete"
+    )
+
+    assert map_send.send_message("/session", "+15551234567", "hello") == (
+        "/transfer/test"
+    )
+    assert interface.source is not None
+    assert interface.source.parent == runtime_dir / "blueferry"
+    assert not interface.source.exists()
 
 
 class TestByteStuff:

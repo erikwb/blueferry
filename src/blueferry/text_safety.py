@@ -16,6 +16,8 @@ def terminal_text(value: object) -> str:
 
     Newlines are retained for the caller to format. Tabs and all other C0/C1
     controls become a visible replacement character instead of being emitted.
+    Unicode line and paragraph separators are also replaced so they cannot
+    create extra terminal rows while bypassing newline handling.
     """
     output = []
     for character in str(value or ""):
@@ -24,6 +26,7 @@ def terminal_text(value: object) -> str:
             output.append(character)
         elif (
             unicodedata.category(character) == "Cc"
+            or unicodedata.category(character) in {"Zl", "Zp"}
             or 0x7F <= codepoint <= 0x9F
             or codepoint in _BIDI_CONTROL_CODEPOINTS
         ):

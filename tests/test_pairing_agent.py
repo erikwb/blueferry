@@ -90,6 +90,71 @@ def test_agent_rejects_requests_for_any_other_device():
     assert raised.value.get_dbus_name() == "org.bluez.Error.Rejected"
 
 
+def test_agent_rejects_a_pin_it_cannot_display():
+    agent = _agent(lambda _passkey: True)
+
+    with pytest.raises(dbus.exceptions.DBusException) as raised:
+        agent.DisplayPinCode(
+            dbus.ObjectPath("/org/bluez/hci0/dev_02_00_00_00_00_01"),
+            "123456",
+        )
+
+    assert raised.value.get_dbus_name() == "org.bluez.Error.Rejected"
+
+
+def test_pairing_without_numeric_comparison_requires_explicit_approval():
+    requested = []
+    replies = []
+    agent = _agent(lambda passkey: requested.append(passkey) or True)
+
+    agent.RequestAuthorization(
+        dbus.ObjectPath("/org/bluez/hci0/dev_02_00_00_00_00_01"),
+        lambda: replies.append("accepted"),
+        lambda error: replies.append(error),
+    )
+    _wait_for(replies)
+
+    assert requested == [None]
+    assert replies == ["accepted"]
+
+
+def test_pairing_without_numeric_comparison_honors_rejection():
+    replies = []
+    agent = _agent(lambda _passkey: False)
+
+    agent.RequestAuthorization(
+        dbus.ObjectPath("/org/bluez/hci0/dev_02_00_00_00_00_01"),
+        lambda: replies.append("accepted"),
+        lambda error: replies.append(error),
+    )
+    _wait_for(replies)
+
+    assert isinstance(replies[0], dbus.exceptions.DBusException)
+    assert replies[0].get_dbus_name() == "org.bluez.Error.Rejected"
+
+
+@pytest.mark.parametrize("uuid", sorted(pairing_agent._AUTHORIZED_SERVICE_UUIDS))
+def test_agent_authorizes_only_blueferry_profiles(uuid):
+    agent = _agent(lambda _passkey: True)
+
+    agent.AuthorizeService(
+        dbus.ObjectPath("/org/bluez/hci0/dev_02_00_00_00_00_01"),
+        uuid.upper(),
+    )
+
+
+def test_agent_rejects_unrelated_services():
+    agent = _agent(lambda _passkey: True)
+
+    with pytest.raises(dbus.exceptions.DBusException) as raised:
+        agent.AuthorizeService(
+            dbus.ObjectPath("/org/bluez/hci0/dev_02_00_00_00_00_01"),
+            "0000110b-0000-1000-8000-00805f9b34fb",
+        )
+
+    assert raised.value.get_dbus_name() == "org.bluez.Error.Rejected"
+
+
 def test_registered_agent_is_default_only_for_context_lifetime(caplog):
     calls = []
     caplog.set_level(logging.DEBUG, logger="blueferry.pairing_agent")

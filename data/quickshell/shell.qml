@@ -14,7 +14,6 @@ ShellRoot {
   property string contactsRequestedQuery: ""
   property string selectedThreadKey: ""
   property string pendingMessageHandle: ""
-  property bool awaitingOpenMessageHandle: false
   property string confirmedGroupSignature: ""
   property var groupParticipantsThread: null
   property var rosterChangedThread: null
@@ -37,8 +36,10 @@ ShellRoot {
   property string configuredMac: ""
   property string configuredAdapter: ""
   property bool pairingConfirmationPending: false
+  property string pairingConfirmationPurpose: ""
   property string pairingPasskey: ""
   property bool pairingResultReceived: false
+  property bool forgetResultReceived: false
   property string pairingIssueReport: ""
   property var pendingPairingDevice: null
   property string adapterName: ""
@@ -52,6 +53,15 @@ ShellRoot {
   property string storageDetail: ""
   property bool storageUnlockAttempted: false
   property string statusErrorText: ""
+  property bool statusBusy: false
+  property bool threadsBusy: false
+  property bool contactsBusy: false
+  property bool sendBusy: false
+  property bool newMessageSendBusy: false
+  property bool groupParticipantsBusy: false
+  property bool notificationPolicyBusy: false
+  property bool storagePolicyBusy: false
+  property bool storageUnlockBusy: false
 
   Theme { id: theme }
   OnboardingState {
@@ -71,8 +81,14 @@ ShellRoot {
 
   function reload() {
     if (!configured) return
-    if (!threadsProcess.running) threadsProcess.running = true
-    if (!statusProcess.running) statusProcess.running = true
+    if (!threadsBusy) {
+      threadsBusy = true
+      backendBridge.request("threads", {limit: 200})
+    }
+    if (!statusBusy) {
+      statusBusy = true
+      backendBridge.request("status", {})
+    }
   }
 
   function searchContacts(query) {
@@ -81,23 +97,22 @@ ShellRoot {
       contactResults = []
       return
     }
-    if (!contactsProcess.running) startContactSearch()
+    if (!contactsBusy) startContactSearch()
   }
 
   function startContactSearch() {
-    if (contactQuery === "" || contactsProcess.running) return
+    if (contactQuery === "" || contactsBusy) return
     contactsRequestedQuery = contactQuery
-    contactsProcess.command = [
-      "/usr/bin/blueferry", "contacts-json", contactsRequestedQuery
-    ]
-    contactsProcess.running = true
+    contactsBusy = true
+    backendBridge.request("contacts", {query: contactsRequestedQuery})
   }
 
   function maybeUnlockStorage() {
     if (configured && storagePolicy === "encrypted" && storageState !== "ready"
-        && !storageUnlockAttempted && !storageUnlockProcess.running) {
+        && !storageUnlockAttempted && !storageUnlockBusy) {
       storageUnlockAttempted = true
-      storageUnlockProcess.running = true
+      storageUnlockBusy = true
+      backendBridge.request("unlock_storage", {})
     }
   }
 
@@ -129,19 +144,6 @@ ShellRoot {
     phoneSettingsVisible = false
     window.visible = true
     if (!selectMessage(handle)) reload()
-  }
-
-  function handleOpenRequestLine(line) {
-    if (line.indexOf("member=OpenMessageRequested") >= 0) {
-      awaitingOpenMessageHandle = true
-      return
-    }
-    if (!awaitingOpenMessageHandle) return
-    var match = /^\s*string "([^"]*)"\s*$/.exec(line)
-    if (match !== null) {
-      awaitingOpenMessageHandle = false
-      openMessage(match[1])
-    }
   }
 
   function groupSignature(thread) {
@@ -246,6 +248,7 @@ ShellRoot {
       }
       if (parsed.event === "confirmation") {
         root.pairingPasskey = parsed.passkey || ""
+        root.pairingConfirmationPurpose = parsed.purpose || "pair"
         root.pairingConfirmationPending = true
         root.pairingStatus = root.pairingPasskey === ""
           ? "The iPhone is asking to pair. Approve only if you started this pairing."
@@ -282,32 +285,161 @@ ShellRoot {
     }
   }
 
-  Process {
-    id: statusProcess
-    command: ["/usr/bin/blueferry", "status-json"]
-    stdout: StdioCollector {
-      onStreamFinished: {
-        try {
-          var parsed = JSON.parse(text)
-          root.backendStatus = parsed
-          var policy = parsed.notification_policy || "messages"
-          root.notificationPolicy = ["all", "messages", "none"].indexOf(policy) >= 0
-            ? policy : "messages"
-          var storagePolicy = parsed.storage_policy || "encrypted"
-          root.storagePolicy = ["encrypted", "plaintext", "none"].indexOf(storagePolicy) >= 0
-            ? storagePolicy : "encrypted"
-          root.storageState = parsed.storage_state || "locked"
-          root.storageDetail = parsed.storage_detail || "Storage status unavailable"
-          root.statusErrorText = ""
-          root.maybeUnlockStorage()
-        } catch (error) {
+  function handleForgetLine(line) {
+    if (line.trim() === "") return
+    try {
+      var parsed = JSON.parse(line)
+      if (parsed.event === "confirmation" && parsed.purpose === "forget") {
+        root.pairingPasskey = ""
+        root.pairingConfirmationPurpose = "forget"
+        root.pairingConfirmationPending = true
+        root.pairingStatus = "Confirm that you want to unpair this iPhone."
+        return
+      }
+      root.forgetResultReceived = true
+      root.pairingConfirmationPending = false
+      root.pairingConfirmationPurpose = ""
+      root.pairingStatus = parsed.ok
+        ? "Local bond removed. Also forget this computer on the iPhone, then scan again."
+        : (parsed.error || "Could not remove the bond.")
+      if (parsed.ok) {
+        root.configured = false
+        root.targetSaved = false
+        root.targetBonded = false
+        root.bondStateKnown = true
+        root.configuredMac = ""
+        root.configuredAdapter = ""
+        root.ancsEnabled = true
+        root.backendStatus = ({})
+        root.pairingDevices = []
+        root.loadPairingDevices(false)
+      }
+    } catch (error) { root.pairingStatus = "Forget operation returned invalid data." }
+  }
+
+  BackendBridge { id: backendBridge }
+
+  Connections {
+    target: backendBridge
+
+    function onResponse(method, requestId, result) {
+      if (method === "status") {
+        root.statusBusy = false
+        if (typeof result !== "object" || result === null) {
           root.markStatusUnavailable("BlueFerry backend returned invalid status data")
+          return
         }
+        root.backendStatus = result
+        var policy = result.notification_policy || "messages"
+        root.notificationPolicy = ["all", "messages", "none"].indexOf(policy) >= 0
+          ? policy : "messages"
+        var storagePolicy = result.storage_policy || "encrypted"
+        root.storagePolicy = ["encrypted", "plaintext", "none"].indexOf(storagePolicy) >= 0
+          ? storagePolicy : "encrypted"
+        root.storageState = result.storage_state || "locked"
+        root.storageDetail = result.storage_detail || "Storage status unavailable"
+        root.statusErrorText = ""
+        root.maybeUnlockStorage()
+      } else if (method === "threads") {
+        root.threadsBusy = false
+        root.threads = Array.isArray(result) ? result : []
+        if (root.selectedThreadKey !== "" && root.selectedThread() === null) {
+          root.selectedThreadKey = ""
+          root.confirmedGroupSignature = ""
+        }
+        if (root.pendingMessageHandle !== "")
+          root.selectMessage(root.pendingMessageHandle)
+        root.warnAboutRosterChanges()
+        root.errorText = ""
+      } else if (method === "contacts") {
+        root.contactsBusy = false
+        if (root.contactsRequestedQuery === root.contactQuery)
+          root.contactResults = Array.isArray(result) ? result : []
+        else Qt.callLater(root.startContactSearch)
+      } else if (method === "send_to_thread") {
+        root.sendBusy = false
+        composer.text = ""
+        messageList.stickToBottom = true
+        root.reload()
+      } else if (method === "send") {
+        root.newMessageSendBusy = false
+        newMessagePopup.close()
+        newRecipient.text = ""
+        newMessageBody.text = ""
+        root.reload()
+      } else if (method === "set_group_participants") {
+        root.groupParticipantsBusy = false
+        groupParticipantsPopup.close()
+        root.reload()
+      } else if (method === "set_notification_policy") {
+        root.notificationPolicyBusy = false
+        root.notificationPolicy = String(result)
+        root.reload()
+      } else if (method === "set_storage_policy") {
+        root.storagePolicyBusy = false
+        if (typeof result === "object" && result !== null) {
+          root.storagePolicy = result.storage_policy || root.storagePolicy
+          root.storageState = result.storage_state || root.storageState
+          root.storageDetail = result.storage_detail || root.storageDetail
+        }
+        root.reload()
+      } else if (method === "unlock_storage") {
+        root.storageUnlockBusy = false
+        if (typeof result === "object" && result !== null) {
+          root.storageState = result.storage_state || root.storageState
+          root.storageDetail = result.storage_detail || root.storageDetail
+        }
+        root.reload()
       }
     }
-    // qmllint disable signal-handler-parameters
-    onExited: function(code) {
-      if (code !== 0) root.markStatusUnavailable("BlueFerry backend is unavailable")
+
+    function onFailure(method, requestId, message) {
+      if (method === "status") {
+        root.statusBusy = false
+        root.markStatusUnavailable("BlueFerry backend is unavailable")
+      } else if (method === "threads") {
+        root.threadsBusy = false
+        root.errorText = "BlueFerry daemon is unavailable"
+      } else if (method === "contacts") {
+        root.contactsBusy = false
+        root.errorText = message || "Contact search failed"
+        if (root.contactsRequestedQuery !== root.contactQuery)
+          Qt.callLater(root.startContactSearch)
+      } else if (method === "send_to_thread") {
+        root.sendBusy = false
+        root.errorText = message
+      } else if (method === "send") {
+        root.newMessageSendBusy = false
+        root.errorText = message
+      } else if (method === "set_group_participants") {
+        root.groupParticipantsBusy = false
+        root.errorText = message
+      } else if (method === "set_notification_policy") {
+        root.notificationPolicyBusy = false
+        root.errorText = message || "Could not save notification preference"
+      } else if (method === "set_storage_policy") {
+        root.storagePolicyBusy = false
+        root.errorText = message
+      } else if (method === "unlock_storage") {
+        root.storageUnlockBusy = false
+        root.errorText = message
+      } else {
+        root.statusBusy = false
+        root.threadsBusy = false
+        root.contactsBusy = false
+        root.sendBusy = false
+        root.newMessageSendBusy = false
+        root.groupParticipantsBusy = false
+        root.notificationPolicyBusy = false
+        root.storagePolicyBusy = false
+        root.storageUnlockBusy = false
+        root.errorText = message
+      }
+    }
+
+    function onEventReceived(name, data) {
+      if (name === "open-message") root.openMessage(String(data || ""))
+      else if (name === "history-changed" || name === "status-changed") root.reload()
     }
   }
 
@@ -374,169 +506,6 @@ ShellRoot {
         } catch (error) { root.phoneSettingsVisible = true }
       }
     }
-  }
-
-  Process {
-    id: threadsProcess
-    command: ["/usr/bin/blueferry", "threads-json", "--limit", "200"]
-    stdout: StdioCollector {
-      onStreamFinished: {
-        try {
-          var parsed = JSON.parse(text)
-          root.threads = Array.isArray(parsed) ? parsed : []
-          if (root.selectedThreadKey !== "" && root.selectedThread() === null) {
-            root.selectedThreadKey = ""
-            root.confirmedGroupSignature = ""
-          }
-          if (root.pendingMessageHandle !== "")
-            root.selectMessage(root.pendingMessageHandle)
-          root.warnAboutRosterChanges()
-          root.errorText = ""
-        } catch (error) { root.errorText = "Backend response was invalid" }
-      }
-    }
-    // Quickshell's qmltypes omit the QProcess namespace used by this signal.
-    // qmllint disable signal-handler-parameters
-    onExited: function(code) {
-      if (code !== 0) root.errorText = "BlueFerry daemon is unavailable"
-    }
-  }
-
-  Process {
-    id: openRequestMonitor
-    running: true
-    command: [
-      "/usr/bin/dbus-monitor",
-      "--session",
-      "type='signal',sender='io.weirdware.BlueFerry',path='/io/weirdware/BlueFerry',interface='io.weirdware.BlueFerry.Events1',member='OpenMessageRequested'"
-    ]
-    stdout: SplitParser {
-      onRead: function(line) { root.handleOpenRequestLine(line) }
-    }
-  }
-
-  Process {
-    id: sendProcess
-    stdout: StdioCollector { }
-    stderr: StdioCollector {
-      onStreamFinished: if (text.trim() !== "") root.errorText = text.trim()
-    }
-    // Quickshell's qmltypes omit the QProcess namespace used by this signal.
-    // qmllint disable signal-handler-parameters
-    onExited: function(code) {
-      if (code === 0) {
-        composer.text = ""
-        messageList.stickToBottom = true
-        root.reload()
-      }
-    }
-  }
-
-  Process {
-    id: contactsProcess
-    stdout: StdioCollector {
-      onStreamFinished: {
-        if (root.contactsRequestedQuery !== root.contactQuery) return
-        try {
-          var parsed = JSON.parse(text)
-          if (parsed.error) root.errorText = parsed.error
-          else root.contactResults = Array.isArray(parsed) ? parsed : []
-        } catch (error) { root.errorText = "Contact search returned invalid data" }
-      }
-    }
-    // qmllint disable signal-handler-parameters
-    onExited: function(code) {
-      if (code !== 0) root.errorText = "Contact search failed"
-      if (root.contactsRequestedQuery !== root.contactQuery)
-        Qt.callLater(root.startContactSearch)
-    }
-  }
-
-  Process {
-    id: newMessageSendProcess
-    stdout: StdioCollector { }
-    stderr: StdioCollector {
-      onStreamFinished: if (text.trim() !== "") root.errorText = text.trim()
-    }
-    // qmllint disable signal-handler-parameters
-    onExited: function(code) {
-      if (code === 0) {
-        newMessagePopup.close()
-        newRecipient.text = ""
-        newMessageBody.text = ""
-        root.reload()
-      }
-    }
-  }
-
-  Process {
-    id: groupParticipantsProcess
-    stdout: StdioCollector { }
-    stderr: StdioCollector {
-      onStreamFinished: if (text.trim() !== "") root.errorText = text.trim()
-    }
-    // qmllint disable signal-handler-parameters
-    onExited: function(code) {
-      if (code === 0) {
-        groupParticipantsPopup.close()
-        root.reload()
-      }
-    }
-  }
-
-  Process {
-    id: notificationPolicyProcess
-    stdout: StdioCollector {
-      onStreamFinished: {
-        try {
-          var parsed = JSON.parse(text)
-          if (parsed.ok) root.notificationPolicy = parsed.policy
-          else root.errorText = parsed.error || "Could not save notification preference"
-        } catch (error) { root.errorText = "Notification preference response was invalid" }
-      }
-    }
-    // qmllint disable signal-handler-parameters
-    onExited: function(code) {
-      if (code === 0) root.reload()
-    }
-  }
-
-  Process {
-    id: storagePolicyProcess
-    stdout: StdioCollector {
-      onStreamFinished: {
-        try {
-          var parsed = JSON.parse(text)
-          root.storagePolicy = parsed.storage_policy || root.storagePolicy
-          root.storageState = parsed.storage_state || root.storageState
-          root.storageDetail = parsed.storage_detail || root.storageDetail
-        } catch (error) { root.errorText = "Storage response was invalid" }
-      }
-    }
-    stderr: StdioCollector {
-      onStreamFinished: if (text.trim() !== "") root.errorText = text.trim()
-    }
-    // qmllint disable signal-handler-parameters
-    onExited: function(code) { if (code === 0) root.reload() }
-  }
-
-  Process {
-    id: storageUnlockProcess
-    command: ["/usr/bin/blueferry", "storage-unlock"]
-    stdout: StdioCollector {
-      onStreamFinished: {
-        try {
-          var parsed = JSON.parse(text)
-          root.storageState = parsed.storage_state || root.storageState
-          root.storageDetail = parsed.storage_detail || root.storageDetail
-        } catch (error) { root.errorText = "Keyring response was invalid" }
-      }
-    }
-    stderr: StdioCollector {
-      onStreamFinished: if (text.trim() !== "") root.errorText = text.trim()
-    }
-    // qmllint disable signal-handler-parameters
-    onExited: function(code) { if (code === 0) root.reload() }
   }
 
   Process {
@@ -614,6 +583,7 @@ ShellRoot {
     // qmllint disable signal-handler-parameters
     onExited: function(code) {
       root.pairingConfirmationPending = false
+      root.pairingConfirmationPurpose = ""
       root.pairingPasskey = ""
       if (code !== 0 && !root.pairingResultReceived)
         root.pairingStatus = "Pairing did not complete; unlock the iPhone and try again."
@@ -634,27 +604,18 @@ ShellRoot {
 
   Process {
     id: forgetProcess
-    stdout: StdioCollector {
-      onStreamFinished: {
-        try {
-          var parsed = JSON.parse(text)
-          root.pairingStatus = parsed.ok
-            ? "Local bond removed. Also forget this computer on the iPhone, then scan again."
-            : (parsed.error || "Could not remove the bond.")
-          if (parsed.ok) {
-            root.configured = false
-            root.targetSaved = false
-            root.targetBonded = false
-            root.bondStateKnown = true
-            root.configuredMac = ""
-            root.configuredAdapter = ""
-            root.ancsEnabled = true
-            root.backendStatus = ({})
-            root.pairingDevices = []
-            root.loadPairingDevices(false)
-          }
-        } catch (error) { root.pairingStatus = "Forget operation returned invalid data." }
+    stdinEnabled: true
+    stdout: SplitParser {
+      onRead: function(line) { root.handleForgetLine(line) }
+    }
+    // qmllint disable signal-handler-parameters
+    onExited: function(code) {
+      if (root.pairingConfirmationPurpose === "forget") {
+        root.pairingConfirmationPending = false
+        root.pairingConfirmationPurpose = ""
       }
+      if (code !== 0 && !root.forgetResultReceived)
+        root.pairingStatus = "Could not remove the bond."
     }
   }
 
@@ -1174,18 +1135,20 @@ ShellRoot {
                   }
                   FerryButton {
                     id: sendMessageButton
-                    text: sendProcess.running ? "SENDING" : "SEND"
+                    text: root.sendBusy ? "SENDING" : "SEND"
                     highlighted: true
                     enabled: composer.enabled && composer.text.trim() !== "" &&
                              (!conversationPane.thread.is_group ||
                               root.confirmedGroupSignature === root.groupSignature(conversationPane.thread)) &&
-                             !sendProcess.running
+                             !root.sendBusy
                     onClicked: {
                       var thread = conversationPane.thread
-                      var args = ["/usr/bin/blueferry", "thread-send", thread.key, composer.text]
-                      if (thread.is_group) args.push("--confirm-group")
-                      sendProcess.command = args
-                      sendProcess.running = true
+                      root.sendBusy = true
+                      backendBridge.request("send_to_thread", {
+                        thread_key: thread.key,
+                        body: composer.text,
+                        confirm_group: thread.is_group
+                      })
                       if (thread.group_origin === "named")
                         root.confirmedGroupSignature = ""
                     }
@@ -1341,6 +1304,7 @@ ShellRoot {
             enabled: root.selectedPairingDevice() !== null
                      && root.compatibilityLoaded
                      && !deviceProcess.running && !pairProcess.running
+                     && !forgetProcess.running
             onClicked: {
               var device = root.selectedPairingDevice()
               if (!device.paired && root.targetSaved) {
@@ -1355,7 +1319,9 @@ ShellRoot {
             onClicked: pairingIssuePopup.open()
           }
           FerryLabel {
-            text: root.pairingPasskey === "" ? "Pairing confirmation" : root.pairingPasskey
+            text: root.pairingConfirmationPurpose === "forget"
+              ? "Confirm unpairing"
+              : root.pairingPasskey === "" ? "Pairing confirmation" : root.pairingPasskey
             font.bold: true
             font.pixelSize: root.pairingPasskey === "" ? theme.baseFontSize : theme.headingSize
             horizontalAlignment: Text.AlignHCenter
@@ -1366,22 +1332,35 @@ ShellRoot {
             Layout.fillWidth: true
             visible: root.pairingConfirmationPending
             FerryButton {
-              text: "Cancel Pairing"
+              text: root.pairingConfirmationPurpose === "forget"
+                ? "Cancel" : "Cancel Pairing"
               Layout.fillWidth: true
               onClicked: {
-                pairProcess.write("no\n")
+                var forgetting = root.pairingConfirmationPurpose === "forget"
+                if (forgetting)
+                  forgetProcess.write("no\n")
+                else pairProcess.write("no\n")
                 root.pairingConfirmationPending = false
-                root.pairingStatus = "Canceling pairing…"
+                root.pairingConfirmationPurpose = ""
+                root.pairingStatus = forgetting
+                  ? "Canceling unpair…" : "Canceling pairing…"
               }
             }
             FerryButton {
-              text: root.pairingPasskey === "" ? "Approve Pairing" : "Codes Match"
+              text: root.pairingConfirmationPurpose === "forget"
+                ? "Unpair"
+                : root.pairingPasskey === "" ? "Approve Pairing" : "Codes Match"
               Layout.fillWidth: true
               highlighted: true
               onClicked: {
-                pairProcess.write("yes\n")
+                var forgetting = root.pairingConfirmationPurpose === "forget"
+                if (forgetting)
+                  forgetProcess.write("yes\n")
+                else pairProcess.write("yes\n")
                 root.pairingConfirmationPending = false
-                root.pairingStatus = "Finishing Bluetooth setup…"
+                root.pairingConfirmationPurpose = ""
+                root.pairingStatus = forgetting
+                  ? "Removing the local bond…" : "Finishing Bluetooth setup…"
               }
             }
           }
@@ -1398,9 +1377,14 @@ ShellRoot {
               text: forgetProcess.running ? "Removing…"
                 : root.bondStateKnown && !root.targetBonded
                   ? "Clear Saved Phone" : "Unpair"
-              enabled: root.configuredMac !== "" && !forgetProcess.running
+              enabled: root.configuredMac !== ""
+                && !forgetProcess.running && !pairProcess.running
               onClicked: {
-                forgetProcess.command = ["/usr/bin/blueferry", "pairing-forget", root.configuredMac]
+                root.forgetResultReceived = false
+                forgetProcess.command = [
+                  "/usr/bin/blueferry", "pairing-forget", root.configuredMac,
+                  "--interactive-approval"
+                ]
                 if (root.configuredAdapter)
                   forgetProcess.command.push("--adapter", root.configuredAdapter)
                 forgetProcess.running = true
@@ -1474,13 +1458,13 @@ ShellRoot {
             model: ["All iPhone notifications", "Messages only", "None"]
             currentIndex: root.notificationPolicy === "all" ? 0
               : root.notificationPolicy === "none" ? 2 : 1
-            enabled: root.configured && !notificationPolicyProcess.running
+            enabled: root.configured && !root.notificationPolicyBusy
             onActivated: {
               var values = ["all", "messages", "none"]
-              notificationPolicyProcess.command = [
-                "/usr/bin/blueferry", "notification-policy-set", values[currentIndex]
-              ]
-              notificationPolicyProcess.running = true
+              root.notificationPolicyBusy = true
+              backendBridge.request("set_notification_policy", {
+                policy: values[currentIndex]
+              })
             }
           }
           FerrySectionLabel {
@@ -1496,7 +1480,7 @@ ShellRoot {
             ]
             currentIndex: root.storagePolicy === "plaintext" ? 1
               : root.storagePolicy === "none" ? 2 : 0
-            enabled: root.configured && !storagePolicyProcess.running
+            enabled: root.configured && !root.storagePolicyBusy
             onActivated: {
               var values = ["encrypted", "plaintext", "none"]
               if (values[currentIndex] !== root.storagePolicy
@@ -1505,12 +1489,12 @@ ShellRoot {
                 root.reload()
                 return
               }
-              storagePolicyProcess.command = [
-                "/usr/bin/blueferry", "storage-policy-set", values[currentIndex]
-              ]
               if (values[currentIndex] === "encrypted")
                 root.storageUnlockAttempted = true
-              storagePolicyProcess.running = true
+              root.storagePolicyBusy = true
+              backendBridge.request("set_storage_policy", {
+                policy: values[currentIndex]
+              })
               confirmStorageChange.checked = false
             }
           }
@@ -1757,17 +1741,17 @@ ShellRoot {
             }
             FerryButton {
               id: newMessageSendButton
-              text: newMessageSendProcess.running ? "Sending…" : "Send"
+              text: root.newMessageSendBusy ? "Sending…" : "Send"
               highlighted: true
               enabled: newRecipient.text.trim() !== ""
                 && newMessageBody.text.trim() !== ""
-                && !newMessageSendProcess.running
+                && !root.newMessageSendBusy
               onClicked: {
-                newMessageSendProcess.command = [
-                  "/usr/bin/blueferry", "message-send",
-                  newRecipient.text, newMessageBody.text
-                ]
-                newMessageSendProcess.running = true
+                root.newMessageSendBusy = true
+                backendBridge.request("send", {
+                  recipient: newRecipient.text,
+                  body: newMessageBody.text
+                })
               }
             }
           }
@@ -1934,20 +1918,17 @@ ShellRoot {
               onClicked: groupParticipantsPopup.close()
             }
             FerryButton {
-              text: groupParticipantsProcess.running ? "Saving…" : "Save participants"
+              text: root.groupParticipantsBusy ? "Saving…" : "Save participants"
               highlighted: true
               enabled: root.participantLines(groupParticipantsEditor.text).length >= 2
-                && !groupParticipantsProcess.running
+                && !root.groupParticipantsBusy
               onClicked: {
-                var args = [
-                  "/usr/bin/blueferry", "group-participants-set",
-                  root.groupParticipantsThread.key
-                ]
                 var recipients = root.participantLines(groupParticipantsEditor.text)
-                for (var index = 0; index < recipients.length; ++index)
-                  args.push(recipients[index])
-                groupParticipantsProcess.command = args
-                groupParticipantsProcess.running = true
+                root.groupParticipantsBusy = true
+                backendBridge.request("set_group_participants", {
+                  thread_key: root.groupParticipantsThread.key,
+                  recipients: recipients
+                })
               }
             }
           }

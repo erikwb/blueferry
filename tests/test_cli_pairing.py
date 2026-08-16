@@ -70,12 +70,13 @@ def test_interactive_pairing_emits_code_and_waits_for_acceptance(monkeypatch):
             "--replace-saved-mac",
             "02:00:00:00:00:02",
         ],
-        input="yes\n",
+        input="yes\nyes\n",
     )
 
     assert result.exit_code == 0
     events = [json.loads(line) for line in result.stdout.splitlines()]
     assert events == [
+        {"event": "confirmation", "passkey": "", "purpose": "bind"},
         {"event": "confirmation", "passkey": "012345"},
         {"ok": True, "device": {"mac": "02:00:00:00:00:01"}},
     ]
@@ -83,6 +84,27 @@ def test_interactive_pairing_emits_code_and_waits_for_acceptance(monkeypatch):
         ("replace", "02:00:00:00:00:02", "02:00:00:00:00:01", "hci0"),
         ("02:00:00:00:00:01", "hci1", True),
     ]
+
+
+def test_pairing_complete_refuses_the_headless_path(monkeypatch):
+    called = []
+
+    class Setup:
+        @staticmethod
+        def complete(*_args, **_kwargs):
+            called.append(True)
+
+    monkeypatch.setattr(setup_client, "SetupClient", Setup)
+
+    result = CliRunner().invoke(
+        cli.app, ["pairing-complete", "02:00:00:00:00:01"],
+    )
+
+    assert result.exit_code == 2
+    assert json.loads(result.stdout)["error"] == (
+        "pairing-complete requires an interactive BlueFerry client"
+    )
+    assert called == []
 
 
 def test_pairing_complete_failure_includes_report_path(monkeypatch):
@@ -99,11 +121,14 @@ def test_pairing_complete_failure_includes_report_path(monkeypatch):
     monkeypatch.setattr(setup_client, "SetupClient", Setup)
 
     result = CliRunner().invoke(
-        cli.app, ["pairing-complete", "02:00:00:00:00:01"],
+        cli.app, [
+            "pairing-complete", "02:00:00:00:00:01", "--interactive-agent",
+        ],
+        input="yes\n",
     )
 
     assert result.exit_code == 2
-    payload = json.loads(result.stdout)
+    payload = json.loads(result.stdout.splitlines()[-1])
     assert payload["ok"] is False
     assert payload["error"] == "adapter setup failed"
     assert payload["report_path"] == "/tmp/quirks-fail.json"
@@ -125,14 +150,94 @@ def test_pairing_complete_forwards_independent_pairing_modes(monkeypatch):
         [
             "pairing-complete",
             "02:00:00:00:00:01",
+            "--interactive-agent",
             "--compatibility-mode",
             "--explicit-pairing",
         ],
+        input="yes\n",
     )
 
     assert result.exit_code == 0
     assert observed[0][1]["compatibility_mode"] is True
     assert observed[0][1]["explicit_pairing"] is True
+
+
+def test_pairing_forget_refuses_the_headless_path(monkeypatch):
+    called = []
+
+    class Setup:
+        @staticmethod
+        def forget(*_args, **_kwargs):
+            called.append(True)
+
+    monkeypatch.setattr(setup_client, "SetupClient", Setup)
+
+    result = CliRunner().invoke(
+        cli.app, ["pairing-forget", "02:00:00:00:00:01"]
+    )
+
+    assert result.exit_code == 2
+    assert json.loads(result.stdout)["error"] == (
+        "pairing-forget requires an interactive BlueFerry client"
+    )
+    assert called == []
+
+
+def test_pairing_forget_waits_for_explicit_approval(monkeypatch):
+    forgotten = []
+
+    class Setup:
+        @staticmethod
+        def configuration():
+            return SimpleNamespace(adapter="hci0")
+
+        @staticmethod
+        def forget(mac, **kwargs):
+            forgotten.append((mac, kwargs["adapter"]))
+
+    monkeypatch.setattr(setup_client, "SetupClient", Setup)
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "pairing-forget", "02:00:00:00:00:01",
+            "--interactive-approval",
+        ],
+        input="yes\n",
+    )
+
+    assert result.exit_code == 0
+    events = [json.loads(line) for line in result.stdout.splitlines()]
+    assert events == [
+        {"event": "confirmation", "purpose": "forget"},
+        {"ok": True, "mac": "02:00:00:00:00:01"},
+    ]
+    assert forgotten == [("02:00:00:00:00:01", "hci0")]
+
+
+def test_pairing_forget_honors_rejection(monkeypatch):
+    called = []
+
+    class Setup:
+        def __init__(self):
+            called.append(True)
+
+    monkeypatch.setattr(setup_client, "SetupClient", Setup)
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "pairing-forget", "02:00:00:00:00:01",
+            "--interactive-approval",
+        ],
+        input="no\n",
+    )
+
+    assert result.exit_code == 2
+    assert json.loads(result.stdout.splitlines()[-1])["error"] == (
+        "Unpairing this phone was not approved"
+    )
+    assert called == []
 
 
 def test_pairing_issue_prints_the_latest_report_without_opening(tmp_path, monkeypatch):

@@ -9,6 +9,7 @@ MAX_BMESSAGE_BYTES = 1024 * 1024
 # A full phonebook can legitimately be large. This is a byte limit, separate
 # from PBAP's MaxCount contact limit.
 MAX_PHONEBOOK_BYTES = 64 * 1024 * 1024
+MAX_VCARD_CHARS = 1024 * 1024
 MAX_CONTACT_NAME_CHARS = 512
 MAX_CONTACT_ADDRESS_CHARS = 320
 

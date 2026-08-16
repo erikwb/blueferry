@@ -57,8 +57,10 @@ Backend payloads cross D-Bus as JSON to keep the wire contract simple. Both
 Python client implementations decode them immediately into the shared models
 in `blueferry.models`; those records retain unknown fields for forward
 compatibility. Toolkit presentation code either consumes their typed fields or
-explicitly converts them to dictionaries. Quickshell's CLI adapter converts
-the same models back to JSON rather than defining a separate backend client.
+explicitly converts them to dictionaries. Quickshell has no generic QML D-Bus
+client, so its persistent stdin bridge converts the same models back to JSON
+while calling the daemon over the session bus. This keeps private request data
+out of process arguments without adding a Plasma-specific dependency.
 All Python transports share `client_wire` for response-shape validation and
 model conversion; synchronous and toolkit-specific scheduling remain separate.
 Group-thread messages include a display-only sender label derived from the

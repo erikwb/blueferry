@@ -256,6 +256,18 @@ def test_phonebook_card_and_address_counts_are_bounded() -> None:
     assert len(parsed[0][1]) == MAX_CONTACT_ADDRESSES_PER_CARD
 
 
+def test_oversized_or_unterminated_vcards_do_not_hide_later_contacts() -> None:
+    blob = (
+        ("BEGIN:VCARD\n" * 10_000)
+        + "FN:" + ("x" * (1024 * 1024 + 1)) + "\nEND:VCARD\n"
+        + "BEGIN:VCARD\nFN:Safe\nTEL:+15551234567\nEND:VCARD\n"
+    )
+
+    assert _parse_vcard_records(blob) == [
+        ("Safe", ["15551234567"], []),
+    ]
+
+
 def test_find_by_name_returns_phone_and_email_destinations(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "STATE_DIR", tmp_path)
     monkeypatch.setattr(config, "CONTACTS_DB", tmp_path / "contacts.sqlite")
@@ -364,3 +376,20 @@ def test_records_are_ordered_once_at_load(tmp_path, monkeypatch):
     ]
     assert resolver.records(0, 1) is not resolver._records
     assert resolver.records(0, 1) == [("Alice Example", ["15551234567"], [])]
+
+
+def test_resolver_only_equates_nanp_country_code_variants() -> None:
+    resolver = ContactsResolver.__new__(ContactsResolver)
+    resolver._mem = {"15551234567": {"Alice"}}
+
+    assert resolver.resolve("5551234567") == "Alice"
+    assert resolver.resolve("+1 555 123 4567") == "Alice"
+    assert resolver.resolve("+44 1 555 123 4567") is None
+
+
+def test_resolver_rejects_ambiguous_contact_names() -> None:
+    resolver = ContactsResolver.__new__(ContactsResolver)
+    resolver._mem = {"15551234567": {"Alice", "Other Alice"}}
+
+    assert resolver.resolve("15551234567") is None
+    assert resolver.resolve("5551234567") is None

@@ -11,7 +11,8 @@ the Linux side:
 
 This module owns those three concerns. The daemon may verify them on startup,
 but privileged Class-of-Device changes are limited to the explicit pairing
-flow and run through a packaged systemd service after Polkit authorization.
+flow and run through a hardened, argument-validating systemd service after a
+fresh Polkit authorization.
 """
 from __future__ import annotations
 

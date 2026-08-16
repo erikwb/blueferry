@@ -1,5 +1,6 @@
 usr/bin/blueferry
 usr/bin/blueferry-tui
+usr/bin/blueferry-quickshell-bridge
 usr/lib/python3*/dist-packages/blueferry/*.py
 usr/lib/python3*/dist-packages/blueferry/tui.tcss
 usr/lib/python3*/dist-packages/blueferry/ancs
@@ -10,6 +11,8 @@ usr/lib/blueferry/vendor
 usr/lib/systemd/user/blueferry.service
 usr/lib/systemd/user/default.target.wants/blueferry.service
 usr/lib/systemd/system/blueferry-btmgmt-set-class@.service
+usr/lib/blueferry/blueferry-set-cod
+usr/share/polkit-1/rules.d/49-blueferry-cod.rules
 usr/share/blueferry/package-release
 usr/share/blueferry/build-sha
 usr/share/dbus-1/interfaces/io.weirdware.BlueFerry.xml

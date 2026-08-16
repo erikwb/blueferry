@@ -94,8 +94,78 @@ class TestBasicParsing:
         assert p.sender_address is None
         assert p.body == "hello"
 
+    def test_vcard_inside_message_body_cannot_become_sender(self):
+        blob = (
+            "BEGIN:BMSG\r\n"
+            "TYPE:SMS_GSM\r\n"
+            "BEGIN:BENV\r\n"
+            "BEGIN:BBODY\r\n"
+            "BEGIN:MSG\r\n"
+            "BEGIN:VCARD\r\n"
+            "FN:Planted Name\r\n"
+            "TEL:+15550009999\r\n"
+            "END:VCARD\r\n"
+            "END:MSG\r\n"
+            "END:BBODY\r\n"
+            "END:BENV\r\n"
+            "END:BMSG\r\n"
+        )
+
+        parsed = parse(blob)
+
+        assert parsed.sender_address is None
+        assert parsed.sender_name is None
+        assert "TEL:+15550009999" in (parsed.body or "")
+
+    def test_recipient_vcard_after_envelope_cannot_become_sender(self):
+        blob = (
+            "BEGIN:BMSG\nTYPE:SMS_GSM\nBEGIN:BENV\n"
+            "BEGIN:VCARD\nFN:Recipient\nTEL:+15550009999\nEND:VCARD\n"
+            "BEGIN:BBODY\nBEGIN:MSG\nhello\nEND:MSG\n"
+            "END:BBODY\nEND:BENV\nEND:BMSG\n"
+        )
+
+        parsed = parse(blob)
+
+        assert parsed.sender_address is None
+        assert parsed.sender_name is None
+
 
 class TestEdgeCases:
+    def test_many_unterminated_message_markers_are_scanned_linearly(self):
+        parsed = parse("BEGIN:MSG\n" * 10_000)
+
+        assert parsed.body is None
+
+    def test_parser_recovers_from_an_unmatched_indented_message_prefix(self):
+        blob = (
+            "  BEGIN:MSG\n"
+            "malformed prefix\n"
+            "BEGIN:MSG\n"
+            "hello\n"
+            "END:MSG\n"
+        )
+
+        assert parse(blob).body == "hello"
+
+    def test_unicode_line_separator_is_body_text_not_structure(self):
+        blob = "BEGIN:MSG\nhello\u2028END:MSG\nEND:MSG\n"
+
+        assert parse(blob).body == "hello\nEND:MSG"
+
+    def test_many_unterminated_vcard_markers_are_skipped_linearly(self):
+        blob = (
+            ("BEGIN:VCARD\n" * 10_000)
+            + "BEGIN:VCARD\nFN:Alice\nTEL:+15551234567\nEND:VCARD\n"
+            + "BEGIN:BENV\nBEGIN:BBODY\nBEGIN:MSG\nhello\n"
+            + "END:MSG\nEND:BBODY\nEND:BENV\n"
+        )
+
+        parsed = parse(blob)
+
+        assert parsed.sender_address == "+15551234567"
+        assert parsed.sender_name == "Alice"
+
     def test_remote_metadata_is_bounded(self):
         blob = _bmsg("1" * (MAX_CONTACT_ADDRESS_CHARS + 1), "hello")
         blob = blob.replace(

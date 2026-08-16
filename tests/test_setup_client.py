@@ -127,7 +127,11 @@ def test_complete_pairing_decodes_result_and_forget_delegates(monkeypatch):
     )
 
     client = setup_client.SetupClient()
-    result = client.complete(device.mac, adapter="hci1")
+    result = client.complete(
+        device.mac,
+        adapter="hci1",
+        confirmation=lambda _passkey: True,
+    )
     client.forget(device.mac, adapter="hci1")
 
     assert result.device.device_path == device.device_path
