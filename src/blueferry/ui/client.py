@@ -13,42 +13,27 @@ Slow methods are issued asynchronously so the UI never blocks.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
-from typing import ClassVar
+from typing import ClassVar, TypeVar
 
 import dbus
-import dbus.exceptions
 import dbus.mainloop
 from gi.repository import GLib, GObject
 
 from blueferry.backend_lifecycle import ensure_backend_current
 from blueferry.bus import get_session_bus
-from blueferry.client_wire import (
-    decode_contacts,
-    decode_mapping,
-    decode_status,
-    decode_thread,
-    decode_threads,
-)
-from blueferry.models import BackendStatus, Thread
+from blueferry.client import BackendClient
+from blueferry.models import BackendStatus
 from blueferry.protocol import (
     BUS_NAME,
-    CLEAR_CALL_TIMEOUT_SEC,
-    CONTACT_CALL_TIMEOUT_SEC,
     EVENTS_IFACE,
-    GROUP_ROUTE_CALL_TIMEOUT_SEC,
-    MESSAGES_IFACE,
-    OBEX_CALL_TIMEOUT_SEC,
     OBJECT_PATH,
-    POLICY_CALL_TIMEOUT_SEC,
-    SNAPSHOT_CALL_TIMEOUT_SEC,
-    STATUS_CALL_TIMEOUT_SEC,
-    STORAGE_CALL_TIMEOUT_SEC,
 )
 from blueferry.setup_client import SetupClient
 
 log = logging.getLogger(__name__)
+T = TypeVar("T")
 
 
 def _plain(value):
@@ -69,12 +54,6 @@ def _plain(value):
     if isinstance(value, dbus.Double):
         return float(value)
     return value
-
-
-def dbus_error_text(e: Exception) -> str:
-    if isinstance(e, dbus.exceptions.DBusException):
-        return e.get_dbus_message() or e.get_dbus_name() or str(e)
-    return str(e)
 
 
 class DaemonClient(GObject.Object):
@@ -144,19 +123,20 @@ class DaemonClient(GObject.Object):
 
     # ---- proxy helpers --------------------------------------------------
 
-    def _iface(self, name: str) -> dbus.Interface:
-        return dbus.Interface(self._bus.get_object(BUS_NAME, OBJECT_PATH), name)
-
     @staticmethod
-    def _private_call(method: str, *args, timeout: int):
-        """Make a blocking call on a worker-owned connection."""
+    def _call_backend(operation: Callable[[BackendClient], T]) -> T:
+        """Call the shared backend facade on a worker-owned connection."""
         bus = dbus.SessionBus(
             private=True,
             mainloop=dbus.mainloop.NULL_MAIN_LOOP,
         )
         try:
-            iface = dbus.Interface(bus.get_object(BUS_NAME, OBJECT_PATH), MESSAGES_IFACE)
-            return getattr(iface, method)(*args, timeout=timeout)
+            backend = BackendClient(
+                interface_factory=lambda name: dbus.Interface(
+                    bus.get_object(BUS_NAME, OBJECT_PATH), name
+                )
+            )
+            return operation(backend)
         finally:
             bus.close()
 
@@ -170,7 +150,7 @@ class DaemonClient(GObject.Object):
                 value = result.result()
             except Exception as error:
                 if on_err is not None:
-                    message = dbus_error_text(error)
+                    message = str(error)
 
                     def deliver_error() -> bool:
                         on_err(message)
@@ -203,15 +183,13 @@ class DaemonClient(GObject.Object):
         )
 
     def ensure_backend_current_async(self) -> None:
-        def operation() -> Mapping:
+        def operation() -> dict:
             def private_status() -> dict:
-                return decode_mapping(self._private_call(
-                    "GetStatus", timeout=SNAPSHOT_CALL_TIMEOUT_SEC
-                ))
+                return self._call_backend(lambda backend: backend.status().to_dict())
 
             return ensure_backend_current(status_reader=private_status)
 
-        def ready(status: Mapping) -> bool:
+        def ready(status: dict) -> bool:
             current = BackendStatus.from_dict(status)
             self.record_status(current)
             return False
@@ -224,9 +202,6 @@ class DaemonClient(GObject.Object):
         self._submit(operation, ready, failed)
 
     def refresh_availability_async(self, on_done=None) -> None:
-        def operation() -> bool:
-            return bool(self._private_call("IsHealthy", timeout=5))
-
         def ready(healthy: bool) -> bool:
             self._set_availability(True, healthy)
             if on_done is not None:
@@ -239,22 +214,23 @@ class DaemonClient(GObject.Object):
                 on_done(False)
             return False
 
-        self._submit(operation, ready, failed)
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.is_healthy()),
+            ready,
+            failed,
+        )
 
     # ---- Messages1 ------------------------------------------------------
 
     def send_message(self, recipient: str, body: str, on_ok, on_err) -> None:
         """Send asynchronously. on_ok(transfer_path) / on_err(text)."""
-        try:
-            self._iface(MESSAGES_IFACE).Send(
-                recipient,
-                body,
-                timeout=OBEX_CALL_TIMEOUT_SEC,
-                reply_handler=lambda t: on_ok(str(t)),
-                error_handler=lambda e: on_err(dbus_error_text(e)),
-            )
-        except dbus.exceptions.DBusException as e:
-            on_err(dbus_error_text(e))
+        self._submit(
+            lambda: self._call_backend(
+                lambda backend: backend.send(recipient, body)
+            ),
+            on_ok,
+            on_err,
+        )
 
     def send_to_thread(
         self,
@@ -265,40 +241,33 @@ class DaemonClient(GObject.Object):
         on_ok,
         on_err,
     ) -> None:
-        try:
-            self._iface(MESSAGES_IFACE).SendToThread(
-                thread_key,
-                body,
-                dbus.Boolean(confirm_group),
-                timeout=OBEX_CALL_TIMEOUT_SEC,
-                reply_handler=lambda transfer: on_ok(str(transfer)),
-                error_handler=lambda error: on_err(dbus_error_text(error)),
-            )
-        except dbus.exceptions.DBusException as error:
-            on_err(dbus_error_text(error))
+        self._submit(
+            lambda: self._call_backend(
+                lambda backend: backend.send_to_thread(
+                    thread_key,
+                    body,
+                    confirm_group=confirm_group,
+                )
+            ),
+            on_ok,
+            on_err,
+        )
 
     def sync_contacts(self, on_ok, on_err) -> None:
-        try:
-            self._iface(MESSAGES_IFACE).SyncContacts(
-                timeout=OBEX_CALL_TIMEOUT_SEC,
-                reply_handler=lambda count: on_ok(int(count)),
-                error_handler=lambda error: on_err(dbus_error_text(error)),
-            )
-        except dbus.exceptions.DBusException as error:
-            on_err(dbus_error_text(error))
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.sync_contacts()),
+            on_ok,
+            on_err,
+        )
 
     # ---- backend-owned history -----------------------------------------
 
     def list_threads_async(self, on_ok, on_err=None, limit: int = 1000) -> None:
-        def operation() -> list[Thread]:
-            return decode_threads(
-                self._private_call(
-                    "ListThreads", dbus.UInt32(limit),
-                    timeout=SNAPSHOT_CALL_TIMEOUT_SEC,
-                )
-            )
-
-        self._submit(operation, on_ok, on_err)
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.threads(limit)),
+            on_ok,
+            on_err,
+        )
 
     def find_contacts_async(self, query: str, on_ok, on_err=None) -> None:
         """Find cached message destinations without blocking the GTK thread."""
@@ -307,68 +276,62 @@ class DaemonClient(GObject.Object):
             on_ok([])
             return
 
-        def operation() -> list[tuple[str, str]]:
-            return decode_contacts(
-                self._private_call(
-                    "FindContacts", selected, timeout=CONTACT_CALL_TIMEOUT_SEC,
-                )
-            )
-
-        self._submit(operation, on_ok, on_err)
+        self._submit(
+            lambda: self._call_backend(
+                lambda backend: backend.find_contacts(selected)
+            ),
+            on_ok,
+            on_err,
+        )
 
     def set_group_participants_async(
         self, thread_key: str, recipients: list[str], on_ok, on_err=None
     ) -> None:
-        def operation() -> Thread:
-            return decode_thread(
-                self._private_call(
-                    "SetGroupParticipants",
-                    thread_key,
-                    dbus.Array(recipients, signature="s"),
-                    timeout=GROUP_ROUTE_CALL_TIMEOUT_SEC,
+        self._submit(
+            lambda: self._call_backend(
+                lambda backend: backend.set_group_participants(
+                    thread_key, recipients
                 )
-            )
-
-        self._submit(operation, on_ok, on_err)
+            ),
+            on_ok,
+            on_err,
+        )
 
     def get_status_async(self, on_ok, on_err=None) -> None:
-        def operation() -> BackendStatus:
-            return decode_status(self._private_call(
-                "GetStatus", timeout=STATUS_CALL_TIMEOUT_SEC
-            ))
-
-        self._submit(operation, on_ok, on_err)
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.status()),
+            on_ok,
+            on_err,
+        )
 
     def clear_history_async(self, on_ok, on_err) -> None:
         self._submit(
-            lambda: self._private_call(
-                "ClearHistory", dbus.Boolean(True), timeout=CLEAR_CALL_TIMEOUT_SEC
-            ),
+            lambda: self._call_backend(lambda backend: backend.clear_history()),
             lambda _value: on_ok(),
             on_err,
         )
 
     def set_notification_policy_async(self, policy: str, on_ok, on_err) -> None:
         self._submit(
-            lambda: str(self._private_call(
-                "SetNotificationPolicy", policy, timeout=POLICY_CALL_TIMEOUT_SEC
-            )),
+            lambda: self._call_backend(
+                lambda backend: backend.set_notification_policy(policy)
+            ),
             on_ok,
             on_err,
         )
 
     def set_storage_policy_async(self, policy: str, on_ok, on_err) -> None:
-        def operation() -> dict:
-            return decode_mapping(self._private_call(
-                "SetStoragePolicy", policy, timeout=STORAGE_CALL_TIMEOUT_SEC
-            ))
-
-        self._submit(operation, on_ok, on_err)
+        self._submit(
+            lambda: self._call_backend(
+                lambda backend: backend.set_storage_policy(policy)
+            ),
+            on_ok,
+            on_err,
+        )
 
     def unlock_storage_async(self, on_ok, on_err) -> None:
-        def operation() -> dict:
-            return decode_mapping(self._private_call(
-                "UnlockStorage", timeout=STORAGE_CALL_TIMEOUT_SEC
-            ))
-
-        self._submit(operation, on_ok, on_err)
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.unlock_storage()),
+            on_ok,
+            on_err,
+        )

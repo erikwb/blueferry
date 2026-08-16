@@ -1,6 +1,8 @@
 """Toolkit-neutral synchronous client for the BlueFerry daemon."""
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import dbus
 import dbus.exceptions
 
@@ -38,9 +40,24 @@ class BackendError(BlueFerryError):
 
 
 class BackendClient:
+    def __init__(
+        self,
+        *,
+        interface_factory: Callable[[str], dbus.Interface] | None = None,
+    ) -> None:
+        self._interface_factory = interface_factory
+
     def _iface(self, name: str) -> dbus.Interface:
+        if self._interface_factory is not None:
+            return self._interface_factory(name)
         bus = get_session_bus()
         return dbus.Interface(bus.get_object(BUS_NAME, OBJECT_PATH), name)
+
+    def is_healthy(self) -> bool:
+        try:
+            return bool(self._iface(MESSAGES_IFACE).IsHealthy(timeout=5))
+        except dbus.exceptions.DBusException as error:
+            raise BackendError(error.get_dbus_message() or str(error)) from error
 
     def status(self) -> BackendStatus:
         try:
