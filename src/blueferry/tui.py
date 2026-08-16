@@ -4,7 +4,6 @@ from __future__ import annotations
 import sys
 from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import ClassVar, Protocol
 
@@ -23,6 +22,11 @@ from blueferry import config
 from blueferry.backend_lifecycle import BackendLifecycleError, ensure_backend_current
 from blueferry.bus import get_session_bus
 from blueferry.client import BackendClient, BackendError
+from blueferry.conversation_state import (
+    ConversationSnapshot,
+    ConversationState,
+    ReplyDisposition,
+)
 from blueferry.models import BackendStatus, Thread, ThreadMessage
 from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH
 from blueferry.text_safety import terminal_text
@@ -80,42 +84,12 @@ def _unread_count(thread: Thread) -> int:
     return sum(not message.outgoing and not message.read for message in thread.messages)
 
 
-@dataclass(frozen=True, slots=True)
-class TuiSnapshot:
-    status: BackendStatus | None
-    threads: tuple[Thread, ...] | None
-    failures: tuple[str, ...] = ()
+class TuiState(ConversationState):
+    def __init__(self, client: _Client) -> None:
+        super().__init__()
+        self.client = client
 
-
-@dataclass
-class TuiState:
-    client: _Client
-    threads: list[Thread] = field(default_factory=list)
-    status: BackendStatus = field(default_factory=BackendStatus)
-    selected_key: str = ""
-    error: str = ""
-    notice: str = ""
-    confirmed_groups: set[str] = field(default_factory=set)
-
-    @property
-    def selected(self) -> Thread | None:
-        return next(
-            (thread for thread in self.threads if thread.key == self.selected_key),
-            None,
-        )
-
-    @property
-    def selected_index(self) -> int:
-        return next(
-            (
-                index
-                for index, thread in enumerate(self.threads)
-                if thread.key == self.selected_key
-            ),
-            0,
-        )
-
-    def fetch_snapshot(self) -> TuiSnapshot:
+    def fetch_snapshot(self) -> ConversationSnapshot:
         failures: list[str] = []
         status: BackendStatus | None = None
         threads: tuple[Thread, ...] | None = None
@@ -127,39 +101,16 @@ class TuiState:
             threads = tuple(self.client.threads(200))
         except BackendError as error:
             failures.append(str(error))
-        return TuiSnapshot(status, threads, tuple(failures))
-
-    def apply_snapshot(self, snapshot: TuiSnapshot) -> None:
-        if snapshot.status is not None:
-            self.status = snapshot.status
-        if snapshot.threads is not None:
-            previous = self.selected_key
-            self.threads = list(snapshot.threads)
-            keys = {thread.key for thread in self.threads}
-            self.selected_key = (
-                previous
-                if previous in keys
-                else (self.threads[0].key if self.threads else "")
-            )
-        self.error = "; ".join(failure for failure in snapshot.failures if failure)
+        return ConversationSnapshot(status, threads, tuple(failures))
 
     def refresh(self) -> None:
         self.apply_snapshot(self.fetch_snapshot())
 
-    def move(self, delta: int) -> None:
-        if not self.threads:
-            return
-        index = min(max(self.selected_index + delta, 0), len(self.threads) - 1)
-        self.selected_key = self.threads[index].key
-        self.notice = ""
-
     def select_message(self, handle: str) -> bool:
-        for thread in self.threads:
-            if any(message.handle == handle for message in thread.messages):
-                self.selected_key = thread.key
-                self.notice = "Opened desktop notification"
-                return True
-        return False
+        selected = super().select_message(handle)
+        if selected:
+            self.notice = "Opened desktop notification"
+        return selected
 
     def send_reply(
         self,
@@ -168,46 +119,32 @@ class TuiState:
         confirm_group: bool = False,
         thread_key: str | None = None,
     ) -> bool:
-        thread = next(
-            (
-                candidate
-                for candidate in self.threads
-                if candidate.key == (thread_key or self.selected_key)
-            ),
-            None,
+        plan = self.plan_reply(
+            body,
+            thread_key=thread_key,
+            confirm_group=confirm_group,
         )
-        if thread is None:
+        if plan.disposition is ReplyDisposition.NO_THREAD:
             self.error = "Select a conversation first"
             return False
-        if not thread.reply_ready:
+        if plan.disposition is ReplyDisposition.READ_ONLY:
             self.error = "This conversation is read-only"
             return False
-        if (
-            thread.is_group
-            and (
-                thread.group_origin == "named"
-                or thread.key not in self.confirmed_groups
-            )
-            and not confirm_group
-        ):
+        if plan.disposition is ReplyDisposition.CONFIRM_GROUP:
             self.error = "Group reply requires participant confirmation"
+            return False
+        if not plan.ready or plan.thread is None:
             return False
         try:
             self.client.send_to_thread(
-                thread.key,
-                body,
-                confirm_group=confirm_group,
+                plan.thread.key,
+                plan.body,
+                confirm_group=plan.confirm_group,
             )
         except BackendError as error:
             self.error = str(error)
             return False
-        if (
-            thread.is_group
-            and confirm_group
-            and thread.group_origin != "named"
-        ):
-            self.confirmed_groups.add(thread.key)
-        self.selected_key = thread.key
+        self.reply_sent(plan)
         self.error = ""
         self.notice = "Message sent"
         self.refresh()
@@ -232,12 +169,7 @@ class TuiState:
         except BackendError as error:
             self.error = str(error)
             return False
-        self.threads = [
-            updated if thread.key == thread_key else thread
-            for thread in self.threads
-        ]
-        self.selected_key = thread_key
-        self.confirmed_groups.discard(thread_key)
+        self.group_participants_saved(updated)
         self.error = ""
         self.notice = "Group participants saved locally"
         return True
@@ -569,7 +501,6 @@ class BlueFerryApp(App[None]):
         self._monitor: _Monitor | None = None
         self._pending_open_handle: str | None = None
         self._sending = False
-        self._warned_roster_changes: set[str] = set()
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="masthead"):
@@ -670,7 +601,7 @@ class BlueFerryApp(App[None]):
             self.state.error = f"Could not update terminal view: {_one_line(error)}"
             self.call_from_thread(self._update_notice)
 
-    def _schedule_snapshot(self, snapshot: TuiSnapshot) -> None:
+    def _schedule_snapshot(self, snapshot: ConversationSnapshot) -> None:
         self.run_worker(
             self._apply_snapshot(snapshot),
             name="render-snapshot",
@@ -678,7 +609,7 @@ class BlueFerryApp(App[None]):
             exclusive=True,
         )
 
-    async def _apply_snapshot(self, snapshot: TuiSnapshot) -> None:
+    async def _apply_snapshot(self, snapshot: ConversationSnapshot) -> None:
         previous_status = self.state.status
         previous_threads = tuple(self.state.threads)
         previous_selection = self.state.selected_key
@@ -701,18 +632,9 @@ class BlueFerryApp(App[None]):
             self._warn_about_roster_changes()
 
     def _warn_about_roster_changes(self) -> None:
-        for thread in self.state.threads:
-            if not thread.roster_changed:
-                continue
-            warning_id = str(
-                thread.roster_warning_id
-                or f"{thread.key}:{thread.unexpected_sender or 'unknown'}"
-            )
-            if warning_id in self._warned_roster_changes:
-                continue
-            self._warned_roster_changes.add(warning_id)
+        thread = self.state.next_roster_warning()
+        if thread is not None:
             self._open_roster_editor(thread)
-            return
 
     def _open_roster_editor(self, thread: Thread) -> None:
         self.push_screen(
