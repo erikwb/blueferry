@@ -468,6 +468,120 @@ def test_start_notify_failure_retries_without_rediscovery(monkeypatch) -> None:
     assert ds.start_calls == 1
 
 
+def test_le_reconnect_replaces_stale_subscription_and_reauthorizes(
+    monkeypatch,
+) -> None:
+    calls = []
+    statuses = []
+
+    class _Characteristic:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def StartNotify(self, **_kwargs) -> None:
+            calls.append(("start", self.name))
+
+        def StopNotify(self, **_kwargs) -> None:
+            calls.append(("stop", self.name))
+
+        def WriteValue(self, _value, _options, **_kwargs) -> None:
+            calls.append(("write", self.name))
+
+    ns = _Characteristic("ns")
+    ds = _Characteristic("ds")
+    cp = _Characteristic("cp")
+    bus = _CharacteristicBus(
+        {"/device/ns": ns, "/device/ds": ds, "/device/cp": cp}
+    )
+    monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
+    monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
+    monkeypatch.setattr(
+        client_module.GLib,
+        "timeout_add_seconds",
+        lambda _delay, _callback: 9,
+    )
+    monkeypatch.setattr(client_module.GLib, "source_remove", lambda _timer: None)
+    client = AncsClient(
+        "/device",
+        lambda _event: None,
+        on_status=lambda: statuses.append(True),
+    )
+    client._started = True
+    client._bearer_connected = True
+    client._ns_path = "/device/ns"
+    client._ds_path = "/device/ds"
+    client._cp_path = "/device/cp"
+    client._notify_started = True
+    client._authorized = True
+    old_matches = [_Match(), _Match()]
+    client._characteristic_signal_matches = old_matches
+
+    client.observe_bearer_state(False)
+
+    assert client.connected is False
+    assert client.subscribed is False
+    assert client.authorized is False
+    assert all(match.removed for match in old_matches)
+    assert calls == []
+    assert statuses == [True]
+
+    client.observe_bearer_state(True)
+
+    assert calls == [
+        ("stop", "ns"),
+        ("stop", "ds"),
+        ("start", "ns"),
+        ("start", "ds"),
+        ("write", "cp"),
+    ]
+    assert client.subscribed is True
+    assert client.authorized is False
+    _complete_authorization_probe(client)
+    assert client.connected is True
+    assert statuses == [True, True]
+
+
+def test_not_connected_control_point_failure_invalidates_ancs_health(
+    monkeypatch,
+) -> None:
+    statuses = []
+
+    class _ControlPoint:
+        @staticmethod
+        def WriteValue(_value, _options, **_kwargs) -> None:
+            raise client_module.dbus.exceptions.DBusException(
+                "Not connected",
+                name="org.bluez.Error.Failed",
+            )
+
+    bus = _CharacteristicBus({"/device/cp": _ControlPoint()})
+    monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
+    monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
+    client = AncsClient(
+        "/device",
+        lambda _event: None,
+        on_status=lambda: statuses.append(True),
+    )
+    client._started = True
+    client._bearer_connected = True
+    client._ns_path = "/device/ns"
+    client._ds_path = "/device/ds"
+    client._cp_path = "/device/cp"
+    client._notify_started = True
+    client._authorized = True
+    matches = [_Match(), _Match()]
+    client._characteristic_signal_matches = matches
+
+    client._request_attrs(Notification.parse(_notification(42)))
+
+    assert client.connected is False
+    assert client.subscribed is False
+    assert client.authorized is False
+    assert client._bearer_connected is False
+    assert all(match.removed for match in matches)
+    assert statuses == [True]
+
+
 def test_owner_change_during_start_notify_preserves_new_subscription(
     monkeypatch,
 ) -> None:

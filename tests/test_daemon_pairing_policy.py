@@ -4,6 +4,8 @@ from blueferry import daemon
 
 
 class _Bearer:
+    le_state = False
+
     def __init__(self, calls):
         self.calls = calls
 
@@ -86,6 +88,9 @@ def test_full_daemon_starts_ancs_client(monkeypatch):
         def __init__(self, *_args, **_kwargs):
             calls.append("ancs-client")
 
+        def observe_bearer_state(self, connected):
+            calls.append(("ancs-bearer", connected))
+
         def start(self):
             calls.append("ancs-start")
 
@@ -97,5 +102,6 @@ def test_full_daemon_starts_ancs_client(monkeypatch):
     value._initialize_bluetooth()
 
     assert "ancs-client" in calls
+    assert ("ancs-bearer", False) in calls
     assert "ancs-start" in calls
     assert value.ancs is not None

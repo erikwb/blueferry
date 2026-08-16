@@ -93,6 +93,12 @@ def _char_path_to_device_path(char_path: str) -> str:
     return "/".join(char_path.rsplit("/", 2)[:-2])
 
 
+def _connection_was_lost(error: dbus.exceptions.DBusException) -> bool:
+    name = (error.get_dbus_name() or "").casefold()
+    detail = (error.get_dbus_message() or str(error)).casefold()
+    return name.endswith(".notconnected") or "not connected" in detail
+
+
 class AncsClient:
     """Tracks ANCS characteristics under one target device and subscribes
     when all three are present.
@@ -126,6 +132,8 @@ class AncsClient:
         self._cp_path: str | None = None
         self._notify_started = False
         self._authorized = False
+        self._bearer_connected: bool | None = None
+        self._reset_notify_on_reconnect = False
 
         # In-flight per-notification attribute requests + app-name cache
         self._app_name_cache: OrderedDict[str, str] = OrderedDict()
@@ -247,6 +255,7 @@ class AncsClient:
             self._remove_manager_watches()
             self._cancel_subscribe_retry()
             self._clear_characteristic_subscription(stop_notify=False)
+            self._reset_notify_on_reconnect = False
             self._ns_path = self._ds_path = self._cp_path = None
 
     def _remove_manager_watches(self) -> None:
@@ -278,6 +287,7 @@ class AncsClient:
             self._remove_manager_watches()
             self._cancel_subscribe_retry()
             self._clear_characteristic_subscription(stop_notify=False)
+            self._reset_notify_on_reconnect = False
             self._ns_path = self._ds_path = self._cp_path = None
             if was_connected and self.on_status is not None:
                 self.on_status()
@@ -341,7 +351,52 @@ class AncsClient:
         # StartNotify only proves that BlueZ subscribed to the GATT
         # characteristics. iOS notification access is usable only after an
         # authorized Control Point round trip succeeds.
-        return self.subscribed and self.authorized
+        return (
+            self._bearer_connected is not False
+            and self.subscribed
+            and self.authorized
+        )
+
+    def observe_bearer_state(self, connected: bool | None) -> None:
+        """Invalidate stale GATT state and rebuild it after an LE reconnect.
+
+        BlueZ retains ANCS characteristic objects, and sometimes their
+        ``Notifying`` property, across a physical LE disconnect. ObjectManager
+        removal alone therefore cannot define the subscription lifecycle.
+        """
+        if connected is None:
+            return
+        previous = self._bearer_connected
+        self._bearer_connected = connected
+        if not connected:
+            had_state = bool(
+                self._notify_started
+                or self._authorized
+                or self._characteristic_signal_matches
+                or self._active_request is not None
+                or self._request_queue
+            )
+            if not had_state:
+                return
+            log.info("iPhone LE bearer disconnected; resetting ANCS subscription")
+            self._reset_notify_on_reconnect = self._notify_started
+            self._cancel_subscribe_retry()
+            # StopNotify can block or fail while the ATT link is down. Remove
+            # our local receivers now and replace BlueZ's registration once
+            # the bearer is observably connected again.
+            self._clear_characteristic_subscription(stop_notify=False)
+            if self.on_status is not None:
+                self.on_status()
+            return
+
+        if previous is False and self._reset_notify_on_reconnect:
+            log.info("iPhone LE bearer reconnected; rebuilding ANCS subscription")
+            self._stop_bluez_notifications()
+            self._reset_notify_on_reconnect = False
+        # This is intentionally safe on every bearer poll. It also recovers a
+        # Control Point failure when the disconnect was too brief for the
+        # bearer supervisor itself to observe a state transition.
+        self._try_subscribe()
 
     def stop(self) -> None:
         log.info("ANCS client stopping")
@@ -396,6 +451,7 @@ class AncsClient:
                 self._cancel_subscribe_retry()
                 self._cancel_authorization_retry()
                 self._clear_characteristic_subscription()
+                self._reset_notify_on_reconnect = False
                 log.warning("ANCS char gone: %s", path_s)
                 if was_connected and self.on_status is not None:
                     self.on_status()
@@ -411,21 +467,28 @@ class AncsClient:
                 log.debug("could not remove ANCS characteristic watch", exc_info=True)
         self._characteristic_signal_matches = []
         if self._notify_started and stop_notify:
-            for path in (self._ns_path, self._ds_path):
-                if path:
-                    try:
-                        dbus.Interface(
-                            get_system_bus().get_object("org.bluez", path),
-                            "org.bluez.GattCharacteristic1",
-                        ).StopNotify(timeout=DBUS_CALL_TIMEOUT_SECONDS)
-                    except dbus.exceptions.DBusException:
-                        pass
+            self._stop_bluez_notifications()
         self._notify_started = False
         self._authorized = False
         self._reset_requests()
 
+    def _stop_bluez_notifications(self) -> None:
+        """Best-effort removal of BlueZ's possibly stale notify ownership."""
+        for path in (self._ns_path, self._ds_path):
+            if not path:
+                continue
+            try:
+                dbus.Interface(
+                    get_system_bus().get_object("org.bluez", path),
+                    "org.bluez.GattCharacteristic1",
+                ).StopNotify(timeout=DBUS_CALL_TIMEOUT_SECONDS)
+            except dbus.exceptions.DBusException:
+                log.debug("could not stop stale ANCS notification", exc_info=True)
+
     def _try_subscribe(self) -> None:
         if self._notify_started:
+            return
+        if self._bearer_connected is False:
             return
         if not (self._ns_path and self._ds_path and self._cp_path):
             return
@@ -689,6 +752,9 @@ class AncsClient:
             name = error.get_dbus_name() or type(error).__name__
             detail = error.get_dbus_message() or str(error)
             log.warning("ANCS CP WriteValue failed: %s: %s", name, detail)
+            if _connection_was_lost(error):
+                self.observe_bearer_state(False)
+                return
             self._abandon_request(request)
             self._active_request = None
             self._pump_requests()

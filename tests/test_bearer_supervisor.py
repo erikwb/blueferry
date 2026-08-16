@@ -299,6 +299,33 @@ def test_backoff_resets_once_the_bearer_connects() -> None:
     assert attempts == ["bredr", "bredr"]
 
 
+def test_le_observer_receives_every_polled_state() -> None:
+    state = {"bredr": True, "le": True}
+    observed = []
+    scheduled = []
+    supervisor = BearerSupervisor(
+        "/device",
+        read_connected=state.get,
+        connect=lambda *_args: None,
+        on_le_state=observed.append,
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+    )
+
+    supervisor.start()
+    assert supervisor.le_state is True
+    assert observed == [True]
+
+    # Repeat observations let a consumer recover when it detected a brief
+    # disconnect that fell entirely between supervisor polls.
+    scheduled[0][1]()
+    assert observed == [True, True]
+
+    state["le"] = False
+    scheduled[0][1]()
+    assert supervisor.le_state is False
+    assert observed[-1] is False
+
+
 def test_stop_cancels_health_check() -> None:
     cancelled = []
     supervisor = BearerSupervisor(

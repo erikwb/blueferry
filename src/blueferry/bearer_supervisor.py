@@ -76,6 +76,7 @@ def preferred_bearer_unavailable(error: Exception) -> bool:
 ReadConnected = Callable[[str], bool | None]
 Connect = Callable[[str, Callable[[], None], Callable[[Exception], None]], None]
 Prefer = Callable[[str], None]
+ObserveLeState = Callable[[bool | None], None]
 Schedule = Callable[[int, Callable[[], bool]], int]
 Cancel = Callable[[int], object]
 Clock = Callable[[], float]
@@ -95,6 +96,7 @@ class BearerSupervisor:
         *,
         le_enabled: bool = True,
         on_status: Callable[[], None] | None = None,
+        on_le_state: ObserveLeState | None = None,
         read_connected: ReadConnected | None = None,
         connect: Connect | None = None,
         prefer: Prefer | None = None,
@@ -104,6 +106,7 @@ class BearerSupervisor:
     ) -> None:
         self.device_path = device_path
         self._on_status = on_status
+        self._on_le_state = on_le_state
         self._read_connected = read_connected or self._read_bluez_connected
         self._connect = connect or self._connect_bluez
         self._prefer = prefer or (
@@ -129,6 +132,11 @@ class BearerSupervisor:
     @property
     def le_connected(self) -> bool:
         return self._states["le"] is True
+
+    @property
+    def le_state(self) -> bool | None:
+        """Return the latest observed LE bearer state."""
+        return self._states["le"]
 
     def start(self) -> None:
         if self._running:
@@ -259,6 +267,11 @@ class BearerSupervisor:
             self._last_errors.pop(kind, None)
             self._failures[kind] = 0
             self._next_attempt[kind] = 0.0
+        # ANCS can independently discover a failed GATT transaction between
+        # polls. Repeat the latest observation so it can recover even when the
+        # supervisor itself did not observe the brief disconnect transition.
+        if kind == "le" and self._on_le_state is not None:
+            self._on_le_state(value)
         if previous != value and self._on_status is not None:
             self._on_status()
 
