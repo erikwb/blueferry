@@ -867,8 +867,11 @@ def complete_pairing(
     display: DisplayCallback | None = None,
     compatibility_mode: bool = False,
     explicit_pairing: bool = False,
+    _allow_headless: bool = False,
 ) -> dict:
     """Pair if needed and finish every Linux-side BlueFerry setup step."""
+    if confirmation is None and not _allow_headless:
+        raise PairingError("Pairing requires an interactive confirmation callback")
     attempt = quirks_report.start_attempt(interactive=confirmation is not None)
     try:
         result = _execute_pairing(

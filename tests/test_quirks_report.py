@@ -416,7 +416,7 @@ def test_complete_pairing_writes_a_scrubbed_success_report(
         "after_remove_reply": {"device_present": False, "battery_objects": 0},
     }
 
-    result = pair_setup.complete_pairing(device.mac)
+    result = pair_setup.complete_pairing(device.mac, _allow_headless=True)
     payload = Path(result["quirks_report"]).read_text()
 
     assert result["ok"] is True
@@ -530,7 +530,7 @@ def test_pairing_report_keeps_last_le_error_when_ancs_stays_down(
 
     monkeypatch.setattr(pair_setup, "_wait_for_daemon_transports", _ancs_missing)
 
-    result = pair_setup.complete_pairing(device.mac)
+    result = pair_setup.complete_pairing(device.mac, _allow_headless=True)
     parsed = json.loads(Path(result["quirks_report"]).read_text())
 
     assert result["ancs_ready"] is False
@@ -581,7 +581,7 @@ def test_failed_pairing_still_writes_a_report(report_dir, monkeypatch) -> None:
     monkeypatch.setattr(pair_setup, "_adapter_identity", lambda adapter, *_args, **_kwargs: {"name": adapter})
 
     with pytest.raises(pair_setup.PairingError) as raised:
-        pair_setup.complete_pairing(device.mac)
+        pair_setup.complete_pairing(device.mac, _allow_headless=True)
 
     path = Path(raised.value.report_path)
     payload = path.read_text()
@@ -653,7 +653,7 @@ def test_unexpected_pairing_exception_still_writes_a_report(
     )
 
     with pytest.raises(pair_setup.PairingError, match="bluez properties vanished") as raised:
-        pair_setup.complete_pairing(device.mac)
+        pair_setup.complete_pairing(device.mac, _allow_headless=True)
 
     assert raised.value.report_path
     parsed = json.loads(Path(raised.value.report_path).read_text())
