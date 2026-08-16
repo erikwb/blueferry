@@ -70,7 +70,14 @@ class DaemonClient(GObject.Object):
         super().__init__()
         self._bus = get_session_bus()
         self._matches: list = []
-        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="blueferry-gtk-dbus")
+        self._read_executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="blueferry-gtk-read",
+        )
+        self._mutation_executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="blueferry-gtk-mutation",
+        )
         self._stopped = False
         self.available = False  # is the daemon reachable on D-Bus?
         self.healthy = False  # is the MAP session up?
@@ -119,7 +126,8 @@ class DaemonClient(GObject.Object):
             except Exception:
                 log.debug("could not remove backend signal watch", exc_info=True)
         self._matches = []
-        self._executor.shutdown(wait=False, cancel_futures=True)
+        self._read_executor.shutdown(wait=False, cancel_futures=True)
+        self._mutation_executor.shutdown(wait=False, cancel_futures=True)
 
     # ---- proxy helpers --------------------------------------------------
 
@@ -140,8 +148,16 @@ class DaemonClient(GObject.Object):
         finally:
             bus.close()
 
-    def _submit(self, operation, on_ok, on_err=None) -> Future:
-        future = self._executor.submit(operation)
+    def _submit(
+        self,
+        operation,
+        on_ok,
+        on_err=None,
+        *,
+        mutation: bool = False,
+    ) -> Future:
+        executor = self._mutation_executor if mutation else self._read_executor
+        future = executor.submit(operation)
 
         def completed(result: Future) -> None:
             if self._stopped:
@@ -230,6 +246,7 @@ class DaemonClient(GObject.Object):
             ),
             on_ok,
             on_err,
+            mutation=True,
         )
 
     def send_to_thread(
@@ -251,6 +268,7 @@ class DaemonClient(GObject.Object):
             ),
             on_ok,
             on_err,
+            mutation=True,
         )
 
     def sync_contacts(self, on_ok, on_err) -> None:
@@ -258,6 +276,7 @@ class DaemonClient(GObject.Object):
             lambda: self._call_backend(lambda backend: backend.sync_contacts()),
             on_ok,
             on_err,
+            mutation=True,
         )
 
     # ---- backend-owned history -----------------------------------------
@@ -295,6 +314,7 @@ class DaemonClient(GObject.Object):
             ),
             on_ok,
             on_err,
+            mutation=True,
         )
 
     def get_status_async(self, on_ok, on_err=None) -> None:
@@ -309,6 +329,7 @@ class DaemonClient(GObject.Object):
             lambda: self._call_backend(lambda backend: backend.clear_history()),
             lambda _value: on_ok(),
             on_err,
+            mutation=True,
         )
 
     def set_notification_policy_async(self, policy: str, on_ok, on_err) -> None:
@@ -318,6 +339,7 @@ class DaemonClient(GObject.Object):
             ),
             on_ok,
             on_err,
+            mutation=True,
         )
 
     def set_storage_policy_async(self, policy: str, on_ok, on_err) -> None:
@@ -327,6 +349,7 @@ class DaemonClient(GObject.Object):
             ),
             on_ok,
             on_err,
+            mutation=True,
         )
 
     def unlock_storage_async(self, on_ok, on_err) -> None:
@@ -334,4 +357,5 @@ class DaemonClient(GObject.Object):
             lambda: self._call_backend(lambda backend: backend.unlock_storage()),
             on_ok,
             on_err,
+            mutation=True,
         )

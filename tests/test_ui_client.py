@@ -115,3 +115,42 @@ def test_contact_search_decodes_backend_destinations(monkeypatch) -> None:
         ("Alice", "15551234567"),
         ("Alice Work", "alice@example.com"),
     ]
+
+
+def test_pending_send_does_not_block_thread_snapshot(monkeypatch) -> None:
+    monkeypatch.setattr(client_module, "get_session_bus", _Bus)
+    monkeypatch.setattr(client_module, "SetupClient", _UnconfiguredSetup)
+    monkeypatch.setattr(
+        client_module.GLib,
+        "idle_add",
+        lambda callback, *args: callback(*args),
+    )
+    send_started = threading.Event()
+    release_send = threading.Event()
+    snapshot_done = threading.Event()
+
+    class Backend:
+        def send(self, _recipient, _body):
+            send_started.set()
+            assert release_send.wait(3)
+            return "/transfer/1"
+
+        @staticmethod
+        def threads(_limit):
+            return []
+
+    backend = Backend()
+    client = client_module.DaemonClient()
+    monkeypatch.setattr(
+        client,
+        "_call_backend",
+        lambda operation: operation(backend),
+    )
+    try:
+        client.send_message("+15551234567", "hello", lambda _value: None, None)
+        assert send_started.wait(3)
+        client.list_threads_async(lambda _threads: snapshot_done.set())
+        assert snapshot_done.wait(1)
+    finally:
+        release_send.set()
+        client.stop()
