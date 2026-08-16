@@ -332,7 +332,7 @@ def test_group_message_bubbles_show_the_individual_sender() -> None:
     qt_view = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
     quickshell = (ROOT / "data/quickshell/shell.qml").read_text()
 
-    assert 'label=_("You") if msg["outgoing"] else msg.get("sender", "")' in gtk
+    assert 'label=_("You") if message.outgoing else message.sender' in gtk
     assert 'text: root.message.outgoing ? qsTr("You")' in qt_bubble
     assert "&& messagesPage.thread.is_group" in qt_view
     assert '? "You" : (messageRow.modelData.sender || "")' in quickshell

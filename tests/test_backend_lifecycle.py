@@ -6,6 +6,7 @@ import json
 import pytest
 
 from blueferry import backend_lifecycle
+from blueferry.errors import BlueFerryError
 
 
 class _Iface:
@@ -150,3 +151,26 @@ def test_client_can_supply_a_worker_owned_status_reader(monkeypatch):
     )
 
     assert status["daemon"] is True
+
+
+def test_client_error_from_status_reader_uses_activation_fallback(monkeypatch):
+    monkeypatch.setattr(backend_lifecycle, "installed_release", lambda: None)
+    statuses = iter([
+        BlueFerryError("daemon unavailable"),
+        {"daemon": True},
+    ])
+    calls = []
+    monkeypatch.setattr(
+        backend_lifecycle,
+        "run_command",
+        lambda args, **_kwargs: calls.append(args),
+    )
+
+    def read_status():
+        value = next(statuses)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    assert backend_lifecycle.ensure_backend_current(read_status)["daemon"] is True
+    assert calls == [["/usr/bin/systemctl", "--user", "start", "blueferry.service"]]

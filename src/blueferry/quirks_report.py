@@ -7,6 +7,7 @@ import os
 import re
 import stat
 import time
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,7 @@ from blueferry import config
 from blueferry.backend_lifecycle import installed_release
 from blueferry.bluetooth_capabilities import chipset_name, is_generic_product
 from blueferry.build_info import build_id, running_build_sha
+from blueferry.pairing_types import PairingAttempt
 from blueferry.private_files import atomic_write_private_text, ensure_private_directory
 
 log = logging.getLogger(__name__)
@@ -122,12 +124,12 @@ def session_environment() -> dict[str, str]:
     }
 
 
-def start_attempt(*, interactive: bool) -> dict[str, Any]:
+def start_attempt(*, interactive: bool) -> PairingAttempt:
     from blueferry import __version__
 
     build_sha = running_build_sha()
     release = installed_release() or __version__
-    attempt: dict[str, Any] = {
+    attempt: PairingAttempt = {
         "started_at": datetime.now(timezone.utc).isoformat(),
         "blueferry": __version__,
         "blueferry_build": build_id(release, build_sha),
@@ -141,7 +143,7 @@ def start_attempt(*, interactive: bool) -> dict[str, Any]:
     return attempt
 
 
-def mark(attempt: dict[str, Any] | None, event: str, **fields: Any) -> None:
+def mark(attempt: PairingAttempt | None, event: str, **fields: Any) -> None:
     """Append one timeline entry. ``t`` is seconds since pairing started."""
     if attempt is None:
         return
@@ -154,7 +156,7 @@ def mark(attempt: dict[str, Any] | None, event: str, **fields: Any) -> None:
     attempt.setdefault("timeline", []).append(entry)
 
 
-def save_report(report: dict[str, Any], *, directory: Path | None = None) -> Path | None:
+def save_report(report: Mapping[str, Any], *, directory: Path | None = None) -> Path | None:
     """Write one scrubbed report beside the history database and keep ten."""
     try:
         target_dir = directory if directory is not None else config.STATE_DIR

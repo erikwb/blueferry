@@ -22,11 +22,8 @@ from blueferry.ancs.parsers import (
 from blueferry.contacts import _parse_vcard_records
 from blueferry.grouping import correlate_group_events
 from blueferry.obex.bmessage import parse as parse_bmessage
-from blueferry.obex.map_send import (
-    InvalidRecipient,
-    build_bmessage,
-    validate_recipient,
-)
+from blueferry.obex.map_send import build_bmessage
+from blueferry.recipients import InvalidRecipient, validate_recipient
 
 PROPERTY_SETTINGS = settings(max_examples=150, derandomize=True, deadline=None)
 _WIRE_TEXT = st.text(

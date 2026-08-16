@@ -3,10 +3,13 @@ from __future__ import annotations
 
 import io
 import json
+import subprocess
+import threading
 
 import pytest
 
 from blueferry import pair_setup, setup_client
+from blueferry.pairing_types import PairingOutcome, PairingTransports
 
 
 def _device() -> pair_setup.PairedDevice:
@@ -103,22 +106,23 @@ def test_device_operations_delegate_with_requested_scan(monkeypatch):
     assert calls == [(8, None), (8, "hci1"), "list"]
 
 
-def test_complete_pairing_decodes_result_and_forget_delegates(monkeypatch):
+def test_complete_pairing_preserves_typed_result_and_forget_delegates(monkeypatch):
     device = _device()
     forgotten = []
     paired = []
     monkeypatch.setattr(
         setup_client.pair_setup,
         "complete_pairing",
-        lambda mac, **kwargs: paired.append((mac, kwargs.get("adapter"))) or {
-            "ok": True,
-            "device": device.to_dict(),
-            "config": "/tmp/test-config",
-            "service": "restarted",
-            "ancs": "connected",
-            "ancs_ready": True,
-            "iphone_steps": ["Enable notifications"],
-        },
+        lambda mac, **kwargs: paired.append((mac, kwargs.get("adapter")))
+        or PairingOutcome(
+            device=device,
+            config="/tmp/test-config",
+            service="restarted",
+            ancs="connected",
+            ancs_enabled=True,
+            transports=PairingTransports(ancs=True),
+            iphone_steps=("Enable notifications",),
+        ),
     )
     monkeypatch.setattr(
         setup_client.pair_setup,
@@ -138,6 +142,7 @@ def test_complete_pairing_decodes_result_and_forget_delegates(monkeypatch):
     assert result.iphone_steps == ("Enable notifications",)
     assert result.ancs_ready is True
     assert result.to_dict()["device"]["mac"] == device.mac
+    assert PairingOutcome.from_dict(result.to_dict()) == result
     assert paired == [(device.mac, "hci1")]
     assert forgotten == [(device.mac, "hci1")]
 
@@ -158,6 +163,7 @@ def test_isolated_pairing_answers_helper_confirmation(monkeypatch):
                 '{"ok":true,"device":' + __import__("json").dumps(device.to_dict())
                 + ',"ancs_ready":true}\n',
             ])
+            self.stderr = io.StringIO()
 
         @staticmethod
         def wait(*_args, **_kwargs):
@@ -188,6 +194,48 @@ def test_isolated_pairing_answers_helper_confirmation(monkeypatch):
     ]
 
 
+def test_pairing_helper_timeout_resets_after_user_confirmation(monkeypatch):
+    device = _device()
+
+    class Process:
+        stdin = io.StringIO()
+        stdout = iter([
+            '{"event":"confirmation","passkey":"123456"}\n',
+            '{"ok":true,"device":' + json.dumps(device.to_dict()) + "}\n",
+        ])
+        stderr = io.StringIO()
+
+        @staticmethod
+        def wait(*_args, **_kwargs):
+            return 0
+
+        @staticmethod
+        def poll():
+            return 0
+
+    monkeypatch.setattr(
+        setup_client.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: Process(),
+    )
+    monkeypatch.setattr(
+        setup_client,
+        "PAIRING_HELPER_IDLE_TIMEOUT_SECONDS",
+        0.01,
+    )
+
+    def confirm(_passkey):
+        threading.Event().wait(0.03)
+        return True
+
+    result = setup_client.SetupClient().complete_isolated(
+        device.mac,
+        confirmation=confirm,
+    )
+
+    assert result.device.mac == device.mac
+
+
 def test_isolated_pairing_preserves_report_path_on_failure(monkeypatch):
     device = _device()
 
@@ -201,6 +249,7 @@ def test_isolated_pairing_preserves_report_path_on_failure(monkeypatch):
                     "report_path": "/tmp/quirks-test.json",
                 }) + "\n"
             ])
+            self.stderr = io.StringIO()
 
         @staticmethod
         def wait(*_args, **_kwargs):
@@ -237,6 +286,7 @@ def test_isolated_pairing_adds_pairing_mode_helper_flags(monkeypatch):
         stdout = iter([
             '{"ok":true,"device":' + json.dumps(device.to_dict()) + "}\n",
         ])
+        stderr = io.StringIO()
 
         @staticmethod
         def wait(*_args, **_kwargs):
@@ -261,3 +311,103 @@ def test_isolated_pairing_adds_pairing_mode_helper_flags(monkeypatch):
 
     assert "--compatibility-mode" in commands[0]
     assert commands[0][-1] == "--explicit-pairing"
+
+
+def test_isolated_pairing_times_out_and_kills_a_stuck_helper(monkeypatch, caplog):
+    device = _device()
+    released = threading.Event()
+
+    class BlockingOutput:
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            released.wait()
+            raise StopIteration
+
+    class Process:
+        def __init__(self):
+            self.stdin = io.StringIO()
+            self.stdout = BlockingOutput()
+            self.stderr = io.StringIO("child diagnostic\n")
+            self.running = True
+            self.terminated = False
+            self.killed = False
+
+        def poll(self):
+            return None if self.running else -9
+
+        def terminate(self):
+            self.terminated = True
+
+        def kill(self):
+            self.killed = True
+            self.running = False
+            released.set()
+
+        def wait(self, timeout=None):
+            if self.running:
+                raise subprocess.TimeoutExpired("pairing-helper", timeout)
+            return -9
+
+    process = Process()
+    monkeypatch.setattr(
+        setup_client.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: process,
+    )
+    monkeypatch.setattr(
+        setup_client,
+        "PAIRING_HELPER_IDLE_TIMEOUT_SECONDS",
+        0.01,
+    )
+    monkeypatch.setattr(setup_client, "PAIRING_HELPER_STOP_TIMEOUT_SECONDS", 0.01)
+
+    with pytest.raises(setup_client.PairingError, match="Pairing helper timed out"):
+        setup_client.SetupClient().complete_isolated(
+            device.mac,
+            confirmation=lambda _passkey: True,
+        )
+
+    assert process.terminated is True
+    assert process.killed is True
+    assert "child diagnostic" in caplog.text
+
+
+def test_isolated_pairing_reports_exit_status_and_logs_bounded_stderr(
+    monkeypatch,
+    caplog,
+):
+    device = _device()
+    diagnostic = "x" * (setup_client.PAIRING_HELPER_DIAGNOSTIC_CHARS + 20)
+
+    class Process:
+        stdin = io.StringIO()
+        stdout = iter(())
+        stderr = io.StringIO("discarded-prefix" + diagnostic)
+
+        @staticmethod
+        def wait(*_args, **_kwargs):
+            return 7
+
+        @staticmethod
+        def poll():
+            return 7
+
+    monkeypatch.setattr(
+        setup_client.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: Process(),
+    )
+
+    with pytest.raises(
+        setup_client.PairingError,
+        match=r"Pairing helper exited without a result \(status 7\)",
+    ):
+        setup_client.SetupClient().complete_isolated(
+            device.mac,
+            confirmation=lambda _passkey: True,
+        )
+
+    assert "discarded-prefix" not in caplog.text
+    assert diagnostic[-100:] in caplog.text

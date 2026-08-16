@@ -20,11 +20,13 @@ Quickshell client ┘                         │
 - GTK, Qt, TUI, and Quickshell are replaceable clients. They receive opaque
   thread keys and cannot construct different recipients for an existing thread.
 - `pair_setup` is the low-level setup boundary. `setup_client` exposes its
-  typed operations to GTK and Qt, and the hidden JSON commands adapt the same
-  operations for Quickshell. `pairing_policy` resolves controller capability
-  and user overrides into one concrete recipe. Setup discovers and pairs
-  devices, writes the selected MAC and ANCS policy to the user's configuration,
-  and asks systemd to authorize and run system-level setup operations.
+  typed operations to GTK, Qt, and the interactive CLI wizard. Quickshell uses
+  private, short-lived `pairing-*` JSON helpers only for setup operations that
+  must work before the backend is configured. `pairing_policy` resolves
+  controller capability and user overrides into one concrete recipe. Setup
+  discovers and pairs devices, writes the selected MAC and ANCS policy to the
+  user's configuration, and asks systemd to authorize and run system-level
+  setup operations.
 - `onboarding` derives a toolkit-neutral first-run stage from configuration,
   controller capabilities, the selected bond, and backend status. Controller
   support is detected from read-only capabilities instead of vendor names. A
@@ -61,6 +63,10 @@ explicitly converts them to dictionaries. Quickshell has no generic QML D-Bus
 client, so its persistent stdin bridge converts the same models back to JSON
 while calling the daemon over the session bus. This keeps private request data
 out of process arguments without adding a Plasma-specific dependency.
+The bridge owns all Quickshell messaging, contact, status, and preference
+requests; there is no parallel messaging CLI protocol. Pairing remains a
+separate short-lived helper protocol because it precedes daemon availability
+and must exchange confirmation prompts with the QML client.
 All Python transports share `client_wire` for response-shape validation and
 model conversion; synchronous and toolkit-specific scheduling remain separate.
 Group-thread messages include a display-only sender label derived from the
@@ -83,7 +89,13 @@ explicit-pairing override calls `Device1.Pair()` for controllers that cancel
 Connect-first. The temporary agent remains present while the bond is trusted,
 Classic settles, solicitation is registered, and the daemon makes its first
 MAP/PBAP attempt; cleanup then releases the advertisement and agent in order.
-CLI message commands use the same backend client as graphical UIs. Group
+`SetupClient.complete()` requires a confirmation callback. The isolated GTK
+and Qt helper is always launched with its interactive agent protocol, while
+the Quickshell pairing and forget helpers require an explicit interactive flag
+and a positive line-protocol approval before changing the saved target. The
+terminal wizard supplies its confirmation callback directly. A library caller
+cannot silently fall through to a desktop Bluetooth agent.
+User-facing CLI message commands use the same backend client as graphical UIs. Group
 replies use `SendToThread`, so routing always comes from the backend's current
 conversation projection rather than client-supplied recipients.
 
@@ -96,8 +108,9 @@ Pairing has two independent axes rather than a growing table of device quirks:
   unavailable, persists `BLUEFERRY_ANCS_ENABLED=false`; MAP and PBAP remain the
   success boundary and the daemon never enables LE/ANCS for that target.
 - Authentication strategy is normally `iphone-initiated-connect`. The user may
-  independently select `explicit-device-pair`; non-interactive callers also use
-  that strategy because they cannot present BlueFerry's confirmation UI.
+  independently select `explicit-device-pair` when a controller cancels the
+  Connect-first transaction. Both strategies still require BlueFerry's
+  interactive confirmation path.
 
 ANCS connection policy and ANCS solicitation are deliberately separate. After
 the Classic bond is trusted and settled, setup broadcasts the short-lived

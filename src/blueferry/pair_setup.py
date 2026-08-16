@@ -5,24 +5,25 @@ from __future__ import annotations
 import json
 import logging
 import time
-from collections import Counter
 from collections.abc import Callable
 from contextlib import ExitStack
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Protocol
 
 import dbus
 import dbus.exceptions
 from gi.repository import GLib
 
 from blueferry import bluetooth_capabilities as capabilities
-from blueferry import config, quirks_report
-from blueferry.ancs.constants import ANCS_CHAR_UUIDS, ANCS_SERVICE_UUID
+from blueferry import config, pairing_diagnostics, quirks_report
 from blueferry.bearer_supervisor import preferred_bearer_unavailable
 from blueferry.bluetooth_devices import PairedDevice
 from blueferry.bus import get_session_bus, get_system_bus
 from blueferry.commands import run_command
 from blueferry.errors import CommandError, PairingError
-from blueferry.pairing_policy import resolve_pairing_policy
+from blueferry.pairing_policy import PairingPolicy, resolve_pairing_policy
+from blueferry.pairing_types import PairingAttempt, PairingOutcome, PairingTransports
 from blueferry.private_files import atomic_write_private_text, read_private_text
 from blueferry.setup_verification import clear_setup_verification
 
@@ -38,7 +39,7 @@ _SESSION_BLUETOOTH_NAMES = (
     "org.gnome.SettingsDaemon.Rfkill",
 )
 CLASSIC_SETTLE_SECONDS = 3.0
-BLUEZ_SNAPSHOT_TIMEOUT_SECONDS = 5.0
+BLUEZ_SNAPSHOT_TIMEOUT_SECONDS = pairing_diagnostics.BLUEZ_SNAPSHOT_TIMEOUT_SECONDS
 BLUEZ_TRACE_POLL_SECONDS = 2.0
 # One BR/EDR inquiry is 10.24s. USB dongles also need a moment to start
 # after another adapter is stopped; 8s was aborting mid-inquiry.
@@ -47,6 +48,31 @@ MAX_DISCOVERY_SECONDS = 30
 
 ConfirmationCallback = Callable[[int | None], bool]
 DisplayCallback = Callable[[int], None]
+
+
+class _TransportStatus(Protocol):
+    @property
+    def map(self) -> bool: ...
+
+    @property
+    def pbap(self) -> bool: ...
+
+    @property
+    def ancs(self) -> bool: ...
+
+
+@dataclass(frozen=True, slots=True)
+class _PairingPreparation:
+    device: PairedDevice
+    adapter: str
+    policy: PairingPolicy
+
+
+@dataclass(slots=True)
+class _PairingResources:
+    agents: ExitStack = field(default_factory=ExitStack)
+    advert_registered: bool = False
+    agent_registered: bool = False
 
 
 # Quickshell runs forget and pair in separate helper processes.
@@ -123,145 +149,29 @@ def _object_manager():
 
 
 def _bluez_device_snapshot(device_path: str) -> dict[str, object]:
-    """Return a public, bounded snapshot of one BlueZ device subtree.
-
-    Object paths and addresses are intentionally omitted.  The report needs
-    to distinguish a retained Device1/Battery1/GATT tree from a newly
-    discovered one, but it does not need the phone's Bluetooth address.
-    """
-    snapshot: dict[str, object] = {
-        "object_present": False,
-        "device_present": False,
-        "child_objects": 0,
-        "root_interfaces": [],
-        "child_interfaces": {},
-        "device": {
-            "paired": False,
-            "trusted": False,
-            "connected": False,
-            "services_resolved": False,
-            "ancs_uuid": False,
-            "uuid_count": 0,
-        },
-        "bearers": {
-            "bredr": {"present": False},
-            "le": {"present": False},
-        },
-        "gatt": {
-            "services": 0,
-            "characteristics": 0,
-            "ancs_service": False,
-            "ancs_characteristics": [],
-        },
-        "battery_objects": 0,
-    }
-    try:
-        objects = _object_manager().GetManagedObjects(
-            timeout=BLUEZ_SNAPSHOT_TIMEOUT_SECONDS,
-        )
-    except Exception as error:
-        snapshot["error"] = type(error).__name__
-        return snapshot
-
-    root_ifaces: dict = {}
-    subtree: list[tuple[str, dict]] = []
-    prefix = f"{device_path}/"
-    for raw_path, raw_ifaces in objects.items():
-        path = str(raw_path)
-        if path == device_path:
-            root_ifaces = raw_ifaces
-        if path == device_path or path.startswith(prefix):
-            subtree.append((path, raw_ifaces))
-
-    snapshot["object_present"] = bool(root_ifaces)
-    snapshot["child_objects"] = sum(path != device_path for path, _ in subtree)
-    snapshot["root_interfaces"] = sorted(str(name) for name in root_ifaces)
-    child_interfaces: Counter[str] = Counter()
-    service_uuids: set[str] = set()
-    characteristic_uuids: set[str] = set()
-    battery_objects = 0
-    for path, ifaces in subtree:
-        if path != device_path:
-            child_interfaces.update(str(name) for name in ifaces)
-        if "org.bluez.Battery1" in ifaces:
-            battery_objects += 1
-        service = ifaces.get("org.bluez.GattService1")
-        if service is not None:
-            uuid = str(service.get("UUID", "")).casefold()
-            if uuid:
-                service_uuids.add(uuid)
-        characteristic = ifaces.get("org.bluez.GattCharacteristic1")
-        if characteristic is not None:
-            uuid = str(characteristic.get("UUID", "")).casefold()
-            if uuid:
-                characteristic_uuids.add(uuid)
-
-    device = root_ifaces.get("org.bluez.Device1")
-    snapshot["device_present"] = device is not None
-    if device is not None:
-        uuids = sorted({str(value).casefold() for value in device.get("UUIDs", ())})
-        snapshot["device"] = {
-            "paired": bool(device.get("Paired", False)),
-            "trusted": bool(device.get("Trusted", False)),
-            "connected": bool(device.get("Connected", False)),
-            "services_resolved": bool(device.get("ServicesResolved", False)),
-            "ancs_uuid": ANCS_SERVICE_UUID in uuids,
-            "uuid_count": len(uuids),
-        }
-
-    bearers: dict[str, dict[str, object]] = {}
-    for label, interface in (
-        ("bredr", "org.bluez.Bearer.BREDR1"),
-        ("le", "org.bluez.Bearer.LE1"),
-    ):
-        bearer = root_ifaces.get(interface)
-        state: dict[str, object] = {"present": bearer is not None}
-        if bearer is not None:
-            for field in ("Paired", "Bonded", "Connected"):
-                if field in bearer:
-                    state[field.casefold()] = bool(bearer[field])
-        bearers[label] = state
-    snapshot["bearers"] = bearers
-    snapshot["child_interfaces"] = dict(sorted(child_interfaces.items()))
-    snapshot["battery_objects"] = battery_objects
-    snapshot["gatt"] = {
-        "services": child_interfaces["org.bluez.GattService1"],
-        "characteristics": child_interfaces["org.bluez.GattCharacteristic1"],
-        "ancs_service": ANCS_SERVICE_UUID in service_uuids,
-        "ancs_characteristics": sorted(ANCS_CHAR_UUIDS & characteristic_uuids),
-    }
-    return snapshot
-
-
-def _trace_time(attempt: dict) -> float:
-    origin = attempt.get("_t0")
-    if not isinstance(origin, (int, float)):
-        return 0.0
-    return round(time.monotonic() - origin, 3)
+    return pairing_diagnostics.bluez_device_snapshot(
+        device_path,
+        load_objects=lambda timeout: _object_manager().GetManagedObjects(
+            timeout=timeout,
+        ),
+    )
 
 
 def _record_bluez_state(
-    attempt: dict | None,
+    attempt: PairingAttempt | None,
     device_path: str | None,
     phase: str,
     *,
     force: bool = False,
 ) -> None:
-    """Append a BlueZ snapshot when the device subtree changes."""
-    if attempt is None or not device_path:
-        return
-    snapshot = _bluez_device_snapshot(device_path)
-    trace = attempt.setdefault("bluez_trace", [])
-    if not isinstance(trace, list):
-        return
-    if trace and not force and trace[-1].get("state") == snapshot:
-        return
-    trace.append({"t": _trace_time(attempt), "phase": phase, "state": snapshot})
-    # Bound pathological churn while retaining both the beginning and the
-    # most recent transitions that explain the final outcome.
-    if len(trace) > 32:
-        del trace[1]
-    log.debug("BlueZ device state (%s): %s", phase, snapshot)
+    pairing_diagnostics.record_bluez_state(
+        attempt,
+        device_path,
+        phase,
+        snapshot=_bluez_device_snapshot,
+        monotonic=time.monotonic,
+        force=force,
+    )
 
 
 def _teardown_trace_path() -> Path:
@@ -471,7 +381,11 @@ def trust_device(mac: str, adapter_path: str) -> None:
         get_system_bus().get_object("org.bluez", dev_path),
         "org.freedesktop.DBus.Properties",
     )
-    props.Set("org.bluez.Device1", "Trusted", dbus.Boolean(True))
+    try:
+        props.Set("org.bluez.Device1", "Trusted", dbus.Boolean(True))
+    except dbus.exceptions.DBusException as error:
+        detail = error.get_dbus_message() or error.get_dbus_name() or str(error)
+        raise PairingError(f"Could not trust the paired iPhone: {detail}") from error
 
 
 def _requested_adapter(adapter: str | None) -> str:
@@ -553,7 +467,7 @@ def _wait_for_classic_settled(
     *,
     timeout: float = 45.0,
     settle_seconds: float = CLASSIC_SETTLE_SECONDS,
-    attempt: dict | None = None,
+    attempt: PairingAttempt | None = None,
 ) -> None:
     """Require an observably stable Classic connection before starting LE."""
     props = dbus.Interface(
@@ -609,7 +523,7 @@ def _connect_classic(
     *,
     timeout: float = 45.0,
     settle: bool = True,
-    attempt: dict | None = None,
+    attempt: PairingAttempt | None = None,
 ) -> None:
     """Connect the Classic bearer without blocking agent dispatch."""
     log.info("sending Device1.Connect for Classic bearer: %s", device_path)
@@ -703,16 +617,22 @@ def _activate_obex_mns() -> None:
 def _wait_for_daemon_transports(
     *,
     timeout: float = 45.0,
-    attempt: dict | None = None,
+    attempt: PairingAttempt | None = None,
     notifications_supported: bool = True,
     device_path: str | None = None,
-) -> tuple[bool, bool, bool]:
+    status_reader: Callable[[], _TransportStatus] | None = None,
+) -> PairingTransports:
     """Observe the daemon while the pairing advert and agent remain active."""
     from blueferry.client import BackendClient, BackendError
 
+    reader: Callable[[], _TransportStatus]
+    if status_reader is None:
+        reader = BackendClient().status
+    else:
+        reader = status_reader
     deadline = time.monotonic() + timeout
     next_bluez_snapshot = 0.0
-    previous: tuple[bool, bool, bool] | None = None
+    previous: PairingTransports | None = None
     quirks_report.mark(attempt, "waiting_for_transports")
     while time.monotonic() < deadline:
         now = time.monotonic()
@@ -720,24 +640,24 @@ def _wait_for_daemon_transports(
             _record_bluez_state(attempt, device_path, "transport_wait")
             next_bluez_snapshot = now + BLUEZ_TRACE_POLL_SECONDS
         try:
-            status = BackendClient().status()
+            status = reader()
         except BackendError:
             time.sleep(0.5)
             continue
         _remember_daemon_status(attempt, status)
-        current = (status.map, status.pbap, status.ancs)
+        current = PairingTransports(status.map, status.pbap, status.ancs)
         if current != previous:
             log.debug(
                 "daemon transport state: MAP=%s PBAP=%s ANCS=%s",
-                *current,
+                *current.as_tuple(),
             )
             if attempt is not None:
-                was = previous or (False, False, False)
-                if current[0] and not was[0]:
+                was = previous or PairingTransports()
+                if current.map and not was.map:
                     quirks_report.mark(attempt, "map_ready")
-                if current[1] and not was[1]:
+                if current.pbap and not was.pbap:
                     quirks_report.mark(attempt, "pbap_ready")
-                if current[2] and not was[2]:
+                if current.ancs and not was.ancs:
                     quirks_report.mark(attempt, "ancs_ready")
             previous = current
         if status.ancs or (
@@ -745,97 +665,7 @@ def _wait_for_daemon_transports(
         ):
             return current
         time.sleep(0.5)
-    return previous or (False, False, False)
-
-
-def _connect_ancs(device: PairedDevice, *, timeout: float = 30.0) -> str:
-    """Connect the bonded LE bearer exposed by bluetoothd's experimental API."""
-    manager = _object_manager()
-    previous_state: tuple[bool, bool, bool] | None = None
-
-    def bearer_present() -> bool:
-        nonlocal previous_state
-        objects = manager.GetManagedObjects()
-        interfaces = objects.get(dbus.ObjectPath(device.device_path), {})
-        bearer = interfaces.get("org.bluez.Bearer.LE1")
-        if bearer is None:
-            return False
-        state = (
-            bool(bearer.get("Paired", False)),
-            bool(bearer.get("Bonded", False)),
-            bool(bearer.get("Connected", False)),
-        )
-        if state != previous_state:
-            log.debug(
-                "LE bearer probe: paired=%s bonded=%s connected=%s",
-                *state,
-            )
-            previous_state = state
-        return True
-
-    log.debug("probing for Bearer.LE1 on %s", device.device_path)
-    if not _dispatching_wait(time.monotonic() + timeout, bearer_present):
-        raise PairingError(
-            "The iPhone has not established the low-energy half of this "
-            "bond yet; notification setup continues in the background."
-        )
-
-    obj = get_system_bus().get_object("org.bluez", device.device_path)
-    props = dbus.Interface(obj, "org.freedesktop.DBus.Properties")
-    try:
-        log.debug("setting Device1.PreferredBearer=le")
-        props.Set("org.bluez.Device1", "PreferredBearer", dbus.String("le"))
-    except dbus.exceptions.DBusException as error:
-        if preferred_bearer_unavailable(error):
-            log.debug(
-                "Device1.PreferredBearer is unavailable; connecting LE without it"
-            )
-        else:
-            name = error.get_dbus_name() or ""
-            raise PairingError(
-                error.get_dbus_message() or name or str(error)
-            ) from error
-    for attempt in range(2):
-        try:
-            log.info("sending Bearer.LE1.Connect (attempt %d/2)", attempt + 1)
-            dbus.Interface(obj, "org.bluez.Bearer.LE1").Connect(timeout=45.0)
-            log.info("LE bearer connected")
-            return "connected"
-        except dbus.exceptions.DBusException as error:
-            name = error.get_dbus_name() or ""
-            detail = error.get_dbus_message() or ""
-            if name in {
-                "org.bluez.Error.AlreadyConnected",
-                "org.bluez.Error.InProgress",
-            } or detail.casefold() == "operation already in progress":
-                log.info(
-                    "LE bearer connection is already active (%s)",
-                    name or detail,
-                )
-                return "already connected"
-            if name in {
-                "org.freedesktop.DBus.Error.UnknownInterface",
-                "org.freedesktop.DBus.Error.UnknownMethod",
-                "org.freedesktop.DBus.Error.UnknownProperty",
-            }:
-                # Marker-only bearer API: the advert invites the bonded iPhone
-                # to establish LE inbound instead.
-                log.debug("Bearer.LE1.Connect is unavailable: %s", name)
-                return "waiting for iPhone to connect"
-            log.debug(
-                "Bearer.LE1.Connect failed: %s: %s",
-                name or "unknown error",
-                detail or "(no detail)",
-            )
-            failure = f"{name} {detail}".casefold()
-            if attempt == 0 and "le-connection-abort-by-local" in failure:
-                # Desktop managers often connect the newly paired Classic
-                # device themselves. Let that link settle again before one
-                # bounded retry instead of racing their post-pair work.
-                _wait_for_classic_settled(device.device_path, timeout=15.0)
-                continue
-            raise PairingError(detail or name or str(error)) from error
-    raise PairingError("LE connection did not complete")
+    return previous or PairingTransports()
 
 
 def _restart_user_service() -> None:
@@ -868,13 +698,13 @@ def complete_pairing(
     compatibility_mode: bool = False,
     explicit_pairing: bool = False,
     _allow_headless: bool = False,
-) -> dict:
+) -> PairingOutcome:
     """Pair if needed and finish every Linux-side BlueFerry setup step."""
     if confirmation is None and not _allow_headless:
         raise PairingError("Pairing requires an interactive confirmation callback")
     attempt = quirks_report.start_attempt(interactive=confirmation is not None)
     try:
-        result = _execute_pairing(
+        outcome = _execute_pairing(
             mac,
             adapter=adapter,
             confirmation=confirmation,
@@ -888,18 +718,23 @@ def complete_pairing(
         if path is not None:
             error.report_path = str(path)
         raise
+    except dbus.exceptions.DBusException as error:
+        detail = error.get_dbus_message() or error.get_dbus_name() or str(error)
+        pairing_error = PairingError(detail)
+        path = _record_pairing_report(attempt, error=pairing_error)
+        if path is not None:
+            pairing_error.report_path = str(path)
+        raise pairing_error from error
     except Exception as error:
         path = _record_pairing_report(attempt, error=error)
-        raise PairingError(
-            str(error) or type(error).__name__,
-            report_path=str(path) if path is not None else None,
-        ) from error
+        log.exception("unexpected pairing failure; report=%s", path or "unavailable")
+        raise
     path = _record_pairing_report(
-        attempt, transports=result.pop("_report_transports", None),
+        attempt, transports=outcome.transports,
     )
     if path is not None:
-        result["quirks_report"] = str(path)
-    return result
+        outcome = outcome.with_quirks_report(str(path))
+    return outcome
 
 
 def _adapter_identity(adapter: str, compatibility: dict | None = None) -> dict:
@@ -928,27 +763,10 @@ def _adapter_identity(adapter: str, compatibility: dict | None = None) -> dict:
 
 
 def _le_bearer_snapshot(device_path: str) -> dict[str, object]:
-    snapshot: dict[str, object] = {
-        "present": False,
-        "paired": False,
-        "bonded": False,
-        "connected": False,
-    }
-    try:
-        objects = _object_manager().GetManagedObjects()
-        interfaces = objects.get(
-            dbus.ObjectPath(device_path), objects.get(device_path, {}),
-        )
-        bearer = interfaces.get("org.bluez.Bearer.LE1") if interfaces else None
-        if bearer is None:
-            return snapshot
-        snapshot["present"] = True
-        snapshot["paired"] = bool(bearer.get("Paired", False))
-        snapshot["bonded"] = bool(bearer.get("Bonded", False))
-        snapshot["connected"] = bool(bearer.get("Connected", False))
-    except Exception:
-        log.debug("could not inspect LE bearer", exc_info=True)
-    return snapshot
+    return pairing_diagnostics.le_bearer_snapshot(
+        device_path,
+        load_objects=lambda: _object_manager().GetManagedObjects(),
+    )
 
 
 _COMPATIBILITY_REPORT_KEYS = (
@@ -1120,181 +938,60 @@ def _bluetooth_session_owners() -> list[str]:
     return owners
 
 
-def _remember_daemon_status(attempt: dict | None, status: object) -> None:
-    if attempt is None:
-        return
-    extra = getattr(status, "extra", {}) or {}
-    if not isinstance(extra, dict):
-        extra = {}
-    subscribed = bool(extra.get("ancs_subscribed"))
-    authorized = bool(extra.get("ancs_authorized"))
-    last_le_error = str(extra.get("last_le_error") or "")[:256]
-    last_le_message = str(extra.get("last_le_error_message") or "")[:256]
-    previous = attempt.get("daemon")
-    if (
-        not last_le_error
-        and extra.get("le") is not True
-        and isinstance(previous, dict)
-    ):
-        last_le_error = str(previous.get("last_le_error") or "")[:256]
-        if not last_le_message:
-            last_le_message = str(previous.get("last_le_error_message") or "")[:256]
-    daemon = {
-        "ancs_subscribed": subscribed,
-        "ancs_authorized": authorized,
-        "bredr": extra.get("bredr"),
-        "le": extra.get("le"),
-    }
-    if last_le_error:
-        daemon["last_le_error"] = last_le_error
-        if last_le_message:
-            daemon["last_le_error_message"] = last_le_message
-    attempt["daemon"] = daemon
-    phone = attempt.get("phone")
-    if isinstance(phone, dict) and last_le_error:
-        bearer = phone.setdefault("le_bearer", {})
-        if isinstance(bearer, dict):
-            bearer["last_error"] = last_le_error
-            if last_le_message:
-                bearer["last_error_message"] = last_le_message
-    seen = {
-        item.get("event")
-        for item in attempt.get("timeline", ())
-        if isinstance(item, dict)
-    }
-    if subscribed and "ancs_subscribed" not in seen:
-        quirks_report.mark(attempt, "ancs_subscribed")
-    if authorized and "ancs_authorized" not in seen:
-        quirks_report.mark(attempt, "ancs_authorized")
-    if last_le_error and "le_connect_failed" not in seen:
-        fields: dict[str, str] = {"error": last_le_error}
-        if last_le_message:
-            fields["message"] = last_le_message
-        quirks_report.mark(attempt, "le_connect_failed", **fields)
+def _remember_daemon_status(attempt: PairingAttempt | None, status: object) -> None:
+    pairing_diagnostics.remember_daemon_status(attempt, status)
 
 
-def _snapshot_phone(attempt: dict, device: PairedDevice) -> None:
-    phone = quirks_report.public_device(device)
-    phone["le_bearer"] = _le_bearer_snapshot(device.device_path)
-    previous = attempt.get("phone")
-    if isinstance(previous, dict):
-        previous_bearer = previous.get("le_bearer")
-        if isinstance(previous_bearer, dict) and previous_bearer.get("last_error"):
-            phone["le_bearer"]["last_error"] = previous_bearer["last_error"]
-            if previous_bearer.get("last_error_message"):
-                phone["le_bearer"]["last_error_message"] = previous_bearer[
-                    "last_error_message"
-                ]
-    attempt["phone"] = phone
+def _snapshot_phone(attempt: PairingAttempt, device: PairedDevice) -> None:
+    pairing_diagnostics.snapshot_phone(
+        attempt,
+        device,
+        bearer_snapshot=_le_bearer_snapshot,
+    )
 
 
 def _record_pairing_report(
-    attempt: dict,
+    attempt: PairingAttempt,
     *,
-    transports: tuple[bool, bool, bool] | None = None,
+    transports: PairingTransports | None = None,
     error: Exception | None = None,
 ):
-    if transports is not None:
-        map_ready, pbap_ready, ancs_ready = transports
-        attempt["preferred_bearer"] = "bredr"
-        seen = {
-            item.get("event")
-            for item in attempt.get("timeline", ())
-            if isinstance(item, dict)
-        }
-        if map_ready and "map_ready" not in seen:
-            quirks_report.mark(attempt, "map_ready")
-        if pbap_ready and "pbap_ready" not in seen:
-            quirks_report.mark(attempt, "pbap_ready")
-        if ancs_ready and "ancs_ready" not in seen:
-            quirks_report.mark(attempt, "ancs_ready")
-    attempt["outcome"] = _pairing_outcome(attempt, transports, error)
-    if error is not None:
-        quirks_report.mark(attempt, "failed")
-    elif transports is not None:
-        quirks_report.mark(attempt, "finished")
-    else:
-        quirks_report.mark(attempt, "failed")
-    return quirks_report.save_report(attempt)
+    return pairing_diagnostics.record_pairing_report(
+        attempt,
+        transports=transports,
+        error=error,
+    )
 
 
-def _device_bonded(attempt: dict) -> bool:
-    """True once Device1.Paired is observed, even if later setup fails."""
-    phone = attempt.get("phone")
-    if isinstance(phone, dict) and phone.get("paired") is True:
-        return True
-    for item in attempt.get("timeline", ()):
-        if not isinstance(item, dict):
-            continue
-        if item.get("event") == "paired":
-            return True
-        if item.get("event") == "device_loaded" and item.get("already_paired"):
-            return True
-    return False
+def _device_bonded(attempt: PairingAttempt) -> bool:
+    return pairing_diagnostics.device_bonded(attempt)
 
 
 def _pairing_outcome(
-    attempt: dict,
-    transports: tuple[bool, bool, bool] | None,
+    attempt: PairingAttempt,
+    transports: PairingTransports | None,
     error: Exception | None,
 ) -> dict[str, object]:
-    """Record each profile separately; MAP-only is not a single 'degraded' bit."""
-    outcome: dict[str, object] = {
-        "bonded": _device_bonded(attempt),
-        "setup_complete": error is None and transports is not None,
-        "map": None,
-        "pbap": None,
-        "ancs": None,
-    }
-    daemon = attempt.get("daemon")
-    if isinstance(daemon, dict):
-        if "ancs_subscribed" in daemon:
-            outcome["ancs_subscribed"] = daemon["ancs_subscribed"]
-        if "ancs_authorized" in daemon:
-            outcome["ancs_authorized"] = daemon["ancs_authorized"]
-        if daemon.get("last_le_error"):
-            outcome["last_le_error"] = daemon["last_le_error"]
-        if daemon.get("last_le_error_message"):
-            outcome["last_le_error_message"] = daemon["last_le_error_message"]
-    if transports is not None:
-        outcome["map"], outcome["pbap"], outcome["ancs"] = transports
-    else:
-        events = {
-            item.get("event")
-            for item in attempt.get("timeline", ())
-            if isinstance(item, dict)
-        }
-        if "map_ready" in events:
-            outcome["map"] = True
-        if "pbap_ready" in events:
-            outcome["pbap"] = True
-        if "ancs_ready" in events:
-            outcome["ancs"] = True
-    if error is not None:
-        outcome["error"] = str(error)[:1024]
-    return outcome
+    return pairing_diagnostics.pairing_outcome(attempt, transports, error)
 
 
-def _execute_pairing(
+def _prepare_pairing(
     mac: str,
     *,
-    adapter: str | None = None,
-    confirmation: ConfirmationCallback | None = None,
-    display: DisplayCallback | None = None,
-    compatibility_mode: bool = False,
-    explicit_pairing: bool = False,
-    attempt: dict,
-) -> dict:
-    from blueferry import bluez_setup
-
+    adapter: str | None,
+    compatibility_mode: bool,
+    explicit_pairing: bool,
+    interactive: bool,
+    attempt: PairingAttempt,
+) -> _PairingPreparation:
     requested = _requested_adapter(adapter)
     device = _device(mac, adapter=requested or None)
-    adapter = requested or device.adapter_path.rsplit("/", 1)[-1]
+    selected_adapter = requested or device.adapter_path.rsplit("/", 1)[-1]
     log.info(
         "starting setup for %s (%s) on %s: paired=%s trusted=%s connected=%s",
         device.name,
         device.mac,
-        adapter,
+        selected_adapter,
         device.paired,
         device.trusted,
         device.connected,
@@ -1302,15 +999,16 @@ def _execute_pairing(
     session = attempt.setdefault("session", quirks_report.session_environment())
     if isinstance(session, dict):
         session["bluetooth_owners"] = _bluetooth_session_owners()
-    teardown = _take_pending_teardown(adapter)
+    teardown = _take_pending_teardown(selected_adapter)
     if teardown is not None:
         teardown["before_new_pairing"] = _bluez_device_snapshot(device.device_path)
         attempt["previous_teardown"] = teardown
     quirks_report.mark(attempt, "device_loaded", already_paired=device.paired)
     _snapshot_phone(attempt, device)
     _record_bluez_state(attempt, device.device_path, "device_loaded", force=True)
-    compatibility = bluetooth_compatibility(adapter)
-    attempt["controller"] = _controller_snapshot(adapter, compatibility)
+
+    compatibility = bluetooth_compatibility(selected_adapter)
+    attempt["controller"] = _controller_snapshot(selected_adapter, compatibility)
     quirks_report.mark(attempt, "compatibility_ready")
     if not compatibility["hardware_supported"]:
         issue = compatibility["issue"] or "Controller capabilities could not be verified"
@@ -1323,7 +1021,7 @@ def _execute_pairing(
         compatibility,
         force_compatibility=compatibility_mode,
         force_explicit_pairing=explicit_pairing,
-        interactive=confirmation is not None,
+        interactive=interactive,
     )
     attempt["pairing_policy"] = policy.to_dict()
     log.info(
@@ -1335,10 +1033,20 @@ def _execute_pairing(
         policy.reason,
     )
     if policy.ancs_enabled and not compatibility["bearer_api_active"]:
-        raise PairingError("Activate Bluetooth support before pairing or re-pairing the iPhone")
-    # No LE advertisement during pairing: iOS would connect the unbonded
-    # advert as a separate accessory and keep two device records. The advert
-    # is registered only after the bond exists.
+        raise PairingError(
+            "Activate Bluetooth support before pairing or re-pairing the iPhone"
+        )
+    return _PairingPreparation(
+        device=device,
+        adapter=selected_adapter,
+        policy=policy,
+    )
+
+
+def _prepare_classic_transport(adapter: str, attempt: PairingAttempt) -> None:
+    from blueferry import bluez_setup
+
+    # Advertising before the bond exists can make iOS retain two accessories.
     quirks_report.mark(attempt, "prepare_classic_sent")
     if not bluez_setup.prepare_classic(adapter=adapter, authorize=True):
         raise PairingError(
@@ -1349,195 +1057,277 @@ def _execute_pairing(
     _activate_obex_mns()
     quirks_report.mark(attempt, "obex_mns_ready")
 
-    pairing_agents = ExitStack()
-    advert_registered = False
-    agent_registered = False
+
+def _run_pairing_transaction(
+    mac: str,
+    device: PairedDevice,
+    adapter: str,
+    policy: PairingPolicy,
+    *,
+    confirmation: ConfirmationCallback | None,
+    display: DisplayCallback | None,
+    attempt: PairingAttempt,
+    resources: _PairingResources,
+) -> PairedDevice:
+    if device.paired:
+        return device
     try:
-        if not device.paired:
-            try:
-                if confirmation is None:
-                    # Headless fallback: a Linux-initiated transaction pairs
-                    # the Classic bearer. Controllers whose Classic pairing
-                    # derives LE keys (CTKD) get the dual bond this way too.
-                    log.info("sending Device1.Pair using the headless pairing path")
-                    quirks_report.mark(attempt, "pair_sent")
-                    dbus.Interface(
-                        get_system_bus().get_object("org.bluez", device.device_path),
-                        "org.bluez.Device1",
-                    ).Pair(timeout=120.0)
-                    quirks_report.mark(attempt, "pair_replied")
-                else:
-                    from blueferry.pairing_agent import RegisteredPairingAgent
+        if confirmation is None:
+            # complete_pairing permits this only with explicit _allow_headless.
+            log.info("sending Device1.Pair using the headless pairing path")
+            quirks_report.mark(attempt, "pair_sent")
+            dbus.Interface(
+                get_system_bus().get_object("org.bluez", device.device_path),
+                "org.bluez.Device1",
+            ).Pair(timeout=120.0)
+            quirks_report.mark(attempt, "pair_replied")
+        else:
+            from blueferry.pairing_agent import RegisteredPairingAgent
 
-                    def timed_confirmation(passkey: int | None) -> bool:
-                        quirks_report.mark(
-                            attempt, "pairing_confirmation_requested",
-                            has_passkey=passkey is not None,
-                        )
-                        accepted = confirmation(passkey)
-                        quirks_report.mark(
-                            attempt, "pairing_confirmation_answered",
-                            accepted=accepted,
-                        )
-                        return accepted
+            def timed_confirmation(passkey: int | None) -> bool:
+                quirks_report.mark(
+                    attempt,
+                    "pairing_confirmation_requested",
+                    has_passkey=passkey is not None,
+                )
+                accepted = confirmation(passkey)
+                quirks_report.mark(
+                    attempt,
+                    "pairing_confirmation_answered",
+                    accepted=accepted,
+                )
+                return accepted
 
-                    def timed_display(passkey: int) -> None:
-                        quirks_report.mark(attempt, "pairing_passkey_displayed")
-                        if display is not None:
-                            display(passkey)
+            def timed_display(passkey: int) -> None:
+                quirks_report.mark(attempt, "pairing_passkey_displayed")
+                if display is not None:
+                    display(passkey)
 
-                    # Normally the iPhone initiates authentication so it owns
-                    # cross-transport key derivation. The explicit option
-                    # instead skips Connect for controllers known to cancel it.
-                    registered = pairing_agents.enter_context(
-                        RegisteredPairingAgent(
-                            device.device_path,
-                            timed_confirmation,
-                            timed_display,
-                            make_default=policy.iphone_initiated,
-                        )
-                    )
-                    agent_registered = True
-                    quirks_report.mark(attempt, "agent_registered")
-                    if policy.iphone_initiated:
-                        _connect_classic(
-                            device.device_path,
-                            timeout=60.0,
-                            settle=False,
-                            attempt=attempt,
-                        )
-                        registered.wait_for_pair(timeout=120.0)
-                        attempt["pairing_transaction"] = (
-                            "iphone-initiated-connect"
-                        )
-                    else:
-                        quirks_report.mark(attempt, "pair_sent")
-                        registered.pair(timeout=120.0)
-                        quirks_report.mark(attempt, "pair_replied")
-                        attempt["pairing_transaction"] = "explicit-device-pair"
-            except dbus.exceptions.DBusException as error:
-                name = error.get_dbus_name() or ""
-                if name in {
-                    "org.bluez.Error.AlreadyExists",
-                    "org.bluez.Error.InProgress",
-                }:
-                    # The iPhone initiated pairing on its own; settle below.
-                    quirks_report.mark(attempt, "peer_pairing_in_progress")
-                    pass
-                else:
-                    detail = error.get_dbus_message() or name or str(error)
-                    if name in {
-                        "org.bluez.Error.AuthenticationCanceled",
-                        "org.bluez.Error.AuthenticationFailed",
-                        "org.bluez.Error.AuthenticationRejected",
-                    }:
-                        detail = f"Bluetooth confirmation did not complete: {detail}"
-                    raise PairingError(detail) from error
-            device = _wait_for_paired_device(mac, adapter=adapter)
-            quirks_report.mark(attempt, "paired")
-            _snapshot_phone(attempt, device)
-            _record_bluez_state(attempt, device.device_path, "paired", force=True)
-        log.debug("setting Device1.Trusted=true for %s", device.device_path)
-        trust_device(device.mac, device.adapter_path)
-        quirks_report.mark(attempt, "trusted")
-
-        _prefer_bredr(device.device_path)
-        quirks_report.mark(attempt, "preferred_bearer_bredr")
-        # Both pairing transactions should leave a Classic ACL behind. A
-        # second generic Device1.Connect can wander into LE, so only require
-        # that the existing ACL settle.
-        _wait_for_classic_settled(device.device_path, attempt=attempt)
-        _record_bluez_state(
-            attempt, device.device_path, "classic_settled", force=True,
-        )
-
-        # Keep ANCS solicitation active because iOS 26 testing found that it
-        # surfaced the MAP/PBAP permission toggles.  It is a pairing signal,
-        # not a prerequisite connection: the daemon below attempts MAP/PBAP
-        # before it is allowed to connect the LE bearer.
-        if policy.solicitation_enabled:
-            log.debug("registering ANCS solicitation advertisement on %s", adapter)
-            quirks_report.mark(attempt, "advert_register_sent")
-            if not bluez_setup.register_advert(adapter, settle_for_pairing=True):
-                raise PairingError("The ANCS advertisement did not activate")
-            advert_registered = True
-            quirks_report.mark(attempt, "advert_ready")
-            _record_bluez_state(
-                attempt, device.device_path, "advert_ready", force=True,
+            registered = resources.agents.enter_context(
+                RegisteredPairingAgent(
+                    device.device_path,
+                    timed_confirmation,
+                    timed_display,
+                    make_default=policy.iphone_initiated,
+                )
             )
+            resources.agent_registered = True
+            quirks_report.mark(attempt, "agent_registered")
+            if policy.iphone_initiated:
+                _connect_classic(
+                    device.device_path,
+                    timeout=60.0,
+                    settle=False,
+                    attempt=attempt,
+                )
+                registered.wait_for_pair(timeout=120.0)
+                attempt["pairing_transaction"] = "iphone-initiated-connect"
+            else:
+                quirks_report.mark(attempt, "pair_sent")
+                registered.pair(timeout=120.0)
+                quirks_report.mark(attempt, "pair_replied")
+                attempt["pairing_transaction"] = "explicit-device-pair"
+    except dbus.exceptions.DBusException as error:
+        name = error.get_dbus_name() or ""
+        if name in {
+            "org.bluez.Error.AlreadyExists",
+            "org.bluez.Error.InProgress",
+        }:
+            quirks_report.mark(attempt, "peer_pairing_in_progress")
         else:
-            log.info(
-                "the controller cannot advertise ANCS solicitation; "
-                "continuing with MAP/PBAP"
-            )
+            detail = error.get_dbus_message() or name or str(error)
+            if name in {
+                "org.bluez.Error.AuthenticationCanceled",
+                "org.bluez.Error.AuthenticationFailed",
+                "org.bluez.Error.AuthenticationRejected",
+            }:
+                detail = f"Bluetooth confirmation did not complete: {detail}"
+            raise PairingError(detail) from error
+    paired = _wait_for_paired_device(mac, adapter=adapter)
+    quirks_report.mark(attempt, "paired")
+    _snapshot_phone(attempt, paired)
+    _record_bluez_state(attempt, paired.device_path, "paired", force=True)
+    return paired
 
-        # Start the long-lived owner while both the advert and temporary
-        # pairing agent are still present. Its first operation is a Classic
-        # MAP/PBAP open; full mode enables LE only after that attempt, while
-        # compatibility mode leaves LE disabled permanently.
-        if policy.ancs_enabled:
-            write_local_env(device.mac, adapter)
-        else:
-            write_local_env(device.mac, adapter, False)
-        log.debug("saved paired target %s; restarting user service", device.mac)
-        quirks_report.mark(attempt, "daemon_restart_sent")
-        _restart_user_service()
-        quirks_report.mark(attempt, "daemon_restarted")
-        _record_bluez_state(
-            attempt, device.device_path, "daemon_restarted", force=True,
-        )
-        map_ready, pbap_ready, ancs_ready = _wait_for_daemon_transports(
-            attempt=attempt,
-            notifications_supported=policy.ancs_enabled,
-            device_path=device.device_path,
-        )
-        if not policy.ancs_enabled:
-            ancs = "disabled"
-        else:
-            ancs = "connected" if ancs_ready else "daemon connecting"
+
+def _trust_and_settle(device: PairedDevice, attempt: PairingAttempt) -> None:
+    log.debug("setting Device1.Trusted=true for %s", device.device_path)
+    trust_device(device.mac, device.adapter_path)
+    quirks_report.mark(attempt, "trusted")
+    _prefer_bredr(device.device_path)
+    quirks_report.mark(attempt, "preferred_bearer_bredr")
+    _wait_for_classic_settled(device.device_path, attempt=attempt)
+    _record_bluez_state(
+        attempt,
+        device.device_path,
+        "classic_settled",
+        force=True,
+    )
+
+
+def _register_solicitation(
+    device: PairedDevice,
+    adapter: str,
+    policy: PairingPolicy,
+    attempt: PairingAttempt,
+    resources: _PairingResources,
+) -> None:
+    from blueferry import bluez_setup
+
+    if not policy.solicitation_enabled:
         log.info(
-            "pairing-window result: MAP=%s PBAP=%s ANCS=%s",
-            map_ready,
-            pbap_ready,
-            ancs_ready,
+            "the controller cannot advertise ANCS solicitation; "
+            "continuing with MAP/PBAP"
+        )
+        return
+    log.debug("registering ANCS solicitation advertisement on %s", adapter)
+    quirks_report.mark(attempt, "advert_register_sent")
+    if not bluez_setup.register_advert(adapter, settle_for_pairing=True):
+        raise PairingError("The ANCS advertisement did not activate")
+    resources.advert_registered = True
+    quirks_report.mark(attempt, "advert_ready")
+    _record_bluez_state(attempt, device.device_path, "advert_ready", force=True)
+
+
+def _handoff_to_daemon(
+    device: PairedDevice,
+    adapter: str,
+    policy: PairingPolicy,
+    attempt: PairingAttempt,
+) -> PairingTransports:
+    if policy.ancs_enabled:
+        write_local_env(device.mac, adapter)
+    else:
+        write_local_env(device.mac, adapter, False)
+    log.debug("saved paired target %s; restarting user service", device.mac)
+    quirks_report.mark(attempt, "daemon_restart_sent")
+    _restart_user_service()
+    quirks_report.mark(attempt, "daemon_restarted")
+    _record_bluez_state(
+        attempt,
+        device.device_path,
+        "daemon_restarted",
+        force=True,
+    )
+    transports = _wait_for_daemon_transports(
+        attempt=attempt,
+        notifications_supported=policy.ancs_enabled,
+        device_path=device.device_path,
+    )
+    log.info(
+        "pairing-window result: MAP=%s PBAP=%s ANCS=%s",
+        transports.map,
+        transports.pbap,
+        transports.ancs,
+    )
+    return transports
+
+
+def _cleanup_pairing_resources(
+    device: PairedDevice,
+    adapter: str,
+    attempt: PairingAttempt,
+    resources: _PairingResources,
+) -> None:
+    from blueferry import bluez_setup
+
+    try:
+        if resources.advert_registered:
+            log.debug("removing ANCS solicitation advertisement from %s", adapter)
+            bluez_setup.unregister_advert(adapter)
+            quirks_report.mark(attempt, "advert_removed")
+            _record_bluez_state(
+                attempt,
+                device.device_path,
+                "advert_removed",
+                force=True,
+            )
+    finally:
+        resources.agents.close()
+        if resources.agent_registered:
+            quirks_report.mark(attempt, "agent_released")
+
+
+def _execute_pairing(
+    mac: str,
+    *,
+    adapter: str | None = None,
+    confirmation: ConfirmationCallback | None = None,
+    display: DisplayCallback | None = None,
+    compatibility_mode: bool = False,
+    explicit_pairing: bool = False,
+    attempt: PairingAttempt,
+) -> PairingOutcome:
+    preparation = _prepare_pairing(
+        mac,
+        adapter=adapter,
+        compatibility_mode=compatibility_mode,
+        explicit_pairing=explicit_pairing,
+        interactive=confirmation is not None,
+        attempt=attempt,
+    )
+    device = preparation.device
+    selected_adapter = preparation.adapter
+    policy = preparation.policy
+    _prepare_classic_transport(selected_adapter, attempt)
+
+    resources = _PairingResources()
+    try:
+        device = _run_pairing_transaction(
+            mac,
+            device,
+            selected_adapter,
+            policy,
+            confirmation=confirmation,
+            display=display,
+            attempt=attempt,
+            resources=resources,
+        )
+        _trust_and_settle(device, attempt)
+        _register_solicitation(
+            device,
+            selected_adapter,
+            policy,
+            attempt,
+            resources,
+        )
+        transports = _handoff_to_daemon(
+            device,
+            selected_adapter,
+            policy,
+            attempt,
         )
     finally:
-        # The temporary setup process owns this advertisement. Remove it
-        # before releasing our device-scoped default agent. Restoring a
-        # desktop agent as soon as Device1.Paired flips can let its post-pair
-        # work race BlueFerry's Classic-to-LE handoff.
-        try:
-            if advert_registered:
-                log.debug("removing ANCS solicitation advertisement from %s", adapter)
-                bluez_setup.unregister_advert(adapter)
-                quirks_report.mark(attempt, "advert_removed")
-                _record_bluez_state(
-                    attempt, device.device_path, "advert_removed", force=True,
-                )
-        finally:
-            pairing_agents.close()
-            if agent_registered:
-                quirks_report.mark(attempt, "agent_released")
+        _cleanup_pairing_resources(
+            device,
+            selected_adapter,
+            attempt,
+            resources,
+        )
 
-    device = _device(mac, adapter=adapter)
+    device = _device(mac, adapter=selected_adapter)
     _snapshot_phone(attempt, device)
     _record_bluez_state(attempt, device.device_path, "finished", force=True)
-    return {
-        "ok": True,
-        "device": device.to_dict(),
-        "config": str(LOCAL_ENV_PATH),
-        "service": "package-enabled and restarted",
-        "ancs": ancs,
-        "ancs_enabled": policy.ancs_enabled,
-        "ancs_ready": ancs_ready,
-        "iphone_steps": [
+    return PairingOutcome(
+        device=device,
+        config=str(LOCAL_ENV_PATH),
+        service="package-enabled and restarted",
+        ancs=(
+            "disabled"
+            if not policy.ancs_enabled
+            else "connected"
+            if transports.ancs
+            else "daemon connecting"
+        ),
+        ancs_enabled=policy.ancs_enabled,
+        transports=transports,
+        iphone_steps=(
             "Open Settings → Bluetooth and tap ⓘ next to this computer",
             "If this computer is listed twice, check both entries",
             "Toggle on Show Message Notifications and Sync Contacts",
             "You may need to back out and tap ⓘ again to make these toggles appear",
-        ],
-        "_report_transports": (map_ready, pbap_ready, ancs_ready),
-    }
+        ),
+    )
 
 
 def forget_device(mac: str, *, adapter: str | None = None) -> None:

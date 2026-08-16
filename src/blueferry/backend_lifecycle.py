@@ -106,12 +106,13 @@ def ensure_backend_current(
     expected_build = build_id(expected, expected_sha) if expected is not None else None
     try:
         status = read_status()
-    except (dbus.exceptions.DBusException, ValueError) as first_error:
+    except (BlueFerryError, dbus.exceptions.DBusException, ValueError) as first_error:
         try:
             _systemctl("start")
             status = read_status()
         except (
             BackendLifecycleError,
+            BlueFerryError,
             dbus.exceptions.DBusException,
             ValueError,
         ) as error:
@@ -132,7 +133,7 @@ def ensure_backend_current(
         # Another client may have completed recovery while we waited.
         try:
             status = read_status()
-        except (dbus.exceptions.DBusException, ValueError):
+        except (BlueFerryError, dbus.exceptions.DBusException, ValueError):
             status = {}
         if status.get("backend_release") != expected or (
             expected_sha is not None and status.get("_build_id") != expected_build
@@ -140,7 +141,11 @@ def ensure_backend_current(
             restart_backend()
             try:
                 status = read_status()
-            except (dbus.exceptions.DBusException, ValueError) as error:
+            except (
+                BlueFerryError,
+                dbus.exceptions.DBusException,
+                ValueError,
+            ) as error:
                 raise BackendLifecycleError(str(error)) from error
     actual = status.get("backend_release")
     actual_build = status.get("_build_id")

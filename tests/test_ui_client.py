@@ -1,9 +1,9 @@
 """GTK client work is dispatched without reaching the desktop bus."""
 from __future__ import annotations
 
-import json
 import threading
 
+from blueferry.models import Thread
 from blueferry.ui import client as client_module
 
 
@@ -17,13 +17,14 @@ class _Bus:
         return _SignalMatch()
 
 
+class _UnconfiguredSetup:
+    def configuration(self):
+        return type("Configuration", (), {"configured": False})()
+
+
 def test_thread_snapshot_runs_off_the_ui_thread(monkeypatch) -> None:
     monkeypatch.setattr(client_module, "get_session_bus", _Bus)
-    monkeypatch.setattr(
-        client_module,
-        "configuration_status",
-        lambda: {"configured": False},
-    )
+    monkeypatch.setattr(client_module, "SetupClient", _UnconfiguredSetup)
     monkeypatch.setattr(
         client_module.DaemonClient,
         "ensure_backend_current_async",
@@ -42,23 +43,27 @@ def test_thread_snapshot_runs_off_the_ui_thread(monkeypatch) -> None:
     worker_started = threading.Event()
     release_worker = threading.Event()
 
-    def private_call(method, *_args, **_kwargs):
-        worker_threads.append(threading.get_ident())
-        worker_started.set()
-        assert release_worker.wait(3)
-        assert method == "ListThreads"
-        return json.dumps([{
-            "key": "address:email:test@example.com",
-            "name": "Test",
-            "recipients": ["test@example.com"],
-            "reply_ready": True,
-        }])
+    class Backend:
+        def threads(self, limit):
+            assert limit == 1000
+            worker_threads.append(threading.get_ident())
+            worker_started.set()
+            assert release_worker.wait(3)
+            return [Thread.from_dict({
+                "key": "address:email:test@example.com",
+                "name": "Test",
+                "recipients": ["test@example.com"],
+                "reply_ready": True,
+            })]
+
+    def backend_call(operation):
+        return operation(Backend())
 
     current_thread = threading.get_ident()
     completed = threading.Event()
     received = []
     client = client_module.DaemonClient()
-    monkeypatch.setattr(client, "_private_call", private_call)
+    monkeypatch.setattr(client, "_call_backend", backend_call)
     try:
         client.list_threads_async(
             lambda threads: (received.extend(threads), completed.set()),
@@ -77,23 +82,22 @@ def test_thread_snapshot_runs_off_the_ui_thread(monkeypatch) -> None:
 
 def test_contact_search_decodes_backend_destinations(monkeypatch) -> None:
     monkeypatch.setattr(client_module, "get_session_bus", _Bus)
-    monkeypatch.setattr(
-        client_module,
-        "configuration_status",
-        lambda: {"configured": False},
-    )
+    monkeypatch.setattr(client_module, "SetupClient", _UnconfiguredSetup)
     client = client_module.DaemonClient()
     calls = []
+
+    class Backend:
+        def find_contacts(self, query):
+            calls.append(query)
+            return [
+                ("Alice", "15551234567"),
+                ("Alice Work", "alice@example.com"),
+            ]
+
     monkeypatch.setattr(
         client,
-        "_private_call",
-        lambda method, query, **_kwargs: (
-            calls.append((method, query))
-            or json.dumps([
-                {"name": "Alice", "address": "15551234567"},
-                {"name": "Alice Work", "address": "alice@example.com"},
-            ])
-        ),
+        "_call_backend",
+        lambda operation: operation(Backend()),
     )
     monkeypatch.setattr(
         client,
@@ -106,8 +110,47 @@ def test_contact_search_decodes_backend_destinations(monkeypatch) -> None:
     finally:
         client.stop()
 
-    assert calls == [("FindContacts", "Alice")]
+    assert calls == ["Alice"]
     assert received == [
         ("Alice", "15551234567"),
         ("Alice Work", "alice@example.com"),
     ]
+
+
+def test_pending_send_does_not_block_thread_snapshot(monkeypatch) -> None:
+    monkeypatch.setattr(client_module, "get_session_bus", _Bus)
+    monkeypatch.setattr(client_module, "SetupClient", _UnconfiguredSetup)
+    monkeypatch.setattr(
+        client_module.GLib,
+        "idle_add",
+        lambda callback, *args: callback(*args),
+    )
+    send_started = threading.Event()
+    release_send = threading.Event()
+    snapshot_done = threading.Event()
+
+    class Backend:
+        def send(self, _recipient, _body):
+            send_started.set()
+            assert release_send.wait(3)
+            return "/transfer/1"
+
+        @staticmethod
+        def threads(_limit):
+            return []
+
+    backend = Backend()
+    client = client_module.DaemonClient()
+    monkeypatch.setattr(
+        client,
+        "_call_backend",
+        lambda operation: operation(backend),
+    )
+    try:
+        client.send_message("+15551234567", "hello", lambda _value: None, None)
+        assert send_started.wait(3)
+        client.list_threads_async(lambda _threads: snapshot_done.set())
+        assert snapshot_done.wait(1)
+    finally:
+        release_send.set()
+        client.stop()

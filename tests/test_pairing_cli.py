@@ -237,6 +237,64 @@ def test_cli_wizard_supplies_its_own_pairing_agent_ui(
         assert "Automatic compatibility mode" in output
 
 
+def test_cli_wizard_preserves_report_for_unexpected_pairing_failure(
+    monkeypatch,
+    capsys,
+) -> None:
+    device = PairedDevice(
+        mac="02:00:00:00:00:01",
+        name="iPhone",
+        icon="phone",
+        trusted=False,
+        connected=False,
+        paired=False,
+        adapter_path="/org/bluez/hci0",
+        device_path="/org/bluez/hci0/dev_02_00_00_00_00_01",
+        uuids=frozenset(),
+    )
+
+    class Setup:
+        @staticmethod
+        def configuration():
+            return SimpleNamespace(saved=False, mac="")
+
+        @staticmethod
+        def compatibility():
+            return SimpleNamespace(
+                adapter="hci0",
+                hardware_supported=True,
+                issue="",
+                notifications_supported=True,
+                bearer_api_active=True,
+                adapters=(),
+            )
+
+        @staticmethod
+        def devices(*, scan_seconds, adapter=None):
+            return [device]
+
+        @staticmethod
+        def complete(*_args, **_kwargs):
+            raise RuntimeError("unexpected pairing failure")
+
+    monkeypatch.setattr(pairing_cli, "SetupClient", Setup)
+    monkeypatch.setattr(
+        pairing_cli,
+        "latest_report",
+        lambda: "/tmp/quirks-unexpected.json",
+    )
+    monkeypatch.setattr(
+        pairing_cli.typer,
+        "confirm",
+        lambda *_args, **_kwargs: True,
+    )
+
+    assert pairing_cli.run_wizard(verify_after=False) == 1
+    output = capsys.readouterr().out
+    assert "unexpected pairing failure" in output
+    assert "blueferry pairing-issue" in output
+
+
 def test_cli_wizard_points_at_pairing_issue_when_ancs_stays_down(
     monkeypatch, capsys,
 ) -> None:

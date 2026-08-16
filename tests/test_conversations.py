@@ -7,7 +7,11 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 
-from blueferry.models import BackendStatus  # noqa: E402
+from blueferry.conversation_state import (  # noqa: E402
+    ConversationSnapshot,
+    ConversationState,
+)
+from blueferry.models import BackendStatus, Thread, ThreadMessage  # noqa: E402
 from blueferry.ui import conversations  # noqa: E402
 
 
@@ -59,22 +63,39 @@ class _FakeThreadList:
             self.selection_callbacks += 1
 
 
+def _thread(**changes) -> Thread:
+    values = {
+        "key": "Alice",
+        "name": "Alice",
+        "is_group": False,
+        "recipients": (),
+        "reply_ready": True,
+        "messages": (
+            ThreadMessage(
+                handle="1",
+                body="hello",
+                timestamp="2026-08-08T10:00:00-04:00",
+                outgoing=False,
+                read=True,
+            ),
+        ),
+        "last_ts": "2026-08-08T10:00:00-04:00",
+    }
+    values.update(changes)
+    return Thread(**values)
+
+
 def test_sidebar_rebuild_does_not_fire_selection_callback(monkeypatch):
     """A live event redraw must not redraw the current thread a second time."""
     monkeypatch.setattr(conversations, "Gtk", _FakeGtk)
     thread_list = _FakeThreadList()
+    state = ConversationState(select_first=False)
+    state.apply_snapshot(ConversationSnapshot(None, (_thread(),)))
+    state.selected_key = "Alice"
     page = SimpleNamespace(
         _thread_list=thread_list,
         _thread_selected_handler=42,
-        _current="Alice",
-        _threads={
-            "Alice": {
-                "key": "Alice",
-                "name": "Alice",
-                "messages": [{"body": "hello"}],
-                "last_ts": "2026-08-08T10:00:00-04:00",
-            },
-        },
+        _state=state,
     )
 
     conversations.ConversationsPage._rebuild_thread_list(page)
@@ -92,7 +113,10 @@ def test_map_refusal_reveals_prominent_message_banner() -> None:
             self.revealed = value
 
     banner = Banner()
-    page = SimpleNamespace(_map_refused_banner=banner)
+    page = SimpleNamespace(
+        _map_refused_banner=banner,
+        _state=ConversationState(select_first=False),
+    )
 
     result = conversations.ConversationsPage._apply_status(
         page,
@@ -113,24 +137,24 @@ def test_participant_editor_keeps_unique_nonempty_lines() -> None:
 
 
 def test_roster_banner_keeps_unexpected_sender_after_later_known_sender() -> None:
-    title = conversations._group_roster_banner_title({
-        "name": "Crew",
-        "roster_changed": True,
-        "unexpected_sender": "Casey",
-        "prompt_sender": "Beau",
-    })
+    title = conversations._group_roster_banner_title(_thread(
+        name="Crew",
+        roster_changed=True,
+        unexpected_sender="Casey",
+        prompt_sender="Beau",
+    ))
 
     assert title.startswith("Casey is not")
     assert "Beau" not in title
 
 
 def test_roster_warning_fallback_id_is_stable_for_partial_payload() -> None:
-    thread = {
-        "key": "group:named:crew",
-        "unexpected_sender": "Casey",
-        "roster_warning_id": "",
-    }
+    thread = _thread(
+        key="group:named:crew",
+        unexpected_sender="Casey",
+        roster_warning_id="",
+    )
 
-    assert conversations._roster_warning_id(thread) == (
+    assert ConversationState.roster_warning_id(thread) == (
         "group:named:crew:Casey"
     )

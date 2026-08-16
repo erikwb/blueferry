@@ -8,11 +8,8 @@ from __future__ import annotations
 
 import pytest
 
-from blueferry.obex.map_send import (
-    InvalidRecipient,
-    build_bmessage,
-    validate_recipient,
-)
+from blueferry.obex.map_send import build_bmessage
+from blueferry.recipients import InvalidRecipient, validate_recipient
 
 
 class TestValidateRecipient:

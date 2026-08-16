@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 import stat
 
 import pytest
@@ -344,6 +343,30 @@ def test_find_device_stays_on_the_requested_adapter(monkeypatch):
     assert pair_setup._device(leftover.mac, adapter="hci1") == phone
 
 
+def test_trust_device_maps_bluez_failure_to_pairing_error(monkeypatch):
+    class Bus:
+        @staticmethod
+        def get_object(*_args):
+            return object()
+
+    class Properties:
+        @staticmethod
+        def Set(*_args):
+            raise pair_setup.dbus.exceptions.DBusException(
+                "Permission denied",
+                name="org.bluez.Error.NotPermitted",
+            )
+
+    monkeypatch.setattr(pair_setup, "get_system_bus", Bus)
+    monkeypatch.setattr(pair_setup.dbus, "Interface", lambda *_args: Properties())
+
+    with pytest.raises(
+        pair_setup.PairingError,
+        match=r"Could not trust.*Permission denied",
+    ):
+        pair_setup.trust_device("02:00:00:00:00:01", "/org/bluez/hci0")
+
+
 def test_bluez_device_snapshot_captures_bearers_battery_and_ancs(monkeypatch):
     device = _device(paired=True)
     objects = {
@@ -477,10 +500,13 @@ def test_transport_wait_samples_bluez_at_a_bounded_rate(monkeypatch):
         for _index in range(5)
     ] + [BackendStatus(map=True, pbap=True, ancs=True)]
     snapshots = []
+    clients = []
 
     class FakeClient:
-        @staticmethod
-        def status():
+        def __init__(self):
+            clients.append(self)
+
+        def status(self):
             return statuses.pop(0)
 
     monkeypatch.setattr("blueferry.client.BackendClient", FakeClient)
@@ -498,8 +524,9 @@ def test_transport_wait_samples_bluez_at_a_bounded_rate(monkeypatch):
         device_path="/device",
     )
 
-    assert result == (True, True, True)
+    assert result.as_tuple() == (True, True, True)
     assert snapshots == [0.0, 2.0]
+    assert len(clients) == 1
 
 
 def test_teardown_trace_survives_quickshell_helper_processes(monkeypatch):
@@ -1250,7 +1277,7 @@ def _compatible(
     monkeypatch.setattr(
         pair_setup,
         "_wait_for_daemon_transports",
-        lambda **_kwargs: (True, True, True),
+        lambda **_kwargs: pair_setup.PairingTransports(True, True, True),
     )
 
 
@@ -1290,9 +1317,9 @@ def test_complete_pairing_starts_profiles_while_pairing_advert_is_active(monkeyp
 
     result = pair_setup.complete_pairing(device.mac, _allow_headless=True)
 
-    assert result["ok"] is True
-    assert result["ancs"] == "connected"
-    assert result["ancs_ready"] is True
+    assert result.device.mac == device.mac
+    assert result.ancs == "connected"
+    assert result.ancs_ready is True
     assert calls == [
         ("prepare_classic", "hci0"),
         "trust",
@@ -1369,7 +1396,7 @@ def test_complete_pairing_prepares_the_selected_adapter_not_a_leftover_bond(
     monkeypatch.setattr(pair_setup, "_restart_user_service", lambda: None)
     monkeypatch.setattr(
         pair_setup, "_wait_for_daemon_transports",
-        lambda **_kwargs: (True, True, True),
+        lambda **_kwargs: pair_setup.PairingTransports(True, True, True),
     )
     monkeypatch.setattr(pair_setup, "_adapter_dbus_fields", lambda _adapter: {})
     monkeypatch.setattr(pair_setup, "_le_bearer_snapshot", lambda _path: {
@@ -1381,7 +1408,7 @@ def test_complete_pairing_prepares_the_selected_adapter_not_a_leftover_bond(
         phone.mac, adapter="hci1", _allow_headless=True
     )
 
-    assert result["ok"] is True
+    assert result.device.mac == phone.mac
     assert prepared == ["hci1"]
     assert saved == [(phone.mac, "hci1")]
 
@@ -1522,113 +1549,6 @@ def test_obex_mns_is_activated_before_pairing(monkeypatch):
     ]
 
 
-def test_ancs_retries_local_abort_after_classic_resettles(monkeypatch, caplog):
-    device = _device(paired=True)
-    connects = []
-    settled = []
-    caplog.set_level(logging.DEBUG, logger="blueferry.pair_setup")
-
-    class Manager:
-        @staticmethod
-        def GetManagedObjects():
-            return {
-                pair_setup.dbus.ObjectPath(device.device_path): {
-                    "org.bluez.Bearer.LE1": {},
-                }
-            }
-
-    class Properties:
-        @staticmethod
-        def Set(*_args, **_kwargs):
-            return None
-
-    class LeBearer:
-        @staticmethod
-        def Connect(**_kwargs):
-            connects.append(True)
-            if len(connects) == 1:
-                raise pair_setup.dbus.exceptions.DBusException(
-                    "le-connection-abort-by-local",
-                    name="org.bluez.Error.Failed",
-                )
-
-    monkeypatch.setattr(pair_setup, "_object_manager", lambda: Manager())
-    monkeypatch.setattr(
-        pair_setup,
-        "_wait_for_classic_settled",
-        lambda path, **_kwargs: settled.append(path),
-    )
-    monkeypatch.setattr(
-        pair_setup,
-        "get_system_bus",
-        lambda: type("Bus", (), {"get_object": staticmethod(lambda *_args: object())})(),
-    )
-    monkeypatch.setattr(
-        pair_setup.dbus,
-        "Interface",
-        lambda _obj, interface: (
-            Properties()
-            if interface == "org.freedesktop.DBus.Properties"
-            else LeBearer()
-        ),
-    )
-
-    assert pair_setup._connect_ancs(device) == "connected"
-    assert len(connects) == 2
-    assert settled == [device.device_path]
-    assert "LE bearer probe: paired=False bonded=False connected=False" in caplog.text
-    assert "sending Bearer.LE1.Connect (attempt 1/2)" in caplog.text
-    assert "le-connection-abort-by-local" in caplog.text
-    assert "sending Bearer.LE1.Connect (attempt 2/2)" in caplog.text
-    assert "LE bearer connected" in caplog.text
-
-
-def test_connect_ancs_continues_when_preferred_bearer_is_missing(monkeypatch):
-    device = _device(paired=True)
-    connects = []
-
-    class Manager:
-        @staticmethod
-        def GetManagedObjects():
-            return {
-                pair_setup.dbus.ObjectPath(device.device_path): {
-                    "org.bluez.Bearer.LE1": {},
-                }
-            }
-
-    class Properties:
-        @staticmethod
-        def Set(*_args, **_kwargs):
-            raise pair_setup.dbus.exceptions.DBusException(
-                "No such property 'PreferredBearer'",
-                name="org.bluez.Error.InvalidArguments",
-            )
-
-    class LeBearer:
-        @staticmethod
-        def Connect(**_kwargs):
-            connects.append(True)
-
-    monkeypatch.setattr(pair_setup, "_object_manager", lambda: Manager())
-    monkeypatch.setattr(
-        pair_setup,
-        "get_system_bus",
-        lambda: type("Bus", (), {"get_object": staticmethod(lambda *_args: object())})(),
-    )
-    monkeypatch.setattr(
-        pair_setup.dbus,
-        "Interface",
-        lambda _obj, interface: (
-            Properties()
-            if interface == "org.freedesktop.DBus.Properties"
-            else LeBearer()
-        ),
-    )
-
-    assert pair_setup._connect_ancs(device) == "connected"
-    assert connects == [True]
-
-
 def test_complete_pairing_headless_pairs_from_linux(monkeypatch):
     unpaired = _device(paired=False)
     paired = _device(paired=True)
@@ -1658,8 +1578,8 @@ def test_complete_pairing_headless_pairs_from_linux(monkeypatch):
     result = pair_setup.complete_pairing(unpaired.mac, _allow_headless=True)
 
     assert calls == [("pair", 120.0)]
-    assert result["ok"] is True
-    assert result["ancs"] == "connected"
+    assert result.device.mac == unpaired.mac
+    assert result.ancs == "connected"
 
 
 def test_compatibility_pairing_connects_and_lets_the_iphone_initiate(monkeypatch):
@@ -1909,7 +1829,7 @@ def test_interactive_pairing_can_use_explicit_pair_without_connecting(monkeypatc
         explicit_pairing=True,
     )
 
-    assert result["ok"] is True
+    assert result.device.mac == unpaired.mac
     assert calls[:5] == [
         ("agent", unpaired.device_path, False),
         "agent-enter",
@@ -1957,7 +1877,7 @@ def test_peer_initiated_pairing_is_allowed_to_finish(monkeypatch):
     result = pair_setup.complete_pairing(unpaired.mac, _allow_headless=True)
 
     assert pair_calls == [True]
-    assert result["ok"] is True
+    assert result.device.mac == unpaired.mac
 
 
 def test_pairing_starts_daemon_even_when_ancs_is_still_missing(monkeypatch):
@@ -1975,7 +1895,7 @@ def test_pairing_starts_daemon_even_when_ancs_is_still_missing(monkeypatch):
     monkeypatch.setattr(
         pair_setup,
         "_wait_for_daemon_transports",
-        lambda **_kwargs: (True, True, False),
+        lambda **_kwargs: pair_setup.PairingTransports(True, True, False),
     )
     monkeypatch.setattr(pair_setup, "_restart_user_service", lambda: restarted.append(True))
 
@@ -1983,8 +1903,8 @@ def test_pairing_starts_daemon_even_when_ancs_is_still_missing(monkeypatch):
 
     assert saved == [True]
     assert restarted == [True]
-    assert result["ancs"] == "daemon connecting"
-    assert result["ancs_ready"] is False
+    assert result.ancs == "daemon connecting"
+    assert result.ancs_ready is False
 
 
 def test_pairing_does_not_gate_map_on_inbound_ancs(monkeypatch):
@@ -1998,7 +1918,7 @@ def test_pairing_does_not_gate_map_on_inbound_ancs(monkeypatch):
     monkeypatch.setattr(
         pair_setup,
         "_wait_for_daemon_transports",
-        lambda **_kwargs: (False, False, False),
+        lambda **_kwargs: pair_setup.PairingTransports(),
     )
     saved = []
     monkeypatch.setattr(pair_setup, "write_local_env", lambda *_args: saved.append(True))
@@ -2007,7 +1927,7 @@ def test_pairing_does_not_gate_map_on_inbound_ancs(monkeypatch):
     result = pair_setup.complete_pairing(device.mac, _allow_headless=True)
 
     assert saved == [True]
-    assert result["ancs_ready"] is False
+    assert result.ancs_ready is False
 
 
 def test_pairing_without_bearer_api_continues_with_map_and_pbap(monkeypatch):
@@ -2034,7 +1954,7 @@ def test_pairing_without_bearer_api_continues_with_map_and_pbap(monkeypatch):
         lambda **kwargs: (
             pytest.fail("MAP/PBAP-only flag was not passed")
             if kwargs.get("notifications_supported") is not False
-            else (True, True, False)
+            else pair_setup.PairingTransports(True, True, False)
         ),
     )
     saved = []
@@ -2045,6 +1965,6 @@ def test_pairing_without_bearer_api_continues_with_map_and_pbap(monkeypatch):
 
     assert saved == [True]
     assert adverts == ["registered", "removed"]
-    assert result["ancs"] == "disabled"
-    assert result["ancs_enabled"] is False
-    assert result["ancs_ready"] is False
+    assert result.ancs == "disabled"
+    assert result.ancs_enabled is False
+    assert result.ancs_ready is False

@@ -242,7 +242,10 @@ BlueFerry uses three standard Bluetooth services:
   display information.
 
 One unprivileged per-user backend owns those connections and exposes a small
-session D-Bus API to the clients. Pairing uses normal Bluetooth confirmation;
+session D-Bus API to the clients. Quickshell messaging reaches that API through
+one persistent stdin bridge; its short-lived command helpers are limited to
+setup before the backend is configured. Pairing and unpairing require approval
+in the initiating BlueFerry client and use normal Bluetooth confirmation;
 there is no hidden Apple protocol.
 
 The deeper design and protocol notes live in

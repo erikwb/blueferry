@@ -207,7 +207,7 @@ def test_wait_for_daemon_transports_records_split_ancs(monkeypatch) -> None:
 
     result = pair_setup._wait_for_daemon_transports(timeout=5, attempt=attempt)
 
-    assert result == (True, True, True)
+    assert result.as_tuple() == (True, True, True)
     assert attempt["daemon"]["ancs_subscribed"] is True
     assert attempt["daemon"]["ancs_authorized"] is True
     assert "last_le_error" not in attempt["daemon"]
@@ -391,7 +391,7 @@ def test_complete_pairing_writes_a_scrubbed_success_report(
                 }
             ),
         )
-        return (True, True, True)
+        return pair_setup.PairingTransports(True, True, True)
 
     monkeypatch.setattr(pair_setup, "_wait_for_daemon_transports", _ready_transports)
     monkeypatch.setattr(bluez_setup, "prepare_classic", lambda **_kwargs: True)
@@ -417,10 +417,10 @@ def test_complete_pairing_writes_a_scrubbed_success_report(
     }
 
     result = pair_setup.complete_pairing(device.mac, _allow_headless=True)
-    payload = Path(result["quirks_report"]).read_text()
+    payload = Path(result.quirks_report).read_text()
 
-    assert result["ok"] is True
-    assert result["ancs_ready"] is True
+    assert result.device.mac == device.mac
+    assert result.ancs_ready is True
     assert "02:00:00:00:00:01" not in payload
     assert "Alex" not in payload
     assert "dev_02_00" not in payload
@@ -462,7 +462,7 @@ def test_complete_pairing_writes_a_scrubbed_success_report(
     }
     assert "adapter" not in parsed
     assert "compatibility" not in parsed
-    assert Path(result["quirks_report"]).is_relative_to(report_dir)
+    assert Path(result.quirks_report).is_relative_to(report_dir)
     events = [item["event"] for item in parsed["timeline"]]
     assert events[0] == "start"
     assert events[-1] == "finished"
@@ -526,14 +526,14 @@ def test_pairing_report_keeps_last_le_error_when_ancs_stays_down(
                 }
             ),
         )
-        return (True, True, False)
+        return pair_setup.PairingTransports(True, True, False)
 
     monkeypatch.setattr(pair_setup, "_wait_for_daemon_transports", _ancs_missing)
 
     result = pair_setup.complete_pairing(device.mac, _allow_headless=True)
-    parsed = json.loads(Path(result["quirks_report"]).read_text())
+    parsed = json.loads(Path(result.quirks_report).read_text())
 
-    assert result["ancs_ready"] is False
+    assert result.ancs_ready is False
     assert parsed["outcome"]["bonded"] is True
     assert parsed["outcome"]["setup_complete"] is True
     assert parsed["outcome"]["map"] is True
@@ -652,11 +652,12 @@ def test_unexpected_pairing_exception_still_writes_a_report(
         lambda *_args: (_ for _ in ()).throw(RuntimeError("bluez properties vanished")),
     )
 
-    with pytest.raises(pair_setup.PairingError, match="bluez properties vanished") as raised:
+    with pytest.raises(RuntimeError, match="bluez properties vanished"):
         pair_setup.complete_pairing(device.mac, _allow_headless=True)
 
-    assert raised.value.report_path
-    parsed = json.loads(Path(raised.value.report_path).read_text())
+    report = quirks_report.latest_report(report_dir)
+    assert report is not None
+    parsed = json.loads(report.read_text())
     assert parsed["outcome"]["bonded"] is True
     assert parsed["outcome"]["setup_complete"] is False
     assert "bluez properties vanished" in str(parsed["outcome"]["error"])

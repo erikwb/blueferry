@@ -11,6 +11,9 @@ from blueferry.models import BackendStatus, EventRecord, Thread
 
 
 class _Messages:
+    def IsHealthy(self, **_kwargs):
+        return True
+
     def GetStatus(self, **_kwargs):
         return json.dumps({"daemon": True, "contacts": 3})
 
@@ -51,9 +54,10 @@ class _Messages:
 
 
 def test_backend_client_returns_shared_models(monkeypatch):
-    client = BackendClient()
-    monkeypatch.setattr(client, "_iface", lambda _name: _Messages())
+    messages = _Messages()
+    client = BackendClient(interface_factory=lambda _name: messages)
 
+    assert client.is_healthy() is True
     assert isinstance(client.status(), BackendStatus)
     assert client.status().contacts == 3
     assert isinstance(client.threads()[0], Thread)

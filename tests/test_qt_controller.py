@@ -6,8 +6,10 @@ import pytest
 
 pytest.importorskip("PySide6")
 
+from blueferry.client import BackendError
 from blueferry.models import BackendStatus, Thread
 from blueferry.qt.controller import BridgeController
+from blueferry.setup_client import ConfigurationState
 
 
 class _Backend:
@@ -55,6 +57,36 @@ def test_snapshot_converts_typed_client_models_for_qml():
 
     assert snapshot["status"]["contacts"] == 4
     assert snapshot["threads"][0]["key"] == "address:email:test@example.com"
+
+
+def test_failed_thread_snapshot_preserves_last_successful_projection():
+    class FailingBackend(_Backend):
+        def status(self):
+            return BackendStatus(
+                daemon=True,
+                map=True,
+                contacts=4,
+                storage_state="ready",
+            )
+
+        def threads(self):
+            raise BackendError("thread snapshot unavailable")
+
+    controller = BridgeController(
+        backend=FailingBackend(),
+        setup=object(),
+        subscribe=False,
+        autostart=False,
+    )
+    previous = [{"key": "address:phone:15551234567", "name": "Kept"}]
+    controller._threads = previous
+
+    snapshot = controller._snapshot()
+    controller._apply_snapshot(snapshot)
+
+    assert controller.threads == previous
+    assert controller.status["daemon"] is True
+    assert controller.errorText == "thread snapshot unavailable"
 
 
 def test_failed_capability_probe_is_loaded_and_pairable(monkeypatch):
@@ -110,7 +142,12 @@ def test_configured_mac_is_exposed_for_the_paired_phone_summary():
         subscribe=False,
         autostart=False,
     )
-    controller._configured_mac = "02:00:00:00:00:01"
+    controller._configuration = ConfigurationState(
+        configured=True,
+        mac="02:00:00:00:00:01",
+        adapter="hci0",
+        path="",
+    )
 
     assert controller.configuredMac == "02:00:00:00:00:01"
 
@@ -402,9 +439,14 @@ def test_compatibility_pairing_adjusts_only_the_qt_onboarding_view():
         "notifications_supported": True,
         "bearer_api_active": True,
     }
-    controller._configured = True
-    controller._target_saved = True
-    controller._ancs_enabled = False
+    controller._configuration = ConfigurationState(
+        configured=True,
+        mac="02:00:00:00:00:01",
+        adapter="hci0",
+        path="",
+        saved=True,
+        ancs_enabled=False,
+    )
     controller._setup_loaded = True
     controller._status = {
         "daemon": True,

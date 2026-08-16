@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-from typing import Annotated
 
 import typer
 
@@ -320,6 +319,14 @@ def pairing_complete(
             payload["report_path"] = error.report_path
         typer.echo(json.dumps(payload))
         raise typer.Exit(code=2) from None
+    except Exception as error:
+        from blueferry import quirks_report
+
+        payload = {"ok": False, "error": str(error) or type(error).__name__}
+        if report := quirks_report.latest_report():
+            payload["report_path"] = str(report)
+        typer.echo(json.dumps(payload))
+        raise typer.Exit(code=2) from None
 
 
 @app.command("pairing-issue")
@@ -393,11 +400,11 @@ def pairing_forget(
         raise typer.Exit(code=2) from None
 
 
-def _json_client():
-    """Connect to the backend for machine-readable desktop-shell commands."""
-    from blueferry.client import BackendClient, BackendError
+def _backend_client():
+    """Construct the shared backend client without loading D-Bus for --help."""
+    from blueferry.client import BackendClient
 
-    return BackendClient(), BackendError
+    return BackendClient()
 
 
 @app.command("backend-ensure", hidden=True)
@@ -418,98 +425,17 @@ def backend_ensure() -> None:
         raise typer.Exit(code=2) from None
 
 
-@app.command("status-json", hidden=True)
-def status_json() -> None:
-    """Print backend status JSON (stable helper for shell clients)."""
-    import json
-
-    client, error_type = _json_client()
-    try:
-        from blueferry.backend_lifecycle import ensure_backend_current
-
-        ensure_backend_current()
-        typer.echo(json.dumps(client.status().to_dict(), ensure_ascii=False))
-    except (error_type, RuntimeError) as error:
-        typer.echo(json.dumps({"daemon": False, "error": str(error)}))
-        raise typer.Exit(code=2) from None
-
-
-@app.command("threads-json", hidden=True)
-def threads_json(limit: int = typer.Option(200, "--limit")) -> None:
-    """Print correlated conversation JSON for non-Python clients."""
-    import json
-
-    client, error_type = _json_client()
-    try:
-        typer.echo(
-            json.dumps(
-                [thread.to_dict() for thread in client.threads(limit)],
-                ensure_ascii=False,
-            )
-        )
-    except error_type as error:
-        typer.echo(json.dumps({"error": str(error)}))
-        raise typer.Exit(code=2) from None
-
-
-@app.command("contacts-json", hidden=True)
-def contacts_json(query: str = typer.Argument(...)) -> None:
-    """Search cached contact destinations for non-Python clients."""
-    import json
-
-    client, error_type = _json_client()
-    try:
-        typer.echo(
-            json.dumps(
-                [
-                    {"name": name, "address": address}
-                    for name, address in client.find_contacts(query)
-                ],
-                ensure_ascii=False,
-            )
-        )
-    except error_type as error:
-        typer.echo(json.dumps({"error": str(error)}))
-        raise typer.Exit(code=2) from None
-
-
-@app.command("message-send", hidden=True)
-def message_send(
-    recipient: str = typer.Argument(...),
-    body: str = typer.Argument(...),
-) -> None:
-    """Send to an explicit destination for graphical shell clients."""
-    client, error_type = _json_client()
-    try:
-        typer.echo(client.send(recipient, body))
-    except error_type as error:
-        typer.echo(str(error), err=True)
-        raise typer.Exit(code=2) from None
-
-
-@app.command("notification-policy-set", hidden=True)
-def notification_policy_set(policy: str = typer.Argument(...)) -> None:
-    """Set daemon-owned desktop popup policy for shell clients."""
-    import json
-
-    client, error_type = _json_client()
-    try:
-        selected = client.set_notification_policy(policy)
-        typer.echo(json.dumps({"ok": True, "policy": selected}))
-    except error_type as error:
-        typer.echo(json.dumps({"ok": False, "error": str(error)}))
-        raise typer.Exit(code=2) from None
-
-
 @app.command("storage-policy-set")
 def storage_policy_set(policy: str = typer.Argument(...)) -> None:
     """Choose encrypted, unencrypted, or unretained local data."""
     import json
 
-    client, error_type = _json_client()
+    from blueferry.client import BackendError
+
+    client = _backend_client()
     try:
         typer.echo(json.dumps(client.set_storage_policy(policy)))
-    except error_type as error:
+    except BackendError as error:
         typer.echo(str(error), err=True)
         raise typer.Exit(code=2) from None
 
@@ -519,42 +445,12 @@ def storage_unlock() -> None:
     """Ask the desktop keyring to unlock BlueFerry's retained data."""
     import json
 
-    client, error_type = _json_client()
+    from blueferry.client import BackendError
+
+    client = _backend_client()
     try:
         typer.echo(json.dumps(client.unlock_storage()))
-    except error_type as error:
-        typer.echo(str(error), err=True)
-        raise typer.Exit(code=2) from None
-
-
-@app.command("thread-send", hidden=True)
-def thread_send(
-    thread_key: str = typer.Argument(...),
-    body: str = typer.Argument(...),
-    confirm_group: bool = typer.Option(False, "--confirm-group"),
-) -> None:
-    """Send through an opaque backend thread key for shell clients."""
-    client, error_type = _json_client()
-    try:
-        typer.echo(client.send_to_thread(thread_key, body, confirm_group=confirm_group))
-    except error_type as error:
-        typer.echo(str(error), err=True)
-        raise typer.Exit(code=2) from None
-
-
-@app.command("group-participants-set", hidden=True)
-def group_participants_set(
-    thread_key: Annotated[str, typer.Argument()],
-    recipients: Annotated[list[str], typer.Argument()],
-) -> None:
-    """Save an explicit recipient roster for a named group thread."""
-    import json
-
-    client, error_type = _json_client()
-    try:
-        thread = client.set_group_participants(thread_key, recipients)
-        typer.echo(json.dumps(thread.to_dict(), ensure_ascii=False))
-    except error_type as error:
+    except BackendError as error:
         typer.echo(str(error), err=True)
         raise typer.Exit(code=2) from None
 
@@ -568,10 +464,12 @@ def history_clear(
         "Delete local BlueFerry history? Nothing on the iPhone is deleted."
     ):
         raise typer.Exit()
-    client, error_type = _json_client()
+    from blueferry.client import BackendError
+
+    client = _backend_client()
     try:
         client.clear_history()
-    except error_type as error:
+    except BackendError as error:
         typer.echo(f"Could not clear history through the daemon: {error}", err=True)
         raise typer.Exit(code=2) from None
     typer.echo("Local BlueFerry history cleared.")

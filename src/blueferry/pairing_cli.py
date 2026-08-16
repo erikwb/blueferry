@@ -10,7 +10,7 @@ from blueferry.backend_lifecycle import ensure_backend_current
 from blueferry.bluetooth_devices import iphone_candidates
 from blueferry.client import BackendClient, BackendError
 from blueferry.errors import PairingError
-from blueferry.quirks_report import cli_issue_hint
+from blueferry.quirks_report import cli_issue_hint, latest_report
 from blueferry.setup_client import DISCOVERY_SECONDS, SetupClient
 from blueferry.setup_verification import (
     NOTIFICATION_ACCESS,
@@ -244,9 +244,15 @@ def run_wizard(
             compatibility_mode=effective_compatibility_mode,
             explicit_pairing=explicit_pairing,
         )
-    except PairingError as error:
-        typer.echo(typer.style(str(error), fg=typer.colors.RED))
-        if getattr(error, "report_path", None):
+    except Exception as error:
+        message = str(error) or type(error).__name__
+        typer.echo(typer.style(message, fg=typer.colors.RED))
+        report = (
+            error.report_path
+            if isinstance(error, PairingError)
+            else latest_report()
+        )
+        if report:
             typer.echo(cli_issue_hint())
         return 1
     typer.echo(typer.style("✓ Linux-side setup complete", fg=typer.colors.GREEN))

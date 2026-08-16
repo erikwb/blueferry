@@ -2,19 +2,119 @@
 from __future__ import annotations
 
 import json
+import logging
+import queue
 
 # This fixed, shell-free invocation launches BlueFerry's own helper module.
 import subprocess  # nosec B404
 import sys
-from collections.abc import Mapping
+import threading
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import IO, Any
 
 from blueferry import pair_setup, quirks_report
 from blueferry.bluetooth_devices import PairedDevice
 from blueferry.errors import PairingError
+from blueferry.pairing_types import PairingOutcome
 
 DISCOVERY_SECONDS = pair_setup.DISCOVERY_SECONDS
+PAIRING_HELPER_IDLE_TIMEOUT_SECONDS = 300.0
+PAIRING_HELPER_STOP_TIMEOUT_SECONDS = 5.0
+PAIRING_HELPER_DIAGNOSTIC_CHARS = 4096
+
+log = logging.getLogger(__name__)
+
+_PAIRING_HELPER_EOF = object()
+
+
+class _BoundedDiagnostics:
+    """Keep a thread-safe tail of child output without unbounded buffering."""
+
+    def __init__(self, limit: int) -> None:
+        self._limit = limit
+        self._text = ""
+        self._lock = threading.Lock()
+
+    def append(self, text: str) -> None:
+        with self._lock:
+            self._text = (self._text + text)[-self._limit :]
+
+    def text(self) -> str:
+        with self._lock:
+            return self._text.strip()
+
+
+def _read_helper_stdout(
+    stream: IO[str],
+    pending: queue.Queue[object],
+) -> None:
+    try:
+        for line in stream:
+            pending.put(line)
+    except Exception as exc:  # pragma: no cover - OS pipe errors are timing-specific
+        pending.put(exc)
+    finally:
+        pending.put(_PAIRING_HELPER_EOF)
+
+
+def _read_helper_stderr(stream: IO[str], diagnostics: _BoundedDiagnostics) -> None:
+    try:
+        while chunk := stream.read(1024):
+            diagnostics.append(chunk)
+    except Exception:  # pragma: no cover - diagnostics must never mask pairing
+        return
+
+
+def _helper_lines(
+    stream: IO[str],
+    *,
+    idle_timeout: float,
+) -> Iterator[str]:
+    pending: queue.Queue[object] = queue.Queue(maxsize=64)
+    threading.Thread(
+        target=_read_helper_stdout,
+        args=(stream, pending),
+        name="blueferry-pairing-output",
+        daemon=True,
+    ).start()
+    while True:
+        try:
+            item = pending.get(timeout=idle_timeout)
+        except queue.Empty as exc:
+            raise PairingError("Pairing helper timed out") from exc
+        if item is _PAIRING_HELPER_EOF:
+            return
+        if isinstance(item, Exception):
+            raise PairingError("Could not read from the pairing helper") from item
+        if isinstance(item, str):
+            yield item
+
+
+def _wait_for_helper(
+    process: subprocess.Popen[str],
+    *,
+    timeout: float,
+) -> int:
+    try:
+        return process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        raise PairingError("Pairing helper timed out") from exc
+
+
+def _stop_helper(process: subprocess.Popen[str]) -> None:
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=PAIRING_HELPER_STOP_TIMEOUT_SECONDS)
+        return
+    except subprocess.TimeoutExpired:
+        process.kill()
+    try:
+        process.wait(timeout=PAIRING_HELPER_STOP_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        log.error("Pairing helper did not exit after being killed")
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,51 +272,6 @@ class ConfigurationState:
         }
 
 
-@dataclass(frozen=True, slots=True)
-class PairingResult:
-    ok: bool
-    device: PairedDevice
-    config: str
-    service: str
-    ancs: str
-    ancs_ready: bool
-    ancs_enabled: bool
-    iphone_steps: tuple[str, ...]
-    quirks_report: str = ""
-
-    @classmethod
-    def from_dict(cls, value: Mapping[str, Any]) -> PairingResult:
-        raw_device = value.get("device", {})
-        if not isinstance(raw_device, dict):
-            raw_device = {}
-        raw_steps = value.get("iphone_steps", ())
-        return cls(
-            ok=bool(value.get("ok", False)),
-            device=PairedDevice.from_dict(raw_device),
-            config=str(value.get("config", "")),
-            service=str(value.get("service", "")),
-            ancs=str(value.get("ancs", "")),
-            ancs_ready=bool(value.get("ancs_ready", False)),
-            ancs_enabled=bool(value.get("ancs_enabled", True)),
-            iphone_steps=tuple(str(item) for item in raw_steps)
-            if isinstance(raw_steps, list | tuple) else (),
-            quirks_report=str(value.get("quirks_report", "")),
-        )
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "ok": self.ok,
-            "device": self.device.to_dict(),
-            "config": self.config,
-            "service": self.service,
-            "ancs": self.ancs,
-            "ancs_ready": self.ancs_ready,
-            "ancs_enabled": self.ancs_enabled,
-            "iphone_steps": list(self.iphone_steps),
-            "quirks_report": self.quirks_report,
-        }
-
-
 class SetupClient:
     """Direct Python setup facade; operations may block and belong off the UI thread."""
 
@@ -253,16 +308,14 @@ class SetupClient:
         display: pair_setup.DisplayCallback | None = None,
         compatibility_mode: bool = False,
         explicit_pairing: bool = False,
-    ) -> PairingResult:
-        return PairingResult.from_dict(
-            pair_setup.complete_pairing(
-                mac,
-                adapter=adapter,
-                confirmation=confirmation,
-                display=display,
-                compatibility_mode=compatibility_mode,
-                explicit_pairing=explicit_pairing,
-            )
+    ) -> PairingOutcome:
+        return pair_setup.complete_pairing(
+            mac,
+            adapter=adapter,
+            confirmation=confirmation,
+            display=display,
+            compatibility_mode=compatibility_mode,
+            explicit_pairing=explicit_pairing,
         )
 
     def complete_isolated(
@@ -275,7 +328,7 @@ class SetupClient:
         replace_saved_mac: str = "",
         compatibility_mode: bool = False,
         explicit_pairing: bool = False,
-    ) -> PairingResult:
+    ) -> PairingOutcome:
         """Run interactive pairing in a D-Bus/GLib-isolated child process."""
         command = [
             sys.executable,
@@ -297,15 +350,29 @@ class SetupClient:
             command,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
         )
         if process.stdin is None or process.stdout is None:
-            process.terminate()
+            _stop_helper(process)
             raise PairingError("Could not open the pairing helper pipes")
+        diagnostics = _BoundedDiagnostics(PAIRING_HELPER_DIAGNOSTIC_CHARS)
+        diagnostics_thread: threading.Thread | None = None
+        if process.stderr is not None:
+            diagnostics_thread = threading.Thread(
+                target=_read_helper_stderr,
+                args=(process.stderr, diagnostics),
+                name="blueferry-pairing-diagnostics",
+                daemon=True,
+            )
+            diagnostics_thread.start()
+        failed = False
         try:
-            for line in process.stdout:
+            for line in _helper_lines(
+                process.stdout,
+                idle_timeout=PAIRING_HELPER_IDLE_TIMEOUT_SECONDS,
+            ):
                 try:
                     event = json.loads(line)
                 except json.JSONDecodeError:
@@ -321,19 +388,33 @@ class SetupClient:
                     if display is not None:
                         display(int(str(event["passkey"])))
                 elif event.get("ok") is True:
-                    process.wait()
-                    return PairingResult.from_dict(event)
+                    status = _wait_for_helper(
+                        process,
+                        timeout=PAIRING_HELPER_IDLE_TIMEOUT_SECONDS,
+                    )
+                    if status != 0:
+                        raise PairingError(f"Pairing helper exited unexpectedly (status {status})")
+                    return PairingOutcome.from_dict(event)
                 elif event.get("ok") is False:
                     path = str(event.get("report_path") or "").strip()
                     raise PairingError(
                         str(event.get("error", "Pairing failed")),
                         report_path=path or None,
                     )
-            raise PairingError("Pairing helper exited without a result")
+            status = _wait_for_helper(
+                process,
+                timeout=PAIRING_HELPER_IDLE_TIMEOUT_SECONDS,
+            )
+            raise PairingError(f"Pairing helper exited without a result (status {status})")
+        except BaseException:
+            failed = True
+            raise
         finally:
-            if process.poll() is None:
-                process.terminate()
-                process.wait(timeout=5)
+            _stop_helper(process)
+            if diagnostics_thread is not None:
+                diagnostics_thread.join(timeout=0.25)
+            if failed and (details := diagnostics.text()):
+                log.warning("Pairing helper diagnostics (bounded tail): %s", details)
 
     def forget(self, mac: str, *, adapter: str | None = None) -> None:
         pair_setup.forget_device(mac, adapter=adapter)
