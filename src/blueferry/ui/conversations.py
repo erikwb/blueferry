@@ -233,7 +233,7 @@ class ConversationsPage(Gtk.Box):
 
         self._build_new_message_dialog()
 
-        self._load_history()
+        self._reload_threads()
         client.connect("history-changed", self._on_history_changed)
         client.connect("status-invalidated", self._on_status_invalidated)
         self._refresh_status()
@@ -298,9 +298,6 @@ class ConversationsPage(Gtk.Box):
         )
 
     # ---- data ----------------------------------------------------------
-
-    def _load_history(self) -> None:
-        self._reload_threads()
 
     def open_message(self, handle: str) -> None:
         """Select a notification's message, refreshing if it is not loaded."""
@@ -523,8 +520,8 @@ class ConversationsPage(Gtk.Box):
         selected = self._current
         # Removing/recreating rows changes the ListBox selection. Without
         # blocking this handler, re-selecting the current row synchronously
-        # redraws all its messages; _ingest() then appends the new message a
-        # second time. User-initiated selections remain unblocked.
+        # redraws the conversation during the list rebuild. User-initiated
+        # selections remain unblocked.
         self._thread_list.handler_block(self._thread_selected_handler)
         try:
             self._thread_list.remove_all()

@@ -392,11 +392,11 @@ def pairing_forget(
         raise typer.Exit(code=2) from None
 
 
-def _json_client():
-    """Connect to the backend for machine-readable desktop-shell commands."""
-    from blueferry.client import BackendClient, BackendError
+def _backend_client():
+    """Construct the shared backend client without loading D-Bus for --help."""
+    from blueferry.client import BackendClient
 
-    return BackendClient(), BackendError
+    return BackendClient()
 
 
 @app.command("backend-ensure", hidden=True)
@@ -422,10 +422,12 @@ def storage_policy_set(policy: str = typer.Argument(...)) -> None:
     """Choose encrypted, unencrypted, or unretained local data."""
     import json
 
-    client, error_type = _json_client()
+    from blueferry.client import BackendError
+
+    client = _backend_client()
     try:
         typer.echo(json.dumps(client.set_storage_policy(policy)))
-    except error_type as error:
+    except BackendError as error:
         typer.echo(str(error), err=True)
         raise typer.Exit(code=2) from None
 
@@ -435,10 +437,12 @@ def storage_unlock() -> None:
     """Ask the desktop keyring to unlock BlueFerry's retained data."""
     import json
 
-    client, error_type = _json_client()
+    from blueferry.client import BackendError
+
+    client = _backend_client()
     try:
         typer.echo(json.dumps(client.unlock_storage()))
-    except error_type as error:
+    except BackendError as error:
         typer.echo(str(error), err=True)
         raise typer.Exit(code=2) from None
 
@@ -452,10 +456,12 @@ def history_clear(
         "Delete local BlueFerry history? Nothing on the iPhone is deleted."
     ):
         raise typer.Exit()
-    client, error_type = _json_client()
+    from blueferry.client import BackendError
+
+    client = _backend_client()
     try:
         client.clear_history()
-    except error_type as error:
+    except BackendError as error:
         typer.echo(f"Could not clear history through the daemon: {error}", err=True)
         raise typer.Exit(code=2) from None
     typer.echo("Local BlueFerry history cleared.")

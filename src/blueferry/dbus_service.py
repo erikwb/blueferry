@@ -323,7 +323,7 @@ class MessagesService(dbus.service.Object):
         except Exception:
             log.exception("history invalidation signal emit failed")
 
-    def emit_status(self, status: dict | None = None) -> None:
+    def emit_status(self) -> None:
         try:
             self.StatusChanged()
         except Exception:

@@ -361,7 +361,7 @@ class IPhonePage(Gtk.Box):
         client.connect("availability-changed", lambda *_: self._refresh())
         client.connect("status-invalidated", self._status_invalidated)
         self._load_setup_state()
-        if SetupClient().configuration().configured:
+        if self._setup.configuration().configured:
             self._refresh()
 
     def _selected_device(self) -> PairedDevice | None:
