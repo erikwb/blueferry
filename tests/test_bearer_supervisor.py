@@ -267,6 +267,32 @@ def test_failed_connection_is_retried_after_backoff() -> None:
     assert attempts == ["bredr", "bredr", "bredr"]
 
 
+def test_accepted_connection_request_waits_for_observed_state_change() -> None:
+    attempts = []
+    scheduled = []
+    now = 0.0
+
+    supervisor = BearerSupervisor(
+        "/device",
+        read_connected=lambda _kind: False,
+        connect=lambda kind, on_success, _on_error: (
+            attempts.append(kind),
+            on_success(),
+        ),
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        clock=lambda: now,
+    )
+    supervisor.start()
+    assert attempts == ["bredr"]
+
+    scheduled[0][1]()
+    assert attempts == ["bredr"]
+
+    now = 11.0
+    scheduled[0][1]()
+    assert attempts == ["bredr", "bredr"]
+
+
 def test_backoff_resets_once_the_bearer_connects() -> None:
     state = {"bredr": False, "le": False}
     attempts = []
@@ -297,6 +323,100 @@ def test_backoff_resets_once_the_bearer_connects() -> None:
     scheduled[0][1]()
 
     assert attempts == ["bredr", "bredr"]
+
+
+def test_le_observer_receives_only_lifecycle_transitions() -> None:
+    state = {"bredr": True, "le": True}
+    observed = []
+    scheduled = []
+    supervisor = BearerSupervisor(
+        "/device",
+        read_connected=state.get,
+        connect=lambda *_args: None,
+        on_le_state=observed.append,
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+    )
+
+    supervisor.start()
+    assert supervisor.le_state is True
+    assert observed == [True]
+
+    # A stale true must not make ANCS resubscribe after a failed GATT request.
+    scheduled[0][1]()
+    assert observed == [True]
+
+    state["le"] = False
+    scheduled[0][1]()
+    assert supervisor.le_state is False
+    assert observed[-1] is False
+
+
+def test_gatt_transport_failure_cycles_le_once_before_reconnecting() -> None:
+    state = {"bredr": True, "le": True}
+    disconnects = []
+    connections = []
+    observed = []
+    scheduled = []
+    now = 0.0
+
+    supervisor = BearerSupervisor(
+        "/device",
+        read_connected=state.get,
+        connect=lambda kind, on_success, _on_error: (
+            connections.append(kind),
+            on_success(),
+        ),
+        disconnect=lambda kind, on_success, _on_error: (
+            disconnects.append(kind),
+            on_success(),
+        ),
+        on_le_state=observed.append,
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        clock=lambda: now,
+    )
+    supervisor.start()
+
+    supervisor.recover_le_transport()
+    supervisor.recover_le_transport()
+    assert disconnects == ["le"]
+
+    scheduled[0][1]()
+    assert disconnects == ["le"]
+
+    state["le"] = False
+    scheduled[0][1]()
+    assert observed == [True, False]
+    assert scheduled[-1][0] == bearer_supervisor.CLASSIC_SETTLE_SECONDS
+
+    scheduled[-1][1]()
+    assert connections == ["le"]
+
+
+def test_bluez_restart_discards_callbacks_from_the_previous_owner() -> None:
+    callbacks = []
+    statuses = []
+    observed = []
+
+    def connect(_kind, on_success, on_error):
+        callbacks.append((on_success, on_error))
+
+    supervisor = BearerSupervisor(
+        "/device",
+        read_connected=lambda _kind: False,
+        connect=connect,
+        on_status=lambda: statuses.append(True),
+        on_le_state=observed.append,
+        schedule=lambda _delay, _callback: 7,
+    )
+    supervisor.start()
+    assert len(callbacks) == 1
+
+    supervisor.reset_after_bluez_restart()
+    callbacks[0][1](RuntimeError("stale failure"))
+
+    assert supervisor.snapshot()["last_le_error"] == ""
+    assert observed[-1] is False
+    assert statuses
 
 
 def test_stop_cancels_health_check() -> None:

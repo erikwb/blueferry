@@ -97,6 +97,7 @@ class Daemon:
             device_path,
             le_enabled=False,
             on_status=self._emit_status,
+            on_le_state=self._observe_le_state,
         )
         self._contacts_refresh_id: int | None = None
         self._bus_name = None
@@ -136,6 +137,10 @@ class Daemon:
         emit = getattr(self._dbus_service, "emit_status", None)
         if emit is not None:
             emit()
+
+    def _observe_le_state(self, connected: bool | None) -> None:
+        if self.ancs is not None:
+            self.ancs.observe_bearer_state(connected)
 
     def _mark_setup_task(self, task: str) -> bool:
         try:
@@ -275,11 +280,14 @@ class Daemon:
                 device_path,
                 on_event=self.events.ancs,
                 on_status=self._emit_status,
+                on_bluez_restart=self.bearers.reset_after_bluez_restart,
+                on_transport_failure=self.bearers.recover_le_transport,
                 include_non_message_notifications=lambda: (
                     self.notification_policy.value == ALL_NOTIFICATIONS
                 ),
             )
             try:
+                candidate.observe_bearer_state(self.bearers.le_state)
                 candidate.start()
             except Exception:
                 candidate.stop()
