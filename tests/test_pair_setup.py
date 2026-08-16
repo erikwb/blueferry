@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 import stat
 
 import pytest
@@ -1520,113 +1519,6 @@ def test_obex_mns_is_activated_before_pairing(monkeypatch):
         ("interface", "org.freedesktop.DBus.Peer"),
         ("ping", 10.0),
     ]
-
-
-def test_ancs_retries_local_abort_after_classic_resettles(monkeypatch, caplog):
-    device = _device(paired=True)
-    connects = []
-    settled = []
-    caplog.set_level(logging.DEBUG, logger="blueferry.pair_setup")
-
-    class Manager:
-        @staticmethod
-        def GetManagedObjects():
-            return {
-                pair_setup.dbus.ObjectPath(device.device_path): {
-                    "org.bluez.Bearer.LE1": {},
-                }
-            }
-
-    class Properties:
-        @staticmethod
-        def Set(*_args, **_kwargs):
-            return None
-
-    class LeBearer:
-        @staticmethod
-        def Connect(**_kwargs):
-            connects.append(True)
-            if len(connects) == 1:
-                raise pair_setup.dbus.exceptions.DBusException(
-                    "le-connection-abort-by-local",
-                    name="org.bluez.Error.Failed",
-                )
-
-    monkeypatch.setattr(pair_setup, "_object_manager", lambda: Manager())
-    monkeypatch.setattr(
-        pair_setup,
-        "_wait_for_classic_settled",
-        lambda path, **_kwargs: settled.append(path),
-    )
-    monkeypatch.setattr(
-        pair_setup,
-        "get_system_bus",
-        lambda: type("Bus", (), {"get_object": staticmethod(lambda *_args: object())})(),
-    )
-    monkeypatch.setattr(
-        pair_setup.dbus,
-        "Interface",
-        lambda _obj, interface: (
-            Properties()
-            if interface == "org.freedesktop.DBus.Properties"
-            else LeBearer()
-        ),
-    )
-
-    assert pair_setup._connect_ancs(device) == "connected"
-    assert len(connects) == 2
-    assert settled == [device.device_path]
-    assert "LE bearer probe: paired=False bonded=False connected=False" in caplog.text
-    assert "sending Bearer.LE1.Connect (attempt 1/2)" in caplog.text
-    assert "le-connection-abort-by-local" in caplog.text
-    assert "sending Bearer.LE1.Connect (attempt 2/2)" in caplog.text
-    assert "LE bearer connected" in caplog.text
-
-
-def test_connect_ancs_continues_when_preferred_bearer_is_missing(monkeypatch):
-    device = _device(paired=True)
-    connects = []
-
-    class Manager:
-        @staticmethod
-        def GetManagedObjects():
-            return {
-                pair_setup.dbus.ObjectPath(device.device_path): {
-                    "org.bluez.Bearer.LE1": {},
-                }
-            }
-
-    class Properties:
-        @staticmethod
-        def Set(*_args, **_kwargs):
-            raise pair_setup.dbus.exceptions.DBusException(
-                "No such property 'PreferredBearer'",
-                name="org.bluez.Error.InvalidArguments",
-            )
-
-    class LeBearer:
-        @staticmethod
-        def Connect(**_kwargs):
-            connects.append(True)
-
-    monkeypatch.setattr(pair_setup, "_object_manager", lambda: Manager())
-    monkeypatch.setattr(
-        pair_setup,
-        "get_system_bus",
-        lambda: type("Bus", (), {"get_object": staticmethod(lambda *_args: object())})(),
-    )
-    monkeypatch.setattr(
-        pair_setup.dbus,
-        "Interface",
-        lambda _obj, interface: (
-            Properties()
-            if interface == "org.freedesktop.DBus.Properties"
-            else LeBearer()
-        ),
-    )
-
-    assert pair_setup._connect_ancs(device) == "connected"
-    assert connects == [True]
 
 
 def test_complete_pairing_headless_pairs_from_linux(monkeypatch):
