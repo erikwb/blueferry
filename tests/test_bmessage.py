@@ -132,6 +132,27 @@ class TestBasicParsing:
 
 
 class TestEdgeCases:
+    def test_many_unterminated_message_markers_are_scanned_linearly(self):
+        parsed = parse("BEGIN:MSG\n" * 10_000)
+
+        assert parsed.body is None
+
+    def test_parser_recovers_from_an_unmatched_indented_message_prefix(self):
+        blob = (
+            "  BEGIN:MSG\n"
+            "malformed prefix\n"
+            "BEGIN:MSG\n"
+            "hello\n"
+            "END:MSG\n"
+        )
+
+        assert parse(blob).body == "hello"
+
+    def test_unicode_line_separator_is_body_text_not_structure(self):
+        blob = "BEGIN:MSG\nhello\u2028END:MSG\nEND:MSG\n"
+
+        assert parse(blob).body == "hello\nEND:MSG"
+
     def test_many_unterminated_vcard_markers_are_skipped_linearly(self):
         blob = (
             ("BEGIN:VCARD\n" * 10_000)
