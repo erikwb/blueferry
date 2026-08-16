@@ -705,7 +705,7 @@ class BlueFerryApp(App[None]):
             if not thread.roster_changed:
                 continue
             warning_id = str(
-                thread.extra.get("roster_warning_id")
+                thread.roster_warning_id
                 or f"{thread.key}:{thread.unexpected_sender or 'unknown'}"
             )
             if warning_id in self._warned_roster_changes:

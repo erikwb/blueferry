@@ -51,6 +51,8 @@ def test_thread_normalizes_nested_messages(monkeypatch):
             "participants_required": True,
             "roster_changed": True,
             "unexpected_sender": "Casey",
+            "prompt_sender": "Alice",
+            "roster_warning_id": "route-1:casey",
             "future_thread_field": "preserved",
             "messages": [
                 {
@@ -72,10 +74,14 @@ def test_thread_normalizes_nested_messages(monkeypatch):
     assert thread.participants_required is True
     assert thread.roster_changed is True
     assert thread.unexpected_sender == "Casey"
+    assert thread.prompt_sender == "Alice"
+    assert thread.roster_warning_id == "route-1:casey"
     assert thread.extra["future_thread_field"] == "preserved"
     assert thread.to_dict()["messages"][0]["display_timestamp"] == "friendly:today"
     assert thread.to_dict()["messages"][0]["body"] == "hello"
     assert thread.to_dict()["recipients"] == ["+15551234567"]
+    assert thread.to_dict()["prompt_sender"] == "Alice"
+    assert thread.to_dict()["roster_warning_id"] == "route-1:casey"
     assert thread.to_dict()["future_thread_field"] == "preserved"
 
 

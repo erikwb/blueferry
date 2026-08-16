@@ -187,6 +187,8 @@ class Thread:
     participants_required: bool = False
     roster_changed: bool = False
     unexpected_sender: str = ""
+    prompt_sender: str = ""
+    roster_warning_id: str = ""
     extra: Mapping[str, Any] = field(default_factory=dict, repr=False)
 
     @classmethod
@@ -203,6 +205,8 @@ class Thread:
             "participants_required",
             "roster_changed",
             "unexpected_sender",
+            "prompt_sender",
+            "roster_warning_id",
         }
         raw_recipients = value.get("recipients")
         raw_messages = value.get("messages")
@@ -224,6 +228,8 @@ class Thread:
             participants_required=_bool(value.get("participants_required")),
             roster_changed=_bool(value.get("roster_changed")),
             unexpected_sender=_str(value.get("unexpected_sender")),
+            prompt_sender=_str(value.get("prompt_sender")),
+            roster_warning_id=_str(value.get("roster_warning_id")),
             extra={key: item for key, item in value.items() if key not in known},
         )
 
@@ -241,6 +247,8 @@ class Thread:
             "participants_required": self.participants_required,
             "roster_changed": self.roster_changed,
             "unexpected_sender": self.unexpected_sender,
+            "prompt_sender": self.prompt_sender,
+            "roster_warning_id": self.roster_warning_id,
         }
 
 
