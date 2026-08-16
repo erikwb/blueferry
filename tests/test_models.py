@@ -47,6 +47,11 @@ def test_thread_normalizes_nested_messages(monkeypatch):
             "name": "Alice",
             "recipients": ["+15551234567"],
             "reply_ready": True,
+            "group_origin": "named",
+            "participants_required": True,
+            "roster_changed": True,
+            "unexpected_sender": "Casey",
+            "future_thread_field": "preserved",
             "messages": [
                 {
                     "handle": "1",
@@ -63,9 +68,15 @@ def test_thread_normalizes_nested_messages(monkeypatch):
     assert thread.key == "address:phone:15551234567"
     assert thread.messages[0].body == "hello"
     assert thread.messages[0].sender == "Alice"
+    assert thread.group_origin == "named"
+    assert thread.participants_required is True
+    assert thread.roster_changed is True
+    assert thread.unexpected_sender == "Casey"
+    assert thread.extra["future_thread_field"] == "preserved"
     assert thread.to_dict()["messages"][0]["display_timestamp"] == "friendly:today"
     assert thread.to_dict()["messages"][0]["body"] == "hello"
     assert thread.to_dict()["recipients"] == ["+15551234567"]
+    assert thread.to_dict()["future_thread_field"] == "preserved"
 
 
 def test_event_record_exposes_common_fields_without_discarding_payload():

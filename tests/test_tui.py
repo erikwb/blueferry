@@ -48,10 +48,10 @@ def _thread(
             ),
         ),
         last_ts="2026-08-10T10:00:00-04:00",
+        group_origin="named" if group else "",
+        roster_changed=roster_changed,
+        unexpected_sender="Beau" if roster_changed else "",
         extra={
-            "group_origin": "named" if group else "",
-            "roster_changed": roster_changed,
-            "unexpected_sender": "Beau" if roster_changed else "",
             "roster_warning_id": "route-1:beau" if roster_changed else "",
         },
     )
@@ -91,10 +91,10 @@ class _Backend:
             current,
             recipients=tuple(recipients),
             reply_ready=True,
+            roster_changed=False,
+            unexpected_sender="",
             extra={
                 **current.extra,
-                "roster_changed": False,
-                "unexpected_sender": "",
                 "roster_warning_id": "",
             },
         )

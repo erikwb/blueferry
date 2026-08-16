@@ -185,7 +185,7 @@ class TuiState:
         if (
             thread.is_group
             and (
-                thread.extra.get("group_origin") == "named"
+                thread.group_origin == "named"
                 or thread.key not in self.confirmed_groups
             )
             and not confirm_group
@@ -204,7 +204,7 @@ class TuiState:
         if (
             thread.is_group
             and confirm_group
-            and thread.extra.get("group_origin") != "named"
+            and thread.group_origin != "named"
         ):
             self.confirmed_groups.add(thread.key)
         self.selected_key = thread.key
@@ -395,8 +395,8 @@ class RosterChangedScreen(ModalScreen[tuple[str, ...] | None]):
         self.thread = thread
 
     def compose(self) -> ComposeResult:
-        sender = str(self.thread.extra.get("unexpected_sender") or "Someone new")
-        if self.thread.extra.get("roster_changed"):
+        sender = self.thread.unexpected_sender or "Someone new"
+        if self.thread.roster_changed:
             title = "Group membership may have changed"
             copy = (
                 f"{sender} sent a message to {self.thread.name}, but is not in "
@@ -702,11 +702,11 @@ class BlueFerryApp(App[None]):
 
     def _warn_about_roster_changes(self) -> None:
         for thread in self.state.threads:
-            if not thread.extra.get("roster_changed"):
+            if not thread.roster_changed:
                 continue
             warning_id = str(
                 thread.extra.get("roster_warning_id")
-                or f"{thread.key}:{thread.extra.get('unexpected_sender') or 'unknown'}"
+                or f"{thread.key}:{thread.unexpected_sender or 'unknown'}"
             )
             if warning_id in self._warned_roster_changes:
                 continue
@@ -800,7 +800,7 @@ class BlueFerryApp(App[None]):
             Text(f"{unread} unread" if unread else "up to date")
         )
         roster_button.display = bool(
-            thread.extra.get("group_origin") == "named"
+            thread.group_origin == "named"
             or thread.key.startswith("group:named:")
         )
 
@@ -989,7 +989,7 @@ class BlueFerryApp(App[None]):
             self.notify(f"Messages are limited to {_MAX_INPUT} characters", severity="error")
             return
         if thread.is_group and (
-            thread.extra.get("group_origin") == "named"
+            thread.group_origin == "named"
             or thread.key not in self.state.confirmed_groups
         ):
             self.push_screen(

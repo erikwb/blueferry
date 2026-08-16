@@ -183,6 +183,10 @@ class Thread:
     reply_ready: bool
     messages: tuple[ThreadMessage, ...]
     last_ts: str
+    group_origin: str = ""
+    participants_required: bool = False
+    roster_changed: bool = False
+    unexpected_sender: str = ""
     extra: Mapping[str, Any] = field(default_factory=dict, repr=False)
 
     @classmethod
@@ -195,6 +199,10 @@ class Thread:
             "reply_ready",
             "messages",
             "last_ts",
+            "group_origin",
+            "participants_required",
+            "roster_changed",
+            "unexpected_sender",
         }
         raw_recipients = value.get("recipients")
         raw_messages = value.get("messages")
@@ -212,6 +220,10 @@ class Thread:
             if isinstance(raw_messages, list | tuple)
             else (),
             last_ts=_str(value.get("last_ts")),
+            group_origin=_str(value.get("group_origin")),
+            participants_required=_bool(value.get("participants_required")),
+            roster_changed=_bool(value.get("roster_changed")),
+            unexpected_sender=_str(value.get("unexpected_sender")),
             extra={key: item for key, item in value.items() if key not in known},
         )
 
@@ -225,6 +237,10 @@ class Thread:
             "reply_ready": self.reply_ready,
             "messages": [message.to_dict() for message in self.messages],
             "last_ts": self.last_ts,
+            "group_origin": self.group_origin,
+            "participants_required": self.participants_required,
+            "roster_changed": self.roster_changed,
+            "unexpected_sender": self.unexpected_sender,
         }
 
 
