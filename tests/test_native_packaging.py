@@ -133,7 +133,10 @@ def test_native_backends_ship_the_btmgmt_system_unit_template() -> None:
     spec = (ROOT / "packaging/rpm/blueferry.spec").read_text()
 
     assert "Type=oneshot" in unit
-    assert "ExecStart=/usr/bin/btmgmt --index %i class 4 8" in unit
+    assert (
+        "ExecStart=/bin/sh -c ': | /usr/bin/btmgmt --index \"$1\" class 4 8' "
+        "blueferry %i"
+    ) in unit
     assert "[Install]" not in unit
     assert f"systemd/{unit_name}" in deb_rules
     assert f"usr/lib/systemd/system/{unit_name}" in deb_install

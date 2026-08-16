@@ -3,4 +3,6 @@ Description=BlueFerry set Bluetooth adapter hci%i class with btmgmt
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/btmgmt --index %i class 4 8
+# BlueZ 5.72 requires pollable stdin even for non-interactive commands. Give
+# btmgmt an empty pipe because systemd otherwise connects stdin to /dev/null.
+ExecStart=/bin/sh -c ': | /usr/bin/btmgmt --index "$1" class 4 8' blueferry %i
