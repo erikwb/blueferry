@@ -204,9 +204,20 @@ class SessionManager:
         self.pbap = _create_session("PBAP")
         log.info("PBAP session: %s", self.pbap.path)
 
-    def close_all(self) -> None:
+    def close_all(self, *, remove_remote: bool = True) -> None:
+        """Forget both sessions, optionally asking obexd to remove them first.
+
+        Recovery from an observed transport loss must not call RemoveSession:
+        BlueZ 5.87 can crash when that request drives an already-disconnected
+        GObex channel into read_packet(). Normal shutdown and partial-open
+        cleanup still remove live remote sessions; the next open attempt can
+        clean up any surviving stale object after the reconnect delay.
+        """
         self._closing = True
         try:
+            if not remove_remote:
+                log.debug("discarding local OBEX session state after transport loss")
+                return
             client = _client()
             for sess in (self.map, self.pbap):
                 if sess is None:

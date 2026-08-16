@@ -92,3 +92,20 @@ def test_close_clears_state_even_when_obexd_is_unreachable(monkeypatch) -> None:
     assert manager.map is None
     assert manager.pbap is None
     assert manager._closing is False
+
+
+def test_close_can_discard_lost_sessions_without_calling_obexd(monkeypatch) -> None:
+    manager = SessionManager()
+    manager.map = ObexSession("MAP", "/session/map")
+    manager.pbap = ObexSession("PBAP", "/session/pbap")
+    monkeypatch.setattr(
+        sessions_mod,
+        "_client",
+        lambda: (_ for _ in ()).throw(AssertionError("must not call obexd")),
+    )
+
+    manager.close_all(remove_remote=False)
+
+    assert manager.map is None
+    assert manager.pbap is None
+    assert manager._closing is False

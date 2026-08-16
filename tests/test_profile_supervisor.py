@@ -17,6 +17,7 @@ class FakeSessions:
         self.monitoring = False
         self.opens = 0
         self.closes = 0
+        self.remote_closes = []
 
     def set_on_lost(self, callback) -> None:
         self.lost = callback
@@ -32,8 +33,9 @@ class FakeSessions:
         self.map = ObexSession("MAP", "/map")
         self.pbap = ObexSession("PBAP", "/pbap")
 
-    def close_all(self) -> None:
+    def close_all(self, *, remove_remote: bool = True) -> None:
         self.closes += 1
+        self.remote_closes.append(remove_remote)
         self.map = None
         self.pbap = None
 
@@ -150,7 +152,7 @@ def test_map_connection_refusal_is_exposed_and_polls_quickly_until_ready() -> No
     assert scheduled[-1][0] == INITIAL_MAP_CONNECT_POLL_SECONDS
 
 
-def test_loss_closes_once_then_reconnects() -> None:
+def test_loss_discards_once_then_reconnects() -> None:
     supervisor, sessions, worker, scheduled, ready, lost, _statuses = (
         make_supervisor()
     )
@@ -165,6 +167,7 @@ def test_loss_closes_once_then_reconnects() -> None:
     assert len(worker.jobs) == 1
     worker.succeed()
     assert sessions.closes == 1
+    assert sessions.remote_closes == [False]
     assert scheduled[-1][0] == MAP_RECONNECT_POLL_SECONDS
     scheduled[-1][1]()
     worker.fail(RuntimeError("still offline"))
@@ -173,6 +176,20 @@ def test_loss_closes_once_then_reconnects() -> None:
     scheduled[-1][1]()
     worker.succeed()
     assert ready == [True, True]
+
+
+def test_explicit_reconnect_still_removes_live_remote_sessions() -> None:
+    supervisor, sessions, worker, scheduled, _ready, _lost, _statuses = (
+        make_supervisor()
+    )
+    supervisor.start()
+    worker.succeed()
+
+    supervisor.reconnect("system resumed")
+    worker.succeed()
+
+    assert sessions.remote_closes == [True]
+    assert scheduled[-1][0] == MAP_RECONNECT_POLL_SECONDS
 
 
 def test_stop_cancels_a_pending_retry_and_ignores_late_callbacks() -> None:
