@@ -17,13 +17,14 @@ class _Bus:
         return _SignalMatch()
 
 
+class _UnconfiguredSetup:
+    def configuration(self):
+        return type("Configuration", (), {"configured": False})()
+
+
 def test_thread_snapshot_runs_off_the_ui_thread(monkeypatch) -> None:
     monkeypatch.setattr(client_module, "get_session_bus", _Bus)
-    monkeypatch.setattr(
-        client_module,
-        "configuration_status",
-        lambda: {"configured": False},
-    )
+    monkeypatch.setattr(client_module, "SetupClient", _UnconfiguredSetup)
     monkeypatch.setattr(
         client_module.DaemonClient,
         "ensure_backend_current_async",
@@ -77,11 +78,7 @@ def test_thread_snapshot_runs_off_the_ui_thread(monkeypatch) -> None:
 
 def test_contact_search_decodes_backend_destinations(monkeypatch) -> None:
     monkeypatch.setattr(client_module, "get_session_bus", _Bus)
-    monkeypatch.setattr(
-        client_module,
-        "configuration_status",
-        lambda: {"configured": False},
-    )
+    monkeypatch.setattr(client_module, "SetupClient", _UnconfiguredSetup)
     client = client_module.DaemonClient()
     calls = []
     monkeypatch.setattr(

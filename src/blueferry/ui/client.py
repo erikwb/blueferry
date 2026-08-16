@@ -32,7 +32,6 @@ from blueferry.client_wire import (
     decode_threads,
 )
 from blueferry.models import BackendStatus, Thread
-from blueferry.pair_setup import configuration_status
 from blueferry.protocol import (
     BUS_NAME,
     CLEAR_CALL_TIMEOUT_SEC,
@@ -47,6 +46,7 @@ from blueferry.protocol import (
     STATUS_CALL_TIMEOUT_SEC,
     STORAGE_CALL_TIMEOUT_SEC,
 )
+from blueferry.setup_client import SetupClient
 
 log = logging.getLogger(__name__)
 
@@ -96,7 +96,7 @@ class DaemonClient(GObject.Object):
         self.available = False  # is the daemon reachable on D-Bus?
         self.healthy = False  # is the MAP session up?
         self._subscribe()
-        if configuration_status()["configured"]:
+        if SetupClient().configuration().configured:
             self.ensure_backend_current_async()
 
     # ---- signal subscription -------------------------------------------
