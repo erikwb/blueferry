@@ -1,3 +1,18 @@
+blueferry (0.7.4-1) unstable; urgency=medium
+
+  * Recover ANCS after Bluetooth LE reconnects without stale session races.
+  * Make message composers expand, wrap, and scroll in every client.
+  * Repair Qt utility pages and expose unavailable conversation storage.
+  * Verify Sync Contacts after successful empty phonebook pulls.
+
+ -- BlueFerry Contributors <blueferry@weirdware.io>  Sun, 16 Aug 2026 00:00:00 -0400
+
+blueferry (0.7.2-1) unstable; urgency=medium
+
+  * Prevent the privileged btmgmt helper from hanging under systemd.
+
+ -- BlueFerry Contributors <blueferry@weirdware.io>  Sun, 16 Aug 2026 00:00:00 -0400
+
 blueferry (0.7.1-1) unstable; urgency=medium
 
   * Make controller capability checks advisory and fix D-Bus advertisement

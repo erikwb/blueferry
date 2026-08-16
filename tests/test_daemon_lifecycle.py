@@ -116,6 +116,18 @@ def test_no_storage_policy_reasserts_empty_local_data(monkeypatch):
     assert cleared == ["events", "contacts"]
 
 
+def test_successful_empty_phonebook_verifies_contact_permission():
+    instance = _bare_daemon()
+    instance.contacts = SimpleNamespace(refresh=lambda: 0)
+    verified = []
+    instance._mark_setup_task = verified.append
+
+    count = instance._contacts_pulled(0)
+
+    assert count == 0
+    assert verified == [daemon_mod.CONTACTS]
+
+
 def test_status_exposes_split_ancs_and_last_le_error(monkeypatch):
     instance = _bare_daemon()
     instance.contacts = SimpleNamespace(count=lambda: 0)

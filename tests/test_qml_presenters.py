@@ -89,3 +89,23 @@ def test_qt_onboarding_summary_renders_stage_from_properties(qml_engine) -> None
     assert summary is not None
     assert "BlueFerry Is Connected" in summary.property("text")
     summary.deleteLater()
+
+
+def test_qt_onboarding_summary_explains_locked_contact_sync(qml_engine) -> None:
+    component = _component(
+        qml_engine, "src/blueferry/qt/qml/OnboardingSummary.qml"
+    )
+    summary = component.createWithInitialProperties({
+        "stage": "iphone-settings",
+        "compatibility": {"notifications_supported": False},
+        "status": {"verified_iphone_setup": ["message-notifications"]},
+    })
+
+    assert summary is not None
+    assert summary.setProperty("storagePolicy", "encrypted")
+    assert summary.setProperty("storageState", "locked")
+    assert summary.property("storagePolicy") == "encrypted"
+    assert summary.property("storageState") == "locked"
+    assert "Unlock Local Data, then sync contacts again" in summary.property("text")
+    assert "Enable Sync Contacts" not in summary.property("text")
+    summary.deleteLater()

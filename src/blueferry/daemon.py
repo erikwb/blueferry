@@ -377,8 +377,9 @@ class Daemon:
     def _contacts_pulled(self, pulled: int) -> int:
         """GLib-side cache refresh after a successful PBAP pull."""
         count = self.contacts.refresh()
-        if count > 0:
-            self._mark_setup_task(CONTACTS)
+        # Completing PullAll proves that the iPhone granted Sync Contacts,
+        # even when its phonebook is empty.
+        self._mark_setup_task(CONTACTS)
         if self._dbus_service is not None:
             self._dbus_service.operations.invalidate_conversations()
             self._dbus_service.emit_history_changed()

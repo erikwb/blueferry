@@ -15,6 +15,56 @@ Kirigami.ApplicationWindow {
     property string pendingMessageHandle: ""
     property var warnedRosterChanges: ({})
 
+    component ExpandingMessageComposer: Controls.ScrollView {
+        id: messageComposer
+
+        property alias text: editor.text
+        property alias placeholderText: editor.placeholderText
+        signal accepted()
+
+        Layout.fillWidth: true
+        Layout.minimumWidth: 0
+        Layout.minimumHeight: Kirigami.Units.gridUnit * 2.5
+        Layout.preferredHeight: Math.min(
+            Math.max(
+                editor.contentHeight + editor.topPadding + editor.bottomPadding + 2,
+                Layout.minimumHeight
+            ),
+            Layout.maximumHeight
+        )
+        Layout.maximumHeight: Kirigami.Units.gridUnit * 8
+        clip: true
+        Controls.ScrollBar.horizontal.policy: Controls.ScrollBar.AlwaysOff
+        Controls.ScrollBar.vertical.policy: Controls.ScrollBar.AsNeeded
+
+        function clear() {
+            editor.clear()
+        }
+
+        function forceActiveFocus() {
+            editor.forceActiveFocus()
+        }
+
+        function submit(event) {
+            if ((event.modifiers & Qt.ShiftModifier) !== 0) {
+                event.accepted = false
+                return
+            }
+            accepted()
+            event.accepted = true
+        }
+
+        Controls.TextArea {
+            id: editor
+            width: messageComposer.availableWidth
+            wrapMode: TextEdit.Wrap
+            selectByMouse: true
+            Accessible.name: messageComposer.Accessible.name
+            Keys.onReturnPressed: event => messageComposer.submit(event)
+            Keys.onEnterPressed: event => messageComposer.submit(event)
+        }
+    }
+
     visible: true
     width: 980
     height: 680
@@ -63,6 +113,32 @@ Kirigami.ApplicationWindow {
     function mapConnectionRefused() {
         const status = bridge.status || ({})
         return status.map_connection_refused === true
+    }
+
+    function retainedStorageUnavailable() {
+        const status = bridge.status || ({})
+        return status.daemon === true
+            && status.storage_policy !== undefined
+            && status.storage_policy !== "none"
+            && status.storage_state !== "ready"
+    }
+
+    function storageDetail() {
+        const status = bridge.status || ({})
+        if (status.storage_detail)
+            return status.storage_detail
+        return qsTr("Local conversation history is unavailable.")
+    }
+
+    function storageStatusText() {
+        const status = bridge.status || ({})
+        if (status.storage_policy === "none")
+            return qsTr("Disabled")
+        if (status.storage_state === "ready")
+            return qsTr("Available")
+        if (status.storage_state === "locked")
+            return qsTr("Locked")
+        return qsTr("Unavailable")
     }
 
     function openPhoneSettings() {
@@ -171,7 +247,7 @@ Kirigami.ApplicationWindow {
                 icon.name: "help-about"
                 onTriggered: {
                     root.closePhoneSettings()
-                    root.pageStack.push(aboutPage)
+                    root.pageStack.layers.push(aboutPage)
                 }
             },
             Kirigami.Action {
@@ -454,6 +530,7 @@ Kirigami.ApplicationWindow {
         preferredWidth: Kirigami.Units.gridUnit * 24
         standardButtons: Kirigami.Dialog.Cancel
         customFooterActions: [Kirigami.Action {
+            id: newMessageSendAction
             text: qsTr("Send")
             icon.name: "document-send"
             enabled: newRecipient.text.trim() !== ""
@@ -524,13 +601,14 @@ Kirigami.ApplicationWindow {
                 text: qsTr("Message")
                 font.bold: true
             }
-            Controls.TextArea {
+            ExpandingMessageComposer {
                 id: newMessageBody
-                Layout.fillWidth: true
-                Layout.preferredHeight: Kirigami.Units.gridUnit * 5
                 placeholderText: qsTr("Write a Message")
-                wrapMode: TextEdit.Wrap
                 Accessible.name: qsTr("Message Text")
+                onAccepted: {
+                    if (newMessageSendAction.enabled)
+                        newMessageSendAction.trigger()
+                }
             }
         }
     }
@@ -570,6 +648,27 @@ Kirigami.ApplicationWindow {
                     actions: [
                         Kirigami.Action {
                             text: qsTr("Open iPhone Settings")
+                            onTriggered: root.openPhoneSettings()
+                        }
+                    ]
+                }
+
+                Kirigami.InlineMessage {
+                    Layout.fillWidth: true
+                    visible: root.retainedStorageUnavailable()
+                    text: root.htmlEscape(root.storageDetail())
+                    type: Kirigami.MessageType.Warning
+                    position: Kirigami.InlineMessage.Position.Header
+                    actions: [
+                        Kirigami.Action {
+                            visible: root.bridge.status.storage_policy === "encrypted"
+                            text: qsTr("Unlock Local Data")
+                            icon.name: "document-decrypt"
+                            enabled: !root.bridge.busy
+                            onTriggered: root.bridge.unlockStorage()
+                        },
+                        Kirigami.Action {
+                            text: qsTr("Open Settings")
                             onTriggered: root.openPhoneSettings()
                         }
                     ]
@@ -678,8 +777,16 @@ Kirigami.ApplicationWindow {
                                 width: parent.width - Kirigami.Units.largeSpacing * 2
                                 visible: threadList.count === 0
                                 icon.name: "mail-message-new"
-                                text: qsTr("No Conversations Yet")
-                                explanation: qsTr("New iPhone messages will appear here.")
+                                text: root.bridge.status.storage_policy === "none"
+                                    ? qsTr("Conversation History Disabled")
+                                    : root.retainedStorageUnavailable()
+                                        ? qsTr("Conversation History Unavailable")
+                                        : qsTr("No Conversations Yet")
+                                explanation: root.bridge.status.storage_policy === "none"
+                                    ? qsTr("Local messages are not being retained. Choose a storage option in Settings to keep conversation history.")
+                                    : root.retainedStorageUnavailable()
+                                        ? root.storageDetail()
+                                        : qsTr("New iPhone messages will appear here.")
                             }
                         }
                     }
@@ -810,9 +917,8 @@ Kirigami.ApplicationWindow {
                             Layout.fillWidth: true
                             Layout.margins: Kirigami.Units.smallSpacing
 
-                            Controls.TextField {
+                            ExpandingMessageComposer {
                                 id: composer
-                                Layout.fillWidth: true
                                 placeholderText: qsTr("Write a Message")
                                 enabled: messagesPage.thread !== null
                                     && messagesPage.thread.reply_ready && !root.bridge.busy
@@ -821,6 +927,7 @@ Kirigami.ApplicationWindow {
                             }
                             Controls.Button {
                                 id: sendButton
+                                Layout.alignment: Qt.AlignBottom
                                 text: qsTr("Send")
                                 icon.name: "document-send"
                                 enabled: composer.enabled && composer.text.trim() !== ""
@@ -958,6 +1065,8 @@ Kirigami.ApplicationWindow {
                         ? "select-device" : iphonePage.effectiveStage
                     compatibility: root.bridge.onboardingCompatibility
                     status: root.bridge.status
+                    storagePolicy: root.bridge.status.storage_policy || ""
+                    storageState: root.bridge.status.storage_state || ""
                 }
 
                 Kirigami.FormLayout {
@@ -1253,6 +1362,33 @@ Kirigami.ApplicationWindow {
                             storageChangeDialog.requestedPolicy = currentValue
                             storageChangeDialog.open()
                         }
+                    }
+
+                    Controls.Label {
+                        Kirigami.FormData.label: qsTr("Status:")
+                        Layout.fillWidth: true
+                        text: root.storageStatusText()
+                        textFormat: Text.PlainText
+                    }
+
+                    Controls.Label {
+                        Kirigami.FormData.label: qsTr("Details:")
+                        Layout.fillWidth: true
+                        visible: root.bridge.status.storage_detail !== undefined
+                            && root.bridge.status.storage_detail !== ""
+                        text: root.bridge.status.storage_detail || ""
+                        textFormat: Text.PlainText
+                        wrapMode: Text.Wrap
+                    }
+
+                    Controls.Button {
+                        Kirigami.FormData.label: qsTr("Keyring:")
+                        visible: root.bridge.status.storage_policy === "encrypted"
+                            && root.bridge.status.storage_state !== "ready"
+                        text: qsTr("Unlock Local Data")
+                        icon.name: "document-decrypt"
+                        enabled: root.bridge.status.daemon === true && !root.bridge.busy
+                        onClicked: root.bridge.unlockStorage()
                     }
                 }
 

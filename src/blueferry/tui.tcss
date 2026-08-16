@@ -343,7 +343,9 @@ ConversationItem.-highlight .avatar {
 }
 
 #composer-wrap {
-    height: 8;
+    height: auto;
+    min-height: 8;
+    max-height: 12;
     padding: 1 2 0 2;
     background: #10192b;
     border-top: solid #233551;
@@ -354,7 +356,9 @@ ConversationItem.-highlight .avatar {
 }
 
 #composer {
-    height: 4;
+    height: auto;
+    min-height: 4;
+    max-height: 8;
     background: #151f35;
     border: tall #2a3d5c;
     color: #f8fafc;
@@ -482,7 +486,9 @@ ModalScreen {
 }
 
 #new-body {
-    height: 8;
+    height: auto;
+    min-height: 4;
+    max-height: 8;
     background: #151f35;
 }
 
