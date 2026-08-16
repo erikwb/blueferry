@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from functools import partial
 from typing import Any, Protocol
 
 from gi.repository import GLib
@@ -29,7 +30,7 @@ class ProfileSessions(Protocol):
     def start_monitoring(self) -> None: ...
     def stop_monitoring(self) -> None: ...
     def open_all(self) -> None: ...
-    def close_all(self) -> None: ...
+    def close_all(self, *, remove_remote: bool = True) -> None: ...
 
 
 class ProfileWorker(Protocol):
@@ -112,7 +113,7 @@ class ProfileSupervisor:
             on_error=lambda error: self._open_failed(generation, error),
         )
 
-    def reconnect(self, reason: str) -> None:
+    def reconnect(self, reason: str, *, remove_remote_sessions: bool = True) -> None:
         """Discard current consumers and sessions, then reconnect shortly."""
         if self._stopping:
             return
@@ -129,14 +130,20 @@ class ProfileSupervisor:
             self._on_lost(reason)
         self._opening = False
         self._closing = True
+        close = self.sessions.close_all
+        if not remove_remote_sessions:
+            close = partial(self.sessions.close_all, remove_remote=False)
         self.worker.submit(
-            self.sessions.close_all,
+            close,
             on_success=lambda _result: self._closed(generation),
             on_error=lambda error: self._close_failed(generation, error),
         )
 
     def session_lost(self, reason: str) -> None:
-        self.reconnect(reason)
+        # The transport is already failing. Keep cleanup serialized behind any
+        # in-flight open, but do not send RemoveSession into the dead channel:
+        # BlueZ 5.87 can NULL-dereference read_err in gobex/read_packet there.
+        self.reconnect(reason, remove_remote_sessions=False)
 
     def stop(self) -> None:
         """Cancel future transitions; worker shutdown performs final cleanup."""
