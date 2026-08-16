@@ -157,13 +157,19 @@ class ConversationState:
             confirm_group=confirm_group,
         )
 
-    def reply_sent(self, plan: ReplyPlan) -> None:
+    def reply_sent(
+        self,
+        plan: ReplyPlan,
+        *,
+        preserve_selection: bool = False,
+    ) -> None:
         if not plan.ready or plan.thread is None:
             raise ValueError("cannot complete a blocked reply plan")
         thread = plan.thread
         if thread.is_group and plan.confirm_group and thread.group_origin != "named":
             self.confirmed_groups.add(thread.key)
-        self.selected_key = thread.key
+        if not preserve_selection:
+            self.selected_key = thread.key
 
     def group_participants_saved(self, updated: Thread) -> None:
         self.threads = [

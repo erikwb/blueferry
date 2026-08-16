@@ -772,7 +772,7 @@ class ConversationsPage(Gtk.Box):
             # content-free HistoryChanged invalidation. Avoid an optimistic
             # append so the same bubble cannot appear twice.
             self._entry.set_text("")
-            self._state.reply_sent(plan)
+            self._state.reply_sent(plan, preserve_selection=True)
             can_reply = thread.reply_ready
             self._entry.set_sensitive(can_reply)
             self._send_btn.set_sensitive(can_reply)

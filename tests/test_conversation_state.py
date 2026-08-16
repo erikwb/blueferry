@@ -125,6 +125,24 @@ def test_group_update_clears_prior_confirmation() -> None:
     assert group.key not in state.confirmed_groups
 
 
+def test_async_reply_completion_preserves_newer_selection() -> None:
+    state = ConversationState()
+    group = _thread("group", group=True)
+    other = _thread("other")
+    state.apply_snapshot(ConversationSnapshot(None, (group, other)))
+    plan = state.plan_reply(
+        "hello",
+        thread_key=group.key,
+        confirm_group=True,
+    )
+    state.selected_key = other.key
+
+    state.reply_sent(plan, preserve_selection=True)
+
+    assert state.selected_key == other.key
+    assert group.key in state.confirmed_groups
+
+
 def test_roster_warning_is_returned_once_per_stable_warning_id() -> None:
     state = ConversationState()
     warning = _thread("group", group=True, roster_changed=True)
