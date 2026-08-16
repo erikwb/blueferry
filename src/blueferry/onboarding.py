@@ -3,10 +3,21 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from enum import Enum
+from typing import Any, Protocol
 
 from blueferry.models import BackendStatus
 from blueferry.setup_verification import remaining_iphone_setup_tasks
+
+
+class CompatibilityState(Protocol):
+    def to_dict(self) -> dict[str, Any]: ...
+
+
+class ConfigurationState(Protocol):
+    configured: bool
+    ancs_enabled: bool
 
 
 class OnboardingStage(str, Enum):
@@ -20,6 +31,69 @@ class OnboardingStage(str, Enum):
 
     def __str__(self) -> str:
         return self.value
+
+
+_READY_STAGES = {
+    OnboardingStage.READY,
+    OnboardingStage.READY_WITHOUT_ANCS,
+}
+
+
+@dataclass(frozen=True, slots=True)
+class OnboardingTransition:
+    previous: OnboardingStage
+    current: OnboardingStage
+
+    @property
+    def became_ready(self) -> bool:
+        return self.current in _READY_STAGES and self.previous not in _READY_STAGES
+
+
+class OnboardingState:
+    """Reduce typed setup and daemon snapshots to one presentation stage."""
+
+    def __init__(self) -> None:
+        self.setup_loaded = False
+        self.compatibility: dict[str, Any] = {}
+        self.configuration: ConfigurationState | None = None
+        self.status = BackendStatus()
+        self.compatibility_mode = False
+        self.stage = OnboardingStage.CHECKING
+
+    def update(
+        self,
+        *,
+        setup_loaded: bool,
+        compatibility: CompatibilityState | Mapping[str, Any] | None,
+        configuration: ConfigurationState | None,
+        status: BackendStatus,
+        compatibility_mode: bool = False,
+    ) -> OnboardingTransition:
+        previous = self.stage
+        self.setup_loaded = setup_loaded
+        if isinstance(compatibility, Mapping):
+            self.compatibility = dict(compatibility)
+        elif compatibility is not None:
+            self.compatibility = compatibility.to_dict()
+        else:
+            self.compatibility = {}
+        self.configuration = configuration
+        self.status = status
+        self.compatibility_mode = compatibility_mode
+        effective = dict(self.compatibility)
+        if compatibility_mode or (
+            configuration is not None
+            and configuration.configured
+            and not configuration.ancs_enabled
+        ):
+            effective["notifications_supported"] = False
+        self.stage = derive_stage(
+            setup_loaded=setup_loaded,
+            configured=bool(configuration and configuration.configured),
+            compatibility=effective,
+            status=status,
+        )
+        return OnboardingTransition(previous, self.stage)
 
 
 def derive_stage(

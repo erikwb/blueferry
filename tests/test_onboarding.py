@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from blueferry.models import BackendStatus
-from blueferry.onboarding import OnboardingStage, derive_stage
+from blueferry.onboarding import OnboardingStage, OnboardingState, derive_stage
+from blueferry.setup_client import ConfigurationState
 
 COMPATIBLE = {
     "hardware_supported": True,
@@ -155,3 +156,64 @@ def test_connected_profiles_still_request_unverified_iphone_steps() -> None:
         )
         is OnboardingStage.IPHONE_SETTINGS
     )
+
+
+def test_onboarding_state_reports_only_transitions_into_ready() -> None:
+    state = OnboardingState()
+    configuration = ConfigurationState(
+        configured=True,
+        mac="02:00:00:00:00:01",
+        adapter="hci0",
+        path="",
+    )
+    status = BackendStatus(
+        daemon=True,
+        map=True,
+        pbap=True,
+        ancs=True,
+        verified_iphone_setup=(
+            "message-notifications",
+            "contacts",
+            "notification-access",
+        ),
+    )
+
+    first = state.update(
+        setup_loaded=True,
+        compatibility=COMPATIBLE,
+        configuration=configuration,
+        status=status,
+    )
+    second = state.update(
+        setup_loaded=True,
+        compatibility=COMPATIBLE,
+        configuration=configuration,
+        status=status,
+    )
+
+    assert first.current is OnboardingStage.READY
+    assert first.became_ready is True
+    assert second.became_ready is False
+
+
+def test_saved_ancs_opt_out_derives_ready_without_notifications() -> None:
+    state = OnboardingState()
+    transition = state.update(
+        setup_loaded=True,
+        compatibility=COMPATIBLE,
+        configuration=ConfigurationState(
+            configured=True,
+            mac="02:00:00:00:00:01",
+            adapter="hci0",
+            path="",
+            ancs_enabled=False,
+        ),
+        status=BackendStatus(
+            daemon=True,
+            map=True,
+            pbap=True,
+            verified_iphone_setup=("message-notifications", "contacts"),
+        ),
+    )
+
+    assert transition.current is OnboardingStage.READY_WITHOUT_ANCS

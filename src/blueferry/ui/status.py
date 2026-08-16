@@ -9,7 +9,7 @@ from gi.repository import Adw, Gio, GLib, Gtk
 from blueferry.bluetooth_devices import PairedDevice, iphone_candidates
 from blueferry.i18n import _
 from blueferry.models import BackendStatus
-from blueferry.onboarding import OnboardingStage, derive_stage
+from blueferry.onboarding import OnboardingState
 from blueferry.quirks_report import issue_report, issue_url
 from blueferry.setup_client import (
     DISCOVERY_SECONDS,
@@ -42,7 +42,7 @@ class IPhonePage(Gtk.Box):
         self._configuration: ConfigurationState | None = None
         self._last_status = BackendStatus()
         self._setup_loaded = False
-        self._last_onboarding_stage: OnboardingStage | None = None
+        self._onboarding = OnboardingState()
         self._applying_notification_policy = False
         self._applying_storage_policy = False
         self._storage_unlock_attempted = False
@@ -1044,27 +1044,15 @@ class IPhonePage(Gtk.Box):
         )
 
     def _update_onboarding(self) -> None:
-        compatibility = self._compatibility.to_dict() if self._compatibility else {}
-        configured = bool(self._configuration and self._configuration.configured)
-        if self._compatibility_switch.get_active() or (
-            configured and self._configuration and not self._configuration.ancs_enabled
-        ):
-            compatibility["notifications_supported"] = False
-        stage = derive_stage(
+        transition = self._onboarding.update(
             setup_loaded=self._setup_loaded,
-            configured=configured,
-            compatibility=compatibility,
+            compatibility=self._compatibility,
+            configuration=self._configuration,
             status=self._last_status,
+            compatibility_mode=self._compatibility_switch.get_active(),
         )
-        if stage in {
-            OnboardingStage.READY,
-            OnboardingStage.READY_WITHOUT_ANCS,
-        } and self._last_onboarding_stage not in {
-            OnboardingStage.READY,
-            OnboardingStage.READY_WITHOUT_ANCS,
-        }:
+        if transition.became_ready:
             self._toast(_("BlueFerry is connected and ready"))
-        self._last_onboarding_stage = stage
 
     def _sync_contacts(self, _button) -> None:
         self._client.sync_contacts(
