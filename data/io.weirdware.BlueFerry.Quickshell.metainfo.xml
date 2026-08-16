@@ -14,6 +14,7 @@
   <content_rating type="oars-1.1"/>
   <developer id="io.weirdware"><name>BlueFerry contributors</name></developer>
   <releases>
+    <release version="0.7.5" date="2026-08-16"><description><p>Recovers ANCS when a previously authorized iPhone stops responding after a Bluetooth reconnect.</p></description></release>
     <release version="0.7.4" date="2026-08-16"><description><p>Recovers iPhone notifications after reconnects, makes message editors expand and wrap, and improves conversation-storage recovery.</p></description></release>
     <release version="0.7.2" date="2026-08-16"><description><p>Prevents the privileged Bluetooth setup helper from hanging when pairing under systemd.</p></description></release>
     <release version="0.7.1" date="2026-08-15"><description><p>Improves cross-distro pairing and privileged setup, makes controller capability checks advisory, and polishes Qt startup, connection health, and group messaging.</p></description></release>
