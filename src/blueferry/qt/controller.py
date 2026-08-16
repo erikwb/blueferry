@@ -21,11 +21,16 @@ from blueferry.backend_lifecycle import ensure_backend_current, restart_backend
 from blueferry.bluetooth_devices import iphone_candidates
 from blueferry.client import BackendClient, BackendError
 from blueferry.i18n import _
-from blueferry.onboarding import derive_stage
+from blueferry.models import BackendStatus
+from blueferry.onboarding import OnboardingState, effective_compatibility
 from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH
 from blueferry.qt.tasks import Task
 from blueferry.quirks_report import issue_report, issue_url
-from blueferry.setup_client import DISCOVERY_SECONDS, SetupClient
+from blueferry.setup_client import (
+    DISCOVERY_SECONDS,
+    ConfigurationState,
+    SetupClient,
+)
 
 
 class BridgeController(QObject):
@@ -72,20 +77,10 @@ class BridgeController(QObject):
         self._error_text = ""
         self._pairing_issue_report = ""
         self._compatibility: dict = {}
-        self._configured = False
-        self._target_saved = False
-        self._ancs_enabled = True
-        self._configured_mac = ""
-        self._configured_adapter = ""
+        self._configuration = ConfigurationState(False, "", "", "")
         self._setup_loaded = False
-        self._onboarding_stage = str(
-            derive_stage(
-                setup_loaded=self._setup_loaded,
-                configured=self._configured,
-                compatibility=self._onboarding_compatibility(),
-                status=self._status,
-            )
-        )
+        self._onboarding = OnboardingState()
+        self._onboarding_stage = str(self._onboarding.stage)
         self._refreshing = False
         self._refresh_again = False
         self._storage_unlock_attempted = False
@@ -158,10 +153,10 @@ class BridgeController(QObject):
         self._operation_failed(message)
 
     def _onboarding_compatibility(self) -> dict:
-        compatibility = dict(self._compatibility)
-        if self._target_saved and not self._ancs_enabled:
-            compatibility["notifications_supported"] = False
-        return compatibility
+        return effective_compatibility(
+            self._compatibility,
+            self._configuration,
+        )
 
     @Property("QVariantMap", notify=compatibilityChanged)
     def onboardingCompatibility(self):
@@ -169,15 +164,15 @@ class BridgeController(QObject):
 
     @Property(bool, notify=configuredChanged)
     def configured(self) -> bool:
-        return self._configured
+        return self._configuration.configured
 
     @Property(bool, notify=configuredChanged)
     def targetSaved(self) -> bool:
-        return self._target_saved
+        return self._configuration.saved
 
     @Property(str, notify=configuredChanged)
     def configuredMac(self) -> str:
-        return self._configured_mac
+        return self._configuration.mac
 
     @Property(bool, notify=setupLoadedChanged)
     def setupLoaded(self) -> bool:
@@ -188,14 +183,13 @@ class BridgeController(QObject):
         return self._onboarding_stage
 
     def _update_onboarding_stage(self) -> None:
-        stage = str(
-            derive_stage(
-                setup_loaded=self._setup_loaded,
-                configured=self._configured,
-                compatibility=self._onboarding_compatibility(),
-                status=self._status,
-            )
+        transition = self._onboarding.update(
+            setup_loaded=self._setup_loaded,
+            compatibility=self._compatibility,
+            configuration=self._configuration,
+            status=BackendStatus.from_dict(self._status),
         )
+        stage = str(transition.current)
         if stage == self._onboarding_stage:
             return
         self._onboarding_stage = stage
@@ -311,11 +305,7 @@ class BridgeController(QObject):
 
         def ready(result: object) -> None:
             configuration, status = result
-            self._configured = configuration.configured
-            self._target_saved = configuration.saved
-            self._ancs_enabled = bool(getattr(configuration, "ancs_enabled", True))
-            self._configured_mac = configuration.mac
-            self._configured_adapter = configuration.adapter
+            self._configuration = configuration
             self._setup_loaded = True
             self.configuredChanged.emit()
             self.compatibilityChanged.emit()
@@ -325,7 +315,7 @@ class BridgeController(QObject):
                 self.statusChanged.emit()
                 self._maybe_unlock_storage()
             self._set_error("")
-            if self._configured:
+            if self._configuration.configured:
                 self.refresh()
             self.loadSetupState()
             self.loadDevices(False)
@@ -356,11 +346,7 @@ class BridgeController(QObject):
         def completed(value: object) -> None:
             compatibility, configuration = value
             self._compatibility = compatibility.to_dict()
-            self._configured = configuration.configured
-            self._target_saved = configuration.saved
-            self._ancs_enabled = bool(getattr(configuration, "ancs_enabled", True))
-            self._configured_mac = configuration.mac
-            self._configured_adapter = configuration.adapter
+            self._configuration = configuration
             self._setup_loaded = True
             self._bluetooth_active = compatibility.bearer_api_active
             self.compatibilityChanged.emit()
@@ -620,7 +606,7 @@ class BridgeController(QObject):
             candidates = iphone_candidates(
                 devices,
                 adapter=adapter,
-                configured_mac=self._configured_mac,
+                configured_mac=self._configuration.mac,
                 include_unpaired=scan,
             )
             self._devices = []
@@ -692,11 +678,15 @@ class BridgeController(QObject):
         explicit_pairing: bool = False,
     ) -> None:
         def completed(value: object) -> None:
-            self._configured = True
-            self._target_saved = True
-            self._ancs_enabled = bool(getattr(value, "ancs_enabled", True))
-            self._configured_mac = mac
-            self._configured_adapter = str(self._compatibility.get("adapter", ""))
+            self._configuration = ConfigurationState(
+                configured=True,
+                mac=mac,
+                adapter=str(self._compatibility.get("adapter", "")),
+                path="",
+                saved=True,
+                bonded=True,
+                ancs_enabled=bool(getattr(value, "ancs_enabled", True)),
+            )
             self.configuredChanged.emit()
             self.compatibilityChanged.emit()
             self._update_onboarding_stage()
@@ -781,11 +771,7 @@ class BridgeController(QObject):
     @Slot(str)
     def forgetDevice(self, mac: str) -> None:
         def completed(_value: object) -> None:
-            self._configured = False
-            self._target_saved = False
-            self._ancs_enabled = True
-            self._configured_mac = ""
-            self._configured_adapter = ""
+            self._configuration = ConfigurationState(False, "", "", "")
             self._status = {}
             self._threads = []
             self.configuredChanged.emit()
@@ -796,5 +782,5 @@ class BridgeController(QObject):
             self.loadDevices(False)
             self.loadSetupState()
 
-        adapter = self._configured_adapter.strip() or None
+        adapter = self._configuration.adapter.strip() or None
         self._run(lambda: self._setup.forget(mac, adapter=adapter), completed)

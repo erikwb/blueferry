@@ -20,6 +20,28 @@ class ConfigurationState(Protocol):
     ancs_enabled: bool
 
 
+def effective_compatibility(
+    compatibility: CompatibilityState | Mapping[str, Any] | None,
+    configuration: ConfigurationState | None,
+    *,
+    compatibility_mode: bool = False,
+) -> dict[str, Any]:
+    """Return setup capabilities after applying the selected pairing policy."""
+    if isinstance(compatibility, Mapping):
+        effective = dict(compatibility)
+    elif compatibility is not None:
+        effective = compatibility.to_dict()
+    else:
+        effective = {}
+    if compatibility_mode or (
+        configuration is not None
+        and configuration.configured
+        and not configuration.ancs_enabled
+    ):
+        effective["notifications_supported"] = False
+    return effective
+
+
 class OnboardingStage(str, Enum):
     CHECKING = "checking"
     ACTIVATE_BLUETOOTH = "activate-bluetooth"
@@ -55,6 +77,7 @@ class OnboardingState:
     def __init__(self) -> None:
         self.setup_loaded = False
         self.compatibility: dict[str, Any] = {}
+        self.effective_compatibility: dict[str, Any] = {}
         self.configuration: ConfigurationState | None = None
         self.status = BackendStatus()
         self.compatibility_mode = False
@@ -71,22 +94,16 @@ class OnboardingState:
     ) -> OnboardingTransition:
         previous = self.stage
         self.setup_loaded = setup_loaded
-        if isinstance(compatibility, Mapping):
-            self.compatibility = dict(compatibility)
-        elif compatibility is not None:
-            self.compatibility = compatibility.to_dict()
-        else:
-            self.compatibility = {}
+        self.compatibility = effective_compatibility(compatibility, None)
         self.configuration = configuration
         self.status = status
         self.compatibility_mode = compatibility_mode
-        effective = dict(self.compatibility)
-        if compatibility_mode or (
-            configuration is not None
-            and configuration.configured
-            and not configuration.ancs_enabled
-        ):
-            effective["notifications_supported"] = False
+        effective = effective_compatibility(
+            self.compatibility,
+            configuration,
+            compatibility_mode=compatibility_mode,
+        )
+        self.effective_compatibility = effective
         self.stage = derive_stage(
             setup_loaded=setup_loaded,
             configured=bool(configuration and configuration.configured),
