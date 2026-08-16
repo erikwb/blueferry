@@ -162,6 +162,84 @@ def test_pairing_complete_forwards_independent_pairing_modes(monkeypatch):
     assert observed[0][1]["explicit_pairing"] is True
 
 
+def test_pairing_forget_refuses_the_headless_path(monkeypatch):
+    called = []
+
+    class Setup:
+        @staticmethod
+        def forget(*_args, **_kwargs):
+            called.append(True)
+
+    monkeypatch.setattr(setup_client, "SetupClient", Setup)
+
+    result = CliRunner().invoke(
+        cli.app, ["pairing-forget", "02:00:00:00:00:01"]
+    )
+
+    assert result.exit_code == 2
+    assert json.loads(result.stdout)["error"] == (
+        "pairing-forget requires an interactive BlueFerry client"
+    )
+    assert called == []
+
+
+def test_pairing_forget_waits_for_explicit_approval(monkeypatch):
+    forgotten = []
+
+    class Setup:
+        @staticmethod
+        def configuration():
+            return SimpleNamespace(adapter="hci0")
+
+        @staticmethod
+        def forget(mac, **kwargs):
+            forgotten.append((mac, kwargs["adapter"]))
+
+    monkeypatch.setattr(setup_client, "SetupClient", Setup)
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "pairing-forget", "02:00:00:00:00:01",
+            "--interactive-approval",
+        ],
+        input="yes\n",
+    )
+
+    assert result.exit_code == 0
+    events = [json.loads(line) for line in result.stdout.splitlines()]
+    assert events == [
+        {"event": "confirmation", "purpose": "forget"},
+        {"ok": True, "mac": "02:00:00:00:00:01"},
+    ]
+    assert forgotten == [("02:00:00:00:00:01", "hci0")]
+
+
+def test_pairing_forget_honors_rejection(monkeypatch):
+    called = []
+
+    class Setup:
+        def __init__(self):
+            called.append(True)
+
+    monkeypatch.setattr(setup_client, "SetupClient", Setup)
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "pairing-forget", "02:00:00:00:00:01",
+            "--interactive-approval",
+        ],
+        input="no\n",
+    )
+
+    assert result.exit_code == 2
+    assert json.loads(result.stdout.splitlines()[-1])["error"] == (
+        "Unpairing this phone was not approved"
+    )
+    assert called == []
+
+
 def test_pairing_issue_prints_the_latest_report_without_opening(tmp_path, monkeypatch):
     from blueferry import config, quirks_report
 

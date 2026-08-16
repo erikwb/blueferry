@@ -360,14 +360,30 @@ def pairing_issue(
 def pairing_forget(
     mac: str,
     adapter: str = typer.Option("", "--adapter"),
+    interactive_approval: bool = typer.Option(
+        False, "--interactive-approval", hidden=True
+    ),
 ) -> None:
     """Unpair the phone and clear it from BlueFerry configuration."""
     import json
+    import sys
 
     from blueferry.errors import PairingError
     from blueferry.setup_client import SetupClient
 
     try:
+        if not interactive_approval:
+            raise PairingError(
+                "pairing-forget requires an interactive BlueFerry client"
+            )
+        print(
+            json.dumps({"event": "confirmation", "purpose": "forget"}),
+            flush=True,
+        )
+        if sys.stdin.readline().strip().casefold() not in {
+            "yes", "y", "accept"
+        }:
+            raise PairingError("Unpairing this phone was not approved")
         setup = SetupClient()
         selected = adapter.strip() or setup.configuration().adapter or None
         setup.forget(mac, adapter=selected)

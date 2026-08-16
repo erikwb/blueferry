@@ -466,6 +466,8 @@ def test_all_gui_clients_can_choose_a_bluetooth_controller() -> None:
     assert "--adapter" in quickshell
     assert 'pairProcess.command.push("--adapter", root.adapterName)' in quickshell
     assert 'forgetProcess.command.push("--adapter", root.configuredAdapter)' in quickshell
+    assert '"--interactive-approval"' in quickshell
+    assert "forgetProcess.write(\"yes\\n\")" in quickshell
     assert "property string configuredAdapter" in quickshell
     assert (
         "root.configuredAdapter = root.targetSaved ? (parsed.adapter || \"\") : \"\""

@@ -36,8 +36,10 @@ ShellRoot {
   property string configuredMac: ""
   property string configuredAdapter: ""
   property bool pairingConfirmationPending: false
+  property string pairingConfirmationPurpose: ""
   property string pairingPasskey: ""
   property bool pairingResultReceived: false
+  property bool forgetResultReceived: false
   property string pairingIssueReport: ""
   property var pendingPairingDevice: null
   property string adapterName: ""
@@ -246,6 +248,7 @@ ShellRoot {
       }
       if (parsed.event === "confirmation") {
         root.pairingPasskey = parsed.passkey || ""
+        root.pairingConfirmationPurpose = parsed.purpose || "pair"
         root.pairingConfirmationPending = true
         root.pairingStatus = root.pairingPasskey === ""
           ? "The iPhone is asking to pair. Approve only if you started this pairing."
@@ -280,6 +283,38 @@ ShellRoot {
     } catch (error) {
       root.pairingStatus = "Pairing returned invalid data."
     }
+  }
+
+  function handleForgetLine(line) {
+    if (line.trim() === "") return
+    try {
+      var parsed = JSON.parse(line)
+      if (parsed.event === "confirmation" && parsed.purpose === "forget") {
+        root.pairingPasskey = ""
+        root.pairingConfirmationPurpose = "forget"
+        root.pairingConfirmationPending = true
+        root.pairingStatus = "Confirm that you want to unpair this iPhone."
+        return
+      }
+      root.forgetResultReceived = true
+      root.pairingConfirmationPending = false
+      root.pairingConfirmationPurpose = ""
+      root.pairingStatus = parsed.ok
+        ? "Local bond removed. Also forget this computer on the iPhone, then scan again."
+        : (parsed.error || "Could not remove the bond.")
+      if (parsed.ok) {
+        root.configured = false
+        root.targetSaved = false
+        root.targetBonded = false
+        root.bondStateKnown = true
+        root.configuredMac = ""
+        root.configuredAdapter = ""
+        root.ancsEnabled = true
+        root.backendStatus = ({})
+        root.pairingDevices = []
+        root.loadPairingDevices(false)
+      }
+    } catch (error) { root.pairingStatus = "Forget operation returned invalid data." }
   }
 
   BackendBridge { id: backendBridge }
@@ -548,6 +583,7 @@ ShellRoot {
     // qmllint disable signal-handler-parameters
     onExited: function(code) {
       root.pairingConfirmationPending = false
+      root.pairingConfirmationPurpose = ""
       root.pairingPasskey = ""
       if (code !== 0 && !root.pairingResultReceived)
         root.pairingStatus = "Pairing did not complete; unlock the iPhone and try again."
@@ -568,27 +604,18 @@ ShellRoot {
 
   Process {
     id: forgetProcess
-    stdout: StdioCollector {
-      onStreamFinished: {
-        try {
-          var parsed = JSON.parse(text)
-          root.pairingStatus = parsed.ok
-            ? "Local bond removed. Also forget this computer on the iPhone, then scan again."
-            : (parsed.error || "Could not remove the bond.")
-          if (parsed.ok) {
-            root.configured = false
-            root.targetSaved = false
-            root.targetBonded = false
-            root.bondStateKnown = true
-            root.configuredMac = ""
-            root.configuredAdapter = ""
-            root.ancsEnabled = true
-            root.backendStatus = ({})
-            root.pairingDevices = []
-            root.loadPairingDevices(false)
-          }
-        } catch (error) { root.pairingStatus = "Forget operation returned invalid data." }
+    stdinEnabled: true
+    stdout: SplitParser {
+      onRead: function(line) { root.handleForgetLine(line) }
+    }
+    // qmllint disable signal-handler-parameters
+    onExited: function(code) {
+      if (root.pairingConfirmationPurpose === "forget") {
+        root.pairingConfirmationPending = false
+        root.pairingConfirmationPurpose = ""
       }
+      if (code !== 0 && !root.forgetResultReceived)
+        root.pairingStatus = "Could not remove the bond."
     }
   }
 
@@ -1277,6 +1304,7 @@ ShellRoot {
             enabled: root.selectedPairingDevice() !== null
                      && root.compatibilityLoaded
                      && !deviceProcess.running && !pairProcess.running
+                     && !forgetProcess.running
             onClicked: {
               var device = root.selectedPairingDevice()
               if (!device.paired && root.targetSaved) {
@@ -1291,7 +1319,9 @@ ShellRoot {
             onClicked: pairingIssuePopup.open()
           }
           FerryLabel {
-            text: root.pairingPasskey === "" ? "Pairing confirmation" : root.pairingPasskey
+            text: root.pairingConfirmationPurpose === "forget"
+              ? "Confirm unpairing"
+              : root.pairingPasskey === "" ? "Pairing confirmation" : root.pairingPasskey
             font.bold: true
             font.pixelSize: root.pairingPasskey === "" ? theme.baseFontSize : theme.headingSize
             horizontalAlignment: Text.AlignHCenter
@@ -1302,22 +1332,35 @@ ShellRoot {
             Layout.fillWidth: true
             visible: root.pairingConfirmationPending
             FerryButton {
-              text: "Cancel Pairing"
+              text: root.pairingConfirmationPurpose === "forget"
+                ? "Cancel" : "Cancel Pairing"
               Layout.fillWidth: true
               onClicked: {
-                pairProcess.write("no\n")
+                var forgetting = root.pairingConfirmationPurpose === "forget"
+                if (forgetting)
+                  forgetProcess.write("no\n")
+                else pairProcess.write("no\n")
                 root.pairingConfirmationPending = false
-                root.pairingStatus = "Canceling pairing…"
+                root.pairingConfirmationPurpose = ""
+                root.pairingStatus = forgetting
+                  ? "Canceling unpair…" : "Canceling pairing…"
               }
             }
             FerryButton {
-              text: root.pairingPasskey === "" ? "Approve Pairing" : "Codes Match"
+              text: root.pairingConfirmationPurpose === "forget"
+                ? "Unpair"
+                : root.pairingPasskey === "" ? "Approve Pairing" : "Codes Match"
               Layout.fillWidth: true
               highlighted: true
               onClicked: {
-                pairProcess.write("yes\n")
+                var forgetting = root.pairingConfirmationPurpose === "forget"
+                if (forgetting)
+                  forgetProcess.write("yes\n")
+                else pairProcess.write("yes\n")
                 root.pairingConfirmationPending = false
-                root.pairingStatus = "Finishing Bluetooth setup…"
+                root.pairingConfirmationPurpose = ""
+                root.pairingStatus = forgetting
+                  ? "Removing the local bond…" : "Finishing Bluetooth setup…"
               }
             }
           }
@@ -1334,9 +1377,14 @@ ShellRoot {
               text: forgetProcess.running ? "Removing…"
                 : root.bondStateKnown && !root.targetBonded
                   ? "Clear Saved Phone" : "Unpair"
-              enabled: root.configuredMac !== "" && !forgetProcess.running
+              enabled: root.configuredMac !== ""
+                && !forgetProcess.running && !pairProcess.running
               onClicked: {
-                forgetProcess.command = ["/usr/bin/blueferry", "pairing-forget", root.configuredMac]
+                root.forgetResultReceived = false
+                forgetProcess.command = [
+                  "/usr/bin/blueferry", "pairing-forget", root.configuredMac,
+                  "--interactive-approval"
+                ]
                 if (root.configuredAdapter)
                   forgetProcess.command.push("--adapter", root.configuredAdapter)
                 forgetProcess.running = true
