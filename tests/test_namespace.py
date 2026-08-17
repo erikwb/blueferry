@@ -91,9 +91,14 @@ def test_backend_unit_does_not_source_user_controlled_process_environment() -> N
 
     assert "EnvironmentFile=" not in unit
     assert "NoNewPrivileges=true" in unit
-    assert "CapabilityBoundingSet=" in unit
     assert "ProtectSystem=strict" in unit
     assert "RestrictAddressFamilies=AF_UNIX" in unit
+
+
+def test_backend_user_unit_does_not_change_process_capabilities() -> None:
+    unit = (ROOT / "systemd" / "blueferry.service").read_text()
+
+    assert "CapabilityBoundingSet=" not in unit
 
 
 def test_backend_package_includes_maintained_protocol_findings() -> None:
