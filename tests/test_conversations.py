@@ -23,12 +23,24 @@ class _FakeWidget:
         self.children.append(child)
 
 
+class _FakeGesture:
+    def __init__(self, **_kwargs):
+        pass
+
+    def connect(self, *_args):
+        pass
+
+
 class _FakeRow:
     def __init__(self):
         self.child = None
+        self.controllers = []
 
     def set_child(self, child):
         self.child = child
+
+    def add_controller(self, controller):
+        self.controllers.append(controller)
 
 
 class _FakeGtk:
@@ -38,6 +50,11 @@ class _FakeGtk:
     ListBoxRow = _FakeRow
     Box = _FakeWidget
     Label = _FakeWidget
+    GestureClick = _FakeGesture
+
+
+class _FakeGdk:
+    BUTTON_SECONDARY = 3
 
 
 class _FakeThreadList:
@@ -88,6 +105,7 @@ def _thread(**changes) -> Thread:
 def test_sidebar_rebuild_does_not_fire_selection_callback(monkeypatch):
     """A live event redraw must not redraw the current thread a second time."""
     monkeypatch.setattr(conversations, "Gtk", _FakeGtk)
+    monkeypatch.setattr(conversations, "Gdk", _FakeGdk)
     thread_list = _FakeThreadList()
     state = ConversationState(select_first=False)
     state.apply_snapshot(ConversationSnapshot(None, (_thread(),)))
@@ -95,12 +113,14 @@ def test_sidebar_rebuild_does_not_fire_selection_callback(monkeypatch):
     page = SimpleNamespace(
         _thread_list=thread_list,
         _thread_selected_handler=42,
+        _show_thread_context_menu=lambda *_args: None,
         _state=state,
     )
 
     conversations.ConversationsPage._rebuild_thread_list(page)
 
     assert len(thread_list.rows) == 1
+    assert len(thread_list.rows[0].controllers) == 1
     assert thread_list.selection_callbacks == 0
     assert thread_list.blocked is False
 

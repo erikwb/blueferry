@@ -332,6 +332,16 @@ class DaemonClient(GObject.Object):
             mutation=True,
         )
 
+    def delete_threads_async(self, thread_keys: list[str], on_ok, on_err) -> None:
+        self._submit(
+            lambda: self._call_backend(
+                lambda backend: backend.delete_threads(thread_keys)
+            ),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
     def set_notification_policy_async(self, policy: str, on_ok, on_err) -> None:
         self._submit(
             lambda: self._call_backend(

@@ -61,6 +61,13 @@
       <annotation name="io.weirdware.BlueFerry.Errors"
                   value="ConfirmationRequired"/>
     </method>
+    <method name="DeleteThreads">
+      <arg name="thread_keys" type="as" direction="in"/>
+      <arg name="confirmed" type="b" direction="in"/>
+      <arg name="deleted_conversations" type="u" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotFound,NotReady,ConfirmationRequired"/>
+    </method>
     <method name="GetNotificationPolicy">
       <arg name="policy" type="s" direction="out"/>
     </method>

@@ -14,6 +14,7 @@ from blueferry.models import BackendStatus, Thread, ThreadMessage
 from blueferry.tui import (
     BlueFerryApp,
     ConversationItem,
+    DeleteConversationScreen,
     MessageRow,
     RosterChangedScreen,
     TuiState,
@@ -62,6 +63,7 @@ class _Backend:
             _thread("group", "Friends", "plans", group=True),
         ]
         self.sent = []
+        self.deleted = []
         self.group_participants = None
 
     @staticmethod
@@ -79,6 +81,14 @@ class _Backend:
     def send(self, recipient: str, body: str) -> str:
         self.sent.append((recipient, body))
         return "/transfer/2"
+
+    def delete_threads(self, thread_keys: list[str]) -> int:
+        self.deleted.append(list(thread_keys))
+        before = len(self.loaded)
+        self.loaded = [
+            thread for thread in self.loaded if thread.key not in thread_keys
+        ]
+        return before - len(self.loaded)
 
     def set_group_participants(
         self, thread_key: str, recipients: list[str],
@@ -196,6 +206,18 @@ def test_new_message_uses_explicit_destination() -> None:
     assert state.send_new("person@example.com", "hello") is True
 
     assert backend.sent == [("person@example.com", "hello")]
+
+
+def test_delete_uses_one_opaque_thread_key() -> None:
+    backend = _Backend()
+    state = TuiState(backend)
+    state.refresh()
+
+    assert state.delete_thread("one") is True
+
+    assert backend.deleted == [["one"]]
+    assert [thread.key for thread in state.threads] == ["group"]
+    assert state.notice == "Conversation deleted locally"
 
 
 def test_group_participant_update_replaces_local_thread_snapshot() -> None:
@@ -322,6 +344,32 @@ def test_textual_app_renders_status_threads_and_messages() -> None:
             assert app.query_one("#conversation-title").render().plain == "Friends  ·  Group"
             meta = await _wait_for_message_meta(app, pilot, "Beau  ·  ")
             assert meta.render().plain.startswith("Beau  ·  ")
+
+    _run_headless(scenario())
+
+
+def test_delete_key_confirms_and_deletes_current_conversation() -> None:
+    async def scenario() -> None:
+        backend = _Backend()
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
+
+        async with app.run_test(size=(120, 36)) as pilot:
+            await _wait_for_threads(app, pilot, 2)
+            await pilot.press("delete")
+
+            assert isinstance(app.screen, DeleteConversationScreen)
+            assert app.screen.thread.key == "one"
+            assert backend.deleted == []
+
+            await pilot.click("#delete-confirm")
+            for _attempt in range(30):
+                if backend.deleted:
+                    break
+                await pilot.pause(0.05)
+
+            assert backend.deleted == [["one"]]
+            await _wait_for_threads(app, pilot, 1)
+            assert app.state.selected_key == "group"
 
     _run_headless(scenario())
 

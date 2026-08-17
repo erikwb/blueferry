@@ -385,6 +385,38 @@ Kirigami.ApplicationWindow {
     }
 
     Kirigami.PromptDialog {
+        id: deleteThreadsDialog
+        property string threadKey: ""
+        title: qsTr("Delete Conversation?")
+        subtitle: qsTr("This permanently deletes this local message history and group metadata. Nothing is deleted from your iPhone. A new message can create the conversation again.")
+        dialogType: Kirigami.PromptDialog.Warning
+        standardButtons: Kirigami.Dialog.Cancel
+        customFooterActions: [Kirigami.Action {
+            text: qsTr("Delete Locally")
+            icon.name: "edit-delete"
+            enabled: !root.bridge.busy
+            onTriggered: {
+                root.bridge.deleteThreads([deleteThreadsDialog.threadKey])
+                deleteThreadsDialog.close()
+            }
+        }]
+    }
+
+    Controls.Menu {
+        id: threadContextMenu
+        property string threadKey: ""
+
+        Controls.MenuItem {
+            text: qsTr("Delete Conversation")
+            icon.name: "edit-delete"
+            onTriggered: {
+                deleteThreadsDialog.threadKey = threadContextMenu.threadKey
+                deleteThreadsDialog.open()
+            }
+        }
+    }
+
+    Kirigami.PromptDialog {
         id: storageChangeDialog
         property string requestedPolicy: ""
         title: requestedPolicy === "none"
@@ -769,7 +801,20 @@ Kirigami.ApplicationWindow {
                                         elide: Text.ElideRight
                                     }
                                 }
-                                onClicked: root.selectedThreadKey = modelData.key
+                                MouseArea {
+                                    id: threadMouse
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    acceptedButtons: Qt.LeftButton | Qt.RightButton
+                                    onClicked: mouse => {
+                                        if (mouse.button === Qt.RightButton) {
+                                            threadContextMenu.threadKey = threadDelegate.modelData.key
+                                            threadContextMenu.popup(threadDelegate, mouse.x, mouse.y)
+                                        } else {
+                                            root.selectedThreadKey = threadDelegate.modelData.key
+                                        }
+                                    }
+                                }
                             }
 
                             Kirigami.PlaceholderMessage {

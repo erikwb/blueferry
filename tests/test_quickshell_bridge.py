@@ -31,6 +31,10 @@ class FakeClient:
         self.calls.append(("set_group_participants", thread_key, recipients))
         return SimpleNamespace(to_dict=lambda: {"key": thread_key})
 
+    def delete_threads(self, thread_keys):
+        self.calls.append(("delete_threads", thread_keys))
+        return len(thread_keys)
+
 
 def test_bridge_dispatches_private_values_without_command_arguments() -> None:
     client = FakeClient()
@@ -51,6 +55,9 @@ def test_bridge_dispatches_private_values_without_command_arguments() -> None:
         "thread_key": "private-thread",
         "recipients": ["+15550000001", "+15550000002"],
     })
+    assert bridge.dispatch("delete_threads", {
+        "thread_keys": ["thread-one", "thread-two"],
+    }) == 2
 
     assert client.calls == [
         ("contacts", "private search"),
@@ -61,6 +68,7 @@ def test_bridge_dispatches_private_values_without_command_arguments() -> None:
             "private-thread",
             ["+15550000001", "+15550000002"],
         ),
+        ("delete_threads", ["thread-one", "thread-two"]),
     ]
 
 

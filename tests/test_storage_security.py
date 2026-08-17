@@ -14,7 +14,9 @@ from blueferry import config, contact_repository
 from blueferry.contacts import ContactsResolver
 from blueferry.history import (
     append_event,
+    delete_event_rows,
     prune_events,
+    read_event_rows,
     read_events,
     scrub_unprotected_events,
 )
@@ -292,6 +294,29 @@ def test_history_database_contains_ciphertext_and_round_trips(tmp_path) -> None:
     assert is_encrypted_value(payload)
     assert "do not expose this" not in payload
     assert read_events(path=path, storage=storage) == [event]
+
+
+def test_selected_encrypted_history_rows_can_be_deleted(tmp_path) -> None:
+    path = tmp_path / "events.sqlite"
+    storage = _storage(tmp_path)
+    append_event(
+        {"kind": "sms_received", "body": "delete me"},
+        path=path,
+        storage=storage,
+    )
+    append_event(
+        {"kind": "sms_received", "body": "keep me"},
+        path=path,
+        storage=storage,
+    )
+    rows = read_event_rows(path=path, storage=storage)
+
+    assert delete_event_rows(
+        [rows[0][0]], path=path, storage=storage
+    ) == 1
+    assert read_events(path=path, storage=storage) == [
+        {"kind": "sms_received", "body": "keep me"}
+    ]
 
 
 def test_plaintext_history_is_scrubbed_in_encrypted_mode(tmp_path) -> None:

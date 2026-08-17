@@ -44,6 +44,10 @@ class _Backend:
         self.group_participants = (key, recipients)
         return object()
 
+    def delete_threads(self, keys):
+        self.deleted = list(keys)
+        return len(keys)
+
 
 def test_snapshot_converts_typed_client_models_for_qml():
     controller = BridgeController(
@@ -261,6 +265,30 @@ def test_named_group_participants_are_forwarded_to_backend(monkeypatch):
     assert backend.group_participants == (
         "group:named:test", ["+15551111111", "beau@example.com"]
     )
+
+
+def test_selected_threads_are_forwarded_to_backend(monkeypatch):
+    backend = _Backend()
+    controller = BridgeController(
+        backend=backend,
+        setup=object(),
+        subscribe=False,
+        autostart=False,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_run",
+        lambda operation, on_done=None, *_args, **_kwargs: (
+            on_done(operation()) if on_done is not None else operation()
+        ),
+    )
+    refreshes = []
+    monkeypatch.setattr(controller, "refresh", lambda: refreshes.append(True))
+
+    controller.deleteThreads(["one", "two"])
+
+    assert backend.deleted == ["one", "two"]
+    assert refreshes == [True]
 
 
 def test_pairing_uses_interactive_agent_and_accepts_matching_code(monkeypatch):

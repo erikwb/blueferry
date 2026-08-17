@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Iterable
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -21,6 +22,7 @@ if TYPE_CHECKING:
     from blueferry.storage_security import StorageSecurity
 
 EventRecord = dict[str, Any]
+EventRow = tuple[int, EventRecord]
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
@@ -183,6 +185,78 @@ def read_events(
     if bounded is not None:
         events.reverse()
     return events
+
+
+def read_event_rows(
+    *,
+    limit: int | None = None,
+    path: Path | None = None,
+    storage: StorageSecurity | None = None,
+) -> list[EventRow]:
+    """Read valid events with backend-private SQLite identifiers.
+
+    Row identifiers must never cross the backend boundary. They exist only so
+    a derived conversation can be resolved back to the exact retained records
+    that must be erased.
+    """
+    if storage is not None and not storage.status.can_read:
+        return []
+    bounded = max(0, int(limit)) if limit is not None else None
+    if bounded == 0:
+        return []
+    query = (
+        "SELECT id, payload_json FROM events ORDER BY id DESC"
+        if bounded is not None
+        else "SELECT id, payload_json FROM events ORDER BY id ASC"
+    )
+    rows: list[EventRow] = []
+    with closing(_open_database(path)) as database:
+        for event_id, payload in database.execute(query):
+            try:
+                event = _deserialize(payload, storage)
+            except CorruptStorageError:
+                if storage is not None:
+                    storage.fail_closed(
+                        "Encrypted local history could not be authenticated"
+                    )
+                return []
+            except (ValueError, RuntimeError):
+                continue
+            if event is not None:
+                rows.append((int(event_id), event))
+                if bounded is not None and len(rows) >= bounded:
+                    break
+    if bounded is not None:
+        rows.reverse()
+    return rows
+
+
+def delete_event_rows(
+    event_ids: Iterable[int],
+    *,
+    path: Path | None = None,
+    storage: StorageSecurity | None = None,
+) -> int:
+    """Securely erase a backend-resolved set of event rows."""
+    selected = sorted({int(event_id) for event_id in event_ids})
+    if not selected:
+        return 0
+    if storage is not None and not storage.status.can_write:
+        return 0
+    with closing(_open_database(path)) as database:
+        database.execute("PRAGMA secure_delete = ON")
+        before = database.total_changes
+        with database:
+            database.executemany(
+                "DELETE FROM events WHERE id = ?",
+                ((event_id,) for event_id in selected),
+            )
+        removed = database.total_changes - before
+        if removed and (
+            storage is None or storage.status.policy == PLAINTEXT_STORAGE
+        ):
+            database.execute("VACUUM")
+    return int(removed)
 
 
 def history_revision(

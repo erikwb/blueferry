@@ -129,6 +129,7 @@ class ConversationsPage(Gtk.Box):
         self._reload_pending = False
         self._reload_again = False
         self._new_destination: str | None = None
+        self._deleting_threads = False
         self._map_refused_banner = Adw.Banner(
             title=map_connection_refused_message(),
         )
@@ -598,6 +599,11 @@ class ConversationsPage(Gtk.Box):
                     )
                 )
                 row.set_child(box)
+                context_click = Gtk.GestureClick(button=Gdk.BUTTON_SECONDARY)
+                context_click.connect(
+                    "pressed", self._show_thread_context_menu, row
+                )
+                row.add_controller(context_click)
                 self._thread_list.append(row)
                 if thread.key == selected:
                     self._thread_list.select_row(row)
@@ -622,6 +628,84 @@ class ConversationsPage(Gtk.Box):
         for message in thread.messages:
             self._append_bubble(message, is_group=thread.is_group)
         self._scroll_to_bottom()
+
+    def _show_thread_context_menu(
+        self, _gesture, _press_count, x, y, row
+    ) -> None:
+        thread_key = str(getattr(row, "thread_key", ""))
+        if not thread_key:
+            return
+        popover = Gtk.Popover(
+            autohide=True,
+            has_arrow=True,
+        )
+        popover.set_parent(row)
+        pointing = Gdk.Rectangle()
+        pointing.x = int(x)
+        pointing.y = int(y)
+        pointing.width = 1
+        pointing.height = 1
+        popover.set_pointing_to(pointing)
+        delete = Gtk.Button(
+            label=_("Delete Conversation"),
+            css_classes=["flat", "destructive-action"],
+        )
+
+        def selected(_button) -> None:
+            popover.popdown()
+            self._confirm_delete_thread(thread_key)
+
+        delete.connect("clicked", selected)
+        popover.set_child(delete)
+        popover.connect("closed", lambda widget: widget.unparent())
+        popover.popup()
+
+    def _confirm_delete_thread(self, thread_key: str) -> None:
+        if not thread_key or self._deleting_threads:
+            return
+        dialog = Adw.AlertDialog(
+            heading=_("Delete Conversation?"),
+            body=_(
+                "This permanently deletes this local message history "
+                "and group metadata. Nothing is deleted from your iPhone. "
+                "A new message can create the conversation again."
+            ),
+        )
+        dialog.add_response("cancel", _("Cancel"))
+        dialog.add_response("delete", _("Delete Locally"))
+        dialog.set_close_response("cancel")
+        dialog.set_default_response("cancel")
+        dialog.set_response_appearance(
+            "delete", Adw.ResponseAppearance.DESTRUCTIVE
+        )
+
+        def responded(_dialog, response: str) -> None:
+            if response != "delete":
+                return
+            self._deleting_threads = True
+
+            def deleted(removed: int) -> None:
+                self._deleting_threads = False
+                if self._state.selected_key == thread_key:
+                    self._state.selected_key = ""
+                self._reload_threads()
+                if removed:
+                    self._toast(_("Conversation deleted locally"))
+
+            def failed(error: str) -> None:
+                self._deleting_threads = False
+                self._toast(
+                    _("Could not delete conversation: {error}").format(
+                        error=error
+                    )
+                )
+
+            self._client.delete_threads_async(
+                [thread_key], deleted, failed
+            )
+
+        dialog.connect("response", responded)
+        dialog.present(self.get_root())
 
     def _update_group_roster_banner(self, thread: Thread | None) -> None:
         required = bool(thread and thread.participants_required)

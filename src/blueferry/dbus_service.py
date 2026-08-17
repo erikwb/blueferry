@@ -199,6 +199,21 @@ class MessagesService(dbus.service.Object):
         self._sync(lambda: self._authorized(sender, "destructive", clear))
 
     @dbus.service.method(
+        IFACE, in_signature="asb", out_signature="u", sender_keyword="sender"
+    )
+    def DeleteThreads(self, thread_keys, confirmed: bool, sender=None) -> int:
+        def delete() -> int:
+            removed = self.operations.delete_threads(
+                thread_keys, bool(confirmed)
+            )
+            self.emit_history_changed()
+            return removed
+
+        return self._sync(
+            lambda: self._authorized(sender, "destructive", delete)
+        )
+
+    @dbus.service.method(
         IFACE, in_signature="", out_signature="s", sender_keyword="sender"
     )
     def GetNotificationPolicy(self, sender=None) -> str:
