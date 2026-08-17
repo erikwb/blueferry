@@ -24,6 +24,7 @@ class PairingAttempt(TypedDict, total=False):
     controller: dict[str, Any]
     phone: dict[str, Any]
     daemon: dict[str, Any]
+    pairing_options: dict[str, bool]
     pairing_policy: dict[str, Any]
     pairing_transaction: str
     preferred_bearer: str
