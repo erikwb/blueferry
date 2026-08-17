@@ -23,9 +23,7 @@ from blueferry.events import canonical_address, safe_event_address
 
 CORRELATION_WINDOW_SECONDS = 60
 
-# These keys exist only on backend-internal copies loaded for a destructive
-# operation. They are deliberately absent from persisted events and from the
-# explicit public thread projection in ``threads.build_threads``.
+# Backend-private row markers; never persisted or exported.
 HISTORY_ROW_ID_FIELD = "_blueferry_history_row_id"
 CORRELATED_ANCS_ROW_IDS_FIELD = "_blueferry_correlated_ancs_row_ids"
 
@@ -470,10 +468,7 @@ def correlate_group_events(events: list[dict], resolver=None) -> list[dict]:
             "group_sender_verified": sender_name_verified,
         })
 
-    # Direct-message ANCS records do not affect group routing, but they still
-    # duplicate retained conversation content. Link only an unambiguous
-    # body/time candidate so deleting a direct thread also erases that private
-    # notification evidence without changing correlation behavior.
+    # Link direct ANCS evidence only when its body/time match is unambiguous.
     for event in out:
         if event.get("kind") != "ancs_notification":
             continue

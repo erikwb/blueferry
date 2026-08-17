@@ -252,10 +252,6 @@ def delete_event_rows(
                 ((event_id,) for event_id in selected),
             )
         removed = database.total_changes - before
-        if removed and (
-            storage is None or storage.status.policy == PLAINTEXT_STORAGE
-        ):
-            database.execute("VACUUM")
     return int(removed)
 
 

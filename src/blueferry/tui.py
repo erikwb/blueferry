@@ -952,7 +952,11 @@ class BlueFerryApp(App[None]):
 
     def action_delete_thread(self) -> None:
         thread = self.state.selected
-        if thread is None or self._deleting:
+        if (
+            thread is None
+            or self._deleting
+            or isinstance(self.screen, DeleteConversationScreen)
+        ):
             return
         self.push_screen(
             DeleteConversationScreen(thread),

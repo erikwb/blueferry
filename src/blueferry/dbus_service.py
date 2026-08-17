@@ -210,7 +210,7 @@ class MessagesService(dbus.service.Object):
             return removed
 
         return self._sync(
-            lambda: self._authorized(sender, "destructive", delete)
+            lambda: self._authorized(sender, "conversation-delete", delete)
         )
 
     @dbus.service.method(

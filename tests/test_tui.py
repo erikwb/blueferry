@@ -361,6 +361,11 @@ def test_delete_key_confirms_and_deletes_current_conversation() -> None:
             assert app.screen.thread.key == "one"
             assert backend.deleted == []
 
+            confirmation = app.screen
+            await pilot.press("delete")
+            assert app.screen is confirmation
+            assert backend.deleted == []
+
             await pilot.click("#delete-confirm")
             for _attempt in range(30):
                 if backend.deleted:

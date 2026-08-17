@@ -785,6 +785,10 @@ ShellRoot {
                   highlighted: modelData.key === root.selectedThreadKey
                   leftPadding: theme.scaled(8)
                   rightPadding: theme.scaled(8)
+                  onClicked: {
+                    root.selectedThreadKey = modelData.key
+                    root.confirmedGroupSignature = ""
+                  }
                   contentItem: Row {
                     spacing: theme.scaled(10)
 
@@ -843,18 +847,15 @@ ShellRoot {
                     border.color: threadDelegate.highlighted ? theme.divider : "transparent"
                     radius: theme.controlRadius
                   }
-                  MouseArea {
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    acceptedButtons: Qt.LeftButton | Qt.RightButton
-                    onClicked: mouse => {
-                      if (mouse.button === Qt.RightButton) {
-                        threadContextMenu.threadKey = threadDelegate.modelData.key
-                        threadContextMenu.popup(threadDelegate, mouse.x, mouse.y)
-                      } else {
-                        root.selectedThreadKey = threadDelegate.modelData.key
-                        root.confirmedGroupSignature = ""
-                      }
+                  TapHandler {
+                    acceptedButtons: Qt.RightButton
+                    onTapped: eventPoint => {
+                      threadContextMenu.threadKey = threadDelegate.modelData.key
+                      threadContextMenu.popup(
+                        threadDelegate,
+                        eventPoint.position.x,
+                        eventPoint.position.y
+                      )
                     }
                   }
                 }

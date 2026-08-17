@@ -778,6 +778,7 @@ Kirigami.ApplicationWindow {
                                 width: threadList.width
                                 highlighted: root.selectedThreadKey === modelData.key
                                 Accessible.name: preview.text
+                                onClicked: root.selectedThreadKey = modelData.key
                                 contentItem: RowLayout {
                                     spacing: Kirigami.Units.smallSpacing
 
@@ -801,18 +802,15 @@ Kirigami.ApplicationWindow {
                                         elide: Text.ElideRight
                                     }
                                 }
-                                MouseArea {
-                                    id: threadMouse
-                                    anchors.fill: parent
-                                    hoverEnabled: true
-                                    acceptedButtons: Qt.LeftButton | Qt.RightButton
-                                    onClicked: mouse => {
-                                        if (mouse.button === Qt.RightButton) {
-                                            threadContextMenu.threadKey = threadDelegate.modelData.key
-                                            threadContextMenu.popup(threadDelegate, mouse.x, mouse.y)
-                                        } else {
-                                            root.selectedThreadKey = threadDelegate.modelData.key
-                                        }
+                                TapHandler {
+                                    acceptedButtons: Qt.RightButton
+                                    onTapped: eventPoint => {
+                                        threadContextMenu.threadKey = threadDelegate.modelData.key
+                                        threadContextMenu.popup(
+                                            threadDelegate,
+                                            eventPoint.position.x,
+                                            eventPoint.position.y
+                                        )
                                     }
                                 }
                             }

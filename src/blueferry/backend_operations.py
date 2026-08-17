@@ -460,10 +460,7 @@ class BackendOperations:
         if storage is not None and not storage.status.can_write:
             raise NotReadyError(storage.status.detail)
         try:
-            # First replay the same bounded window used to create the visible
-            # thread keys. Then use those row identities as anchors in a full
-            # replay, so older messages cannot reappear after deletion even if
-            # older group evidence refines the conversation's projected key.
+            # Anchor the visible projection before replaying the full archive.
             recent_rows = read_event_rows(
                 limit=MAX_CONVERSATION_EVENTS, storage=storage
             )
@@ -475,12 +472,22 @@ class BackendOperations:
                 }
                 for event_id, event in recent_rows
             ], self.dependencies.contacts)
-            anchor_ids = {
-                int(event[HISTORY_ROW_ID_FIELD])
-                for event in recent
-                if event.get("kind") in MESSAGE_KINDS
-                and thread_key(event) in selected
-            }
+            anchor_keys: dict[int, str] = {}
+            recent_evidence_ids: set[int] = set()
+            for event in recent:
+                projected_key = thread_key(event)
+                if event.get("kind") not in MESSAGE_KINDS:
+                    continue
+                if projected_key is None or projected_key not in selected:
+                    continue
+                anchor_keys[int(event[HISTORY_ROW_ID_FIELD])] = projected_key
+                recent_evidence_ids.update(
+                    correlated_id
+                    for correlated_id in event.get(
+                        CORRELATED_ANCS_ROW_IDS_FIELD, []
+                    )
+                    if isinstance(correlated_id, int)
+                )
 
             all_rows = read_event_rows(storage=storage)
             correlated = correlate_group_events([
@@ -493,18 +500,27 @@ class BackendOperations:
             ], self.dependencies.contacts)
             resolved_keys = set(selected)
             for event in correlated:
-                if int(event.get(HISTORY_ROW_ID_FIELD, -1)) not in anchor_ids:
+                event_id = int(event.get(HISTORY_ROW_ID_FIELD, -1))
+                anchored_key = anchor_keys.get(event_id)
+                if anchored_key is None:
                     continue
                 resolved_key = thread_key(event)
-                if resolved_key is not None:
+                if (
+                    anchored_key.startswith("group:")
+                    and resolved_key is not None
+                    and resolved_key.startswith("group:")
+                ):
                     resolved_keys.add(resolved_key)
             selected_messages = [
                 event
                 for event in correlated
                 if event.get("kind") in MESSAGE_KINDS
-                and thread_key(event) in resolved_keys
+                and (
+                    int(event.get(HISTORY_ROW_ID_FIELD, -1)) in anchor_keys
+                    or thread_key(event) in resolved_keys
+                )
             ]
-            event_ids = {
+            event_ids = recent_evidence_ids | {
                 int(event[HISTORY_ROW_ID_FIELD])
                 for event in selected_messages
             }
@@ -522,8 +538,8 @@ class BackendOperations:
                     if isinstance(correlated_id, int)
                 )
             for event in correlated:
-                event_id = event.get(HISTORY_ROW_ID_FIELD)
-                if not isinstance(event_id, int):
+                row_id = event.get(HISTORY_ROW_ID_FIELD)
+                if not isinstance(row_id, int):
                     continue
                 kind = str(event.get("kind") or "")
                 belongs = (
@@ -538,7 +554,7 @@ class BackendOperations:
                 )
                 if not belongs:
                     continue
-                event_ids.add(event_id)
+                event_ids.add(row_id)
             if not event_ids:
                 raise NotFoundError(
                     "selected conversations no longer exist in local history"
