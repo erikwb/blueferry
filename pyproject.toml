@@ -10,7 +10,7 @@ authors = [
   {name = "Erik Bourget", email = "erik@ebourget.net"},
   {name = "Gabe Shatunovsky", email = "gabriel@shatunovsky.com"},
 ]
-license = "GPL-2.0-only"
+license = "GPL-2.0-or-later"
 requires-python = ">=3.10"
 readme = "README.md"
 classifiers = [

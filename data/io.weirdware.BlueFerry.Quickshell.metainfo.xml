@@ -2,7 +2,7 @@
 <component type="desktop-application">
   <id>io.weirdware.BlueFerry.Quickshell</id>
   <metadata_license>CC0-1.0</metadata_license>
-  <project_license>GPL-2.0-only</project_license>
+  <project_license>GPL-2.0-or-later</project_license>
   <name>BlueFerry Quickshell</name>
   <summary>Use your iPhone from Quickshell</summary>
   <description><p>A lightweight, Quattro-theme-aware Quickshell conversation client for the local BlueFerry backend.</p></description>

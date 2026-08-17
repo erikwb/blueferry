@@ -963,7 +963,7 @@ Kirigami.ApplicationWindow {
                 authors: [],
                 credits: [],
                 translators: [],
-                licenses: [{name: "GPL-2.0-only", text: "", spdx: "GPL-2.0-only"}],
+                licenses: [{name: "GPL-2.0-or-later", text: "", spdx: "GPL-2.0-or-later"}],
                 copyrightStatement: qsTr("Copyright © 2026 Erik Bourget <erik@ebourget.net>\nCopyright © 2026 Gabe Shatunovsky <gabriel@shatunovsky.com>"),
                 desktopFileName: "io.weirdware.BlueFerry.Qt"
             })
