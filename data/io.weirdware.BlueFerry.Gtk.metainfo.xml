@@ -40,6 +40,12 @@
   </developer>
 
   <releases>
+    <release version="0.7.6" date="2026-08-17">
+      <description>
+        <p>Adds local conversation deletion, improves pairing diagnostics and
+        Bluetooth recovery, and fixes backend startup on systemd 255.</p>
+      </description>
+    </release>
     <release version="0.7.5" date="2026-08-16">
       <description>
         <p>Recovers ANCS when a previously authorized iPhone stops responding

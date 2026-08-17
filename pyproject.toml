@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "blueferry"
-version = "0.7.5"
+version = "0.7.6"
 description = "BlueFerry brings iPhone messages, notifications, and contacts to Linux"
 authors = [
   {name = "Erik Bourget", email = "erik@ebourget.net"},

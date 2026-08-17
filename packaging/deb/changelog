@@ -1,3 +1,13 @@
+blueferry (0.7.6-1) unstable; urgency=medium
+
+  * Add backend-owned deletion of individual local conversations.
+  * Record pairing-mode choices in diagnostic reports.
+  * Restore initial ANCS setup and avoid stale OBEX cleanup after transport
+    loss.
+  * Start the backend user service on systemd 255.
+
+ -- BlueFerry Contributors <blueferry@weirdware.io>  Mon, 17 Aug 2026 00:00:00 -0400
+
 blueferry (0.7.5-1) unstable; urgency=medium
 
   * Recover ANCS when a previously authorized iPhone stops responding after

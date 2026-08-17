@@ -14,11 +14,32 @@ def _version() -> str:
 
 def test_native_recipes_track_project_version() -> None:
     version = _version()
+    package = (ROOT / "src/blueferry/__init__.py").read_text()
+    arch_recipe = (ROOT / "packaging/arch/PKGBUILD").read_text()
     debian_changelog = (ROOT / "packaging/deb/changelog").read_text()
     rpm_spec = (ROOT / "packaging/rpm/blueferry.spec").read_text()
+    changelog = (ROOT / "CHANGELOG.md").read_text()
 
+    assert f'__version__ = "{version}"' in package
+    assert f"pkgver={version}\n" in arch_recipe
     assert debian_changelog.startswith(f"blueferry ({version}-1)")
     assert f"Version:        {version}\n" in rpm_spec
+    assert f"## [{version}]" in changelog
+    for client in ("Gtk", "Qt", "Quickshell"):
+        metainfo = (
+            ROOT / f"data/io.weirdware.BlueFerry.{client}.metainfo.xml"
+        ).read_text()
+        assert f'<release version="{version}"' in metainfo
+
+
+def test_native_backends_ship_the_project_changelog() -> None:
+    arch_recipe = (ROOT / "packaging/arch/PKGBUILD").read_text()
+    debian_docs = (ROOT / "packaging/deb/blueferry-backend.docs").read_text()
+    rpm_spec = (ROOT / "packaging/rpm/blueferry.spec").read_text()
+
+    assert "install -Dm644 CHANGELOG.md" in arch_recipe
+    assert "CHANGELOG.md" in debian_docs.splitlines()
+    assert "%doc README.md ARCHITECTURE.md PROTOCOL.md CHANGELOG.md" in rpm_spec
 
 
 def test_native_packages_bake_and_ship_a_source_build_sha() -> None:
