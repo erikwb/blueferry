@@ -59,6 +59,7 @@ ShellRoot {
   property bool sendBusy: false
   property bool newMessageSendBusy: false
   property bool groupParticipantsBusy: false
+  property bool deleteThreadsBusy: false
   property bool notificationPolicyBusy: false
   property bool storagePolicyBusy: false
   property bool storageUnlockBusy: false
@@ -371,6 +372,9 @@ ShellRoot {
         root.groupParticipantsBusy = false
         groupParticipantsPopup.close()
         root.reload()
+      } else if (method === "delete_threads") {
+        root.deleteThreadsBusy = false
+        root.reload()
       } else if (method === "set_notification_policy") {
         root.notificationPolicyBusy = false
         root.notificationPolicy = String(result)
@@ -414,6 +418,9 @@ ShellRoot {
       } else if (method === "set_group_participants") {
         root.groupParticipantsBusy = false
         root.errorText = message
+      } else if (method === "delete_threads") {
+        root.deleteThreadsBusy = false
+        root.errorText = message || "Could not delete local conversations"
       } else if (method === "set_notification_policy") {
         root.notificationPolicyBusy = false
         root.errorText = message || "Could not save notification preference"
@@ -430,6 +437,7 @@ ShellRoot {
         root.sendBusy = false
         root.newMessageSendBusy = false
         root.groupParticipantsBusy = false
+        root.deleteThreadsBusy = false
         root.notificationPolicyBusy = false
         root.storagePolicyBusy = false
         root.storageUnlockBusy = false
@@ -777,6 +785,10 @@ ShellRoot {
                   highlighted: modelData.key === root.selectedThreadKey
                   leftPadding: theme.scaled(8)
                   rightPadding: theme.scaled(8)
+                  onClicked: {
+                    root.selectedThreadKey = modelData.key
+                    root.confirmedGroupSignature = ""
+                  }
                   contentItem: Row {
                     spacing: theme.scaled(10)
 
@@ -835,9 +847,16 @@ ShellRoot {
                     border.color: threadDelegate.highlighted ? theme.divider : "transparent"
                     radius: theme.controlRadius
                   }
-                  onClicked: {
-                    root.selectedThreadKey = modelData.key
-                    root.confirmedGroupSignature = ""
+                  TapHandler {
+                    acceptedButtons: Qt.RightButton
+                    onTapped: eventPoint => {
+                      threadContextMenu.threadKey = threadDelegate.modelData.key
+                      threadContextMenu.popup(
+                        threadDelegate,
+                        eventPoint.position.x,
+                        eventPoint.position.y
+                      )
+                    }
                   }
                 }
 
@@ -1626,6 +1645,76 @@ ShellRoot {
                 pairingIssueUrlProcess.running = true
               }
             }
+          }
+        }
+      }
+
+      Popup {
+        id: deleteThreadsPopup
+        property string threadKey: ""
+        parent: applicationSurface
+        x: Math.max(0, (applicationSurface.width - width) / 2)
+        y: Math.max(0, (applicationSurface.height - height) / 2)
+        width: Math.min(theme.scaled(440), applicationSurface.width - theme.scaled(24))
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        padding: theme.scaled(18)
+
+        background: Rectangle {
+          color: theme.cardSurface
+          border.color: theme.divider
+          radius: theme.panelRadius
+        }
+
+        Overlay.modal: Rectangle {
+          color: Qt.rgba(theme.windowSurface.r, theme.windowSurface.g,
+                         theme.windowSurface.b, 0.72)
+        }
+
+        contentItem: ColumnLayout {
+          spacing: theme.scaled(12)
+          FerryLabel {
+            text: "Delete conversation?"
+            font.bold: true
+            font.pixelSize: theme.headingSize
+          }
+          FerryLabel {
+            Layout.fillWidth: true
+            wrapMode: Text.Wrap
+            text: "This permanently deletes this local message history and group metadata. Nothing is deleted from your iPhone. A new message can create the conversation again."
+          }
+          RowLayout {
+            Layout.alignment: Qt.AlignRight
+            FerryButton {
+              text: "Cancel"
+              onClicked: deleteThreadsPopup.close()
+            }
+            FerryButton {
+              text: root.deleteThreadsBusy ? "Deleting…" : "Delete locally"
+              highlighted: true
+              enabled: !root.deleteThreadsBusy
+              onClicked: {
+                root.deleteThreadsBusy = true
+                backendBridge.request("delete_threads", {
+                  thread_keys: [deleteThreadsPopup.threadKey]
+                })
+                deleteThreadsPopup.close()
+              }
+            }
+          }
+        }
+      }
+
+      Menu {
+        id: threadContextMenu
+        property string threadKey: ""
+
+        MenuItem {
+          text: "Delete Conversation"
+          onTriggered: {
+            deleteThreadsPopup.threadKey = threadContextMenu.threadKey
+            deleteThreadsPopup.open()
           }
         }
       }

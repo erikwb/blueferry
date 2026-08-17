@@ -154,3 +154,37 @@ def test_pending_send_does_not_block_thread_snapshot(monkeypatch) -> None:
     finally:
         release_send.set()
         client.stop()
+
+
+def test_selected_thread_deletion_uses_mutation_worker(monkeypatch) -> None:
+    monkeypatch.setattr(client_module, "get_session_bus", _Bus)
+    monkeypatch.setattr(client_module, "SetupClient", _UnconfiguredSetup)
+    client = client_module.DaemonClient()
+    observed = []
+
+    class Backend:
+        def delete_threads(self, keys):
+            observed.append(list(keys))
+            return len(keys)
+
+    monkeypatch.setattr(
+        client,
+        "_call_backend",
+        lambda operation: operation(Backend()),
+    )
+    submitted = {}
+
+    def submit(operation, on_ok, _on_err=None, *, mutation=False):
+        submitted["mutation"] = mutation
+        on_ok(operation())
+
+    monkeypatch.setattr(client, "_submit", submit)
+    completed = []
+    try:
+        client.delete_threads_async(["one", "two"], completed.append, None)
+    finally:
+        client.stop()
+
+    assert observed == [["one", "two"]]
+    assert completed == [2]
+    assert submitted == {"mutation": True}

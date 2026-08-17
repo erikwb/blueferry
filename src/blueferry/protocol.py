@@ -15,6 +15,7 @@ GROUP_ROUTE_CALL_TIMEOUT_SEC = 20
 POLICY_CALL_TIMEOUT_SEC = 10
 STORAGE_CALL_TIMEOUT_SEC = 30
 CLEAR_CALL_TIMEOUT_SEC = 20
+DELETE_CALL_TIMEOUT_SEC = 20
 
 # One phonebook pull or incoming-body fetch may already be ahead of an
 # interactive request on the serialized OBEX worker. This is a client-side

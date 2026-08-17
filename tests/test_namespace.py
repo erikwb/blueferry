@@ -476,6 +476,7 @@ def test_quickshell_keeps_private_dbus_values_out_of_process_arguments() -> None
     assert 'backendBridge.request("send"' in quickshell
     assert 'backendBridge.request("send_to_thread"' in quickshell
     assert 'backendBridge.request("set_group_participants"' in quickshell
+    assert 'backendBridge.request("delete_threads"' in quickshell
     for cli_adapter in (
         '"contacts-json"',
         '"message-send"',
@@ -489,6 +490,29 @@ def test_quickshell_keeps_private_dbus_values_out_of_process_arguments() -> None
         '"/usr/bin/dbus-monitor"',
     ):
         assert cli_adapter not in quickshell
+
+
+def test_graphical_clients_offer_backend_owned_context_menu_delete() -> None:
+    gtk = (ROOT / "src/blueferry/ui/conversations.py").read_text()
+    qt = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
+    quickshell = (ROOT / "data/quickshell/shell.qml").read_text()
+
+    assert "Gdk.BUTTON_SECONDARY" in gtk
+    assert 'label=_("Delete Conversation")' in gtk
+    assert "delete_threads_async(\n                [thread_key]" in gtk
+    assert "Controls.Menu {" in qt
+    assert "onClicked: root.selectedThreadKey = modelData.key" in qt
+    assert "acceptedButtons: Qt.RightButton" in qt
+    assert "root.bridge.deleteThreads([deleteThreadsDialog.threadKey])" in qt
+    assert "Menu {" in quickshell
+    assert "root.selectedThreadKey = modelData.key" in quickshell
+    assert "acceptedButtons: Qt.RightButton" in quickshell
+    assert 'backendBridge.request("delete_threads"' in quickshell
+    assert "thread_keys: [deleteThreadsPopup.threadKey]" in quickshell
+    for source in (gtk, qt, quickshell):
+        assert "SelectionMode.MULTIPLE" not in source
+        assert "threadSelectionMode" not in source
+        assert "selectedThreadKeys" not in source
 
 
 def test_all_gui_clients_can_choose_a_bluetooth_controller() -> None:

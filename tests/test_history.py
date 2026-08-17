@@ -8,10 +8,12 @@ import blueferry.history as history_module
 from blueferry.history import (
     append_event,
     clear_events,
+    delete_event_rows,
     history_count,
     history_revision,
     minimize_ancs_history,
     prune_events,
+    read_event_rows,
     read_events,
 )
 
@@ -95,6 +97,24 @@ def test_clear_preserves_private_database_and_changes_revision(tmp_path) -> None
     assert read_events(path=path) == []
     assert history_revision(path=path) != before
     assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_selected_row_deletion_scrubs_only_selected_plaintext(tmp_path) -> None:
+    path = tmp_path / "events.sqlite"
+    secret = "selected plaintext body with unique forensic marker"
+    append_event({"kind": "sms_received", "body": secret}, path=path)
+    append_event({"kind": "sms_received", "body": "retained"}, path=path)
+
+    rows = read_event_rows(path=path)
+    assert [event["body"] for _row_id, event in rows] == [
+        secret, "retained"
+    ]
+    assert delete_event_rows([rows[0][0]], path=path) == 1
+
+    assert read_events(path=path) == [
+        {"kind": "sms_received", "body": "retained"}
+    ]
+    assert secret.encode() not in path.read_bytes()
 
 
 def test_reader_can_bound_bodies_for_presentation_without_changing_archive(

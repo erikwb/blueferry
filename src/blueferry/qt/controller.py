@@ -542,6 +542,16 @@ class BridgeController(QObject):
             lambda _value: self.refresh(),
         )
 
+    @Slot("QVariantList")
+    def deleteThreads(self, thread_keys) -> None:
+        selected = [str(value) for value in thread_keys]
+        if not selected:
+            return
+        self._run(
+            lambda: self._backend.delete_threads(selected),
+            lambda _value: self.refresh(),
+        )
+
     @Slot(str)
     def setNotificationPolicy(self, policy: str) -> None:
         def completed(value: object) -> None:

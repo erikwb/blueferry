@@ -23,6 +23,10 @@ from blueferry.events import canonical_address, safe_event_address
 
 CORRELATION_WINDOW_SECONDS = 60
 
+# Backend-private row markers; never persisted or exported.
+HISTORY_ROW_ID_FIELD = "_blueferry_history_row_id"
+CORRELATED_ANCS_ROW_IDS_FIELD = "_blueferry_correlated_ancs_row_ids"
+
 _TO_PREFIX = re.compile(r"^To\s+", re.IGNORECASE)
 _MEMBER_SEPARATOR = re.compile(r"\s*(?:,|&)\s*")
 
@@ -351,6 +355,11 @@ def correlate_group_events(events: list[dict], resolver=None) -> list[dict]:
             # means these two events are not safe to join.
             matched.remove(sms_index)
             continue
+        source_row_id = event.get(HISTORY_ROW_ID_FIELD)
+        if isinstance(source_row_id, int):
+            sms.setdefault(CORRELATED_ANCS_ROW_IDS_FIELD, []).append(
+                source_row_id
+            )
         sender_address = _safe_address(sms)
         if sender_name_verified and sender_address:
             addresses_by_name.setdefault(sender_title.casefold(), set()).add(
@@ -458,6 +467,47 @@ def correlate_group_events(events: list[dict], resolver=None) -> list[dict]:
             "group_observed_sender": sender_title,
             "group_sender_verified": sender_name_verified,
         })
+
+    # Link direct ANCS evidence only when its body/time match is unambiguous.
+    for event in out:
+        if event.get("kind") != "ancs_notification":
+            continue
+        if event.get("app_id") != MESSAGES_APP_ID:
+            continue
+        if group_members_from_ancs(event) or named_group_from_ancs(event):
+            continue
+        source_row_id = event.get(HISTORY_ROW_ID_FIELD)
+        if not isinstance(source_row_id, int):
+            continue
+        ancs_body = str(event.get("body") or "")
+        ancs_time = _seen_at(event)
+        if not ancs_body or ancs_time is None:
+            continue
+        eligible_indexes = list(sms_by_body.get(ancs_body, ()))
+        if len(ancs_body) == 256:
+            eligible_indexes.extend(sms_by_ancs_prefix.get(ancs_body, ()))
+        direct_candidates: list[int] = []
+        for sms_index in dict.fromkeys(eligible_indexes):
+            sms_time = _seen_at(out[sms_index])
+            if sms_time is None:
+                continue
+            if (
+                abs((ancs_time - sms_time).total_seconds())
+                <= CORRELATION_WINDOW_SECONDS
+            ):
+                direct_candidates.append(sms_index)
+        if len(direct_candidates) != 1:
+            continue
+        sms = out[direct_candidates[0]]
+        sender_title = str(event.get("title") or "").strip()
+        trusted_sender_name = str(sms.get("contact_name") or "").strip()
+        if (
+            sender_title
+            and trusted_sender_name
+            and sender_title.casefold() != trusted_sender_name.casefold()
+        ):
+            continue
+        sms.setdefault(CORRELATED_ANCS_ROW_IDS_FIELD, []).append(source_row_id)
 
     _reconcile_group_identities(out, addresses_by_name, resolver)
     return out

@@ -45,6 +45,21 @@ def test_consequential_calls_are_rate_limited_and_recover() -> None:
     guard.authorize(":1.20", "destructive")
 
 
+def test_conversation_deletes_have_an_independent_interactive_quota() -> None:
+    guard = CallerGuard(
+        expected_uid=1000,
+        credential_provider=lambda _sender: {"UnixUserID": 1000},
+    )
+
+    for _ in range(7):
+        guard.authorize(":1.20", "conversation-delete")
+    for _ in range(6):
+        guard.authorize(":1.20", "destructive")
+
+    with pytest.raises(RateLimitError):
+        guard.authorize(":1.20", "destructive")
+
+
 def test_disconnecting_forgets_per_caller_state_but_not_global_quota() -> None:
     guard = CallerGuard(
         expected_uid=1000,

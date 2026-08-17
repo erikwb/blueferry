@@ -53,6 +53,8 @@ class _Client(Protocol):
         self, thread_key: str, recipients: list[str],
     ) -> Thread: ...
 
+    def delete_threads(self, thread_keys: list[str]) -> int: ...
+
 
 class _Monitor(Protocol):
     def pump(self) -> tuple[bool, str | None]: ...
@@ -172,6 +174,21 @@ class TuiState(ConversationState):
         self.group_participants_saved(updated)
         self.error = ""
         self.notice = "Group participants saved locally"
+        return True
+
+    def delete_thread(self, thread_key: str) -> bool:
+        try:
+            removed = self.client.delete_threads([thread_key])
+        except BackendError as error:
+            self.error = str(error)
+            return False
+        self.error = ""
+        self.notice = (
+            "Conversation deleted locally"
+            if removed
+            else "Conversation was already deleted"
+        )
+        self.refresh()
         return True
 
 
@@ -317,6 +334,44 @@ class GroupConfirmScreen(ModalScreen[bool]):
         self.dismiss(False)
 
 
+class DeleteConversationScreen(ModalScreen[bool]):
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("escape", "cancel", "Cancel", show=False)
+    ]
+
+    def __init__(self, thread: Thread) -> None:
+        super().__init__()
+        self.thread = thread
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="delete-conversation-dialog", classes="dialog"):
+            yield Static("Delete conversation?", classes="dialog-title")
+            yield Static(
+                Text(
+                    "This permanently deletes this local message history and "
+                    "group metadata. Nothing is deleted from your iPhone. A "
+                    "new message can create the conversation again."
+                ),
+                classes="dialog-copy",
+            )
+            with Horizontal(classes="dialog-actions"):
+                yield Button("Cancel", id="delete-cancel")
+                yield Button(
+                    "Delete locally", variant="error", id="delete-confirm"
+                )
+
+    @on(Button.Pressed, "#delete-cancel")
+    def cancel_button(self) -> None:
+        self.dismiss(False)
+
+    @on(Button.Pressed, "#delete-confirm")
+    def confirm_button(self) -> None:
+        self.dismiss(True)
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+
 class RosterChangedScreen(ModalScreen[tuple[str, ...] | None]):
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Cancel", show=False)
@@ -455,6 +510,7 @@ class HelpScreen(ModalScreen[None]):
             "[bold #7dd3fc]New line[/]  Shift+Enter\n"
             "[bold #7dd3fc]Search[/]  /\n"
             "[bold #7dd3fc]New message[/]  n\n"
+            "[bold #7dd3fc]Delete conversation[/]  Delete\n"
             "[bold #7dd3fc]Commands[/]  Ctrl+P\n"
             "[bold #7dd3fc]Refresh[/]  r\n"
             "[bold #7dd3fc]Back[/]  Esc\n"
@@ -486,6 +542,7 @@ class BlueFerryApp(App[None]):
         Binding("j,down", "next_thread", "Next", show=False),
         Binding("k,up", "previous_thread", "Previous", show=False),
         Binding("enter", "open_thread", "Open", show=False),
+        Binding("delete", "delete_thread", "Delete"),
         Binding("escape", "return_to_list", "Back", show=False),
     ]
 
@@ -501,6 +558,7 @@ class BlueFerryApp(App[None]):
         self._monitor: _Monitor | None = None
         self._pending_open_handle: str | None = None
         self._sending = False
+        self._deleting = False
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="masthead"):
@@ -892,6 +950,29 @@ class BlueFerryApp(App[None]):
     def action_new_message(self) -> None:
         self.push_screen(NewMessageScreen(), self._new_message_ready)
 
+    def action_delete_thread(self) -> None:
+        thread = self.state.selected
+        if (
+            thread is None
+            or self._deleting
+            or isinstance(self.screen, DeleteConversationScreen)
+        ):
+            return
+        self.push_screen(
+            DeleteConversationScreen(thread),
+            lambda confirmed, key=thread.key: self._delete_thread_ready(
+                confirmed, key
+            ),
+        )
+
+    def _delete_thread_ready(self, confirmed: bool, thread_key: str) -> None:
+        if not confirmed:
+            return
+        self._deleting = True
+        self.state.notice = "Deleting conversation…"
+        self._update_notice()
+        self._delete_thread_worker(thread_key)
+
     def _new_message_ready(self, result: tuple[str, str] | None) -> None:
         if result is None:
             return
@@ -963,6 +1044,30 @@ class BlueFerryApp(App[None]):
     ) -> None:
         succeeded = self.state.save_group_participants(thread_key, recipients)
         self.call_from_thread(self._schedule_roster_finished, succeeded)
+
+    @work(thread=True, group="delete", exclusive=True, exit_on_error=False)
+    def _delete_thread_worker(self, thread_key: str) -> None:
+        succeeded = self.state.delete_thread(thread_key)
+        self.call_from_thread(self._schedule_delete_finished, succeeded)
+
+    def _schedule_delete_finished(self, succeeded: bool) -> None:
+        self.run_worker(
+            self._delete_finished(succeeded),
+            name="render-delete-result",
+            group="render",
+            exclusive=True,
+        )
+
+    async def _delete_finished(self, succeeded: bool) -> None:
+        self._deleting = False
+        await self._populate_threads()
+        await self._render_conversation()
+        self._update_notice()
+        if not succeeded:
+            self.notify(
+                self.state.error or "Could not delete conversation",
+                severity="error",
+            )
 
     def _schedule_roster_finished(self, succeeded: bool) -> None:
         self.run_worker(

@@ -10,11 +10,12 @@ from blueferry.backend_operations import BackendDependencies, BackendOperations
 from blueferry.errors import (
     ConfirmationRequiredError,
     InvalidArgumentsError,
+    NotFoundError,
     NotReadyError,
     OperationFailedError,
 )
 from blueferry.grouping import named_group_key
-from blueferry.history import append_event
+from blueferry.history import append_event, read_events
 from blueferry.limits import (
     MAX_CONTACT_PAGE,
     MAX_EVENT_QUERY_LIMIT,
@@ -449,3 +450,179 @@ def test_history_snapshot_validates_kinds_and_caps_bodies(monkeypatch) -> None:
 
     with pytest.raises(InvalidArgumentsError, match="event kind"):
         operations.list_events(["ancs_notification"], 10)
+
+
+def test_delete_threads_erases_selected_conversation_and_notification_evidence(
+    tmp_path, monkeypatch,
+) -> None:
+    path = tmp_path / "events.sqlite"
+    monkeypatch.setattr(config, "EVENTS_DB", path)
+    append_event({
+        "kind": "sms_received",
+        "handle": "alice-message",
+        "sender_address": "+15551111111",
+        "contact_name": "Alice",
+        "body": "private alice text",
+        "seen_at": "2026-08-12T10:00:00+00:00",
+    }, path=path)
+    append_event({
+        "kind": "ancs_notification",
+        "notification_id": 1,
+        "app_id": "com.apple.MobileSMS",
+        "title": "Alice",
+        "subtitle": "",
+        "body": "private alice text",
+        "seen_at": "2026-08-12T10:00:02+00:00",
+    }, path=path)
+    append_event({
+        "kind": "sms_seen",
+        "handle": "alice-message",
+        "sender_address": "+15551111111",
+        "contact_name": "Alice",
+        "body": "private alice text",
+        "seen_at": "2026-08-12T10:00:03+00:00",
+    }, path=path)
+    append_event({
+        "kind": "sms_received",
+        "handle": "bob-message",
+        "sender_address": "+15552222222",
+        "contact_name": "Bob",
+        "body": "retained bob text",
+        "seen_at": "2026-08-12T10:01:00+00:00",
+    }, path=path)
+    operations = _operations()
+    alice = next(
+        thread for thread in operations.list_threads(10)
+        if thread["name"] == "Alice"
+    )
+
+    assert operations.delete_threads([alice["key"]], True) == 1
+
+    retained = read_events(path=path)
+    assert [event["body"] for event in retained] == ["retained bob text"]
+    assert [thread["name"] for thread in operations.list_threads(10)] == ["Bob"]
+
+
+def test_delete_threads_erases_named_group_route_and_matched_ancs(
+    tmp_path, monkeypatch,
+) -> None:
+    path = tmp_path / "events.sqlite"
+    monkeypatch.setattr(config, "EVENTS_DB", path)
+    key = named_group_key("Crew")
+    append_event({
+        "kind": "group_route",
+        "group_key": key,
+        "group_name": "Crew",
+        "group_members": ["Beau", "Alice"],
+        "group_recipients": ["+15551111111", "+15552222222"],
+        "seen_at": "2026-08-12T09:00:00+00:00",
+    }, path=path)
+    append_event({
+        "kind": "sms_received",
+        "handle": "crew-message",
+        "sender_address": "+15551111111",
+        "contact_name": "Beau",
+        "body": "crew secret",
+        "seen_at": "2026-08-12T10:00:00+00:00",
+    }, path=path)
+    append_event({
+        "kind": "ancs_notification",
+        "notification_id": 2,
+        "app_id": "com.apple.MobileSMS",
+        "title": "Beau",
+        "subtitle": "Crew",
+        "body": "crew secret",
+        "seen_at": "2026-08-12T10:00:02+00:00",
+    }, path=path)
+    operations = _operations()
+
+    assert operations.list_threads(10)[0]["key"] == key
+    assert operations.delete_threads([key], True) == 1
+
+    assert read_events(path=path) == []
+    assert operations.list_threads(10) == []
+
+
+def test_delete_group_does_not_expand_to_a_direct_thread_on_full_replay(
+    tmp_path, monkeypatch,
+) -> None:
+    path = tmp_path / "events.sqlite"
+    monkeypatch.setattr(config, "EVENTS_DB", path)
+    monkeypatch.setattr(backend_operations, "MAX_CONVERSATION_EVENTS", 4)
+    append_event({
+        "kind": "sms_received",
+        "handle": "older-duplicate",
+        "sender_address": "+15551111111",
+        "contact_name": "Beau",
+        "body": "crew secret",
+        "seen_at": "2026-08-12T10:00:01+00:00",
+    }, path=path)
+    append_event({
+        "kind": "sms_received",
+        "handle": "direct-message",
+        "sender_address": "+15551111111",
+        "contact_name": "Beau",
+        "body": "keep private DM",
+        "seen_at": "2026-08-12T09:00:00+00:00",
+    }, path=path)
+    for index in range(2):
+        append_event({
+            "kind": "sms_seen",
+            "handle": f"filler-{index}",
+            "seen_at": f"2026-08-12T09:30:0{index}+00:00",
+        }, path=path)
+    append_event({
+        "kind": "sms_received",
+        "handle": "group-message",
+        "sender_address": "+15551111111",
+        "contact_name": "Beau",
+        "body": "crew secret",
+        "seen_at": "2026-08-12T10:00:00+00:00",
+    }, path=path)
+    append_event({
+        "kind": "ancs_notification",
+        "notification_id": 2,
+        "app_id": "com.apple.MobileSMS",
+        "title": "Beau",
+        "subtitle": "Crew",
+        "body": "crew secret",
+        "seen_at": "2026-08-12T10:00:02+00:00",
+    }, path=path)
+    operations = _operations()
+    key = named_group_key("Crew")
+
+    assert operations.list_threads(10)[0]["key"] == key
+    assert operations.delete_threads([key], True) == 1
+
+    retained = read_events(path=path)
+    assert [
+        event["body"]
+        for event in retained
+        if event.get("kind") == "sms_received"
+    ] == ["crew secret", "keep private DM"]
+    assert not any(
+        event.get("kind") == "ancs_notification" for event in retained
+    )
+
+
+def test_delete_threads_validates_entire_request_before_erasing(
+    tmp_path, monkeypatch,
+) -> None:
+    path = tmp_path / "events.sqlite"
+    monkeypatch.setattr(config, "EVENTS_DB", path)
+    append_event({
+        "kind": "sms_received",
+        "sender_address": "+15551111111",
+        "contact_name": "Alice",
+        "body": "keep until valid request",
+        "seen_at": "2026-08-12T10:00:00+00:00",
+    }, path=path)
+    operations = _operations()
+    key = operations.list_threads(10)[0]["key"]
+
+    with pytest.raises(ConfirmationRequiredError):
+        operations.delete_threads([key], False)
+    with pytest.raises(NotFoundError):
+        operations.delete_threads([key, "address:phone:missing"], True)
+
+    assert len(read_events(path=path)) == 1

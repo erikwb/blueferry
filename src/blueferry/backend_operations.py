@@ -22,10 +22,17 @@ from blueferry.errors import (
     OperationFailedError,
 )
 from blueferry.events import canonical_address
+from blueferry.grouping import (
+    CORRELATED_ANCS_ROW_IDS_FIELD,
+    HISTORY_ROW_ID_FIELD,
+    correlate_group_events,
+)
 from blueferry.history import (
     append_event,
     clear_events,
+    delete_event_rows,
     history_revision,
+    read_event_rows,
     read_events,
 )
 from blueferry.limits import (
@@ -40,13 +47,19 @@ from blueferry.limits import (
     MAX_OUTGOING_BODY_BYTES,
     MAX_RECENT_QUERY_LIMIT,
     MAX_THREAD_BODY_CHARS,
+    MAX_THREAD_DELETE_COUNT,
     MAX_THREAD_QUERY_LIMIT,
 )
 from blueferry.obex.map_query import list_recent_messages
 from blueferry.obex.map_send import send_group_message, send_message
 from blueferry.recipients import InvalidRecipient, validate_recipient
 from blueferry.storage_security import STORAGE_POLICIES, StorageSecurity
-from blueferry.threads import ConversationIndex, build_threads
+from blueferry.threads import (
+    MESSAGE_KINDS,
+    ConversationIndex,
+    build_threads,
+    thread_key,
+)
 
 log = logging.getLogger(__name__)
 
@@ -412,6 +425,153 @@ class BackendOperations:
             )
         clear_events()
         self.invalidate_conversations()
+
+    def delete_threads(
+        self, thread_keys: Sequence[object], confirmed: bool
+    ) -> int:
+        """Erase complete local conversations resolved from opaque keys."""
+        if not confirmed:
+            raise ConfirmationRequiredError(
+                "conversation deletion requires explicit confirmation"
+            )
+        if isinstance(thread_keys, str | bytes):
+            raise InvalidArgumentsError("thread keys must be an array")
+        if not 1 <= len(thread_keys) <= MAX_THREAD_DELETE_COUNT:
+            raise InvalidArgumentsError(
+                f"select 1 to {MAX_THREAD_DELETE_COUNT} conversations"
+            )
+        selected: list[str] = []
+        for raw_key in thread_keys:
+            key = str(raw_key).strip()
+            if not key or len(key) > 1024:
+                raise InvalidArgumentsError("invalid thread key")
+            if key not in selected:
+                selected.append(key)
+
+        current_keys = {
+            str(thread["key"]) for thread in self._conversations.threads()
+        }
+        if not set(selected).issubset(current_keys):
+            raise NotFoundError(
+                "a selected thread no longer exists in local history"
+            )
+
+        storage = self.dependencies.storage
+        if storage is not None and not storage.status.can_write:
+            raise NotReadyError(storage.status.detail)
+        try:
+            # Anchor the visible projection before replaying the full archive.
+            recent_rows = read_event_rows(
+                limit=MAX_CONVERSATION_EVENTS, storage=storage
+            )
+            recent = correlate_group_events([
+                {
+                    **event,
+                    HISTORY_ROW_ID_FIELD: event_id,
+                    CORRELATED_ANCS_ROW_IDS_FIELD: [],
+                }
+                for event_id, event in recent_rows
+            ], self.dependencies.contacts)
+            anchor_keys: dict[int, str] = {}
+            recent_evidence_ids: set[int] = set()
+            for event in recent:
+                projected_key = thread_key(event)
+                if event.get("kind") not in MESSAGE_KINDS:
+                    continue
+                if projected_key is None or projected_key not in selected:
+                    continue
+                anchor_keys[int(event[HISTORY_ROW_ID_FIELD])] = projected_key
+                recent_evidence_ids.update(
+                    correlated_id
+                    for correlated_id in event.get(
+                        CORRELATED_ANCS_ROW_IDS_FIELD, []
+                    )
+                    if isinstance(correlated_id, int)
+                )
+
+            all_rows = read_event_rows(storage=storage)
+            correlated = correlate_group_events([
+                {
+                    **event,
+                    HISTORY_ROW_ID_FIELD: event_id,
+                    CORRELATED_ANCS_ROW_IDS_FIELD: [],
+                }
+                for event_id, event in all_rows
+            ], self.dependencies.contacts)
+            resolved_keys = set(selected)
+            for event in correlated:
+                event_id = int(event.get(HISTORY_ROW_ID_FIELD, -1))
+                anchored_key = anchor_keys.get(event_id)
+                if anchored_key is None:
+                    continue
+                resolved_key = thread_key(event)
+                if (
+                    anchored_key.startswith("group:")
+                    and resolved_key is not None
+                    and resolved_key.startswith("group:")
+                ):
+                    resolved_keys.add(resolved_key)
+            selected_messages = [
+                event
+                for event in correlated
+                if event.get("kind") in MESSAGE_KINDS
+                and (
+                    int(event.get(HISTORY_ROW_ID_FIELD, -1)) in anchor_keys
+                    or thread_key(event) in resolved_keys
+                )
+            ]
+            event_ids = recent_evidence_ids | {
+                int(event[HISTORY_ROW_ID_FIELD])
+                for event in selected_messages
+            }
+            selected_handles = {
+                str(event.get("handle") or "")
+                for event in selected_messages
+                if event.get("handle")
+            }
+            for event in selected_messages:
+                event_ids.update(
+                    correlated_id
+                    for correlated_id in event.get(
+                        CORRELATED_ANCS_ROW_IDS_FIELD, []
+                    )
+                    if isinstance(correlated_id, int)
+                )
+            for event in correlated:
+                row_id = event.get(HISTORY_ROW_ID_FIELD)
+                if not isinstance(row_id, int):
+                    continue
+                kind = str(event.get("kind") or "")
+                belongs = (
+                    kind == "group_route"
+                    and str(event.get("group_key") or "") in resolved_keys
+                ) or (
+                    kind == "sms_seen"
+                    and (
+                        thread_key(event) in resolved_keys
+                        or str(event.get("handle") or "") in selected_handles
+                    )
+                )
+                if not belongs:
+                    continue
+                event_ids.add(row_id)
+            if not event_ids:
+                raise NotFoundError(
+                    "selected conversations no longer exist in local history"
+                )
+            if delete_event_rows(event_ids, storage=storage) == 0:
+                raise NotFoundError(
+                    "selected conversations no longer exist in local history"
+                )
+        except NotFoundError:
+            raise
+        except (OSError, RuntimeError, ValueError, sqlite3.Error) as error:
+            log.error("could not delete conversations: %s", error)
+            raise NotReadyError("could not delete local conversations") from error
+
+        self._confirmed_group_keys.difference_update(resolved_keys)
+        self.invalidate_conversations()
+        return len(selected)
 
     def get_storage_policy(self) -> str:
         if self.dependencies.storage is None:

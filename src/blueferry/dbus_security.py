@@ -40,6 +40,7 @@ _RULES: dict[str, tuple[RateRule, ...]] = {
     "send": (RateRule(30, 60), RateRule(200, 3_600)),
     "contact-sync": (RateRule(6, 600), RateRule(20, 3_600)),
     "settings": (RateRule(30, 60),),
+    "conversation-delete": (RateRule(60, 60), RateRule(500, 3_600)),
     "destructive": (RateRule(6, 600),),
     "unlock": (RateRule(6, 600),),
 }

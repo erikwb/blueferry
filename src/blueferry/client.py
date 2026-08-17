@@ -24,6 +24,7 @@ from blueferry.protocol import (
     BUS_NAME,
     CLEAR_CALL_TIMEOUT_SEC,
     CONTACT_CALL_TIMEOUT_SEC,
+    DELETE_CALL_TIMEOUT_SEC,
     GROUP_ROUTE_CALL_TIMEOUT_SEC,
     MESSAGES_IFACE,
     OBEX_CALL_TIMEOUT_SEC,
@@ -160,6 +161,16 @@ class BackendClient:
             self._iface(MESSAGES_IFACE).ClearHistory(
                 dbus.Boolean(True), timeout=CLEAR_CALL_TIMEOUT_SEC
             )
+        except dbus.exceptions.DBusException as error:
+            raise BackendError(error.get_dbus_message() or str(error)) from error
+
+    def delete_threads(self, thread_keys: list[str]) -> int:
+        try:
+            return int(self._iface(MESSAGES_IFACE).DeleteThreads(
+                dbus.Array(thread_keys, signature="s"),
+                dbus.Boolean(True),
+                timeout=DELETE_CALL_TIMEOUT_SEC,
+            ))
         except dbus.exceptions.DBusException as error:
             raise BackendError(error.get_dbus_message() or str(error)) from error
 

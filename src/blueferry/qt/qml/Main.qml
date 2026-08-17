@@ -385,6 +385,38 @@ Kirigami.ApplicationWindow {
     }
 
     Kirigami.PromptDialog {
+        id: deleteThreadsDialog
+        property string threadKey: ""
+        title: qsTr("Delete Conversation?")
+        subtitle: qsTr("This permanently deletes this local message history and group metadata. Nothing is deleted from your iPhone. A new message can create the conversation again.")
+        dialogType: Kirigami.PromptDialog.Warning
+        standardButtons: Kirigami.Dialog.Cancel
+        customFooterActions: [Kirigami.Action {
+            text: qsTr("Delete Locally")
+            icon.name: "edit-delete"
+            enabled: !root.bridge.busy
+            onTriggered: {
+                root.bridge.deleteThreads([deleteThreadsDialog.threadKey])
+                deleteThreadsDialog.close()
+            }
+        }]
+    }
+
+    Controls.Menu {
+        id: threadContextMenu
+        property string threadKey: ""
+
+        Controls.MenuItem {
+            text: qsTr("Delete Conversation")
+            icon.name: "edit-delete"
+            onTriggered: {
+                deleteThreadsDialog.threadKey = threadContextMenu.threadKey
+                deleteThreadsDialog.open()
+            }
+        }
+    }
+
+    Kirigami.PromptDialog {
         id: storageChangeDialog
         property string requestedPolicy: ""
         title: requestedPolicy === "none"
@@ -746,6 +778,7 @@ Kirigami.ApplicationWindow {
                                 width: threadList.width
                                 highlighted: root.selectedThreadKey === modelData.key
                                 Accessible.name: preview.text
+                                onClicked: root.selectedThreadKey = modelData.key
                                 contentItem: RowLayout {
                                     spacing: Kirigami.Units.smallSpacing
 
@@ -769,7 +802,17 @@ Kirigami.ApplicationWindow {
                                         elide: Text.ElideRight
                                     }
                                 }
-                                onClicked: root.selectedThreadKey = modelData.key
+                                TapHandler {
+                                    acceptedButtons: Qt.RightButton
+                                    onTapped: eventPoint => {
+                                        threadContextMenu.threadKey = threadDelegate.modelData.key
+                                        threadContextMenu.popup(
+                                            threadDelegate,
+                                            eventPoint.position.x,
+                                            eventPoint.position.y
+                                        )
+                                    }
+                                }
                             }
 
                             Kirigami.PlaceholderMessage {

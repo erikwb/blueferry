@@ -52,6 +52,10 @@ class _Messages:
             "messages": [],
         })
 
+    def DeleteThreads(self, keys, confirmed, **_kwargs):
+        assert bool(confirmed) is True
+        return len(keys)
+
 
 def test_backend_client_returns_shared_models(monkeypatch):
     messages = _Messages()
@@ -74,6 +78,7 @@ def test_backend_client_returns_shared_models(monkeypatch):
     )
     assert group.reply_ready is True
     assert group.recipients == ("+15551111111", "+15552222222")
+    assert client.delete_threads(["one", "two"]) == 2
 
 
 def test_backend_client_rejects_wrong_json_shape(monkeypatch):
