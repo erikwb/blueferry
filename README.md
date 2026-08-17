@@ -307,4 +307,4 @@ Shatunovsky. The ANCS constants and wire-format code are adapted from
 [ANCS4Linux](https://github.com/bmh129/ancs4linux), by Paweł Zmarzły and
 Bradley Harmon, under GPL-2.0-or-later.
 
-BlueFerry is licensed under [GPL-2.0-only](LICENSE).
+BlueFerry is licensed under [GPL-2.0-or-later](LICENSE).

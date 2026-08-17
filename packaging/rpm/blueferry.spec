@@ -2,7 +2,7 @@ Name:           blueferry-backend
 Version:        0.7.5
 Release:        1%{?dist}
 Summary:        iPhone Bluetooth bridge backend, daemon, and CLI
-License:        GPL-2.0-only AND MIT AND BSD-2-Clause AND PSF-2.0
+License:        GPL-2.0-or-later AND MIT AND BSD-2-Clause AND PSF-2.0
 URL:            https://github.com/erikwb/blueferry
 Source0:        blueferry-%{version}.tar.gz
 BuildArch:      noarch

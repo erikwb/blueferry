@@ -11,7 +11,7 @@ pkgrel=1
 pkgdesc='BlueFerry Bluetooth bridge from iPhone to Linux'
 arch=('any')
 url='https://github.com/erikwb/blueferry'
-license=('GPL-2.0-only')
+license=('GPL-2.0-or-later')
 makedepends=(
   'dbus'
   'python-build'
