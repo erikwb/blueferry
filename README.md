@@ -25,7 +25,7 @@ on, so don't make it your only way to receive an important message yet.
 - Mark messages read from the desktop.
 - Use native GTK, KDE/Kirigami, Quickshell, or terminal clients.
 - Keep local history encrypted with GNOME Keyring or KDE Wallet.
-- Reply to group chats when BlueFerry can identify the participants safely.
+- Group chats, when BlueFerry can identify the participants safely.
 
 BlueFerry only knows about messages it sees while connected; it does not
 download your iCloud Messages archive. Attachments, reactions, typing
@@ -39,37 +39,86 @@ roster. This does not change the group on the iPhone.
 
 ## Install
 
-### Arch Linux and CachyOS
+Download the native packages for your distribution from the
+[latest BlueFerry release](https://github.com/erikwb/blueferry/releases/latest).
+Install `blueferry-backend` plus the client for your desktop. The backend also
+includes the `blueferry-tui` terminal client.
 
-Clone the repository and run:
+For Arch Linux or CachyOS, download the `.pkg.tar.zst` files and install them
+with pacman. For example, to install the GTK client:
 
 ```bash
+sudo pacman -U ./blueferry-backend-*.pkg.tar.zst ./blueferry-gtk-*.pkg.tar.zst
+```
+
+For Debian, Ubuntu, Mint, Pop!_OS, or PikaOS, download the `.deb` files and
+install them with apt:
+
+```bash
+sudo apt install ./blueferry-backend_*.deb ./blueferry-gtk_*.deb
+```
+
+For Fedora, download the `.noarch.rpm` files and install them with dnf:
+
+```bash
+sudo dnf install ./blueferry-backend-*.noarch.rpm ./blueferry-gtk-*.noarch.rpm
+```
+
+Replace the GTK package with `blueferry-qt` for KDE Plasma. Arch and CachyOS
+also provide `blueferry-quickshell`. The tested matrix currently covers Arch
+Linux, CachyOS, Debian 13, Ubuntu 24.04 and 26.04, Linux Mint 22.3, Pop!_OS
+24.04, PikaOS IV, and Fedora 43 and 44. Ubuntu 24.04, Mint, and Pop!_OS do not
+provide necessary Qt dependencies, so use the GTK or terminal client there.
+
+Arch and Fedora packages set up the newer Bluetooth support needed for iPhone
+system notifications. Debian-family packages do not change or restart
+Bluetooth; messages and contacts still work, and notifications are added only
+when that machine already supports them.
+
+### Build packages from source
+
+Clone the repository, then choose the build instructions for your
+distribution:
+
+```bash
+git clone https://github.com/erikwb/blueferry.git
+cd blueferry
+```
+
+#### Arch based distros
+
+Install the basic build tools, then build and install all four packages:
+
+```bash
+sudo pacman -S --needed base-devel python
 ./build.sh -si
 ```
 
-This builds and installs four normal pacman packages: `blueferry-backend`
-(including the terminal client), `blueferry-gtk`, `blueferry-qt`, and
-`blueferry-quickshell`. It uses repository dependencies rather than downloading
-from the AUR or PyPI.
+Run `./build.sh` without `-i` to build without installing. Finished packages
+are written to `packaging/arch/`.
 
-Run `./build.sh` without `-i` if you only want the package files. They are
-written to `packaging/arch/`. More details are in
-[packaging/arch/README.md](packaging/arch/README.md).
+#### Debian based distros
 
-### Debian, Ubuntu, Mint, Pop!_OS, PikaOS, and Fedora
+```bash
+sudo apt-get install devscripts equivs
+sudo mk-build-deps -i -r -t 'apt-get -y --no-install-recommends' packaging/deb/control
+./packaging/build-deb.sh
+```
 
-Native DEB and RPM recipes are included too. The tested matrix currently covers
-Debian 13, Ubuntu 24.04 and 26.04, Linux Mint 22.3, Pop!_OS 24.04, PikaOS IV,
-and Fedora 43 and 44. Some older Debian-family releases do not have the Qt
-dependencies, but the GTK client, backend, and TUI are still supported.
+Finished packages are written to `dist/deb/`.
+
+#### Fedora
+
+```bash
+sudo dnf install dnf-plugins-core rpm-build
+sudo dnf builddep packaging/rpm/blueferry.spec
+./packaging/build-rpm.sh
+```
+
+Finished packages are written to `dist/rpm/`.
 
 See [packaging/README.md](packaging/README.md) for the exact support matrix and
-local build commands.
-
-Arch and Fedora packages can set up the newer Bluetooth support needed for
-iPhone system notifications. Debian-family packages do not change or restart
-Bluetooth; messages and contacts still work, and notifications are added only
-when that machine already supports them.
+more packaging details.
 
 ## Pair an iPhone
 
