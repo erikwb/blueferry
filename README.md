@@ -298,8 +298,8 @@ in the initiating BlueFerry client and use normal Bluetooth confirmation;
 there is no hidden Apple protocol.
 
 The deeper design and protocol notes live in
-[ARCHITECTURE.md](ARCHITECTURE.md), [PROTOCOL.md](PROTOCOL.md), and
-[TESTING.md](TESTING.md).
+[ARCHITECTURE.md](ARCHITECTURE.md), [PROTOCOL.md](PROTOCOL.md),
+[TESTING.md](TESTING.md). Release history is in [CHANGELOG.md](CHANGELOG.md).
 
 BlueFerry began from
 [iphonebridge](https://github.com/gabrielmeir53/iphonebridge), created by Gabe

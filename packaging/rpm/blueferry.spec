@@ -1,5 +1,5 @@
 Name:           blueferry-backend
-Version:        0.7.5
+Version:        0.7.6
 Release:        1%{?dist}
 Summary:        iPhone Bluetooth bridge backend, daemon, and CLI
 License:        GPL-2.0-or-later AND MIT AND BSD-2-Clause AND PSF-2.0
@@ -156,7 +156,7 @@ fi
 
 %files
 %license LICENSE
-%doc README.md ARCHITECTURE.md PROTOCOL.md
+%doc README.md ARCHITECTURE.md PROTOCOL.md CHANGELOG.md
 %{_bindir}/blueferry
 %{_bindir}/blueferry-tui
 %{_bindir}/blueferry-quickshell-bridge
@@ -196,6 +196,12 @@ fi
 %{_metainfodir}/io.weirdware.BlueFerry.Qt.metainfo.xml
 
 %changelog
+* Mon Aug 17 2026 BlueFerry Contributors <blueferry@weirdware.io> - 0.7.6-1
+- Add backend-owned deletion of individual local conversations.
+- Record pairing-mode choices in diagnostic reports.
+- Restore initial ANCS setup and avoid stale OBEX cleanup after transport loss.
+- Start the backend user service on systemd 255.
+
 * Sun Aug 16 2026 BlueFerry Contributors <blueferry@weirdware.io> - 0.7.5-1
 - Recover ANCS when a previously authorized iPhone stops responding after a
   Bluetooth reconnect.

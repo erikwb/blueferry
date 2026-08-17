@@ -6,7 +6,7 @@ pkgname=(
   blueferry-qt
   blueferry-quickshell
 )
-pkgver=0.7.5
+pkgver=0.7.6
 pkgrel=1
 pkgdesc='BlueFerry Bluetooth bridge from iPhone to Linux'
 arch=('any')
@@ -152,6 +152,8 @@ package_blueferry-backend() {
     "$pkgdir/usr/share/doc/$pkgname/ARCHITECTURE.md"
   install -Dm644 PROTOCOL.md \
     "$pkgdir/usr/share/doc/$pkgname/PROTOCOL.md"
+  install -Dm644 CHANGELOG.md \
+    "$pkgdir/usr/share/doc/$pkgname/CHANGELOG.md"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }
 
