@@ -75,3 +75,4 @@ def test_user_can_force_explicit_pairing_independently_of_compatibility() -> Non
     assert policy.mode is PairingMode.FULL
     assert policy.pairing_strategy == "explicit-device-pair"
     assert policy.ancs_enabled is True
+    assert policy.user_forced is True

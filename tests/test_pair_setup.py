@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import stat
 
 import pytest
@@ -1839,9 +1840,16 @@ def test_interactive_pairing_can_use_explicit_pair_without_connecting(monkeypatc
     ]
     report = pair_setup.quirks_report.issue_report()
     assert report is not None
-    payload = report.read_text()
-    assert '"pairing_transaction": "explicit-device-pair"' in payload
-    assert '"event": "pair_fallback"' not in payload
+    payload = json.loads(report.read_text())
+    assert payload["pairing_transaction"] == "explicit-device-pair"
+    assert payload["pairing_options"] == {
+        "compatibility_mode": False,
+        "explicit_pairing": True,
+    }
+    assert payload["pairing_policy"]["user_forced"] is True
+    assert "pair_fallback" not in {
+        item["event"] for item in payload["timeline"]
+    }
 
 
 def test_peer_initiated_pairing_is_allowed_to_finish(monkeypatch):

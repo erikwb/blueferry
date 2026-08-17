@@ -460,6 +460,10 @@ def test_complete_pairing_writes_a_scrubbed_success_report(
         "solicitation_enabled": True,
         "user_forced": False,
     }
+    assert parsed["pairing_options"] == {
+        "compatibility_mode": False,
+        "explicit_pairing": False,
+    }
     assert "adapter" not in parsed
     assert "compatibility" not in parsed
     assert Path(result.quirks_report).is_relative_to(report_dir)
@@ -595,6 +599,10 @@ def test_failed_pairing_still_writes_a_report(report_dir, monkeypatch) -> None:
     assert parsed["outcome"]["map"] is None
     assert parsed["outcome"]["ancs"] is None
     assert "error" in parsed["outcome"]
+    assert parsed["pairing_options"] == {
+        "compatibility_mode": False,
+        "explicit_pairing": False,
+    }
     events = [item["event"] for item in parsed["timeline"]]
     assert events[0] == "start"
     assert events[-1] == "failed"

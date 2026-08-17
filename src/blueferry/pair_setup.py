@@ -703,6 +703,10 @@ def complete_pairing(
     if confirmation is None and not _allow_headless:
         raise PairingError("Pairing requires an interactive confirmation callback")
     attempt = quirks_report.start_attempt(interactive=confirmation is not None)
+    attempt["pairing_options"] = {
+        "compatibility_mode": bool(compatibility_mode),
+        "explicit_pairing": bool(explicit_pairing),
+    }
     try:
         outcome = _execute_pairing(
             mac,

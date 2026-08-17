@@ -80,6 +80,6 @@ def resolve_pairing_policy(
         ancs_capable=ancs_capable,
         ancs_enabled=not compatibility_mode,
         solicitation_enabled=solicitation_enabled,
-        user_forced=force_compatibility,
+        user_forced=force_compatibility or force_explicit_pairing,
         reason=reason,
     )
