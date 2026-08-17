@@ -9,6 +9,10 @@ dist/
 .mypy_cache/
 .ruff_cache/
 .hypothesis/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
 
 # Local Arch package artifacts
 /packaging/arch/*.tar.gz

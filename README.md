@@ -5,10 +5,10 @@
 Use your iPhone's messages on Linux over Bluetooth.
 
 <p align="center">
-  <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/9/90/Ferry_Blue_star_1_Rhodes.jpg/1920px-Ferry_Blue_star_1_Rhodes.jpg" width="320" alt="Blue Star ferry at Rhodes">
+  <img src="ferry.jpg" width="320" alt="Blue Star ferry at Rhodes">
 </p>
 
-BlueFerry brings SMS and iMessage from a paired iPhone to your Linux desktop.
+BlueFerry brings SMS, RCS, and iMessage from a paired iPhone to your Linux desktop.
 You can read and reply to messages, start a conversation, search synced
 contacts, and optionally mirror other iPhone notifications. There is no Mac
 relay, Apple login, cloud service, or subscription.
@@ -20,7 +20,7 @@ on, so don't make it your only way to receive an important message yet.
 
 ## What works
 
-- Receive and send SMS and iMessage through the iPhone.
+- Receive and send SMS, RCS, and iMessage through the iPhone.
 - Sync contacts, including phone numbers and Apple-ID email addresses.
 - Mark messages read from the desktop.
 - Use native GTK, KDE/Kirigami, Quickshell, or terminal clients.
@@ -30,7 +30,7 @@ on, so don't make it your only way to receive an important message yet.
 BlueFerry only knows about messages it sees while connected; it does not
 download your iCloud Messages archive. Attachments, reactions, typing
 indicators, FaceTime, calls, and complete sent-message history are not
-supported. MMS and RCS need more testing.
+supported.
 
 Group replies are deliberately cautious. Bluetooth does not give BlueFerry a
 reliable group ID or complete roster, so it disables replies when the
