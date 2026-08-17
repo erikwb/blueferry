@@ -95,7 +95,7 @@ def test_backend_unit_does_not_source_user_controlled_process_environment() -> N
     assert "RestrictAddressFamilies=AF_UNIX" in unit
 
 
-def test_backend_user_unit_does_not_change_process_capabilities() -> None:
+def test_backend_user_unit_does_not_set_a_capability_bounding_set() -> None:
     unit = (ROOT / "systemd" / "blueferry.service").read_text()
 
     assert "CapabilityBoundingSet=" not in unit

@@ -145,6 +145,34 @@ def test_native_backends_install_systemd_privilege_dependencies() -> None:
     assert "pkexec" not in spec
 
 
+def test_deb_disables_user_manager_capability_changes() -> None:
+    unit = (ROOT / "systemd/blueferry.service").read_text()
+    override_name = "20-capability-compat.conf"
+    override = (ROOT / "packaging/deb" / override_name).read_text()
+    deb_rules = (ROOT / "packaging/deb/rules").read_text()
+    deb_install = (ROOT / "packaging/deb/blueferry-backend.install").read_text()
+    arch = (ROOT / "packaging/arch/PKGBUILD").read_text()
+    rpm = (ROOT / "packaging/rpm/blueferry.spec").read_text()
+
+    capability_changing_options = (
+        "PrivateDevices",
+        "ProtectClock",
+        "ProtectKernelLogs",
+        "ProtectKernelModules",
+    )
+    for option in capability_changing_options:
+        assert f"{option}=true" in unit
+        assert f"{option}=false" in override
+
+    assert "CapabilityBoundingSet=" not in unit + override
+    assert f"packaging/deb/{override_name}" in deb_rules
+    installed_override = f"blueferry.service.d/{override_name}"
+    assert installed_override in deb_rules
+    assert installed_override in deb_install
+    assert override_name not in arch
+    assert override_name not in rpm
+
+
 def test_native_backends_ship_the_btmgmt_system_unit_template() -> None:
     unit_name = "blueferry-btmgmt-set-class@.service"
     unit = (ROOT / "systemd" / unit_name).read_text()
@@ -247,6 +275,14 @@ def test_package_workflow_installs_identical_artifacts_on_targets() -> None:
     assert workflow.count(
         "systemd-analyze verify --man=no bluetooth.service"
     ) == 3
+    assert workflow.count(
+        "systemd-analyze --user verify --recursive-errors=no --man=no"
+    ) == 6
+    assert workflow.count(
+        "systemd-analyze verify --recursive-errors=no --man=no"
+    ) == 6
+    assert workflow.count("blueferry-btmgmt-set-class@hci0.service") == 6
+    assert workflow.count("compatibility_override=/usr/lib/systemd/user/") == 2
     assert "GH_REPO: ${{ github.repository }}" in workflow
 
 
