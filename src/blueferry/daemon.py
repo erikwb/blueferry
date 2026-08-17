@@ -285,6 +285,9 @@ class Daemon:
                 include_non_message_notifications=lambda: (
                     self.notification_policy.value == ALL_NOTIFICATIONS
                 ),
+                previously_authorized=(
+                    NOTIFICATION_ACCESS in self.setup_verification.verified
+                ),
             )
             try:
                 candidate.observe_bearer_state(self.bearers.le_state)
