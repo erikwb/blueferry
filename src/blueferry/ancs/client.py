@@ -118,6 +118,7 @@ class AncsClient:
         on_bluez_restart: Callable[[], None] | None = None,
         on_transport_failure: Callable[[], None] | None = None,
         *,
+        previously_authorized: bool = False,
         schedule: Callable[[int, Callable[[], bool]], int] = GLib.timeout_add_seconds,
         cancel: Callable[[int], object] = GLib.source_remove,
     ) -> None:
@@ -142,7 +143,7 @@ class AncsClient:
         # probe can mean "permission not granted yet" during onboarding, but
         # after this client has already received an authorized response it is
         # evidence that the rebuilt GATT transport is stale.
-        self._was_authorized = False
+        self._was_authorized = previously_authorized
         self._bearer_connected: bool | None = None
         self._bearer_ready = False
         self._transport_blocked = False
@@ -588,10 +589,18 @@ class AncsClient:
     def _try_subscribe(self) -> None:
         if self._notify_started:
             return
-        if (
-            self._bearer_connected is not True
-            or not self._bearer_ready
-            or self._transport_blocked
+        if self._transport_blocked:
+            return
+        # During first-time authorization, registering the GATT notification
+        # subscriptions is part of the connection bootstrap on some iPhone
+        # and controller combinations. In particular, BlueZ can expose the
+        # bonded ANCS characteristics while Bearer.LE1 remains disconnected
+        # and its explicit Connect method fails. Once authorization has ever
+        # succeeded, retain the stricter settled-bearer requirement so stale
+        # GATT objects cannot masquerade as a live subscription after a
+        # reconnect.
+        if self._was_authorized and (
+            self._bearer_connected is not True or not self._bearer_ready
         ):
             return
         if not (self._ns_path and self._ds_path and self._cp_path):
@@ -662,12 +671,14 @@ class AncsClient:
                     match.remove()
                 except Exception:
                     log.debug("could not roll back ANCS signal watch", exc_info=True)
-            if _connection_was_lost(e):
+            if _connection_was_lost(e) and self._was_authorized:
                 self._mark_transport_failed()
             else:
                 # Do not StopNotify a characteristic that succeeded before a
                 # later CCC write failed. On retry its Notifying property lets
-                # us resume without racing ATT teardown in bluetoothd.
+                # us resume without racing ATT teardown in bluetoothd. Before
+                # first authorization, a disconnected error is also retried:
+                # the pending subscription is part of the LE bootstrap.
                 self._schedule_subscribe_retry()
             return
         if not current_attempt():
@@ -876,7 +887,7 @@ class AncsClient:
             name = error.get_dbus_name() or type(error).__name__
             detail = error.get_dbus_message() or str(error)
             log.warning("ANCS CP WriteValue failed: %s: %s", name, detail)
-            if _connection_was_lost(error):
+            if _connection_was_lost(error) and self._was_authorized:
                 self._mark_transport_failed()
                 return
             self._abandon_request(request)

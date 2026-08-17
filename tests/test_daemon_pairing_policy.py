@@ -47,6 +47,7 @@ def _daemon(calls):
     value.events = _Events(calls)
     value.profiles = _Profiles(calls)
     value.notification_policy = type("Policy", (), {"value": "messages"})()
+    value.setup_verification = type("Verification", (), {"verified": ()})()
     value.ancs = None
     value._watch_sleep_resume = lambda: calls.append("sleep-watch")
     return value
@@ -91,8 +92,9 @@ def test_full_daemon_starts_ancs_client(monkeypatch):
     monkeypatch.setattr(daemon.config, "ANCS_ENABLED", True)
 
     class Ancs:
-        def __init__(self, *_args, **_kwargs):
+        def __init__(self, *_args, **kwargs):
             calls.append("ancs-client")
+            calls.append(("previously-authorized", kwargs["previously_authorized"]))
 
         def observe_bearer_state(self, connected):
             calls.append(("ancs-bearer", connected))
@@ -108,6 +110,41 @@ def test_full_daemon_starts_ancs_client(monkeypatch):
     value._initialize_bluetooth()
 
     assert "ancs-client" in calls
+    assert ("previously-authorized", False) in calls
     assert ("ancs-bearer", False) in calls
     assert "ancs-start" in calls
     assert value.ancs is not None
+
+
+def test_full_daemon_preserves_known_ancs_reconnect_protection(monkeypatch):
+    calls = []
+    value = _daemon(calls)
+    value.setup_verification = type(
+        "Verification",
+        (),
+        {"verified": (daemon.NOTIFICATION_ACCESS,)},
+    )()
+    _ready_bluetooth(monkeypatch, calls)
+    monkeypatch.setattr(daemon.config, "ANCS_ENABLED", True)
+
+    class Ancs:
+        def __init__(self, *_args, **kwargs):
+            calls.append(("previously-authorized", kwargs["previously_authorized"]))
+
+        @staticmethod
+        def observe_bearer_state(_connected):
+            return None
+
+        @staticmethod
+        def start():
+            return None
+
+        @staticmethod
+        def stop():
+            return None
+
+    monkeypatch.setattr(daemon, "AncsClient", Ancs)
+
+    value._initialize_bluetooth()
+
+    assert ("previously-authorized", True) in calls
