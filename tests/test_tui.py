@@ -292,6 +292,18 @@ async def _wait_for_static_text(
     return widget
 
 
+async def _wait_for_static_text_containing(
+    app: BlueFerryApp, pilot, selector: str, expected: str,
+) -> Static:
+    widget = app.query_one(selector, Static)
+    for _attempt in range(30):
+        if expected in widget.render().plain:
+            return widget
+        await pilot.pause(0.05)
+    assert expected in widget.render().plain
+    return widget
+
+
 async def _wait_for_message_meta(
     app: BlueFerryApp, pilot, expected_prefix: str,
 ) -> Static:
@@ -391,9 +403,12 @@ def test_textual_warns_about_bluez_restart_when_only_ancs_is_missing(
         app = BlueFerryApp(TuiState(MissingAncsBackend()), monitor_factory=lambda: None)
 
         async with app.run_test(size=(70, 36)) as pilot:
-            await _wait_for_threads(app, pilot, 2)
-            notice = app.query_one("#notice-bar", Static)
-            assert "sudo systemctl restart bluetooth.service" in notice.render().plain
+            notice = await _wait_for_static_text_containing(
+                app,
+                pilot,
+                "#notice-bar",
+                "sudo systemctl restart bluetooth.service",
+            )
             assert notice.has_class("warn")
             assert notice.region.height >= 3
 

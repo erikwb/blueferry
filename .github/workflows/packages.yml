@@ -49,6 +49,12 @@ jobs:
         run: pacman -U --noconfirm packaging/arch/*.pkg.tar.zst
       - name: Smoke test
         run: |
+          install -d -m700 /tmp/blueferry-systemd-analyze
+          XDG_RUNTIME_DIR=/tmp/blueferry-systemd-analyze \
+            systemd-analyze --user verify --recursive-errors=no --man=no \
+            blueferry.service
+          systemd-analyze verify --recursive-errors=no --man=no \
+            blueferry-btmgmt-set-class@hci0.service
           if command -v systemd-analyze >/dev/null; then
             systemd-analyze verify --man=no bluetooth.service
           fi
@@ -81,6 +87,12 @@ jobs:
       - name: Install and smoke-test the exact Arch artifacts
         run: |
           pacman -U --noconfirm packages/*.pkg.tar.zst
+          install -d -m700 /tmp/blueferry-systemd-analyze
+          XDG_RUNTIME_DIR=/tmp/blueferry-systemd-analyze \
+            systemd-analyze --user verify --recursive-errors=no --man=no \
+            blueferry.service
+          systemd-analyze verify --recursive-errors=no --man=no \
+            blueferry-btmgmt-set-class@hci0.service
           if command -v systemd-analyze >/dev/null; then
             systemd-analyze verify --man=no bluetooth.service
           fi
@@ -123,6 +135,16 @@ jobs:
         run: apt-get install -y ./dist/deb/*.deb
       - name: Smoke test
         run: |
+          install -d -m700 /tmp/blueferry-systemd-analyze
+          XDG_RUNTIME_DIR=/tmp/blueferry-systemd-analyze \
+            systemd-analyze --user verify --recursive-errors=no --man=no \
+            blueferry.service
+          systemd-analyze verify --recursive-errors=no --man=no \
+            blueferry-btmgmt-set-class@hci0.service
+          compatibility_override=/usr/lib/systemd/user/blueferry.service.d/20-capability-compat.conf
+          for option in PrivateDevices ProtectClock ProtectKernelLogs ProtectKernelModules; do
+            grep -Fx "$option=false" "$compatibility_override"
+          done
           test ! -e /usr/lib/systemd/system/bluetooth.service.d/blueferry.conf
           ! dpkg-query -L blueferry-backend | grep -F '/bluetooth.service.d/'
           blueferry version
@@ -194,6 +216,16 @@ jobs:
       - name: Install and smoke-test the exact Debian artifacts
         run: |
           apt-get install -y ${{ matrix.packages }}
+          install -d -m700 /tmp/blueferry-systemd-analyze
+          XDG_RUNTIME_DIR=/tmp/blueferry-systemd-analyze \
+            systemd-analyze --user verify --recursive-errors=no --man=no \
+            blueferry.service
+          systemd-analyze verify --recursive-errors=no --man=no \
+            blueferry-btmgmt-set-class@hci0.service
+          compatibility_override=/usr/lib/systemd/user/blueferry.service.d/20-capability-compat.conf
+          for option in PrivateDevices ProtectClock ProtectKernelLogs ProtectKernelModules; do
+            grep -Fx "$option=false" "$compatibility_override"
+          done
           test ! -e /usr/lib/systemd/system/bluetooth.service.d/blueferry.conf
           ! dpkg-query -L blueferry-backend | grep -F '/bluetooth.service.d/'
           dpkg --compare-versions "$(dpkg-query -W -f='${Version}' bluez)" ge 5.72
@@ -228,6 +260,12 @@ jobs:
         run: dnf install -y --allowerasing dist/rpm/*.noarch.rpm
       - name: Smoke test
         run: |
+          install -d -m700 /tmp/blueferry-systemd-analyze
+          XDG_RUNTIME_DIR=/tmp/blueferry-systemd-analyze \
+            systemd-analyze --user verify --recursive-errors=no --man=no \
+            blueferry.service
+          systemd-analyze verify --recursive-errors=no --man=no \
+            blueferry-btmgmt-set-class@hci0.service
           blueferry version
           python3 -c 'import blueferry; print(blueferry.__version__)'
           python3 -c 'import gi; gi.require_version("Secret", "1"); from gi.repository import Secret'
@@ -266,6 +304,12 @@ jobs:
       - name: Install and smoke-test the exact Fedora artifacts
         run: |
           dnf install -y --allowerasing packages/*.noarch.rpm
+          install -d -m700 /tmp/blueferry-systemd-analyze
+          XDG_RUNTIME_DIR=/tmp/blueferry-systemd-analyze \
+            systemd-analyze --user verify --recursive-errors=no --man=no \
+            blueferry.service
+          systemd-analyze verify --recursive-errors=no --man=no \
+            blueferry-btmgmt-set-class@hci0.service
           if command -v systemd-analyze >/dev/null; then
             systemd-analyze verify --man=no bluetooth.service
           fi

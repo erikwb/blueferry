@@ -9,6 +9,7 @@ usr/lib/python3*/dist-packages/blueferry/sinks
 usr/lib/python3*/dist-packages/blueferry-*.dist-info
 usr/lib/blueferry/vendor
 usr/lib/systemd/user/blueferry.service
+usr/lib/systemd/user/blueferry.service.d/20-capability-compat.conf
 usr/lib/systemd/user/default.target.wants/blueferry.service
 usr/lib/systemd/system/blueferry-btmgmt-set-class@.service
 usr/lib/blueferry/blueferry-set-cod

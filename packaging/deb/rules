@@ -27,6 +27,8 @@ override_dh_auto_install:
 	done
 	install -Dm644 systemd/blueferry.service \
 		debian/tmp/usr/lib/systemd/user/blueferry.service
+	install -Dm644 packaging/deb/20-capability-compat.conf \
+		debian/tmp/usr/lib/systemd/user/blueferry.service.d/20-capability-compat.conf
 	install -Dm644 systemd/blueferry-btmgmt-set-class@.service \
 		debian/tmp/usr/lib/systemd/system/blueferry-btmgmt-set-class@.service
 	install -Dm755 systemd/blueferry-set-cod \
