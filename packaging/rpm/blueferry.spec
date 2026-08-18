@@ -1,5 +1,5 @@
 Name:           blueferry-backend
-Version:        0.7.6
+Version:        0.7.7
 Release:        1%{?dist}
 Summary:        iPhone Bluetooth bridge backend, daemon, and CLI
 License:        GPL-2.0-or-later AND MIT AND BSD-2-Clause AND PSF-2.0
@@ -196,6 +196,9 @@ fi
 %{_metainfodir}/io.weirdware.BlueFerry.Qt.metainfo.xml
 
 %changelog
+* Mon Aug 17 2026 BlueFerry Contributors <blueferry@weirdware.io> - 0.7.7-1
+- Keep the Debian backend user service compatible with systemd 255.
+
 * Mon Aug 17 2026 BlueFerry Contributors <blueferry@weirdware.io> - 0.7.6-1
 - Add backend-owned deletion of individual local conversations.
 - Record pairing-mode choices in diagnostic reports.

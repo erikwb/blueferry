@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.7](https://github.com/erikwb/blueferry/releases/tag/v0.7.7) - 2026-08-17
+
+### Fixed
+
+- Keep the Debian backend user service compatible with systemd 255 while
+  retaining stronger sandboxing in other native packages.
+
 ## [0.7.6](https://github.com/erikwb/blueferry/releases/tag/v0.7.6) - 2026-08-17
 
 ### Added

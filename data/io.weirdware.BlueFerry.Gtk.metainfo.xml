@@ -40,6 +40,12 @@
   </developer>
 
   <releases>
+    <release version="0.7.7" date="2026-08-17">
+      <description>
+        <p>Restores Debian backend startup on systemd 255 while retaining
+        stronger service sandboxing in other native packages.</p>
+      </description>
+    </release>
     <release version="0.7.6" date="2026-08-17">
       <description>
         <p>Adds local conversation deletion, improves pairing diagnostics and
