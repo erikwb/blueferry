@@ -37,3 +37,25 @@ jobs:
           '
       - name: QML syntax
         run: /usr/lib/qt6/bin/qmllint src/blueferry/qt/qml/*.qml data/quickshell/*.qml
+
+  build-deb-ubuntu-24-04:
+    name: Build Debian packages on Ubuntu 24.04
+    runs-on: ubuntu-latest
+    container: ubuntu:24.04
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - name: Install package tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates devscripts equivs git
+      - uses: actions/checkout@v6
+      - name: Mark the container checkout as safe for Git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Install declared build dependencies
+        run: >-
+          mk-build-deps --install --remove
+          --tool 'apt-get -y --no-install-recommends'
+          packaging/deb/control
+      - name: Build packages and run recipe checks
+        run: ./packaging/build-deb.sh
