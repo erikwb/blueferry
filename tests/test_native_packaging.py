@@ -12,6 +12,13 @@ def _version() -> str:
         return tomllib.load(stream)["project"]["version"]
 
 
+def test_project_license_supports_distribution_setuptools() -> None:
+    with (ROOT / "pyproject.toml").open("rb") as stream:
+        project = tomllib.load(stream)["project"]
+
+    assert project["license"] == {"text": "GPL-2.0-or-later"}
+
+
 def test_native_recipes_track_project_version() -> None:
     version = _version()
     package = (ROOT / "src/blueferry/__init__.py").read_text()
