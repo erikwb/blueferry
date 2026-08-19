@@ -32,14 +32,10 @@ elif [[ ${1:-} == "--" ]]; then
     shift
 fi
 
-# makepkg must build against the system interpreter. python-build,
-# python-installer, and every checkdepend are Arch packages installed only for
-# /usr/bin/python, and the PKGBUILD derives the installed site-packages path
-# from whichever python it finds first. A mise, pyenv, conda, or activated
-# virtualenv python earlier in PATH either fails in build() with "No module
-# named build" or, worse, silently produces a package whose modules land in a
-# site-packages directory the system interpreter never reads. mise ships in
-# Omarchy's base install, so this is the common case there.
+# python-build and python-installer are installed only for /usr/bin/python
+# the PKGBUILD derives the installed site-packages from whichever python it finds first,
+# so systems that have python earlier on the path (such as via mise, in the case of Omarchy 4 machines)
+# must explicityly use /usr/bin/python
 if [[ ! -x /usr/bin/python ]]; then
     echo "error: /usr/bin/python not found; install the 'python' package" >&2
     exit 127

@@ -100,8 +100,7 @@ are written to `packaging/arch/`.
 The build always uses `/usr/bin/python`, because the build and test
 dependencies are Arch packages for the system interpreter. A mise, pyenv,
 conda, or activated virtualenv python earlier in `PATH` is ignored rather
-than producing a package for the wrong `site-packages` directory. mise is
-part of the standard Omarchy install, so this is worth knowing there.
+than producing a package for the wrong `site-packages` directory.
 
 #### Debian based distros
 
