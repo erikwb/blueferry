@@ -32,6 +32,24 @@ elif [[ ${1:-} == "--" ]]; then
     shift
 fi
 
+# makepkg must build against the system interpreter. python-build,
+# python-installer, and every checkdepend are Arch packages installed only for
+# /usr/bin/python, and the PKGBUILD derives the installed site-packages path
+# from whichever python it finds first. A mise, pyenv, conda, or activated
+# virtualenv python earlier in PATH either fails in build() with "No module
+# named build" or, worse, silently produces a package whose modules land in a
+# site-packages directory the system interpreter never reads. mise ships in
+# Omarchy's base install, so this is the common case there.
+if [[ ! -x /usr/bin/python ]]; then
+    echo "error: /usr/bin/python not found; install the 'python' package" >&2
+    exit 127
+fi
+shadowing_python=$(command -v python 2>/dev/null || true)
+if [[ -n "$shadowing_python" && ! "$shadowing_python" -ef /usr/bin/python ]]; then
+    echo "note: ignoring $shadowing_python; building with /usr/bin/python"
+fi
+export PATH="/usr/bin:$PATH"
+
 for command in git gzip makepkg python tar; do
     command -v "$command" >/dev/null || {
         echo "error: required command not found: $command" >&2
