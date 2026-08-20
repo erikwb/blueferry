@@ -32,6 +32,20 @@ elif [[ ${1:-} == "--" ]]; then
     shift
 fi
 
+# python-build and python-installer are installed only for /usr/bin/python
+# the PKGBUILD derives the installed site-packages from whichever python it finds first,
+# so systems that have python earlier on the path (such as via mise, in the case of Omarchy 4 machines)
+# must explicityly use /usr/bin/python
+if [[ ! -x /usr/bin/python ]]; then
+    echo "error: /usr/bin/python not found; install the 'python' package" >&2
+    exit 127
+fi
+shadowing_python=$(command -v python 2>/dev/null || true)
+if [[ -n "$shadowing_python" && ! "$shadowing_python" -ef /usr/bin/python ]]; then
+    echo "note: ignoring $shadowing_python; building with /usr/bin/python"
+fi
+export PATH="/usr/bin:$PATH"
+
 for command in git gzip makepkg python tar; do
     command -v "$command" >/dev/null || {
         echo "error: required command not found: $command" >&2

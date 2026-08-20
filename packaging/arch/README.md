@@ -52,7 +52,7 @@ been configured, the backend also starts at login. Package upgrades and normal
 Bluetooth reconnects do not require manual systemd commands.
 
 The optional Omarchy bar widget is distributed separately from
-[blueferry-quattro](https://github.com/erikwb/blueferry-quattro).
+[omarchy-blueferry](https://github.com/erikwb/omarchy-blueferry).
 
 ## Removing BlueFerry
 

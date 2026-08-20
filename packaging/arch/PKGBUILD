@@ -46,6 +46,14 @@ source=("$pkgbase-$pkgver.tar.gz")
 # working-tree snapshot. The digest file is ignored and excluded from source.
 sha256sums=("$(<.source-sha256)")
 
+# Build, test, and install with the system interpreter. python-build,
+# python-installer, and the checkdepends are Arch packages for /usr/bin/python
+# only, and _site below must name the interpreter that will import the
+# installed package. This is a no-op in a clean chroot; it matters when makepkg
+# runs from a shell where mise, pyenv, conda, or an activated virtualenv puts a
+# different python first.
+PATH="/usr/bin:$PATH"
+
 _site="usr/lib/python$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')/site-packages"
 _stage='package-stage'
 
