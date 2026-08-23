@@ -128,9 +128,13 @@ class Daemon:
             on_ready=self._post_sessions_setup,
             on_lost=self._profiles_lost,
             on_status=self._emit_status,
+            on_attempt_pending=(
+                self.bearers.hold_le if config.ANCS_ENABLED else None
+            ),
             on_first_attempt_complete=(
                 self.bearers.enable_le if config.ANCS_ENABLED else None
             ),
+            attempt_ready=lambda: self.bearers.bredr_connected,
         )
 
     def _emit_status(self) -> None:
