@@ -60,7 +60,7 @@ class FakeWorker:
         failure(error)
 
 
-def make_supervisor(*, first_attempt=None):
+def make_supervisor(*, attempt_pending=None, first_attempt=None, attempt_ready=None):
     sessions = FakeSessions()
     worker = FakeWorker()
     scheduled = []
@@ -74,7 +74,9 @@ def make_supervisor(*, first_attempt=None):
         on_ready=lambda: ready.append(True),
         on_lost=lost.append,
         on_status=lambda: statuses.append(True),
+        on_attempt_pending=attempt_pending,
         on_first_attempt_complete=first_attempt,
+        attempt_ready=attempt_ready,
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 99,
         cancel=lambda _source: True,
     )
@@ -125,6 +127,58 @@ def test_first_attempt_callback_runs_once_across_failure_and_retry() -> None:
     scheduled[-1][1]()
     worker.succeed()
     assert attempted == [True]
+
+
+def test_attempt_gate_is_reapplied_for_each_profile_reconnect_cycle() -> None:
+    pending = []
+    completed = []
+    supervisor, sessions, worker, scheduled, _ready, _lost, _statuses = (
+        make_supervisor(
+            attempt_pending=lambda: pending.append(True),
+            first_attempt=lambda: completed.append(True),
+        )
+    )
+
+    supervisor.start()
+    assert pending == [True]
+    worker.succeed()
+    assert completed == [True]
+
+    assert sessions.lost is not None
+    sessions.lost("phone disconnected")
+    assert pending == [True, True]
+    worker.succeed()
+    scheduled[-1][1]()
+    worker.fail(RuntimeError("profile unavailable"))
+
+    assert completed == [True, True]
+
+    scheduled[-1][1]()
+    worker.succeed()
+    assert completed == [True, True]
+
+
+def test_attempt_gate_stays_closed_while_classic_is_unavailable() -> None:
+    classic = {"connected": False}
+    pending = []
+    completed = []
+    supervisor, _sessions, worker, scheduled, _ready, _lost, _statuses = (
+        make_supervisor(
+            attempt_pending=lambda: pending.append(True),
+            first_attempt=lambda: completed.append(True),
+            attempt_ready=lambda: classic["connected"],
+        )
+    )
+
+    supervisor.start()
+    worker.fail(RuntimeError("phone out of range"))
+    assert pending == [True]
+    assert completed == []
+
+    classic["connected"] = True
+    scheduled[-1][1]()
+    worker.fail(RuntimeError("profile unavailable"))
+    assert completed == [True]
 
 
 def test_map_connection_refusal_is_exposed_and_polls_quickly_until_ready() -> None:

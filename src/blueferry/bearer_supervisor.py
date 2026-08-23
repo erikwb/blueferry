@@ -169,11 +169,10 @@ class BearerSupervisor:
         self._timer_id = self._schedule(POLL_SECONDS, self._tick)
 
     def enable_le(self) -> None:
-        """Allow the LE bearer after the first Classic profile attempt.
+        """Allow the LE bearer after the current Classic profile attempt.
 
-        Pairing-time callers can hold LE back long enough for MAP/PBAP to be
-        the first post-pair profile transaction.  Calling this more than once
-        is harmless.
+        Callers hold LE during every whole-device reconnect so MAP/PBAP can be
+        the first profile transaction. Calling this more than once is harmless.
         """
         if self._le_enabled:
             return
@@ -181,6 +180,19 @@ class BearerSupervisor:
         log.info("MAP/PBAP attempt completed; enabling iPhone LE bearer")
         if self._running:
             self._tick()
+
+    def hold_le(self) -> None:
+        """Prevent a missing LE bearer from connecting during a MAP/PBAP attempt.
+
+        An LE link that is already established is left alone. The gate affects
+        only the next connection request, avoiding unnecessary bearer churn
+        when an OBEX session alone needs recovery.
+        """
+        if not self._le_enabled:
+            return
+        self._le_enabled = False
+        self._cancel_le_settle()
+        log.info("holding iPhone LE bearer until the MAP/PBAP attempt completes")
 
     def poke(self) -> None:
         """Run a health check now, for example after system resume."""

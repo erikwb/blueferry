@@ -150,6 +150,36 @@ def test_le_can_be_held_until_classic_profile_attempt_finishes() -> None:
     assert connections == ["le"]
 
 
+def test_le_can_be_held_again_during_a_later_profile_reconnect() -> None:
+    state = {"bredr": True, "le": False}
+    connections = []
+    scheduled = []
+    cancelled = []
+    supervisor = BearerSupervisor(
+        "/device",
+        read_connected=state.get,
+        connect=lambda kind, on_success, _on_error: (
+            connections.append(kind),
+            on_success(),
+        ),
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=cancelled.append,
+    )
+
+    supervisor.start()
+    assert scheduled[0][0] == bearer_supervisor.CLASSIC_SETTLE_SECONDS
+
+    supervisor.hold_le()
+    assert cancelled == [7]
+    scheduled[0][1]()
+    assert connections == []
+
+    supervisor.enable_le()
+    assert scheduled[-1][0] == bearer_supervisor.CLASSIC_SETTLE_SECONDS
+    scheduled[-1][1]()
+    assert connections == ["le"]
+
+
 def test_selects_each_bearer_before_requesting_its_connection() -> None:
     state = {"bredr": False, "le": False}
     calls = []
