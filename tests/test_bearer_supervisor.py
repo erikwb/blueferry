@@ -228,10 +228,13 @@ def test_hold_rejects_an_le_connect_already_in_flight() -> None:
     health_check()
     supervisor.enable_le()
     assert observed == [False]
-    assert any(
-        delay == bearer_supervisor.CLASSIC_SETTLE_SECONDS
-        for delay, _callback in scheduled
+    next_settle = next(
+        callback
+        for delay, callback in reversed(scheduled)
+        if delay == bearer_supervisor.CLASSIC_SETTLE_SECONDS
     )
+    next_settle()
+    assert [kind for kind, _callback in connect_callbacks] == ["le", "le"]
 
 
 def test_selects_each_bearer_before_requesting_its_connection() -> None:
@@ -500,21 +503,25 @@ def test_gatt_transport_recovery_waits_for_profile_gate_to_reopen() -> None:
 
 def test_bluez_restart_rejects_new_le_link_while_profile_gate_is_closed() -> None:
     state = {"bredr": True, "le": True}
+    connections = []
     disconnects = []
     observed = []
     supervisor = BearerSupervisor(
         "/device",
         read_connected=state.get,
+        connect=lambda kind, _on_success, _on_error: connections.append(kind),
         disconnect=lambda kind, _on_success, _on_error: disconnects.append(kind),
         on_le_state=observed.append,
         schedule=lambda _delay, _callback: 7,
     )
     supervisor.start()
     supervisor.hold_le()
+    state["bredr"] = False
 
     supervisor.reset_after_bluez_restart()
 
     assert disconnects == ["le"]
+    assert connections == ["bredr"]
     assert observed == [True, None]
 
 

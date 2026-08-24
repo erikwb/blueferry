@@ -273,8 +273,8 @@ class BearerSupervisor:
             # the profile gate closed, so allowing it to become usable here
             # would put GATT ahead of the MAP/PBAP attempt again.
             self._request_le_disconnect(force=True)
-            return True
-        self._update_state("le", le)
+        else:
+            self._update_state("le", le)
 
         if self._le_reset_pending and self._le_enabled:
             if le is False:
@@ -393,6 +393,12 @@ class BearerSupervisor:
         if kind == "le" and not self._le_enabled:
             self._le_hold_disconnect_pending = True
             self._request_le_disconnect(force=True)
+            # The request completed only after policy closed the gate. Treat
+            # rejecting it as cancellation, not as a failed connection that
+            # should delay the next permitted LE attempt.
+            self._failures[kind] = 0
+            self._next_attempt[kind] = 0.0
+            return
         # A successful method reply only means BlueZ accepted the request; it
         # does not mean the bearer connected. Keep widening the quiet window
         # until an observed Connected=true resets it.
