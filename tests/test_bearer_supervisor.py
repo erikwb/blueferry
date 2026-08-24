@@ -180,6 +180,60 @@ def test_le_can_be_held_again_during_a_later_profile_reconnect() -> None:
     assert connections == ["le"]
 
 
+def test_hold_rejects_an_le_connect_already_in_flight() -> None:
+    state = {"bredr": True, "le": False}
+    connect_callbacks = []
+    disconnect_callbacks = []
+    observed = []
+    scheduled = []
+
+    supervisor = BearerSupervisor(
+        "/device",
+        read_connected=state.get,
+        connect=lambda kind, on_success, _on_error: connect_callbacks.append(
+            (kind, on_success)
+        ),
+        disconnect=lambda kind, on_success, _on_error: disconnect_callbacks.append(
+            (kind, on_success)
+        ),
+        on_le_state=observed.append,
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+    )
+    supervisor.start()
+    settle = next(
+        callback
+        for delay, callback in scheduled
+        if delay == bearer_supervisor.CLASSIC_SETTLE_SECONDS
+    )
+    health_check = next(
+        callback
+        for delay, callback in scheduled
+        if delay == bearer_supervisor.POLL_SECONDS
+    )
+    settle()
+    assert [kind for kind, _callback in connect_callbacks] == ["le"]
+
+    supervisor.hold_le()
+    connect_callbacks[0][1]()
+    state["le"] = True
+    health_check()
+
+    # The pending Connect is countered immediately, and its transient True
+    # state is not published to ANCS while the profile gate is closed.
+    assert [kind for kind, _callback in disconnect_callbacks] == ["le"]
+    assert observed == [False]
+
+    disconnect_callbacks[0][1]()
+    state["le"] = False
+    health_check()
+    supervisor.enable_le()
+    assert observed == [False]
+    assert any(
+        delay == bearer_supervisor.CLASSIC_SETTLE_SECONDS
+        for delay, _callback in scheduled
+    )
+
+
 def test_selects_each_bearer_before_requesting_its_connection() -> None:
     state = {"bredr": False, "le": False}
     calls = []
@@ -420,6 +474,48 @@ def test_gatt_transport_failure_cycles_le_once_before_reconnecting() -> None:
 
     scheduled[-1][1]()
     assert connections == ["le"]
+
+
+def test_gatt_transport_recovery_waits_for_profile_gate_to_reopen() -> None:
+    state = {"bredr": True, "le": True}
+    disconnects = []
+    supervisor = BearerSupervisor(
+        "/device",
+        read_connected=state.get,
+        disconnect=lambda kind, on_success, _on_error: (
+            disconnects.append(kind),
+            on_success(),
+        ),
+        schedule=lambda _delay, _callback: 7,
+    )
+    supervisor.start()
+
+    supervisor.hold_le()
+    supervisor.recover_le_transport()
+    assert disconnects == []
+
+    supervisor.enable_le()
+    assert disconnects == ["le"]
+
+
+def test_bluez_restart_rejects_new_le_link_while_profile_gate_is_closed() -> None:
+    state = {"bredr": True, "le": True}
+    disconnects = []
+    observed = []
+    supervisor = BearerSupervisor(
+        "/device",
+        read_connected=state.get,
+        disconnect=lambda kind, _on_success, _on_error: disconnects.append(kind),
+        on_le_state=observed.append,
+        schedule=lambda _delay, _callback: 7,
+    )
+    supervisor.start()
+    supervisor.hold_le()
+
+    supervisor.reset_after_bluez_restart()
+
+    assert disconnects == ["le"]
+    assert observed == [True, None]
 
 
 def test_bluez_restart_discards_callbacks_from_the_previous_owner() -> None:

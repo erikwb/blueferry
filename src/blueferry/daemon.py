@@ -284,7 +284,7 @@ class Daemon:
                 device_path,
                 on_event=self.events.ancs,
                 on_status=self._emit_status,
-                on_bluez_restart=self.bearers.reset_after_bluez_restart,
+                on_bluez_restart=self._on_bluez_restart,
                 on_transport_failure=self.bearers.recover_le_transport,
                 include_non_message_notifications=lambda: (
                     self.notification_policy.value == ALL_NOTIFICATIONS
@@ -317,6 +317,18 @@ class Daemon:
             log.warning("    No MAP/PBAP session yet; retry is automatic.")
         # The "ready" line in the happy path is emitted by
         # _post_sessions_setup, so we don't duplicate it here.
+
+    def _on_bluez_restart(self) -> None:
+        """Reapply MAP-first ordering before accepting the new BlueZ owner."""
+        # Hold first because resetting bearer observations immediately probes
+        # the replacement daemon. The old OBEX transport is already gone, so
+        # discard its local sessions without asking obexd to remove them.
+        self.bearers.hold_le()
+        self.profiles.reconnect(
+            "bluetoothd restarted",
+            remove_remote_sessions=False,
+        )
+        self.bearers.reset_after_bluez_restart()
 
     def _profiles_lost(self, _reason: str) -> None:
         """Stop consumers that hold objects belonging to old sessions."""

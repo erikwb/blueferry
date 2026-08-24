@@ -125,6 +125,7 @@ class BearerSupervisor:
         self._generation = 0
         self._connecting: set[str] = set()
         self._disconnecting: set[str] = set()
+        self._le_hold_disconnect_pending = False
         self._le_reset_pending = False
         self._le_reset_failures = 0
         self._next_le_reset_attempt = 0.0
@@ -162,6 +163,7 @@ class BearerSupervisor:
         if self._le_enabled:
             return
         self._le_enabled = True
+        self._le_hold_disconnect_pending = False
         log.info("MAP/PBAP attempt completed; enabling iPhone LE bearer")
         if self._running:
             self._tick()
@@ -169,15 +171,19 @@ class BearerSupervisor:
     def hold_le(self) -> None:
         """Prevent a missing LE bearer from connecting during a MAP/PBAP attempt.
 
-        An LE link that is already established is left alone. The gate affects
-        only the next connection request, avoiding unnecessary bearer churn
-        when an OBEX session alone needs recovery.
+        An LE link that is already established is left alone. If LE is missing,
+        the gate also rejects a Connect that was already in flight, avoiding a
+        race with the MAP/PBAP attempt without churning a healthy LE link.
         """
-        if not self._le_enabled:
-            return
+        was_enabled = self._le_enabled
         self._le_enabled = False
+        if self._states["le"] is False:
+            self._le_hold_disconnect_pending = True
         self._cancel_le_settle()
-        log.info("holding iPhone LE bearer until the MAP/PBAP attempt completes")
+        if "le" in self._connecting:
+            self._request_le_disconnect(force=True)
+        if was_enabled:
+            log.info("holding iPhone LE bearer until the MAP/PBAP attempt completes")
 
     def poke(self) -> None:
         """Run a health check now, for example after system resume."""
@@ -190,6 +196,9 @@ class BearerSupervisor:
         self._generation += 1
         self._connecting.clear()
         self._disconnecting.clear()
+        # The old owner's live link is gone. While the profile gate is closed,
+        # reject any LE link that appears under the replacement owner.
+        self._le_hold_disconnect_pending = not self._le_enabled
         self._le_reset_pending = False
         self._le_reset_failures = 0
         self._next_le_reset_attempt = 0.0
@@ -207,7 +216,7 @@ class BearerSupervisor:
 
     def recover_le_transport(self) -> None:
         """Request one serialized LE reset after GATT and bearer state diverge."""
-        if not self._running or not self._le_enabled:
+        if not self._running:
             return
         if not self._le_reset_pending:
             log.warning(
@@ -215,13 +224,17 @@ class BearerSupervisor:
             )
         self._le_reset_pending = True
         self._cancel_le_settle()
-        self._request_le_disconnect()
+        if self._le_enabled:
+            self._request_le_disconnect()
+        else:
+            log.debug("deferring the ANCS LE reset until the profile attempt completes")
 
     def stop(self) -> None:
         self._running = False
         self._generation += 1
         self._connecting.clear()
         self._disconnecting.clear()
+        self._le_hold_disconnect_pending = False
         self._le_reset_pending = False
         self._cancel_le_settle()
         if self._timer_id is not None:
@@ -252,9 +265,18 @@ class BearerSupervisor:
         bredr = self._read("bredr")
         le = self._read("le")
         self._update_state("bredr", bredr)
+
+        if not self._le_enabled and le is False:
+            self._le_hold_disconnect_pending = True
+        if not self._le_enabled and self._le_hold_disconnect_pending and le is True:
+            # Do not publish the transient link to ANCS. It was missing when
+            # the profile gate closed, so allowing it to become usable here
+            # would put GATT ahead of the MAP/PBAP attempt again.
+            self._request_le_disconnect(force=True)
+            return True
         self._update_state("le", le)
 
-        if self._le_reset_pending:
+        if self._le_reset_pending and self._le_enabled:
             if le is False:
                 self._le_reset_pending = False
                 self._le_reset_failures = 0
@@ -368,6 +390,9 @@ class BearerSupervisor:
             return
         self._connecting.discard(kind)
         self._last_errors.pop(kind, None)
+        if kind == "le" and not self._le_enabled:
+            self._le_hold_disconnect_pending = True
+            self._request_le_disconnect(force=True)
         # A successful method reply only means BlueZ accepted the request; it
         # does not mean the bearer connected. Keep widening the quiet window
         # until an observed Connected=true resets it.
@@ -412,10 +437,10 @@ class BearerSupervisor:
             )
             self._last_errors[kind] = (name, message)
 
-    def _request_le_disconnect(self) -> None:
+    def _request_le_disconnect(self, *, force: bool = False) -> None:
         if "le" in self._disconnecting:
             return
-        if self._clock() < self._next_le_reset_attempt:
+        if not force and self._clock() < self._next_le_reset_attempt:
             return
         self._disconnecting.add("le")
         generation = self._generation
@@ -455,7 +480,7 @@ class BearerSupervisor:
         } or "not connected" in message.casefold():
             self._le_reset_pending = False
             self._update_state("le", False)
-            if self.bredr_connected:
+            if self.bredr_connected and self._le_enabled:
                 self._schedule_le_connect()
             return
         self._le_reset_failures += 1

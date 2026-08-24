@@ -101,6 +101,25 @@ def _connection_was_lost(error: dbus.exceptions.DBusException) -> bool:
     return name.endswith(".notconnected") or "not connected" in detail
 
 
+def _notification_is_already_stopped(
+    error: dbus.exceptions.DBusException,
+) -> bool:
+    """Return whether BlueZ has already discarded our notify registration."""
+    name = (error.get_dbus_name() or "").casefold()
+    detail = (error.get_dbus_message() or str(error)).casefold()
+    if name.endswith((".unknownobject", ".unknowninterface")):
+        return True
+    return any(
+        marker in detail
+        for marker in (
+            "not notifying",
+            "no notify session",
+            "no notification session",
+            "notify session not started",
+        )
+    )
+
+
 class AncsClient:
     """Tracks ANCS characteristics under one target device and subscribes
     when all three are present.
@@ -602,9 +621,17 @@ class AncsClient:
                     get_system_bus().get_object("org.bluez", path),
                     "org.bluez.GattCharacteristic1",
                 ).StopNotify(timeout=DBUS_CALL_TIMEOUT_SECONDS)
-            except dbus.exceptions.DBusException:
-                stopped_all = False
-                log.debug("could not stop ANCS notification", exc_info=True)
+            except dbus.exceptions.DBusException as error:
+                if _notification_is_already_stopped(error):
+                    # StopNotify is an ownership release, so BlueZ reporting
+                    # that the registration is already gone is idempotent
+                    # success. Keeping the path would otherwise make rearm
+                    # retry StopNotify forever and never reach StartNotify.
+                    self._owned_notify_paths.discard(path)
+                    log.debug("ANCS notification was already stopped: %s", path)
+                else:
+                    stopped_all = False
+                    log.debug("could not stop ANCS notification", exc_info=True)
             else:
                 self._owned_notify_paths.discard(path)
         return stopped_all
