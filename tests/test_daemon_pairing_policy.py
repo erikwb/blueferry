@@ -12,6 +12,9 @@ class _Bearer:
     def start(self):
         self.calls.append("bearers-start")
 
+    def hold_le(self):
+        self.calls.append("bearers-hold-le")
+
     def reset_after_bluez_restart(self):
         self.calls.append("bearers-reset")
 
@@ -39,6 +42,11 @@ class _Profiles:
 
     def start(self):
         self.calls.append("profiles-start")
+
+    def reconnect(self, reason, *, remove_remote_sessions=True):
+        self.calls.append(
+            ("profiles-reconnect", reason, remove_remote_sessions)
+        )
 
 
 def _daemon(calls):
@@ -148,3 +156,16 @@ def test_full_daemon_preserves_known_ancs_reconnect_protection(monkeypatch):
     value._initialize_bluetooth()
 
     assert ("previously-authorized", True) in calls
+
+
+def test_bluez_restart_reapplies_profile_gate_before_resetting_bearers():
+    calls = []
+    value = _daemon(calls)
+
+    value._on_bluez_restart()
+
+    assert calls == [
+        "bearers-hold-le",
+        ("profiles-reconnect", "bluetoothd restarted", False),
+        "bearers-reset",
+    ]
