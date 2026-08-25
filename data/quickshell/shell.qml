@@ -883,10 +883,13 @@ ShellRoot {
               RowLayout {
                 Layout.fillWidth: true
                 FerryButton {
-                  text: "⚙"
-                  implicitWidth: implicitHeight
-                  labelSize: theme.displaySize
+                  text: "SETTINGS"
+                  labelSize: theme.captionSize
+                  labelBold: true
+                  labelLetterSpacing: 1
                   bare: true
+                  subtle: true
+                  leftPadding: theme.scaled(4)
                   Accessible.name: "iPhone settings"
                   ToolTip.visible: hovered
                   ToolTip.text: "iPhone settings"
@@ -1528,10 +1531,13 @@ ShellRoot {
             RowLayout {
               Layout.fillWidth: true
               FerryButton {
-                text: "⚙"
-                implicitWidth: implicitHeight
-                labelSize: theme.displaySize
+                text: "‹ MESSAGES"
+                labelSize: theme.captionSize
+                labelBold: true
+                labelLetterSpacing: 1
                 bare: true
+                subtle: true
+                leftPadding: theme.scaled(4)
                 Accessible.name: "Back to messages"
                 ToolTip.visible: hovered
                 ToolTip.text: "Back to messages"
@@ -2040,6 +2046,9 @@ ShellRoot {
     id: control
     property real labelSize: theme.baseFontSize
     property bool bare: false
+    property bool subtle: false
+    property bool labelBold: false
+    property real labelLetterSpacing: 0
     implicitHeight: theme.scaled(34)
     leftPadding: theme.scaled(12)
     rightPadding: theme.scaled(12)
@@ -2051,10 +2060,12 @@ ShellRoot {
       textFormat: Text.PlainText
       color: !control.enabled ? theme.muted
         : control.bare && control.hovered ? theme.accent
-        : control.highlighted ? theme.primaryText : theme.windowText
+        : control.highlighted ? theme.primaryText
+        : control.subtle ? theme.muted : theme.windowText
       font.family: theme.fontFamily
       font.pixelSize: control.labelSize
-      font.bold: control.highlighted
+      font.bold: control.labelBold || control.highlighted
+      font.letterSpacing: control.labelLetterSpacing
       horizontalAlignment: Text.AlignHCenter
       verticalAlignment: Text.AlignVCenter
       elide: Text.ElideRight
