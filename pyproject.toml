@@ -94,6 +94,14 @@ ignore_missing_imports = true
 warn_unused_ignores = true
 check_untyped_defs = true
 
+# typer pulls in rich, whose optional Jupyter support imports IPython, which
+# imports numpy. mypy parses installed stubs with the *target* grammar, and
+# numpy's stubs use PEP 695 `type` statements, so a 3.10 target rejects them.
+# None of these are ours to check — don't follow them.
+[[tool.mypy.overrides]]
+module = ["IPython.*", "numpy.*"]
+follow_imports = "skip"
+
 [[tool.mypy.overrides]]
 module = [
   "blueferry.backend_operations",
