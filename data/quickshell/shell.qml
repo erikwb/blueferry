@@ -977,7 +977,8 @@ ShellRoot {
                   id: messageRow
                   required property var modelData
                   width: messageList.width
-                  height: bubble.height + theme.scaled(3)
+                  height: bubble.height > 0
+                    ? bubble.height + theme.scaled(3) : 0
 
                   QuickshellMessageBubble {
                     id: bubble

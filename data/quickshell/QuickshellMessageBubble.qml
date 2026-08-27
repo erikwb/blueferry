@@ -46,8 +46,9 @@ Rectangle {
   width: Math.min(availableWidth * 0.76,
                   Math.max(ferryTheme.scaled(92),
                            naturalContentWidth + bubblePadding * 2))
-  height: naturalHeight
+  height: canRenderBody ? Math.min(maximumHeight, naturalHeight) : 0
   visible: canRenderBody
+  clip: true
   color: message.outgoing
     ? ferryTheme.selectedSurface : ferryTheme.raisedSurface
   border.color: message.outgoing ? "transparent" : ferryTheme.divider

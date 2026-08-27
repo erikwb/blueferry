@@ -331,8 +331,11 @@ def test_quickshell_outgoing_bubbles_match_qt_accent_tint() -> None:
     ).read_text()
 
     assert "QuickshellMessageBubble {" in shell
-    assert "height: bubble.height + theme.scaled(3)" in shell
+    assert "height: bubble.height > 0" in shell
+    assert "? bubble.height + theme.scaled(3) : 0" in shell
     assert "availableHeight: messageList.height" in shell
+    assert "Math.min(maximumHeight, naturalHeight)" in quickshell
+    assert "clip: true" in quickshell
     assert "? ferryTheme.selectedSurface : ferryTheme.raisedSurface" in quickshell
     assert "color: root.ferryTheme.windowText" in quickshell
 
@@ -348,6 +351,14 @@ def test_quickshell_thread_preview_is_single_line() -> None:
     assert "maximumLineCount: 1" in preview
     assert "elide: Text.ElideRight" in preview
     assert "clip: true" in preview
+
+    title = shell.split("text: threadDelegate.modelData.name", 1)[1].split(
+        "QuickshellThreadPreview {", 1
+    )[0]
+    assert "wrapMode: Text.NoWrap" in title
+    assert "maximumLineCount: 1" in title
+    assert "elide: Text.ElideRight" in title
+    assert "clip: true" in title
 
 
 def test_group_message_bubbles_show_the_individual_sender() -> None:

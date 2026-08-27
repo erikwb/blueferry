@@ -144,9 +144,13 @@ def test_quickshell_long_message_is_truncated_to_the_timeline_height(
     assert bubble.property("height") > 0
     assert bubble.property("height") <= 217
     assert bubble.property("bodyTruncated") is True
-    assert bubble.property("naturalHeight") <= bubble.property("maximumHeight")
+    assert bubble.property("height") == min(
+        bubble.property("naturalHeight"), bubble.property("maximumHeight")
+    )
     assert bubble.property("canRenderBody") is True
     assert bubble.property("width") <= 480 * 0.76
+    assert bubble.property("showSenderChrome") is True
+    assert bubble.property("showTimestampChrome") is True
 
     assert bubble.setProperty("availableHeight", 0)
     QGuiApplication.processEvents()
@@ -166,6 +170,38 @@ def test_quickshell_long_message_is_truncated_to_the_timeline_height(
     QGuiApplication.processEvents()
     assert bubble.property("height") > 0
     assert bubble.property("bodyTruncated") is True
+    assert bubble.property("showSenderChrome") is True
+    assert bubble.property("showTimestampChrome") is True
+    bubble.deleteLater()
+
+
+def test_quickshell_fallback_glyphs_cannot_overflow_timeline(qml_engine) -> None:
+    component = _component(
+        qml_engine,
+        "data/quickshell/QuickshellMessageBubble.qml",
+    )
+    theme = _BubbleTheme()
+    bubble = component.createWithInitialProperties({
+        "message": {
+            "outgoing": False,
+            "sender": "A friend",
+            "body": "emoji 🚀 漢字 " * 200,
+            "display_timestamp": "10:42 PM",
+        },
+        "availableWidth": 480.0,
+        "availableHeight": 220.0,
+        "showSender": True,
+        "ferryTheme": theme,
+    })
+    QGuiApplication.processEvents()
+
+    assert bubble is not None
+    assert bubble.property("height") <= bubble.property("maximumHeight")
+    assert bubble.property("height") == min(
+        bubble.property("naturalHeight"), bubble.property("maximumHeight")
+    )
+    assert bubble.property("bodyTruncated") is True
+    assert bubble.property("clip") is True
     bubble.deleteLater()
 
 
