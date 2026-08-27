@@ -331,6 +331,8 @@ def test_quickshell_outgoing_bubbles_match_qt_accent_tint() -> None:
     ).read_text()
 
     assert "QuickshellMessageBubble {" in shell
+    assert "height: bubble.height + theme.scaled(3)" in shell
+    assert "availableHeight: messageList.height" in shell
     assert "? ferryTheme.selectedSurface : ferryTheme.raisedSurface" in quickshell
     assert "color: root.ferryTheme.windowText" in quickshell
 

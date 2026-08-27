@@ -141,9 +141,58 @@ def test_quickshell_long_message_is_truncated_to_the_timeline_height(
     QGuiApplication.processEvents()
 
     assert bubble is not None
+    assert bubble.property("height") > 0
     assert bubble.property("height") <= 217
     assert bubble.property("bodyTruncated") is True
+    assert bubble.property("naturalHeight") <= bubble.property("maximumHeight")
+    assert bubble.property("canRenderBody") is True
     assert bubble.property("width") <= 480 * 0.76
+
+    assert bubble.setProperty("availableHeight", 0)
+    QGuiApplication.processEvents()
+    assert bubble.property("height") == 0
+    assert bubble.property("canRenderBody") is False
+    assert bubble.property("bodyTruncated") is False
+
+    minimum_viewport_height = bubble.property("minimumBodyHeight") + 3
+    assert bubble.setProperty("availableHeight", minimum_viewport_height)
+    QGuiApplication.processEvents()
+    assert bubble.property("height") > 0
+    assert bubble.property("naturalHeight") <= bubble.property("maximumHeight")
+    assert bubble.property("showSenderChrome") is False
+    assert bubble.property("showTimestampChrome") is False
+
+    assert bubble.setProperty("availableHeight", 220.0)
+    QGuiApplication.processEvents()
+    assert bubble.property("height") > 0
+    assert bubble.property("bodyTruncated") is True
+    bubble.deleteLater()
+
+
+def test_quickshell_short_message_uses_its_natural_height(qml_engine) -> None:
+    component = _component(
+        qml_engine,
+        "data/quickshell/QuickshellMessageBubble.qml",
+    )
+    theme = _BubbleTheme()
+    bubble = component.createWithInitialProperties({
+        "message": {
+            "outgoing": True,
+            "sender": "",
+            "body": "A short message",
+            "display_timestamp": "10:43 PM",
+        },
+        "availableWidth": 480.0,
+        "availableHeight": 220.0,
+        "showSender": False,
+        "ferryTheme": theme,
+    })
+    QGuiApplication.processEvents()
+
+    assert bubble is not None
+    assert 0 < bubble.property("height") < 217
+    assert bubble.property("height") == bubble.property("naturalHeight")
+    assert bubble.property("bodyTruncated") is False
     bubble.deleteLater()
 
 
