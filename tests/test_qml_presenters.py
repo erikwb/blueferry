@@ -13,8 +13,8 @@ os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import QUrl
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtCore import Property, QObject, QUrl, Slot
+from PySide6.QtGui import QColor, QGuiApplication
 from PySide6.QtQml import QQmlComponent, QQmlEngine
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,6 +37,48 @@ def _component(engine: QQmlEngine, relative_path: str) -> QQmlComponent:
         error.toString() for error in component.errors()
     )
     return component
+
+
+class _BubbleTheme(QObject):
+    @Property(QColor, constant=True)
+    def windowText(self) -> QColor:
+        return QColor("#f4f4f4")
+
+    @Property(QColor, constant=True)
+    def selectedSurface(self) -> QColor:
+        return QColor("#334455")
+
+    @Property(QColor, constant=True)
+    def raisedSurface(self) -> QColor:
+        return QColor("#222222")
+
+    @Property(QColor, constant=True)
+    def divider(self) -> QColor:
+        return QColor("#555555")
+
+    @Property(QColor, constant=True)
+    def muted(self) -> QColor:
+        return QColor("#999999")
+
+    @Property(str, constant=True)
+    def fontFamily(self) -> str:
+        return "Sans Serif"
+
+    @Property(int, constant=True)
+    def captionSize(self) -> int:
+        return 10
+
+    @Property(int, constant=True)
+    def baseFontSize(self) -> int:
+        return 12
+
+    @Property(int, constant=True)
+    def controlRadius(self) -> int:
+        return 8
+
+    @Slot(float, result=int)
+    def scaled(self, value: float) -> int:
+        return max(1, round(value))
 
 
 def test_quickshell_onboarding_state_derives_ready_stage(qml_engine) -> None:
@@ -74,6 +116,35 @@ def test_quickshell_unverified_controller_still_reaches_device_selection(
     assert presenter is not None
     assert presenter.property("stage") == "select-device"
     presenter.deleteLater()
+
+
+def test_quickshell_long_message_is_truncated_to_the_timeline_height(
+    qml_engine,
+) -> None:
+    component = _component(
+        qml_engine,
+        "data/quickshell/QuickshellMessageBubble.qml",
+    )
+    theme = _BubbleTheme()
+    bubble = component.createWithInitialProperties({
+        "message": {
+            "outgoing": False,
+            "sender": "A friend",
+            "body": " ".join(["long message"] * 300),
+            "display_timestamp": "10:42 PM",
+        },
+        "availableWidth": 480.0,
+        "availableHeight": 220.0,
+        "showSender": True,
+        "ferryTheme": theme,
+    })
+    QGuiApplication.processEvents()
+
+    assert bubble is not None
+    assert bubble.property("height") <= 217
+    assert bubble.property("bodyTruncated") is True
+    assert bubble.property("width") <= 480 * 0.76
+    bubble.deleteLater()
 
 
 def test_qt_onboarding_summary_renders_stage_from_properties(qml_engine) -> None:
