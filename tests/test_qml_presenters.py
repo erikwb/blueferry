@@ -196,6 +196,34 @@ def test_quickshell_short_message_uses_its_natural_height(qml_engine) -> None:
     bubble.deleteLater()
 
 
+def test_quickshell_thread_preview_stays_inside_one_line(qml_engine) -> None:
+    component = _component(
+        qml_engine,
+        "data/quickshell/QuickshellThreadPreview.qml",
+    )
+    theme = _BubbleTheme()
+    preview = component.createWithInitialProperties({
+        "thread": {
+            "messages": [{
+                "outgoing": True,
+                "body": (
+                    "A long opening line that cannot fit in the sidebar\n"
+                    "and a second line that must not escape the thread row"
+                ),
+            }],
+        },
+        "ferryTheme": theme,
+        "width": 120.0,
+    })
+    QGuiApplication.processEvents()
+
+    assert preview is not None
+    assert preview.property("lineCount") == 1
+    assert preview.property("truncated") is True
+    assert preview.property("height") == preview.property("implicitHeight")
+    preview.deleteLater()
+
+
 def test_qt_onboarding_summary_renders_stage_from_properties(qml_engine) -> None:
     component = _component(
         qml_engine, "src/blueferry/qt/qml/OnboardingSummary.qml"

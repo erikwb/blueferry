@@ -790,6 +790,7 @@ ShellRoot {
                     root.confirmedGroupSignature = ""
                   }
                   contentItem: Row {
+                    clip: true
                     spacing: theme.scaled(10)
 
                     Rectangle {
@@ -825,19 +826,15 @@ ShellRoot {
                         font.family: theme.fontFamily
                         font.pixelSize: theme.baseFontSize
                         font.bold: threadDelegate.highlighted
+                        wrapMode: Text.NoWrap
+                        maximumLineCount: 1
                         elide: Text.ElideRight
+                        clip: true
                       }
-                      Text {
+                      QuickshellThreadPreview {
                         width: parent.width
-                        text: threadDelegate.modelData.messages.length
-                          ? (threadDelegate.modelData.messages[threadDelegate.modelData.messages.length - 1].outgoing ? "You: " : "")
-                            + threadDelegate.modelData.messages[threadDelegate.modelData.messages.length - 1].body
-                          : "No messages"
-                        textFormat: Text.PlainText
-                        color: theme.muted
-                        font.family: theme.fontFamily
-                        font.pixelSize: theme.captionSize
-                        elide: Text.ElideRight
+                        thread: threadDelegate.modelData
+                        ferryTheme: theme
                       }
                     }
                   }

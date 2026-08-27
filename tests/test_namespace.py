@@ -337,6 +337,19 @@ def test_quickshell_outgoing_bubbles_match_qt_accent_tint() -> None:
     assert "color: root.ferryTheme.windowText" in quickshell
 
 
+def test_quickshell_thread_preview_is_single_line() -> None:
+    shell = (ROOT / "data/quickshell/shell.qml").read_text()
+    preview = (
+        ROOT / "data/quickshell/QuickshellThreadPreview.qml"
+    ).read_text()
+
+    assert "QuickshellThreadPreview {" in shell
+    assert "wrapMode: Text.NoWrap" in preview
+    assert "maximumLineCount: 1" in preview
+    assert "elide: Text.ElideRight" in preview
+    assert "clip: true" in preview
+
+
 def test_group_message_bubbles_show_the_individual_sender() -> None:
     gtk = (ROOT / "src/blueferry/ui/conversations.py").read_text()
     qt_bubble = (ROOT / "src/blueferry/qt/qml/MessageBubble.qml").read_text()
