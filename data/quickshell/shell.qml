@@ -790,6 +790,7 @@ ShellRoot {
                     root.confirmedGroupSignature = ""
                   }
                   contentItem: Row {
+                    clip: true
                     spacing: theme.scaled(10)
 
                     Rectangle {
@@ -825,19 +826,15 @@ ShellRoot {
                         font.family: theme.fontFamily
                         font.pixelSize: theme.baseFontSize
                         font.bold: threadDelegate.highlighted
+                        wrapMode: Text.NoWrap
+                        maximumLineCount: 1
                         elide: Text.ElideRight
+                        clip: true
                       }
-                      Text {
+                      QuickshellThreadPreview {
                         width: parent.width
-                        text: threadDelegate.modelData.messages.length
-                          ? (threadDelegate.modelData.messages[threadDelegate.modelData.messages.length - 1].outgoing ? "You: " : "")
-                            + threadDelegate.modelData.messages[threadDelegate.modelData.messages.length - 1].body
-                          : "No messages"
-                        textFormat: Text.PlainText
-                        color: theme.muted
-                        font.family: theme.fontFamily
-                        font.pixelSize: theme.captionSize
-                        elide: Text.ElideRight
+                        thread: threadDelegate.modelData
+                        ferryTheme: theme
                       }
                     }
                   }
@@ -980,72 +977,19 @@ ShellRoot {
                   id: messageRow
                   required property var modelData
                   width: messageList.width
-                  implicitHeight: bubble.implicitHeight + theme.scaled(3)
+                  height: bubble.height > 0
+                    ? bubble.height + theme.scaled(3) : 0
 
-                  Rectangle {
+                  QuickshellMessageBubble {
                     id: bubble
-                    readonly property int bubblePadding: theme.scaled(12)
-                    width: Math.min(messageList.width * 0.76,
-                                    Math.max(theme.scaled(92),
-                                      Math.max(messageSender.implicitWidth,
-                                        Math.max(messageBody.implicitWidth,
-                                                 messageTimestamp.implicitWidth))
-                                        + bubblePadding * 2))
-                    implicitHeight: bubbleContent.implicitHeight + bubblePadding * 2
+                    message: messageRow.modelData
+                    availableWidth: messageList.width
+                    availableHeight: messageList.height
+                    showSender: conversationPane.thread
+                      && conversationPane.thread.is_group
+                    ferryTheme: theme
                     anchors.right: messageRow.modelData.outgoing ? parent.right : undefined
                     anchors.left: messageRow.modelData.outgoing ? undefined : parent.left
-                    color: messageRow.modelData.outgoing
-                      ? theme.selectedSurface : theme.raisedSurface
-                    border.color: messageRow.modelData.outgoing
-                      ? "transparent" : theme.divider
-                    radius: theme.controlRadius
-
-                    Column {
-                      id: bubbleContent
-                      anchors.left: parent.left
-                      anchors.right: parent.right
-                      anchors.top: parent.top
-                      anchors.margins: bubble.bubblePadding
-                      spacing: theme.scaled(5)
-
-                      Text {
-                        id: messageSender
-                        width: parent.width
-                        visible: conversationPane.thread
-                          && conversationPane.thread.is_group
-                        text: messageRow.modelData.outgoing
-                          ? "You" : (messageRow.modelData.sender || "")
-                        textFormat: Text.PlainText
-                        color: theme.windowText
-                        font.family: theme.fontFamily
-                        font.pixelSize: theme.captionSize
-                        font.bold: true
-                      }
-                      Text {
-                        id: messageBody
-                        width: parent.width
-                        text: messageRow.modelData.body
-                        textFormat: Text.PlainText
-                        color: theme.windowText
-                        font.family: theme.fontFamily
-                        font.pixelSize: theme.baseFontSize
-                        wrapMode: Text.Wrap
-                      }
-                      Text {
-                        id: messageTimestamp
-                        width: parent.width
-                        visible: text !== ""
-                        text: messageRow.modelData.display_timestamp || ""
-                        textFormat: Text.PlainText
-                        color: messageRow.modelData.outgoing
-                          ? Qt.rgba(theme.windowText.r, theme.windowText.g,
-                                    theme.windowText.b, 0.62)
-                          : theme.muted
-                        font.family: theme.fontFamily
-                        font.pixelSize: theme.captionSize
-                        horizontalAlignment: Text.AlignRight
-                      }
-                    }
                   }
                 }
 

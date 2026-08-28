@@ -325,22 +325,54 @@ def test_qt_message_bubbles_do_not_use_full_selection_color() -> None:
 
 
 def test_quickshell_outgoing_bubbles_match_qt_accent_tint() -> None:
-    quickshell = (ROOT / "data/quickshell/shell.qml").read_text()
+    shell = (ROOT / "data/quickshell/shell.qml").read_text()
+    quickshell = (
+        ROOT / "data/quickshell/QuickshellMessageBubble.qml"
+    ).read_text()
 
-    assert "? theme.selectedSurface : theme.raisedSurface" in quickshell
-    assert "color: theme.windowText" in quickshell
+    assert "QuickshellMessageBubble {" in shell
+    assert "height: bubble.height > 0" in shell
+    assert "? bubble.height + theme.scaled(3) : 0" in shell
+    assert "availableHeight: messageList.height" in shell
+    assert "Math.min(maximumHeight, naturalHeight)" in quickshell
+    assert "clip: true" in quickshell
+    assert "? ferryTheme.selectedSurface : ferryTheme.raisedSurface" in quickshell
+    assert "color: root.ferryTheme.windowText" in quickshell
+
+
+def test_quickshell_thread_preview_is_single_line() -> None:
+    shell = (ROOT / "data/quickshell/shell.qml").read_text()
+    preview = (
+        ROOT / "data/quickshell/QuickshellThreadPreview.qml"
+    ).read_text()
+
+    assert "QuickshellThreadPreview {" in shell
+    assert "wrapMode: Text.NoWrap" in preview
+    assert "maximumLineCount: 1" in preview
+    assert "elide: Text.ElideRight" in preview
+    assert "clip: true" in preview
+
+    title = shell.split("text: threadDelegate.modelData.name", 1)[1].split(
+        "QuickshellThreadPreview {", 1
+    )[0]
+    assert "wrapMode: Text.NoWrap" in title
+    assert "maximumLineCount: 1" in title
+    assert "elide: Text.ElideRight" in title
+    assert "clip: true" in title
 
 
 def test_group_message_bubbles_show_the_individual_sender() -> None:
     gtk = (ROOT / "src/blueferry/ui/conversations.py").read_text()
     qt_bubble = (ROOT / "src/blueferry/qt/qml/MessageBubble.qml").read_text()
     qt_view = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
-    quickshell = (ROOT / "data/quickshell/shell.qml").read_text()
+    quickshell = (
+        ROOT / "data/quickshell/QuickshellMessageBubble.qml"
+    ).read_text()
 
     assert 'label=_("You") if message.outgoing else message.sender' in gtk
     assert 'text: root.message.outgoing ? qsTr("You")' in qt_bubble
     assert "&& messagesPage.thread.is_group" in qt_view
-    assert '? "You" : (messageRow.modelData.sender || "")' in quickshell
+    assert '? "You" : (root.message.sender || "")' in quickshell
 
 
 def test_group_roster_editors_explain_local_and_same_name_limits() -> None:
