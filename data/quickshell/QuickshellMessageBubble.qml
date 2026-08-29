@@ -13,8 +13,12 @@ Rectangle {
   readonly property int contentSpacing: ferryTheme.scaled(5)
   readonly property real maximumHeight: Math.max(
     0, availableHeight - ferryTheme.scaled(3))
-  readonly property real bodyLineHeight: Math.max(
+  readonly property real bodyFontLineHeight: Math.max(
     1, Math.ceil(Math.max(bodyFontMetrics.height, bodyFontMetrics.lineSpacing)))
+  readonly property real bodyLineHeight: messageBody.lineCount > 0
+    ? Math.max(bodyFontLineHeight,
+               messageBody.contentHeight / messageBody.lineCount)
+    : bodyFontLineHeight
   readonly property real minimumBodyHeight: bubblePadding * 2 + bodyLineHeight
   readonly property bool canRenderBody: maximumHeight >= minimumBodyHeight
   readonly property bool showSenderChrome: canRenderBody && showSender
@@ -35,13 +39,19 @@ Rectangle {
        ? messageSender.implicitHeight + contentSpacing : 0)
     + (showTimestampChrome
        ? messageTimestamp.implicitHeight + contentSpacing : 0)
+  readonly property real maximumBodyHeight: canRenderBody
+    ? Math.max(0, maximumHeight - nonBodyHeight) : 0
   readonly property int maximumBodyLines: canRenderBody
-    ? Math.max(1, Math.floor(
-        Math.max(0, maximumHeight - nonBodyHeight) / bodyLineHeight))
-    : 1
-  readonly property bool bodyTruncated: canRenderBody && messageBody.truncated
+    ? Math.max(1, Math.floor(maximumBodyHeight / bodyLineHeight)) : 1
+  readonly property real renderedBodyHeight: canRenderBody
+    ? Math.min(maximumBodyHeight,
+               Math.min(Math.ceil(messageBody.contentHeight),
+                        maximumBodyLines * bodyLineHeight))
+    : 0
+  readonly property bool bodyTruncated: canRenderBody
+    && messageBody.contentHeight > renderedBodyHeight
   readonly property real naturalHeight: canRenderBody
-    ? nonBodyHeight + messageBody.implicitHeight : 0
+    ? nonBodyHeight + renderedBodyHeight : 0
 
   width: Math.min(availableWidth * 0.76,
                   Math.max(ferryTheme.scaled(92),
@@ -79,6 +89,7 @@ Rectangle {
 
   Column {
     id: bubbleContent
+    objectName: "bubbleContent"
     anchors.left: parent.left
     anchors.right: parent.right
     anchors.top: parent.top
@@ -97,22 +108,53 @@ Rectangle {
       font.bold: true
     }
 
-    Text {
+    TextEdit {
       id: messageBody
+      objectName: "messageBody"
       width: parent.width
+      height: root.renderedBodyHeight
       text: root.message.body
-      textFormat: Text.PlainText
+      textFormat: TextEdit.PlainText
       color: root.ferryTheme.windowText
+      selectionColor: root.ferryTheme.accent
+      selectedTextColor: root.ferryTheme.highlightedText
       font.family: root.ferryTheme.fontFamily
       font.pixelSize: root.ferryTheme.baseFontSize
-      wrapMode: Text.Wrap
+      wrapMode: TextEdit.Wrap
       visible: root.canRenderBody
-      maximumLineCount: root.maximumBodyLines
-      elide: Text.ElideRight
+      readOnly: true
+      selectByMouse: true
+      activeFocusOnTab: false
+      persistentSelection: true
+      clip: true
+      Accessible.name: "Message body"
+
+      Rectangle {
+        id: overflowIndicator
+        objectName: "messageOverflowIndicator"
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        width: overflowGlyph.implicitWidth + root.ferryTheme.scaled(4)
+        height: overflowGlyph.implicitHeight
+        visible: root.bodyTruncated
+        color: root.color
+        z: 1
+
+        Text {
+          id: overflowGlyph
+          objectName: "messageOverflowGlyph"
+          anchors.right: parent.right
+          anchors.bottom: parent.bottom
+          text: "…"
+          color: root.ferryTheme.windowText
+          font: messageBody.font
+        }
+      }
     }
 
     Text {
       id: messageTimestamp
+      objectName: "messageTimestamp"
       width: parent.width
       visible: root.showTimestampChrome
       text: root.message.display_timestamp || ""

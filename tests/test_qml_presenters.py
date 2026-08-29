@@ -13,7 +13,7 @@ os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import Property, QObject, QUrl, Slot
+from PySide6.QtCore import Property, QMetaObject, QObject, QUrl, Slot
 from PySide6.QtGui import QColor, QGuiApplication
 from PySide6.QtQml import QQmlComponent, QQmlEngine
 
@@ -59,6 +59,14 @@ class _BubbleTheme(QObject):
     @Property(QColor, constant=True)
     def muted(self) -> QColor:
         return QColor("#999999")
+
+    @Property(QColor, constant=True)
+    def accent(self) -> QColor:
+        return QColor("#4488cc")
+
+    @Property(QColor, constant=True)
+    def highlightedText(self) -> QColor:
+        return QColor("#ffffff")
 
     @Property(str, constant=True)
     def fontFamily(self) -> str:
@@ -152,6 +160,29 @@ def test_quickshell_long_message_is_truncated_to_the_timeline_height(
     assert bubble.property("showSenderChrome") is True
     assert bubble.property("showTimestampChrome") is True
 
+    body = bubble.findChild(QObject, "messageBody")
+    content = bubble.findChild(QObject, "bubbleContent")
+    timestamp = bubble.findChild(QObject, "messageTimestamp")
+    overflow = bubble.findChild(QObject, "messageOverflowIndicator")
+    overflow_glyph = bubble.findChild(QObject, "messageOverflowGlyph")
+    assert body is not None
+    assert content is not None
+    assert timestamp is not None
+    assert overflow is not None
+    assert overflow_glyph is not None
+    assert body.property("height") <= bubble.property("maximumBodyHeight")
+    assert overflow_glyph.property("text") == "…"
+    assert overflow.property("y") + overflow.property("height") <= body.property(
+        "height"
+    )
+    timestamp_bottom = (
+        content.property("y")
+        + timestamp.property("y")
+        + timestamp.property("height")
+        + bubble.property("bubblePadding")
+    )
+    assert timestamp_bottom <= bubble.property("height")
+
     assert bubble.setProperty("availableHeight", 0)
     QGuiApplication.processEvents()
     assert bubble.property("height") == 0
@@ -229,6 +260,45 @@ def test_quickshell_short_message_uses_its_natural_height(qml_engine) -> None:
     assert 0 < bubble.property("height") < 217
     assert bubble.property("height") == bubble.property("naturalHeight")
     assert bubble.property("bodyTruncated") is False
+    bubble.deleteLater()
+
+
+def test_quickshell_message_body_is_selectable_and_copyable(qml_engine) -> None:
+    component = _component(
+        qml_engine,
+        "data/quickshell/QuickshellMessageBubble.qml",
+    )
+    theme = _BubbleTheme()
+    message_text = "Verification code: 123456 " + "more details " * 200
+    bubble = component.createWithInitialProperties({
+        "message": {
+            "outgoing": False,
+            "sender": "A friend",
+            "body": message_text,
+            "display_timestamp": "10:44 PM",
+        },
+        "availableWidth": 480.0,
+        "availableHeight": 220.0,
+        "showSender": False,
+        "ferryTheme": theme,
+    })
+    QGuiApplication.processEvents()
+
+    assert bubble is not None
+    body = bubble.findChild(QObject, "messageBody")
+    assert body is not None
+    assert body.property("readOnly") is True
+    assert body.property("selectByMouse") is True
+    assert body.property("activeFocusOnTab") is False
+    assert bubble.property("bodyTruncated") is True
+    assert QMetaObject.invokeMethod(body, "selectAll") is True
+    assert body.property("selectedText") == message_text
+
+    clipboard = QGuiApplication.clipboard()
+    clipboard.clear()
+    assert QMetaObject.invokeMethod(body, "copy") is True
+    assert clipboard.text() == message_text
+    clipboard.clear()
     bubble.deleteLater()
 
 
