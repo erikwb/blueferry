@@ -336,6 +336,11 @@ def test_quickshell_outgoing_bubbles_match_qt_accent_tint() -> None:
     assert "availableHeight: messageList.height" in shell
     assert "Math.min(maximumHeight, naturalHeight)" in quickshell
     assert "clip: true" in quickshell
+    assert "TextEdit {" in quickshell
+    assert "selectByMouse: true" in quickshell
+    assert "maximumBodyHeight" in quickshell
+    assert "messageBody.contentHeight > renderedBodyHeight" in quickshell
+    assert "visible: root.bodyTruncated" in quickshell
     assert "? ferryTheme.selectedSurface : ferryTheme.raisedSurface" in quickshell
     assert "color: root.ferryTheme.windowText" in quickshell
 
