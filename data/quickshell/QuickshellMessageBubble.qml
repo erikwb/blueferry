@@ -97,18 +97,22 @@ Rectangle {
       font.bold: true
     }
 
-    Text {
+    TextEdit {
       id: messageBody
       width: parent.width
       text: root.message.body
-      textFormat: Text.PlainText
+      textFormat: TextEdit.PlainText
       color: root.ferryTheme.windowText
       font.family: root.ferryTheme.fontFamily
       font.pixelSize: root.ferryTheme.baseFontSize
-      wrapMode: Text.Wrap
+      wrapMode: TextEdit.Wrap
       visible: root.canRenderBody
-      maximumLineCount: root.maximumBodyLines
-      elide: Text.ElideRight
+      readOnly: true
+      selectByMouse: true
+      activeFocusOnTab: false
+
+      // Read-only TextEdit simulation properties for metrics compatibility
+      readonly property bool truncated: false
     }
 
     Text {
