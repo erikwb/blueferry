@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from blueferry import event_dispatcher
 from blueferry.event_dispatcher import EventDispatcher
 from blueferry.events import sms_sent_event
 
@@ -27,6 +28,63 @@ class _Service:
 
     def emit_open_message(self, handle: str) -> None:
         self.events.append(("open", handle))
+
+
+class _Match:
+    def __init__(self) -> None:
+        self.removed = False
+
+    def remove(self) -> None:
+        self.removed = True
+
+
+class _Bus:
+    def __init__(self, *, owner: bool = False) -> None:
+        self.owner = owner
+        self.callback = None
+        self.match = _Match()
+
+    def add_signal_receiver(self, callback, **kwargs):
+        assert kwargs == {
+            "dbus_interface": "org.freedesktop.DBus",
+            "signal_name": "NameOwnerChanged",
+            "bus_name": "org.freedesktop.DBus",
+            "arg0": "org.freedesktop.Notifications",
+        }
+        self.callback = callback
+        return self.match
+
+    def name_has_owner(self, name: str) -> bool:
+        assert name == "org.freedesktop.Notifications"
+        return self.owner
+
+    def change_owner(self, old_owner: str, new_owner: str) -> None:
+        self.owner = bool(new_owner)
+        assert self.callback is not None
+        self.callback("org.freedesktop.Notifications", old_owner, new_owner)
+
+
+class _SqliteSink:
+    name = "sqlite"
+
+    def __init__(self, *, storage=None) -> None:
+        self.storage = storage
+
+    def handle(self, _event) -> None:
+        pass
+
+
+class _NotificationSink:
+    name = "libnotify"
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    def handle(self, _event) -> None:
+        pass
+
+    def close(self) -> None:
+        self.closed = True
 
 
 def _event(body: str = "hello"):
@@ -154,3 +212,115 @@ def test_notification_action_is_broadcast_through_current_dbus_service():
     dispatcher._open_message("message-opaque-42")
 
     assert service.events == [("open", "message-opaque-42")]
+
+
+def test_libnotify_is_added_when_notification_server_appears(monkeypatch):
+    monkeypatch.setattr(event_dispatcher, "SqliteSink", _SqliteSink)
+    bus = _Bus()
+    attempts = []
+
+    def create_sink(**_kwargs):
+        # Install the owner watch before the fallible construction so the
+        # server cannot appear in an unobserved gap.
+        assert bus.callback is not None
+        attempts.append(bus.owner)
+        if not bus.owner:
+            raise RuntimeError("notification server is not ready")
+        return _NotificationSink()
+
+    dispatcher = EventDispatcher(
+        object(),
+        submit_obex=lambda *_args, **_kwargs: None,
+        notification_sink_factory=create_sink,
+        session_bus=bus,
+    )
+
+    dispatcher.setup()
+    assert dispatcher.names == ["sqlite"]
+
+    bus.change_owner("", ":1.42")
+
+    assert attempts == [False, True]
+    assert dispatcher.names == ["sqlite", "libnotify"]
+
+
+def test_owned_but_not_ready_notification_server_is_retried(monkeypatch):
+    monkeypatch.setattr(event_dispatcher, "SqliteSink", _SqliteSink)
+    bus = _Bus(owner=True)
+    scheduled = []
+    attempts = []
+
+    def create_sink(**_kwargs):
+        attempts.append(True)
+        if len(attempts) < 3:
+            raise RuntimeError("object has not been exported yet")
+        return _NotificationSink()
+
+    dispatcher = EventDispatcher(
+        object(),
+        submit_obex=lambda *_args, **_kwargs: None,
+        notification_sink_factory=create_sink,
+        session_bus=bus,
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or len(scheduled),
+    )
+
+    dispatcher.setup()
+    assert dispatcher.names == ["sqlite"]
+    assert scheduled[-1][0] == event_dispatcher._LIBNOTIFY_RETRY_SECONDS
+
+    scheduled[-1][1]()
+    assert dispatcher.names == ["sqlite"]
+    scheduled[-1][1]()
+
+    assert len(attempts) == 3
+    assert dispatcher.names == ["sqlite", "libnotify"]
+
+
+def test_notification_owner_replacement_rebuilds_sink(monkeypatch):
+    monkeypatch.setattr(event_dispatcher, "SqliteSink", _SqliteSink)
+    bus = _Bus(owner=True)
+    sinks = []
+
+    def create_sink(**_kwargs):
+        sink = _NotificationSink()
+        sinks.append(sink)
+        return sink
+
+    dispatcher = EventDispatcher(
+        object(),
+        submit_obex=lambda *_args, **_kwargs: None,
+        notification_sink_factory=create_sink,
+        session_bus=bus,
+    )
+    dispatcher.setup()
+
+    bus.change_owner(":1.42", ":1.84")
+
+    assert len(sinks) == 2
+    assert sinks[0].closed is True
+    assert sinks[1].closed is False
+    assert dispatcher.names == ["sqlite", "libnotify"]
+
+
+def test_dispatcher_stop_removes_owner_watch_and_retry(monkeypatch):
+    monkeypatch.setattr(event_dispatcher, "SqliteSink", _SqliteSink)
+    bus = _Bus(owner=True)
+    cancelled = []
+
+    def unavailable_sink(**_kwargs):
+        raise RuntimeError("not ready")
+
+    dispatcher = EventDispatcher(
+        object(),
+        submit_obex=lambda *_args, **_kwargs: None,
+        notification_sink_factory=unavailable_sink,
+        session_bus=bus,
+        schedule=lambda _delay, _callback: 9,
+        cancel=cancelled.append,
+    )
+    dispatcher.setup()
+
+    dispatcher.stop()
+
+    assert bus.match.removed is True
+    assert cancelled == [9]

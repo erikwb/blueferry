@@ -109,6 +109,25 @@ class LibnotifySink:
         )
         log.info("libnotify sink ready (expiring + bidirectional read-sync)")
 
+    def close(self) -> None:
+        """Release signal watches before a notification-daemon replacement."""
+        for attribute in ("_match", "_action_match"):
+            match = getattr(self, attribute, None)
+            if match is not None:
+                try:
+                    match.remove()
+                except Exception:
+                    log.debug("could not remove libnotify signal watch", exc_info=True)
+                setattr(self, attribute, None)
+        for subscription in self._msg_subs.values():
+            try:
+                subscription.remove()
+            except Exception:
+                log.debug("could not remove message read-state watch", exc_info=True)
+        self._msg_subs.clear()
+        self._pending.clear()
+        self._open_messages.clear()
+
     def _policy(self) -> str:
         provider = getattr(self, "_notification_policy", None)
         return (
