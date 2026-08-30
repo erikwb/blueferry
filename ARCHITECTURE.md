@@ -113,12 +113,15 @@ Pairing has two independent axes rather than a growing table of device quirks:
   interactive confirmation path.
 
 ANCS connection policy and ANCS solicitation are deliberately separate. After
-the Classic bond is trusted and settled, setup broadcasts the short-lived
-solicitation whenever the controller can advertise, including compatibility
-mode. Real-device testing indicates that older iOS uses this signal to expose
-its MAP/PBAP permission toggles even though BlueFerry must not connect ANCS.
-Full mode starts the daemon with LE held back until its first MAP/PBAP attempt
-completes; compatibility mode leaves LE disabled. Pairing reports record the
+the Classic bond is trusted and settled, setup broadcasts solicitation whenever
+the controller can advertise, including compatibility mode. Real-device testing
+indicates that older iOS uses this signal to expose its MAP/PBAP permission
+toggles even though BlueFerry must not connect ANCS. At runtime a dedicated
+supervisor keeps solicitation on air until MAP/PBAP and an end-to-end ANCS
+Control Point round trip are both healthy, preserves a three-minute permission
+window, and re-registers the advertisement if BlueZ releases it or changes
+D-Bus owner. Full mode holds a missing LE bearer behind every MAP/PBAP reconnect
+attempt; compatibility mode leaves LE disabled. Pairing reports record the
 resolved policy, controller capability, ordered timeline, package build ID, and
 full source-content SHA.
 

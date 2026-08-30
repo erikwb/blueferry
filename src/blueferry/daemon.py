@@ -47,6 +47,7 @@ from blueferry.setup_verification import (
     NOTIFICATION_ACCESS,
     SetupVerification,
 )
+from blueferry.solicitation_supervisor import SolicitationSupervisor
 from blueferry.storage_security import NO_STORAGE, StorageSecurity
 
 log = logging.getLogger(__name__)
@@ -86,6 +87,7 @@ class Daemon:
         )
         self.listener: MapEventListener | None = None
         self.ancs: AncsClient | None = None
+        self.solicitation = SolicitationSupervisor(config.ADAPTER)
         device_path = (
             f"/org/bluez/{config.ADAPTER}/"
             f"dev_{config.IPHONE_MAC.replace(':', '_')}"
@@ -98,6 +100,7 @@ class Daemon:
             le_enabled=False,
             on_status=self._emit_status,
             on_le_state=self._observe_le_state,
+            inbound_le_primed=self.solicitation.active,
         )
         self._contacts_refresh_id: int | None = None
         self._bus_name = None
@@ -143,8 +146,25 @@ class Daemon:
             emit()
 
     def _observe_le_state(self, connected: bool | None) -> None:
+        if connected is not True:
+            self.solicitation.set_needed(True)
         if self.ancs is not None:
             self.ancs.observe_bearer_state(connected)
+
+    def _on_ancs_status(self) -> None:
+        # StartNotify is not the success boundary.  Keep solicitation on air
+        # until a Control Point/Data Source round trip proves ANCS usable.
+        self._sync_solicitation()
+        self._emit_status()
+
+    def _sync_solicitation(self) -> None:
+        end_to_end_ready = bool(
+            config.ANCS_ENABLED
+            and self.ancs is not None
+            and self.ancs.connected
+            and self.profiles.ready
+        )
+        self.solicitation.set_needed(not end_to_end_ready)
 
     def _mark_setup_task(self, task: str) -> bool:
         try:
@@ -269,6 +289,7 @@ class Daemon:
                 "but MAP/PBAP may be refused. Re-pair on iPhone after the "
                 "adapter is in A/V Hands-Free CoD if the toggles aren't there."
             )
+        self.solicitation.start()
 
         # A bond records trust but does not guarantee a live connection.
         # The bearer supervisor establishes BR/EDR but deliberately holds LE
@@ -283,7 +304,7 @@ class Daemon:
             candidate = AncsClient(
                 device_path,
                 on_event=self.events.ancs,
-                on_status=self._emit_status,
+                on_status=self._on_ancs_status,
                 on_bluez_restart=self._on_bluez_restart,
                 on_transport_failure=self.bearers.recover_le_transport,
                 include_non_message_notifications=lambda: (
@@ -320,6 +341,9 @@ class Daemon:
 
     def _on_bluez_restart(self) -> None:
         """Reapply MAP-first ordering before accepting the new BlueZ owner."""
+        # The advertisement registration belonged to the old owner.  Prime
+        # inbound LE immediately instead of waiting for another link event.
+        self.solicitation.reset_after_bluez_restart()
         # Hold first because resetting bearer observations immediately probes
         # the replacement daemon. The old OBEX transport is already gone, so
         # discard its local sessions without asking obexd to remove them.
@@ -332,6 +356,7 @@ class Daemon:
 
     def _profiles_lost(self, _reason: str) -> None:
         """Stop consumers that hold objects belonging to old sessions."""
+        self.solicitation.set_needed(True)
         if self.listener is not None:
             self.listener.stop()
             self.listener = None
@@ -382,6 +407,8 @@ class Daemon:
                 submit_obex=self.obex_worker.submit,
             )
             self.listener.start()
+
+        self._sync_solicitation()
 
         log.info(
             "=== BlueFerry ready (contacts=%d, sinks=%s) ===",
@@ -532,6 +559,7 @@ class Daemon:
             self.listener.stop()
         if self.ancs is not None:
             self.ancs.stop()
+        self.solicitation.stop()
         if self._sleep_match is not None:
             try:
                 self._sleep_match.remove()
@@ -543,7 +571,6 @@ class Daemon:
         self.obex_worker.shutdown(cleanup=self.sessions.close_all)
         self.storage.close()
         self.sessions.stop_monitoring()
-        bluez_setup.unregister_advert()
         main_loop.quit()
 
     def run(self) -> int:

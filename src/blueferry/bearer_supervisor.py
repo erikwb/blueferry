@@ -22,6 +22,10 @@ CLASSIC_SETTLE_SECONDS = 3
 # into a five-second hammer against the iPhone; back off exponentially
 # instead, up to this ceiling, and reset as soon as a bearer connects.
 BACKOFF_CAP_SECONDS = 300
+# A live LE bearer proves that the phone is in range and answering.  Classic
+# may still decline a page temporarily, but it must not inherit the five-minute
+# absence backoff while ANCS is demonstrably reachable.
+LE_CONNECTED_CLASSIC_BACKOFF_CAP_SECONDS = 30
 _INTERFACES = {
     "bredr": "org.bluez.Bearer.BREDR1",
     "le": "org.bluez.Bearer.LE1",
@@ -93,6 +97,7 @@ Connect = Callable[[str, Callable[[], None], Callable[[Exception], None]], None]
 Disconnect = Callable[[str, Callable[[], None], Callable[[Exception], None]], None]
 Prefer = Callable[[str], None]
 ObserveLeState = Callable[[bool | None], None]
+InboundLePrimed = Callable[[], bool]
 Schedule = Callable[[int, Callable[[], bool]], int]
 Cancel = Callable[[int], object]
 Clock = Callable[[], float]
@@ -117,6 +122,7 @@ class BearerSupervisor:
         connect: Connect | None = None,
         disconnect: Disconnect | None = None,
         prefer: Prefer | None = None,
+        inbound_le_primed: InboundLePrimed | None = None,
         schedule: Schedule = GLib.timeout_add_seconds,
         cancel: Cancel = GLib.source_remove,
         clock: Clock = time.monotonic,
@@ -130,6 +136,7 @@ class BearerSupervisor:
         self._prefer = prefer or (
             self._prefer_bluez if connect is None else lambda _kind: None
         )
+        self._inbound_le_primed = inbound_le_primed or (lambda: True)
         self._schedule = schedule
         self._cancel = cancel
         self._clock = clock
@@ -141,6 +148,12 @@ class BearerSupervisor:
         self._connecting: set[str] = set()
         self._disconnecting: set[str] = set()
         self._le_hold_disconnect_pending = False
+        # Outbound Bearer.LE1.Connect is only a bootstrap hint.  Real-device
+        # traces show the solicitation advertisement to be the reliable
+        # reconnect path, while repeating Connect can leave BlueZ in an
+        # InProgress loop.  Spend one dial, then leave the radio to solicitation
+        # until BlueZ is replaced or ANCS deliberately resets the transport.
+        self._le_dial_spent = False
         self._le_reset_pending = False
         self._le_reset_failures = 0
         self._next_le_reset_attempt = 0.0
@@ -214,6 +227,7 @@ class BearerSupervisor:
         # The old owner's live link is gone. While the profile gate is closed,
         # reject any LE link that appears under the replacement owner.
         self._le_hold_disconnect_pending = not self._le_enabled
+        self._le_dial_spent = False
         self._le_reset_pending = False
         self._le_reset_failures = 0
         self._next_le_reset_attempt = 0.0
@@ -237,6 +251,9 @@ class BearerSupervisor:
             log.warning(
                 "ANCS transport disagrees with BlueZ; resetting the LE bearer"
             )
+        # The targeted disconnect creates a new transport generation, so it is
+        # appropriate to give that generation one fresh outbound bootstrap.
+        self._le_dial_spent = False
         self._le_reset_pending = True
         self._cancel_le_settle()
         if self._le_enabled:
@@ -250,6 +267,7 @@ class BearerSupervisor:
         self._connecting.clear()
         self._disconnecting.clear()
         self._le_hold_disconnect_pending = False
+        self._le_dial_spent = False
         self._le_reset_pending = False
         self._cancel_le_settle()
         if self._timer_id is not None:
@@ -316,7 +334,7 @@ class BearerSupervisor:
         return True
 
     def _schedule_le_connect(self) -> None:
-        if self._le_settle_id is not None:
+        if self._le_settle_id is not None or self._le_dial_exhausted():
             return
         log.info(
             "iPhone BR/EDR connected; allowing %ds to settle before LE",
@@ -371,6 +389,12 @@ class BearerSupervisor:
             self._last_errors.pop(kind, None)
             self._failures[kind] = 0
             self._next_attempt[kind] = 0.0
+        if kind == "le" and value is True and previous is not True:
+            # An inbound LE connection is the missing presence event for a
+            # Classic backoff accumulated while the phone was out of range.
+            self._last_errors.pop("bredr", None)
+            self._failures["bredr"] = 0
+            self._next_attempt["bredr"] = 0.0
         # Repeating stale Connected=true after a failed GATT operation can
         # race BlueZ's pending CCC registration with ATT teardown. Consumers
         # therefore receive only genuine bearer lifecycle transitions.
@@ -382,8 +406,12 @@ class BearerSupervisor:
     def _request_connect(self, kind: str) -> None:
         if kind in self._connecting:
             return
+        if kind == "le" and self._le_dial_exhausted():
+            return
         if self._clock() < self._next_attempt[kind]:
             return
+        if kind == "le":
+            self._le_dial_spent = True
         self._connecting.add(kind)
         generation = self._generation
         log.info("connecting iPhone %s bearer", kind.upper())
@@ -407,6 +435,7 @@ class BearerSupervisor:
         self._last_errors.pop(kind, None)
         if kind == "le" and not self._le_enabled:
             self._le_hold_disconnect_pending = True
+            self._le_dial_spent = False
             self._request_le_disconnect(force=True)
             # The request completed only after policy closed the gate. Treat
             # rejecting it as cancellation, not as a failed connection that
@@ -420,7 +449,7 @@ class BearerSupervisor:
         self._failures[kind] += 1
         delay = min(
             POLL_SECONDS * (2 ** self._failures[kind]),
-            BACKOFF_CAP_SECONDS,
+            self._backoff_cap(kind),
         )
         self._next_attempt[kind] = self._clock() + delay
         log.info(
@@ -434,6 +463,11 @@ class BearerSupervisor:
         if generation != self._generation:
             return
         self._connecting.discard(kind)
+        if kind == "le" and not self._le_enabled:
+            # Policy closed the gate while the asynchronous request was in
+            # flight.  This generation never received its permitted attempt.
+            self._le_dial_spent = False
+            return
         name, message = _connect_error_parts(error)
         if name in {
             "org.bluez.Error.AlreadyConnected",
@@ -445,7 +479,7 @@ class BearerSupervisor:
         self._failures[kind] += 1
         delay = min(
             POLL_SECONDS * (2 ** self._failures[kind]),
-            BACKOFF_CAP_SECONDS,
+            self._backoff_cap(kind),
         )
         self._next_attempt[kind] = self._clock() + delay
         if self._last_errors.get(kind) != (name, message):
@@ -457,6 +491,15 @@ class BearerSupervisor:
                 delay,
             )
             self._last_errors[kind] = (name, message)
+
+    def _le_dial_exhausted(self) -> bool:
+        """Yield to inbound solicitation only when it is actually on air."""
+        return self._le_dial_spent and self._inbound_le_primed()
+
+    def _backoff_cap(self, kind: str) -> int:
+        if kind == "bredr" and self.le_connected:
+            return LE_CONNECTED_CLASSIC_BACKOFF_CAP_SECONDS
+        return BACKOFF_CAP_SECONDS
 
     def _request_le_disconnect(self, *, force: bool = False) -> None:
         if "le" in self._disconnecting:

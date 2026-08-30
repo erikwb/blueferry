@@ -49,14 +49,30 @@ class _Profiles:
         )
 
 
+class _Solicitation:
+    def __init__(self, calls):
+        self.calls = calls
+
+    def start(self):
+        self.calls.append("solicitation-start")
+
+    def set_needed(self, needed):
+        self.calls.append(("solicitation-needed", needed))
+
+    def reset_after_bluez_restart(self):
+        self.calls.append("solicitation-reset")
+
+
 def _daemon(calls):
     value = daemon.Daemon.__new__(daemon.Daemon)
     value.bearers = _Bearer(calls)
     value.events = _Events(calls)
     value.profiles = _Profiles(calls)
+    value.solicitation = _Solicitation(calls)
     value.notification_policy = type("Policy", (), {"value": "messages"})()
     value.setup_verification = type("Verification", (), {"verified": ()})()
     value.ancs = None
+    value._dbus_service = None
     value._watch_sleep_resume = lambda: calls.append("sleep-watch")
     return value
 
@@ -85,6 +101,7 @@ def test_compatibility_daemon_solicits_but_never_starts_ancs(monkeypatch):
 
     assert calls == [
         "solicitation-prepare",
+        "solicitation-start",
         "bearers-start",
         "sleep-watch",
         "events-setup",
@@ -165,7 +182,25 @@ def test_bluez_restart_reapplies_profile_gate_before_resetting_bearers():
     value._on_bluez_restart()
 
     assert calls == [
+        "solicitation-reset",
         "bearers-hold-le",
         ("profiles-reconnect", "bluetoothd restarted", False),
         "bearers-reset",
+    ]
+
+
+def test_solicitation_stays_up_until_profiles_and_ancs_are_ready(monkeypatch):
+    calls = []
+    value = _daemon(calls)
+    monkeypatch.setattr(daemon.config, "ANCS_ENABLED", True)
+    value.ancs = type("Ancs", (), {"connected": True})()
+
+    value.profiles.ready = False
+    value._sync_solicitation()
+    value.profiles.ready = True
+    value._sync_solicitation()
+
+    assert calls == [
+        ("solicitation-needed", True),
+        ("solicitation-needed", False),
     ]

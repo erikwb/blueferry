@@ -158,6 +158,9 @@ class _AncsAdvert(dbus.service.Object):
     @dbus.service.method("org.bluez.LEAdvertisement1",
                          in_signature="", out_signature="")
     def Release(self) -> None:
+        global _advert_registered
+        _advert_registered = False
+        log.info("BlueZ released the ANCS solicitation advertisement")
         return None
 
     @dbus.service.method("org.freedesktop.DBus.Properties",
@@ -200,6 +203,17 @@ class _AncsAdvert(dbus.service.Object):
 
 _advert_instance: _AncsAdvert | None = None
 _advert_registered = False
+
+
+def advert_registered() -> bool:
+    """Return whether the current BlueZ owner accepted our advertisement."""
+    return _advert_registered
+
+
+def forget_advert_registration() -> None:
+    """Discard registration state that belonged to a departed BlueZ owner."""
+    global _advert_registered
+    _advert_registered = False
 
 
 def _active_advertisements(adapter: str | None = None) -> int | None:
