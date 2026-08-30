@@ -201,8 +201,8 @@ def test_native_backends_ship_the_btmgmt_system_unit_template() -> None:
     assert "*[!0-9]*" in helper
     assert ': | /usr/bin/btmgmt --index "$1" class 4 8' in helper
     assert "org.freedesktop.systemd1.manage-units" in rule
-    assert "AUTH_ADMIN" in rule
-    assert "AUTH_ADMIN_KEEP" not in rule
+    assert "polkit.Result.YES" in rule
+    assert "AUTH_ADMIN" not in rule
     assert "@[0-9]+\\.service" in rule
     assert "[Install]" not in unit
     assert f"systemd/{unit_name}" in deb_rules

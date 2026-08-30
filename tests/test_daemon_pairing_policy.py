@@ -63,11 +63,23 @@ class _Solicitation:
         self.calls.append("solicitation-reset")
 
 
+class _AdapterClass:
+    def __init__(self, calls):
+        self.calls = calls
+
+    def start(self):
+        self.calls.append("adapter-class-start")
+
+    def poke(self):
+        self.calls.append("adapter-class-poke")
+
+
 def _daemon(calls):
     value = daemon.Daemon.__new__(daemon.Daemon)
     value.bearers = _Bearer(calls)
     value.events = _Events(calls)
     value.profiles = _Profiles(calls)
+    value.adapter_class = _AdapterClass(calls)
     value.solicitation = _Solicitation(calls)
     value.notification_policy = type("Policy", (), {"value": "messages"})()
     value.setup_verification = type("Verification", (), {"verified": ()})()
@@ -100,6 +112,7 @@ def test_compatibility_daemon_solicits_but_never_starts_ancs(monkeypatch):
     value._initialize_bluetooth()
 
     assert calls == [
+        "adapter-class-start",
         "solicitation-prepare",
         "solicitation-start",
         "bearers-start",
@@ -182,6 +195,7 @@ def test_bluez_restart_reapplies_profile_gate_before_resetting_bearers():
     value._on_bluez_restart()
 
     assert calls == [
+        "adapter-class-poke",
         "solicitation-reset",
         "bearers-hold-le",
         ("profiles-reconnect", "bluetoothd restarted", False),

@@ -9,10 +9,10 @@ the Linux side:
    payloads keep the advertisement visible to iOS during first pairing.
 3. Adapter is powered.
 
-This module owns those three concerns. The daemon may verify them on startup,
-but privileged Class-of-Device changes are limited to the explicit pairing
-flow and run through a hardened, argument-validating systemd service after a
-fresh Polkit authorization.
+This module owns those three concerns. Class-of-Device changes run through a
+hardened, argument-validating systemd service; its fixed operation is available
+to an active local daemon so volatile controller state can be repaired after a
+Bluetooth reset without granting raw Bluetooth capabilities to BlueFerry.
 """
 from __future__ import annotations
 

@@ -115,6 +115,11 @@ reapply the same gate; compatibility mode leaves LE disabled. Before later
 connection requests the daemon selects the corresponding BlueZ
 `PreferredBearer` when that property is available.
 
+Because `btmgmt class` is reset by controller and bluetoothd lifecycles, the
+daemon also reconciles the A/V Hands-Free Class-of-Device at startup, after a
+BlueZ owner change, and once per minute. Repair goes through the packaged fixed
+systemd helper rather than granting the daemon raw Bluetooth capabilities.
+
 On a clean iOS 26 test this ordering opened MAP/PBAP first; the pending LE
 request completed three seconds later, resolved all three ANCS characteristics,
 and presented the system-notification consent prompt. The first Control Point

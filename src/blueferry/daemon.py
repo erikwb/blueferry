@@ -13,6 +13,7 @@ import dbus
 from gi.repository import GLib
 
 from blueferry import __version__, bluez_setup, config
+from blueferry.adapter_class_supervisor import AdapterClassSupervisor
 from blueferry.ancs.client import AncsClient
 from blueferry.backend_lifecycle import installed_release
 from blueferry.backend_operations import BackendDependencies
@@ -87,6 +88,7 @@ class Daemon:
         )
         self.listener: MapEventListener | None = None
         self.ancs: AncsClient | None = None
+        self.adapter_class = AdapterClassSupervisor(config.ADAPTER)
         self.solicitation = SolicitationSupervisor(config.ADAPTER)
         device_path = (
             f"/org/bluez/{config.ADAPTER}/"
@@ -283,6 +285,10 @@ class Daemon:
                 "the saved iPhone is not currently paired; open a client to pair it"
             )
 
+        # Class-of-Device is controller state, not durable configuration.
+        # Repair it before opening either bearer and continue supervising it
+        # for bluetoothd/controller resets during this daemon generation.
+        self.adapter_class.start()
         if not bluez_setup.prepare():
             log.warning(
                 "bluez_setup.prepare reported issues — continuing anyway, "
@@ -341,6 +347,7 @@ class Daemon:
 
     def _on_bluez_restart(self) -> None:
         """Reapply MAP-first ordering before accepting the new BlueZ owner."""
+        self.adapter_class.poke()
         # The advertisement registration belonged to the old owner.  Prime
         # inbound LE immediately instead of waiting for another link event.
         self.solicitation.reset_after_bluez_restart()
@@ -539,6 +546,7 @@ class Daemon:
 
     def stop(self) -> None:
         log.info("=== BlueFerry stopping ===")
+        self.adapter_class.stop()
         self.bearers.stop()
         self.profiles.stop()
         for tid_attr in (

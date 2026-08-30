@@ -125,6 +125,13 @@ attempt; compatibility mode leaves LE disabled. Pairing reports record the
 resolved policy, controller capability, ordered timeline, package build ID, and
 full source-content SHA.
 
+The adapter Class-of-Device is volatile controller state. The unprivileged
+daemon checks it at startup, after a BlueZ owner change, and periodically. On
+drift it starts one fixed, capability-bounded systemd helper that can only set
+the validated adapter index to A/V Hands-Free; a narrow Polkit rule permits
+that operation for an active local session without exposing general `btmgmt`
+or systemd control.
+
 ## Lifecycle
 
 The backend unit is a systemd user service with `Type=dbus`. Session D-Bus can
