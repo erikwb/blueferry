@@ -73,6 +73,21 @@ def preferred_bearer_unavailable(error: Exception) -> bool:
     return "no such property" in detail and "preferredbearer" in detail
 
 
+def bearer_connected_unavailable(error: Exception) -> bool:
+    """True when a BlueZ bearer interface has no Connected property."""
+    if not isinstance(error, dbus.exceptions.DBusException):
+        return False
+    name = error.get_dbus_name() or ""
+    if name in {
+        "org.freedesktop.DBus.Error.UnknownInterface",
+        "org.freedesktop.DBus.Error.UnknownMethod",
+        "org.freedesktop.DBus.Error.UnknownProperty",
+    }:
+        return True
+    detail = (error.get_dbus_message() or "").casefold()
+    return "no such property" in detail and "connected" in detail
+
+
 ReadConnected = Callable[[str], bool | None]
 Connect = Callable[[str, Callable[[], None], Callable[[Exception], None]], None]
 Disconnect = Callable[[str, Callable[[], None], Callable[[Exception], None]], None]
@@ -463,10 +478,29 @@ class BearerSupervisor:
         obj = get_system_bus().get_object("org.bluez", self.device_path)
         properties = dbus.Interface(obj, "org.freedesktop.DBus.Properties")
         if kind == "bredr":
-            # Bearer.BREDR1 is marker-only on some packaged BlueZ builds (no
-            # Connected property). Before LE is up, Device1.Connected is the
-            # observable Classic ACL state.
-            return bool(properties.Get("org.bluez.Device1", "Connected", timeout=5.0))
+            # Device1.Connected is true when *either* bearer is up. Prefer the
+            # bearer-specific property so an LE-only link is not mistaken for
+            # the Classic connection required by MAP/PBAP. Bearer.BREDR1 is
+            # marker-only on some older packaged BlueZ builds, where the
+            # aggregate property remains the only available fallback.
+            try:
+                return bool(
+                    properties.Get(
+                        _INTERFACES["bredr"],
+                        "Connected",
+                        timeout=5.0,
+                    )
+                )
+            except dbus.exceptions.DBusException as error:
+                if not bearer_connected_unavailable(error):
+                    raise
+                return bool(
+                    properties.Get(
+                        "org.bluez.Device1",
+                        "Connected",
+                        timeout=5.0,
+                    )
+                )
         return bool(properties.Get(_INTERFACES[kind], "Connected", timeout=5.0))
 
     def _connect_bluez(
