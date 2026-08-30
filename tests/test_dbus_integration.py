@@ -32,10 +32,15 @@ class _Sessions:
 
 class _Policy:
     value = "messages"
+    contacts_only = False
 
     def set(self, value: str) -> str:
         self.value = value
         return value
+
+    def set_contacts_only(self, enabled: bool) -> bool:
+        self.contacts_only = enabled
+        return enabled
 
 
 @pytest.fixture
@@ -161,6 +166,12 @@ def test_notification_policy_round_trips_without_profile_io(public_service) -> N
             outcome["after"] = str(
                 interface.SetNotificationPolicy("none", timeout=5)
             )
+            outcome["contacts_before"] = bool(
+                interface.GetContactsOnlyNotifications(timeout=5)
+            )
+            outcome["contacts_after"] = bool(
+                interface.SetContactsOnlyNotifications(True, timeout=5)
+            )
         except Exception as error:
             outcome["error"] = error
         finally:
@@ -171,9 +182,15 @@ def test_notification_policy_round_trips_without_profile_io(public_service) -> N
     _dispatch_until(lambda: not client_thread.is_alive())
     client_thread.join(timeout=1)
 
-    assert outcome == {"before": "messages", "after": "none"}
+    assert outcome == {
+        "before": "messages",
+        "after": "none",
+        "contacts_before": False,
+        "contacts_after": True,
+    }
     assert policy.value == "none"
-    assert policy_changes == [True]
+    assert policy.contacts_only is True
+    assert policy_changes == [True, True]
 
 
 def test_live_signal_contains_only_an_opaque_revision(public_service) -> None:

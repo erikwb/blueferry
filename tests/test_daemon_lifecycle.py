@@ -20,7 +20,9 @@ def _bare_daemon():
     instance.obex_worker = SimpleNamespace(submit=lambda *_args, **_kwargs: None)
     instance.contacts = object()
     instance.connectivity = Connectivity()
-    instance.notification_policy = SimpleNamespace(value="messages")
+    instance.notification_policy = SimpleNamespace(
+        value="messages", contacts_only=False
+    )
     storage_status = SimpleNamespace(
         policy="encrypted", state="ready", detail="", can_read=True
     )
@@ -150,6 +152,7 @@ def test_status_exposes_split_ancs_and_last_le_error(monkeypatch):
     assert status["ancs"] is False
     assert status["ancs_subscribed"] is True
     assert status["ancs_authorized"] is False
+    assert status["contacts_only_notifications"] is False
     assert status["bredr"] is True
     assert status["le"] is False
     assert status["last_le_error"] == "org.bluez.Error.Failed"

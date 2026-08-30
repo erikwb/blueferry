@@ -46,6 +46,13 @@ def _texts(args: Mapping[str, Any], name: str) -> list[str]:
     return value
 
 
+def _boolean(args: Mapping[str, Any], name: str) -> bool:
+    value = args.get(name)
+    if not isinstance(value, bool):
+        raise RequestError(f"{name} must be a boolean")
+    return value
+
+
 class QuickshellBridge:
     """Decode local requests and dispatch them through ``BackendClient``."""
 
@@ -100,6 +107,10 @@ class QuickshellBridge:
             return self.client.delete_threads(_texts(args, "thread_keys"))
         if method == "set_notification_policy":
             return self.client.set_notification_policy(_text(args, "policy"))
+        if method == "set_contacts_only_notifications":
+            return self.client.set_contacts_only_notifications(
+                _boolean(args, "enabled")
+            )
         if method == "set_storage_policy":
             return self.client.set_storage_policy(_text(args, "policy"))
         if method == "unlock_storage":

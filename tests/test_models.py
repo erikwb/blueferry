@@ -10,6 +10,7 @@ def test_status_defaults_missing_fields_and_preserves_new_fields():
             "daemon": True,
             "contacts": "12",
             "notification_policy": "all",
+            "contacts_only_notifications": True,
             "storage_policy": "none",
             "storage_state": "disabled",
             "verified_iphone_setup": ["contacts"],
@@ -24,6 +25,7 @@ def test_status_defaults_missing_fields_and_preserves_new_fields():
     assert status.map is False
     assert status.contacts == 12
     assert status.notification_policy == "all"
+    assert status.contacts_only_notifications is True
     assert status.storage_policy == "none"
     assert status.storage_state == "disabled"
     assert status.connectivity_state == "map-connection-refused"
@@ -31,6 +33,7 @@ def test_status_defaults_missing_fields_and_preserves_new_fields():
     assert status.retry_delay_seconds == 15
     assert status.verified_iphone_setup == ("contacts",)
     assert status.to_dict()["verified_iphone_setup"] == ["contacts"]
+    assert status.to_dict()["contacts_only_notifications"] is True
     assert status.extra["future_capability"] == "supported"
     assert status.to_dict()["future_capability"] == "supported"
 

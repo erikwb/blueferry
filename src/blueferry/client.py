@@ -190,6 +190,26 @@ class BackendClient:
         except dbus.exceptions.DBusException as error:
             raise BackendError(error.get_dbus_message() or str(error)) from error
 
+    def contacts_only_notifications(self) -> bool:
+        try:
+            return bool(
+                self._iface(MESSAGES_IFACE).GetContactsOnlyNotifications(
+                    timeout=POLICY_CALL_TIMEOUT_SEC
+                )
+            )
+        except dbus.exceptions.DBusException as error:
+            raise BackendError(error.get_dbus_message() or str(error)) from error
+
+    def set_contacts_only_notifications(self, enabled: bool) -> bool:
+        try:
+            return bool(
+                self._iface(MESSAGES_IFACE).SetContactsOnlyNotifications(
+                    dbus.Boolean(enabled), timeout=POLICY_CALL_TIMEOUT_SEC
+                )
+            )
+        except dbus.exceptions.DBusException as error:
+            raise BackendError(error.get_dbus_message() or str(error)) from error
+
     def storage_policy(self) -> str:
         try:
             return str(self._iface(MESSAGES_IFACE).GetStoragePolicy(

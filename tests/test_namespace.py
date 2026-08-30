@@ -429,6 +429,19 @@ def test_qt_connection_health_stays_compact_and_centered() -> None:
     assert "Kirigami.InlineMessage" in health
 
 
+def test_all_gui_clients_offer_contacts_only_message_notifications() -> None:
+    clients = [
+        (ROOT / "src/blueferry/ui/status.py").read_text(),
+        (ROOT / "src/blueferry/qt/qml/Main.qml").read_text(),
+        (ROOT / "data/quickshell/shell.qml").read_text(),
+    ]
+
+    for client in clients:
+        lowered = client.casefold()
+        assert "only notify for contacts" in lowered
+        assert "unknown senders remain available in message history" in lowered
+
+
 def test_qt_sends_group_replies_without_a_confirmation_dialog() -> None:
     qml = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
 

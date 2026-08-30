@@ -48,6 +48,7 @@ ShellRoot {
   property string onboardingStage: onboarding.stage
   property var backendStatus: ({})
   property string notificationPolicy: "messages"
+  property bool contactsOnlyNotifications: false
   property string storagePolicy: "encrypted"
   property string storageState: "locked"
   property string storageDetail: ""
@@ -61,6 +62,7 @@ ShellRoot {
   property bool groupParticipantsBusy: false
   property bool deleteThreadsBusy: false
   property bool notificationPolicyBusy: false
+  property bool contactsOnlyNotificationsBusy: false
   property bool storagePolicyBusy: false
   property bool storageUnlockBusy: false
 
@@ -334,6 +336,8 @@ ShellRoot {
         var policy = result.notification_policy || "messages"
         root.notificationPolicy = ["all", "messages", "none"].indexOf(policy) >= 0
           ? policy : "messages"
+        root.contactsOnlyNotifications =
+          result.contacts_only_notifications === true
         var storagePolicy = result.storage_policy || "encrypted"
         root.storagePolicy = ["encrypted", "plaintext", "none"].indexOf(storagePolicy) >= 0
           ? storagePolicy : "encrypted"
@@ -378,6 +382,10 @@ ShellRoot {
       } else if (method === "set_notification_policy") {
         root.notificationPolicyBusy = false
         root.notificationPolicy = String(result)
+        root.reload()
+      } else if (method === "set_contacts_only_notifications") {
+        root.contactsOnlyNotificationsBusy = false
+        root.contactsOnlyNotifications = result === true
         root.reload()
       } else if (method === "set_storage_policy") {
         root.storagePolicyBusy = false
@@ -424,6 +432,10 @@ ShellRoot {
       } else if (method === "set_notification_policy") {
         root.notificationPolicyBusy = false
         root.errorText = message || "Could not save notification preference"
+      } else if (method === "set_contacts_only_notifications") {
+        root.contactsOnlyNotificationsBusy = false
+        root.errorText = message || "Could not save notification preference"
+        root.reload()
       } else if (method === "set_storage_policy") {
         root.storagePolicyBusy = false
         root.errorText = message
@@ -439,6 +451,7 @@ ShellRoot {
         root.groupParticipantsBusy = false
         root.deleteThreadsBusy = false
         root.notificationPolicyBusy = false
+        root.contactsOnlyNotificationsBusy = false
         root.storagePolicyBusy = false
         root.storageUnlockBusy = false
         root.errorText = message
@@ -1431,6 +1444,20 @@ ShellRoot {
               root.notificationPolicyBusy = true
               backendBridge.request("set_notification_policy", {
                 policy: values[currentIndex]
+              })
+            }
+          }
+          FerryCheckBox {
+            text: "Only notify for contacts"
+            checked: root.contactsOnlyNotifications
+            enabled: root.configured && root.notificationPolicy !== "none"
+              && !root.contactsOnlyNotificationsBusy
+            Accessible.description: "Unknown senders remain available in message history"
+            onClicked: {
+              root.contactsOnlyNotifications = checked
+              root.contactsOnlyNotificationsBusy = true
+              backendBridge.request("set_contacts_only_notifications", {
+                enabled: checked
               })
             }
           }
