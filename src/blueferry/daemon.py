@@ -133,14 +133,14 @@ class Daemon:
             on_ready=self._post_sessions_setup,
             on_lost=self._profiles_lost,
             on_status=self._emit_status,
+            on_partial_ready=self._post_available_sessions_setup,
             on_attempt_pending=(
                 self.bearers.hold_le if config.ANCS_ENABLED else None
             ),
             on_first_attempt_complete=(
                 self.bearers.enable_le if config.ANCS_ENABLED else None
             ),
-            on_transport_failure=self.bearers.recover_classic_transport,
-            attempt_ready=lambda: self.bearers.bredr_ready,
+            attempt_ready=lambda: self.bearers.bredr_connected,
         )
 
     def _emit_status(self) -> None:
@@ -391,24 +391,22 @@ class Daemon:
         self.bearers.poke()
         self.profiles.reconnect("system resumed")
 
-    def _post_sessions_setup(self) -> None:
-        """Everything that requires live MAP+PBAP sessions. Idempotent so
-        we can call it either at first-attempt success or at retry success."""
-        self.bearers.confirm_classic_transport()
+    def _post_available_sessions_setup(self) -> None:
+        """Start consumers for whichever OBEX profiles are currently live."""
         # Warm contacts; if empty, do a one-time pull. PBAP pull is cheap.
-        if self.contacts.count() == 0:
+        if self.sessions.pbap is not None and self.contacts.count() == 0:
             log.info("contacts cache empty — pulling from iPhone via PBAP")
             self._refresh_contacts()
 
         # Schedule periodic contacts refresh
-        if self._contacts_refresh_id is None:
+        if self.sessions.pbap is not None and self._contacts_refresh_id is None:
             self._contacts_refresh_id = GLib.timeout_add_seconds(
                 CONTACTS_REFRESH_SEC, self._periodic_refresh_contacts
             )
 
         # Wire up MAP MNS listener.
         # Resolve through the current cache; contacts refreshes in place.
-        if self.listener is None:
+        if self.sessions.map is not None and self.listener is None:
             self.listener = MapEventListener(
                 sessions=self.sessions,
                 on_sms=self.events.message,
@@ -416,6 +414,10 @@ class Daemon:
                 submit_obex=self.obex_worker.submit,
             )
             self.listener.start()
+
+    def _post_sessions_setup(self) -> None:
+        """Finish setup once both MAP and PBAP are live."""
+        self._post_available_sessions_setup()
 
         self._sync_solicitation()
 

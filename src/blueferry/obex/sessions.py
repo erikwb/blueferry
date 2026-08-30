@@ -175,22 +175,30 @@ class SessionManager:
         self.start_monitoring()
         if self.map is not None and self.pbap is not None:
             return
-        # A previous partial open must not leak into this attempt. Otherwise
-        # removing it below can emit a loss signal that races the new session.
-        if self.map is not None or self.pbap is not None:
-            self.close_all()
-        _remove_stale_sessions({"MAP", "PBAP"})
-        try:
-            self.map = _create_session("MAP")
-            log.info("MAP session: %s", self.map.path)
-            self.pbap = _create_session("PBAP")
-            log.info("PBAP session: %s", self.pbap.path)
-        except Exception:
+        missing = {
+            target
+            for target, session in (("MAP", self.map), ("PBAP", self.pbap))
+            if session is None
+        }
+        _remove_stale_sessions(missing)
+        failures: list[Exception] = []
+        for target, attribute in (("MAP", "map"), ("PBAP", "pbap")):
+            if getattr(self, attribute) is not None:
+                continue
             try:
-                self.close_all()
-            except Exception:
-                log.debug("partial OBEX session cleanup failed", exc_info=True)
-            raise
+                session = _create_session(target)
+            except Exception as error:
+                failures.append(error)
+                continue
+            setattr(self, attribute, session)
+            log.info("%s session: %s", target, session.path)
+
+        if failures:
+            # Keep a successful sibling profile alive. iOS can reject its
+            # single MAP connection while PBAP remains independently usable;
+            # tearing PBAP down on every MAP retry hid that distinction and
+            # needlessly discarded contacts access.
+            raise failures[0]
 
     def open_pbap_only(self) -> None:
         """Open only PBAP for a standalone contacts operation.

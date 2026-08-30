@@ -5,7 +5,6 @@ from blueferry.obex.sessions import ObexSession, SessionError
 from blueferry.profile_supervisor import (
     INITIAL_MAP_CONNECT_POLL_SECONDS,
     MAP_RECONNECT_POLL_SECONDS,
-    TRANSPORT_FAILURES_BEFORE_RESET,
     ProfileSupervisor,
 )
 
@@ -63,10 +62,10 @@ class FakeWorker:
 
 def make_supervisor(
     *,
+    partial_ready=None,
     attempt_pending=None,
     first_attempt=None,
     attempt_ready=None,
-    transport_failure=None,
 ):
     sessions = FakeSessions()
     worker = FakeWorker()
@@ -81,9 +80,9 @@ def make_supervisor(
         on_ready=lambda: ready.append(True),
         on_lost=lost.append,
         on_status=lambda: statuses.append(True),
+        on_partial_ready=partial_ready,
         on_attempt_pending=attempt_pending,
         on_first_attempt_complete=first_attempt,
-        on_transport_failure=transport_failure,
         attempt_ready=attempt_ready,
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 99,
         cancel=lambda _source: True,
@@ -120,6 +119,22 @@ def test_forbidden_failure_polls_and_retries() -> None:
     assert scheduled[0][0] == INITIAL_MAP_CONNECT_POLL_SECONDS
     assert scheduled[0][1]() is False
     assert len(worker.jobs) == 1
+
+
+def test_partial_profile_availability_is_published_while_retrying() -> None:
+    partial = []
+    supervisor, sessions, worker, scheduled, _ready, _lost, _statuses = (
+        make_supervisor(partial_ready=lambda: partial.append(True))
+    )
+    supervisor.start()
+    sessions.pbap = ObexSession("PBAP", "/pbap")
+
+    worker.fail(SessionError("MAP transport got disconnected"))
+
+    assert partial == [True]
+    assert sessions.map is None
+    assert sessions.pbap is not None
+    assert scheduled[-1][0] == INITIAL_MAP_CONNECT_POLL_SECONDS
 
 
 def test_first_attempt_callback_runs_once_across_failure_and_retry() -> None:
@@ -212,97 +227,6 @@ def test_map_connection_refusal_is_exposed_and_polls_quickly_until_ready() -> No
     scheduled[-1][1]()
     worker.fail(RuntimeError("still offline"))
     assert scheduled[-1][0] == INITIAL_MAP_CONNECT_POLL_SECONDS
-
-
-def test_repeated_transport_failures_request_one_targeted_recovery() -> None:
-    recoveries = []
-    supervisor, _sessions, worker, scheduled, _ready, _lost, _statuses = (
-        make_supervisor(
-            transport_failure=lambda: recoveries.append(True) or True,
-        )
-    )
-    supervisor.start()
-
-    for failure in range(TRANSPORT_FAILURES_BEFORE_RESET):
-        worker.fail(
-            SessionError(
-                "CreateSession(MAP) failed: "
-                "org.bluez.obex.Error.Failed: Transport got disconnected"
-            )
-        )
-        if failure < TRANSPORT_FAILURES_BEFORE_RESET - 1:
-            scheduled[-1][1]()
-
-    assert recoveries == [True]
-
-
-def test_profile_retry_waits_for_targeted_classic_recovery() -> None:
-    classic = {"ready": True}
-
-    def recover() -> bool:
-        classic["ready"] = False
-        return True
-
-    supervisor, _sessions, worker, scheduled, _ready, _lost, _statuses = (
-        make_supervisor(
-            attempt_ready=lambda: classic["ready"],
-            transport_failure=recover,
-        )
-    )
-    supervisor.start()
-    for failure in range(TRANSPORT_FAILURES_BEFORE_RESET):
-        worker.fail(SessionError("Timed out waiting for response"))
-        if failure < TRANSPORT_FAILURES_BEFORE_RESET - 1:
-            scheduled[-1][1]()
-
-    scheduled[-1][1]()
-    assert worker.jobs == []
-
-    classic["ready"] = True
-    scheduled[-1][1]()
-    assert len(worker.jobs) == 1
-
-
-def test_nontransport_profile_failures_break_the_recovery_streak() -> None:
-    recoveries = []
-    supervisor, _sessions, worker, scheduled, _ready, _lost, _statuses = (
-        make_supervisor(
-            transport_failure=lambda: recoveries.append(True) or True,
-        )
-    )
-    supervisor.start()
-
-    worker.fail(SessionError("Transport got disconnected"))
-    scheduled[-1][1]()
-    worker.fail(SessionError("Transport got disconnected"))
-    scheduled[-1][1]()
-    worker.fail(SessionError("org.bluez.obex.Error.Forbidden"))
-    for _failure in range(TRANSPORT_FAILURES_BEFORE_RESET - 1):
-        scheduled[-1][1]()
-        worker.fail(SessionError("Transport got disconnected"))
-
-    assert recoveries == []
-
-
-def test_map_refusal_never_cycles_the_classic_bearer() -> None:
-    recoveries = []
-    supervisor, _sessions, worker, scheduled, _ready, _lost, _statuses = (
-        make_supervisor(
-            transport_failure=lambda: recoveries.append(True) or True,
-        )
-    )
-    supervisor.start()
-    error = SessionError(
-        "CreateSession(MAP) failed: org.bluez.obex.Error.Failed: "
-        "Connection refused (111) after transport got disconnected"
-    )
-
-    for failure in range(TRANSPORT_FAILURES_BEFORE_RESET):
-        worker.fail(error)
-        if failure < TRANSPORT_FAILURES_BEFORE_RESET - 1:
-            scheduled[-1][1]()
-
-    assert recoveries == []
 
 
 def test_loss_discards_once_then_reconnects() -> None:

@@ -21,10 +21,6 @@ class _Bearer:
     def recover_le_transport(self):
         self.calls.append("bearers-recover-le")
 
-    def confirm_classic_transport(self):
-        self.calls.append("bearers-confirm-classic")
-
-
 class _Events:
     def __init__(self, calls):
         self.calls = calls
@@ -221,3 +217,68 @@ def test_solicitation_stays_up_until_profiles_and_ancs_are_ready(monkeypatch):
         ("solicitation-needed", True),
         ("solicitation-needed", False),
     ]
+
+
+def test_partial_pbap_starts_contacts_without_map_listener(monkeypatch):
+    calls = []
+    value = daemon.Daemon.__new__(daemon.Daemon)
+    value.sessions = type("Sessions", (), {"map": None, "pbap": object()})()
+    value.contacts = type(
+        "Contacts",
+        (),
+        {"count": lambda _self: 0, "resolve": lambda _self, raw: raw},
+    )()
+    value._contacts_refresh_id = None
+    value.listener = None
+    value._refresh_contacts = lambda: calls.append("refresh-contacts")
+    value._periodic_refresh_contacts = lambda: True
+    monkeypatch.setattr(
+        daemon.GLib,
+        "timeout_add_seconds",
+        lambda delay, _callback: calls.append(("schedule", delay)) or 77,
+    )
+    monkeypatch.setattr(
+        daemon,
+        "MapEventListener",
+        lambda **_kwargs: calls.append("unexpected-map-listener"),
+    )
+
+    value._post_available_sessions_setup()
+
+    assert calls == [
+        "refresh-contacts",
+        ("schedule", daemon.CONTACTS_REFRESH_SEC),
+    ]
+    assert value._contacts_refresh_id == 77
+    assert value.listener is None
+
+
+def test_partial_map_starts_listener_without_contacts_work(monkeypatch):
+    calls = []
+
+    class Listener:
+        def __init__(self, **_kwargs):
+            calls.append("map-listener")
+
+        def start(self):
+            calls.append("map-listener-start")
+
+    value = daemon.Daemon.__new__(daemon.Daemon)
+    value.sessions = type("Sessions", (), {"map": object(), "pbap": None})()
+    value.contacts = type(
+        "Contacts",
+        (),
+        {"count": lambda _self: 0, "resolve": lambda _self, raw: raw},
+    )()
+    value._contacts_refresh_id = None
+    value.listener = None
+    value._refresh_contacts = lambda: calls.append("unexpected-contacts-refresh")
+    value.events = type("Events", (), {"message": lambda *_args: None})()
+    value.obex_worker = type("Worker", (), {"submit": lambda *_args: None})()
+    monkeypatch.setattr(daemon, "MapEventListener", Listener)
+
+    value._post_available_sessions_setup()
+
+    assert calls == ["map-listener", "map-listener-start"]
+    assert isinstance(value.listener, Listener)
+    assert value._contacts_refresh_id is None

@@ -269,6 +269,9 @@ remain available. Removing the bond invalidates the saved runtime target and
 stops the daemon's connection attempts.
 
 - Keep one MAP and one PBAP session open for the daemon lifetime.
+- Open and retry MAP and PBAP independently. A successful sibling session must
+  remain available when iOS rejects the other profile; in particular, a MAP
+  refusal must not prevent PBAP contacts access.
 - Serialize blocking MAP/PBAP operations on one worker.
 - Before opening, remove only stale sessions for the target phone and profile.
 - On `Forbidden`, retry once after targeted stale-session cleanup rather than
@@ -278,13 +281,6 @@ stops the daemon's connection attempts.
   connection, then every 15 seconds for later reconnects. Preserve an iPhone
   `Connection refused (111)` response as a distinct MAP refusal state because
   another computer may currently own the phone's single MAP connection.
-- If three consecutive opens fail because the OBEX transport disconnected or
-  timed out while BlueZ still reports BR/EDR connected, cycle only
-  `Bearer.BREDR1`, wait for an observed disconnect and reconnect, then retry
-  MAP/PBAP. Do not apply this to authorization errors or an explicit MAP
-  refusal. Rate-limit repeated cycles, preserve a healthy LE bearer, and
-  abandon the targeted reset after bounded failures so an incomplete bearer
-  API cannot strand ordinary polling.
 - A transfer object can disappear after successful completion. `complete` and
   a disappearance after observable progress are successful terminal outcomes;
   explicit `error`, a timeout, or a missing output file is not.
@@ -316,13 +312,17 @@ idle. BlueFerry supervises both connections for the daemon lifetime and backs
 off exponentially when a bearer keeps refusing to connect: a rejected
 `Connect` repeated every five seconds against the iPhone was observed to keep
 the bond in a half-connected flapping state. Classic remains actively
-supervised. LE receives one speculative outbound dial per BlueZ generation;
-after that, the solicitation advertisement is the durable reconnect primitive.
-A returning inbound LE link clears Classic backoff accumulated while the phone
-was absent, and limits later Classic backoff to 30 seconds while LE remains
-healthy. A deliberate stale-GATT reset receives one new outbound bootstrap.
-If BlueZ cannot keep the solicitation registered, bounded outbound LE retries
-remain enabled rather than treating an unavailable inbound path as primed.
+supervised. LE receives one speculative outbound dial, then yields to the
+solicitation advertisement instead of repeatedly calling `Connect`. A genuine
+connected-to-disconnected LE transition grants one fresh outbound bootstrap.
+If that attempt is spent while the phone remains absent, an observed Classic
+return grants one more for the new presence generation. A returning inbound LE
+link clears Classic backoff accumulated while the phone was absent, and limits
+later Classic backoff to 30 seconds while LE remains healthy. A deliberate
+stale-GATT reset and a new BlueZ generation also receive a new outbound
+bootstrap. If BlueZ cannot keep the solicitation registered, bounded outbound
+LE retries remain enabled rather than treating an unavailable inbound path as
+primed.
 
 Solicitation remains registered until both MAP/PBAP and end-to-end ANCS are
 healthy, subject to a three-minute minimum permission window. It is restored

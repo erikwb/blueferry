@@ -20,19 +20,6 @@ log = logging.getLogger(__name__)
 
 INITIAL_MAP_CONNECT_POLL_SECONDS = 5
 MAP_RECONNECT_POLL_SECONDS = 15
-TRANSPORT_FAILURES_BEFORE_RESET = 3
-
-
-def profile_transport_failed(error: Exception) -> bool:
-    """Recognize a dead OBEX transport behind a still-connected bearer."""
-    detail = str(error).casefold()
-    return any(
-        marker in detail
-        for marker in (
-            "transport got disconnected",
-            "timed out waiting for response",
-        )
-    )
 
 
 class ProfileSessions(Protocol):
@@ -72,9 +59,9 @@ class ProfileSupervisor:
         on_ready: Callable[[], None],
         on_lost: Callable[[str], None],
         on_status: Callable[[], None],
+        on_partial_ready: Callable[[], None] | None = None,
         on_attempt_pending: Callable[[], None] | None = None,
         on_first_attempt_complete: Callable[[], None] | None = None,
-        on_transport_failure: Callable[[], bool] | None = None,
         attempt_ready: Callable[[], bool] | None = None,
         schedule: Schedule = GLib.timeout_add_seconds,
         cancel: Cancel = GLib.source_remove,
@@ -85,9 +72,9 @@ class ProfileSupervisor:
         self._on_ready = on_ready
         self._on_lost = on_lost
         self._on_status = on_status
+        self._on_partial_ready = on_partial_ready
         self._on_attempt_pending = on_attempt_pending
         self._on_first_attempt_complete = on_first_attempt_complete
-        self._on_transport_failure = on_transport_failure
         self._attempt_ready = attempt_ready or (lambda: True)
         self._schedule = schedule
         self._cancel = cancel
@@ -99,8 +86,6 @@ class ProfileSupervisor:
         self._stopping = False
         self._generation = 0
         self._first_attempt_completed = False
-        self._transport_failures = 0
-        self._transport_recovery_pending = False
         self.sessions.set_on_lost(self.session_lost)
 
     @property
@@ -175,7 +160,6 @@ class ProfileSupervisor:
         self._ready = False
         self._opening = False
         self._closing = False
-        self._transport_recovery_pending = False
         self.connectivity.stopping()
         if self._retry_id is not None:
             try:
@@ -200,8 +184,6 @@ class ProfileSupervisor:
                 log.debug("could not remove stale profile retry timer", exc_info=True)
             self._retry_id = None
         self.connectivity.ready()
-        self._transport_failures = 0
-        self._transport_recovery_pending = False
         self._on_status()
         self._ever_ready = True
         if self._ready:
@@ -216,6 +198,16 @@ class ProfileSupervisor:
         self._complete_first_attempt()
         message = str(error)
         log.warning("could not open MAP/PBAP sessions: %s", message)
+        if (
+            self._on_partial_ready is not None
+            and (self.sessions.map is not None or self.sessions.pbap is not None)
+        ):
+            log.info(
+                "keeping partial OBEX availability (MAP=%s, PBAP=%s)",
+                self.sessions.map is not None,
+                self.sessions.pbap is not None,
+            )
+            self._on_partial_ready()
         authorization_required = isinstance(error, SessionError) and (
             "Forbidden" in message or "0x43" in message
         )
@@ -227,27 +219,6 @@ class ProfileSupervisor:
             log.warning(
                 "  → iPhone refused MAP; it may be connected to another computer."
             )
-        transport_failed = (
-            not authorization_required
-            and not map_connection_refused
-            and profile_transport_failed(error)
-        )
-        if transport_failed:
-            self._transport_failures += 1
-        else:
-            self._transport_failures = 0
-        if (
-            self._transport_failures >= TRANSPORT_FAILURES_BEFORE_RESET
-            and self._on_transport_failure is not None
-        ):
-            self._transport_failures = 0
-            if self._on_transport_failure():
-                log.warning(
-                    "repeated OBEX transport failures; cycling only the "
-                    "iPhone BR/EDR bearer"
-                )
-                self._transport_recovery_pending = True
-                self._begin_attempt_cycle()
         delay = self.connectivity.failed(
             error,
             authorization_required=authorization_required,
@@ -302,14 +273,6 @@ class ProfileSupervisor:
     def _retry(self) -> bool:
         self._retry_id = None
         if not self._stopping:
-            if self._transport_recovery_pending and not self._attempt_ready():
-                log.debug(
-                    "waiting for the targeted BR/EDR recovery before retrying "
-                    "MAP/PBAP"
-                )
-                self._schedule_retry(self._poll_seconds)
-                return False
-            self._transport_recovery_pending = False
             log.info("retrying MAP/PBAP session open ...")
             self.open()
         return False
