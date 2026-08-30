@@ -205,6 +205,76 @@ def test_bluez_preference_selects_requested_bearer(monkeypatch) -> None:
     ]
 
 
+def test_bluez_reads_classic_bearer_instead_of_aggregate_device_state(
+    monkeypatch,
+) -> None:
+    calls = []
+
+    class Properties:
+        @staticmethod
+        def Get(interface, name, *, timeout):
+            calls.append((interface, name, timeout))
+            if interface == "org.bluez.Bearer.BREDR1":
+                return False
+            if interface == "org.bluez.Device1":
+                return True
+            raise AssertionError(interface)
+
+    class Bus:
+        @staticmethod
+        def get_object(service, path):
+            calls.append((service, path))
+            return object()
+
+    monkeypatch.setattr(bearer_supervisor, "get_system_bus", Bus)
+    monkeypatch.setattr(
+        bearer_supervisor.dbus,
+        "Interface",
+        lambda _object, interface: calls.append(("interface", interface))
+        or Properties(),
+    )
+
+    connected = BearerSupervisor("/device")._read_bluez_connected("bredr")
+
+    assert connected is False
+    assert ("org.bluez.Device1", "Connected", 5.0) not in calls
+
+
+def test_bluez_falls_back_when_classic_bearer_is_marker_only(monkeypatch) -> None:
+    calls = []
+
+    class Properties:
+        @staticmethod
+        def Get(interface, name, *, timeout):
+            calls.append((interface, name, timeout))
+            if interface == "org.bluez.Bearer.BREDR1":
+                raise bearer_supervisor.dbus.exceptions.DBusException(
+                    "No such property 'Connected'",
+                    name="org.freedesktop.DBus.Error.UnknownProperty",
+                )
+            return True
+
+    class Bus:
+        @staticmethod
+        def get_object(_service, _path):
+            return object()
+
+    monkeypatch.setattr(bearer_supervisor, "get_system_bus", Bus)
+    monkeypatch.setattr(
+        bearer_supervisor.dbus,
+        "Interface",
+        lambda _object, _interface: Properties(),
+    )
+
+    connected = BearerSupervisor("/device")._read_bluez_connected("bredr")
+
+    assert connected is True
+    assert calls == [
+        ("org.bluez.Bearer.BREDR1", "Connected", 5.0),
+        ("org.bluez.Device1", "Connected", 5.0),
+    ]
+
+
 def test_bluez_preference_ignores_a_missing_preferred_bearer_property(monkeypatch) -> None:
     class Properties:
         @staticmethod
