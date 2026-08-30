@@ -26,6 +26,8 @@ BACKOFF_CAP_SECONDS = 300
 # may still decline a page temporarily, but it must not inherit the five-minute
 # absence backoff while ANCS is demonstrably reachable.
 LE_CONNECTED_CLASSIC_BACKOFF_CAP_SECONDS = 30
+CLASSIC_RECOVERY_COOLDOWN_SECONDS = 30
+CLASSIC_RECOVERY_DISCONNECT_ATTEMPTS = 3
 _INTERFACES = {
     "bredr": "org.bluez.Bearer.BREDR1",
     "le": "org.bluez.Bearer.LE1",
@@ -157,6 +159,12 @@ class BearerSupervisor:
         self._le_reset_pending = False
         self._le_reset_failures = 0
         self._next_le_reset_attempt = 0.0
+        self._classic_recovery_pending = False
+        self._classic_recovery_saw_disconnect = False
+        self._classic_disconnect_attempts = 0
+        self._next_classic_disconnect_attempt = 0.0
+        self._classic_recovery_cycles = 0
+        self._next_classic_recovery_allowed = 0.0
         self._last_errors: dict[str, tuple[str, str]] = {}
         self._states: dict[str, bool | None] = {"bredr": None, "le": None}
         self._failures: dict[str, int] = {"bredr": 0, "le": 0}
@@ -165,6 +173,11 @@ class BearerSupervisor:
     @property
     def bredr_connected(self) -> bool:
         return self._states["bredr"] is True
+
+    @property
+    def bredr_ready(self) -> bool:
+        """True when Classic is connected and no targeted reset is active."""
+        return self.bredr_connected and not self._classic_recovery_pending
 
     @property
     def le_connected(self) -> bool:
@@ -231,6 +244,7 @@ class BearerSupervisor:
         self._le_reset_pending = False
         self._le_reset_failures = 0
         self._next_le_reset_attempt = 0.0
+        self._reset_classic_recovery()
         self._cancel_le_settle()
         self._states = {"bredr": None, "le": None}
         self._failures = {"bredr": 0, "le": 0}
@@ -261,6 +275,54 @@ class BearerSupervisor:
         else:
             log.debug("deferring the ANCS LE reset until the profile attempt completes")
 
+    def recover_classic_transport(self) -> bool:
+        """Cycle only BR/EDR after repeated OBEX transport failures.
+
+        A true Bearer.BREDR1 state is not proof that its RFCOMM transport can
+        still carry MAP. Serialize one targeted disconnect/reconnect cycle and
+        keep healthy LE/ANCS untouched. The caller uses the return value to
+        decide whether to wait for that cycle before its next profile open.
+        """
+        if not self._running:
+            return False
+        if self._classic_recovery_pending:
+            return True
+        now = self._clock()
+        if now < self._next_classic_recovery_allowed:
+            log.debug(
+                "targeted BR/EDR recovery is rate-limited for another %.0fs",
+                self._next_classic_recovery_allowed - now,
+            )
+            return False
+
+        self._classic_recovery_cycles += 1
+        cooldown = min(
+            CLASSIC_RECOVERY_COOLDOWN_SECONDS
+            * (2 ** (self._classic_recovery_cycles - 1)),
+            BACKOFF_CAP_SECONDS,
+        )
+        self._next_classic_recovery_allowed = now + cooldown
+        self._classic_recovery_pending = True
+        self._classic_recovery_saw_disconnect = self._states["bredr"] is False
+        self._classic_disconnect_attempts = 0
+        self._next_classic_disconnect_attempt = 0.0
+        self._failures["bredr"] = 0
+        self._next_attempt["bredr"] = 0.0
+        self._cancel_le_settle()
+        log.warning(
+            "requesting targeted iPhone BR/EDR recovery; preserving the LE bearer"
+        )
+        if self._classic_recovery_saw_disconnect:
+            self._tick()
+        else:
+            self._request_classic_disconnect()
+        return True
+
+    def confirm_classic_transport(self) -> None:
+        """Clear recovery penalties after MAP/PBAP prove Classic usable."""
+        self._classic_recovery_cycles = 0
+        self._next_classic_recovery_allowed = 0.0
+
     def stop(self) -> None:
         self._running = False
         self._generation += 1
@@ -269,6 +331,7 @@ class BearerSupervisor:
         self._le_hold_disconnect_pending = False
         self._le_dial_spent = False
         self._le_reset_pending = False
+        self._reset_classic_recovery()
         self._cancel_le_settle()
         if self._timer_id is not None:
             try:
@@ -308,6 +371,29 @@ class BearerSupervisor:
             self._request_le_disconnect(force=True)
         else:
             self._update_state("le", le)
+
+        if self._classic_recovery_pending:
+            if bredr is False:
+                if not self._classic_recovery_saw_disconnect:
+                    log.info("observed iPhone BR/EDR disconnect; reconnecting it")
+                self._classic_recovery_saw_disconnect = True
+                self._disconnecting.discard("bredr")
+                self._failures["bredr"] = 0
+                self._next_attempt["bredr"] = 0.0
+            elif bredr is None:
+                return True
+
+            if not self._classic_recovery_saw_disconnect:
+                self._request_classic_disconnect()
+                return True
+            if bredr is False:
+                self._request_connect("bredr")
+                return True
+            log.info("targeted iPhone BR/EDR bearer recovery completed")
+            self._classic_recovery_pending = False
+            self._classic_recovery_saw_disconnect = False
+            self._classic_disconnect_attempts = 0
+            self._next_classic_disconnect_attempt = 0.0
 
         if self._le_reset_pending and self._le_enabled:
             if le is False:
@@ -516,6 +602,101 @@ class BearerSupervisor:
             )
         except Exception as error:
             self._disconnect_failed(error, generation)
+
+    def _request_classic_disconnect(self) -> None:
+        if "bredr" in self._disconnecting:
+            return
+        if self._clock() < self._next_classic_disconnect_attempt:
+            return
+        if self._classic_disconnect_attempts >= CLASSIC_RECOVERY_DISCONNECT_ATTEMPTS:
+            self._abandon_classic_recovery(
+                "BR/EDR stayed connected after targeted disconnect requests"
+            )
+            return
+        self._disconnecting.add("bredr")
+        generation = self._generation
+        try:
+            self._disconnect(
+                "bredr",
+                lambda: self._classic_disconnect_succeeded(generation),
+                lambda error: self._classic_disconnect_failed(error, generation),
+            )
+        except Exception as error:
+            self._classic_disconnect_failed(error, generation)
+
+    def _classic_disconnect_succeeded(self, generation: int) -> None:
+        if generation != self._generation:
+            return
+        self._disconnecting.discard("bredr")
+        self._classic_disconnect_attempts += 1
+        delay = min(
+            POLL_SECONDS * (2 ** self._classic_disconnect_attempts),
+            BACKOFF_CAP_SECONDS,
+        )
+        self._next_classic_disconnect_attempt = self._clock() + delay
+        log.info(
+            "iPhone BR/EDR reset requested successfully; "
+            "waiting up to %ds for state change",
+            delay,
+        )
+
+    def _classic_disconnect_failed(
+        self,
+        error: Exception,
+        generation: int,
+    ) -> None:
+        if generation != self._generation:
+            return
+        self._disconnecting.discard("bredr")
+        name, message = _connect_error_parts(error)
+        if name in {
+            "org.bluez.Error.NotConnected",
+            "org.bluez.Error.AlreadyDisconnected",
+        } or "not connected" in message.casefold():
+            self._classic_recovery_saw_disconnect = True
+            self._update_state("bredr", False)
+            self._failures["bredr"] = 0
+            self._next_attempt["bredr"] = 0.0
+            return
+        if name in {
+            "org.freedesktop.DBus.Error.UnknownInterface",
+            "org.freedesktop.DBus.Error.UnknownMethod",
+            "org.bluez.Error.NotSupported",
+        }:
+            self._abandon_classic_recovery(
+                f"targeted BR/EDR disconnect is unavailable ({name})"
+            )
+            return
+
+        self._classic_disconnect_attempts += 1
+        delay = min(
+            POLL_SECONDS * (2 ** self._classic_disconnect_attempts),
+            BACKOFF_CAP_SECONDS,
+        )
+        self._next_classic_disconnect_attempt = self._clock() + delay
+        detail = f"{name}: {message}" if message else name
+        log.warning(
+            "could not reset iPhone BR/EDR bearer: %s (next attempt in %ds)",
+            detail,
+            delay,
+        )
+
+    def _abandon_classic_recovery(self, reason: str) -> None:
+        log.warning("abandoning targeted iPhone BR/EDR recovery: %s", reason)
+        self._classic_recovery_pending = False
+        self._classic_recovery_saw_disconnect = False
+        self._classic_disconnect_attempts = 0
+        self._next_classic_disconnect_attempt = 0.0
+        self._disconnecting.discard("bredr")
+
+    def _reset_classic_recovery(self) -> None:
+        self._classic_recovery_pending = False
+        self._classic_recovery_saw_disconnect = False
+        self._classic_disconnect_attempts = 0
+        self._next_classic_disconnect_attempt = 0.0
+        self._classic_recovery_cycles = 0
+        self._next_classic_recovery_allowed = 0.0
+        self._disconnecting.discard("bredr")
 
     def _disconnect_succeeded(self, generation: int) -> None:
         if generation != self._generation:

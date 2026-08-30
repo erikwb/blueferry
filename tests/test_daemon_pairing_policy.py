@@ -21,6 +21,9 @@ class _Bearer:
     def recover_le_transport(self):
         self.calls.append("bearers-recover-le")
 
+    def confirm_classic_transport(self):
+        self.calls.append("bearers-confirm-classic")
+
 
 class _Events:
     def __init__(self, calls):

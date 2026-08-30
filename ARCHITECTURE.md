@@ -147,6 +147,12 @@ MAP/PBAP connectivity moves through explicit initializing, connecting, ready,
 degraded, reconnecting, authorization-required, map-connection-refused, and
 stopping states. Failed profile opens poll every 5 seconds until the first
 successful MAP/PBAP connection, then every 15 seconds for later reconnects.
+Three consecutive transport-level failures while BlueZ still reports Classic
+connected escalate to one targeted `Bearer.BREDR1.Disconnect`. Profile retry
+waits until the supervisor observes Classic disconnect and reconnect; a live
+LE/ANCS bearer is left alone. Recovery cycles are rate-limited, and a missing
+or ineffective bearer-specific disconnect API falls back to ordinary profile
+polling instead of blocking it.
 Suspend/resume and observed OBEX loss enter the same reconnection path. The
 refusal state preserves the iPhone's
 `Connection refused (111)` detail so clients can explain that another computer

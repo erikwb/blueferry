@@ -278,6 +278,13 @@ stops the daemon's connection attempts.
   connection, then every 15 seconds for later reconnects. Preserve an iPhone
   `Connection refused (111)` response as a distinct MAP refusal state because
   another computer may currently own the phone's single MAP connection.
+- If three consecutive opens fail because the OBEX transport disconnected or
+  timed out while BlueZ still reports BR/EDR connected, cycle only
+  `Bearer.BREDR1`, wait for an observed disconnect and reconnect, then retry
+  MAP/PBAP. Do not apply this to authorization errors or an explicit MAP
+  refusal. Rate-limit repeated cycles, preserve a healthy LE bearer, and
+  abandon the targeted reset after bounded failures so an incomplete bearer
+  API cannot strand ordinary polling.
 - A transfer object can disappear after successful completion. `complete` and
   a disappearance after observable progress are successful terminal outcomes;
   explicit `error`, a timeout, or a missing output file is not.

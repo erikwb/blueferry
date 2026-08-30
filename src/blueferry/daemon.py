@@ -139,7 +139,8 @@ class Daemon:
             on_first_attempt_complete=(
                 self.bearers.enable_le if config.ANCS_ENABLED else None
             ),
-            attempt_ready=lambda: self.bearers.bredr_connected,
+            on_transport_failure=self.bearers.recover_classic_transport,
+            attempt_ready=lambda: self.bearers.bredr_ready,
         )
 
     def _emit_status(self) -> None:
@@ -393,6 +394,7 @@ class Daemon:
     def _post_sessions_setup(self) -> None:
         """Everything that requires live MAP+PBAP sessions. Idempotent so
         we can call it either at first-attempt success or at retry success."""
+        self.bearers.confirm_classic_transport()
         # Warm contacts; if empty, do a one-time pull. PBAP pull is cheap.
         if self.contacts.count() == 0:
             log.info("contacts cache empty — pulling from iPhone via PBAP")

@@ -729,6 +729,134 @@ def test_gatt_transport_recovery_waits_for_profile_gate_to_reopen() -> None:
     assert disconnects == ["le"]
 
 
+def test_profile_transport_failure_cycles_only_classic() -> None:
+    state = {"bredr": True, "le": True}
+    disconnects = []
+    connections = []
+    scheduled = []
+    supervisor = BearerSupervisor(
+        "/device",
+        read_connected=state.get,
+        connect=lambda kind, on_success, _on_error: (
+            connections.append(kind),
+            on_success(),
+        ),
+        disconnect=lambda kind, on_success, _on_error: (
+            disconnects.append(kind),
+            on_success(),
+        ),
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+    )
+    supervisor.start()
+    health_check = scheduled[0][1]
+
+    assert supervisor.recover_classic_transport() is True
+    assert supervisor.recover_classic_transport() is True
+    assert disconnects == ["bredr"]
+    assert supervisor.bredr_ready is False
+    assert supervisor.le_connected is True
+
+    state["bredr"] = False
+    health_check()
+    assert connections == ["bredr"]
+    assert supervisor.bredr_ready is False
+    assert state["le"] is True
+
+    state["bredr"] = True
+    health_check()
+    assert supervisor.bredr_ready is True
+    assert disconnects == ["bredr"]
+    assert connections == ["bredr"]
+
+
+def test_classic_recovery_is_rate_limited_until_profiles_succeed() -> None:
+    state = {"bredr": True, "le": True}
+    disconnects = []
+    scheduled = []
+    now = 0.0
+    supervisor = BearerSupervisor(
+        "/device",
+        read_connected=state.get,
+        connect=lambda _kind, on_success, _on_error: on_success(),
+        disconnect=lambda kind, on_success, _on_error: (
+            disconnects.append(kind),
+            on_success(),
+        ),
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        clock=lambda: now,
+    )
+    supervisor.start()
+    health_check = scheduled[0][1]
+
+    assert supervisor.recover_classic_transport() is True
+    state["bredr"] = False
+    health_check()
+    state["bredr"] = True
+    health_check()
+
+    now = 20.0
+    assert supervisor.recover_classic_transport() is False
+    assert disconnects == ["bredr"]
+
+    supervisor.confirm_classic_transport()
+    assert supervisor.recover_classic_transport() is True
+    assert disconnects == ["bredr", "bredr"]
+
+
+def test_missing_classic_disconnect_api_does_not_block_profile_retries() -> None:
+    import dbus
+
+    state = {"bredr": True, "le": True}
+
+    def disconnect(_kind, _on_success, on_error):
+        on_error(
+            dbus.exceptions.DBusException(
+                "Unknown method Disconnect",
+                name="org.freedesktop.DBus.Error.UnknownMethod",
+            )
+        )
+
+    supervisor = BearerSupervisor(
+        "/device",
+        read_connected=state.get,
+        disconnect=disconnect,
+        schedule=lambda _delay, _callback: 7,
+    )
+    supervisor.start()
+
+    assert supervisor.recover_classic_transport() is True
+    assert supervisor.bredr_ready is True
+    assert supervisor.le_connected is True
+
+
+def test_noop_classic_disconnect_is_abandoned_after_bounded_attempts() -> None:
+    state = {"bredr": True, "le": True}
+    disconnects = []
+    scheduled = []
+    clock = {"now": 0.0}
+    supervisor = BearerSupervisor(
+        "/device",
+        read_connected=state.get,
+        disconnect=lambda kind, on_success, _on_error: (
+            disconnects.append(kind),
+            on_success(),
+        ),
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        clock=lambda: clock["now"],
+    )
+    supervisor.start()
+    health_check = scheduled[0][1]
+
+    assert supervisor.recover_classic_transport() is True
+    for instant in (10.0, 30.0, 70.0):
+        clock["now"] = instant
+        health_check()
+
+    assert disconnects == ["bredr"] * 3
+    assert supervisor.bredr_ready is True
+    assert supervisor.le_connected is True
+
+
 def test_bluez_restart_rejects_new_le_link_while_profile_gate_is_closed() -> None:
     state = {"bredr": True, "le": True}
     connections = []
