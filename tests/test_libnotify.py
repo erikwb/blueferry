@@ -25,6 +25,14 @@ class _FakeNotifications:
         self.calls.append(("close", int(notification_id)))
 
 
+class _Match:
+    def __init__(self) -> None:
+        self.removed = False
+
+    def remove(self) -> None:
+        self.removed = True
+
+
 def test_ancs_popup_is_transient_and_expires(
     monkeypatch,
 ) -> None:
@@ -243,3 +251,26 @@ def test_expiry_and_phone_read_do_not_write_read_state(reason) -> None:
     sink._on_closed(7, reason)
 
     assert queued == []
+
+
+def test_close_releases_all_signal_watches_and_trackers() -> None:
+    sink = LibnotifySink.__new__(LibnotifySink)
+    sink._match = _Match()
+    sink._action_match = _Match()
+    message_match = _Match()
+    sink._msg_subs = {7: message_match}
+    sink._pending = {7: "/session/message1"}
+    sink._open_messages = {7: "opaque-handle"}
+
+    owner_match = sink._match
+    action_match = sink._action_match
+    sink.close()
+
+    assert owner_match.removed is True
+    assert action_match.removed is True
+    assert message_match.removed is True
+    assert sink._match is None
+    assert sink._action_match is None
+    assert sink._msg_subs == {}
+    assert sink._pending == {}
+    assert sink._open_messages == {}

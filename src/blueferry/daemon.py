@@ -572,6 +572,7 @@ class Daemon:
         if self.ancs is not None:
             self.ancs.stop()
         self.solicitation.stop()
+        self.events.stop()
         if self._sleep_match is not None:
             try:
                 self._sleep_match.remove()
