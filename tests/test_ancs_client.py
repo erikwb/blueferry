@@ -835,6 +835,7 @@ def test_le_reconnect_replaces_stale_subscription_and_reauthorizes(
     client._notify_started = True
     client._authorized = True
     client._was_authorized = True
+    client._owned_notify_paths = {"/device/ns", "/device/ds"}
     old_matches = [_Match(), _Match()]
     client._characteristic_signal_matches = old_matches
 
@@ -854,6 +855,8 @@ def test_le_reconnect_replaces_stale_subscription_and_reauthorizes(
     scheduled[0][1]()
 
     assert calls == [
+        ("stop", "ns"),
+        ("stop", "ds"),
         ("start", "ns"),
         ("start", "ds"),
         ("write", "cp"),
@@ -863,6 +866,130 @@ def test_le_reconnect_replaces_stale_subscription_and_reauthorizes(
     _complete_authorization_probe(client)
     assert client.connected is True
     assert statuses == [True, True]
+
+
+def test_le_reconnect_retries_notification_rearm_without_cycling_bearer(
+    monkeypatch,
+) -> None:
+    scheduled = []
+
+    class _Characteristic:
+        def __init__(self, *, stop_fails_once: bool = False) -> None:
+            self.stop_fails_once = stop_fails_once
+            self.stop_calls = 0
+            self.start_calls = 0
+
+        def StartNotify(self, **_kwargs) -> None:
+            self.start_calls += 1
+
+        def StopNotify(self, **_kwargs) -> None:
+            self.stop_calls += 1
+            if self.stop_fails_once:
+                self.stop_fails_once = False
+                raise client_module.dbus.exceptions.DBusException(
+                    "still settling",
+                    name="org.bluez.Error.InProgress",
+                )
+
+        @staticmethod
+        def WriteValue(_value, _options, **_kwargs) -> None:
+            return None
+
+    ns = _Characteristic(stop_fails_once=True)
+    ds = _Characteristic()
+    cp = _Characteristic()
+    bus = _CharacteristicBus(
+        {"/device/ns": ns, "/device/ds": ds, "/device/cp": cp}
+    )
+    monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
+    monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
+    client = AncsClient(
+        "/device",
+        lambda _event: None,
+        previously_authorized=True,
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+    )
+    client._started = True
+    client._bearer_connected = False
+    client._ns_path = "/device/ns"
+    client._ds_path = "/device/ds"
+    client._cp_path = "/device/cp"
+    client._owned_notify_paths = {"/device/ns", "/device/ds"}
+    client._notify_rearm_pending = True
+
+    client.observe_bearer_state(True)
+    scheduled.pop(0)[1]()
+
+    assert client.subscribed is False
+    assert ns.stop_calls == 1
+    assert ds.stop_calls == 1
+    assert scheduled[0][0] == client_module.SUBSCRIBE_RETRY_SECONDS
+
+    scheduled.pop(0)[1]()
+
+    assert ns.stop_calls == 2
+    assert ns.start_calls == 1
+    assert ds.start_calls == 1
+    assert client.subscribed is True
+
+
+def test_le_reconnect_treats_missing_notify_session_as_already_stopped(
+    monkeypatch,
+) -> None:
+    scheduled = []
+
+    class _Characteristic:
+        def __init__(self, *, already_stopped: bool = False) -> None:
+            self.already_stopped = already_stopped
+            self.stop_calls = 0
+            self.start_calls = 0
+
+        def StartNotify(self, **_kwargs) -> None:
+            self.start_calls += 1
+
+        def StopNotify(self, **_kwargs) -> None:
+            self.stop_calls += 1
+            if self.already_stopped:
+                raise client_module.dbus.exceptions.DBusException(
+                    "No notify session started",
+                    name="org.bluez.Error.Failed",
+                )
+
+        @staticmethod
+        def WriteValue(_value, _options, **_kwargs) -> None:
+            return None
+
+    ns = _Characteristic(already_stopped=True)
+    ds = _Characteristic()
+    cp = _Characteristic()
+    bus = _CharacteristicBus(
+        {"/device/ns": ns, "/device/ds": ds, "/device/cp": cp}
+    )
+    monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
+    monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
+    client = AncsClient(
+        "/device",
+        lambda _event: None,
+        previously_authorized=True,
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+    )
+    client._started = True
+    client._bearer_connected = False
+    client._ns_path = "/device/ns"
+    client._ds_path = "/device/ds"
+    client._cp_path = "/device/cp"
+    client._owned_notify_paths = {"/device/ns", "/device/ds"}
+    client._notify_rearm_pending = True
+
+    client.observe_bearer_state(True)
+    scheduled.pop(0)[1]()
+
+    assert ns.stop_calls == 1
+    assert ds.stop_calls == 1
+    assert ns.start_calls == 1
+    assert ds.start_calls == 1
+    assert client.subscribed is True
+    assert client._notify_rearm_pending is False
 
 
 def test_not_connected_control_point_failure_invalidates_ancs_health(

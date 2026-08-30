@@ -13,6 +13,7 @@ import dbus
 from gi.repository import GLib
 
 from blueferry import __version__, bluez_setup, config
+from blueferry.adapter_class_supervisor import AdapterClassSupervisor
 from blueferry.ancs.client import AncsClient
 from blueferry.backend_lifecycle import installed_release
 from blueferry.backend_operations import BackendDependencies
@@ -47,6 +48,7 @@ from blueferry.setup_verification import (
     NOTIFICATION_ACCESS,
     SetupVerification,
 )
+from blueferry.solicitation_supervisor import SolicitationSupervisor
 from blueferry.storage_security import NO_STORAGE, StorageSecurity
 
 log = logging.getLogger(__name__)
@@ -86,6 +88,8 @@ class Daemon:
         )
         self.listener: MapEventListener | None = None
         self.ancs: AncsClient | None = None
+        self.adapter_class = AdapterClassSupervisor(config.ADAPTER)
+        self.solicitation = SolicitationSupervisor(config.ADAPTER)
         device_path = (
             f"/org/bluez/{config.ADAPTER}/"
             f"dev_{config.IPHONE_MAC.replace(':', '_')}"
@@ -98,6 +102,7 @@ class Daemon:
             le_enabled=False,
             on_status=self._emit_status,
             on_le_state=self._observe_le_state,
+            inbound_le_primed=self.solicitation.active,
         )
         self._contacts_refresh_id: int | None = None
         self._bus_name = None
@@ -128,9 +133,14 @@ class Daemon:
             on_ready=self._post_sessions_setup,
             on_lost=self._profiles_lost,
             on_status=self._emit_status,
+            on_partial_ready=self._post_available_sessions_setup,
+            on_attempt_pending=(
+                self.bearers.hold_le if config.ANCS_ENABLED else None
+            ),
             on_first_attempt_complete=(
                 self.bearers.enable_le if config.ANCS_ENABLED else None
             ),
+            attempt_ready=lambda: self.bearers.bredr_connected,
         )
 
     def _emit_status(self) -> None:
@@ -139,8 +149,25 @@ class Daemon:
             emit()
 
     def _observe_le_state(self, connected: bool | None) -> None:
+        if connected is not True:
+            self.solicitation.set_needed(True)
         if self.ancs is not None:
             self.ancs.observe_bearer_state(connected)
+
+    def _on_ancs_status(self) -> None:
+        # StartNotify is not the success boundary.  Keep solicitation on air
+        # until a Control Point/Data Source round trip proves ANCS usable.
+        self._sync_solicitation()
+        self._emit_status()
+
+    def _sync_solicitation(self) -> None:
+        end_to_end_ready = bool(
+            config.ANCS_ENABLED
+            and self.ancs is not None
+            and self.ancs.connected
+            and self.profiles.ready
+        )
+        self.solicitation.set_needed(not end_to_end_ready)
 
     def _mark_setup_task(self, task: str) -> bool:
         try:
@@ -259,12 +286,17 @@ class Daemon:
                 "the saved iPhone is not currently paired; open a client to pair it"
             )
 
+        # Class-of-Device is controller state, not durable configuration.
+        # Repair it before opening either bearer and continue supervising it
+        # for bluetoothd/controller resets during this daemon generation.
+        self.adapter_class.start()
         if not bluez_setup.prepare():
             log.warning(
                 "bluez_setup.prepare reported issues — continuing anyway, "
                 "but MAP/PBAP may be refused. Re-pair on iPhone after the "
                 "adapter is in A/V Hands-Free CoD if the toggles aren't there."
             )
+        self.solicitation.start()
 
         # A bond records trust but does not guarantee a live connection.
         # The bearer supervisor establishes BR/EDR but deliberately holds LE
@@ -279,8 +311,8 @@ class Daemon:
             candidate = AncsClient(
                 device_path,
                 on_event=self.events.ancs,
-                on_status=self._emit_status,
-                on_bluez_restart=self.bearers.reset_after_bluez_restart,
+                on_status=self._on_ancs_status,
+                on_bluez_restart=self._on_bluez_restart,
                 on_transport_failure=self.bearers.recover_le_transport,
                 include_non_message_notifications=lambda: (
                     self.notification_policy.value == ALL_NOTIFICATIONS
@@ -314,8 +346,25 @@ class Daemon:
         # The "ready" line in the happy path is emitted by
         # _post_sessions_setup, so we don't duplicate it here.
 
+    def _on_bluez_restart(self) -> None:
+        """Reapply MAP-first ordering before accepting the new BlueZ owner."""
+        self.adapter_class.poke()
+        # The advertisement registration belonged to the old owner.  Prime
+        # inbound LE immediately instead of waiting for another link event.
+        self.solicitation.reset_after_bluez_restart()
+        # Hold first because resetting bearer observations immediately probes
+        # the replacement daemon. The old OBEX transport is already gone, so
+        # discard its local sessions without asking obexd to remove them.
+        self.bearers.hold_le()
+        self.profiles.reconnect(
+            "bluetoothd restarted",
+            remove_remote_sessions=False,
+        )
+        self.bearers.reset_after_bluez_restart()
+
     def _profiles_lost(self, _reason: str) -> None:
         """Stop consumers that hold objects belonging to old sessions."""
+        self.solicitation.set_needed(True)
         if self.listener is not None:
             self.listener.stop()
             self.listener = None
@@ -342,23 +391,22 @@ class Daemon:
         self.bearers.poke()
         self.profiles.reconnect("system resumed")
 
-    def _post_sessions_setup(self) -> None:
-        """Everything that requires live MAP+PBAP sessions. Idempotent so
-        we can call it either at first-attempt success or at retry success."""
+    def _post_available_sessions_setup(self) -> None:
+        """Start consumers for whichever OBEX profiles are currently live."""
         # Warm contacts; if empty, do a one-time pull. PBAP pull is cheap.
-        if self.contacts.count() == 0:
+        if self.sessions.pbap is not None and self.contacts.count() == 0:
             log.info("contacts cache empty — pulling from iPhone via PBAP")
             self._refresh_contacts()
 
         # Schedule periodic contacts refresh
-        if self._contacts_refresh_id is None:
+        if self.sessions.pbap is not None and self._contacts_refresh_id is None:
             self._contacts_refresh_id = GLib.timeout_add_seconds(
                 CONTACTS_REFRESH_SEC, self._periodic_refresh_contacts
             )
 
         # Wire up MAP MNS listener.
         # Resolve through the current cache; contacts refreshes in place.
-        if self.listener is None:
+        if self.sessions.map is not None and self.listener is None:
             self.listener = MapEventListener(
                 sessions=self.sessions,
                 on_sms=self.events.message,
@@ -366,6 +414,12 @@ class Daemon:
                 submit_obex=self.obex_worker.submit,
             )
             self.listener.start()
+
+    def _post_sessions_setup(self) -> None:
+        """Finish setup once both MAP and PBAP are live."""
+        self._post_available_sessions_setup()
+
+        self._sync_solicitation()
 
         log.info(
             "=== BlueFerry ready (contacts=%d, sinks=%s) ===",
@@ -496,6 +550,7 @@ class Daemon:
 
     def stop(self) -> None:
         log.info("=== BlueFerry stopping ===")
+        self.adapter_class.stop()
         self.bearers.stop()
         self.profiles.stop()
         for tid_attr in (
@@ -516,6 +571,7 @@ class Daemon:
             self.listener.stop()
         if self.ancs is not None:
             self.ancs.stop()
+        self.solicitation.stop()
         if self._sleep_match is not None:
             try:
                 self._sleep_match.remove()
@@ -527,7 +583,6 @@ class Daemon:
         self.obex_worker.shutdown(cleanup=self.sessions.close_all)
         self.storage.close()
         self.sessions.stop_monitoring()
-        bluez_setup.unregister_advert()
         main_loop.quit()
 
     def run(self) -> int:

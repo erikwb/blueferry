@@ -1,6 +1,8 @@
-// Require a fresh administrator authorization for BlueFerry's one narrowly
-// scoped system unit. In particular, do not inherit systemd's usual
-// auth_admin_keep decision after a previous manage-units operation.
+// Let an active local session repair volatile Bluetooth Class-of-Device state
+// through BlueFerry's one narrowly scoped system unit. The unit has a fixed
+// command, validates its numeric adapter index, sets only class 4/8, and has a
+// capability and syscall sandbox; this does not delegate arbitrary btmgmt or
+// systemd operations to the user daemon.
 polkit.addRule(function(action, subject) {
     if (action.id !== "org.freedesktop.systemd1.manage-units" ||
         action.lookup("verb") !== "start" ||
@@ -10,7 +12,7 @@ polkit.addRule(function(action, subject) {
 
     var unit = action.lookup("unit");
     if (unit && /^blueferry-btmgmt-set-class@[0-9]+\.service$/.test(unit)) {
-        return polkit.Result.AUTH_ADMIN;
+        return polkit.Result.YES;
     }
     return polkit.Result.NOT_HANDLED;
 });

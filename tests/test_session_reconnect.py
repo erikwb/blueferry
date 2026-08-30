@@ -45,36 +45,64 @@ def test_unknown_object_send_error_triggers_reconnect() -> None:
     assert reasons
 
 
-def test_failed_pbap_open_cleans_partial_map_before_retry(monkeypatch) -> None:
+def test_failed_pbap_open_keeps_map_and_retries_only_pbap(monkeypatch) -> None:
     manager = SessionManager()
-    removed = []
-    targets = iter([
-        ObexSession("MAP", "/session/map"),
-        sessions_mod.SessionError("PBAP refused"),
-    ])
+    attempts = []
+    pbap_attempts = 0
 
-    def create(_target):
-        result = next(targets)
-        if isinstance(result, Exception):
-            raise result
-        return result
-
-    class Client:
-        @staticmethod
-        def RemoveSession(path, **_kwargs):
-            removed.append(str(path))
+    def create(target):
+        nonlocal pbap_attempts
+        attempts.append(target)
+        if target == "MAP":
+            return ObexSession("MAP", "/session/map")
+        pbap_attempts += 1
+        if pbap_attempts == 1:
+            raise sessions_mod.SessionError("PBAP refused")
+        return ObexSession("PBAP", "/session/pbap")
 
     monkeypatch.setattr(manager, "start_monitoring", lambda: None)
-    monkeypatch.setattr(sessions_mod, "_client", lambda: Client())
     monkeypatch.setattr(sessions_mod, "_remove_stale_sessions", lambda _x: None)
     monkeypatch.setattr(sessions_mod, "_create_session", create)
 
     with pytest.raises(sessions_mod.SessionError, match="PBAP refused"):
         manager.open_all()
 
-    assert removed == ["/session/map"]
-    assert manager.map is None
+    assert manager.map == ObexSession("MAP", "/session/map")
     assert manager.pbap is None
+
+    manager.open_all()
+
+    assert attempts == ["MAP", "PBAP", "PBAP"]
+    assert manager.map == ObexSession("MAP", "/session/map")
+    assert manager.pbap == ObexSession("PBAP", "/session/pbap")
+
+
+def test_failed_map_open_still_opens_and_keeps_pbap(monkeypatch) -> None:
+    manager = SessionManager()
+    attempts = []
+
+    def create(target):
+        attempts.append(target)
+        if target == "MAP":
+            raise sessions_mod.SessionError("MAP transport disconnected")
+        return ObexSession("PBAP", "/session/pbap")
+
+    monkeypatch.setattr(manager, "start_monitoring", lambda: None)
+    monkeypatch.setattr(sessions_mod, "_remove_stale_sessions", lambda _x: None)
+    monkeypatch.setattr(sessions_mod, "_create_session", create)
+
+    with pytest.raises(sessions_mod.SessionError, match="MAP transport"):
+        manager.open_all()
+
+    pbap = manager.pbap
+    assert manager.map is None
+    assert pbap == ObexSession("PBAP", "/session/pbap")
+
+    with pytest.raises(sessions_mod.SessionError, match="MAP transport"):
+        manager.open_all()
+
+    assert attempts == ["MAP", "PBAP", "MAP"]
+    assert manager.pbap is pbap
 
 
 def test_close_clears_state_even_when_obexd_is_unreachable(monkeypatch) -> None:

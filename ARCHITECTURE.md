@@ -113,14 +113,27 @@ Pairing has two independent axes rather than a growing table of device quirks:
   interactive confirmation path.
 
 ANCS connection policy and ANCS solicitation are deliberately separate. After
-the Classic bond is trusted and settled, setup broadcasts the short-lived
-solicitation whenever the controller can advertise, including compatibility
-mode. Real-device testing indicates that older iOS uses this signal to expose
-its MAP/PBAP permission toggles even though BlueFerry must not connect ANCS.
-Full mode starts the daemon with LE held back until its first MAP/PBAP attempt
-completes; compatibility mode leaves LE disabled. Pairing reports record the
-resolved policy, controller capability, ordered timeline, package build ID, and
-full source-content SHA.
+the Classic bond is trusted and settled, setup broadcasts solicitation whenever
+the controller can advertise, including compatibility mode. Real-device testing
+indicates that older iOS uses this signal to expose its MAP/PBAP permission
+toggles even though BlueFerry must not connect ANCS. At runtime a dedicated
+supervisor keeps solicitation on air until MAP/PBAP and an end-to-end ANCS
+Control Point round trip are both healthy, preserves a three-minute permission
+window, and re-registers the advertisement if BlueZ releases it or changes
+D-Bus owner. Full mode holds a missing LE bearer behind every MAP/PBAP reconnect
+attempt. A genuine LE disconnect grants one fresh outbound bootstrap, and a
+later Classic return grants another if that attempt was spent while the phone
+was absent; solicitation remains the durable fallback between those lifecycle
+events. Compatibility mode leaves LE disabled. Pairing reports record the
+resolved policy, controller capability, ordered timeline, package build ID,
+and full source-content SHA.
+
+The adapter Class-of-Device is volatile controller state. The unprivileged
+daemon checks it at startup, after a BlueZ owner change, and periodically. On
+drift it starts one fixed, capability-bounded systemd helper that can only set
+the validated adapter index to A/V Hands-Free; a narrow Polkit rule permits
+that operation for an active local session without exposing general `btmgmt`
+or systemd control.
 
 ## Lifecycle
 
@@ -137,6 +150,9 @@ MAP/PBAP connectivity moves through explicit initializing, connecting, ready,
 degraded, reconnecting, authorization-required, map-connection-refused, and
 stopping states. Failed profile opens poll every 5 seconds until the first
 successful MAP/PBAP connection, then every 15 seconds for later reconnects.
+MAP and PBAP opens are independent: if iOS rejects one profile, the other
+session and its consumers remain available while only the missing profile is
+retried. Full readiness still requires both profiles.
 Suspend/resume and observed OBEX loss enter the same reconnection path. The
 refusal state preserves the iPhone's
 `Connection refused (111)` detail so clients can explain that another computer

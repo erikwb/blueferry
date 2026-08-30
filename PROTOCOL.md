@@ -108,10 +108,17 @@ After authentication, setup trusts the bond, selects BR/EDR as the preferred
 bearer, lets the existing Classic ACL settle, and only then registers the
 short-lived solicitation advertisement. The daemon starts while that advert
 and BlueFerry's temporary pairing agent are still present, and its first
-profile operation is MAP/PBAP. Full mode enables LE after that first profile
-attempt completes, whether it succeeds or fails; compatibility mode leaves LE
-disabled. Before later connection requests the daemon selects the corresponding
-BlueZ `PreferredBearer` when that property is available.
+profile operation is MAP/PBAP. Full mode enables LE after a MAP/PBAP attempt
+made while Classic is observable, or immediately after a successful profile
+open that itself proves Classic reachability. Later whole-device reconnects
+reapply the same gate; compatibility mode leaves LE disabled. Before later
+connection requests the daemon selects the corresponding BlueZ
+`PreferredBearer` when that property is available.
+
+Because `btmgmt class` is reset by controller and bluetoothd lifecycles, the
+daemon also reconciles the A/V Hands-Free Class-of-Device at startup, after a
+BlueZ owner change, and once per minute. Repair goes through the packaged fixed
+systemd helper rather than granting the daemon raw Bluetooth capabilities.
 
 On a clean iOS 26 test this ordering opened MAP/PBAP first; the pending LE
 request completed three seconds later, resolved all three ANCS characteristics,
@@ -262,6 +269,9 @@ remain available. Removing the bond invalidates the saved runtime target and
 stops the daemon's connection attempts.
 
 - Keep one MAP and one PBAP session open for the daemon lifetime.
+- Open and retry MAP and PBAP independently. A successful sibling session must
+  remain available when iOS rejects the other profile; in particular, a MAP
+  refusal must not prevent PBAP contacts access.
 - Serialize blocking MAP/PBAP operations on one worker.
 - Before opening, remove only stale sessions for the target phone and profile.
 - On `Forbidden`, retry once after targeted stale-session cleanup rather than
@@ -298,16 +308,37 @@ During first-time setup, `Device1.PreferredBearer=le` followed by
 5.87. `PreferredBearer` is treated as an instruction for the next outbound
 connection, not a durable preference: the supervisor selects `bredr` or `le`
 immediately before requesting that bearer and does not leave LE preferred while
-idle. BlueFerry supervises both connections for the daemon lifetime, repeats
-the sequence after disconnects and system resume, and backs off exponentially
-when a bearer keeps refusing to connect: a rejected `Connect` repeated every
-five seconds against the iPhone was observed to keep the bond in a
-half-connected flapping state.
+idle. BlueFerry supervises both connections for the daemon lifetime and backs
+off exponentially when a bearer keeps refusing to connect: a rejected
+`Connect` repeated every five seconds against the iPhone was observed to keep
+the bond in a half-connected flapping state. Classic remains actively
+supervised. LE receives one speculative outbound dial, then yields to the
+solicitation advertisement instead of repeatedly calling `Connect`. A genuine
+connected-to-disconnected LE transition grants one fresh outbound bootstrap.
+If that attempt is spent while the phone remains absent, an observed Classic
+return grants one more for the new presence generation. A returning inbound LE
+link clears Classic backoff accumulated while the phone was absent, and limits
+later Classic backoff to 30 seconds while LE remains healthy. A deliberate
+stale-GATT reset and a new BlueZ generation also receive a new outbound
+bootstrap. If BlueZ cannot keep the solicitation registered, bounded outbound
+LE retries remain enabled rather than treating an unavailable inbound path as
+primed.
+
+Solicitation remains registered until both MAP/PBAP and end-to-end ANCS are
+healthy, subject to a three-minute minimum permission window. It is restored
+when LE or either protocol becomes unhealthy, when BlueZ releases it, and when
+bluetoothd changes D-Bus owner. This both preserves the iOS permission signal
+and avoids occupying an advertising instance indefinitely after recovery.
 
 After LE connects, BlueFerry waits for BlueZ to enumerate the ANCS service and
 its Notification Source, Data Source, and Control Point characteristics. A
 `StartNotify` call can race GATT readiness even after the characteristics have
 appeared, so subscription failures are retried without requiring rediscovery.
+After a physical reconnect, notification registrations owned by the previous
+ATT session are explicitly stopped and started again rather than trusting a
+cached `Notifying=true`. A previously authorized Control Point failure or
+timeout escalates to one serialized `Bearer.LE1.Disconnect`; MAP/PBAP stay
+available and LE rebuilds behind the profile-ordering gate.
 
 This works on the MediaTek MT7922 and the Intel AX210 while MAP and PBAP stay
 connected over BR/EDR; on the AX210 the LE half of the bond exists only when

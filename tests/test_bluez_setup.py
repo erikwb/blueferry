@@ -30,6 +30,13 @@ class TestAncsAdvertisement:
         with pytest.raises(dbus.exceptions.DBusException):
             bluez_setup._AncsAdvert.GetAll(None, "not.the.advert.interface")
 
+    def test_release_clears_registration_state(self, monkeypatch):
+        monkeypatch.setattr(bluez_setup, "_advert_registered", True)
+
+        bluez_setup._AncsAdvert.Release(None)
+
+        assert bluez_setup.advert_registered() is False
+
 
 def test_daemon_run_cleans_up_when_start_raises(monkeypatch):
     """A partial startup must not leak a hardware advertisement."""

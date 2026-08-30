@@ -9,10 +9,10 @@ the Linux side:
    payloads keep the advertisement visible to iOS during first pairing.
 3. Adapter is powered.
 
-This module owns those three concerns. The daemon may verify them on startup,
-but privileged Class-of-Device changes are limited to the explicit pairing
-flow and run through a hardened, argument-validating systemd service after a
-fresh Polkit authorization.
+This module owns those three concerns. Class-of-Device changes run through a
+hardened, argument-validating systemd service; its fixed operation is available
+to an active local daemon so volatile controller state can be repaired after a
+Bluetooth reset without granting raw Bluetooth capabilities to BlueFerry.
 """
 from __future__ import annotations
 
@@ -158,6 +158,9 @@ class _AncsAdvert(dbus.service.Object):
     @dbus.service.method("org.bluez.LEAdvertisement1",
                          in_signature="", out_signature="")
     def Release(self) -> None:
+        global _advert_registered
+        _advert_registered = False
+        log.info("BlueZ released the ANCS solicitation advertisement")
         return None
 
     @dbus.service.method("org.freedesktop.DBus.Properties",
@@ -200,6 +203,17 @@ class _AncsAdvert(dbus.service.Object):
 
 _advert_instance: _AncsAdvert | None = None
 _advert_registered = False
+
+
+def advert_registered() -> bool:
+    """Return whether the current BlueZ owner accepted our advertisement."""
+    return _advert_registered
+
+
+def forget_advert_registration() -> None:
+    """Discard registration state that belonged to a departed BlueZ owner."""
+    global _advert_registered
+    _advert_registered = False
 
 
 def _active_advertisements(adapter: str | None = None) -> int | None:

@@ -59,7 +59,10 @@ class ProfileSupervisor:
         on_ready: Callable[[], None],
         on_lost: Callable[[str], None],
         on_status: Callable[[], None],
+        on_partial_ready: Callable[[], None] | None = None,
+        on_attempt_pending: Callable[[], None] | None = None,
         on_first_attempt_complete: Callable[[], None] | None = None,
+        attempt_ready: Callable[[], bool] | None = None,
         schedule: Schedule = GLib.timeout_add_seconds,
         cancel: Cancel = GLib.source_remove,
     ) -> None:
@@ -69,7 +72,10 @@ class ProfileSupervisor:
         self._on_ready = on_ready
         self._on_lost = on_lost
         self._on_status = on_status
+        self._on_partial_ready = on_partial_ready
+        self._on_attempt_pending = on_attempt_pending
         self._on_first_attempt_complete = on_first_attempt_complete
+        self._attempt_ready = attempt_ready or (lambda: True)
         self._schedule = schedule
         self._cancel = cancel
         self._retry_id: int | None = None
@@ -93,6 +99,7 @@ class ProfileSupervisor:
     def start(self) -> None:
         if self._stopping:
             return
+        self._begin_attempt_cycle()
         self.sessions.start_monitoring()
         self.open()
 
@@ -121,6 +128,7 @@ class ProfileSupervisor:
             log.debug("ignoring duplicate profile loss during cleanup: %s", reason)
             return
         log.warning("entering degraded mode after OBEX loss: %s", reason)
+        self._begin_attempt_cycle()
         self._generation += 1
         generation = self._generation
         self.connectivity.lost(reason)
@@ -164,7 +172,7 @@ class ProfileSupervisor:
         if self._stopping or generation != self._generation or self._closing:
             return
         self._opening = False
-        self._complete_first_attempt()
+        self._complete_first_attempt(force=True)
         log.info("MAP/PBAP sessions opened")
         self._mark_ready()
 
@@ -190,6 +198,16 @@ class ProfileSupervisor:
         self._complete_first_attempt()
         message = str(error)
         log.warning("could not open MAP/PBAP sessions: %s", message)
+        if (
+            self._on_partial_ready is not None
+            and (self.sessions.map is not None or self.sessions.pbap is not None)
+        ):
+            log.info(
+                "keeping partial OBEX availability (MAP=%s, PBAP=%s)",
+                self.sessions.map is not None,
+                self.sessions.pbap is not None,
+            )
+            self._on_partial_ready()
         authorization_required = isinstance(error, SessionError) and (
             "Forbidden" in message or "0x43" in message
         )
@@ -210,12 +228,25 @@ class ProfileSupervisor:
         self._on_status()
         self._schedule_retry(delay)
 
-    def _complete_first_attempt(self) -> None:
+    def _complete_first_attempt(self, *, force: bool = False) -> None:
         if self._first_attempt_completed:
+            return
+        if not force and not self._attempt_ready():
+            log.debug(
+                "MAP/PBAP attempt completed while BR/EDR was unavailable; "
+                "keeping LE held for the next attempt"
+            )
             return
         self._first_attempt_completed = True
         if self._on_first_attempt_complete is not None:
             self._on_first_attempt_complete()
+
+    def _begin_attempt_cycle(self) -> None:
+        if not self._first_attempt_completed and self._opening:
+            return
+        self._first_attempt_completed = False
+        if self._on_attempt_pending is not None:
+            self._on_attempt_pending()
 
     def _closed(self, generation: int) -> None:
         if self._stopping or generation != self._generation:

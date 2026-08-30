@@ -150,6 +150,93 @@ def test_le_can_be_held_until_classic_profile_attempt_finishes() -> None:
     assert connections == ["le"]
 
 
+def test_le_can_be_held_again_during_a_later_profile_reconnect() -> None:
+    state = {"bredr": True, "le": False}
+    connections = []
+    scheduled = []
+    cancelled = []
+    supervisor = BearerSupervisor(
+        "/device",
+        read_connected=state.get,
+        connect=lambda kind, on_success, _on_error: (
+            connections.append(kind),
+            on_success(),
+        ),
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=cancelled.append,
+    )
+
+    supervisor.start()
+    assert scheduled[0][0] == bearer_supervisor.CLASSIC_SETTLE_SECONDS
+
+    supervisor.hold_le()
+    assert cancelled == [7]
+    scheduled[0][1]()
+    assert connections == []
+
+    supervisor.enable_le()
+    assert scheduled[-1][0] == bearer_supervisor.CLASSIC_SETTLE_SECONDS
+    scheduled[-1][1]()
+    assert connections == ["le"]
+
+
+def test_hold_rejects_an_le_connect_already_in_flight() -> None:
+    state = {"bredr": True, "le": False}
+    connect_callbacks = []
+    disconnect_callbacks = []
+    observed = []
+    scheduled = []
+
+    supervisor = BearerSupervisor(
+        "/device",
+        read_connected=state.get,
+        connect=lambda kind, on_success, _on_error: connect_callbacks.append(
+            (kind, on_success)
+        ),
+        disconnect=lambda kind, on_success, _on_error: disconnect_callbacks.append(
+            (kind, on_success)
+        ),
+        on_le_state=observed.append,
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+    )
+    supervisor.start()
+    settle = next(
+        callback
+        for delay, callback in scheduled
+        if delay == bearer_supervisor.CLASSIC_SETTLE_SECONDS
+    )
+    health_check = next(
+        callback
+        for delay, callback in scheduled
+        if delay == bearer_supervisor.POLL_SECONDS
+    )
+    settle()
+    assert [kind for kind, _callback in connect_callbacks] == ["le"]
+
+    supervisor.hold_le()
+    connect_callbacks[0][1]()
+    state["le"] = True
+    health_check()
+
+    # The pending Connect is countered immediately, and its transient True
+    # state is not published to ANCS while the profile gate is closed.
+    assert [kind for kind, _callback in disconnect_callbacks] == ["le"]
+    assert observed == [False]
+
+    disconnect_callbacks[0][1]()
+    state["le"] = False
+    health_check()
+    supervisor.enable_le()
+    assert observed == [False]
+    next_settle = next(
+        callback
+        for delay, callback in reversed(scheduled)
+        if delay == bearer_supervisor.CLASSIC_SETTLE_SECONDS
+    )
+    next_settle()
+    assert [kind for kind, _callback in connect_callbacks] == ["le", "le"]
+
+
 def test_selects_each_bearer_before_requesting_its_connection() -> None:
     state = {"bredr": False, "le": False}
     calls = []
@@ -395,6 +482,246 @@ def test_backoff_resets_once_the_bearer_connects() -> None:
     assert attempts == ["bredr", "bredr"]
 
 
+def test_returning_le_link_clears_classic_absence_backoff() -> None:
+    state = {"bredr": False, "le": False}
+    attempts = []
+    scheduled = []
+    now = 0.0
+
+    def connect(kind, _on_success, on_error):
+        attempts.append(kind)
+        on_error(RuntimeError("phone absent"))
+
+    supervisor = BearerSupervisor(
+        "/device",
+        read_connected=state.get,
+        connect=connect,
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        clock=lambda: now,
+    )
+    supervisor.start()
+    assert attempts == ["bredr"]
+
+    # The old retry is ten seconds away, but an inbound LE link proves that
+    # the phone has returned and makes Classic retry on this health tick.
+    state["le"] = True
+    scheduled[0][1]()
+
+    assert attempts == ["bredr", "bredr"]
+
+
+def test_live_le_bounds_classic_backoff() -> None:
+    state = {"bredr": False, "le": True}
+    attempts = []
+    scheduled = []
+    now = 0.0
+
+    def connect(kind, _on_success, on_error):
+        attempts.append(kind)
+        on_error(RuntimeError("not now"))
+
+    supervisor = BearerSupervisor(
+        "/device",
+        read_connected=state.get,
+        connect=connect,
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        clock=lambda: now,
+    )
+    supervisor.start()
+
+    for instant in (10.0, 30.0, 60.0, 90.0):
+        now = instant
+        scheduled[0][1]()
+
+    assert attempts == ["bredr"] * 5
+    assert supervisor._next_attempt["bredr"] == 120.0
+
+
+def test_le_outbound_dial_is_spent_once_then_solicitation_takes_over() -> None:
+    state = {"bredr": True, "le": False}
+    connections = []
+    scheduled = []
+    now = 0.0
+
+    supervisor = BearerSupervisor(
+        "/device",
+        read_connected=state.get,
+        connect=lambda kind, on_success, _on_error: (
+            connections.append(kind),
+            on_success(),
+        ),
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        clock=lambda: now,
+    )
+    supervisor.start()
+    settle = scheduled[0][1]
+    health_check = scheduled[1][1]
+
+    settle()
+    assert connections == ["le"]
+
+    # Even after the old exponential delay has elapsed, a missing LE bearer
+    # does not spend another outbound dial.  The ANCS solicitation remains the
+    # durable reconnect mechanism.
+    now = 600.0
+    health_check()
+    assert connections == ["le"]
+
+
+def test_real_le_disconnect_refunds_one_outbound_dial() -> None:
+    state = {"bredr": True, "le": False}
+    connections = []
+    scheduled = []
+
+    supervisor = BearerSupervisor(
+        "/device",
+        read_connected=state.get,
+        connect=lambda kind, on_success, _on_error: (
+            connections.append(kind),
+            on_success(),
+        ),
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+    )
+    supervisor.start()
+    initial_settle = scheduled[0][1]
+    health_check = scheduled[1][1]
+    initial_settle()
+    assert connections == ["le"]
+
+    state["le"] = True
+    health_check()
+    state["le"] = False
+    health_check()
+    settle = next(
+        callback
+        for delay, callback in reversed(scheduled)
+        if delay == bearer_supervisor.CLASSIC_SETTLE_SECONDS
+    )
+    settle()
+
+    assert connections == ["le", "le"]
+
+    # The lifecycle event grants exactly one attempt. A phone that remains
+    # absent is still left to solicitation instead of being dialled forever.
+    health_check()
+    assert connections == ["le", "le"]
+
+
+def test_classic_return_refunds_le_dial_spent_while_phone_was_absent() -> None:
+    state = {"bredr": True, "le": True}
+    le_connections = []
+    scheduled = []
+
+    def connect(kind, on_success, _on_error):
+        if kind == "le":
+            le_connections.append(kind)
+        on_success()
+
+    supervisor = BearerSupervisor(
+        "/device",
+        read_connected=state.get,
+        connect=connect,
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+    )
+    supervisor.start()
+    health_check = scheduled[0][1]
+
+    state["le"] = False
+    health_check()
+    first_settle = next(
+        callback
+        for delay, callback in reversed(scheduled)
+        if delay == bearer_supervisor.CLASSIC_SETTLE_SECONDS
+    )
+    first_settle()
+    assert le_connections == ["le"]
+
+    state["bredr"] = False
+    health_check()
+    state["bredr"] = True
+    health_check()
+    return_settle = next(
+        callback
+        for delay, callback in reversed(scheduled)
+        if delay == bearer_supervisor.CLASSIC_SETTLE_SECONDS
+    )
+    return_settle()
+
+    assert le_connections == ["le", "le"]
+
+
+def test_le_outbound_dial_retries_when_solicitation_is_unavailable() -> None:
+    state = {"bredr": True, "le": False}
+    connections = []
+    scheduled = []
+    now = 0.0
+
+    supervisor = BearerSupervisor(
+        "/device",
+        read_connected=state.get,
+        connect=lambda kind, on_success, _on_error: (
+            connections.append(kind),
+            on_success(),
+        ),
+        inbound_le_primed=lambda: False,
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        clock=lambda: now,
+    )
+    supervisor.start()
+    settle = scheduled[0][1]
+    health_check = scheduled[1][1]
+
+    settle()
+    assert connections == ["le"]
+
+    # If BlueZ cannot keep the solicitation advertisement registered, retain
+    # the ordinary bounded outbound fallback instead of stranding ANCS.
+    now = 11.0
+    health_check()
+    scheduled[-1][1]()
+    assert connections == ["le", "le"]
+
+
+def test_ancs_transport_reset_refunds_one_le_dial() -> None:
+    state = {"bredr": True, "le": False}
+    connections = []
+    disconnects = []
+    scheduled = []
+
+    supervisor = BearerSupervisor(
+        "/device",
+        read_connected=state.get,
+        connect=lambda kind, on_success, _on_error: (
+            connections.append(kind),
+            on_success(),
+        ),
+        disconnect=lambda kind, on_success, _on_error: (
+            disconnects.append(kind),
+            on_success(),
+        ),
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+    )
+    supervisor.start()
+    scheduled[0][1]()
+    assert connections == ["le"]
+
+    state["le"] = True
+    scheduled[1][1]()
+    supervisor.recover_le_transport()
+    assert disconnects == ["le"]
+
+    state["le"] = False
+    scheduled[1][1]()
+    next_settle = next(
+        callback
+        for delay, callback in reversed(scheduled)
+        if delay == bearer_supervisor.CLASSIC_SETTLE_SECONDS
+    )
+    next_settle()
+
+    assert connections == ["le", "le"]
+
+
 def test_le_observer_receives_only_lifecycle_transitions() -> None:
     state = {"bredr": True, "le": True}
     observed = []
@@ -460,6 +787,52 @@ def test_gatt_transport_failure_cycles_le_once_before_reconnecting() -> None:
 
     scheduled[-1][1]()
     assert connections == ["le"]
+
+
+def test_gatt_transport_recovery_waits_for_profile_gate_to_reopen() -> None:
+    state = {"bredr": True, "le": True}
+    disconnects = []
+    supervisor = BearerSupervisor(
+        "/device",
+        read_connected=state.get,
+        disconnect=lambda kind, on_success, _on_error: (
+            disconnects.append(kind),
+            on_success(),
+        ),
+        schedule=lambda _delay, _callback: 7,
+    )
+    supervisor.start()
+
+    supervisor.hold_le()
+    supervisor.recover_le_transport()
+    assert disconnects == []
+
+    supervisor.enable_le()
+    assert disconnects == ["le"]
+
+
+def test_bluez_restart_rejects_new_le_link_while_profile_gate_is_closed() -> None:
+    state = {"bredr": True, "le": True}
+    connections = []
+    disconnects = []
+    observed = []
+    supervisor = BearerSupervisor(
+        "/device",
+        read_connected=state.get,
+        connect=lambda kind, _on_success, _on_error: connections.append(kind),
+        disconnect=lambda kind, _on_success, _on_error: disconnects.append(kind),
+        on_le_state=observed.append,
+        schedule=lambda _delay, _callback: 7,
+    )
+    supervisor.start()
+    supervisor.hold_le()
+    state["bredr"] = False
+
+    supervisor.reset_after_bluez_restart()
+
+    assert disconnects == ["le"]
+    assert connections == ["bredr"]
+    assert observed == [True, None]
 
 
 def test_bluez_restart_discards_callbacks_from_the_previous_owner() -> None:
