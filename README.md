@@ -244,7 +244,31 @@ BLUEFERRY_HISTORY_MAX_EVENTS=10000
 BLUEFERRY_HISTORY_MAX_PAYLOAD_BYTES=268435456
 ```
 
-Restart the user service after editing those settings.
+When **All iPhone Notifications** is selected, optional exact bundle-ID rules
+can limit which non-Messages ANCS apps create desktop popups:
+
+```bash
+# Keep all iPhone app notifications except these apps:
+BLUEFERRY_ANCS_APP_BLOCKLIST=com.example.Chat,com.example.Mail
+
+# Or allow only these apps (omit this setting to allow every unblocked app):
+# BLUEFERRY_ANCS_APP_ALLOWLIST=com.example.Calendar,com.example.Reminders
+```
+
+If both are configured, the blocklist wins. An explicitly empty allowlist
+blocks every non-Messages app. Apple Messages is always processed for group
+conversation metadata, but its duplicate ANCS popup remains suppressed in
+favor of the MAP message popup.
+
+Bundle IDs are case-sensitive. To discover them, follow the user-service log
+while causing the app to send a notification; BlueFerry logs each app once per
+daemon run without logging its notification content:
+
+```bash
+journalctl --user -u blueferry -f | grep "ANCS app observed"
+```
+
+Restart the user service after editing `local.env` settings.
 
 ## Command line
 

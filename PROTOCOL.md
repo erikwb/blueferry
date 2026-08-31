@@ -364,8 +364,11 @@ message and read-state synchronization. Other ANCS application notifications
 are transient display-only events; ANCS provides no general reply mechanism.
 BlueFerry first requests only the owning app identifier. Unless live mirroring
 of all notifications is enabled, it does not request unrelated notification
-content at all. Even when mirroring is enabled, non-Messages content is never
-written to history or placed on BlueFerry's D-Bus event feed.
+content at all. When mirroring is enabled, the optional local allow/block rules
+are evaluated against that exact identifier before title, subtitle, message,
+or app display-name attributes are requested. Even when mirroring is enabled,
+included non-Messages content is never written to history or placed on
+BlueFerry's D-Bus event feed.
 
 ## Historical HFP result
 

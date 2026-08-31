@@ -158,6 +158,59 @@ def test_all_policy_reads_future_well_formed_system_notifications() -> None:
     assert len(client._request_queue) == 1
 
 
+def test_app_filter_discards_before_notification_content_is_requested() -> None:
+    considered = []
+    client = AncsClient(
+        "/device",
+        lambda _event: None,
+        include_non_message_notifications=lambda: True,
+        include_app_notification=lambda app_id: (
+            considered.append(app_id) or False
+        ),
+    )
+    notification = Notification.parse(_notification(42))
+    client._request_attrs(notification)
+
+    _complete_app_probe(client, 42, "com.example.Blocked")
+
+    assert considered == ["com.example.Blocked"]
+    assert len(client._request_queue) == 0
+
+
+def test_app_filter_allows_matching_notification_content_request() -> None:
+    client = AncsClient(
+        "/device",
+        lambda _event: None,
+        include_non_message_notifications=lambda: True,
+        include_app_notification=lambda app_id: app_id == "com.example.Allowed",
+    )
+    notification = Notification.parse(_notification(42))
+    client._request_attrs(notification)
+
+    _complete_app_probe(client, 42, "com.example.Allowed")
+
+    assert len(client._request_queue) == 1
+    assert client._request_queue.popleft().expected_app_id == "com.example.Allowed"
+
+
+def test_messages_bypasses_non_message_app_filter_for_grouping() -> None:
+    client = AncsClient(
+        "/device",
+        lambda _event: None,
+        include_non_message_notifications=lambda: True,
+        include_app_notification=lambda _app_id: False,
+    )
+    notification = Notification.parse(_notification(42))
+    client._request_attrs(notification)
+
+    _complete_app_probe(client, 42, "com.apple.MobileSMS")
+
+    assert len(client._request_queue) == 1
+    assert client._request_queue.popleft().expected_app_id == (
+        "com.apple.MobileSMS"
+    )
+
+
 def test_malformed_app_identifier_is_discarded_even_under_all_policy() -> None:
     client = AncsClient(
         "/device",

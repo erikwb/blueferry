@@ -13,10 +13,9 @@ Protocol behavior established by the pairing experiments:
 - StartNotify is called on Notification Source and Data Source as soon as
   they're present + we're paired. Control Point is write-only.
 
-- For each NotificationAdded/Modified event we get on NS, we synthesize a
-  GetNotificationAttributes packet asking for AppIdentifier+Title+Subtitle+
-  Message (plus positive/negative action labels if the iPhone declared
-  them) and write it to CP. The response comes back on DS.
+- For each NotificationAdded/Modified event we get on NS, we first request
+  only AppIdentifier. Policy and per-app configuration are evaluated before
+  requesting Title+Subtitle+Message, and the response comes back on DS.
 
 - App display names are looked up lazily via GetAppAttributes and cached.
 """
@@ -134,6 +133,7 @@ class AncsClient:
         on_event: Callable[[AncsEvent], None],
         on_status: Callable[[], None] | None = None,
         include_non_message_notifications: Callable[[], bool] | None = None,
+        include_app_notification: Callable[[str], bool] | None = None,
         on_bluez_restart: Callable[[], None] | None = None,
         on_transport_failure: Callable[[], None] | None = None,
         *,
@@ -148,6 +148,9 @@ class AncsClient:
         self._on_transport_failure = on_transport_failure
         self._include_non_message_notifications = (
             include_non_message_notifications or (lambda: False)
+        )
+        self._include_app_notification = (
+            include_app_notification or (lambda _app_id: True)
         )
         self._schedule = schedule
         self._cancel = cancel
@@ -171,6 +174,7 @@ class AncsClient:
 
         # In-flight per-notification attribute requests + app-name cache
         self._app_name_cache: OrderedDict[str, str] = OrderedDict()
+        self._observed_app_ids: OrderedDict[str, None] = OrderedDict()
         self._pending_app_lookups: dict[str, list[NotificationAttributes]] = {}
         self._app_lookup_requested: set[str] = set()
         self._request_queue: RequestBacklog[_PendingRequest] = RequestBacklog(
@@ -1047,7 +1051,23 @@ class AncsClient:
                     _APP_ID_RE.fullmatch(app_id)
                     and self._include_non_message_notifications()
                 ):
-                    self._request_full_attrs(request.notification, app_id)
+                    included = self._include_app_notification(app_id)
+                    if app_id not in self._observed_app_ids:
+                        log.info(
+                            "ANCS app observed: %s (%s)",
+                            app_id,
+                            "included" if included else "blocked",
+                        )
+                    self._observed_app_ids[app_id] = None
+                    self._observed_app_ids.move_to_end(app_id)
+                    while len(self._observed_app_ids) > MAX_ANCS_APP_CACHE:
+                        self._observed_app_ids.popitem(last=False)
+                    if included:
+                        self._request_full_attrs(request.notification, app_id)
+                    else:
+                        log.debug(
+                            "discarding ANCS notification blocked by app filter"
+                        )
                 else:
                     # The default policy never asks the iPhone for unrelated
                     # notification title, subtitle, message, or action text.

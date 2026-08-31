@@ -95,6 +95,14 @@ def test_backend_unit_does_not_source_user_controlled_process_environment() -> N
     assert "RestrictAddressFamilies=AF_UNIX" in unit
 
 
+def test_readme_documents_manual_ancs_app_filter() -> None:
+    readme = (ROOT / "README.md").read_text()
+
+    assert "BLUEFERRY_ANCS_APP_ALLOWLIST" in readme
+    assert "BLUEFERRY_ANCS_APP_BLOCKLIST" in readme
+    assert "ANCS app observed" in readme
+
+
 def test_backend_user_unit_does_not_set_a_capability_bounding_set() -> None:
     unit = (ROOT / "systemd" / "blueferry.service").read_text()
 

@@ -202,10 +202,11 @@ managers; distro systemd hooks reload changed user-unit metadata.
   a wrong or replaced key fail closed without deleting the stored records.
 - ANCS is app-identified before content is requested. Under the default
   policy, unrelated app/system content is never fetched. Under the opt-in
-  `all` policy it is delivered only to an explicitly ephemeral popup sink,
-  never retained or broadcast on D-Bus. Apple Messages retains only the fields
-  required for group correlation, and those raw records are not exposed by the
-  public event-query method.
+  `all` policy, optional exact bundle-ID allow/block rules are applied before
+  notification attributes are fetched. Included content is delivered only to
+  an explicitly ephemeral popup sink, never retained or broadcast on D-Bus.
+  Apple Messages retains only the fields required for group correlation, and
+  those raw records are not exposed by the public event-query method.
 - Logs exclude message bodies, notification text, and recipient identities at
   every level. UI markup and terminal output are escaped at their respective
   display boundaries.
