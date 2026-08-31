@@ -410,6 +410,10 @@ def test_textual_warns_about_bluez_restart_when_only_ancs_is_missing(
                 "sudo systemctl restart bluetooth.service",
             )
             assert notice.has_class("warn")
+            for _attempt in range(30):
+                if notice.region.height >= 3:
+                    break
+                await pilot.pause(0.05)
             assert notice.region.height >= 3
 
     monkeypatch.setattr(tui_module.config, "ANCS_ENABLED", True)
