@@ -93,6 +93,138 @@ def test_issue_url_labels_a_pairing_issue_with_adapter_and_outcome() -> None:
     ) == "Pairing issue: MediaTek MT7921 — MAP/PBAP success, ANCS fail"
 
 
+def test_save_report_delta_compacts_repeated_bluez_snapshots(tmp_path) -> None:
+    initial = {
+        "device": {"paired": False, "trusted": False},
+        "bearers": {"bredr": {"present": True}, "le": {"present": False}},
+    }
+    paired = {
+        "device": {"paired": True, "trusted": False},
+        "bearers": {
+            "bredr": {"present": True, "connected": True},
+            "le": {"present": True, "connected": False},
+        },
+    }
+    disconnected = {
+        "device": {"paired": True, "trusted": True},
+        "bearers": {"bredr": {"present": True}, "le": {"present": False}},
+    }
+
+    path = quirks_report.save_report(
+        {
+            "bluez_trace": [
+                {"t": 0.1, "phase": "device_loaded", "state": initial},
+                {"t": 1.2, "phase": "paired", "state": paired},
+                {"t": 2.3, "phase": "advert_ready", "state": paired},
+                {"t": 3.4, "phase": "finished", "state": disconnected},
+            ],
+        },
+        directory=tmp_path,
+    )
+
+    assert path is not None
+    trace = json.loads(path.read_text())["bluez_trace"]
+    assert trace[0]["state"] == initial
+    assert trace[1]["changes"] == {
+        "bearers": {
+            "bredr": {"connected": True},
+            "le": {"connected": False, "present": True},
+        },
+        "device": {"paired": True},
+    }
+    assert [entry["phase"] for entry in trace] == [
+        "device_loaded", "paired", "finished",
+    ]
+    assert trace[2]["changes"] == {
+        "bearers": {
+            "bredr": {"connected": None},
+            "le": {"connected": None, "present": False},
+        },
+        "device": {"trusted": True},
+    }
+
+
+def test_issue_url_compacts_full_snapshot_reports_before_embedding(monkeypatch) -> None:
+    interfaces = {
+        f"org.example.Interface{index}": index
+        for index in range(18)
+    }
+    state = {
+        "object_present": True,
+        "device_present": True,
+        "child_objects": 18,
+        "root_interfaces": list(interfaces),
+        "child_interfaces": interfaces,
+        "device": {
+            "paired": True,
+            "trusted": True,
+            "connected": True,
+            "services_resolved": True,
+            "ancs_uuid": False,
+            "uuid_count": 14,
+        },
+        "bearers": {
+            "bredr": {"present": True, "connected": True},
+            "le": {"present": True, "connected": False},
+        },
+        "gatt": {
+            "services": 0,
+            "characteristics": 0,
+            "ancs_service": False,
+            "ancs_characteristics": [],
+        },
+        "battery_objects": 1,
+    }
+    payload = {
+        "blueferry": "0.7.7",
+        "blueferry_sha": "a" * 64,
+        "controller": {
+            "name": "hci0",
+            "vendor": "Realtek",
+            "product": "RTL8852CE",
+            "supported_settings": list(interfaces),
+            "current_settings": list(interfaces)[:10],
+            "summary": "Realtek RTL8852CE (usb 0bda:c852, btusb)",
+            "uuids": [
+                *list(interfaces),
+                "message-access-server",
+                "phonebook-access-server",
+            ],
+        },
+        "outcome": {"map": False, "pbap": False, "ancs": False},
+        "timeline": [
+            {"t": index * 1.5, "event": f"pairing_phase_{index}"}
+            for index in range(30)
+        ],
+        "bluez_trace": [
+            {"t": index * 5.0, "phase": f"phase_{index}", "state": state}
+            for index in range(8)
+        ],
+    }
+    monkeypatch.setattr(quirks_report, "MAX_ISSUE_URL_CHARS", 6_000)
+
+    url = quirks_report.issue_url(payload)
+
+    assert len(url) <= quirks_report.MAX_ISSUE_URL_CHARS
+    body = parse_qs(urlparse(url).query)["body"][0]
+    assert "too large to embed" not in body
+    report_json = body.partition("```json\n")[2].rpartition("\n```")[0]
+    embedded = json.loads(report_json)
+    assert len(embedded["timeline"]) == 30
+    assert len(embedded["bluez_trace"]) == 1
+    issue_state = embedded["bluez_trace"][0]["state"]
+    assert issue_state["device"] == state["device"]
+    assert issue_state["bearers"] == state["bearers"]
+    assert issue_state["gatt"] == state["gatt"]
+    assert "root_interfaces" not in issue_state
+    assert "child_interfaces" not in issue_state
+    assert "summary" not in embedded["controller"]
+    assert embedded["controller"]["messaging_uuids"] == [
+        "message-access-server",
+        "phonebook-access-server",
+    ]
+
+
 def test_issue_report_keeps_a_successful_ancs_setup(tmp_path) -> None:
     failed = quirks_report.save_report(
         {"outcome": {"setup_complete": True, "ancs": False}},
