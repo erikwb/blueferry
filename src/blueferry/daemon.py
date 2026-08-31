@@ -320,6 +320,7 @@ class Daemon:
                 include_non_message_notifications=lambda: (
                     self.notification_policy.value == ALL_NOTIFICATIONS
                 ),
+                include_app_notification=config.include_ancs_app,
                 previously_authorized=(
                     NOTIFICATION_ACCESS in self.setup_verification.verified
                 ),

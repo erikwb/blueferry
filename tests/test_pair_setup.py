@@ -210,6 +210,7 @@ def test_write_local_env_preserves_settings_and_is_private(tmp_path, monkeypatch
     destination.parent.mkdir()
     destination.write_text(
         "BLUEFERRY_MAC=00:00:00:00:00:00\n"
+        "BLUEFERRY_ANCS_APP_BLOCKLIST=com.example.Chat\n"
         "BLUEFERRY_SHOW_NOTIFICATION_CONTENT=false\n"
         "LD_PRELOAD=/tmp/not-allowed.so\n"
     )
@@ -221,6 +222,7 @@ def test_write_local_env_preserves_settings_and_is_private(tmp_path, monkeypatch
         "BLUEFERRY_MAC=02:00:00:00:00:01\n"
         "BLUEFERRY_ADAPTER=hci7\n"
         "BLUEFERRY_ANCS_ENABLED=true\n"
+        "BLUEFERRY_ANCS_APP_BLOCKLIST=com.example.Chat\n"
         "BLUEFERRY_SHOW_NOTIFICATION_CONTENT=false\n"
     )
     assert stat.S_IMODE(destination.stat().st_mode) == 0o600

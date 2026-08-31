@@ -126,14 +126,20 @@ def test_compatibility_daemon_solicits_but_never_starts_ancs(monkeypatch):
 
 def test_full_daemon_starts_ancs_client(monkeypatch):
     calls = []
+
+    def app_filter(app_id):
+        return app_id == "com.example.Allowed"
+
     value = _daemon(calls)
     _ready_bluetooth(monkeypatch, calls)
     monkeypatch.setattr(daemon.config, "ANCS_ENABLED", True)
+    monkeypatch.setattr(daemon.config, "include_ancs_app", app_filter)
 
     class Ancs:
         def __init__(self, *_args, **kwargs):
             calls.append("ancs-client")
             calls.append(("previously-authorized", kwargs["previously_authorized"]))
+            calls.append(("app-filter", kwargs["include_app_notification"]))
 
         def observe_bearer_state(self, connected):
             calls.append(("ancs-bearer", connected))
@@ -150,6 +156,7 @@ def test_full_daemon_starts_ancs_client(monkeypatch):
 
     assert "ancs-client" in calls
     assert ("previously-authorized", False) in calls
+    assert ("app-filter", app_filter) in calls
     assert ("ancs-bearer", False) in calls
     assert "ancs-start" in calls
     assert value.ancs is not None

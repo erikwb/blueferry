@@ -13,6 +13,8 @@ LOCAL_ENV_KEYS = frozenset({
     "BLUEFERRY_MAC",
     "BLUEFERRY_ADAPTER",
     "BLUEFERRY_ANCS_ENABLED",
+    "BLUEFERRY_ANCS_APP_ALLOWLIST",
+    "BLUEFERRY_ANCS_APP_BLOCKLIST",
     "BLUEFERRY_SHOW_NOTIFICATION_CONTENT",
     "BLUEFERRY_NOTIFICATION_TIMEOUT_MS",
     "BLUEFERRY_HISTORY_RETENTION_DAYS",
@@ -144,12 +146,52 @@ def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(value, maximum))
 
 
+_ANCS_APP_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")
+
+
+def _env_ancs_app_ids(name: str) -> frozenset[str] | None:
+    """Parse one optional comma-separated set of exact ANCS bundle IDs."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    return frozenset(
+        app_id
+        for value in raw.split(",")
+        if (app_id := value.strip()) and _ANCS_APP_ID_RE.fullmatch(app_id)
+    )
+
+
 ANCS_ENABLED: bool = _env_bool("BLUEFERRY_ANCS_ENABLED", True)
 """Whether the daemon should connect and subscribe to ANCS over LE.
 
 The pairing solicitation advertisement is deliberately independent: even
 compatibility mode broadcasts it so iOS exposes MAP/PBAP permissions.
 """
+
+ANCS_APP_ALLOWLIST: frozenset[str] | None = _env_ancs_app_ids(
+    "BLUEFERRY_ANCS_APP_ALLOWLIST"
+)
+"""Exact bundle IDs allowed to create non-Messages ANCS popups.
+
+``None`` means no allowlist was configured. An explicitly empty value allows
+no non-Messages apps. Apple Messages bypasses this popup filter because its
+ANCS metadata is required for group-message correlation.
+"""
+
+ANCS_APP_BLOCKLIST: frozenset[str] = (
+    _env_ancs_app_ids("BLUEFERRY_ANCS_APP_BLOCKLIST") or frozenset()
+)
+"""Exact bundle IDs denied after the allowlist; block rules take precedence."""
+
+
+def include_ancs_app(app_id: str) -> bool:
+    """Return whether one validated non-Messages app passes local rules."""
+    selected = str(app_id).strip()
+    if not _ANCS_APP_ID_RE.fullmatch(selected):
+        return False
+    if selected in ANCS_APP_BLOCKLIST:
+        return False
+    return ANCS_APP_ALLOWLIST is None or selected in ANCS_APP_ALLOWLIST
 
 SHOW_NOTIFICATION_CONTENT: bool = _env_bool(
     "BLUEFERRY_SHOW_NOTIFICATION_CONTENT", True
