@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import stat
+from contextlib import contextmanager
 
 import pytest
 
@@ -1449,6 +1450,153 @@ def test_classic_connect_requires_observable_settled_connection(monkeypatch):
     ]
 
 
+def test_classic_connect_distinguishes_a_missing_bluez_device(monkeypatch):
+    class Interface:
+        @staticmethod
+        def Connect(*, error_handler, **_kwargs):
+            error_handler(
+                pair_setup.dbus.exceptions.DBusException(
+                    'Method "Connect" does not exist',
+                    name="org.freedesktop.DBus.Error.UnknownObject",
+                )
+            )
+
+    class Bus:
+        @staticmethod
+        def get_object(*_args):
+            return object()
+
+    attempt = {"timeline": []}
+    monkeypatch.setattr(pair_setup, "get_system_bus", Bus)
+    monkeypatch.setattr(pair_setup.dbus, "Interface", lambda *_args: Interface())
+    monkeypatch.setattr(
+        pair_setup,
+        "_wait_for_classic_settled",
+        lambda *_args, **_kwargs: pytest.fail("non-settling connect settled"),
+    )
+
+    with pytest.raises(pair_setup._ConnectDeviceMissing, match="does not exist"):
+        pair_setup._connect_classic(
+            "/org/bluez/hci0/dev_02_00_00_00_00_01",
+            settle=False,
+            timeout=1.0,
+            attempt=attempt,
+        )
+
+    assert [event["event"] for event in attempt["timeline"]] == [
+        "classic_connect_sent",
+        "classic_connect_failed",
+    ]
+    assert attempt["timeline"][-1]["error"] == (
+        "org.freedesktop.DBus.Error.UnknownObject"
+    )
+
+
+def test_pairing_rediscovery_waits_for_exact_device_on_selected_adapter(
+    monkeypatch,
+):
+    same_phone_other_adapter = _device(paired=False)
+    other_phone = _device(paired=False)
+    other_phone.mac = "02:00:00:00:00:02"
+    other_phone.adapter_path = "/org/bluez/hci1"
+    other_phone.device_path = "/org/bluez/hci1/dev_02_00_00_00_00_02"
+    target = _device(paired=False)
+    target.adapter_path = "/org/bluez/hci1"
+    target.device_path = "/org/bluez/hci1/dev_02_00_00_00_00_01"
+    snapshots = [
+        [same_phone_other_adapter, other_phone],
+        [same_phone_other_adapter, other_phone],
+        [same_phone_other_adapter, other_phone, target],
+    ]
+    calls = []
+    elapsed = 0.0
+
+    class Adapter:
+        @staticmethod
+        def StartDiscovery():
+            calls.append("start")
+
+        @staticmethod
+        def StopDiscovery():
+            calls.append("stop")
+
+    class Bus:
+        @staticmethod
+        def get_object(service, path):
+            calls.append((service, path))
+            return Adapter()
+
+    def sleep(seconds):
+        nonlocal elapsed
+        elapsed += seconds
+
+    attempt = {"timeline": []}
+    monkeypatch.setattr(pair_setup, "list_devices", lambda: snapshots.pop(0))
+    monkeypatch.setattr(pair_setup, "get_system_bus", Bus)
+    monkeypatch.setattr(pair_setup.dbus, "Interface", lambda value, _iface: value)
+    monkeypatch.setattr(pair_setup.time, "monotonic", lambda: elapsed)
+    monkeypatch.setattr(pair_setup.time, "sleep", sleep)
+
+    with pair_setup._rediscover_pairing_device(
+        target.mac,
+        adapter="hci1",
+        timeout=1.0,
+        attempt=attempt,
+    ) as result:
+        assert calls == [
+            ("org.bluez", "/org/bluez/hci1"),
+            "start",
+        ]
+
+    assert result == target
+    assert calls == [
+        ("org.bluez", "/org/bluez/hci1"),
+        "start",
+        "stop",
+    ]
+    assert [event["event"] for event in attempt["timeline"]] == [
+        "pairing_device_rediscovery_started",
+        "pairing_device_rediscovered",
+    ]
+
+
+def test_pairing_rediscovery_leaves_an_existing_scan_running(monkeypatch):
+    target = _device(paired=False)
+    devices = iter([None, target])
+
+    class Adapter:
+        @staticmethod
+        def StartDiscovery():
+            raise pair_setup.dbus.exceptions.DBusException(
+                "Discovery already in progress",
+                name="org.bluez.Error.InProgress",
+            )
+
+        @staticmethod
+        def StopDiscovery():
+            pytest.fail("BlueFerry did not start this discovery session")
+
+    class Bus:
+        @staticmethod
+        def get_object(_service, _path):
+            return Adapter()
+
+    monkeypatch.setattr(
+        pair_setup,
+        "_find_device",
+        lambda _mac, **_kwargs: next(devices),
+    )
+    monkeypatch.setattr(pair_setup, "get_system_bus", Bus)
+    monkeypatch.setattr(pair_setup.dbus, "Interface", lambda value, _iface: value)
+
+    with pair_setup._rediscover_pairing_device(
+        target.mac,
+        adapter="hci0",
+        timeout=1.0,
+    ) as result:
+        assert result == target
+
+
 def test_post_pair_bearer_preference_is_forced_to_bredr(monkeypatch):
     calls = []
 
@@ -1692,7 +1840,7 @@ def test_compatibility_pairing_connects_and_lets_the_iphone_initiate(monkeypatch
     ]
 
 
-def test_default_interactive_pairing_lets_the_iphone_initiate(monkeypatch):
+def test_default_pairing_rediscovers_a_device_lost_before_connect(monkeypatch):
     from blueferry import pairing_agent
 
     unpaired = _device(paired=False)
@@ -1731,10 +1879,31 @@ def test_default_interactive_pairing_lets_the_iphone_initiate(monkeypatch):
         lambda _adapter: calls.append("advert-exit"),
     )
     monkeypatch.setattr(pairing_agent, "RegisteredPairingAgent", Agent)
+
+    connect_attempts = 0
+
+    def connect_classic(path, **kwargs):
+        nonlocal connect_attempts
+        connect_attempts += 1
+        calls.append(("connect", path, kwargs["timeout"]))
+        if connect_attempts == 1:
+            raise pair_setup._ConnectDeviceMissing("Device1 disappeared")
+
     monkeypatch.setattr(
         pair_setup,
         "_connect_classic",
-        lambda path, **kwargs: calls.append(("connect", path, kwargs["timeout"])),
+        connect_classic,
+    )
+
+    @contextmanager
+    def rediscover_pairing_device(mac, **kwargs):
+        calls.append(("rediscover", mac, kwargs["adapter"]))
+        yield unpaired
+
+    monkeypatch.setattr(
+        pair_setup,
+        "_rediscover_pairing_device",
+        rediscover_pairing_device,
     )
     monkeypatch.setattr(
         pair_setup,
@@ -1758,6 +1927,8 @@ def test_default_interactive_pairing_lets_the_iphone_initiate(monkeypatch):
     assert calls == [
         ("agent", unpaired.device_path, True),
         "agent-enter",
+        ("connect", unpaired.device_path, 60.0),
+        ("rediscover", unpaired.mac, "hci0"),
         ("connect", unpaired.device_path, 60.0),
         ("wait", 120.0),
         "settled",
