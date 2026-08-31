@@ -83,6 +83,9 @@ class Daemon:
             self.contacts,
             submit_obex=self.obex_worker.submit,
             notification_policy=lambda: self.notification_policy.value,
+            contacts_only_notifications=(
+                lambda: self.notification_policy.contacts_only
+            ),
             storage=self.storage,
             on_incoming_message=lambda: self._verify_setup_task(MESSAGE_NOTIFICATIONS),
         )
@@ -464,6 +467,9 @@ class Daemon:
             "history_retention_days": config.HISTORY_RETENTION_DAYS,
             "notification_timeout_ms": config.NOTIFICATION_TIMEOUT_MS,
             "notification_policy": self.notification_policy.value,
+            "contacts_only_notifications": (
+                self.notification_policy.contacts_only
+            ),
             "storage_policy": self.storage.status.policy,
             "storage_state": self.storage.status.state,
             "storage_detail": self.storage.status.detail,

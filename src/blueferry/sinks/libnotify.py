@@ -78,10 +78,12 @@ class LibnotifySink:
         *,
         submit_obex,
         notification_policy=None,
+        contacts_only_notifications=None,
         on_open_message=None,
     ) -> None:
         self._submit_obex = submit_obex
         self._notification_policy = notification_policy
+        self._contacts_only_notifications = contacts_only_notifications
         self._on_open_message = on_open_message
         self._notif = dbus.Interface(
             get_session_bus().get_object(
@@ -136,11 +138,17 @@ class LibnotifySink:
             else DEFAULT_NOTIFICATION_POLICY
         )
 
+    def _contacts_only(self) -> bool:
+        provider = getattr(self, "_contacts_only_notifications", None)
+        return bool(provider()) if provider is not None else False
+
     def handle(self, event: SmsEvent) -> None:
         # Don't pop a desktop notification for a message we ourselves sent.
         if event.kind == "sms_sent":
             return
         if self._policy() == NO_NOTIFICATIONS:
+            return
+        if self._contacts_only() and not getattr(event, "contact_name", None):
             return
         title = f"\U0001f4ac {event.display_sender}"
         body = (event.body or "").strip()

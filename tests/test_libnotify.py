@@ -200,6 +200,44 @@ def test_none_suppresses_message_popup() -> None:
     assert sink._notif.calls == []
 
 
+def test_contacts_only_suppresses_unknown_sender_popup() -> None:
+    sink = LibnotifySink.__new__(LibnotifySink)
+    sink._notification_policy = lambda: "messages"
+    sink._contacts_only_notifications = lambda: True
+    sink._notif = _FakeNotifications()
+    event = SimpleNamespace(
+        kind="sms_received",
+        contact_name=None,
+        display_sender="+15551234567",
+        body="Hello",
+        message_path=None,
+    )
+
+    sink.handle(event)
+
+    assert sink._notif.calls == []
+
+
+def test_contacts_only_allows_resolved_contact_popup() -> None:
+    sink = LibnotifySink.__new__(LibnotifySink)
+    sink._notification_policy = lambda: "messages"
+    sink._contacts_only_notifications = lambda: True
+    sink._notif = _FakeNotifications()
+    sink._pending = {}
+    sink._msg_subs = {}
+    event = SimpleNamespace(
+        kind="sms_received",
+        contact_name="Alice",
+        display_sender="Alice",
+        body="Hello",
+        message_path=None,
+    )
+
+    sink.handle(event)
+
+    assert len(sink._notif.calls) == 1
+
+
 def test_read_state_trackers_are_bounded(monkeypatch) -> None:
     removed = []
     subscription = SimpleNamespace(remove=lambda: removed.append(True))

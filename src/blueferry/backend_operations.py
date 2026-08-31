@@ -101,7 +101,12 @@ class NotificationPolicy(Protocol):
     @property
     def value(self) -> str: ...
 
+    @property
+    def contacts_only(self) -> bool: ...
+
     def set(self, value: str) -> str: ...
+
+    def set_contacts_only(self, enabled: bool) -> bool: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -413,6 +418,9 @@ class BackendOperations:
             "map": self.sessions.map is not None,
             "pbap": self.sessions.pbap is not None,
             "notification_policy": self.get_notification_policy(),
+            "contacts_only_notifications": (
+                self.get_contacts_only_notifications()
+            ),
         }
         if self.dependencies.status_provider is not None:
             status.update(self.dependencies.status_provider())
@@ -640,6 +648,24 @@ class BackendOperations:
             raise NotReadyError("notification policy storage is unavailable")
         try:
             selected = self.dependencies.notification_policy.set(value)
+        except ValueError as error:
+            raise InvalidArgumentsError(str(error)) from error
+        if self.dependencies.on_notification_policy_changed is not None:
+            self.dependencies.on_notification_policy_changed()
+        return selected
+
+    def get_contacts_only_notifications(self) -> bool:
+        if self.dependencies.notification_policy is None:
+            return False
+        return bool(self.dependencies.notification_policy.contacts_only)
+
+    def set_contacts_only_notifications(self, enabled: bool) -> bool:
+        if self.dependencies.notification_policy is None:
+            raise NotReadyError("notification policy storage is unavailable")
+        try:
+            selected = self.dependencies.notification_policy.set_contacts_only(
+                enabled
+            )
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
         if self.dependencies.on_notification_policy_changed is not None:

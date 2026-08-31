@@ -45,6 +45,7 @@ class BackendStatus:
     history_retention_days: int = 0
     notification_timeout_ms: int = 0
     notification_policy: str = "messages"
+    contacts_only_notifications: bool = False
     storage_policy: str = "encrypted"
     storage_state: str = "locked"
     storage_detail: str = ""
@@ -77,6 +78,7 @@ class BackendStatus:
             "history_retention_days",
             "notification_timeout_ms",
             "notification_policy",
+            "contacts_only_notifications",
             "storage_policy",
             "storage_state",
             "storage_detail",
@@ -103,6 +105,9 @@ class BackendStatus:
             history_retention_days=_int(value.get("history_retention_days")),
             notification_timeout_ms=_int(value.get("notification_timeout_ms")),
             notification_policy=_str(value.get("notification_policy"), "messages"),
+            contacts_only_notifications=_bool(
+                value.get("contacts_only_notifications")
+            ),
             storage_policy=_str(value.get("storage_policy"), "encrypted"),
             storage_state=_str(value.get("storage_state"), "locked"),
             storage_detail=_str(value.get("storage_detail")),
@@ -128,6 +133,7 @@ class BackendStatus:
             "history_retention_days": self.history_retention_days,
             "notification_timeout_ms": self.notification_timeout_ms,
             "notification_policy": self.notification_policy,
+            "contacts_only_notifications": self.contacts_only_notifications,
             "storage_policy": self.storage_policy,
             "storage_state": self.storage_state,
             "storage_detail": self.storage_detail,

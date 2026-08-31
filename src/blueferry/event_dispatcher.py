@@ -53,6 +53,7 @@ class EventDispatcher:
         submit_obex,
         historical_ancs=(),
         notification_policy=None,
+        contacts_only_notifications=None,
         storage=None,
         on_incoming_message=None,
         notification_sink_factory: Callable[..., Sink] = LibnotifySink,
@@ -65,6 +66,7 @@ class EventDispatcher:
         self.sinks: list[Sink] = []
         self.dbus_service = None
         self.notification_policy = notification_policy
+        self.contacts_only_notifications = contacts_only_notifications
         self.storage = storage
         self.on_incoming_message = on_incoming_message
         self._notification_sink_factory = notification_sink_factory
@@ -145,6 +147,7 @@ class EventDispatcher:
             sink = self._notification_sink_factory(
                 submit_obex=self.submit_obex,
                 notification_policy=self.notification_policy,
+                contacts_only_notifications=self.contacts_only_notifications,
                 on_open_message=self._open_message,
             )
         except Exception:

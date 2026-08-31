@@ -168,10 +168,15 @@ def test_failed_group_reply_is_not_marked_confirmed(monkeypatch):
 def test_notification_policy_is_backend_owned_and_notifies_status() -> None:
     class Policy:
         value = "messages"
+        contacts_only = False
 
         def set(self, value):
             self.value = value
             return value
+
+        def set_contacts_only(self, enabled):
+            self.contacts_only = enabled
+            return enabled
 
     changes = []
     operations = _operations(
@@ -182,7 +187,11 @@ def test_notification_policy_is_backend_owned_and_notifies_status() -> None:
     assert operations.get_notification_policy() == "messages"
     assert operations.set_notification_policy("all") == "all"
     assert operations.get_notification_policy() == "all"
-    assert changes == [True]
+    assert operations.get_contacts_only_notifications() is False
+    assert operations.set_contacts_only_notifications(True) is True
+    assert operations.get_contacts_only_notifications() is True
+    assert operations.status()["contacts_only_notifications"] is True
+    assert changes == [True, True]
 
 
 def test_invalid_notification_policy_has_public_invalid_args_error() -> None:

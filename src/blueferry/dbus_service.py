@@ -231,6 +231,28 @@ class MessagesService(dbus.service.Object):
         ))
 
     @dbus.service.method(
+        IFACE, in_signature="", out_signature="b", sender_keyword="sender"
+    )
+    def GetContactsOnlyNotifications(self, sender=None) -> bool:
+        return self._sync(lambda: self._authorized(
+            sender, "status",
+            self.operations.get_contacts_only_notifications,
+        ))
+
+    @dbus.service.method(
+        IFACE, in_signature="b", out_signature="b", sender_keyword="sender"
+    )
+    def SetContactsOnlyNotifications(
+        self, enabled: bool, sender=None,
+    ) -> bool:
+        return self._sync(lambda: self._authorized(
+            sender, "settings",
+            lambda: self.operations.set_contacts_only_notifications(
+                bool(enabled)
+            ),
+        ))
+
+    @dbus.service.method(
         IFACE, in_signature="", out_signature="s", sender_keyword="sender"
     )
     def GetStoragePolicy(self, sender=None) -> str:

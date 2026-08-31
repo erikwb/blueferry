@@ -1382,6 +1382,16 @@ Kirigami.ApplicationWindow {
                         enabled: root.bridge.status.daemon === true && !root.bridge.busy
                         onActivated: root.bridge.setNotificationPolicy(currentValue)
                     }
+                    Controls.CheckBox {
+                        Layout.fillWidth: true
+                        text: qsTr("Only notify for contacts")
+                        checked: root.bridge.status.contacts_only_notifications === true
+                        enabled: root.bridge.status.daemon === true
+                            && root.bridge.status.notification_policy !== "none"
+                            && !root.bridge.busy
+                        onClicked: root.bridge.setContactsOnlyNotifications(checked)
+                        Accessible.description: qsTr("Unknown senders remain available in message history.")
+                    }
                 }
 
                 Kirigami.Heading { text: qsTr("Local Data"); level: 2 }

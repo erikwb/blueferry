@@ -1,4 +1,4 @@
-"""Persistent daemon-owned desktop notification policy."""
+"""Persistent daemon-owned desktop notification preferences."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -18,22 +18,31 @@ NOTIFICATION_POLICIES = frozenset({
 
 
 class NotificationPolicyStore:
-    """Keep one validated policy in an owner-only XDG configuration file."""
+    """Keep validated popup preferences in an owner-only config file."""
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or config.SETTINGS_JSON
         self._settings = SettingsStore(self.path)
-        self._value = self._load()
+        payload = self._load()
+        self._value = self._load_policy(payload)
+        self._contacts_only = payload.get("contacts_only_notifications") is True
 
     @property
     def value(self) -> str:
         return self._value
 
-    def _load(self) -> str:
+    @property
+    def contacts_only(self) -> bool:
+        return self._contacts_only
+
+    def _load(self) -> dict:
         try:
-            payload = self._settings.read()
+            return self._settings.read()
         except OSError:
-            payload = {}
+            return {}
+
+    @staticmethod
+    def _load_policy(payload: dict) -> str:
         value = str(payload.get("desktop_notifications", ""))
         return (
             value
@@ -51,3 +60,11 @@ class NotificationPolicyStore:
 
         self._value = selected
         return selected
+
+    def set_contacts_only(self, enabled: bool) -> bool:
+        if not isinstance(enabled, bool):
+            raise ValueError("contacts-only notifications must be a boolean")
+
+        self._settings.update(contacts_only_notifications=enabled)
+        self._contacts_only = enabled
+        return enabled

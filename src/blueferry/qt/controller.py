@@ -561,6 +561,17 @@ class BridgeController(QObject):
 
         self._run(lambda: self._backend.set_notification_policy(policy), completed)
 
+    @Slot(bool)
+    def setContactsOnlyNotifications(self, enabled: bool) -> None:
+        def completed(value: object) -> None:
+            self._status["contacts_only_notifications"] = bool(value)
+            self.statusChanged.emit()
+
+        self._run(
+            lambda: self._backend.set_contacts_only_notifications(enabled),
+            completed,
+        )
+
     @Slot(str)
     def setStoragePolicy(self, policy: str) -> None:
         if policy == "encrypted":

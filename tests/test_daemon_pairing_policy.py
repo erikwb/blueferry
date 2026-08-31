@@ -80,7 +80,9 @@ def _daemon(calls):
     value.profiles = _Profiles(calls)
     value.adapter_class = _AdapterClass(calls)
     value.solicitation = _Solicitation(calls)
-    value.notification_policy = type("Policy", (), {"value": "messages"})()
+    value.notification_policy = type(
+        "Policy", (), {"value": "messages", "contacts_only": False}
+    )()
     value.setup_verification = type("Verification", (), {"verified": ()})()
     value.ancs = None
     value._dbus_service = None

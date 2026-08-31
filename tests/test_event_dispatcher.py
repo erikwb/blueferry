@@ -223,6 +223,7 @@ def test_libnotify_is_added_when_notification_server_appears(monkeypatch):
         # Install the owner watch before the fallible construction so the
         # server cannot appear in an unobserved gap.
         assert bus.callback is not None
+        assert _kwargs["contacts_only_notifications"]() is True
         attempts.append(bus.owner)
         if not bus.owner:
             raise RuntimeError("notification server is not ready")
@@ -231,6 +232,7 @@ def test_libnotify_is_added_when_notification_server_appears(monkeypatch):
     dispatcher = EventDispatcher(
         object(),
         submit_obex=lambda *_args, **_kwargs: None,
+        contacts_only_notifications=lambda: True,
         notification_sink_factory=create_sink,
         session_bus=bus,
     )

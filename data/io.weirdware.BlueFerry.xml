@@ -77,6 +77,15 @@
       <annotation name="io.weirdware.BlueFerry.Errors"
                   value="InvalidArgs,NotReady"/>
     </method>
+    <method name="GetContactsOnlyNotifications">
+      <arg name="enabled" type="b" direction="out"/>
+    </method>
+    <method name="SetContactsOnlyNotifications">
+      <arg name="enabled" type="b" direction="in"/>
+      <arg name="selected" type="b" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady"/>
+    </method>
     <method name="GetStoragePolicy">
       <arg name="policy" type="s" direction="out"/>
     </method>

@@ -35,6 +35,10 @@ class FakeClient:
         self.calls.append(("delete_threads", thread_keys))
         return len(thread_keys)
 
+    def set_contacts_only_notifications(self, enabled):
+        self.calls.append(("set_contacts_only_notifications", enabled))
+        return enabled
+
 
 def test_bridge_dispatches_private_values_without_command_arguments() -> None:
     client = FakeClient()
@@ -58,6 +62,9 @@ def test_bridge_dispatches_private_values_without_command_arguments() -> None:
     assert bridge.dispatch("delete_threads", {
         "thread_keys": ["thread-one", "thread-two"],
     }) == 2
+    assert bridge.dispatch("set_contacts_only_notifications", {
+        "enabled": True,
+    }) is True
 
     assert client.calls == [
         ("contacts", "private search"),
@@ -69,7 +76,19 @@ def test_bridge_dispatches_private_values_without_command_arguments() -> None:
             ["+15550000001", "+15550000002"],
         ),
         ("delete_threads", ["thread-one", "thread-two"]),
+        ("set_contacts_only_notifications", True),
     ]
+
+
+def test_bridge_rejects_non_boolean_contacts_only_value() -> None:
+    bridge = QuickshellBridge(FakeClient())  # type: ignore[arg-type]
+
+    try:
+        bridge.dispatch("set_contacts_only_notifications", {"enabled": 1})
+    except ValueError as error:
+        assert str(error) == "enabled must be a boolean"
+    else:
+        raise AssertionError("non-boolean preference was accepted")
 
 
 def test_bridge_returns_structured_success_and_errors() -> None:

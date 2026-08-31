@@ -44,6 +44,7 @@ class IPhonePage(Gtk.Box):
         self._setup_loaded = False
         self._onboarding = OnboardingState()
         self._applying_notification_policy = False
+        self._applying_contacts_only_notifications = False
         self._applying_storage_policy = False
         self._storage_unlock_attempted = False
         self._pairing_issue_report = ""
@@ -315,6 +316,21 @@ class IPhonePage(Gtk.Box):
         self._notification_policy_row.set_selected(1)
         self._notification_policy_row.connect("notify::selected", self._notification_policy_changed)
         notification_group.add(self._notification_policy_row)
+        self._contacts_only_row = Adw.ActionRow(
+            title=_("Only Notify for Contacts"),
+            subtitle=_(
+                "Unknown senders remain available in message history"
+            ),
+        )
+        self._contacts_only_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
+        self._contacts_only_switch.connect(
+            "notify::active", self._contacts_only_notifications_changed
+        )
+        self._contacts_only_row.add_suffix(self._contacts_only_switch)
+        self._contacts_only_row.set_activatable_widget(
+            self._contacts_only_switch
+        )
+        notification_group.add(self._contacts_only_row)
         page.add(notification_group)
 
         data_group = Adw.PreferencesGroup(title=_("Local Data"))
@@ -922,6 +938,14 @@ class IPhonePage(Gtk.Box):
         self._notification_policy_row.set_selected(selected)
         self._notification_policy_row.set_sensitive(reachable)
         self._applying_notification_policy = False
+        self._applying_contacts_only_notifications = True
+        self._contacts_only_switch.set_active(
+            status.contacts_only_notifications
+        )
+        self._contacts_only_row.set_sensitive(
+            reachable and policy != "none"
+        )
+        self._applying_contacts_only_notifications = False
         self._applying_storage_policy = True
         selected_storage = {
             "encrypted": 0,
@@ -958,6 +982,30 @@ class IPhonePage(Gtk.Box):
             self._apply_status(self._last_status)
 
         self._client.set_notification_policy_async(policy, saved, failed)
+
+    def _contacts_only_notifications_changed(
+        self, _switch, _property
+    ) -> None:
+        if self._applying_contacts_only_notifications:
+            return
+        enabled = self._contacts_only_switch.get_active()
+        self._contacts_only_row.set_sensitive(False)
+
+        def saved(_value: bool) -> None:
+            self._toast(_("Message notification preference saved"))
+            self._refresh()
+
+        def failed(error: str) -> None:
+            self._toast(
+                _("Could not save notification preference: {error}").format(
+                    error=error
+                )
+            )
+            self._apply_status(self._last_status)
+
+        self._client.set_contacts_only_notifications_async(
+            enabled, saved, failed
+        )
 
     def _storage_policy_changed(self, _row, _property) -> None:
         if self._applying_storage_policy:
