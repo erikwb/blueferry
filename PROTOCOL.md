@@ -390,7 +390,14 @@ Each pairing attempt records the resolved delivery mode, authentication
 strategy, controller capability, phone/bearer observations, daemon transport
 state, and an ordered monotonic timeline. Reports redact device addresses,
 object paths, and user directories before they are retained or embedded in a
-GitHub issue URL.
+GitHub issue URL. The first `bluez_trace` entry contains a complete device
+snapshot; later entries contain only recursive `changes` from the previous
+entry, with JSON `null` removing a field. Unchanged snapshots are represented
+by the ordered timeline instead of taking another trace entry. GitHub issue
+prefill also omits the redundant root/child interface inventories and limits
+the adapter UUID inventory to messaging/phonebook services, while the local
+report retains them; if necessary, it drops the timeline only as a final
+size-reduction step.
 
 Native packages also bake a SHA-256 of their deterministic source snapshot.
 The report's `blueferry_build` uses the same package-release plus short-SHA

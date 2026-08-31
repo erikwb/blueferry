@@ -156,6 +156,102 @@ def mark(attempt: PairingAttempt | None, event: str, **fields: Any) -> None:
     attempt.setdefault("timeline", []).append(entry)
 
 
+def _mapping_changes(
+    previous: Mapping[str, Any],
+    current: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return a recursive merge patch from one diagnostic state to another."""
+    changes: dict[str, Any] = {
+        str(key): None for key in previous.keys() - current.keys()
+    }
+    for key, value in current.items():
+        old = previous.get(key)
+        if key in previous and isinstance(old, Mapping) and isinstance(value, Mapping):
+            nested = _mapping_changes(old, value)
+            if nested:
+                changes[str(key)] = nested
+        elif key not in previous or old != value:
+            changes[str(key)] = value
+    return changes
+
+
+def _compact_bluez_trace(value: Any) -> Any:
+    """Store one full BlueZ state followed by lossless recursive changes."""
+    if not isinstance(value, list) or not value:
+        return value
+    if not all(
+        isinstance(entry, dict) and isinstance(entry.get("state"), dict)
+        for entry in value
+    ):
+        # Reports already written in the compact format have only one full
+        # state. Leave them untouched when pairing-issue reads them later.
+        return value
+
+    compacted: list[dict[str, Any]] = []
+    previous: Mapping[str, Any] | None = None
+    for entry in value:
+        state = entry["state"]
+        compact = {key: item for key, item in entry.items() if key != "state"}
+        if previous is None:
+            compact["state"] = state
+        else:
+            changes = _mapping_changes(previous, state)
+            if not changes:
+                previous = state
+                continue
+            compact["changes"] = changes
+        compacted.append(compact)
+        previous = state
+    return compacted
+
+
+def _compact_report(report: Mapping[str, Any]) -> dict[str, Any]:
+    compacted = dict(report)
+    if "bluez_trace" in compacted:
+        compacted["bluez_trace"] = _compact_bluez_trace(compacted["bluez_trace"])
+    return compacted
+
+
+def _issue_compact_report(report: Mapping[str, Any]) -> dict[str, Any]:
+    """Remove trace inventories duplicated by explicit bearer/GATT fields."""
+    compacted = _compact_report(report)
+    raw_controller = compacted.get("controller")
+    if isinstance(raw_controller, dict):
+        controller = dict(raw_controller)
+        raw_uuids = controller.pop("uuids", None)
+        if isinstance(raw_uuids, list):
+            controller["messaging_uuids"] = [
+                uuid
+                for uuid in raw_uuids
+                if "message" in str(uuid) or "phonebook" in str(uuid)
+            ]
+        controller.pop("summary", None)
+        compacted["controller"] = controller
+    trace = compacted.get("bluez_trace")
+    if not isinstance(trace, list):
+        return compacted
+    issue_trace: list[Any] = []
+    for raw_entry in trace:
+        if not isinstance(raw_entry, dict):
+            issue_trace.append(raw_entry)
+            continue
+        entry = dict(raw_entry)
+        for field in ("state", "changes"):
+            raw_snapshot = entry.get(field)
+            if not isinstance(raw_snapshot, dict):
+                continue
+            snapshot = dict(raw_snapshot)
+            snapshot.pop("root_interfaces", None)
+            snapshot.pop("child_interfaces", None)
+            if snapshot:
+                entry[field] = snapshot
+            else:
+                entry.pop(field)
+        issue_trace.append(entry)
+    compacted["bluez_trace"] = issue_trace
+    return compacted
+
+
 def save_report(report: Mapping[str, Any], *, directory: Path | None = None) -> Path | None:
     """Write one scrubbed report beside the history database and keep ten."""
     try:
@@ -170,7 +266,7 @@ def save_report(report: Mapping[str, Any], *, directory: Path | None = None) -> 
         while path.exists():
             sequence += 1
             path = target_dir / f"{REPORT_PREFIX}{stamp}-{sequence:04d}{REPORT_SUFFIX}"
-        prepared = dict(report)
+        prepared = _compact_report(report)
         origin = prepared.pop("_t0", None)
         timeline = prepared.get("timeline")
         if isinstance(origin, (int, float)):
@@ -346,15 +442,28 @@ def issue_url(report: dict[str, Any] | Path | str | None = None) -> str:
     """GitHub new-issue URL with label, chipset title, and report JSON body."""
     payload = report if isinstance(report, dict) else _read_report(report)
     title = issue_title(payload)
+    issue_compacted = _issue_compact_report(payload)
     candidates = [
         json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
-        json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
     ]
-    slim = dict(payload)
-    slim.pop("timeline", None)
-    candidates.append(
-        json.dumps(slim, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    issue_json = json.dumps(
+        issue_compacted,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
     )
+    if issue_json not in candidates:
+        candidates.append(issue_json)
+    slim = dict(issue_compacted)
+    slim.pop("timeline", None)
+    slim_json = json.dumps(
+        slim,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    if slim_json not in candidates:
+        candidates.append(slim_json)
     for report_json in candidates:
         url = (
             f"{GITHUB_ISSUE_NEW}?"
