@@ -105,6 +105,7 @@ class Daemon:
             le_enabled=False,
             on_status=self._emit_status,
             on_le_state=self._observe_le_state,
+            on_le_dial=self.solicitation.set_dialing,
             inbound_le_primed=self.solicitation.active,
         )
         self._contacts_refresh_id: int | None = None

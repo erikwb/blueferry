@@ -97,6 +97,7 @@ Connect = Callable[[str, Callable[[], None], Callable[[Exception], None]], None]
 Disconnect = Callable[[str, Callable[[], None], Callable[[Exception], None]], None]
 Prefer = Callable[[str], None]
 ObserveLeState = Callable[[bool | None], None]
+ObserveLeDial = Callable[[bool], None]
 InboundLePrimed = Callable[[], bool]
 Schedule = Callable[[int, Callable[[], bool]], int]
 Cancel = Callable[[int], object]
@@ -118,6 +119,7 @@ class BearerSupervisor:
         le_enabled: bool = True,
         on_status: Callable[[], None] | None = None,
         on_le_state: ObserveLeState | None = None,
+        on_le_dial: ObserveLeDial | None = None,
         read_connected: ReadConnected | None = None,
         connect: Connect | None = None,
         disconnect: Disconnect | None = None,
@@ -130,6 +132,7 @@ class BearerSupervisor:
         self.device_path = device_path
         self._on_status = on_status
         self._on_le_state = on_le_state
+        self._on_le_dial = on_le_dial
         self._read_connected = read_connected or self._read_bluez_connected
         self._connect = connect or self._connect_bluez
         self._disconnect = disconnect or self._disconnect_bluez
@@ -148,6 +151,7 @@ class BearerSupervisor:
         self._connecting: set[str] = set()
         self._disconnecting: set[str] = set()
         self._le_hold_disconnect_pending = False
+        self._le_dial_active = False
         # Outbound Bearer.LE1.Connect is only a bootstrap hint.  Real-device
         # traces show the solicitation advertisement to be the reliable
         # reconnect path, while repeating Connect can leave BlueZ in an
@@ -193,6 +197,19 @@ class BearerSupervisor:
         self._le_enabled = True
         self._le_hold_disconnect_pending = False
         log.info("MAP/PBAP attempt completed; enabling iPhone LE bearer")
+        if self._states["le"] is not True and "le" not in self._connecting:
+            # Pairing deliberately leaves the untyped Device1.Connect path on
+            # BR/EDR while MAP/PBAP get their first turn. Hand inbound control
+            # back once here, before either an LE dial or a solicited link is
+            # in flight. Bearer.LE1.Connect already names its transport and
+            # must not rewrite PreferredBearer underneath itself.
+            try:
+                self._prefer("le")
+            except Exception as error:
+                log.warning(
+                    "could not hand PreferredBearer to inbound LE: %s",
+                    error,
+                )
         if self._running:
             self._tick()
 
@@ -224,6 +241,7 @@ class BearerSupervisor:
         self._generation += 1
         self._connecting.clear()
         self._disconnecting.clear()
+        self._set_le_dial_active(False)
         # The old owner's live link is gone. While the profile gate is closed,
         # reject any LE link that appears under the replacement owner.
         self._le_hold_disconnect_pending = not self._le_enabled
@@ -266,6 +284,7 @@ class BearerSupervisor:
         self._generation += 1
         self._connecting.clear()
         self._disconnecting.clear()
+        self._set_le_dial_active(False)
         self._le_hold_disconnect_pending = False
         self._le_dial_spent = False
         self._le_reset_pending = False
@@ -306,6 +325,10 @@ class BearerSupervisor:
             # the profile gate closed, so allowing it to become usable here
             # would put GATT ahead of the MAP/PBAP attempt again.
             self._request_le_disconnect(force=True)
+            # Wait for the targeted LE teardown before selecting BR/EDR. A
+            # PreferredBearer write here would race the still-live LE link we
+            # just asked BlueZ to remove.
+            return True
         else:
             self._update_state("le", le)
 
@@ -422,6 +445,17 @@ class BearerSupervisor:
     def _request_connect(self, kind: str) -> None:
         if kind in self._connecting:
             return
+        if kind == "bredr" and "le" in self._connecting:
+            return
+        if (
+            kind == "bredr"
+            and self._le_enabled
+            and self._states["le"] is None
+        ):
+            # Do not guess that LE is down and rewrite PreferredBearer during
+            # a transient read failure. During the initial MAP-first gate, a
+            # missing LE interface must not strand Classic-only controllers.
+            return
         if kind == "le" and self._le_dial_exhausted():
             return
         if self._clock() < self._next_attempt[kind]:
@@ -432,10 +466,18 @@ class BearerSupervisor:
         generation = self._generation
         log.info("connecting iPhone %s bearer", kind.upper())
         try:
-            # Pairing pins the device to BR/EDR so iOS sees MAP/PBAP first.
-            # Switch that preference explicitly for the deferred LE handoff;
-            # restore it just as explicitly before a later Classic reconnect.
-            self._prefer(kind)
+            if kind == "bredr":
+                if self._states["le"] is not True:
+                    # Device1.Connect is transport-agnostic, so select Classic
+                    # only when no LE link is live. With live LE,
+                    # _connect_bluez uses targeted Bearer.BREDR1.Connect and
+                    # leaves the preference untouched.
+                    self._prefer("bredr")
+            else:
+                # Advertising while this asynchronous call is outstanding can
+                # abort the dial locally. The daemon withdraws solicitation
+                # synchronously here and restores it on reply or timeout.
+                self._set_le_dial_active(True)
             self._connect(
                 kind,
                 lambda: self._connect_succeeded(kind, generation),
@@ -448,6 +490,8 @@ class BearerSupervisor:
         if generation != self._generation:
             return
         self._connecting.discard(kind)
+        if kind == "le":
+            self._set_le_dial_active(False)
         self._last_errors.pop(kind, None)
         if kind == "le" and not self._le_enabled:
             self._le_hold_disconnect_pending = True
@@ -479,6 +523,8 @@ class BearerSupervisor:
         if generation != self._generation:
             return
         self._connecting.discard(kind)
+        if kind == "le":
+            self._set_le_dial_active(False)
         if kind == "le" and not self._le_enabled:
             # Policy closed the gate while the asynchronous request was in
             # flight.  This generation never received its permitted attempt.
@@ -511,6 +557,14 @@ class BearerSupervisor:
     def _le_dial_exhausted(self) -> bool:
         """Yield to inbound solicitation only when it is actually on air."""
         return self._le_dial_spent and self._inbound_le_primed()
+
+    def _set_le_dial_active(self, active: bool) -> None:
+        """Publish one LE dial's lifetime so solicitation cannot overlap it."""
+        if active == self._le_dial_active:
+            return
+        self._le_dial_active = active
+        if self._on_le_dial is not None:
+            self._on_le_dial(active)
 
     def _rearm_le_dial(self, reason: str) -> None:
         """Grant one outbound LE bootstrap for a new presence generation."""
@@ -620,9 +674,19 @@ class BearerSupervisor:
         on_success: Callable[[], None],
         on_error: Callable[[Exception], None],
     ) -> None:
-        # Device1.Connect drives the Classic bearer (Bearer.BREDR1 can be
-        # marker-only); the LE bearer interface is driven directly.
-        interface = "org.bluez.Device1" if kind == "bredr" else _INTERFACES[kind]
+        # With no live link, Device1.Connect is the broadly compatible Classic
+        # bootstrap (Bearer.BREDR1 can be marker-only). Under live LE, using
+        # the targeted Classic method avoids rewriting PreferredBearer and
+        # disturbing ANCS. If that method is marker-only, profile reconnects
+        # still establish their own OBEX transports.
+        if kind == "bredr":
+            interface = (
+                _INTERFACES["bredr"]
+                if self.le_connected
+                else "org.bluez.Device1"
+            )
+        else:
+            interface = _INTERFACES[kind]
         bearer = dbus.Interface(
             get_system_bus().get_object("org.bluez", self.device_path),
             interface,
