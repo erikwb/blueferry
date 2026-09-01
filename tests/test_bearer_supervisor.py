@@ -204,11 +204,12 @@ def test_le_can_be_held_again_during_a_later_profile_reconnect() -> None:
     assert connections == ["le"]
 
 
-def test_hold_rejects_an_le_connect_already_in_flight() -> None:
+def test_hold_cancels_in_flight_le_once_but_keeps_a_late_connection() -> None:
     state = {"bredr": True, "le": False}
     connect_callbacks = []
     disconnect_callbacks = []
     observed = []
+    preferences = []
     scheduled = []
 
     supervisor = BearerSupervisor(
@@ -217,9 +218,10 @@ def test_hold_rejects_an_le_connect_already_in_flight() -> None:
         connect=lambda kind, on_success, _on_error: connect_callbacks.append(
             (kind, on_success)
         ),
-        disconnect=lambda kind, on_success, _on_error: disconnect_callbacks.append(
-            (kind, on_success)
+        disconnect=lambda kind, on_success, on_error: disconnect_callbacks.append(
+            (kind, on_success, on_error)
         ),
+        prefer=preferences.append,
         on_le_state=observed.append,
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
     )
@@ -238,27 +240,22 @@ def test_hold_rejects_an_le_connect_already_in_flight() -> None:
     assert [kind for kind, _callback in connect_callbacks] == ["le"]
 
     supervisor.hold_le()
+    assert [kind for kind, _success, _error in disconnect_callbacks] == ["le"]
+
+    # BlueZ reports that the best-effort cancellation found no live link, but
+    # the original asynchronous Connect subsequently wins the race. Keep and
+    # publish that observed link instead of issuing a second Disconnect.
+    disconnect_callbacks[0][2](RuntimeError("not connected"))
     connect_callbacks[0][1]()
     state["le"] = True
     health_check()
 
-    # The pending Connect is countered immediately, and its transient True
-    # state is not published to ANCS while the profile gate is closed.
-    assert [kind for kind, _callback in disconnect_callbacks] == ["le"]
-    assert observed == [False]
+    assert [kind for kind, _success, _error in disconnect_callbacks] == ["le"]
+    assert observed == [False, True]
 
-    disconnect_callbacks[0][1]()
-    state["le"] = False
-    health_check()
     supervisor.enable_le()
-    assert observed == [False]
-    next_settle = next(
-        callback
-        for delay, callback in reversed(scheduled)
-        if delay == bearer_supervisor.CLASSIC_SETTLE_SECONDS
-    )
-    next_settle()
-    assert [kind for kind, _callback in connect_callbacks] == ["le", "le"]
+    assert preferences == []
+    assert [kind for kind, _callback in connect_callbacks] == ["le"]
 
 
 def test_untyped_classic_connect_restores_le_preference_before_le_dial() -> None:
@@ -343,6 +340,108 @@ def test_enabling_le_waits_for_an_outstanding_classic_connect() -> None:
         bearer_supervisor.POLL_SECONDS,
         bearer_supervisor.CLASSIC_SETTLE_SECONDS,
     ]
+
+
+def test_inbound_le_retargets_an_outstanding_untyped_classic_connect() -> None:
+    state = {"bredr": False, "le": False}
+    calls = []
+    preferences = []
+    observed = []
+    supervisor = None
+
+    def connect(kind, on_success, on_error):
+        assert supervisor is not None
+        calls.append(
+            (
+                kind,
+                supervisor._connect_targeted[kind],
+                on_success,
+                on_error,
+            )
+        )
+
+    supervisor = BearerSupervisor(
+        "/device",
+        le_enabled=False,
+        read_connected=state.get,
+        connect=connect,
+        prefer=preferences.append,
+        on_le_state=observed.append,
+        schedule=lambda _delay, _callback: 7,
+    )
+    supervisor.start()
+
+    assert [(kind, targeted) for kind, targeted, *_callbacks in calls] == [
+        ("bredr", False)
+    ]
+    assert preferences == ["bredr"]
+
+    state["le"] = True
+    supervisor.poke()
+
+    assert observed == [False, True]
+    assert [(kind, targeted) for kind, targeted, *_callbacks in calls] == [
+        ("bredr", False),
+        ("bredr", True),
+    ]
+    assert preferences == ["bredr"]
+    assert supervisor._failures["bredr"] == 0
+    assert supervisor._next_attempt["bredr"] == 0.0
+
+    # The obsolete Device1.Connect callback cannot settle or delay the new
+    # Bearer.BREDR1.Connect request.
+    calls[0][2]()
+    assert "bredr" in supervisor._connecting
+    assert supervisor._failures["bredr"] == 0
+    assert supervisor._next_attempt["bredr"] == 0.0
+
+
+def test_untyped_classic_already_connected_rechecks_bearers_before_success() -> None:
+    import dbus
+
+    state = {"bredr": False, "le": False}
+    calls = []
+    preferences = []
+    supervisor = None
+
+    def connect(kind, on_success, on_error):
+        assert supervisor is not None
+        calls.append(
+            (
+                kind,
+                supervisor._connect_targeted[kind],
+                on_success,
+                on_error,
+            )
+        )
+
+    supervisor = BearerSupervisor(
+        "/device",
+        le_enabled=False,
+        read_connected=state.get,
+        connect=connect,
+        prefer=preferences.append,
+        schedule=lambda _delay, _callback: 7,
+    )
+    supervisor.start()
+
+    state["le"] = True
+    calls[0][3](
+        dbus.exceptions.DBusException(
+            "Already connected",
+            name="org.bluez.Error.AlreadyConnected",
+        )
+    )
+
+    assert [(kind, targeted) for kind, targeted, *_callbacks in calls] == [
+        ("bredr", False),
+        ("bredr", True),
+    ]
+    assert preferences == ["bredr"]
+    assert supervisor.bredr_connected is False
+    assert supervisor.le_connected is True
+    assert supervisor._failures["bredr"] == 0
+    assert supervisor._next_attempt["bredr"] == 0.0
 
 
 def test_le_settle_retries_failed_preference_handoff_without_blocking_dial() -> None:
@@ -484,40 +583,6 @@ def test_bluez_targets_classic_bearer_when_le_is_live(monkeypatch) -> None:
     )
     supervisor = BearerSupervisor("/device")
     supervisor._states["le"] = True
-
-    supervisor._connect_bluez("bredr", lambda: None, lambda _error: None)
-
-    assert calls == [
-        ("org.bluez", "/device"),
-        ("interface", "org.bluez.Bearer.BREDR1"),
-        ("connect", 45.0),
-    ]
-
-
-def test_bluez_targets_classic_bearer_when_live_le_is_unpublished(
-    monkeypatch,
-) -> None:
-    calls = []
-
-    class Bearer:
-        @staticmethod
-        def Connect(**kwargs):
-            calls.append(("connect", kwargs["timeout"]))
-
-    class Bus:
-        @staticmethod
-        def get_object(service, path):
-            calls.append((service, path))
-            return object()
-
-    monkeypatch.setattr(bearer_supervisor, "get_system_bus", Bus)
-    monkeypatch.setattr(
-        bearer_supervisor.dbus,
-        "Interface",
-        lambda _object, interface: calls.append(("interface", interface)) or Bearer(),
-    )
-    supervisor = BearerSupervisor("/device")
-    supervisor._unpublished_le_live = True
 
     supervisor._connect_bluez("bredr", lambda: None, lambda _error: None)
 
@@ -1290,20 +1355,28 @@ def test_gatt_transport_recovery_waits_for_profile_gate_to_reopen() -> None:
     assert disconnects == ["le"]
 
 
-def test_bluez_restart_rejects_new_le_link_while_profile_gate_is_closed() -> None:
+def test_bluez_restart_accepts_new_le_link_while_profile_gate_is_closed() -> None:
     state = {"bredr": True, "le": True}
     connections = []
     disconnects = []
     observed = []
     preferences = []
+    now = 0.0
+    supervisor = None
+
+    def connect(kind, _on_success, on_error):
+        assert supervisor is not None
+        connections.append((kind, supervisor._connect_targeted[kind], on_error))
+
     supervisor = BearerSupervisor(
         "/device",
         read_connected=state.get,
-        connect=lambda kind, _on_success, _on_error: connections.append(kind),
+        connect=connect,
         disconnect=lambda kind, _on_success, _on_error: disconnects.append(kind),
         prefer=preferences.append,
         on_le_state=observed.append,
         schedule=lambda _delay, _callback: 7,
+        clock=lambda: now,
     )
     supervisor.start()
     supervisor.hold_le()
@@ -1311,21 +1384,38 @@ def test_bluez_restart_rejects_new_le_link_while_profile_gate_is_closed() -> Non
 
     supervisor.reset_after_bluez_restart()
 
-    assert disconnects == ["le"]
-    assert connections == ["bredr"]
+    assert disconnects == []
+    assert [(kind, targeted) for kind, targeted, _error in connections] == [
+        ("bredr", True)
+    ]
     assert preferences == []
-    assert observed == [True, None]
-    assert supervisor._unpublished_le_live is True
+    assert observed == [True, None, True]
+    assert supervisor.le_connected is True
 
-    # A transient missing property does not forget that teardown is still in
-    # flight and therefore cannot fall back to an untyped Device1.Connect.
+    # A transient read failure is published normally; no teardown or untyped
+    # Classic fallback is introduced while the targeted request is in flight.
     state["le"] = None
     supervisor.poke()
     assert preferences == []
-    assert supervisor._unpublished_le_live is True
+    assert disconnects == []
+    assert observed == [True, None, True, None]
+
+    supervisor._failures["bredr"] = 9
+    connections[0][2](RuntimeError("not now"))
+    assert supervisor._next_attempt["bredr"] == (
+        bearer_supervisor.LE_CONNECTED_CLASSIC_BACKOFF_CAP_SECONDS
+    )
+
+    now = bearer_supervisor.LE_CONNECTED_CLASSIC_BACKOFF_CAP_SECONDS
+    supervisor.poke()
+    assert [(kind, targeted) for kind, targeted, _error in connections] == [
+        ("bredr", True),
+        ("bredr", True),
+    ]
+    assert preferences == []
 
 
-def test_unpublished_live_le_resets_and_caps_classic_backoff() -> None:
+def test_inbound_le_during_hold_resets_and_caps_classic_backoff() -> None:
     state = {"bredr": True, "le": False}
     connect_callbacks = []
     scheduled = []
@@ -1347,7 +1437,7 @@ def test_unpublished_live_le_resets_and_caps_classic_backoff() -> None:
     state.update(bredr=False, le=True)
     scheduled[0][1]()
 
-    assert supervisor._unpublished_le_live is True
+    assert supervisor.le_connected is True
     assert supervisor._failures["bredr"] == 0
     assert supervisor._next_attempt["bredr"] == 0.0
     assert [kind for kind, _on_error in connect_callbacks] == ["bredr"]

@@ -234,7 +234,7 @@ class ProfileSupervisor:
         if not force and not self._attempt_ready():
             log.debug(
                 "MAP/PBAP attempt completed while BR/EDR was unavailable; "
-                "keeping LE held for the next attempt"
+                "keeping outbound LE bootstrap held for the next attempt"
             )
             return
         self._first_attempt_completed = True

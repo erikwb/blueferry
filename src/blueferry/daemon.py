@@ -302,9 +302,10 @@ class Daemon:
             )
         self.solicitation.start()
 
-        # A bond records trust but does not guarantee a live connection.
-        # The bearer supervisor establishes BR/EDR but deliberately holds LE
-        # until ProfileSupervisor completes its first MAP/PBAP attempt.
+        # A bond records trust but does not guarantee a live connection. The
+        # bearer supervisor establishes BR/EDR but deliberately holds its own
+        # outbound LE bootstrap until ProfileSupervisor completes its first
+        # MAP/PBAP attempt. Phone-initiated LE remains usable for ANCS.
         self.bearers.start()
 
         # ANCS — per-app notifications via BLE GATT. Independent of MAP/PBAP.
