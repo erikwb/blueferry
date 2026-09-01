@@ -10,7 +10,7 @@ described below.
 | `arch/PKGBUILD` | Arch Linux, CachyOS | backend with TUI, GTK, Qt, Quickshell |
 | `deb/` | Debian 13, Ubuntu 26.04, PikaOS IV | MAP/PBAP backend with TUI, GTK, Qt |
 | `deb/` | Ubuntu 24.04, Linux Mint 22.3, Pop!_OS 24.04 | MAP/PBAP backend with TUI, GTK |
-| `rpm/blueferry.spec` | Fedora 43, Fedora 44 | backend with TUI, GTK, Qt |
+| `rpm/blueferry.spec` | Fedora 43, Fedora 44, Fedora 45 | backend with TUI, GTK, Qt |
 
 The matrix tests current package ecosystems rather than claiming that one
 artifact works forever. Arch and CachyOS are rolling releases, and PikaOS IV
@@ -31,8 +31,12 @@ system Bluetooth service.
 openSUSE is the next sensible RPM target. Rocky Linux and AlmaLinux are popular
 RPM server distributions, but they are less relevant to a Bluetooth desktop
 application and their conservative stacks are a poor initial compatibility
-target. Fedora derivatives may accept the Fedora RPM, but they are not claimed
-as tested until they are present in the matrix.
+target. Fedora RPMs remain tied to the Python ABI they were built with even
+though they are CPU-independent `noarch` packages. CI therefore builds an
+`.fc43` set for Fedora 43 and 44, which share Python 3.14, and a separate
+`.fc45` set for Fedora 45 and Python 3.15. Fedora derivatives may accept the
+matching Fedora RPM, but they are not claimed as tested until they are present
+in the matrix.
 
 Arch uses its native `python-textual` package. DEB and RPM repositories do not
 provide a sufficiently recent Textual, so those backend packages contain a

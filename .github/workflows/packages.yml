@@ -243,9 +243,19 @@ jobs:
           smoke_tui blueferry tui
 
   build-rpm:
-    name: Build Fedora RPMs
+    name: Build ${{ matrix.name }} RPMs
     runs-on: ubuntu-latest
-    container: fedora:43
+    container: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Fedora 43
+            image: fedora:43
+            artifact: packages-rpm-fc43
+          - name: Fedora 45
+            image: fedora:45
+            artifact: packages-rpm-fc45
     steps:
       - name: Install package tools
         run: dnf install -y dnf-plugins-core git rpm-build
@@ -279,12 +289,12 @@ jobs:
           smoke_tui blueferry tui
       - uses: actions/upload-artifact@v4
         with:
-          name: packages-rpm
+          name: ${{ matrix.artifact }}
           path: dist/rpm/*.rpm
           if-no-files-found: error
 
   test-rpm:
-    name: Install Fedora 43 artifacts on ${{ matrix.name }}
+    name: Install matching RPMs on ${{ matrix.name }}
     needs: build-rpm
     runs-on: ubuntu-latest
     container: ${{ matrix.image }}
@@ -294,12 +304,17 @@ jobs:
         include:
           - name: Fedora 43
             image: fedora:43
+            artifact: packages-rpm-fc43
           - name: Fedora 44
             image: fedora:44
+            artifact: packages-rpm-fc43
+          - name: Fedora 45
+            image: fedora:45
+            artifact: packages-rpm-fc45
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: packages-rpm
+          name: ${{ matrix.artifact }}
           path: packages
       - name: Install and smoke-test the exact Fedora artifacts
         run: |
