@@ -345,6 +345,44 @@ def test_enabling_le_waits_for_an_outstanding_classic_connect() -> None:
     ]
 
 
+def test_le_settle_retries_failed_preference_handoff_without_blocking_dial() -> None:
+    state = {"bredr": True, "le": False}
+    calls = []
+    scheduled = []
+
+    def prefer(kind):
+        calls.append(("prefer", kind))
+        raise RuntimeError("temporary D-Bus failure")
+
+    supervisor = BearerSupervisor(
+        "/device",
+        le_enabled=False,
+        read_connected=state.get,
+        prefer=prefer,
+        connect=lambda kind, _on_success, _on_error: calls.append(
+            ("connect", kind)
+        ),
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+    )
+
+    supervisor.start()
+    supervisor.enable_le()
+    settle = next(
+        callback
+        for delay, callback in scheduled
+        if delay == bearer_supervisor.CLASSIC_SETTLE_SECONDS
+    )
+    settle()
+
+    assert calls == [
+        ("prefer", "le"),
+        ("prefer", "le"),
+        ("prefer", "le"),
+        ("connect", "le"),
+    ]
+    assert supervisor._le_preference_restore_pending is True
+
+
 def test_live_le_dials_classic_without_rewriting_preference() -> None:
     calls = []
     scheduled = []

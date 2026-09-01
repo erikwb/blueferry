@@ -398,6 +398,12 @@ class BearerSupervisor:
         self._update_state("bredr", bredr)
         self._update_state("le", le)
         if bredr is True and le is False and self._le_enabled:
+            # The handoff may have failed when LE was enabled or when this
+            # timer was armed. Retry at the last safe point before the
+            # targeted dial; a transient Set failure must not suppress the
+            # one outbound bootstrap, and the pending flag remains set so a
+            # later Classic-up/LE-down tick can try again.
+            self._restore_le_preference()
             self._request_connect("le")
         elif bredr is False:
             self._request_connect("bredr")
