@@ -1,9 +1,10 @@
 # Fedora RPM packages
 
 This spec builds `blueferry-backend`, `blueferry-gtk`, and `blueferry-qt`
-using only Fedora repository dependencies. Package CI builds it on the current
-older supported Fedora release, then installs those exact RPMs on both current
-Fedora releases.
+using only Fedora repository dependencies. Package CI builds one artifact set
+for each Python ABI in the supported Fedora releases, then installs each exact
+set on the compatible releases. The `.fc43` packages cover Fedora 43 and 44;
+Fedora 45 gets separate `.fc45` packages because it uses Python 3.15.
 The backend requires BlueZ 5.86 or newer because that is the first upstream
 release with working per-bearer connection methods.
 
@@ -22,6 +23,10 @@ preferred graphical client, for example:
 sudo dnf install dist/rpm/blueferry-backend-*.noarch.rpm \
   dist/rpm/blueferry-gtk-*.noarch.rpm
 ```
+
+`noarch` means the package contains no CPU-specific machine code; it does not
+make Python installation paths or dependencies ABI-independent. Release RPMs
+must therefore have the `.fcNN` tag matching the installed Fedora release.
 
 `blueferry-backend` includes the `blueferry-tui` command and a pinned private
 Textual 8 runtime under `/usr/lib/blueferry/vendor`. The package build is offline: its

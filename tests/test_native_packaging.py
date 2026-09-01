@@ -264,6 +264,7 @@ def test_package_workflow_installs_identical_artifacts_on_targets() -> None:
         "Pop!_OS 24.04",
         "Fedora 43",
         "Fedora 44",
+        "Fedora 45",
     ):
         assert target in workflow
     assert "cachyos/cachyos:latest" in workflow
@@ -271,7 +272,9 @@ def test_package_workflow_installs_identical_artifacts_on_targets() -> None:
     assert "http://apt.pop-os.org/release noble main" in workflow
     assert "name: packages-arch" in workflow
     assert "name: packages-deb" in workflow
-    assert "name: packages-rpm" in workflow
+    assert "artifact: packages-rpm-fc43" in workflow
+    assert "artifact: packages-rpm-fc45" in workflow
+    assert "name: ${{ matrix.artifact }}" in workflow
     assert "Smoke-test the Arch backend and bundled TUI" in workflow
     assert "install the blueferry-tui package" not in workflow
     assert workflow.count("smoke_tui blueferry-tui") == 6
