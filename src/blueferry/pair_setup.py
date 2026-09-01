@@ -39,6 +39,8 @@ _SESSION_BLUETOOTH_NAMES = (
     "org.gnome.SettingsDaemon.Rfkill",
 )
 CLASSIC_SETTLE_SECONDS = 3.0
+# Device1.Connect can refuse a profile while iOS still completes pairing.
+CONNECT_REFUSED_GRACE_SECONDS = 5.0
 BLUEZ_SNAPSHOT_TIMEOUT_SECONDS = pairing_diagnostics.BLUEZ_SNAPSHOT_TIMEOUT_SECONDS
 BLUEZ_TRACE_POLL_SECONDS = 2.0
 # One BR/EDR inquiry is 10.24s. USB dongles also need a moment to start
@@ -634,9 +636,20 @@ def _connect_classic(
             raise _ConnectDeviceMissing(
                 error.get_dbus_message() or error_name or str(error)
             ) from error
-        raise PairingError(
-            error.get_dbus_message() or error_name or str(error)
-        ) from error
+        if _wait_for_paired_after_connect_error(device_path):
+            log.info(
+                "Device1.Paired became true after Connect reported %s",
+                error_name or "error",
+            )
+            quirks_report.mark(
+                attempt,
+                "classic_connect_paired_after_error",
+                error=error_name or "error",
+            )
+        else:
+            raise PairingError(
+                error.get_dbus_message() or error_name or str(error)
+            ) from error
     if error is None:
         log.debug("Device1.Connect completed successfully")
         quirks_report.mark(attempt, "classic_connect_replied")
@@ -650,18 +663,35 @@ def _connect_classic(
         _wait_for_classic_settled(device_path, timeout=timeout, attempt=attempt)
 
 
-def _prefer_bredr(device_path: str) -> None:
-    """Prefer BR/EDR after pairing when BlueZ exposes PreferredBearer."""
-    log.info(
-        "setting Device1.PreferredBearer=bredr before post-pair connection"
+def _device_is_paired(device_path: str) -> bool:
+    try:
+        props = dbus.Interface(
+            get_system_bus().get_object("org.bluez", device_path),
+            "org.freedesktop.DBus.Properties",
+        )
+        return bool(props.Get("org.bluez.Device1", "Paired", timeout=5.0))
+    except dbus.exceptions.DBusException:
+        return False
+
+
+def _wait_for_paired_after_connect_error(device_path: str) -> bool:
+    """True when pairing finished even though Connect refused a profile."""
+    return _dispatching_wait(
+        time.monotonic() + CONNECT_REFUSED_GRACE_SECONDS,
+        lambda: _device_is_paired(device_path),
     )
+
+
+def _prefer_bearer(device_path: str, kind: str) -> None:
+    """Set Device1.PreferredBearer when BlueZ exposes the property."""
+    log.info("setting Device1.PreferredBearer=%s", kind)
     obj = get_system_bus().get_object("org.bluez", device_path)
     props = dbus.Interface(obj, "org.freedesktop.DBus.Properties")
     try:
         props.Set(
             "org.bluez.Device1",
             "PreferredBearer",
-            dbus.String("bredr"),
+            dbus.String(kind),
         )
     except dbus.exceptions.DBusException as error:
         if preferred_bearer_unavailable(error):
@@ -672,9 +702,14 @@ def _prefer_bredr(device_path: str) -> None:
             return
         detail = error.get_dbus_message() or error.get_dbus_name() or str(error)
         raise PairingError(
-            f"Could not select the BR/EDR bearer for the post-pair "
+            f"Could not select the {kind} bearer for the post-pair "
             f"connection: {detail}"
         ) from error
+
+
+def _prefer_bredr(device_path: str) -> None:
+    """Prefer BR/EDR after pairing when BlueZ exposes PreferredBearer."""
+    _prefer_bearer(device_path, "bredr")
 
 
 def _activate_obex_mns() -> None:
@@ -1260,9 +1295,12 @@ def _trust_and_settle(device: PairedDevice, attempt: PairingAttempt) -> None:
     log.debug("setting Device1.Trusted=true for %s", device.device_path)
     trust_device(device.mac, device.adapter_path)
     quirks_report.mark(attempt, "trusted")
-    _prefer_bredr(device.device_path)
+    _prefer_bearer(device.device_path, "bredr")
     quirks_report.mark(attempt, "preferred_bearer_bredr")
     _wait_for_classic_settled(device.device_path, attempt=attempt)
+    # A bond left on bredr does not accept the phone's inbound LE link.
+    _prefer_bearer(device.device_path, "le")
+    quirks_report.mark(attempt, "preferred_bearer_le")
     _record_bluez_state(
         attempt,
         device.device_path,

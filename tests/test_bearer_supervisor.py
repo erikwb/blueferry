@@ -535,6 +535,11 @@ def test_bluez_preference_selects_requested_bearer(monkeypatch) -> None:
 
     class Properties:
         @staticmethod
+        def Get(interface, name, *, timeout):
+            calls.append(("get", interface, name, timeout))
+            return "bredr"
+
+        @staticmethod
         def Set(interface, name, value, *, timeout):
             calls.append((interface, name, str(value), timeout))
 
@@ -557,6 +562,7 @@ def test_bluez_preference_selects_requested_bearer(monkeypatch) -> None:
     assert calls == [
         ("org.bluez", "/device"),
         ("interface", "org.freedesktop.DBus.Properties"),
+        ("get", "org.bluez.Device1", "PreferredBearer", 5.0),
         ("org.bluez.Device1", "PreferredBearer", "le", 5.0),
     ]
 
@@ -666,6 +672,13 @@ def test_bluez_falls_back_when_classic_bearer_is_marker_only(monkeypatch) -> Non
 def test_bluez_preference_ignores_a_missing_preferred_bearer_property(monkeypatch) -> None:
     class Properties:
         @staticmethod
+        def Get(_interface, _name, *, timeout):
+            raise bearer_supervisor.dbus.exceptions.DBusException(
+                "No such property 'PreferredBearer'",
+                name="org.bluez.Error.InvalidArguments",
+            )
+
+        @staticmethod
         def Set(_interface, _name, _value, *, timeout):
             raise bearer_supervisor.dbus.exceptions.DBusException(
                 "No such property 'PreferredBearer'",
@@ -685,6 +698,36 @@ def test_bluez_preference_ignores_a_missing_preferred_bearer_property(monkeypatc
     )
 
     BearerSupervisor("/device")._prefer_bluez("bredr")
+
+
+def test_bluez_preference_skips_set_when_already_selected(monkeypatch) -> None:
+    calls = []
+
+    class Properties:
+        @staticmethod
+        def Get(_interface, _name, *, timeout):
+            calls.append("get")
+            return "le"
+
+        @staticmethod
+        def Set(_interface, _name, _value, *, timeout):
+            calls.append("set")
+
+    class Bus:
+        @staticmethod
+        def get_object(_service, _path):
+            return object()
+
+    monkeypatch.setattr(bearer_supervisor, "get_system_bus", Bus)
+    monkeypatch.setattr(
+        bearer_supervisor.dbus,
+        "Interface",
+        lambda _object, _interface: Properties(),
+    )
+
+    BearerSupervisor("/device")._prefer_bluez("le")
+
+    assert calls == ["get"]
 
 
 def test_failed_connection_is_retried_after_backoff() -> None:

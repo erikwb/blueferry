@@ -90,6 +90,29 @@ def test_healthy_ancs_keeps_post_pair_solicitation_for_permission_window() -> No
     assert calls[-1] == ("unregister", "hci7")
 
 
+def test_outbound_dial_keeps_solicitation_during_post_pair_hold() -> None:
+    calls = []
+    state = {"registered": False}
+    scheduled = []
+    now = 0.0
+    supervisor = _supervisor(
+        calls,
+        state,
+        scheduled,
+        minimum_on_seconds=180,
+        clock=lambda: now,
+    )
+    supervisor.start()
+    supervisor.set_dialing(True)
+
+    assert state["registered"] is True
+    assert ("unregister", "hci7") not in calls
+
+    now = 180.0
+    scheduled[0][1]()
+    assert calls[-1] == ("unregister", "hci7")
+
+
 def test_outbound_dial_withdraws_and_then_restores_solicitation() -> None:
     calls = []
     state = {"registered": False}

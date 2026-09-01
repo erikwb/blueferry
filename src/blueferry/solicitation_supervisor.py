@@ -126,10 +126,10 @@ class SolicitationSupervisor:
 
     def _reconcile(self) -> None:
         registered = self._is_registered()
-        if self._dialing:
-            # This safety override deliberately ignores the post-pair minimum
-            # hold. Advertising and initiating an LE connection concurrently
-            # can make BlueZ abort its own outstanding dial.
+        if self._dialing and self._clock() >= self._hold_until:
+            # After the post-pair hold, advertising during an outbound dial
+            # can make BlueZ abort its own Connect. During the hold, keep
+            # the advert: that is the inbound door iOS uses.
             if registered:
                 self._unregister(self.adapter)
             return

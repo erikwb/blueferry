@@ -18,6 +18,7 @@ class PairingAttempt(TypedDict, total=False):
     pairing_path: str
     session: dict[str, Any]
     _t0: float
+    _aliases: list[str]
     timeline: list[dict[str, Any]]
     bluez_trace: list[dict[str, Any]]
     previous_teardown: dict[str, object]

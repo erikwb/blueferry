@@ -114,8 +114,8 @@ def bluez_device_snapshot(
         ("le", "org.bluez.Bearer.LE1"),
     ):
         bearer = root_ifaces.get(interface)
-        state: dict[str, object] = {"present": bearer is not None}
-        if bearer is not None:
+        state: dict[str, object] = {"present": bool(bearer)}
+        if bearer:
             for field in ("Paired", "Bonded", "Connected"):
                 if field in bearer:
                     state[field.casefold()] = bool(bearer[field])
@@ -181,7 +181,8 @@ def le_bearer_snapshot(
             {},
         )
         bearer = interfaces.get("org.bluez.Bearer.LE1") if interfaces else None
-        if bearer is None:
+        # Without -E, bluetoothd still registers an empty Bearer.LE1.
+        if not bearer:
             return state
         state["present"] = True
         state["paired"] = bool(bearer.get("Paired", False))
@@ -253,6 +254,11 @@ def snapshot_phone(
 ) -> None:
     phone = quirks_report.public_device(device)
     phone["le_bearer"] = bearer_snapshot(device.device_path)
+    name = str(getattr(device, "name", "") or "").strip()
+    if name:
+        aliases = attempt.setdefault("_aliases", [])
+        if isinstance(aliases, list) and name not in aliases:
+            aliases.append(name)
     previous = attempt.get("phone")
     if isinstance(previous, dict):
         previous_bearer = previous.get("le_bearer")
@@ -330,7 +336,7 @@ def record_pairing_report(
 ) -> Path | None:
     if transports is not None:
         map_ready, pbap_ready, ancs_ready = transports.as_tuple()
-        attempt["preferred_bearer"] = "bredr"
+        attempt["preferred_bearer"] = "le"
         seen = {
             item.get("event")
             for item in attempt.get("timeline", ())
