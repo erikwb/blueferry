@@ -823,7 +823,13 @@ def test_le_in_progress_keeps_solicitation_paused_until_connected() -> None:
 
     assert dial_states == [True]
     assert "le" in supervisor._connecting
-    assert supervisor._le_dial_spent is False
+    assert supervisor._le_dial_spent is True
+
+    # Connected=false is expected while BlueZ still owns the operation. The
+    # ordinary five-second health poll must not reopen solicitation.
+    health_check()
+    assert dial_states == [True]
+    assert "le" in supervisor._connecting
 
     state["le"] = True
     health_check()
@@ -832,7 +838,7 @@ def test_le_in_progress_keeps_solicitation_paused_until_connected() -> None:
     assert "le" not in supervisor._connecting
 
 
-def test_le_in_progress_settled_false_refunds_and_retries_dial() -> None:
+def test_le_in_progress_times_out_to_solicitation_without_another_dial() -> None:
     import dbus
 
     state = {"bredr": True, "le": False}
@@ -871,20 +877,75 @@ def test_le_in_progress_settled_false_refunds_and_retries_dial() -> None:
     )
     health_check()
 
+    assert dial_states == [True]
+    assert "le" in supervisor._connecting
+    assert supervisor._le_dial_spent is True
+
+    now = bearer_supervisor.CONNECT_TIMEOUT_SECONDS - 1
+    health_check()
+    assert dial_states == [True]
+    assert "le" in supervisor._connecting
+
+    now = bearer_supervisor.CONNECT_TIMEOUT_SECONDS
+    health_check()
     assert dial_states == [True, False]
     assert "le" not in supervisor._connecting
-    assert supervisor._le_dial_spent is False
+    assert supervisor._le_dial_spent is True
+    assert supervisor._failures["le"] == 1
 
-    now = bearer_supervisor.POLL_SECONDS + 1
-    retry = next(
-        callback
-        for delay, callback in reversed(scheduled)
-        if delay == bearer_supervisor.CLASSIC_SETTLE_SECONDS
+    now = 600.0
+    health_check()
+    assert [item[0] for item in connect_callbacks] == ["le"]
+    assert dial_states == [True, False]
+
+
+def test_classic_in_progress_times_out_with_exponential_backoff() -> None:
+    import dbus
+
+    state = {"bredr": False, "le": False}
+    connect_callbacks = []
+    scheduled = []
+    now = 0.0
+    supervisor = BearerSupervisor(
+        "/device",
+        le_enabled=False,
+        read_connected=state.get,
+        connect=lambda kind, on_success, on_error: connect_callbacks.append(
+            (kind, on_success, on_error)
+        ),
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        clock=lambda: now,
     )
-    retry()
+    supervisor.start()
+    health_check = next(
+        callback
+        for delay, callback in scheduled
+        if delay == bearer_supervisor.POLL_SECONDS
+    )
+    connect_callbacks[0][2](
+        dbus.exceptions.DBusException(
+            "Operation already in progress",
+            name="org.bluez.Error.InProgress",
+        )
+    )
 
-    assert [item[0] for item in connect_callbacks] == ["le", "le"]
-    assert dial_states == [True, False, True]
+    health_check()
+    assert "bredr" in supervisor._connecting
+
+    now = bearer_supervisor.CONNECT_TIMEOUT_SECONDS
+    health_check()
+    assert "bredr" not in supervisor._connecting
+    assert supervisor._failures["bredr"] == 1
+    assert supervisor._next_attempt["bredr"] == 55.0
+    assert [item[0] for item in connect_callbacks] == ["bredr"]
+
+    now = 54.0
+    health_check()
+    assert [item[0] for item in connect_callbacks] == ["bredr"]
+
+    now = 55.0
+    health_check()
+    assert [item[0] for item in connect_callbacks] == ["bredr", "bredr"]
 
 
 def test_le_already_connected_restores_solicitation_immediately() -> None:
@@ -1224,6 +1285,40 @@ def test_bluez_restart_rejects_new_le_link_while_profile_gate_is_closed() -> Non
     supervisor.poke()
     assert preferences == []
     assert supervisor._unpublished_le_live is True
+
+
+def test_unpublished_live_le_resets_and_caps_classic_backoff() -> None:
+    state = {"bredr": True, "le": False}
+    connect_callbacks = []
+    scheduled = []
+    now = 0.0
+    supervisor = BearerSupervisor(
+        "/device",
+        le_enabled=False,
+        read_connected=state.get,
+        connect=lambda kind, _on_success, on_error: connect_callbacks.append(
+            (kind, on_error)
+        ),
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        clock=lambda: now,
+    )
+    supervisor.start()
+    supervisor._failures["bredr"] = 6
+    supervisor._next_attempt["bredr"] = 300.0
+
+    state.update(bredr=False, le=True)
+    scheduled[0][1]()
+
+    assert supervisor._unpublished_le_live is True
+    assert supervisor._failures["bredr"] == 0
+    assert supervisor._next_attempt["bredr"] == 0.0
+    assert [kind for kind, _on_error in connect_callbacks] == ["bredr"]
+
+    supervisor._failures["bredr"] = 9
+    connect_callbacks[0][1](RuntimeError("not now"))
+    assert supervisor._next_attempt["bredr"] == (
+        bearer_supervisor.LE_CONNECTED_CLASSIC_BACKOFF_CAP_SECONDS
+    )
 
 
 def test_bluez_restart_discards_callbacks_from_the_previous_owner() -> None:

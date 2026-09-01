@@ -17,6 +17,10 @@ log = logging.getLogger(__name__)
 
 POLL_SECONDS = 5
 CLASSIC_SETTLE_SECONDS = 3
+# org.bluez.Bearer*.Connect uses this same timeout below. An InProgress reply
+# means BlueZ owns an overlapping request, so Connected=false cannot settle it
+# before a full method-timeout-sized quiet window has elapsed.
+CONNECT_TIMEOUT_SECONDS = 45
 # A phone that rejects a connection keeps rejecting it for a while (powered
 # off, out of range, or a broken bond). Repeating Connect every poll turned
 # into a five-second hammer against the iPhone; back off exponentially
@@ -149,7 +153,7 @@ class BearerSupervisor:
         self._running = False
         self._generation = 0
         self._connecting: set[str] = set()
-        self._connect_observation_pending: set[str] = set()
+        self._connect_observation_deadlines: dict[str, float] = {}
         self._disconnecting: set[str] = set()
         self._le_hold_disconnect_pending = False
         self._unpublished_le_live = False
@@ -238,7 +242,7 @@ class BearerSupervisor:
         previous = dict(self._states)
         self._generation += 1
         self._connecting.clear()
-        self._connect_observation_pending.clear()
+        self._connect_observation_deadlines.clear()
         self._disconnecting.clear()
         self._set_le_dial_active(False)
         # The old owner's live link is gone. While the profile gate is closed,
@@ -284,7 +288,7 @@ class BearerSupervisor:
         self._running = False
         self._generation += 1
         self._connecting.clear()
-        self._connect_observation_pending.clear()
+        self._connect_observation_deadlines.clear()
         self._disconnecting.clear()
         self._set_le_dial_active(False)
         self._le_hold_disconnect_pending = False
@@ -333,8 +337,9 @@ class BearerSupervisor:
             # the profile gate closed, so allowing it to become usable here
             # would put GATT ahead of the MAP/PBAP attempt again.
             self._settle_in_progress_connect("le", le)
-            if le is True:
+            if le is True and not self._unpublished_le_live:
                 self._unpublished_le_live = True
+                self._reset_classic_backoff_from_le()
             self._request_le_disconnect(force=True)
             if bredr is False:
                 # Bearer.BREDR1.Connect is transport-specific, so Classic may
@@ -448,9 +453,7 @@ class BearerSupervisor:
         if kind == "le" and value is True and previous is not True:
             # An inbound LE connection is the missing presence event for a
             # Classic backoff accumulated while the phone was out of range.
-            self._last_errors.pop("bredr", None)
-            self._failures["bredr"] = 0
-            self._next_attempt["bredr"] = 0.0
+            self._reset_classic_backoff_from_le()
         # Repeating stale Connected=true after a failed GATT operation can
         # race BlueZ's pending CCC registration with ATT teardown. Consumers
         # therefore receive only genuine bearer lifecycle transitions.
@@ -513,7 +516,7 @@ class BearerSupervisor:
         if generation != self._generation:
             return
         self._connecting.discard(kind)
-        self._connect_observation_pending.discard(kind)
+        self._connect_observation_deadlines.pop(kind, None)
         if kind == "le":
             self._set_le_dial_active(False)
         self._last_errors.pop(kind, None)
@@ -551,13 +554,13 @@ class BearerSupervisor:
         name, message = _connect_error_parts(error)
         if name == "org.bluez.Error.InProgress":
             # BlueZ still owns a connect attempt. Keep solicitation withdrawn
-            # and keep this bearer in _connecting until a later health read
-            # observes either the resulting link or a settled false state.
-            self._connect_observation_pending.add(kind)
-            if kind == "le":
-                # This call overlapped an existing attempt; it did not consume
-                # this presence generation's one outbound bootstrap.
-                self._le_dial_spent = False
+            # and keep this bearer in _connecting until Connected=true or a
+            # full Connect-sized timeout. Connected=false is normal while the
+            # overlapping operation is still running and proves nothing.
+            self._connect_observation_deadlines.setdefault(
+                kind,
+                self._clock() + CONNECT_TIMEOUT_SECONDS,
+            )
             log.debug("%s bearer connection is still in progress", kind.upper())
             return
         if name == "org.bluez.Error.AlreadyConnected":
@@ -565,7 +568,7 @@ class BearerSupervisor:
             self._connect_succeeded(kind, generation)
             return
         self._connecting.discard(kind)
-        self._connect_observation_pending.discard(kind)
+        self._connect_observation_deadlines.pop(kind, None)
         if kind == "le":
             self._set_le_dial_active(False)
         if kind == "le" and not self._le_enabled:
@@ -590,25 +593,41 @@ class BearerSupervisor:
             self._last_errors[kind] = (name, message)
 
     def _settle_in_progress_connect(self, kind: str, value: bool | None) -> None:
-        """Resolve an InProgress reply only from a later concrete state read."""
-        if kind not in self._connect_observation_pending or value is None:
+        """Resolve InProgress on connection or after a method-sized timeout."""
+        deadline = self._connect_observation_deadlines.get(kind)
+        if deadline is None:
             return
-        self._connect_observation_pending.discard(kind)
+        connected = value is True
+        if not connected and self._clock() < deadline:
+            return
+        self._connect_observation_deadlines.pop(kind, None)
         self._connecting.discard(kind)
         if kind == "le":
             self._set_le_dial_active(False)
-        if value is False:
-            # Do not issue another request in the same health tick that proved
-            # the old attempt settled. The one-shot itself remains available.
-            self._next_attempt[kind] = max(
-                self._next_attempt[kind],
-                self._clock() + POLL_SECONDS,
-            )
-        log.debug(
-            "%s bearer InProgress state settled as %s",
-            kind.upper(),
-            "connected" if value else "disconnected",
+        if connected:
+            log.debug("%s bearer InProgress state connected", kind.upper())
+            return
+
+        # The operation remained down for a full BlueZ Connect timeout. Count
+        # that as a failure so Classic observes normal exponential backoff.
+        # LE deliberately keeps its one-shot spent and yields to solicitation.
+        self._failures[kind] += 1
+        delay = min(
+            POLL_SECONDS * (2 ** self._failures[kind]),
+            self._backoff_cap(kind),
         )
+        self._next_attempt[kind] = self._clock() + delay
+        log.debug(
+            "%s bearer InProgress state timed out; next attempt in %ds",
+            kind.upper(),
+            delay,
+        )
+
+    def _reset_classic_backoff_from_le(self) -> None:
+        """Treat any live LE link as proof that the phone is in range."""
+        self._last_errors.pop("bredr", None)
+        self._failures["bredr"] = 0
+        self._next_attempt["bredr"] = 0.0
 
     def _restore_le_preference(self) -> None:
         """Hand untyped connects back to inbound LE once Classic is settled."""
@@ -651,7 +670,7 @@ class BearerSupervisor:
             log.info("re-arming outbound iPhone LE bootstrap: %s", reason)
 
     def _backoff_cap(self, kind: str) -> int:
-        if kind == "bredr" and self.le_connected:
+        if kind == "bredr" and (self.le_connected or self._unpublished_le_live):
             return LE_CONNECTED_CLASSIC_BACKOFF_CAP_SECONDS
         return BACKOFF_CAP_SECONDS
 
@@ -769,7 +788,7 @@ class BearerSupervisor:
         bearer.Connect(
             reply_handler=on_success,
             error_handler=on_error,
-            timeout=45.0,
+            timeout=float(CONNECT_TIMEOUT_SECONDS),
         )
 
     def _disconnect_bluez(
