@@ -63,6 +63,7 @@ class SolicitationSupervisor:
         self._cancel = cancel
         self._clock = clock
         self._running = False
+        self._dialing = False
         self._timer_id: int | None = None
         self._hold_until = 0.0
 
@@ -89,6 +90,13 @@ class SolicitationSupervisor:
         if needed and changed:
             self._begin_hold()
         if self._running and (changed or needed != self._is_registered()):
+            self._reconcile()
+
+    def set_dialing(self, dialing: bool) -> None:
+        """Keep solicitation off while an outbound LE connect is in flight."""
+        changed = dialing != self._dialing
+        self._dialing = dialing
+        if self._running and changed:
             self._reconcile()
 
     def reset_after_bluez_restart(self) -> None:
@@ -118,6 +126,13 @@ class SolicitationSupervisor:
 
     def _reconcile(self) -> None:
         registered = self._is_registered()
+        if self._dialing:
+            # This safety override deliberately ignores the post-pair minimum
+            # hold. Advertising and initiating an LE connection concurrently
+            # can make BlueZ abort its own outstanding dial.
+            if registered:
+                self._unregister(self.adapter)
+            return
         if self._needed and not registered:
             if not self._register(self.adapter):
                 log.warning(

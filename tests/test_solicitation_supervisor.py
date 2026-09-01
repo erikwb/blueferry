@@ -90,6 +90,43 @@ def test_healthy_ancs_keeps_post_pair_solicitation_for_permission_window() -> No
     assert calls[-1] == ("unregister", "hci7")
 
 
+def test_outbound_dial_withdraws_and_then_restores_solicitation() -> None:
+    calls = []
+    state = {"registered": False}
+    scheduled = []
+    supervisor = _supervisor(calls, state, scheduled)
+    supervisor.start()
+
+    supervisor.set_dialing(True)
+    assert calls[-1] == ("unregister", "hci7")
+    assert supervisor.active() is False
+
+    supervisor.set_dialing(False)
+    assert calls[-1] == ("register", "hci7")
+    assert supervisor.active() is True
+
+
+def test_solicitation_stays_withdrawn_when_need_changes_during_dial() -> None:
+    calls = []
+    state = {"registered": False}
+    scheduled = []
+    supervisor = _supervisor(calls, state, scheduled)
+    supervisor.start()
+    supervisor.set_dialing(True)
+
+    supervisor.set_needed(False)
+    supervisor.set_needed(True)
+
+    assert state["registered"] is False
+    assert calls == [
+        ("register", "hci7"),
+        ("unregister", "hci7"),
+    ]
+
+    supervisor.set_dialing(False)
+    assert calls[-1] == ("register", "hci7")
+
+
 def test_bluez_restart_forgets_registration_and_primes_inbound_le() -> None:
     calls = []
     state = {"registered": False}

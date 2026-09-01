@@ -150,6 +150,30 @@ def test_le_can_be_held_until_classic_profile_attempt_finishes() -> None:
     assert connections == ["le"]
 
 
+def test_enabling_le_hands_preference_back_before_any_le_dial() -> None:
+    state = {"bredr": True, "le": False}
+    calls = []
+    scheduled = []
+    supervisor = BearerSupervisor(
+        "/device",
+        le_enabled=False,
+        read_connected=state.get,
+        prefer=lambda kind: calls.append(("prefer", kind)),
+        connect=lambda kind, on_success, _on_error: (
+            calls.append(("connect", kind)),
+            on_success(),
+        ),
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+    )
+
+    supervisor.start()
+    supervisor.enable_le()
+
+    assert calls == [("prefer", "le")]
+    scheduled[-1][1]()
+    assert calls == [("prefer", "le"), ("connect", "le")]
+
+
 def test_le_can_be_held_again_during_a_later_profile_reconnect() -> None:
     state = {"bredr": True, "le": False}
     connections = []
@@ -237,7 +261,7 @@ def test_hold_rejects_an_le_connect_already_in_flight() -> None:
     assert [kind for kind, _callback in connect_callbacks] == ["le", "le"]
 
 
-def test_selects_each_bearer_before_requesting_its_connection() -> None:
+def test_only_untyped_classic_connect_selects_a_preferred_bearer() -> None:
     state = {"bredr": False, "le": False}
     calls = []
     scheduled = []
@@ -258,7 +282,59 @@ def test_selects_each_bearer_before_requesting_its_connection() -> None:
     state["bredr"] = True
     scheduled[0][1]()
     scheduled[1][1]()
-    assert calls[-2:] == [("prefer", "le"), ("connect", "le")]
+    assert calls == [
+        ("prefer", "bredr"),
+        ("connect", "bredr"),
+        ("connect", "le"),
+    ]
+
+
+def test_live_le_dials_classic_without_rewriting_preference() -> None:
+    calls = []
+    scheduled = []
+    supervisor = BearerSupervisor(
+        "/device",
+        read_connected=lambda kind: {"bredr": False, "le": True}[kind],
+        prefer=lambda kind: calls.append(("prefer", kind)),
+        connect=lambda kind, *_args: calls.append(("connect", kind)),
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+    )
+
+    supervisor.start()
+    scheduled[0][1]()
+
+    assert calls == [("connect", "bredr")]
+
+
+def test_unknown_le_state_delays_classic_fallback_after_le_is_enabled() -> None:
+    calls = []
+    supervisor = BearerSupervisor(
+        "/device",
+        read_connected=lambda kind: {"bredr": False, "le": None}[kind],
+        prefer=lambda kind: calls.append(("prefer", kind)),
+        connect=lambda kind, *_args: calls.append(("connect", kind)),
+        schedule=lambda _delay, _callback: 7,
+    )
+
+    supervisor.start()
+
+    assert calls == []
+
+
+def test_initial_profile_gate_allows_classic_with_no_le_interface() -> None:
+    calls = []
+    supervisor = BearerSupervisor(
+        "/device",
+        le_enabled=False,
+        read_connected=lambda kind: {"bredr": False, "le": None}[kind],
+        prefer=lambda kind: calls.append(("prefer", kind)),
+        connect=lambda kind, *_args: calls.append(("connect", kind)),
+        schedule=lambda _delay, _callback: 7,
+    )
+
+    supervisor.start()
+
+    assert calls == [("prefer", "bredr"), ("connect", "bredr")]
 
 
 def test_bluez_preference_selects_requested_bearer(monkeypatch) -> None:
@@ -289,6 +365,38 @@ def test_bluez_preference_selects_requested_bearer(monkeypatch) -> None:
         ("org.bluez", "/device"),
         ("interface", "org.freedesktop.DBus.Properties"),
         ("org.bluez.Device1", "PreferredBearer", "le", 5.0),
+    ]
+
+
+def test_bluez_targets_classic_bearer_when_le_is_live(monkeypatch) -> None:
+    calls = []
+
+    class Bearer:
+        @staticmethod
+        def Connect(**kwargs):
+            calls.append(("connect", kwargs["timeout"]))
+
+    class Bus:
+        @staticmethod
+        def get_object(service, path):
+            calls.append((service, path))
+            return object()
+
+    monkeypatch.setattr(bearer_supervisor, "get_system_bus", Bus)
+    monkeypatch.setattr(
+        bearer_supervisor.dbus,
+        "Interface",
+        lambda _object, interface: calls.append(("interface", interface)) or Bearer(),
+    )
+    supervisor = BearerSupervisor("/device")
+    supervisor._states["le"] = True
+
+    supervisor._connect_bluez("bredr", lambda: None, lambda _error: None)
+
+    assert calls == [
+        ("org.bluez", "/device"),
+        ("interface", "org.bluez.Bearer.BREDR1"),
+        ("connect", 45.0),
     ]
 
 
@@ -482,9 +590,10 @@ def test_backoff_resets_once_the_bearer_connects() -> None:
     assert attempts == ["bredr", "bredr"]
 
 
-def test_returning_le_link_clears_classic_absence_backoff() -> None:
+def test_returning_le_link_retries_classic_without_rewriting_preference() -> None:
     state = {"bredr": False, "le": False}
     attempts = []
+    preferences = []
     scheduled = []
     now = 0.0
 
@@ -496,21 +605,24 @@ def test_returning_le_link_clears_classic_absence_backoff() -> None:
         "/device",
         read_connected=state.get,
         connect=connect,
+        prefer=preferences.append,
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
         clock=lambda: now,
     )
     supervisor.start()
     assert attempts == ["bredr"]
 
-    # The old retry is ten seconds away, but an inbound LE link proves that
-    # the phone has returned and makes Classic retry on this health tick.
+    # The old retry is ten seconds away. Live LE clears that penalty and the
+    # targeted Classic retry may run, but it must not change PreferredBearer
+    # underneath the working ANCS link.
     state["le"] = True
     scheduled[0][1]()
 
     assert attempts == ["bredr", "bredr"]
+    assert preferences == ["bredr"]
 
 
-def test_live_le_bounds_classic_backoff() -> None:
+def test_live_le_keeps_targeted_classic_fallback_bounded() -> None:
     state = {"bredr": False, "le": True}
     attempts = []
     scheduled = []
@@ -535,6 +647,52 @@ def test_live_le_bounds_classic_backoff() -> None:
 
     assert attempts == ["bredr"] * 5
     assert supervisor._next_attempt["bredr"] == 120.0
+
+
+def test_le_dial_pauses_solicitation_until_async_reply() -> None:
+    state = {"bredr": True, "le": False}
+    connect_callbacks = []
+    dial_states = []
+    scheduled = []
+    supervisor = BearerSupervisor(
+        "/device",
+        read_connected=state.get,
+        connect=lambda kind, on_success, on_error: connect_callbacks.append(
+            (kind, on_success, on_error)
+        ),
+        on_le_dial=dial_states.append,
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+    )
+    supervisor.start()
+
+    scheduled[0][1]()
+    assert [item[0] for item in connect_callbacks] == ["le"]
+    assert dial_states == [True]
+
+    connect_callbacks[0][1]()
+    assert dial_states == [True, False]
+
+
+def test_le_dial_restores_solicitation_after_failure() -> None:
+    state = {"bredr": True, "le": False}
+    connect_callbacks = []
+    dial_states = []
+    scheduled = []
+    supervisor = BearerSupervisor(
+        "/device",
+        read_connected=state.get,
+        connect=lambda kind, on_success, on_error: connect_callbacks.append(
+            (kind, on_success, on_error)
+        ),
+        on_le_dial=dial_states.append,
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+    )
+    supervisor.start()
+
+    scheduled[0][1]()
+    connect_callbacks[0][2](RuntimeError("no route"))
+
+    assert dial_states == [True, False]
 
 
 def test_le_outbound_dial_is_spent_once_then_solicitation_takes_over() -> None:
@@ -831,7 +989,7 @@ def test_bluez_restart_rejects_new_le_link_while_profile_gate_is_closed() -> Non
     supervisor.reset_after_bluez_restart()
 
     assert disconnects == ["le"]
-    assert connections == ["bredr"]
+    assert connections == []
     assert observed == [True, None]
 
 
