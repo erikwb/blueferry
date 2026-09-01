@@ -65,6 +65,13 @@ authentication. BlueZ exposes neither its registered-agent list nor the
 identity of its default agent, so automatic desktop-agent heuristics proved too
 indirect to choose a reliable transaction.
 
+An unpaired `Device1` discovery record can expire while BlueFerry prepares the
+adapter, including while setup waits for interactive system authorization. If
+the Connect-first call reports `UnknownObject`, BlueFerry scans the selected
+adapter for that exact address and retries `Connect()` once. Other devices and
+adapters are not eligible, and ordinary runtime connections continue to fail
+on `UnknownObject`.
+
 Some controllers instead cancel the Connect-first transaction before pairing
 finishes. For those systems the independent **Use explicit Bluetooth pairing**
 override registers the same device-scoped agent but calls `Device1.Pair()`

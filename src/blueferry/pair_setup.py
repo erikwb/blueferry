@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 import logging
 import time
-from collections.abc import Callable
-from contextlib import ExitStack
+from collections.abc import Callable, Iterator
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
@@ -59,6 +59,10 @@ class _TransportStatus(Protocol):
 
     @property
     def ancs(self) -> bool: ...
+
+
+class _ConnectDeviceMissing(PairingError):
+    """BlueZ removed the Device1 object before Connect was dispatched."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -425,6 +429,83 @@ def _device(mac: str, *, adapter: str | None = None) -> PairedDevice:
     raise PairingError(f"Bluetooth device {normalized} is no longer available; scan again")
 
 
+@contextmanager
+def _rediscover_pairing_device(
+    mac: str,
+    *,
+    adapter: str,
+    timeout: float = DISCOVERY_SECONDS,
+    attempt: PairingAttempt | None = None,
+) -> Iterator[PairedDevice]:
+    """Recreate one vanished Device1 on its selected adapter.
+
+    This is deliberately narrower than the setup client's general scan: it
+    waits for the exact address, never switches adapters, and leaves a scan
+    that another Bluetooth client already owned running.
+    """
+    normalized = mac.strip().upper()
+    device = _find_device(normalized, adapter=adapter)
+    if device is not None:
+        yield device
+        return
+
+    adapter_path = f"/org/bluez/{adapter}"
+    log.info(
+        "BlueZ removed %s before pairing; rediscovering it on %s",
+        normalized,
+        adapter,
+    )
+    quirks_report.mark(attempt, "pairing_device_rediscovery_started")
+    radio = dbus.Interface(
+        get_system_bus().get_object("org.bluez", adapter_path),
+        "org.bluez.Adapter1",
+    )
+    started_discovery = False
+    try:
+        try:
+            radio.StartDiscovery()
+            started_discovery = True
+        except dbus.exceptions.DBusException as error:
+            if error.get_dbus_name() != "org.bluez.Error.InProgress":
+                raise
+
+        deadline = time.monotonic() + max(1.0, timeout)
+        while True:
+            device = _find_device(normalized, adapter=adapter)
+            if device is not None:
+                log.info(
+                    "rediscovered pairing device %s on %s",
+                    normalized,
+                    adapter,
+                )
+                quirks_report.mark(attempt, "pairing_device_rediscovered")
+                # Keep our discovery session alive until the caller has sent
+                # Connect, so BlueZ cannot age this new unpaired object out
+                # at the same boundary a second time.
+                yield device
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(0.25, remaining))
+    except dbus.exceptions.DBusException as error:
+        detail = error.get_dbus_message() or error.get_dbus_name() or str(error)
+        raise PairingError(
+            f"Could not rediscover the iPhone on {adapter}: {detail}"
+        ) from error
+    finally:
+        if started_discovery:
+            try:
+                radio.StopDiscovery()
+            except dbus.exceptions.DBusException:
+                pass
+
+    raise PairingError(
+        f"The iPhone disappeared from {adapter} before pairing. Keep its "
+        "Bluetooth settings open and retry."
+    )
+
+
 def _wait_for_paired_device(
     mac: str, *, adapter: str | None = None, timeout: float = 120,
 ) -> PairedDevice:
@@ -540,25 +621,30 @@ def _connect_classic(
     )
     _dispatching_wait(time.monotonic() + timeout + 5.0, lambda: bool(results))
     error = results[0] if results else None
-    if error is not None and error.get_dbus_name() not in {
+    error_name = error.get_dbus_name() if error is not None else ""
+    if error is not None and error_name not in {
         "org.bluez.Error.AlreadyConnected",
         "org.bluez.Error.InProgress",
     }:
         quirks_report.mark(
             attempt, "classic_connect_failed",
-            error=error.get_dbus_name() or "failed",
+            error=error_name or "failed",
         )
+        if error_name == "org.freedesktop.DBus.Error.UnknownObject":
+            raise _ConnectDeviceMissing(
+                error.get_dbus_message() or error_name or str(error)
+            ) from error
         raise PairingError(
-            error.get_dbus_message() or error.get_dbus_name() or str(error)
+            error.get_dbus_message() or error_name or str(error)
         ) from error
     if error is None:
         log.debug("Device1.Connect completed successfully")
         quirks_report.mark(attempt, "classic_connect_replied")
     else:
-        log.debug("Device1.Connect reports %s", error.get_dbus_name())
+        log.debug("Device1.Connect reports %s", error_name)
         quirks_report.mark(
             attempt, "classic_connect_replied",
-            result=error.get_dbus_name() or "error",
+            result=error_name or "error",
         )
     if settle:
         _wait_for_classic_settled(device_path, timeout=timeout, attempt=attempt)
@@ -1118,12 +1204,28 @@ def _run_pairing_transaction(
             resources.agent_registered = True
             quirks_report.mark(attempt, "agent_registered")
             if policy.iphone_initiated:
-                _connect_classic(
-                    device.device_path,
-                    timeout=60.0,
-                    settle=False,
-                    attempt=attempt,
-                )
+                try:
+                    _connect_classic(
+                        device.device_path,
+                        timeout=60.0,
+                        settle=False,
+                        attempt=attempt,
+                    )
+                except _ConnectDeviceMissing:
+                    # An unpaired discovery record can expire while adapter
+                    # preparation is waiting for authorization. Recreate only
+                    # that exact object, then retry once.
+                    with _rediscover_pairing_device(
+                        mac,
+                        adapter=adapter,
+                        attempt=attempt,
+                    ) as device:
+                        _connect_classic(
+                            device.device_path,
+                            timeout=60.0,
+                            settle=False,
+                            attempt=attempt,
+                        )
                 registered.wait_for_pair(timeout=120.0)
                 attempt["pairing_transaction"] = "iphone-initiated-connect"
             else:
