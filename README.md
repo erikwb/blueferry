@@ -245,6 +245,10 @@ BLUEFERRY_NOTIFICATION_TIMEOUT_MS=8000
 BLUEFERRY_HISTORY_RETENTION_DAYS=30
 BLUEFERRY_HISTORY_MAX_EVENTS=10000
 BLUEFERRY_HISTORY_MAX_PAYLOAD_BYTES=268435456
+
+# Keep messages unread on the iPhone (no iMessage read receipts when you
+# dismiss a desktop popup). Phone-to-desktop sync is unaffected.
+BLUEFERRY_READ_SYNC_ENABLED=false
 ```
 
 When **All iPhone Notifications** is selected, optional exact bundle-ID rules

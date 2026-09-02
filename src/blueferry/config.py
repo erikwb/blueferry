@@ -16,6 +16,7 @@ LOCAL_ENV_KEYS = frozenset({
     "BLUEFERRY_ANCS_APP_ALLOWLIST",
     "BLUEFERRY_ANCS_APP_BLOCKLIST",
     "BLUEFERRY_SHOW_NOTIFICATION_CONTENT",
+    "BLUEFERRY_READ_SYNC_ENABLED",
     "BLUEFERRY_NOTIFICATION_TIMEOUT_MS",
     "BLUEFERRY_HISTORY_RETENTION_DAYS",
     "BLUEFERRY_HISTORY_MAX_EVENTS",
@@ -196,6 +197,16 @@ def include_ancs_app(app_id: str) -> bool:
 SHOW_NOTIFICATION_CONTENT: bool = _env_bool(
     "BLUEFERRY_SHOW_NOTIFICATION_CONTENT", True
 )
+READ_SYNC_ENABLED: bool = _env_bool("BLUEFERRY_READ_SYNC_ENABLED", True)
+"""Whether dismissing a desktop message popup marks the message read on the
+iPhone via MAP.
+
+Enabled by default. Set to ``false`` to keep messages unread on the phone so
+iMessage shows no read receipt to the other party. The phone-to-desktop
+direction is unaffected: opening a message on the iPhone still closes the
+corresponding desktop popup.
+"""
+
 NOTIFICATION_TIMEOUT_MS: int = _env_int(
     "BLUEFERRY_NOTIFICATION_TIMEOUT_MS", 8_000, 1_000, 60_000
 )

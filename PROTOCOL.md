@@ -168,7 +168,10 @@ the tested phone they are indistinguishable on the wire:
   full bMessage download.
 - Changing `Message1.Read` is reflected on the phone. Conversely, opening a
   message on the phone produces a read-property update that can close the
-  corresponding desktop popup.
+  corresponding desktop popup. The desktop-to-phone write is optional:
+  `BLUEFERRY_READ_SYNC_ENABLED=false` (default true) disables it so dismissing
+  a desktop popup leaves the phone-side message unread. The phone-to-desktop
+  popup close is always enabled because it writes nothing back.
 
 MAP does not say whether a message used SMS or iMessage, and BlueFerry must not
 infer the transport from `sms-gsm`. It also does not provide reactions, typing

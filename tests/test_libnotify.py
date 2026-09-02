@@ -291,6 +291,55 @@ def test_expiry_and_phone_read_do_not_write_read_state(reason) -> None:
     assert queued == []
 
 
+def test_disabled_read_sync_does_not_write_read_state() -> None:
+    """BLUEFERRY_READ_SYNC_ENABLED=false: user dismissal must not mark read."""
+    queued = []
+    sink = LibnotifySink.__new__(LibnotifySink)
+    sink._pending = {7: "/session/message1"}
+    sink._msg_subs = {}
+    sink._open_messages = {}
+    sink._read_sync_enabled = False
+    sink._submit_obex = lambda operation, **callbacks: queued.append(
+        (operation, callbacks)
+    )
+
+    sink._on_closed(7, 2)
+
+    assert queued == []
+    assert sink._pending == {}
+
+
+def test_disabled_read_sync_falls_back_to_config_when_uninitialized(
+    monkeypatch,
+) -> None:
+    """Sinks built before the flag existed (or via __new__) honor config."""
+    queued = []
+    sink = LibnotifySink.__new__(LibnotifySink)
+    sink._pending = {7: "/session/message1"}
+    sink._msg_subs = {}
+    sink._open_messages = {}
+    sink._submit_obex = lambda operation, **callbacks: queued.append(
+        (operation, callbacks)
+    )
+    monkeypatch.setattr(
+        "blueferry.sinks.libnotify.config.READ_SYNC_ENABLED", False
+    )
+
+    sink._on_closed(7, 2)
+
+    assert queued == []
+
+    queued.clear()
+    sink._pending[8] = "/session/message2"
+    monkeypatch.setattr(
+        "blueferry.sinks.libnotify.config.READ_SYNC_ENABLED", True
+    )
+
+    sink._on_closed(8, 2)
+
+    assert len(queued) == 1
+
+
 def test_close_releases_all_signal_watches_and_trackers() -> None:
     sink = LibnotifySink.__new__(LibnotifySink)
     sink._match = _Match()

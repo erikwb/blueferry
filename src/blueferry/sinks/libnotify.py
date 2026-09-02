@@ -11,6 +11,12 @@ Read-state sync:
   Linux dismiss → MAP Message1.Properties.Set(Read=true)  → iPhone marks read
   iPhone reads  → MAP PropertiesChanged(Read=true)         → we close popup
 
+The desktop-to-phone direction is optional (BLUEFERRY_READ_SYNC_ENABLED,
+default true). With it disabled, dismissing a popup leaves the message unread
+on the iPhone. The phone-to-desktop direction always stays on: opening a
+message on the iPhone closes the corresponding desktop popup without writing
+anything back.
+
 Empirical on iOS 26.5: both directions work. iPhone propagates Read=true
 back over MAP within a few seconds of opening the Messages app.
 """
@@ -85,6 +91,7 @@ class LibnotifySink:
         self._notification_policy = notification_policy
         self._contacts_only_notifications = contacts_only_notifications
         self._on_open_message = on_open_message
+        self._read_sync_enabled = config.READ_SYNC_ENABLED
         self._notif = dbus.Interface(
             get_session_bus().get_object(
                 "org.freedesktop.Notifications",
@@ -109,7 +116,12 @@ class LibnotifySink:
         self._action_match = self._notif.connect_to_signal(
             "ActionInvoked", self._on_action,
         )
-        log.info("libnotify sink ready (expiring + bidirectional read-sync)")
+        log.info(
+            "libnotify sink ready (expiring + %s)",
+            "bidirectional read-sync"
+            if self._read_sync_enabled
+            else "incoming read-sync only",
+        )
 
     def close(self) -> None:
         """Release signal watches before a notification-daemon replacement."""
@@ -327,8 +339,12 @@ class LibnotifySink:
         # Only propagate read-state to iPhone when the human actively
         # dismissed (reason=2). Don't loop on programmatic close (reason=3,
         # which is fired when we closed it ourselves because iPhone already
-        # marked it read).
+        # marked it read). Reason 1 (expiry) never writes read state.
         if reason_i != _REASON_DISMISSED:
+            return
+        # BLUEFERRY_READ_SYNC_ENABLED=false leaves the message unread on the
+        # iPhone; the desktop popup is closed and nothing is written back.
+        if not getattr(self, "_read_sync_enabled", config.READ_SYNC_ENABLED):
             return
         def succeeded(_result) -> None:
             log.info("marked %s as read on iPhone (user dismissed popup)",
