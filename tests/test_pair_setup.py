@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import stat
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 
 import pytest
 
@@ -1305,6 +1305,11 @@ def _compatible(
     )
     monkeypatch.setattr(pair_setup, "_prefer_bearer", lambda *_args: None)
     monkeypatch.setattr(pair_setup, "_prefer_bredr", lambda _path: None)
+    monkeypatch.setattr(
+        pair_setup,
+        "_pairable_window",
+        lambda *_args, **_kwargs: nullcontext(),
+    )
     monkeypatch.setattr(pair_setup, "_activate_obex_mns", lambda: None)
     monkeypatch.setattr(pair_setup, "_wait_for_classic_settled", lambda _path, **_kwargs: None)
     monkeypatch.setattr(
@@ -1805,6 +1810,71 @@ def test_post_pair_bearer_preference_can_select_le(monkeypatch):
     pair_setup._prefer_bearer("/org/bluez/hci0/dev_02_00_00_00_00_01", "le")
 
     assert calls[-1] == ("org.bluez.Device1", "PreferredBearer", "le")
+
+
+def test_pairable_window_enables_and_restores_pairable_only(monkeypatch):
+    state = {"Pairable": False, "Discoverable": False}
+    calls = []
+
+    class Properties:
+        @staticmethod
+        def Get(_interface, name, *, timeout):
+            calls.append(("get", name))
+            return state[name]
+
+        @staticmethod
+        def Set(_interface, name, value, *, timeout):
+            calls.append(("set", name, bool(value)))
+            state[name] = bool(value)
+
+    class Bus:
+        @staticmethod
+        def get_object(_service, path):
+            assert path == "/org/bluez/hci0"
+            return object()
+
+    monkeypatch.setattr(pair_setup, "get_system_bus", Bus)
+    monkeypatch.setattr(pair_setup.dbus, "Interface", lambda *_args: Properties())
+    attempt = {"timeline": []}
+
+    with pair_setup._pairable_window("hci0", attempt=attempt):
+        assert state == {"Pairable": True, "Discoverable": False}
+
+    assert state == {"Pairable": False, "Discoverable": False}
+    assert calls == [
+        ("get", "Pairable"),
+        ("set", "Pairable", True),
+        ("set", "Pairable", False),
+    ]
+    assert attempt["timeline"][-1]["event"] == "pairable_window_open"
+
+
+def test_pairable_window_restores_after_an_error(monkeypatch):
+    state = {"Pairable": False, "Discoverable": True}
+
+    class Properties:
+        @staticmethod
+        def Get(_interface, name, *, timeout):
+            return state[name]
+
+        @staticmethod
+        def Set(_interface, name, value, *, timeout):
+            state[name] = bool(value)
+
+    monkeypatch.setattr(
+        pair_setup,
+        "get_system_bus",
+        type("Bus", (), {"get_object": staticmethod(lambda *_args: object())}),
+    )
+    monkeypatch.setattr(pair_setup.dbus, "Interface", lambda *_args: Properties())
+
+    with pytest.raises(RuntimeError, match="pairing failed"):
+        with pair_setup._pairable_window("hci1"):
+            assert state["Pairable"] is True
+            assert state["Discoverable"] is True
+            raise RuntimeError("pairing failed")
+
+    assert state == {"Pairable": False, "Discoverable": True}
 
 
 def test_post_pair_bearer_preference_is_optional_when_bluez_omits_it(monkeypatch):

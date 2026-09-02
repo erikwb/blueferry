@@ -1196,6 +1196,51 @@ def _prepare_classic_transport(adapter: str, attempt: PairingAttempt) -> None:
     quirks_report.mark(attempt, "obex_mns_ready")
 
 
+@contextmanager
+def _pairable_window(adapter: str, *, attempt: PairingAttempt | None = None):
+    """Force Adapter1.Pairable for the pairing transaction, then restore it.
+
+    Connect-first makes the iPhone the authentication initiator. BlueZ refuses
+    that inbound request when Pairable is off (Linux shows the passkey, the
+    phone never does, ``br-connection-key-missing``). Discoverable is not
+    required once the ACL exists and would advertise the adapter during
+    Classic pairing.
+    """
+    path = f"/org/bluez/{adapter}"
+    props = dbus.Interface(
+        get_system_bus().get_object("org.bluez", path),
+        "org.freedesktop.DBus.Properties",
+    )
+    previous: bool | None = None
+    try:
+        previous = bool(props.Get("org.bluez.Adapter1", "Pairable", timeout=5.0))
+        if not previous:
+            props.Set(
+                "org.bluez.Adapter1",
+                "Pairable",
+                dbus.Boolean(True),
+                timeout=5.0,
+            )
+    except dbus.exceptions.DBusException as error:
+        log.warning("could not enable Adapter1.Pairable: %s", error)
+        previous = None
+    if previous is not None:
+        quirks_report.mark(attempt, "pairable_window_open", pairable=previous)
+    try:
+        yield
+    finally:
+        if previous is not None:
+            try:
+                props.Set(
+                    "org.bluez.Adapter1",
+                    "Pairable",
+                    dbus.Boolean(previous),
+                    timeout=5.0,
+                )
+            except dbus.exceptions.DBusException as error:
+                log.warning("could not restore Adapter1.Pairable: %s", error)
+
+
 def _run_pairing_transaction(
     mac: str,
     device: PairedDevice,
@@ -1209,6 +1254,30 @@ def _run_pairing_transaction(
 ) -> PairedDevice:
     if device.paired:
         return device
+    with _pairable_window(adapter, attempt=attempt):
+        return _complete_pairing_transaction(
+            mac,
+            device,
+            adapter,
+            policy,
+            confirmation=confirmation,
+            display=display,
+            attempt=attempt,
+            resources=resources,
+        )
+
+
+def _complete_pairing_transaction(
+    mac: str,
+    device: PairedDevice,
+    adapter: str,
+    policy: PairingPolicy,
+    *,
+    confirmation: ConfirmationCallback | None,
+    display: DisplayCallback | None,
+    attempt: PairingAttempt,
+    resources: _PairingResources,
+) -> PairedDevice:
     try:
         if confirmation is None:
             # complete_pairing permits this only with explicit _allow_headless.
