@@ -262,6 +262,7 @@ def test_untyped_classic_connect_restores_le_preference_before_le_dial() -> None
     state = {"bredr": False, "le": False}
     calls = []
     scheduled = []
+    now = 0.0
     supervisor = BearerSupervisor(
         "/device",
         read_connected=state.get,
@@ -271,6 +272,7 @@ def test_untyped_classic_connect_restores_le_preference_before_le_dial() -> None
             on_success(),
         ),
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        clock=lambda: now,
     )
 
     supervisor.start()
@@ -289,6 +291,11 @@ def test_untyped_classic_connect_restores_le_preference_before_le_dial() -> None
         ("prefer", "le"),
         ("connect", "le"),
     ]
+
+    # Hold the link past the dwell window so it counts as a real session and
+    # its earlier penalty is forgiven. This tick issues no new calls.
+    now = bearer_supervisor.STABLE_CONNECTION_SECONDS + 1.0
+    scheduled[0][1]()
 
     # A later out-of-range cycle repeats the handoff instead of leaving the
     # idle preference on BR/EDR after its untyped bootstrap.
@@ -816,9 +823,14 @@ def test_backoff_resets_once_the_bearer_connects() -> None:
     supervisor.start()
     assert attempts == ["bredr"]
 
-    # The bearer connecting through any path clears the penalty, so the next
-    # genuine disconnect is retried promptly instead of inheriting old delays.
+    # A bearer that HOLDS clears the penalty, so the next genuine disconnect is
+    # retried promptly instead of inheriting old delays. The link has to survive
+    # the dwell window: a connection that drops immediately is a flap, not
+    # evidence that the phone is reachable.
+    now = 1.0
     state["bredr"] = True
+    scheduled[0][1]()
+    now = 1.0 + bearer_supervisor.STABLE_CONNECTION_SECONDS
     scheduled[0][1]()
     state["bredr"] = False
     scheduled[0][1]()
@@ -1533,3 +1545,107 @@ def test_stop_cancels_health_check() -> None:
     supervisor.stop()
 
     assert cancelled == [7]
+
+
+def test_flapping_bearer_does_not_clear_backoff() -> None:
+    """A phone that connects then drops at once must not pin the retry delay.
+
+    Connected=true is observed on every five-second poll, not just on genuine
+    transitions, so clearing the failure counter on each observation let a
+    flapping device reset the backoff before it could ever grow. The retry
+    interval stayed pinned at its five-second minimum forever.
+    """
+    state = {"bredr": False, "le": False}
+    attempts = []
+    scheduled = []
+    now = 0.0
+
+    def connect(kind, _on_success, on_error):
+        attempts.append(kind)
+        on_error(RuntimeError("not ready"))
+
+    supervisor = BearerSupervisor(
+        "/device",
+        read_connected=state.get,
+        connect=connect,
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer_id: None,
+        clock=lambda: now,
+    )
+
+    supervisor.start()
+    assert attempts == ["bredr"]
+
+    # The bearer appears and drops again well inside the dwell window.
+    now = 1.0
+    state["bredr"] = True
+    scheduled[0][1]()
+    now = 2.0
+    state["bredr"] = False
+    scheduled[0][1]()
+
+    # The 10s penalty earned by the first failure must still be in force.
+    assert attempts == ["bredr"]
+
+    # ...and once it genuinely expires, the retry proceeds as normal.
+    now = 11.0
+    scheduled[0][1]()
+    assert attempts == ["bredr", "bredr"]
+
+
+def test_backoff_grows_across_repeated_flaps() -> None:
+    """Repeated connect/drop cycles must escalate the retry delay.
+
+    Reproduces an observed field failure: a phone whose bearer flapped
+    continuously kept every retry pinned at ten seconds -- POLL_SECONDS * 2**1
+    -- because each Connected=true observation zeroed the failure counter
+    before it could ever grow past one. The five-minute ceiling was therefore
+    unreachable and the phone was re-dialled every ten seconds indefinitely.
+    """
+    state = {"bredr": False, "le": False}
+    attempts = []
+    scheduled = []
+    now = 0.0
+
+    def connect(_kind, _on_success, on_error):
+        attempts.append(now)
+        on_error(RuntimeError("not ready"))
+
+    supervisor = BearerSupervisor(
+        "/device",
+        read_connected=state.get,
+        connect=connect,
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer_id: None,
+        clock=lambda: now,
+    )
+
+    def flap(at: float) -> None:
+        """A bearer that appears and drops again inside the dwell window."""
+        nonlocal now
+        now = at
+        state["bredr"] = True
+        scheduled[0][1]()
+        now = at + 1.0
+        state["bredr"] = False
+        scheduled[0][1]()
+
+    supervisor.start()
+    assert attempts == [0.0]
+
+    # First failure earns a 10s penalty; a flap must not forgive it.
+    flap(1.0)
+    now = 11.0
+    scheduled[0][1]()
+    assert attempts == [0.0, 11.0]
+
+    # The second failure escalates to 20s. Another flap must not reset that
+    # either -- under the old behaviour the delay collapsed back to 10s here.
+    flap(12.0)
+    now = 25.0
+    scheduled[0][1]()
+    assert attempts == [0.0, 11.0]
+
+    now = 32.0
+    scheduled[0][1]()
+    assert attempts == [0.0, 11.0, 32.0]

@@ -30,6 +30,13 @@ BACKOFF_CAP_SECONDS = 300
 # may still decline a page temporarily, but it must not inherit the five-minute
 # absence backoff while ANCS is demonstrably reachable.
 LE_CONNECTED_CLASSIC_BACKOFF_CAP_SECONDS = 30
+# Connected=true is observed on every poll, not only on genuine transitions,
+# so clearing the failure counter on each observation let a phone that connects
+# and drops in a loop reset the backoff before it could grow -- pinning the
+# retry interval at its minimum. Require a bearer to hold this long before its
+# penalty is forgiven. Longer than POLL_SECONDS so a link must survive at least
+# one full probe cycle to count as stable.
+STABLE_CONNECTION_SECONDS = 15
 _INTERFACES = {
     "bredr": "org.bluez.Bearer.BREDR1",
     "le": "org.bluez.Bearer.LE1",
@@ -177,6 +184,7 @@ class BearerSupervisor:
         self._states: dict[str, bool | None] = {"bredr": None, "le": None}
         self._failures: dict[str, int] = {"bredr": 0, "le": 0}
         self._next_attempt: dict[str, float] = {"bredr": 0.0, "le": 0.0}
+        self._connected_since: dict[str, float | None] = {"bredr": None, "le": None}
 
     @property
     def bredr_connected(self) -> bool:
@@ -266,6 +274,7 @@ class BearerSupervisor:
         self._states = {"bredr": None, "le": None}
         self._failures = {"bredr": 0, "le": 0}
         self._next_attempt = {"bredr": 0.0, "le": 0.0}
+        self._connected_since = {"bredr": None, "le": None}
         self._last_errors.clear()
         if self._on_le_state is not None:
             self._on_le_state(None)
@@ -446,9 +455,11 @@ class BearerSupervisor:
             # device that remains absent still receives only one attempt.
             self._rearm_le_dial("iPhone LE disconnected")
         if value is True:
-            self._last_errors.pop(kind, None)
-            self._failures[kind] = 0
-            self._next_attempt[kind] = 0.0
+            if previous is not True:
+                self._connected_since[kind] = self._clock()
+            self._clear_backoff_if_stable(kind)
+        else:
+            self._connected_since[kind] = None
         if kind == "le" and value is True and previous is not True:
             # An inbound LE connection is the missing presence event for a
             # Classic backoff accumulated while the phone was out of range.
@@ -684,6 +695,22 @@ class BearerSupervisor:
             kind.upper(),
             delay,
         )
+
+    def _clear_backoff_if_stable(self, kind: str) -> None:
+        """Forgive a bearer's backoff only once it has held long enough.
+
+        A bearer that connects and immediately drops is not evidence that the
+        phone is reachable; treating it as such reset the penalty faster than
+        it could accumulate.
+        """
+        since = self._connected_since[kind]
+        if since is None:
+            return
+        if self._clock() - since < STABLE_CONNECTION_SECONDS:
+            return
+        self._last_errors.pop(kind, None)
+        self._failures[kind] = 0
+        self._next_attempt[kind] = 0.0
 
     def _reset_classic_backoff_from_le(self) -> None:
         """Treat any live LE link as proof that the phone is in range."""
