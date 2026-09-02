@@ -430,6 +430,34 @@ def test_bluez_device_snapshot_captures_bearers_battery_and_ancs(monkeypatch):
     ]
 
 
+def test_empty_le_bearer_interface_is_treated_as_absent() -> None:
+    from blueferry import pairing_diagnostics
+
+    objects = {
+        "/org/bluez/hci0/dev_02_00_00_00_00_01": {
+            "org.bluez.Device1": {"Paired": True},
+            "org.bluez.Bearer.LE1": {},
+        },
+    }
+
+    snapshot = pairing_diagnostics.bluez_device_snapshot(
+        "/org/bluez/hci0/dev_02_00_00_00_00_01",
+        load_objects=lambda _timeout: objects,
+    )
+    assert snapshot["bearers"]["le"] == {"present": False}
+
+    le = pairing_diagnostics.le_bearer_snapshot(
+        "/org/bluez/hci0/dev_02_00_00_00_00_01",
+        load_objects=lambda: objects,
+    )
+    assert le == {
+        "present": False,
+        "paired": False,
+        "bonded": False,
+        "connected": False,
+    }
+
+
 def test_forget_records_bluez_state_before_and_after_remove(monkeypatch):
     device = _device(paired=True)
     snapshots = iter([
@@ -1275,6 +1303,7 @@ def _compatible(
             "issue": issue,
         },
     )
+    monkeypatch.setattr(pair_setup, "_prefer_bearer", lambda *_args: None)
     monkeypatch.setattr(pair_setup, "_prefer_bredr", lambda _path: None)
     monkeypatch.setattr(pair_setup, "_activate_obex_mns", lambda: None)
     monkeypatch.setattr(pair_setup, "_wait_for_classic_settled", lambda _path, **_kwargs: None)
@@ -1308,8 +1337,8 @@ def test_complete_pairing_starts_profiles_while_pairing_advert_is_active(monkeyp
     monkeypatch.setattr(pair_setup, "trust_device", lambda *_args: calls.append("trust"))
     monkeypatch.setattr(
         pair_setup,
-        "_prefer_bredr",
-        lambda path: calls.append(("prefer-bredr", path)),
+        "_prefer_bearer",
+        lambda path, kind: calls.append((f"prefer-{kind}", path)),
     )
     monkeypatch.setattr(pair_setup, "write_local_env", lambda *_args: calls.append("config"))
     monkeypatch.setattr(
@@ -1329,6 +1358,7 @@ def test_complete_pairing_starts_profiles_while_pairing_advert_is_active(monkeyp
         "trust",
         ("prefer-bredr", device.device_path),
         ("classic-settled", device.device_path),
+        ("prefer-le", device.device_path),
         ("advert", "hci0"),
         "config",
         "restart",
@@ -1492,6 +1522,126 @@ def test_classic_connect_distinguishes_a_missing_bluez_device(monkeypatch):
     )
 
 
+def test_classic_connect_treats_late_paired_as_success(monkeypatch):
+    calls = []
+
+    class Interface:
+        @staticmethod
+        def Connect(*, error_handler, **_kwargs):
+            error_handler(
+                pair_setup.dbus.exceptions.DBusException(
+                    "br-connection-unknown",
+                    name="org.bluez.Error.Failed",
+                )
+            )
+
+        @staticmethod
+        def Get(_interface, name, *, timeout):
+            calls.append(("get", name, timeout))
+            return name == "Paired"
+
+    class Bus:
+        @staticmethod
+        def get_object(*_args):
+            return object()
+
+    attempt = {"timeline": []}
+    monkeypatch.setattr(pair_setup, "get_system_bus", Bus)
+    monkeypatch.setattr(pair_setup.dbus, "Interface", lambda *_args: Interface())
+    monkeypatch.setattr(
+        pair_setup,
+        "_wait_for_classic_settled",
+        lambda path, **kwargs: calls.append(("settled", path)),
+    )
+
+    pair_setup._connect_classic(
+        "/org/bluez/hci0/dev_02_00_00_00_00_01",
+        settle=True,
+        timeout=1.0,
+        attempt=attempt,
+    )
+
+    assert ("get", "Paired", 1.0) in calls
+    assert calls[-1] == (
+        "settled",
+        "/org/bluez/hci0/dev_02_00_00_00_00_01",
+    )
+    assert [event["event"] for event in attempt["timeline"]] == [
+        "classic_connect_sent",
+        "classic_connect_failed",
+        "classic_connect_paired_after_error",
+        "classic_connect_replied",
+    ]
+    assert attempt["timeline"][2]["message"] == "br-connection-unknown"
+
+
+def test_classic_connect_still_fails_when_pairing_does_not_finish(monkeypatch):
+    class Interface:
+        @staticmethod
+        def Connect(*, error_handler, **_kwargs):
+            error_handler(
+                pair_setup.dbus.exceptions.DBusException(
+                    "br-connection-unknown",
+                    name="org.bluez.Error.Failed",
+                )
+            )
+
+        @staticmethod
+        def Get(_interface, _name, *, timeout):
+            return False
+
+    class Bus:
+        @staticmethod
+        def get_object(*_args):
+            return object()
+
+    monkeypatch.setattr(pair_setup, "CONNECT_REFUSED_GRACE_SECONDS", 0.0)
+    monkeypatch.setattr(pair_setup, "get_system_bus", Bus)
+    monkeypatch.setattr(pair_setup.dbus, "Interface", lambda *_args: Interface())
+
+    with pytest.raises(pair_setup.PairingError, match="br-connection-unknown"):
+        pair_setup._connect_classic(
+            "/org/bluez/hci0/dev_02_00_00_00_00_01",
+            settle=False,
+            timeout=1.0,
+        )
+
+
+def test_classic_connect_does_not_wait_on_access_denied(monkeypatch):
+    gets = []
+
+    class Interface:
+        @staticmethod
+        def Connect(*, error_handler, **_kwargs):
+            error_handler(
+                pair_setup.dbus.exceptions.DBusException(
+                    "Permission denied",
+                    name="org.freedesktop.DBus.Error.AccessDenied",
+                )
+            )
+
+        @staticmethod
+        def Get(_interface, _name, *, timeout):
+            gets.append(True)
+            return False
+
+    class Bus:
+        @staticmethod
+        def get_object(*_args):
+            return object()
+
+    monkeypatch.setattr(pair_setup, "get_system_bus", Bus)
+    monkeypatch.setattr(pair_setup.dbus, "Interface", lambda *_args: Interface())
+
+    with pytest.raises(pair_setup.PairingError, match="Permission denied"):
+        pair_setup._connect_classic(
+            "/org/bluez/hci0/dev_02_00_00_00_00_01",
+            settle=False,
+            timeout=1.0,
+        )
+    assert gets == []
+
+
 def test_pairing_rediscovery_waits_for_exact_device_on_selected_adapter(
     monkeypatch,
 ):
@@ -1627,6 +1777,34 @@ def test_post_pair_bearer_preference_is_forced_to_bredr(monkeypatch):
         ("interface", "org.freedesktop.DBus.Properties"),
         ("org.bluez.Device1", "PreferredBearer", "bredr"),
     ]
+
+
+def test_post_pair_bearer_preference_can_select_le(monkeypatch):
+    calls = []
+
+    class Properties:
+        @staticmethod
+        def Set(interface, name, value):
+            calls.append((interface, name, str(value)))
+
+    class Bus:
+        @staticmethod
+        def get_object(service, path):
+            calls.append((service, path))
+            return object()
+
+    monkeypatch.setattr(pair_setup, "get_system_bus", Bus)
+    monkeypatch.setattr(
+        pair_setup.dbus,
+        "Interface",
+        lambda _obj, interface: (
+            calls.append(("interface", interface)) or Properties()
+        ),
+    )
+
+    pair_setup._prefer_bearer("/org/bluez/hci0/dev_02_00_00_00_00_01", "le")
+
+    assert calls[-1] == ("org.bluez.Device1", "PreferredBearer", "le")
 
 
 def test_post_pair_bearer_preference_is_optional_when_bluez_omits_it(monkeypatch):
@@ -1795,8 +1973,8 @@ def test_compatibility_pairing_connects_and_lets_the_iphone_initiate(monkeypatch
     )
     monkeypatch.setattr(
         pair_setup,
-        "_prefer_bredr",
-        lambda path: calls.append(("prefer-bredr", path)),
+        "_prefer_bearer",
+        lambda path, kind: calls.append((f"prefer-{kind}", path)),
     )
     monkeypatch.setattr(
         pair_setup,
@@ -1833,6 +2011,7 @@ def test_compatibility_pairing_connects_and_lets_the_iphone_initiate(monkeypatch
         "trust",
         ("prefer-bredr", paired.device_path),
         ("classic-settled", paired.device_path),
+        ("prefer-le", paired.device_path),
         "persist",
         "daemon",
         "advert-exit",
@@ -1913,8 +2092,8 @@ def test_default_pairing_rediscovers_a_device_lost_before_connect(monkeypatch):
     monkeypatch.setattr(pair_setup, "trust_device", lambda *_args: calls.append("trust"))
     monkeypatch.setattr(
         pair_setup,
-        "_prefer_bredr",
-        lambda path: calls.append(("prefer-bredr", path)),
+        "_prefer_bearer",
+        lambda path, kind: calls.append((f"prefer-{kind}", path)),
     )
     monkeypatch.setattr(pair_setup, "write_local_env", lambda *_args: calls.append("persist"))
     monkeypatch.setattr(pair_setup, "_restart_user_service", lambda: calls.append("daemon"))
@@ -1935,6 +2114,7 @@ def test_default_pairing_rediscovers_a_device_lost_before_connect(monkeypatch):
         "trust",
         ("prefer-bredr", paired.device_path),
         ("classic-settled", paired.device_path),
+        ("prefer-le", paired.device_path),
         "persist",
         "daemon",
         "advert-exit",

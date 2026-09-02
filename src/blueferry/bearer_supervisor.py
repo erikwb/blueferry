@@ -878,6 +878,24 @@ class BearerSupervisor:
             "org.freedesktop.DBus.Properties",
         )
         try:
+            current = str(
+                properties.Get(
+                    "org.bluez.Device1",
+                    "PreferredBearer",
+                    timeout=5.0,
+                )
+            )
+        except dbus.exceptions.DBusException as error:
+            if preferred_bearer_unavailable(error):
+                # Older or partial experimental BlueZ builds can still accept
+                # inbound ANCS without exposing PreferredBearer.
+                log.debug("PreferredBearer is unavailable on this BlueZ build")
+                return
+            current = ""
+        else:
+            if current == kind:
+                return
+        try:
             properties.Set(
                 "org.bluez.Device1",
                 "PreferredBearer",
@@ -887,8 +905,6 @@ class BearerSupervisor:
             log.debug("set iPhone PreferredBearer=%s", kind)
         except dbus.exceptions.DBusException as error:
             if preferred_bearer_unavailable(error):
-                # Older or partial experimental BlueZ builds can still accept
-                # inbound ANCS without exposing PreferredBearer.
                 log.debug("PreferredBearer is unavailable on this BlueZ build")
                 return
             raise

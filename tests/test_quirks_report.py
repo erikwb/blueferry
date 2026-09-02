@@ -359,6 +359,40 @@ def test_wait_for_daemon_transports_records_split_ancs(monkeypatch) -> None:
     assert "ancs_ready" in events
 
 
+def test_scrub_text_redacts_device_aliases() -> None:
+    cleaned = quirks_report.scrub_text(
+        "paired Alex's iPhone at /org/bluez/hci0/dev_02_00_AA_BB_CC_DD",
+        aliases=["Alex's iPhone"],
+    )
+    assert "Alex" not in cleaned
+    assert "<alias-1>" in cleaned
+    assert "dev_REDACTED" in cleaned
+
+
+def test_scrub_text_does_not_mangle_iphone_strategy_tokens() -> None:
+    cleaned = quirks_report.scrub_text(
+        '{"pairing_strategy":"iphone-initiated-connect","note":"paired iPhone"}',
+        aliases=["iPhone"],
+    )
+    assert "iphone-initiated-connect" in cleaned
+    assert '"note":"paired <alias-1>"' in cleaned
+
+
+def test_save_report_redacts_aliases_and_drops_the_alias_list(tmp_path) -> None:
+    path = quirks_report.save_report(
+        {
+            "error": "could not pair Alex's iPhone",
+            "_aliases": ["Alex's iPhone"],
+        },
+        directory=tmp_path,
+    )
+    payload = path.read_text()
+    parsed = json.loads(payload)
+    assert "Alex" not in payload
+    assert parsed["error"] == "could not pair <alias-1>"
+    assert "_aliases" not in parsed
+
+
 def test_scrub_text_removes_mac_addresses_and_bluez_paths() -> None:
     raw = (
         "paired 02:00:AA:BB:CC:DD at "
@@ -502,6 +536,7 @@ def test_complete_pairing_writes_a_scrubbed_success_report(
             "bearer_api_active": True,
         },
     )
+    monkeypatch.setattr(pair_setup, "_prefer_bearer", lambda *_args: None)
     monkeypatch.setattr(pair_setup, "_prefer_bredr", lambda _path: None)
     monkeypatch.setattr(pair_setup, "_activate_obex_mns", lambda: None)
     monkeypatch.setattr(pair_setup, "_wait_for_classic_settled", lambda _path, **_kwargs: None)
@@ -630,6 +665,7 @@ def test_pairing_report_keeps_last_le_error_when_ancs_stays_down(
             "bearer_api_active": True,
         },
     )
+    monkeypatch.setattr(pair_setup, "_prefer_bearer", lambda *_args: None)
     monkeypatch.setattr(pair_setup, "_prefer_bredr", lambda _path: None)
     monkeypatch.setattr(pair_setup, "_activate_obex_mns", lambda: None)
     monkeypatch.setattr(pair_setup, "_wait_for_classic_settled", lambda _path, **_kwargs: None)
@@ -772,6 +808,7 @@ def test_unexpected_pairing_exception_still_writes_a_report(
             "bearer_api_active": True,
         },
     )
+    monkeypatch.setattr(pair_setup, "_prefer_bearer", lambda *_args: None)
     monkeypatch.setattr(pair_setup, "_prefer_bredr", lambda _path: None)
     monkeypatch.setattr(pair_setup, "_activate_obex_mns", lambda: None)
     monkeypatch.setattr(pair_setup, "_wait_for_classic_settled", lambda _path, **_kwargs: None)

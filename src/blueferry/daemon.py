@@ -40,7 +40,7 @@ from blueferry.obex.map_events import MapEventListener
 from blueferry.obex.sessions import SessionManager
 from blueferry.obex.worker import ObexWorker
 from blueferry.pair_setup import bond_status
-from blueferry.profile_supervisor import ProfileSupervisor
+from blueferry.profile_supervisor import ProfileSessions, ProfileSupervisor
 from blueferry.protocol import BUS_NAME
 from blueferry.setup_verification import (
     CONTACTS,
@@ -52,6 +52,16 @@ from blueferry.solicitation_supervisor import SolicitationSupervisor
 from blueferry.storage_security import NO_STORAGE, StorageSecurity
 
 log = logging.getLogger(__name__)
+
+
+def classic_reachable(bearers: BearerSupervisor, sessions: ProfileSessions) -> bool:
+    """True when Classic is up or an OBEX session already proves it."""
+    return (
+        bearers.bredr_connected
+        or sessions.map is not None
+        or sessions.pbap is not None
+    )
+
 
 # How often to re-pull the iPhone's phonebook (so the cache picks up new contacts)
 CONTACTS_REFRESH_SEC = 24 * 60 * 60  # 24h
@@ -144,7 +154,7 @@ class Daemon:
             on_first_attempt_complete=(
                 self.bearers.enable_le if config.ANCS_ENABLED else None
             ),
-            attempt_ready=lambda: self.bearers.bredr_connected,
+            attempt_ready=lambda: classic_reachable(self.bearers, self.sessions),
         )
 
     def _emit_status(self) -> None:

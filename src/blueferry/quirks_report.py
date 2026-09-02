@@ -7,7 +7,7 @@ import os
 import re
 import stat
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -84,23 +84,54 @@ def _replace_path_prefix(text: str, prefix: str, token: str) -> str:
     return pattern.sub(token, text)
 
 
-def scrub_text(value: str) -> str:
-    """Remove Bluetooth addresses and home/XDG path prefixes from text."""
+def _alias_replacements(aliases: Sequence[str]) -> list[tuple[str, str]]:
+    """Longest-first alias substitutions with numbered placeholders."""
+    replacements: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    index = 1
+    for alias in sorted(
+        (str(item).strip() for item in aliases),
+        key=len,
+        reverse=True,
+    ):
+        key = alias.casefold()
+        if len(alias) < 2 or key in seen:
+            continue
+        seen.add(key)
+        replacements.append((alias, f"<alias-{index}>"))
+        index += 1
+    return replacements
+
+
+def scrub_text(value: str, *, aliases: Sequence[str] = ()) -> str:
+    """Remove Bluetooth addresses, aliases, and home/XDG path prefixes."""
     text = str(value)
+    for alias, token in _alias_replacements(aliases):
+        # Do not match inside kebab/snake tokens: the default iOS alias
+        # "iPhone" is a substring of "iphone-initiated-connect".
+        text = re.sub(
+            r"(?<![A-Za-z0-9_-])" + re.escape(alias) + r"(?![A-Za-z0-9_-])",
+            token,
+            text,
+            flags=re.IGNORECASE,
+        )
     for prefix, token in _redaction_prefixes():
         text = _replace_path_prefix(text, prefix, token)
     text = _MAC_COLON.sub("xx:xx:xx:xx:xx:xx", text)
     return _MAC_PATH.sub("dev_REDACTED", text)
 
 
-def scrub_value(value: Any) -> Any:
-    """Recursively redact Bluetooth addresses from a JSON-compatible value."""
+def scrub_value(value: Any, *, aliases: Sequence[str] = ()) -> Any:
+    """Recursively redact Bluetooth addresses and device aliases."""
     if isinstance(value, str):
-        return scrub_text(value)
+        return scrub_text(value, aliases=aliases)
     if isinstance(value, list):
-        return [scrub_value(item) for item in value]
+        return [scrub_value(item, aliases=aliases) for item in value]
     if isinstance(value, dict):
-        return {str(key): scrub_value(item) for key, item in value.items()}
+        return {
+            str(key): scrub_value(item, aliases=aliases)
+            for key, item in value.items()
+        }
     return value
 
 
@@ -267,6 +298,9 @@ def save_report(report: Mapping[str, Any], *, directory: Path | None = None) -> 
             sequence += 1
             path = target_dir / f"{REPORT_PREFIX}{stamp}-{sequence:04d}{REPORT_SUFFIX}"
         prepared = _compact_report(report)
+        aliases = prepared.pop("_aliases", [])
+        if not isinstance(aliases, list):
+            aliases = []
         origin = prepared.pop("_t0", None)
         timeline = prepared.get("timeline")
         if isinstance(origin, (int, float)):
@@ -276,7 +310,7 @@ def save_report(report: Mapping[str, Any], *, directory: Path | None = None) -> 
             if isinstance(last, dict) and isinstance(last.get("t"), (int, float)):
                 prepared["duration_s"] = last["t"]
         payload = json.dumps(
-            scrub_value(prepared),
+            scrub_value(prepared, aliases=aliases),
             ensure_ascii=False,
             indent=2,
             sort_keys=True,

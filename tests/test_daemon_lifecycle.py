@@ -299,3 +299,13 @@ def test_changing_saved_target_requests_restart(monkeypatch):
     assert instance._check_target_config() is False
     assert instance._restart_after_upgrade is True
     assert stopped == [True]
+
+
+def test_classic_reachable_accepts_an_open_obex_session() -> None:
+    bearers = SimpleNamespace(bredr_connected=False)
+    sessions = SimpleNamespace(map=object(), pbap=None)
+    assert daemon_mod.classic_reachable(bearers, sessions) is True
+    sessions = SimpleNamespace(map=None, pbap=None)
+    assert daemon_mod.classic_reachable(bearers, sessions) is False
+    bearers = SimpleNamespace(bredr_connected=True)
+    assert daemon_mod.classic_reachable(bearers, sessions) is True
