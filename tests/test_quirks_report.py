@@ -369,6 +369,15 @@ def test_scrub_text_redacts_device_aliases() -> None:
     assert "dev_REDACTED" in cleaned
 
 
+def test_scrub_text_does_not_mangle_iphone_strategy_tokens() -> None:
+    cleaned = quirks_report.scrub_text(
+        '{"pairing_strategy":"iphone-initiated-connect","note":"paired iPhone"}',
+        aliases=["iPhone"],
+    )
+    assert "iphone-initiated-connect" in cleaned
+    assert '"note":"paired <alias-1>"' in cleaned
+
+
 def test_save_report_redacts_aliases_and_drops_the_alias_list(tmp_path) -> None:
     path = quirks_report.save_report(
         {

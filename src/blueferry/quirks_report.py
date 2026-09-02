@@ -107,7 +107,14 @@ def scrub_text(value: str, *, aliases: Sequence[str] = ()) -> str:
     """Remove Bluetooth addresses, aliases, and home/XDG path prefixes."""
     text = str(value)
     for alias, token in _alias_replacements(aliases):
-        text = re.sub(re.escape(alias), token, text, flags=re.IGNORECASE)
+        # Do not match inside kebab/snake tokens: the default iOS alias
+        # "iPhone" is a substring of "iphone-initiated-connect".
+        text = re.sub(
+            r"(?<![A-Za-z0-9_-])" + re.escape(alias) + r"(?![A-Za-z0-9_-])",
+            token,
+            text,
+            flags=re.IGNORECASE,
+        )
     for prefix, token in _redaction_prefixes():
         text = _replace_path_prefix(text, prefix, token)
     text = _MAC_COLON.sub("xx:xx:xx:xx:xx:xx", text)

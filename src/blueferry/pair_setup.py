@@ -41,6 +41,10 @@ _SESSION_BLUETOOTH_NAMES = (
 CLASSIC_SETTLE_SECONDS = 3.0
 # Device1.Connect can refuse a profile while iOS still completes pairing.
 CONNECT_REFUSED_GRACE_SECONDS = 5.0
+_CONNECT_PROFILE_REFUSALS = frozenset({
+    "org.bluez.Error.Failed",
+    "org.bluez.Error.NotReady",
+})
 BLUEZ_SNAPSHOT_TIMEOUT_SECONDS = pairing_diagnostics.BLUEZ_SNAPSHOT_TIMEOUT_SECONDS
 BLUEZ_TRACE_POLL_SECONDS = 2.0
 # One BR/EDR inquiry is 10.24s. USB dongles also need a moment to start
@@ -624,31 +628,40 @@ def _connect_classic(
     _dispatching_wait(time.monotonic() + timeout + 5.0, lambda: bool(results))
     error = results[0] if results else None
     error_name = error.get_dbus_name() if error is not None else ""
+    error_message = (
+        error.get_dbus_message() or "" if error is not None else ""
+    )
     if error is not None and error_name not in {
         "org.bluez.Error.AlreadyConnected",
         "org.bluez.Error.InProgress",
     }:
-        quirks_report.mark(
-            attempt, "classic_connect_failed",
-            error=error_name or "failed",
-        )
+        failed_fields: dict[str, str] = {"error": error_name or "failed"}
+        if error_message:
+            failed_fields["message"] = error_message[:256]
+        quirks_report.mark(attempt, "classic_connect_failed", **failed_fields)
         if error_name == "org.freedesktop.DBus.Error.UnknownObject":
             raise _ConnectDeviceMissing(
-                error.get_dbus_message() or error_name or str(error)
+                error_message or error_name or str(error)
             ) from error
-        if _wait_for_paired_after_connect_error(device_path):
+        if (
+            error_name in _CONNECT_PROFILE_REFUSALS
+            and _wait_for_paired_after_connect_error(device_path)
+        ):
             log.info(
                 "Device1.Paired became true after Connect reported %s",
                 error_name or "error",
             )
+            paired_fields: dict[str, str] = {"error": error_name or "error"}
+            if error_message:
+                paired_fields["message"] = error_message[:256]
             quirks_report.mark(
                 attempt,
                 "classic_connect_paired_after_error",
-                error=error_name or "error",
+                **paired_fields,
             )
         else:
             raise PairingError(
-                error.get_dbus_message() or error_name or str(error)
+                error_message or error_name or str(error)
             ) from error
     if error is None:
         log.debug("Device1.Connect completed successfully")
@@ -669,7 +682,7 @@ def _device_is_paired(device_path: str) -> bool:
             get_system_bus().get_object("org.bluez", device_path),
             "org.freedesktop.DBus.Properties",
         )
-        return bool(props.Get("org.bluez.Device1", "Paired", timeout=5.0))
+        return bool(props.Get("org.bluez.Device1", "Paired", timeout=1.0))
     except dbus.exceptions.DBusException:
         return False
 

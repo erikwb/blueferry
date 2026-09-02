@@ -1561,7 +1561,7 @@ def test_classic_connect_treats_late_paired_as_success(monkeypatch):
         attempt=attempt,
     )
 
-    assert ("get", "Paired", 5.0) in calls
+    assert ("get", "Paired", 1.0) in calls
     assert calls[-1] == (
         "settled",
         "/org/bluez/hci0/dev_02_00_00_00_00_01",
@@ -1572,6 +1572,7 @@ def test_classic_connect_treats_late_paired_as_success(monkeypatch):
         "classic_connect_paired_after_error",
         "classic_connect_replied",
     ]
+    assert attempt["timeline"][2]["message"] == "br-connection-unknown"
 
 
 def test_classic_connect_still_fails_when_pairing_does_not_finish(monkeypatch):
@@ -1604,6 +1605,41 @@ def test_classic_connect_still_fails_when_pairing_does_not_finish(monkeypatch):
             settle=False,
             timeout=1.0,
         )
+
+
+def test_classic_connect_does_not_wait_on_access_denied(monkeypatch):
+    gets = []
+
+    class Interface:
+        @staticmethod
+        def Connect(*, error_handler, **_kwargs):
+            error_handler(
+                pair_setup.dbus.exceptions.DBusException(
+                    "Permission denied",
+                    name="org.freedesktop.DBus.Error.AccessDenied",
+                )
+            )
+
+        @staticmethod
+        def Get(_interface, _name, *, timeout):
+            gets.append(True)
+            return False
+
+    class Bus:
+        @staticmethod
+        def get_object(*_args):
+            return object()
+
+    monkeypatch.setattr(pair_setup, "get_system_bus", Bus)
+    monkeypatch.setattr(pair_setup.dbus, "Interface", lambda *_args: Interface())
+
+    with pytest.raises(pair_setup.PairingError, match="Permission denied"):
+        pair_setup._connect_classic(
+            "/org/bluez/hci0/dev_02_00_00_00_00_01",
+            settle=False,
+            timeout=1.0,
+        )
+    assert gets == []
 
 
 def test_pairing_rediscovery_waits_for_exact_device_on_selected_adapter(
