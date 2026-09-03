@@ -16,6 +16,9 @@ from blueferry.bus import get_system_bus
 log = logging.getLogger(__name__)
 
 POLL_SECONDS = 5
+# Forgive backoff only after the bearer has stayed Connected=true this long,
+# so a flap cannot reset the penalty. Three poll intervals.
+STABLE_CONNECTION_SECONDS = POLL_SECONDS * 3
 CLASSIC_SETTLE_SECONDS = 3
 # org.bluez.Bearer*.Connect uses this same timeout below. An InProgress reply
 # means BlueZ owns an overlapping request, so Connected=false cannot settle it
@@ -24,19 +27,13 @@ CONNECT_TIMEOUT_SECONDS = 45
 # A phone that rejects a connection keeps rejecting it for a while (powered
 # off, out of range, or a broken bond). Repeating Connect every poll turned
 # into a five-second hammer against the iPhone; back off exponentially
-# instead, up to this ceiling, and reset as soon as a bearer connects.
+# instead, up to this ceiling. Forgive the penalty only after the bearer has
+# stayed connected for STABLE_CONNECTION_SECONDS.
 BACKOFF_CAP_SECONDS = 300
 # A live LE bearer proves that the phone is in range and answering.  Classic
 # may still decline a page temporarily, but it must not inherit the five-minute
 # absence backoff while ANCS is demonstrably reachable.
 LE_CONNECTED_CLASSIC_BACKOFF_CAP_SECONDS = 30
-# Connected=true is observed on every poll, not only on genuine transitions,
-# so clearing the failure counter on each observation let a phone that connects
-# and drops in a loop reset the backoff before it could grow -- pinning the
-# retry interval at its minimum. Require a bearer to hold this long before its
-# penalty is forgiven. Longer than POLL_SECONDS so a link must survive at least
-# one full probe cycle to count as stable.
-STABLE_CONNECTION_SECONDS = 15
 _INTERFACES = {
     "bredr": "org.bluez.Bearer.BREDR1",
     "le": "org.bluez.Bearer.LE1",
@@ -185,6 +182,9 @@ class BearerSupervisor:
         self._failures: dict[str, int] = {"bredr": 0, "le": 0}
         self._next_attempt: dict[str, float] = {"bredr": 0.0, "le": 0.0}
         self._connected_since: dict[str, float | None] = {"bredr": None, "le": None}
+        # One-shot: a held LE link may forgive Classic backoff earned while the
+        # phone was away, not failures that happened with ANCS already up.
+        self._le_dwell_should_forgive_classic = False
 
     @property
     def bredr_connected(self) -> bool:
@@ -275,6 +275,7 @@ class BearerSupervisor:
         self._failures = {"bredr": 0, "le": 0}
         self._next_attempt = {"bredr": 0.0, "le": 0.0}
         self._connected_since = {"bredr": None, "le": None}
+        self._le_dwell_should_forgive_classic = False
         self._last_errors.clear()
         if self._on_le_state is not None:
             self._on_le_state(None)
@@ -458,15 +459,18 @@ class BearerSupervisor:
             # device that remains absent still receives only one attempt.
             self._rearm_le_dial("iPhone LE disconnected")
         if value is True:
-            if previous is not True:
+            if self._connected_since[kind] is None:
                 self._connected_since[kind] = self._clock()
+                if kind == "le":
+                    self._le_dwell_should_forgive_classic = (
+                        self._failures["bredr"] > 0
+                        or self._clock() < self._next_attempt["bredr"]
+                    )
             self._clear_backoff_if_stable(kind)
-        else:
+        elif value is False:
             self._connected_since[kind] = None
-        if kind == "le" and value is True and previous is not True:
-            # An inbound LE connection is the missing presence event for a
-            # Classic backoff accumulated while the phone was out of range.
-            self._reset_classic_backoff_from_le()
+            if kind == "le":
+                self._le_dwell_should_forgive_classic = False
         # Repeating stale Connected=true after a failed GATT operation can
         # race BlueZ's pending CCC registration with ATT teardown. Consumers
         # therefore receive only genuine bearer lifecycle transitions.
@@ -490,9 +494,9 @@ class BearerSupervisor:
             "retargeting Classic bearer"
         )
         self._clear_connect_request("bredr")
-        # The live LE link is current reachability evidence, so the replacement
-        # request must not inherit a quiet window from the obsolete request.
-        self._reset_classic_backoff_from_le()
+        # The replacement request must not inherit a quiet window from the
+        # obsolete untyped request.
+        self._next_attempt["bredr"] = 0.0
         self._request_connect("bredr")
 
     def _request_connect(self, kind: str) -> None:
@@ -700,12 +704,7 @@ class BearerSupervisor:
         )
 
     def _clear_backoff_if_stable(self, kind: str) -> None:
-        """Forgive a bearer's backoff only once it has held long enough.
-
-        A bearer that connects and immediately drops is not evidence that the
-        phone is reachable; treating it as such reset the penalty faster than
-        it could accumulate.
-        """
+        """Forgive backoff after the bearer has stayed Connected=true long enough."""
         since = self._connected_since[kind]
         if since is None:
             return
@@ -714,9 +713,12 @@ class BearerSupervisor:
         self._last_errors.pop(kind, None)
         self._failures[kind] = 0
         self._next_attempt[kind] = 0.0
+        if kind == "le" and self._le_dwell_should_forgive_classic:
+            self._reset_classic_backoff_from_le()
+            self._le_dwell_should_forgive_classic = False
 
     def _reset_classic_backoff_from_le(self) -> None:
-        """Treat any live LE link as proof that the phone is in range."""
+        """Forgive Classic absence backoff once LE has held long enough."""
         self._last_errors.pop("bredr", None)
         self._failures["bredr"] = 0
         self._next_attempt["bredr"] = 0.0
