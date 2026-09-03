@@ -1338,6 +1338,7 @@ def test_le_observer_receives_only_lifecycle_transitions() -> None:
 def test_gatt_transport_failure_cycles_le_once_before_reconnecting() -> None:
     state = {"bredr": True, "le": True}
     disconnects = []
+    disconnect_callbacks = []
     connections = []
     observed = []
     scheduled = []
@@ -1352,7 +1353,7 @@ def test_gatt_transport_failure_cycles_le_once_before_reconnecting() -> None:
         ),
         disconnect=lambda kind, on_success, _on_error: (
             disconnects.append(kind),
-            on_success(),
+            disconnect_callbacks.append(on_success),
         ),
         on_le_state=observed.append,
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
@@ -1364,16 +1365,55 @@ def test_gatt_transport_failure_cycles_le_once_before_reconnecting() -> None:
     supervisor.recover_le_transport()
     assert disconnects == ["le"]
 
+    state["le"] = False
+    disconnect_callbacks[0]()
     scheduled[0][1]()
     assert disconnects == ["le"]
-
-    state["le"] = False
-    scheduled[0][1]()
     assert observed == [True, False]
     assert scheduled[-1][0] == bearer_supervisor.CLASSIC_SETTLE_SECONDS
 
     scheduled[-1][1]()
     assert connections == ["le"]
+
+
+def test_gatt_transport_reset_preserves_a_reconnect_between_polls() -> None:
+    state = {"bredr": True, "le": True}
+    disconnects = []
+    observed = []
+    scheduled = []
+
+    supervisor = BearerSupervisor(
+        "/device",
+        read_connected=state.get,
+        connect=lambda *_args: None,
+        disconnect=lambda kind, on_success, _on_error: (
+            disconnects.append(kind),
+            on_success(),
+        ),
+        on_le_state=observed.append,
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer_id: None,
+    )
+    supervisor.start()
+
+    # The iPhone can reconnect before the five-second health poll. The
+    # successful reset reply must still publish the generation boundary so
+    # ANCS can discard its blocked transport and rebuild on the live bearer.
+    supervisor.recover_le_transport()
+    supervisor.recover_le_transport()
+    assert disconnects == ["le"]
+    assert observed == [True, False]
+
+    health_check = next(
+        callback
+        for delay, callback in scheduled
+        if delay == bearer_supervisor.POLL_SECONDS
+    )
+    health_check()
+
+    assert observed == [True, False, True]
+    assert disconnects == ["le"]
+    assert supervisor._le_reset_pending is False
 
 
 def test_gatt_transport_recovery_waits_for_profile_gate_to_reopen() -> None:
