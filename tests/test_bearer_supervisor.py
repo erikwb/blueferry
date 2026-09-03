@@ -296,6 +296,8 @@ def test_untyped_classic_connect_restores_le_preference_before_le_dial() -> None
     # its earlier penalty is forgiven. This tick issues no new calls.
     now = bearer_supervisor.STABLE_CONNECTION_SECONDS + 1.0
     scheduled[0][1]()
+    assert supervisor._failures["bredr"] == 0
+    assert supervisor._next_attempt["bredr"] == 0.0
 
     # A later out-of-range cycle repeats the handoff instead of leaving the
     # idle preference on BR/EDR after its untyped bootstrap.
@@ -823,15 +825,19 @@ def test_backoff_resets_once_the_bearer_connects() -> None:
     supervisor.start()
     assert attempts == ["bredr"]
 
-    # A bearer that HOLDS clears the penalty, so the next genuine disconnect is
-    # retried promptly instead of inheriting old delays. The link has to survive
-    # the dwell window: a connection that drops immediately is a flap, not
-    # evidence that the phone is reachable.
+    # Leave a penalty that would still be blocking at the drop instant unless
+    # the held link actually forgave it (the original 10s quiet window expires
+    # during a 15s dwell).
+    supervisor._failures["bredr"] = 6
+    supervisor._next_attempt["bredr"] = 300.0
+
     now = 1.0
     state["bredr"] = True
     scheduled[0][1]()
     now = 1.0 + bearer_supervisor.STABLE_CONNECTION_SECONDS
     scheduled[0][1]()
+    assert supervisor._failures["bredr"] == 0
+    assert supervisor._next_attempt["bredr"] == 0.0
     state["bredr"] = False
     scheduled[0][1]()
 
@@ -860,10 +866,15 @@ def test_returning_le_link_retries_classic_without_rewriting_preference() -> Non
     supervisor.start()
     assert attempts == ["bredr"]
 
-    # The old retry is ten seconds away. Live LE clears that penalty and the
-    # targeted Classic retry may run, but it must not change PreferredBearer
-    # underneath the working ANCS link.
+    # The old retry is ten seconds away. A brief LE appearance must not clear
+    # that penalty; a held LE link does. The targeted Classic retry must not
+    # change PreferredBearer underneath the working ANCS link.
     state["le"] = True
+    scheduled[0][1]()
+    assert attempts == ["bredr"]
+    assert supervisor._failures["bredr"] == 1
+
+    now = bearer_supervisor.STABLE_CONNECTION_SECONDS
     scheduled[0][1]()
 
     assert attempts == ["bredr", "bredr"]
@@ -1533,6 +1544,13 @@ def test_inbound_le_during_hold_resets_and_caps_classic_backoff() -> None:
     scheduled[0][1]()
 
     assert supervisor.le_connected is True
+    assert supervisor._failures["bredr"] == 6
+    assert supervisor._next_attempt["bredr"] == 300.0
+    assert connect_callbacks == []
+
+    now = bearer_supervisor.STABLE_CONNECTION_SECONDS
+    scheduled[0][1]()
+
     assert supervisor._failures["bredr"] == 0
     assert supervisor._next_attempt["bredr"] == 0.0
     assert [kind for kind, _on_error in connect_callbacks] == ["bredr"]
@@ -1540,7 +1558,7 @@ def test_inbound_le_during_hold_resets_and_caps_classic_backoff() -> None:
     supervisor._failures["bredr"] = 9
     connect_callbacks[0][1](RuntimeError("not now"))
     assert supervisor._next_attempt["bredr"] == (
-        bearer_supervisor.LE_CONNECTED_CLASSIC_BACKOFF_CAP_SECONDS
+        now + bearer_supervisor.LE_CONNECTED_CLASSIC_BACKOFF_CAP_SECONDS
     )
 
 
@@ -1590,10 +1608,10 @@ def test_stop_cancels_health_check() -> None:
 def test_flapping_bearer_does_not_clear_backoff() -> None:
     """A phone that connects then drops at once must not pin the retry delay.
 
-    Connected=true is observed on every five-second poll, not just on genuine
-    transitions, so clearing the failure counter on each observation let a
-    flapping device reset the backoff before it could ever grow. The retry
-    interval stayed pinned at its five-second minimum forever.
+    Connected=true is observed on every poll, not just on genuine transitions,
+    so clearing the failure counter on each observation let a flapping device
+    reset the backoff before it could ever grow. The retry interval stayed
+    pinned at POLL_SECONDS * 2**1 (10s) forever.
     """
     state = {"bredr": False, "le": False}
     attempts = []
@@ -1689,3 +1707,122 @@ def test_backoff_grows_across_repeated_flaps() -> None:
     now = 32.0
     scheduled[0][1]()
     assert attempts == [0.0, 11.0, 32.0]
+
+
+def test_unavailable_connected_read_does_not_restart_dwell() -> None:
+    """A None Connected read must not restart the 15s timer.
+
+    _read() maps D-Bus errors to None, and only a concrete False is a
+    disconnect. Restarting the dwell on blips would keep a live session from
+    ever forgiving its penalty.
+    """
+    state: dict[str, bool | None] = {"bredr": False, "le": False}
+    scheduled = []
+    now = 0.0
+
+    supervisor = BearerSupervisor(
+        "/device",
+        read_connected=state.get,
+        connect=lambda _kind, _on_success, on_error: on_error(RuntimeError("not ready")),
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer_id: None,
+        clock=lambda: now,
+    )
+    supervisor.start()
+    supervisor._failures["bredr"] = 6
+    supervisor._next_attempt["bredr"] = 300.0
+
+    now = 1.0
+    state["bredr"] = True
+    scheduled[0][1]()
+    now = 2.0
+    state["bredr"] = None
+    scheduled[0][1]()
+    now = 1.0 + bearer_supervisor.STABLE_CONNECTION_SECONDS
+    state["bredr"] = True
+    scheduled[0][1]()
+
+    assert supervisor._failures["bredr"] == 0
+    assert supervisor._next_attempt["bredr"] == 0.0
+
+
+def test_brief_le_link_does_not_clear_classic_backoff() -> None:
+    """An LE blip is not evidence the phone is stably in range for Classic."""
+    state = {"bredr": False, "le": False}
+    attempts = []
+    scheduled = []
+    now = 0.0
+
+    def connect(kind, _on_success, on_error):
+        attempts.append(kind)
+        on_error(RuntimeError("not ready"))
+
+    supervisor = BearerSupervisor(
+        "/device",
+        read_connected=state.get,
+        connect=connect,
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer_id: None,
+        clock=lambda: now,
+    )
+    supervisor.start()
+    assert attempts == ["bredr"]
+    supervisor._failures["bredr"] = 6
+    supervisor._next_attempt["bredr"] = 300.0
+
+    now = 1.0
+    state["le"] = True
+    scheduled[0][1]()
+    now = 2.0
+    state["le"] = False
+    scheduled[0][1]()
+
+    assert attempts == ["bredr"]
+    assert supervisor._failures["bredr"] == 6
+    assert supervisor._next_attempt["bredr"] == 300.0
+
+
+def test_stable_le_clears_classic_backoff_once() -> None:
+    """A held LE link forgives Classic absence backoff once, not every poll."""
+    state = {"bredr": False, "le": False}
+    attempts = []
+    scheduled = []
+    now = 0.0
+
+    def connect(kind, _on_success, on_error):
+        attempts.append((kind, now))
+        on_error(RuntimeError("not ready"))
+
+    supervisor = BearerSupervisor(
+        "/device",
+        read_connected=state.get,
+        connect=connect,
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer_id: None,
+        clock=lambda: now,
+    )
+    supervisor.start()
+    supervisor._failures["bredr"] = 6
+    supervisor._next_attempt["bredr"] = 300.0
+
+    now = 1.0
+    state["le"] = True
+    scheduled[0][1]()
+    assert attempts == [("bredr", 0.0)]
+    assert supervisor._failures["bredr"] == 6
+
+    retry_at = 1.0 + bearer_supervisor.STABLE_CONNECTION_SECONDS
+    now = retry_at
+    scheduled[0][1]()
+    assert supervisor._failures["bredr"] == 1
+    assert attempts == [("bredr", 0.0), ("bredr", retry_at)]
+    quiet_until = supervisor._next_attempt["bredr"]
+    assert quiet_until > retry_at
+
+    now = retry_at + 1.0
+    scheduled[0][1]()
+    assert attempts == [("bredr", 0.0), ("bredr", retry_at)]
+
+    now = quiet_until
+    scheduled[0][1]()
+    assert attempts == [("bredr", 0.0), ("bredr", retry_at), ("bredr", quiet_until)]
