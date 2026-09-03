@@ -1371,6 +1371,109 @@ def test_complete_pairing_starts_profiles_while_pairing_advert_is_active(monkeyp
     ]
 
 
+def test_compatibility_pairing_continues_when_solicitation_is_unavailable(
+    monkeypatch,
+    caplog,
+):
+    device = _device(paired=True)
+    policy = pair_setup.resolve_pairing_policy(
+        {
+            "notifications_supported": False,
+            "low_energy": True,
+            "advertising": True,
+        },
+        force_compatibility=True,
+        interactive=False,
+    )
+    attempt = pair_setup.quirks_report.start_attempt(interactive=False)
+    calls = []
+
+    monkeypatch.setattr(
+        pair_setup,
+        "_prepare_pairing",
+        lambda *_args, **_kwargs: pair_setup._PairingPreparation(
+            device=device,
+            adapter="hci0",
+            policy=policy,
+        ),
+    )
+    monkeypatch.setattr(
+        pair_setup,
+        "_prepare_classic_transport",
+        lambda adapter, _attempt: calls.append(("prepare", adapter)),
+    )
+    monkeypatch.setattr(
+        pair_setup,
+        "_run_pairing_transaction",
+        lambda *_args, **_kwargs: calls.append(("pair", device.mac)) or device,
+    )
+    monkeypatch.setattr(
+        pair_setup,
+        "_trust_and_settle",
+        lambda selected, _attempt: calls.append(("settle", selected.mac)),
+    )
+    monkeypatch.setattr(bluez_setup, "register_advert", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        pair_setup,
+        "_handoff_to_daemon",
+        lambda selected, adapter, selected_policy, _attempt: calls.append(
+            ("handoff", selected.mac, adapter, selected_policy.ancs_enabled)
+        )
+        or pair_setup.PairingTransports(map=True, pbap=True, ancs=False),
+    )
+    monkeypatch.setattr(pair_setup, "_device", lambda *_args, **_kwargs: device)
+
+    outcome = pair_setup._execute_pairing(
+        device.mac,
+        compatibility_mode=True,
+        attempt=attempt,
+    )
+
+    assert outcome.transports == pair_setup.PairingTransports(
+        map=True,
+        pbap=True,
+        ancs=False,
+    )
+    assert outcome.ancs == "disabled"
+    assert calls == [
+        ("prepare", "hci0"),
+        ("pair", device.mac),
+        ("settle", device.mac),
+        ("handoff", device.mac, "hci0", False),
+    ]
+    assert "ANCS solicitation is unavailable; continuing with MAP/PBAP" in caplog.text
+    assert [entry["event"] for entry in attempt["timeline"]][-2:] == [
+        "advert_register_sent",
+        "advert_unavailable",
+    ]
+
+
+def test_full_pairing_still_requires_solicitation(monkeypatch):
+    device = _device(paired=True)
+    policy = pair_setup.resolve_pairing_policy(
+        {
+            "notifications_supported": True,
+            "low_energy": True,
+            "advertising": True,
+        }
+    )
+    attempt = pair_setup.quirks_report.start_attempt(interactive=False)
+    resources = pair_setup._PairingResources()
+    monkeypatch.setattr(bluez_setup, "register_advert", lambda *_args, **_kwargs: False)
+
+    with pytest.raises(pair_setup.PairingError, match="advertisement did not activate"):
+        pair_setup._register_solicitation(
+            device,
+            "hci0",
+            policy,
+            attempt,
+            resources,
+        )
+
+    assert resources.advert_registered is False
+    assert attempt["timeline"][-1]["event"] == "advert_unavailable"
+
+
 def test_unverified_controller_reaches_the_real_pairing_transaction(
     monkeypatch,
     caplog,

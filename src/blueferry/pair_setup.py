@@ -1409,7 +1409,13 @@ def _register_solicitation(
     log.debug("registering ANCS solicitation advertisement on %s", adapter)
     quirks_report.mark(attempt, "advert_register_sent")
     if not bluez_setup.register_advert(adapter, settle_for_pairing=True):
-        raise PairingError("The ANCS advertisement did not activate")
+        quirks_report.mark(attempt, "advert_unavailable")
+        if policy.ancs_enabled:
+            raise PairingError("The ANCS advertisement did not activate")
+        log.warning(
+            "ANCS solicitation is unavailable; continuing with MAP/PBAP"
+        )
+        return
     resources.advert_registered = True
     quirks_report.mark(attempt, "advert_ready")
     _record_bluez_state(attempt, device.device_path, "advert_ready", force=True)
