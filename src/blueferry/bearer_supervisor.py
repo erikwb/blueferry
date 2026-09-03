@@ -278,6 +278,11 @@ class BearerSupervisor:
         """Request one serialized LE reset after GATT and bearer state diverge."""
         if not self._running:
             return
+        # A successful reset is published locally as disconnected before the
+        # polling source can see a replacement inbound link. Ignore duplicate
+        # failure reports during that synthetic down-state.
+        if self._states["le"] is False:
+            return
         if not self._le_reset_pending:
             log.warning(
                 "ANCS transport disagrees with BlueZ; resetting the LE bearer"
@@ -341,9 +346,7 @@ class BearerSupervisor:
 
         if self._le_reset_pending and self._le_enabled:
             if le is False:
-                self._le_reset_pending = False
-                self._le_reset_failures = 0
-                self._next_le_reset_attempt = 0.0
+                self._complete_le_reset()
             elif le is True:
                 self._request_le_disconnect()
                 return True
@@ -756,17 +759,21 @@ class BearerSupervisor:
         if generation != self._generation:
             return
         self._disconnecting.discard("le")
-        self._le_reset_failures += 1
-        delay = min(
-            POLL_SECONDS * (2 ** self._le_reset_failures),
-            BACKOFF_CAP_SECONDS,
-        )
-        self._next_le_reset_attempt = self._clock() + delay
-        log.info(
-            "iPhone LE bearer reset requested successfully; "
-            "waiting up to %ds for state change",
-            delay,
-        )
+        if not self._le_reset_pending:
+            return
+        # Disconnect success is the generation boundary because iOS may
+        # already be back before the next poll.
+        log.info("iPhone LE bearer reset completed")
+        self._complete_le_reset()
+
+    def _complete_le_reset(self) -> None:
+        """Publish a completed LE reset even if its down-state was transient."""
+        self._le_reset_pending = False
+        self._le_reset_failures = 0
+        self._next_le_reset_attempt = 0.0
+        self._update_state("le", False)
+        if self.bredr_connected and self._le_enabled:
+            self._schedule_le_connect()
 
     def _disconnect_failed(self, error: Exception, generation: int) -> None:
         if generation != self._generation:
@@ -777,10 +784,7 @@ class BearerSupervisor:
             "org.bluez.Error.NotConnected",
             "org.bluez.Error.AlreadyDisconnected",
         } or "not connected" in message.casefold():
-            self._le_reset_pending = False
-            self._update_state("le", False)
-            if self.bredr_connected and self._le_enabled:
-                self._schedule_le_connect()
+            self._complete_le_reset()
             return
         self._le_reset_failures += 1
         delay = min(
