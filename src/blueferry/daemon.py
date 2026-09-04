@@ -50,6 +50,7 @@ from blueferry.setup_verification import (
 )
 from blueferry.solicitation_supervisor import SolicitationSupervisor
 from blueferry.storage_security import NO_STORAGE, StorageSecurity
+from blueferry.wireplumber_policy import WirePlumberPhoneAudioPolicy
 
 log = logging.getLogger(__name__)
 
@@ -103,6 +104,7 @@ class Daemon:
         self.ancs: AncsClient | None = None
         self.adapter_class = AdapterClassSupervisor(config.ADAPTER)
         self.solicitation = SolicitationSupervisor(config.ADAPTER)
+        self.phone_audio = WirePlumberPhoneAudioPolicy()
         device_path = (
             f"/org/bluez/{config.ADAPTER}/"
             f"dev_{config.IPHONE_MAC.replace(':', '_')}"
@@ -278,6 +280,7 @@ class Daemon:
         self._startup_id = None
         self._initialization_retry_id = None
         try:
+            self.phone_audio.reconcile(enabled=config.KEEP_PHONE_AUDIO_ON_PHONE)
             self._initialize_bluetooth()
         except PairingRequiredError as error:
             log.warning("Bluetooth setup is incomplete: %s", error)

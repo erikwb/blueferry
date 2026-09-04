@@ -170,7 +170,6 @@ class AncsClient:
         self._bearer_ready = False
         self._transport_blocked = False
         self._owned_notify_paths: set[str] = set()
-        self._notify_rearm_pending = False
 
         # In-flight per-notification attribute requests + app-name cache
         self._app_name_cache: OrderedDict[str, str] = OrderedDict()
@@ -334,7 +333,6 @@ class AncsClient:
             self._bearer_ready = False
             self._transport_blocked = False
             self._owned_notify_paths.clear()
-            self._notify_rearm_pending = False
             self._ns_path = self._ds_path = self._cp_path = None
             if was_connected and self.on_status is not None:
                 self.on_status()
@@ -438,10 +436,10 @@ class AncsClient:
                 return
             log.info("iPhone LE bearer disconnected; resetting ANCS subscription")
             self._cancel_subscribe_retry()
-            # StopNotify can block or fail while the ATT link is down. Remove
-            # our local receivers now, remember any BlueZ registrations that
-            # we own, and replace them after the new bearer has settled.
-            self._notify_rearm_pending = bool(self._owned_notify_paths)
+            # Do not StopNotify: bluetoothd 5.87 SIGSEGVs in register_notify_cb
+            # when a CCC enable completes after that registration was freed or
+            # the ATT link dropped. Drop local receivers and keep ownership so
+            # reconnect can rebind signals without touching the handle.
             self._clear_characteristic_subscription(stop_notify=False)
             if self.on_status is not None:
                 self.on_status()
@@ -537,7 +535,6 @@ class AncsClient:
             stop_notify=self._bearer_connected is True and self._bearer_ready,
         )
         self._owned_notify_paths.clear()
-        self._notify_rearm_pending = False
         self._remove_manager_watches()
         if self._owner_signal_match is not None:
             try:
@@ -582,8 +579,6 @@ class AncsClient:
                 self._cancel_authorization_retry()
                 self._clear_characteristic_subscription(stop_notify=False)
                 self._owned_notify_paths.discard(path_s)
-                if not self._owned_notify_paths:
-                    self._notify_rearm_pending = False
                 log.warning("ANCS char gone: %s", path_s)
                 if was_connected and self.on_status is not None:
                     self.on_status()
@@ -605,11 +600,7 @@ class AncsClient:
         self._reset_requests()
 
     def _stop_bluez_notifications(self) -> bool:
-        """Remove notification ownership created by us.
-
-        Keep failed paths recorded so a settled reconnect can retry the local
-        BlueZ operation without cycling the physical LE bearer again.
-        """
+        """Remove notification ownership created by us while ATT is up."""
         current_paths = tuple(
             path
             for path in (self._ns_path, self._ds_path)
@@ -627,10 +618,8 @@ class AncsClient:
                 ).StopNotify(timeout=DBUS_CALL_TIMEOUT_SECONDS)
             except dbus.exceptions.DBusException as error:
                 if _notification_is_already_stopped(error):
-                    # StopNotify is an ownership release, so BlueZ reporting
-                    # that the registration is already gone is idempotent
-                    # success. Keeping the path would otherwise make rearm
-                    # retry StopNotify forever and never reach StartNotify.
+                    # BlueZ already dropped this registration; forget it so a
+                    # later StartNotify is allowed.
                     self._owned_notify_paths.discard(path)
                     log.debug("ANCS notification was already stopped: %s", path)
                 else:
@@ -659,12 +648,6 @@ class AncsClient:
             return
         if not (self._ns_path and self._ds_path and self._cp_path):
             return
-        if self._notify_rearm_pending:
-            log.info("re-arming stale ANCS notifications after LE reconnect")
-            if not self._stop_bluez_notifications():
-                self._schedule_subscribe_retry()
-                return
-            self._notify_rearm_pending = False
         generation = self._bluez_owner_generation
         ns_path = self._ns_path
         ds_path = self._ds_path
@@ -709,14 +692,14 @@ class AncsClient:
                 bus.get_object("org.bluez", ds_path),
                 "org.bluez.GattCharacteristic1",
             )
-            if ns_path not in self._owned_notify_paths:
+            if self._should_start_notify(ns_path):
                 ns.StartNotify(timeout=DBUS_CALL_TIMEOUT_SECONDS)
                 if current_attempt():
                     self._owned_notify_paths.add(ns_path)
             if not current_attempt():
                 remove_attempt_matches(matches)
                 return
-            if ds_path not in self._owned_notify_paths:
+            if self._should_start_notify(ds_path):
                 ds.StartNotify(timeout=DBUS_CALL_TIMEOUT_SECONDS)
                 if current_attempt():
                     self._owned_notify_paths.add(ds_path)
@@ -751,6 +734,33 @@ class AncsClient:
             "ANCS characteristic subscriptions active; requesting notification access"
         )
         self._queue_authorization_probe()
+
+    def _should_start_notify(self, path: str) -> bool:
+        """Skip StartNotify only when BlueZ still reports Notifying=true."""
+        if path not in self._owned_notify_paths:
+            return True
+        return self._cached_notifying(path) is not True
+
+    def _cached_notifying(self, path: str) -> bool | None:
+        """Read BlueZ's local Notifying flag. This is not an ATT handle read."""
+        try:
+            props = dbus.Interface(
+                get_system_bus().get_object("org.bluez", path),
+                "org.freedesktop.DBus.Properties",
+            )
+            getter = getattr(props, "Get", None)
+            if getter is None:
+                return None
+            return bool(
+                getter(
+                    "org.bluez.GattCharacteristic1",
+                    "Notifying",
+                    timeout=DBUS_CALL_TIMEOUT_SECONDS,
+                )
+            )
+        except Exception:
+            log.debug("ANCS Notifying property unavailable for %s", path, exc_info=True)
+            return None
 
     def _schedule_subscribe_retry(self) -> None:
         if (
