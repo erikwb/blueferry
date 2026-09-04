@@ -618,10 +618,8 @@ class AncsClient:
                 ).StopNotify(timeout=DBUS_CALL_TIMEOUT_SECONDS)
             except dbus.exceptions.DBusException as error:
                 if _notification_is_already_stopped(error):
-                    # StopNotify is an ownership release, so BlueZ reporting
-                    # that the registration is already gone is idempotent
-                    # success. Keeping the path would otherwise make rearm
-                    # retry StopNotify forever and never reach StartNotify.
+                    # BlueZ already dropped this registration; forget it so a
+                    # later StartNotify is allowed.
                     self._owned_notify_paths.discard(path)
                     log.debug("ANCS notification was already stopped: %s", path)
                 else:
@@ -667,7 +665,6 @@ class AncsClient:
         # Install receivers before StartNotify so the first value cannot arrive
         # in the gap between notification activation and signal registration.
         matches = []
-        started_any = False
         try:
             bus = get_system_bus()
             matches.append(bus.add_signal_receiver(
@@ -697,7 +694,6 @@ class AncsClient:
             )
             if self._should_start_notify(ns_path):
                 ns.StartNotify(timeout=DBUS_CALL_TIMEOUT_SECONDS)
-                started_any = True
                 if current_attempt():
                     self._owned_notify_paths.add(ns_path)
             if not current_attempt():
@@ -705,7 +701,6 @@ class AncsClient:
                 return
             if self._should_start_notify(ds_path):
                 ds.StartNotify(timeout=DBUS_CALL_TIMEOUT_SECONDS)
-                started_any = True
                 if current_attempt():
                     self._owned_notify_paths.add(ds_path)
         except dbus.exceptions.DBusException as e:
@@ -735,22 +730,16 @@ class AncsClient:
         self._cancel_subscribe_retry()
         self._characteristic_signal_matches = matches
         self._notify_started = True
-        if not started_any and self._was_authorized:
-            # BlueZ kept the previous CCC registration. Rewriting it on an LE
-            # flap is what SIGSEGVs bluetoothd; restore local state instead.
-            log.info("ANCS characteristic subscriptions restored without CCC rewrite")
-            self._mark_authorized()
-            return
         log.info(
             "ANCS characteristic subscriptions active; requesting notification access"
         )
         self._queue_authorization_probe()
 
     def _should_start_notify(self, path: str) -> bool:
-        """StartNotify only when we do not already own a live CCC registration."""
+        """Skip StartNotify only when BlueZ still reports Notifying=true."""
         if path not in self._owned_notify_paths:
             return True
-        return self._cached_notifying(path) is False
+        return self._cached_notifying(path) is not True
 
     def _cached_notifying(self, path: str) -> bool | None:
         """Read BlueZ's local Notifying flag. This is not an ATT handle read."""

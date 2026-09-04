@@ -201,7 +201,6 @@ class Daemon:
     def start(self) -> None:
         log.info("=== BlueFerry starting ===")
         config.ensure_dirs()
-        self.phone_audio.reconcile(enabled=config.KEEP_PHONE_AUDIO_ON_PHONE)
 
         # Type=dbus means owning the name is our readiness boundary. Publish
         # the control surface before any Bluetooth operation that can wait on
@@ -281,6 +280,7 @@ class Daemon:
         self._startup_id = None
         self._initialization_retry_id = None
         try:
+            self.phone_audio.reconcile(enabled=config.KEEP_PHONE_AUDIO_ON_PHONE)
             self._initialize_bluetooth()
         except PairingRequiredError as error:
             log.warning("Bluetooth setup is incomplete: %s", error)

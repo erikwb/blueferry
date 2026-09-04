@@ -23,8 +23,7 @@ def test_active_wireplumber_gets_phone_sink_roles_removed(tmp_path) -> None:
 
     text = path.read_text()
     assert text == FRAGMENT_TEXT
-    assert "bluez5.roles" in text
-    assert "override.bluez5.roles" not in text
+    assert "override.bluez5.roles" in text
     assert "a2dp_source" in text
     assert "a2dp_sink" not in text
     assert "hfp_hf" not in text

@@ -850,6 +850,11 @@ def test_le_reconnect_restores_subscription_without_ccc_rewrite(
         def __init__(self, name: str) -> None:
             self.name = name
 
+        @staticmethod
+        def Get(_iface, name, **_kwargs):
+            assert name == "Notifying"
+            return True
+
         def StartNotify(self, **_kwargs) -> None:
             calls.append(("start", self.name))
 
@@ -908,9 +913,13 @@ def test_le_reconnect_restores_subscription_without_ccc_rewrite(
     scheduled[0][1]()
 
     # Owned CCC registrations stay in place. Rewriting them on an LE flap
-    # SIGSEGVs bluetoothd 5.87; restore local receivers instead.
-    assert calls == []
+    # SIGSEGVs bluetoothd 5.87. Control Point still has to prove the ATT
+    # session can write before we report connected.
+    assert calls == [("write", "cp")]
     assert client.subscribed is True
+    assert client.authorized is False
+    assert client.connected is False
+    _complete_authorization_probe(client)
     assert client.authorized is True
     assert client.connected is True
     assert statuses == [True, True]
@@ -925,6 +934,11 @@ def test_le_reconnect_does_not_stop_notify_while_att_may_be_down(
     class _Characteristic:
         def __init__(self, name: str) -> None:
             self.name = name
+
+        @staticmethod
+        def Get(_iface, name, **_kwargs):
+            assert name == "Notifying"
+            return True
 
         def StartNotify(self, **_kwargs) -> None:
             calls.append(("start", self.name))
@@ -944,6 +958,12 @@ def test_le_reconnect_does_not_stop_notify_while_att_may_be_down(
     )
     monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
     monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
+    monkeypatch.setattr(
+        client_module.GLib,
+        "timeout_add_seconds",
+        lambda _delay, _callback: 9,
+    )
+    monkeypatch.setattr(client_module.GLib, "source_remove", lambda _timer: None)
     client = AncsClient(
         "/device",
         lambda _event: None,
@@ -960,9 +980,9 @@ def test_le_reconnect_does_not_stop_notify_while_att_may_be_down(
     client.observe_bearer_state(True)
     scheduled.pop(0)[1]()
 
-    assert calls == []
+    assert calls == ["write"]
     assert client.subscribed is True
-    assert client.authorized is True
+    assert client.authorized is False
 
 
 def test_le_reconnect_starts_notify_only_when_bluez_dropped_ccc(
@@ -1018,6 +1038,127 @@ def test_le_reconnect_starts_notify_only_when_bluez_dropped_ccc(
     assert calls == [("start", "ns"), "write"]
     assert client.subscribed is True
     assert client.authorized is False
+
+
+def test_unknown_notifying_property_does_not_skip_start_notify(
+    monkeypatch,
+) -> None:
+    scheduled = []
+    calls = []
+
+    class _Characteristic:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        @staticmethod
+        def Get(_iface, _name, **_kwargs):
+            raise client_module.dbus.exceptions.DBusException(
+                "Unknown object",
+                name="org.freedesktop.DBus.Error.UnknownObject",
+            )
+
+        def StartNotify(self, **_kwargs) -> None:
+            calls.append(("start", self.name))
+
+        def StopNotify(self, **_kwargs) -> None:
+            calls.append(("stop", self.name))
+
+        @staticmethod
+        def WriteValue(_value, _options, **_kwargs) -> None:
+            calls.append("write")
+
+    ns = _Characteristic("ns")
+    ds = _Characteristic("ds")
+    cp = _Characteristic("cp")
+    bus = _CharacteristicBus(
+        {"/device/ns": ns, "/device/ds": ds, "/device/cp": cp}
+    )
+    monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
+    monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
+    monkeypatch.setattr(
+        client_module.GLib,
+        "timeout_add_seconds",
+        lambda _delay, _callback: 9,
+    )
+    monkeypatch.setattr(client_module.GLib, "source_remove", lambda _timer: None)
+    client = AncsClient(
+        "/device",
+        lambda _event: None,
+        previously_authorized=True,
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+    )
+    client._started = True
+    client._bearer_connected = False
+    client._ns_path = "/device/ns"
+    client._ds_path = "/device/ds"
+    client._cp_path = "/device/cp"
+    client._owned_notify_paths = {"/device/ns", "/device/ds"}
+
+    client.observe_bearer_state(True)
+    scheduled.pop(0)[1]()
+
+    assert calls == [("start", "ns"), ("start", "ds"), "write"]
+    assert client.subscribed is True
+    assert client.authorized is False
+
+
+def test_reconnect_control_point_failure_keeps_solicitation_needed(
+    monkeypatch,
+) -> None:
+    scheduled = []
+    resets = []
+
+    class _Characteristic:
+        @staticmethod
+        def Get(_iface, name, **_kwargs):
+            assert name == "Notifying"
+            return True
+
+        def StartNotify(self, **_kwargs) -> None:
+            raise AssertionError("StartNotify should be skipped")
+
+        def StopNotify(self, **_kwargs) -> None:
+            raise AssertionError("StopNotify should be skipped")
+
+        @staticmethod
+        def WriteValue(_value, _options, **_kwargs) -> None:
+            raise client_module.dbus.exceptions.DBusException(
+                "Not connected",
+                name="org.bluez.Error.Failed",
+            )
+
+    bus = _CharacteristicBus(
+        {
+            "/device/ns": _Characteristic(),
+            "/device/ds": _Characteristic(),
+            "/device/cp": _Characteristic(),
+        }
+    )
+    monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
+    monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
+    client = AncsClient(
+        "/device",
+        lambda _event: None,
+        previously_authorized=True,
+        on_transport_failure=lambda: resets.append(True),
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+    )
+    client._started = True
+    client._ns_path = "/device/ns"
+    client._ds_path = "/device/ds"
+    client._cp_path = "/device/cp"
+    client._owned_notify_paths = {"/device/ns", "/device/ds"}
+    client._was_authorized = True
+
+    client.observe_bearer_state(True)
+    scheduled.pop(0)[1]()
+
+    assert client.subscribed is False
+    assert client.authorized is False
+    assert client.connected is False
+    assert client._transport_blocked is True
+    assert scheduled[0][0] == client_module.TRANSPORT_RESET_SECONDS
+    assert resets == []
 
 
 def test_not_connected_control_point_failure_invalidates_ancs_health(

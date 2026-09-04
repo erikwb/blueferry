@@ -84,6 +84,9 @@ def test_start_publishes_dbus_before_scheduling_bluetooth(monkeypatch):
         lambda: order.append("bluetooth"),
     )
     monkeypatch.setattr(instance, "_initialize_storage", lambda: order.append("storage"))
+    instance.phone_audio = SimpleNamespace(
+        reconcile=lambda **_kwargs: order.append("audio")
+    )
 
     instance.start()
 
@@ -93,7 +96,7 @@ def test_start_publishes_dbus_before_scheduling_bluetooth(monkeypatch):
 
     scheduled[0]()
 
-    assert order[-1] == "bluetooth"
+    assert order == ["dirs", "claim", "storage", "service", "audio", "bluetooth"]
     assert instance._initializing is False
 
 

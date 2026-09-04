@@ -15,15 +15,13 @@ log = logging.getLogger(__name__)
 
 FRAGMENT_NAME = "99-blueferry-keep-phone-audio.conf"
 LEGACY_FRAGMENT_NAME = "90-blueferry-keep-phone-audio.conf"
-# `override.bluez5.roles` is a no-op when WirePlumber never defined that array:
-# the SPA plugin then keeps its default, including a2dp_sink. Set the real key.
-# 99- loads after bluetooth-a2dp-autoconnect.conf so phone auto-connect wins.
+# 99- loads after other bluetooth auto-connect fragments.
 FRAGMENT_TEXT = """\
 # Managed by BlueFerry. To remove this policy, set
 # BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE=false in BlueFerry's local.env and
 # restart blueferry.service.
 monitor.bluez.properties = {
-  bluez5.roles = [ a2dp_source hfp_ag bap_source ]
+  override.bluez5.roles = [ a2dp_source hfp_ag bap_source ]
 }
 monitor.bluez.rules = [
   {

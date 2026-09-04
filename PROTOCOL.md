@@ -341,13 +341,15 @@ After LE connects, BlueFerry waits for BlueZ to enumerate the ANCS service and
 its Notification Source, Data Source, and Control Point characteristics. A
 `StartNotify` call can race GATT readiness even after the characteristics have
 appeared, so subscription failures are retried without requiring rediscovery.
-After a physical reconnect, BlueFerry rebinds D-Bus receivers and leaves any
-CCC registration it still owns in place. `StopNotify` followed by `StartNotify`
-on that flap SIGSEGVs bluetoothd 5.87 in `register_notify_cb` when ATT teardown
-completes a freed CCC enable; WirePlumber then dies on the vanished `org.bluez`
-name. A previously authorized Control Point failure or timeout escalates to one
-serialized `Bearer.LE1.Disconnect`; MAP/PBAP stay available and LE rebuilds
-behind the profile-ordering gate.
+After a physical reconnect, BlueFerry rebinds D-Bus receivers and leaves a CCC
+registration in place only when BlueZ still reports `Notifying=true`.
+`StopNotify` followed by `StartNotify` on that flap SIGSEGVs bluetoothd 5.87 in
+`register_notify_cb` when ATT teardown completes a freed CCC enable; WirePlumber
+then dies on the vanished `org.bluez` name. A Control Point write still has to
+succeed before ANCS is reported connected, so a rebuilt ATT session that cannot
+write keeps solicitation on. A previously authorized Control Point failure or
+timeout escalates to one serialized `Bearer.LE1.Disconnect`; MAP/PBAP stay
+available and LE rebuilds behind the profile-ordering gate.
 
 This works on the MediaTek MT7922 and the Intel AX210 while MAP and PBAP stay
 connected over BR/EDR; on the AX210 the LE half of the bond exists only when
