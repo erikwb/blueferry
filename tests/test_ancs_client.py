@@ -839,7 +839,7 @@ def test_partial_start_notify_failure_reuses_live_subscription(monkeypatch) -> N
     assert client.subscribed is True
 
 
-def test_le_reconnect_replaces_stale_subscription_and_reauthorizes(
+def test_le_reconnect_restores_subscription_without_ccc_rewrite(
     monkeypatch,
 ) -> None:
     calls = []
@@ -907,50 +907,38 @@ def test_le_reconnect_replaces_stale_subscription_and_reauthorizes(
     assert scheduled[0][0] == client_module.BEARER_SETTLE_SECONDS
     scheduled[0][1]()
 
-    assert calls == [
-        ("stop", "ns"),
-        ("stop", "ds"),
-        ("start", "ns"),
-        ("start", "ds"),
-        ("write", "cp"),
-    ]
+    # Owned CCC registrations stay in place. Rewriting them on an LE flap
+    # SIGSEGVs bluetoothd 5.87; restore local receivers instead.
+    assert calls == []
     assert client.subscribed is True
-    assert client.authorized is False
-    _complete_authorization_probe(client)
+    assert client.authorized is True
     assert client.connected is True
     assert statuses == [True, True]
 
 
-def test_le_reconnect_retries_notification_rearm_without_cycling_bearer(
+def test_le_reconnect_does_not_stop_notify_while_att_may_be_down(
     monkeypatch,
 ) -> None:
     scheduled = []
+    calls = []
 
     class _Characteristic:
-        def __init__(self, *, stop_fails_once: bool = False) -> None:
-            self.stop_fails_once = stop_fails_once
-            self.stop_calls = 0
-            self.start_calls = 0
+        def __init__(self, name: str) -> None:
+            self.name = name
 
         def StartNotify(self, **_kwargs) -> None:
-            self.start_calls += 1
+            calls.append(("start", self.name))
 
         def StopNotify(self, **_kwargs) -> None:
-            self.stop_calls += 1
-            if self.stop_fails_once:
-                self.stop_fails_once = False
-                raise client_module.dbus.exceptions.DBusException(
-                    "still settling",
-                    name="org.bluez.Error.InProgress",
-                )
+            calls.append(("stop", self.name))
 
         @staticmethod
         def WriteValue(_value, _options, **_kwargs) -> None:
-            return None
+            calls.append("write")
 
-    ns = _Characteristic(stop_fails_once=True)
-    ds = _Characteristic()
-    cp = _Characteristic()
+    ns = _Characteristic("ns")
+    ds = _Characteristic("ds")
+    cp = _Characteristic("cp")
     bus = _CharacteristicBus(
         {"/device/ns": ns, "/device/ds": ds, "/device/cp": cp}
     )
@@ -968,53 +956,44 @@ def test_le_reconnect_retries_notification_rearm_without_cycling_bearer(
     client._ds_path = "/device/ds"
     client._cp_path = "/device/cp"
     client._owned_notify_paths = {"/device/ns", "/device/ds"}
-    client._notify_rearm_pending = True
 
     client.observe_bearer_state(True)
     scheduled.pop(0)[1]()
 
-    assert client.subscribed is False
-    assert ns.stop_calls == 1
-    assert ds.stop_calls == 1
-    assert scheduled[0][0] == client_module.SUBSCRIBE_RETRY_SECONDS
-
-    scheduled.pop(0)[1]()
-
-    assert ns.stop_calls == 2
-    assert ns.start_calls == 1
-    assert ds.start_calls == 1
+    assert calls == []
     assert client.subscribed is True
+    assert client.authorized is True
 
 
-def test_le_reconnect_treats_missing_notify_session_as_already_stopped(
+def test_le_reconnect_starts_notify_only_when_bluez_dropped_ccc(
     monkeypatch,
 ) -> None:
     scheduled = []
+    calls = []
 
     class _Characteristic:
-        def __init__(self, *, already_stopped: bool = False) -> None:
-            self.already_stopped = already_stopped
-            self.stop_calls = 0
-            self.start_calls = 0
+        def __init__(self, name: str, *, notifying: bool) -> None:
+            self.name = name
+            self.notifying = notifying
+
+        def Get(self, _iface, name, **_kwargs):
+            assert name == "Notifying"
+            return self.notifying
 
         def StartNotify(self, **_kwargs) -> None:
-            self.start_calls += 1
+            calls.append(("start", self.name))
+            self.notifying = True
 
         def StopNotify(self, **_kwargs) -> None:
-            self.stop_calls += 1
-            if self.already_stopped:
-                raise client_module.dbus.exceptions.DBusException(
-                    "No notify session started",
-                    name="org.bluez.Error.Failed",
-                )
+            calls.append(("stop", self.name))
 
         @staticmethod
         def WriteValue(_value, _options, **_kwargs) -> None:
-            return None
+            calls.append("write")
 
-    ns = _Characteristic(already_stopped=True)
-    ds = _Characteristic()
-    cp = _Characteristic()
+    ns = _Characteristic("ns", notifying=False)
+    ds = _Characteristic("ds", notifying=True)
+    cp = _Characteristic("cp", notifying=False)
     bus = _CharacteristicBus(
         {"/device/ns": ns, "/device/ds": ds, "/device/cp": cp}
     )
@@ -1032,17 +1011,13 @@ def test_le_reconnect_treats_missing_notify_session_as_already_stopped(
     client._ds_path = "/device/ds"
     client._cp_path = "/device/cp"
     client._owned_notify_paths = {"/device/ns", "/device/ds"}
-    client._notify_rearm_pending = True
 
     client.observe_bearer_state(True)
     scheduled.pop(0)[1]()
 
-    assert ns.stop_calls == 1
-    assert ds.stop_calls == 1
-    assert ns.start_calls == 1
-    assert ds.start_calls == 1
+    assert calls == [("start", "ns"), "write"]
     assert client.subscribed is True
-    assert client._notify_rearm_pending is False
+    assert client.authorized is False
 
 
 def test_not_connected_control_point_failure_invalidates_ancs_health(

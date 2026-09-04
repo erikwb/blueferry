@@ -50,6 +50,7 @@ from blueferry.setup_verification import (
 )
 from blueferry.solicitation_supervisor import SolicitationSupervisor
 from blueferry.storage_security import NO_STORAGE, StorageSecurity
+from blueferry.wireplumber_policy import WirePlumberPhoneAudioPolicy
 
 log = logging.getLogger(__name__)
 
@@ -103,6 +104,7 @@ class Daemon:
         self.ancs: AncsClient | None = None
         self.adapter_class = AdapterClassSupervisor(config.ADAPTER)
         self.solicitation = SolicitationSupervisor(config.ADAPTER)
+        self.phone_audio = WirePlumberPhoneAudioPolicy()
         device_path = (
             f"/org/bluez/{config.ADAPTER}/"
             f"dev_{config.IPHONE_MAC.replace(':', '_')}"
@@ -199,6 +201,7 @@ class Daemon:
     def start(self) -> None:
         log.info("=== BlueFerry starting ===")
         config.ensure_dirs()
+        self.phone_audio.reconcile(enabled=config.KEEP_PHONE_AUDIO_ON_PHONE)
 
         # Type=dbus means owning the name is our readiness boundary. Publish
         # the control surface before any Bluetooth operation that can wait on

@@ -241,6 +241,7 @@ The common retention settings live in `~/.config/blueferry/local.env`:
 
 ```bash
 BLUEFERRY_SHOW_NOTIFICATION_CONTENT=false
+BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE=true
 BLUEFERRY_NOTIFICATION_TIMEOUT_MS=8000
 BLUEFERRY_HISTORY_RETENTION_DAYS=30
 BLUEFERRY_HISTORY_MAX_EVENTS=10000
@@ -272,6 +273,15 @@ journalctl --user -u blueferry -f | grep "ANCS app observed"
 ```
 
 Restart the user service after editing `local.env` settings.
+
+When WirePlumber 0.5 or newer is installed, BlueFerry keeps calls and music on
+the iPhone by writing
+`~/.config/wireplumber/wireplumber.conf.d/99-blueferry-keep-phone-audio.conf`
+and reloading WirePlumber if that fragment changed. The fragment removes the
+adapter roles that make this computer an A2DP/HFP sink, and disables
+auto-connect on phone cards so a later `bluetooth-a2dp-autoconnect` rule cannot
+steal the stream. Set `BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE=false` to remove
+BlueFerry's fragment only.
 
 ## Command line
 

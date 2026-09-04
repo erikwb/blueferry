@@ -47,6 +47,7 @@ def _bare_daemon():
     instance._running_build_id = "0.6.0-6"
     instance._release_missing_checks = 0
     instance._restart_after_upgrade = False
+    instance.phone_audio = SimpleNamespace(reconcile=lambda **_kwargs: False)
     return instance
 
 
