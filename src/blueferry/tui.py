@@ -727,7 +727,11 @@ class BlueFerryApp(App[None]):
         selected: list[Thread] = []
         for thread in self.state.threads:
             preview = thread.messages[-1].body if thread.messages else ""
-            haystack = " ".join((thread.name, *thread.recipients, preview)).casefold()
+            addresses = []
+            for key in thread.extra.get("aliases", []):
+                kind, _, address = str(key).removeprefix("address:").partition(":")
+                addresses.append(f"+{address}" if kind == "phone" else address)
+            haystack = " ".join((thread.name, *thread.recipients, *addresses, preview)).casefold()
             if query in haystack:
                 selected.append(thread)
         return selected
