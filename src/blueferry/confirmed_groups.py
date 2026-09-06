@@ -7,7 +7,8 @@ from pathlib import Path
 
 from blueferry import config
 from blueferry.limits import MAX_CONFIRMED_GROUPS, MAX_THREAD_KEY_CHARS
-from blueferry.settings_store import SettingsStore
+from blueferry.private_preferences import PrivatePreference
+from blueferry.storage_security import StorageSecurity
 
 _SETTINGS_KEY = "confirmed_group_rosters"
 _DIGEST_LENGTH = 64
@@ -38,11 +39,15 @@ def _normalized_digest(value: object) -> str:
 class ConfirmedGroupsStore:
     """Remember which group rosters the user has already confirmed."""
 
-    def __init__(self, path: Path | None = None) -> None:
-        self._settings = SettingsStore(path or config.SETTINGS_JSON)
+    def __init__(
+        self, path: Path | None = None, *, storage: StorageSecurity | None = None,
+    ) -> None:
+        self._preference = PrivatePreference(
+            path or config.SETTINGS_JSON, _SETTINGS_KEY, storage,
+        )
 
     def _mapping(self) -> dict[str, str]:
-        raw = self._settings.read().get(_SETTINGS_KEY)
+        raw = self._preference.read()
         if not isinstance(raw, dict):
             return {}
         selected: dict[str, str] = {}
@@ -55,6 +60,9 @@ class ConfirmedGroupsStore:
             if len(selected) >= MAX_CONFIRMED_GROUPS:
                 break
         return selected
+
+    def migrate(self) -> None:
+        self._preference.read()
 
     def matches(self, thread_key: str, token: str) -> bool:
         key = _normalized_key(thread_key)
@@ -74,7 +82,7 @@ class ConfirmedGroupsStore:
         elif len(current) >= MAX_CONFIRMED_GROUPS:
             current.pop(next(iter(current)))
         current[key] = digest
-        self._settings.update(**{_SETTINGS_KEY: current})
+        self._preference.write(current)
 
     def forget(self, thread_keys: Iterable[str]) -> None:
         remove = {_normalized_key(key) for key in thread_keys}
@@ -86,8 +94,7 @@ class ConfirmedGroupsStore:
             key: digest for key, digest in current.items() if key not in remove
         }
         if updated != current:
-            self._settings.update(**{_SETTINGS_KEY: updated})
+            self._preference.write(updated)
 
     def clear(self) -> None:
-        if self._mapping():
-            self._settings.update(**{_SETTINGS_KEY: {}})
+        self._preference.clear()

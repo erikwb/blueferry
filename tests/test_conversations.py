@@ -4,6 +4,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import gi
+import pytest
 
 gi.require_version("Gtk", "4.0")
 
@@ -188,7 +189,8 @@ def test_star_button_toggles_backend_star_state():
     assert starred == [("Bob", False)]
 
 
-def test_selected_unread_thread_is_marked_read():
+@pytest.mark.parametrize("mapped,active", [(True, True), (False, True), (True, False)])
+def test_selected_unread_thread_is_marked_read(mapped, active):
     marked = []
     unread = _thread(
         key="Bob",
@@ -207,6 +209,8 @@ def test_selected_unread_thread_is_marked_read():
     state.apply_snapshot(ConversationSnapshot(None, (unread, _thread())))
     state.selected_key = "Bob"
     page = SimpleNamespace(
+        get_root=lambda: SimpleNamespace(is_active=lambda: active),
+        get_mapped=lambda: mapped,
         _state=state,
         _client=SimpleNamespace(
             mark_thread_read_async=lambda key: marked.append(key)
@@ -214,11 +218,11 @@ def test_selected_unread_thread_is_marked_read():
     )
 
     conversations.ConversationsPage._mark_selected_read(page)
-    assert marked == ["Bob"]
+    assert marked == (["Bob"] if mapped and active else [])
 
     state.selected_key = "Alice"
     conversations.ConversationsPage._mark_selected_read(page)
-    assert marked == ["Bob"]
+    assert marked == (["Bob"] if mapped and active else [])
 
 
 def test_map_refusal_reveals_prominent_message_banner() -> None:

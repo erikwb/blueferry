@@ -30,6 +30,7 @@ def _bare_daemon():
         clear=lambda: None,
     )
     instance.confirmed_groups = SimpleNamespace(
+        migrate=lambda: None,
         matches=lambda *_args, **_kwargs: False,
         remember=lambda *_args, **_kwargs: None,
         forget=lambda *_args, **_kwargs: None,

@@ -191,6 +191,13 @@ managers; distro systemd hooks reload changed user-unit metadata.
   Service. GNOME Keyring and KWallet are reached through the same libsecret
   interface; toolkit clients never handle the key. Generic key lookup
   attributes are intentionally non-sensitive.
+- Starred thread keys and confirmed group rosters are also sensitive: keys
+  can contain contact addresses. Each complete collection in `settings.json`
+  is encrypted with its own purpose string under the history storage policy.
+  Legacy plaintext collections are encrypted on first access, or scrubbed when
+  the wallet is locked or retention is disabled. Settings have a separate
+  4 MiB bound for the two 200-entry collections and encryption framing;
+  `local.env` retains its 64 KiB bound.
 - Passive daemon startup loads an existing key only from an already unlocked
   collection. It neither creates an item nor requests a wallet prompt. If the
   key is unavailable or ciphertext authentication fails, storage fails closed

@@ -6,7 +6,8 @@ from pathlib import Path
 
 from blueferry import config
 from blueferry.limits import MAX_STARRED_THREADS, MAX_THREAD_KEY_CHARS
-from blueferry.settings_store import SettingsStore
+from blueferry.private_preferences import PrivatePreference
+from blueferry.storage_security import StorageSecurity
 
 _SETTINGS_KEY = "starred_thread_keys"
 
@@ -21,11 +22,15 @@ def _normalized_key(value: object) -> str:
 class StarredThreadsStore:
     """Keep a bounded set of opaque thread keys the user has starred."""
 
-    def __init__(self, path: Path | None = None) -> None:
-        self._settings = SettingsStore(path or config.SETTINGS_JSON)
+    def __init__(
+        self, path: Path | None = None, *, storage: StorageSecurity | None = None,
+    ) -> None:
+        self._preference = PrivatePreference(
+            path or config.SETTINGS_JSON, _SETTINGS_KEY, storage,
+        )
 
     def keys(self) -> list[str]:
-        raw = self._settings.read().get(_SETTINGS_KEY)
+        raw = self._preference.read()
         if not isinstance(raw, list):
             return []
         selected: list[str] = []
@@ -58,7 +63,7 @@ class StarredThreadsStore:
             current = [item for item in current if item != key]
         else:
             return False
-        self._settings.update(**{_SETTINGS_KEY: current})
+        self._preference.write(current)
         return bool(starred)
 
     def discard(self, thread_keys: Iterable[str]) -> None:
@@ -69,8 +74,7 @@ class StarredThreadsStore:
         current = self.keys()
         updated = [key for key in current if key not in remove]
         if updated != current:
-            self._settings.update(**{_SETTINGS_KEY: updated})
+            self._preference.write(updated)
 
     def clear(self) -> None:
-        if self.keys():
-            self._settings.update(**{_SETTINGS_KEY: []})
+        self._preference.clear()

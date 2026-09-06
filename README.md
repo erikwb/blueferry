@@ -233,6 +233,12 @@ can also choose unencrypted storage or **Do not retain local data**. Changing
 storage modes clears the existing cache so encrypted and plaintext records are
 never mixed.
 
+Starred conversations and saved group confirmations follow the same storage
+policy as history. Older plaintext preferences are encrypted during upgrade
+when the wallet is available; if it is locked, those old preferences are
+cleared so contact identities are no longer retained in plaintext. You can
+star conversations and confirm group rosters again after unlocking.
+
 Configuration lives in `~/.config/blueferry`; local state lives in
 `~/.local/state/blueferry`. Uninstalling packages does not delete either
 directory.

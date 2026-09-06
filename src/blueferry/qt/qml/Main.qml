@@ -11,6 +11,8 @@ Kirigami.ApplicationWindow {
     required property var bridge
     property string selectedThreadKey: ""
     onSelectedThreadKeyChanged: root.markSelectedThreadRead()
+    onActiveChanged: root.markSelectedThreadRead()
+    onIphoneSettingsPageChanged: Qt.callLater(root.markSelectedThreadRead)
     property bool firstRunRedirected: false
     property var iphoneSettingsPage: null
     property string pendingMessageHandle: ""
@@ -102,6 +104,8 @@ Kirigami.ApplicationWindow {
     }
 
     function markSelectedThreadRead() {
+        if (!root.visible || !root.active || root.iphoneSettingsPage !== null)
+            return
         const thread = selectedThread()
         if (thread && threadIsUnread(thread))
             bridge.markThreadRead(thread.key)

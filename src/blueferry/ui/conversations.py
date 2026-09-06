@@ -122,6 +122,10 @@ class ConversationsPage(Gtk.Box):
             hexpand=True,
             vexpand=True,
         )
+        self.connect("map", lambda _page: self._mark_selected_read())
+        focus = Gtk.EventControllerFocus()
+        focus.connect("enter", lambda _focus: self._mark_selected_read())
+        self.add_controller(focus)
         self._client = client
         self._toast = toast
         self._state = ConversationState(select_first=False)
@@ -653,6 +657,9 @@ class ConversationsPage(Gtk.Box):
         self._mark_selected_read()
 
     def _mark_selected_read(self) -> None:
+        window = self.get_root()
+        if not self.get_mapped() or window is None or not window.is_active():
+            return
         thread = self._state.selected
         if thread is None or not thread.unread:
             return

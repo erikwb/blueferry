@@ -353,7 +353,7 @@ class BackendOperations:
             return
         try:
             store.remember(thread_key, token)
-        except OSError:
+        except (OSError, ValueError, RuntimeError):
             log.exception("could not persist confirmed group roster")
 
     def _forget_confirmed_groups(self, thread_keys: Iterable[str]) -> None:

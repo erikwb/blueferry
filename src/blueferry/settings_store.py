@@ -8,6 +8,11 @@ from typing import Any
 from blueferry import config
 from blueferry.private_files import atomic_write_private_text, read_private_text
 
+# Two bounded collections can each contain 200 UTF-8 thread keys (1024
+# characters), plus roster digests and encryption framing. Keep local.env
+# parsing on its smaller, independent config limit.
+MAX_SETTINGS_FILE_BYTES = 4 * 1024 * 1024
+
 
 class SettingsStore:
     """Read and atomically update the owner-only settings document."""
@@ -18,7 +23,7 @@ class SettingsStore:
     def read(self) -> dict[str, Any]:
         try:
             value = json.loads(read_private_text(
-                self.path, maximum_bytes=config.MAX_CONFIG_FILE_BYTES
+                self.path, maximum_bytes=MAX_SETTINGS_FILE_BYTES
             ))
         except (OSError, UnicodeError, ValueError, TypeError):
             return {}
@@ -31,5 +36,5 @@ class SettingsStore:
         atomic_write_private_text(
             self.path,
             encoded,
-            maximum_bytes=config.MAX_CONFIG_FILE_BYTES,
+            maximum_bytes=MAX_SETTINGS_FILE_BYTES,
         )

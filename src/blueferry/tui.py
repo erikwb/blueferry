@@ -631,6 +631,12 @@ class BlueFerryApp(App[None]):
         self._update_responsive(self.size.width)
         self._load_data()
 
+    def on_app_focus(self) -> None:
+        self.call_later(self._maybe_mark_selected_read)
+
+    def on_screen_resume(self) -> None:
+        self.call_later(self._maybe_mark_selected_read)
+
     def on_unmount(self) -> None:
         if self._monitor is not None:
             self._monitor.close()
@@ -879,6 +885,11 @@ class BlueFerryApp(App[None]):
             notice.set_classes("")
 
     def _maybe_mark_selected_read(self) -> None:
+        if not self.app_focus or isinstance(self.screen, ModalScreen):
+            return
+        workspace = self.query_one("#workspace")
+        if workspace.has_class("narrow") and not workspace.has_class("chat-open"):
+            return
         thread = self.state.selected
         if thread is None or not thread.unread:
             return
@@ -965,6 +976,7 @@ class BlueFerryApp(App[None]):
         composer = self.query_one("#composer", TextArea)
         if not composer.disabled:
             composer.focus()
+        self._maybe_mark_selected_read()
 
     def action_focus_search(self) -> None:
         self.query_one("#workspace").remove_class("chat-open")

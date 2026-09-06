@@ -92,8 +92,8 @@ class Daemon:
         self.contacts = ContactsResolver(storage=self.storage)
         self.connectivity = Connectivity()
         self.notification_policy = NotificationPolicyStore()
-        self.starred_threads = StarredThreadsStore()
-        self.confirmed_groups = ConfirmedGroupsStore()
+        self.starred_threads = StarredThreadsStore(storage=self.storage)
+        self.confirmed_groups = ConfirmedGroupsStore(storage=self.storage)
         self.setup_verification = SetupVerification(config.IPHONE_MAC)
         self.events = EventDispatcher(
             self.contacts,
@@ -252,6 +252,9 @@ class Daemon:
 
     def _initialize_storage(self) -> None:
         status = self.storage.refresh(allow_prompt=False)
+        # Upgrade/scrub legacy preferences even if the wallet is locked.
+        self.starred_threads.keys()
+        self.confirmed_groups.migrate()
         if status.policy == NO_STORAGE:
             clear_events()
             clear_contact_cache()

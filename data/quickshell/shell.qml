@@ -175,12 +175,14 @@ ShellRoot {
   }
 
   function markSelectedThreadRead() {
+    if (!window.visible || !applicationSurface.Window.active || phoneSettingsVisible) return
     var thread = selectedThread()
     if (!thread || !threadIsUnread(thread)) return
     backendBridge.request("mark_thread_read", {thread_key: String(thread.key)})
   }
 
   onSelectedThreadKeyChanged: root.markSelectedThreadRead()
+  onPhoneSettingsVisibleChanged: root.markSelectedThreadRead()
 
   function selectMessage(handle) {
     for (var threadIndex = 0; threadIndex < threads.length; ++threadIndex) {
@@ -786,6 +788,7 @@ ShellRoot {
 
     Pane {
       id: applicationSurface
+      Window.onActiveChanged: root.markSelectedThreadRead()
       anchors.fill: parent
       padding: 0
       font.family: theme.fontFamily

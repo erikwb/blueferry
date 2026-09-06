@@ -653,3 +653,31 @@ def test_textual_composer_sends_without_blocking_ui() -> None:
             assert backend.sent == [("one", "A proper terminal reply", False)]
 
     _run_headless(scenario())
+
+
+def test_read_sync_waits_for_narrow_chat_and_pauses_under_dialogs():
+    async def scenario() -> None:
+        backend = _Backend()
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
+        marked = []
+        app._mark_thread_read = marked.append
+        async with app.run_test(size=(70, 30)) as pilot:
+            await _wait_for_threads(app, pilot, 2)
+            selected = app.state.selected
+            assert selected is not None and selected.unread
+            app._maybe_mark_selected_read()
+            assert marked == []
+            app.action_open_thread()
+            assert marked == [selected.key]
+            marked.clear()
+            app.action_help()
+            await pilot.pause()
+            app._maybe_mark_selected_read()
+            assert marked == []
+            app.pop_screen()
+            await pilot.pause()
+            marked.clear()
+            app.app_focus = False
+            app._maybe_mark_selected_read()
+            assert marked == []
+    _run_headless(scenario())
