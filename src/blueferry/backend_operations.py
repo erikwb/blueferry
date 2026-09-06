@@ -61,6 +61,7 @@ from blueferry.threads import (
     MESSAGE_KINDS,
     ConversationIndex,
     build_threads,
+    group_confirmation_token,
     sort_threads,
     thread_key,
 )
@@ -123,6 +124,16 @@ class StarredThreads(Protocol):
     def clear(self) -> None: ...
 
 
+class ConfirmedGroups(Protocol):
+    def matches(self, thread_key: str, token: str) -> bool: ...
+
+    def remember(self, thread_key: str, token: str) -> None: ...
+
+    def forget(self, thread_keys: Sequence[str]) -> None: ...
+
+    def clear(self) -> None: ...
+
+
 @dataclass(frozen=True, slots=True)
 class BackendDependencies:
     """Explicit optional capabilities supplied by the daemon composition root."""
@@ -137,6 +148,7 @@ class BackendDependencies:
     notification_policy: NotificationPolicy | None = None
     on_notification_policy_changed: Callable[[], None] | None = None
     starred_threads: StarredThreads | None = None
+    confirmed_groups: ConfirmedGroups | None = None
     storage: StorageSecurity | None = None
     on_storage_changed: Callable[[], None] | None = None
 
@@ -151,7 +163,7 @@ class BackendOperations:
     ) -> None:
         self.sessions = sessions
         self.dependencies = dependencies or BackendDependencies()
-        self._confirmed_group_keys: set[str] = set()
+        self._confirmed_groups: dict[str, str] = {}
         self._conversations = ConversationIndex(
             lambda: read_events(
                 limit=MAX_CONVERSATION_EVENTS,
@@ -259,10 +271,12 @@ class BackendOperations:
                 raise NotReadyError("group thread must have 2 to 20 recipients")
             if len(set(group_recipients)) != len(group_recipients):
                 raise NotReadyError("group thread contains duplicate recipients")
-            named_group = thread.get("group_origin") == "named"
-            if (
-                (named_group or thread_key not in self._confirmed_group_keys)
-                and not confirm_group
+            token = group_confirmation_token(
+                group_recipients,
+                thread.get("roster_warning_id"),
+            )
+            if not confirm_group and not self._group_roster_confirmed(
+                thread_key, token
             ):
                 raise ConfirmationRequiredError(
                     "confirm the displayed participant list before replying "
@@ -270,8 +284,7 @@ class BackendOperations:
                 )
 
             def succeeded(transfer: str) -> None:
-                if not named_group:
-                    self._confirmed_group_keys.add(thread_key)
+                self._remember_confirmed_group(thread_key, token)
                 if self.dependencies.on_group_sent is not None:
                     try:
                         self.dependencies.on_group_sent(
@@ -327,8 +340,50 @@ class BackendOperations:
             return set()
         return {str(key) for key in store.keys()}
 
+    def _group_roster_confirmed(self, thread_key: str, token: str) -> bool:
+        if self._confirmed_groups.get(thread_key) == token:
+            return True
+        store = self.dependencies.confirmed_groups
+        return store is not None and store.matches(thread_key, token)
+
+    def _remember_confirmed_group(self, thread_key: str, token: str) -> None:
+        self._confirmed_groups[thread_key] = token
+        store = self.dependencies.confirmed_groups
+        if store is None:
+            return
+        try:
+            store.remember(thread_key, token)
+        except OSError:
+            log.exception("could not persist confirmed group roster")
+
+    def _forget_confirmed_groups(self, thread_keys: Iterable[str]) -> None:
+        selected = [str(key) for key in thread_keys]
+        for key in selected:
+            self._confirmed_groups.pop(key, None)
+        store = self.dependencies.confirmed_groups
+        if store is not None:
+            store.forget(selected)
+
+    def _clear_confirmed_groups(self) -> None:
+        self._confirmed_groups.clear()
+        store = self.dependencies.confirmed_groups
+        if store is not None:
+            store.clear()
+
+    def _group_confirmed(self, thread: dict) -> bool:
+        if not thread.get("is_group"):
+            return False
+        token = group_confirmation_token(
+            thread.get("recipients") or [],
+            thread.get("roster_warning_id"),
+        )
+        return self._group_roster_confirmed(str(thread.get("key") or ""), token)
+
     def _present_threads(self, threads: Sequence[dict]) -> list[dict]:
-        return sort_threads(threads, starred_keys=self._starred_keys())
+        presented = sort_threads(threads, starred_keys=self._starred_keys())
+        for item in presented:
+            item["group_confirmed"] = self._group_confirmed(item)
+        return presented
 
     def set_thread_starred(self, thread_key: str, starred: bool) -> bool:
         if not thread_key.strip() or len(thread_key) > MAX_THREAD_KEY_CHARS:
@@ -473,7 +528,7 @@ class BackendOperations:
             raise NotReadyError(
                 "could not retain the group participant list"
             ) from error
-        self._confirmed_group_keys.discard(thread_key)
+        self._forget_confirmed_groups([thread_key])
         self.invalidate_conversations()
         updated = self._conversations.find(thread_key)
         if updated is None:
@@ -505,6 +560,7 @@ class BackendOperations:
         clear_events()
         if self.dependencies.starred_threads is not None:
             self.dependencies.starred_threads.clear()
+        self._clear_confirmed_groups()
         self.invalidate_conversations()
 
     def delete_threads(
@@ -650,7 +706,7 @@ class BackendOperations:
             log.error("could not delete conversations: %s", error)
             raise NotReadyError("could not delete local conversations") from error
 
-        self._confirmed_group_keys.difference_update(resolved_keys)
+        self._forget_confirmed_groups(resolved_keys)
         if self.dependencies.starred_threads is not None:
             self.dependencies.starred_threads.discard(selected)
         self.invalidate_conversations()
@@ -678,6 +734,7 @@ class BackendOperations:
             clear_contact_cache()
             if self.dependencies.starred_threads is not None:
                 self.dependencies.starred_threads.clear()
+            self._clear_confirmed_groups()
         try:
             status = self.dependencies.storage.set_policy(
                 selected, allow_prompt=True

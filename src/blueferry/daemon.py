@@ -21,6 +21,7 @@ from blueferry.bearer_supervisor import BearerSupervisor
 from blueferry.bluetooth_capabilities import ancs_limited_vendor, controller_hardware
 from blueferry.build_info import build_id, installed_build_sha, running_build_sha
 from blueferry.bus import get_system_bus, main_loop
+from blueferry.confirmed_groups import ConfirmedGroupsStore
 from blueferry.connectivity import Connectivity
 from blueferry.contacts import ContactsResolver, clear_contact_cache, pull_phonebook
 from blueferry.dbus_service import MessagesService, claim_bus_name
@@ -92,6 +93,7 @@ class Daemon:
         self.connectivity = Connectivity()
         self.notification_policy = NotificationPolicyStore()
         self.starred_threads = StarredThreadsStore()
+        self.confirmed_groups = ConfirmedGroupsStore()
         self.setup_verification = SetupVerification(config.IPHONE_MAC)
         self.events = EventDispatcher(
             self.contacts,
@@ -224,6 +226,7 @@ class Daemon:
                 notification_policy=self.notification_policy,
                 on_notification_policy_changed=self._emit_status,
                 starred_threads=self.starred_threads,
+                confirmed_groups=self.confirmed_groups,
                 storage=self.storage,
                 on_storage_changed=self._emit_status,
             ),

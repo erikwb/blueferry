@@ -7,6 +7,7 @@ import pytest
 
 from blueferry import backend_operations, config
 from blueferry.backend_operations import BackendDependencies, BackendOperations
+from blueferry.confirmed_groups import ConfirmedGroupsStore
 from blueferry.errors import (
     ConfirmationRequiredError,
     InvalidArgumentsError,
@@ -23,6 +24,7 @@ from blueferry.limits import (
     MAX_THREAD_BODY_CHARS,
 )
 from blueferry.starred_threads import StarredThreadsStore
+from blueferry.threads import group_confirmation_token
 
 
 class _Sessions:
@@ -94,10 +96,18 @@ def test_confirmed_group_reply_uses_backend_recipient_set(monkeypatch):
 
     assert replies == ["/transfer/1"]
     assert sent == [(["+15551111111", "+15552222222"], "hello")]
-    assert thread["key"] in operations._confirmed_group_keys
+    assert operations._confirmed_groups[thread["key"]] == group_confirmation_token(
+        thread["recipients"], thread.get("roster_warning_id")
+    )
+
+    operations.send_to_thread(
+        thread["key"], "again", False, replies.append,
+        lambda error: pytest.fail(str(error)),
+    )
+    assert replies == ["/transfer/1", "/transfer/1"]
 
 
-def test_named_group_requires_confirmation_for_every_reply(monkeypatch):
+def test_named_group_remembers_confirmation_until_roster_changes(monkeypatch):
     operations = _operations()
     thread = {**_group(), "group_origin": "named"}
     _stub_group(operations, thread)
@@ -113,13 +123,81 @@ def test_named_group_requires_confirmation_for_every_reply(monkeypatch):
         lambda error: pytest.fail(str(error)),
     )
 
-    assert thread["key"] not in operations._confirmed_group_keys
+    assert operations._confirmed_groups[thread["key"]] == group_confirmation_token(
+        thread["recipients"], ""
+    )
+    operations.send_to_thread(
+        thread["key"], "second", False,
+        lambda _result: None,
+        lambda error: pytest.fail(str(error)),
+    )
+
+    thread["recipients"] = ["+15551111111", "+15553333333"]
+    with pytest.raises(ConfirmationRequiredError):
+        operations.send_to_thread(
+            thread["key"], "third", False,
+            lambda _result: pytest.fail("unexpected successful reply"),
+            lambda error: pytest.fail(str(error)),
+        )
+
+
+def test_group_reply_requires_confirmation_again_when_roster_warning_changes(
+    monkeypatch,
+):
+    operations = _operations()
+    thread = {**_group(), "roster_warning_id": ""}
+    _stub_group(operations, thread)
+    monkeypatch.setattr(
+        backend_operations,
+        "send_group_message",
+        lambda *_args: "/transfer/warning",
+    )
+
+    operations.send_to_thread(
+        thread["key"], "first", True,
+        lambda _result: None,
+        lambda error: pytest.fail(str(error)),
+    )
+
+    thread["roster_warning_id"] = "route:2:phone:15553333333"
     with pytest.raises(ConfirmationRequiredError):
         operations.send_to_thread(
             thread["key"], "second", False,
             lambda _result: pytest.fail("unexpected successful reply"),
             lambda error: pytest.fail(str(error)),
         )
+
+
+def test_confirmed_group_roster_survives_a_new_operations_instance(
+    monkeypatch, tmp_path,
+) -> None:
+    thread = _group()
+    store_path = tmp_path / "settings.json"
+    monkeypatch.setattr(
+        backend_operations,
+        "send_group_message",
+        lambda *_args: "/transfer/persist",
+    )
+
+    first = _operations(confirmed_groups=ConfirmedGroupsStore(store_path))
+    _stub_group(first, thread)
+    first.send_to_thread(
+        thread["key"], "hello", True,
+        lambda _result: None,
+        lambda error: pytest.fail(str(error)),
+    )
+    assert first.list_threads(10)[0]["group_confirmed"] is True
+
+    second = _operations(confirmed_groups=ConfirmedGroupsStore(store_path))
+    _stub_group(second, thread)
+    replies = []
+    second.send_to_thread(
+        thread["key"], "again", False, replies.append,
+        lambda error: pytest.fail(str(error)),
+    )
+
+    assert replies == ["/transfer/persist"]
+    assert second.list_threads(10)[0]["group_confirmed"] is True
 
 
 def test_group_reply_records_the_projected_member_roster(monkeypatch):
@@ -163,7 +241,7 @@ def test_failed_group_reply_is_not_marked_confirmed(monkeypatch):
 
     assert len(errors) == 1
     assert isinstance(errors[0], OperationFailedError)
-    assert thread["key"] not in operations._confirmed_group_keys
+    assert thread["key"] not in operations._confirmed_groups
 
 
 def test_notification_policy_is_backend_owned_and_notifies_status() -> None:
@@ -372,11 +450,13 @@ def test_named_group_roster_is_validated_and_persisted(monkeypatch) -> None:
         lambda event, **_kwargs: retained.append(event),
     )
 
+    operations._confirmed_groups[provisional["key"]] = "stale"
     result = operations.set_group_participants(
         provisional["key"], ["+1 (555) 111-1111", "+15552222222"]
     )
 
     assert result["reply_ready"] is True
+    assert provisional["key"] not in operations._confirmed_groups
     assert retained[0]["group_name"] == "Crew"
     assert retained[0]["group_members"] == ["Beau", "Alice"]
     assert retained[0]["group_recipients"] == [

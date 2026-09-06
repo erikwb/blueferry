@@ -402,6 +402,19 @@ def test_group_message_bubbles_show_the_individual_sender() -> None:
     assert '? "You" : (root.message.sender || "")' in quickshell
 
 
+def test_quickshell_remembers_group_confirmation_until_roster_changes() -> None:
+    qml = (ROOT / "data" / "quickshell" / "shell.qml").read_text()
+    signature = qml.split("function groupSignature(thread)", 1)[1]
+
+    assert "property var confirmedGroupSignatures" in qml
+    assert "function groupIsConfirmed(thread)" in qml
+    assert "function setGroupConfirmed(thread, confirmed)" in qml
+    assert "thread.roster_warning_id" in signature
+    assert "thread.group_confirmed" in qml
+    assert 'confirmedGroupSignature = ""' not in qml
+    assert 'if (thread.group_origin === "named")' not in qml
+
+
 def test_group_roster_editors_explain_local_and_same_name_limits() -> None:
     clients = (
         (ROOT / "src/blueferry/ui/conversations.py").read_text(),

@@ -204,6 +204,7 @@ class Thread:
     prompt_sender: str = ""
     roster_warning_id: str = ""
     starred: bool = False
+    group_confirmed: bool = False
     extra: Mapping[str, Any] = field(default_factory=dict, repr=False)
 
     @classmethod
@@ -224,6 +225,7 @@ class Thread:
             "roster_warning_id",
             "unread",
             "starred",
+            "group_confirmed",
         }
         raw_recipients = value.get("recipients")
         raw_messages = value.get("messages")
@@ -248,6 +250,7 @@ class Thread:
             prompt_sender=_str(value.get("prompt_sender")),
             roster_warning_id=_str(value.get("roster_warning_id")),
             starred=_bool(value.get("starred")),
+            group_confirmed=_bool(value.get("group_confirmed")),
             extra={key: item for key, item in value.items() if key not in known},
         )
 
@@ -256,6 +259,11 @@ class Thread:
         return any(
             not message.outgoing and not message.read for message in self.messages
         )
+
+    @property
+    def confirmation_token(self) -> str:
+        identities = sorted({str(value) for value in self.recipients if str(value)})
+        return "\n".join((self.roster_warning_id, *identities))
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -275,6 +283,7 @@ class Thread:
             "roster_warning_id": self.roster_warning_id,
             "unread": self.unread,
             "starred": self.starred,
+            "group_confirmed": self.group_confirmed,
         }
 
 

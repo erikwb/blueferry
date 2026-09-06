@@ -1039,10 +1039,8 @@ class BlueFerryApp(App[None]):
         if len(body) > _MAX_INPUT:
             self.notify(f"Messages are limited to {_MAX_INPUT} characters", severity="error")
             return
-        if thread.is_group and (
-            thread.group_origin == "named"
-            or thread.key not in self.state.confirmed_groups
-        ):
+        plan = self.state.plan_reply(body)
+        if plan.disposition is ReplyDisposition.CONFIRM_GROUP:
             self.push_screen(
                 GroupConfirmScreen(thread),
                 lambda confirmed: self._group_reply_ready(confirmed, thread.key, body),

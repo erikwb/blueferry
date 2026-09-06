@@ -92,6 +92,15 @@ def _message_sender(event: dict, address: str | None, resolver) -> str:
     return address or "(unknown)"
 
 
+def group_confirmation_token(
+    recipients: Iterable[object],
+    roster_warning_id: object = "",
+) -> str:
+    """Stable token for one group roster, used to skip repeat send confirms."""
+    identities = sorted({str(value) for value in recipients if str(value)})
+    return "\n".join((str(roster_warning_id or ""), *identities))
+
+
 def thread_key(event: dict) -> str | None:
     """Return a stable key that never relies on a contact display name."""
     if event.get("group_key"):
