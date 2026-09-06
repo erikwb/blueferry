@@ -214,6 +214,8 @@ package_blueferry-quickshell() {
     "$pkgdir/usr/bin/blueferry-quickshell"
   install -Dm644 data/quickshell/*.qml \
     -t "$pkgdir/usr/share/blueferry/quickshell"
+  install -Dm644 src/blueferry/qt/qml/ConversationLogic.qml \
+    "$pkgdir/usr/share/blueferry/quickshell/ConversationLogic.qml"
   install -Dm644 data/io.weirdware.BlueFerry.Quickshell.desktop \
     "$pkgdir/usr/share/applications/io.weirdware.BlueFerry.Quickshell.desktop"
   install -Dm644 data/io.weirdware.BlueFerry.Quickshell.metainfo.xml \

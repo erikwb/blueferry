@@ -387,14 +387,9 @@ def test_qt_onboarding_summary_explains_locked_contact_sync(qml_engine) -> None:
     summary.deleteLater()
 
 
-@pytest.mark.parametrize("relative_path", [
-    "data/quickshell/shell.qml", "src/blueferry/qt/qml/Main.qml",
-])
-def test_read_sync_requires_visible_active_conversation(qml_engine, relative_path):
-    """Execute the shipped handlers with inert windows and backend recorders."""
-    source = (ROOT / relative_path).read_text()
+def _qml_functions(source: str, names: tuple[str, ...]) -> str:
     functions = []
-    for name in ("threadByKey", "selectedThread", "threadIsUnread", "markSelectedThreadRead"):
+    for name in names:
         start = source.index("function " + name + "(")
         opening = source.index("{", start)
         depth = 1
@@ -403,6 +398,22 @@ def test_read_sync_requires_visible_active_conversation(qml_engine, relative_pat
             depth += (source[end] == "{") - (source[end] == "}")
             end += 1
         functions.append(source[start:end])
+    return "\n".join(functions)
+
+
+@pytest.mark.parametrize("relative_path", [
+    "data/quickshell/shell.qml", "src/blueferry/qt/qml/Main.qml",
+])
+def test_read_sync_requires_visible_active_conversation(qml_engine, relative_path):
+    """Execute the shipped handlers with inert windows and backend recorders."""
+    component = _component(qml_engine, "src/blueferry/qt/qml/ConversationLogic.qml")
+    logic = component.create()
+    assert logic is not None
+    qml_engine.globalObject().setProperty("conversationLogic", qml_engine.newQObject(logic))
+    source = (ROOT / relative_path).read_text()
+    functions = _qml_functions(source, (
+        "threadByKey", "selectedThread", "threadIsUnread", "markSelectedThreadRead",
+    ))
     script = '''(function() {
         var calls = [];
         var threads = [{key: "one", unread: true}];
@@ -413,7 +424,7 @@ def test_read_sync_requires_visible_active_conversation(qml_engine, relative_pat
         var applicationSurface = {Window: {active: true}};
         var phoneSettingsVisible = false;
         var root = {visible: true, active: true, iphoneSettingsPage: null};
-    ''' + "\n".join(functions) + '''
+    ''' + functions + '''
         window.visible = root.visible = false;
         markSelectedThreadRead();
         window.visible = root.visible = true;
@@ -432,6 +443,7 @@ def test_read_sync_requires_visible_active_conversation(qml_engine, relative_pat
     result = qml_engine.evaluate(script)
     assert not result.isError(), result.toString()
     assert result.toString() == '["one"]'
+    logic.deleteLater()
 
 
 class _MessageDialogBridge(QObject):
@@ -480,3 +492,97 @@ def test_group_confirmation_component_shows_literal_recipients(qml_engine):
     assert dialog.property("draft") == "draft"
     assert dialog.property("subtitle") == "<span>&lt;alice&gt;<br>bob@example.com</span>"
     dialog.deleteLater()
+
+
+def test_quickshell_search_coalesces_queries_and_ignores_superseded_replies(qml_engine):
+    source = (ROOT / "data/quickshell/BackendBridge.qml").read_text()
+    functions = _qml_functions(source, ("requestLatest", "cancelLatest", "handleLine"))
+    result = qml_engine.evaluate('''(function() {
+        var latestRequests = {}, latestMethods = {}, sent = [], replies = [], errors = [];
+        var nextId = 1;
+        function request(method, args) { sent.push(args.query); return nextId++; }
+        function response(method, id, result) { replies.push(result); }
+        function failure(method, id, error) { errors.push(error); }
+        function eventReceived() {}
+    ''' + functions + '''
+        requestLatest("contacts", {query: "A"});
+        requestLatest("contacts", {query: "B"});
+        requestLatest("contacts", {query: "A"});
+        handleLine(JSON.stringify({method: "contacts", id: 1, ok: false, error: "old failure"}));
+        if (replies.length || errors.length || sent.join() !== "A,A") throw new Error("stale search");
+        handleLine(JSON.stringify({method: "contacts", id: 2, ok: true, result: "latest A"}));
+        requestLatest("contacts", {query: "B"});
+        cancelLatest("contacts");
+        handleLine(JSON.stringify({method: "contacts", id: 3, ok: true, result: "cancelled"}));
+        requestLatest("contacts", {query: "C"});
+        handleLine(JSON.stringify({method: "", id: 0, ok: false, error: "bridge failed"}));
+        handleLine(JSON.stringify({method: "contacts", id: 4, ok: true, result: "before failure"}));
+        requestLatest("contacts", {query: "D"});
+        handleLine(JSON.stringify({method: "contacts", id: 5, ok: true, result: "recovered"}));
+        return JSON.stringify({replies: replies, errors: errors, sent: sent});
+    })()''')
+    assert not result.isError(), result.toString()
+    import json
+
+    assert json.loads(result.toString()) == {
+        "replies": ["latest A", "recovered"], "errors": ["bridge failed"],
+        "sent": ["A", "A", "B", "C", "D"],
+    }
+
+
+@pytest.mark.parametrize("text", [
+    "  alice@example.com\n\n+15551111111\nalice@example.com  ",
+    "alice\rbob\r\nalice\u2028carol\u0085dave\v\ffrank",
+    "", " \n\t ",
+])
+def test_roster_parsing_matches_between_python_and_qml(qml_engine, text):
+    import json
+
+    from blueferry.recipients import participant_lines
+
+    component = _component(qml_engine, "src/blueferry/qt/qml/ConversationLogic.qml")
+    logic = component.create()
+    assert logic is not None
+    qml_engine.globalObject().setProperty("logic", qml_engine.newQObject(logic))
+    result = qml_engine.evaluate("JSON.stringify(logic.participantLines(" + json.dumps(text) + "))")
+    assert not result.isError(), result.toString()
+    assert json.loads(result.toString()) == participant_lines(text)
+    logic.deleteLater()
+
+
+def test_qml_conversation_decisions_match_python_state(qml_engine):
+    import json
+
+    from blueferry.conversation_state import ConversationSnapshot, ConversationState
+    from blueferry.models import Thread
+
+    component = _component(qml_engine, "src/blueferry/qt/qml/ConversationLogic.qml")
+    logic = component.create()
+    assert logic is not None
+    qml_engine.globalObject().setProperty("logic", qml_engine.newQObject(logic))
+    threads = [{
+        "key": "group:one", "is_group": True, "roster_changed": True,
+        "unexpected_sender": "Alice", "recipients": ["b@example.com", "a@example.com", "b@example.com"],
+        "messages": [{"handle": "message", "outgoing": False, "read": False}],
+    }]
+    state = ConversationState()
+    state.apply_snapshot(ConversationSnapshot(None, tuple(Thread.from_dict(t) for t in threads)))
+    thread = state.next_roster_warning()
+    assert thread is not None
+    result = qml_engine.evaluate('''(function() {
+        const threads = ''' + json.dumps(threads) + ''';
+        return JSON.stringify([
+            logic.threadByKey(threads, "group:one").key,
+            logic.threadForMessage(threads, "message").key,
+            logic.threadIsUnread(threads[0]),
+            logic.groupSignature(threads[0]),
+            logic.nextRosterWarning(threads).key,
+            logic.nextRosterWarning(threads)
+        ]);
+    })()''')
+    assert not result.isError(), result.toString()
+    assert json.loads(result.toString()) == [
+        thread.key, thread.key, thread.unread, thread.confirmation_token, thread.key, None,
+    ]
+    assert state.next_roster_warning() is None
+    logic.deleteLater()

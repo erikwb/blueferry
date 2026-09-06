@@ -19,8 +19,13 @@ from PySide6.QtDBus import QDBusConnection
 from blueferry import __version__
 from blueferry.backend_lifecycle import ensure_backend_current, restart_backend
 from blueferry.bluetooth_devices import iphone_candidates
-from blueferry.client import BackendClient, BackendError
-from blueferry.conversation_state import ConversationState, ReplyDisposition
+from blueferry.client import BackendClient
+from blueferry.conversation_state import (
+    ConversationSnapshot,
+    ConversationState,
+    ReplyDisposition,
+    fetch_conversation_snapshot,
+)
 from blueferry.i18n import _
 from blueferry.models import BackendStatus, Thread
 from blueferry.onboarding import OnboardingState, effective_compatibility
@@ -74,7 +79,7 @@ class BridgeController(QObject):
         self._threads: list[dict] = []
         self._pending_group: tuple[str, str, str] | None = None
         self._contact_results: list[dict] = []
-        self._contact_query = ""
+        self._state = ConversationState(select_first=False)
         self._status: dict = {}
         self._devices: list[dict] = []
         self._bluetooth_active = False
@@ -399,25 +404,14 @@ class BridgeController(QObject):
         self._run(lambda: self._setup.compatibility(selected), completed, failed)
 
     def _snapshot(self) -> dict:
-        status: dict
-        try:
-            status = self._backend.status().to_dict()
-        except BackendError as error:
-            status = {"daemon": False, "error": str(error)}
-        threads: list[dict] | None
-        thread_error = ""
-        try:
-            threads = [item.to_dict() for item in self._backend.threads()]
-        except BackendError as error:
-            # A failed snapshot is not evidence that history is empty. Keep
-            # the last successful projection visible and report the transient
-            # failure separately.
-            threads = None
-            thread_error = str(error)
+        snapshot = fetch_conversation_snapshot(self._backend)
+        error = "; ".join(snapshot.failures)
         return {
-            "threads": threads,
-            "status": status,
-            "thread_error": thread_error,
+            "threads": [item.to_dict() for item in snapshot.threads]
+                if snapshot.threads is not None else None,
+            "status": snapshot.status.to_dict() if snapshot.status is not None
+                else {"daemon": False, "error": error},
+            "thread_error": error,
         }
 
     def _apply_snapshot(self, snapshot: object) -> None:
@@ -425,6 +419,9 @@ class BridgeController(QObject):
         threads = value.get("threads")
         if isinstance(threads, list):
             self._threads = list(threads)
+            self._state.apply_snapshot(ConversationSnapshot(
+                None, tuple(Thread.from_dict(item) for item in threads),
+            ))
             self.threadsChanged.emit()
         status = value.get("status")
         if isinstance(status, dict):
@@ -468,7 +465,7 @@ class BridgeController(QObject):
     @Slot(str, str, bool)
     def sendThread(self, key: str, body: str, confirm_group: bool) -> None:
         draft = body
-        state = ConversationState()
+        state = self._state
         state.threads = [Thread.from_dict(value) for value in self._threads]
         thread = state.thread(key)
         if confirm_group:
@@ -487,6 +484,7 @@ class BridgeController(QObject):
             return
 
         def completed(_value: object) -> None:
+            state.reply_sent(plan, preserve_selection=True)
             self.threadSendSucceeded.emit(key, draft)
             self.refresh()
 
@@ -507,27 +505,29 @@ class BridgeController(QObject):
 
     @Slot(str)
     def findContacts(self, query: str) -> None:
-        selected = query.strip()
-        self._contact_query = selected
-        if not selected:
-            self._contact_results = []
-            self.contactResultsChanged.emit()
+        request = self._state.begin_contact_search(query)
+        self._contact_results = []
+        self.contactResultsChanged.emit()
+        if request is None:
             return
 
         def completed(value: object) -> None:
-            if self._contact_query != selected:
-                return
             matches = list(value) if isinstance(value, list) else []
+            if not self._state.apply_contact_results(request, matches):
+                return
             self._contact_results = [
                 {"name": str(name), "address": str(address)}
-                for name, address in matches
+                for name, address in self._state.contact_results
             ]
             self.contactResultsChanged.emit()
 
+        def failed(message: str) -> None:
+            if self._state.apply_contact_results(request, []):
+                self._set_error(message)
+
         self._run(
-            lambda: self._backend.find_contacts(selected),
-            completed,
-            busy=False,
+            lambda: self._backend.find_contacts(request.query),
+            completed, failed, busy=False,
         )
 
     @Slot(str, str)
@@ -841,6 +841,10 @@ class BridgeController(QObject):
             self._configuration = ConfigurationState(False, "", "", "")
             self._status = {}
             self._threads = []
+            self._state = ConversationState(select_first=False)
+            self._pending_group = None
+            self._contact_results = []
+            self.contactResultsChanged.emit()
             self.configuredChanged.emit()
             self.compatibilityChanged.emit()
             self.statusChanged.emit()

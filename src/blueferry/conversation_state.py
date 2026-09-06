@@ -3,7 +3,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from typing import Protocol
 
+from blueferry.client import BackendError
 from blueferry.models import BackendStatus, Thread
 
 
@@ -12,6 +14,29 @@ class ConversationSnapshot:
     status: BackendStatus | None
     threads: tuple[Thread, ...] | None
     failures: tuple[str, ...] = ()
+
+
+class SnapshotClient(Protocol):
+    def status(self) -> BackendStatus: ...
+    def threads(self, limit: int = 1000) -> list[Thread]: ...
+
+
+def fetch_conversation_snapshot(
+    client: SnapshotClient, *, limit: int = 1000,
+) -> ConversationSnapshot:
+    """Fetch each independently; None distinguishes failure from an empty result."""
+    failures: list[str] = []
+    status: BackendStatus | None = None
+    threads: tuple[Thread, ...] | None = None
+    try:
+        status = client.status()
+    except BackendError as error:
+        failures.append(str(error))
+    try:
+        threads = tuple(client.threads(limit))
+    except BackendError as error:
+        failures.append(str(error))
+    return ConversationSnapshot(status, threads, tuple(failures))
 
 
 class ReplyDisposition(str, Enum):

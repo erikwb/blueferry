@@ -16,6 +16,7 @@ from blueferry.conversation_state import (
 )
 from blueferry.i18n import _
 from blueferry.models import BackendStatus, Thread, ThreadMessage
+from blueferry.recipients import participant_lines as _participant_lines
 from blueferry.ui.status_presenter import (
     map_connection_refused,
     map_connection_refused_message,
@@ -86,16 +87,6 @@ class MessageComposer(Gtk.ScrolledWindow):
 
     def grab_focus(self) -> bool:
         return self._view.grab_focus()
-
-
-def _participant_lines(value: str) -> list[str]:
-    """Return unique non-empty addresses from the one-per-line editor."""
-    result: list[str] = []
-    for line in value.splitlines():
-        address = line.strip()
-        if address and address not in result:
-            result.append(address)
-    return result
 
 
 def _group_roster_banner_title(thread: Thread) -> str:

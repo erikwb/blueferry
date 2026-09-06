@@ -10,6 +10,8 @@ Item {
   property int nextRequestId: 1
   property bool ready: false
   property var queuedRequests: []
+  property var latestRequests: ({})
+  property var latestMethods: ({})
 
   signal response(string method, int requestId, var result)
   signal failure(string method, int requestId, string message)
@@ -30,18 +32,51 @@ Item {
     return requestId
   }
 
+  // Coalesce repeated reads and suppress superseded results, even when a
+  // query changes A → B → A while the first A is still in flight.
+  function requestLatest(method, args) {
+    latestMethods[method] = true
+    const active = latestRequests[method]
+    if (active) {
+      active.queued = args
+      active.cancelled = false
+    } else {
+      latestRequests[method] = {id: request(method, args), cancelled: false}
+    }
+  }
+
+  function cancelLatest(method) {
+    const active = latestRequests[method]
+    if (active) {
+      active.queued = undefined
+      active.cancelled = true
+    }
+  }
+
   function handleLine(line) {
     try {
       var payload = JSON.parse(line)
+      const active = latestRequests[payload.method]
+      if (latestMethods[payload.method] && (!active || active.id !== payload.id)) return
+      if (active && active.id === payload.id) {
+        delete latestRequests[payload.method]
+        if (active.queued !== undefined) {
+          requestLatest(payload.method, active.queued)
+          return
+        }
+        if (active.cancelled) return
+      }
       if (typeof payload.event === "string") {
         eventReceived(payload.event, payload.data)
       } else if (payload.ok === true) {
         response(payload.method || "", payload.id || 0, payload.result)
       } else {
+        if (!payload.method) latestRequests = ({})
         failure(payload.method || "", payload.id || 0,
                 payload.error || "BlueFerry request failed")
       }
     } catch (error) {
+      latestRequests = ({})
       failure("", 0, "BlueFerry bridge returned invalid data")
     }
   }
@@ -64,6 +99,7 @@ Item {
     onExited: function(code) {
       bridge.ready = false
       bridge.queuedRequests = []
+      bridge.latestRequests = ({})
       bridge.failure("", 0, code === 0
         ? "BlueFerry bridge stopped"
         : "BlueFerry bridge is unavailable")
