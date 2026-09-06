@@ -30,16 +30,9 @@ class PrivatePreference:
         if storage is None or value is None:
             return value
         if storage.status.policy == NO_STORAGE:
-            self.clear()
             return None
         if not isinstance(value, str):
-            # Upgrade legacy plaintext records while the wallet is available.
-            # If it is locked, scrub them rather than retain exposed identities.
-            if storage.status.can_write:
-                self.write(value)
-                return value
-            self.clear()
-            return None
+            return value if storage.status.can_read else None
         if not storage.status.can_read:
             return None
         try:
@@ -47,6 +40,20 @@ class PrivatePreference:
         except (CorruptStorageError, ValueError):
             storage.fail_closed("Saved conversation preferences could not be authenticated")
             return None
+
+    def migrate(self) -> None:
+        """Upgrade or scrub legacy records during explicit storage initialization."""
+        value = self._settings.read().get(self._key)
+        storage = self._storage
+        if storage is None or value is None:
+            return
+        if storage.status.policy == NO_STORAGE:
+            self.clear()
+        elif not isinstance(value, str):
+            if storage.status.can_write:
+                self.write(value)
+            else:
+                self.clear()
 
     def write(self, value: object) -> None:
         if self._storage is not None:

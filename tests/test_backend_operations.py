@@ -915,3 +915,22 @@ def test_large_thread_response_fits_wire_limit_without_changing_cached_history()
     assert result[0]["messages"][-1]["handle"] == "259"
     assert result[0]["recipients"] == thread["recipients"]
     assert len(thread["messages"]) == 260
+
+
+def test_thread_snapshot_reads_confirmed_rosters_once(tmp_path, monkeypatch):
+    store = ConfirmedGroupsStore(tmp_path / "settings.json")
+    threads = [{**_group(), "key": f"group:{i}"} for i in range(20)]
+    token = group_confirmation_token(threads[0]["recipients"], None)
+    for thread in threads:
+        store.remember(thread["key"], token)
+    threads[-1]["recipients"] = ["+15553333333", "+15554444444"]
+    operations = _operations(confirmed_groups=store)
+    operations._conversations.threads = lambda: threads
+    reads = []
+    read = store._preference.read
+    monkeypatch.setattr(store._preference, "read", lambda: reads.append(True) or read())
+    result = operations.list_threads(100)
+    assert reads == [True]
+    by_key = {thread["key"]: thread["group_confirmed"] for thread in result}
+    assert all(by_key[f"group:{i}"] for i in range(19))
+    assert by_key["group:19"] is False

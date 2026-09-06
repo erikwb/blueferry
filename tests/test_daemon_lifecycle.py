@@ -25,6 +25,7 @@ def _bare_daemon():
     )
     instance.starred_threads = SimpleNamespace(
         keys=lambda: [],
+        migrate=lambda: None,
         set_starred=lambda *_args, **_kwargs: False,
         discard=lambda *_args, **_kwargs: None,
         clear=lambda: None,
@@ -32,6 +33,7 @@ def _bare_daemon():
     instance.confirmed_groups = SimpleNamespace(
         migrate=lambda: None,
         matches=lambda *_args, **_kwargs: False,
+        matching_rosters=lambda _rosters: set(),
         remember=lambda *_args, **_kwargs: None,
         forget=lambda *_args, **_kwargs: None,
         clear=lambda: None,
@@ -149,6 +151,8 @@ def test_no_storage_policy_reasserts_empty_local_data(monkeypatch):
         refresh=lambda **_kwargs: status,
     )
     cleared = []
+    instance.starred_threads.migrate = lambda: cleared.append("stars")
+    instance.confirmed_groups.migrate = lambda: cleared.append("groups")
     monkeypatch.setattr(
         daemon_mod, "clear_events", lambda: cleared.append("events")
     )
@@ -158,7 +162,7 @@ def test_no_storage_policy_reasserts_empty_local_data(monkeypatch):
 
     instance._initialize_storage()
 
-    assert cleared == ["events", "contacts"]
+    assert cleared == ["stars", "groups", "events", "contacts"]
 
 
 def test_successful_empty_phonebook_verifies_contact_permission():

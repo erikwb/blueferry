@@ -432,3 +432,51 @@ def test_read_sync_requires_visible_active_conversation(qml_engine, relative_pat
     result = qml_engine.evaluate(script)
     assert not result.isError(), result.toString()
     assert result.toString() == '["one"]'
+
+
+class _MessageDialogBridge(QObject):
+    from PySide6.QtCore import Signal
+
+    messageSendSucceeded = Signal(str, str)
+    groupConfirmationRequested = Signal(str, str, str)
+
+    @Property(bool, constant=True)
+    def busy(self):
+        return False
+
+    @Property("QVariantList", constant=True)
+    def contactResults(self):
+        return []
+
+    @Slot(str)
+    def findContacts(self, _query):
+        pass
+
+
+def test_new_message_dialog_retains_edited_draft_after_earlier_send(qml_engine):
+    bridge = _MessageDialogBridge()
+    component = _component(qml_engine, "src/blueferry/qt/qml/NewMessageDialog.qml")
+    dialog = component.createWithInitialProperties({
+        "bridge": bridge, "recipient": "alice@example.com", "body": "original draft",
+    })
+    assert dialog is not None
+    dialog.setProperty("body", "new draft")
+    bridge.messageSendSucceeded.emit("alice@example.com", "original draft")
+    assert dialog.property("body") == "new draft"
+    assert dialog.property("recipient") == "alice@example.com"
+    bridge.messageSendSucceeded.emit("alice@example.com", "new draft")
+    assert dialog.property("body") == ""
+    assert dialog.property("recipient") == ""
+    dialog.deleteLater()
+
+
+def test_group_confirmation_component_shows_literal_recipients(qml_engine):
+    bridge = _MessageDialogBridge()
+    component = _component(qml_engine, "src/blueferry/qt/qml/GroupConfirmationDialog.qml")
+    dialog = component.createWithInitialProperties({"bridge": bridge})
+    assert dialog is not None
+    bridge.groupConfirmationRequested.emit("group:test", "draft", "<alice>\nbob@example.com")
+    assert dialog.property("threadKey") == "group:test"
+    assert dialog.property("draft") == "draft"
+    assert dialog.property("subtitle") == "<span>&lt;alice&gt;<br>bob@example.com</span>"
+    dialog.deleteLater()

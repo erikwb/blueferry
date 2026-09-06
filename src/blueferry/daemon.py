@@ -254,7 +254,7 @@ class Daemon:
     def _initialize_storage(self) -> None:
         status = self.storage.refresh(allow_prompt=False)
         # Upgrade/scrub legacy preferences even if the wallet is locked.
-        self.starred_threads.keys()
+        self.starred_threads.migrate()
         self.confirmed_groups.migrate()
         if status.policy == NO_STORAGE:
             clear_events()

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 from blueferry import config
@@ -62,12 +62,19 @@ class ConfirmedGroupsStore:
         return selected
 
     def migrate(self) -> None:
-        self._preference.read()
+        self._preference.migrate()
 
     def matches(self, thread_key: str, token: str) -> bool:
-        key = _normalized_key(thread_key)
-        digest = _digest(token)
-        return bool(key and digest and self._mapping().get(key) == digest)
+        return thread_key in self.matching_rosters({thread_key: token})
+
+    def matching_rosters(self, rosters: Mapping[str, str]) -> set[str]:
+        """Match a presentation snapshot with one settings read/decryption."""
+        current = self._mapping()
+        return {
+            key for key, token in rosters.items()
+            if _normalized_key(key) and token
+            and current.get(_normalized_key(key)) == _digest(token)
+        }
 
     def remember(self, thread_key: str, token: str) -> None:
         key = _normalized_key(thread_key)

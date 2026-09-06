@@ -48,6 +48,7 @@ def test_upgrade_encrypts_legacy_keys_without_losing_preferences(tmp_path):
     ConfirmedGroupsStore(path).remember(key, "roster")
     _, stars, groups = _stores(path)
     assert stars.keys() == [key]
+    stars.migrate()
     groups.migrate()
     assert groups.matches(key, "roster")
     assert "15551111111" not in path.read_text()
@@ -76,6 +77,7 @@ def test_locked_upgrade_scrubs_legacy_plaintext(tmp_path):
     ConfirmedGroupsStore(path).remember("group:addresses:phone:15551111111", "roster")
     _, stars, groups = _stores(path, initialize=False)
     assert stars.keys() == []
+    stars.migrate()
     groups.migrate()
     assert "15551111111" not in path.read_text()
 
@@ -135,3 +137,25 @@ def test_tampering_fails_closed(tmp_path):
     SettingsStore(path).update(starred_thread_keys=payload["confirmed_group_rosters"])
     assert stars.keys() == []
     assert storage.status.state == "error"
+
+
+@pytest.mark.parametrize("policy", ["encrypted", "none"])
+@pytest.mark.parametrize("initialize", [True, False])
+def test_preference_reads_do_not_migrate_or_scrub_settings(tmp_path, policy, initialize):
+    path = tmp_path / "settings.json"
+    SettingsStore(path).update(local_data=policy)
+    StarredThreadsStore(path).set_starred("private-identity", True)
+    ConfirmedGroupsStore(path).remember("private-identity", "roster")
+    _, stars, groups = _stores(path, initialize=initialize)
+    saved = path.read_bytes()
+    stars.keys()
+    groups.matches("private-identity", "roster")
+    groups.matching_rosters({"private-identity": "roster"})
+    assert path.read_bytes() == saved
+    stars.migrate()
+    groups.migrate()
+    assert "private-identity" not in path.read_text()
+    migrated = path.read_bytes()
+    stars.migrate()
+    groups.migrate()
+    assert path.read_bytes() == migrated
