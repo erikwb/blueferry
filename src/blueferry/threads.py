@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Iterable
+from datetime import datetime
 from pathlib import Path
 from typing import TypeAlias
 
@@ -66,6 +67,14 @@ class ConversationIndex:
 
 def _event_time(event: dict) -> str:
     return str(event.get("timestamp") or event.get("seen_at") or "")
+
+
+def _timestamp_order(value: str) -> float:
+    """Compare instants: outgoing local offsets and incoming UTC may differ."""
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except (ValueError, OverflowError, OSError):
+        return float("-inf")
 
 
 def _thread_name(event: dict, address: str | None, resolver) -> str:
@@ -231,13 +240,13 @@ def build_threads(events: list[dict], resolver=None) -> list[dict]:
             "body_truncated": bool(event.get("body_truncated", False)),
         }
         thread["messages"].append(message)
-        if message["timestamp"] >= thread["last_ts"]:
+        if _timestamp_order(str(message["timestamp"])) >= _timestamp_order(thread["last_ts"]):
             thread["last_ts"] = message["timestamp"]
             if event.get("group_observed_sender"):
                 thread["prompt_sender"] = str(event["group_observed_sender"])
 
     for thread in by_key.values():
-        thread["messages"].sort(key=lambda message: message["timestamp"])
+        thread["messages"].sort(key=lambda message: _timestamp_order(message["timestamp"]))
         if not thread["is_group"]:
             messages = thread["messages"]
             latest_incoming = next(
@@ -273,7 +282,7 @@ def sort_threads(
         decorated,
         key=lambda item: (
             bool(item.get("starred")),
-            str(item.get("last_ts") or ""),
+            _timestamp_order(str(item.get("last_ts") or "")),
         ),
         reverse=True,
     )

@@ -147,3 +147,27 @@ def test_selected_address_follows_merge_even_when_old_message_is_not_in_snapshot
     state.apply_snapshot(ConversationSnapshot(None, (merged,)))
     assert state.selected_key == merged.key
     assert state.thread(old.key) == merged
+
+
+def test_local_send_stays_at_tail_of_utc_contact_history(contacts, monkeypatch):
+    from blueferry import threads as threads_module
+
+    resolver, _ = contacts
+    # Limiting the view used to hide the send entirely after string sorting.
+    monkeypatch.setattr(threads_module, "MAX_THREAD_MESSAGES", 2)
+    events = [
+        message(EMAIL, 0, timestamp="2026-09-06T19:05:00+00:00"),
+        message(PHONE, 1, timestamp="2026-09-06T19:06:00+00:00"),
+        message(OTHER_PHONE, 2, outgoing=True, timestamp="2026-09-06T15:53:33-04:00"),
+        message("+15553333333", 3, timestamp="2026-09-06T19:50:00Z"),
+    ]
+    merged, other = build_threads(events, resolver)
+    assert [item["handle"] for item in merged["messages"]] == ["message-1", "message-2"]
+    assert merged["messages"][-1]["outgoing"]
+    assert merged["last_ts"] == "2026-09-06T15:53:33-04:00"
+    assert other["last_ts"] == "2026-09-06T19:50:00Z"
+    assert merged["recipients"] == [PHONE]
+    events.append(message(EMAIL, 4, timestamp="2026-09-06T15:54:00-04:00"))
+    merged = build_threads(events, resolver)[0]
+    assert [item["handle"] for item in merged["messages"]] == ["message-2", "message-4"]
+    assert merged["recipients"] == [EMAIL]
