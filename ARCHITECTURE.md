@@ -69,6 +69,14 @@ separate short-lived helper protocol because it precedes daemon availability
 and must exchange confirmation prompts with the QML client.
 All Python transports share `client_wire` for response-shape validation and
 model conversion; synchronous and toolkit-specific scheduling remain separate.
+`ListThreads` includes retained starred conversations even when their last event
+falls outside the ordinary 2,000-event window. The cached projection scans retained
+history when stars exist, preserving older group correlation evidence. Responses
+fit the 8 MiB JSON budget by retaining contiguous newest-message tails fairly
+across threads. `messages_truncated` tells clients to show a history notice; this
+also covers the existing 500-message per-thread display cap. These limits never
+delete stored events or change reply recipients.
+
 Group-thread messages include a display-only sender label derived from the
 resolved MAP contact or the correlated Messages notification. It never
 participates in thread identity or reply routing; outgoing labels are localized

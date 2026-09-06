@@ -258,6 +258,10 @@ class ConversationsPage(Gtk.Box):
             "button-clicked", self._open_group_roster_dialog
         )
         right.append(self._group_roster_banner)
+        self._history_banner = Adw.Banner(
+            title=_("Showing recent messages. Older messages remain in local history.")
+        )
+        right.append(self._history_banner)
         right.append(self._stack)
 
         compose = Gtk.Box(
@@ -764,6 +768,7 @@ class ConversationsPage(Gtk.Box):
         dialog.present(self.get_root())
 
     def _update_group_roster_banner(self, thread: Thread | None) -> None:
+        self._history_banner.set_revealed(bool(thread and thread.extra.get("messages_truncated")))
         required = bool(thread and thread.participants_required)
         self._group_roster_button.set_visible(
             bool(thread and thread.group_origin == "named")

@@ -606,6 +606,30 @@ Kirigami.ApplicationWindow {
         standardButtons: Kirigami.Dialog.Close
     }
 
+    Kirigami.PromptDialog {
+        id: confirmGroupDialog
+        property string threadKey: ""
+        property string draft: ""
+        title: qsTr("Confirm Group Recipients")
+        standardButtons: Kirigami.Dialog.Cancel
+        customFooterActions: [Kirigami.Action {
+            text: qsTr("Send to These Recipients")
+            onTriggered: {
+                root.bridge.sendThread(confirmGroupDialog.threadKey, confirmGroupDialog.draft, true)
+                confirmGroupDialog.close()
+            }
+        }]
+        Connections {
+            target: root.bridge
+            function onGroupConfirmationRequested(key: string, body: string, roster: string): void {
+                confirmGroupDialog.threadKey = key
+                confirmGroupDialog.draft = body
+                confirmGroupDialog.subtitle = root.escapedRichText(root.htmlEscape(roster).replace(/\n/g, "<br>"))
+                confirmGroupDialog.open()
+            }
+        }
+    }
+
     Kirigami.Dialog {
         id: newMessageDialog
         title: qsTr("New Message")
@@ -619,13 +643,21 @@ Kirigami.ApplicationWindow {
                 && newMessageBody.text.trim() !== "" && !root.bridge.busy
             onTriggered: {
                 root.bridge.sendMessage(newRecipient.text, newMessageBody.text)
-                newMessageDialog.close()
             }
         }]
 
+        Connections {
+            target: root.bridge
+            function onMessageSendSucceeded(recipient: string, body: string): void {
+                if (newRecipient.text === recipient && newMessageBody.text === body) {
+                    newRecipient.clear()
+                    newMessageBody.clear()
+                    newMessageDialog.close()
+                }
+            }
+        }
+
         onOpened: {
-            newRecipient.clear()
-            newMessageBody.clear()
             root.bridge.findContacts("")
             newRecipient.forceActiveFocus()
         }
@@ -957,6 +989,14 @@ Kirigami.ApplicationWindow {
                             }
                         }
 
+                        Controls.Label {
+                            Layout.fillWidth: true
+                            visible: messagesPage.thread !== null
+                                && messagesPage.thread.messages_truncated === true
+                            text: qsTr("Showing recent messages. Older messages remain in local history.")
+                            wrapMode: Text.Wrap
+                        }
+
                         ListView {
                             id: messageList
                             Layout.fillWidth: true
@@ -1031,6 +1071,14 @@ Kirigami.ApplicationWindow {
 
                             ExpandingMessageComposer {
                                 id: composer
+                                Connections {
+                                    target: root.bridge
+                                    function onThreadSendSucceeded(key: string, body: string): void {
+                                        if (messagesPage.thread && messagesPage.thread.key === key
+                                                && composer.text === body)
+                                            composer.clear()
+                                    }
+                                }
                                 placeholderText: qsTr("Write a Message")
                                 enabled: messagesPage.thread !== null
                                     && messagesPage.thread.reply_ready && !root.bridge.busy
@@ -1048,9 +1096,8 @@ Kirigami.ApplicationWindow {
                                     root.bridge.sendThread(
                                         messagesPage.thread.key,
                                         composer.text,
-                                        messagesPage.thread.is_group
+                                        false
                                     )
-                                    composer.clear()
                                 }
                             }
                         }

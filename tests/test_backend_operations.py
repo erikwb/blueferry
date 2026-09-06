@@ -870,3 +870,48 @@ def test_successful_group_send_is_acknowledged_when_preferences_fail(monkeypatch
     ObexWorker._deliver(result, *pending[0])
     assert replies == ["/transfer/sent"]
     assert len(recorded) == 1
+
+
+def test_starred_thread_survives_recent_event_window(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "EVENTS_DB", tmp_path / "events.sqlite")
+    monkeypatch.setattr(backend_operations, "MAX_CONVERSATION_EVENTS", 3)
+    append_event({
+        "kind": "sms_received", "handle": "favorite", "sender_address": "+15551111111",
+        "body": "keep me", "seen_at": "2026-08-01T00:00:00Z",
+    })
+    store = StarredThreadsStore(tmp_path / "settings.json")
+    operations = _operations(starred_threads=store)
+    key = operations.list_threads(10)[0]["key"]
+    operations.set_thread_starred(key, True)
+    for index in range(4):
+        append_event({
+            "kind": "sms_received", "handle": f"new-{index}",
+            "sender_address": "+15552222222", "body": "new",
+            "seen_at": f"2026-08-02T00:00:0{index}Z",
+        })
+    for instance in [operations, _operations(starred_threads=store)]:
+        favorite = instance.list_threads(10)[0]
+        assert favorite["key"] == key
+        assert favorite["starred"] is True
+        assert favorite["messages"][0]["body"] == "keep me"
+    operations.set_thread_starred(key, False)
+    assert key not in {thread["key"] for thread in operations.list_threads(10)}
+
+
+def test_large_thread_response_fits_wire_limit_without_changing_cached_history():
+    import json
+
+    from blueferry.limits import MAX_DBUS_JSON_BYTES
+
+    operations = _operations()
+    messages = [{"handle": str(i), "body": "😀" * 32768} for i in range(260)]
+    thread = {**_group(), "messages": messages}
+    _stub_group(operations, thread)
+    result = operations.list_threads(1)
+    assert len(json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode()) <= (
+        MAX_DBUS_JSON_BYTES
+    )
+    assert result[0]["messages_truncated"] is True
+    assert result[0]["messages"][-1]["handle"] == "259"
+    assert result[0]["recipients"] == thread["recipients"]
+    assert len(thread["messages"]) == 260

@@ -60,6 +60,7 @@ from blueferry.storage_security import STORAGE_POLICIES, StorageSecurity
 from blueferry.threads import (
     MESSAGE_KINDS,
     ConversationIndex,
+    bound_thread_response,
     build_threads,
     group_confirmation_token,
     sort_threads,
@@ -166,13 +167,23 @@ class BackendOperations:
         self._confirmed_groups: dict[str, str] = {}
         self._conversations = ConversationIndex(
             lambda: read_events(
-                limit=MAX_CONVERSATION_EVENTS,
+                limit=None if self._starred_keys() else MAX_CONVERSATION_EVENTS,
                 max_body_chars=MAX_THREAD_BODY_CHARS,
                 storage=self.dependencies.storage,
             ),
-            lambda events: build_threads(events, self.dependencies.contacts),
+            self._build_conversations,
             revision=lambda: history_revision(storage=self.dependencies.storage),
         )
+
+    def _build_conversations(self, events: list[dict]) -> list[dict]:
+        threads = build_threads(events, self.dependencies.contacts)
+        stars = self._starred_keys()
+        if not stars:
+            return threads
+        recent = {str(event.get("handle") or "") for event in events[-MAX_CONVERSATION_EVENTS:]}
+        return [thread for thread in threads if thread["key"] in stars or any(
+            message["handle"] in recent for message in thread["messages"]
+        )]
 
     def _require_map(self) -> None:
         if self.sessions.map is None:
@@ -332,7 +343,7 @@ class BackendOperations:
 
     def list_threads(self, limit: int) -> list[dict]:
         bounded = max(1, min(int(limit), MAX_THREAD_QUERY_LIMIT))
-        return self._present_threads(self._conversations.threads())[:bounded]
+        return bound_thread_response(self._present_threads(self._conversations.threads())[:bounded])
 
     def _starred_keys(self) -> set[str]:
         store = self.dependencies.starred_threads
@@ -394,9 +405,9 @@ class BackendOperations:
         if thread is None:
             raise NotFoundError("thread no longer exists in local history")
         try:
-            return self.dependencies.starred_threads.set_starred(
-                thread_key, bool(starred)
-            )
+            result = self.dependencies.starred_threads.set_starred(thread_key, bool(starred))
+            self._conversations.invalidate()
+            return result
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
 

@@ -114,11 +114,17 @@ class ProfileSupervisor:
         generation = self._generation
         self.connectivity.connecting()
         self._on_status()
-        self.worker.submit(
-            self.sessions.open_all,
-            on_success=lambda result: self._opened(generation, result),
-            on_error=lambda error: self._open_failed(generation, error),
-        )
+        try:
+            self.worker.submit(
+                self.sessions.open_all,
+                on_success=lambda result: self._opened(generation, result),
+                on_error=lambda error: self._open_failed(generation, error),
+            )
+        except RuntimeError as error:
+            self._opening = False
+            delay = self.connectivity.failed(error, retry_delay_seconds=self._poll_seconds)
+            self._on_status()
+            self._schedule_retry(delay)
 
     def reconnect(self, reason: str, *, remove_remote_sessions: bool = True) -> None:
         """Discard current consumers and sessions, then reconnect shortly."""
@@ -141,11 +147,29 @@ class ProfileSupervisor:
         close = self.sessions.close_all
         if not remove_remote_sessions:
             close = partial(self.sessions.close_all, remove_remote=False)
-        self.worker.submit(
-            close,
-            on_success=lambda _result: self._closed(generation),
-            on_error=lambda error: self._close_failed(generation, error),
-        )
+        if self._retry_id is not None:
+            self._cancel(self._retry_id)
+            self._retry_id = None
+        self._submit_close(generation, close)
+
+    def _submit_close(self, generation: int, close: Callable[[], None]) -> None:
+        if self._stopping or generation != self._generation:
+            return
+        try:
+            self.worker.submit(
+                close,
+                on_success=lambda _result: self._closed(generation),
+                on_error=lambda error: self._close_failed(generation, error),
+            )
+        except RuntimeError:
+            log.warning("OBEX queue full; retrying session cleanup")
+
+            def retry_close() -> bool:
+                self._retry_id = None
+                self._submit_close(generation, close)
+                return False
+
+            self._retry_id = self._schedule(self._poll_seconds, retry_close)
 
     def session_lost(self, reason: str) -> None:
         # The transport is already failing. Keep cleanup serialized behind any

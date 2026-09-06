@@ -807,6 +807,10 @@ class BlueFerryApp(App[None]):
         )
 
         widgets: list[Static | MessageRow] = []
+        if thread.extra.get("messages_truncated"):
+            widgets.append(Static(
+                "Showing recent messages. Older messages remain in local history."
+            ))
         previous_day = ""
         for message in thread.messages:
             timestamp = format_message_timestamp(message.timestamp)

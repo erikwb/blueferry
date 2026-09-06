@@ -303,3 +303,57 @@ def test_loss_during_open_cannot_publish_stale_readiness() -> None:
     # operation before a retry can begin.
     worker.succeed()
     assert sessions.map is None and sessions.pbap is None
+
+
+def test_full_queue_retries_open_without_completing_an_attempt(monkeypatch):
+    completed = []
+    supervisor, sessions, worker, scheduled, *_ = make_supervisor(
+        first_attempt=lambda: completed.append(True),
+    )
+    submit = worker.submit
+    monkeypatch.setattr(worker, "submit", lambda *_a, **_k: (_ for _ in ()).throw(
+        RuntimeError("queue full")
+    ))
+    supervisor.start()
+    assert not supervisor.opening
+    assert not completed
+    monkeypatch.setattr(worker, "submit", submit)
+    scheduled.pop()[1]()
+    worker.succeed()
+    assert supervisor.ready
+    assert sessions.opens == 1
+    assert completed == [True]
+
+
+def test_full_queue_retries_cleanup_before_reopening(monkeypatch):
+    supervisor, sessions, worker, scheduled, *_ = make_supervisor()
+    supervisor.start()
+    worker.succeed()
+    submit = worker.submit
+    monkeypatch.setattr(worker, "submit", lambda *_a, **_k: (_ for _ in ()).throw(
+        RuntimeError("queue full")
+    ))
+    supervisor.session_lost("disconnected")
+    supervisor.open()
+    assert not worker.jobs
+    monkeypatch.setattr(worker, "submit", submit)
+    scheduled.pop()[1]()
+    worker.succeed()
+    assert sessions.remote_closes == [False]
+    assert sessions.opens == 1
+    scheduled.pop()[1]()
+    worker.succeed()
+    assert sessions.opens == 2
+    assert supervisor.ready
+
+
+def test_stop_cancels_rejected_cleanup_retry(monkeypatch):
+    supervisor, _sessions, worker, scheduled, *_ = make_supervisor()
+    monkeypatch.setattr(worker, "submit", lambda *_a, **_k: (_ for _ in ()).throw(
+        RuntimeError("queue full")
+    ))
+    supervisor.reconnect("disconnected")
+    supervisor.stop()
+    scheduled.pop()[1]()
+    assert not scheduled
+    assert not worker.jobs

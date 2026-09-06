@@ -676,3 +676,45 @@ def test_activating_bluetooth_reloads_the_selected_adapter_before_scanning(
     assert calls == ["activate", ("compatibility", "hci1")]
     assert controller.compatibility["adapter"] == "hci1"
     assert loaded == [True]
+
+
+def test_group_send_requires_explicit_approval_and_rejects_changed_roster(monkeypatch):
+    controller = BridgeController(backend=_Backend(), setup=object(), subscribe=False, autostart=False)
+    controller._threads = [{
+        "key": "group:test", "name": "Group", "is_group": True, "reply_ready": True,
+        "recipients": ["+15551111111", "+15552222222"],
+    }]
+    queued = []
+    prompts = []
+    monkeypatch.setattr(controller, "_run", lambda *args, **kwargs: queued.append(args))
+    controller.groupConfirmationRequested.connect(lambda *args: prompts.append(args))
+    controller.sendThread("group:test", "draft", False)
+    assert not queued
+    assert prompts == [("group:test", "draft", "+15551111111\n+15552222222")]
+    controller._threads[0]["recipients"].append("+15553333333")
+    controller.sendThread("group:test", "draft", True)
+    assert not queued
+    assert "group changed" in controller.errorText
+    controller.sendThread("group:test", "draft", False)
+    controller.sendThread("group:test", "draft", True)
+    assert len(queued) == 1
+
+
+def test_draft_completion_is_emitted_only_after_success(monkeypatch):
+    backend = _Backend()
+    controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+    controller._threads = [thread.to_dict() for thread in backend.threads()]
+    queued = []
+    completed = []
+    monkeypatch.setattr(controller, "_run", lambda *args, **kwargs: queued.append(args))
+    monkeypatch.setattr(controller, "refresh", lambda: None)
+    controller.threadSendSucceeded.connect(lambda *args: completed.append(args))
+    controller.messageSendSucceeded.connect(lambda *args: completed.append(args))
+    key = controller._threads[0]["key"]
+    controller.sendThread(key, " draft ", False)
+    controller.sendMessage(" new recipient ", " new draft ")
+    assert completed == []
+    queued[0][1]("sent")
+    assert completed == [(key, " draft ")]
+    queued[1][1]("sent")
+    assert completed[-1] == (" new recipient ", " new draft ")
