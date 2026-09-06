@@ -437,6 +437,83 @@ def test_named_group_key_survives_roster_save_and_history_reload(
     assert updated["roster_changed"] is False
 
 
+def test_mark_thread_read_updates_local_history_and_queues_map(
+    tmp_path, monkeypatch,
+) -> None:
+    path = tmp_path / "events.sqlite"
+    monkeypatch.setattr(config, "EVENTS_DB", path)
+    append_event({
+        "kind": "sms_received",
+        "handle": "message-alice",
+        "sender_address": "+15551111111",
+        "contact_name": "Alice",
+        "body": "hello",
+        "is_read": False,
+        "seen_at": "2026-08-12T10:00:00+00:00",
+    }, path=path)
+    append_event({
+        "kind": "sms_received",
+        "handle": "message-bob",
+        "sender_address": "+15552222222",
+        "contact_name": "Bob",
+        "body": "later",
+        "is_read": False,
+        "seen_at": "2026-08-12T10:01:00+00:00",
+    }, path=path)
+    mapped = []
+    monkeypatch.setattr(
+        backend_operations,
+        "set_session_messages_read",
+        lambda session, handles: mapped.append((session, list(handles))),
+    )
+    operations = _operations()
+    alice = next(
+        thread for thread in operations.list_threads(10) if thread["name"] == "Alice"
+    )
+
+    assert alice["unread"] is True
+    assert operations.mark_thread_read(alice["key"]) == 1
+    assert mapped == [("/session/map", ["message-alice"])]
+    events = {event["handle"]: event for event in read_events(path=path)}
+    assert events["message-alice"]["is_read"] is True
+    assert events["message-bob"]["is_read"] is False
+    alice = next(
+        thread for thread in operations.list_threads(10) if thread["name"] == "Alice"
+    )
+    assert alice["unread"] is False
+    assert operations.mark_thread_read(alice["key"]) == 0
+
+
+def test_mark_thread_read_skips_map_without_a_session(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "events.sqlite"
+    monkeypatch.setattr(config, "EVENTS_DB", path)
+    append_event({
+        "kind": "sms_received",
+        "handle": "message-alice",
+        "sender_address": "+15551111111",
+        "contact_name": "Alice",
+        "body": "hello",
+        "is_read": False,
+        "seen_at": "2026-08-12T10:00:00+00:00",
+    }, path=path)
+    mapped = []
+    monkeypatch.setattr(
+        backend_operations,
+        "set_session_messages_read",
+        lambda *_args: mapped.append(True),
+    )
+    sessions = _Sessions()
+    sessions.map = None
+    operations = BackendOperations(
+        sessions, BackendDependencies(submit_obex=lambda *_a, **_k: None)
+    )
+
+    thread = operations.list_threads(10)[0]
+    assert operations.mark_thread_read(thread["key"]) == 1
+    assert mapped == []
+    assert read_events(path=path)[0]["is_read"] is True
+
+
 def test_history_snapshot_validates_kinds_and_caps_bodies(monkeypatch) -> None:
     captured = {}
 

@@ -10,6 +10,7 @@ Kirigami.ApplicationWindow {
 
     required property var bridge
     property string selectedThreadKey: ""
+    onSelectedThreadKeyChanged: root.markSelectedThreadRead()
     property bool firstRunRedirected: false
     property var iphoneSettingsPage: null
     property string pendingMessageHandle: ""
@@ -79,6 +80,27 @@ Kirigami.ApplicationWindow {
             }
         }
         return null
+    }
+
+    function threadIsUnread(thread) {
+        if (!thread)
+            return false
+        if (thread.unread === true)
+            return true
+        if (thread.unread === false)
+            return false
+        const messages = thread.messages || []
+        for (let index = 0; index < messages.length; ++index) {
+            if (!messages[index].outgoing && messages[index].read === false)
+                return true
+        }
+        return false
+    }
+
+    function markSelectedThreadRead() {
+        const thread = selectedThread()
+        if (thread && threadIsUnread(thread))
+            bridge.markThreadRead(thread.key)
     }
 
     function selectMessage(handle) {
@@ -198,6 +220,7 @@ Kirigami.ApplicationWindow {
             if (root.pendingMessageHandle !== "")
                 root.selectMessage(root.pendingMessageHandle)
             root.warnAboutRosterChanges()
+            root.markSelectedThreadRead()
         }
 
         function onMessageOpenRequested(handle) {
@@ -777,7 +800,7 @@ Kirigami.ApplicationWindow {
                                 required property var modelData
                                 width: threadList.width
                                 highlighted: root.selectedThreadKey === modelData.key
-                                Accessible.name: preview.text
+                                Accessible.name: threadDelegate.modelData.name
                                 onClicked: root.selectedThreadKey = modelData.key
                                 contentItem: RowLayout {
                                     spacing: Kirigami.Units.smallSpacing
@@ -788,18 +811,26 @@ Kirigami.ApplicationWindow {
                                         implicitWidth: Kirigami.Units.iconSizes.smallMedium
                                         implicitHeight: implicitWidth
                                     }
-                                    Controls.Label {
-                                        id: preview
+                                    ColumnLayout {
                                         Layout.fillWidth: true
-                                        text: threadDelegate.modelData.name + "\n" + (
-                                            threadDelegate.modelData.messages.length
+                                        spacing: 0
+                                        Controls.Label {
+                                            id: preview
+                                            Layout.fillWidth: true
+                                            text: threadDelegate.modelData.name
+                                            textFormat: Text.PlainText
+                                            font.bold: root.threadIsUnread(threadDelegate.modelData)
+                                            elide: Text.ElideRight
+                                        }
+                                        Controls.Label {
+                                            Layout.fillWidth: true
+                                            text: threadDelegate.modelData.messages.length
                                                 ? threadDelegate.modelData.messages[threadDelegate.modelData.messages.length - 1].body
                                                 : qsTr("No Messages")
-                                        )
-                                        textFormat: Text.PlainText
-                                        maximumLineCount: 2
-                                        wrapMode: Text.Wrap
-                                        elide: Text.ElideRight
+                                            textFormat: Text.PlainText
+                                            opacity: 0.7
+                                            elide: Text.ElideRight
+                                        }
                                     }
                                 }
                                 TapHandler {

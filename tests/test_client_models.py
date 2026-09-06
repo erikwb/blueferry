@@ -62,6 +62,10 @@ class _Messages:
         assert bool(confirmed) is True
         return len(keys)
 
+    def MarkThreadRead(self, key, **_kwargs):
+        assert key == "address:email:test@example.com"
+        return 3
+
 
 def test_backend_client_returns_shared_models(monkeypatch):
     messages = _Messages()
@@ -72,6 +76,7 @@ def test_backend_client_returns_shared_models(monkeypatch):
     assert client.status().contacts == 3
     assert isinstance(client.threads()[0], Thread)
     assert client.threads()[0].recipients == ("test@example.com",)
+    assert client.mark_thread_read("address:email:test@example.com") == 3
     assert isinstance(client.events([])[0], EventRecord)
     assert client.events([])[0].title == "Test"
     assert client.list_contacts() == [

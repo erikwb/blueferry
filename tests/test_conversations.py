@@ -16,8 +16,9 @@ from blueferry.ui import conversations  # noqa: E402
 
 
 class _FakeWidget:
-    def __init__(self, **_kwargs):
+    def __init__(self, **kwargs):
         self.children = []
+        self.css_classes = kwargs.get("css_classes", [])
 
     def append(self, child):
         self.children.append(child)
@@ -123,6 +124,71 @@ def test_sidebar_rebuild_does_not_fire_selection_callback(monkeypatch):
     assert len(thread_list.rows[0].controllers) == 1
     assert thread_list.selection_callbacks == 0
     assert thread_list.blocked is False
+    assert thread_list.rows[0].child.children[0].css_classes == []
+
+
+def test_unread_thread_name_uses_heading_style(monkeypatch):
+    monkeypatch.setattr(conversations, "Gtk", _FakeGtk)
+    monkeypatch.setattr(conversations, "Gdk", _FakeGdk)
+    thread_list = _FakeThreadList()
+    unread = _thread(
+        key="Bob",
+        name="Bob",
+        messages=(
+            ThreadMessage(
+                handle="2",
+                body="hey",
+                timestamp="2026-08-08T11:00:00-04:00",
+                outgoing=False,
+                read=False,
+            ),
+        ),
+    )
+    state = ConversationState(select_first=False)
+    state.apply_snapshot(ConversationSnapshot(None, (unread,)))
+    page = SimpleNamespace(
+        _thread_list=thread_list,
+        _thread_selected_handler=42,
+        _show_thread_context_menu=lambda *_args: None,
+        _state=state,
+    )
+
+    conversations.ConversationsPage._rebuild_thread_list(page)
+
+    assert thread_list.rows[0].child.children[0].css_classes == ["heading"]
+
+
+def test_selected_unread_thread_is_marked_read():
+    marked = []
+    unread = _thread(
+        key="Bob",
+        name="Bob",
+        messages=(
+            ThreadMessage(
+                handle="2",
+                body="hey",
+                timestamp="2026-08-08T11:00:00-04:00",
+                outgoing=False,
+                read=False,
+            ),
+        ),
+    )
+    state = ConversationState(select_first=False)
+    state.apply_snapshot(ConversationSnapshot(None, (unread, _thread())))
+    state.selected_key = "Bob"
+    page = SimpleNamespace(
+        _state=state,
+        _client=SimpleNamespace(
+            mark_thread_read_async=lambda key: marked.append(key)
+        ),
+    )
+
+    conversations.ConversationsPage._mark_selected_read(page)
+    assert marked == ["Bob"]
+
+    state.selected_key = "Alice"
+    conversations.ConversationsPage._mark_selected_read(page)
+    assert marked == ["Bob"]
 
 
 def test_map_refusal_reveals_prominent_message_banner() -> None:

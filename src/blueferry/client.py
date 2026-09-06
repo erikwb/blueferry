@@ -78,6 +78,14 @@ class BackendClient:
         except (dbus.exceptions.DBusException, ValueError) as error:
             raise BackendError(str(error)) from error
 
+    def mark_thread_read(self, thread_key: str) -> int:
+        try:
+            return int(self._iface(MESSAGES_IFACE).MarkThreadRead(
+                thread_key, timeout=SNAPSHOT_CALL_TIMEOUT_SEC,
+            ))
+        except dbus.exceptions.DBusException as error:
+            raise BackendError(error.get_dbus_message() or str(error)) from error
+
     def events(self, kinds: list[str], limit: int = 1000) -> list[EventRecord]:
         try:
             return decode_events(self._iface(MESSAGES_IFACE).ListEvents(

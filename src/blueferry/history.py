@@ -31,6 +31,10 @@ CREATE TABLE IF NOT EXISTS events (
     occurred_at  REAL,
     payload_json TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS meta (
+    key   TEXT PRIMARY KEY,
+    value INTEGER NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_events_kind_id ON events(kind, id);
 CREATE INDEX IF NOT EXISTS idx_events_occurred_at ON events(occurred_at);
 """
@@ -255,17 +259,77 @@ def delete_event_rows(
     return int(removed)
 
 
+def _bump_generation(database: sqlite3.Connection) -> None:
+    database.execute(
+        "INSERT INTO meta(key, value) VALUES ('generation', 1) "
+        "ON CONFLICT(key) DO UPDATE SET value = value + 1"
+    )
+
+
+def mark_event_handles_read(
+    handles: Iterable[str],
+    *,
+    path: Path | None = None,
+    storage: StorageSecurity | None = None,
+) -> int:
+    """Set ``is_read`` on matching ``sms_received`` history events.
+
+    Payload updates do not change row ids, so a generation counter is bumped
+    when anything changes and conversation caches can observe the revision.
+    """
+    selected = {str(handle) for handle in handles if str(handle)}
+    if not selected:
+        return 0
+    if storage is not None and not storage.status.can_write:
+        return 0
+    updated = 0
+    with closing(_open_database(path)) as database, database:
+        for event_id, payload in database.execute(
+            "SELECT id, payload_json FROM events"
+        ):
+            try:
+                event = _deserialize(payload, storage)
+            except CorruptStorageError:
+                if storage is not None:
+                    storage.fail_closed(
+                        "Encrypted local history could not be authenticated"
+                    )
+                return 0
+            except (ValueError, RuntimeError):
+                continue
+            if event is None:
+                continue
+            if str(event.get("kind") or "") != "sms_received":
+                continue
+            handle = str(event.get("handle") or "")
+            if handle not in selected or event.get("is_read") is True:
+                continue
+            event["is_read"] = True
+            database.execute(
+                "UPDATE events SET payload_json = ? WHERE id = ?",
+                (_serialize(event, storage), int(event_id)),
+            )
+            updated += 1
+        if updated:
+            _bump_generation(database)
+    return updated
+
+
 def history_revision(
     *, path: Path | None = None, storage: StorageSecurity | None = None
-) -> tuple[int, int]:
-    """Return a cheap cache key that changes for every append or deletion."""
+) -> tuple[int, int, int]:
+    """Return a cheap cache key that changes for every append, update, or deletion."""
     if storage is not None and not storage.status.can_read:
-        return 0, 0
+        return 0, 0, 0
     with closing(_open_database(path)) as database:
         count, newest = database.execute(
             "SELECT COUNT(*), COALESCE(MAX(id), 0) FROM events"
         ).fetchone()
-    return int(count), int(newest)
+        generation_row = database.execute(
+            "SELECT value FROM meta WHERE key = 'generation'"
+        ).fetchone()
+    generation = int(generation_row[0]) if generation_row else 0
+    return int(count), int(newest), generation
 
 
 def history_count(

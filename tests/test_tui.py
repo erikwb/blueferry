@@ -64,6 +64,7 @@ class _Backend:
         ]
         self.sent = []
         self.deleted = []
+        self.marked = []
         self.group_participants = None
 
     @staticmethod
@@ -81,6 +82,10 @@ class _Backend:
     def send(self, recipient: str, body: str) -> str:
         self.sent.append((recipient, body))
         return "/transfer/2"
+
+    def mark_thread_read(self, thread_key: str) -> int:
+        self.marked.append(thread_key)
+        return 0
 
     def delete_threads(self, thread_keys: list[str]) -> int:
         self.deleted.append(list(thread_keys))

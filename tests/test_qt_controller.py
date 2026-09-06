@@ -48,6 +48,26 @@ class _Backend:
         self.deleted = list(keys)
         return len(keys)
 
+    def mark_thread_read(self, key):
+        self.marked = key
+        return 1
+
+
+def test_mark_thread_read_is_silent_and_not_busy():
+    backend = _Backend()
+    controller = BridgeController(
+        backend=backend,
+        setup=object(),
+        subscribe=False,
+        autostart=False,
+    )
+
+    controller.markThreadRead("address:email:test@example.com")
+    controller._pool.waitForDone(1000)
+
+    assert backend.marked == "address:email:test@example.com"
+    assert controller.busy is False
+
 
 def test_snapshot_converts_typed_client_models_for_qml():
     controller = BridgeController(

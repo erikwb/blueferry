@@ -13,6 +13,7 @@ ShellRoot {
   property string contactQuery: ""
   property string contactsRequestedQuery: ""
   property string selectedThreadKey: ""
+  property string pendingThreadKey: ""
   property string pendingMessageHandle: ""
   property string confirmedGroupSignature: ""
   property var groupParticipantsThread: null
@@ -126,6 +127,25 @@ ShellRoot {
     return null
   }
 
+  function threadIsUnread(thread) {
+    if (!thread) return false
+    if (thread.unread === true) return true
+    if (thread.unread === false) return false
+    var messages = thread.messages || []
+    for (var index = 0; index < messages.length; ++index) {
+      if (!messages[index].outgoing && messages[index].read === false) return true
+    }
+    return false
+  }
+
+  function markSelectedThreadRead() {
+    var thread = selectedThread()
+    if (!thread || !threadIsUnread(thread)) return
+    backendBridge.request("mark_thread_read", {thread_key: String(thread.key)})
+  }
+
+  onSelectedThreadKeyChanged: root.markSelectedThreadRead()
+
   function selectMessage(handle) {
     for (var threadIndex = 0; threadIndex < threads.length; ++threadIndex) {
       var thread = threads[threadIndex]
@@ -142,10 +162,22 @@ ShellRoot {
     return false
   }
 
-  function openMessage(handle) {
-    pendingMessageHandle = handle
+  function presentWindow() {
     phoneSettingsVisible = false
     window.visible = true
+  }
+
+  function openThread(key) {
+    pendingThreadKey = key
+    selectedThreadKey = key
+    confirmedGroupSignature = ""
+    pendingMessageHandle = ""
+    presentWindow()
+  }
+
+  function openMessage(handle) {
+    pendingMessageHandle = handle
+    presentWindow()
     if (!selectMessage(handle)) reload()
   }
 
@@ -322,6 +354,13 @@ ShellRoot {
 
   BackendBridge { id: backendBridge }
 
+  IpcHandler {
+    target: "blueferry"
+    function open(): void { root.presentWindow() }
+    function openThread(key: string): void { root.openThread(key) }
+    function openMessage(handle: string): void { root.openMessage(handle) }
+  }
+
   Connections {
     target: backendBridge
 
@@ -348,13 +387,17 @@ ShellRoot {
       } else if (method === "threads") {
         root.threadsBusy = false
         root.threads = Array.isArray(result) ? result : []
-        if (root.selectedThreadKey !== "" && root.selectedThread() === null) {
+        if (root.pendingThreadKey !== "") {
+          root.selectedThreadKey = root.pendingThreadKey
+          if (root.selectedThread() !== null) root.pendingThreadKey = ""
+        } else if (root.selectedThreadKey !== "" && root.selectedThread() === null) {
           root.selectedThreadKey = ""
           root.confirmedGroupSignature = ""
         }
         if (root.pendingMessageHandle !== "")
           root.selectMessage(root.pendingMessageHandle)
         root.warnAboutRosterChanges()
+        root.markSelectedThreadRead()
         root.errorText = ""
       } else if (method === "contacts") {
         root.contactsBusy = false
@@ -376,6 +419,8 @@ ShellRoot {
         root.groupParticipantsBusy = false
         groupParticipantsPopup.close()
         root.reload()
+      } else if (method === "mark_thread_read") {
+        // HistoryChanged reloads the thread list.
       } else if (method === "delete_threads") {
         root.deleteThreadsBusy = false
         root.reload()
@@ -426,6 +471,8 @@ ShellRoot {
       } else if (method === "set_group_participants") {
         root.groupParticipantsBusy = false
         root.errorText = message
+      } else if (method === "mark_thread_read") {
+        // Keep the conversation open even if MAP write-back fails.
       } else if (method === "delete_threads") {
         root.deleteThreadsBusy = false
         root.errorText = message || "Could not delete local conversations"
@@ -655,6 +702,10 @@ ShellRoot {
     compatibilityProcess.running = true
     configurationProcess.running = true
     loadPairingDevices(false)
+    var messageHandle = String(Quickshell.env("BLUEFERRY_OPEN_MESSAGE_HANDLE") || "")
+    var threadKey = String(Quickshell.env("BLUEFERRY_OPEN_THREAD_KEY") || "")
+    if (messageHandle !== "") root.openMessage(messageHandle)
+    else if (threadKey !== "") root.openThread(threadKey)
   }
 
   FloatingWindow {
@@ -838,7 +889,7 @@ ShellRoot {
                         color: theme.windowText
                         font.family: theme.fontFamily
                         font.pixelSize: theme.baseFontSize
-                        font.bold: threadDelegate.highlighted
+                        font.bold: root.threadIsUnread(threadDelegate.modelData)
                         wrapMode: Text.NoWrap
                         maximumLineCount: 1
                         elide: Text.ElideRight

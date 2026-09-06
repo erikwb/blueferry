@@ -105,6 +105,8 @@ class QuickshellBridge:
             ).to_dict()
         if method == "delete_threads":
             return self.client.delete_threads(_texts(args, "thread_keys"))
+        if method == "mark_thread_read":
+            return self.client.mark_thread_read(_text(args, "thread_key"))
         if method == "set_notification_policy":
             return self.client.set_notification_policy(_text(args, "policy"))
         if method == "set_contacts_only_notifications":

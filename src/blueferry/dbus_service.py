@@ -147,6 +147,18 @@ class MessagesService(dbus.service.Object):
         ))
 
     @dbus.service.method(
+        IFACE, in_signature="s", out_signature="u", sender_keyword="sender"
+    )
+    def MarkThreadRead(self, thread_key: str, sender=None) -> int:
+        def mark() -> int:
+            updated = self.operations.mark_thread_read(thread_key)
+            if updated:
+                self.emit_history_changed()
+            return updated
+
+        return self._sync(lambda: self._authorized(sender, "read", mark))
+
+    @dbus.service.method(
         IFACE, in_signature="s", out_signature="s", sender_keyword="sender"
     )
     def FindContacts(self, query: str, sender=None) -> str:
