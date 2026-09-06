@@ -27,7 +27,7 @@ import dbus.exceptions
 
 from blueferry import config
 from blueferry.ancs.events import AncsEvent
-from blueferry.bus import get_session_bus, obex
+from blueferry.bus import get_session_bus
 from blueferry.events import SmsEvent
 from blueferry.limits import MAX_DESKTOP_MESSAGE_TRACKERS
 from blueferry.notification_policy import (
@@ -99,9 +99,9 @@ def _notification_hints(handle: str) -> dict[str, object]:
 
 
 def _mark_message_read(message_path: str) -> None:
-    obex(message_path, "org.freedesktop.DBus.Properties").Set(
-        "org.bluez.obex.Message1", "Read", dbus.Boolean(True), timeout=10.0
-    )
+    from blueferry.obex.map_read import set_message_read
+
+    set_message_read(message_path)
 
 
 class LibnotifySink:

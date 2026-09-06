@@ -11,6 +11,7 @@ from blueferry.history import (
     delete_event_rows,
     history_count,
     history_revision,
+    mark_event_handles_read,
     minimize_ancs_history,
     prune_events,
     read_event_rows,
@@ -85,6 +86,35 @@ def test_plaintext_prune_scrubs_deleted_payload_bytes(tmp_path) -> None:
     assert prune_events(path=path, max_events=1) == 1
 
     assert secret.encode() not in path.read_bytes()
+
+
+def test_mark_event_handles_read_updates_payload_and_revision(tmp_path) -> None:
+    path = tmp_path / "events.sqlite"
+    append_event({
+        "kind": "sms_received",
+        "handle": "message-unread",
+        "body": "hello",
+        "is_read": False,
+    }, path=path)
+    append_event({
+        "kind": "sms_received",
+        "handle": "message-read",
+        "body": "later",
+        "is_read": True,
+    }, path=path)
+    append_event({
+        "kind": "sms_sent",
+        "handle": "message-unread",
+        "body": "outgoing",
+        "is_read": False,
+    }, path=path)
+    before = history_revision(path=path)
+
+    assert mark_event_handles_read(["message-unread"], path=path) == 1
+    events = read_events(path=path)
+    assert [event["is_read"] for event in events] == [True, True, False]
+    assert history_revision(path=path) != before
+    assert mark_event_handles_read(["message-unread"], path=path) == 0
 
 
 def test_clear_preserves_private_database_and_changes_revision(tmp_path) -> None:

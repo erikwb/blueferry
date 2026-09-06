@@ -288,6 +288,16 @@ class DaemonClient(GObject.Object):
             on_err,
         )
 
+    def mark_thread_read_async(self, thread_key: str, on_ok=None, on_err=None) -> None:
+        self._submit(
+            lambda: self._call_backend(
+                lambda backend: backend.mark_thread_read(thread_key)
+            ),
+            on_ok or (lambda _value: None),
+            on_err,
+            mutation=True,
+        )
+
     def find_contacts_async(self, query: str, on_ok, on_err=None) -> None:
         """Find cached message destinations without blocking the GTK thread."""
         selected = query.strip()

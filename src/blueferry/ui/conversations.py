@@ -552,6 +552,7 @@ class ConversationsPage(Gtk.Box):
         self._reload_finished()
         self._select_pending_message()
         self._maybe_warn_roster_change()
+        self._mark_selected_read()
         return False
 
     # ---- thread list ---------------------------------------------------
@@ -585,7 +586,7 @@ class ConversationsPage(Gtk.Box):
                     Gtk.Label(
                         label=thread.name,
                         xalign=0,
-                        css_classes=["heading"],
+                        css_classes=["heading"] if thread.unread else [],
                         ellipsize=_ELLIPSIZE_END,
                     )
                 )
@@ -628,6 +629,13 @@ class ConversationsPage(Gtk.Box):
         for message in thread.messages:
             self._append_bubble(message, is_group=thread.is_group)
         self._scroll_to_bottom()
+        self._mark_selected_read()
+
+    def _mark_selected_read(self) -> None:
+        thread = self._state.selected
+        if thread is None or not thread.unread:
+            return
+        self._client.mark_thread_read_async(thread.key)
 
     def _show_thread_context_menu(
         self, _gesture, _press_count, x, y, row

@@ -86,6 +86,34 @@ def test_thread_normalizes_nested_messages(monkeypatch):
     assert thread.to_dict()["prompt_sender"] == "Alice"
     assert thread.to_dict()["roster_warning_id"] == "route-1:casey"
     assert thread.to_dict()["future_thread_field"] == "preserved"
+    assert thread.unread is False
+    assert thread.to_dict()["unread"] is False
+
+
+def test_thread_unread_ignores_outgoing_and_read_incoming():
+    unread = Thread.from_dict({
+        "key": "address:phone:15550000000",
+        "name": "Bob",
+        "messages": [
+            {
+                "handle": "out",
+                "body": "hi",
+                "timestamp": "today",
+                "outgoing": True,
+                "read": True,
+            },
+            {
+                "handle": "in",
+                "body": "hey",
+                "timestamp": "today",
+                "outgoing": False,
+                "read": False,
+            },
+        ],
+    })
+
+    assert unread.unread is True
+    assert unread.to_dict()["unread"] is True
 
 
 def test_event_record_exposes_common_fields_without_discarding_payload():

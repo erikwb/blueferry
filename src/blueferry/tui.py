@@ -55,6 +55,8 @@ class _Client(Protocol):
 
     def delete_threads(self, thread_keys: list[str]) -> int: ...
 
+    def mark_thread_read(self, thread_key: str) -> int: ...
+
 
 class _Monitor(Protocol):
     def pump(self) -> tuple[bool, str | None]: ...
@@ -245,7 +247,10 @@ class ConversationItem(ListItem):
         unread = _unread_count(thread)
         detail = f"{unread} unread" if unread else ("group" if thread.is_group else "direct")
         avatar = Static(Text(_initials(thread.name), justify="center"), classes="avatar")
-        title = Static(Text(_one_line(thread.name), style="bold"), classes="thread-name")
+        title = Static(
+            Text(_one_line(thread.name), style="bold" if unread else ""),
+            classes="thread-name",
+        )
         timestamp = Static(
             Text(_short_timestamp(thread.last_ts), justify="right"),
             classes="thread-time",
@@ -649,6 +654,7 @@ class BlueFerryApp(App[None]):
         await self._render_conversation()
         self.query_one("#workspace").add_class("chat-open")
         self._update_notice()
+        self._maybe_mark_selected_read()
 
     @work(thread=True, exclusive=True, group="refresh", exit_on_error=False)
     def _load_data(self) -> None:
@@ -688,6 +694,7 @@ class BlueFerryApp(App[None]):
             self._update_notice()
         if threads_changed:
             self._warn_about_roster_changes()
+        self._maybe_mark_selected_read()
 
     def _warn_about_roster_changes(self) -> None:
         thread = self.state.next_roster_warning()
@@ -861,6 +868,19 @@ class BlueFerryApp(App[None]):
             notice.update("Ready  ·  Ctrl+P: Help")
             notice.set_classes("")
 
+    def _maybe_mark_selected_read(self) -> None:
+        thread = self.state.selected
+        if thread is None or not thread.unread:
+            return
+        self._mark_thread_read(thread.key)
+
+    @work(thread=True, exit_on_error=False)
+    def _mark_thread_read(self, thread_key: str) -> None:
+        try:
+            self.state.client.mark_thread_read(thread_key)
+        except BackendError:
+            return
+
     @on(ListView.Highlighted, "#thread-list")
     async def thread_highlighted(self, event: ListView.Highlighted) -> None:
         if not isinstance(event.item, ConversationItem):
@@ -869,12 +889,14 @@ class BlueFerryApp(App[None]):
         self.state.notice = ""
         await self._render_conversation()
         self._update_notice()
+        self._maybe_mark_selected_read()
 
     @on(ListView.Selected, "#thread-list")
     def thread_selected(self, event: ListView.Selected) -> None:
         if isinstance(event.item, ConversationItem):
             self.state.selected_key = event.item.thread_key
         self.action_open_thread()
+        self._maybe_mark_selected_read()
 
     @on(Input.Changed, "#thread-search")
     async def search_changed(self) -> None:

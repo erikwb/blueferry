@@ -127,6 +127,25 @@ ShellRoot {
     return null
   }
 
+  function threadIsUnread(thread) {
+    if (!thread) return false
+    if (thread.unread === true) return true
+    if (thread.unread === false) return false
+    var messages = thread.messages || []
+    for (var index = 0; index < messages.length; ++index) {
+      if (!messages[index].outgoing && messages[index].read === false) return true
+    }
+    return false
+  }
+
+  function markSelectedThreadRead() {
+    var thread = selectedThread()
+    if (!thread || !threadIsUnread(thread)) return
+    backendBridge.request("mark_thread_read", {thread_key: String(thread.key)})
+  }
+
+  onSelectedThreadKeyChanged: root.markSelectedThreadRead()
+
   function selectMessage(handle) {
     for (var threadIndex = 0; threadIndex < threads.length; ++threadIndex) {
       var thread = threads[threadIndex]
@@ -378,6 +397,7 @@ ShellRoot {
         if (root.pendingMessageHandle !== "")
           root.selectMessage(root.pendingMessageHandle)
         root.warnAboutRosterChanges()
+        root.markSelectedThreadRead()
         root.errorText = ""
       } else if (method === "contacts") {
         root.contactsBusy = false
@@ -399,6 +419,8 @@ ShellRoot {
         root.groupParticipantsBusy = false
         groupParticipantsPopup.close()
         root.reload()
+      } else if (method === "mark_thread_read") {
+        // HistoryChanged reloads the thread list.
       } else if (method === "delete_threads") {
         root.deleteThreadsBusy = false
         root.reload()
@@ -449,6 +471,8 @@ ShellRoot {
       } else if (method === "set_group_participants") {
         root.groupParticipantsBusy = false
         root.errorText = message
+      } else if (method === "mark_thread_read") {
+        // Keep the conversation open even if MAP write-back fails.
       } else if (method === "delete_threads") {
         root.deleteThreadsBusy = false
         root.errorText = message || "Could not delete local conversations"
@@ -865,7 +889,7 @@ ShellRoot {
                         color: theme.windowText
                         font.family: theme.fontFamily
                         font.pixelSize: theme.baseFontSize
-                        font.bold: threadDelegate.highlighted
+                        font.bold: root.threadIsUnread(threadDelegate.modelData)
                         wrapMode: Text.NoWrap
                         maximumLineCount: 1
                         elide: Text.ElideRight

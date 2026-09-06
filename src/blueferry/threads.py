@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from typing import TypeAlias
 
 from blueferry.events import (
     canonical_address,
@@ -14,6 +15,7 @@ from blueferry.history import history_revision
 from blueferry.limits import MAX_THREAD_MESSAGES
 
 MESSAGE_KINDS = {"sms_received", "sms_sent"}
+CacheKey: TypeAlias = tuple[int, ...]
 
 
 class ConversationIndex:
@@ -25,7 +27,7 @@ class ConversationIndex:
         builder: Callable[[list[dict]], list[dict]],
         *,
         source: Path | None = None,
-        revision: Callable[[], tuple[int, int]] | None = None,
+        revision: Callable[[], CacheKey] | None = None,
     ) -> None:
         self._loader = loader
         self._builder = builder
@@ -35,7 +37,7 @@ class ConversationIndex:
             if source is not None
             else history_revision
         )
-        self._signature: tuple[int, int] | None = None
+        self._signature: CacheKey | None = None
         self._threads: list[dict] | None = None
 
     @staticmethod
@@ -200,7 +202,7 @@ def build_threads(events: list[dict], resolver=None) -> list[dict]:
                 "" if event.get("kind") == "sms_sent"
                 else _message_sender(event, address, resolver)
             ) if is_group else "",
-            "read": bool(event.get("is_read", False)),
+            "read": bool(event["is_read"]) if "is_read" in event else True,
             "body_truncated": bool(event.get("body_truncated", False)),
         }
         thread["messages"].append(message)
@@ -214,6 +216,10 @@ def build_threads(events: list[dict], resolver=None) -> list[dict]:
             thread["reply_ready"] = False
         if len(thread["messages"]) > MAX_THREAD_MESSAGES:
             thread["messages"] = thread["messages"][-MAX_THREAD_MESSAGES:]
+        thread["unread"] = any(
+            not message.get("outgoing") and not message.get("read")
+            for message in thread["messages"]
+        )
     return sorted(by_key.values(), key=lambda item: item["last_ts"], reverse=True)
 
 

@@ -542,6 +542,18 @@ class BridgeController(QObject):
             lambda _value: self.refresh(),
         )
 
+    @Slot(str)
+    def markThreadRead(self, thread_key: str) -> None:
+        key = str(thread_key or "").strip()
+        if not key:
+            return
+        self._run(
+            lambda: self._backend.mark_thread_read(key),
+            lambda _value: None,
+            lambda _message: None,
+            busy=False,
+        )
+
     @Slot("QVariantList")
     def deleteThreads(self, thread_keys) -> None:
         selected = [str(value) for value in thread_keys]

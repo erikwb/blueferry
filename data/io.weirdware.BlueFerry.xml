@@ -33,6 +33,12 @@
       <annotation name="io.weirdware.BlueFerry.Errors"
                   value="ResponseTooLarge"/>
     </method>
+    <method name="MarkThreadRead">
+      <arg name="thread_key" type="s" direction="in"/>
+      <arg name="updated" type="u" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotFound,NotReady"/>
+    </method>
     <method name="FindContacts">
       <arg name="query" type="s" direction="in"/>
       <arg name="json" type="s" direction="out"/>

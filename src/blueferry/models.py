@@ -213,6 +213,7 @@ class Thread:
             "unexpected_sender",
             "prompt_sender",
             "roster_warning_id",
+            "unread",
         }
         raw_recipients = value.get("recipients")
         raw_messages = value.get("messages")
@@ -239,6 +240,12 @@ class Thread:
             extra={key: item for key, item in value.items() if key not in known},
         )
 
+    @property
+    def unread(self) -> bool:
+        return any(
+            not message.outgoing and not message.read for message in self.messages
+        )
+
     def to_dict(self) -> dict[str, Any]:
         return {
             **self.extra,
@@ -255,6 +262,7 @@ class Thread:
             "unexpected_sender": self.unexpected_sender,
             "prompt_sender": self.prompt_sender,
             "roster_warning_id": self.roster_warning_id,
+            "unread": self.unread,
         }
 
 

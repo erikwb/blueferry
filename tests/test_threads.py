@@ -62,6 +62,23 @@ def test_historical_number_uses_the_current_contact_name() -> None:
     assert thread["name"] == "Alice Example"
 
 
+def test_unread_follows_incoming_read_state() -> None:
+    read = _sms("+15551111111", "Alice", "one", "2026-08-08T10:00:00+00:00")
+    read["is_read"] = True
+    unread = _sms("+15552222222", "Bob", "two", "2026-08-08T10:01:00+00:00")
+    unread["is_read"] = False
+    missing = _sms("+15553333333", "Cara", "three", "2026-08-08T10:02:00+00:00")
+
+    threads = {thread["name"]: thread for thread in build_threads([read, unread, missing])}
+
+    assert threads["Alice"]["unread"] is False
+    assert threads["Alice"]["messages"][0]["read"] is True
+    assert threads["Bob"]["unread"] is True
+    assert threads["Bob"]["messages"][0]["read"] is False
+    assert threads["Cara"]["unread"] is False
+    assert threads["Cara"]["messages"][0]["read"] is True
+
+
 def test_thread_snapshot_keeps_only_the_newest_bounded_messages(monkeypatch) -> None:
     monkeypatch.setattr(threads_module, "MAX_THREAD_MESSAGES", 2)
     events = [
