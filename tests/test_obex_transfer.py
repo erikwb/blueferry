@@ -1,10 +1,20 @@
 """Pure transfer-state tests; no BlueZ or OBEX connection is opened."""
 from __future__ import annotations
 
+from unittest.mock import Mock
+
 import dbus
 import pytest
 
+from blueferry.obex import transfer
 from blueferry.obex.transfer import TransferFailed, wait_for_transfer
+
+
+@pytest.fixture(autouse=True)
+def cancel(monkeypatch):
+    interface = Mock()
+    monkeypatch.setattr(transfer, "obex", lambda *_args: interface)
+    return interface.Cancel
 
 
 class _Clock:
@@ -18,7 +28,7 @@ class _Clock:
         self.now += seconds
 
 
-def test_wait_requires_terminal_completion() -> None:
+def test_wait_requires_terminal_completion(cancel) -> None:
     statuses = iter(["queued", "active", "complete"])
     clock = _Clock()
 
@@ -26,9 +36,10 @@ def test_wait_requires_terminal_completion() -> None:
         "/transfer/1", timeout_s=5, get_status=lambda: next(statuses),
         monotonic=clock, sleep=clock.sleep,
     ) == "complete"
+    cancel.assert_not_called()
 
 
-def test_nonterminal_status_at_deadline_is_not_success() -> None:
+def test_nonterminal_status_at_deadline_is_not_success(cancel) -> None:
     clock = _Clock()
 
     with pytest.raises(TimeoutError, match="last status: active"):
@@ -36,6 +47,7 @@ def test_nonterminal_status_at_deadline_is_not_success() -> None:
             "/transfer/2", timeout_s=0.2, get_status=lambda: "active",
             monotonic=clock, sleep=clock.sleep,
         )
+    cancel.assert_called_once_with(timeout=2.0)
 
 
 def test_transfer_timeout_restarts_when_progress_advances() -> None:
@@ -72,7 +84,7 @@ def test_progress_regression_does_not_restart_inactivity_timeout() -> None:
         )
 
 
-def test_progress_cannot_extend_overall_timeout() -> None:
+def test_progress_cannot_extend_overall_timeout(cancel) -> None:
     clock = _Clock()
 
     with pytest.raises(TimeoutError, match=r"0\.5s overall limit"):
@@ -85,6 +97,7 @@ def test_progress_cannot_extend_overall_timeout() -> None:
             monotonic=clock,
             sleep=clock.sleep,
         )
+    cancel.assert_called_once_with(timeout=2.0)
 
 
 def test_explicit_transfer_error_fails() -> None:
@@ -94,7 +107,7 @@ def test_explicit_transfer_error_fails() -> None:
         )
 
 
-def test_only_object_disappearance_is_accepted() -> None:
+def test_only_object_disappearance_is_accepted(cancel) -> None:
     def gone():
         raise dbus.exceptions.DBusException(
             "gone", name="org.freedesktop.DBus.Error.UnknownObject",
@@ -103,9 +116,10 @@ def test_only_object_disappearance_is_accepted() -> None:
     assert wait_for_transfer(
         "/transfer/4", timeout_s=1, get_status=gone,
     ) == "gone"
+    cancel.assert_not_called()
 
 
-def test_unrelated_dbus_failure_is_not_treated_as_completion() -> None:
+def test_unrelated_dbus_failure_is_not_treated_as_completion(cancel) -> None:
     def disconnected():
         raise dbus.exceptions.DBusException(
             "lost", name="org.freedesktop.DBus.Error.Disconnected",
@@ -115,3 +129,29 @@ def test_unrelated_dbus_failure_is_not_treated_as_completion() -> None:
         wait_for_transfer(
             "/transfer/5", timeout_s=1, get_status=disconnected,
         )
+    cancel.assert_called_once_with(timeout=2.0)
+
+
+@pytest.mark.parametrize("callback", ["check_progress", "get_progress"])
+@pytest.mark.parametrize("fail_after", [0, 2])
+def test_progress_rejection_survives_failed_cancellation(cancel, callback, fail_after):
+    clock = _Clock()
+    original = RuntimeError("size limit")
+    calls = 0
+    cancel.side_effect = dbus.exceptions.DBusException("transfer already gone")
+
+    def progress():
+        nonlocal calls
+        calls += 1
+        if calls > fail_after:
+            raise original
+        return 0
+
+    with pytest.raises(RuntimeError) as caught:
+        wait_for_transfer(
+            "/transfer/oversized", timeout_s=1, get_status=lambda: "active",
+            monotonic=clock, sleep=clock.sleep, **{callback: progress},
+        )
+
+    assert caught.value is original
+    cancel.assert_called_once_with(timeout=2.0)
