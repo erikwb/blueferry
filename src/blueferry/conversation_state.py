@@ -97,7 +97,8 @@ class ConversationState:
         )
 
     def thread(self, key: str) -> Thread | None:
-        return next((thread for thread in self.threads if thread.key == key), None)
+        return next((thread for thread in self.threads
+                     if thread.key == key or key in thread.extra.get("aliases", [])), None)
 
     def apply_snapshot(self, snapshot: ConversationSnapshot) -> None:
         if snapshot.status is not None:
@@ -115,7 +116,8 @@ class ConversationState:
                     self.confirmed_groups[thread.key] = thread.confirmation_token
             keys = {thread.key for thread in self.threads}
             if self.selected_key not in keys:
-                retained = next(
+                alias = self.thread(self.selected_key)
+                retained = alias.key if alias is not None else next(
                     (
                         thread.key
                         for thread in self.threads

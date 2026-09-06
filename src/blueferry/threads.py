@@ -61,7 +61,7 @@ class ConversationIndex:
         return self._threads
 
     def find(self, key: str) -> dict | None:
-        return next((thread for thread in self.threads() if thread["key"] == key), None)
+        return next((thread for thread in self.threads() if key in conversation_keys(thread)), None)
 
 
 def _event_time(event: dict) -> str:
@@ -102,11 +102,22 @@ def group_confirmation_token(
     return "\n".join((str(roster_warning_id or ""), *identities))
 
 
-def thread_key(event: dict) -> str | None:
+def _contact_addresses(resolver, address: str | None) -> tuple[str, ...]:
+    lookup = getattr(resolver, "thread_addresses", None)
+    return lookup(address) if lookup is not None else ()
+
+
+def conversation_keys(thread: dict) -> set[str]:
+    return {thread["key"], *thread.get("aliases", [])}
+
+
+def thread_key(event: dict, resolver=None) -> str | None:
     """Return a stable key that never relies on a contact display name."""
     if event.get("group_key"):
         return str(event["group_key"])
-    identity = canonical_address(safe_event_address(event))
+    address = safe_event_address(event)
+    addresses = _contact_addresses(resolver, address)
+    identity = addresses[0] if addresses else canonical_address(address)
     return f"address:{identity}" if identity else None
 
 
@@ -121,7 +132,7 @@ def build_threads(events: list[dict], resolver=None) -> list[dict]:
     for event in correlated:
         if event.get("kind") not in MESSAGE_KINDS:
             continue
-        key = thread_key(event)
+        key = thread_key(event, resolver)
         if key is None:
             # An untrusted, non-address sender is visible in notification
             # history but can never become a reply target.
@@ -136,6 +147,9 @@ def build_threads(events: list[dict], resolver=None) -> list[dict]:
         if thread is None:
             thread = {
                 "key": key,
+                "aliases": [
+                    f"address:{value}" for value in _contact_addresses(resolver, address)
+                ] if not is_group else [],
                 "name": _thread_name(event, address, resolver),
                 "is_group": is_group,
                 "members": [
@@ -205,6 +219,7 @@ def build_threads(events: list[dict], resolver=None) -> list[dict]:
 
         message = {
             "handle": str(event.get("handle") or ""),
+            "address": address or "",
             "body": str(event.get("body") or ""),
             "timestamp": _event_time(event),
             "outgoing": event.get("kind") == "sms_sent",
@@ -222,6 +237,14 @@ def build_threads(events: list[dict], resolver=None) -> list[dict]:
                 thread["prompt_sender"] = str(event["group_observed_sender"])
 
     for thread in by_key.values():
+        thread["messages"].sort(key=lambda message: message["timestamp"])
+        if not thread["is_group"]:
+            messages = thread["messages"]
+            latest_incoming = next(
+                (message for message in reversed(messages) if not message["outgoing"]),
+                messages[-1],
+            )
+            thread["recipients"] = [latest_incoming["address"]]
         if thread.get("participants_required"):
             thread["reply_ready"] = False
         thread["messages_truncated"] = len(thread["messages"]) > MAX_THREAD_MESSAGES
@@ -244,7 +267,7 @@ def sort_threads(
     decorated: list[dict] = []
     for thread in threads:
         item = dict(thread)
-        item["starred"] = str(item.get("key") or "") in selected
+        item["starred"] = bool(conversation_keys(item) & selected)
         decorated.append(item)
     return sorted(
         decorated,
@@ -260,7 +283,7 @@ def find_thread(events: list[dict], key: str, resolver=None) -> dict | None:
     """Look up one current thread by its opaque backend key."""
     return next(
         (thread for thread in build_threads(events, resolver)
-         if thread["key"] == key),
+         if key in conversation_keys(thread)),
         None,
     )
 

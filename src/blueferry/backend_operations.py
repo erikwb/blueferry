@@ -62,6 +62,7 @@ from blueferry.threads import (
     ConversationIndex,
     bound_thread_response,
     build_threads,
+    conversation_keys,
     group_confirmation_token,
     sort_threads,
     thread_key,
@@ -183,7 +184,7 @@ class BackendOperations:
         if not stars:
             return threads
         recent = {str(event.get("handle") or "") for event in events[-MAX_CONVERSATION_EVENTS:]}
-        return [thread for thread in threads if thread["key"] in stars or any(
+        return [thread for thread in threads if conversation_keys(thread) & stars or any(
             message["handle"] in recent for message in thread["messages"]
         )]
 
@@ -412,7 +413,10 @@ class BackendOperations:
         if thread is None:
             raise NotFoundError("thread no longer exists in local history")
         try:
-            result = self.dependencies.starred_threads.set_starred(thread_key, bool(starred))
+            store = self.dependencies.starred_threads
+            if not starred:
+                store.discard(list(conversation_keys(thread)))
+            result = store.set_starred(thread["key"], bool(starred))
             self._conversations.invalidate()
             return result
         except ValueError as error:
@@ -603,13 +607,17 @@ class BackendOperations:
             if key not in selected:
                 selected.append(key)
 
-        current_keys = {
-            str(thread["key"]) for thread in self._conversations.threads()
+        by_key = {
+            key: thread for thread in self._conversations.threads()
+            for key in conversation_keys(thread)
         }
-        if not set(selected).issubset(current_keys):
+        if any(key not in by_key for key in selected):
             raise NotFoundError(
                 "a selected thread no longer exists in local history"
             )
+        current = [by_key[key] for key in selected]
+        selected = list(dict.fromkeys(thread["key"] for thread in current))
+        preference_keys = {key for thread in current for key in conversation_keys(thread)}
 
         storage = self.dependencies.storage
         if storage is not None and not storage.status.can_write:
@@ -630,7 +638,7 @@ class BackendOperations:
             anchor_keys: dict[int, str] = {}
             recent_evidence_ids: set[int] = set()
             for event in recent:
-                projected_key = thread_key(event)
+                projected_key = thread_key(event, self.dependencies.contacts)
                 if event.get("kind") not in MESSAGE_KINDS:
                     continue
                 if projected_key is None or projected_key not in selected:
@@ -659,7 +667,7 @@ class BackendOperations:
                 anchored_key = anchor_keys.get(event_id)
                 if anchored_key is None:
                     continue
-                resolved_key = thread_key(event)
+                resolved_key = thread_key(event, self.dependencies.contacts)
                 if (
                     anchored_key.startswith("group:")
                     and resolved_key is not None
@@ -672,7 +680,7 @@ class BackendOperations:
                 if event.get("kind") in MESSAGE_KINDS
                 and (
                     int(event.get(HISTORY_ROW_ID_FIELD, -1)) in anchor_keys
-                    or thread_key(event) in resolved_keys
+                    or thread_key(event, self.dependencies.contacts) in resolved_keys
                 )
             ]
             event_ids = recent_evidence_ids | {
@@ -703,7 +711,7 @@ class BackendOperations:
                 ) or (
                     kind == "sms_seen"
                     and (
-                        thread_key(event) in resolved_keys
+                        thread_key(event, self.dependencies.contacts) in resolved_keys
                         or str(event.get("handle") or "") in selected_handles
                     )
                 )
@@ -726,7 +734,7 @@ class BackendOperations:
 
         self._forget_confirmed_groups(resolved_keys)
         if self.dependencies.starred_threads is not None:
-            self.dependencies.starred_threads.discard(selected)
+            self.dependencies.starred_threads.discard(list(preference_keys))
         self.invalidate_conversations()
         return len(selected)
 

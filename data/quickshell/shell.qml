@@ -408,9 +408,9 @@ ShellRoot {
         if (root.pendingThreadKey !== "") {
           root.selectedThreadKey = root.pendingThreadKey
           if (root.selectedThread() !== null) root.pendingThreadKey = ""
-        } else if (root.selectedThreadKey !== "" && root.selectedThread() === null) {
-          root.selectedThreadKey = ""
         }
+        const selected = root.selectedThread()
+        root.selectedThreadKey = selected ? selected.key : ""
         if (root.pendingMessageHandle !== "")
           root.selectMessage(root.pendingMessageHandle)
         root.warnAboutRosterChanges()
@@ -1047,6 +1047,15 @@ ShellRoot {
                   font.bold: true
                   font.letterSpacing: 1
                 }
+              }
+
+              FerryLabel {
+                Layout.fillWidth: true
+                visible: conversationPane.thread !== null && !conversationPane.thread.is_group
+                text: visible ? "Reply to: " + conversationPane.thread.recipients.join(", ") : ""
+                textFormat: Text.PlainText
+                color: theme.muted
+                elide: Text.ElideRight
               }
 
               Rectangle {

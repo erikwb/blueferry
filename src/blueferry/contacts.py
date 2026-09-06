@@ -16,7 +16,7 @@ import dbus
 
 from blueferry.bus import obex
 from blueferry.contact_repository import ContactRecord, ContactRepository
-from blueferry.events import is_email_shaped, normalize_phone
+from blueferry.events import canonical_address, is_email_shaped, normalize_phone
 from blueferry.limits import (
     MAX_CONTACT_ADDRESS_CHARS,
     MAX_CONTACT_ADDRESSES_PER_CARD,
@@ -235,6 +235,36 @@ class ContactsResolver:
             if name:
                 for address in (*phones, *emails):
                     self._mem.setdefault(address, set()).add(name)
+
+        self._thread_addresses: dict[str, tuple[str, ...]] = {}
+        # Count record ownership, not names: two people can share a name or number.
+        owners: dict[str, set[int]] = {}
+        for index, (_name, phones, emails) in enumerate(self._records):
+            for address in (*phones, *emails):
+                identity = canonical_address(address)
+                if identity is None:
+                    continue
+                identities = [identity]
+                if identity.startswith("phone:"):
+                    number = identity.removeprefix("phone:")
+                    if len(number) == 10:
+                        identities.append(f"phone:1{number}")
+                    elif len(number) == 11 and number.startswith("1"):
+                        identities.append(f"phone:{number[1:]}")
+                for value in identities:
+                    owners.setdefault(value, set()).add(index)
+        unique: dict[int, list[str]] = {}
+        for identity, records in owners.items():
+            if len(records) == 1:
+                unique.setdefault(next(iter(records)), []).append(identity)
+        for addresses in unique.values():
+            ordered = tuple(sorted(addresses))
+            for identity in ordered:
+                self._thread_addresses[identity] = ordered
+
+    def thread_addresses(self, raw: str | None) -> tuple[str, ...]:
+        """Unambiguous address identities from the same PBAP record."""
+        return self._thread_addresses.get(canonical_address(raw) or "", ())
 
     def refresh(self) -> int:
         """Re-read the SQLite cache into memory. Returns new count."""

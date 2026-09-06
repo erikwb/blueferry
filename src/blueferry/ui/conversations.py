@@ -238,7 +238,13 @@ class ConversationsPage(Gtk.Box):
             "clicked", self._open_group_roster_dialog
         )
         conversation_header.append(self.back_button)
-        conversation_header.append(self._conversation_title)
+        titles = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True)
+        titles.append(self._conversation_title)
+        self._reply_destination = Gtk.Label(
+            xalign=0, ellipsize=_ELLIPSIZE_END, css_classes=["dim-label"], visible=False,
+        )
+        titles.append(self._reply_destination)
+        conversation_header.append(titles)
         conversation_header.append(self._group_roster_button)
         right.append(conversation_header)
         right.append(Gtk.Separator())
@@ -537,6 +543,7 @@ class ConversationsPage(Gtk.Box):
             self._msg_list.remove_all()
             for message in current.messages:
                 self._append_bubble(message, is_group=current.is_group)
+            self._update_conversation_title(current)
             can_reply = current.reply_ready
             self._entry.set_sensitive(can_reply)
             self._send_btn.set_sensitive(can_reply)
@@ -643,13 +650,20 @@ class ConversationsPage(Gtk.Box):
         self._send_btn.set_sensitive(can_reply)
         self._update_group_roster_banner(thread)
         self._stack.set_visible_child_name("messages")
-        self._conversation_title.set_label(thread.name)
+        self._update_conversation_title(thread)
         self.split_view.set_show_content(True)
         self._msg_list.remove_all()
         for message in thread.messages:
             self._append_bubble(message, is_group=thread.is_group)
         self._scroll_to_bottom()
         self._mark_selected_read()
+
+    def _update_conversation_title(self, thread: Thread) -> None:
+        self._conversation_title.set_label(thread.name)
+        self._reply_destination.set_visible(not thread.is_group)
+        self._reply_destination.set_label(
+            _("Reply to: {address}").format(address=", ".join(thread.recipients))
+        )
 
     def _mark_selected_read(self) -> None:
         window = self.get_root()

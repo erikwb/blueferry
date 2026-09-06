@@ -142,9 +142,8 @@ Kirigami.ApplicationWindow {
         }
 
         function onThreadsChanged() {
-            if (root.selectedThreadKey !== "" && root.selectedThread() === null) {
-                root.selectedThreadKey = ""
-            }
+            const selected = root.selectedThread()
+            root.selectedThreadKey = selected ? selected.key : ""
             if (root.pendingMessageHandle !== "")
                 root.selectMessage(root.pendingMessageHandle)
             root.warnAboutRosterChanges()
@@ -758,12 +757,23 @@ Kirigami.ApplicationWindow {
                                     Controls.ToolTip.visible: hovered
                                     onClicked: root.selectedThreadKey = ""
                                 }
-                                Controls.Label {
+                                ColumnLayout {
                                     Layout.fillWidth: true
-                                    text: messagesPage.thread ? messagesPage.thread.name : qsTr("Conversation")
-                                    textFormat: Text.PlainText
-                                    font.bold: true
-                                    elide: Text.ElideRight
+                                    Controls.Label {
+                                        Layout.fillWidth: true
+                                        text: messagesPage.thread ? messagesPage.thread.name : qsTr("Conversation")
+                                        textFormat: Text.PlainText
+                                        font.bold: true
+                                        elide: Text.ElideRight
+                                    }
+                                    Controls.Label {
+                                        Layout.fillWidth: true
+                                        visible: messagesPage.thread !== null && !messagesPage.thread.is_group
+                                        text: visible ? qsTr("Reply to: %1").arg(messagesPage.thread.recipients.join(", ")) : ""
+                                        textFormat: Text.PlainText
+                                        elide: Text.ElideRight
+                                        opacity: 0.7
+                                    }
                                 }
                                 Controls.ToolButton {
                                     visible: messagesPage.thread !== null

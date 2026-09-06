@@ -32,6 +32,12 @@ download your iCloud Messages archive. Attachments, reactions, typing
 indicators, FaceTime, calls, and complete sent-message history are not
 supported.
 
+Direct conversations combine the phone numbers and email addresses that belong
+unambiguously to one synced contact. Replies use the most recent incoming
+address, shown as **Reply to** above the conversation. Shared addresses and
+contacts that merely have the same name stay separate. Original message
+addresses are retained; editing and syncing contacts updates the grouping.
+
 Group replies are deliberately cautious. Bluetooth does not give BlueFerry a
 reliable group ID or complete roster, so it disables replies when the
 participants are unclear. Named groups may ask you to confirm a local reply
