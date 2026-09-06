@@ -1105,6 +1105,15 @@ ShellRoot {
                 color: theme.divider
               }
 
+              Label {
+                Layout.fillWidth: true
+                visible: conversationPane.thread !== null
+                  && conversationPane.thread.messages_truncated === true
+                text: "Showing recent messages. Older messages remain in local history."
+                wrapMode: Text.Wrap
+                color: theme.windowText
+              }
+
               ListView {
                 id: messageList
                 property bool stickToBottom: true

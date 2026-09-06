@@ -20,8 +20,9 @@ from blueferry import __version__
 from blueferry.backend_lifecycle import ensure_backend_current, restart_backend
 from blueferry.bluetooth_devices import iphone_candidates
 from blueferry.client import BackendClient, BackendError
+from blueferry.conversation_state import ConversationState, ReplyDisposition
 from blueferry.i18n import _
-from blueferry.models import BackendStatus
+from blueferry.models import BackendStatus, Thread
 from blueferry.onboarding import OnboardingState, effective_compatibility
 from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH
 from blueferry.qt.tasks import Task
@@ -48,6 +49,9 @@ class BridgeController(QObject):
     pairingConfirmationRequested = Signal(str)
     pairingIssueReportChanged = Signal()
     messageOpenRequested = Signal(str)
+    groupConfirmationRequested = Signal(str, str, str)
+    threadSendSucceeded = Signal(str, str)
+    messageSendSucceeded = Signal(str, str)
 
     def __init__(
         self,
@@ -68,6 +72,7 @@ class BridgeController(QObject):
         self._pool.setExpiryTimeout(-1)
         self._tasks: set[Task] = set()
         self._threads: list[dict] = []
+        self._pending_group: tuple[str, str, str] | None = None
         self._contact_results: list[dict] = []
         self._contact_query = ""
         self._status: dict = {}
@@ -462,15 +467,31 @@ class BridgeController(QObject):
 
     @Slot(str, str, bool)
     def sendThread(self, key: str, body: str, confirm_group: bool) -> None:
-        body = body.strip()
-        if not key or not body:
+        draft = body
+        state = ConversationState()
+        state.threads = [Thread.from_dict(value) for value in self._threads]
+        thread = state.thread(key)
+        if confirm_group:
+            expected = (key, body.strip(), thread.confirmation_token) if thread else None
+            if expected is None or self._pending_group != expected:
+                self._pending_group = None
+                self._set_error(_("The group changed. Review the recipients and send again."))
+                return
+        self._pending_group = None
+        plan = state.plan_reply(body, thread_key=key, confirm_group=confirm_group)
+        if plan.disposition is ReplyDisposition.CONFIRM_GROUP and thread is not None:
+            self._pending_group = (key, plan.body, thread.confirmation_token)
+            self.groupConfirmationRequested.emit(key, draft, "\n".join(thread.recipients))
+            return
+        if not plan.ready:
             return
 
         def completed(_value: object) -> None:
+            self.threadSendSucceeded.emit(key, draft)
             self.refresh()
 
         self._run(
-            lambda: self._backend.send_to_thread(key, body, confirm_group=confirm_group),
+            lambda: self._backend.send_to_thread(key, plan.body, confirm_group=plan.confirm_group),
             completed,
         )
 
@@ -511,14 +532,16 @@ class BridgeController(QObject):
 
     @Slot(str, str)
     def sendMessage(self, recipient: str, body: str) -> None:
-        recipient = recipient.strip()
-        body = body.strip()
-        if not recipient or not body:
+        if not recipient.strip() or not body.strip():
             return
 
+        def completed(_value: object) -> None:
+            self.messageSendSucceeded.emit(recipient, body)
+            self.refresh()
+
         self._run(
-            lambda: self._backend.send(recipient, body),
-            lambda _value: self.refresh(),
+            lambda: self._backend.send(recipient.strip(), body.strip()),
+            completed,
         )
 
     @Slot()

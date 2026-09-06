@@ -29,6 +29,7 @@ from blueferry.event_dispatcher import EventDispatcher
 from blueferry.history import (
     clear_events,
     history_count,
+    mark_event_handles_read,
     minimize_ancs_history,
     prune_events,
     read_events,
@@ -440,10 +441,16 @@ class Daemon:
             self.listener = MapEventListener(
                 sessions=self.sessions,
                 on_sms=self.events.message,
+                on_read=self._message_read,
                 resolve_contact=lambda raw: self.contacts.resolve(raw),
                 submit_obex=self.obex_worker.submit,
             )
             self.listener.start()
+
+    def _message_read(self, handle: str) -> None:
+        if mark_event_handles_read([handle], storage=self.storage):
+            if self._dbus_service is not None:
+                self._dbus_service.emit_history_changed()
 
     def _post_sessions_setup(self) -> None:
         """Finish setup once both MAP and PBAP are live."""

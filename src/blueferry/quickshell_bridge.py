@@ -204,6 +204,20 @@ def _install_signal_receivers(bridge: QuickshellBridge) -> list[object]:
     ]
 
 
+def _read_requests(stream: TextIO, submit: Callable[[str], None]) -> None:
+    while True:
+        line = stream.readline(MAX_REQUEST_CHARS + 2)
+        if not line:
+            return
+        if len(line) > MAX_REQUEST_CHARS:
+            # Report one oversized request, then discard its remaining chunks.
+            submit(line)
+            while line and not line.endswith("\n"):
+                line = stream.readline(MAX_REQUEST_CHARS + 2)
+            continue
+        submit(line)
+
+
 def main() -> int:
     from dbus.mainloop.glib import DBusGMainLoop
     from gi.repository import GLib
@@ -214,22 +228,13 @@ def main() -> int:
     signal_matches = _install_signal_receivers(bridge)
     loop = GLib.MainLoop()
 
-    def read_request(_source: object, condition: int) -> bool:
-        if condition & (GLib.IO_HUP | GLib.IO_ERR):
-            loop.quit()
-            return False
-        line = sys.stdin.readline()
-        if not line:
-            loop.quit()
-            return False
-        workers.submit(line)
-        return True
+    # A dedicated reader drains TextIO's prefetched lines and keeps a partial
+    # request from blocking GLib's D-Bus signal dispatch.
+    def read_requests() -> None:
+        _read_requests(sys.stdin, workers.submit)
+        GLib.idle_add(loop.quit)
 
-    GLib.io_add_watch(
-        sys.stdin.fileno(),
-        GLib.IO_IN | GLib.IO_HUP | GLib.IO_ERR,
-        read_request,
-    )
+    threading.Thread(target=read_requests, name="blueferry-stdin", daemon=True).start()
     try:
         loop.run()
     finally:

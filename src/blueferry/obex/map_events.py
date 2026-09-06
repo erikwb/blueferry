@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from collections import OrderedDict
 from collections.abc import Callable
 from pathlib import Path
 
@@ -82,10 +83,14 @@ class MapEventListener:
         on_sms: EventCallback,
         *,
         submit_obex: SubmitObex,
+        on_read: Callable[[str], None] | None = None,
         resolve_contact: Callable[[str | None], str | None] = lambda _: None,
     ) -> None:
         self.sessions = sessions
         self.on_sms = on_sms
+        self.on_read = on_read
+        self._read_handles: OrderedDict[str, None] = OrderedDict()
+        self._read_match = None
         self.submit_obex = submit_obex
         self.resolve_contact = resolve_contact
         self._signal_match = None
@@ -99,12 +104,23 @@ class MapEventListener:
         self._signal_match = manager.connect_to_signal(
             "InterfacesAdded", self._on_interfaces_added
         )
+        self._read_match = get_session_bus().add_signal_receiver(
+            self._on_message_properties,
+            signal_name="PropertiesChanged",
+            dbus_interface="org.freedesktop.DBus.Properties",
+            bus_name="org.bluez.obex",
+            path_keyword="path",
+        )
         self._running = True
         log.info("MAP MNS listener started (filtering on %s)",
                  self.sessions.map_path)
 
     def stop(self) -> None:
         self._running = False
+        self._read_handles.clear()
+        if self._read_match is not None:
+            self._read_match.remove()
+            self._read_match = None
         if self._signal_match is not None:
             try:
                 self._signal_match.remove()
@@ -112,6 +128,24 @@ class MapEventListener:
                 log.debug("could not remove MAP event watch", exc_info=True)
             self._signal_match = None
         log.info("MAP MNS listener stopped")
+
+    def _on_message_properties(self, interface, changed, _invalidated, *, path) -> None:
+        session = self.sessions.map
+        if (not self._running or session is None
+                or interface != "org.bluez.obex.Message1"
+                or not str(path).startswith(f"{session.path}/")
+                or not changed.get("Read")):
+            return
+        handle = str(path).rsplit("/", 1)[-1]
+        self._read_handles[handle] = None
+        self._read_handles.move_to_end(handle)
+        if len(self._read_handles) > 2048:
+            self._read_handles.popitem(last=False)
+        if self.on_read is not None:
+            try:
+                self.on_read(handle)
+            except Exception:
+                log.exception("could not persist phone read state")
 
     def _on_interfaces_added(self, path, ifaces) -> None:
         path_s = str(path)
@@ -155,7 +189,8 @@ class MapEventListener:
             contact_name=contact,
             body=parsed.body,
             timestamp=parse_map_timestamp(props.get("Timestamp")),
-            is_read=str(parsed.status or "").upper() == "READ",
+            is_read=(str(parsed.status or "").upper() == "READ"
+                     or handle in self._read_handles),
             message_path=message_path,
         )
         log.info("sms_received (%d-char body)", len(event.body or ""))

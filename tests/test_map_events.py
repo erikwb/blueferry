@@ -108,3 +108,72 @@ def test_failed_body_fetch_does_not_persist_an_unusable_event() -> None:
     listener._fetch_failed("message42", RuntimeError("transfer failed"))
 
     assert received == []
+
+
+def test_phone_read_updates_persist_without_notification_and_survive_fetch_race(
+    monkeypatch, tmp_path,
+):
+    from types import SimpleNamespace
+
+    from blueferry import config, daemon
+    from blueferry.history import append_event, read_events
+
+    monkeypatch.setattr(config, "EVENTS_DB", tmp_path / "history.sqlite")
+    append_event({"kind": "sms_received", "handle": "message1", "is_read": False})
+    changed = []
+    service = daemon.Daemon.__new__(daemon.Daemon)
+    service.storage = None
+    service._dbus_service = SimpleNamespace(emit_history_changed=lambda: changed.append(True))
+    received = []
+    listener = map_events.MapEventListener(
+        SimpleNamespace(map=SimpleNamespace(path="/session1")), received.append,
+        submit_obex=lambda *_a, **_k: None, on_read=service._message_read,
+    )
+    listener._running = True
+    for interface, props, path in [
+        ("org.bluez.obex.Message1", {"Read": True}, "/session10/message1"),
+        ("org.bluez.obex.Transfer1", {"Read": True}, "/session1/message1"),
+        ("org.bluez.obex.Message1", {"Read": False}, "/session1/message1"),
+    ]:
+        listener._on_message_properties(interface, props, [], path=path)
+    assert changed == []
+    listener._on_message_properties(
+        "org.bluez.obex.Message1", {"Read": True}, [], path="/session1/message1",
+    )
+    assert read_events()[0]["is_read"] is True
+    assert changed == [True]
+    listener._fetched("message1", "/session1/message1", {}, SimpleNamespace(
+        sender_address="+15551234567", body="hello", status="UNREAD",
+    ))
+    assert received[0].is_read is True
+    listener.stop()
+    listener._on_message_properties(
+        "org.bluez.obex.Message1", {"Read": True}, [], path="/session1/message1",
+    )
+    assert changed == [True]
+
+
+def test_listener_subscribes_to_read_updates_for_its_entire_lifetime(monkeypatch):
+    from types import SimpleNamespace
+
+    subscriptions = []
+    removed = []
+
+    def subscribe(*args, **kwargs):
+        subscriptions.append((args, kwargs))
+        return SimpleNamespace(remove=lambda: removed.append(True))
+
+    bus = SimpleNamespace(get_object=lambda *_a: object(), add_signal_receiver=subscribe)
+    monkeypatch.setattr(map_events, "get_session_bus", lambda: bus)
+    monkeypatch.setattr(map_events.dbus, "Interface", lambda *_a: SimpleNamespace(
+        connect_to_signal=subscribe,
+    ))
+    listener = map_events.MapEventListener(
+        SimpleNamespace(map_path="/map"), lambda _e: None,
+        submit_obex=lambda *_a, **_k: None,
+    )
+    listener.start()
+    assert subscriptions[1][1]["signal_name"] == "PropertiesChanged"
+    assert subscriptions[1][1]["path_keyword"] == "path"
+    listener.stop()
+    assert removed == [True, True]

@@ -151,3 +151,41 @@ def test_slow_send_does_not_block_status_requests() -> None:
     workers.submit('{"id":2,"method":"status","args":{}}')
     assert status_called.wait(1)
     release_send.set()
+
+
+def test_stdin_reader_drains_batched_lines_without_another_write():
+    import os
+
+    from blueferry.quickshell_bridge import _read_requests
+
+    read_fd, write_fd = os.pipe()
+    received = []
+    completed = threading.Event()
+
+    def submit(line):
+        received.append(line)
+        if len(received) == 3:
+            completed.set()
+
+    with os.fdopen(read_fd) as stream:
+        reader = threading.Thread(target=_read_requests, args=(stream, submit), daemon=True)
+        reader.start()
+        try:
+            os.write(write_fd, b"one\ntwo\nthree\n")
+            assert completed.wait(2), received
+            assert received == ["one\n", "two\n", "three\n"]
+        finally:
+            os.close(write_fd)
+            reader.join(2)
+        assert not reader.is_alive()
+
+
+def test_stdin_reader_discards_oversized_line_and_recovers(monkeypatch):
+    from blueferry import quickshell_bridge
+
+    monkeypatch.setattr(quickshell_bridge, "MAX_REQUEST_CHARS", 8)
+    received = []
+    quickshell_bridge._read_requests(io.StringIO("x" * 40 + "\nnext\n"), received.append)
+    assert len(received) == 2
+    assert len(received[0]) > 8
+    assert received[1] == "next\n"

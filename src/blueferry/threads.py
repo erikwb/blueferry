@@ -1,6 +1,7 @@
 """Backend-owned conversation model and reply routing metadata."""
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import TypeAlias
@@ -12,7 +13,7 @@ from blueferry.events import (
 )
 from blueferry.grouping import correlate_group_events
 from blueferry.history import history_revision
-from blueferry.limits import MAX_THREAD_MESSAGES
+from blueferry.limits import MAX_DBUS_JSON_BYTES, MAX_THREAD_MESSAGES
 
 MESSAGE_KINDS = {"sms_received", "sms_sent"}
 CacheKey: TypeAlias = tuple[int, ...]
@@ -223,7 +224,8 @@ def build_threads(events: list[dict], resolver=None) -> list[dict]:
     for thread in by_key.values():
         if thread.get("participants_required"):
             thread["reply_ready"] = False
-        if len(thread["messages"]) > MAX_THREAD_MESSAGES:
+        thread["messages_truncated"] = len(thread["messages"]) > MAX_THREAD_MESSAGES
+        if thread["messages_truncated"]:
             thread["messages"] = thread["messages"][-MAX_THREAD_MESSAGES:]
         thread["unread"] = any(
             not message.get("outgoing") and not message.get("read")
@@ -261,3 +263,45 @@ def find_thread(events: list[dict], key: str, resolver=None) -> dict | None:
          if thread["key"] == key),
         None,
     )
+
+
+def bound_thread_response(
+    threads: list[dict], *, max_bytes: int = MAX_DBUS_JSON_BYTES,
+) -> list[dict]:
+    """Fit newest message tails fairly within the wire budget, without mutating history."""
+    def size(value: object) -> int:
+        return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+
+    result: list[dict] = []
+    remaining = max_bytes - 2  # outer list
+    for thread in threads:
+        item = {**thread, "messages": [], "messages_truncated": False}
+        cost = size(item) + bool(result)
+        if cost > remaining:
+            break
+        remaining -= cost
+        result.append(item)
+
+    # One message per conversation per round prevents a large thread from
+    # consuming the entire response. Each retained history remains contiguous.
+    pending = list(range(len(result)))
+    while pending:
+        next_round = []
+        for index in pending:
+            messages = threads[index].get("messages", [])
+            kept = result[index]["messages"]
+            if len(kept) == len(messages):
+                continue
+            message = messages[-len(kept) - 1]
+            cost = size(message) + bool(kept)
+            if cost <= remaining:
+                remaining -= cost
+                kept.append(message)
+                next_round.append(index)
+        pending = next_round
+    for original, item in zip(threads, result, strict=False):
+        item["messages"].reverse()
+        item["messages_truncated"] = bool(original.get("messages_truncated")) or (
+            len(item["messages"]) < len(original.get("messages", []))
+        )
+    return result

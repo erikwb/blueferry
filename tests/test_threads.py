@@ -157,3 +157,23 @@ def test_group_messages_identify_incoming_senders_and_outgoing_author() -> None:
     assert messages[0]["sender"] == "Alice"
     # Clients localize the outgoing label as "You".
     assert messages[1]["sender"] == ""
+
+
+def test_response_budget_shares_space_and_keeps_contiguous_tails():
+    import json
+
+    from blueferry.threads import bound_thread_response
+
+    original = [
+        {"key": str(i), "messages": [{"body": "x" * 100, "handle": str(n)} for n in range(10)]}
+        for i in range(3)
+    ]
+    result = bound_thread_response(original, max_bytes=1200)
+    assert len(json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode()) <= 1200
+    assert len(result) == 3
+    for thread in result:
+        count = len(thread["messages"])
+        assert 0 < count < 10
+        assert [m["handle"] for m in thread["messages"]] == [str(n) for n in range(10-count, 10)]
+        assert thread["messages_truncated"] is True
+    assert all(len(thread["messages"]) == 10 for thread in original)
