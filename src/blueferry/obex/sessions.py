@@ -217,9 +217,10 @@ class SessionManager:
 
         Recovery from an observed transport loss must not call RemoveSession:
         BlueZ 5.87 can crash when that request drives an already-disconnected
-        GObex channel into read_packet(). Normal shutdown and partial-open
-        cleanup still remove live remote sessions; the next open attempt can
-        clean up any surviving stale object after the reconnect delay.
+        GObex channel into read_packet(). Daemon shutdown must not call it
+        either: the same D-Bus dispatch path SIGSEGVs even after a long-lived
+        healthy session. The next open attempt can clean up any surviving
+        stale object after the reconnect delay.
         """
         self._closing = True
         try:
