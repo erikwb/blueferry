@@ -1,6 +1,7 @@
 """Desktop popup policy tests."""
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -106,6 +107,40 @@ def test_clicking_message_popup_requests_opaque_message_handle(monkeypatch) -> N
     sink._on_closed(1, 1)
     sink._on_action(1, "default")
     assert opened == ["message-opaque-42"]
+
+
+def test_message_popup_includes_omarchy_open_argv(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "blueferry.sinks.libnotify.config.SHOW_NOTIFICATION_CONTENT", True
+    )
+    launcher = tmp_path / "blueferry-quickshell"
+    launcher.write_text("#!/bin/sh\n")
+    launcher.chmod(0o755)
+    monkeypatch.setattr(
+        libnotify_mod, "_CLIENT_LAUNCHERS", (str(launcher),)
+    )
+    sink = LibnotifySink.__new__(LibnotifySink)
+    sink._notif = _FakeNotifications()
+    sink._pending = {}
+    sink._open_messages = {}
+    sink._msg_subs = {}
+    event = SimpleNamespace(
+        kind="sms_received",
+        handle="message-opaque-42",
+        display_sender="Alice",
+        body="Hello",
+        message_path=None,
+    )
+
+    sink.handle(event)
+
+    hints = sink._notif.calls[0][-2]
+    assert hints["desktop-entry"] == "io.weirdware.BlueFerry.Quickshell"
+    assert json.loads(str(hints["omarchy-exec-argv"])) == [
+        str(launcher),
+        "--message",
+        "message-opaque-42",
+    ]
 
 
 def test_remote_markup_is_escaped_before_notification(monkeypatch) -> None:

@@ -3,6 +3,43 @@ set -euo pipefail
 
 config=/usr/share/blueferry/quickshell
 if [[ -x /usr/bin/qs ]]; then
-    exec /usr/bin/qs -p "$config"
+    qs=/usr/bin/qs
+else
+    qs=/usr/bin/quickshell
 fi
-exec /usr/bin/quickshell -p "$config"
+
+thread=""
+message=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --thread)
+            thread="${2-}"
+            shift 2
+            ;;
+        --message)
+            message="${2-}"
+            shift 2
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
+ipc() {
+    "$qs" -p "$config" ipc call blueferry "$@"
+}
+
+if [[ -n "$message" ]]; then
+    if ipc openMessage "$message"; then
+        exit 0
+    fi
+    export BLUEFERRY_OPEN_MESSAGE_HANDLE="$message"
+elif [[ -n "$thread" ]]; then
+    if ipc openThread "$thread"; then
+        exit 0
+    fi
+    export BLUEFERRY_OPEN_THREAD_KEY="$thread"
+fi
+
+exec "$qs" -p "$config" "$@"

@@ -16,8 +16,10 @@ back over MAP within a few seconds of opening the Messages app.
 """
 from __future__ import annotations
 
+import json
 import logging
 from html import escape
+from pathlib import Path
 from typing import Protocol
 
 import dbus
@@ -59,6 +61,41 @@ _ANCS_EXPIRE_MS = config.NOTIFICATION_TIMEOUT_MS
 # because the iPhone marked it read (so we'd be in a write-self-write loop).
 # Reason 1 is the normal finite-timeout path and must not mark the phone read.
 _REASON_DISMISSED = 2
+_CLIENT_LAUNCHERS = (
+    "/usr/bin/blueferry-quickshell",
+    "/usr/bin/blueferry-gtk",
+    "/usr/bin/blueferry-qt",
+)
+
+
+def _open_conversation_argv(handle: str) -> list[str]:
+    """Return an argv that focuses a client on this opaque message handle."""
+    if not handle:
+        return []
+    for binary in _CLIENT_LAUNCHERS:
+        if Path(binary).is_file():
+            if binary.endswith("quickshell"):
+                return [binary, "--message", handle]
+            return [binary]
+    return []
+
+
+def _notification_hints(handle: str) -> dict[str, object]:
+    hints: dict[str, object] = {"urgency": dbus.Byte(1)}
+    argv = _open_conversation_argv(handle)
+    if not argv:
+        return hints
+    binary = argv[0]
+    if binary.endswith("quickshell"):
+        hints["desktop-entry"] = "io.weirdware.BlueFerry.Quickshell"
+    elif binary.endswith("gtk"):
+        hints["desktop-entry"] = "io.weirdware.BlueFerry.Gtk"
+    elif binary.endswith("-qt"):
+        hints["desktop-entry"] = "io.weirdware.BlueFerry.Qt"
+    # Omarchy's notification shell prefers this JSON argv over a live
+    # libnotify action, and it survives a shell restart.
+    hints["omarchy-exec-argv"] = json.dumps(argv)
+    return hints
 
 
 def _mark_message_read(message_path: str) -> None:
@@ -172,7 +209,7 @@ class LibnotifySink:
                 title,
                 body,
                 dbus.Array(actions, signature="s"),
-                dbus.Dictionary({"urgency": dbus.Byte(1)}, signature="sv"),
+                dbus.Dictionary(_notification_hints(handle), signature="sv"),
                 dbus.Int32(_MESSAGE_EXPIRE_MS),
             ))
         except dbus.exceptions.DBusException as e:

@@ -532,6 +532,20 @@ def test_all_clients_expand_and_scroll_long_message_drafts() -> None:
     assert "max-height: 8" in composer_styles
 
 
+def test_quickshell_launcher_can_focus_an_existing_conversation() -> None:
+    launcher = (ROOT / "data" / "blueferry-quickshell").read_text()
+    qml = (ROOT / "data" / "quickshell" / "shell.qml").read_text()
+
+    assert "--thread" in launcher
+    assert "--message" in launcher
+    assert "ipc call blueferry" in launcher
+    assert 'target: "blueferry"' in qml
+    assert "function openThread(key: string)" in qml
+    assert "function openMessage(handle: string)" in qml
+    assert "BLUEFERRY_OPEN_THREAD_KEY" in qml
+    assert "BLUEFERRY_OPEN_MESSAGE_HANDLE" in qml
+
+
 def test_quickshell_keeps_private_dbus_values_out_of_process_arguments() -> None:
     quickshell = _qml_bundle(ROOT / "data/quickshell")
 
