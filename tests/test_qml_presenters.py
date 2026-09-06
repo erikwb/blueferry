@@ -385,3 +385,50 @@ def test_qt_onboarding_summary_explains_locked_contact_sync(qml_engine) -> None:
     assert "Unlock Local Data, then sync contacts again" in summary.property("text")
     assert "Enable Sync Contacts" not in summary.property("text")
     summary.deleteLater()
+
+
+@pytest.mark.parametrize("relative_path", [
+    "data/quickshell/shell.qml", "src/blueferry/qt/qml/Main.qml",
+])
+def test_read_sync_requires_visible_active_conversation(qml_engine, relative_path):
+    """Execute the shipped handlers with inert windows and backend recorders."""
+    source = (ROOT / relative_path).read_text()
+    functions = []
+    for name in ("threadByKey", "selectedThread", "threadIsUnread", "markSelectedThreadRead"):
+        start = source.index("function " + name + "(")
+        opening = source.index("{", start)
+        depth = 1
+        end = opening + 1
+        while depth:
+            depth += (source[end] == "{") - (source[end] == "}")
+            end += 1
+        functions.append(source[start:end])
+    script = '''(function() {
+        var calls = [];
+        var threads = [{key: "one", unread: true}];
+        var selectedThreadKey = "one";
+        var bridge = {threads: threads, markThreadRead: function(key) { calls.push(key); }};
+        var backendBridge = {request: function(method, args) { calls.push(args.thread_key); }};
+        var window = {visible: true};
+        var applicationSurface = {Window: {active: true}};
+        var phoneSettingsVisible = false;
+        var root = {visible: true, active: true, iphoneSettingsPage: null};
+    ''' + "\n".join(functions) + '''
+        window.visible = root.visible = false;
+        markSelectedThreadRead();
+        window.visible = root.visible = true;
+        applicationSurface.Window.active = root.active = false;
+        markSelectedThreadRead();
+        applicationSurface.Window.active = root.active = true;
+        phoneSettingsVisible = true;
+        root.iphoneSettingsPage = {};
+        markSelectedThreadRead();
+        if (calls.length) throw new Error("Hidden conversation was marked read");
+        phoneSettingsVisible = false;
+        root.iphoneSettingsPage = null;
+        markSelectedThreadRead();
+        return JSON.stringify(calls);
+    })()'''
+    result = qml_engine.evaluate(script)
+    assert not result.isError(), result.toString()
+    assert result.toString() == '["one"]'

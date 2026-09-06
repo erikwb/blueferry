@@ -836,3 +836,37 @@ def test_delete_threads_validates_entire_request_before_erasing(
         operations.delete_threads([key, "address:phone:missing"], True)
 
     assert len(read_events(path=path)) == 1
+
+
+@pytest.mark.parametrize("error", [ValueError("settings full"), OSError("disk full")])
+def test_successful_group_send_is_acknowledged_when_preferences_fail(monkeypatch, error):
+    from concurrent.futures import Future
+
+    from blueferry.obex.worker import ObexWorker
+
+    pending = []
+    recorded = []
+    replies = []
+
+    def remember(*_args):
+        raise error
+
+    def submit(operation, *, on_success, on_error):
+        pending.append((on_success, on_error))
+
+    operations = _operations(
+        submit_obex=submit,
+        confirmed_groups=SimpleNamespace(remember=remember),
+        on_group_sent=lambda *args: recorded.append(args),
+    )
+    thread = _group()
+    _stub_group(operations, thread)
+    operations.send_to_thread(
+        thread["key"], "hello", True, replies.append,
+        lambda error: pytest.fail(str(error)),
+    )
+    result = Future()
+    result.set_result("/transfer/sent")
+    ObexWorker._deliver(result, *pending[0])
+    assert replies == ["/transfer/sent"]
+    assert len(recorded) == 1
