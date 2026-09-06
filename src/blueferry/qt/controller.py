@@ -443,12 +443,6 @@ class BridgeController(QObject):
             return
         self._refreshing = True
 
-        def completed(snapshot: object) -> None:
-            self._apply_snapshot(snapshot)
-
-        def failed(message: str) -> None:
-            self._set_error(message)
-
         def finished() -> None:
             self._refreshing = False
             if self._refresh_again:
@@ -457,8 +451,8 @@ class BridgeController(QObject):
 
         task = Task(self._snapshot)
         self._tasks.add(task)
-        task.signals.done.connect(completed)
-        task.signals.failed.connect(failed)
+        task.signals.done.connect(self._apply_snapshot)
+        task.signals.failed.connect(self._set_error)
         task.signals.finished.connect(lambda: (self._tasks.discard(task), finished()))
         self._pool.start(task)
 
@@ -546,10 +540,7 @@ class BridgeController(QObject):
 
     @Slot()
     def syncContacts(self) -> None:
-        def completed(_value: object) -> None:
-            self.refresh()
-
-        self._run(self._backend.sync_contacts, completed)
+        self._run(self._backend.sync_contacts, lambda _value: self.refresh())
 
     @Slot()
     def restartBackend(self) -> None:
@@ -601,8 +592,7 @@ class BridgeController(QObject):
     @Slot(str)
     def setNotificationPolicy(self, policy: str) -> None:
         def completed(value: object) -> None:
-            selected = str(value)
-            self._status["notification_policy"] = selected
+            self._status["notification_policy"] = str(value)
             self.statusChanged.emit()
 
         self._run(lambda: self._backend.set_notification_policy(policy), completed)
@@ -625,25 +615,19 @@ class BridgeController(QObject):
             # selected, so do not immediately issue a duplicate request.
             self._storage_unlock_attempted = True
 
-        def completed(value: object) -> None:
-            if isinstance(value, dict):
-                self._status.update(value)
-                self.statusChanged.emit()
-            self.refresh()
-
-        self._run(lambda: self._backend.set_storage_policy(policy), completed)
+        self._run(lambda: self._backend.set_storage_policy(policy), self._storage_updated)
 
     @Slot()
     def unlockStorage(self) -> None:
         self._storage_unlock_attempted = True
 
-        def completed(value: object) -> None:
-            if isinstance(value, dict):
-                self._status.update(value)
-                self.statusChanged.emit()
-            self.refresh()
+        self._run(self._backend.unlock_storage, self._storage_updated)
 
-        self._run(self._backend.unlock_storage, completed)
+    def _storage_updated(self, value: object) -> None:
+        if isinstance(value, dict):
+            self._status.update(value)
+            self.statusChanged.emit()
+        self.refresh()
 
     def _maybe_unlock_storage(self) -> None:
         if self._storage_unlock_attempted:

@@ -1,14 +1,4 @@
-"""DaemonClient — the UI's link to the running BlueFerry daemon.
-
-The daemon owns `io.weirdware.BlueFerry` on the session bus. This client:
-  • subscribes to content-free Events1 invalidations and re-emits them as
-    GObject signals the UI pages connect to;
-  • calls its messaging methods;
-  • reads history and conversation routing through the daemon, so every UI
-    uses the same correlation and recipient-safety rules.
-
-Slow methods are issued asynchronously so the UI never blocks.
-"""
+"""Asynchronous backend calls and D-Bus invalidations for GTK clients."""
 
 from __future__ import annotations
 
@@ -85,8 +75,6 @@ class DaemonClient(GObject.Object):
         if SetupClient().configuration().configured:
             self.ensure_backend_current_async()
 
-    # ---- signal subscription -------------------------------------------
-
     def _subscribe(self) -> None:
         # add_signal_receiver works even before the daemon is up — delivery
         # just starts once it claims the bus name.
@@ -128,8 +116,6 @@ class DaemonClient(GObject.Object):
         self._matches = []
         self._read_executor.shutdown(wait=False, cancel_futures=True)
         self._mutation_executor.shutdown(wait=False, cancel_futures=True)
-
-    # ---- proxy helpers --------------------------------------------------
 
     @staticmethod
     def _call_backend(operation: Callable[[BackendClient], T]) -> T:
@@ -236,8 +222,6 @@ class DaemonClient(GObject.Object):
             failed,
         )
 
-    # ---- Messages1 ------------------------------------------------------
-
     def send_message(self, recipient: str, body: str, on_ok, on_err) -> None:
         """Send asynchronously. on_ok(transfer_path) / on_err(text)."""
         self._submit(
@@ -278,8 +262,6 @@ class DaemonClient(GObject.Object):
             on_err,
             mutation=True,
         )
-
-    # ---- backend-owned history -----------------------------------------
 
     def list_threads_async(self, on_ok, on_err=None, limit: int = 1000) -> None:
         self._submit(
