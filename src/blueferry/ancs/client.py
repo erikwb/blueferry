@@ -97,7 +97,11 @@ def _char_path_to_device_path(char_path: str) -> str:
 def _connection_was_lost(error: dbus.exceptions.DBusException) -> bool:
     name = (error.get_dbus_name() or "").casefold()
     detail = (error.get_dbus_message() or str(error)).casefold()
-    return name.endswith(".notconnected") or "not connected" in detail
+    return (
+        name.endswith(".notconnected")
+        or "not connected" in detail
+        or "no att transport" in detail
+    )
 
 
 def _notification_is_already_stopped(
@@ -634,17 +638,10 @@ class AncsClient:
             return
         if self._transport_blocked:
             return
-        # During first-time authorization, registering the GATT notification
-        # subscriptions is part of the connection bootstrap on some iPhone
-        # and controller combinations. In particular, BlueZ can expose the
-        # bonded ANCS characteristics while Bearer.LE1 remains disconnected
-        # and its explicit Connect method fails. Once authorization has ever
-        # succeeded, retain the stricter settled-bearer requirement so stale
-        # GATT objects cannot masquerade as a live subscription after a
-        # reconnect.
-        if self._was_authorized and (
-            self._bearer_connected is not True or not self._bearer_ready
-        ):
+        # BlueZ keeps bonded ANCS objects after ATT drops. StartNotify/CP on
+        # those objects returns Not connected / No ATT transport and never
+        # reaches iOS, so the notification-access prompt does not appear.
+        if self._bearer_connected is not True or not self._bearer_ready:
             return
         if not (self._ns_path and self._ds_path and self._cp_path):
             return
@@ -714,7 +711,7 @@ class AncsClient:
                     match.remove()
                 except Exception:
                     log.debug("could not roll back ANCS signal watch", exc_info=True)
-            if _connection_was_lost(e) and self._was_authorized:
+            if _connection_was_lost(e):
                 self._mark_transport_failed()
             else:
                 # Do not StopNotify a characteristic that succeeded before a
@@ -942,7 +939,7 @@ class AncsClient:
             name = error.get_dbus_name() or type(error).__name__
             detail = error.get_dbus_message() or str(error)
             log.warning("ANCS CP WriteValue failed: %s: %s", name, detail)
-            if _connection_was_lost(error) and self._was_authorized:
+            if _connection_was_lost(error):
                 self._mark_transport_failed()
                 return
             self._abandon_request(request)

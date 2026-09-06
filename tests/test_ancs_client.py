@@ -534,9 +534,7 @@ def test_start_notify_failure_retries_without_rediscovery(monkeypatch) -> None:
     assert ds.start_calls == 1
 
 
-def test_initial_subscription_bootstraps_a_disconnected_le_bearer(
-    monkeypatch,
-) -> None:
+def test_initial_subscription_waits_for_a_settled_le_bearer(monkeypatch) -> None:
     calls = []
 
     class _Characteristic:
@@ -571,51 +569,32 @@ def test_initial_subscription_bootstraps_a_disconnected_le_bearer(
 
     client._try_subscribe()
 
-    assert calls == [
-        ("start", "ns"),
-        ("start", "ds"),
-        ("write", "cp"),
-    ]
-    assert client.subscribed is True
-    assert client.authorized is False
-    assert client.connected is False
+    assert calls == []
+    assert client.subscribed is False
+
+    client.observe_bearer_state(True)
+    assert client._bearer_settle_id is not None
 
 
-def test_disconnected_initial_subscription_keeps_retrying(monkeypatch) -> None:
+def test_missing_att_transport_resets_a_connected_le_bearer(monkeypatch) -> None:
     scheduled = []
     resets = []
 
     class _Characteristic:
-        def __init__(self, *, fail_once: bool = False) -> None:
-            self.fail_once = fail_once
-            self.start_calls = 0
-
-        def StartNotify(self, **_kwargs) -> None:
-            self.start_calls += 1
-            if self.fail_once:
-                self.fail_once = False
-                raise client_module.dbus.exceptions.DBusException(
-                    "Not connected",
-                    name="org.bluez.Error.NotConnected",
-                )
-
         @staticmethod
-        def WriteValue(_value, _options, **_kwargs) -> None:
-            return None
+        def StartNotify(**_kwargs) -> None:
+            raise client_module.dbus.exceptions.DBusException(
+                "No ATT transport",
+                name="org.bluez.Error.Failed",
+            )
 
-    ns = _Characteristic(fail_once=True)
-    ds = _Characteristic()
-    cp = _Characteristic()
-    bus = _CharacteristicBus(
-        {"/device/ns": ns, "/device/ds": ds, "/device/cp": cp}
-    )
+    bus = _CharacteristicBus({
+        "/device/ns": _Characteristic(),
+        "/device/ds": _Characteristic(),
+        "/device/cp": _Characteristic(),
+    })
     monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
     monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
-    monkeypatch.setattr(
-        client_module.GLib,
-        "timeout_add_seconds",
-        lambda _delay, _callback: 9,
-    )
     monkeypatch.setattr(client_module.GLib, "source_remove", lambda _timer: None)
     client = AncsClient(
         "/device",
@@ -624,8 +603,8 @@ def test_disconnected_initial_subscription_keeps_retrying(monkeypatch) -> None:
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
     )
     client._started = True
-    client._bearer_connected = False
-    client._bearer_ready = False
+    client._bearer_connected = True
+    client._bearer_ready = True
     client._ns_path = "/device/ns"
     client._ds_path = "/device/ds"
     client._cp_path = "/device/cp"
@@ -633,82 +612,10 @@ def test_disconnected_initial_subscription_keeps_retrying(monkeypatch) -> None:
     client._try_subscribe()
 
     assert client.subscribed is False
-    assert client._transport_blocked is False
-    assert resets == []
-    assert scheduled[0][0] == client_module.SUBSCRIBE_RETRY_SECONDS
-
+    assert client._transport_blocked is True
+    assert scheduled[0][0] == client_module.TRANSPORT_RESET_SECONDS
     scheduled[0][1]()
-
-    assert ns.start_calls == 2
-    assert ds.start_calls == 1
-    assert client.subscribed is True
-    assert client._transport_blocked is False
-
-
-def test_disconnected_initial_authorization_write_keeps_retrying(
-    monkeypatch,
-) -> None:
-    scheduled = []
-    resets = []
-
-    class _Characteristic:
-        @staticmethod
-        def StartNotify(**_kwargs) -> None:
-            return None
-
-    class _ControlPoint:
-        def __init__(self) -> None:
-            self.write_calls = 0
-
-        def WriteValue(self, _value, _options, **_kwargs) -> None:
-            self.write_calls += 1
-            if self.write_calls == 1:
-                raise client_module.dbus.exceptions.DBusException(
-                    "Not connected",
-                    name="org.bluez.Error.NotConnected",
-                )
-
-    cp = _ControlPoint()
-    bus = _CharacteristicBus({
-        "/device/ns": _Characteristic(),
-        "/device/ds": _Characteristic(),
-        "/device/cp": cp,
-    })
-    monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
-    monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
-    monkeypatch.setattr(
-        client_module.GLib,
-        "timeout_add_seconds",
-        lambda _delay, _callback: 9,
-    )
-    monkeypatch.setattr(client_module.GLib, "source_remove", lambda _timer: None)
-    client = AncsClient(
-        "/device",
-        lambda _event: None,
-        on_transport_failure=lambda: resets.append(True),
-        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
-    )
-    client._started = True
-    client._bearer_connected = False
-    client._bearer_ready = False
-    client._ns_path = "/device/ns"
-    client._ds_path = "/device/ds"
-    client._cp_path = "/device/cp"
-
-    client._try_subscribe()
-
-    assert client.subscribed is True
-    assert client.authorized is False
-    assert client._transport_blocked is False
-    assert resets == []
-    assert scheduled[0][0] == client_module.AUTHORIZATION_RETRY_SECONDS
-
-    scheduled[0][1]()
-
-    assert cp.write_calls == 2
-    _complete_authorization_probe(client)
-    assert client.authorized is True
-    assert client.connected is False
+    assert resets == [True]
 
 
 def test_previously_authorized_subscription_waits_for_a_settled_bearer(

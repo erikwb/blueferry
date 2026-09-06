@@ -96,7 +96,7 @@ def test_start_publishes_dbus_before_scheduling_bluetooth(monkeypatch):
 
     scheduled[0]()
 
-    assert order == ["dirs", "claim", "storage", "service", "audio", "bluetooth"]
+    assert order == ["dirs", "claim", "storage", "service", "bluetooth"]
     assert instance._initializing is False
 
 
@@ -213,6 +213,8 @@ def test_failed_hardware_initialization_leaves_control_service_alive(monkeypatch
 def test_missing_bond_never_prepares_or_connects_bluetooth(monkeypatch):
     instance = _bare_daemon()
     prepared = []
+    audio = []
+    instance.phone_audio = SimpleNamespace(reconcile=lambda **kwargs: audio.append(kwargs))
     monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args: False)
     monkeypatch.setattr(
         daemon_mod.bluez_setup,
@@ -224,6 +226,25 @@ def test_missing_bond_never_prepares_or_connects_bluetooth(monkeypatch):
         instance._initialize_bluetooth()
 
     assert prepared == []
+    assert audio == []
+
+
+def test_bonded_start_reconciles_phone_audio_before_adapter_class(monkeypatch):
+    instance = _bare_daemon()
+    order = []
+    monkeypatch.setattr(daemon_mod.config, "KEEP_PHONE_AUDIO_ON_PHONE", True)
+    monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args: True)
+    instance.phone_audio = SimpleNamespace(
+        reconcile=lambda **kwargs: order.append(("audio", kwargs["enabled"]))
+    )
+    instance.adapter_class = SimpleNamespace(
+        start=lambda: order.append("class") or (_ for _ in ()).throw(RuntimeError("stop"))
+    )
+
+    with pytest.raises(RuntimeError, match="stop"):
+        instance._initialize_bluetooth()
+
+    assert order == [("audio", True), "class"]
 
 
 def test_transient_missing_release_marker_does_not_stop_daemon(monkeypatch):

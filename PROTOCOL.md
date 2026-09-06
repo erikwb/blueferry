@@ -110,7 +110,10 @@ connection. MAP and PBAP are its successful end state; absence of Notification
 Access is expected and group messages may consequently lack ANCS-derived group
 metadata.
 
-Both modes activate obexd's local Message Notification Server before pairing.
+Both modes activate obexd's local Message Notification Server before pairing
+and install BlueFerry's WirePlumber phone-audio fragment so this computer is
+not an A2DP/HFP sink when iOS first connects. A failed pairing attempt removes
+that fragment if this attempt created it.
 After authentication, setup trusts the bond, selects BR/EDR as the preferred
 bearer, lets the existing Classic ACL settle, and only then registers the
 short-lived solicitation advertisement. The daemon starts while that advert

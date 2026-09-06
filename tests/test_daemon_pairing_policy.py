@@ -80,6 +80,9 @@ def _daemon(calls):
     value.profiles = _Profiles(calls)
     value.adapter_class = _AdapterClass(calls)
     value.solicitation = _Solicitation(calls)
+    value.phone_audio = type(
+        "Audio", (), {"reconcile": lambda self, **_kwargs: False}
+    )()
     value.notification_policy = type(
         "Policy", (), {"value": "messages", "contacts_only": False}
     )()

@@ -19,6 +19,8 @@ def _pairing_diagnostics(monkeypatch):
         "_bluez_device_snapshot",
         lambda _path: {"device_present": False},
     )
+    monkeypatch.setattr(pair_setup, "_apply_phone_audio_policy", lambda _attempt: False)
+    monkeypatch.setattr(pair_setup, "_revert_phone_audio_policy", lambda _attempt: None)
 
 
 @pytest.fixture

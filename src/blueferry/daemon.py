@@ -280,7 +280,6 @@ class Daemon:
         self._startup_id = None
         self._initialization_retry_id = None
         try:
-            self.phone_audio.reconcile(enabled=config.KEEP_PHONE_AUDIO_ON_PHONE)
             self._initialize_bluetooth()
         except PairingRequiredError as error:
             log.warning("Bluetooth setup is incomplete: %s", error)
@@ -302,6 +301,8 @@ class Daemon:
             raise PairingRequiredError(
                 "the saved iPhone is not currently paired; open a client to pair it"
             )
+
+        self.phone_audio.reconcile(enabled=config.KEEP_PHONE_AUDIO_ON_PHONE)
 
         # Class-of-Device is controller state, not durable configuration.
         # Repair it before opening either bearer and continue supervising it
