@@ -116,17 +116,12 @@ def _wireplumber_05_or_newer() -> bool:
     return version >= (0, 5)
 
 
-def _restart_wireplumber() -> None:
-    run_command(
-        [
-            "/usr/bin/systemctl",
-            "--user",
-            "--no-block",
-            "try-restart",
-            "wireplumber.service",
-        ],
-        timeout=5,
-    )
+def _restart_wireplumber(*, wait: bool = False) -> None:
+    command = ["/usr/bin/systemctl", "--user"]
+    if not wait:
+        command.append("--no-block")
+    command.extend(["try-restart", "wireplumber.service"])
+    run_command(command, timeout=30 if wait else 5)
 
 
 def _matches(path: Path, expected: str) -> bool:
@@ -170,12 +165,15 @@ class WirePlumberPhoneAudioPolicy:
         path: Path | None = None,
         active: ActiveCheck = _wireplumber_active,
         supported: SupportedCheck = _wireplumber_05_or_newer,
-        restart: Restart = _restart_wireplumber,
+        restart: Restart | None = None,
+        wait_for_restart: bool = False,
     ) -> None:
         self.path = path or fragment_path()
         self._active = active
         self._supported = supported
-        self._restart = restart
+        self._restart = restart or (
+            lambda: _restart_wireplumber(wait=wait_for_restart)
+        )
 
     def reconcile(self, *, enabled: bool) -> bool:
         """Apply or remove the policy and reload WirePlumber on change.

@@ -26,6 +26,7 @@ from blueferry.pairing_policy import PairingPolicy, resolve_pairing_policy
 from blueferry.pairing_types import PairingAttempt, PairingOutcome, PairingTransports
 from blueferry.private_files import atomic_write_private_text, read_private_text
 from blueferry.setup_verification import clear_setup_verification
+from blueferry.wireplumber_policy import WirePlumberPhoneAudioPolicy
 
 log = logging.getLogger(__name__)
 
@@ -723,6 +724,28 @@ def _prefer_bearer(device_path: str, kind: str) -> None:
 def _prefer_bredr(device_path: str) -> None:
     """Prefer BR/EDR after pairing when BlueZ exposes PreferredBearer."""
     _prefer_bearer(device_path, "bredr")
+
+
+def _apply_phone_audio_policy(attempt: PairingAttempt) -> bool:
+    """Load the phone-audio fragment before iOS probes A2DP/HFP on Connect.
+
+    Returns whether this attempt wrote or replaced the owned fragment, so a
+    later failure can remove only what pairing just installed.
+    """
+    if not config.KEEP_PHONE_AUDIO_ON_PHONE:
+        quirks_report.mark(attempt, "phone_audio_policy_skipped")
+        return False
+    changed = WirePlumberPhoneAudioPolicy(wait_for_restart=True).reconcile(
+        enabled=True
+    )
+    quirks_report.mark(attempt, "phone_audio_policy_ready", changed=changed)
+    return changed
+
+
+def _revert_phone_audio_policy(attempt: PairingAttempt) -> None:
+    """Drop a fragment this pairing attempt installed, so a failed setup does not linger."""
+    WirePlumberPhoneAudioPolicy(wait_for_restart=True).reconcile(enabled=False)
+    quirks_report.mark(attempt, "phone_audio_policy_removed")
 
 
 def _activate_obex_mns() -> None:
@@ -1501,65 +1524,73 @@ def _execute_pairing(
     device = preparation.device
     selected_adapter = preparation.adapter
     policy = preparation.policy
-    _prepare_classic_transport(selected_adapter, attempt)
-
-    resources = _PairingResources()
+    phone_audio_installed = _apply_phone_audio_policy(attempt)
+    success = False
     try:
-        device = _run_pairing_transaction(
-            mac,
-            device,
-            selected_adapter,
-            policy,
-            confirmation=confirmation,
-            display=display,
-            attempt=attempt,
-            resources=resources,
-        )
-        _trust_and_settle(device, attempt)
-        _register_solicitation(
-            device,
-            selected_adapter,
-            policy,
-            attempt,
-            resources,
-        )
-        transports = _handoff_to_daemon(
-            device,
-            selected_adapter,
-            policy,
-            attempt,
-        )
-    finally:
-        _cleanup_pairing_resources(
-            device,
-            selected_adapter,
-            attempt,
-            resources,
-        )
+        _prepare_classic_transport(selected_adapter, attempt)
 
-    device = _device(mac, adapter=selected_adapter)
-    _snapshot_phone(attempt, device)
-    _record_bluez_state(attempt, device.device_path, "finished", force=True)
-    return PairingOutcome(
-        device=device,
-        config=str(LOCAL_ENV_PATH),
-        service="package-enabled and restarted",
-        ancs=(
-            "disabled"
-            if not policy.ancs_enabled
-            else "connected"
-            if transports.ancs
-            else "daemon connecting"
-        ),
-        ancs_enabled=policy.ancs_enabled,
-        transports=transports,
-        iphone_steps=(
-            "Open Settings → Bluetooth and tap ⓘ next to this computer",
-            "If this computer is listed twice, check both entries",
-            "Toggle on Show Message Notifications and Sync Contacts",
-            "You may need to back out and tap ⓘ again to make these toggles appear",
-        ),
-    )
+        resources = _PairingResources()
+        try:
+            device = _run_pairing_transaction(
+                mac,
+                device,
+                selected_adapter,
+                policy,
+                confirmation=confirmation,
+                display=display,
+                attempt=attempt,
+                resources=resources,
+            )
+            _trust_and_settle(device, attempt)
+            _register_solicitation(
+                device,
+                selected_adapter,
+                policy,
+                attempt,
+                resources,
+            )
+            transports = _handoff_to_daemon(
+                device,
+                selected_adapter,
+                policy,
+                attempt,
+            )
+        finally:
+            _cleanup_pairing_resources(
+                device,
+                selected_adapter,
+                attempt,
+                resources,
+            )
+
+        device = _device(mac, adapter=selected_adapter)
+        _snapshot_phone(attempt, device)
+        _record_bluez_state(attempt, device.device_path, "finished", force=True)
+        outcome = PairingOutcome(
+            device=device,
+            config=str(LOCAL_ENV_PATH),
+            service="package-enabled and restarted",
+            ancs=(
+                "disabled"
+                if not policy.ancs_enabled
+                else "connected"
+                if transports.ancs
+                else "daemon connecting"
+            ),
+            ancs_enabled=policy.ancs_enabled,
+            transports=transports,
+            iphone_steps=(
+                "Open Settings → Bluetooth and tap ⓘ next to this computer",
+                "If this computer is listed twice, check both entries",
+                "Toggle on Show Message Notifications and Sync Contacts",
+                "You may need to back out and tap ⓘ again to make these toggles appear",
+            ),
+        )
+        success = True
+        return outcome
+    finally:
+        if not success and phone_audio_installed:
+            _revert_phone_audio_policy(attempt)
 
 
 def forget_device(mac: str, *, adapter: str | None = None) -> None:

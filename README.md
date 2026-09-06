@@ -277,11 +277,13 @@ Restart the user service after editing `local.env` settings.
 When WirePlumber 0.5 or newer is installed, BlueFerry keeps calls and music on
 the iPhone by writing
 `~/.config/wireplumber/wireplumber.conf.d/99-blueferry-keep-phone-audio.conf`
-and reloading WirePlumber if that fragment changed. The fragment removes the
-adapter roles that make this computer an A2DP/HFP sink, and disables
+before pairing and waiting for WirePlumber to reload it. The fragment removes
+the adapter roles that make this computer an A2DP/HFP sink, and disables
 auto-connect on phone cards so a later `bluetooth-a2dp-autoconnect` rule cannot
-steal the stream. Set `BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE=false` to remove
-BlueFerry's fragment only.
+steal the stream. A failed pairing attempt removes a fragment that attempt
+installed. After a successful bond the daemon keeps reconciling the same
+file. Set `BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE=false` to remove BlueFerry's
+fragment only.
 
 ## Command line
 

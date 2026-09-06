@@ -1,11 +1,14 @@
 """WirePlumber phone-audio policy is owned, reversible, and change-driven."""
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from blueferry.wireplumber_policy import (
     FRAGMENT_TEXT,
     LEGACY_FRAGMENT_NAME,
     WirePlumberPhoneAudioPolicy,
     _parse_wireplumber_version,
+    _restart_wireplumber,
 )
 
 
@@ -110,3 +113,53 @@ def test_parse_wireplumber_version_from_linked_banner() -> None:
     assert _parse_wireplumber_version(
         "wireplumber\nCompiled with libwireplumber 0.5.15\n"
     ) == (0, 5)
+
+
+def test_blocking_restart_waits_for_wireplumber(monkeypatch) -> None:
+    seen: list[tuple[list[str], float]] = []
+
+    def fake_run(argv, **kwargs):
+        seen.append((list(argv), kwargs["timeout"]))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("blueferry.wireplumber_policy.run_command", fake_run)
+
+    _restart_wireplumber(wait=True)
+    _restart_wireplumber()
+
+    assert seen == [
+        (
+            ["/usr/bin/systemctl", "--user", "try-restart", "wireplumber.service"],
+            30,
+        ),
+        (
+            [
+                "/usr/bin/systemctl",
+                "--user",
+                "--no-block",
+                "try-restart",
+                "wireplumber.service",
+            ],
+            5,
+        ),
+    ]
+
+
+def test_pairing_policy_waits_for_wireplumber_reload(tmp_path, monkeypatch) -> None:
+    seen: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):
+        seen.append(list(argv))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("blueferry.wireplumber_policy.run_command", fake_run)
+    path = tmp_path / "wireplumber.conf.d" / "99-blueferry-keep-phone-audio.conf"
+    policy = WirePlumberPhoneAudioPolicy(
+        path=path,
+        active=lambda: True,
+        supported=lambda: True,
+        wait_for_restart=True,
+    )
+
+    assert policy.reconcile(enabled=True) is True
+    assert seen == [["/usr/bin/systemctl", "--user", "try-restart", "wireplumber.service"]]
