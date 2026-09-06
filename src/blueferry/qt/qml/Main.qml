@@ -1167,6 +1167,7 @@ Kirigami.ApplicationWindow {
                 }
 
                 OnboardingSummary {
+                    id: onboardingSummary
                     Layout.fillWidth: true
                     stage: compatibilityMode.checked
                         && iphonePage.effectiveStage === "activate-bluetooth"
@@ -1420,8 +1421,10 @@ Kirigami.ApplicationWindow {
                         && root.bridge.status.map === true
                         && root.bridge.status.pbap === true
                         && root.bridge.status.ancs === false
-                    type: Kirigami.MessageType.Information
-                    text: qsTr("FYI: If ANCS remains unavailable, BlueZ may be retaining stale Bluetooth state. Before re-pairing, run sudo systemctl restart bluetooth.service, then forget this computer on the iPhone and pair again. This briefly disconnects all Bluetooth devices.")
+                    type: onboardingSummary.ancsLimitedController()
+                        ? Kirigami.MessageType.Positive
+                        : Kirigami.MessageType.Information
+                    text: onboardingSummary.ancsUnavailableHint()
                 }
 
                 Kirigami.Heading { text: qsTr("Desktop Notifications"); level: 2 }

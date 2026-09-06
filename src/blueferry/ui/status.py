@@ -9,7 +9,7 @@ from gi.repository import Adw, Gio, GLib, Gtk
 from blueferry.bluetooth_devices import PairedDevice, iphone_candidates
 from blueferry.i18n import _
 from blueferry.models import BackendStatus
-from blueferry.onboarding import OnboardingState
+from blueferry.onboarding import OnboardingState, ancs_unavailable_detail
 from blueferry.quirks_report import issue_report, issue_url
 from blueferry.setup_client import (
     DISCOVERY_SECONDS,
@@ -277,12 +277,7 @@ class IPhonePage(Gtk.Box):
         self._ancs_icon = Gtk.Image()
         self._ancs_row.add_suffix(self._ancs_icon)
         self._ancs_recovery_label = Gtk.Label(
-            label=_(
-                "FYI: If ANCS remains unavailable, BlueZ may be retaining stale "
-                "Bluetooth state. Before re-pairing, run sudo systemctl restart "
-                "bluetooth.service, then forget this computer on the iPhone and "
-                "pair again. This briefly disconnects all Bluetooth devices."
-            ),
+            label=ancs_unavailable_detail(),
             selectable=True,
             wrap=True,
             xalign=0,
@@ -924,10 +919,23 @@ class IPhonePage(Gtk.Box):
         show_ancs_recovery = bool(
             status.map and status.pbap and not ancs_connected and ancs_expected
         )
-        ancs_subtitle = _("Connected") if ancs_connected else _("Unavailable")
+        limited_ancs = bool(status.ancs_limited_controller)
+        if ancs_connected:
+            ancs_subtitle = _("Connected")
+        elif limited_ancs:
+            ancs_subtitle = _("Expected on this adapter")
+        else:
+            ancs_subtitle = _("Unavailable")
         self._ancs_row.set_subtitle(ancs_subtitle)
-        self._ancs_icon.set_from_icon_name(
-            "emblem-ok-symbolic" if ancs_connected else "dialog-warning-symbolic"
+        if ancs_connected or limited_ancs:
+            self._ancs_icon.set_from_icon_name("emblem-ok-symbolic")
+        else:
+            self._ancs_icon.set_from_icon_name("dialog-warning-symbolic")
+        self._ancs_recovery_label.set_label(
+            ancs_unavailable_detail(
+                limited=limited_ancs,
+                vendor=status.controller_vendor,
+            )
         )
         self._ancs_recovery_label.set_visible(show_ancs_recovery)
         self._contacts_row.set_subtitle(str(status.contacts))

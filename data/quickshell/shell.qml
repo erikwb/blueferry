@@ -26,6 +26,8 @@ ShellRoot {
   property bool bluezActive: false
   property bool hardwareSupported: false
   property bool notificationsSupported: false
+  property bool ancsLimitedController: false
+  property string controllerVendor: ""
   property bool compatibilityLoaded: false
   property bool ancsEnabled: true
   property bool compatibilityModeOverride: false
@@ -148,6 +150,28 @@ ShellRoot {
       if (!messages[index].outgoing && messages[index].read === false) return true
     }
     return false
+  }
+
+  function ancsLimited() {
+    return root.backendStatus.ancs_limited_controller === true
+      || root.ancsLimitedController
+  }
+
+  function ancsVendorName() {
+    return String(root.backendStatus.controller_vendor || root.controllerVendor || "")
+  }
+
+  function ancsExpectedDetail() {
+    var vendor = root.ancsVendorName()
+    if (vendor !== "")
+      return "Messages and contacts are connected. This " + vendor
+        + " adapter does not support iPhone system notifications. Group texts will appear as separate messages from their sender."
+    return "Messages and contacts are connected. This Bluetooth adapter does not support iPhone system notifications. Group texts will appear as separate messages from their sender."
+  }
+
+  function ancsUnavailableHint() {
+    if (root.ancsLimited()) return root.ancsExpectedDetail()
+    return "FYI: If ANCS remains unavailable, BlueZ may be retaining stale Bluetooth state. Before re-pairing, run sudo systemctl restart bluetooth.service, then forget this computer on the iPhone and pair again. This briefly disconnects all Bluetooth devices."
   }
 
   function markSelectedThreadRead() {
@@ -536,6 +560,8 @@ ShellRoot {
           var parsed = JSON.parse(text)
           root.hardwareSupported = parsed.hardware_supported === true
           root.notificationsSupported = parsed.notifications_supported === true
+          root.ancsLimitedController = parsed.ancs_limited_controller === true
+          root.controllerVendor = parsed.controller_vendor || ""
           root.compatibilityLoaded = true
           root.bluezActive = parsed.bearer_api_active === true
           root.adapterName = parsed.adapter || ""
@@ -1278,7 +1304,9 @@ ShellRoot {
             text: root.onboardingStage === "ready"
               ? "Bluetooth services and iPhone permissions have been verified."
               : root.onboardingStage === "ready-without-ancs"
-                ? "Messages and contacts have been verified. System notifications are unavailable, so group texts may appear as individual conversations."
+                ? (root.ancsLimited()
+                  ? root.ancsExpectedDetail()
+                  : "Messages and contacts have been verified. System notifications are unavailable, so group texts may appear as individual conversations.")
                 : root.onboardingStage === "iphone-settings"
                     ? onboarding.mapConnectionRefused()
                       ? "Cannot retrieve or send messages - are you connected to another computer? We will reconnect once your phone is free"
@@ -1504,8 +1532,8 @@ ShellRoot {
               && root.backendStatus.map
               && root.backendStatus.pbap
               && !root.backendStatus.ancs
-            text: "FYI: If ANCS remains unavailable, BlueZ may be retaining stale Bluetooth state. Before re-pairing, run sudo systemctl restart bluetooth.service, then forget this computer on the iPhone and pair again. This briefly disconnects all Bluetooth devices."
-            color: theme.warning
+            text: root.ancsUnavailableHint()
+            color: root.ancsLimited() ? theme.surfaceText : theme.warning
             wrapMode: Text.Wrap
             Layout.fillWidth: true
           }

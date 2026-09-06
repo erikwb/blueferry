@@ -31,6 +31,14 @@ def test_cli_ancs_repair_hint_restarts_bluez_before_repairing(capsys) -> None:
     assert "briefly disconnects all Bluetooth devices" in output
 
 
+def test_cli_limited_vendor_treats_missing_ancs_as_expected(capsys) -> None:
+    _print_ancs_repair_hint(limited=True, vendor="Realtek")
+
+    output = capsys.readouterr().out
+    assert "This Realtek adapter does not support iPhone system notifications" in output
+    assert "sudo systemctl restart" not in output
+
+
 def test_cli_setup_always_prints_required_bluetooth_toggles(capsys) -> None:
     _print_iphone_steps(
         frozenset(),

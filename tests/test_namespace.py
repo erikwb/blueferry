@@ -241,12 +241,12 @@ def test_gui_pairing_guidance_tells_users_to_recheck_iphone_toggles() -> None:
 
 
 def test_all_clients_offer_bluez_restart_as_ancs_repair_recovery() -> None:
+    shared = (ROOT / "src/blueferry/onboarding.py").read_text()
+    pairing_cli = (ROOT / "src/blueferry/pairing_cli.py").read_text()
     clients = (
-        (ROOT / "src/blueferry/ui/status.py").read_text(),
+        shared,
         _qml_bundle(ROOT / "src/blueferry/qt/qml"),
         _qml_bundle(ROOT / "data/quickshell"),
-        (ROOT / "src/blueferry/tui.py").read_text(),
-        (ROOT / "src/blueferry/pairing_cli.py").read_text(),
     )
 
     for client in clients:
@@ -256,6 +256,20 @@ def test_all_clients_offer_bluez_restart_as_ancs_repair_recovery() -> None:
         assert "forget this computer on the iPhone and" in client
         assert "pair again" in client
         assert "briefly disconnects all Bluetooth devices" in client
+    assert "ANCS_REPAIR_HINT_CLI" in pairing_cli
+    assert "sudo systemctl restart bluetooth.service" in pairing_cli
+    assert "ancs_unavailable_detail" in (ROOT / "src/blueferry/tui.py").read_text()
+    assert "ancs_unavailable_detail" in (ROOT / "src/blueferry/ui/status.py").read_text()
+
+
+def test_limited_bluetooth_vendors_get_an_expected_ancs_success_message() -> None:
+    clients = (
+        (ROOT / "src/blueferry/onboarding.py").read_text(),
+        _qml_bundle(ROOT / "src/blueferry/qt/qml"),
+        _qml_bundle(ROOT / "data/quickshell"),
+    )
+    for client in clients:
+        assert "does not support iPhone system notifications" in client
 
 
 def test_all_pairing_clients_expose_compatibility_mode() -> None:

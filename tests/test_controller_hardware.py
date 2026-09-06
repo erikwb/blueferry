@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from blueferry.bluetooth_capabilities import (
     activate_bluez_support,
+    ancs_limited_vendor,
     bluez_bearer_api_supported,
     bluez_stack,
     controller_hardware,
@@ -11,6 +12,15 @@ from blueferry.errors import PairingError
 
 def _btmgmt(stdout: str):
     return type("Result", (), {"returncode": 0, "stdout": stdout, "stderr": ""})()
+
+
+def test_realtek_and_broadcom_are_ancs_limited_vendors() -> None:
+    assert ancs_limited_vendor("Realtek") is True
+    assert ancs_limited_vendor("BROADCOM") is True
+    assert ancs_limited_vendor("Cypress") is True
+    assert ancs_limited_vendor("Intel") is False
+    assert ancs_limited_vendor("MediaTek") is False
+    assert ancs_limited_vendor("") is False
 
 
 def test_bluez_bearer_api_requires_5_86_or_newer() -> None:

@@ -7,8 +7,38 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Protocol
 
+from blueferry.i18n import _
 from blueferry.models import BackendStatus
 from blueferry.setup_verification import remaining_iphone_setup_tasks
+
+ANCS_REPAIR_HINT = _(
+    "FYI: If ANCS remains unavailable, BlueZ may be retaining stale "
+    "Bluetooth state. Before re-pairing, run sudo systemctl restart "
+    "bluetooth.service, then forget this computer on the iPhone and "
+    "pair again. This briefly disconnects all Bluetooth devices."
+)
+ANCS_REPAIR_HINT_CLI = _(
+    "FYI: If ANCS remains unavailable after setup, BlueZ may be "
+    "retaining stale Bluetooth state."
+)
+
+
+def ancs_unavailable_detail(*, limited: bool = False, vendor: str = "") -> str:
+    """Explain missing iPhone notifications after messages and contacts work."""
+    if not limited:
+        return ANCS_REPAIR_HINT
+    name = str(vendor or "").strip()
+    if name:
+        return _(
+            "Messages and contacts are connected. This {vendor} adapter "
+            "does not support iPhone system notifications. Group texts "
+            "will appear as separate messages from their sender."
+        ).format(vendor=name)
+    return _(
+        "Messages and contacts are connected. This Bluetooth adapter "
+        "does not support iPhone system notifications. Group texts "
+        "will appear as separate messages from their sender."
+    )
 
 
 class CompatibilityState(Protocol):

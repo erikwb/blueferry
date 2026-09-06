@@ -330,6 +330,28 @@ def test_quickshell_thread_preview_stays_inside_one_line(qml_engine) -> None:
     preview.deleteLater()
 
 
+def test_qt_onboarding_summary_treats_realtek_as_expected_success(qml_engine) -> None:
+    component = _component(
+        qml_engine, "src/blueferry/qt/qml/OnboardingSummary.qml"
+    )
+    summary = component.createWithInitialProperties({
+        "stage": "ready-without-ancs",
+        "compatibility": {
+            "notifications_supported": False,
+            "ancs_limited_controller": True,
+            "controller_vendor": "Realtek",
+        },
+        "status": {"verified_iphone_setup": []},
+    })
+
+    assert summary is not None
+    text = summary.property("text")
+    assert "Messages Are Connected" in text
+    assert "This Realtek adapter does not support iPhone system notifications" in text
+    assert "System notifications are unavailable" not in text
+    summary.deleteLater()
+
+
 def test_qt_onboarding_summary_renders_stage_from_properties(qml_engine) -> None:
     component = _component(
         qml_engine, "src/blueferry/qt/qml/OnboardingSummary.qml"

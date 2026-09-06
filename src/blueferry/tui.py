@@ -28,6 +28,7 @@ from blueferry.conversation_state import (
     ReplyDisposition,
 )
 from blueferry.models import BackendStatus, Thread, ThreadMessage
+from blueferry.onboarding import ancs_unavailable_detail
 from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH
 from blueferry.text_safety import terminal_text
 from blueferry.time_display import format_message_timestamp
@@ -865,13 +866,14 @@ class BlueFerryApp(App[None]):
             and self.state.status.pbap
             and not self.state.status.ancs
         ):
+            limited = self.state.status.ancs_limited_controller
             notice.update(
-                "FYI: If ANCS remains unavailable, BlueZ may be retaining stale "
-                "Bluetooth state. Before re-pairing, run sudo systemctl restart "
-                "bluetooth.service, then forget this computer on the iPhone and "
-                "pair again. This briefly disconnects all Bluetooth devices."
+                ancs_unavailable_detail(
+                    limited=limited,
+                    vendor=self.state.status.controller_vendor,
+                )
             )
-            notice.set_classes("warn")
+            notice.set_classes("success" if limited else "warn")
         else:
             notice.update("Ready  ·  Ctrl+P: Help")
             notice.set_classes("")

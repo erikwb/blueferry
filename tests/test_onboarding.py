@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 from blueferry.models import BackendStatus
-from blueferry.onboarding import OnboardingStage, OnboardingState, derive_stage
+from blueferry.onboarding import (
+    OnboardingStage,
+    OnboardingState,
+    ancs_unavailable_detail,
+    derive_stage,
+)
 from blueferry.setup_client import ConfigurationState
 
 COMPATIBLE = {
@@ -11,6 +16,15 @@ COMPATIBLE = {
     "notifications_supported": True,
     "bearer_api_active": True,
 }
+
+
+def test_ancs_copy_is_a_success_when_the_adapter_cannot_pair_notifications() -> None:
+    repair = ancs_unavailable_detail()
+    expected = ancs_unavailable_detail(limited=True, vendor="Realtek")
+    assert "ANCS remains unavailable" in repair
+    assert "sudo systemctl restart bluetooth.service" in repair
+    assert "This Realtek adapter does not support iPhone system notifications" in expected
+    assert "sudo systemctl restart" not in expected
 
 
 def test_unconfigured_compatible_install_requests_a_device() -> None:
