@@ -2,7 +2,7 @@
 SmsEvent construction from MAP Message1 properties."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -54,13 +54,15 @@ class TestParseMapTimestamp:
         assert result.minute == 14
         assert result.second == 23
 
-    def test_with_tz_suffix(self):
-        # iPhone may append a TZ offset; we just take the first 15 chars
-        result = parse_map_timestamp("20260519T181423+0500")
+    @pytest.mark.parametrize(("suffix", "hours"), [("+0500", 5), ("-0400", -4), ("Z", 0)])
+    def test_with_tz_suffix(self, suffix, hours):
+        result = parse_map_timestamp(f"20260519T181423{suffix}")
         assert result is not None
-        assert result.day == 19
+        assert result.hour == 18
+        assert result.utcoffset() == timedelta(hours=hours)
 
-    @pytest.mark.parametrize("bad", ["", None, "not a date", "20260", "abcdef"])
+    @pytest.mark.parametrize("bad", ["", None, "not a date", "20260", "abcdef", "20260519T181423+2500",
+                                     "20260519T181423garbage"])
     def test_invalid_returns_none(self, bad):
         assert parse_map_timestamp(bad) is None
 

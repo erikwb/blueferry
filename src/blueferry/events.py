@@ -100,14 +100,13 @@ def parse_map_timestamp(ts: str | None) -> datetime | None:
     """Parse MAP's timestamp format: '20260519T181423' or with timezone suffix."""
     if not ts:
         return None
-    # MAP timestamps: YYYYMMDDTHHMMSS, optionally followed by a TZ offset
-    base = ts[:15]
     try:
-        dt = datetime.strptime(base, "%Y%m%dT%H%M%S")
-    except ValueError:
+        fmt = "%Y%m%dT%H%M%S" + ("%z" if len(ts) > 15 else "")
+        dt = datetime.strptime(ts, fmt)
+        # Offset-free MAP dates use local time on the date of the message.
+        return dt if dt.tzinfo is not None else dt.astimezone()
+    except (ValueError, OverflowError, OSError):
         return None
-    # MAP timestamps are local-time on the iPhone; we'll treat as local
-    return dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
 
 
 # ---- event types --------------------------------------------------------

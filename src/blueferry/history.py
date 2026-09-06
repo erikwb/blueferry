@@ -45,12 +45,9 @@ def _event_datetime(event: EventRecord) -> datetime | None:
     if not raw:
         return None
     try:
-        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-    except ValueError:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except (ValueError, OverflowError, OSError):
         return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=datetime.now().astimezone().tzinfo)
-    return parsed.astimezone(timezone.utc)
 
 
 def _serialize(event: EventRecord, storage: StorageSecurity | None) -> str:

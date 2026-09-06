@@ -16,7 +16,7 @@ from __future__ import annotations
 import hashlib
 import re
 import unicodedata
-from datetime import datetime
+from datetime import datetime, timezone
 
 from blueferry.ancs.constants import MESSAGES_APP_ID
 from blueferry.events import canonical_address, safe_event_address
@@ -36,8 +36,8 @@ def _seen_at(event: dict) -> datetime | None:
     if not raw:
         return None
     try:
-        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
-    except ValueError:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except (ValueError, OverflowError, OSError):
         return None
 
 
