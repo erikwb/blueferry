@@ -100,6 +100,32 @@ def test_start_publishes_dbus_before_scheduling_bluetooth(monkeypatch):
     assert instance._initializing is False
 
 
+def test_stop_does_not_ask_obexd_to_remove_sessions(monkeypatch):
+    instance = _bare_daemon()
+    closed = []
+    instance.adapter_class = SimpleNamespace(stop=lambda: None)
+    instance.bearers = SimpleNamespace(stop=lambda: None)
+    instance.profiles = SimpleNamespace(stop=lambda: None)
+    instance.listener = None
+    instance.ancs = None
+    instance.solicitation = SimpleNamespace(stop=lambda: None)
+    instance.events = SimpleNamespace(stop=lambda: None)
+    instance._sleep_match = None
+    instance.storage = SimpleNamespace(close=lambda: None)
+    instance.sessions = SimpleNamespace(
+        close_all=lambda **kwargs: closed.append(kwargs),
+        stop_monitoring=lambda: None,
+    )
+    instance.obex_worker = SimpleNamespace(
+        shutdown=lambda **kwargs: kwargs["cleanup"]()
+    )
+    monkeypatch.setattr(daemon_mod.main_loop, "quit", lambda: None)
+
+    instance.stop()
+
+    assert closed == [{"remove_remote": False}]
+
+
 def test_no_storage_policy_reasserts_empty_local_data(monkeypatch):
     instance = _bare_daemon()
     status = SimpleNamespace(

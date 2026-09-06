@@ -603,7 +603,13 @@ class Daemon:
             self._sleep_match = None
         if self._dbus_service is not None:
             self._dbus_service.close()
-        self.obex_worker.shutdown(cleanup=self.sessions.close_all)
+        # BlueZ 5.87 SIGSEGVs in gobex when RemoveSession runs on shutdown,
+        # including after a healthy MAP/PBAP lifetime. Drop local session
+        # state only; the D-Bus disconnect and the next open's stale cleanup
+        # release whatever obexd still holds.
+        self.obex_worker.shutdown(
+            cleanup=lambda: self.sessions.close_all(remove_remote=False),
+        )
         self.storage.close()
         self.sessions.stop_monitoring()
         main_loop.quit()
