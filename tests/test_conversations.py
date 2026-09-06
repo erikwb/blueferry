@@ -330,3 +330,39 @@ def test_roster_warning_fallback_id_is_stable_for_partial_payload() -> None:
     assert ConversationState.roster_warning_id(thread) == (
         "group:named:crew:Casey"
     )
+
+
+@pytest.mark.parametrize(
+    ("position", "changed", "expected"),
+    [(200, True, [200]), (780, True, [None]), (200, False, [])],
+)
+def test_refresh_preserves_reading_position_and_only_follows_from_bottom(position, changed, expected):
+    from unittest.mock import Mock
+
+    before = _thread()
+    state = ConversationState()
+    state.apply_snapshot(ConversationSnapshot(None, (before,)))
+    adjustment = Mock()
+    adjustment.get_value.return_value = position
+    adjustment.get_upper.return_value = 1000
+    adjustment.get_page_size.return_value = 200
+    page = Mock(_state=state)
+    page._msg_scroll.get_vadjustment.return_value = adjustment
+    after = _thread(messages=(*before.messages, before.messages[0])) if changed else before
+
+    conversations.ConversationsPage._apply_threads(page, [after])
+
+    assert [call.args[0] for call in page._scroll_to.call_args_list] == expected
+    assert page._msg_list.remove_all.call_count == int(changed)
+
+
+def test_delayed_scroll_does_not_move_a_different_conversation(monkeypatch):
+    from unittest.mock import Mock
+
+    callbacks = []
+    monkeypatch.setattr(conversations.GLib, "idle_add", lambda callback: callbacks.append(callback))
+    page = Mock(_state=SimpleNamespace(selected_key="Alice"))
+    conversations.ConversationsPage._scroll_to(page, 200)
+    page._state.selected_key = "Bob"
+    assert callbacks[0]() is False
+    page._msg_scroll.get_vadjustment.assert_not_called()

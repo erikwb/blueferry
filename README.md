@@ -64,13 +64,14 @@ install them with apt:
 sudo apt install ./blueferry-backend_*.deb ./blueferry-gtk_*.deb
 ```
 
-For Fedora, download the `.noarch.rpm` files whose `.fcNN` tag matches your
-Fedora release, then install them with dnf:
+For Fedora 43 or 44, download the `.fc43.noarch.rpm` files. For Fedora 45,
+download the `.fc45.noarch.rpm` files. Fedora 43 and 44 use the same package
+build. Install the backend and your client with dnf:
 
 ```bash
-fedora_release=$(rpm -E %fedora)
-sudo dnf install ./blueferry-backend-*.fc${fedora_release}.noarch.rpm \
-  ./blueferry-gtk-*.fc${fedora_release}.noarch.rpm
+# Fedora 43 and 44; use fc45 below for Fedora 45.
+sudo dnf install ./blueferry-backend-*.fc43.noarch.rpm \
+  ./blueferry-gtk-*.fc43.noarch.rpm
 ```
 
 Replace the GTK package with `blueferry-qt` for KDE Plasma. Arch and CachyOS

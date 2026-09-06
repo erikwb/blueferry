@@ -531,6 +531,10 @@ class ConversationsPage(Gtk.Box):
         self._client.send_message(recipient, body, done, failed)
 
     def _apply_threads(self, loaded) -> bool:
+        previous = self._state.selected
+        adjustment = self._msg_scroll.get_vadjustment()
+        position = adjustment.get_value()
+        following = adjustment.get_upper() - adjustment.get_page_size() - position <= 32
         threads = tuple(
             thread
             for thread in loaded
@@ -540,16 +544,20 @@ class ConversationsPage(Gtk.Box):
         self._rebuild_thread_list()
         current = self._state.selected
         if current is not None:
-            self._msg_list.remove_all()
-            for message in current.messages:
-                self._append_bubble(message, is_group=current.is_group)
+            switched = previous is None or previous.key not in {
+                current.key, *current.extra.get("aliases", []),
+            }
+            if switched or previous.messages != current.messages:
+                self._msg_list.remove_all()
+                for message in current.messages:
+                    self._append_bubble(message, is_group=current.is_group)
+                self._scroll_to(None if switched or following else position)
             self._update_conversation_title(current)
             can_reply = current.reply_ready
             self._entry.set_sensitive(can_reply)
             self._send_btn.set_sensitive(can_reply)
             self._update_group_roster_banner(current)
             self._stack.set_visible_child_name("messages")
-            self._scroll_to_bottom()
         else:
             self._entry.set_sensitive(False)
             self._send_btn.set_sensitive(False)
@@ -655,7 +663,7 @@ class ConversationsPage(Gtk.Box):
         self._msg_list.remove_all()
         for message in thread.messages:
             self._append_bubble(message, is_group=thread.is_group)
-        self._scroll_to_bottom()
+        self._scroll_to()
         self._mark_selected_read()
 
     def _update_conversation_title(self, thread: Thread) -> None:
@@ -933,10 +941,14 @@ class ConversationsPage(Gtk.Box):
         row.set_child(outer)
         self._msg_list.append(row)
 
-    def _scroll_to_bottom(self) -> None:
+    def _scroll_to(self, position: float | None = None) -> None:
+        selected = self._state.selected_key
+
         def _scroll() -> bool:
+            if self._state.selected_key != selected:
+                return False
             adj = self._msg_scroll.get_vadjustment()
-            adj.set_value(adj.get_upper())
+            adj.set_value(adj.get_upper() if position is None else position)
             return False
 
         GLib.idle_add(_scroll)
