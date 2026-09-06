@@ -404,7 +404,7 @@ def test_group_message_bubbles_show_the_individual_sender() -> None:
 
 def test_quickshell_remembers_group_confirmation_until_roster_changes() -> None:
     qml = (ROOT / "data" / "quickshell" / "shell.qml").read_text()
-    signature = qml.split("function groupSignature(thread)", 1)[1]
+    signature = (ROOT / "src/blueferry/qt/qml/ConversationLogic.qml").read_text()
 
     assert "property var confirmedGroupSignatures" in qml
     assert "function groupIsConfirmed(thread)" in qml
@@ -518,7 +518,7 @@ def test_all_gui_clients_offer_contacts_aware_new_messages() -> None:
     assert "def findContacts" in qt_controller
     assert 'text: qsTr("New Message")' in qt_qml
     assert 'Accessible.name: "New message"' in quickshell
-    assert 'backendBridge.request("contacts"' in quickshell
+    assert 'backendBridge.requestLatest("contacts"' in quickshell
 
 
 def test_all_clients_expand_and_scroll_long_message_drafts() -> None:

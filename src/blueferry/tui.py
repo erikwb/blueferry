@@ -26,10 +26,12 @@ from blueferry.conversation_state import (
     ConversationSnapshot,
     ConversationState,
     ReplyDisposition,
+    fetch_conversation_snapshot,
 )
 from blueferry.models import BackendStatus, Thread, ThreadMessage
 from blueferry.onboarding import ancs_unavailable_detail
 from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH
+from blueferry.recipients import participant_lines
 from blueferry.text_safety import terminal_text
 from blueferry.time_display import format_message_timestamp
 
@@ -97,18 +99,7 @@ class TuiState(ConversationState):
         self.client = client
 
     def fetch_snapshot(self) -> ConversationSnapshot:
-        failures: list[str] = []
-        status: BackendStatus | None = None
-        threads: tuple[Thread, ...] | None = None
-        try:
-            status = self.client.status()
-        except BackendError as error:
-            failures.append(str(error))
-        try:
-            threads = tuple(self.client.threads(200))
-        except BackendError as error:
-            failures.append(str(error))
-        return ConversationSnapshot(status, threads, tuple(failures))
+        return fetch_conversation_snapshot(self.client, limit=200)
 
     def refresh(self) -> None:
         self.apply_snapshot(self.fetch_snapshot())
@@ -441,11 +432,7 @@ class RosterChangedScreen(ModalScreen[tuple[str, ...] | None]):
 
     @on(Button.Pressed, "#roster-changed-save")
     def save_button(self) -> None:
-        recipients: list[str] = []
-        for line in self.query_one("#roster-participants", TextArea).text.splitlines():
-            address = line.strip()
-            if address and address not in recipients:
-                recipients.append(address)
+        recipients = participant_lines(self.query_one("#roster-participants", TextArea).text)
         if not 2 <= len(recipients) <= 20:
             self.notify(
                 "Enter 2 to 20 participants, one per line",

@@ -204,3 +204,33 @@ def test_reply_sent_rejects_blocked_plan() -> None:
     state = ConversationState()
     with pytest.raises(ValueError, match="blocked"):
         state.reply_sent(state.plan_reply("hello"))
+
+
+@pytest.mark.parametrize("status_fails,threads_fail", [(False, False), (True, False), (False, True), (True, True)])
+def test_shared_snapshot_loader_distinguishes_empty_history_from_failure(status_fails, threads_fail):
+    from blueferry.client import BackendError
+    from blueferry.conversation_state import fetch_conversation_snapshot
+
+    calls = []
+
+    class Client:
+        def status(self):
+            calls.append("status")
+            if status_fails:
+                raise BackendError("status failed")
+            return BackendStatus(daemon=True)
+
+        def threads(self, limit=1000):
+            calls.append(limit)
+            if threads_fail:
+                raise BackendError("threads failed")
+            return []
+
+    snapshot = fetch_conversation_snapshot(Client(), limit=17)
+    assert calls == ["status", 17]
+    assert (snapshot.status is None) == status_fails
+    assert snapshot.threads == (None if threads_fail else ())
+    assert snapshot.failures == tuple(
+        message for failed, message in [(status_fails, "status failed"), (threads_fail, "threads failed")]
+        if failed
+    )

@@ -59,3 +59,8 @@ def validate_recipient(recipient: str) -> str:
     raise InvalidRecipient(
         f"not a valid phone number or email address: {candidate!r}"
     )
+
+
+def participant_lines(value: str) -> list[str]:
+    """Parse the roster editor without changing address spelling or order."""
+    return list(dict.fromkeys(line.strip() for line in value.splitlines() if line.strip()))

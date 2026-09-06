@@ -8,6 +8,8 @@ import org.kde.kirigami as Kirigami
 Kirigami.ApplicationWindow {
     id: root
 
+    ConversationLogic { id: conversationLogic }
+
     required property var bridge
     property string selectedThreadKey: ""
     onSelectedThreadKeyChanged: root.markSelectedThreadRead()
@@ -16,7 +18,6 @@ Kirigami.ApplicationWindow {
     property bool firstRunRedirected: false
     property var iphoneSettingsPage: null
     property string pendingMessageHandle: ""
-    property var warnedRosterChanges: ({})
 
     visible: true
     width: 980
@@ -26,12 +27,7 @@ Kirigami.ApplicationWindow {
     title: qsTr("BlueFerry")
 
     function threadByKey(key) {
-        for (let index = 0; index < bridge.threads.length; ++index) {
-            if (bridge.threads[index].key === key) {
-                return bridge.threads[index]
-            }
-        }
-        return null
+        return conversationLogic.threadByKey(bridge.threads, key)
     }
 
     function selectedThread() {
@@ -39,18 +35,7 @@ Kirigami.ApplicationWindow {
     }
 
     function threadIsUnread(thread) {
-        if (!thread)
-            return false
-        if (thread.unread === true)
-            return true
-        if (thread.unread === false)
-            return false
-        const messages = thread.messages || []
-        for (let index = 0; index < messages.length; ++index) {
-            if (!messages[index].outgoing && messages[index].read === false)
-                return true
-        }
-        return false
+        return conversationLogic.threadIsUnread(thread)
     }
 
     function markSelectedThreadRead() {
@@ -62,19 +47,13 @@ Kirigami.ApplicationWindow {
     }
 
     function selectMessage(handle) {
-        for (let threadIndex = 0; threadIndex < bridge.threads.length; ++threadIndex) {
-            const thread = bridge.threads[threadIndex]
-            for (let messageIndex = 0; messageIndex < thread.messages.length; ++messageIndex) {
-                if (thread.messages[messageIndex].handle === handle) {
-                    closePhoneSettings()
-                    pageStack.currentIndex = 0
-                    selectedThreadKey = thread.key
-                    pendingMessageHandle = ""
-                    return true
-                }
-            }
-        }
-        return false
+        const thread = conversationLogic.threadForMessage(bridge.threads, handle)
+        if (!thread) return false
+        closePhoneSettings()
+        pageStack.currentIndex = 0
+        selectedThreadKey = thread.key
+        pendingMessageHandle = ""
+        return true
     }
 
     function htmlEscape(value) {
@@ -148,19 +127,10 @@ Kirigami.ApplicationWindow {
     }
 
     function warnAboutRosterChanges() {
-        for (let index = 0; index < bridge.threads.length; ++index) {
-            const thread = bridge.threads[index]
-            if (!thread.roster_changed)
-                continue
-            const warningId = thread.roster_warning_id
-                || thread.key + ":" + (thread.unexpected_sender || "unknown")
-            if (warnedRosterChanges[warningId] === true)
-                continue
-            warnedRosterChanges[warningId] = true
-            rosterChangedDialog.thread = thread
-            rosterChangedDialog.open()
-            return
-        }
+        const thread = conversationLogic.nextRosterWarning(bridge.threads)
+        if (!thread) return
+        rosterChangedDialog.thread = thread
+        rosterChangedDialog.open()
     }
 
     Connections {
@@ -273,14 +243,7 @@ Kirigami.ApplicationWindow {
         standardButtons: Kirigami.Dialog.Cancel
 
         function recipients() {
-            const result = []
-            const lines = groupParticipantEditor.text.split(/\r?\n/)
-            for (let index = 0; index < lines.length; ++index) {
-                const address = lines[index].trim()
-                if (address !== "" && result.indexOf(address) < 0)
-                    result.push(address)
-            }
-            return result
+            return conversationLogic.participantLines(groupParticipantEditor.text)
         }
 
         customFooterActions: [Kirigami.Action {

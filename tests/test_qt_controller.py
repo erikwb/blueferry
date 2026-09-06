@@ -19,7 +19,7 @@ class _Backend:
     def status(self):
         return BackendStatus(daemon=True, map=True, contacts=4)
 
-    def threads(self):
+    def threads(self, limit=1000):
         return [
             Thread(
                 key="address:email:test@example.com",
@@ -97,7 +97,7 @@ def test_failed_thread_snapshot_preserves_last_successful_projection():
                 storage_state="ready",
             )
 
-        def threads(self):
+        def threads(self, limit=1000):
             raise BackendError("thread snapshot unavailable")
 
     controller = BridgeController(
@@ -718,3 +718,44 @@ def test_draft_completion_is_emitted_only_after_success(monkeypatch):
     assert completed == [(key, " draft ")]
     queued[1][1]("sent")
     assert completed[-1] == (" new recipient ", " new draft ")
+
+
+def test_contact_search_rejects_repeated_query_stale_results_and_errors(monkeypatch):
+    controller = BridgeController(backend=_Backend(), setup=object(), subscribe=False, autostart=False)
+    pending = []
+    monkeypatch.setattr(controller, "_run", lambda *args, **_kw: pending.append(args))
+    controller.findContacts("Ali")
+    controller.findContacts("Bob")
+    controller.findContacts("Ali")
+    pending[0][1]([("Old Alice", "old@example.com")])
+    pending[1][2]("stale failure")
+    assert controller.contactResults == []
+    assert controller.errorText == ""
+    pending[2][1]([("Alice", "alice@example.com")])
+    assert controller.contactResults == [{"name": "Alice", "address": "alice@example.com"}]
+    controller.findContacts("")
+    pending[2][1]([("Late Alice", "late@example.com")])
+    assert controller.contactResults == []
+
+
+def test_successful_group_reply_reuses_confirmation_until_roster_changes(monkeypatch):
+    controller = BridgeController(backend=_Backend(), setup=object(), subscribe=False, autostart=False)
+    controller._threads = [{
+        "key": "group:test", "is_group": True, "reply_ready": True,
+        "recipients": ["+15551111111", "+15552222222"],
+    }]
+    pending = []
+    prompts = []
+    monkeypatch.setattr(controller, "_run", lambda *args, **_kw: pending.append(args))
+    monkeypatch.setattr(controller, "refresh", lambda: None)
+    controller.groupConfirmationRequested.connect(lambda *args: prompts.append(args))
+    controller.sendThread("group:test", "first", False)
+    controller.sendThread("group:test", "first", True)
+    pending.pop()[1]("sent")
+    controller.sendThread("group:test", "second", False)
+    assert len(prompts) == 1
+    assert len(pending) == 1
+    controller._threads[0]["recipients"].append("+15553333333")
+    controller.sendThread("group:test", "third", False)
+    assert len(prompts) == 2
+    assert len(pending) == 1

@@ -10,15 +10,12 @@ ShellRoot {
   id: root
   property var threads: []
   property var contactResults: []
-  property string contactQuery: ""
-  property string contactsRequestedQuery: ""
   property string selectedThreadKey: ""
   property string pendingThreadKey: ""
   property string pendingMessageHandle: ""
   property var confirmedGroupSignatures: ({})
   property var groupParticipantsThread: null
   property var rosterChangedThread: null
-  property var warnedRosterChanges: ({})
   property string errorText: ""
   property bool phoneSettingsVisible: false
   property var pairingDevices: []
@@ -69,6 +66,8 @@ ShellRoot {
   property bool storagePolicyBusy: false
   property bool storageUnlockBusy: false
 
+  ConversationLogic { id: conversationLogic }
+
   Theme { id: theme }
   OnboardingState {
     id: onboarding
@@ -98,19 +97,11 @@ ShellRoot {
   }
 
   function searchContacts(query) {
-    contactQuery = query.trim()
-    if (contactQuery === "") {
-      contactResults = []
-      return
-    }
-    if (!contactsBusy) startContactSearch()
-  }
-
-  function startContactSearch() {
-    if (contactQuery === "" || contactsBusy) return
-    contactsRequestedQuery = contactQuery
-    contactsBusy = true
-    backendBridge.request("contacts", {query: contactsRequestedQuery})
+    contactResults = []
+    const selected = query.trim()
+    contactsBusy = selected !== ""
+    if (contactsBusy) backendBridge.requestLatest("contacts", {query: selected})
+    else backendBridge.cancelLatest("contacts")
   }
 
   function maybeUnlockStorage() {
@@ -123,10 +114,7 @@ ShellRoot {
   }
 
   function threadByKey(key) {
-    for (var index = 0; index < threads.length; ++index) {
-      if (threads[index].key === key) return threads[index]
-    }
-    return null
+    return conversationLogic.threadByKey(threads, key)
   }
 
   function selectedThread() {
@@ -142,14 +130,7 @@ ShellRoot {
   }
 
   function threadIsUnread(thread) {
-    if (!thread) return false
-    if (thread.unread === true) return true
-    if (thread.unread === false) return false
-    var messages = thread.messages || []
-    for (var index = 0; index < messages.length; ++index) {
-      if (!messages[index].outgoing && messages[index].read === false) return true
-    }
-    return false
+    return conversationLogic.threadIsUnread(thread)
   }
 
   function ancsLimited() {
@@ -185,18 +166,12 @@ ShellRoot {
   onPhoneSettingsVisibleChanged: root.markSelectedThreadRead()
 
   function selectMessage(handle) {
-    for (var threadIndex = 0; threadIndex < threads.length; ++threadIndex) {
-      var thread = threads[threadIndex]
-      for (var messageIndex = 0; messageIndex < thread.messages.length; ++messageIndex) {
-        if (thread.messages[messageIndex].handle === handle) {
-          selectedThreadKey = thread.key
-          pendingMessageHandle = ""
-          phoneSettingsVisible = false
-          return true
-        }
-      }
-    }
-    return false
+    const thread = conversationLogic.threadForMessage(threads, handle)
+    if (!thread) return false
+    selectedThreadKey = thread.key
+    pendingMessageHandle = ""
+    phoneSettingsVisible = false
+    return true
   }
 
   function presentWindow() {
@@ -218,15 +193,7 @@ ShellRoot {
   }
 
   function groupSignature(thread) {
-    if (!thread || !thread.is_group) return ""
-    var unique = []
-    var recipients = thread.recipients || []
-    for (var index = 0; index < recipients.length; ++index) {
-      var address = String(recipients[index] || "")
-      if (address !== "" && unique.indexOf(address) < 0) unique.push(address)
-    }
-    unique.sort()
-    return [String(thread.roster_warning_id || "")].concat(unique).join("\n")
+    return conversationLogic.groupSignature(thread)
   }
 
   function groupIsConfirmed(thread) {
@@ -251,27 +218,14 @@ ShellRoot {
   }
 
   function participantLines(value) {
-    var result = []
-    var lines = value.split(/\r?\n/)
-    for (var index = 0; index < lines.length; ++index) {
-      var address = lines[index].trim()
-      if (address !== "" && result.indexOf(address) < 0) result.push(address)
-    }
-    return result
+    return conversationLogic.participantLines(value)
   }
 
   function warnAboutRosterChanges() {
-    for (var index = 0; index < threads.length; ++index) {
-      var thread = threads[index]
-      if (!thread.roster_changed) continue
-      var warningId = thread.roster_warning_id
-        || thread.key + ":" + (thread.unexpected_sender || "unknown")
-      if (warnedRosterChanges[warningId] === true) continue
-      warnedRosterChanges[warningId] = true
-      rosterChangedThread = thread
-      rosterChangedPopup.open()
-      return
-    }
+    const thread = conversationLogic.nextRosterWarning(threads)
+    if (!thread) return
+    rosterChangedThread = thread
+    rosterChangedPopup.open()
   }
 
   function loadCompatibility(adapter) {
@@ -464,9 +418,7 @@ ShellRoot {
         root.errorText = ""
       } else if (method === "contacts") {
         root.contactsBusy = false
-        if (root.contactsRequestedQuery === root.contactQuery)
-          root.contactResults = Array.isArray(result) ? result : []
-        else Qt.callLater(root.startContactSearch)
+        root.contactResults = Array.isArray(result) ? result : []
       } else if (method === "send_to_thread") {
         root.sendBusy = false
         composer.text = ""
@@ -527,8 +479,6 @@ ShellRoot {
       } else if (method === "contacts") {
         root.contactsBusy = false
         root.errorText = message || "Contact search failed"
-        if (root.contactsRequestedQuery !== root.contactQuery)
-          Qt.callLater(root.startContactSearch)
       } else if (method === "send_to_thread") {
         root.sendBusy = false
         root.errorText = message
