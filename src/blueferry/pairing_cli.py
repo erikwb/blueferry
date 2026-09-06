@@ -10,6 +10,7 @@ from blueferry.backend_lifecycle import ensure_backend_current
 from blueferry.bluetooth_devices import iphone_candidates
 from blueferry.client import BackendClient, BackendError
 from blueferry.errors import PairingError
+from blueferry.onboarding import ANCS_REPAIR_HINT_CLI, ancs_unavailable_detail
 from blueferry.quirks_report import cli_issue_hint, latest_report
 from blueferry.setup_client import DISCOVERY_SECONDS, SetupClient
 from blueferry.setup_verification import (
@@ -39,11 +40,18 @@ def _verification_detail(*, ancs_ready: bool, compatibility_mode: bool) -> str:
     return "messages and contacts; this controller has no ANCS support"
 
 
-def _print_ancs_repair_hint() -> None:
+def _print_ancs_repair_hint(*, limited: bool = False, vendor: str = "") -> None:
+    if limited:
+        typer.echo(
+            typer.style(
+                "\n" + ancs_unavailable_detail(limited=True, vendor=vendor),
+                fg=typer.colors.GREEN,
+            )
+        )
+        return
     typer.echo(
         typer.style(
-            "\nFYI: If ANCS remains unavailable after setup, BlueZ may be "
-            "retaining stale Bluetooth state.",
+            "\n" + ANCS_REPAIR_HINT_CLI,
             fg=typer.colors.YELLOW,
         )
     )
@@ -279,7 +287,10 @@ def run_wizard(
         ancs_ready=result.ancs_ready,
     )
     if ancs_enabled and not result.ancs_ready:
-        _print_ancs_repair_hint()
+        _print_ancs_repair_hint(
+            limited=bool(getattr(compatibility, "ancs_limited_controller", False)),
+            vendor=str(getattr(compatibility, "controller_vendor", "") or ""),
+        )
 
     prompt = (
         "Have you completed the remaining iPhone steps? Verify the connection now?"

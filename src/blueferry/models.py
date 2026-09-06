@@ -49,6 +49,8 @@ class BackendStatus:
     storage_policy: str = "encrypted"
     storage_state: str = "locked"
     storage_detail: str = ""
+    controller_vendor: str = ""
+    ancs_limited_controller: bool = False
     extra: Mapping[str, Any] = field(default_factory=dict, repr=False)
 
     @property
@@ -83,6 +85,8 @@ class BackendStatus:
             "storage_state",
             "storage_detail",
             "map_connection_refused",
+            "controller_vendor",
+            "ancs_limited_controller",
         }
         return cls(
             daemon=_bool(value.get("daemon")),
@@ -111,6 +115,8 @@ class BackendStatus:
             storage_policy=_str(value.get("storage_policy"), "encrypted"),
             storage_state=_str(value.get("storage_state"), "locked"),
             storage_detail=_str(value.get("storage_detail")),
+            controller_vendor=_str(value.get("controller_vendor")),
+            ancs_limited_controller=_bool(value.get("ancs_limited_controller")),
             extra={key: item for key, item in value.items() if key not in known},
         )
 
@@ -138,6 +144,8 @@ class BackendStatus:
             "storage_state": self.storage_state,
             "storage_detail": self.storage_detail,
             "map_connection_refused": self.map_connection_refused,
+            "controller_vendor": self.controller_vendor,
+            "ancs_limited_controller": self.ancs_limited_controller,
         }
 
 

@@ -18,6 +18,7 @@ from blueferry.ancs.client import AncsClient
 from blueferry.backend_lifecycle import installed_release
 from blueferry.backend_operations import BackendDependencies
 from blueferry.bearer_supervisor import BearerSupervisor
+from blueferry.bluetooth_capabilities import ancs_limited_vendor, controller_hardware
 from blueferry.build_info import build_id, installed_build_sha, running_build_sha
 from blueferry.bus import get_system_bus, main_loop
 from blueferry.connectivity import Connectivity
@@ -493,8 +494,22 @@ class Daemon:
             "storage_policy": self.storage.status.policy,
             "storage_state": self.storage.status.state,
             "storage_detail": self.storage.status.detail,
+            **self._controller_identity(),
             **self.connectivity.snapshot(),
         }
+
+    def _controller_identity(self) -> dict[str, object]:
+        cached = getattr(self, "_controller_identity_cache", None)
+        if cached is None:
+            vendor = str(
+                controller_hardware(config.ADAPTER).get("vendor") or ""
+            )
+            cached = {
+                "controller_vendor": vendor,
+                "ancs_limited_controller": ancs_limited_vendor(vendor),
+            }
+            self._controller_identity_cache = cached
+        return cached
 
     def _refresh_contacts(self) -> None:
         """Best-effort wrapper used by startup and the periodic timer."""

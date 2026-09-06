@@ -193,6 +193,8 @@ class BluetoothCompatibility:
     issue: str
     supported_settings: tuple[str, ...]
     adapters: tuple[AdapterOption, ...] = ()
+    controller_vendor: str = ""
+    ancs_limited_controller: bool = False
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> BluetoothCompatibility:
@@ -219,6 +221,8 @@ class BluetoothCompatibility:
                 for item in raw_adapters
                 if isinstance(item, dict)
             ),
+            controller_vendor=str(value.get("controller_vendor") or ""),
+            ancs_limited_controller=bool(value.get("ancs_limited_controller")),
         )
 
     def to_dict(self) -> dict[str, Any]:

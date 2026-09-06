@@ -74,8 +74,32 @@ Kirigami.InlineMessage {
             "starting": qsTr("The configured backend is starting. This normally takes a few seconds."),
             "iphone-settings": pendingTasksText(storagePolicy, storageState),
             "ready": qsTr("Bluetooth services and iPhone permissions have been verified."),
-            "ready-without-ancs": qsTr("Messages and contacts have been verified. System notifications are unavailable, so group texts may appear as individual conversations.")
+            "ready-without-ancs": ancsLimitedDetail()
         }
         return details[stage] || ""
+    }
+
+    function ancsLimitedController() {
+        return compatibility.ancs_limited_controller === true
+            || status.ancs_limited_controller === true
+    }
+
+    function controllerVendor() {
+        return String(status.controller_vendor || compatibility.controller_vendor || "")
+    }
+
+    function ancsLimitedDetail() {
+        if (!ancsLimitedController())
+            return qsTr("Messages and contacts have been verified. System notifications are unavailable, so group texts may appear as individual conversations.")
+        const vendor = controllerVendor()
+        if (vendor !== "")
+            return qsTr("Messages and contacts are connected. This %1 adapter does not support iPhone system notifications. Group texts will appear as separate messages from their sender.").arg(vendor)
+        return qsTr("Messages and contacts are connected. This Bluetooth adapter does not support iPhone system notifications. Group texts will appear as separate messages from their sender.")
+    }
+
+    function ancsUnavailableHint() {
+        if (!ancsLimitedController())
+            return qsTr("FYI: If ANCS remains unavailable, BlueZ may be retaining stale Bluetooth state. Before re-pairing, run sudo systemctl restart bluetooth.service, then forget this computer on the iPhone and pair again. This briefly disconnects all Bluetooth devices.")
+        return ancsLimitedDetail()
     }
 }

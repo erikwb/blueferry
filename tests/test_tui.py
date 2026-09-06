@@ -401,6 +401,38 @@ def test_delete_key_confirms_and_deletes_current_conversation() -> None:
     _run_headless(scenario())
 
 
+def test_textual_treats_realtek_ancs_gap_as_expected(monkeypatch) -> None:
+    class LimitedAncsBackend(_Backend):
+        @staticmethod
+        def status() -> BackendStatus:
+            return BackendStatus(
+                daemon=True,
+                map=True,
+                pbap=True,
+                ancs=False,
+                controller_vendor="Realtek",
+                ancs_limited_controller=True,
+            )
+
+    async def scenario() -> None:
+        app = BlueFerryApp(
+            TuiState(LimitedAncsBackend()), monitor_factory=lambda: None
+        )
+
+        async with app.run_test(size=(70, 36)) as pilot:
+            notice = await _wait_for_static_text_containing(
+                app,
+                pilot,
+                "#notice-bar",
+                "This Realtek adapter does not support iPhone system notifications",
+            )
+            assert notice.has_class("success")
+            assert "sudo systemctl restart bluetooth.service" not in notice.render().plain
+
+    monkeypatch.setattr(tui_module.config, "ANCS_ENABLED", True)
+    _run_headless(scenario())
+
+
 def test_textual_warns_about_bluez_restart_when_only_ancs_is_missing(
     monkeypatch,
 ) -> None:

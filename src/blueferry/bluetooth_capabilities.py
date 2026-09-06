@@ -32,6 +32,16 @@ _BT_COMPANIES = {
     305: "Cypress",
 }
 
+# These vendors usually expose LE + advertising, but iOS ANCS pairing
+# does not complete on them. Messages and contacts still work.
+ANCS_LIMITED_VENDORS = frozenset({"realtek", "broadcom", "cypress"})
+
+
+def ancs_limited_vendor(vendor: object) -> bool:
+    """Return True when iPhone notification pairing is not expected to finish."""
+    return str(vendor or "").strip().casefold() in ANCS_LIMITED_VENDORS
+
+
 # USB/PCI IDs whose sysfs product string is generic (e.g. Wireless_Device).
 _CHIPSETS = {
     "0bda:8771": "RTL8761BU",
@@ -524,11 +534,13 @@ def compatibility(
     )
     options: list[dict[str, object]] = []
     inspected: dict[str, tuple] = {}
+    hardware_by_name: dict[str, dict[str, object]] = {}
     for name in names:
         available, supported, current, error, identity = controller_settings(
             name, run_command=run_command,
         )
         hardware = controller_hardware(name, run_command=None)
+        hardware_by_name[name] = hardware
         manufacturer_id = identity.get("manufacturer_id")
         if isinstance(manufacturer_id, int):
             apply_company_id(hardware, manufacturer_id)
@@ -571,11 +583,14 @@ def compatibility(
             names[0],
         )
     _available, _supported, _current, _error, identity, fields = inspected[str(chosen)]
+    vendor = str(hardware_by_name.get(str(chosen), {}).get("vendor") or "")
     result: dict[str, object] = {
         "adapter": chosen,
         **fields,
         **stack,
         "adapters": options,
+        "controller_vendor": vendor,
+        "ancs_limited_controller": ancs_limited_vendor(vendor),
     }
     if "manufacturer_id" in identity:
         result["manufacturer_id"] = identity["manufacturer_id"]
