@@ -681,3 +681,21 @@ def test_read_sync_waits_for_narrow_chat_and_pauses_under_dialogs():
             app._maybe_mark_selected_read()
             assert marked == []
     _run_headless(scenario())
+
+
+def test_search_finds_other_addresses_in_a_merged_contact(monkeypatch):
+    from types import SimpleNamespace
+
+    state = TuiState(_Backend())
+    merged = replace(_thread("one", "Alice", "hello"), extra={"aliases": [
+        "address:phone:15559998888", "address:email:alice@example.com",
+    ]})
+    state.threads = [merged, _thread("two", "Bob", "unrelated")]
+    app = BlueFerryApp(state, monitor_factory=lambda: None)
+    search = SimpleNamespace(value="")
+    monkeypatch.setattr(app, "query_one", lambda *_args: search)
+    for query in ["5559998888", "+15559998888", "ALICE@EXAMPLE.COM", "Alice", "hello", "15551111111"]:
+        search.value = query
+        assert merged in app._filtered_threads()
+    search.value = "address:email:"
+    assert app._filtered_threads() == []
