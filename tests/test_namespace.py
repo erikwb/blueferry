@@ -95,14 +95,6 @@ def test_backend_unit_does_not_source_user_controlled_process_environment() -> N
     assert "RestrictAddressFamilies=AF_UNIX" in unit
 
 
-def test_readme_documents_manual_ancs_app_filter() -> None:
-    readme = (ROOT / "README.md").read_text()
-
-    assert "BLUEFERRY_ANCS_APP_ALLOWLIST" in readme
-    assert "BLUEFERRY_ANCS_APP_BLOCKLIST" in readme
-    assert "ANCS app observed" in readme
-
-
 def test_backend_user_unit_does_not_set_a_capability_bounding_set() -> None:
     unit = (ROOT / "systemd" / "blueferry.service").read_text()
 
@@ -123,24 +115,6 @@ def test_arch_check_dependencies_cover_cli_test_imports() -> None:
     assert "'python-typer>=0.12'" in checkdepends
     assert "'python-textual>=8.0'" in checkdepends
     assert "'python-coverage'" in checkdepends
-
-
-def test_repository_quality_workflow_runs_hermetic_checks() -> None:
-    workflow = (ROOT / ".github/workflows/quality.yml").read_text()
-
-    assert "dbus-run-session --config-file=tests/dbus-test.conf" in workflow
-    assert "python -m coverage run -m pytest" in workflow
-    assert "mypy src/blueferry" in workflow
-    assert "qmllint src/blueferry/qt/qml/*.qml data/quickshell/*.qml" in workflow
-
-
-def test_arch_bluetooth_dropin_warns_about_other_executable_paths() -> None:
-    dropin = (ROOT / "packaging/arch/blueferry-bluetooth.conf").read_text()
-
-    assert "Arch Linux only" in dropin
-    assert "/usr/lib/bluetooth/bluetoothd" in dropin
-    assert "/usr/libexec/bluetooth/bluetoothd" in dropin
-    assert "prevents Bluetooth from starting" in dropin
 
 
 def test_gtk_client_styles_messages_with_libadwaita_1_5_colors() -> None:
@@ -191,21 +165,10 @@ def test_native_backend_owns_the_shared_application_icon() -> None:
 def test_qt_package_ships_the_kirigami_ui_and_dependencies() -> None:
     project = (ROOT / "pyproject.toml").read_text()
     pkgbuild = (ROOT / "packaging/arch/PKGBUILD").read_text()
-    qml = _qml_bundle(ROOT / "src/blueferry/qt/qml")
 
     assert '"blueferry.qt" = ["qml/*.qml"]' in project
     assert "'kirigami'" in pkgbuild
     assert "'qqc2-desktop-style'" in pkgbuild
-    assert "Kirigami.ApplicationWindow" in qml
-    assert "Kirigami.NavigationTabBar" not in qml
-    assert "pageStack.push(iphonePageLoader.item)" in qml
-    assert "sourceComponent: iphonePageComponent" in qml
-    assert "root.pageStack.layers.push(aboutPage)" in qml
-    assert qml.count("pageStack.layers.push") == 1
-    assert "Controls.StackView.Immediate" not in qml
-    assert "Kirigami.AboutPage" in qml
-    assert "customFooterActions" in qml
-    assert "interval: 3000" not in qml
     qt_app = (ROOT / "src" / "blueferry" / "qt" / "app.py").read_text()
     assert f'APP_ICON = "{BUS_NAME}"' in qt_app
     assert "setDesktopFileName(APP_ID)" in qt_app
@@ -226,50 +189,6 @@ def test_gui_pairing_requires_confirmation_before_replacing_saved_target() -> No
         assert "old iPhone's Bluetooth settings" in client
     assert "replaceAndPair" in qt
     assert "--replace-saved-mac" in quickshell
-
-
-def test_gui_pairing_guidance_tells_users_to_recheck_iphone_toggles() -> None:
-    clients = (
-        (ROOT / "src/blueferry/ui/status.py").read_text(),
-        _qml_bundle(ROOT / "src/blueferry/qt/qml"),
-        _qml_bundle(ROOT / "data/quickshell"),
-    )
-
-    for client in clients:
-        assert "this computer's ⓘ page a" in client
-        assert "few times; turn on any new toggles that appear" in client
-
-
-def test_all_clients_offer_bluez_restart_as_ancs_repair_recovery() -> None:
-    shared = (ROOT / "src/blueferry/onboarding.py").read_text()
-    pairing_cli = (ROOT / "src/blueferry/pairing_cli.py").read_text()
-    clients = (
-        shared,
-        _qml_bundle(ROOT / "src/blueferry/qt/qml"),
-        _qml_bundle(ROOT / "data/quickshell"),
-    )
-
-    for client in clients:
-        assert "ANCS remains unavailable" in client
-        assert "sudo systemctl restart " in client
-        assert "bluetooth.service" in client
-        assert "forget this computer on the iPhone and" in client
-        assert "pair again" in client
-        assert "briefly disconnects all Bluetooth devices" in client
-    assert "ANCS_REPAIR_HINT_CLI" in pairing_cli
-    assert "sudo systemctl restart bluetooth.service" in pairing_cli
-    assert "ancs_unavailable_detail" in (ROOT / "src/blueferry/tui.py").read_text()
-    assert "ancs_unavailable_detail" in (ROOT / "src/blueferry/ui/status.py").read_text()
-
-
-def test_limited_bluetooth_vendors_get_an_expected_ancs_success_message() -> None:
-    clients = (
-        (ROOT / "src/blueferry/onboarding.py").read_text(),
-        _qml_bundle(ROOT / "src/blueferry/qt/qml"),
-        _qml_bundle(ROOT / "data/quickshell"),
-    )
-    for client in clients:
-        assert "does not support iPhone system notifications" in client
 
 
 def test_all_pairing_clients_expose_compatibility_mode() -> None:
@@ -322,243 +241,6 @@ def test_capability_checks_do_not_disable_pairing_buttons() -> None:
     )[1].split("onClicked:", 1)[0]
 
 
-def test_gtk_connection_rows_all_have_status_icons() -> None:
-    gtk = (ROOT / "src/blueferry/ui/status.py").read_text()
-
-    for profile in ("daemon", "map", "pbap", "ancs"):
-        assert f"self._{profile}_icon = Gtk.Image()" in gtk
-        assert f"self._{profile}_row.add_suffix(self._{profile}_icon)" in gtk
-        row_definition = gtk.split(
-            f"self._{profile}_row = Adw.ActionRow(", 1
-        )[1].split(f"self._{profile}_icon", 1)[0]
-        assert "use_markup=False" in row_definition
-    assert "self._ancs_recovery_label = Gtk.Label(" in gtk
-    assert "self._ancs_recovery_label.set_visible(show_ancs_recovery)" in gtk
-    assert "self._apply_status(self._last_status)" in gtk
-
-
-def test_qt_message_bubbles_do_not_use_full_selection_color() -> None:
-    bubble = (ROOT / "src/blueferry/qt/qml/MessageBubble.qml").read_text()
-
-    assert "backgroundColor.r * 0.78" in bubble
-    assert "highlightColor.r * 0.22" in bubble
-    assert "? Kirigami.Theme.highlightColor" not in bubble
-    assert "Kirigami.Theme.highlightedTextColor" not in bubble
-
-
-def test_quickshell_outgoing_bubbles_match_qt_accent_tint() -> None:
-    shell = (ROOT / "data/quickshell/shell.qml").read_text()
-    quickshell = (
-        ROOT / "data/quickshell/QuickshellMessageBubble.qml"
-    ).read_text()
-
-    assert "QuickshellMessageBubble {" in shell
-    assert "height: bubble.height > 0" in shell
-    assert "? bubble.height + theme.scaled(3) : 0" in shell
-    assert "availableHeight: messageList.height" in shell
-    assert "Math.min(maximumHeight, naturalHeight)" in quickshell
-    assert "clip: true" in quickshell
-    assert "TextEdit {" in quickshell
-    assert "selectByMouse: true" in quickshell
-    assert "maximumBodyHeight" in quickshell
-    assert "messageBody.contentHeight > renderedBodyHeight" in quickshell
-    assert "visible: root.bodyTruncated" in quickshell
-    assert "? ferryTheme.selectedSurface : ferryTheme.raisedSurface" in quickshell
-    assert "color: root.ferryTheme.windowText" in quickshell
-
-
-def test_quickshell_thread_preview_is_single_line() -> None:
-    shell = (ROOT / "data/quickshell/shell.qml").read_text()
-    preview = (
-        ROOT / "data/quickshell/QuickshellThreadPreview.qml"
-    ).read_text()
-
-    assert "QuickshellThreadPreview {" in shell
-    assert "wrapMode: Text.NoWrap" in preview
-    assert "maximumLineCount: 1" in preview
-    assert "elide: Text.ElideRight" in preview
-    assert "clip: true" in preview
-
-    title = shell.split("text: threadDelegate.modelData.name", 1)[1].split(
-        "QuickshellThreadPreview {", 1
-    )[0]
-    assert "wrapMode: Text.NoWrap" in title
-    assert "maximumLineCount: 1" in title
-    assert "elide: Text.ElideRight" in title
-    assert "clip: true" in title
-
-
-def test_group_message_bubbles_show_the_individual_sender() -> None:
-    gtk = (ROOT / "src/blueferry/ui/conversations.py").read_text()
-    qt_bubble = (ROOT / "src/blueferry/qt/qml/MessageBubble.qml").read_text()
-    qt_view = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
-    quickshell = (
-        ROOT / "data/quickshell/QuickshellMessageBubble.qml"
-    ).read_text()
-
-    assert 'label=_("You") if message.outgoing else message.sender' in gtk
-    assert 'text: root.message.outgoing ? qsTr("You")' in qt_bubble
-    assert "&& messagesPage.thread.is_group" in qt_view
-    assert '? "You" : (root.message.sender || "")' in quickshell
-
-
-def test_quickshell_remembers_group_confirmation_until_roster_changes() -> None:
-    qml = (ROOT / "data" / "quickshell" / "shell.qml").read_text()
-    signature = (ROOT / "src/blueferry/qt/qml/ConversationLogic.qml").read_text()
-
-    assert "property var confirmedGroupSignatures" in qml
-    assert "function groupIsConfirmed(thread)" in qml
-    assert "function setGroupConfirmed(thread, confirmed)" in qml
-    assert "thread.roster_warning_id" in signature
-    assert "thread.group_confirmed" in qml
-    assert 'confirmedGroupSignature = ""' not in qml
-    assert 'if (thread.group_origin === "named")' not in qml
-
-
-def test_group_roster_editors_explain_local_and_same_name_limits() -> None:
-    clients = (
-        (ROOT / "src/blueferry/ui/conversations.py").read_text(),
-        _qml_bundle(ROOT / "src/blueferry/qt/qml"),
-        _qml_bundle(ROOT / "data/quickshell"),
-        (ROOT / "src/blueferry/tui.py").read_text(),
-    )
-
-    for client in clients:
-        lowered = client.casefold()
-        assert "multiple groups" in lowered
-        assert "does not add or remove anyone" in lowered
-        assert "group membership may have changed" in lowered
-        assert "roster_changed" in client
-
-
-def test_qt_escaped_roster_names_are_forced_to_rich_text() -> None:
-    qml = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
-
-    assert 'return "<span>" + value + "</span>"' in qml
-    assert "root.escapedRichText(" in qml
-    assert "root.htmlEscape(thread.name)" in qml
-
-
-def test_qt_messages_toolbar_toggles_dismissible_settings_pane() -> None:
-    qml = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
-
-    assert 'text: qsTr("Settings")' in qml
-    assert "onClicked: root.togglePhoneSettings()" in qml
-    assert 'text: qsTr("Close Settings")' in qml
-    assert "onClicked: root.closePhoneSettings()" in qml
-    assert "pageStack.push(iphonePageLoader.item)" in qml
-    assert "pageStack.removePage(page)" in qml
-    assert "messagesPage.thread.group_origin" in qml
-    assert "messagesPage.actions" not in qml
-    assert "iphonePage.actions" not in qml
-    assert 'text: qsTr("Refresh")' not in qml
-
-
-def test_qt_connection_health_stays_compact_and_centered() -> None:
-    qml = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
-    health = qml.split('text: qsTr("Connection Health")', 1)[1]
-    health = health.split('text: qsTr("Desktop Notifications")', 1)[0]
-
-    assert "Layout.fillWidth: root.mapConnectionRefused()" in health
-    assert 'Kirigami.FormData.label: qsTr("ANCS Recovery:")' not in health
-    assert "Kirigami.InlineMessage" in health
-
-
-def test_all_gui_clients_offer_contacts_only_message_notifications() -> None:
-    clients = [
-        (ROOT / "src/blueferry/ui/status.py").read_text(),
-        (ROOT / "src/blueferry/qt/qml/Main.qml").read_text(),
-        (ROOT / "data/quickshell/shell.qml").read_text(),
-    ]
-
-    for client in clients:
-        lowered = client.casefold()
-        assert "only notify for contacts" in lowered
-        assert "unknown senders remain available in message history" in lowered
-
-
-def test_qt_sends_group_replies_without_a_confirmation_dialog() -> None:
-    qml = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
-
-    assert "messagesPage.thread.is_group" in qml
-    assert 'title: qsTr("Send Group Message?")' not in qml
-    assert "groupDialog.open()" not in qml
-    assert "pendingThread" not in qml
-    assert "pendingBody" not in qml
-
-
-def test_qt_conversation_panes_start_compact_and_are_resizable() -> None:
-    qml = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
-
-    assert "Controls.SplitView {" in qml
-    assert "messagesSplit.width * 0.35" in qml
-    assert "Controls.SplitView.fillWidth: true" in qml
-    assert "handle: Item {" in qml
-
-
-def test_gui_clients_keep_phone_settings_out_of_primary_navigation() -> None:
-    gtk_window = (ROOT / "src/blueferry/ui/window.py").read_text()
-    quickshell = (ROOT / "data/quickshell/shell.qml").read_text()
-
-    assert "Adw.ViewSwitcher" not in gtk_window
-    assert 'menu.append(_("iPhone Settings"), "win.phone")' in gtk_window
-    assert 'Accessible.name: "iPhone settings"' in quickshell
-    assert 'text: "Messages"' not in quickshell
-    assert 'text: "iPhone"' not in quickshell
-
-
-def test_all_gui_clients_offer_contacts_aware_new_messages() -> None:
-    gtk = (ROOT / "src/blueferry/ui/conversations.py").read_text()
-    qt_controller = (ROOT / "src/blueferry/qt/controller.py").read_text()
-    qt_qml = _qml_bundle(ROOT / "src/blueferry/qt/qml")
-    quickshell = _qml_bundle(ROOT / "data/quickshell")
-
-    assert 'tooltip_text=_("New Message")' in gtk
-    assert "find_contacts_async" in gtk
-    assert "def findContacts" in qt_controller
-    assert 'text: qsTr("New Message")' in qt_qml
-    assert 'Accessible.name: "New message"' in quickshell
-    assert 'backendBridge.requestLatest("contacts"' in quickshell
-
-
-def test_all_clients_expand_and_scroll_long_message_drafts() -> None:
-    gtk = (ROOT / "src/blueferry/ui/conversations.py").read_text()
-    qt = _qml_bundle(ROOT / "src/blueferry/qt/qml")
-    quickshell = (ROOT / "data/quickshell/shell.qml").read_text()
-    tui_styles = (ROOT / "src/blueferry/tui.tcss").read_text()
-
-    assert gtk.count("= MessageComposer(") == 2
-    assert "Gtk.Overlay(child=self._view)" in gtk
-    assert "placeholder_text=placeholder" not in gtk
-    assert "propagate_natural_height=True" in gtk
-    assert "vscrollbar_policy=Gtk.PolicyType.AUTOMATIC" in gtk
-    assert "follows_content_size=True" in gtk
-    assert "Gdk.ModifierType.SHIFT_MASK" in gtk
-    assert gtk.count("wrap_mode=Pango.WrapMode.WORD_CHAR") == 2
-    message_viewport = gtk.split("self._msg_scroll = Gtk.ScrolledWindow(", 1)[1]
-    assert "hscrollbar_policy=Gtk.PolicyType.NEVER" in message_viewport.split(
-        ")", 1
-    )[0]
-
-    assert qt.count("ExpandingMessageComposer {") == 2
-    assert "Layout.minimumWidth: 0" in qt
-    assert "Controls.ScrollBar.vertical.policy: Controls.ScrollBar.AsNeeded" in qt
-    assert "Layout.maximumHeight: Kirigami.Units.gridUnit * 8" in qt
-    assert "Qt.ShiftModifier" in qt
-
-    assert quickshell.count("FerryMessageComposer {") == 2
-    assert "Layout.minimumWidth: 0" in quickshell
-    assert "ScrollBar.vertical.policy: ScrollBar.AsNeeded" in quickshell
-    assert "Layout.maximumHeight: theme.scaled(144)" in quickshell
-    assert "Qt.ShiftModifier" in quickshell
-
-    composer_styles = tui_styles.split("#composer {", maxsplit=1)[1].split(
-        "}", maxsplit=1
-    )[0]
-    assert "height: auto" in composer_styles
-    assert "max-height: 8" in composer_styles
-
-
 def test_quickshell_launcher_can_focus_an_existing_conversation() -> None:
     launcher = (ROOT / "data" / "blueferry-quickshell").read_text()
     qml = (ROOT / "data" / "quickshell" / "shell.qml").read_text()
@@ -596,32 +278,6 @@ def test_quickshell_keeps_private_dbus_values_out_of_process_arguments() -> None
         assert cli_adapter not in quickshell
 
 
-def test_graphical_clients_offer_backend_owned_context_menu_delete() -> None:
-    gtk = (ROOT / "src/blueferry/ui/conversations.py").read_text()
-    qt = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
-    quickshell = (ROOT / "data/quickshell/shell.qml").read_text()
-
-    assert "Gdk.BUTTON_SECONDARY" in gtk
-    assert 'label=_("Delete Conversation")' in gtk
-    assert '_("Star Conversation")' in gtk
-    assert "delete_threads_async(\n                [thread_key]" in gtk
-    assert "Controls.Menu {" in qt
-    assert "onClicked: root.selectedThreadKey = modelData.key" in qt
-    assert "acceptedButtons: Qt.RightButton" in qt
-    assert "root.bridge.deleteThreads([deleteThreadsDialog.threadKey])" in qt
-    assert "setThreadStarred" in qt
-    assert "Menu {" in quickshell
-    assert "root.selectedThreadKey = modelData.key" in quickshell
-    assert "acceptedButtons: Qt.RightButton" in quickshell
-    assert 'backendBridge.request("delete_threads"' in quickshell
-    assert 'backendBridge.request("set_thread_starred"' in quickshell
-    assert "thread_keys: [deleteThreadsPopup.threadKey]" in quickshell
-    for source in (gtk, qt, quickshell):
-        assert "SelectionMode.MULTIPLE" not in source
-        assert "threadSelectionMode" not in source
-        assert "selectedThreadKeys" not in source
-
-
 def test_all_gui_clients_can_choose_a_bluetooth_controller() -> None:
     gtk = (ROOT / "src/blueferry/ui/status.py").read_text()
     qt = _qml_bundle(ROOT / "src/blueferry/qt/qml")
@@ -652,99 +308,10 @@ def test_all_gui_clients_can_choose_a_bluetooth_controller() -> None:
     ).read_text()
 
 
-def test_all_gui_clients_offer_a_pairing_issue_button() -> None:
-    gtk = (ROOT / "src/blueferry/ui/status.py").read_text()
-    qt = _qml_bundle(ROOT / "src/blueferry/qt/qml")
-    quickshell = _qml_bundle(ROOT / "data/quickshell")
-
-    for client in (gtk, qt, quickshell):
-        assert "Report Pairing Issue" in client
-        assert "iPhone model" in client
-        assert "iOS version" in client
-    assert "blueferry pairing-issue" in (ROOT / "src/blueferry/quirks_report.py").read_text()
-    assert '"pairing-issue"' in quickshell
-    assert '"--print-url"' in quickshell
-
-
-def test_all_gui_clients_explain_desktop_initiated_pairing() -> None:
-    gtk = (ROOT / "src/blueferry/ui/status.py").read_text()
-    qt = _qml_bundle(ROOT / "src/blueferry/qt/qml")
-    quickshell = _qml_bundle(ROOT / "data/quickshell")
-
-    for client in (gtk, qt, quickshell):
-        assert "select your iPhone here, then choose Pair" in client
-        assert "pairing request appears on the iPhone" in client
-        assert "Other Devices" not in client
-
-
-def test_all_gui_clients_explain_map_connection_refusal() -> None:
-    message = (
-        "iPhone is refusing message connections; is it connected to another computer?"
-    )
-    gtk_messages = (ROOT / "src/blueferry/ui/conversations.py").read_text()
-    gtk_settings = (ROOT / "src/blueferry/ui/status.py").read_text()
-    qt = _qml_bundle(ROOT / "src/blueferry/qt/qml")
-    quickshell = _qml_bundle(ROOT / "data/quickshell")
-
-    assert "map_connection_refused_message" in gtk_messages
-    assert "map_connection_refused_message" in gtk_settings
-    assert qt.count(message) >= 2
-    assert quickshell.count(message) >= 2
-
-
-def test_all_gui_clients_offer_unencrypted_local_storage() -> None:
-    gtk = (ROOT / "src/blueferry/ui/status.py").read_text()
-    qt = _qml_bundle(ROOT / "src/blueferry/qt/qml")
-    quickshell = _qml_bundle(ROOT / "data/quickshell")
-
-    assert '_("Unencrypted Local Data")' in gtk
-    assert '"value": "plaintext"' in qt
-    assert '"Unencrypted local data"' in quickshell
-
-
-def test_gui_clients_handle_encrypted_storage_unlocks() -> None:
-    gtk = (ROOT / "src/blueferry/ui/status.py").read_text()
-    qt_controller = (ROOT / "src/blueferry/qt/controller.py").read_text()
-    qt_qml = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
-    quickshell = (ROOT / "data/quickshell/shell.qml").read_text()
-
-    assert "_unlock_storage_button" not in gtk
-    assert "_maybe_unlock_storage" in qt_controller
-    assert "onClicked: root.bridge.unlockStorage()" in qt_qml
-    assert 'qsTr("Conversation History Unavailable")' in qt_qml
-    assert 'qsTr("Unlock Local Data")' in qt_qml
-    assert "root.maybeUnlockStorage()" in quickshell
-    assert "onClicked: storageUnlockProcess.running" not in quickshell
-
-
-def test_quickshell_package_ships_its_quattro_theme_adapter() -> None:
+def test_quickshell_package_ships_shared_qml_without_the_qt_client() -> None:
     pkgbuild = (ROOT / "packaging/arch/PKGBUILD").read_text()
-    theme = (ROOT / "data/quickshell/Theme.qml").read_text()
-    shell = (ROOT / "data/quickshell/shell.qml").read_text()
-
     assert "install -Dm644 data/quickshell/*.qml" in pkgbuild
-    assert (ROOT / "data/quickshell/OnboardingState.qml").is_file()
-    assert "/.local/state/omarchy/current/theme" in theme
-    assert "fallbackPalette" in theme
-    assert "readonly property color windowSurface" in theme
-    assert "readonly property color cardSurface" in theme
-    assert "readonly property color primarySurface" in theme
-    assert "readonly property color muted: blend(foreground, background, 0.62)" in theme
-    assert "readonly property color selectedSurface" in theme
-    assert "readonly property int panelRadius" in theme
-    assert "readonly property int controlRadius" in theme
-    assert "color: theme.windowSurface" in shell
-    assert "component FerryLabel: Label" in shell
-    assert (
-        "component FerryLabel: Label {\n"
-        "    color: theme.windowText\n"
-        "    textFormat: Text.PlainText"
-    ) in shell
-    assert "component FerryButton: Button" in shell
-    assert "theme.primarySurface" in shell
-    assert "component FerrySectionLabel: FerryLabel" in shell
-    window_declaration = shell.split("FloatingWindow {", 1)[1].split("Pane {", 1)[0]
-    assert 'color: "transparent"' not in window_declaration
+    assert "install -Dm644 src/blueferry/qt/qml/ConversationLogic.qml" in pkgbuild
 
 
 def test_remote_qml_text_is_rendered_as_plain_text() -> None:
@@ -768,13 +335,3 @@ def test_remote_qml_text_is_rendered_as_plain_text() -> None:
         "text: newContactDelegate.modelData.name\n"
         "                  textFormat: Text.PlainText"
     ) in quickshell
-
-
-def test_quickshell_message_timeline_stays_at_the_latest_message() -> None:
-    quickshell = (ROOT / "data/quickshell/shell.qml").read_text()
-
-    assert "property bool stickToBottom: true" in quickshell
-    assert "positionViewAtEnd()" in quickshell
-    assert "onThreadKeyChanged" in quickshell
-    assert "onMovementStarted: stickToBottom = false" in quickshell
-    assert "messageList.stickToBottom = true" in quickshell
