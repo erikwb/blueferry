@@ -86,6 +86,15 @@ class BackendClient:
         except dbus.exceptions.DBusException as error:
             raise BackendError(error.get_dbus_message() or str(error)) from error
 
+    def set_thread_starred(self, thread_key: str, starred: bool) -> bool:
+        try:
+            return bool(self._iface(MESSAGES_IFACE).SetThreadStarred(
+                thread_key, dbus.Boolean(starred),
+                timeout=SNAPSHOT_CALL_TIMEOUT_SEC,
+            ))
+        except dbus.exceptions.DBusException as error:
+            raise BackendError(error.get_dbus_message() or str(error)) from error
+
     def events(self, kinds: list[str], limit: int = 1000) -> list[EventRecord]:
         try:
             return decode_events(self._iface(MESSAGES_IFACE).ListEvents(

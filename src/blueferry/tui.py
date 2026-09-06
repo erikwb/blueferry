@@ -57,6 +57,8 @@ class _Client(Protocol):
 
     def mark_thread_read(self, thread_key: str) -> int: ...
 
+    def set_thread_starred(self, thread_key: str, starred: bool) -> bool: ...
+
 
 class _Monitor(Protocol):
     def pump(self) -> tuple[bool, str | None]: ...
@@ -247,8 +249,12 @@ class ConversationItem(ListItem):
         unread = _unread_count(thread)
         detail = f"{unread} unread" if unread else ("group" if thread.is_group else "direct")
         avatar = Static(Text(_initials(thread.name), justify="center"), classes="avatar")
+        star = "★ " if thread.starred else ""
         title = Static(
-            Text(_one_line(thread.name), style="bold" if unread else ""),
+            Text(
+                star + _one_line(thread.name),
+                style="bold" if unread or thread.starred else "",
+            ),
             classes="thread-name",
         )
         timestamp = Static(
@@ -515,6 +521,7 @@ class HelpScreen(ModalScreen[None]):
             "[bold #7dd3fc]New line[/]  Shift+Enter\n"
             "[bold #7dd3fc]Search[/]  /\n"
             "[bold #7dd3fc]New message[/]  n\n"
+            "[bold #7dd3fc]Star conversation[/]  s\n"
             "[bold #7dd3fc]Delete conversation[/]  Delete\n"
             "[bold #7dd3fc]Commands[/]  Ctrl+P\n"
             "[bold #7dd3fc]Refresh[/]  r\n"
@@ -547,6 +554,7 @@ class BlueFerryApp(App[None]):
         Binding("j,down", "next_thread", "Next", show=False),
         Binding("k,up", "previous_thread", "Previous", show=False),
         Binding("enter", "open_thread", "Open", show=False),
+        Binding("s", "toggle_star", "Star"),
         Binding("delete", "delete_thread", "Delete"),
         Binding("escape", "return_to_list", "Back", show=False),
     ]
@@ -971,6 +979,22 @@ class BlueFerryApp(App[None]):
 
     def action_new_message(self) -> None:
         self.push_screen(NewMessageScreen(), self._new_message_ready)
+
+    def action_toggle_star(self) -> None:
+        focused = self.focused
+        if isinstance(focused, Input | TextArea):
+            return
+        thread = self.state.selected
+        if thread is None:
+            return
+        self._set_thread_starred(thread.key, not thread.starred)
+
+    @work(thread=True, exit_on_error=False)
+    def _set_thread_starred(self, thread_key: str, starred: bool) -> None:
+        try:
+            self.state.client.set_thread_starred(thread_key, starred)
+        except BackendError:
+            return
 
     def action_delete_thread(self) -> None:
         thread = self.state.selected

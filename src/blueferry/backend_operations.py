@@ -49,6 +49,7 @@ from blueferry.limits import (
     MAX_RECENT_QUERY_LIMIT,
     MAX_THREAD_BODY_CHARS,
     MAX_THREAD_DELETE_COUNT,
+    MAX_THREAD_KEY_CHARS,
     MAX_THREAD_QUERY_LIMIT,
 )
 from blueferry.obex.map_query import list_recent_messages
@@ -60,6 +61,7 @@ from blueferry.threads import (
     MESSAGE_KINDS,
     ConversationIndex,
     build_threads,
+    sort_threads,
     thread_key,
 )
 
@@ -111,6 +113,16 @@ class NotificationPolicy(Protocol):
     def set_contacts_only(self, enabled: bool) -> bool: ...
 
 
+class StarredThreads(Protocol):
+    def keys(self) -> Sequence[str]: ...
+
+    def set_starred(self, thread_key: str, starred: bool) -> bool: ...
+
+    def discard(self, thread_keys: Sequence[str]) -> None: ...
+
+    def clear(self) -> None: ...
+
+
 @dataclass(frozen=True, slots=True)
 class BackendDependencies:
     """Explicit optional capabilities supplied by the daemon composition root."""
@@ -124,6 +136,7 @@ class BackendDependencies:
     status_provider: Callable[[], dict[str, Any]] | None = None
     notification_policy: NotificationPolicy | None = None
     on_notification_policy_changed: Callable[[], None] | None = None
+    starred_threads: StarredThreads | None = None
     storage: StorageSecurity | None = None
     on_storage_changed: Callable[[], None] | None = None
 
@@ -306,7 +319,31 @@ class BackendOperations:
 
     def list_threads(self, limit: int) -> list[dict]:
         bounded = max(1, min(int(limit), MAX_THREAD_QUERY_LIMIT))
-        return self._conversations.threads()[:bounded]
+        return self._present_threads(self._conversations.threads())[:bounded]
+
+    def _starred_keys(self) -> set[str]:
+        store = self.dependencies.starred_threads
+        if store is None:
+            return set()
+        return {str(key) for key in store.keys()}
+
+    def _present_threads(self, threads: Sequence[dict]) -> list[dict]:
+        return sort_threads(threads, starred_keys=self._starred_keys())
+
+    def set_thread_starred(self, thread_key: str, starred: bool) -> bool:
+        if not thread_key.strip() or len(thread_key) > MAX_THREAD_KEY_CHARS:
+            raise InvalidArgumentsError("invalid thread key")
+        if self.dependencies.starred_threads is None:
+            raise NotReadyError("starred conversations are unavailable")
+        thread = self._conversations.find(thread_key)
+        if thread is None:
+            raise NotFoundError("thread no longer exists in local history")
+        try:
+            return self.dependencies.starred_threads.set_starred(
+                thread_key, bool(starred)
+            )
+        except ValueError as error:
+            raise InvalidArgumentsError(str(error)) from error
 
     def mark_thread_read(self, thread_key: str) -> int:
         """Mark incoming messages in one conversation read locally and on MAP."""
@@ -441,7 +478,7 @@ class BackendOperations:
         updated = self._conversations.find(thread_key)
         if updated is None:
             raise NotFoundError("thread no longer exists in local history")
-        return updated
+        return self._present_threads([updated])[0]
 
     def invalidate_conversations(self) -> None:
         self._conversations.invalidate()
@@ -466,6 +503,8 @@ class BackendOperations:
                 "history deletion requires explicit confirmation"
             )
         clear_events()
+        if self.dependencies.starred_threads is not None:
+            self.dependencies.starred_threads.clear()
         self.invalidate_conversations()
 
     def delete_threads(
@@ -612,6 +651,8 @@ class BackendOperations:
             raise NotReadyError("could not delete local conversations") from error
 
         self._confirmed_group_keys.difference_update(resolved_keys)
+        if self.dependencies.starred_threads is not None:
+            self.dependencies.starred_threads.discard(selected)
         self.invalidate_conversations()
         return len(selected)
 
@@ -635,6 +676,8 @@ class BackendOperations:
             # archive, but never private data under the wrong policy.
             clear_events()
             clear_contact_cache()
+            if self.dependencies.starred_threads is not None:
+                self.dependencies.starred_threads.clear()
         try:
             status = self.dependencies.storage.set_policy(
                 selected, allow_prompt=True

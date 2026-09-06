@@ -39,6 +39,13 @@
       <annotation name="io.weirdware.BlueFerry.Errors"
                   value="InvalidArgs,NotFound,NotReady"/>
     </method>
+    <method name="SetThreadStarred">
+      <arg name="thread_key" type="s" direction="in"/>
+      <arg name="starred" type="b" direction="in"/>
+      <arg name="starred_state" type="b" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotFound,NotReady"/>
+    </method>
     <method name="FindContacts">
       <arg name="query" type="s" direction="in"/>
       <arg name="json" type="s" direction="out"/>

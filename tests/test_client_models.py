@@ -66,6 +66,10 @@ class _Messages:
         assert key == "address:email:test@example.com"
         return 3
 
+    def SetThreadStarred(self, key, starred, **_kwargs):
+        assert key == "address:email:test@example.com"
+        return bool(starred)
+
 
 def test_backend_client_returns_shared_models(monkeypatch):
     messages = _Messages()
@@ -77,6 +81,7 @@ def test_backend_client_returns_shared_models(monkeypatch):
     assert isinstance(client.threads()[0], Thread)
     assert client.threads()[0].recipients == ("test@example.com",)
     assert client.mark_thread_read("address:email:test@example.com") == 3
+    assert client.set_thread_starred("address:email:test@example.com", True) is True
     assert isinstance(client.events([])[0], EventRecord)
     assert client.events([])[0].title == "Test"
     assert client.list_contacts() == [

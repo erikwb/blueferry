@@ -159,6 +159,17 @@ class MessagesService(dbus.service.Object):
         return self._sync(lambda: self._authorized(sender, "read", mark))
 
     @dbus.service.method(
+        IFACE, in_signature="sb", out_signature="b", sender_keyword="sender"
+    )
+    def SetThreadStarred(self, thread_key: str, starred: bool, sender=None) -> bool:
+        def update() -> bool:
+            result = self.operations.set_thread_starred(thread_key, bool(starred))
+            self.emit_history_changed()
+            return result
+
+        return self._sync(lambda: self._authorized(sender, "settings", update))
+
+    @dbus.service.method(
         IFACE, in_signature="s", out_signature="s", sender_keyword="sender"
     )
     def FindContacts(self, query: str, sender=None) -> str:

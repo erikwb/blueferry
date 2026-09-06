@@ -288,6 +288,18 @@ class DaemonClient(GObject.Object):
             on_err,
         )
 
+    def set_thread_starred_async(
+        self, thread_key: str, starred: bool, on_ok=None, on_err=None
+    ) -> None:
+        self._submit(
+            lambda: self._call_backend(
+                lambda backend: backend.set_thread_starred(thread_key, starred)
+            ),
+            on_ok or (lambda _value: None),
+            on_err,
+            mutation=True,
+        )
+
     def mark_thread_read_async(self, thread_key: str, on_ok=None, on_err=None) -> None:
         self._submit(
             lambda: self._call_backend(

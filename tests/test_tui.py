@@ -65,6 +65,7 @@ class _Backend:
         self.sent = []
         self.deleted = []
         self.marked = []
+        self.starred = []
         self.group_participants = None
 
     @staticmethod
@@ -86,6 +87,10 @@ class _Backend:
     def mark_thread_read(self, thread_key: str) -> int:
         self.marked.append(thread_key)
         return 0
+
+    def set_thread_starred(self, thread_key: str, starred: bool) -> bool:
+        self.starred.append((thread_key, starred))
+        return starred
 
     def delete_threads(self, thread_keys: list[str]) -> int:
         self.deleted.append(list(thread_keys))

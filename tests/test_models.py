@@ -88,6 +88,8 @@ def test_thread_normalizes_nested_messages(monkeypatch):
     assert thread.to_dict()["future_thread_field"] == "preserved"
     assert thread.unread is False
     assert thread.to_dict()["unread"] is False
+    assert thread.starred is False
+    assert thread.to_dict()["starred"] is False
 
 
 def test_thread_unread_ignores_outgoing_and_read_incoming():

@@ -23,6 +23,12 @@ def _bare_daemon():
     instance.notification_policy = SimpleNamespace(
         value="messages", contacts_only=False
     )
+    instance.starred_threads = SimpleNamespace(
+        keys=lambda: [],
+        set_starred=lambda *_args, **_kwargs: False,
+        discard=lambda *_args, **_kwargs: None,
+        clear=lambda: None,
+    )
     storage_status = SimpleNamespace(
         policy="encrypted", state="ready", detail="", can_read=True
     )

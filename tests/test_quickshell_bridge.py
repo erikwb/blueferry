@@ -39,6 +39,10 @@ class FakeClient:
         self.calls.append(("mark_thread_read", thread_key))
         return 2
 
+    def set_thread_starred(self, thread_key, starred):
+        self.calls.append(("set_thread_starred", thread_key, starred))
+        return starred
+
     def set_contacts_only_notifications(self, enabled):
         self.calls.append(("set_contacts_only_notifications", enabled))
         return enabled
@@ -69,6 +73,10 @@ def test_bridge_dispatches_private_values_without_command_arguments() -> None:
     assert bridge.dispatch("mark_thread_read", {
         "thread_key": "private-thread",
     }) == 2
+    assert bridge.dispatch("set_thread_starred", {
+        "thread_key": "private-thread",
+        "starred": True,
+    }) is True
     assert bridge.dispatch("set_contacts_only_notifications", {
         "enabled": True,
     }) is True
@@ -84,6 +92,7 @@ def test_bridge_dispatches_private_values_without_command_arguments() -> None:
         ),
         ("delete_threads", ["thread-one", "thread-two"]),
         ("mark_thread_read", "private-thread"),
+        ("set_thread_starred", "private-thread", True),
         ("set_contacts_only_notifications", True),
     ]
 
