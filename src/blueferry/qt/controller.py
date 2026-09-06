@@ -542,6 +542,17 @@ class BridgeController(QObject):
             lambda _value: self.refresh(),
         )
 
+    @Slot(str, bool)
+    def setThreadStarred(self, thread_key: str, starred: bool) -> None:
+        key = str(thread_key or "").strip()
+        if not key:
+            return
+        self._run(
+            lambda: self._backend.set_thread_starred(key, bool(starred)),
+            lambda _value: self.refresh(),
+            busy=False,
+        )
+
     @Slot(str)
     def markThreadRead(self, thread_key: str) -> None:
         key = str(thread_key or "").strip()

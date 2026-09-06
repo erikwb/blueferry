@@ -23,6 +23,9 @@ class _FakeWidget:
     def append(self, child):
         self.children.append(child)
 
+    def connect(self, *_args):
+        pass
+
 
 class _FakeGesture:
     def __init__(self, **_kwargs):
@@ -47,10 +50,15 @@ class _FakeRow:
 class _FakeGtk:
     class Orientation:
         VERTICAL = 1
+        HORIZONTAL = 2
+
+    class Align:
+        CENTER = 1
 
     ListBoxRow = _FakeRow
     Box = _FakeWidget
     Label = _FakeWidget
+    Button = _FakeWidget
     GestureClick = _FakeGesture
 
 
@@ -103,6 +111,10 @@ def _thread(**changes) -> Thread:
     return Thread(**values)
 
 
+def _name_label(row):
+    return row.child.children[0].children[0]
+
+
 def test_sidebar_rebuild_does_not_fire_selection_callback(monkeypatch):
     """A live event redraw must not redraw the current thread a second time."""
     monkeypatch.setattr(conversations, "Gtk", _FakeGtk)
@@ -115,6 +127,7 @@ def test_sidebar_rebuild_does_not_fire_selection_callback(monkeypatch):
         _thread_list=thread_list,
         _thread_selected_handler=42,
         _show_thread_context_menu=lambda *_args: None,
+        _toggle_star=lambda *_args: None,
         _state=state,
     )
 
@@ -124,7 +137,7 @@ def test_sidebar_rebuild_does_not_fire_selection_callback(monkeypatch):
     assert len(thread_list.rows[0].controllers) == 1
     assert thread_list.selection_callbacks == 0
     assert thread_list.blocked is False
-    assert thread_list.rows[0].child.children[0].css_classes == []
+    assert _name_label(thread_list.rows[0]).css_classes == []
 
 
 def test_unread_thread_name_uses_heading_style(monkeypatch):
@@ -150,12 +163,29 @@ def test_unread_thread_name_uses_heading_style(monkeypatch):
         _thread_list=thread_list,
         _thread_selected_handler=42,
         _show_thread_context_menu=lambda *_args: None,
+        _toggle_star=lambda *_args: None,
         _state=state,
     )
 
     conversations.ConversationsPage._rebuild_thread_list(page)
 
-    assert thread_list.rows[0].child.children[0].css_classes == ["heading"]
+    assert _name_label(thread_list.rows[0]).css_classes == ["heading"]
+
+
+def test_star_button_toggles_backend_star_state():
+    starred = []
+    unread = _thread(key="Bob", name="Bob", starred=True)
+    state = ConversationState(select_first=False)
+    state.apply_snapshot(ConversationSnapshot(None, (unread,)))
+    page = SimpleNamespace(
+        _state=state,
+        _client=SimpleNamespace(
+            set_thread_starred_async=lambda key, value: starred.append((key, value))
+        ),
+    )
+
+    conversations.ConversationsPage._toggle_star(page, None, "Bob", False)
+    assert starred == [("Bob", False)]
 
 
 def test_selected_unread_thread_is_marked_read():

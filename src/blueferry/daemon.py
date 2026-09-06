@@ -49,6 +49,7 @@ from blueferry.setup_verification import (
     SetupVerification,
 )
 from blueferry.solicitation_supervisor import SolicitationSupervisor
+from blueferry.starred_threads import StarredThreadsStore
 from blueferry.storage_security import NO_STORAGE, StorageSecurity
 from blueferry.wireplumber_policy import WirePlumberPhoneAudioPolicy
 
@@ -89,6 +90,7 @@ class Daemon:
         self.contacts = ContactsResolver(storage=self.storage)
         self.connectivity = Connectivity()
         self.notification_policy = NotificationPolicyStore()
+        self.starred_threads = StarredThreadsStore()
         self.setup_verification = SetupVerification(config.IPHONE_MAC)
         self.events = EventDispatcher(
             self.contacts,
@@ -220,6 +222,7 @@ class Daemon:
                 status_provider=self._status,
                 notification_policy=self.notification_policy,
                 on_notification_policy_changed=self._emit_status,
+                starred_threads=self.starred_threads,
                 storage=self.storage,
                 on_storage_changed=self._emit_status,
             ),

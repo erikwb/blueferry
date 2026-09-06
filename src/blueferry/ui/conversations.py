@@ -566,32 +566,33 @@ class ConversationsPage(Gtk.Box):
         self._thread_list.handler_block(self._thread_selected_handler)
         try:
             self._thread_list.remove_all()
-            order = sorted(
-                self._state.threads,
-                key=lambda thread: thread.last_ts,
-                reverse=True,
-            )
-            for thread in order:
+            for thread in self._state.threads:
                 row = Gtk.ListBoxRow()
                 row.thread_key = thread.key
-                box = Gtk.Box(
-                    orientation=Gtk.Orientation.VERTICAL,
-                    spacing=2,
+                heading = Gtk.Box(
+                    orientation=Gtk.Orientation.HORIZONTAL,
+                    spacing=8,
                     margin_top=8,
                     margin_bottom=8,
                     margin_start=10,
                     margin_end=10,
                 )
-                box.append(
+                copy = Gtk.Box(
+                    orientation=Gtk.Orientation.VERTICAL,
+                    spacing=2,
+                    hexpand=True,
+                )
+                copy.append(
                     Gtk.Label(
                         label=thread.name,
                         xalign=0,
+                        hexpand=True,
                         css_classes=["heading"] if thread.unread else [],
                         ellipsize=_ELLIPSIZE_END,
                     )
                 )
                 last = thread.messages[-1].body if thread.messages else ""
-                box.append(
+                copy.append(
                     Gtk.Label(
                         label=last.replace("\n", " "),
                         xalign=0,
@@ -599,7 +600,27 @@ class ConversationsPage(Gtk.Box):
                         css_classes=["dim-label"],
                     )
                 )
-                row.set_child(box)
+                heading.append(copy)
+                star = Gtk.Button(
+                    icon_name=(
+                        "starred-symbolic" if thread.starred
+                        else "non-starred-symbolic"
+                    ),
+                    css_classes=["flat"],
+                    valign=Gtk.Align.CENTER,
+                    tooltip_text=(
+                        _("Unstar Conversation") if thread.starred
+                        else _("Star Conversation")
+                    ),
+                )
+                star.connect(
+                    "clicked",
+                    self._toggle_star,
+                    thread.key,
+                    not thread.starred,
+                )
+                heading.append(star)
+                row.set_child(heading)
                 context_click = Gtk.GestureClick(button=Gdk.BUTTON_SECONDARY)
                 context_click.connect(
                     "pressed", self._show_thread_context_menu, row
@@ -637,6 +658,11 @@ class ConversationsPage(Gtk.Box):
             return
         self._client.mark_thread_read_async(thread.key)
 
+    def _toggle_star(self, _button, thread_key: str, starred: bool) -> None:
+        if not thread_key:
+            return
+        self._client.set_thread_starred_async(thread_key, bool(starred))
+
     def _show_thread_context_menu(
         self, _gesture, _press_count, x, y, row
     ) -> None:
@@ -654,6 +680,19 @@ class ConversationsPage(Gtk.Box):
         pointing.width = 1
         pointing.height = 1
         popover.set_pointing_to(pointing)
+        thread = self._state.thread(thread_key)
+        starred = bool(thread and thread.starred)
+        actions = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        star = Gtk.Button(
+            label=_("Unstar Conversation") if starred else _("Star Conversation"),
+            css_classes=["flat"],
+        )
+
+        def toggle(_button) -> None:
+            popover.popdown()
+            self._toggle_star(None, thread_key, not starred)
+
+        star.connect("clicked", toggle)
         delete = Gtk.Button(
             label=_("Delete Conversation"),
             css_classes=["flat", "destructive-action"],
@@ -664,7 +703,9 @@ class ConversationsPage(Gtk.Box):
             self._confirm_delete_thread(thread_key)
 
         delete.connect("clicked", selected)
-        popover.set_child(delete)
+        actions.append(star)
+        actions.append(delete)
+        popover.set_child(actions)
         popover.connect("closed", lambda widget: widget.unparent())
         popover.popup()
 

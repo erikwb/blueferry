@@ -1,7 +1,7 @@
 """Backend-owned conversation model and reply routing metadata."""
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import TypeAlias
 
@@ -220,7 +220,29 @@ def build_threads(events: list[dict], resolver=None) -> list[dict]:
             not message.get("outgoing") and not message.get("read")
             for message in thread["messages"]
         )
-    return sorted(by_key.values(), key=lambda item: item["last_ts"], reverse=True)
+    return sort_threads(by_key.values())
+
+
+def sort_threads(
+    threads: Iterable[dict],
+    *,
+    starred_keys: set[str] | frozenset[str] | None = None,
+) -> list[dict]:
+    """Newest-first, with starred conversations pinned above the rest."""
+    selected = starred_keys or set()
+    decorated: list[dict] = []
+    for thread in threads:
+        item = dict(thread)
+        item["starred"] = str(item.get("key") or "") in selected
+        decorated.append(item)
+    return sorted(
+        decorated,
+        key=lambda item: (
+            bool(item.get("starred")),
+            str(item.get("last_ts") or ""),
+        ),
+        reverse=True,
+    )
 
 
 def find_thread(events: list[dict], key: str, resolver=None) -> dict | None:

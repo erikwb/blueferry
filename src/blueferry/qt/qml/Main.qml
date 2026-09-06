@@ -73,13 +73,17 @@ Kirigami.ApplicationWindow {
     minimumHeight: 480
     title: qsTr("BlueFerry")
 
-    function selectedThread() {
+    function threadByKey(key) {
         for (let index = 0; index < bridge.threads.length; ++index) {
-            if (bridge.threads[index].key === selectedThreadKey) {
+            if (bridge.threads[index].key === key) {
                 return bridge.threads[index]
             }
         }
         return null
+    }
+
+    function selectedThread() {
+        return threadByKey(selectedThreadKey)
     }
 
     function threadIsUnread(thread) {
@@ -429,6 +433,25 @@ Kirigami.ApplicationWindow {
         id: threadContextMenu
         property string threadKey: ""
 
+        Controls.MenuItem {
+            text: {
+                const thread = root.threadByKey(threadContextMenu.threadKey)
+                return thread && thread.starred
+                    ? qsTr("Unstar Conversation") : qsTr("Star Conversation")
+            }
+            icon.name: {
+                const thread = root.threadByKey(threadContextMenu.threadKey)
+                return thread && thread.starred
+                    ? "non-starred-symbolic" : "starred-symbolic"
+            }
+            onTriggered: {
+                const thread = root.threadByKey(threadContextMenu.threadKey)
+                root.bridge.setThreadStarred(
+                    threadContextMenu.threadKey,
+                    !(thread && thread.starred)
+                )
+            }
+        }
         Controls.MenuItem {
             text: qsTr("Delete Conversation")
             icon.name: "edit-delete"
@@ -831,6 +854,17 @@ Kirigami.ApplicationWindow {
                                             opacity: 0.7
                                             elide: Text.ElideRight
                                         }
+                                    }
+                                    Controls.ToolButton {
+                                        icon.name: threadDelegate.modelData.starred
+                                            ? "starred-symbolic" : "non-starred-symbolic"
+                                        Accessible.name: threadDelegate.modelData.starred
+                                            ? qsTr("Unstar Conversation")
+                                            : qsTr("Star Conversation")
+                                        onClicked: root.bridge.setThreadStarred(
+                                            threadDelegate.modelData.key,
+                                            !threadDelegate.modelData.starred
+                                        )
                                     }
                                 }
                                 TapHandler {

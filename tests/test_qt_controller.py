@@ -52,6 +52,10 @@ class _Backend:
         self.marked = key
         return 1
 
+    def set_thread_starred(self, key, starred):
+        self.starred = (key, starred)
+        return starred
+
 
 def test_mark_thread_read_is_silent_and_not_busy():
     backend = _Backend()

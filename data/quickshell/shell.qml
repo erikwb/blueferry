@@ -120,11 +120,23 @@ ShellRoot {
     }
   }
 
-  function selectedThread() {
+  function threadByKey(key) {
     for (var index = 0; index < threads.length; ++index) {
-      if (threads[index].key === selectedThreadKey) return threads[index]
+      if (threads[index].key === key) return threads[index]
     }
     return null
+  }
+
+  function selectedThread() {
+    return threadByKey(selectedThreadKey)
+  }
+
+  function setThreadStarred(key, starred) {
+    if (!key) return
+    backendBridge.request("set_thread_starred", {
+      thread_key: String(key),
+      starred: starred === true
+    })
   }
 
   function threadIsUnread(thread) {
@@ -421,6 +433,8 @@ ShellRoot {
         root.reload()
       } else if (method === "mark_thread_read") {
         // HistoryChanged reloads the thread list.
+      } else if (method === "set_thread_starred") {
+        // HistoryChanged reloads the thread list.
       } else if (method === "delete_threads") {
         root.deleteThreadsBusy = false
         root.reload()
@@ -473,6 +487,8 @@ ShellRoot {
         root.errorText = message
       } else if (method === "mark_thread_read") {
         // Keep the conversation open even if MAP write-back fails.
+      } else if (method === "set_thread_starred") {
+        root.errorText = message || "Could not update starred conversations"
       } else if (method === "delete_threads") {
         root.deleteThreadsBusy = false
         root.errorText = message || "Could not delete local conversations"
@@ -879,7 +895,7 @@ ShellRoot {
 
                     Column {
                       id: threadContent
-                      width: parent.width - x
+                      width: parent.width - x - theme.scaled(28)
                       anchors.verticalCenter: parent.verticalCenter
                       spacing: theme.scaled(3)
                       Text {
@@ -899,6 +915,28 @@ ShellRoot {
                         width: parent.width
                         thread: threadDelegate.modelData
                         ferryTheme: theme
+                      }
+                    }
+                    Text {
+                      anchors.verticalCenter: parent.verticalCenter
+                      text: threadDelegate.modelData.starred ? "★" : "☆"
+                      textFormat: Text.PlainText
+                      color: threadDelegate.modelData.starred
+                        ? theme.accent : theme.muted
+                      font.family: theme.fontFamily
+                      font.pixelSize: theme.baseFontSize
+                      Accessible.name: threadDelegate.modelData.starred
+                        ? "Unstar conversation" : "Star conversation"
+                      MouseArea {
+                        anchors.fill: parent
+                        anchors.margins: theme.scaled(-6)
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                          root.setThreadStarred(
+                            threadDelegate.modelData.key,
+                            !threadDelegate.modelData.starred
+                          )
+                        }
                       }
                     }
                   }
@@ -1738,6 +1776,20 @@ ShellRoot {
         id: threadContextMenu
         property string threadKey: ""
 
+        MenuItem {
+          text: {
+            var thread = root.threadByKey(threadContextMenu.threadKey)
+            return thread && thread.starred
+              ? "Unstar Conversation" : "Star Conversation"
+          }
+          onTriggered: {
+            var thread = root.threadByKey(threadContextMenu.threadKey)
+            root.setThreadStarred(
+              threadContextMenu.threadKey,
+              !(thread && thread.starred)
+            )
+          }
+        }
         MenuItem {
           text: "Delete Conversation"
           onTriggered: {

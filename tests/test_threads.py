@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from blueferry import threads as threads_module
-from blueferry.threads import build_threads, thread_key
+from blueferry.threads import build_threads, sort_threads, thread_key
 
 
 def _sms(address: str, name: str, body: str, seen: str) -> dict:
@@ -60,6 +60,26 @@ def test_historical_number_uses_the_current_contact_name() -> None:
     thread = build_threads([event], Resolver())[0]
 
     assert thread["name"] == "Alice Example"
+
+
+def test_starred_threads_sort_above_newer_unstarred_threads() -> None:
+    older = {
+        "key": "address:phone:1",
+        "last_ts": "2026-08-08T10:00:00+00:00",
+    }
+    newer = {
+        "key": "address:phone:2",
+        "last_ts": "2026-08-08T11:00:00+00:00",
+    }
+
+    ordered = sort_threads([newer, older], starred_keys={"address:phone:1"})
+
+    assert [thread["key"] for thread in ordered] == [
+        "address:phone:1",
+        "address:phone:2",
+    ]
+    assert ordered[0]["starred"] is True
+    assert ordered[1]["starred"] is False
 
 
 def test_unread_follows_incoming_read_state() -> None:

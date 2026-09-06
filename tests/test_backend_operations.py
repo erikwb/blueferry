@@ -22,6 +22,7 @@ from blueferry.limits import (
     MAX_OUTGOING_BODY_BYTES,
     MAX_THREAD_BODY_CHARS,
 )
+from blueferry.starred_threads import StarredThreadsStore
 
 
 class _Sessions:
@@ -435,6 +436,49 @@ def test_named_group_key_survives_roster_save_and_history_reload(
     assert updated["reply_ready"] is True
     assert updated["participants_required"] is False
     assert updated["roster_changed"] is False
+
+
+def test_starred_thread_is_pinned_above_newer_conversations(
+    tmp_path, monkeypatch,
+) -> None:
+    path = tmp_path / "events.sqlite"
+    monkeypatch.setattr(config, "EVENTS_DB", path)
+    append_event({
+        "kind": "sms_received",
+        "handle": "message-alice",
+        "sender_address": "+15551111111",
+        "contact_name": "Alice",
+        "body": "hello",
+        "is_read": True,
+        "seen_at": "2026-08-12T10:00:00+00:00",
+        "timestamp": "2026-08-12T10:00:00+00:00",
+    }, path=path)
+    append_event({
+        "kind": "sms_received",
+        "handle": "message-bob",
+        "sender_address": "+15552222222",
+        "contact_name": "Bob",
+        "body": "later",
+        "is_read": True,
+        "seen_at": "2026-08-12T11:00:00+00:00",
+        "timestamp": "2026-08-12T11:00:00+00:00",
+    }, path=path)
+    store = StarredThreadsStore(tmp_path / "settings.json")
+    operations = _operations(starred_threads=store)
+    names = [thread["name"] for thread in operations.list_threads(10)]
+    assert names == ["Bob", "Alice"]
+
+    alice = next(
+        thread for thread in operations.list_threads(10) if thread["name"] == "Alice"
+    )
+    assert operations.set_thread_starred(alice["key"], True) is True
+    listed = operations.list_threads(10)
+    assert [thread["name"] for thread in listed] == ["Alice", "Bob"]
+    assert listed[0]["starred"] is True
+    assert listed[1]["starred"] is False
+
+    operations.delete_threads([alice["key"]], True)
+    assert store.keys() == []
 
 
 def test_mark_thread_read_updates_local_history_and_queues_map(
