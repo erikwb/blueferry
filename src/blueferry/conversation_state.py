@@ -50,7 +50,7 @@ class ConversationState:
         self.selected_key = ""
         self.error = ""
         self.notice = ""
-        self.confirmed_groups: set[str] = set()
+        self.confirmed_groups: dict[str, str] = {}
         self.warned_roster_changes: set[str] = set()
         self.contact_results: list[tuple[str, str]] = []
         self._contact_sequence = 0
@@ -85,6 +85,9 @@ class ConversationState:
                 else ""
             )
             self.threads = list(snapshot.threads)
+            for thread in self.threads:
+                if thread.is_group and thread.group_confirmed:
+                    self.confirmed_groups[thread.key] = thread.confirmation_token
             keys = {thread.key for thread in self.threads}
             if self.selected_key not in keys:
                 retained = next(
@@ -139,11 +142,9 @@ class ConversationState:
             return ReplyPlan(ReplyDisposition.READ_ONLY, selected, message)
         if (
             selected.is_group
-            and (
-                selected.group_origin == "named"
-                or selected.key not in self.confirmed_groups
-            )
             and not confirm_group
+            and not selected.group_confirmed
+            and self.confirmed_groups.get(selected.key) != selected.confirmation_token
         ):
             return ReplyPlan(
                 ReplyDisposition.CONFIRM_GROUP,
@@ -166,8 +167,8 @@ class ConversationState:
         if not plan.ready or plan.thread is None:
             raise ValueError("cannot complete a blocked reply plan")
         thread = plan.thread
-        if thread.is_group and plan.confirm_group and thread.group_origin != "named":
-            self.confirmed_groups.add(thread.key)
+        if thread.is_group and plan.confirm_group:
+            self.confirmed_groups[thread.key] = thread.confirmation_token
         if not preserve_selection:
             self.selected_key = thread.key
 
@@ -177,7 +178,7 @@ class ConversationState:
             for thread in self.threads
         ]
         self.selected_key = updated.key
-        self.confirmed_groups.discard(updated.key)
+        self.confirmed_groups.pop(updated.key, None)
 
     @staticmethod
     def roster_warning_id(thread: Thread) -> str:

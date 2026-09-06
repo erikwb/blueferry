@@ -2,6 +2,7 @@
 
 from blueferry import models as models_module
 from blueferry.models import BackendStatus, EventRecord, Thread
+from blueferry.threads import group_confirmation_token
 
 
 def test_status_defaults_missing_fields_and_preserves_new_fields():
@@ -90,6 +91,25 @@ def test_thread_normalizes_nested_messages(monkeypatch):
     assert thread.to_dict()["unread"] is False
     assert thread.starred is False
     assert thread.to_dict()["starred"] is False
+    assert thread.group_confirmed is False
+    assert thread.to_dict()["group_confirmed"] is False
+
+
+def test_thread_confirmation_token_tracks_recipients_and_roster_warning():
+    payload = {
+        "key": "group:addresses:phone:1|phone:2",
+        "name": "Crew",
+        "is_group": True,
+        "recipients": ["+15552222222", "+15551111111"],
+        "roster_warning_id": "route:1:casey",
+    }
+    thread = Thread.from_dict(payload)
+
+    assert thread.confirmation_token == group_confirmation_token(
+        thread.recipients, thread.roster_warning_id
+    )
+    cleared = Thread.from_dict({**payload, "roster_warning_id": ""})
+    assert thread.confirmation_token != cleared.confirmation_token
 
 
 def test_thread_unread_ignores_outgoing_and_read_incoming():

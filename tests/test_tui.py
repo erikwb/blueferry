@@ -169,8 +169,11 @@ def test_replies_use_opaque_thread_key_and_explicit_group_confirmation() -> None
     assert state.send_reply("hello all", confirm_group=True) is True
 
     assert backend.sent == [("group", "hello all", True)]
-    assert state.confirmed_groups == set()
-    assert state.send_reply("not without another confirmation") is False
+    group = state.thread("group")
+    assert group is not None
+    assert state.confirmed_groups == {group.key: group.confirmation_token}
+    assert state.send_reply("second") is True
+    assert backend.sent[-1] == ("group", "second", False)
 
 
 def test_message_sender_metadata_is_sanitized() -> None:

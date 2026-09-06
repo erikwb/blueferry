@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 from blueferry import threads as threads_module
-from blueferry.threads import build_threads, sort_threads, thread_key
+from blueferry.threads import (
+    build_threads,
+    group_confirmation_token,
+    sort_threads,
+    thread_key,
+)
 
 
 def _sms(address: str, name: str, body: str, seen: str) -> dict:
@@ -60,6 +65,19 @@ def test_historical_number_uses_the_current_contact_name() -> None:
     thread = build_threads([event], Resolver())[0]
 
     assert thread["name"] == "Alice Example"
+
+
+def test_group_confirmation_token_changes_with_roster_or_warning() -> None:
+    same = ["+15551111111", "+15552222222"]
+    assert group_confirmation_token(same, "") == group_confirmation_token(
+        reversed(same), None
+    )
+    assert group_confirmation_token(same, "") != group_confirmation_token(
+        ["+15551111111", "+15553333333"], ""
+    )
+    assert group_confirmation_token(same, "") != group_confirmation_token(
+        same, "route:casey"
+    )
 
 
 def test_starred_threads_sort_above_newer_unstarred_threads() -> None:

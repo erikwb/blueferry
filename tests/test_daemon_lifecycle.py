@@ -29,6 +29,12 @@ def _bare_daemon():
         discard=lambda *_args, **_kwargs: None,
         clear=lambda: None,
     )
+    instance.confirmed_groups = SimpleNamespace(
+        matches=lambda *_args, **_kwargs: False,
+        remember=lambda *_args, **_kwargs: None,
+        forget=lambda *_args, **_kwargs: None,
+        clear=lambda: None,
+    )
     storage_status = SimpleNamespace(
         policy="encrypted", state="ready", detail="", can_read=True
     )

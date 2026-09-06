@@ -15,7 +15,7 @@ ShellRoot {
   property string selectedThreadKey: ""
   property string pendingThreadKey: ""
   property string pendingMessageHandle: ""
-  property string confirmedGroupSignature: ""
+  property var confirmedGroupSignatures: ({})
   property var groupParticipantsThread: null
   property var rosterChangedThread: null
   property var warnedRosterChanges: ({})
@@ -188,7 +188,6 @@ ShellRoot {
       for (var messageIndex = 0; messageIndex < thread.messages.length; ++messageIndex) {
         if (thread.messages[messageIndex].handle === handle) {
           selectedThreadKey = thread.key
-          confirmedGroupSignature = ""
           pendingMessageHandle = ""
           phoneSettingsVisible = false
           return true
@@ -206,7 +205,6 @@ ShellRoot {
   function openThread(key) {
     pendingThreadKey = key
     selectedThreadKey = key
-    confirmedGroupSignature = ""
     pendingMessageHandle = ""
     presentWindow()
   }
@@ -219,7 +217,35 @@ ShellRoot {
 
   function groupSignature(thread) {
     if (!thread || !thread.is_group) return ""
-    return thread.key + "\n" + JSON.stringify(thread.recipients || [])
+    var unique = []
+    var recipients = thread.recipients || []
+    for (var index = 0; index < recipients.length; ++index) {
+      var address = String(recipients[index] || "")
+      if (address !== "" && unique.indexOf(address) < 0) unique.push(address)
+    }
+    unique.sort()
+    return [String(thread.roster_warning_id || "")].concat(unique).join("\n")
+  }
+
+  function groupIsConfirmed(thread) {
+    if (!thread || !thread.is_group) return true
+    if (thread.group_confirmed === true) return true
+    var signature = root.groupSignature(thread)
+    return signature !== "" &&
+      (root.confirmedGroupSignatures[thread.key] || "") === signature
+  }
+
+  function setGroupConfirmed(thread, confirmed) {
+    if (!thread || !thread.is_group) return
+    var next = Object.assign({}, root.confirmedGroupSignatures)
+    if (confirmed) {
+      var signature = root.groupSignature(thread)
+      if (signature === "") return
+      next[thread.key] = signature
+    } else {
+      delete next[thread.key]
+    }
+    root.confirmedGroupSignatures = next
   }
 
   function participantLines(value) {
@@ -428,7 +454,6 @@ ShellRoot {
           if (root.selectedThread() !== null) root.pendingThreadKey = ""
         } else if (root.selectedThreadKey !== "" && root.selectedThread() === null) {
           root.selectedThreadKey = ""
-          root.confirmedGroupSignature = ""
         }
         if (root.pendingMessageHandle !== "")
           root.selectMessage(root.pendingMessageHandle)
@@ -453,6 +478,8 @@ ShellRoot {
         root.reload()
       } else if (method === "set_group_participants") {
         root.groupParticipantsBusy = false
+        if (root.groupParticipantsThread)
+          root.setGroupConfirmed(root.groupParticipantsThread, false)
         groupParticipantsPopup.close()
         root.reload()
       } else if (method === "mark_thread_read") {
@@ -891,10 +918,7 @@ ShellRoot {
                   highlighted: modelData.key === root.selectedThreadKey
                   leftPadding: theme.scaled(8)
                   rightPadding: theme.scaled(8)
-                  onClicked: {
-                    root.selectedThreadKey = modelData.key
-                    root.confirmedGroupSignature = ""
-                  }
+                  onClicked: root.selectedThreadKey = modelData.key
                   contentItem: Row {
                     clip: true
                     spacing: theme.scaled(10)
@@ -1192,17 +1216,14 @@ ShellRoot {
 
               FerryCheckBox {
                 id: confirmGroup
-                property string signature: root.groupSignature(conversationPane.thread)
-                visible: conversationPane.thread && conversationPane.thread.is_group
-                  && conversationPane.thread.reply_ready
-                text: conversationPane.thread
-                  ? "Confirm group: " + conversationPane.thread.recipients.join(", ") : ""
-                checked: signature !== "" && root.confirmedGroupSignature === signature
-                onToggled: {
-                  if (checked) root.confirmedGroupSignature = signature
-                  else if (root.confirmedGroupSignature === signature)
-                    root.confirmedGroupSignature = ""
-                }
+                property var thread: conversationPane.thread
+                property string signature: root.groupSignature(thread)
+                visible: thread && thread.is_group && thread.reply_ready
+                text: thread
+                  ? "Confirm group: " + thread.recipients.join(", ") : ""
+                checked: root.groupIsConfirmed(thread) && signature !== ""
+                enabled: !(thread && thread.group_confirmed === true)
+                onToggled: root.setGroupConfirmed(thread, checked)
                 Layout.fillWidth: true
               }
 
@@ -1233,8 +1254,7 @@ ShellRoot {
                     text: root.sendBusy ? "SENDING" : "SEND"
                     highlighted: true
                     enabled: composer.enabled && composer.text.trim() !== "" &&
-                             (!conversationPane.thread.is_group ||
-                              root.confirmedGroupSignature === root.groupSignature(conversationPane.thread)) &&
+                             root.groupIsConfirmed(conversationPane.thread) &&
                              !root.sendBusy
                     onClicked: {
                       var thread = conversationPane.thread
@@ -1244,8 +1264,6 @@ ShellRoot {
                         body: composer.text,
                         confirm_group: thread.is_group
                       })
-                      if (thread.group_origin === "named")
-                        root.confirmedGroupSignature = ""
                     }
                   }
                 }

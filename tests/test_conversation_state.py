@@ -105,18 +105,45 @@ def test_reply_plan_enforces_read_only_and_group_confirmation() -> None:
     assert plan.ready is True
     assert plan.body == "hello"
     state.reply_sent(plan)
-    assert "group" in state.confirmed_groups
+    assert state.confirmed_groups[group.key] == group.confirmation_token
     assert state.plan_reply("again", thread_key="group").ready is True
     assert state.plan_reply("again", thread_key="named").disposition is (
         ReplyDisposition.CONFIRM_GROUP
     )
+
+    named_plan = state.plan_reply(
+        "named hello", thread_key="named", confirm_group=True
+    )
+    state.reply_sent(named_plan)
+    assert state.plan_reply("again", thread_key="named").ready is True
+
+    changed = replace(named, recipients=("+15551111111", "+15553333333"))
+    state.apply_snapshot(ConversationSnapshot(None, (direct, group, changed)))
+    assert state.plan_reply("again", thread_key="named").disposition is (
+        ReplyDisposition.CONFIRM_GROUP
+    )
+
+    warned = replace(group, roster_warning_id="route:jamie")
+    state.apply_snapshot(ConversationSnapshot(None, (direct, warned, changed)))
+    assert state.plan_reply("again", thread_key="group").disposition is (
+        ReplyDisposition.CONFIRM_GROUP
+    )
+
+
+def test_daemon_remembered_roster_skips_client_confirmation() -> None:
+    state = ConversationState()
+    group = replace(_thread("group", group=True), group_confirmed=True)
+    state.apply_snapshot(ConversationSnapshot(None, (group,)))
+
+    assert state.plan_reply("hello", thread_key="group").ready is True
+    assert state.confirmed_groups[group.key] == group.confirmation_token
 
 
 def test_group_update_clears_prior_confirmation() -> None:
     state = ConversationState()
     group = _thread("group", group=True)
     state.apply_snapshot(ConversationSnapshot(None, (group,)))
-    state.confirmed_groups.add(group.key)
+    state.confirmed_groups[group.key] = group.confirmation_token
 
     updated = replace(group, recipients=("+15553333333", "+15554444444"))
     state.group_participants_saved(updated)
