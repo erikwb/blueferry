@@ -7,7 +7,8 @@ QtObject {
 
     function threadByKey(threads, key) {
         for (let index = 0; index < threads.length; ++index) {
-            if (threads[index].key === key) return threads[index]
+            if (threads[index].key === key
+                || (threads[index].aliases || []).indexOf(key) >= 0) return threads[index]
         }
         return null
     }

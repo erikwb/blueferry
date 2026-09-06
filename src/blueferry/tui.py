@@ -783,7 +783,9 @@ class BlueFerryApp(App[None]):
         title = thread.name + ("  ·  Group" if thread.is_group else "")
         recipients = ", ".join(thread.recipients)
         title_view.update(Text(_one_line(title)))
-        subtitle_view.update(Text(_one_line(recipients)))
+        subtitle_view.update(Text(_one_line(
+            recipients if thread.is_group else f"Reply to: {recipients}"
+        )))
         unread = _unread_count(thread)
         badge_view.update(
             Text(f"{unread} unread" if unread else "up to date")

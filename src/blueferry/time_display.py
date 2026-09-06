@@ -45,7 +45,8 @@ def format_message_timestamp(
         single_line = raw.replace("\r", " ").replace("\n", " ")
         return terminal_text(single_line)[:32]
 
-    reference = now or datetime.now().astimezone()
+    # A naive local reference lets each message use its own date's DST offset.
+    reference = now or datetime.now()
     local = _in_reference_timezone(parsed, reference)
     if reference.tzinfo is not None:
         reference = reference.replace(tzinfo=None)
