@@ -69,6 +69,8 @@ separate short-lived helper protocol because it precedes daemon availability
 and must exchange confirmation prompts with the QML client.
 All Python transports share `client_wire` for response-shape validation and
 model conversion; synchronous and toolkit-specific scheduling remain separate.
+Qt message composition and group confirmation live in standalone QML components
+with an explicit bridge dependency; the window handles navigation.
 `ListThreads` includes retained starred conversations even when their last event
 falls outside the ordinary 2,000-event window. The cached projection scans retained
 history when stars exist, preserving older group correlation evidence. Responses
@@ -202,8 +204,10 @@ managers; distro systemd hooks reload changed user-unit metadata.
 - Starred thread keys and confirmed group rosters are also sensitive: keys
   can contain contact addresses. Each complete collection in `settings.json`
   is encrypted with its own purpose string under the history storage policy.
-  Legacy plaintext collections are encrypted on first access, or scrubbed when
-  the wallet is locked or retention is disabled. Settings have a separate
+  Legacy plaintext collections are encrypted during explicit daemon storage
+  initialization, or scrubbed when the wallet is locked or retention is disabled.
+  Preference reads never rewrite settings; a thread snapshot reads and decrypts
+  the confirmed-roster collection at most once. Settings have a separate
   4 MiB bound for the two 200-entry collections and encryption framing;
   `local.env` retains its 64 KiB bound.
 - Passive daemon startup loads an existing key only from an already unlocked

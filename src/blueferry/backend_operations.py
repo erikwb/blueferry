@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 import re
 import sqlite3
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Protocol
@@ -126,6 +126,8 @@ class StarredThreads(Protocol):
 
 
 class ConfirmedGroups(Protocol):
+    def matching_rosters(self, rosters: Mapping[str, str]) -> set[str]: ...
+
     def matches(self, thread_key: str, token: str) -> bool: ...
 
     def remember(self, thread_key: str, token: str) -> None: ...
@@ -381,19 +383,24 @@ class BackendOperations:
         if store is not None:
             store.clear()
 
-    def _group_confirmed(self, thread: dict) -> bool:
-        if not thread.get("is_group"):
-            return False
-        token = group_confirmation_token(
-            thread.get("recipients") or [],
-            thread.get("roster_warning_id"),
-        )
-        return self._group_roster_confirmed(str(thread.get("key") or ""), token)
-
     def _present_threads(self, threads: Sequence[dict]) -> list[dict]:
         presented = sort_threads(threads, starred_keys=self._starred_keys())
+        rosters = {
+            str(item["key"]): group_confirmation_token(
+                item.get("recipients") or [], item.get("roster_warning_id"),
+            )
+            for item in presented if item.get("is_group")
+        }
+        confirmed = {
+            key for key, token in rosters.items()
+            if self._confirmed_groups.get(key) == token
+        }
+        pending = {key: token for key, token in rosters.items() if key not in confirmed}
+        store = self.dependencies.confirmed_groups
+        if pending and store is not None:
+            confirmed.update(store.matching_rosters(pending))
         for item in presented:
-            item["group_confirmed"] = self._group_confirmed(item)
+            item["group_confirmed"] = item["key"] in confirmed
         return presented
 
     def set_thread_starred(self, thread_key: str, starred: bool) -> bool:

@@ -18,56 +18,6 @@ Kirigami.ApplicationWindow {
     property string pendingMessageHandle: ""
     property var warnedRosterChanges: ({})
 
-    component ExpandingMessageComposer: Controls.ScrollView {
-        id: messageComposer
-
-        property alias text: editor.text
-        property alias placeholderText: editor.placeholderText
-        signal accepted()
-
-        Layout.fillWidth: true
-        Layout.minimumWidth: 0
-        Layout.minimumHeight: Kirigami.Units.gridUnit * 2.5
-        Layout.preferredHeight: Math.min(
-            Math.max(
-                editor.contentHeight + editor.topPadding + editor.bottomPadding + 2,
-                Layout.minimumHeight
-            ),
-            Layout.maximumHeight
-        )
-        Layout.maximumHeight: Kirigami.Units.gridUnit * 8
-        clip: true
-        Controls.ScrollBar.horizontal.policy: Controls.ScrollBar.AlwaysOff
-        Controls.ScrollBar.vertical.policy: Controls.ScrollBar.AsNeeded
-
-        function clear() {
-            editor.clear()
-        }
-
-        function forceActiveFocus() {
-            editor.forceActiveFocus()
-        }
-
-        function submit(event) {
-            if ((event.modifiers & Qt.ShiftModifier) !== 0) {
-                event.accepted = false
-                return
-            }
-            accepted()
-            event.accepted = true
-        }
-
-        Controls.TextArea {
-            id: editor
-            width: messageComposer.availableWidth
-            wrapMode: TextEdit.Wrap
-            selectByMouse: true
-            Accessible.name: messageComposer.Accessible.name
-            Keys.onReturnPressed: event => messageComposer.submit(event)
-            Keys.onEnterPressed: event => messageComposer.submit(event)
-        }
-    }
-
     visible: true
     width: 980
     height: 680
@@ -606,125 +556,14 @@ Kirigami.ApplicationWindow {
         standardButtons: Kirigami.Dialog.Close
     }
 
-    Kirigami.PromptDialog {
+    GroupConfirmationDialog {
         id: confirmGroupDialog
-        property string threadKey: ""
-        property string draft: ""
-        title: qsTr("Confirm Group Recipients")
-        standardButtons: Kirigami.Dialog.Cancel
-        customFooterActions: [Kirigami.Action {
-            text: qsTr("Send to These Recipients")
-            onTriggered: {
-                root.bridge.sendThread(confirmGroupDialog.threadKey, confirmGroupDialog.draft, true)
-                confirmGroupDialog.close()
-            }
-        }]
-        Connections {
-            target: root.bridge
-            function onGroupConfirmationRequested(key: string, body: string, roster: string): void {
-                confirmGroupDialog.threadKey = key
-                confirmGroupDialog.draft = body
-                confirmGroupDialog.subtitle = root.escapedRichText(root.htmlEscape(roster).replace(/\n/g, "<br>"))
-                confirmGroupDialog.open()
-            }
-        }
+        bridge: root.bridge
     }
 
-    Kirigami.Dialog {
+    NewMessageDialog {
         id: newMessageDialog
-        title: qsTr("New Message")
-        preferredWidth: Kirigami.Units.gridUnit * 24
-        standardButtons: Kirigami.Dialog.Cancel
-        customFooterActions: [Kirigami.Action {
-            id: newMessageSendAction
-            text: qsTr("Send")
-            icon.name: "document-send"
-            enabled: newRecipient.text.trim() !== ""
-                && newMessageBody.text.trim() !== "" && !root.bridge.busy
-            onTriggered: {
-                root.bridge.sendMessage(newRecipient.text, newMessageBody.text)
-            }
-        }]
-
-        Connections {
-            target: root.bridge
-            function onMessageSendSucceeded(recipient: string, body: string): void {
-                if (newRecipient.text === recipient && newMessageBody.text === body) {
-                    newRecipient.clear()
-                    newMessageBody.clear()
-                    newMessageDialog.close()
-                }
-            }
-        }
-
-        onOpened: {
-            root.bridge.findContacts("")
-            newRecipient.forceActiveFocus()
-        }
-
-        Timer {
-            id: contactSearchTimer
-            interval: 180
-            onTriggered: root.bridge.findContacts(newRecipient.text)
-        }
-
-        ColumnLayout {
-            spacing: Kirigami.Units.smallSpacing
-
-            Controls.Label {
-                text: qsTr("To")
-                font.bold: true
-            }
-            Controls.TextField {
-                id: newRecipient
-                Layout.fillWidth: true
-                placeholderText: qsTr("Contact, phone number, or email address")
-                Accessible.name: qsTr("Recipient")
-                onTextEdited: contactSearchTimer.restart()
-            }
-            ListView {
-                id: contactResults
-                Layout.fillWidth: true
-                Layout.preferredHeight: count > 0
-                    ? Math.min(contentHeight, Kirigami.Units.gridUnit * 10) : 0
-                visible: count > 0
-                clip: true
-                model: root.bridge.contactResults
-
-                delegate: Controls.ItemDelegate {
-                    id: contactDelegate
-                    required property var modelData
-                    width: contactResults.width
-                    text: modelData.name + "\n" + (
-                        modelData.address.indexOf("@") >= 0
-                            ? modelData.address : "+" + modelData.address
-                    )
-                    contentItem: Controls.Label {
-                        text: contactDelegate.text
-                        textFormat: Text.PlainText
-                        elide: Text.ElideRight
-                    }
-                    onClicked: {
-                        newRecipient.text = modelData.address
-                        root.bridge.findContacts("")
-                        newMessageBody.forceActiveFocus()
-                    }
-                }
-            }
-            Controls.Label {
-                text: qsTr("Message")
-                font.bold: true
-            }
-            ExpandingMessageComposer {
-                id: newMessageBody
-                placeholderText: qsTr("Write a Message")
-                Accessible.name: qsTr("Message Text")
-                onAccepted: {
-                    if (newMessageSendAction.enabled)
-                        newMessageSendAction.trigger()
-                }
-            }
-        }
+        bridge: root.bridge
     }
 
     Kirigami.Page {

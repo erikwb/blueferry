@@ -29,6 +29,9 @@ class StarredThreadsStore:
             path or config.SETTINGS_JSON, _SETTINGS_KEY, storage,
         )
 
+    def migrate(self) -> None:
+        self._preference.migrate()
+
     def keys(self) -> list[str]:
         raw = self._preference.read()
         if not isinstance(raw, list):

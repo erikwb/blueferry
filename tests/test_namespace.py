@@ -523,7 +523,7 @@ def test_all_gui_clients_offer_contacts_aware_new_messages() -> None:
 
 def test_all_clients_expand_and_scroll_long_message_drafts() -> None:
     gtk = (ROOT / "src/blueferry/ui/conversations.py").read_text()
-    qt = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
+    qt = _qml_bundle(ROOT / "src/blueferry/qt/qml")
     quickshell = (ROOT / "data/quickshell/shell.qml").read_text()
     tui_styles = (ROOT / "src/blueferry/tui.tcss").read_text()
 
@@ -748,13 +748,13 @@ def test_quickshell_package_ships_its_quattro_theme_adapter() -> None:
 
 
 def test_remote_qml_text_is_rendered_as_plain_text() -> None:
-    qt_qml = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
+    qt_qml = _qml_bundle(ROOT / "src/blueferry/qt/qml")
     quickshell = (ROOT / "data/quickshell/shell.qml").read_text()
 
     assert (
         "text: contactDelegate.text\n"
-        "                        textFormat: Text.PlainText"
-    ) in qt_qml
+        "textFormat: Text.PlainText"
+    ) in "\n".join(line.strip() for line in qt_qml.splitlines())
     assert "text: deviceCombo.displayText" not in qt_qml
     assert (
         "text: deviceOption.modelData.display_name\n"
