@@ -142,14 +142,9 @@ def pull_phonebook(
         initial_status = str(initial.get("Status", "queued"))
         log.debug("PBAP transfer %s initial status=%s size=%s",
                   transfer_path, initial_status, initial.get("Size", "unknown"))
-        initial_size = int(initial.get("Size", 0) or 0)
-        if initial_size > MAX_PHONEBOOK_BYTES:
-            raise RuntimeError(
-                f"phonebook exceeds {MAX_PHONEBOOK_BYTES} byte safety limit"
-            )
         def phonebook_size() -> int:
             size = out.stat().st_size if out.exists() else 0
-            if size > MAX_PHONEBOOK_BYTES:
+            if max(size, int(initial.get("Size", 0) or 0)) > MAX_PHONEBOOK_BYTES:
                 raise RuntimeError(
                     f"phonebook exceeds {MAX_PHONEBOOK_BYTES} byte safety limit"
                 )

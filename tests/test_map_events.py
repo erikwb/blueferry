@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from blueferry.obex import map_events
+from blueferry.obex import map_events, transfer
 
 
 class _Message:
@@ -47,11 +47,19 @@ def test_fetch_rejects_oversized_bmessage_before_parsing(tmp_path, monkeypatch) 
     monkeypatch.setattr(
         map_events, "obex", lambda _path, _interface: _Message(b"x" * 17),
     )
-    monkeypatch.setattr(map_events, "wait_for_transfer", lambda *_args, **_kwargs: "complete")
+    cancelled = []
+
+    class _Transfer:
+        def Cancel(self, *, timeout):
+            assert target.exists(), "cancel before unlinking the output"
+            cancelled.append(timeout)
+
+    monkeypatch.setattr(transfer, "obex", lambda *_args: _Transfer())
 
     with pytest.raises(RuntimeError, match="safety limit"):
         map_events._fetch_bmessage("/message/test", target)
 
+    assert cancelled == [2.0]
     assert not target.exists()
 
 

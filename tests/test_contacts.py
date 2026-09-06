@@ -19,6 +19,7 @@ from blueferry.limits import (
     MAX_CONTACT_ADDRESSES_PER_CARD,
     MAX_CONTACT_NAME_CHARS,
 )
+from blueferry.obex import transfer
 
 
 def test_pbap_filters_use_phonebook_access_names():
@@ -98,6 +99,40 @@ def test_phonebook_transfer_wires_idle_and_overall_timeouts(
     assert captured["timeout_s"] == 60
     assert captured["overall_timeout_s"] == 30 * 60
     assert callable(captured["get_progress"])
+
+
+@pytest.mark.parametrize("advertised_size", [0, 17])
+def test_oversized_phonebook_is_cancelled_before_cleanup(
+    tmp_path, monkeypatch, advertised_size,
+):
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setattr(contacts, "MAX_PHONEBOOK_BYTES", 16)
+    target = None
+    cancelled = []
+
+    class _Pbap:
+        def Select(self, *_args, **_kwargs):
+            pass
+
+        def PullAll(self, path, *_args, **_kwargs):
+            nonlocal target
+            target = Path(path)
+            target.write_bytes(b"x" * (1 if advertised_size else 17))
+            return "/transfer/phonebook", {"Status": "active", "Size": advertised_size}
+
+        def Cancel(self, *, timeout):
+            assert target.exists(), "cancel before removing the temporary directory"
+            cancelled.append(timeout)
+
+    interface = _Pbap()
+    monkeypatch.setattr(contacts, "obex", lambda *_args: interface)
+    monkeypatch.setattr(transfer, "obex", lambda *_args: interface)
+
+    with pytest.raises(RuntimeError, match="safety limit"):
+        contacts.pull_phonebook(SimpleNamespace(pbap_path="/pbap"))
+
+    assert cancelled == [2.0]
+    assert not target.parent.exists()
 
 
 def test_single_vcard():
