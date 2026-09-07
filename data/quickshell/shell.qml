@@ -929,7 +929,7 @@ ShellRoot {
                   FerryButton {
                     ferryTheme: theme
                     id: sendMessageButton
-                    Layout.alignment: Qt.AlignBottom
+                    Layout.alignment: composer.multiline ? Qt.AlignBottom : Qt.AlignVCenter
                     text: root.sendBusy ? "SENDING" : "SEND"
                     highlighted: true
                     enabled: composer.enabled && composer.text.trim() !== "" &&
