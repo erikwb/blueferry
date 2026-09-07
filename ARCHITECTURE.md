@@ -49,9 +49,9 @@ is checked against the dbus-python decorators in the service implementation.
 (currently 2 for roster-bound replies), independently of the package release.
 Additive compatible changes keep that generation. All shared-client operations
 check the advertised generation on the same owner-bound proxy they invoke;
-missing, malformed, or different generations produce an update-and-restart
-error before reads or mutations. Compatibility is rechecked after daemon
-replacement. Lifecycle recovery reads status without this check so it can
+missing, malformed, or different generations prompt users to install the most
+recent version of BlueFerry before reads or mutations. Compatibility is rechecked
+after daemon replacement. Lifecycle recovery reads status without this check so it can
 restart an outdated packaged daemon first, then requires a compatible API.
 Source installs also require compatibility even without package markers.
 

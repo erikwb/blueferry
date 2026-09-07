@@ -104,7 +104,7 @@ def test_incompatible_backend_is_rejected_before_reads_or_sends(status):
         lambda: client.send_to_thread("address:phone:15551111111", "draft"),
         lambda: client.send("+15551111111", "draft"),
     ):
-        with pytest.raises(BackendError, match=r"incompatible.*Update both"):
+        with pytest.raises(BackendError, match=r"incompatible.*Install the most recent version"):
             action()
     assert operations == []
 
