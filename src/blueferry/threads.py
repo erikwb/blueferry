@@ -288,15 +288,6 @@ def sort_threads(
     )
 
 
-def find_thread(events: list[dict], key: str, resolver=None) -> dict | None:
-    """Look up one current thread by its opaque backend key."""
-    return next(
-        (thread for thread in build_threads(events, resolver)
-         if key in conversation_keys(thread)),
-        None,
-    )
-
-
 def bound_thread_response(
     threads: list[dict], *, max_bytes: int = MAX_DBUS_JSON_BYTES,
 ) -> list[dict]:

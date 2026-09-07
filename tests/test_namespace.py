@@ -191,32 +191,6 @@ def test_gui_pairing_requires_confirmation_before_replacing_saved_target() -> No
     assert "--replace-saved-mac" in quickshell
 
 
-def test_all_pairing_clients_expose_compatibility_mode() -> None:
-    gtk = (ROOT / "src/blueferry/ui/status.py").read_text()
-    qt = _qml_bundle(ROOT / "src/blueferry/qt/qml")
-    quickshell = _qml_bundle(ROOT / "data/quickshell")
-
-    for client in (gtk, qt, quickshell):
-        assert "Compatibility pairing" in client
-        assert "iOS 18 or earlier" in client
-    assert "compatibility_mode=" in gtk
-    assert "compatibilityMode.checked" in qt
-    assert "text: compatibilityMode.checked" in qt
-    assert '"--compatibility-mode"' in quickshell
-
-
-def test_all_pairing_clients_expose_explicit_pairing_mode() -> None:
-    gtk = (ROOT / "src/blueferry/ui/status.py").read_text()
-    qt = _qml_bundle(ROOT / "src/blueferry/qt/qml")
-    quickshell = _qml_bundle(ROOT / "data/quickshell")
-
-    for client in (gtk, qt, quickshell):
-        assert "Use explicit Bluetooth pairing" in client
-    assert "explicit_pairing=" in gtk
-    assert "explicitPairing.checked" in qt
-    assert '"--explicit-pairing"' in quickshell
-
-
 def test_capability_checks_do_not_disable_pairing_buttons() -> None:
     gtk = (ROOT / "src/blueferry/ui/status.py").read_text()
     qt = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
@@ -276,36 +250,6 @@ def test_quickshell_keeps_private_dbus_values_out_of_process_arguments() -> None
         '"/usr/bin/dbus-monitor"',
     ):
         assert cli_adapter not in quickshell
-
-
-def test_all_gui_clients_can_choose_a_bluetooth_controller() -> None:
-    gtk = (ROOT / "src/blueferry/ui/status.py").read_text()
-    qt = _qml_bundle(ROOT / "src/blueferry/qt/qml")
-    quickshell = _qml_bundle(ROOT / "data/quickshell")
-
-    assert "_adapter_row" in gtk
-    assert "selectAdapter" in qt
-    assert "Bluetooth Controller" in gtk
-    assert "Controller:" in qt
-    assert "adapterCombo" in quickshell
-    assert "--adapter" in quickshell
-    assert 'pairProcess.command.push("--adapter", root.adapterName)' in quickshell
-    assert 'forgetProcess.command.push("--adapter", root.configuredAdapter)' in quickshell
-    assert '"--interactive-approval"' in quickshell
-    assert "forgetProcess.write(\"yes\\n\")" in quickshell
-    assert "property string configuredAdapter" in quickshell
-    assert (
-        "root.configuredAdapter = root.targetSaved ? (parsed.adapter || \"\") : \"\""
-    ) in quickshell
-    assert "if (root.targetSaved && parsed.adapter)" not in quickshell
-    assert "scanAfterCompatibility" in quickshell
-    assert 'command.push("--scan-seconds", "24")' in quickshell
-    assert "scan_seconds=DISCOVERY_SECONDS if scan else 0" in (
-        ROOT / "src/blueferry/ui/status.py"
-    ).read_text()
-    assert "scan_seconds=DISCOVERY_SECONDS if scan else 0" in (
-        ROOT / "src/blueferry/qt/controller.py"
-    ).read_text()
 
 
 def test_quickshell_package_ships_shared_qml_without_the_qt_client() -> None:

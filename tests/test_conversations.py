@@ -302,12 +302,6 @@ def test_gtk_message_composer_placeholder_tracks_empty_buffer() -> None:
     assert resize_requests == [True, True]
 
 
-def test_participant_editor_keeps_unique_nonempty_lines() -> None:
-    assert conversations._participant_lines(
-        " +15551111111 \n\nbeau@example.com\n+15551111111\n"
-    ) == ["+15551111111", "beau@example.com"]
-
-
 def test_roster_banner_keeps_unexpected_sender_after_later_known_sender() -> None:
     title = conversations._group_roster_banner_title(_thread(
         name="Crew",

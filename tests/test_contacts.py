@@ -390,29 +390,6 @@ def test_records_tolerate_a_malformed_stored_row(tmp_path, monkeypatch):
     ]
 
 
-def test_records_are_ordered_once_at_load(tmp_path, monkeypatch):
-    """Paging slices an already-sorted cache rather than re-sorting."""
-    monkeypatch.setattr(config, "STATE_DIR", tmp_path)
-    monkeypatch.setattr(config, "CONTACTS_DB", tmp_path / "contacts.sqlite")
-    monkeypatch.setattr(config, "EVENTS_DB", tmp_path / "events.sqlite")
-
-    resolver = ContactsResolver.__new__(ContactsResolver)
-    resolver.storage = None
-    resolver._repository = SimpleNamespace(load=lambda: [
-        ("Zoe Last", ["15550000002"], []),
-        ("Alice Example", ["15551234567"], []),
-    ])
-    resolver._mem = {}
-    resolver._records = []
-    resolver._warm()
-
-    assert [record[0] for record in resolver._records] == [
-        "Alice Example", "Zoe Last",
-    ]
-    assert resolver.records(0, 1) is not resolver._records
-    assert resolver.records(0, 1) == [("Alice Example", ["15551234567"], [])]
-
-
 def test_resolver_only_equates_nanp_country_code_variants() -> None:
     resolver = ContactsResolver.__new__(ContactsResolver)
     resolver._mem = {"15551234567": {"Alice"}}

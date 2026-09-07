@@ -603,7 +603,7 @@ class AncsClient:
         self._authorized = False
         self._reset_requests()
 
-    def _stop_bluez_notifications(self) -> bool:
+    def _stop_bluez_notifications(self) -> None:
         """Remove notification ownership created by us while ATT is up."""
         current_paths = tuple(
             path
@@ -613,7 +613,6 @@ class AncsClient:
         remaining_paths = tuple(sorted(
             self._owned_notify_paths.difference(current_paths)
         ))
-        stopped_all = True
         for path in current_paths + remaining_paths:
             try:
                 dbus.Interface(
@@ -627,11 +626,9 @@ class AncsClient:
                     self._owned_notify_paths.discard(path)
                     log.debug("ANCS notification was already stopped: %s", path)
                 else:
-                    stopped_all = False
                     log.debug("could not stop ANCS notification", exc_info=True)
             else:
                 self._owned_notify_paths.discard(path)
-        return stopped_all
 
     def _try_subscribe(self) -> None:
         if self._notify_started:

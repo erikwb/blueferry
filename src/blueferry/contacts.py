@@ -161,16 +161,13 @@ def pull_phonebook(
 
         # obexd may remove a completed transfer object just before its output
         # becomes visible. Give the local write a bounded grace period.
-        if status in ("complete", "gone"):
-            for _ in range(20):
-                if out.exists() and out.stat().st_size > 0:
-                    break
-                time.sleep(0.1)
+        for _ in range(20):
+            if out.exists() and out.stat().st_size > 0:
+                break
+            time.sleep(0.1)
 
         size = out.stat().st_size if out.exists() else 0
         log.info("transfer status: %s, file size: %d bytes", status, size)
-        if status == "error":
-            raise RuntimeError("PBAP transfer failed")
         if size == 0:
             raise RuntimeError(
                 "iPhone returned an empty phonebook; verify Settings → "
