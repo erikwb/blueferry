@@ -1,5 +1,45 @@
 # Changelog
 
+## [0.8.0](https://github.com/erikwb/blueferry/releases/tag/v0.8.0) - 2026-09-07
+
+### Added
+
+- Star conversations and keep them at the top of the list, show unread threads,
+  and open the matching conversation from notifications and client launches.
+- Filter message notifications to known contacts and configure which iPhone
+  applications can send ANCS notifications to the desktop.
+- Provide separate Fedora 45 RPMs for its Python version.
+
+### Changed
+
+- Group direct conversations across addresses that belong unambiguously to the
+  same synced contact, preserving the sender and reply destination.
+- Match Quickshell's fonts, colors, and controls to Omarchy themes while keeping
+  outgoing message bubbles blue. Improve text selection, long-message layout,
+  and single-line composer alignment.
+- Use the saved group members directly for Quickshell replies without a separate
+  confirmation checkbox.
+- Share conversation refresh, routing, and setup logic across clients, and
+  extract Qt and Quickshell settings components for easier maintenance.
+
+### Fixed
+
+- Improve Bluetooth pairing and recovery across Classic and LE reconnects,
+  adapter resets, and stale ANCS notification subscriptions.
+- Apply the WirePlumber phone-audio policy before pairing and avoid unnecessary
+  OBEX session cleanup after shutdown or transport loss.
+- Preserve conversation scroll, read state, and saved preferences across
+  refreshes, contact merges, and storage changes.
+- Separate named groups by spelling, migrate legacy routes safely, and prevent
+  stale group rosters or delayed responses from enabling incorrect replies.
+- Check backend API compatibility after recovering stale packaged daemons and
+  provide guidance to install the most recent version when incompatible.
+- Build Arch packages with the system Python and give Quickshell tests a private
+  runtime directory. Support Ubuntu 24.04's setuptools metadata format and ship
+  missing Qt startup dependencies in Debian and Fedora packages.
+- Check installed Qt startup with the default KDE style across the supported
+  native package matrix.
+
 ## [0.7.7](https://github.com/erikwb/blueferry/releases/tag/v0.7.7) - 2026-08-17
 
 ### Fixed
