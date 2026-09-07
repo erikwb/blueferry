@@ -6,14 +6,18 @@ from enum import Enum
 from typing import Protocol
 
 from blueferry.client import BackendError
+from blueferry.i18n import _
 from blueferry.models import BackendStatus, Thread
 
 
 @dataclass(frozen=True, slots=True)
 class ConversationSnapshot:
-    status: BackendStatus | None
-    threads: tuple[Thread, ...] | None
-    failures: tuple[str, ...] = ()
+    """Independent read results; an absent result and error leave that source alone."""
+
+    status: BackendStatus | None = None
+    threads: tuple[Thread, ...] | None = None
+    status_error: str = ""
+    thread_error: str = ""
 
 
 class SnapshotClient(Protocol):
@@ -25,18 +29,18 @@ def fetch_conversation_snapshot(
     client: SnapshotClient, *, limit: int = 1000,
 ) -> ConversationSnapshot:
     """Fetch each independently; None distinguishes failure from an empty result."""
-    failures: list[str] = []
+    status_error = thread_error = ""
     status: BackendStatus | None = None
     threads: tuple[Thread, ...] | None = None
     try:
         status = client.status()
     except BackendError as error:
-        failures.append(str(error))
+        status_error = str(error)
     try:
         threads = tuple(client.threads(limit))
     except BackendError as error:
-        failures.append(str(error))
-    return ConversationSnapshot(status, threads, tuple(failures))
+        thread_error = str(error)
+    return ConversationSnapshot(status, threads, status_error, thread_error)
 
 
 class ReplyDisposition(str, Enum):
@@ -45,6 +49,18 @@ class ReplyDisposition(str, Enum):
     NO_THREAD = "no-thread"
     READ_ONLY = "read-only"
     CONFIRM_GROUP = "confirm-group"
+    STALE_GROUP = "stale-group"
+
+    @property
+    def message(self) -> str:
+        return {
+            ReplyDisposition.NO_THREAD: _("Select a conversation first"),
+            ReplyDisposition.READ_ONLY: _("This conversation is read-only"),
+            ReplyDisposition.CONFIRM_GROUP: _("Group reply requires participant confirmation"),
+            ReplyDisposition.STALE_GROUP: _(
+                "The group changed. Review the recipients and send again."
+            ),
+        }.get(self, "")
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,7 +76,7 @@ class ReplyPlan:
 
     @property
     def expected_group_token(self) -> str:
-        return self.thread.confirmation_token if self.thread and self.thread.is_group else ""
+        return self.thread.confirmation_token if self.thread else ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +94,8 @@ class ConversationState:
         self.status = BackendStatus()
         self.selected_key = ""
         self.error = ""
+        self._status_error = ""
+        self._thread_error = ""
         self.notice = ""
         self.confirmed_groups: dict[str, str] = {}
         self.warned_roster_changes: set[str] = set()
@@ -107,7 +125,14 @@ class ConversationState:
     def apply_snapshot(self, snapshot: ConversationSnapshot) -> None:
         if snapshot.status is not None:
             self.status = snapshot.status
+            self._status_error = ""
+        elif snapshot.status_error:
+            self._status_error = snapshot.status_error
+            self.status = BackendStatus(extra={"error": snapshot.status_error})
+        if snapshot.thread_error:
+            self._thread_error = snapshot.thread_error
         if snapshot.threads is not None:
+            self._thread_error = ""
             previous = self.selected
             previous_handle = (
                 previous.messages[-1].handle
@@ -138,9 +163,9 @@ class ConversationState:
                     if self.select_first and self.threads
                     else ""
                 )
-        self.error = "; ".join(
-            failure for failure in snapshot.failures if failure
-        )
+        self.error = "; ".join(dict.fromkeys(
+            error for error in (self._status_error, self._thread_error) if error
+        ))
 
     def move(self, delta: int) -> None:
         if not self.threads:
@@ -162,6 +187,7 @@ class ConversationState:
         *,
         thread_key: str | None = None,
         confirm_group: bool = False,
+        expected_group_token: str | None = None,
     ) -> ReplyPlan:
         selected = self.thread(thread_key or self.selected_key)
         message = body.strip()
@@ -169,6 +195,8 @@ class ConversationState:
             return ReplyPlan(ReplyDisposition.EMPTY, selected, "")
         if selected is None:
             return ReplyPlan(ReplyDisposition.NO_THREAD, None, message)
+        if expected_group_token is not None and expected_group_token != selected.confirmation_token:
+            return ReplyPlan(ReplyDisposition.STALE_GROUP, selected, message)
         if not selected.reply_ready:
             return ReplyPlan(ReplyDisposition.READ_ONLY, selected, message)
         if (
@@ -211,18 +239,11 @@ class ConversationState:
         self.selected_key = updated.key
         self.confirmed_groups.pop(updated.key, None)
 
-    @staticmethod
-    def roster_warning_id(thread: Thread) -> str:
-        return (
-            thread.roster_warning_id
-            or f"{thread.key}:{thread.unexpected_sender or 'unknown'}"
-        )
-
     def next_roster_warning(self) -> Thread | None:
         for thread in self.threads:
             if not thread.roster_changed:
                 continue
-            warning_id = self.roster_warning_id(thread)
+            warning_id = thread.roster_warning_key
             if warning_id in self.warned_roster_changes:
                 continue
             self.warned_roster_changes.add(warning_id)

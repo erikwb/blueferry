@@ -82,15 +82,28 @@ model conversion; synchronous and toolkit-specific scheduling remain separate.
 Qt message composition and group confirmation live in standalone QML components
 with an explicit bridge dependency; the window handles navigation.
 GTK and Qt contact searches use `ConversationState` request sequences, and Qt
-retains that state across sends. Qt and TUI share the snapshot loader, which
-keeps failed reads distinct from empty history. Quickshell's transport coalesces
+retains that typed state across refreshes and sends. Qt and TUI share the snapshot
+loader; GTK feeds its independent asynchronous read results into the same state.
+Snapshots distinguish an untouched source, a failed read, and a successful empty
+history. Status and history errors clear only when their own read recovers, and a
+failed status read marks the backend unavailable while retaining the last history.
+The shared reply planner validates the roster token retained by a confirmation
+dialog and provides blocked-reply messages. Qt additionally binds its pending
+dialog to the original conversation and draft. Quickshell's transport coalesces
 contact queries and delivers only the latest request's result or failure.
 
-`ConversationLogic.qml` holds the Qt/Quickshell thread lookup, unread, roster
-warning, and participant parsing helpers. The Quickshell source wrapper imports
+`Thread` derives unread counts, group approval tokens, and roster-warning keys.
+Both Qt and the Quickshell bridge serialize these fields for QML, so JavaScript
+does not recompute them. The token implementation lives in `recipients` and is
+also used by the backend; it preserves the spelling of displayed addresses.
+These presentation fields are computed by the client from existing backend
+fields and require no new D-Bus API generation.
+
+`ConversationLogic.qml` holds Qt/Quickshell thread lookup, warning deduplication,
+and participant parsing helpers. The Quickshell source wrapper imports
 the canonical Qt QML file for development; its package installs that file directly
 so it has no runtime dependency on the Qt client. Python/QML behavior tests cover
-the shared contracts, including group signatures and participant line parsing.
+the shared contracts, including serialized approval tokens and participant line parsing.
 GTK and TUI use the same Python participant parser in `recipients`.
 
 `ListThreads` includes retained starred conversations even when their last event

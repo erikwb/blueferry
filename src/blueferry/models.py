@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from blueferry.connectivity import is_map_connection_refused
+from blueferry.recipients import group_confirmation_token
 from blueferry.time_display import format_message_timestamp
 
 
@@ -224,6 +225,9 @@ class Thread:
             "prompt_sender",
             "roster_warning_id",
             "unread",
+            "unread_count",
+            "confirmation_token",
+            "roster_warning_key",
             "starred",
             "group_confirmed",
         }
@@ -256,14 +260,22 @@ class Thread:
 
     @property
     def unread(self) -> bool:
-        return any(
-            not message.outgoing and not message.read for message in self.messages
-        )
+        return self.unread_count > 0
+
+    @property
+    def unread_count(self) -> int:
+        return sum(not message.outgoing and not message.read for message in self.messages)
 
     @property
     def confirmation_token(self) -> str:
-        identities = sorted({str(value) for value in self.recipients if str(value)})
-        return "\n".join((self.roster_warning_id, *identities))
+        return (
+            group_confirmation_token(self.recipients, self.roster_warning_id)
+            if self.is_group else ""
+        )
+
+    @property
+    def roster_warning_key(self) -> str:
+        return self.roster_warning_id or f"{self.key}:{self.unexpected_sender or 'unknown'}"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -282,6 +294,9 @@ class Thread:
             "prompt_sender": self.prompt_sender,
             "roster_warning_id": self.roster_warning_id,
             "unread": self.unread,
+            "unread_count": self.unread_count,
+            "confirmation_token": self.confirmation_token,
+            "roster_warning_key": self.roster_warning_key,
             "starred": self.starred,
             "group_confirmed": self.group_confirmed,
         }

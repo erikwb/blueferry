@@ -90,10 +90,6 @@ def _initials(name: str) -> str:
     return " ".join(initials)
 
 
-def _unread_count(thread: Thread) -> int:
-    return sum(not message.outgoing and not message.read for message in thread.messages)
-
-
 class TuiState(ConversationState):
     def __init__(self, client: _Client) -> None:
         super().__init__()
@@ -123,20 +119,11 @@ class TuiState(ConversationState):
             body,
             thread_key=thread_key,
             confirm_group=confirm_group,
+            expected_group_token=expected_group_token,
         )
-        if plan.disposition is ReplyDisposition.NO_THREAD:
-            self.error = "Select a conversation first"
-            return False
-        if plan.disposition is ReplyDisposition.READ_ONLY:
-            self.error = "This conversation is read-only"
-            return False
-        if plan.disposition is ReplyDisposition.CONFIRM_GROUP:
-            self.error = "Group reply requires participant confirmation"
-            return False
         if not plan.ready or plan.thread is None:
-            return False
-        if expected_group_token is not None and expected_group_token != plan.expected_group_token:
-            self.error = "The group changed. Review the recipients and send again."
+            if plan.disposition.message:
+                self.error = plan.disposition.message
             return False
         try:
             self.client.send_to_thread(
@@ -244,7 +231,7 @@ class ConversationItem(ListItem):
         self.thread_key = thread.key
         latest = thread.messages[-1] if thread.messages else None
         preview = _one_line(latest.body) if latest else "No messages yet"
-        unread = _unread_count(thread)
+        unread = thread.unread_count
         detail = f"{unread} unread" if unread else ("group" if thread.is_group else "direct")
         avatar = Static(Text(_initials(thread.name), justify="center"), classes="avatar")
         star = "★ " if thread.starred else ""
@@ -796,7 +783,7 @@ class BlueFerryApp(App[None]):
         subtitle_view.update(Text(_one_line(
             recipients if thread.is_group else f"Reply to: {recipients}"
         )))
-        unread = _unread_count(thread)
+        unread = thread.unread_count
         badge_view.update(
             Text(f"{unread} unread" if unread else "up to date")
         )

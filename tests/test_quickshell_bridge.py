@@ -5,6 +5,7 @@ import json
 import threading
 from types import SimpleNamespace
 
+from blueferry.models import Thread
 from blueferry.quickshell_bridge import QuickshellBridge, _RequestWorkers
 
 
@@ -107,6 +108,31 @@ def test_bridge_rejects_non_boolean_contacts_only_value() -> None:
         assert str(error) == "enabled must be a boolean"
     else:
         raise AssertionError("non-boolean preference was accepted")
+
+
+def test_bridge_supplies_shared_thread_metadata_and_forwards_displayed_approval():
+    class Client(FakeClient):
+        def threads(self, limit=200):
+            return [Thread.from_dict({
+                "key": "group:crew", "is_group": True, "roster_warning_id": "warning:1",
+                "recipients": ["Bob@example.com", "+1 (555) 222-2222"],
+                "messages": [{"outgoing": False, "read": False}],
+            })]
+
+    client = Client()
+    bridge = QuickshellBridge(client)
+    payload = bridge.dispatch("threads", {})[0]
+    assert payload["confirmation_token"] == "warning:1\n+1 (555) 222-2222\nBob@example.com"
+    assert payload["roster_warning_key"] == "warning:1"
+    assert payload["unread"] is True
+    assert payload["unread_count"] == 1
+    bridge.dispatch("send_to_thread", {
+        "thread_key": payload["key"], "body": "draft", "confirm_group": True,
+        "expected_group_token": payload["confirmation_token"],
+    })
+    assert client.calls == [(
+        "send_to_thread", "group:crew", "draft", True, payload["confirmation_token"],
+    )]
 
 
 def test_bridge_returns_structured_success_and_errors() -> None:

@@ -2,7 +2,7 @@
 
 from blueferry import models as models_module
 from blueferry.models import BackendStatus, EventRecord, Thread
-from blueferry.threads import group_confirmation_token
+from blueferry.recipients import group_confirmation_token
 
 
 def test_status_defaults_missing_fields_and_preserves_new_fields():
@@ -110,6 +110,32 @@ def test_thread_confirmation_token_tracks_recipients_and_roster_warning():
     )
     cleared = Thread.from_dict({**payload, "roster_warning_id": ""})
     assert thread.confirmation_token != cleared.confirmation_token
+
+
+def test_presentation_metadata_is_derived_from_the_current_roster_and_messages():
+    thread = Thread.from_dict({
+        "key": "group:crew", "is_group": True, "unexpected_sender": "Casey",
+        "recipients": ["+1 (555) 222-2222", "Alice@example.com", "Alice@example.com"],
+        "messages": [
+            {"outgoing": True, "read": False},
+            {"outgoing": False, "read": True},
+            {"outgoing": False, "read": False},
+            {"outgoing": False, "read": False},
+        ],
+        "confirmation_token": "stale token", "roster_warning_key": "stale warning",
+        "unread": False, "unread_count": 99,
+    })
+    payload = thread.to_dict()
+    assert thread.unread_count == payload["unread_count"] == 2
+    assert payload["unread"] is True
+    assert payload["confirmation_token"] == "\n+1 (555) 222-2222\nAlice@example.com"
+    assert payload["roster_warning_key"] == "group:crew:Casey"
+    assert Thread.from_dict(payload).to_dict() == payload
+
+
+def test_direct_thread_has_no_group_approval_token():
+    thread = Thread.from_dict({"key": "direct", "recipients": ["alice@example.com"]})
+    assert thread.confirmation_token == thread.to_dict()["confirmation_token"] == ""
 
 
 def test_thread_unread_ignores_outgoing_and_read_incoming():

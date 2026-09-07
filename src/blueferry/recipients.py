@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 
 # Recipients are eventually placed in vCard properties, so accepted forms are
 # deliberately narrower than their full formal grammars. Newlines and other
@@ -64,3 +65,12 @@ def validate_recipient(recipient: str) -> str:
 def participant_lines(value: str) -> list[str]:
     """Parse the roster editor without changing address spelling or order."""
     return list(dict.fromkeys(line.strip() for line in value.splitlines() if line.strip()))
+
+
+def group_confirmation_token(
+    recipients: Iterable[object],
+    roster_warning_id: object = "",
+) -> str:
+    """Bind approval to the displayed roster; preserve address spelling."""
+    identities = sorted({str(value) for value in recipients if str(value)})
+    return "\n".join((str(roster_warning_id or ""), *identities))

@@ -24,8 +24,9 @@ from blueferry.limits import (
     MAX_THREAD_BODY_CHARS,
 )
 from blueferry.models import Thread
+from blueferry.recipients import group_confirmation_token
 from blueferry.starred_threads import StarredThreadsStore
-from blueferry.threads import build_threads, group_confirmation_token
+from blueferry.threads import build_threads
 
 
 class _Sessions:

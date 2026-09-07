@@ -27,7 +27,7 @@ from blueferry.conversation_state import (
     fetch_conversation_snapshot,
 )
 from blueferry.i18n import _
-from blueferry.models import BackendStatus, Thread
+from blueferry.models import BackendStatus
 from blueferry.onboarding import OnboardingState, effective_compatibility
 from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH
 from blueferry.qt.tasks import Task
@@ -403,38 +403,28 @@ class BridgeController(QObject):
 
         self._run(lambda: self._setup.compatibility(selected), completed, failed)
 
-    def _snapshot(self) -> dict:
+    def _snapshot(self) -> tuple[ConversationSnapshot, list[dict] | None]:
         snapshot = fetch_conversation_snapshot(self._backend)
-        error = "; ".join(snapshot.failures)
-        return {
-            "threads": [item.to_dict() for item in snapshot.threads]
-                if snapshot.threads is not None else None,
-            "status": snapshot.status.to_dict() if snapshot.status is not None
-                else {"daemon": False, "error": error},
-            "thread_error": error,
-        }
+        # Prepare QML's copy on the worker; keep typed models for shared decisions.
+        threads = (
+            [thread.to_dict() for thread in snapshot.threads]
+            if snapshot.threads is not None else None
+        )
+        return snapshot, threads
 
-    def _apply_snapshot(self, snapshot: object) -> None:
-        value = snapshot if isinstance(snapshot, dict) else {}
-        threads = value.get("threads")
-        if isinstance(threads, list):
-            self._threads = list(threads)
-            self._state.apply_snapshot(ConversationSnapshot(
-                None, tuple(Thread.from_dict(item) for item in threads),
-            ))
+    def _apply_snapshot(self, result: tuple[ConversationSnapshot, list[dict] | None]) -> None:
+        snapshot, threads = result
+        self._state.apply_snapshot(snapshot)
+        if threads is not None:
+            self._threads = threads
             self.threadsChanged.emit()
-        status = value.get("status")
-        if isinstance(status, dict):
-            self._status = dict(status)
+        if snapshot.status is not None or snapshot.status_error:
+            self._status = self._state.status.to_dict()
             self.statusChanged.emit()
             self._maybe_unlock_storage()
         self._update_onboarding_stage()
         self._refresh_pairing_issue_report()
-        thread_error = str(value.get("thread_error") or "")
-        if thread_error:
-            self._set_error(thread_error)
-        elif self._status.get("daemon"):
-            self._set_error("")
+        self._set_error(self._state.error)
 
     @Slot()
     def refresh(self) -> None:
@@ -460,21 +450,24 @@ class BridgeController(QObject):
     def sendThread(self, key: str, body: str, confirm_group: bool) -> None:
         draft = body
         state = self._state
-        state.threads = [Thread.from_dict(value) for value in self._threads]
-        thread = state.thread(key)
-        if confirm_group:
-            expected = (key, body.strip(), thread.confirmation_token) if thread else None
-            if expected is None or self._pending_group != expected:
-                self._pending_group = None
-                self._set_error(_("The group changed. Review the recipients and send again."))
-                return
+        pending = self._pending_group
         self._pending_group = None
-        plan = state.plan_reply(body, thread_key=key, confirm_group=confirm_group)
+        if confirm_group:
+            if pending is None or pending[:2] != (key, body.strip()):
+                self._set_error(ReplyDisposition.STALE_GROUP.message)
+                return
+        plan = state.plan_reply(
+            body, thread_key=key, confirm_group=confirm_group,
+            expected_group_token=pending[2] if confirm_group else None,
+        )
+        thread = plan.thread
         if plan.disposition is ReplyDisposition.CONFIRM_GROUP and thread is not None:
-            self._pending_group = (key, plan.body, thread.confirmation_token)
+            self._pending_group = (key, plan.body, plan.expected_group_token)
             self.groupConfirmationRequested.emit(key, draft, "\n".join(thread.recipients))
             return
         if not plan.ready:
+            if plan.disposition.message:
+                self._set_error(plan.disposition.message)
             return
 
         def completed(_value: object) -> None:

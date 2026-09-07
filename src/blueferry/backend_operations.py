@@ -58,7 +58,7 @@ from blueferry.obex.map_query import list_recent_messages
 from blueferry.obex.map_read import set_session_messages_read
 from blueferry.obex.map_send import send_group_message, send_message
 from blueferry.protocol import MESSAGES_API_VERSION
-from blueferry.recipients import InvalidRecipient, validate_recipient
+from blueferry.recipients import InvalidRecipient, group_confirmation_token, validate_recipient
 from blueferry.storage_security import (
     STORAGE_POLICIES,
     CorruptStorageError,
@@ -71,7 +71,6 @@ from blueferry.threads import (
     bound_thread_response,
     build_threads,
     conversation_keys,
-    group_confirmation_token,
     sort_threads,
     thread_key,
 )

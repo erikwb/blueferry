@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from blueferry import threads as threads_module
+from blueferry.recipients import group_confirmation_token
 from blueferry.threads import (
     build_threads,
-    group_confirmation_token,
     sort_threads,
     thread_key,
 )

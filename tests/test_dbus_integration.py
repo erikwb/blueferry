@@ -29,9 +29,9 @@ from blueferry.protocol import (
     MESSAGES_IFACE,
     OBJECT_PATH,
 )
+from blueferry.recipients import group_confirmation_token
 from blueferry.settings_store import SettingsStore
 from blueferry.storage_security import StorageSecurity
-from blueferry.threads import group_confirmation_token
 
 pytestmark = pytest.mark.private_dbus
 _service_ids = itertools.count()

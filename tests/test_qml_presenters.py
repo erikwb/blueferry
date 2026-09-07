@@ -567,6 +567,7 @@ def test_qml_conversation_decisions_match_python_state(qml_engine):
     }]
     state = ConversationState()
     state.apply_snapshot(ConversationSnapshot(None, tuple(Thread.from_dict(t) for t in threads)))
+    threads = [thread.to_dict() for thread in state.threads]
     thread = state.next_roster_warning()
     assert thread is not None
     result = qml_engine.evaluate('''(function() {
