@@ -55,8 +55,8 @@ def _print_ancs_repair_hint(*, limited: bool = False, vendor: str = "") -> None:
             fg=typer.colors.YELLOW,
         )
     )
-    typer.echo("Before re-pairing, run: sudo systemctl restart bluetooth.service")
-    typer.echo("Then forget this computer on the iPhone and pair again.")
+    typer.echo("Run: sudo systemctl restart bluetooth.service")
+    typer.echo("Then wait for BlueFerry to reconnect.")
     typer.echo("This briefly disconnects all Bluetooth devices.")
 
 

@@ -43,7 +43,7 @@ Rectangle {
   function ancsUnavailableHint() {
     if (root.ancsLimited())
       return root.ancsExpectedDetail();
-    return "FYI: If ANCS remains unavailable, BlueZ may be retaining stale Bluetooth state. Before re-pairing, run sudo systemctl restart bluetooth.service, then forget this computer on the iPhone and pair again. This briefly disconnects all Bluetooth devices.";
+    return "FYI: If ANCS remains unavailable, BlueZ may be retaining stale Bluetooth state. Try running sudo systemctl restart bluetooth.service, then wait for BlueFerry to reconnect. This briefly disconnects all Bluetooth devices.";
   }
 
   color: root.theme.windowSurface

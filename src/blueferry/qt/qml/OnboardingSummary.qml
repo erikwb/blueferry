@@ -99,7 +99,7 @@ Kirigami.InlineMessage {
 
     function ancsUnavailableHint() {
         if (!ancsLimitedController())
-            return qsTr("FYI: If ANCS remains unavailable, BlueZ may be retaining stale Bluetooth state. Before re-pairing, run sudo systemctl restart bluetooth.service, then forget this computer on the iPhone and pair again. This briefly disconnects all Bluetooth devices.")
+            return qsTr("FYI: If ANCS remains unavailable, BlueZ may be retaining stale Bluetooth state. Try running sudo systemctl restart bluetooth.service, then wait for BlueFerry to reconnect. This briefly disconnects all Bluetooth devices.")
         return ancsLimitedDetail()
     }
 }
