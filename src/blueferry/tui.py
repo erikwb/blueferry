@@ -48,6 +48,7 @@ class _Client(Protocol):
 
     def send_to_thread(
         self, key: str, body: str, *, confirm_group: bool = False,
+        expected_group_token: str = "",
     ) -> str: ...
 
     def send(self, recipient: str, body: str) -> str: ...
@@ -116,6 +117,7 @@ class TuiState(ConversationState):
         *,
         confirm_group: bool = False,
         thread_key: str | None = None,
+        expected_group_token: str | None = None,
     ) -> bool:
         plan = self.plan_reply(
             body,
@@ -133,11 +135,15 @@ class TuiState(ConversationState):
             return False
         if not plan.ready or plan.thread is None:
             return False
+        if expected_group_token is not None and expected_group_token != plan.expected_group_token:
+            self.error = "The group changed. Review the recipients and send again."
+            return False
         try:
             self.client.send_to_thread(
                 plan.thread.key,
                 plan.body,
                 confirm_group=plan.confirm_group,
+                expected_group_token=plan.expected_group_token,
             )
         except BackendError as error:
             self.error = str(error)
@@ -1052,21 +1058,27 @@ class BlueFerryApp(App[None]):
         if plan.disposition is ReplyDisposition.CONFIRM_GROUP:
             self.push_screen(
                 GroupConfirmScreen(thread),
-                lambda confirmed: self._group_reply_ready(confirmed, thread.key, body),
+                lambda confirmed: self._group_reply_ready(
+                    confirmed, thread.key, body, plan.expected_group_token
+                ),
             )
             return
-        self._begin_reply(thread.key, body, False)
+        self._begin_reply(thread.key, body, False, plan.expected_group_token)
 
-    def _group_reply_ready(self, confirmed: bool, thread_key: str, body: str) -> None:
+    def _group_reply_ready(
+        self, confirmed: bool, thread_key: str, body: str, expected_group_token: str,
+    ) -> None:
         if confirmed:
-            self._begin_reply(thread_key, body, True)
+            self._begin_reply(thread_key, body, True, expected_group_token)
         else:
             self.state.notice = "Group reply cancelled"
             self._update_notice()
 
-    def _begin_reply(self, thread_key: str, body: str, confirm_group: bool) -> None:
+    def _begin_reply(
+        self, thread_key: str, body: str, confirm_group: bool, expected_group_token: str,
+    ) -> None:
         self._set_sending(True, "Sending…")
-        self._send_reply_worker(thread_key, body, confirm_group)
+        self._send_reply_worker(thread_key, body, confirm_group, expected_group_token)
 
     def _set_sending(self, sending: bool, notice: str = "") -> None:
         self._sending = sending
@@ -1080,11 +1092,13 @@ class BlueFerryApp(App[None]):
     @work(thread=True, group="send", exit_on_error=False)
     def _send_reply_worker(
         self, thread_key: str, body: str, confirm_group: bool,
+        expected_group_token: str,
     ) -> None:
         succeeded = self.state.send_reply(
             body,
             confirm_group=confirm_group,
             thread_key=thread_key,
+            expected_group_token=expected_group_token,
         )
         self.call_from_thread(self._schedule_send_finished, succeeded, body)
 

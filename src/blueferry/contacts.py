@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import tempfile
 import time
+from copy import copy
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -156,6 +157,7 @@ def pull_phonebook(
             timeout_s=60,
             overall_timeout_s=_PHONEBOOK_TRANSFER_MAX_SECONDS,
             property_timeout_s=10.0,
+            allow_disappearance=True,
             get_progress=phonebook_size,
         )
 
@@ -262,6 +264,14 @@ class ContactsResolver:
     def thread_addresses(self, raw: str | None) -> tuple[str, ...]:
         """Unambiguous address identities from the same PBAP record."""
         return self._thread_addresses.get(canonical_address(raw) or "", ())
+
+    def snapshot(self) -> ContactsResolver:
+        """Capture lookup state without reopening the repository on a worker."""
+        resolver = copy(self)
+        resolver._mem = self._mem.copy()
+        resolver._records = self._records.copy()
+        resolver._thread_addresses = self._thread_addresses.copy()
+        return resolver
 
     def refresh(self) -> int:
         """Re-read the SQLite cache into memory. Returns new count."""

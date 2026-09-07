@@ -47,20 +47,20 @@ class _KeyProvider:
         self.key = key
         self.calls: list[bool] = []
 
-    def get_or_create(self, *, allow_prompt: bool) -> bytes:
+    def get_or_create(self, *, allow_prompt: bool, cancellable=None) -> bytes:
         self.calls.append(allow_prompt)
         return self.key
 
-    def delete(self, *, allow_prompt: bool) -> bool:
+    def delete(self, *, allow_prompt: bool, cancellable=None) -> bool:
         self.calls.append(allow_prompt)
         return True
 
 
 class _LockedProvider:
-    def get_or_create(self, *, allow_prompt: bool) -> bytes:
+    def get_or_create(self, *, allow_prompt: bool, cancellable=None) -> bytes:
         raise StorageUnavailableError("wallet locked")
 
-    def delete(self, *, allow_prompt: bool) -> bool:
+    def delete(self, *, allow_prompt: bool, cancellable=None) -> bool:
         raise StorageUnavailableError("wallet locked")
 
 
@@ -391,6 +391,83 @@ def test_wrong_key_fails_closed_without_deleting_ciphertext(tmp_path) -> None:
 
     assert replacement.status.state == "error"
     assert path.read_bytes() == before
+
+
+def test_pruning_rolls_back_earlier_deletions_when_a_retained_row_is_corrupt(tmp_path):
+    path = tmp_path / "events.sqlite"
+    storage = _storage(tmp_path)
+    for number in range(3):
+        append_event({"kind": "sms_received", "body": str(number)}, path=path, storage=storage)
+    with closing(sqlite3.connect(path)) as database, database:
+        database.execute(
+            "UPDATE events SET payload_json = ? WHERE id = 2",
+            ("blueferry:aesgcm:v1:invalid",),
+        )
+    before = path.read_bytes()
+
+    assert prune_events(path=path, storage=storage, max_events=2) == 0
+
+    assert storage.status.state == "error"
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("end_request", ["timeout", "shutdown", "corruption"])
+def test_cancelled_wallet_request_cannot_install_a_late_key(tmp_path, monkeypatch, end_request):
+    from gi.repository import GLib
+
+    callbacks = []
+    pending = []
+    outcomes = []
+    errors = []
+    monkeypatch.setattr(GLib, "timeout_add_seconds", lambda _seconds, callback: callbacks.append(callback) or 1)
+    monkeypatch.setattr(GLib, "source_remove", lambda _source: True)
+    provider = _KeyProvider()
+    storage = StorageSecurity(
+        settings=SettingsStore(tmp_path / "settings.json"), key_provider=provider, initialize=False,
+    )
+    storage.change_async(
+        lambda operation, **handlers: pending.append((operation, handlers)),
+        on_success=outcomes.append, on_error=errors.append,
+    )
+    assert storage.busy
+    assert not storage.status.can_write
+    operation, handlers = pending.pop()
+    key = operation()
+    if end_request == "timeout":
+        callbacks[0]()
+        assert len(outcomes) == 1
+        assert "timed out" in outcomes[0].detail
+    elif end_request == "shutdown":
+        storage.close()
+        assert not outcomes
+    else:
+        storage.fail_closed("corrupted history")
+    handlers["on_success"](key)
+    assert not storage.status.can_write
+    assert not storage.busy
+    assert not errors
+
+
+def test_enabling_encryption_never_exposes_a_ready_store_without_a_key(tmp_path, monkeypatch):
+    from gi.repository import GLib
+
+    monkeypatch.setattr(GLib, "timeout_add_seconds", lambda *_args: 1)
+    monkeypatch.setattr(GLib, "source_remove", lambda _source: True)
+    settings = SettingsStore(tmp_path / "settings.json")
+    settings.update(local_data="plaintext")
+    storage = StorageSecurity(settings=settings, key_provider=_KeyProvider())
+    pending = []
+    outcomes = []
+    storage.change_async(
+        lambda operation, **handlers: pending.append((operation, handlers)),
+        policy="encrypted", on_success=outcomes.append, on_error=lambda error: pytest.fail(str(error)),
+    )
+    with pytest.raises(StorageUnavailableError):
+        storage.encrypt("private", purpose="fixture")
+    operation, handlers = pending.pop()
+    handlers["on_success"](operation())
+    assert outcomes[0].can_write
+    assert is_encrypted_value(storage.encrypt("private", purpose="fixture"))
 
 
 def test_plaintext_secure_contact_record_fails_closed(

@@ -76,7 +76,7 @@ class _Backend:
         assert limit == 200
         return self.loaded
 
-    def send_to_thread(self, key: str, body: str, *, confirm_group: bool = False) -> str:
+    def send_to_thread(self, key: str, body: str, *, confirm_group: bool = False, expected_group_token: str = "") -> str:
         self.sent.append((key, body, confirm_group))
         return "/transfer/1"
 
@@ -176,6 +176,22 @@ def test_replies_use_opaque_thread_key_and_explicit_group_confirmation() -> None
     assert backend.sent[-1] == ("group", "second", False)
 
 
+def test_tui_rejects_a_confirmation_from_an_older_roster():
+    from dataclasses import replace
+
+    backend = _Backend()
+    state = TuiState(backend)
+    state.refresh()
+    group = state.thread("group")
+    approved = group.confirmation_token
+    state.threads = [replace(group, recipients=("alice@example.com", "carol@example.com"))]
+    assert not state.send_reply(
+        "private draft", thread_key="group", confirm_group=True, expected_group_token=approved,
+    )
+    assert "group changed" in state.error
+    assert not backend.sent
+
+
 def test_message_sender_metadata_is_sanitized() -> None:
     async def scenario() -> None:
         backend = _Backend()
@@ -257,7 +273,7 @@ def test_group_participant_update_replaces_local_thread_snapshot() -> None:
 
 def test_send_failures_remain_user_visible() -> None:
     class FailingBackend(_Backend):
-        def send_to_thread(self, key: str, body: str, *, confirm_group: bool = False) -> str:
+        def send_to_thread(self, key: str, body: str, *, confirm_group: bool = False, expected_group_token: str = "") -> str:
             raise BackendError("phone unavailable")
 
     state = TuiState(FailingBackend())

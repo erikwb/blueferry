@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable
 
 import dbus
 
-from blueferry.bus import obex
+from blueferry.bus import get_obex_bus, obex
+from blueferry.errors import SendOutcomeUnknownError
 
 log = logging.getLogger(__name__)
 
@@ -20,6 +23,46 @@ _DISAPPEARED_ERRORS = frozenset({
 
 class TransferFailed(RuntimeError):
     """BlueZ reported an explicit transfer failure."""
+
+
+class TransferStatusWatch:
+    """Capture terminal signals before PushMessage creates its transfer.
+
+    The daemon's GLib loop receives signals while the OBEX worker polls. Keep
+    only bounded terminal evidence for this session, including signals that
+    arrive before PushMessage returns the new transfer's path.
+    """
+
+    def __init__(self, session_path: str) -> None:
+        self._prefix = f"{session_path}/"
+        self._condition = threading.Condition()
+        self._terminal: OrderedDict[str, str] = OrderedDict()
+        self._match = get_obex_bus().add_signal_receiver(
+            self._changed, signal_name="PropertiesChanged",
+            dbus_interface="org.freedesktop.DBus.Properties",
+            bus_name="org.bluez.obex", arg0=_TRANSFER_IFACE, path_keyword="path",
+        )
+
+    def _changed(self, interface, changed, _invalidated, *, path) -> None:
+        status = str(changed.get("Status") or "").casefold()
+        if (str(interface) != _TRANSFER_IFACE or not str(path).startswith(self._prefix)
+                or status not in {"complete", "error"}):
+            return
+        with self._condition:
+            self._terminal[str(path)] = status
+            self._terminal.move_to_end(str(path))
+            if len(self._terminal) > 256:
+                self._terminal.popitem(last=False)
+            self._condition.notify_all()
+
+    def terminal(self, path: str, timeout: float = 0) -> str | None:
+        with self._condition:
+            if timeout:
+                self._condition.wait_for(lambda: path in self._terminal, timeout)
+            return self._terminal.get(path)
+
+    def close(self) -> None:
+        self._match.remove()
 
 
 def _dbus_error_name(error: dbus.exceptions.DBusException) -> str:
@@ -37,6 +80,8 @@ def wait_for_transfer(
     overall_timeout_s: float | None = None,
     poll_interval_s: float = 0.1,
     property_timeout_s: float | None = None,
+    allow_disappearance: bool = False,
+    terminal_status: Callable[[float], str | None] | None = None,
     get_status: Callable[[], str] | None = None,
     check_progress: Callable[[], None] | None = None,
     get_progress: Callable[[], int] | None = None,
@@ -45,9 +90,9 @@ def wait_for_transfer(
 ) -> str:
     """Wait for one Transfer1 object and return ``complete`` or ``gone``.
 
-    BlueZ removes short-lived transfer objects soon after completion. Only an
-    explicit UnknownObject/NotFound error represents that successful race;
-    unrelated bus failures remain failures. A non-terminal status at the
+    Downloads may opt into disappearance handling only when their caller
+    independently verifies the output file. Sends require observed completion:
+    UnknownObject/NotFound alone cannot establish success. A non-terminal status at the
     deadline is always a timeout, never an implicit success. When
     ``get_progress`` is supplied, the deadline measures inactivity and is
     restarted whenever its integer value increases. ``overall_timeout_s``
@@ -80,6 +125,10 @@ def wait_for_transfer(
         )
         last_progress = get_progress() if get_progress is not None else None
         while status not in {"complete", "error"}:
+            observed = terminal_status(0) if terminal_status is not None else None
+            if observed in {"complete", "error"}:
+                status = observed
+                break
             if get_progress is not None:
                 progress = get_progress()
                 if last_progress is None or progress > last_progress:
@@ -103,7 +152,7 @@ def wait_for_transfer(
                 status = str(status_reader()).casefold()
             except dbus.exceptions.DBusException as error:
                 if _dbus_error_name(error) in _DISAPPEARED_ERRORS:
-                    return "gone"
+                    raise
                 raise RuntimeError(
                     f"could not read OBEX transfer status for {transfer_path}: "
                     f"{_dbus_error_name(error) or error}"
@@ -115,7 +164,21 @@ def wait_for_transfer(
         if status == "error":
             raise TransferFailed(f"OBEX transfer reported error: {transfer_path}")
         return "complete"
-    except Exception:
+    except Exception as error:
+        if (
+            isinstance(error, dbus.exceptions.DBusException)
+            and _dbus_error_name(error) in _DISAPPEARED_ERRORS
+        ):
+            # Give the already-subscribed GLib receiver a short handoff window
+            # after a synchronous Properties.Get races object removal.
+            observed = terminal_status(0.5) if terminal_status is not None else None
+            if observed == "complete":
+                return "complete"
+            if observed == "error":
+                raise TransferFailed(f"OBEX transfer reported error: {transfer_path}") from error
+            if allow_disappearance:
+                return "gone"
+            raise SendOutcomeUnknownError() from error
         # Unlinking a download does not stop obexd writing through its open fd.
         try:
             obex(transfer_path, _TRANSFER_IFACE).Cancel(timeout=2.0)

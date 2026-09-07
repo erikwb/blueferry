@@ -75,9 +75,14 @@ def close_obex_worker_bus() -> None:
         del _thread_state.obex_bus
 
 
+def get_obex_bus():
+    """Use the worker-owned connection for operations and transfer watches."""
+    return getattr(_thread_state, "obex_bus", None) or get_session_bus()
+
+
 def obex(path: str, iface: str) -> dbus.Interface:
     """Return an interface on a BlueZ OBEX session object."""
-    bus = getattr(_thread_state, "obex_bus", None) or get_session_bus()
+    bus = get_obex_bus()
     return dbus.Interface(
         bus.get_object("org.bluez.obex", path), iface
     )

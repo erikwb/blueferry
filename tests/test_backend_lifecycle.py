@@ -6,7 +6,9 @@ import json
 import pytest
 
 from blueferry import backend_lifecycle
+from blueferry.client import BackendClient
 from blueferry.errors import BlueFerryError
+from blueferry.protocol import MESSAGES_API_VERSION
 
 
 class _Iface:
@@ -39,7 +41,7 @@ def _dbus(monkeypatch, statuses):
 
 
 def test_current_backend_is_not_restarted(monkeypatch):
-    _dbus(monkeypatch, [{"backend_release": "0.6.0-6", "daemon": True}])
+    _dbus(monkeypatch, [{"backend_release": "0.6.0-6", "daemon": True, "api_version": MESSAGES_API_VERSION}])
     monkeypatch.setattr(backend_lifecycle, "installed_release", lambda: "0.6.0-6")
     calls = []
     monkeypatch.setattr(
@@ -58,7 +60,7 @@ def test_pre_lifecycle_backend_is_restarted_once(monkeypatch):
     _dbus(monkeypatch, [
         {"daemon": True},
         {"daemon": True},
-        {"backend_release": "0.6.0-6", "daemon": True},
+        {"backend_release": "0.6.0-6", "daemon": True, "api_version": MESSAGES_API_VERSION},
     ])
     monkeypatch.setattr(backend_lifecycle, "installed_release", lambda: "0.6.0-6")
     calls = []
@@ -80,7 +82,7 @@ def test_release_mismatch_is_restarted(monkeypatch):
     _dbus(monkeypatch, [
         {"backend_release": "0.6.0-5"},
         {"backend_release": "0.6.0-5"},
-        {"backend_release": "0.6.0-6"},
+        {"backend_release": "0.6.0-6", "api_version": MESSAGES_API_VERSION},
     ])
     monkeypatch.setattr(backend_lifecycle, "installed_release", lambda: "0.6.0-6")
     monkeypatch.setattr(
@@ -100,7 +102,7 @@ def test_same_release_with_a_different_build_sha_is_restarted(monkeypatch):
     _dbus(monkeypatch, [
         {"backend_release": "0.6.0-6", "_build_id": old_build},
         {"backend_release": "0.6.0-6", "_build_id": old_build},
-        {"backend_release": "0.6.0-6", "_build_id": new_build},
+        {"backend_release": "0.6.0-6", "_build_id": new_build, "api_version": MESSAGES_API_VERSION},
     ])
     monkeypatch.setattr(backend_lifecycle, "installed_release", lambda: "0.6.0-6")
     monkeypatch.setattr(
@@ -125,7 +127,7 @@ def test_same_release_with_a_different_build_sha_is_restarted(monkeypatch):
 
 
 def test_missing_package_marker_does_not_restart(monkeypatch):
-    _dbus(monkeypatch, [{"backend_release": "0.6.0-6", "daemon": True}])
+    _dbus(monkeypatch, [{"backend_release": "0.6.0-6", "daemon": True, "api_version": MESSAGES_API_VERSION}])
     monkeypatch.setattr(backend_lifecycle, "installed_release", lambda: None)
     calls = []
     monkeypatch.setattr(
@@ -147,7 +149,7 @@ def test_client_can_supply_a_worker_owned_status_reader(monkeypatch):
     )
 
     status = backend_lifecycle.ensure_backend_current(
-        status_reader=lambda: {"backend_release": "0.6.0-6", "daemon": True}
+        status_reader=lambda: {"backend_release": "0.6.0-6", "daemon": True, "api_version": MESSAGES_API_VERSION}
     )
 
     assert status["daemon"] is True
@@ -157,7 +159,7 @@ def test_client_error_from_status_reader_uses_activation_fallback(monkeypatch):
     monkeypatch.setattr(backend_lifecycle, "installed_release", lambda: None)
     statuses = iter([
         BlueFerryError("daemon unavailable"),
-        {"daemon": True},
+        {"daemon": True, "api_version": MESSAGES_API_VERSION},
     ])
     calls = []
     monkeypatch.setattr(
@@ -174,3 +176,40 @@ def test_client_error_from_status_reader_uses_activation_fallback(monkeypatch):
 
     assert backend_lifecycle.ensure_backend_current(read_status)["daemon"] is True
     assert calls == [["/usr/bin/systemctl", "--user", "start", "blueferry.service"]]
+
+
+@pytest.mark.parametrize("release", [None, "0.6.0-6"])
+def test_matching_release_or_source_install_still_requires_compatible_api(monkeypatch, release):
+    monkeypatch.setattr(backend_lifecycle, "installed_release", lambda: release)
+    with pytest.raises(backend_lifecycle.BackendLifecycleError, match="incompatible"):
+        backend_lifecycle.ensure_backend_current(
+            lambda: {"daemon": True, "backend_release": "0.6.0-6"},
+        )
+
+
+@pytest.mark.parametrize("version", [None, MESSAGES_API_VERSION, MESSAGES_API_VERSION + 1])
+def test_client_bootstrap_recovers_packaged_backend_before_checking_api(monkeypatch, version):
+    messages = _Iface([
+        {"backend_release": "old"},
+        {"backend_release": "old"},
+        {"backend_release": "current", "api_version": version, "daemon": True},
+    ])
+    client = BackendClient(interface_factory=lambda _: messages)
+    calls = []
+    monkeypatch.setattr(backend_lifecycle, "installed_release", lambda: "current")
+    monkeypatch.setattr(backend_lifecycle, "run_command", lambda args, **kw: calls.append(args))
+
+    def bootstrap():
+        return backend_lifecycle.ensure_backend_current(
+            lambda: client.status(check_compatibility=False).to_dict(),
+        )
+
+    if version == MESSAGES_API_VERSION:
+        assert bootstrap()["daemon"] is True
+    else:
+        with pytest.raises(backend_lifecycle.BackendLifecycleError, match="incompatible"):
+            bootstrap()
+    assert calls == [
+        ["/usr/bin/systemctl", "--user", "daemon-reload"],
+        ["/usr/bin/systemctl", "--user", "restart", "blueferry.service"],
+    ]

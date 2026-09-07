@@ -1,10 +1,25 @@
 from __future__ import annotations
 
+from blueferry.models import BackendStatus
+from blueferry.protocol import backend_compatibility_error
 from blueferry.ui.status_presenter import (
     connection_subtitle,
     map_connection_refused,
     map_connection_refused_message,
 )
+
+
+def test_backend_incompatibility_is_preserved_on_the_status_page():
+    from types import SimpleNamespace
+
+    from blueferry.ui.status import IPhonePage
+
+    rendered = []
+    page = SimpleNamespace(_apply_status=rendered.append)
+    message = backend_compatibility_error({})
+    IPhonePage._status_failed(page, message)
+    assert connection_subtitle(rendered[0].to_dict(), reachable=False) == message
+    assert "incompatible" not in connection_subtitle(BackendStatus().to_dict(), reachable=False)
 
 
 def test_connection_summary_includes_degraded_detail_and_retry() -> None:

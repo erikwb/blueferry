@@ -45,6 +45,16 @@ existing method contracts. `data/io.weirdware.BlueFerry.xml` is the
 canonical introspection contract, is installed under `dbus-1/interfaces`, and
 is checked against the dbus-python decorators in the service implementation.
 
+`GetStatus.api_version` advertises the messaging compatibility generation
+(currently 2 for roster-bound replies), independently of the package release.
+Additive compatible changes keep that generation. All shared-client operations
+check the advertised generation on the same owner-bound proxy they invoke;
+missing, malformed, or different generations produce an update-and-restart
+error before reads or mutations. Compatibility is rechecked after daemon
+replacement. Lifecycle recovery reads status without this check so it can
+restart an outdated packaged daemon first, then requires a compatible API.
+Source installs also require compatibility even without package markers.
+
 `Events1.HistoryChanged` carries only a daemon-local revision and
 `Events1.StatusChanged` has no arguments. `Events1.OpenMessageRequested`
 carries only a bounded, opaque MAP handle after the user invokes a desktop
@@ -118,8 +128,15 @@ and a positive line-protocol approval before changing the saved target. The
 terminal wizard supplies its confirmation callback directly. A library caller
 cannot silently fall through to a desktop Bluetooth agent.
 User-facing CLI message commands use the same backend client as graphical UIs. Group
-replies use `SendToThread`, so routing always comes from the backend's current
-conversation projection rather than client-supplied recipients.
+replies use `SendToThreadChecked`, which binds approval to the exact roster and
+roster-warning token displayed by the client. The backend rejects stale tokens
+even if another client has already confirmed the new roster. GTK and TUI retain
+the dialog's token across refreshes; Qt and Quickshell use the same check at the
+wire boundary. The legacy `SendToThread` signature remains available for direct
+threads; group calls require an updated client. Approval tokens use the exact
+displayed addresses, including formatting; only transport destinations are
+normalized. Reply addresses always come
+from the backend projection.
 
 ## Pairing policy
 
@@ -279,7 +296,20 @@ plaintext cleanup. This keeps Bluetooth failure handling outside persistence.
 
 Slow public D-Bus methods use deferred replies, so Bluetooth waits never block
 the daemon's event loop. Status, lifecycle signals, and incoming BlueZ events
-remain dispatchable while an OBEX transfer is active. The GTK client serializes
+remain dispatchable while an OBEX transfer is active. Conversation requests
+coalesce into one background history read and projection using independent
+contact and key snapshots. Results are published only if both the history
+revision and the invalidation generation still match; stale results and
+failures are retried. Correlation indexes repeated bodies by timestamp and
+stops once it finds two candidates, preserving ambiguity without scanning
+every occurrence of a common message.
+
+Explicit wallet operations use a separate worker with a 120-second cancellable
+deadline. Key installation, policy changes, and replies remain on GLib; late
+results after cancellation or a new authentication failure cannot enable
+storage. Wallet waits never occupy the serialized Bluetooth worker.
+
+The GTK client serializes
 snapshot reads on a worker-owned private bus connection and marshals results to
 GLib; its sends use dbus-python reply handlers. The Qt/KDE client exposes an
 asynchronous controller to Kirigami, serializes work in a QThreadPool, and

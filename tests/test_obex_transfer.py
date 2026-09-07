@@ -6,6 +6,7 @@ from unittest.mock import Mock
 import dbus
 import pytest
 
+from blueferry.errors import SendOutcomeUnknownError
 from blueferry.obex import transfer
 from blueferry.obex.transfer import TransferFailed, wait_for_transfer
 
@@ -107,14 +108,19 @@ def test_explicit_transfer_error_fails() -> None:
         )
 
 
-def test_only_object_disappearance_is_accepted(cancel) -> None:
+@pytest.mark.parametrize("initial_status", ["queued", "active"])
+def test_disappearance_requires_independent_download_verification(cancel, initial_status) -> None:
     def gone():
         raise dbus.exceptions.DBusException(
             "gone", name="org.freedesktop.DBus.Error.UnknownObject",
         )
 
+    with pytest.raises(SendOutcomeUnknownError):
+        wait_for_transfer(
+            "/transfer/4", timeout_s=1, get_status=gone, initial_status=initial_status,
+        )
     assert wait_for_transfer(
-        "/transfer/4", timeout_s=1, get_status=gone,
+        "/transfer/4", timeout_s=1, get_status=gone, allow_disappearance=True,
     ) == "gone"
     cancel.assert_not_called()
 

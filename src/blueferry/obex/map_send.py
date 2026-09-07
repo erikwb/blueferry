@@ -23,7 +23,7 @@ import dbus.exceptions
 
 from blueferry.bus import obex
 from blueferry.limits import MAX_OUTGOING_BODY_BYTES
-from blueferry.obex.transfer import wait_for_transfer
+from blueferry.obex.transfer import TransferStatusWatch, wait_for_transfer
 from blueferry.private_files import create_runtime_private_file
 from blueferry.recipients import InvalidRecipient, validate_recipient
 
@@ -141,11 +141,13 @@ def _push_bmessage(
     fd, tmp = create_runtime_private_file(
         prefix="blueferry_send_", suffix=".bmsg"
     )
+    watch = None
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
             fd = -1
             stream.write(bmsg)
         map_iface = obex(session_path, "org.bluez.obex.MessageAccess1")
+        watch = TransferStatusWatch(session_path)
         log.info("PushMessage (%d-byte body, folder=%s)", len(body), folder)
         try:
             options = dbus.Dictionary({}, signature="sv")
@@ -165,10 +167,16 @@ def _push_bmessage(
             transfer_path,
             initial_status=str(initial.get("Status", "queued")),
             timeout_s=poll_timeout_s,
+            terminal_status=lambda timeout: watch.terminal(transfer_path, timeout),
         )
         log.info("send result: status=%s", status)
         return transfer_path
     finally:
+        if watch is not None:
+            try:
+                watch.close()
+            except Exception:
+                log.debug("could not remove transfer status watch", exc_info=True)
         if fd >= 0:
             os.close(fd)
         try:
@@ -187,8 +195,8 @@ def send_message(
 ) -> str:
     """Push a message via the given MAP session.
 
-    Returns the BlueZ transfer object path once status reaches 'complete'
-    or 'gone'. Raises on InvalidArguments or transfer error.
+    Returns the BlueZ transfer object path only after observed completion.
+    Disappearance without completion raises SendOutcomeUnknownError.
     """
     # Raises InvalidRecipient before we touch DBus. Idempotent, so
     # build_bmessage re-validating below is harmless.

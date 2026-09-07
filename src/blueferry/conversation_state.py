@@ -58,6 +58,10 @@ class ReplyPlan:
     def ready(self) -> bool:
         return self.disposition is ReplyDisposition.READY
 
+    @property
+    def expected_group_token(self) -> str:
+        return self.thread.confirmation_token if self.thread and self.thread.is_group else ""
+
 
 @dataclass(frozen=True, slots=True)
 class ContactSearch:

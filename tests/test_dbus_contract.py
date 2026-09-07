@@ -71,4 +71,5 @@ def test_every_documented_error_has_the_stable_namespace() -> None:
         "RateLimited",
         "ResponseTooLarge",
         "SendFailed",
+        "SendOutcomeUnknown",
     }

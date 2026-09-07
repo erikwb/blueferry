@@ -56,6 +56,18 @@ class ConfirmationRequiredError(BlueFerryError):
     dbus_suffix = "ConfirmationRequired"
 
 
+class SendOutcomeUnknownError(ObexError):
+    """The transfer vanished without an observed successful completion."""
+
+    dbus_suffix = "SendOutcomeUnknown"
+
+    def __init__(self) -> None:
+        super().__init__(
+            "The send result could not be confirmed. Check Messages on the "
+            "iPhone before trying again."
+        )
+
+
 class CommandError(BlueFerryError):
     """A fixed external command could not be executed successfully."""
 

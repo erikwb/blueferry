@@ -483,7 +483,10 @@ class BridgeController(QObject):
             self.refresh()
 
         self._run(
-            lambda: self._backend.send_to_thread(key, plan.body, confirm_group=plan.confirm_group),
+            lambda: self._backend.send_to_thread(
+                key, plan.body, confirm_group=plan.confirm_group,
+                expected_group_token=plan.expected_group_token,
+            ),
             completed,
         )
 

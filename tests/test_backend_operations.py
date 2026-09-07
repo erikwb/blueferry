@@ -23,8 +23,9 @@ from blueferry.limits import (
     MAX_OUTGOING_BODY_BYTES,
     MAX_THREAD_BODY_CHARS,
 )
+from blueferry.models import Thread
 from blueferry.starred_threads import StarredThreadsStore
-from blueferry.threads import group_confirmation_token
+from blueferry.threads import build_threads, group_confirmation_token
 
 
 class _Sessions:
@@ -73,7 +74,67 @@ def test_group_reply_requires_confirmation_before_send(monkeypatch):
             thread["key"], "hello", False,
             lambda _result: pytest.fail("unexpected successful reply"),
             lambda error: pytest.fail(str(error)),
+            expected_group_token=group_confirmation_token(
+                thread["recipients"], thread.get("roster_warning_id"),
+            ),
         )
+
+
+@pytest.mark.parametrize(("address", "destination"), [
+    ("+1 (555) 111-1111", "+15551111111"),
+    ("alice@EXAMPLE.COM", "alice@example.com"),
+])
+def test_inferred_group_approval_uses_displayed_addresses_and_persists(
+    monkeypatch, address, destination,
+):
+    threads = build_threads([
+        {"kind": "sms_received", "handle": "bob", "sender_address": "+15552222222",
+         "contact_name": "Bob", "body": "earlier", "seen_at": "2026-09-07T12:00:00Z"},
+        {"kind": "sms_received", "handle": "alice", "sender_address": address,
+         "contact_name": "Alice", "body": "hello", "seen_at": "2026-09-07T12:10:00Z"},
+        {"kind": "ancs_notification", "app_id": "com.apple.MobileSMS", "title": "Alice",
+         "subtitle": "To you & Bob", "body": "hello", "seen_at": "2026-09-07T12:10:01Z"},
+    ])
+    group = next(thread for thread in threads if thread["is_group"])
+    displayed = Thread.from_dict(group)
+    assert displayed.reply_ready and address in displayed.recipients
+    operations = _operations()
+    _stub_group(operations, group)
+    sent = []
+    monkeypatch.setattr(
+        backend_operations, "send_group_message",
+        lambda _path, recipients, _body: sent.append(recipients) or "/transfer/sent",
+    )
+    for confirm in (True, False):
+        operations.send_to_thread(
+            displayed.key, "draft", confirm, lambda _: None,
+            lambda error: pytest.fail(str(error)),
+            expected_group_token=displayed.confirmation_token,
+        )
+        assert operations.list_threads(10)[0]["group_confirmed"] is True
+    assert sent == [[destination, "+15552222222"]] * 2
+
+
+@pytest.mark.parametrize("confirmation", [False, True])
+def test_stale_or_missing_roster_token_never_queues_a_group_send(confirmation):
+    queued = []
+    operations = _operations(submit_obex=lambda *args, **kwargs: queued.append(args))
+    thread = {**_group(), "key": named_group_key("Team")}
+    _stub_group(operations, thread)
+    approved = group_confirmation_token(thread["recipients"])
+    thread["recipients"] = ["+15551111111", "+15553333333"]
+    # Even another client's persisted confirmation cannot approve a roster
+    # that this caller has never displayed.
+    operations._confirmed_groups[thread["key"]] = group_confirmation_token(thread["recipients"])
+    for token in (approved, ""):
+        with pytest.raises(ConfirmationRequiredError, match="group"):
+            operations.send_to_thread(
+                thread["key"], "private draft", confirmation,
+                lambda _: pytest.fail("unexpected send"),
+                lambda _: pytest.fail("unexpected queued operation"),
+                expected_group_token=token,
+            )
+    assert queued == []
 
 
 def test_confirmed_group_reply_uses_backend_recipient_set(monkeypatch):
@@ -92,6 +153,9 @@ def test_confirmed_group_reply_uses_backend_recipient_set(monkeypatch):
     operations.send_to_thread(
         thread["key"], "hello", True, replies.append,
         lambda error: pytest.fail(str(error)),
+        expected_group_token=group_confirmation_token(
+            thread["recipients"], thread.get("roster_warning_id"),
+        ),
     )
 
     assert replies == ["/transfer/1"]
@@ -103,6 +167,9 @@ def test_confirmed_group_reply_uses_backend_recipient_set(monkeypatch):
     operations.send_to_thread(
         thread["key"], "again", False, replies.append,
         lambda error: pytest.fail(str(error)),
+        expected_group_token=group_confirmation_token(
+            thread["recipients"], thread.get("roster_warning_id"),
+        ),
     )
     assert replies == ["/transfer/1", "/transfer/1"]
 
@@ -121,6 +188,9 @@ def test_named_group_remembers_confirmation_until_roster_changes(monkeypatch):
         thread["key"], "first", True,
         lambda _result: None,
         lambda error: pytest.fail(str(error)),
+        expected_group_token=group_confirmation_token(
+            thread["recipients"], thread.get("roster_warning_id"),
+        ),
     )
 
     assert operations._confirmed_groups[thread["key"]] == group_confirmation_token(
@@ -130,6 +200,9 @@ def test_named_group_remembers_confirmation_until_roster_changes(monkeypatch):
         thread["key"], "second", False,
         lambda _result: None,
         lambda error: pytest.fail(str(error)),
+        expected_group_token=group_confirmation_token(
+            thread["recipients"], thread.get("roster_warning_id"),
+        ),
     )
 
     thread["recipients"] = ["+15551111111", "+15553333333"]
@@ -138,6 +211,9 @@ def test_named_group_remembers_confirmation_until_roster_changes(monkeypatch):
             thread["key"], "third", False,
             lambda _result: pytest.fail("unexpected successful reply"),
             lambda error: pytest.fail(str(error)),
+            expected_group_token=group_confirmation_token(
+                thread["recipients"], thread.get("roster_warning_id"),
+            ),
         )
 
 
@@ -157,6 +233,9 @@ def test_group_reply_requires_confirmation_again_when_roster_warning_changes(
         thread["key"], "first", True,
         lambda _result: None,
         lambda error: pytest.fail(str(error)),
+        expected_group_token=group_confirmation_token(
+            thread["recipients"], thread.get("roster_warning_id"),
+        ),
     )
 
     thread["roster_warning_id"] = "route:2:phone:15553333333"
@@ -165,6 +244,9 @@ def test_group_reply_requires_confirmation_again_when_roster_warning_changes(
             thread["key"], "second", False,
             lambda _result: pytest.fail("unexpected successful reply"),
             lambda error: pytest.fail(str(error)),
+            expected_group_token=group_confirmation_token(
+                thread["recipients"], thread.get("roster_warning_id"),
+            ),
         )
 
 
@@ -185,6 +267,9 @@ def test_confirmed_group_roster_survives_a_new_operations_instance(
         thread["key"], "hello", True,
         lambda _result: None,
         lambda error: pytest.fail(str(error)),
+        expected_group_token=group_confirmation_token(
+            thread["recipients"], thread.get("roster_warning_id"),
+        ),
     )
     assert first.list_threads(10)[0]["group_confirmed"] is True
 
@@ -194,6 +279,9 @@ def test_confirmed_group_roster_survives_a_new_operations_instance(
     second.send_to_thread(
         thread["key"], "again", False, replies.append,
         lambda error: pytest.fail(str(error)),
+        expected_group_token=group_confirmation_token(
+            thread["recipients"], thread.get("roster_warning_id"),
+        ),
     )
 
     assert replies == ["/transfer/persist"]
@@ -217,6 +305,9 @@ def test_group_reply_records_the_projected_member_roster(monkeypatch):
         thread["key"], "hello", True,
         lambda _result: None,
         lambda error: pytest.fail(str(error)),
+        expected_group_token=group_confirmation_token(
+            thread["recipients"], thread.get("roster_warning_id"),
+        ),
     )
 
     assert recorded[0][-1] == ["Alice", "Bob"]
@@ -237,6 +328,9 @@ def test_failed_group_reply_is_not_marked_confirmed(monkeypatch):
         thread["key"], "hello", True,
         lambda _result: pytest.fail("unexpected successful reply"),
         errors.append,
+        expected_group_token=group_confirmation_token(
+            thread["recipients"], thread.get("roster_warning_id"),
+        ),
     )
 
     assert len(errors) == 1
@@ -294,17 +388,17 @@ def test_storage_policy_change_clears_data_before_switching(monkeypatch) -> None
 
     class Storage:
         status = SimpleNamespace(policy="encrypted", can_read=True)
+        busy = False
 
-        def set_policy(self, value, *, allow_prompt):
-            assert allow_prompt is True
-            calls.append(("set", value))
+        def change_async(self, submit, *, policy, on_success, on_error):
+            calls.append(("set", policy))
             self.status = SimpleNamespace(
-                policy=value,
+                policy=policy,
                 state="ready",
                 detail="Local data is retained without encryption",
                 can_read=True,
             )
-            return self.status
+            on_success(self.status)
 
     monkeypatch.setattr(
         backend_operations, "clear_events", lambda: calls.append("events")
@@ -316,15 +410,19 @@ def test_storage_policy_change_clears_data_before_switching(monkeypatch) -> None
         _Sessions(), BackendDependencies(storage=Storage())
     )
 
-    result = operations.set_storage_policy("plaintext")
+    result = []
+    operations.change_storage_async(
+        lambda *args, **kwargs: None, result.append,
+        lambda error: pytest.fail(str(error)), policy="plaintext",
+    )
 
     assert calls == ["events", "contacts", ("set", "plaintext")]
-    assert result["storage_policy"] == "plaintext"
+    assert result[0]["storage_policy"] == "plaintext"
 
 
 def test_invalid_storage_policy_does_not_clear_data(monkeypatch) -> None:
     cleared = []
-    storage = SimpleNamespace(status=SimpleNamespace(policy="encrypted"))
+    storage = SimpleNamespace(status=SimpleNamespace(policy="encrypted"), busy=False)
     operations = BackendOperations(
         _Sessions(), BackendDependencies(storage=storage)
     )
@@ -338,7 +436,9 @@ def test_invalid_storage_policy_does_not_clear_data(monkeypatch) -> None:
     )
 
     with pytest.raises(InvalidArgumentsError, match="local data policy"):
-        operations.set_storage_policy("surprise")
+        operations.change_storage_async(
+            lambda *args, **kwargs: None, lambda _: None, lambda _: None, policy="surprise",
+        )
 
     assert cleared == []
 
@@ -864,6 +964,9 @@ def test_successful_group_send_is_acknowledged_when_preferences_fail(monkeypatch
     operations.send_to_thread(
         thread["key"], "hello", True, replies.append,
         lambda error: pytest.fail(str(error)),
+        expected_group_token=group_confirmation_token(
+            thread["recipients"], thread.get("roster_warning_id"),
+        ),
     )
     result = Future()
     result.set_result("/transfer/sent")

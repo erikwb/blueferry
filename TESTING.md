@@ -54,6 +54,15 @@ must not be hidden behind an automated test command.
 
 `test_dbus_contract.py` compares the shipped introspection XML with the
 dbus-python decorators, including signatures and stable application errors.
+Private D-Bus tests deliberately hold fake wallet and conversation-projection
+work open while fetching status, and verify that history changes invalidate
+an in-flight projection. Wallet tests cover cancellation and late key results;
+group tests bind confirmation to the displayed roster across client refreshes.
+Fresh-profile integration coverage starts with locked storage and missing
+databases, unlocks a fake wallet, and reads the first retained message through
+the compatibility-checking client. Client tests reject incompatible API
+generations before operations, including after daemon replacement; lifecycle
+tests verify that packaged upgrade recovery runs before compatibility checks.
 Client-model and setup-facade tests use plain mappings and monkeypatched
 operations; they must not probe BlueZ merely to exercise serialization.
 Bluetooth compatibility tests feed inert `btmgmt info` text through the parser

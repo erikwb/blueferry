@@ -394,6 +394,9 @@ def prune_events(
             try:
                 event = _deserialize(payload, storage)
             except CorruptStorageError:
+                # A normal return commits a sqlite3 connection context. Undo
+                # the cardinality deletion before reporting an unreadable archive.
+                database.rollback()
                 if storage is not None:
                     storage.fail_closed(
                         "Encrypted local history could not be authenticated"

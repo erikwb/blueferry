@@ -123,6 +123,10 @@ class ConversationsPage(Gtk.Box):
         self._pending_open_handle: str | None = None
         self._reload_pending = False
         self._reload_again = False
+        self._thread_error = ""
+        self._status_error = ""
+        self._backend_error_banner = Adw.Banner(use_markup=False)
+        self.append(self._backend_error_banner)
         self._new_destination: str | None = None
         self._deleting_threads = False
         self._map_refused_banner = Adw.Banner(
@@ -404,9 +408,16 @@ class ConversationsPage(Gtk.Box):
         self._reload_pending = True
         self._client.list_threads_async(self._apply_threads, self._reload_failed)
 
-    def _reload_failed(self, _message: str) -> bool:
+    def _reload_failed(self, message: str) -> bool:
+        self._thread_error = message
+        self._update_backend_error_banner()
         self._reload_finished()
         return False
+
+    def _update_backend_error_banner(self) -> None:
+        message = self._status_error or self._thread_error
+        self._backend_error_banner.set_title(message)
+        self._backend_error_banner.set_revealed(bool(message))
 
     def _reload_finished(self) -> None:
         self._reload_pending = False
@@ -418,13 +429,17 @@ class ConversationsPage(Gtk.Box):
         self._client.get_status_async(self._apply_status, self._status_failed)
 
     def _apply_status(self, status: BackendStatus) -> bool:
+        self._status_error = ""
+        self._update_backend_error_banner()
         self._state.apply_snapshot(ConversationSnapshot(status, None))
         self._map_refused_banner.set_revealed(
             map_connection_refused(status.to_dict())
         )
         return False
 
-    def _status_failed(self, _message: str) -> bool:
+    def _status_failed(self, message: str) -> bool:
+        self._status_error = message
+        self._update_backend_error_banner()
         self._map_refused_banner.set_revealed(False)
         return False
 
@@ -526,11 +541,13 @@ class ConversationsPage(Gtk.Box):
             self._new_recipient.set_sensitive(True)
             self._new_body.set_sensitive(True)
             self._update_new_send_button()
-            self._toast(_("Send failed: {error}").format(error=text))
+            self._toast(_("Send: {error}").format(error=text))
 
         self._client.send_message(recipient, body, done, failed)
 
     def _apply_threads(self, loaded) -> bool:
+        self._thread_error = ""
+        self._update_backend_error_banner()
         previous = self._state.selected
         adjustment = self._msg_scroll.get_vadjustment()
         position = adjustment.get_value()
@@ -983,6 +1000,10 @@ class ConversationsPage(Gtk.Box):
 
         def responded(_dialog, response: str) -> None:
             if response == "send":
+                current = self._state.thread(thread.key)
+                if current is None or current.confirmation_token != thread.confirmation_token:
+                    self._toast(_("The group changed. Review the recipients and send again."))
+                    return
                 plan = self._state.plan_reply(
                     body,
                     thread_key=thread.key,
@@ -1022,6 +1043,7 @@ class ConversationsPage(Gtk.Box):
             thread.key,
             plan.body,
             confirm_group=plan.confirm_group,
+            expected_group_token=plan.expected_group_token,
             on_ok=done,
             on_err=failed,
         )

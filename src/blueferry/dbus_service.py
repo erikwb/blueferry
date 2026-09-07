@@ -9,6 +9,7 @@ import dbus.exceptions
 import dbus.service
 
 from blueferry.backend_operations import BackendDependencies, BackendOperations, SessionState
+from blueferry.background_worker import BackgroundWorker
 from blueferry.bus import get_session_bus
 from blueferry.dbus_security import CallerGuard
 from blueferry.errors import BlueFerryError, OperationFailedError, ResponseTooLargeError
@@ -41,6 +42,8 @@ class MessagesService(dbus.service.Object):
         self._caller_guard = caller_guard or CallerGuard(bus_name.get_bus())
         self._change_revision = 0
         self.operations = operations or BackendOperations(sessions, dependencies)
+        self._projection_worker = BackgroundWorker("blueferry-projection", maximum=1)
+        self._wallet_worker = BackgroundWorker("blueferry-wallet", maximum=1)
 
     @staticmethod
     def _dbus_error(error: Exception) -> dbus.exceptions.DBusException:
@@ -86,6 +89,16 @@ class MessagesService(dbus.service.Object):
                 log.exception("unexpected synchronous D-Bus operation failure")
             raise self._dbus_error(error) from error
 
+    def _conversation_call(self, sender, action, invoke, error_handler) -> None:
+        self._async(
+            lambda: self._authorized(sender, action, lambda: self.operations.prepare_conversations(
+                self._projection_worker.submit,
+                lambda: self._async(invoke, error_handler),
+                lambda error: error_handler(self._dbus_error(error)),
+            )),
+            error_handler,
+        )
+
     @dbus.service.method(
         IFACE, in_signature="ss", out_signature="s",
         async_callbacks=("reply_handler", "error_handler"),
@@ -116,14 +129,30 @@ class MessagesService(dbus.service.Object):
         self, thread_key: str, body: str, confirm_group: bool,
         reply_handler, error_handler, sender=None,
     ) -> None:
-        self._async(
-            lambda: self._authorized(
-                sender,
-                "send",
-                lambda: self.operations.send_to_thread(
-                    thread_key, body, bool(confirm_group), reply_handler,
-                    lambda error: error_handler(self._dbus_error(error)),
-                ),
+        self._conversation_call(
+            sender, "send",
+            lambda: self.operations.send_to_thread(
+                thread_key, body, bool(confirm_group), reply_handler,
+                lambda error: error_handler(self._dbus_error(error)),
+            ),
+            error_handler,
+        )
+
+    @dbus.service.method(
+        IFACE, in_signature="ssbs", out_signature="s",
+        async_callbacks=("reply_handler", "error_handler"),
+        sender_keyword="sender",
+    )
+    def SendToThreadChecked(
+        self, thread_key: str, body: str, confirm_group: bool,
+        expected_group_token: str, reply_handler, error_handler, sender=None,
+    ) -> None:
+        self._conversation_call(
+            sender, "send",
+            lambda: self.operations.send_to_thread(
+                thread_key, body, bool(confirm_group), reply_handler,
+                lambda error: error_handler(self._dbus_error(error)),
+                expected_group_token=expected_group_token,
             ),
             error_handler,
         )
@@ -138,36 +167,42 @@ class MessagesService(dbus.service.Object):
         ))
 
     @dbus.service.method(
-        IFACE, in_signature="u", out_signature="s", sender_keyword="sender"
+        IFACE, in_signature="u", out_signature="s", sender_keyword="sender",
+        async_callbacks=("reply_handler", "error_handler"),
     )
-    def ListThreads(self, limit: int, sender=None) -> str:
-        return self._sync(lambda: self._authorized(
-            sender, "read",
-            lambda: self._json_response(self.operations.list_threads(limit)),
-        ))
+    def ListThreads(self, limit: int, reply_handler, error_handler, sender=None) -> None:
+        self._conversation_call(
+            sender, "read", lambda: reply_handler(
+                self._json_response(self.operations.list_threads(limit)),
+            ), error_handler,
+        )
 
     @dbus.service.method(
-        IFACE, in_signature="s", out_signature="u", sender_keyword="sender"
+        IFACE, in_signature="s", out_signature="u", sender_keyword="sender",
+        async_callbacks=("reply_handler", "error_handler"),
     )
-    def MarkThreadRead(self, thread_key: str, sender=None) -> int:
-        def mark() -> int:
+    def MarkThreadRead(self, thread_key: str, reply_handler, error_handler, sender=None) -> None:
+        def mark() -> None:
             updated = self.operations.mark_thread_read(thread_key)
             if updated:
                 self.emit_history_changed()
-            return updated
+            reply_handler(updated)
 
-        return self._sync(lambda: self._authorized(sender, "read", mark))
+        self._conversation_call(sender, "read", mark, error_handler)
 
     @dbus.service.method(
-        IFACE, in_signature="sb", out_signature="b", sender_keyword="sender"
+        IFACE, in_signature="sb", out_signature="b", sender_keyword="sender",
+        async_callbacks=("reply_handler", "error_handler"),
     )
-    def SetThreadStarred(self, thread_key: str, starred: bool, sender=None) -> bool:
-        def update() -> bool:
+    def SetThreadStarred(
+        self, thread_key: str, starred: bool, reply_handler, error_handler, sender=None,
+    ) -> None:
+        def update() -> None:
             result = self.operations.set_thread_starred(thread_key, bool(starred))
             self.emit_history_changed()
-            return result
+            reply_handler(result)
 
-        return self._sync(lambda: self._authorized(sender, "settings", update))
+        self._conversation_call(sender, "settings", update, error_handler)
 
     @dbus.service.method(
         IFACE, in_signature="s", out_signature="s", sender_keyword="sender"
@@ -190,17 +225,20 @@ class MessagesService(dbus.service.Object):
         ))
 
     @dbus.service.method(
-        IFACE, in_signature="sas", out_signature="s", sender_keyword="sender"
+        IFACE, in_signature="sas", out_signature="s", sender_keyword="sender",
+        async_callbacks=("reply_handler", "error_handler"),
     )
-    def SetGroupParticipants(self, thread_key: str, recipients, sender=None) -> str:
-        def update() -> str:
+    def SetGroupParticipants(
+        self, thread_key: str, recipients, reply_handler, error_handler, sender=None,
+    ) -> None:
+        def update() -> None:
             result = self._json_response(
                 self.operations.set_group_participants(thread_key, recipients)
             )
             self.emit_history_changed()
-            return result
+            reply_handler(result)
 
-        return self._sync(lambda: self._authorized(sender, "settings", update))
+        self._conversation_call(sender, "settings", update, error_handler)
 
     @dbus.service.method(
         IFACE, in_signature="", out_signature="s", sender_keyword="sender"
@@ -222,19 +260,20 @@ class MessagesService(dbus.service.Object):
         self._sync(lambda: self._authorized(sender, "destructive", clear))
 
     @dbus.service.method(
-        IFACE, in_signature="asb", out_signature="u", sender_keyword="sender"
+        IFACE, in_signature="asb", out_signature="u", sender_keyword="sender",
+        async_callbacks=("reply_handler", "error_handler"),
     )
-    def DeleteThreads(self, thread_keys, confirmed: bool, sender=None) -> int:
-        def delete() -> int:
+    def DeleteThreads(
+        self, thread_keys, confirmed: bool, reply_handler, error_handler, sender=None,
+    ) -> None:
+        def delete() -> None:
             removed = self.operations.delete_threads(
                 thread_keys, bool(confirmed)
             )
             self.emit_history_changed()
-            return removed
+            reply_handler(removed)
 
-        return self._sync(
-            lambda: self._authorized(sender, "conversation-delete", delete)
-        )
+        self._conversation_call(sender, "conversation-delete", delete, error_handler)
 
     @dbus.service.method(
         IFACE, in_signature="", out_signature="s", sender_keyword="sender"
@@ -284,26 +323,30 @@ class MessagesService(dbus.service.Object):
         ))
 
     @dbus.service.method(
-        IFACE, in_signature="s", out_signature="s", sender_keyword="sender"
+        IFACE, in_signature="s", out_signature="s", sender_keyword="sender",
+        async_callbacks=("reply_handler", "error_handler"),
     )
-    def SetStoragePolicy(self, policy: str, sender=None) -> str:
-        def change() -> str:
-            result = self._json_response(self.operations.set_storage_policy(policy))
-            self.emit_history_changed()
-            return result
+    def SetStoragePolicy(self, policy: str, reply_handler, error_handler, sender=None) -> None:
+        self._storage_call(sender, "destructive", policy, reply_handler, error_handler)
 
-        return self._sync(lambda: self._authorized(sender, "destructive", change))
+    def _storage_call(self, sender, action, policy, reply_handler, error_handler) -> None:
+        def changed(status) -> None:
+            self.emit_history_changed()
+            reply_handler(self._json_response(status))
+
+        self._async(lambda: self._authorized(sender, action, lambda: (
+            self.operations.change_storage_async(
+                self._wallet_worker.submit, changed,
+                lambda error: error_handler(self._dbus_error(error)), policy=policy,
+            )
+        )), error_handler)
 
     @dbus.service.method(
-        IFACE, in_signature="", out_signature="s", sender_keyword="sender"
+        IFACE, in_signature="", out_signature="s", sender_keyword="sender",
+        async_callbacks=("reply_handler", "error_handler"),
     )
-    def UnlockStorage(self, sender=None) -> str:
-        def unlock() -> str:
-            result = self._json_response(self.operations.unlock_storage())
-            self.emit_history_changed()
-            return result
-
-        return self._sync(lambda: self._authorized(sender, "unlock", unlock))
+    def UnlockStorage(self, reply_handler, error_handler, sender=None) -> None:
+        self._storage_call(sender, "unlock", None, reply_handler, error_handler)
 
     @dbus.service.method(
         IFACE, in_signature="su", out_signature="s",
@@ -396,6 +439,11 @@ class MessagesService(dbus.service.Object):
             log.exception("OpenMessageRequested emit failed")
 
     def close(self) -> None:
+        storage = self.operations.dependencies.storage
+        if storage is not None:
+            storage.cancel_pending()
+        self._projection_worker.close()
+        self._wallet_worker.close()
         self._caller_guard.close()
 
 

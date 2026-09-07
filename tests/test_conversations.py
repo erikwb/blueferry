@@ -13,6 +13,7 @@ from blueferry.conversation_state import (  # noqa: E402
     ConversationState,
 )
 from blueferry.models import BackendStatus, Thread, ThreadMessage  # noqa: E402
+from blueferry.protocol import backend_compatibility_error  # noqa: E402
 from blueferry.ui import conversations  # noqa: E402
 
 
@@ -114,6 +115,23 @@ def _thread(**changes) -> Thread:
 
 def _name_label(row):
     return row.child.children[0].children[0]
+
+
+def test_group_dialog_rejects_a_roster_changed_while_it_was_open(monkeypatch):
+    from unittest.mock import Mock
+
+    dialog = Mock()
+    monkeypatch.setattr(conversations.Adw, "AlertDialog", lambda **_kwargs: dialog)
+    original = _thread(key="group:test", is_group=True, recipients=("alice@example.com", "bob@example.com"))
+    state = ConversationState()
+    state.threads = [original]
+    page = SimpleNamespace(_state=state, _toast=Mock(), _dispatch_send=Mock(), get_root=lambda: None)
+    conversations.ConversationsPage._confirm_group_send(page, original, "private draft")
+    response = dialog.connect.call_args.args[1]
+    state.threads = [_thread(key=original.key, is_group=True, recipients=("alice@example.com", "carol@example.com"))]
+    response(dialog, "send")
+    page._dispatch_send.assert_not_called()
+    assert "group changed" in page._toast.call_args.args[0]
 
 
 def test_sidebar_rebuild_does_not_fire_selection_callback(monkeypatch):
@@ -236,6 +254,7 @@ def test_map_refusal_reveals_prominent_message_banner() -> None:
     page = SimpleNamespace(
         _map_refused_banner=banner,
         _state=ConversationState(select_first=False),
+        _update_backend_error_banner=lambda: None,
     )
 
     result = conversations.ConversationsPage._apply_status(
@@ -248,6 +267,30 @@ def test_map_refusal_reveals_prominent_message_banner() -> None:
 
     assert result is False
     assert banner.revealed is True
+
+
+def test_backend_error_remains_visible_until_both_refreshes_recover():
+    from unittest.mock import Mock
+
+    message = backend_compatibility_error({})
+    page = Mock(
+        _state=ConversationState(), _thread_error="", _status_error="",
+    )
+    adjustment = page._msg_scroll.get_vadjustment.return_value
+    adjustment.get_value.return_value = 0
+    adjustment.get_upper.return_value = 0
+    adjustment.get_page_size.return_value = 0
+    page._update_backend_error_banner = lambda: (
+        conversations.ConversationsPage._update_backend_error_banner(page)
+    )
+    conversations.ConversationsPage._reload_failed(page, message)
+    conversations.ConversationsPage._status_failed(page, message)
+    page._backend_error_banner.set_title.assert_called_with(message)
+    page._backend_error_banner.set_revealed.assert_called_with(True)
+    conversations.ConversationsPage._apply_status(page, BackendStatus(daemon=True))
+    page._backend_error_banner.set_revealed.assert_called_with(True)
+    conversations.ConversationsPage._apply_threads(page, [])
+    page._backend_error_banner.set_revealed.assert_called_with(False)
 
 
 def test_gtk_message_composer_sends_on_enter_and_keeps_shift_enter() -> None:

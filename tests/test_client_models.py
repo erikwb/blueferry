@@ -8,6 +8,7 @@ import pytest
 from blueferry.client import BackendClient, BackendError
 from blueferry.limits import MAX_CONTACT_ADDRESSES_PER_CARD
 from blueferry.models import BackendStatus, EventRecord, Thread
+from blueferry.protocol import MESSAGES_API_VERSION
 
 
 class _Messages:
@@ -15,7 +16,7 @@ class _Messages:
         return True
 
     def GetStatus(self, **_kwargs):
-        return json.dumps({"daemon": True, "contacts": 3})
+        return json.dumps({"daemon": True, "contacts": 3, "api_version": MESSAGES_API_VERSION})
 
     def ListThreads(self, *_args, **_kwargs):
         return json.dumps([{
@@ -71,6 +72,63 @@ class _Messages:
         return bool(starred)
 
 
+def test_group_send_carries_the_displayed_roster_without_a_legacy_fallback():
+    calls = []
+    class Messages(_Messages):
+        def SendToThreadChecked(self, *args, **kwargs):
+            calls.append(args)
+            return "/transfer/test"
+    client = BackendClient(interface_factory=lambda _: Messages())
+    assert client.send_to_thread(
+        "group:test", "private draft", confirm_group=True, expected_group_token="approved-roster",
+    ) == "/transfer/test"
+    assert calls == [("group:test", "private draft", True, "approved-roster")]
+
+
+@pytest.mark.parametrize("status", [
+    {}, {"api_version": 1}, {"api_version": MESSAGES_API_VERSION + 1},
+    {"api_version": True}, {"api_version": str(MESSAGES_API_VERSION)},
+])
+def test_incompatible_backend_is_rejected_before_reads_or_sends(status):
+    operations = []
+    class Messages:
+        def GetStatus(self, **kwargs):
+            return json.dumps(status)
+
+        def __getattr__(self, name):
+            return lambda *args, **kwargs: operations.append(name)
+
+    client = BackendClient(interface_factory=lambda _: Messages())
+    for action in (
+        client.status, client.threads,
+        lambda: client.send_to_thread("address:phone:15551111111", "draft"),
+        lambda: client.send("+15551111111", "draft"),
+    ):
+        with pytest.raises(BackendError, match=r"incompatible.*Update both"):
+            action()
+    assert operations == []
+
+
+def test_compatibility_is_rechecked_when_the_backend_is_replaced():
+    active = [_Messages()]
+    calls = []
+    client = BackendClient(interface_factory=lambda _: active[0])
+    assert client.threads()
+
+    class OlderMessages(_Messages):
+        def GetStatus(self, **kwargs):
+            return json.dumps({"daemon": True})
+
+        def SendToThreadChecked(self, *args, **kwargs):
+            calls.append(args)
+
+    active[0] = OlderMessages()
+    with pytest.raises(BackendError, match="incompatible"):
+        client.send_to_thread("address:phone:15551111111", "draft")
+    assert calls == []
+    assert client.status(check_compatibility=False).daemon is True
+
+
 def test_backend_client_returns_shared_models(monkeypatch):
     messages = _Messages()
     client = BackendClient(interface_factory=lambda _name: messages)
@@ -103,7 +161,7 @@ def test_backend_client_rejects_wrong_json_shape(monkeypatch):
     client = BackendClient()
     messages = _Messages()
     monkeypatch.setattr(messages, "GetStatus", lambda **_kwargs: "[]")
-    monkeypatch.setattr(client, "_iface", lambda _name: messages)
+    monkeypatch.setattr(client, "_raw_iface", lambda _name: messages)
 
     with pytest.raises(BackendError, match="expected dict"):
         client.status()

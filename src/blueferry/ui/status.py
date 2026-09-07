@@ -874,8 +874,8 @@ class IPhonePage(Gtk.Box):
     def _status_invalidated(self, _client) -> None:
         self._refresh()
 
-    def _status_failed(self, _message: str) -> bool:
-        self._apply_status(BackendStatus())
+    def _status_failed(self, message: str) -> bool:
+        self._apply_status(BackendStatus(extra={"error": message}))
         return False
 
     def _apply_status(self, status: BackendStatus) -> bool:

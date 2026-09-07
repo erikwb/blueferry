@@ -187,7 +187,9 @@ class DaemonClient(GObject.Object):
     def ensure_backend_current_async(self) -> None:
         def operation() -> dict:
             def private_status() -> dict:
-                return self._call_backend(lambda backend: backend.status().to_dict())
+                return self._call_backend(
+                    lambda backend: backend.status(check_compatibility=False).to_dict()
+                )
 
             return ensure_backend_current(status_reader=private_status)
 
@@ -239,6 +241,7 @@ class DaemonClient(GObject.Object):
         body: str,
         *,
         confirm_group: bool,
+        expected_group_token: str,
         on_ok,
         on_err,
     ) -> None:
@@ -248,6 +251,7 @@ class DaemonClient(GObject.Object):
                     thread_key,
                     body,
                     confirm_group=confirm_group,
+                    expected_group_token=expected_group_token,
                 )
             ),
             on_ok,

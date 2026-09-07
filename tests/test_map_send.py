@@ -6,13 +6,57 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import dbus
+import pytest
+
+from blueferry.errors import SendOutcomeUnknownError
 from blueferry.limits import MAX_OUTGOING_BODY_BYTES
-from blueferry.obex import map_send
+from blueferry.obex import map_send, transfer
 from blueferry.obex.map_send import (
     _byte_stuff,
     build_bmessage,
     build_group_bmessage,
 )
+
+
+@pytest.fixture(autouse=True)
+def transfer_signals(monkeypatch):
+    from unittest.mock import Mock
+
+    callbacks = []
+    bus = Mock()
+    bus.add_signal_receiver.side_effect = lambda callback, **kwargs: callbacks.append(callback) or Mock()
+    monkeypatch.setattr(transfer, "get_obex_bus", lambda: bus)
+    return callbacks
+
+
+@pytest.mark.parametrize("status", ["complete", "error"])
+def test_terminal_signal_before_push_returns_survives_object_removal(
+    tmp_path, monkeypatch, transfer_signals, status,
+):
+    class FastTransfer:
+        def PushMessage(self, *_args, **_kwargs):
+            transfer_signals[0](
+                "org.bluez.obex.Transfer1", {"Status": status}, [], path="/session/transfer1",
+            )
+            return "/session/transfer1", {"Status": "queued"}
+
+        def Get(self, *_args):
+            raise dbus.exceptions.DBusException(
+                "gone", name="org.freedesktop.DBus.Error.UnknownObject",
+            )
+
+        def Cancel(self, **_kwargs):
+            pass
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setattr(map_send, "obex", lambda *_args: FastTransfer())
+    monkeypatch.setattr(transfer, "obex", lambda *_args: FastTransfer())
+    if status == "complete":
+        assert map_send.send_message("/session", "+15551234567", "fixture") == "/session/transfer1"
+    else:
+        with pytest.raises(transfer.TransferFailed):
+            map_send.send_message("/session", "+15551234567", "fixture")
 
 
 class _MessageAccess:
@@ -23,6 +67,26 @@ class _MessageAccess:
         self.source = Path(source)
         assert self.source.read_text(encoding="utf-8").startswith("BEGIN:BMSG")
         return "/transfer/test", {"Status": "complete"}
+
+
+def test_a_queued_send_that_disappears_is_not_reported_as_sent(tmp_path, monkeypatch):
+    class LostTransfer(_MessageAccess):
+        def PushMessage(self, *args, **kwargs):
+            super().PushMessage(*args, **kwargs)
+            return "/transfer/test", {"Status": "queued"}
+
+        def Get(self, *_args):
+            raise dbus.exceptions.DBusException(
+                "gone", name="org.freedesktop.DBus.Error.UnknownObject",
+            )
+
+    interface = LostTransfer()
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setattr(map_send, "obex", lambda *_args: interface)
+    monkeypatch.setattr(transfer, "obex", lambda *_args: interface)
+    with pytest.raises(SendOutcomeUnknownError, match="Check Messages"):
+        map_send.send_message("/session", "+15551234567", "private fixture")
+    assert not interface.source.exists()
 
 
 def test_outgoing_bmessage_uses_runtime_storage_and_is_removed(
