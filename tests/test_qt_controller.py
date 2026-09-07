@@ -2,14 +2,23 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 pytest.importorskip("PySide6")
 
 from blueferry.client import BackendError
+from blueferry.conversation_state import ConversationSnapshot
 from blueferry.models import BackendStatus, Thread
 from blueferry.qt.controller import BridgeController
 from blueferry.setup_client import ConfigurationState
+
+
+def _apply_threads(controller, threads):
+    controller._apply_snapshot((
+        ConversationSnapshot(threads=tuple(threads)), [thread.to_dict() for thread in threads],
+    ))
 
 
 class _Backend:
@@ -17,7 +26,7 @@ class _Backend:
         self.sent = []
 
     def status(self):
-        return BackendStatus(daemon=True, map=True, contacts=4)
+        return BackendStatus(daemon=True, map=True, contacts=4, storage_state="ready")
 
     def threads(self, limit=1000):
         return [
@@ -82,9 +91,10 @@ def test_snapshot_converts_typed_client_models_for_qml():
     )
 
     snapshot = controller._snapshot()
+    controller._apply_snapshot(snapshot)
 
-    assert snapshot["status"]["contacts"] == 4
-    assert snapshot["threads"][0]["key"] == "address:email:test@example.com"
+    assert controller.status["contacts"] == 4
+    assert controller.threads[0]["key"] == "address:email:test@example.com"
 
 
 def test_failed_thread_snapshot_preserves_last_successful_projection():
@@ -106,8 +116,10 @@ def test_failed_thread_snapshot_preserves_last_successful_projection():
         subscribe=False,
         autostart=False,
     )
-    previous = [{"key": "address:phone:15551234567", "name": "Kept"}]
-    controller._threads = previous
+    _apply_threads(controller, [Thread.from_dict({
+        "key": "address:phone:15551234567", "name": "Kept",
+    })])
+    previous = controller.threads
 
     snapshot = controller._snapshot()
     controller._apply_snapshot(snapshot)
@@ -115,6 +127,62 @@ def test_failed_thread_snapshot_preserves_last_successful_projection():
     assert controller.threads == previous
     assert controller.status["daemon"] is True
     assert controller.errorText == "thread snapshot unavailable"
+
+
+def test_incompatible_initial_snapshot_displays_one_error_without_attempting_unlock(monkeypatch):
+    from blueferry.protocol import backend_compatibility_error
+
+    message = backend_compatibility_error({})
+
+    class IncompatibleBackend(_Backend):
+        def status(self):
+            raise BackendError(message)
+
+        def threads(self, limit=1000):
+            raise BackendError(message)
+
+    controller = BridgeController(
+        backend=IncompatibleBackend(), setup=object(), subscribe=False, autostart=False,
+    )
+    unlocks = []
+    monkeypatch.setattr(controller, "unlockStorage", lambda: unlocks.append(True))
+    controller._apply_snapshot(controller._snapshot())
+    assert controller.status["daemon"] is False
+    assert controller.status["error"] == controller.errorText == message
+    assert controller.status["storage_policy"] == ""
+    assert controller.status["storage_state"] == "unavailable"
+    assert controller.threads == []
+    assert unlocks == []
+
+
+def test_failed_status_preserves_the_latest_successful_storage_setting(monkeypatch):
+    controller = BridgeController(
+        backend=_Backend(), setup=object(), subscribe=False, autostart=False,
+    )
+    controller._apply_snapshot(controller._snapshot())
+    monkeypatch.setattr(controller, "refresh", lambda: None)
+    controller._storage_updated({"storage_policy": "none", "storage_state": "disabled"})
+    controller._apply_snapshot((ConversationSnapshot(status_error="status timed out"), None))
+    assert controller.status["storage_policy"] == "none"
+    assert controller.status["storage_state"] == "unavailable"
+    assert controller.errorText == "status timed out"
+
+
+def test_failed_first_refresh_preserves_the_policy_loaded_at_startup(monkeypatch):
+    controller = BridgeController(
+        backend=_Backend(), setup=object(), subscribe=False, autostart=False,
+    )
+    status = BackendStatus(daemon=True, storage_policy="none", storage_state="disabled")
+    monkeypatch.setattr(controller, "_run", lambda _operation, ready, _failed: ready((
+        ConfigurationState(True, "02:00:00:00:00:01", "hci0", ""), status.to_dict(),
+    )))
+    monkeypatch.setattr(controller, "loadSetupState", lambda: None)
+    monkeypatch.setattr(controller, "loadDevices", lambda _scan: None)
+    monkeypatch.setattr(controller, "refresh", lambda: None)
+    controller.start()
+    controller._apply_snapshot((ConversationSnapshot(status_error="status timed out"), None))
+    assert controller.status["storage_policy"] == "none"
+    assert controller.status["storage_state"] == "unavailable"
 
 
 def test_failed_capability_probe_is_loaded_and_pairable(monkeypatch):
@@ -680,10 +748,10 @@ def test_activating_bluetooth_reloads_the_selected_adapter_before_scanning(
 
 def test_group_send_requires_explicit_approval_and_rejects_changed_roster(monkeypatch):
     controller = BridgeController(backend=_Backend(), setup=object(), subscribe=False, autostart=False)
-    controller._threads = [{
+    _apply_threads(controller, [Thread.from_dict({
         "key": "group:test", "name": "Group", "is_group": True, "reply_ready": True,
         "recipients": ["+15551111111", "+15552222222"],
-    }]
+    })])
     queued = []
     prompts = []
     monkeypatch.setattr(controller, "_run", lambda *args, **kwargs: queued.append(args))
@@ -691,7 +759,10 @@ def test_group_send_requires_explicit_approval_and_rejects_changed_roster(monkey
     controller.sendThread("group:test", "draft", False)
     assert not queued
     assert prompts == [("group:test", "draft", "+15551111111\n+15552222222")]
-    controller._threads[0]["recipients"].append("+15553333333")
+    thread = controller._state.threads[0]
+    _apply_threads(controller, [
+        replace(thread, recipients=(*thread.recipients, "+15553333333")),
+    ])
     controller.sendThread("group:test", "draft", True)
     assert not queued
     assert "group changed" in controller.errorText
@@ -703,14 +774,14 @@ def test_group_send_requires_explicit_approval_and_rejects_changed_roster(monkey
 def test_draft_completion_is_emitted_only_after_success(monkeypatch):
     backend = _Backend()
     controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
-    controller._threads = [thread.to_dict() for thread in backend.threads()]
+    _apply_threads(controller, backend.threads())
     queued = []
     completed = []
     monkeypatch.setattr(controller, "_run", lambda *args, **kwargs: queued.append(args))
     monkeypatch.setattr(controller, "refresh", lambda: None)
     controller.threadSendSucceeded.connect(lambda *args: completed.append(args))
     controller.messageSendSucceeded.connect(lambda *args: completed.append(args))
-    key = controller._threads[0]["key"]
+    key = controller.threads[0]["key"]
     controller.sendThread(key, " draft ", False)
     controller.sendMessage(" new recipient ", " new draft ")
     assert completed == []
@@ -740,10 +811,10 @@ def test_contact_search_rejects_repeated_query_stale_results_and_errors(monkeypa
 
 def test_successful_group_reply_reuses_confirmation_until_roster_changes(monkeypatch):
     controller = BridgeController(backend=_Backend(), setup=object(), subscribe=False, autostart=False)
-    controller._threads = [{
+    _apply_threads(controller, [Thread.from_dict({
         "key": "group:test", "is_group": True, "reply_ready": True,
         "recipients": ["+15551111111", "+15552222222"],
-    }]
+    })])
     pending = []
     prompts = []
     monkeypatch.setattr(controller, "_run", lambda *args, **_kw: pending.append(args))
@@ -755,7 +826,10 @@ def test_successful_group_reply_reuses_confirmation_until_roster_changes(monkeyp
     controller.sendThread("group:test", "second", False)
     assert len(prompts) == 1
     assert len(pending) == 1
-    controller._threads[0]["recipients"].append("+15553333333")
+    thread = controller._state.threads[0]
+    _apply_threads(controller, [
+        replace(thread, recipients=(*thread.recipients, "+15553333333")),
+    ])
     controller.sendThread("group:test", "third", False)
     assert len(prompts) == 2
     assert len(pending) == 1

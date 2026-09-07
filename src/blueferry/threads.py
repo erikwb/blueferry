@@ -163,15 +163,6 @@ def _message_sender(event: dict, address: str | None, resolver) -> str:
     return address or "(unknown)"
 
 
-def group_confirmation_token(
-    recipients: Iterable[object],
-    roster_warning_id: object = "",
-) -> str:
-    """Stable token for one group roster, used to skip repeat send confirms."""
-    identities = sorted({str(value) for value in recipients if str(value)})
-    return "\n".join((str(roster_warning_id or ""), *identities))
-
-
 def _contact_addresses(resolver, address: str | None) -> tuple[str, ...]:
     lookup = getattr(resolver, "thread_addresses", None)
     return lookup(address) if lookup is not None else ()

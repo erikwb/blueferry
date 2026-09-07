@@ -401,6 +401,41 @@ def _qml_functions(source: str, names: tuple[str, ...]) -> str:
     return "\n".join(functions)
 
 
+@pytest.mark.parametrize("policy,storage_state,label", [
+    ("encrypted", "locked", "Locked"), ("plaintext", "ready", "Available"),
+    ("none", "disabled", "Disabled"),
+])
+def test_qt_storage_label_reports_unavailability_after_failed_reads(qml_engine, policy, storage_state, label):
+    import json
+
+    from blueferry.conversation_state import ConversationSnapshot, ConversationState
+    from blueferry.models import BackendStatus
+
+    state = ConversationState()
+    healthy = BackendStatus(daemon=True, storage_policy=policy, storage_state=storage_state)
+    statuses = []
+    for snapshot in (
+        ConversationSnapshot(status=healthy),
+        ConversationSnapshot(status_error="status timed out"),
+        ConversationSnapshot(status=healthy),
+    ):
+        state.apply_snapshot(snapshot)
+        statuses.append(state.status.to_dict())
+    function = _qml_functions((ROOT / "src/blueferry/qt/qml/Main.qml").read_text(), ("storageStatusText",))
+    result = qml_engine.evaluate('''(function() {
+        const statuses = ''' + json.dumps(statuses) + ''';
+        const bridge = {};
+        function qsTr(text) { return text; }
+        ''' + function + '''
+        return JSON.stringify(statuses.map(function(status) {
+            bridge.status = status;
+            return storageStatusText();
+        }));
+    })()''')
+    assert not result.isError(), result.toString()
+    assert json.loads(result.toString()) == [label, "Unavailable", label]
+
+
 @pytest.mark.parametrize("relative_path", [
     "data/quickshell/shell.qml", "src/blueferry/qt/qml/Main.qml",
 ])
@@ -567,6 +602,7 @@ def test_qml_conversation_decisions_match_python_state(qml_engine):
     }]
     state = ConversationState()
     state.apply_snapshot(ConversationSnapshot(None, tuple(Thread.from_dict(t) for t in threads)))
+    threads = [thread.to_dict() for thread in state.threads]
     thread = state.next_roster_warning()
     assert thread is not None
     result = qml_engine.evaluate('''(function() {

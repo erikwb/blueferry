@@ -273,9 +273,7 @@ def test_backend_error_remains_visible_until_both_refreshes_recover():
     from unittest.mock import Mock
 
     message = backend_compatibility_error({})
-    page = Mock(
-        _state=ConversationState(), _thread_error="", _status_error="",
-    )
+    page = Mock(_state=ConversationState())
     adjustment = page._msg_scroll.get_vadjustment.return_value
     adjustment.get_value.return_value = 0
     adjustment.get_upper.return_value = 0
@@ -364,7 +362,7 @@ def test_roster_warning_fallback_id_is_stable_for_partial_payload() -> None:
         roster_warning_id="",
     )
 
-    assert ConversationState.roster_warning_id(thread) == (
+    assert thread.roster_warning_key == (
         "group:named:crew:Casey"
     )
 

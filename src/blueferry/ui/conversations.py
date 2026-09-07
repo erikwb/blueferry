@@ -123,8 +123,6 @@ class ConversationsPage(Gtk.Box):
         self._pending_open_handle: str | None = None
         self._reload_pending = False
         self._reload_again = False
-        self._thread_error = ""
-        self._status_error = ""
         self._backend_error_banner = Adw.Banner(use_markup=False)
         self.append(self._backend_error_banner)
         self._new_destination: str | None = None
@@ -409,13 +407,13 @@ class ConversationsPage(Gtk.Box):
         self._client.list_threads_async(self._apply_threads, self._reload_failed)
 
     def _reload_failed(self, message: str) -> bool:
-        self._thread_error = message
+        self._state.apply_snapshot(ConversationSnapshot(thread_error=message))
         self._update_backend_error_banner()
         self._reload_finished()
         return False
 
     def _update_backend_error_banner(self) -> None:
-        message = self._status_error or self._thread_error
+        message = self._state.error
         self._backend_error_banner.set_title(message)
         self._backend_error_banner.set_revealed(bool(message))
 
@@ -429,16 +427,15 @@ class ConversationsPage(Gtk.Box):
         self._client.get_status_async(self._apply_status, self._status_failed)
 
     def _apply_status(self, status: BackendStatus) -> bool:
-        self._status_error = ""
-        self._update_backend_error_banner()
         self._state.apply_snapshot(ConversationSnapshot(status, None))
+        self._update_backend_error_banner()
         self._map_refused_banner.set_revealed(
             map_connection_refused(status.to_dict())
         )
         return False
 
     def _status_failed(self, message: str) -> bool:
-        self._status_error = message
+        self._state.apply_snapshot(ConversationSnapshot(status_error=message))
         self._update_backend_error_banner()
         self._map_refused_banner.set_revealed(False)
         return False
@@ -546,8 +543,6 @@ class ConversationsPage(Gtk.Box):
         self._client.send_message(recipient, body, done, failed)
 
     def _apply_threads(self, loaded) -> bool:
-        self._thread_error = ""
-        self._update_backend_error_banner()
         previous = self._state.selected
         adjustment = self._msg_scroll.get_vadjustment()
         position = adjustment.get_value()
@@ -558,6 +553,7 @@ class ConversationsPage(Gtk.Box):
             if isinstance(thread, Thread) and thread.key
         )
         self._state.apply_snapshot(ConversationSnapshot(None, threads))
+        self._update_backend_error_banner()
         self._rebuild_thread_list()
         current = self._state.selected
         if current is not None:
@@ -1000,17 +996,16 @@ class ConversationsPage(Gtk.Box):
 
         def responded(_dialog, response: str) -> None:
             if response == "send":
-                current = self._state.thread(thread.key)
-                if current is None or current.confirmation_token != thread.confirmation_token:
-                    self._toast(_("The group changed. Review the recipients and send again."))
-                    return
                 plan = self._state.plan_reply(
                     body,
                     thread_key=thread.key,
                     confirm_group=True,
+                    expected_group_token=thread.confirmation_token,
                 )
                 if plan.ready:
                     self._dispatch_send(plan)
+                elif plan.disposition.message:
+                    self._toast(plan.disposition.message)
 
         dialog.connect("response", responded)
         dialog.present(self.get_root())

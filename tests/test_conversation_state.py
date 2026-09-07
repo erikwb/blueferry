@@ -54,7 +54,7 @@ def test_partial_snapshot_preserves_successful_state_and_selection() -> None:
     state.selected_key = "two"
 
     state.apply_snapshot(
-        ConversationSnapshot(None, None, ("temporary failure",))
+        ConversationSnapshot(thread_error="temporary failure")
     )
 
     assert state.status is original_status
@@ -74,6 +74,62 @@ def test_selection_follows_the_same_message_when_thread_key_changes() -> None:
     )
 
     assert state.selected_key == "new"
+
+
+@pytest.mark.parametrize("recover_status_first", [False, True])
+def test_refresh_errors_clear_only_when_their_own_source_recovers(recover_status_first):
+    state = ConversationState()
+    thread = _thread("kept")
+    state.apply_snapshot(ConversationSnapshot(BackendStatus(daemon=True), (thread,)))
+    state.apply_snapshot(ConversationSnapshot(status_error="status failed"))
+    state.apply_snapshot(ConversationSnapshot(thread_error="history failed"))
+    assert state.error == "status failed; history failed"
+    assert state.status.daemon is False
+    assert state.status.extra["error"] == "status failed"
+    assert state.selected is thread
+
+    status = ConversationSnapshot(status=BackendStatus(daemon=True))
+    threads = ConversationSnapshot(threads=())
+    state.apply_snapshot(status if recover_status_first else threads)
+    assert state.error == ("history failed" if recover_status_first else "status failed")
+    state.apply_snapshot(threads if recover_status_first else status)
+    assert state.error == ""
+    assert state.status.daemon is True
+    assert state.threads == []
+    assert state.selected is None
+
+
+def test_duplicate_backend_errors_are_displayed_once():
+    state = ConversationState()
+    state.apply_snapshot(ConversationSnapshot(status_error="incompatible", thread_error="incompatible"))
+    assert state.error == "incompatible"
+    state.apply_snapshot(ConversationSnapshot(threads=()))
+    assert state.error == "incompatible"
+
+
+@pytest.mark.parametrize("policy,storage_state", [
+    ("encrypted", "ready"), ("encrypted", "locked"),
+    ("plaintext", "ready"), ("none", "disabled"),
+])
+def test_failed_status_preserves_policy_without_claiming_storage_is_locked(policy, storage_state):
+    state = ConversationState()
+    healthy = BackendStatus(
+        daemon=True, map=True, storage_policy=policy, storage_state=storage_state,
+        storage_detail="previous storage detail",
+    )
+    state.apply_snapshot(ConversationSnapshot(status=healthy))
+    for error in ("status timed out", "backend unavailable"):
+        state.apply_snapshot(ConversationSnapshot(status_error=error))
+        state.apply_snapshot(ConversationSnapshot(threads=()))
+        assert state.status.daemon is False
+        assert state.status.map is False
+        assert state.status.storage_policy == policy
+        assert state.status.storage_state == "unavailable"
+        assert state.status.storage_detail == ""
+        assert state.error == error
+    state.apply_snapshot(ConversationSnapshot(status=healthy))
+    assert state.status is healthy
+    assert state.error == ""
 
 
 def test_presentations_can_leave_the_initial_selection_empty() -> None:
@@ -137,6 +193,40 @@ def test_daemon_remembered_roster_skips_client_confirmation() -> None:
 
     assert state.plan_reply("hello", thread_key="group").ready is True
     assert state.confirmed_groups[group.key] == group.confirmation_token
+
+
+@pytest.mark.parametrize("change", [
+    {"recipients": ("alice@example.com", "carol@example.com")},
+    {"roster_warning_id": "new-warning"},
+    {"is_group": False},
+])
+def test_confirming_a_stale_roster_is_blocked_even_if_backend_approved_it(change):
+    state = ConversationState()
+    original = _thread("group", group=True)
+    state.apply_snapshot(ConversationSnapshot(threads=(original,)))
+    displayed = state.plan_reply(" draft ")
+    assert displayed.disposition is ReplyDisposition.CONFIRM_GROUP
+    state.apply_snapshot(ConversationSnapshot(threads=(
+        replace(original, **change, group_confirmed=True),
+    )))
+    plan = state.plan_reply(
+        displayed.body, thread_key=original.key, confirm_group=True,
+        expected_group_token=displayed.expected_group_token,
+    )
+    assert plan.disposition is ReplyDisposition.STALE_GROUP
+    assert plan.ready is False
+    assert "group changed" in plan.disposition.message
+
+
+def test_reordering_displayed_recipients_does_not_invalidate_approval():
+    state = ConversationState()
+    original = _thread("group", group=True)
+    state.apply_snapshot(ConversationSnapshot(threads=(
+        replace(original, recipients=tuple(reversed(original.recipients))),
+    )))
+    assert state.plan_reply(
+        "draft", confirm_group=True, expected_group_token=original.confirmation_token,
+    ).ready
 
 
 def test_group_update_clears_prior_confirmation() -> None:
@@ -230,7 +320,5 @@ def test_shared_snapshot_loader_distinguishes_empty_history_from_failure(status_
     assert calls == ["status", 17]
     assert (snapshot.status is None) == status_fails
     assert snapshot.threads == (None if threads_fail else ())
-    assert snapshot.failures == tuple(
-        message for failed, message in [(status_fails, "status failed"), (threads_fail, "threads failed")]
-        if failed
-    )
+    assert snapshot.status_error == ("status failed" if status_fails else "")
+    assert snapshot.thread_error == ("threads failed" if threads_fail else "")

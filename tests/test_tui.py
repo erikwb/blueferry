@@ -503,6 +503,32 @@ def test_unchanged_poll_does_not_rebuild_the_terminal_view() -> None:
     _run_headless(scenario())
 
 
+def test_textual_reports_storage_unavailable_during_status_failure() -> None:
+    class Backend(_Backend):
+        fail = False
+
+        def status(self):
+            if self.fail:
+                raise BackendError("status timed out")
+            return BackendStatus(daemon=True, storage_policy="none", storage_state="disabled")
+
+    async def scenario() -> None:
+        backend = Backend()
+        state = TuiState(backend)
+        app = BlueFerryApp(state, monitor_factory=lambda: None)
+        async with app.run_test(size=(120, 36)) as pilot:
+            await _wait_for_threads(app, pilot, 2)
+            backend.fail = True
+            await app._apply_snapshot(state.fetch_snapshot())
+            await _wait_for_static_text(app, pilot, "#storage-status", "STORAGE  UNAVAILABLE")
+            assert state.status.storage_policy == "none"
+            backend.fail = False
+            await app._apply_snapshot(state.fetch_snapshot())
+            await _wait_for_static_text(app, pilot, "#storage-status", "STORAGE  DISABLED")
+
+    _run_headless(scenario())
+
+
 def test_textual_warns_once_when_saved_group_roster_changes() -> None:
     async def scenario() -> None:
         backend = _Backend()

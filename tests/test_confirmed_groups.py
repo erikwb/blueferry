@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from blueferry.confirmed_groups import ConfirmedGroupsStore
-from blueferry.threads import group_confirmation_token
+from blueferry.recipients import group_confirmation_token
 
 
 def test_store_remembers_a_roster_across_instances(tmp_path) -> None:

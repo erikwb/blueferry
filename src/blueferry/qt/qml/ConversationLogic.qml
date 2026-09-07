@@ -24,33 +24,18 @@ QtObject {
     }
 
     function threadIsUnread(thread) {
-        if (!thread) return false
-        if (thread.unread === true || thread.unread === false) return thread.unread
-        const messages = thread.messages || []
-        for (let index = 0; index < messages.length; ++index) {
-            if (!messages[index].outgoing && messages[index].read === false) return true
-        }
-        return false
+        return !!thread && thread.unread === true
     }
 
     function groupSignature(thread) {
-        if (!thread || !thread.is_group) return ""
-        const unique = []
-        const recipients = thread.recipients || []
-        for (let index = 0; index < recipients.length; ++index) {
-            const address = String(recipients[index] || "")
-            if (address !== "" && unique.indexOf(address) < 0) unique.push(address)
-        }
-        unique.sort()
-        return [String(thread.roster_warning_id || "")].concat(unique).join("\n")
+        return thread && thread.is_group ? String(thread.confirmation_token || "") : ""
     }
 
     function nextRosterWarning(threads) {
         for (let index = 0; index < threads.length; ++index) {
             const thread = threads[index]
             if (!thread.roster_changed) continue
-            const warningId = thread.roster_warning_id
-                || thread.key + ":" + (thread.unexpected_sender || "unknown")
+            const warningId = thread.roster_warning_key
             if (warnedRosterChanges[warningId] === true) continue
             warnedRosterChanges[warningId] = true
             return thread

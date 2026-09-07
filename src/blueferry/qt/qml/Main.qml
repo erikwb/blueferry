@@ -91,6 +91,8 @@ Kirigami.ApplicationWindow {
 
     function storageStatusText() {
         const status = bridge.status || ({})
+        if (status.daemon !== true)
+            return qsTr("Unavailable")
         if (status.storage_policy === "none")
             return qsTr("Disabled")
         if (status.storage_state === "ready")
