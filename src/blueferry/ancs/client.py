@@ -965,6 +965,13 @@ class AncsClient:
                 "previously authorized ANCS transport stopped responding; "
                 "resetting the LE bearer"
             )
+            # A completed Control Point write followed by silence can mean
+            # BlueZ retained dead CCC registrations despite Notifying=true.
+            # Retire them while ATT is settled and no StartNotify is pending;
+            # doing this from disconnect/partial-subscribe paths is unsafe on
+            # BlueZ 5.87. The next connection must create fresh registrations.
+            if self._notify_started and self._bearer_connected is True and self._bearer_ready:
+                self._stop_bluez_notifications()
             self._mark_transport_failed()
             return False
         self._abandon_request(request)

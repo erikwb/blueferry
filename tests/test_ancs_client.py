@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import struct
 
+import pytest
+
 from blueferry.ancs import client as client_module
 from blueferry.ancs.client import AncsClient
 from blueferry.ancs.constants import (
@@ -746,8 +748,9 @@ def test_partial_start_notify_failure_reuses_live_subscription(monkeypatch) -> N
     assert client.subscribed is True
 
 
-def test_le_reconnect_restores_subscription_without_ccc_rewrite(
-    monkeypatch,
+@pytest.mark.parametrize("stale_registration", [False, True])
+def test_le_reconnect_refreshes_registrations_only_after_a_silent_probe(
+    monkeypatch, stale_registration,
 ) -> None:
     calls = []
     statuses = []
@@ -826,6 +829,16 @@ def test_le_reconnect_restores_subscription_without_ccc_rewrite(
     assert client.subscribed is True
     assert client.authorized is False
     assert client.connected is False
+    if stale_registration:
+        client._request_timed_out()
+        assert calls == [("write", "cp"), ("stop", "ns"), ("stop", "ds")]
+        assert client._owned_notify_paths == set()
+        assert not client.connected
+        client.observe_bearer_state(False)
+        client.observe_bearer_state(True)
+        scheduled[-1][1]()
+        # Even a stale Notifying=true flag must not suppress fresh ownership.
+        assert calls[-3:] == [("start", "ns"), ("start", "ds"), ("write", "cp")]
     _complete_authorization_probe(client)
     assert client.authorized is True
     assert client.connected is True
@@ -1124,11 +1137,13 @@ def test_not_connected_control_point_failure_invalidates_ancs_health(
     assert resets == [True]
 
 
+@pytest.mark.parametrize("bearer_ready", [True, False])
 def test_authorization_timeout_resets_previously_authorized_transport(
-    monkeypatch,
+    monkeypatch, bearer_ready,
 ) -> None:
     scheduled = []
     resets = []
+    retired = []
 
     class _ControlPoint:
         @staticmethod
@@ -1160,8 +1175,11 @@ def test_authorization_timeout_resets_previously_authorized_transport(
     _complete_authorization_probe(client)
     client._authorized = False
     client._queue_authorization_probe()
+    client._bearer_ready = bearer_ready
+    monkeypatch.setattr(client, "_stop_bluez_notifications", lambda: retired.append(True))
     client._request_timed_out()
 
+    assert retired == ([True] if bearer_ready else [])
     assert client.connected is False
     assert client.subscribed is False
     assert client._transport_blocked is True
