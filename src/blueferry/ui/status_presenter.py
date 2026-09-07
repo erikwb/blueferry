@@ -21,7 +21,7 @@ def map_connection_refused_message() -> str:
 
 def connection_subtitle(status: Mapping, *, reachable: bool) -> str:
     if not reachable:
-        return _("Not Reachable — Retrying Automatically")
+        return str(status.get("error") or _("Not Reachable — Retrying Automatically"))
     state = str(status.get("connectivity_state", "ready"))
     labels = {
         "initializing": _("Initializing"),

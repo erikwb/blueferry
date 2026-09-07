@@ -472,10 +472,10 @@ ShellRoot {
     function onFailure(method, requestId, message) {
       if (method === "status") {
         root.statusBusy = false
-        root.markStatusUnavailable("BlueFerry backend is unavailable")
+        root.markStatusUnavailable(message || "BlueFerry backend is unavailable")
       } else if (method === "threads") {
         root.threadsBusy = false
-        root.errorText = "BlueFerry daemon is unavailable"
+        root.errorText = message || "BlueFerry daemon is unavailable"
       } else if (method === "contacts") {
         root.contactsBusy = false
         root.errorText = message || "Contact search failed"

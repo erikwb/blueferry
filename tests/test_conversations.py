@@ -13,6 +13,7 @@ from blueferry.conversation_state import (  # noqa: E402
     ConversationState,
 )
 from blueferry.models import BackendStatus, Thread, ThreadMessage  # noqa: E402
+from blueferry.protocol import backend_compatibility_error  # noqa: E402
 from blueferry.ui import conversations  # noqa: E402
 
 
@@ -253,6 +254,7 @@ def test_map_refusal_reveals_prominent_message_banner() -> None:
     page = SimpleNamespace(
         _map_refused_banner=banner,
         _state=ConversationState(select_first=False),
+        _update_backend_error_banner=lambda: None,
     )
 
     result = conversations.ConversationsPage._apply_status(
@@ -265,6 +267,30 @@ def test_map_refusal_reveals_prominent_message_banner() -> None:
 
     assert result is False
     assert banner.revealed is True
+
+
+def test_backend_error_remains_visible_until_both_refreshes_recover():
+    from unittest.mock import Mock
+
+    message = backend_compatibility_error({})
+    page = Mock(
+        _state=ConversationState(), _thread_error="", _status_error="",
+    )
+    adjustment = page._msg_scroll.get_vadjustment.return_value
+    adjustment.get_value.return_value = 0
+    adjustment.get_upper.return_value = 0
+    adjustment.get_page_size.return_value = 0
+    page._update_backend_error_banner = lambda: (
+        conversations.ConversationsPage._update_backend_error_banner(page)
+    )
+    conversations.ConversationsPage._reload_failed(page, message)
+    conversations.ConversationsPage._status_failed(page, message)
+    page._backend_error_banner.set_title.assert_called_with(message)
+    page._backend_error_banner.set_revealed.assert_called_with(True)
+    conversations.ConversationsPage._apply_status(page, BackendStatus(daemon=True))
+    page._backend_error_banner.set_revealed.assert_called_with(True)
+    conversations.ConversationsPage._apply_threads(page, [])
+    page._backend_error_banner.set_revealed.assert_called_with(False)
 
 
 def test_gtk_message_composer_sends_on_enter_and_keeps_shift_enter() -> None:
