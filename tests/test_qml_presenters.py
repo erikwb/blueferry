@@ -1143,7 +1143,11 @@ def test_quickshell_storage_cancel_keeps_the_status_binding(qml_engine, quickshe
 
 
 @pytest.mark.private_dbus
-def test_quickshell_replies_use_the_saved_members_without_a_checkbox(tmp_path):
+@pytest.mark.parametrize("late_read", ["success", "failure"])
+@pytest.mark.parametrize("late_after_refresh", [False, True])
+def test_quickshell_replies_use_the_saved_members_without_a_checkbox(
+    tmp_path, late_read, late_after_refresh,
+):
     """Exercise the real shell with both transports replaced before loading."""
     import shutil
     import subprocess
@@ -1171,10 +1175,15 @@ Item {
     (tmp_path / "BackendBridge.qml").write_text('''import QtQuick
 Item {
   property var calls: []
+  property int nextId: 1
   signal response(string method, int requestId, var result)
   signal failure(string method, int requestId, string message)
   signal eventReceived(string name, var data)
-  function request(method, args) { calls.push({method: method, args: args}); }
+  function request(method, args) {
+    const id = nextId++;
+    calls.push({id: id, method: method, args: args});
+    return id;
+  }
   function requestLatest(method, args) {}
   function cancelLatest(method) {}
 }
@@ -1187,7 +1196,9 @@ Item {
     onTriggered: {
       function check(value, message) { if (!value) throw new Error(message); }
       function sends() { return backendBridge.calls.filter(call => call.method === "send_to_thread"); }
+      function latestRead() { return backendBridge.calls.filter(call => call.method === "threads").slice(-1)[0].id; }
       try {
+        setupController.configured = true;
         const recipients = ["alice@example.com", "bob@example.com"];
         const pending = {
           key: "crew", name: "Crew", group_origin: "named", is_group: true,
@@ -1199,10 +1210,17 @@ Item {
         root.selectedThreadKey = pending.key;
         composer.text = "hello";
         check(!sendMessageButton.enabled, "unconfigured group allowed a reply");
+        root.reload();
+        const initialRead = latestRead();
 
         const saved = Object.assign({}, pending, {reply_ready: true, participants_required: false});
-        root.threads = [saved];
-        check(sendMessageButton.enabled, "saved members still require a checkbox");
+        root.groupParticipantsBusy = true;
+        backendBridge.response("set_group_participants", 1, saved);
+        check(sendMessageButton.enabled, "saving members did not immediately enable replies");
+        check(latestRead() !== initialRead, "save did not replace the pending history read");
+        backendBridge.response("threads", initialRead, [pending]);
+        check(sendMessageButton.enabled, "old read undid the first members save");
+        backendBridge.response("threads", latestRead(), [saved]);
         sendMessageButton.clicked();
         check(sends().length === 1 && sends()[0].args.confirm_group === true,
           "Send did not approve the saved group");
@@ -1214,34 +1232,81 @@ Item {
         check(composer.text === "", "successful reply did not clear draft");
 
         composer.text = "next reply";
+        const oldRead = latestRead();
+        const reviewed = Object.assign({}, saved, {
+          recipients: ["alice@example.com", "carol@example.com"],
+          confirmation_token: "\nalice@example.com\ncarol@example.com"
+        });
         root.groupParticipantsBusy = true;
         check(!sendMessageButton.enabled, "reply allowed while members were being saved");
-        backendBridge.response("set_group_participants", 2, saved);
+        backendBridge.response("set_group_participants", 2, reviewed);
         check(sendMessageButton.enabled, "saved members did not restore Send");
+        check(root.selectedThread().recipients.join() === reviewed.recipients.join(),
+          "saved members did not replace the displayed recipients immediately");
+        sendMessageButton.clicked();
+        check(sends()[1].args.expected_group_token === reviewed.confirmation_token,
+          "immediate reply used the old roster token");
 
-        const changed = Object.assign({}, saved, {
+        const freshRead = latestRead();
+        check(freshRead !== oldRead, "save did not request a fresh snapshot");
+        const refreshed = Object.assign({}, reviewed, {starred: true});
+        if (LATE_AFTER_REFRESH) backendBridge.response("threads", freshRead, [refreshed]);
+        if (LATE_READ_FAILED) backendBridge.failure("threads", oldRead, "obsolete failure");
+        else backendBridge.response("threads", oldRead, [saved]);
+        check(root.selectedThread().confirmation_token === reviewed.confirmation_token,
+          "late history replaced the saved roster");
+        check(root.errorText === "", "obsolete read failure was displayed");
+        check(root.threadsBusy === !LATE_AFTER_REFRESH,
+          "obsolete read changed the current request's busy state");
+        if (!LATE_AFTER_REFRESH) backendBridge.response("threads", freshRead, [refreshed]);
+        check(root.selectedThread().starred === true, "fresh snapshot was ignored");
+        backendBridge.response("send_to_thread", 3, "transfer");
+
+        backendBridge.failure("threads", latestRead(), "current read failed");
+        check(!root.threadsBusy && root.errorText === "current read failed", "current failure was ignored");
+        check(root.selectedThread().confirmation_token === reviewed.confirmation_token,
+          "failed refresh erased saved members");
+        root.reload();
+        backendBridge.response("threads", latestRead(), [reviewed]);
+        check(root.errorText === "", "current read did not recover");
+
+        const changed = Object.assign({}, reviewed, {
           reply_ready: false, participants_required: true, roster_changed: true,
           confirmation_token: "changed\nalice@example.com\ncarol@example.com"
         });
         root.threads = [changed];
+        composer.text = "after roster change";
         check(!sendMessageButton.enabled, "roster needing review allowed a reply");
-        const reviewed = Object.assign({}, changed, {
-          recipients: ["alice@example.com", "carol@example.com"],
+        const resolved = Object.assign({}, changed, {
           reply_ready: true, participants_required: false, roster_changed: false
         });
-        root.threads = [reviewed];
+        root.groupParticipantsBusy = true;
+        backendBridge.response("set_group_participants", 4, resolved);
         check(sendMessageButton.enabled, "reviewed roster required another confirmation");
         sendMessageButton.clicked();
-        check(sends()[1].args.expected_group_token === reviewed.confirmation_token,
+        check(sends()[2].args.expected_group_token === resolved.confirmation_token,
           "reply reused the previous roster approval");
-        backendBridge.response("send_to_thread", 3, "transfer");
+        backendBridge.response("send_to_thread", 5, "transfer");
 
         root.threads = [Object.assign({}, saved, {is_group: false, recipients: ["alice@example.com"]})];
         composer.text = "direct reply";
         check(sendMessageButton.enabled, "direct reply disabled");
         sendMessageButton.clicked();
-        check(sends()[2].args.confirm_group === false && sends()[2].args.expected_group_token === "",
+        check(sends()[3].args.confirm_group === false && sends()[3].args.expected_group_token === "",
           "direct reply sent as group");
+
+        const interruptedRead = latestRead();
+        backendBridge.failure("", 0, "bridge restarted");
+        check(!root.threadsBusy, "bridge failure retained the active read");
+        backendBridge.response("threads", interruptedRead, [saved]);
+        check(!root.selectedThread().is_group, "read from before restart was accepted");
+        root.reload();
+        const beforeReset = latestRead();
+        setupController.configured = false;
+        setupController.historyReset();
+        backendBridge.response("threads", beforeReset, [saved]);
+        backendBridge.response("threads", 0, [saved]);
+        check(!root.threadsBusy && root.threads.length === 0, "old read restored cleared history");
         console.log("BLUEFERRY_GROUP_REPLY_OK");
       } catch (error) {
         console.error(error);
@@ -1249,7 +1314,9 @@ Item {
       Qt.quit();
     }
   }
-'''
+'''.replace("LATE_AFTER_REFRESH", "true" if late_after_refresh else "false").replace(
+        "LATE_READ_FAILED", "true" if late_read == "failure" else "false"
+    )
     config.write_text(source[:source.rfind("}")] + probe + "}\n")
     environment = dict(os.environ, QT_QPA_PLATFORM="offscreen", NO_AT_BRIDGE="1")
     environment.pop("WAYLAND_DISPLAY", None)

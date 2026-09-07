@@ -26,7 +26,8 @@ ShellRoot {
   property bool storageUnlockAttempted: false
   property string statusErrorText: ""
   property bool statusBusy: false
-  property bool threadsBusy: false
+  property int threadsRequestId: 0
+  readonly property bool threadsBusy: threadsRequestId !== 0
   property bool contactsBusy: false
   property bool sendBusy: false
   property bool newMessageSendBusy: false
@@ -58,8 +59,7 @@ ShellRoot {
   function reload() {
     if (!setupController.configured) return
     if (!threadsBusy) {
-      threadsBusy = true
-      backendBridge.request("threads", {limit: 200})
+      threadsRequestId = backendBridge.request("threads", {limit: 200})
     }
     if (!statusBusy) {
       statusBusy = true
@@ -172,6 +172,7 @@ ShellRoot {
     }
     onReloadRequested: root.reload()
     onHistoryReset: {
+      root.threadsRequestId = 0
       root.threads = []
       root.selectedThreadKey = ""
       root.backendStatus = ({})
@@ -220,7 +221,8 @@ ShellRoot {
         root.statusErrorText = ""
         root.maybeUnlockStorage()
       } else if (method === "threads") {
-        root.threadsBusy = false
+        if (!root.threadsBusy || requestId !== root.threadsRequestId) return
+        root.threadsRequestId = 0
         root.threads = Array.isArray(result) ? result : []
         if (root.pendingThreadKey !== "") {
           root.selectedThreadKey = root.pendingThreadKey
@@ -248,6 +250,11 @@ ShellRoot {
         newMessageBody.text = ""
         root.reload()
       } else if (method === "set_group_participants") {
+        // Reads started before this save completed may still contain the old
+        // roster. Apply the authoritative result before enabling replies, then
+        // request a fresh snapshot without accepting those earlier reads.
+        root.threadsRequestId = 0
+        root.threads = root.threads.map(thread => thread.key === result.key ? result : thread)
         root.groupParticipantsBusy = false
         groupParticipantsPopup.close()
         root.reload()
@@ -289,7 +296,8 @@ ShellRoot {
         root.statusBusy = false
         root.markStatusUnavailable(message || "BlueFerry backend is unavailable")
       } else if (method === "threads") {
-        root.threadsBusy = false
+        if (!root.threadsBusy || requestId !== root.threadsRequestId) return
+        root.threadsRequestId = 0
         root.errorText = message || "BlueFerry daemon is unavailable"
       } else if (method === "contacts") {
         root.contactsBusy = false
@@ -325,7 +333,7 @@ ShellRoot {
         root.errorText = message
       } else {
         root.statusBusy = false
-        root.threadsBusy = false
+        root.threadsRequestId = 0
         root.contactsBusy = false
         root.sendBusy = false
         root.newMessageSendBusy = false

@@ -115,6 +115,9 @@ Quickshell shows group recipients above the conversation and treats Send as
 approval of a reply-ready roster, including a saved named-group members list.
 It sends the displayed roster token so the backend can reject stale routes;
 missing or changed members still require review before replying.
+Saving members replaces the displayed thread before replies are enabled.
+Conversation reads carry request IDs; a successful save invalidates older
+reads and starts a fresh snapshot, so delayed results cannot undo the edit.
 
 `Thread` derives unread counts, group approval tokens, and roster-warning keys.
 Both Qt and the Quickshell bridge serialize these fields for QML, so JavaScript
