@@ -88,6 +88,16 @@ device selection and busy state, storage-status recovery, and confirmation
 across refreshes or settings closure. Binding warnings fail these tests;
 pairing and storage actions must reach the recorder only after confirmation.
 
+Quickshell setup tests load the real controller without a transport and inject
+helper replies. They cover first install, adapter changes, cancellation, failed
+and malformed results, confirmation lifetime, replacement snapshots, and late
+configuration reads after pairing/unpairing. The settings page uses that inert
+controller; palette tests load only `ThemePalette.qml`. A private-bus test runs
+the real Quickshell transport with temporary Python helpers to exercise streamed
+prompts, stdin, exit status, cancellation, and a missing executable. It skips
+when Quickshell is unavailable. Visual previews replace both transports and
+the host theme loader before loading the shell; never preview with live helpers.
+
 The Arch package check runs Ruff over the complete source and test tree,
 Bandit over the Python security boundaries, and type-checks every backend
 module with mypy. Toolkit clients remain outside that

@@ -9,7 +9,7 @@ Rectangle {
   required property bool showSender
   required property var ferryTheme
 
-  readonly property int bubblePadding: ferryTheme.scaled(12)
+  readonly property int bubblePadding: ferryTheme.scaled(10)
   readonly property int contentSpacing: ferryTheme.scaled(5)
   readonly property real maximumHeight: Math.max(
     0, availableHeight - ferryTheme.scaled(3))
@@ -60,9 +60,11 @@ Rectangle {
   visible: canRenderBody
   clip: true
   color: message.outgoing
-    ? ferryTheme.selectedSurface : ferryTheme.raisedSurface
+    ? ferryTheme.outgoingBubble : ferryTheme.control
   border.color: message.outgoing ? "transparent" : ferryTheme.divider
   radius: ferryTheme.controlRadius
+
+  readonly property color messageText: message.outgoing ? ferryTheme.outgoingText : ferryTheme.windowText
 
   TextMetrics {
     id: senderMetrics
@@ -102,7 +104,7 @@ Rectangle {
       visible: root.showSenderChrome
       text: root.message.outgoing ? "You" : (root.message.sender || "")
       textFormat: Text.PlainText
-      color: root.ferryTheme.windowText
+      color: root.messageText
       font.family: root.ferryTheme.fontFamily
       font.pixelSize: root.ferryTheme.captionSize
       font.bold: true
@@ -115,7 +117,7 @@ Rectangle {
       height: root.renderedBodyHeight
       text: root.message.body
       textFormat: TextEdit.PlainText
-      color: root.ferryTheme.windowText
+      color: root.messageText
       selectionColor: root.ferryTheme.accent
       selectedTextColor: root.ferryTheme.highlightedText
       font.family: root.ferryTheme.fontFamily
@@ -146,7 +148,7 @@ Rectangle {
           anchors.right: parent.right
           anchors.bottom: parent.bottom
           text: "…"
-          color: root.ferryTheme.windowText
+          color: root.messageText
           font: messageBody.font
         }
       }
@@ -160,9 +162,7 @@ Rectangle {
       text: root.message.display_timestamp || ""
       textFormat: Text.PlainText
       color: root.message.outgoing
-        ? Qt.rgba(root.ferryTheme.windowText.r,
-                  root.ferryTheme.windowText.g,
-                  root.ferryTheme.windowText.b, 0.62)
+        ? root.ferryTheme.outgoingMuted
         : root.ferryTheme.muted
       font.family: root.ferryTheme.fontFamily
       font.pixelSize: root.ferryTheme.captionSize
