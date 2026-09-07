@@ -237,8 +237,18 @@ managers; distro systemd hooks reload changed user-unit metadata.
   retain a user-supplied route, and it requires all observed senders to remain
   in that route. A sender outside an established route produces a distinct
   roster-change warning and disables replies. Routes are local metadata and do
-  not modify iPhone groups; named groups with the same name necessarily share
-  one key because ANCS provides no conversation identifier.
+  not modify iPhone groups; named groups with exactly the same name still share
+  one key because ANCS provides no conversation identifier. The named-group
+  routing module preserves spelling in versioned keys (NFC with surrounding
+  whitespace trimmed), so case, internal whitespace, and compatibility
+  characters no longer cause additional collisions.
+- Retained named-group history is re-keyed in the conversation projection;
+  reading it never rewrites the database. Old name-folded keys remain aliases
+  for stars and operations only when the projected history identifies a single
+  spelling. Multiple spellings disable both that alias and any old shared
+  roster until participants are supplied for each conversation. New roster
+  records use the versioned key, and old send approvals require a fresh
+  confirmation. A roster edit does not change the conversation key.
 - Message history and the contact cache are user-private (`0700` directories,
   `0600` SQLite files). Their sensitive records are authenticated and encrypted
   with AES-256-GCM under one random application key held by the desktop Secret

@@ -222,7 +222,8 @@ Messages ANCS notification supplies the missing display information:
   shaped like `To you & participant` (with further names separated by commas
   or ampersands).
 - For the observed named group, the title is the sender and the subtitle is the
-  group name. This identifies the conversation but contains no member roster.
+  group name. This is display metadata, not a unique conversation identifier,
+  and contains no member roster.
 
 BlueFerry correlates these records only within a bounded time window, refuses
 ambiguous repeated-body matches, and requires every name to resolve to exactly
@@ -232,10 +233,13 @@ when a previously unseen sender appears, but iOS provides no event when a
 silent member is added or removed, so the user must maintain that roster. This
 local roster affects only BlueFerry's reply routing and never modifies the
 Messages group itself. Because iOS supplies a group name but no conversation
-identifier, distinct named groups with the same normalized name cannot be
-distinguished and are projected as one local thread. This is a conservative
-observation-based heuristic, not a general iMessage group protocol;
-alternative iOS notification formats remain uncharacterized.
+identifier, distinct named groups with exactly the same name cannot be
+distinguished and are projected as one local thread. Local keys preserve case,
+internal whitespace, and compatibility characters: `Family` and `FAMILY` are
+separate conversations. Only canonical Unicode equivalence (NFC) and surrounding
+whitespace are normalized. This is an observation-based heuristic, not a general
+iMessage group protocol; alternative iOS notification formats remain
+uncharacterized.
 
 ## PBAP behavior
 

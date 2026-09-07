@@ -208,9 +208,9 @@ def build_threads(events: list[dict], resolver=None) -> list[dict]:
         if thread is None:
             thread = {
                 "key": key,
-                "aliases": [
+                "aliases": list(event.get("group_aliases", [])) if is_group else [
                     f"address:{value}" for value in _contact_addresses(resolver, address)
-                ] if not is_group else [],
+                ],
                 "name": _thread_name(event, address, resolver),
                 "is_group": is_group,
                 "members": [
