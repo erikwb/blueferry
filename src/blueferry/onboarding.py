@@ -13,9 +13,9 @@ from blueferry.setup_verification import remaining_iphone_setup_tasks
 
 ANCS_REPAIR_HINT = _(
     "FYI: If ANCS remains unavailable, BlueZ may be retaining stale "
-    "Bluetooth state. Before re-pairing, run sudo systemctl restart "
-    "bluetooth.service, then forget this computer on the iPhone and "
-    "pair again. This briefly disconnects all Bluetooth devices."
+    "Bluetooth state. Try running sudo systemctl restart bluetooth.service, "
+    "then wait for BlueFerry to reconnect. This briefly disconnects all "
+    "Bluetooth devices."
 )
 ANCS_REPAIR_HINT_CLI = _(
     "FYI: If ANCS remains unavailable after setup, BlueZ may be "

@@ -21,13 +21,13 @@ def test_verified_cli_setup_omits_the_iphone_section(capsys) -> None:
     assert capsys.readouterr().out == ""
 
 
-def test_cli_ancs_repair_hint_restarts_bluez_before_repairing(capsys) -> None:
+def test_cli_ancs_repair_hint_recommends_bluez_restart(capsys) -> None:
     _print_ancs_repair_hint()
 
     output = capsys.readouterr().out
     assert "If ANCS remains unavailable after setup" in output
     assert "sudo systemctl restart bluetooth.service" in output
-    assert "forget this computer on the iPhone and pair again" in output
+    assert "wait for BlueFerry to reconnect" in output
     assert "briefly disconnects all Bluetooth devices" in output
 
 
