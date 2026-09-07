@@ -41,18 +41,6 @@ def _seen_at(event: dict) -> datetime | None:
         return None
 
 
-def _safe_address(event: dict) -> str | None:
-    return safe_event_address(event)
-
-
-def _body_matches(map_body: str, ancs_body: str) -> bool:
-    if map_body == ancs_body:
-        return True
-    # ANCS requests at most 256 characters.  A longer MAP body can therefore
-    # match its exact ANCS prefix, but short partial strings never do.
-    return len(ancs_body) == 256 and map_body.startswith(ancs_body)
-
-
 def _unique_names(names: list[str]) -> list[str]:
     by_folded: dict[str, str] = {}
     for raw in names:
@@ -300,7 +288,7 @@ def correlate_group_events(events: list[dict], resolver=None) -> list[dict]:
         if not str(event.get("kind") or "").startswith("sms_"):
             continue
         name = str(event.get("contact_name") or "").strip()
-        address = _safe_address(event)
+        address = safe_event_address(event)
         if name and address:
             addresses_by_name.setdefault(name.casefold(), set()).add(address)
 
@@ -360,7 +348,7 @@ def correlate_group_events(events: list[dict], resolver=None) -> list[dict]:
             sms.setdefault(CORRELATED_ANCS_ROW_IDS_FIELD, []).append(
                 source_row_id
             )
-        sender_address = _safe_address(sms)
+        sender_address = safe_event_address(sms)
         if sender_name_verified and sender_address:
             addresses_by_name.setdefault(sender_title.casefold(), set()).add(
                 sender_address
