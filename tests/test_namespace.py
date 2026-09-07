@@ -193,17 +193,10 @@ def test_gui_pairing_requires_confirmation_before_replacing_saved_target() -> No
 
 def test_capability_checks_do_not_disable_pairing_buttons() -> None:
     gtk = (ROOT / "src/blueferry/ui/status.py").read_text()
-    qt = (ROOT / "src/blueferry/qt/qml/Main.qml").read_text()
     quickshell = (ROOT / "data/quickshell/shell.qml").read_text()
 
     assert "self._pair_button.set_sensitive(not busy and bool(selected))" in gtk
-    assert "root.bridge.compatibility.pairing_ready" not in qt
-    assert "root.bridge.compatibility.messages_supported" not in qt.split(
-        'text: iphonePage.device !== null', 1
-    )[1].split("onClicked:", 1)[0]
-    assert "root.bridge.compatibilityLoaded" in qt.split(
-        'text: iphonePage.device !== null', 1
-    )[1].split("onClicked:", 1)[0]
+    # Qt uses behavioral checks against the loaded settings page.
     assert "root.pairingReady" not in quickshell.split(
         'text: pairProcess.running ? "Pairing…"', 1
     )[1].split("onClicked:", 1)[0]
@@ -269,8 +262,8 @@ def test_remote_qml_text_is_rendered_as_plain_text() -> None:
     assert "text: deviceCombo.displayText" not in qt_qml
     assert (
         "text: deviceOption.modelData.display_name\n"
-        "                                textFormat: Text.PlainText"
-    ) in qt_qml
+        "textFormat: Text.PlainText"
+    ) in "\n".join(line.strip() for line in qt_qml.splitlines())
     assert (
         "text: threadDelegate.modelData.name\n"
         "                        textFormat: Text.PlainText"

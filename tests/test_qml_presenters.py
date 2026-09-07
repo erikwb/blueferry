@@ -401,39 +401,227 @@ def _qml_functions(source: str, names: tuple[str, ...]) -> str:
     return "\n".join(functions)
 
 
+@pytest.fixture
+def settings_window(qml_engine):
+    """Load an offscreen window with a recorder that has no backend access."""
+    component = QQmlComponent(qml_engine)
+    component.setData(b'''
+        import QtQuick
+        QtObject {
+            property var calls: []
+            property var status: ({})
+            property var threads: []
+            property var devices: []
+            property var contactResults: []
+            property var compatibility: ({})
+            property var onboardingCompatibility: compatibility
+            property bool compatibilityLoaded: false
+            property bool bluetoothActive: false
+            property bool busy: false
+            property bool configured: false
+            property bool targetSaved: false
+            property bool setupLoaded: false
+            property string configuredMac: ""
+            property string onboardingStage: "loading"
+            property string errorText: ""
+            property string pairingIssueReport: ""
+            property string version: "test"
+            signal pairingConfirmationRequested(string passkey)
+            signal messageOpenRequested(string handle)
+            signal messageSendSucceeded(string recipient, string body)
+            signal threadSendSucceeded(string key, string body)
+            signal groupConfirmationRequested(string key, string body, string recipients)
+            function record(method, args) { calls = calls.concat([{method: method, args: args}]); }
+            function refresh() { record("refresh", []); }
+            function findContacts(query) { record("findContacts", [query]); }
+            function selectAdapter(adapter) { record("selectAdapter", [adapter]); }
+            function completePairing(mac, compatibility, explicit) {
+                record("completePairing", [mac, compatibility, explicit]);
+            }
+            function replaceAndPair(previousMac, mac, compatibility, explicit) {
+                record("replaceAndPair", [previousMac, mac, compatibility, explicit]);
+            }
+            function answerPairingConfirmation(approved) { record("answerPairingConfirmation", [approved]); }
+            function setStoragePolicy(policy) { record("setStoragePolicy", [policy]); }
+            function forgetDevice(mac) { record("forgetDevice", [mac]); }
+            function activateBluetooth() { record("activateBluetooth", []); }
+            function filePairingIssue() { record("filePairingIssue", []); }
+        }
+    ''', QUrl())
+    assert not component.isError(), [error.toString() for error in component.errors()]
+    bridge = component.create()
+    assert bridge is not None
+    warnings = []
+
+    def collect_warnings(errors):
+        warnings.extend(error.toString() for error in errors)
+
+    qml_engine.warnings.connect(collect_warnings)
+    window_component = _component(qml_engine, "src/blueferry/qt/qml/Main.qml")
+    window = window_component.createWithInitialProperties({"bridge": bridge})
+    assert window is not None, [error.toString() for error in window_component.errors()]
+    qml_engine.globalObject().setProperty("testBridge", qml_engine.newQObject(bridge))
+    qml_engine.globalObject().setProperty("testWindow", qml_engine.newQObject(window))
+    QGuiApplication.processEvents()
+    yield window, bridge
+    window.deleteLater()
+    # Destroy the QML tree before its required bridge, including deferred loaders.
+    from PySide6.QtCore import QCoreApplication, QEvent
+
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+    bridge.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+    qml_engine.warnings.disconnect(collect_warnings)
+    assert not warnings, "\n".join(warnings)
+
+
+def _evaluate(engine, script):
+    result = engine.evaluate(script)
+    assert not result.isError(), result.toString()
+    return result.toVariant()
+
+
+def _settings_object(window, name):
+    obj = window.findChild(QObject, name)
+    assert obj is not None, name
+    return obj
+
+
 @pytest.mark.parametrize("policy,storage_state,label", [
     ("encrypted", "locked", "Locked"), ("plaintext", "ready", "Available"),
     ("none", "disabled", "Disabled"),
 ])
-def test_qt_storage_label_reports_unavailability_after_failed_reads(qml_engine, policy, storage_state, label):
-    import json
-
+def test_qt_storage_label_reports_unavailability_after_failed_reads(settings_window, policy, storage_state, label):
     from blueferry.conversation_state import ConversationSnapshot, ConversationState
     from blueferry.models import BackendStatus
 
+    window, bridge = settings_window
+    status_label = _settings_object(window, "storageStatusLabel")
     state = ConversationState()
     healthy = BackendStatus(daemon=True, storage_policy=policy, storage_state=storage_state)
-    statuses = []
+    labels = []
     for snapshot in (
         ConversationSnapshot(status=healthy),
         ConversationSnapshot(status_error="status timed out"),
         ConversationSnapshot(status=healthy),
     ):
         state.apply_snapshot(snapshot)
-        statuses.append(state.status.to_dict())
-    function = _qml_functions((ROOT / "src/blueferry/qt/qml/Main.qml").read_text(), ("storageStatusText",))
-    result = qml_engine.evaluate('''(function() {
-        const statuses = ''' + json.dumps(statuses) + ''';
-        const bridge = {};
-        function qsTr(text) { return text; }
-        ''' + function + '''
-        return JSON.stringify(statuses.map(function(status) {
-            bridge.status = status;
-            return storageStatusText();
-        }));
-    })()''')
-    assert not result.isError(), result.toString()
-    assert json.loads(result.toString()) == [label, "Unavailable", label]
+        bridge.setProperty("status", state.status.to_dict())
+        labels.append(status_label.property("text"))
+    assert labels == [label, "Unavailable", label]
+
+
+def test_phone_settings_first_run_and_reopening_keep_the_page_alive(qml_engine, settings_window):
+    window, bridge = settings_window
+    assert window.property("iphoneSettingsPage") is None
+    assert _evaluate(qml_engine, "testBridge.calls") == []
+    bridge.setProperty("setupLoaded", True)
+    QGuiApplication.processEvents()
+    page = window.property("iphoneSettingsPage")
+    assert page is not None
+    assert page.objectName() == "phoneSettingsPage"
+    assert window.property("firstRunRedirected") is True
+    for _ in range(3):
+        assert QMetaObject.invokeMethod(page, "closeRequested")
+        QGuiApplication.processEvents()
+        assert window.property("iphoneSettingsPage") is None
+        assert QMetaObject.invokeMethod(window, "openPhoneSettings")
+        QGuiApplication.processEvents()
+        assert window.property("iphoneSettingsPage") == page
+    assert _evaluate(qml_engine, "testBridge.calls") == []
+
+
+def test_phone_settings_pairing_uses_loaded_selection_and_busy_state(qml_engine, settings_window):
+    window, bridge = settings_window
+    bridge.setProperty("setupLoaded", True)
+    button = _settings_object(window, "pairPhoneButton")
+    assert not button.property("enabled")
+    bridge.setProperty("devices", [{"mac": "new-phone", "display_name": "Phone", "paired": False}])
+    assert not button.property("enabled")
+    bridge.setProperty("compatibility", {
+        "available": False, "hardware_supported": False,
+        "messages_supported": False, "notifications_supported": False,
+        "adapter": "hci1", "adapters": [
+            {"name": "hci0", "label": "First"}, {"name": "hci1", "label": "Second"},
+        ],
+    })
+    bridge.setProperty("compatibilityLoaded", True)
+    assert button.property("enabled")
+    assert _settings_object(window, "adapterSelector").property("currentIndex") == 1
+    bridge.setProperty("busy", True)
+    assert not button.property("enabled")
+    bridge.setProperty("busy", False)
+    assert QMetaObject.invokeMethod(button, "clicked")
+    assert _evaluate(qml_engine, "testBridge.calls") == [
+        {"method": "completePairing", "args": ["new-phone", True, False]},
+    ]
+    bridge.setProperty("devices", [])
+    assert not button.property("enabled")
+
+
+@pytest.mark.parametrize("confirm", [False, True])
+def test_phone_replacement_keeps_the_confirmed_targets_across_refresh(qml_engine, settings_window, confirm):
+    window, bridge = settings_window
+    bridge.setProperty("setupLoaded", True)
+    bridge.setProperty("targetSaved", True)
+    bridge.setProperty("configuredMac", "old-phone")
+    bridge.setProperty("compatibilityLoaded", True)
+    bridge.setProperty("devices", [{"mac": "new-phone", "display_name": "Phone", "paired": False}])
+    assert QMetaObject.invokeMethod(_settings_object(window, "pairPhoneButton"), "clicked")
+    dialog = _settings_object(window, "replaceTargetDialog")
+    assert dialog.property("visible")
+    assert _evaluate(qml_engine, "testBridge.calls") == []
+    bridge.setProperty("configuredMac", "changed-saved-phone")
+    bridge.setProperty("devices", [{"mac": "changed-selection", "display_name": "Other", "paired": False}])
+    qml_engine.globalObject().setProperty("testDialog", qml_engine.newQObject(dialog))
+    if confirm:
+        _evaluate(qml_engine, "testDialog.customFooterActions[0].trigger()")
+        assert _evaluate(qml_engine, "testBridge.calls") == [
+            {"method": "replaceAndPair", "args": ["old-phone", "new-phone", True, False]},
+        ]
+    else:
+        assert QMetaObject.invokeMethod(dialog, "close")
+        assert _evaluate(qml_engine, "testBridge.calls") == []
+
+
+@pytest.mark.parametrize("confirm", [False, True])
+def test_storage_change_waits_for_confirmation(qml_engine, settings_window, confirm):
+    window, bridge = settings_window
+    bridge.setProperty("status", {"daemon": True, "storage_policy": "encrypted", "storage_state": "ready"})
+    bridge.setProperty("setupLoaded", True)
+    selector = _settings_object(window, "storagePolicySelector")
+    selector.setProperty("currentIndex", 2)
+    qml_engine.globalObject().setProperty("testSelector", qml_engine.newQObject(selector))
+    _evaluate(qml_engine, "testSelector.activated(2)")
+    dialog = _settings_object(window, "storageChangeDialog")
+    assert dialog.property("visible")
+    assert _evaluate(qml_engine, "testBridge.calls") == []
+    qml_engine.globalObject().setProperty("testDialog", qml_engine.newQObject(dialog))
+    if confirm:
+        _evaluate(qml_engine, "testDialog.customFooterActions[0].trigger()")
+    else:
+        assert QMetaObject.invokeMethod(dialog, "close")
+    calls = _evaluate(qml_engine, "testBridge.calls")
+    changes = [call for call in calls if call["method"] == "setStoragePolicy"]
+    assert changes == ([{"method": "setStoragePolicy", "args": ["none"]}] if confirm else [])
+
+
+@pytest.mark.parametrize("approve", [False, True])
+def test_pairing_confirmation_remains_available_after_settings_close(qml_engine, settings_window, approve):
+    window, bridge = settings_window
+    bridge.setProperty("setupLoaded", True)
+    assert QMetaObject.invokeMethod(window, "closePhoneSettings")
+    assert window.property("iphoneSettingsPage") is None
+    _evaluate(qml_engine, 'testBridge.pairingConfirmationRequested("123456")')
+    dialog = _settings_object(window, "pairingConfirmationDialog")
+    assert dialog.property("visible")
+    assert "123456" in dialog.property("subtitle")
+    assert _evaluate(qml_engine, "testBridge.calls") == []
+    qml_engine.globalObject().setProperty("testDialog", qml_engine.newQObject(dialog))
+    _evaluate(qml_engine, f"testDialog.customFooterActions[{int(approve)}].trigger()")
+    assert _evaluate(qml_engine, "testBridge.calls") == [
+        {"method": "answerPairingConfirmation", "args": [approve]},
+    ]
 
 
 @pytest.mark.parametrize("relative_path", [
