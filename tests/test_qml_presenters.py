@@ -1002,8 +1002,24 @@ def test_quickshell_theme_keeps_blue_messages_and_opaque_window(qml_engine, colo
     theme.deleteLater()
 
 
+@pytest.fixture
+def quickshell_environment(tmp_path):
+    # Non-login builders have no /run/user/<uid>. Quickshell needs a writable
+    # runtime directory even with the offscreen platform and a private bus.
+    runtime = tmp_path / "runtime"
+    runtime.mkdir(mode=0o700)
+    environment = dict(
+        os.environ, QT_QPA_PLATFORM="offscreen", NO_AT_BRIDGE="1",
+        XDG_RUNTIME_DIR=str(runtime),
+    )
+    environment.pop("WAYLAND_DISPLAY", None)
+    return environment
+
+
 @pytest.mark.private_dbus
-def test_quickshell_setup_transport_streams_cancels_and_times_out(tmp_path):
+def test_quickshell_setup_transport_streams_cancels_and_times_out(
+    tmp_path, quickshell_environment,
+):
     """Run actual Quickshell IO with inert Python children on the private bus."""
     import json
     import shutil
@@ -1092,10 +1108,8 @@ ShellRoot {
     ).replace("MISSING_COMMAND", json.dumps(missing))
     config = tmp_path / "shell.qml"
     config.write_text(source)
-    environment = dict(os.environ, QT_QPA_PLATFORM="offscreen", NO_AT_BRIDGE="1")
-    environment.pop("WAYLAND_DISPLAY", None)
     result = subprocess.run(
-        [executable, "--path", str(config)], env=environment,
+        [executable, "--path", str(config)], env=quickshell_environment,
         capture_output=True, text=True, timeout=10, check=False,
     )
     log = result.stdout + result.stderr
@@ -1146,7 +1160,7 @@ def test_quickshell_storage_cancel_keeps_the_status_binding(qml_engine, quickshe
 @pytest.mark.parametrize("late_read", ["success", "failure"])
 @pytest.mark.parametrize("late_after_refresh", [False, True])
 def test_quickshell_replies_use_the_saved_members_without_a_checkbox(
-    tmp_path, late_read, late_after_refresh,
+    tmp_path, quickshell_environment, late_read, late_after_refresh,
 ):
     """Exercise the real shell with both transports replaced before loading."""
     import shutil
@@ -1318,10 +1332,8 @@ Item {
         "LATE_READ_FAILED", "true" if late_read == "failure" else "false"
     )
     config.write_text(source[:source.rfind("}")] + probe + "}\n")
-    environment = dict(os.environ, QT_QPA_PLATFORM="offscreen", NO_AT_BRIDGE="1")
-    environment.pop("WAYLAND_DISPLAY", None)
     result = subprocess.run(
-        [executable, "--path", str(config)], env=environment,
+        [executable, "--path", str(config)], env=quickshell_environment,
         capture_output=True, text=True, timeout=10, check=False,
     )
     log = result.stdout + result.stderr

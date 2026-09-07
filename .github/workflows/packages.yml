@@ -66,6 +66,8 @@ jobs:
             /usr/share/libalpm/hooks/70-blueferry-restart-bluetooth.hook
           blueferry version
           python -c 'import blueferry; print(blueferry.__version__)'
+      - name: Load the installed Qt client
+        run: timeout 30s /usr/bin/python3 -I packaging/smoke-qt.py
       - uses: actions/upload-artifact@v4
         with:
           name: packages-arch
@@ -80,6 +82,7 @@ jobs:
     steps:
       - name: Update the package database
         run: pacman -Syu --noconfirm ca-certificates
+      - uses: actions/checkout@v6
       - uses: actions/download-artifact@v4
         with:
           name: packages-arch
@@ -109,6 +112,9 @@ jobs:
           }
           smoke_tui blueferry-tui
           smoke_tui blueferry tui
+
+      - name: Load the installed Qt client
+        run: timeout 30s /usr/bin/python3 -I packaging/smoke-qt.py
 
   build-deb:
     name: Build Debian packages
@@ -158,6 +164,8 @@ jobs:
           }
           smoke_tui blueferry-tui
           smoke_tui blueferry tui
+      - name: Load the installed Qt client
+        run: timeout 30s /usr/bin/python3 -I packaging/smoke-qt.py
       - uses: actions/upload-artifact@v4
         with:
           name: packages-deb
@@ -179,15 +187,18 @@ jobs:
           - name: Debian 13
             image: debian:13
             packages: ./packages/*.deb
+            qt: true
           - name: Ubuntu 24.04
             image: ubuntu:24.04
             packages: ./packages/blueferry-backend_*.deb ./packages/blueferry-gtk_*.deb
           - name: Ubuntu 26.04
             image: ubuntu:26.04
             packages: ./packages/*.deb
+            qt: true
           - name: PikaOS IV
             image: ghcr.io/pikaos-linux/pikaos-builder:nestv3
             packages: ./packages/*.deb
+            qt: true
           - name: Linux Mint 22.3
             image: linuxmintd/mint22.3-amd64:latest
             packages: ./packages/blueferry-backend_*.deb ./packages/blueferry-gtk_*.deb
@@ -209,6 +220,7 @@ jobs:
             > /etc/apt/sources.list.d/pop-os-release.list
       - name: Update package metadata
         run: apt-get update
+      - uses: actions/checkout@v6
       - uses: actions/download-artifact@v4
         with:
           name: packages-deb
@@ -241,6 +253,10 @@ jobs:
           }
           smoke_tui blueferry-tui
           smoke_tui blueferry tui
+
+      - name: Load the installed Qt client
+        if: matrix.qt == true
+        run: timeout 30s /usr/bin/python3 -I packaging/smoke-qt.py
 
   build-rpm:
     name: Build ${{ matrix.name }} RPMs
@@ -287,6 +303,8 @@ jobs:
           }
           smoke_tui blueferry-tui
           smoke_tui blueferry tui
+      - name: Load the installed Qt client
+        run: timeout 30s /usr/bin/python3 -I packaging/smoke-qt.py
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
@@ -312,6 +330,7 @@ jobs:
             image: fedora:45
             artifact: packages-rpm-fc45
     steps:
+      - uses: actions/checkout@v6
       - uses: actions/download-artifact@v4
         with:
           name: ${{ matrix.artifact }}
@@ -343,6 +362,9 @@ jobs:
           }
           smoke_tui blueferry-tui
           smoke_tui blueferry tui
+
+      - name: Load the installed Qt client
+        run: timeout 30s /usr/bin/python3 -I packaging/smoke-qt.py
 
   release:
     name: Attach packages to tagged release

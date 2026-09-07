@@ -29,6 +29,12 @@ dbus-run-session --config-file=tests/dbus-test.conf -- sh -c '
 The repository quality workflow runs the same hermetic suite on Arch Linux,
 along with Ruff, Bandit, mypy, QML linting, and a coverage report. The package
 build remains the final split-package and desktop-metadata integration check.
+The native package matrix also runs `packaging/smoke-qt.py` with the system
+Python in isolated mode after installing the artifacts, on every target that
+supports the Qt client. It loads the installed application and its default KDE
+style with backend subscription and autostart disabled, an unavailable D-Bus
+address, and temporary XDG directories. Missing Python bindings, QML files, or
+style dependencies fail this check even when CLI/TUI startup still succeeds.
 
 ## What belongs in the suite
 
@@ -97,6 +103,8 @@ the real Quickshell transport with temporary Python helpers to exercise streamed
 prompts, stdin, exit status, cancellation, and a missing executable. It skips
 when Quickshell is unavailable. Visual previews replace both transports and
 the host theme loader before loading the shell; never preview with live helpers.
+Each Quickshell subprocess test supplies a temporary runtime directory with
+mode 0700, so it also works for unprivileged builders without a login session.
 A shell test uses those inert replacements to verify direct replies after saving
 group members, blocking during edits or roster review, and the exact roster token
 sent with each reply. Backend tests reject that token after the members change.
