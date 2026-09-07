@@ -58,6 +58,11 @@ Private D-Bus tests deliberately hold fake wallet and conversation-projection
 work open while fetching status, and verify that history changes invalidate
 an in-flight projection. Wallet tests cover cancellation and late key results;
 group tests bind confirmation to the displayed roster across client refreshes.
+Named-group upgrade tests separate previously colliding spellings and exercise
+legacy rosters, stars, read state, reply confirmation, and deletion against
+temporary history. Ambiguous old keys must fail without sending or deleting
+another conversation; replaying projected history must not enable an old
+ambiguous route.
 Fresh-profile integration coverage starts with locked storage and missing
 databases, unlocks a fake wallet, and reads the first retained message through
 the compatibility-checking client. Client tests reject incompatible API

@@ -54,6 +54,7 @@ from blueferry.limits import (
     MAX_THREAD_KEY_CHARS,
     MAX_THREAD_QUERY_LIMIT,
 )
+from blueferry.named_groups import stored_named_group_key
 from blueferry.obex.map_query import list_recent_messages
 from blueferry.obex.map_read import set_session_messages_read
 from blueferry.obex.map_send import send_group_message, send_message
@@ -326,6 +327,7 @@ class BackendOperations:
         thread = self._conversations.find(thread_key)
         if thread is None:
             raise NotFoundError("thread no longer exists in local history")
+        thread_key = str(thread["key"])
         if not thread["reply_ready"] or not thread["recipients"]:
             raise NotReadyError("thread has no unambiguous reply destination")
         self._require_map()
@@ -564,6 +566,7 @@ class BackendOperations:
         thread = self._conversations.find(thread_key)
         if thread is None:
             raise NotFoundError("thread no longer exists in local history")
+        thread_key = str(thread["key"])
         if not thread.get("is_group") or thread.get("group_origin") != "named":
             raise InvalidArgumentsError(
                 "participants can only be supplied for a named group"
@@ -619,7 +622,7 @@ class BackendOperations:
             raise NotReadyError(
                 "could not retain the group participant list"
             ) from error
-        self._forget_confirmed_groups([thread_key])
+        self._forget_confirmed_groups(conversation_keys(thread))
         self.invalidate_conversations()
         updated = self._conversations.find(thread_key)
         if updated is None:
@@ -777,7 +780,10 @@ class BackendOperations:
                 kind = str(event.get("kind") or "")
                 belongs = (
                     kind == "group_route"
-                    and str(event.get("group_key") or "") in resolved_keys
+                    and (
+                        str(event.get("group_key") or "") in resolved_keys
+                        or stored_named_group_key(event) in resolved_keys
+                    )
                 ) or (
                     kind == "sms_seen"
                     and (
@@ -802,7 +808,7 @@ class BackendOperations:
             log.error("could not delete conversations: %s", error)
             raise NotReadyError("could not delete local conversations") from error
 
-        self._forget_confirmed_groups(resolved_keys)
+        self._forget_confirmed_groups(resolved_keys | preference_keys)
         if self.dependencies.starred_threads is not None:
             self.dependencies.starred_threads.discard(list(preference_keys))
         self.invalidate_conversations()
