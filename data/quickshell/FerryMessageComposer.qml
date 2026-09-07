@@ -10,6 +10,7 @@ ScrollView {
   property alias text: editor.text
   property alias placeholderText: editor.placeholderText
   property bool flat: false
+  readonly property bool multiline: editor.lineCount > 1
   signal accepted()
 
   Layout.minimumWidth: 0
@@ -55,6 +56,7 @@ ScrollView {
     font.pixelSize: control.ferryTheme.baseFontSize
     selectByMouse: true
     wrapMode: TextEdit.Wrap
+    verticalAlignment: control.multiline ? TextEdit.AlignTop : TextEdit.AlignVCenter
     background: null
     Accessible.name: control.Accessible.name
     Keys.onReturnPressed: event => control.submit(event)

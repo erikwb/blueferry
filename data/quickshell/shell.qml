@@ -13,7 +13,6 @@ ShellRoot {
   property string selectedThreadKey: ""
   property string pendingThreadKey: ""
   property string pendingMessageHandle: ""
-  property var confirmedGroupSignatures: ({})
   property var groupParticipantsThread: null
   property var rosterChangedThread: null
   property string errorText: ""
@@ -27,7 +26,8 @@ ShellRoot {
   property bool storageUnlockAttempted: false
   property string statusErrorText: ""
   property bool statusBusy: false
-  property bool threadsBusy: false
+  property int threadsRequestId: 0
+  readonly property bool threadsBusy: threadsRequestId !== 0
   property bool contactsBusy: false
   property bool sendBusy: false
   property bool newMessageSendBusy: false
@@ -59,8 +59,7 @@ ShellRoot {
   function reload() {
     if (!setupController.configured) return
     if (!threadsBusy) {
-      threadsBusy = true
-      backendBridge.request("threads", {limit: 200})
+      threadsRequestId = backendBridge.request("threads", {limit: 200})
     }
     if (!statusBusy) {
       statusBusy = true
@@ -146,27 +145,6 @@ ShellRoot {
     return conversationLogic.groupSignature(thread)
   }
 
-  function groupIsConfirmed(thread) {
-    if (!thread || !thread.is_group) return true
-    if (thread.group_confirmed === true) return true
-    var signature = root.groupSignature(thread)
-    return signature !== "" &&
-      (root.confirmedGroupSignatures[thread.key] || "") === signature
-  }
-
-  function setGroupConfirmed(thread, confirmed) {
-    if (!thread || !thread.is_group) return
-    var next = Object.assign({}, root.confirmedGroupSignatures)
-    if (confirmed) {
-      var signature = root.groupSignature(thread)
-      if (signature === "") return
-      next[thread.key] = signature
-    } else {
-      delete next[thread.key]
-    }
-    root.confirmedGroupSignatures = next
-  }
-
   function participantLines(value) {
     return conversationLogic.participantLines(value)
   }
@@ -194,6 +172,7 @@ ShellRoot {
     }
     onReloadRequested: root.reload()
     onHistoryReset: {
+      root.threadsRequestId = 0
       root.threads = []
       root.selectedThreadKey = ""
       root.backendStatus = ({})
@@ -242,7 +221,8 @@ ShellRoot {
         root.statusErrorText = ""
         root.maybeUnlockStorage()
       } else if (method === "threads") {
-        root.threadsBusy = false
+        if (!root.threadsBusy || requestId !== root.threadsRequestId) return
+        root.threadsRequestId = 0
         root.threads = Array.isArray(result) ? result : []
         if (root.pendingThreadKey !== "") {
           root.selectedThreadKey = root.pendingThreadKey
@@ -270,9 +250,12 @@ ShellRoot {
         newMessageBody.text = ""
         root.reload()
       } else if (method === "set_group_participants") {
+        // Reads started before this save completed may still contain the old
+        // roster. Apply the authoritative result before enabling replies, then
+        // request a fresh snapshot without accepting those earlier reads.
+        root.threadsRequestId = 0
+        root.threads = root.threads.map(thread => thread.key === result.key ? result : thread)
         root.groupParticipantsBusy = false
-        if (root.groupParticipantsThread)
-          root.setGroupConfirmed(root.groupParticipantsThread, false)
         groupParticipantsPopup.close()
         root.reload()
       } else if (method === "mark_thread_read") {
@@ -313,7 +296,8 @@ ShellRoot {
         root.statusBusy = false
         root.markStatusUnavailable(message || "BlueFerry backend is unavailable")
       } else if (method === "threads") {
-        root.threadsBusy = false
+        if (!root.threadsBusy || requestId !== root.threadsRequestId) return
+        root.threadsRequestId = 0
         root.errorText = message || "BlueFerry daemon is unavailable"
       } else if (method === "contacts") {
         root.contactsBusy = false
@@ -349,7 +333,7 @@ ShellRoot {
         root.errorText = message
       } else {
         root.statusBusy = false
-        root.threadsBusy = false
+        root.threadsRequestId = 0
         root.contactsBusy = false
         root.sendBusy = false
         root.newMessageSendBusy = false
@@ -751,11 +735,17 @@ ShellRoot {
               FerryLabel {
                 ferryTheme: theme
                 Layout.fillWidth: true
-                visible: conversationPane.thread !== null && !conversationPane.thread.is_group
-                text: visible ? "Reply to: " + conversationPane.thread.recipients.join(", ") : ""
+                visible: conversationPane.thread !== null
+                text: visible
+                  ? (conversationPane.thread.is_group ? "To: " : "Reply to: ")
+                    + conversationPane.thread.recipients.join(", ")
+                  : ""
                 textFormat: Text.PlainText
                 color: theme.muted
                 elide: Text.ElideRight
+                ToolTip.visible: recipientHover.hovered
+                ToolTip.text: text
+                HoverHandler { id: recipientHover }
               }
 
               Rectangle {
@@ -890,20 +880,6 @@ ShellRoot {
                 }
               }
 
-              FerryCheckBox {
-                ferryTheme: theme
-                id: confirmGroup
-                property var thread: conversationPane.thread
-                property string signature: root.groupSignature(thread)
-                visible: thread && thread.is_group && thread.reply_ready
-                text: thread
-                  ? "Confirm group: " + thread.recipients.join(", ") : ""
-                checked: root.groupIsConfirmed(thread) && signature !== ""
-                enabled: !(thread && thread.group_confirmed === true)
-                onToggled: root.setGroupConfirmed(thread, checked)
-                Layout.fillWidth: true
-              }
-
               Rectangle {
                 Layout.fillWidth: true
                 implicitHeight: composerRow.implicitHeight + theme.scaled(12)
@@ -929,12 +905,11 @@ ShellRoot {
                   FerryButton {
                     ferryTheme: theme
                     id: sendMessageButton
-                    Layout.alignment: Qt.AlignBottom
+                    Layout.alignment: composer.multiline ? Qt.AlignBottom : Qt.AlignVCenter
                     text: root.sendBusy ? "SENDING" : "SEND"
                     highlighted: true
                     enabled: composer.enabled && composer.text.trim() !== "" &&
-                             root.groupIsConfirmed(conversationPane.thread) &&
-                             !root.sendBusy
+                             !root.groupParticipantsBusy && !root.sendBusy
                     onClicked: {
                       var thread = conversationPane.thread
                       root.sendBusy = true
