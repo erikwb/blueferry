@@ -193,19 +193,8 @@ def test_gui_pairing_requires_confirmation_before_replacing_saved_target() -> No
 
 def test_capability_checks_do_not_disable_pairing_buttons() -> None:
     gtk = (ROOT / "src/blueferry/ui/status.py").read_text()
-    quickshell = (ROOT / "data/quickshell/shell.qml").read_text()
-
     assert "self._pair_button.set_sensitive(not busy and bool(selected))" in gtk
-    # Qt uses behavioral checks against the loaded settings page.
-    assert "root.pairingReady" not in quickshell.split(
-        'text: pairProcess.running ? "Pairing…"', 1
-    )[1].split("onClicked:", 1)[0]
-    assert "root.messagesSupported" not in quickshell.split(
-        'text: pairProcess.running ? "Pairing…"', 1
-    )[1].split("onClicked:", 1)[0]
-    assert "root.compatibilityLoaded" in quickshell.split(
-        'text: pairProcess.running ? "Pairing…"', 1
-    )[1].split("onClicked:", 1)[0]
+    # Qt and Quickshell use behavioral checks against loaded settings pages.
 
 
 def test_quickshell_launcher_can_focus_an_existing_conversation() -> None:

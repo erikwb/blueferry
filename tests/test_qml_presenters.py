@@ -45,8 +45,20 @@ class _BubbleTheme(QObject):
         return QColor("#f4f4f4")
 
     @Property(QColor, constant=True)
-    def selectedSurface(self) -> QColor:
-        return QColor("#334455")
+    def outgoingBubble(self) -> QColor:
+        return QColor("#245baf")
+
+    @Property(QColor, constant=True)
+    def outgoingText(self) -> QColor:
+        return QColor("#ffffff")
+
+    @Property(QColor, constant=True)
+    def outgoingMuted(self) -> QColor:
+        return QColor("#d2e2fa")
+
+    @Property(QColor, constant=True)
+    def control(self) -> QColor:
+        return QColor("#222222")
 
     @Property(QColor, constant=True)
     def raisedSurface(self) -> QColor:
@@ -810,3 +822,321 @@ def test_qml_conversation_decisions_match_python_state(qml_engine):
     ]
     assert state.next_roster_warning() is None
     logic.deleteLater()
+
+
+@pytest.fixture
+def quickshell_setup(qml_engine):
+    """The real controller has no IO; record requests without a transport."""
+    component = _component(qml_engine, "data/quickshell/SetupController.qml")
+    controller = component.create()
+    assert controller is not None
+    qml_engine.globalObject().setProperty("setup", qml_engine.newQObject(controller))
+    result = qml_engine.evaluate('''
+        var requests = [], cancelled = [], answers = [], configuration = [], resets = 0;
+        setup.executeRequested.connect((id, kind, argv, interactive) =>
+          requests.push({id: id, kind: kind, argv: argv, interactive: interactive}));
+        setup.cancelRequested.connect(id => cancelled.push(id));
+        setup.inputRequested.connect((id, text) => answers.push({id: id, text: text}));
+        setup.configurationUpdated.connect(value => configuration.push(value));
+        setup.historyReset.connect(() => resets++);
+        function check(value, message) { if (!value) throw new Error(message); }
+        function reply(kind, data, code) {
+          setup.finish(setup.pending[kind].id, kind, code || 0, JSON.stringify(data), "");
+        }
+        function ready() {
+          setup.loadCompatibility("hci0");
+          reply("compatibility", {notifications_supported: false, adapter: "hci0"});
+          reply("devices", [{mac: "NEW", name: "Phone", adapter_path: "/org/bluez/hci0"}]);
+        }
+    ''')
+    assert not result.isError(), result.toString()
+    yield controller
+    controller.deleteLater()
+    QGuiApplication.processEvents()
+
+
+@pytest.mark.parametrize("scenario", [
+    # First install: missing saved target must still allow explicit pairing on
+    # an unverified controller; empty/failed discovery must not enable Pair.
+    '''setup.start();
+       reply("configuration", {configured: false, saved: false});
+       check(configuration.join() === "false", "first-run navigation");
+       reply("compatibility", {notifications_supported: false, adapter: "hci0"});
+       reply("devices", []);
+       check(!setup.canPair && setup.selectedDeviceIndex === -1, "empty scan");
+       ready(); check(setup.canPair, "unverified controller blocked pairing");
+       setup.requestPairing();
+       check(requests[requests.length-1].argv.includes("--compatibility-mode"), "compatibility flag");''',
+    # Changing adapters must invalidate a running scan and its late response.
+    '''ready(); setup.loadDevices(true); const old = setup.pending.devices.id;
+       setup.loadCompatibility("hci1");
+       setup.finish(old, "devices", 0, '[{"mac":"OLD","adapter_path":"/org/bluez/hci0"}]', "");
+       check(!setup.pairingDevices.length && cancelled.includes(old), "stale adapter scan");
+       reply("compatibility", {notifications_supported: true, adapter: "hci1"});
+       reply("devices", [{mac:"WRONG",adapter_path:"/org/bluez/hci0"}, {mac:"RIGHT",adapter_path:"/org/bluez/hci1"}]);
+       check(setup.selectedPairingDevice().mac === "RIGHT", "wrong adapter selected");''',
+    '''ready(); setup.loadDevices(true); const old = setup.pending.devices.id;
+       setup.cancelScan(); setup.loadDevices(true);
+       setup.finish(old, "devices", 0, "[]", "");
+       check(setup.scanning && setup.pairingDevices.length === 1, "cancelled result changed selection");
+       reply("devices", [{mac:"NEW",name:"renamed",adapter_path:"/org/bluez/hci0"}]);
+       check(setup.selectedPairingDevice().mac === "NEW" && !setup.scanning, "selection lost");''',
+    # Mutation cancels config reads and clears an interactive prompt on failure.
+    '''ready(); setup.refreshConfiguration(); const old = setup.pending.configuration.id;
+       setup.requestPairing(); const pair = setup.pending.pair.id;
+       setup.receiveLine(pair, "pair", '{"event":"confirmation","passkey":"012345"}');
+       check(setup.pairingConfirmationPending && setup.pairingPasskey === "012345", "missing prompt");
+       setup.finish(old, "configuration", 0, '{"configured":true,"saved":true,"mac":"STALE"}', "");
+       check(setup.configuredMac === "", "old configuration accepted");
+       reply("pair", {ok:false,error:"Rejected",report_path:"/tmp/fake-report"}, 1);
+       check(!setup.pairing && !setup.pairingConfirmationPending && setup.pairingStatus === "Rejected", "failed pair stuck");
+       setup.answerConfirmation(true);
+       setup.receiveLine(pair,"pair",'{"event":"confirmation"}');
+       check(!answers.length && !setup.pairingConfirmationPending, "answered stale prompt");
+       reply("configuration", {configured:false,saved:false});
+       check(setup.pairingIssueReport === "/tmp/fake-report", "failure report lost");''',
+    '''ready(); setup.targetSaved = true; setup.configuredMac = "OLD";
+       setup.explicitPairingOverride = true; setup.requestPairing();
+       check(!setup.pairing && setup.pendingReplacement, "replacement skipped confirmation");
+       setup.configuredMac = "OTHER"; setup.adapterName = "hci9";
+       setup.pairingDevices = [{mac:"OTHER-NEW"}]; setup.confirmReplacement();
+       const argv = requests[requests.length-1].argv;
+       check(argv[2] === "NEW" && argv[argv.indexOf("--replace-saved-mac")+1] === "OLD", "replacement target drift");
+       check(argv[argv.indexOf("--adapter")+1] === "hci0" && argv.includes("--explicit-pairing"), "replacement options drift");''',
+    '''ready(); setup.configured = true; setup.targetSaved = true;
+       setup.configuredMac = "OLD"; setup.configuredAdapter = "hci1";
+       setup.refreshConfiguration(); const old = setup.pending.configuration.id;
+       setup.forgetPhone(); const id = setup.pending.forget.id;
+       setup.receiveLine(id,"forget",'{"event":"confirmation","purpose":"forget"}');
+       setup.answerConfirmation(false); setup.answerConfirmation(true);
+       check(answers.length === 1 && answers[0].text === "no\\n", "duplicate confirmation");
+       reply("forget",{ok:false,error:"Cancelled"},1);
+       check(setup.configured && !resets, "failed forget erased history");
+       setup.forgetPhone(); reply("forget",{ok:true});
+       setup.finish(old,"configuration",0,'{"configured":true,"saved":true,"mac":"OLD"}', "");
+       check(!setup.configured && setup.configuredMac === "" && resets === 1, "forgotten target restored");''',
+    '''ready(); setup.requestPairing();
+       reply("pair",{ok:true,device:{mac:"NEW",adapter_path:"/org/bluez/hci0"},ancs_enabled:false});
+       check(setup.configured && setup.configuredAdapter === "hci0" && !setup.ancsEnabled, "pair success lost");
+       const status = setup.pairingStatus; reply("devices",[]);
+       check(setup.pairingStatus === status, "refresh hid setup instructions");''',
+    '''ready(); setup.loadDevices(true);
+       setup.finish(setup.pending.devices.id,"devices",0,"garbage","");
+       check(!setup.scanning && setup.pairingStatus !== "Scanning for Bluetooth devices…", "malformed scan stuck");
+       setup.activateBluetooth(); reply("activate",{ok:false,error:"Denied"},1);
+       check(!setup.activating && !setup.bluezActive, "failed activation accepted");
+       setup.activateBluetooth(); reply("activate",{ok:true});
+       check(setup.pending.compatibility, "activation did not refresh capabilities");''',
+    '''setup.refreshConfiguration();
+       setup.finish(setup.pending.configuration.id,"configuration",-1,"","Could not start");
+       check(configuration.join() === "false" && setup.configurationError === "Could not start", "missing helper hidden");
+       setup.refreshConfiguration(); reply("configuration",{configured:false,saved:false});
+       check(!setup.configurationError, "configuration recovery retained error");
+       ready(); setup.requestPairing();
+       setup.finish(setup.pending.pair.id,"pair",0,"","");
+       check(!setup.configured && !setup.pairing && setup.pairingStatus.includes("no result"), "empty success accepted");''',
+], ids=["first-install", "adapter-switch", "cancel-scan", "failed-pair", "replacement-snapshot",
+        "forget-confirmation", "pair-success", "failed-helpers", "missing-helper"])
+def test_quickshell_setup_responses(qml_engine, quickshell_setup, scenario):
+    result = qml_engine.evaluate("(function() {" + scenario + "})()")
+    assert not result.isError(), result.toString()
+
+
+def test_quickshell_settings_bindings_and_unverified_pairing(qml_engine, quickshell_setup):
+    warnings = []
+    qml_engine.warnings.connect(warnings.extend)
+    theme_component = _component(qml_engine, "data/quickshell/ThemePalette.qml")
+    theme = theme_component.create()
+    page_component = _component(qml_engine, "data/quickshell/PhoneSettingsPage.qml")
+    page = page_component.createWithInitialProperties({
+        "ferryTheme": theme, "setup": quickshell_setup, "status": {
+            "notification_policy": "messages", "storage_policy": "encrypted",
+            "contacts_only_notifications": False,
+        }, "width": 620, "height": 650,
+    })
+    assert page is not None
+    qml_engine.globalObject().setProperty("page", qml_engine.newQObject(page))
+    result = qml_engine.evaluate("ready()")
+    assert not result.isError(), result.toString()
+    QGuiApplication.processEvents()
+    pair = page.findChild(QObject, "pairPhoneButton")
+    assert pair.property("enabled")
+    QMetaObject.invokeMethod(pair, "clicked")
+    assert quickshell_setup.property("pairing")
+    assert not pair.property("enabled")
+    result = qml_engine.evaluate('''reply("pair", {ok:false,error:"Cancelled"},1);
+        setup.configured = true;''')
+    assert not result.isError(), result.toString()
+    QGuiApplication.processEvents()
+    qml_engine.warnings.disconnect(warnings.extend)
+    assert not warnings, "\n".join(w.toString() for w in warnings)
+    page.deleteLater()
+    theme.deleteLater()
+
+
+@pytest.mark.parametrize("colors", [
+    {"background": "#1a1b26", "foreground": "#c0caf5", "accent": "#9ece6a"},
+    {"background": "#fafafa", "foreground": "#242424", "accent": "#b00060"},
+])
+def test_quickshell_theme_keeps_blue_messages_and_opaque_window(qml_engine, colors):
+    component = _component(qml_engine, "data/quickshell/ThemePalette.qml")
+    theme = component.createWithInitialProperties({
+        "quattroActive": True, "colors": colors,
+        "shell": {"popups.background-alpha": "0.4"},
+    })
+    assert theme is not None
+    assert theme.property("windowSurface").alphaF() == 1
+    assert theme.property("panelRadius") == 0
+    assert theme.property("controlRadius") == 0
+    assert theme.property("fontFamily") == "monospace"
+    assert theme.property("outgoingBubble").name() == "#245baf"
+    bubble_component = _component(qml_engine, "data/quickshell/QuickshellMessageBubble.qml")
+    bubble = bubble_component.createWithInitialProperties({
+        "ferryTheme": theme, "message": {"body": "Blue in every theme", "outgoing": True},
+        "availableWidth": 500, "availableHeight": 300, "showSender": False,
+    })
+    assert bubble is not None
+    assert bubble.property("color").name() == "#245baf"
+    assert bubble.findChild(QObject, "messageBody").property("color").name() == "#ffffff"
+    bubble.deleteLater()
+    theme.deleteLater()
+
+
+@pytest.mark.private_dbus
+def test_quickshell_setup_transport_streams_cancels_and_times_out(tmp_path):
+    """Run actual Quickshell IO with inert Python children on the private bus."""
+    import json
+    import shutil
+    import subprocess
+    import sys
+
+    executable = shutil.which("quickshell")
+    if executable is None:
+        pytest.skip("Quickshell is not installed")
+    for name in ("SetupTransport.qml", "SetupJob.qml"):
+        shutil.copyfile(ROOT / "data/quickshell" / name, tmp_path / name)
+    interactive = [sys.executable, "-c", '''import sys,time
+sys.stdout.write('{"event":'); sys.stdout.flush(); time.sleep(.05)
+print('"confirmation"}',flush=True)
+answer = input()
+print('{"answer":"' + answer + '"}',flush=True)
+print("diagnostic",file=sys.stderr)
+sys.exit(7)
+''']
+    cancelled = [sys.executable, "-c", '''import time
+print("ready",flush=True)
+time.sleep(5)
+''']
+    missing = [str(tmp_path / "missing-helper")]
+    # SetupTransport is exercised directly; no production backend or setup
+    # command is reachable from this configuration.
+    source = '''import QtQuick
+import Quickshell
+ShellRoot {
+  id: root
+  property int completed: 0
+  property int prompts: 0
+  property bool cancelled: false
+  function check(ok, detail) { if (!ok) throw new Error(detail); }
+  function done() {
+    completed++;
+    if (completed === 3) { console.log("BLUEFERRY_TRANSPORT_OK"); Qt.quit(); }
+  }
+  SetupTransport {
+    id: transport
+    onLineReceived: (id, kind, line) => {
+      if (id === 1 && JSON.parse(line).event === "confirmation") {
+        root.prompts++;
+        transport.write(id, "yes\\n");
+      } else if (id === 2) {
+        transport.cancel(id);
+        root.cancelled = true;
+        cancelCheck.start();
+      }
+    }
+    onFinished: (id, kind, code, output, diagnostic) => {
+      root.check(id === 1 && code === 7, "cancelled request delivered or wrong exit code");
+      root.check(root.prompts === 1 && output.includes('"answer":"yes"'), "streaming stdin exchange failed");
+      root.check(diagnostic === "diagnostic", "stderr lost at exit");
+      root.done();
+    }
+  }
+  Component {
+    id: missingJob
+    SetupJob {
+      requestId: 3; kind: "configuration"; timeoutMs: 150
+      command: MISSING_COMMAND
+      onFinished: (id, kind, code, output, diagnostic) => {
+        root.check(code === -1 && diagnostic.includes("could not start"), "failed spawn stayed busy");
+        root.done();
+        destroy();
+      }
+    }
+  }
+  Timer {
+    id: cancelCheck; interval: 300
+    onTriggered: {
+      root.check(root.cancelled && !transport.jobs[2], "cancelled helper retained");
+      root.done();
+    }
+  }
+  Component.onCompleted: {
+    transport.execute(1, "pair", INTERACTIVE_COMMAND, true);
+    transport.execute(2, "devices", CANCEL_COMMAND, true);
+    const job = missingJob.createObject(root);
+    job.start();
+  }
+}
+'''.replace("INTERACTIVE_COMMAND", json.dumps(interactive)).replace(
+        "CANCEL_COMMAND", json.dumps(cancelled)
+    ).replace("MISSING_COMMAND", json.dumps(missing))
+    config = tmp_path / "shell.qml"
+    config.write_text(source)
+    environment = dict(os.environ, QT_QPA_PLATFORM="offscreen", NO_AT_BRIDGE="1")
+    environment.pop("WAYLAND_DISPLAY", None)
+    result = subprocess.run(
+        [executable, "--path", str(config)], env=environment,
+        capture_output=True, text=True, timeout=10, check=False,
+    )
+    log = result.stdout + result.stderr
+    assert result.returncode == 0, log
+    assert "BLUEFERRY_TRANSPORT_OK" in log, log
+    assert "ReferenceError" not in log and "TypeError" not in log, log
+
+
+def test_quickshell_storage_cancel_keeps_the_status_binding(qml_engine, quickshell_setup):
+    from PySide6.QtCore import Qt
+    from PySide6.QtQuick import QQuickWindow
+    from PySide6.QtTest import QTest
+
+    theme_component = _component(qml_engine, "data/quickshell/ThemePalette.qml")
+    theme = theme_component.create()
+    component = _component(qml_engine, "data/quickshell/PhoneSettingsPage.qml")
+    page = component.createWithInitialProperties({
+        "ferryTheme": theme, "setup": quickshell_setup, "status": {
+            "storage_policy": "encrypted", "contacts_only_notifications": False,
+        }, "width": 640, "height": 1400,
+    })
+    assert page is not None
+    quickshell_setup.setProperty("configured", True)
+    window = QQuickWindow()
+    window.resize(640, 1400)
+    page.setParentItem(window.contentItem())
+    window.show()
+    QGuiApplication.processEvents()
+    selector = page.findChild(QObject, "storagePolicySelector")
+    assert selector is not None
+    calls = []
+    page.operationRequested.connect(lambda method, args: calls.append(method))
+    # Real keyboard activation preserves the original QML binding before the
+    # rejection path explicitly restores it.
+    selector.forceActiveFocus()
+    QTest.keyClick(window, Qt.Key_Down)
+    assert selector.property("currentIndex") == 0
+    assert not calls
+    page.setProperty("status", {"storage_policy": "none", "contacts_only_notifications": False})
+    QGuiApplication.processEvents()
+    assert selector.property("currentIndex") == 2
+    window.close()
+    page.deleteLater()
+    theme.deleteLater()

@@ -87,6 +87,18 @@ window retains its page instance when settings closes and owns
 `PhoneSettingsDialogs.qml` separately, so an ongoing pairing prompt can still
 appear while conversations are open. Replacement confirmation retains both
 phone addresses from the original request across setup refreshes.
+Quickshell's `SetupController.qml` owns setup state and emits requests with
+monotonic IDs. `SetupTransport.qml` creates one `SetupJob.qml` per helper and
+returns tagged output only after process exit and both streams finish. The
+controller ignores superseded or cancelled results, invalidates saved-phone
+reads before pairing/unpairing, and binds replacement approval to the original
+phone addresses and adapter. Interactive prompts accept input only for the
+active request. Cancelled scans terminate their helper; all jobs have deadlines.
+Quickshell's `PhoneSettingsPage.qml` receives setup, backend status, busy state,
+and theme explicitly. Shared `Ferry*` controls contain the client styling.
+`Theme.qml` watches public Omarchy theme files; `ThemePalette.qml` derives
+colors and geometry without file or process access. It follows the system
+monospace alias and keeps outgoing bubbles blue independently of shell accent.
 GTK and Qt contact searches use `ConversationState` request sequences, and Qt
 retains that typed state across refreshes and sends. Qt and TUI share the snapshot
 loader; GTK feeds its independent asynchronous read results into the same state.

@@ -226,6 +226,12 @@ Enable it from **Setup › Plugins**. Its popup shows connection health and rece
 conversations; the full Quickshell client handles pairing, messages, and
 preferences.
 
+The Quickshell client follows Omarchy's active palette and system monospace
+font, with compact controls and thin frames. Sent message bubbles stay blue
+across themes. Outside Omarchy, it uses the desktop palette.
+
+![Quickshell client with sample conversations](docs/images/quickshell.png)
+
 ## Notifications and local data
 
 BlueFerry can show message notifications only—the default—all iPhone
