@@ -91,7 +91,7 @@ class ConversationState:
     def __init__(self, *, select_first: bool = True) -> None:
         self.select_first = select_first
         self.threads: list[Thread] = []
-        self.status = BackendStatus()
+        self.status = BackendStatus(storage_policy="", storage_state="unavailable")
         self.selected_key = ""
         self.error = ""
         self._status_error = ""
@@ -128,7 +128,11 @@ class ConversationState:
             self._status_error = ""
         elif snapshot.status_error:
             self._status_error = snapshot.status_error
-            self.status = BackendStatus(extra={"error": snapshot.status_error})
+            self.status = BackendStatus(
+                storage_policy=self.status.storage_policy,
+                storage_state="unavailable",
+                extra={"error": snapshot.status_error},
+            )
         if snapshot.thread_error:
             self._thread_error = snapshot.thread_error
         if snapshot.threads is not None:

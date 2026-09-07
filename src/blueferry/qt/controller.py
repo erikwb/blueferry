@@ -322,6 +322,7 @@ class BridgeController(QObject):
             self.setupLoadedChanged.emit()
             if status:
                 self._status = dict(status)
+                self._state.status = BackendStatus.from_dict(self._status)
                 self.statusChanged.emit()
                 self._maybe_unlock_storage()
             self._set_error("")
@@ -622,6 +623,7 @@ class BridgeController(QObject):
     def _storage_updated(self, value: object) -> None:
         if isinstance(value, dict):
             self._status.update(value)
+            self._state.status = BackendStatus.from_dict(self._status)
             self.statusChanged.emit()
         self.refresh()
 

@@ -149,8 +149,40 @@ def test_incompatible_initial_snapshot_displays_one_error_without_attempting_unl
     controller._apply_snapshot(controller._snapshot())
     assert controller.status["daemon"] is False
     assert controller.status["error"] == controller.errorText == message
+    assert controller.status["storage_policy"] == ""
+    assert controller.status["storage_state"] == "unavailable"
     assert controller.threads == []
     assert unlocks == []
+
+
+def test_failed_status_preserves_the_latest_successful_storage_setting(monkeypatch):
+    controller = BridgeController(
+        backend=_Backend(), setup=object(), subscribe=False, autostart=False,
+    )
+    controller._apply_snapshot(controller._snapshot())
+    monkeypatch.setattr(controller, "refresh", lambda: None)
+    controller._storage_updated({"storage_policy": "none", "storage_state": "disabled"})
+    controller._apply_snapshot((ConversationSnapshot(status_error="status timed out"), None))
+    assert controller.status["storage_policy"] == "none"
+    assert controller.status["storage_state"] == "unavailable"
+    assert controller.errorText == "status timed out"
+
+
+def test_failed_first_refresh_preserves_the_policy_loaded_at_startup(monkeypatch):
+    controller = BridgeController(
+        backend=_Backend(), setup=object(), subscribe=False, autostart=False,
+    )
+    status = BackendStatus(daemon=True, storage_policy="none", storage_state="disabled")
+    monkeypatch.setattr(controller, "_run", lambda _operation, ready, _failed: ready((
+        ConfigurationState(True, "02:00:00:00:00:01", "hci0", ""), status.to_dict(),
+    )))
+    monkeypatch.setattr(controller, "loadSetupState", lambda: None)
+    monkeypatch.setattr(controller, "loadDevices", lambda _scan: None)
+    monkeypatch.setattr(controller, "refresh", lambda: None)
+    controller.start()
+    controller._apply_snapshot((ConversationSnapshot(status_error="status timed out"), None))
+    assert controller.status["storage_policy"] == "none"
+    assert controller.status["storage_state"] == "unavailable"
 
 
 def test_failed_capability_probe_is_loaded_and_pairable(monkeypatch):

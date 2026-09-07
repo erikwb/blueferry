@@ -107,6 +107,31 @@ def test_duplicate_backend_errors_are_displayed_once():
     assert state.error == "incompatible"
 
 
+@pytest.mark.parametrize("policy,storage_state", [
+    ("encrypted", "ready"), ("encrypted", "locked"),
+    ("plaintext", "ready"), ("none", "disabled"),
+])
+def test_failed_status_preserves_policy_without_claiming_storage_is_locked(policy, storage_state):
+    state = ConversationState()
+    healthy = BackendStatus(
+        daemon=True, map=True, storage_policy=policy, storage_state=storage_state,
+        storage_detail="previous storage detail",
+    )
+    state.apply_snapshot(ConversationSnapshot(status=healthy))
+    for error in ("status timed out", "backend unavailable"):
+        state.apply_snapshot(ConversationSnapshot(status_error=error))
+        state.apply_snapshot(ConversationSnapshot(threads=()))
+        assert state.status.daemon is False
+        assert state.status.map is False
+        assert state.status.storage_policy == policy
+        assert state.status.storage_state == "unavailable"
+        assert state.status.storage_detail == ""
+        assert state.error == error
+    state.apply_snapshot(ConversationSnapshot(status=healthy))
+    assert state.status is healthy
+    assert state.error == ""
+
+
 def test_presentations_can_leave_the_initial_selection_empty() -> None:
     state = ConversationState(select_first=False)
     state.apply_snapshot(

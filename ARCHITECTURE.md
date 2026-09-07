@@ -87,6 +87,8 @@ loader; GTK feeds its independent asynchronous read results into the same state.
 Snapshots distinguish an untouched source, a failed read, and a successful empty
 history. Status and history errors clear only when their own read recovers, and a
 failed status read marks the backend unavailable while retaining the last history.
+Storage is shown as unavailable after failed reads, with the last known policy
+retained; before the first successful read, the policy is unknown.
 The shared reply planner validates the roster token retained by a confirmation
 dialog and provides blocked-reply messages. Qt additionally binds its pending
 dialog to the original conversation and draft. Quickshell's transport coalesces
