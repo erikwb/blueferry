@@ -19,7 +19,7 @@ def backend_compatibility_error(status: Mapping[str, object]) -> str | None:
         return None
     return (
         "This BlueFerry client is incompatible with the running backend. "
-        "Update both the client and backend, then restart BlueFerry."
+        "Install the most recent version of BlueFerry."
     )
 
 # Read/control timeouts are part of the client policy rather than toolkit
