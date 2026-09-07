@@ -1,3 +1,16 @@
+blueferry (0.8.0-1) unstable; urgency=medium
+
+  * Add starred and unread conversations, contact-based conversation grouping,
+    and notification filtering.
+  * Improve group reply safety and share conversation and setup logic across
+    clients.
+  * Align the Quickshell client with Omarchy themes and simplify group replies.
+  * Harden Bluetooth pairing, reconnect recovery, and backend compatibility.
+  * Fix native package builds and Qt startup dependencies, and verify installed
+    Qt startup across the supported package matrix.
+
+ -- BlueFerry Contributors <blueferry@weirdware.io>  Mon, 07 Sep 2026 18:39:35 -0400
+
 blueferry (0.7.7-1) unstable; urgency=medium
 
   * Keep the backend user service compatible with systemd 255 on Debian while
