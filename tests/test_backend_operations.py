@@ -618,6 +618,38 @@ def test_named_group_key_survives_roster_save_and_history_reload(
     assert updated["participants_required"] is False
     assert updated["roster_changed"] is False
 
+    # Quickshell's Send uses the saved members as approval. The backend still
+    # checks the exact roster shown by that client before queuing a reply.
+    sent = []
+    monkeypatch.setattr(
+        backend_operations, "send_group_message",
+        lambda _session, recipients, body: sent.append((recipients, body)) or "/transfer/group",
+    )
+    displayed = Thread.from_dict(updated)
+    operations.send_to_thread(
+        key, "first reply", True, lambda _result: None,
+        lambda error: pytest.fail(str(error)),
+        expected_group_token=displayed.confirmation_token,
+    )
+    assert sent == [(["+15551111111", "+15552222222"], "first reply")]
+
+    reviewed = operations.set_group_participants(
+        key, ["+15551111111", "+15553333333"]
+    )
+    with pytest.raises(ConfirmationRequiredError, match="group changed"):
+        operations.send_to_thread(
+            key, "stale draft", True, lambda _result: pytest.fail("stale reply sent"),
+            lambda error: pytest.fail(str(error)),
+            expected_group_token=displayed.confirmation_token,
+        )
+    assert len(sent) == 1
+    operations.send_to_thread(
+        key, "reviewed reply", True, lambda _result: None,
+        lambda error: pytest.fail(str(error)),
+        expected_group_token=Thread.from_dict(reviewed).confirmation_token,
+    )
+    assert sent[-1] == (["+15551111111", "+15553333333"], "reviewed reply")
+
 
 def test_starred_thread_is_pinned_above_newer_conversations(
     tmp_path, monkeypatch,

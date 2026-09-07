@@ -111,6 +111,10 @@ The shared reply planner validates the roster token retained by a confirmation
 dialog and provides blocked-reply messages. Qt additionally binds its pending
 dialog to the original conversation and draft. Quickshell's transport coalesces
 contact queries and delivers only the latest request's result or failure.
+Quickshell shows group recipients above the conversation and treats Send as
+approval of a reply-ready roster, including a saved named-group members list.
+It sends the displayed roster token so the backend can reject stale routes;
+missing or changed members still require review before replying.
 
 `Thread` derives unread counts, group approval tokens, and roster-warning keys.
 Both Qt and the Quickshell bridge serialize these fields for QML, so JavaScript

@@ -97,6 +97,9 @@ the real Quickshell transport with temporary Python helpers to exercise streamed
 prompts, stdin, exit status, cancellation, and a missing executable. It skips
 when Quickshell is unavailable. Visual previews replace both transports and
 the host theme loader before loading the shell; never preview with live helpers.
+A shell test uses those inert replacements to verify direct replies after saving
+group members, blocking during edits or roster review, and the exact roster token
+sent with each reply. Backend tests reject that token after the members change.
 
 The Arch package check runs Ruff over the complete source and test tree,
 Bandit over the Python security boundaries, and type-checks every backend

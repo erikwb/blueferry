@@ -1140,3 +1140,123 @@ def test_quickshell_storage_cancel_keeps_the_status_binding(qml_engine, quickshe
     window.close()
     page.deleteLater()
     theme.deleteLater()
+
+
+@pytest.mark.private_dbus
+def test_quickshell_replies_use_the_saved_members_without_a_checkbox(tmp_path):
+    """Exercise the real shell with both transports replaced before loading."""
+    import shutil
+    import subprocess
+
+    executable = shutil.which("quickshell")
+    if executable is None:
+        pytest.skip("Quickshell is not installed")
+    for source in (ROOT / "data/quickshell").glob("*.qml"):
+        shutil.copyfile(source, tmp_path / source.name)
+    shutil.copyfile(
+        ROOT / "src/blueferry/qt/qml/ConversationLogic.qml",
+        tmp_path / "ConversationLogic.qml",
+    )
+    (tmp_path / "Theme.qml").write_text("import QtQuick\nThemePalette {}\n")
+    # No process can be started by either injected transport.
+    (tmp_path / "SetupTransport.qml").write_text('''import QtQuick
+Item {
+  signal lineReceived(int id, string kind, string line)
+  signal finished(int id, string kind, int code, string output, string diagnostic)
+  function execute(id, kind, command, interactive) {}
+  function cancel(id) {}
+  function write(id, text) {}
+}
+''')
+    (tmp_path / "BackendBridge.qml").write_text('''import QtQuick
+Item {
+  property var calls: []
+  signal response(string method, int requestId, var result)
+  signal failure(string method, int requestId, string message)
+  signal eventReceived(string name, var data)
+  function request(method, args) { calls.push({method: method, args: args}); }
+  function requestLatest(method, args) {}
+  function cancelLatest(method) {}
+}
+''')
+    config = tmp_path / "shell.qml"
+    source = config.read_text()
+    probe = r'''
+  Timer {
+    interval: 200; running: true
+    onTriggered: {
+      function check(value, message) { if (!value) throw new Error(message); }
+      function sends() { return backendBridge.calls.filter(call => call.method === "send_to_thread"); }
+      try {
+        const recipients = ["alice@example.com", "bob@example.com"];
+        const pending = {
+          key: "crew", name: "Crew", group_origin: "named", is_group: true,
+          recipients: recipients, messages: [], reply_ready: false,
+          participants_required: true, group_confirmed: false,
+          confirmation_token: "\nalice@example.com\nbob@example.com"
+        };
+        root.threads = [pending];
+        root.selectedThreadKey = pending.key;
+        composer.text = "hello";
+        check(!sendMessageButton.enabled, "unconfigured group allowed a reply");
+
+        const saved = Object.assign({}, pending, {reply_ready: true, participants_required: false});
+        root.threads = [saved];
+        check(sendMessageButton.enabled, "saved members still require a checkbox");
+        sendMessageButton.clicked();
+        check(sends().length === 1 && sends()[0].args.confirm_group === true,
+          "Send did not approve the saved group");
+        check(sends()[0].args.thread_key === saved.key && sends()[0].args.body === "hello"
+          && sends()[0].args.expected_group_token === saved.confirmation_token,
+          "reply was not bound to the displayed roster");
+        check(!sendMessageButton.enabled, "duplicate send allowed");
+        backendBridge.response("send_to_thread", 1, "transfer");
+        check(composer.text === "", "successful reply did not clear draft");
+
+        composer.text = "next reply";
+        root.groupParticipantsBusy = true;
+        check(!sendMessageButton.enabled, "reply allowed while members were being saved");
+        backendBridge.response("set_group_participants", 2, saved);
+        check(sendMessageButton.enabled, "saved members did not restore Send");
+
+        const changed = Object.assign({}, saved, {
+          reply_ready: false, participants_required: true, roster_changed: true,
+          confirmation_token: "changed\nalice@example.com\ncarol@example.com"
+        });
+        root.threads = [changed];
+        check(!sendMessageButton.enabled, "roster needing review allowed a reply");
+        const reviewed = Object.assign({}, changed, {
+          recipients: ["alice@example.com", "carol@example.com"],
+          reply_ready: true, participants_required: false, roster_changed: false
+        });
+        root.threads = [reviewed];
+        check(sendMessageButton.enabled, "reviewed roster required another confirmation");
+        sendMessageButton.clicked();
+        check(sends()[1].args.expected_group_token === reviewed.confirmation_token,
+          "reply reused the previous roster approval");
+        backendBridge.response("send_to_thread", 3, "transfer");
+
+        root.threads = [Object.assign({}, saved, {is_group: false, recipients: ["alice@example.com"]})];
+        composer.text = "direct reply";
+        check(sendMessageButton.enabled, "direct reply disabled");
+        sendMessageButton.clicked();
+        check(sends()[2].args.confirm_group === false && sends()[2].args.expected_group_token === "",
+          "direct reply sent as group");
+        console.log("BLUEFERRY_GROUP_REPLY_OK");
+      } catch (error) {
+        console.error(error);
+      }
+      Qt.quit();
+    }
+  }
+'''
+    config.write_text(source[:source.rfind("}")] + probe + "}\n")
+    environment = dict(os.environ, QT_QPA_PLATFORM="offscreen", NO_AT_BRIDGE="1")
+    environment.pop("WAYLAND_DISPLAY", None)
+    result = subprocess.run(
+        [executable, "--path", str(config)], env=environment,
+        capture_output=True, text=True, timeout=10, check=False,
+    )
+    log = result.stdout + result.stderr
+    assert result.returncode == 0 and "BLUEFERRY_GROUP_REPLY_OK" in log, log
+    assert "WARN scene:" not in log and "ReferenceError" not in log and "TypeError" not in log, log

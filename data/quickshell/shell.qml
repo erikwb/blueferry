@@ -13,7 +13,6 @@ ShellRoot {
   property string selectedThreadKey: ""
   property string pendingThreadKey: ""
   property string pendingMessageHandle: ""
-  property var confirmedGroupSignatures: ({})
   property var groupParticipantsThread: null
   property var rosterChangedThread: null
   property string errorText: ""
@@ -146,27 +145,6 @@ ShellRoot {
     return conversationLogic.groupSignature(thread)
   }
 
-  function groupIsConfirmed(thread) {
-    if (!thread || !thread.is_group) return true
-    if (thread.group_confirmed === true) return true
-    var signature = root.groupSignature(thread)
-    return signature !== "" &&
-      (root.confirmedGroupSignatures[thread.key] || "") === signature
-  }
-
-  function setGroupConfirmed(thread, confirmed) {
-    if (!thread || !thread.is_group) return
-    var next = Object.assign({}, root.confirmedGroupSignatures)
-    if (confirmed) {
-      var signature = root.groupSignature(thread)
-      if (signature === "") return
-      next[thread.key] = signature
-    } else {
-      delete next[thread.key]
-    }
-    root.confirmedGroupSignatures = next
-  }
-
   function participantLines(value) {
     return conversationLogic.participantLines(value)
   }
@@ -271,8 +249,6 @@ ShellRoot {
         root.reload()
       } else if (method === "set_group_participants") {
         root.groupParticipantsBusy = false
-        if (root.groupParticipantsThread)
-          root.setGroupConfirmed(root.groupParticipantsThread, false)
         groupParticipantsPopup.close()
         root.reload()
       } else if (method === "mark_thread_read") {
@@ -751,11 +727,17 @@ ShellRoot {
               FerryLabel {
                 ferryTheme: theme
                 Layout.fillWidth: true
-                visible: conversationPane.thread !== null && !conversationPane.thread.is_group
-                text: visible ? "Reply to: " + conversationPane.thread.recipients.join(", ") : ""
+                visible: conversationPane.thread !== null
+                text: visible
+                  ? (conversationPane.thread.is_group ? "To: " : "Reply to: ")
+                    + conversationPane.thread.recipients.join(", ")
+                  : ""
                 textFormat: Text.PlainText
                 color: theme.muted
                 elide: Text.ElideRight
+                ToolTip.visible: recipientHover.hovered
+                ToolTip.text: text
+                HoverHandler { id: recipientHover }
               }
 
               Rectangle {
@@ -890,20 +872,6 @@ ShellRoot {
                 }
               }
 
-              FerryCheckBox {
-                ferryTheme: theme
-                id: confirmGroup
-                property var thread: conversationPane.thread
-                property string signature: root.groupSignature(thread)
-                visible: thread && thread.is_group && thread.reply_ready
-                text: thread
-                  ? "Confirm group: " + thread.recipients.join(", ") : ""
-                checked: root.groupIsConfirmed(thread) && signature !== ""
-                enabled: !(thread && thread.group_confirmed === true)
-                onToggled: root.setGroupConfirmed(thread, checked)
-                Layout.fillWidth: true
-              }
-
               Rectangle {
                 Layout.fillWidth: true
                 implicitHeight: composerRow.implicitHeight + theme.scaled(12)
@@ -933,8 +901,7 @@ ShellRoot {
                     text: root.sendBusy ? "SENDING" : "SEND"
                     highlighted: true
                     enabled: composer.enabled && composer.text.trim() !== "" &&
-                             root.groupIsConfirmed(conversationPane.thread) &&
-                             !root.sendBusy
+                             !root.groupParticipantsBusy && !root.sendBusy
                     onClicked: {
                       var thread = conversationPane.thread
                       root.sendBusy = true
