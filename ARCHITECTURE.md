@@ -45,6 +45,16 @@ existing method contracts. `data/io.weirdware.BlueFerry.xml` is the
 canonical introspection contract, is installed under `dbus-1/interfaces`, and
 is checked against the dbus-python decorators in the service implementation.
 
+`GetStatus.api_version` advertises the messaging compatibility generation
+(currently 2 for roster-bound replies), independently of the package release.
+Additive compatible changes keep that generation. All shared-client operations
+check the advertised generation on the same owner-bound proxy they invoke;
+missing, malformed, or different generations produce an update-and-restart
+error before reads or mutations. Compatibility is rechecked after daemon
+replacement. Lifecycle recovery reads status without this check so it can
+restart an outdated packaged daemon first, then requires a compatible API.
+Source installs also require compatibility even without package markers.
+
 `Events1.HistoryChanged` carries only a daemon-local revision and
 `Events1.StatusChanged` has no arguments. `Events1.OpenMessageRequested`
 carries only a bounded, opaque MAP handle after the user invokes a desktop
@@ -123,7 +133,9 @@ roster-warning token displayed by the client. The backend rejects stale tokens
 even if another client has already confirmed the new roster. GTK and TUI retain
 the dialog's token across refreshes; Qt and Quickshell use the same check at the
 wire boundary. The legacy `SendToThread` signature remains available for direct
-threads; group calls require an updated client. Reply addresses always come
+threads; group calls require an updated client. Approval tokens use the exact
+displayed addresses, including formatting; only transport destinations are
+normalized. Reply addresses always come
 from the backend projection.
 
 ## Pairing policy

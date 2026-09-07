@@ -17,10 +17,18 @@ from gi.repository import GLib
 
 from blueferry import config
 from blueferry.backend_operations import BackendDependencies
+from blueferry.client import BackendClient
+from blueferry.contacts import ContactsResolver
 from blueferry.dbus_service import MessagesService
 from blueferry.grouping import named_group_key
 from blueferry.history import append_event
-from blueferry.protocol import BUS_NAME, EVENTS_IFACE, MESSAGES_IFACE, OBJECT_PATH
+from blueferry.protocol import (
+    BUS_NAME,
+    EVENTS_IFACE,
+    MESSAGES_API_VERSION,
+    MESSAGES_IFACE,
+    OBJECT_PATH,
+)
 from blueferry.settings_store import SettingsStore
 from blueferry.storage_security import StorageSecurity
 from blueferry.threads import group_confirmation_token
@@ -122,6 +130,54 @@ def _request_in_thread(name, method, *args):
     thread = threading.Thread(target=request)
     thread.start()
     return thread, outcome
+
+
+def test_fresh_profile_unlock_and_snapshots_use_the_compatible_public_client(
+    public_service, tmp_path, monkeypatch,
+):
+    name, _pending, _policy, _changes, service = public_service
+    monkeypatch.setattr(config, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(config, "CONTACTS_DB", tmp_path / "contacts.sqlite")
+    monkeypatch.setattr(config, "EVENTS_DB", tmp_path / "events.sqlite")
+
+    class Wallet:
+        def get_or_create(self, *, allow_prompt, cancellable=None):
+            return b"K" * 32
+
+    storage = StorageSecurity(
+        settings=SettingsStore(tmp_path / "settings.json"), key_provider=Wallet(), initialize=False,
+    )
+    contacts = ContactsResolver(storage=storage)
+    service.operations.dependencies = replace(
+        service.operations.dependencies, storage=storage, contacts=contacts,
+    )
+    outcomes = []
+
+    def first_launch():
+        connection, interface = _client(name)
+        client = BackendClient(interface_factory=lambda _: interface)
+        try:
+            assert client.status().to_dict()["api_version"] == MESSAGES_API_VERSION
+            assert client.threads() == []
+            assert client.unlock_storage()["storage_state"] == "ready"
+            assert client.threads() == []
+            append_event({
+                "kind": "sms_received", "handle": "first", "sender_address": "+15551111111",
+                "body": "first retained message",
+            }, storage=storage)
+            outcomes.append(client.threads()[0].messages[0].body)
+        except Exception as error:
+            outcomes.append(error)
+        finally:
+            connection.close()
+
+    thread = threading.Thread(target=first_launch)
+    thread.start()
+    try:
+        _dispatch_until(lambda: not thread.is_alive())
+        assert outcomes == ["first retained message"]
+    finally:
+        storage.close()
 
 
 def test_wallet_wait_keeps_status_available(public_service, tmp_path):

@@ -57,6 +57,7 @@ from blueferry.limits import (
 from blueferry.obex.map_query import list_recent_messages
 from blueferry.obex.map_read import set_session_messages_read
 from blueferry.obex.map_send import send_group_message, send_message
+from blueferry.protocol import MESSAGES_API_VERSION
 from blueferry.recipients import InvalidRecipient, validate_recipient
 from blueferry.storage_security import (
     STORAGE_POLICIES,
@@ -343,7 +344,9 @@ class BackendOperations:
             if len(set(group_recipients)) != len(group_recipients):
                 raise NotReadyError("group thread contains duplicate recipients")
             token = group_confirmation_token(
-                group_recipients,
+                # Approval uses exactly the roster exposed by ListThreads.
+                # Normalize only the addresses passed to the transport.
+                thread["recipients"],
                 thread.get("roster_warning_id"),
             )
             if not expected_group_token:
@@ -639,6 +642,7 @@ class BackendOperations:
         }
         if self.dependencies.status_provider is not None:
             status.update(self.dependencies.status_provider())
+        status["api_version"] = MESSAGES_API_VERSION
         return status
 
     def clear_history(self, confirmed: bool) -> None:

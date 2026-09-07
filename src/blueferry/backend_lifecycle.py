@@ -22,7 +22,12 @@ from blueferry.build_info import build_id, installed_build_sha
 from blueferry.bus import get_session_bus
 from blueferry.commands import run_command
 from blueferry.errors import BlueFerryError, CommandError
-from blueferry.protocol import BUS_NAME, MESSAGES_IFACE, OBJECT_PATH
+from blueferry.protocol import (
+    BUS_NAME,
+    MESSAGES_IFACE,
+    OBJECT_PATH,
+    backend_compatibility_error,
+)
 
 PACKAGE_RELEASE_PATH = Path("/usr/share/blueferry/package-release")
 SERVICE = "blueferry.service"
@@ -124,6 +129,8 @@ def ensure_backend_current(
         status.get("backend_release") == expected
         and (expected_sha is None or status.get("_build_id") == expected_build)
     ):
+        if error_message := backend_compatibility_error(status):
+            raise BackendLifecycleError(error_message)
         return status
 
     # A missing key is expected from versions released before lifecycle
@@ -157,4 +164,6 @@ def ensure_backend_current(
             f"{actual_build or actual or 'unknown'}; installed build is "
             f"{expected_build or expected}"
         )
+    if error_message := backend_compatibility_error(status):
+        raise BackendLifecycleError(error_message)
     return status

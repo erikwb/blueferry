@@ -13,7 +13,6 @@ from blueferry.client_wire import (
     decode_events,
     decode_json,
     decode_mapping,
-    decode_status,
     decode_thread,
     decode_threads,
 )
@@ -33,6 +32,7 @@ from blueferry.protocol import (
     SNAPSHOT_CALL_TIMEOUT_SEC,
     STATUS_CALL_TIMEOUT_SEC,
     STORAGE_CALL_TIMEOUT_SEC,
+    backend_compatibility_error,
 )
 
 
@@ -48,11 +48,23 @@ class BackendClient:
     ) -> None:
         self._interface_factory = interface_factory
 
-    def _iface(self, name: str) -> dbus.Interface:
+    def _raw_iface(self, name: str) -> dbus.Interface:
         if self._interface_factory is not None:
             return self._interface_factory(name)
         bus = get_session_bus()
         return dbus.Interface(bus.get_object(BUS_NAME, OBJECT_PATH), name)
+
+    def _iface(self, name: str) -> dbus.Interface:
+        interface = self._raw_iface(name)
+        # Check the same owner-bound proxy used for the operation. A daemon
+        # replacement must not inherit an earlier process's compatibility.
+        try:
+            status = decode_mapping(interface.GetStatus(timeout=STATUS_CALL_TIMEOUT_SEC))
+        except (dbus.exceptions.DBusException, ValueError) as error:
+            raise BackendError(str(error)) from error
+        if error_message := backend_compatibility_error(status):
+            raise BackendError(error_message)
+        return interface
 
     def is_healthy(self) -> bool:
         try:
@@ -60,15 +72,19 @@ class BackendClient:
         except dbus.exceptions.DBusException as error:
             raise BackendError(error.get_dbus_message() or str(error)) from error
 
-    def status(self) -> BackendStatus:
+    def status(self, *, check_compatibility: bool = True) -> BackendStatus:
+        """Read status; lifecycle recovery may inspect an older daemon first."""
         try:
-            return decode_status(
-                self._iface(MESSAGES_IFACE).GetStatus(
+            status = decode_mapping(
+                self._raw_iface(MESSAGES_IFACE).GetStatus(
                     timeout=STATUS_CALL_TIMEOUT_SEC
                 )
             )
         except (dbus.exceptions.DBusException, ValueError) as error:
             raise BackendError(str(error)) from error
+        if check_compatibility and (error_message := backend_compatibility_error(status)):
+            raise BackendError(error_message)
+        return BackendStatus.from_dict(status)
 
     def threads(self, limit: int = 1000) -> list[Thread]:
         try:

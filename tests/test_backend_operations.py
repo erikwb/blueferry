@@ -23,8 +23,9 @@ from blueferry.limits import (
     MAX_OUTGOING_BODY_BYTES,
     MAX_THREAD_BODY_CHARS,
 )
+from blueferry.models import Thread
 from blueferry.starred_threads import StarredThreadsStore
-from blueferry.threads import group_confirmation_token
+from blueferry.threads import build_threads, group_confirmation_token
 
 
 class _Sessions:
@@ -77,6 +78,41 @@ def test_group_reply_requires_confirmation_before_send(monkeypatch):
                 thread["recipients"], thread.get("roster_warning_id"),
             ),
         )
+
+
+@pytest.mark.parametrize(("address", "destination"), [
+    ("+1 (555) 111-1111", "+15551111111"),
+    ("alice@EXAMPLE.COM", "alice@example.com"),
+])
+def test_inferred_group_approval_uses_displayed_addresses_and_persists(
+    monkeypatch, address, destination,
+):
+    threads = build_threads([
+        {"kind": "sms_received", "handle": "bob", "sender_address": "+15552222222",
+         "contact_name": "Bob", "body": "earlier", "seen_at": "2026-09-07T12:00:00Z"},
+        {"kind": "sms_received", "handle": "alice", "sender_address": address,
+         "contact_name": "Alice", "body": "hello", "seen_at": "2026-09-07T12:10:00Z"},
+        {"kind": "ancs_notification", "app_id": "com.apple.MobileSMS", "title": "Alice",
+         "subtitle": "To you & Bob", "body": "hello", "seen_at": "2026-09-07T12:10:01Z"},
+    ])
+    group = next(thread for thread in threads if thread["is_group"])
+    displayed = Thread.from_dict(group)
+    assert displayed.reply_ready and address in displayed.recipients
+    operations = _operations()
+    _stub_group(operations, group)
+    sent = []
+    monkeypatch.setattr(
+        backend_operations, "send_group_message",
+        lambda _path, recipients, _body: sent.append(recipients) or "/transfer/sent",
+    )
+    for confirm in (True, False):
+        operations.send_to_thread(
+            displayed.key, "draft", confirm, lambda _: None,
+            lambda error: pytest.fail(str(error)),
+            expected_group_token=displayed.confirmation_token,
+        )
+        assert operations.list_threads(10)[0]["group_confirmed"] is True
+    assert sent == [[destination, "+15552222222"]] * 2
 
 
 @pytest.mark.parametrize("confirmation", [False, True])
