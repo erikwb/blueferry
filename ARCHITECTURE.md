@@ -81,6 +81,12 @@ All Python transports share `client_wire` for response-shape validation and
 model conversion; synchronous and toolkit-specific scheduling remain separate.
 Qt message composition and group confirmation live in standalone QML components
 with an explicit bridge dependency; the window handles navigation.
+`PhoneSettingsPage.qml` owns the Qt setup and preferences view. It receives the
+bridge explicitly and emits requests for navigation and confirmation. The
+window retains its page instance when settings closes and owns
+`PhoneSettingsDialogs.qml` separately, so an ongoing pairing prompt can still
+appear while conversations are open. Replacement confirmation retains both
+phone addresses from the original request across setup refreshes.
 GTK and Qt contact searches use `ConversationState` request sequences, and Qt
 retains that typed state across refreshes and sends. Qt and TUI share the snapshot
 loader; GTK feeds its independent asynchronous read results into the same state.

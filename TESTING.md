@@ -79,9 +79,14 @@ and fake BlueZ's object inventory. They assert capabilities rather than
 controller brands and never execute `btmgmt` against the host.
 The GTK client worker test replaces both the bus and GLib handoff, while the
 Kirigami controller test disables QDBus subscription and autostart. QML lint
-and an optional offscreen load may construct presentation objects only with an
+and offscreen loads may construct presentation objects only with an
 injected inert controller; a GUI smoke test must never use the default
 controller because that would activate the installed backend.
+Qt settings tests load the real main window with a QML recorder that cannot
+perform I/O. They exercise first-run navigation, repeated page reopening,
+device selection and busy state, storage-status recovery, and confirmation
+across refreshes or settings closure. Binding warnings fail these tests;
+pairing and storage actions must reach the recorder only after confirmation.
 
 The Arch package check runs Ruff over the complete source and test tree,
 Bandit over the Python security boundaries, and type-checks every backend
