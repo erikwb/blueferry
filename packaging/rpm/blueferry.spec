@@ -66,6 +66,7 @@ BlueFerry's GTK4 graphical client for GNOME and other GTK-based desktops.
 Summary:        Qt/Kirigami client for BlueFerry
 Requires:       %{name} = %{version}-%{release}
 Requires:       kf6-kirigami
+Requires:       kf6-qqc2-desktop-style
 Requires:       python3-pyside6
 
 %description -n blueferry-qt
