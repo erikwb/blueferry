@@ -116,6 +116,23 @@ def _name_label(row):
     return row.child.children[0].children[0]
 
 
+def test_group_dialog_rejects_a_roster_changed_while_it_was_open(monkeypatch):
+    from unittest.mock import Mock
+
+    dialog = Mock()
+    monkeypatch.setattr(conversations.Adw, "AlertDialog", lambda **_kwargs: dialog)
+    original = _thread(key="group:test", is_group=True, recipients=("alice@example.com", "bob@example.com"))
+    state = ConversationState()
+    state.threads = [original]
+    page = SimpleNamespace(_state=state, _toast=Mock(), _dispatch_send=Mock(), get_root=lambda: None)
+    conversations.ConversationsPage._confirm_group_send(page, original, "private draft")
+    response = dialog.connect.call_args.args[1]
+    state.threads = [_thread(key=original.key, is_group=True, recipients=("alice@example.com", "carol@example.com"))]
+    response(dialog, "send")
+    page._dispatch_send.assert_not_called()
+    assert "group changed" in page._toast.call_args.args[0]
+
+
 def test_sidebar_rebuild_does_not_fire_selection_callback(monkeypatch):
     """A live event redraw must not redraw the current thread a second time."""
     monkeypatch.setattr(conversations, "Gtk", _FakeGtk)

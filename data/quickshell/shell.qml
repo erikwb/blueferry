@@ -1233,7 +1233,8 @@ ShellRoot {
                       backendBridge.request("send_to_thread", {
                         thread_key: thread.key,
                         body: composer.text,
-                        confirm_group: thread.is_group
+                        confirm_group: thread.is_group,
+                        expected_group_token: root.groupSignature(thread)
                       })
                     }
                   }

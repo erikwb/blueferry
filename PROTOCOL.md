@@ -291,9 +291,14 @@ stops the daemon's connection attempts.
   connection, then every 15 seconds for later reconnects. Preserve an iPhone
   `Connection refused (111)` response as a distinct MAP refusal state because
   another computer may currently own the phone's single MAP connection.
-- A transfer object can disappear after successful completion. `complete` and
-  a disappearance after observable progress are successful terminal outcomes;
-  explicit `error`, a timeout, or a missing output file is not.
+- A transfer object can disappear after successful completion, but disappearance
+  alone does not prove that completion occurred. Sends require an observed
+  `complete` status, captured by a signal listener registered before
+  `PushMessage` or by the returned properties and polling. Disappearance with
+  no terminal evidence produces `SendOutcomeUnknown`, and clients
+  tell the user to check Messages on the phone before retrying. Downloads may
+  accept disappearance only after independently checking their output file.
+  Explicit `error`, a timeout, or a missing output file is not success.
 
 This replaced the early experimental workaround of restarting the user's
 entire `obex.service` before each operation, which disrupted the daemon's MAP

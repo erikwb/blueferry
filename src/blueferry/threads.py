@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TypeAlias
 
+from blueferry.errors import NotReadyError
 from blueferry.events import (
     canonical_address,
     display_sender_from_dict,
@@ -41,6 +42,9 @@ class ConversationIndex:
         )
         self._signature: CacheKey | None = None
         self._threads: list[dict] | None = None
+        self._generation = 0
+        self._loading = False
+        self._waiting: list[tuple[Callable[[], None], Callable[[Exception], None]]] = []
 
     @staticmethod
     def _file_signature(source: Path) -> tuple[int, int]:
@@ -51,8 +55,65 @@ class ConversationIndex:
             return 0, 0
 
     def invalidate(self) -> None:
+        self._generation += 1
         self._signature = None
         self._threads = None
+
+    def prepare_async(self, submit, job_factory, on_ready, on_error) -> None:
+        """Coalesce reads and publish only a still-current projection on GLib."""
+        signature = self._revision()
+        if self._threads is not None and signature == self._signature:
+            on_ready()
+            return
+        if len(self._waiting) >= 64:
+            on_error(NotReadyError("conversation refresh is busy; try again shortly"))
+            return
+        self._waiting.append((on_ready, on_error))
+        if self._loading:
+            return
+        self._loading = True
+        generation = self._generation
+
+        def reject(error: Exception) -> None:
+            self._loading = False
+            waiting, self._waiting = self._waiting, []
+            for _ready, failure in waiting:
+                failure(error)
+
+        def failed(error: Exception) -> None:
+            try:
+                current = generation == self._generation and signature == self._revision()
+            except Exception as revision_error:
+                reject(revision_error)
+                return
+            if not current:
+                loaded([])
+                return
+            reject(error)
+
+        def loaded(threads: list[dict]) -> None:
+            try:
+                current = generation == self._generation and signature == self._revision()
+            except Exception as error:
+                reject(error)
+                return
+            self._loading = False
+            if current:
+                self._threads = threads
+                self._signature = signature
+            waiting, self._waiting = self._waiting, []
+            # Each callback may mutate history or contact state. Recheck the
+            # cache before delivering the next request, never rebuild inline.
+            for ready, failure in waiting:
+                try:
+                    self.prepare_async(submit, job_factory, ready, failure)
+                except Exception as error:
+                    failure(error)
+
+        try:
+            submit(job_factory(), on_success=loaded, on_error=failed)
+        except Exception as error:
+            failed(error)
 
     def threads(self) -> list[dict]:
         signature = self._revision()

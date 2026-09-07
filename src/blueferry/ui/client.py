@@ -239,6 +239,7 @@ class DaemonClient(GObject.Object):
         body: str,
         *,
         confirm_group: bool,
+        expected_group_token: str,
         on_ok,
         on_err,
     ) -> None:
@@ -248,6 +249,7 @@ class DaemonClient(GObject.Object):
                     thread_key,
                     body,
                     confirm_group=confirm_group,
+                    expected_group_token=expected_group_token,
                 )
             ),
             on_ok,

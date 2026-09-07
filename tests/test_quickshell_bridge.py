@@ -23,8 +23,8 @@ class FakeClient:
         self.calls.append(("send", recipient, body))
         return "message-handle"
 
-    def send_to_thread(self, thread_key, body, *, confirm_group):
-        self.calls.append(("send_to_thread", thread_key, body, confirm_group))
+    def send_to_thread(self, thread_key, body, *, confirm_group, expected_group_token):
+        self.calls.append(("send_to_thread", thread_key, body, confirm_group, expected_group_token))
         return "thread-message-handle"
 
     def set_group_participants(self, thread_key, recipients):
@@ -62,6 +62,7 @@ def test_bridge_dispatches_private_values_without_command_arguments() -> None:
         "thread_key": "private-thread",
         "body": "group secret",
         "confirm_group": True,
+        "expected_group_token": "roster-token",
     }) == "thread-message-handle"
     bridge.dispatch("set_group_participants", {
         "thread_key": "private-thread",
@@ -84,7 +85,7 @@ def test_bridge_dispatches_private_values_without_command_arguments() -> None:
     assert client.calls == [
         ("contacts", "private search"),
         ("send", "+15557654321", "private body"),
-        ("send_to_thread", "private-thread", "group secret", True),
+        ("send_to_thread", "private-thread", "group secret", True, "roster-token"),
         (
             "set_group_participants",
             "private-thread",

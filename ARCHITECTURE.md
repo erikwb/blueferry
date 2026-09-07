@@ -118,8 +118,13 @@ and a positive line-protocol approval before changing the saved target. The
 terminal wizard supplies its confirmation callback directly. A library caller
 cannot silently fall through to a desktop Bluetooth agent.
 User-facing CLI message commands use the same backend client as graphical UIs. Group
-replies use `SendToThread`, so routing always comes from the backend's current
-conversation projection rather than client-supplied recipients.
+replies use `SendToThreadChecked`, which binds approval to the exact roster and
+roster-warning token displayed by the client. The backend rejects stale tokens
+even if another client has already confirmed the new roster. GTK and TUI retain
+the dialog's token across refreshes; Qt and Quickshell use the same check at the
+wire boundary. The legacy `SendToThread` signature remains available for direct
+threads; group calls require an updated client. Reply addresses always come
+from the backend projection.
 
 ## Pairing policy
 
@@ -279,7 +284,20 @@ plaintext cleanup. This keeps Bluetooth failure handling outside persistence.
 
 Slow public D-Bus methods use deferred replies, so Bluetooth waits never block
 the daemon's event loop. Status, lifecycle signals, and incoming BlueZ events
-remain dispatchable while an OBEX transfer is active. The GTK client serializes
+remain dispatchable while an OBEX transfer is active. Conversation requests
+coalesce into one background history read and projection using independent
+contact and key snapshots. Results are published only if both the history
+revision and the invalidation generation still match; stale results and
+failures are retried. Correlation indexes repeated bodies by timestamp and
+stops once it finds two candidates, preserving ambiguity without scanning
+every occurrence of a common message.
+
+Explicit wallet operations use a separate worker with a 120-second cancellable
+deadline. Key installation, policy changes, and replies remain on GLib; late
+results after cancellation or a new authentication failure cannot enable
+storage. Wallet waits never occupy the serialized Bluetooth worker.
+
+The GTK client serializes
 snapshot reads on a worker-owned private bus connection and marshals results to
 GLib; its sends use dbus-python reply handlers. The Qt/KDE client exposes an
 asynchronous controller to Kirigami, serializes work in a QThreadPool, and

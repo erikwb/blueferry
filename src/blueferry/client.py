@@ -140,10 +140,11 @@ class BackendClient:
 
     def send_to_thread(
         self, key: str, body: str, *, confirm_group: bool = False,
+        expected_group_token: str = "",
     ) -> str:
         try:
-            return str(self._iface(MESSAGES_IFACE).SendToThread(
-                key, body, dbus.Boolean(confirm_group),
+            return str(self._iface(MESSAGES_IFACE).SendToThreadChecked(
+                key, body, dbus.Boolean(confirm_group), expected_group_token,
                 timeout=OBEX_CALL_TIMEOUT_SEC,
             ))
         except dbus.exceptions.DBusException as error:

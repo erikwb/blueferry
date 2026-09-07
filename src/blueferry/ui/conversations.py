@@ -526,7 +526,7 @@ class ConversationsPage(Gtk.Box):
             self._new_recipient.set_sensitive(True)
             self._new_body.set_sensitive(True)
             self._update_new_send_button()
-            self._toast(_("Send failed: {error}").format(error=text))
+            self._toast(_("Send: {error}").format(error=text))
 
         self._client.send_message(recipient, body, done, failed)
 
@@ -983,6 +983,10 @@ class ConversationsPage(Gtk.Box):
 
         def responded(_dialog, response: str) -> None:
             if response == "send":
+                current = self._state.thread(thread.key)
+                if current is None or current.confirmation_token != thread.confirmation_token:
+                    self._toast(_("The group changed. Review the recipients and send again."))
+                    return
                 plan = self._state.plan_reply(
                     body,
                     thread_key=thread.key,
@@ -1022,6 +1026,7 @@ class ConversationsPage(Gtk.Box):
             thread.key,
             plan.body,
             confirm_group=plan.confirm_group,
+            expected_group_token=plan.expected_group_token,
             on_ok=done,
             on_err=failed,
         )

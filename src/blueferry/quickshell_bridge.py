@@ -98,6 +98,7 @@ class QuickshellBridge:
                 _text(args, "thread_key"),
                 _text(args, "body"),
                 confirm_group=confirm,
+                expected_group_token=_text(args, "expected_group_token"),
             )
         if method == "set_group_participants":
             return self.client.set_group_participants(

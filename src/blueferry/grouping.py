@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import re
 import unicodedata
+from bisect import bisect_left, bisect_right
 from datetime import datetime, timezone
 
 from blueferry.ancs.constants import MESSAGES_APP_ID
@@ -29,6 +30,46 @@ CORRELATED_ANCS_ROW_IDS_FIELD = "_blueferry_correlated_ancs_row_ids"
 
 _TO_PREFIX = re.compile(r"^To\s+", re.IGNORECASE)
 _MEMBER_SEPARATOR = re.compile(r"\s*(?:,|&)\s*")
+
+
+class _MessageCandidates:
+    """Index repeated bodies by time; ambiguity needs at most two candidates."""
+
+    def __init__(self, events: list[dict], indexes: list[int]) -> None:
+        self.exact: dict[str, list[tuple[float, int]]] = {}
+        self.prefix: dict[str, list[tuple[float, int]]] = {}
+        self.maximum_index = len(events)
+        for index in indexes:
+            event = events[index]
+            when = _seen_at(event)
+            if when is None:
+                continue
+            body = str(event.get("body") or "")
+            entry = (when.timestamp(), index)
+            self.exact.setdefault(body, []).append(entry)
+            if len(body) > 256:
+                self.prefix.setdefault(body[:256], []).append(entry)
+        for entries in (*self.exact.values(), *self.prefix.values()):
+            entries.sort()
+
+    def matching(self, body: str, when: datetime, excluded: set[int]) -> list[int]:
+        instant = when.timestamp()
+        matches: list[int] = []
+        buckets = [self.exact.get(body, [])]
+        if len(body) == 256:
+            buckets.append(self.prefix.get(body, []))
+        for entries in buckets:
+            start = bisect_left(entries, (instant - CORRELATION_WINDOW_SECONDS, -1))
+            stop = bisect_right(
+                entries, (instant + CORRELATION_WINDOW_SECONDS, self.maximum_index),
+            )
+            for position in range(start, stop):
+                index = entries[position][1]
+                if index not in excluded:
+                    matches.append(index)
+                    if len(matches) == 2:
+                        return matches
+        return matches
 
 
 def _seen_at(event: dict) -> datetime | None:
@@ -274,13 +315,7 @@ def correlate_group_events(events: list[dict], resolver=None) -> list[dict]:
             "group_participants_required": False,
         })
     addresses_by_name: dict[str, set[str]] = {}
-    sms_by_body: dict[str, list[int]] = {}
-    sms_by_ancs_prefix: dict[str, list[int]] = {}
-    for sms_index in sms_indexes:
-        body = str(out[sms_index].get("body") or "")
-        sms_by_body.setdefault(body, []).append(sms_index)
-        if len(body) > 256:
-            sms_by_ancs_prefix.setdefault(body[:256], []).append(sms_index)
+    message_candidates = _MessageCandidates(out, sms_indexes)
 
     # Learn trustworthy contact-name/address pairs from all MAP history first;
     # a group member may not have spoken in the current group yet.
@@ -306,27 +341,14 @@ def correlate_group_events(events: list[dict], resolver=None) -> list[dict]:
         if not ancs_body or ancs_time is None:
             continue
 
-        eligible_indexes = list(sms_by_body.get(ancs_body, ()))
-        if len(ancs_body) == 256:
-            eligible_indexes.extend(sms_by_ancs_prefix.get(ancs_body, ()))
-        candidates: list[tuple[float, int]] = []
-        for sms_index in dict.fromkeys(eligible_indexes):
-            if sms_index in matched:
-                continue
-            sms = out[sms_index]
-            sms_time = _seen_at(sms)
-            if sms_time is None:
-                continue
-            delta = abs((ancs_time - sms_time).total_seconds())
-            if delta <= CORRELATION_WINDOW_SECONDS:
-                candidates.append((delta, sms_index))
+        candidates = message_candidates.matching(ancs_body, ancs_time, matched)
         # A wrong group reply is worse than a missed correlation. Repeated
         # texts such as "ok" are common, so body + a broad time window is not
         # enough evidence when more than one MAP message is eligible.
         if len(candidates) != 1:
             continue
 
-        _, sms_index = candidates[0]
+        sms_index = candidates[0]
         matched.add(sms_index)
         sms = out[sms_index]
 
@@ -471,19 +493,7 @@ def correlate_group_events(events: list[dict], resolver=None) -> list[dict]:
         ancs_time = _seen_at(event)
         if not ancs_body or ancs_time is None:
             continue
-        eligible_indexes = list(sms_by_body.get(ancs_body, ()))
-        if len(ancs_body) == 256:
-            eligible_indexes.extend(sms_by_ancs_prefix.get(ancs_body, ()))
-        direct_candidates: list[int] = []
-        for sms_index in dict.fromkeys(eligible_indexes):
-            sms_time = _seen_at(out[sms_index])
-            if sms_time is None:
-                continue
-            if (
-                abs((ancs_time - sms_time).total_seconds())
-                <= CORRELATION_WINDOW_SECONDS
-            ):
-                direct_candidates.append(sms_index)
+        direct_candidates = message_candidates.matching(ancs_body, ancs_time, set())
         if len(direct_candidates) != 1:
             continue
         sms = out[direct_candidates[0]]

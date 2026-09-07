@@ -55,6 +55,7 @@ def _fetch_bmessage(message_path: str, target: Path):
             initial_status=str(initial.get("Status", "queued")),
             timeout_s=FETCH_TIMEOUT_SEC,
             property_timeout_s=10.0,
+            allow_disappearance=True,
             check_progress=check_size,
         )
 

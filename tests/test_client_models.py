@@ -71,6 +71,19 @@ class _Messages:
         return bool(starred)
 
 
+def test_group_send_carries_the_displayed_roster_without_a_legacy_fallback():
+    calls = []
+    class Messages:
+        def SendToThreadChecked(self, *args, **kwargs):
+            calls.append(args)
+            return "/transfer/test"
+    client = BackendClient(interface_factory=lambda _: Messages())
+    assert client.send_to_thread(
+        "group:test", "private draft", confirm_group=True, expected_group_token="approved-roster",
+    ) == "/transfer/test"
+    assert calls == [("group:test", "private draft", True, "approved-roster")]
+
+
 def test_backend_client_returns_shared_models(monkeypatch):
     messages = _Messages()
     client = BackendClient(interface_factory=lambda _name: messages)

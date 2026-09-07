@@ -1,11 +1,31 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
+from blueferry import grouping
 from blueferry.grouping import (
     correlate_group_events,
     group_members_from_ancs,
     named_group_key,
 )
 from blueferry.threads import build_threads
+
+
+def test_repeated_bodies_use_a_time_index_without_reparsing_the_archive(monkeypatch):
+    parsed = []
+    original = grouping._seen_at
+    monkeypatch.setattr(grouping, "_seen_at", lambda event: parsed.append(True) or original(event))
+    start = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    events = []
+    for index in range(1000):
+        stamp = (start + timedelta(minutes=index * 3)).isoformat()
+        events.extend([
+            _sms("+15551111111", "Alice", "ok", stamp),
+            _ancs("Alice", "Team", "ok", stamp),
+        ])
+    result = correlate_group_events(events)
+    assert all(event.get("group_key") == named_group_key("Team") for event in result[::2])
+    assert len(parsed) <= 2 * len(events)
 
 
 def _sms(sender: str, name: str | None, body: str, seen_at: str) -> dict:

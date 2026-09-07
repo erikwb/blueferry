@@ -20,6 +20,7 @@ from blueferry.errors import (
     NotFoundError,
     NotReadyError,
     OperationFailedError,
+    SendOutcomeUnknownError,
 )
 from blueferry.events import canonical_address
 from blueferry.grouping import (
@@ -45,6 +46,7 @@ from blueferry.limits import (
     MAX_EVENT_KIND_CHARS,
     MAX_EVENT_KINDS,
     MAX_EVENT_QUERY_LIMIT,
+    MAX_GROUP_CONFIRMATION_TOKEN_CHARS,
     MAX_OUTGOING_BODY_BYTES,
     MAX_RECENT_QUERY_LIMIT,
     MAX_THREAD_BODY_CHARS,
@@ -56,7 +58,12 @@ from blueferry.obex.map_query import list_recent_messages
 from blueferry.obex.map_read import set_session_messages_read
 from blueferry.obex.map_send import send_group_message, send_message
 from blueferry.recipients import InvalidRecipient, validate_recipient
-from blueferry.storage_security import STORAGE_POLICIES, StorageSecurity
+from blueferry.storage_security import (
+    STORAGE_POLICIES,
+    CorruptStorageError,
+    StorageSecurity,
+    StorageStatus,
+)
 from blueferry.threads import (
     MESSAGE_KINDS,
     ConversationIndex,
@@ -93,6 +100,8 @@ class SessionState(Protocol):
 
 
 class ContactIndex(Protocol):
+    def snapshot(self) -> ContactIndex: ...
+
     def find_by_name(self, query: str) -> list[tuple[str, str]]: ...
 
     def records(
@@ -179,14 +188,55 @@ class BackendOperations:
         )
 
     def _build_conversations(self, events: list[dict]) -> list[dict]:
-        threads = build_threads(events, self.dependencies.contacts)
-        stars = self._starred_keys()
+        return self._project_conversations(events, self.dependencies.contacts, self._starred_keys())
+
+    @staticmethod
+    def _project_conversations(
+        events: list[dict], contacts: ContactIndex | None, stars: set[str],
+    ) -> list[dict]:
+        threads = build_threads(events, contacts)
         if not stars:
             return threads
         recent = {str(event.get("handle") or "") for event in events[-MAX_CONVERSATION_EVENTS:]}
         return [thread for thread in threads if conversation_keys(thread) & stars or any(
             message["handle"] in recent for message in thread["messages"]
         )]
+
+    def prepare_conversations(
+        self, submit: Callable[..., object], ready: Callable[[], None], failure: Failure,
+    ) -> None:
+        def job_factory() -> Callable[[], list[dict]]:
+            stars = self._starred_keys()
+            contacts = self.dependencies.contacts
+            resolver = contacts.snapshot() if contacts is not None else None
+            storage = self.dependencies.storage
+            reader = storage.snapshot() if storage is not None else None
+
+            def project() -> list[dict]:
+                try:
+                    events = read_events(
+                        limit=None if stars else MAX_CONVERSATION_EVENTS,
+                        max_body_chars=MAX_THREAD_BODY_CHARS, storage=reader,
+                    )
+                    if reader is not None and reader.status.state == "error":
+                        raise CorruptStorageError(reader.status.detail)
+                    return self._project_conversations(events, resolver, stars)
+                finally:
+                    if reader is not None:
+                        reader.close()
+
+            return project
+
+        def failed(error: Exception) -> None:
+            if isinstance(error, CorruptStorageError):
+                storage = self.dependencies.storage
+                if storage is not None:
+                    storage.fail_closed(str(error))
+                failure(NotReadyError(str(error)))
+                return
+            failure(error)
+
+        self._conversations.prepare_async(submit, job_factory, ready, failed)
 
     def _require_map(self) -> None:
         if self.sessions.map is None:
@@ -218,6 +268,9 @@ class BackendOperations:
             failure(error)
 
     def _operation_failed(self, operation: str, error: Exception, failure: Failure) -> None:
+        if isinstance(error, SendOutcomeUnknownError):
+            failure(error)
+            return
         log.error("%s failed: %s", operation, error)
         try:
             self.sessions.report_error(error)
@@ -260,7 +313,11 @@ class BackendOperations:
         confirm_group: bool,
         success: Success,
         failure: Failure,
+        *,
+        expected_group_token: str = "",
     ) -> None:
+        if len(expected_group_token) > MAX_GROUP_CONFIRMATION_TOKEN_CHARS:
+            raise InvalidArgumentsError("group confirmation token is too long")
         if not thread_key.strip():
             raise InvalidArgumentsError("thread key must be non-empty")
         if len(thread_key) > 1024:
@@ -289,6 +346,16 @@ class BackendOperations:
                 group_recipients,
                 thread.get("roster_warning_id"),
             )
+            if not expected_group_token:
+                raise ConfirmationRequiredError(
+                    "this client cannot confirm group recipients; update or restart "
+                    "BlueFerry before replying to this group"
+                )
+            if expected_group_token != token:
+                raise ConfirmationRequiredError(
+                    "the group changed; refresh the conversation and review the "
+                    "recipients before sending"
+                )
             if not confirm_group and not self._group_roster_confirmed(
                 thread_key, token
             ):
@@ -743,7 +810,7 @@ class BackendOperations:
             return "encrypted"
         return self.dependencies.storage.status.policy
 
-    def set_storage_policy(self, value: str) -> dict:
+    def _prepare_storage_policy(self, value: str) -> str:
         if self.dependencies.storage is None:
             raise NotReadyError("local storage is unavailable")
         selected = str(value).strip().casefold()
@@ -761,35 +828,42 @@ class BackendOperations:
             if self.dependencies.starred_threads is not None:
                 self.dependencies.starred_threads.clear()
             self._clear_confirmed_groups()
-        try:
-            status = self.dependencies.storage.set_policy(
-                selected, allow_prompt=True
-            )
-        except ValueError as error:
-            raise InvalidArgumentsError(str(error)) from error
-        if status.policy == "none":
-            if self.dependencies.contacts is not None:
-                self.dependencies.contacts.refresh()
-        elif status.can_read:
-            if self.dependencies.contacts is not None:
-                self.dependencies.contacts.refresh()
-        self.invalidate_conversations()
-        if self.dependencies.on_storage_changed is not None:
-            self.dependencies.on_storage_changed()
-        return {
-            "storage_policy": status.policy,
-            "storage_state": status.state,
-            "storage_detail": status.detail,
-        }
+        return selected
 
-    def unlock_storage(self) -> dict:
-        if self.dependencies.storage is None:
+    def change_storage_async(
+        self, submit: Callable[..., object], success: Success, failure: Failure,
+        *, policy: str | None = None,
+    ) -> None:
+        storage = self.dependencies.storage
+        if storage is None:
             raise NotReadyError("local storage is unavailable")
-        status = self.dependencies.storage.refresh(allow_prompt=True)
-        if status.can_read:
-            if self.dependencies.contacts is not None:
-                self.dependencies.contacts.refresh()
-            self.invalidate_conversations()
+        if storage.busy:
+            raise NotReadyError("a desktop wallet request is already pending")
+        selected = self._prepare_storage_policy(policy) if policy is not None else None
+        completed = False
+
+        def succeeded(status: StorageStatus) -> None:
+            nonlocal completed
+            completed = True
+            try:
+                success(self._storage_changed(status))
+            except Exception as error:
+                failure(error)
+
+        storage.change_async(
+            submit, policy=selected, on_success=succeeded, on_error=failure,
+        )
+        # Publish policy changes immediately, including while key creation or
+        # deletion is waiting on the wallet. Do not expose an old contact cache.
+        if selected is not None and not completed:
+            self._storage_changed(storage.status)
+
+    def _storage_changed(self, status: StorageStatus) -> dict:
+        if self.dependencies.contacts is not None:
+            self.dependencies.contacts.refresh()
+        if self.dependencies.storage is not None:
+            status = self.dependencies.storage.status
+        self.invalidate_conversations()
         if self.dependencies.on_storage_changed is not None:
             self.dependencies.on_storage_changed()
         return {

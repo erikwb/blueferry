@@ -4,6 +4,8 @@ from __future__ import annotations
 import base64
 import logging
 import os
+from collections.abc import Callable
+from copy import copy
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -35,10 +37,10 @@ class CorruptStorageError(ValueError):
 
 
 class KeyProvider(Protocol):
-    def get_or_create(self, *, allow_prompt: bool) -> bytes:
+    def get_or_create(self, *, allow_prompt: bool, cancellable=None) -> bytes:
         """Return the application key or raise ``StorageUnavailableError``."""
 
-    def delete(self, *, allow_prompt: bool) -> bool:
+    def delete(self, *, allow_prompt: bool, cancellable=None) -> bool:
         """Remove application keys and return whether anything was deleted."""
 
 
@@ -74,12 +76,12 @@ class SecretServiceKeyProvider:
             raise StorageUnavailableError("the stored BlueFerry key has the wrong size")
         return key
 
-    def get_or_create(self, *, allow_prompt: bool) -> bytes:
+    def get_or_create(self, *, allow_prompt: bool, cancellable=None) -> bytes:
         Secret = self._secret_module()
         try:
             service = Secret.Service.get_sync(
                 Secret.ServiceFlags.OPEN_SESSION,
-                None,
+                cancellable,
             )
             schema = Secret.Schema.new(
                 _SCHEMA_NAME,
@@ -92,7 +94,7 @@ class SecretServiceKeyProvider:
                 flags = Secret.SearchFlags.ALL
                 if load_secrets:
                     flags |= Secret.SearchFlags.LOAD_SECRETS
-                return list(service.search_sync(schema, _ATTRIBUTES, flags, None))
+                return list(service.search_sync(schema, _ATTRIBUTES, flags, cancellable))
 
             def load_existing(items) -> bytes:
                 if not items:
@@ -107,7 +109,7 @@ class SecretServiceKeyProvider:
                 if item.get_locked():
                     if not allow_prompt:
                         raise StorageUnavailableError("the desktop keyring is locked")
-                    service.unlock_sync([item], None)
+                    service.unlock_sync([item], cancellable)
                 loaded = search(load_secrets=True)
                 if len(loaded) != 1:
                     if len(loaded) > 1:
@@ -143,12 +145,12 @@ class SecretServiceKeyProvider:
                 service,
                 Secret.COLLECTION_DEFAULT,
                 Secret.CollectionFlags.NONE,
-                None,
+                cancellable,
             )
             if collection is None:
                 raise StorageUnavailableError("no default keyring is configured")
             if collection.get_locked():
-                service.unlock_sync([collection], None)
+                service.unlock_sync([collection], cancellable)
                 if collection.get_locked():
                     raise StorageUnavailableError("the desktop keyring is locked")
 
@@ -172,7 +174,7 @@ class SecretServiceKeyProvider:
                 Secret.COLLECTION_DEFAULT,
                 "BlueFerry local storage key",
                 value,
-                None,
+                cancellable,
             ):
                 raise StorageUnavailableError("the desktop keyring rejected the key")
             # Return what the service actually retained, and fail closed if a
@@ -186,13 +188,13 @@ class SecretServiceKeyProvider:
             log.info("Secret Service is not ready: %s", error)
             raise StorageUnavailableError("the desktop keyring is unavailable") from error
 
-    def delete(self, *, allow_prompt: bool) -> bool:
+    def delete(self, *, allow_prompt: bool, cancellable=None) -> bool:
         if not allow_prompt:
             raise StorageUnavailableError("key removal requires user action")
         Secret = self._secret_module()
         try:
             service = Secret.Service.get_sync(
-                Secret.ServiceFlags.OPEN_SESSION, None
+                Secret.ServiceFlags.OPEN_SESSION, cancellable
             )
             schema = Secret.Schema.new(
                 _SCHEMA_NAME,
@@ -200,7 +202,7 @@ class SecretServiceKeyProvider:
                 {"purpose": Secret.SchemaAttributeType.STRING,
                  "version": Secret.SchemaAttributeType.STRING},
             )
-            return bool(service.clear_sync(schema, _ATTRIBUTES, None))
+            return bool(service.clear_sync(schema, _ATTRIBUTES, cancellable))
         except Exception as error:
             raise StorageUnavailableError(
                 "the desktop keyring could not remove the storage key"
@@ -239,6 +241,8 @@ class StorageSecurity:
         ))
         self._policy = selected if selected in STORAGE_POLICIES else DEFAULT_STORAGE_POLICY
         self._key: bytearray | None = None
+        self._cancel_request: Callable[[], None] | None = None
+        self._failure_generation = 0
         if self._policy == NO_STORAGE:
             self._state = "disabled"
             self._detail = "Local data is not retained"
@@ -255,6 +259,96 @@ class StorageSecurity:
     def status(self) -> StorageStatus:
         return StorageStatus(self._policy, self._state, self._detail)
 
+    def snapshot(self) -> StorageSecurity:
+        """Own a separate key buffer while a background read is in progress."""
+        reader = copy(self)
+        reader._key = bytearray(self._key) if self._key is not None else None
+        reader._cancel_request = None
+        return reader
+
+    @property
+    def busy(self) -> bool:
+        return self._cancel_request is not None
+
+    def change_async(
+        self, submit: Callable[..., object], *, policy: str | None = None,
+        on_success: Callable[[StorageStatus], None], on_error: Callable[[Exception], None],
+        timeout_seconds: int = 120,
+    ) -> None:
+        """Perform wallet I/O off-loop; apply key and policy state only on GLib."""
+        from gi.repository import Gio, GLib
+
+        if self.busy:
+            raise StorageUnavailableError("a desktop wallet request is already pending")
+        if policy is not None:
+            self._select_policy(policy)
+        if self._policy == PLAINTEXT_STORAGE or (self._policy == NO_STORAGE and policy is None):
+            on_success(self.status)
+            return
+        deleting = self._policy == NO_STORAGE
+        failure_generation = self._failure_generation
+        cancellable = Gio.Cancellable()
+        timer: int | None = None
+
+        def cancel() -> None:
+            nonlocal timer
+            cancellable.cancel()
+            if timer is not None:
+                GLib.source_remove(timer)
+                timer = None
+            self._cancel_request = None
+
+        self._cancel_request = cancel
+
+        def finish(value: bytes | bool | None, error: Exception | None = None) -> None:
+            if self._cancel_request is not cancel:
+                return
+            cancel()
+            if deleting:
+                self._detail = (
+                    "Local data is not retained; remove the old BlueFerry key "
+                    "through the desktop wallet if desired"
+                ) if error else "Local data is not retained"
+            elif self._failure_generation != failure_generation:
+                # An independent archive read may detect corruption while
+                # the wallet is open. Its failure must survive a late key.
+                pass
+            elif error is not None:
+                self._forget_key()
+                self._state = "locked"
+                self._detail = str(error)
+            elif isinstance(value, bytes) and len(value) == _KEY_BYTES:
+                self._accept_key(value)
+            else:
+                self._forget_key()
+                self._state = "locked"
+                self._detail = "the desktop keyring returned an invalid BlueFerry key"
+            on_success(self.status)
+
+        def timed_out() -> bool:
+            nonlocal timer
+            timer = None
+            finish(None, StorageUnavailableError("desktop wallet request timed out; try again"))
+            return False
+
+        def request() -> bytes | bool:
+            if deleting:
+                return self._provider.delete(allow_prompt=True, cancellable=cancellable)
+            return self._provider.get_or_create(allow_prompt=True, cancellable=cancellable)
+
+        try:
+            timer = GLib.timeout_add_seconds(timeout_seconds, timed_out)
+            submit(request, on_success=finish, on_error=lambda error: finish(None, error))
+        except Exception as error:
+            cancel()
+            on_error(error)
+
+    def _accept_key(self, key: bytes) -> None:
+        self._forget_key()
+        self._key = bytearray(key)
+        self._state = "ready"
+        self._detail = "Local data is encrypted with the desktop keyring"
+
     def refresh(self, *, allow_prompt: bool) -> StorageStatus:
         if self._policy == NO_STORAGE:
             return self.status
@@ -270,22 +364,34 @@ class StorageSecurity:
             self._state = "locked"
             self._detail = str(error)
         else:
-            self._forget_key()
-            self._key = bytearray(key)
-            self._state = "ready"
-            self._detail = "Local data is encrypted with the desktop keyring"
+            self._accept_key(key)
         return self.status
 
-    def set_policy(self, value: str, *, allow_prompt: bool = True) -> StorageStatus:
+    def _select_policy(self, value: str) -> str:
         selected = str(value).strip().casefold()
         if selected not in STORAGE_POLICIES:
             choices = ", ".join(sorted(STORAGE_POLICIES))
             raise ValueError(f"local data policy must be one of: {choices}")
+        previous = self._policy
         self._settings.update(local_data=selected)
         self._policy = selected
         if selected == NO_STORAGE:
             self._forget_key()
             self._state = "disabled"
+            self._detail = "Local data is not retained"
+        elif selected == PLAINTEXT_STORAGE:
+            self._forget_key()
+            self._state = "ready"
+            self._detail = "Local data is retained without encryption"
+        elif previous != selected:
+            self._forget_key()
+            self._state = "locked"
+            self._detail = "Unlock the desktop keyring to retain encrypted local data"
+        return selected
+
+    def set_policy(self, value: str, *, allow_prompt: bool = True) -> StorageStatus:
+        selected = self._select_policy(value)
+        if selected == NO_STORAGE:
             try:
                 self._provider.delete(allow_prompt=allow_prompt)
             except StorageUnavailableError:
@@ -295,19 +401,21 @@ class StorageSecurity:
                 )
             else:
                 self._detail = "Local data is not retained"
-        elif selected == PLAINTEXT_STORAGE:
-            self._forget_key()
-            self._state = "ready"
-            self._detail = "Local data is retained without encryption"
-        else:
+        elif selected == ENCRYPTED_STORAGE:
             self.refresh(allow_prompt=allow_prompt)
         return self.status
 
     def close(self) -> None:
+        self.cancel_pending()
         self._forget_key()
+
+    def cancel_pending(self) -> None:
+        if self._cancel_request is not None:
+            self._cancel_request()
 
     def fail_closed(self, detail: str) -> None:
         """Stop all retained-data access after an authentication failure."""
+        self._failure_generation += 1
         self._forget_key()
         self._state = "error"
         self._detail = detail

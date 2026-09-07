@@ -10,15 +10,26 @@
       <arg name="body" type="s" direction="in"/>
       <arg name="transfer_path" type="s" direction="out"/>
       <annotation name="io.weirdware.BlueFerry.Errors"
-                  value="InvalidArgs,NotReady,SendFailed"/>
+                  value="InvalidArgs,NotReady,SendFailed,SendOutcomeUnknown"/>
     </method>
     <method name="SendToThread">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Legacy direct-thread send; group replies require SendToThreadChecked"/>
       <arg name="thread_key" type="s" direction="in"/>
       <arg name="body" type="s" direction="in"/>
       <arg name="confirm_group" type="b" direction="in"/>
       <arg name="transfer_path" type="s" direction="out"/>
       <annotation name="io.weirdware.BlueFerry.Errors"
-                  value="InvalidArgs,NotFound,NotReady,ConfirmationRequired,SendFailed"/>
+                  value="InvalidArgs,NotFound,NotReady,ConfirmationRequired,SendFailed,SendOutcomeUnknown"/>
+    </method>
+    <method name="SendToThreadChecked">
+      <arg name="thread_key" type="s" direction="in"/>
+      <arg name="body" type="s" direction="in"/>
+      <arg name="confirm_group" type="b" direction="in"/>
+      <arg name="expected_group_token" type="s" direction="in"/>
+      <arg name="transfer_path" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotFound,NotReady,ConfirmationRequired,SendFailed,SendOutcomeUnknown"/>
     </method>
     <method name="ListEvents">
       <arg name="kinds" type="as" direction="in"/>
