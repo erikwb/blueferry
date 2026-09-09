@@ -374,7 +374,7 @@ def test_records_tolerate_a_malformed_stored_row(tmp_path, monkeypatch):
 
     resolver = ContactsResolver.__new__(ContactsResolver)
     resolver.storage = None
-    resolver._repository = SimpleNamespace(load=lambda: [
+    resolver._repository = SimpleNamespace(load=lambda **_kwargs: [
         ("Alice Example", None, ["alice@example.com"]),
         ("Bob Other", "5551234567", None),
         (None, ["15551112222"], []),

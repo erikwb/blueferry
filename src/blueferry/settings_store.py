@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 from blueferry import config
@@ -12,6 +13,7 @@ from blueferry.private_files import atomic_write_private_text, read_private_text
 # characters), plus roster digests and encryption framing. Keep local.env
 # parsing on its smaller, independent config limit.
 MAX_SETTINGS_FILE_BYTES = 4 * 1024 * 1024
+_UPDATE_LOCK = Lock()
 
 
 class SettingsStore:
@@ -30,11 +32,14 @@ class SettingsStore:
         return value if isinstance(value, dict) else {}
 
     def update(self, **values: Any) -> None:
-        payload = self.read()
-        payload.update(values)
-        encoded = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
-        atomic_write_private_text(
-            self.path,
-            encoded,
-            maximum_bytes=MAX_SETTINGS_FILE_BYTES,
-        )
+        # Preparation can migrate private preferences on a worker while the
+        # main loop saves notification settings. Serialize the read/modify/write.
+        with _UPDATE_LOCK:
+            payload = self.read()
+            payload.update(values)
+            encoded = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+            atomic_write_private_text(
+                self.path,
+                encoded,
+                maximum_bytes=MAX_SETTINGS_FILE_BYTES,
+            )

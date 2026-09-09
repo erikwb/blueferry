@@ -29,8 +29,10 @@ class SqliteSink:
         self.storage = storage
         self._writes_since_prune = 0
         self._unavailable_logged = False
-        if storage is not None and not storage.status.can_write:
-            log.info("SQLite history sink idle: %s", storage.status.detail)
+        if storage is not None:
+            # Managed stores are prepared by the asynchronous storage lifecycle.
+            # Sink creation must not repeat those archive scans on the GLib loop.
+            log.info("SQLite history sink: %s", storage.status.detail)
             return
         discarded, minimized = minimize_ancs_history(
             path=self.path, storage=self.storage

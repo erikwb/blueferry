@@ -6,6 +6,7 @@ import json
 import logging
 import sqlite3
 from contextlib import closing
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -358,7 +359,7 @@ def test_pruning_reasserts_private_encrypted_metadata(tmp_path) -> None:
         {
             "kind": "sms_received",
             "body": "private",
-            "seen_at": "2026-08-09T12:34:56+00:00",
+            "seen_at": datetime.now(timezone.utc).isoformat(),
         },
         path=path,
         storage=storage,
@@ -412,7 +413,10 @@ def test_pruning_rolls_back_earlier_deletions_when_a_retained_row_is_corrupt(tmp
 
 
 @pytest.mark.parametrize("end_request", ["timeout", "shutdown", "corruption"])
-def test_cancelled_wallet_request_cannot_install_a_late_key(tmp_path, monkeypatch, end_request):
+@pytest.mark.parametrize("allow_prompt", [False, True])
+def test_cancelled_wallet_request_cannot_install_a_late_key(
+    tmp_path, monkeypatch, end_request, allow_prompt,
+):
     from gi.repository import GLib
 
     callbacks = []
@@ -428,11 +432,13 @@ def test_cancelled_wallet_request_cannot_install_a_late_key(tmp_path, monkeypatc
     storage.change_async(
         lambda operation, **handlers: pending.append((operation, handlers)),
         on_success=outcomes.append, on_error=errors.append,
+        allow_prompt=allow_prompt,
     )
     assert storage.busy
     assert not storage.status.can_write
     operation, handlers = pending.pop()
     key = operation()
+    assert provider.calls == [allow_prompt]
     if end_request == "timeout":
         callbacks[0]()
         assert len(outcomes) == 1

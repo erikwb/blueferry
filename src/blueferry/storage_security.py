@@ -4,10 +4,13 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import sqlite3
 from collections.abc import Callable
 from copy import copy
 from dataclasses import dataclass
-from typing import Protocol
+from pathlib import Path
+from threading import RLock
+from typing import Any, Protocol
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -34,6 +37,26 @@ class StorageUnavailableError(RuntimeError):
 
 class CorruptStorageError(ValueError):
     """A retained ciphertext failed authenticated decryption."""
+
+
+@dataclass
+class _PreparedKey:
+    value: bytes | bool
+    data: Any
+
+
+def _retryable_preparation_error(error: Exception) -> bool:
+    if isinstance(error, OSError):
+        return not isinstance(error, PermissionError)
+    if not isinstance(error, sqlite3.OperationalError):
+        return False
+    # SQLite primary result codes: BUSY, LOCKED, IOERR, FULL. Python 3.10
+    # does not expose sqlite_errorcode, so retain its exact-message fallback.
+    code = getattr(error, "sqlite_errorcode", 0) & 0xff
+    return code in {5, 6, 10, 13} or str(error).lower() in {
+        "database is locked", "database table is locked",
+        "disk i/o error", "database or disk is full",
+    }
 
 
 class KeyProvider(Protocol):
@@ -242,6 +265,10 @@ class StorageSecurity:
         self._policy = selected if selected in STORAGE_POLICIES else DEFAULT_STORAGE_POLICY
         self._key: bytearray | None = None
         self._cancel_request: Callable[[], None] | None = None
+        self._passive_request = False
+        self._preparing = False
+        self._request_lock = RLock()
+        self._preparation_waiters: list[Callable[[StorageStatus], None]] = []
         self._failure_generation = 0
         if self._policy == NO_STORAGE:
             self._state = "disabled"
@@ -259,21 +286,55 @@ class StorageSecurity:
     def status(self) -> StorageStatus:
         return StorageStatus(self._policy, self._state, self._detail)
 
+    @property
+    def settings_path(self) -> Path:
+        return self._settings.path
+
+    def require_preparation(self) -> None:
+        """Gate daemon startup until its asynchronous preparation has finished."""
+        if self._policy != NO_STORAGE:
+            self._forget_key()
+            self._state = "locked"
+            self._detail = "Preparing local storage"
+
     def snapshot(self) -> StorageSecurity:
         """Own a separate key buffer while a background read is in progress."""
         reader = copy(self)
         reader._key = bytearray(self._key) if self._key is not None else None
         reader._cancel_request = None
+        reader._request_lock = RLock()
+        reader._preparation_waiters = []
+        reader._preparing = False
+        reader._passive_request = False
         return reader
 
     @property
     def busy(self) -> bool:
         return self._cancel_request is not None
 
+    def cancel_passive_request(self) -> bool:
+        """Let a user action supersede a prompt-free wallet lookup."""
+        with self._request_lock:
+            if not self.busy or not self._passive_request:
+                return False
+            self.cancel_pending()
+            return True
+
+    def join_preparation(self, on_success: Callable[[StorageStatus], None]) -> bool:
+        """An unlock can await validation already in progress without restarting it."""
+        with self._request_lock:
+            if not self.busy or not self._preparing:
+                return False
+            self._preparation_waiters.append(on_success)
+            return True
+
     def change_async(
         self, submit: Callable[..., object], *, policy: str | None = None,
         on_success: Callable[[StorageStatus], None], on_error: Callable[[Exception], None],
         timeout_seconds: int = 120,
+        allow_prompt: bool = True,
+        prepare: Callable[[StorageSecurity], Any] | None = None,
+        on_prepared: Callable[[Any], None] | None = None,
     ) -> None:
         """Perform wallet I/O off-loop; apply key and policy state only on GLib."""
         from gi.repository import Gio, GLib
@@ -282,59 +343,155 @@ class StorageSecurity:
             raise StorageUnavailableError("a desktop wallet request is already pending")
         if policy is not None:
             self._select_policy(policy)
-        if self._policy == PLAINTEXT_STORAGE or (self._policy == NO_STORAGE and policy is None):
+        if prepare is None and (
+            self._policy == PLAINTEXT_STORAGE or (self._policy == NO_STORAGE and policy is None)
+        ):
             on_success(self.status)
             return
         deleting = self._policy == NO_STORAGE
+        selected_policy = self._policy
+        if prepare is not None and not deleting:
+            self._state = "locked"
+            self._detail = "Preparing local storage"
         failure_generation = self._failure_generation
         cancellable = Gio.Cancellable()
         timer: int | None = None
 
         def cancel() -> None:
             nonlocal timer
-            cancellable.cancel()
-            if timer is not None:
-                GLib.source_remove(timer)
-                timer = None
-            self._cancel_request = None
+            with self._request_lock:
+                cancellable.cancel()
+                if timer is not None:
+                    GLib.source_remove(timer)
+                    timer = None
+                self._cancel_request = None
+                self._passive_request = False
+                self._preparing = False
+                self._preparation_waiters = []
 
         self._cancel_request = cancel
+        self._passive_request = not allow_prompt and policy is None
 
-        def finish(value: bytes | bool | None, error: Exception | None = None) -> None:
+        def finish(
+            value: bytes | bool | _PreparedKey | None, error: Exception | None = None,
+        ) -> None:
             if self._cancel_request is not cancel:
                 return
+            preparing = self._preparing
+            waiters = self._preparation_waiters
             cancel()
-            if deleting:
+            prepared = value if isinstance(value, _PreparedKey) else None
+            if prepared is not None:
+                value = prepared.value
+            if self._failure_generation != failure_generation:
+                # Independent corruption detection always wins over a late result.
+                pass
+            elif isinstance(error, StorageUnavailableError) and not deleting:
+                self._forget_key()
+                self._state = "locked"
+                self._detail = str(error)
+            elif preparing and error is not None and not (
+                deleting and isinstance(error, StorageUnavailableError)
+            ):
+                if _retryable_preparation_error(error):
+                    self._forget_key()
+                    self._state = "locked"
+                    self._detail = "Local storage is temporarily unavailable; retrying"
+                else:
+                    self.fail_closed(
+                        str(error) if isinstance(error, CorruptStorageError)
+                        else "Local storage could not be prepared"
+                    )
+                log.warning("local storage preparation failed: %s", error)
+            elif deleting:
+                self._state = "disabled"
                 self._detail = (
                     "Local data is not retained; remove the old BlueFerry key "
                     "through the desktop wallet if desired"
                 ) if error else "Local data is not retained"
-            elif self._failure_generation != failure_generation:
-                # An independent archive read may detect corruption while
-                # the wallet is open. Its failure must survive a late key.
-                pass
             elif error is not None:
                 self._forget_key()
                 self._state = "locked"
                 self._detail = str(error)
+            elif selected_policy == PLAINTEXT_STORAGE:
+                self._forget_key()
+                self._state = "ready"
+                self._detail = "Local data is retained without encryption"
             elif isinstance(value, bytes) and len(value) == _KEY_BYTES:
                 self._accept_key(value)
             else:
                 self._forget_key()
                 self._state = "locked"
                 self._detail = "the desktop keyring returned an invalid BlueFerry key"
-            on_success(self.status)
+            if prepared is not None and self._failure_generation == failure_generation:
+                if on_prepared is not None:
+                    try:
+                        on_prepared(prepared.data)
+                    except Exception:
+                        self.fail_closed("Prepared storage could not be activated")
+                        log.exception("could not activate prepared storage")
+            for callback in (on_success, *waiters):
+                try:
+                    callback(self.status)
+                except Exception:
+                    log.exception("storage completion callback failed")
 
         def timed_out() -> bool:
             nonlocal timer
-            timer = None
-            finish(None, StorageUnavailableError("desktop wallet request timed out; try again"))
+            with self._request_lock:
+                timer = None
+                # Local preparation is not cancellable wallet I/O. Keep its
+                # write barrier until it exits, including after a slow SQL lock.
+                if not self._preparing:
+                    finish(None, StorageUnavailableError(
+                        "desktop wallet request timed out; try again"
+                    ))
             return False
 
-        def request() -> bytes | bool:
-            if deleting:
-                return self._provider.delete(allow_prompt=True, cancellable=cancellable)
-            return self._provider.get_or_create(allow_prompt=True, cancellable=cancellable)
+        def request() -> bytes | bool | _PreparedKey:
+            wallet_error = None
+            value: bytes | bool = True
+            try:
+                if deleting and policy is not None:
+                    value = self._provider.delete(
+                        allow_prompt=allow_prompt, cancellable=cancellable,
+                    )
+                elif selected_policy == ENCRYPTED_STORAGE:
+                    value = self._provider.get_or_create(
+                        allow_prompt=allow_prompt, cancellable=cancellable,
+                    )
+                    if not isinstance(value, bytes) or len(value) != _KEY_BYTES:
+                        raise StorageUnavailableError(
+                            "the desktop keyring returned an invalid BlueFerry key"
+                        )
+            except StorageUnavailableError as error:
+                wallet_error = error
+            if prepare is None:
+                if wallet_error is not None:
+                    raise wallet_error
+                return value
+            with self._request_lock:
+                if self._cancel_request is not cancel or cancellable.is_cancelled():
+                    raise StorageUnavailableError("storage request cancelled")
+                self._preparing = True
+                self._passive_request = False
+                candidate = self.snapshot()
+            try:
+                if wallet_error is not None:
+                    candidate._forget_key()
+                    candidate._state = "locked" if not deleting else "disabled"
+                elif isinstance(value, bytes):
+                    candidate._accept_key(value)
+                elif not deleting:
+                    candidate._state = "ready"
+                data = prepare(candidate)
+                if candidate.status.state == "error":
+                    raise CorruptStorageError(candidate.status.detail)
+                if wallet_error is not None:
+                    raise wallet_error
+                return _PreparedKey(value, data)
+            finally:
+                candidate.close()
 
         try:
             timer = GLib.timeout_add_seconds(timeout_seconds, timed_out)

@@ -23,17 +23,12 @@ from blueferry.build_info import build_id, installed_build_sha, running_build_sh
 from blueferry.bus import get_system_bus, main_loop
 from blueferry.confirmed_groups import ConfirmedGroupsStore
 from blueferry.connectivity import Connectivity
-from blueferry.contacts import ContactsResolver, clear_contact_cache, pull_phonebook
+from blueferry.contacts import ContactsResolver, pull_phonebook
 from blueferry.dbus_service import MessagesService, claim_bus_name
 from blueferry.event_dispatcher import EventDispatcher
 from blueferry.history import (
-    clear_events,
     history_count,
     mark_event_handles_read,
-    minimize_ancs_history,
-    prune_events,
-    read_events,
-    scrub_unprotected_events,
 )
 from blueferry.notification_policy import (
     ALL_NOTIFICATIONS,
@@ -53,7 +48,8 @@ from blueferry.setup_verification import (
 )
 from blueferry.solicitation_supervisor import SolicitationSupervisor
 from blueferry.starred_threads import StarredThreadsStore
-from blueferry.storage_security import NO_STORAGE, StorageSecurity
+from blueferry.storage_preparation import PreparedStorage, prepare_storage
+from blueferry.storage_security import StorageSecurity
 from blueferry.wireplumber_policy import WirePlumberPhoneAudioPolicy
 
 log = logging.getLogger(__name__)
@@ -75,6 +71,7 @@ CONTACTS_REFRESH_SEC = 24 * 60 * 60  # 24h
 # every logged-in user's systemd instance.
 PACKAGE_RELEASE_CHECK_SEC = 10
 TARGET_CONFIG_CHECK_SEC = 2
+STORAGE_RETRY_SEC = 5
 RESTART_AFTER_UPGRADE_EXIT = 75
 
 
@@ -90,6 +87,7 @@ class Daemon:
         # prevents two simultaneous first launches from creating different
         # keys for the same database.
         self.storage = StorageSecurity(initialize=False)
+        self.storage.require_preparation()
         self.contacts = ContactsResolver(storage=self.storage)
         self.connectivity = Connectivity()
         self.notification_policy = NotificationPolicyStore()
@@ -142,6 +140,7 @@ class Daemon:
         )
         self._release_check_id: int | None = None
         self._target_config_check_id: int | None = None
+        self._storage_retry_id: int | None = None
         self._restart_after_upgrade = False
         self._release_missing_checks = 0
         self._startup_id: int | None = None
@@ -212,7 +211,6 @@ class Daemon:
         # the control surface before any Bluetooth operation that can wait on
         # hardware or the phone.
         self._bus_name = claim_bus_name()
-        self._initialize_storage()
         self._dbus_service = MessagesService(
             self._bus_name,
             self.sessions,
@@ -229,10 +227,13 @@ class Daemon:
                 starred_threads=self.starred_threads,
                 confirmed_groups=self.confirmed_groups,
                 storage=self.storage,
-                on_storage_changed=self._emit_status,
+                prepare_storage=prepare_storage,
+                on_storage_prepared=self._apply_storage_preparation,
+                on_storage_changed=self._on_storage_changed,
             ),
         )
         self.events.set_dbus_service(self._dbus_service)
+        self._initialize_storage()
         log.info("DBus service ready: %s", BUS_NAME)
         self._emit_status()
 
@@ -243,6 +244,9 @@ class Daemon:
         self._target_config_check_id = GLib.timeout_add_seconds(
             TARGET_CONFIG_CHECK_SEC, self._check_target_config
         )
+        self._storage_retry_id = GLib.timeout_add_seconds(
+            STORAGE_RETRY_SEC, self._retry_storage
+        )
 
         for sig in (signal.SIGINT, signal.SIGTERM):
             signal.signal(sig, self._signal)
@@ -251,41 +255,33 @@ class Daemon:
         # profile setup. This makes activation and GetStatus deterministic.
         self._startup_id = GLib.timeout_add(250, self._initialize)
 
+    def _retry_storage(self) -> bool:
+        # A daemon activated before the desktop keyring opens must recover
+        # without requiring a client launch. Wallet I/O stays off the GLib loop.
+        try:
+            if self._dbus_service is not None:
+                self._dbus_service.retry_storage_unlock()
+        except Exception:
+            log.warning("could not schedule background storage retry", exc_info=True)
+        return True
+
     def _initialize_storage(self) -> None:
-        status = self.storage.refresh(allow_prompt=False)
-        # Upgrade/scrub legacy preferences even if the wallet is locked.
-        self.starred_threads.migrate()
-        self.confirmed_groups.migrate()
-        if status.policy == NO_STORAGE:
-            clear_events()
-            clear_contact_cache()
-            return
-        if not status.can_read:
-            log.info("private storage unavailable: %s", status.detail)
-            return
-        scrubbed = scrub_unprotected_events(storage=self.storage)
-        if scrubbed:
-            log.info("scrubbed %d unprotected history events", scrubbed)
-        prune_events(storage=self.storage)
-        discarded, minimized = minimize_ancs_history(storage=self.storage)
-        if discarded or minimized:
-            log.info(
-                "minimized ANCS history (discarded=%d, compacted=%d)",
-                discarded,
-                minimized,
-            )
-        self.contacts.refresh()
-        if self.contacts.count() > 0:
-            self._mark_setup_task(CONTACTS)
-        if read_events(kinds={"sms_received"}, limit=1, storage=self.storage):
+        if self._dbus_service is not None:
+            self._dbus_service.retry_storage_unlock(initialize=True)
+
+    def _apply_storage_preparation(self, prepared: PreparedStorage) -> None:
+        self.contacts.adopt_cache(prepared.contacts)
+        self.events.seed_historical_ancs(prepared.historical_ancs)
+        if prepared.has_messages:
             self._mark_setup_task(MESSAGE_NOTIFICATIONS)
-        self.events.seed_historical_ancs(
-            read_events(
-                kinds={"ancs_notification"},
-                limit=2_000,
-                storage=self.storage,
-            )
-        )
+
+    def _on_storage_changed(self) -> None:
+        if self.storage.status.can_write:
+            if self.contacts.count() > 0:
+                self._mark_setup_task(CONTACTS)
+            else:
+                self._refresh_contacts()
+        self._emit_status()
 
     def _initialize(self) -> bool:
         self._startup_id = None
@@ -526,7 +522,11 @@ class Daemon:
 
     def _refresh_contacts(self) -> None:
         """Best-effort wrapper used by startup and the periodic timer."""
-        if self._contacts_refresh_pending or self.sessions.pbap is None:
+        if (
+            self._contacts_refresh_pending
+            or self.sessions.pbap is None
+            or not self.storage.status.can_write
+        ):
             return
         self._contacts_refresh_pending = True
 
@@ -539,7 +539,10 @@ class Daemon:
             log.error("contacts refresh failed; using previous cache: %s", error)
             self.sessions.report_error(error)
 
-        self.obex_worker.submit(self._pull_contacts, on_success=succeeded, on_error=failed)
+        try:
+            self.obex_worker.submit(self._pull_contacts, on_success=succeeded, on_error=failed)
+        except Exception as error:
+            failed(error)
 
     def _periodic_refresh_contacts(self) -> bool:
         """GLib timeout callback. Return True to keep the timer running."""
@@ -611,6 +614,7 @@ class Daemon:
             "_contacts_refresh_id",
             "_release_check_id",
             "_target_config_check_id",
+            "_storage_retry_id",
             "_startup_id",
             "_initialization_retry_id",
         ):

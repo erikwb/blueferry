@@ -21,7 +21,7 @@ EMAIL = "sarah@example.com"
 @pytest.fixture
 def contacts(monkeypatch):
     records = [("Dr. Sarah Bourget", [PHONE[1:], OTHER_PHONE[1:]], [EMAIL])]
-    monkeypatch.setattr(ContactRepository, "load", lambda _self: records)
+    monkeypatch.setattr(ContactRepository, "load", lambda _self, **_kwargs: records)
     return ContactsResolver(), records
 
 
