@@ -31,7 +31,7 @@ from blueferry.protocol import (
 )
 from blueferry.recipients import group_confirmation_token
 from blueferry.settings_store import SettingsStore
-from blueferry.storage_security import StorageSecurity
+from blueferry.storage_security import StorageSecurity, StorageUnavailableError
 
 pytestmark = pytest.mark.private_dbus
 _service_ids = itertools.count()
@@ -207,6 +207,262 @@ def test_wallet_wait_keeps_status_available(public_service, tmp_path):
         storage.close()
     assert "error" not in wallet
     assert json.loads(str(wallet["value"]))["storage_state"] == "ready"
+
+
+def test_passive_wallet_retry_keeps_status_available_and_announces_history(
+    public_service, tmp_path,
+):
+    name, _pending, _policy, _changes, service = public_service
+    entered = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    class Wallet:
+        def get_or_create(self, *, allow_prompt, cancellable=None):
+            calls.append(allow_prompt)
+            entered.set()
+            assert release.wait(4), "wallet fixture was not released"
+            return b"K" * 32
+
+    storage = StorageSecurity(
+        settings=SettingsStore(tmp_path / "settings.json"), key_provider=Wallet(), initialize=False,
+    )
+    service.operations.dependencies = replace(
+        service.operations.dependencies, storage=storage,
+        on_storage_changed=service.emit_status,
+        status_provider=lambda: {"initializing": False, "storage_state": storage.status.state},
+    )
+    connection = dbus.SessionBus(private=True)
+    received = []
+    match = connection.add_signal_receiver(
+        lambda change: received.append(dict(change)), dbus_interface=EVENTS_IFACE,
+        signal_name="HistoryChanged", bus_name=name, path=OBJECT_PATH,
+    )
+    try:
+        service.retry_storage_unlock()
+        _dispatch_until(entered.is_set)
+        status_thread, status = _request_in_thread(name, "GetStatus")
+        _dispatch_until(lambda: not status_thread.is_alive())
+        assert storage.busy
+        assert "error" not in status
+        assert json.loads(str(status["value"]))["storage_state"] == "locked"
+        assert not received
+        service.retry_storage_unlock()
+        assert calls == [False]
+        release.set()
+        _dispatch_until(lambda: bool(received))
+        assert storage.status.can_write
+        assert int(received[0]["revision"]) == 1
+        service.retry_storage_unlock()
+        assert calls == [False]
+    finally:
+        release.set()
+        _dispatch_until(lambda: not storage.busy)
+        match.remove()
+        connection.close()
+        storage.close()
+
+
+@pytest.mark.parametrize("passive_times_out", [False, True])
+def test_interactive_unlock_supersedes_passive_lookup(
+    public_service, tmp_path, monkeypatch, passive_times_out,
+):
+    name, _pending, _policy, _changes, service = public_service
+    entered = threading.Event()
+    release = threading.Event()
+    calls = []
+    passive_cancellables = []
+    timers = []
+    monkeypatch.setattr(
+        GLib, "timeout_add_seconds",
+        lambda _seconds, callback: timers.append(callback) or len(timers),
+    )
+    monkeypatch.setattr(GLib, "source_remove", lambda _source: True)
+
+    class Wallet:
+        def get_or_create(self, *, allow_prompt, cancellable=None):
+            calls.append(allow_prompt)
+            if not allow_prompt:
+                passive_cancellables.append(cancellable)
+                entered.set()
+                assert release.wait(4), "wallet fixture was not released"
+                return b"P" * 32  # A cancelled result must never install this key.
+            return b"K" * 32
+
+    storage = StorageSecurity(
+        settings=SettingsStore(tmp_path / "settings.json"), key_provider=Wallet(), initialize=False,
+    )
+    service.operations.dependencies = replace(service.operations.dependencies, storage=storage)
+    wallet_thread = None
+    try:
+        service.retry_storage_unlock()
+        _dispatch_until(entered.is_set)
+        if passive_times_out:
+            timers[0]()
+            assert not storage.busy
+            # Native cancellation has not returned yet. Polling must leave
+            # capacity for the interactive request, not queue a second lookup.
+            service.retry_storage_unlock()
+            assert len(service._wallet_worker._pending) == 1
+        wallet_thread, result = _request_in_thread(name, "UnlockStorage")
+        _dispatch_until(lambda: len(service._wallet_worker._pending) == 2)
+        assert passive_cancellables[0].is_cancelled()
+        assert wallet_thread.is_alive()
+        service.retry_storage_unlock()
+        assert len(service._wallet_worker._pending) == 2
+
+        other_thread, other = _request_in_thread(name, "UnlockStorage")
+        _dispatch_until(lambda: not other_thread.is_alive())
+        assert "already pending" in str(other["error"])
+        assert calls == [False]
+
+        release.set()
+        _dispatch_until(lambda: not wallet_thread.is_alive())
+        assert "error" not in result
+        assert json.loads(str(result["value"]))["storage_state"] == "ready"
+        assert calls == [False, True]
+        verifier = StorageSecurity(
+            settings=SettingsStore(tmp_path / "verifier.json"), key_provider=Wallet(), initialize=False,
+        )
+        verifier.refresh(allow_prompt=True)
+        try:
+            assert verifier.decrypt(
+                storage.encrypt("interactive key", purpose="history-event-v1"),
+                purpose="history-event-v1",
+            ) == "interactive key"
+        finally:
+            verifier.close()
+    finally:
+        release.set()
+        _dispatch_until(lambda: not service._wallet_worker.busy)
+        if wallet_thread is not None:
+            _dispatch_until(lambda: not wallet_thread.is_alive())
+        storage.close()
+
+
+@pytest.mark.parametrize("end_preparation", ["complete", "corruption", "shutdown"])
+def test_preparation_keeps_dbus_responsive_and_holds_the_write_barrier(
+    public_service, tmp_path, monkeypatch, end_preparation,
+):
+    name, _pending, _policy, _changes, service = public_service
+    entered = threading.Event()
+    release = threading.Event()
+    committed = []
+    calls = []
+    timers = []
+    main_thread = threading.get_ident()
+    monkeypatch.setattr(
+        GLib, "timeout_add_seconds",
+        lambda _seconds, callback: timers.append(callback) or len(timers),
+    )
+    monkeypatch.setattr(GLib, "source_remove", lambda _source: True)
+
+    class Wallet:
+        def get_or_create(self, **_kwargs):
+            calls.append(True)
+            return b"K" * 32
+
+    storage = StorageSecurity(
+        settings=SettingsStore(tmp_path / "settings.json"), key_provider=Wallet(), initialize=False,
+    )
+
+    def prepare(candidate):
+        assert threading.get_ident() != main_thread
+        assert candidate.status.can_write
+        assert not storage.status.can_write
+        entered.set()
+        assert release.wait(4), "preparation fixture was not released"
+        return "prepared cache"
+
+    def commit(data):
+        assert threading.get_ident() == main_thread
+        committed.append(data)
+
+    service.operations.dependencies = replace(
+        service.operations.dependencies, storage=storage,
+        prepare_storage=prepare, on_storage_prepared=commit,
+        status_provider=lambda: {"storage_state": storage.status.state},
+    )
+    unlock_thread = None
+    try:
+        service.retry_storage_unlock(initialize=True)
+        _dispatch_until(entered.is_set)
+        status_thread, status = _request_in_thread(name, "GetStatus")
+        _dispatch_until(lambda: not status_thread.is_alive())
+        assert "error" not in status
+        assert json.loads(str(status["value"]))["storage_state"] == "locked"
+        timers[0]()  # A wallet deadline must not release an active disk operation.
+        assert storage.busy
+        policy_thread, policy = _request_in_thread(name, "SetStoragePolicy", "plaintext")
+        _dispatch_until(lambda: not policy_thread.is_alive())
+        assert "already pending" in str(policy["error"])
+        assert storage.status.policy == "encrypted"
+        if end_preparation == "shutdown":
+            service.close()
+        else:
+            unlock_thread, unlocked = _request_in_thread(name, "UnlockStorage")
+            _dispatch_until(lambda: bool(storage._preparation_waiters))
+            assert unlock_thread.is_alive()
+            if end_preparation == "corruption":
+                storage.fail_closed("independent authentication failure")
+        release.set()
+        _dispatch_until(lambda: not service._wallet_worker.busy)
+        if unlock_thread is not None:
+            _dispatch_until(lambda: not unlock_thread.is_alive())
+            assert "error" not in unlocked
+            expected = "ready" if end_preparation == "complete" else "error"
+            assert json.loads(str(unlocked["value"]))["storage_state"] == expected
+        assert calls == [True]
+        assert committed == (["prepared cache"] if end_preparation == "complete" else [])
+        assert storage.status.can_write == (end_preparation == "complete")
+    finally:
+        release.set()
+        _dispatch_until(lambda: not service._wallet_worker.busy)
+        storage.close()
+
+
+def test_unlock_joining_locked_cleanup_still_gets_a_password_prompt(public_service, tmp_path):
+    name, _pending, _policy, _changes, service = public_service
+    entered = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    class Wallet:
+        def get_or_create(self, *, allow_prompt, **_kwargs):
+            calls.append(allow_prompt)
+            if not allow_prompt:
+                raise StorageUnavailableError("wallet locked")
+            return b"K" * 32
+
+    storage = StorageSecurity(
+        settings=SettingsStore(tmp_path / "settings.json"), key_provider=Wallet(), initialize=False,
+    )
+
+    def prepare(candidate):
+        if not candidate.status.can_read:
+            entered.set()
+            assert release.wait(4), "cleanup fixture was not released"
+
+    service.operations.dependencies = replace(
+        service.operations.dependencies, storage=storage, prepare_storage=prepare,
+    )
+    unlock_thread = None
+    try:
+        service.retry_storage_unlock(initialize=True)
+        _dispatch_until(entered.is_set)
+        unlock_thread, unlocked = _request_in_thread(name, "UnlockStorage")
+        _dispatch_until(lambda: bool(storage._preparation_waiters))
+        release.set()
+        _dispatch_until(lambda: not unlock_thread.is_alive())
+        assert "error" not in unlocked
+        assert json.loads(str(unlocked["value"]))["storage_state"] == "ready"
+        assert calls == [False, True]
+    finally:
+        release.set()
+        _dispatch_until(lambda: not service._wallet_worker.busy)
+        if unlock_thread is not None:
+            _dispatch_until(lambda: not unlock_thread.is_alive())
+        storage.close()
 
 
 def test_projection_does_not_block_status_and_retries_after_history_changes(

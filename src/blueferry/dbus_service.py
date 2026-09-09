@@ -43,7 +43,9 @@ class MessagesService(dbus.service.Object):
         self._change_revision = 0
         self.operations = operations or BackendOperations(sessions, dependencies)
         self._projection_worker = BackgroundWorker("blueferry-projection", maximum=1)
-        self._wallet_worker = BackgroundWorker("blueferry-wallet", maximum=1)
+        # One active lookup plus an interactive request queued behind a
+        # cancelled passive lookup. The executor still runs one job at a time.
+        self._wallet_worker = BackgroundWorker("blueferry-wallet", maximum=2)
 
     @staticmethod
     def _dbus_error(error: Exception) -> dbus.exceptions.DBusException:
@@ -347,6 +349,24 @@ class MessagesService(dbus.service.Object):
     )
     def UnlockStorage(self, reply_handler, error_handler, sender=None) -> None:
         self._storage_call(sender, "unlock", None, reply_handler, error_handler)
+
+    def retry_storage_unlock(self, *, initialize: bool = False) -> None:
+        """Daemon-only passive recovery, using the same worker as UI unlocks."""
+        # A timed-out lookup may still be unwinding its native call. Reserve
+        # the second slot for user action instead of queuing another poll.
+        if self._wallet_worker.busy:
+            return
+
+        def changed(status) -> None:
+            if status["storage_state"] == "ready":
+                log.info("encrypted storage became available after keyring retry")
+                self.emit_history_changed()
+
+        self.operations.retry_storage_async(
+            self._wallet_worker.submit, changed,
+            lambda error: log.warning("background storage retry failed: %s", error),
+            initialize=initialize,
+        )
 
     @dbus.service.method(
         IFACE, in_signature="su", out_signature="s",

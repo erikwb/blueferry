@@ -18,7 +18,7 @@ def _bare_daemon():
     instance = object.__new__(daemon_mod.Daemon)
     instance.sessions = object()
     instance.obex_worker = SimpleNamespace(submit=lambda *_args, **_kwargs: None)
-    instance.contacts = object()
+    instance.contacts = SimpleNamespace(refresh=lambda: 0, count=lambda: 0)
     instance.connectivity = Connectivity()
     instance.notification_policy = SimpleNamespace(
         value="messages", contacts_only=False
@@ -56,6 +56,7 @@ def _bare_daemon():
     instance._startup_id = None
     instance._initialization_retry_id = None
     instance._target_config_check_id = None
+    instance._storage_retry_id = None
     instance._initializing = True
     instance._running_release = "0.6.0-6"
     instance._running_build_sha = None
@@ -70,6 +71,7 @@ def test_start_publishes_dbus_before_scheduling_bluetooth(monkeypatch):
     instance = _bare_daemon()
     order = []
     scheduled = []
+    periodic = []
 
     monkeypatch.setattr(daemon_mod.config, "ensure_dirs", lambda: order.append("dirs"))
     monkeypatch.setattr(
@@ -90,7 +92,7 @@ def test_start_publishes_dbus_before_scheduling_bluetooth(monkeypatch):
     monkeypatch.setattr(
         daemon_mod.GLib,
         "timeout_add_seconds",
-        lambda _delay, _callback: 2,
+        lambda delay, callback: periodic.append((delay, callback)) or len(periodic),
     )
     monkeypatch.setattr(daemon_mod.signal, "signal", lambda *_args: None)
     monkeypatch.setattr(
@@ -105,13 +107,14 @@ def test_start_publishes_dbus_before_scheduling_bluetooth(monkeypatch):
 
     instance.start()
 
-    assert order == ["dirs", "claim", "storage", "service"]
+    assert order == ["dirs", "claim", "service", "storage"]
     assert len(scheduled) == 1
+    assert (daemon_mod.STORAGE_RETRY_SEC, instance._retry_storage) in periodic
     assert instance._initializing is True
 
     scheduled[0]()
 
-    assert order == ["dirs", "claim", "storage", "service", "bluetooth"]
+    assert order == ["dirs", "claim", "service", "storage", "bluetooth"]
     assert instance._initializing is False
 
 
@@ -135,34 +138,40 @@ def test_stop_does_not_ask_obexd_to_remove_sessions(monkeypatch):
         shutdown=lambda **kwargs: kwargs["cleanup"]()
     )
     monkeypatch.setattr(daemon_mod.main_loop, "quit", lambda: None)
+    removed = []
+    instance._storage_retry_id = 99
+    monkeypatch.setattr(daemon_mod.GLib, "source_remove", removed.append)
 
     instance.stop()
 
     assert closed == [{"remove_remote": False}]
+    assert removed == [99]
+    assert instance._storage_retry_id is None
 
 
-def test_no_storage_policy_reasserts_empty_local_data(monkeypatch):
+def test_storage_poll_survives_a_transient_scheduling_failure():
     instance = _bare_daemon()
-    status = SimpleNamespace(
-        policy="none", state="disabled", detail="", can_read=False
-    )
-    instance.storage = SimpleNamespace(
-        status=status,
-        refresh=lambda **_kwargs: status,
-    )
-    cleared = []
-    instance.starred_threads.migrate = lambda: cleared.append("stars")
-    instance.confirmed_groups.migrate = lambda: cleared.append("groups")
-    monkeypatch.setattr(
-        daemon_mod, "clear_events", lambda: cleared.append("events")
-    )
-    monkeypatch.setattr(
-        daemon_mod, "clear_contact_cache", lambda: cleared.append("contacts")
-    )
+    attempts = []
 
+    def retry():
+        attempts.append(True)
+        if len(attempts) == 1:
+            raise RuntimeError("wallet worker busy")
+
+    instance._dbus_service = SimpleNamespace(retry_storage_unlock=retry)
+    assert instance._retry_storage() is True
+    assert instance._retry_storage() is True
+    assert len(attempts) == 2
+
+
+def test_startup_queues_storage_preparation_after_publishing_service():
+    instance = _bare_daemon()
+    calls = []
+    instance._dbus_service = SimpleNamespace(
+        retry_storage_unlock=lambda **kwargs: calls.append(kwargs),
+    )
     instance._initialize_storage()
-
-    assert cleared == ["stars", "groups", "events", "contacts"]
+    assert calls == [{"initialize": True}]
 
 
 def test_successful_empty_phonebook_verifies_contact_permission():

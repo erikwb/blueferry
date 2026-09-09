@@ -215,15 +215,15 @@ class ContactsResolver:
     otherwise bound `resolve` methods become stale.
     """
 
-    def __init__(self, *, storage: StorageSecurity | None = None) -> None:
+    def __init__(self, *, storage: StorageSecurity | None = None, strict: bool = False) -> None:
         self.storage = storage
         self._repository = ContactRepository(storage)
         self._mem: dict[str, set[str]] = {}
         self._records: list[ContactRecord] = []
-        self._warm()
+        self._warm(strict=strict)
 
-    def _warm(self) -> None:
-        loaded = [_sanitized(record) for record in self._repository.load()]
+    def _warm(self, *, strict: bool = False) -> None:
+        loaded = [_sanitized(record) for record in self._repository.load(strict=strict)]
         # Order once here rather than per page: the cache is rebuilt only by
         # refresh(), and paging must not pay for a sort on every call.
         loaded.sort(key=lambda record: (
@@ -272,6 +272,12 @@ class ContactsResolver:
         resolver._records = self._records.copy()
         resolver._thread_addresses = self._thread_addresses.copy()
         return resolver
+
+    def adopt_cache(self, prepared: ContactsResolver) -> None:
+        """Install a worker-built cache while keeping this resolver's live repository."""
+        self._mem = prepared._mem
+        self._records = prepared._records
+        self._thread_addresses = prepared._thread_addresses
 
     def refresh(self) -> int:
         """Re-read the SQLite cache into memory. Returns new count."""

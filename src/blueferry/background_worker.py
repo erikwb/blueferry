@@ -20,6 +20,10 @@ class BackgroundWorker:
         self._pending: set[Future] = set()
         self._closed = False
 
+    @property
+    def busy(self) -> bool:
+        return bool(self._pending)
+
     def submit(
         self, operation: Callable[[], Any], *,
         on_success: Callable[[Any], None], on_error: Callable[[Exception], None],

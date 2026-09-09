@@ -164,6 +164,8 @@ class BackendDependencies:
     starred_threads: StarredThreads | None = None
     confirmed_groups: ConfirmedGroups | None = None
     storage: StorageSecurity | None = None
+    prepare_storage: Callable[[StorageSecurity], Any] | None = None
+    on_storage_prepared: Callable[[Any], None] | None = None
     on_storage_changed: Callable[[], None] | None = None
 
 
@@ -846,9 +848,6 @@ class BackendOperations:
         storage = self.dependencies.storage
         if storage is None:
             raise NotReadyError("local storage is unavailable")
-        if storage.busy:
-            raise NotReadyError("a desktop wallet request is already pending")
-        selected = self._prepare_storage_policy(policy) if policy is not None else None
         completed = False
 
         def succeeded(status: StorageStatus) -> None:
@@ -859,22 +858,77 @@ class BackendOperations:
             except Exception as error:
                 failure(error)
 
+        if storage.busy:
+            def prepared(status: StorageStatus) -> None:
+                # A locked-wallet cleanup may finish without obtaining a key.
+                # Preserve the joined client's request for a password prompt.
+                if status.state == "locked":
+                    try:
+                        self.change_storage_async(submit, success, failure)
+                    except Exception as error:
+                        failure(error)
+                else:
+                    succeeded(status)
+
+            if policy is None and storage.join_preparation(prepared):
+                return
+            if not storage.cancel_passive_request():
+                raise NotReadyError("a desktop wallet request is already pending")
+        selected = self._prepare_storage_policy(policy) if policy is not None else None
         storage.change_async(
             submit, policy=selected, on_success=succeeded, on_error=failure,
+            **self._storage_preparation_args(),
         )
         # Publish policy changes immediately, including while key creation or
         # deletion is waiting on the wallet. Do not expose an old contact cache.
         if selected is not None and not completed:
             self._storage_changed(storage.status)
 
+    def retry_storage_async(
+        self, submit: Callable[..., object], success: Success, failure: Failure,
+        *, initialize: bool = False,
+    ) -> None:
+        """Pick up an existing key after login without opening a wallet prompt."""
+        storage = self.dependencies.storage
+        if storage is None or storage.busy:
+            return
+        previous = storage.status
+        if not initialize and previous.state != "locked":
+            return
+
+        def succeeded(status: StorageStatus) -> None:
+            if status == previous and not initialize:
+                return
+            try:
+                success(self._storage_changed(status))
+            except Exception as error:
+                failure(error)
+
+        storage.change_async(
+            submit, on_success=succeeded, on_error=failure,
+            allow_prompt=False, timeout_seconds=5,
+            **self._storage_preparation_args(),
+        )
+
+    def _storage_preparation_args(self) -> dict[str, Any]:
+        if self.dependencies.prepare_storage is None:
+            return {}
+        return {
+            "prepare": self.dependencies.prepare_storage,
+            "on_prepared": self.dependencies.on_storage_prepared,
+        }
+
     def _storage_changed(self, status: StorageStatus) -> dict:
         if self.dependencies.contacts is not None:
-            self.dependencies.contacts.refresh()
-        if self.dependencies.storage is not None:
-            status = self.dependencies.storage.status
+            # The prepared cache has already been installed by the request.
+            # Locked/error states still clear the old cache without disk I/O.
+            if self.dependencies.prepare_storage is None or not status.can_read:
+                self.dependencies.contacts.refresh()
         self.invalidate_conversations()
         if self.dependencies.on_storage_changed is not None:
             self.dependencies.on_storage_changed()
+        if self.dependencies.storage is not None:
+            status = self.dependencies.storage.status
         return {
             "storage_policy": status.policy,
             "storage_state": status.state,

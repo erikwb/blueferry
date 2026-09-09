@@ -208,7 +208,7 @@ class ContactRepository:
             records.append((name, phones, emails))
         return records
 
-    def load(self) -> list[ContactRecord]:
+    def load(self, *, strict: bool = False) -> list[ContactRecord]:
         if self.storage is not None and not self.storage.status.can_read:
             return []
         try:
@@ -221,5 +221,7 @@ class ContactRepository:
                     connection.execute("VACUUM")
                 return records
         except sqlite3.Error as error:
+            if strict:
+                raise
             log.warning("contacts cache warm failed: %s", error)
             return []
