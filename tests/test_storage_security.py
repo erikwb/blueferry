@@ -6,6 +6,7 @@ import json
 import logging
 import sqlite3
 from contextlib import closing
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -354,11 +355,12 @@ def test_plaintext_scrub_preserves_framed_ciphertext(tmp_path) -> None:
 def test_pruning_reasserts_private_encrypted_metadata(tmp_path) -> None:
     path = tmp_path / "events.sqlite"
     storage = _storage(tmp_path)
+    seen_at = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
     append_event(
         {
             "kind": "sms_received",
             "body": "private",
-            "seen_at": "2026-08-09T12:34:56+00:00",
+            "seen_at": seen_at,
         },
         path=path,
         storage=storage,
