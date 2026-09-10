@@ -415,13 +415,6 @@ def _hci_sort_key(name: str) -> tuple[int, int | str]:
     return (1, name)
 
 
-def _pairing_capable(inspected: tuple | None) -> bool:
-    if inspected is None:
-        return False
-    _available, _supported, _current, _error, _identity, fields = inspected
-    return bool(fields["hardware_supported"])
-
-
 def adapter_label(name: str, hardware: dict[str, object] | None = None) -> str:
     """Human controller name plus the hci index so two cards stay distinct."""
     hardware = hardware or {}
@@ -586,16 +579,17 @@ def compatibility(
         inspected[name] = (available, supported, current, error, identity, fields)
     if adapter_name is not None and adapter_name in inspected:
         chosen = adapter_name
-    elif _pairing_capable(inspected.get(requested)):
-        chosen = requested
     else:
-        chosen = next(
-            (
-                str(option["name"])
-                for option in options
-                if _pairing_capable(inspected.get(str(option["name"])))
-            ),
+        # Prefer verified hardware, then an inconclusive probe that still
+        # permits pairing. Honor the configured adapter within each tier.
+        preferred = sorted(options, key=lambda option: option["name"] != requested)
+        fallback = next(
+            (str(option["name"]) for option in preferred if option["pairing_ready"]),
             names[0],
+        )
+        chosen = next(
+            (str(option["name"]) for option in preferred if option["hardware_supported"]),
+            fallback,
         )
     _available, _supported, _current, _error, identity, fields = inspected[str(chosen)]
     hardware = hardware_by_name.get(str(chosen), {})

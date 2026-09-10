@@ -1164,6 +1164,49 @@ def test_adapter_selection_prefers_le_advertising_but_honors_explicit_choice(mon
     assert explicit["pairing_ready"] is False
 
 
+@pytest.mark.parametrize("states,requested,expected", [
+    (("incompatible", "unverified"), "hci0", "hci1"),
+    (("unverified", "supported"), "hci0", "hci1"),
+    (("supported", "unverified"), "hci1", "hci0"),
+    (("unverified", "unverified"), "hci1", "hci1"),
+    (("incompatible", "incompatible"), "hci0", "hci0"),
+])
+def test_adapter_selection_ranks_verified_then_unverified_then_incompatible(
+    monkeypatch, states, requested, expected,
+):
+    class Manager:
+        def GetManagedObjects(self):
+            return {f"/org/bluez/hci{n}": {"org.bluez.Adapter1": {}} for n in range(2)}
+
+    def controller_info(command, **_kwargs):
+        if command[0] == "bluetoothctl":
+            stdout = "bluetoothctl: 5.87\n"
+        else:
+            state = states[int(command[2])]
+            if state == "unverified":
+                raise pair_setup.CommandError(tuple(command), "btmgmt timed out")
+            extra = "le advertising" if state == "supported" else ""
+            stdout = f"supported settings: powered ssp br/edr {extra}\n"
+        return type("Result", (), {"returncode": 0, "stdout": stdout})()
+
+    monkeypatch.setattr(pair_setup.config, "ADAPTER", requested)
+    monkeypatch.setattr(pair_setup, "_object_manager", Manager)
+    monkeypatch.setattr(pair_setup, "run_command", controller_info)
+    monkeypatch.setattr(pair_setup, "bluez_support_status", lambda: {"active": True})
+    monkeypatch.setattr(pair_setup.capabilities, "controller_hardware", lambda *_a, **_kw: {})
+
+    automatic = pair_setup.bluetooth_compatibility()
+    assert automatic["adapter"] == expected
+    expected_state = states[int(expected[-1])]
+    assert automatic["pairing_ready"] is (expected_state != "incompatible")
+    assert automatic["hardware_supported"] is (expected_state == "supported")
+    if expected_state == "unverified":
+        assert automatic["issue"] == "btmgmt timed out"
+
+    # An explicit selection must still be checked and reported as selected.
+    assert pair_setup.bluetooth_compatibility(requested)["adapter"] == requested
+
+
 @pytest.mark.parametrize("explicit_usb_id", ["0BDA:8771", "13D3:3586", "0bda:8922"])
 def test_explicit_pairing_default_matches_only_the_selected_listed_adapter(
     monkeypatch, explicit_usb_id,

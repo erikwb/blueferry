@@ -55,6 +55,8 @@ class IPhonePage(Gtk.Box):
         page = Adw.PreferencesPage()
         self.append(page)
 
+        self._hardware_group = Adw.PreferencesGroup()
+        page.add(self._hardware_group)
         self._pairing_group = Adw.PreferencesGroup(
             title=_("Pair an iPhone"),
             description=_(
@@ -79,8 +81,9 @@ class IPhonePage(Gtk.Box):
         )
         self._device_row.connect("notify::selected", lambda *_args: self._selection_changed())
         self._hardware_row = Adw.ActionRow(
-            title=_("Bluetooth Controller"),
+            title=_("Adapter Compatibility"),
             subtitle=_("Checking compatibility…"),
+            subtitle_lines=0,
             use_markup=False,
         )
         self._adapter_model = Gtk.StringList()
@@ -103,7 +106,7 @@ class IPhonePage(Gtk.Box):
         )
         self._activate_button.connect("clicked", self._confirm_activate_bluez)
         self._bluez_row.add_suffix(self._activate_button)
-        self._pairing_group.add(self._hardware_row)
+        self._hardware_group.add(self._hardware_row)
         self._pairing_group.add(self._adapter_row)
         self._pairing_group.add(self._bluez_row)
 
@@ -392,6 +395,10 @@ class IPhonePage(Gtk.Box):
 
     def _update_phone_controls(self) -> None:
         configured = bool(self._configuration and self._configuration.configured)
+        self._hardware_group.set_visible(
+            not configured
+            or bool(self._compatibility and not self._compatibility.pairing_ready)
+        )
         self._pairing_group.set_visible(not configured)
         self._paired_group.set_visible(configured)
         device = self._configured_device()
@@ -414,7 +421,7 @@ class IPhonePage(Gtk.Box):
                 self._last_status.verified_iphone_setup,
                 notifications_supported=notifications_supported,
             )
-        )
+        ) if configured and self._compatibility and self._compatibility.pairing_ready else set()
         for key, row in self._iphone_setup_rows.items():
             row.set_visible(key in remaining)
         self._iphone_setup_group.set_visible(configured and bool(remaining))

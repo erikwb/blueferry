@@ -86,6 +86,10 @@ def run_wizard(
         typer.echo("Bluetooth controllers:\n")
         for index, option in enumerate(compatibility.adapters, 1):
             marker = " (selected)" if option.name == compatibility.adapter else ""
+            if not option.pairing_ready:
+                marker += " (incompatible)"
+            elif not option.available:
+                marker += " (unverified)"
             typer.echo(f"  [{index}] {option.label}{marker}")
         raw = typer.prompt("Use which controller?", default="").strip()
         if raw:

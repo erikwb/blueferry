@@ -1062,6 +1062,16 @@ def test_quickshell_settings_bindings_and_unverified_pairing(qml_engine, quicksh
     assert message.property("visible")
     assert "Incompatible Bluetooth adapter" in message.property("text")
     _evaluate(qml_engine, '''
+        setup.configured = true;
+        page.status = Object.assign({}, page.status, {daemon: true});
+    ''')
+    heading = page.findChild(QObject, "iphoneSetupHeading")
+    instructions = page.findChild(QObject, "iphoneSetupInstructions")
+    assert not pair.property("visible")
+    assert message.property("visible")
+    assert not heading.property("visible")
+    assert not instructions.property("visible")
+    _evaluate(qml_engine, '''
         setup.loadCompatibility("hci0");
         setup.finish(setup.pending.compatibility.id, "compatibility", 1, "", "btmgmt timed out");
         setup.loadDevices(false);
@@ -1069,6 +1079,11 @@ def test_quickshell_settings_bindings_and_unverified_pairing(qml_engine, quicksh
     ''')
     assert pair.property("enabled")
     assert not message.property("visible")
+    assert heading.property("visible")
+    assert instructions.property("visible")
+    assert "Enable Show Message Notifications" in instructions.property("text")
+    _evaluate(qml_engine, "setup.configured = false")
+    assert not heading.property("visible")
     QMetaObject.invokeMethod(pair, "clicked")
     assert quickshell_setup.property("pairing")
     assert not pair.property("enabled")

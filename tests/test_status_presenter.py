@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from blueferry.models import BackendStatus
 from blueferry.protocol import backend_compatibility_error
 from blueferry.ui.status_presenter import (
@@ -48,6 +50,43 @@ def test_gtk_pairing_blocks_incompatible_hardware_but_allows_unverified_hardware
     assert enabled == [False, True, True]
     IPhonePage._set_pairing_busy(page, True)
     assert enabled[-1] is False
+
+
+@pytest.mark.parametrize("available,pairing_ready", [(True, False), (False, True), (True, True)])
+def test_gtk_configured_phone_surfaces_incompatibility_instead_of_permission_tasks(
+    available, pairing_ready,
+):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from blueferry.setup_client import BluetoothCompatibility, ConfigurationState
+    from blueferry.ui.status import IPhonePage
+
+    page = SimpleNamespace(
+        _configuration=ConfigurationState.from_dict({
+            "configured": True, "saved": True, "mac": "OLD", "ancs_enabled": False,
+        }),
+        _compatibility=BluetoothCompatibility.from_dict({
+            "available": available, "pairing_ready": pairing_ready,
+            "notifications_supported": False,
+        }),
+        _last_status=BackendStatus(daemon=True),
+        _hardware_group=Mock(), _pairing_group=Mock(), _paired_group=Mock(),
+        _paired_row=Mock(), _unpair_button=Mock(),
+        _setup_spinner=Mock(get_spinning=lambda: False),
+        _configured_device=lambda: None,
+        _iphone_setup_rows={key: Mock() for key in ("message-notifications", "contacts")},
+        _iphone_setup_group=Mock(),
+    )
+    page._update_iphone_setup_tasks = lambda: IPhonePage._update_iphone_setup_tasks(page)
+    IPhonePage._update_phone_controls(page)
+
+    page._hardware_group.set_visible.assert_called_with(not pairing_ready)
+    page._pairing_group.set_visible.assert_called_with(False)
+    page._paired_group.set_visible.assert_called_with(True)
+    page._iphone_setup_group.set_visible.assert_called_with(pairing_ready)
+    for row in page._iphone_setup_rows.values():
+        row.set_visible.assert_called_with(pairing_ready)
 
 
 def test_connection_summary_includes_degraded_detail_and_retry() -> None:

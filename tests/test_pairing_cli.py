@@ -5,7 +5,7 @@ import pytest
 from blueferry import pairing_cli
 from blueferry.bluetooth_devices import PairedDevice
 from blueferry.pairing_cli import _print_ancs_repair_hint, _print_iphone_steps
-from blueferry.setup_client import DISCOVERY_SECONDS
+from blueferry.setup_client import DISCOVERY_SECONDS, BluetoothCompatibility
 from blueferry.setup_verification import CONTACTS
 
 
@@ -153,6 +153,44 @@ def test_cli_requires_phone_side_forget_before_clearing_saved_target(
     output = capsys.readouterr().out
     assert "Before answering Yes, forget this PC on the iPhone too" in output
     assert "Forget This Device" in output
+
+
+def test_cli_labels_adapter_choices_and_checks_an_explicit_incompatible_choice(monkeypatch, capsys):
+    compatibility = BluetoothCompatibility.from_dict({
+        "adapter": "hci1", "pairing_ready": True,
+        "adapters": [
+            {"name": "hci0", "label": "Built-in (hci0)", "available": True,
+             "pairing_ready": False},
+            {"name": "hci1", "label": "Dongle (hci1)", "available": False,
+             "pairing_ready": True},
+        ],
+    })
+    selected = []
+
+    class Setup:
+        def configuration(self):
+            return SimpleNamespace(saved=True)
+
+        def compatibility(self, adapter=None):
+            selected.append(adapter)
+            if adapter is None:
+                return compatibility
+            return BluetoothCompatibility.from_dict({
+                "adapter": adapter, "pairing_ready": False,
+                "issue": "Incompatible Bluetooth adapter: missing Bluetooth LE",
+            })
+
+        def forget(self, *_args, **_kwargs):
+            pytest.fail("removed the saved phone for an incompatible choice")
+
+    monkeypatch.setattr(pairing_cli, "SetupClient", Setup)
+    monkeypatch.setattr(pairing_cli.typer, "prompt", lambda *_a, **_kw: "1")
+    assert pairing_cli.run_wizard(verify_after=False) == 1
+    assert selected == [None, "hci0"]
+    output = capsys.readouterr().out
+    assert "[1] Built-in (hci0) (incompatible)" in output
+    assert "[2] Dongle (hci1) (selected) (unverified)" in output
+    assert "Incompatible Bluetooth adapter: missing Bluetooth LE" in output
 
 
 @pytest.mark.parametrize("saved", [False, True])

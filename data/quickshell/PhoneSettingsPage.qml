@@ -11,6 +11,8 @@ Rectangle {
   required property var status
   property var busy: ({})
   readonly property var theme: ferryTheme
+  readonly property bool showIphoneSetup: root.setup.compatibilityLoaded
+    && onboarding.stage === "iphone-settings" && onboarding.pendingIphoneSetupTasks().length > 0
   signal closeRequested
   signal pairingIssueRequested
   signal operationRequested(string method, var args)
@@ -261,15 +263,17 @@ Rectangle {
         }
         FerrySectionLabel {
           ferryTheme: root.theme
+          objectName: "iphoneSetupHeading"
           text: "Finish Setup on the iPhone"
-          visible: root.setup.configured && onboarding.pendingIphoneSetupTasks().length > 0
+          visible: root.showIphoneSetup
         }
         FerryLabel {
           ferryTheme: root.theme
+          objectName: "iphoneSetupInstructions"
           text: onboarding.pendingIphoneSetupText()
           wrapMode: Text.Wrap
           Layout.fillWidth: true
-          visible: root.setup.configured && onboarding.pendingIphoneSetupTasks().length > 0
+          visible: root.showIphoneSetup
         }
         FerrySectionLabel {
           ferryTheme: root.theme
