@@ -195,6 +195,7 @@ class BluetoothCompatibility:
     adapters: tuple[AdapterOption, ...] = ()
     controller_vendor: str = ""
     ancs_limited_controller: bool = False
+    explicit_pairing_default: bool = False
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> BluetoothCompatibility:
@@ -223,6 +224,7 @@ class BluetoothCompatibility:
             ),
             controller_vendor=str(value.get("controller_vendor") or ""),
             ancs_limited_controller=bool(value.get("ancs_limited_controller")),
+            explicit_pairing_default=bool(value.get("explicit_pairing_default", False)),
         )
 
     def to_dict(self) -> dict[str, Any]:

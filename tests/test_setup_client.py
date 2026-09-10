@@ -60,6 +60,7 @@ def test_compatibility_and_configuration_are_typed(monkeypatch):
             "notifications_supported": True,
             "bearer_api_active": True,
             "pairing_ready": True,
+            "explicit_pairing_default": True,
             "issue": "",
             "supported_settings": ["br/edr", "le"],
         },
@@ -80,6 +81,8 @@ def test_compatibility_and_configuration_are_typed(monkeypatch):
 
     assert client.compatibility().pairing_ready is True
     assert client.compatibility().adapter == "hci2"
+    assert client.compatibility().explicit_pairing_default is True
+    assert client.compatibility().to_dict()["explicit_pairing_default"] is True
     assert client.configuration().configured is False
     assert client.configuration().pairing_issue_report == ""
 

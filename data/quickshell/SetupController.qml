@@ -31,7 +31,10 @@ QtObject {
   property bool compatibilityLoaded: false
   property bool ancsEnabled: true
   property bool compatibilityModeOverride: false
-  property bool explicitPairingOverride: false
+  property bool explicitPairingDefault: false
+  property var explicitPairingOverrides: ({})
+  readonly property bool explicitPairing: explicitPairingOverrides[adapterName]
+    ?? explicitPairingDefault
   property bool configured: false
   property bool targetSaved: false
   property bool targetBonded: false
@@ -61,6 +64,12 @@ QtObject {
 
   function configuredPairingDevice() {
     return pairingDevices.find(device => device.mac === configuredMac) || null
+  }
+
+  function setExplicitPairing(enabled) {
+    const overrides = Object.assign({}, explicitPairingOverrides)
+    overrides[adapterName] = enabled
+    explicitPairingOverrides = overrides
   }
 
   function cancel(kind) {
@@ -133,7 +142,7 @@ QtObject {
       ? String(device.adapter_path).split("/").pop() : adapterName
     if (adapter) command.push("--adapter", adapter)
     if (!notificationsSupported || compatibilityModeOverride) command.push("--compatibility-mode")
-    if (explicitPairingOverride) command.push("--explicit-pairing")
+    if (explicitPairing) command.push("--explicit-pairing")
     if (!device.paired && targetSaved) {
       command.push("--replace-saved-mac", configuredMac)
       pendingReplacement = {command: command, adapter: adapter}
@@ -216,6 +225,7 @@ QtObject {
     if (kind === "compatibility") {
       compatibilityLoaded = true
       hardwareSupported = false
+      explicitPairingDefault = false
       pairingReady = true
       compatibilityIssue = message
       notificationsSupported = false
@@ -250,6 +260,7 @@ QtObject {
       if (kind === "compatibility") {
         if (typeof data.notifications_supported !== "boolean") throw new Error("Invalid compatibility response")
         hardwareSupported = data.hardware_supported === true
+        explicitPairingDefault = data.explicit_pairing_default === true
         pairingReady = data.pairing_ready !== false
         compatibilityIssue = String(data.issue || "")
         notificationsSupported = data.notifications_supported === true

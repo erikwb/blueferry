@@ -1164,6 +1164,32 @@ def test_adapter_selection_prefers_le_advertising_but_honors_explicit_choice(mon
     assert explicit["pairing_ready"] is False
 
 
+def test_explicit_pairing_default_matches_only_the_selected_rtl8761bu(monkeypatch):
+    class Manager:
+        def GetManagedObjects(self):
+            return {f"/org/bluez/hci{n}": {"org.bluez.Adapter1": {}} for n in range(3)}
+
+    def controller_info(command, **_kwargs):
+        stdout = "bluetoothctl: 5.87\n" if command[0] == "bluetoothctl" else (
+            "supported settings: powered ssp br/edr le advertising secure-conn\n"
+        )
+        return type("Result", (), {"returncode": 0, "stdout": stdout})()
+
+    usb_ids = {"hci0": "8087:0029", "hci1": "0BDA:8771", "hci2": "0bda:c85b"}
+    monkeypatch.setattr(pair_setup, "_object_manager", Manager)
+    monkeypatch.setattr(pair_setup, "run_command", controller_info)
+    monkeypatch.setattr(pair_setup, "bluez_support_status", lambda: {"active": True})
+    monkeypatch.setattr(
+        pair_setup.capabilities, "controller_hardware",
+        lambda adapter, **_kwargs: {"usb_id": usb_ids[adapter]},
+    )
+    for adapter, expected in (("hci0", False), ("hci1", True), ("hci2", False)):
+        compatibility = pair_setup.bluetooth_compatibility(adapter)
+        assert compatibility["explicit_pairing_default"] is expected
+        assert compatibility["messages_supported"] is True
+        assert compatibility["notifications_supported"] is True
+
+
 def test_controller_snapshot_does_not_repeat_btmgmt_or_systemctl(monkeypatch):
     calls = []
 

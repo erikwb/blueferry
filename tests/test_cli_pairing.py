@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from typer.testing import CliRunner
 
 from blueferry import cli, pairing_cli, quirks_report, setup_client
@@ -28,9 +29,23 @@ def test_pair_setup_debug_enables_diagnostic_logging(monkeypatch):
         ("wizard", {
             "verify_after": False,
             "compatibility_mode": False,
-            "explicit_pairing": False,
+            "explicit_pairing": None,
         }),
     ]
+
+
+@pytest.mark.parametrize("flag,expected", [
+    ("--explicit-pairing", True), ("--no-explicit-pairing", False),
+])
+def test_pair_setup_can_override_the_adapter_default(monkeypatch, flag, expected):
+    observed = []
+    monkeypatch.setattr(
+        pairing_cli, "run_wizard",
+        lambda **kwargs: observed.append(kwargs["explicit_pairing"]) or 0,
+    )
+    result = CliRunner().invoke(cli.app, ["pair-setup", "--no-verify", flag])
+    assert result.exit_code == 0
+    assert observed == [expected]
 
 
 def test_interactive_pairing_emits_code_and_waits_for_acceptance(monkeypatch):

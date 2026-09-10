@@ -64,7 +64,7 @@ def run_wizard(
     *,
     verify_after: bool = True,
     compatibility_mode: bool = False,
-    explicit_pairing: bool = False,
+    explicit_pairing: bool | None = None,
 ) -> int:
     """Run the same full pairing workflow exposed by the graphical clients."""
     typer.echo(
@@ -103,6 +103,8 @@ def run_wizard(
     if not compatibility.pairing_ready:
         typer.echo(typer.style(compatibility.issue, fg=typer.colors.RED))
         return 1
+    if explicit_pairing is None:
+        explicit_pairing = compatibility.explicit_pairing_default
     # Validate the selected adapter before removing the saved phone's bond.
     if configuration.saved:
         typer.echo(

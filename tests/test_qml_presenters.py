@@ -603,6 +603,37 @@ def test_phone_settings_pairing_uses_loaded_selection_and_busy_state(qml_engine,
     assert not button.property("enabled")
 
 
+def test_qt_explicit_pairing_default_preserves_per_adapter_choices(qml_engine, settings_window):
+    window, bridge = settings_window
+    bridge.setProperty("setupLoaded", True)
+    bridge.setProperty("compatibilityLoaded", True)
+    bridge.setProperty("devices", [{"mac": "NEW", "display_name": "Phone", "paired": False}])
+    checkbox = _settings_object(window, "explicitPairingCheckBox")
+    pair = _settings_object(window, "pairPhoneButton")
+    rtl = {"adapter": "hci1", "explicit_pairing_default": True}
+    other = {"adapter": "hci0", "explicit_pairing_default": False}
+    bridge.setProperty("compatibility", rtl)
+    assert checkbox.property("checked")
+    QMetaObject.invokeMethod(pair, "clicked")
+    assert _evaluate(qml_engine, "testBridge.calls[0].args") == ["NEW", True, True]
+
+    QMetaObject.invokeMethod(checkbox, "toggle")
+    QMetaObject.invokeMethod(checkbox, "clicked")
+    bridge.setProperty("compatibility", {**rtl, "powered": True})
+    assert not checkbox.property("checked")
+    QMetaObject.invokeMethod(pair, "clicked")
+    assert _evaluate(qml_engine, "testBridge.calls[1].args") == ["NEW", True, False]
+
+    bridge.setProperty("compatibility", other)
+    assert not checkbox.property("checked")
+    QMetaObject.invokeMethod(checkbox, "toggle")
+    QMetaObject.invokeMethod(checkbox, "clicked")
+    bridge.setProperty("compatibility", rtl)
+    assert not checkbox.property("checked")
+    bridge.setProperty("compatibility", other)
+    assert checkbox.property("checked")
+
+
 @pytest.mark.parametrize("confirm", [False, True])
 def test_phone_replacement_keeps_the_confirmed_targets_across_refresh(qml_engine, settings_window, confirm):
     window, bridge = settings_window
@@ -928,7 +959,7 @@ def quickshell_setup(qml_engine):
        reply("configuration", {configured:false,saved:false});
        check(setup.pairingIssueReport === "/tmp/fake-report", "failure report lost");''',
     '''ready(); setup.targetSaved = true; setup.configuredMac = "OLD";
-       setup.explicitPairingOverride = true; setup.requestPairing();
+       setup.setExplicitPairing(true); setup.requestPairing();
        check(!setup.pairing && setup.pendingReplacement, "replacement skipped confirmation");
        setup.configuredMac = "OTHER"; setup.adapterName = "hci9";
        setup.pairingDevices = [{mac:"OTHER-NEW"}]; setup.confirmReplacement();
@@ -967,8 +998,30 @@ def quickshell_setup(qml_engine):
        ready(); setup.requestPairing();
        setup.finish(setup.pending.pair.id,"pair",0,"","");
        check(!setup.configured && !setup.pairing && setup.pairingStatus.includes("no result"), "empty success accepted");''',
+    '''ready();
+       function selectAdapter(adapter, defaultValue) {
+         setup.loadCompatibility(adapter);
+         reply("compatibility", {adapter:adapter, notifications_supported:false,
+           explicit_pairing_default:defaultValue});
+         reply("devices", [{mac:"NEW",adapter_path:"/org/bluez/"+adapter}]);
+       }
+       selectAdapter("hci1", true);
+       check(setup.explicitPairing, "RTL8761BU did not default to explicit pairing");
+       setup.requestPairing();
+       check(requests[requests.length-1].argv.includes("--explicit-pairing"), "default not forwarded");
+       reply("pair", {ok:false,error:"Cancelled"}, 1);
+       setup.setExplicitPairing(false);
+       selectAdapter("hci1", true);
+       check(!setup.explicitPairing, "refresh overwrote manual opt-out");
+       selectAdapter("hci0", false);
+       check(!setup.explicitPairing, "default leaked to another adapter");
+       setup.setExplicitPairing(true);
+       selectAdapter("hci1", true);
+       check(!setup.explicitPairing, "adapter switch lost opt-out");
+       setup.requestPairing();
+       check(!requests[requests.length-1].argv.includes("--explicit-pairing"), "manual opt-out ignored");''',
 ], ids=["first-install", "adapter-switch", "cancel-scan", "failed-pair", "replacement-snapshot",
-        "forget-confirmation", "pair-success", "failed-helpers", "missing-helper"])
+        "forget-confirmation", "pair-success", "failed-helpers", "missing-helper", "explicit-default"])
 def test_quickshell_setup_responses(qml_engine, quickshell_setup, scenario):
     result = qml_engine.evaluate("(function() {" + scenario + "})()")
     assert not result.isError(), result.toString()
@@ -1000,7 +1053,7 @@ def test_quickshell_settings_bindings_and_unverified_pairing(qml_engine, quicksh
             issue: "Incompatible Bluetooth adapter: missing Bluetooth LE"});
         reply("devices", [{mac: "OLD", paired: true, adapter_path: "/org/bluez/hci1"}]);
         setup.compatibilityModeOverride = true;
-        setup.explicitPairingOverride = true;
+        setup.setExplicitPairing(true);
         setup.requestPairing();
         check(!setup.pairing, "incompatible controller started pairing");
     ''')

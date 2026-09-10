@@ -124,6 +124,13 @@ connection. MAP and PBAP are its successful end state; absence of Notification
 Access is expected and group messages may consequently lack ANCS-derived group
 metadata.
 
+The RTL8761BU (`0bda:8771`) defaults to explicit pairing because its initial
+`Connect` can abort before authentication (#144). Clients apply this default
+from the shared adapter probe and retain manual checkbox choices per adapter
+for the current session. The CLI wizard uses the same default;
+`--no-explicit-pairing` selects Connect-first instead. This does not change the
+ANCS compatibility mode or require explicit pairing on other Realtek adapters.
+
 Both modes activate obexd's local Message Notification Server before pairing
 and install BlueFerry's WirePlumber phone-audio fragment so this computer is
 not an A2DP/HFP sink when iOS first connects. A failed pairing attempt removes

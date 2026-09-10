@@ -180,12 +180,13 @@ Rectangle {
         }
         FerryCheckBox {
           id: explicitPairing
+          objectName: "explicitPairingCheckBox"
           ferryTheme: root.theme
           visible: !root.setup.configured
           text: "Use explicit Bluetooth pairing"
-          checked: root.setup.explicitPairingOverride
-          enabled: !root.setup.pairing
-          onClicked: root.setup.explicitPairingOverride = checked
+          checked: root.setup.explicitPairing
+          enabled: root.setup.compatibilityLoaded && !root.setup.pairing
+          onClicked: root.setup.setExplicitPairing(checked)
         }
         FerryLabel {
           ferryTheme: root.theme

@@ -126,7 +126,9 @@ def test_cli_requires_phone_side_forget_before_clearing_saved_target(
 
         @staticmethod
         def compatibility():
-            return SimpleNamespace(adapter="hci1", pairing_ready=True, adapters=())
+            return SimpleNamespace(
+                adapter="hci1", pairing_ready=True, adapters=(), explicit_pairing_default=False,
+            )
 
         @staticmethod
         def forget(mac, *, adapter=None):
@@ -190,6 +192,9 @@ def test_cli_incompatible_adapter_stops_before_scanning_or_forgetting(monkeypatc
         (False, False, "btmgmt timed out", True),
     ],
 )
+@pytest.mark.parametrize("default,override,expected_explicit", [
+    (False, None, False), (True, None, True), (True, False, False), (False, True, True),
+])
 def test_cli_wizard_supplies_its_own_pairing_agent_ui(
     monkeypatch,
     capsys,
@@ -197,6 +202,9 @@ def test_cli_wizard_supplies_its_own_pairing_agent_ui(
     notifications_supported,
     issue,
     expected_mode,
+    default,
+    override,
+    expected_explicit,
 ) -> None:
     prompts = []
     observed = []
@@ -215,6 +223,7 @@ def test_cli_wizard_supplies_its_own_pairing_agent_ui(
         adapter="hci0",
         hardware_supported=hardware_supported,
         pairing_ready=True,
+        explicit_pairing_default=default,
         issue=issue,
         notifications_supported=notifications_supported,
         bearer_api_active=True,
@@ -246,7 +255,7 @@ def test_cli_wizard_supplies_its_own_pairing_agent_ui(
             explicit_pairing=False,
         ):
             assert compatibility_mode is expected_mode
-            assert explicit_pairing is False
+            assert explicit_pairing is expected_explicit
             observed.append((mac, adapter, confirmation(12345)))
             display(12345)
             return SimpleNamespace(device=device, ancs_ready=True)
@@ -265,7 +274,7 @@ def test_cli_wizard_supplies_its_own_pairing_agent_ui(
     monkeypatch.setattr(pairing_cli.typer, "confirm", confirm)
     monkeypatch.setattr(pairing_cli, "_print_iphone_steps", lambda *_args, **_kwargs: None)
 
-    assert pairing_cli.run_wizard(verify_after=False) == 0
+    assert pairing_cli.run_wizard(verify_after=False, explicit_pairing=override) == 0
     assert observed == [(device.mac, "hci0", True)]
     assert prompts == [
         ("\nUse this device?", {"default": True}),
@@ -307,6 +316,7 @@ def test_cli_wizard_preserves_report_for_unexpected_pairing_failure(
                 adapter="hci0",
                 hardware_supported=True,
                 pairing_ready=True,
+                explicit_pairing_default=False,
                 issue="",
                 notifications_supported=True,
                 bearer_api_active=True,
@@ -357,6 +367,7 @@ def test_cli_wizard_points_at_pairing_issue_when_ancs_stays_down(
         adapter="hci0",
         hardware_supported=True,
         pairing_ready=True,
+        explicit_pairing_default=False,
         issue="",
         notifications_supported=True,
         bearer_api_active=True,

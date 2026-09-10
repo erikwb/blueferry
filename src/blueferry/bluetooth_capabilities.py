@@ -36,6 +36,10 @@ _BT_COMPANIES = {
 # does not complete on them. Messages and contacts still work.
 ANCS_LIMITED_VENDORS = frozenset({"realtek", "broadcom", "cypress"})
 
+# RTL8761BU can abort Connect-first pairing before authentication (#144).
+# This is a client default; users can still select Connect-first explicitly.
+_EXPLICIT_PAIRING_USB_IDS = frozenset({"0bda:8771"})
+
 
 def ancs_limited_vendor(vendor: object) -> bool:
     """Return True when iPhone notification pairing is not expected to finish."""
@@ -591,7 +595,8 @@ def compatibility(
             names[0],
         )
     _available, _supported, _current, _error, identity, fields = inspected[str(chosen)]
-    vendor = str(hardware_by_name.get(str(chosen), {}).get("vendor") or "")
+    hardware = hardware_by_name.get(str(chosen), {})
+    vendor = str(hardware.get("vendor") or "")
     result: dict[str, object] = {
         "adapter": chosen,
         **fields,
@@ -599,6 +604,9 @@ def compatibility(
         "adapters": options,
         "controller_vendor": vendor,
         "ancs_limited_controller": ancs_limited_vendor(vendor),
+        "explicit_pairing_default": (
+            str(hardware.get("usb_id") or "").casefold() in _EXPLICIT_PAIRING_USB_IDS
+        ),
     }
     if "manufacturer_id" in identity:
         result["manufacturer_id"] = identity["manufacturer_id"]

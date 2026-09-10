@@ -63,6 +63,7 @@ Kirigami.ScrollablePage {
     }
     property string effectiveStage: iphonePage.bridge.onboardingStage
     property bool compatibilityModeOverride: false
+    property var explicitPairingOverrides: ({})
 
     ColumnLayout {
         width: parent.width
@@ -252,10 +253,18 @@ Kirigami.ScrollablePage {
 
         Controls.CheckBox {
             id: explicitPairing
+            objectName: "explicitPairingCheckBox"
             Layout.fillWidth: true
             visible: !iphonePage.bridge.configured
             text: qsTr("Use explicit Bluetooth pairing")
-            enabled: !iphonePage.bridge.busy
+            checked: iphonePage.explicitPairingOverrides[iphonePage.bridge.compatibility.adapter]
+                ?? (iphonePage.bridge.compatibility.explicit_pairing_default === true)
+            enabled: iphonePage.bridge.compatibilityLoaded && !iphonePage.bridge.busy
+            onClicked: {
+                const overrides = Object.assign({}, iphonePage.explicitPairingOverrides)
+                overrides[iphonePage.bridge.compatibility.adapter] = checked
+                iphonePage.explicitPairingOverrides = overrides
+            }
             Accessible.description: qsTr("Skips the initial Bluetooth connection attempt and calls Pair immediately. Try this for controllers that cancel normal pairing.")
         }
 

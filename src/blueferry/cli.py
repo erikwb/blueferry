@@ -142,10 +142,10 @@ def pair_setup(
             "(recommended for iOS 18 or earlier)"
         ),
     ),
-    explicit_pairing: bool = typer.Option(
-        False,
-        "--explicit-pairing",
-        help="Call Pair immediately instead of initiating pairing with Connect",
+    explicit_pairing: bool | None = typer.Option(
+        None,
+        "--explicit-pairing/--no-explicit-pairing",
+        help="Call Pair immediately instead of Connect (default depends on the adapter)",
     ),
 ):
     """First-run wizard: pick a paired iPhone, write the local config,
