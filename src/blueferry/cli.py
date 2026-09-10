@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+from typing import Optional
 
 import typer
 
@@ -142,7 +143,8 @@ def pair_setup(
             "(recommended for iOS 18 or earlier)"
         ),
     ),
-    explicit_pairing: bool | None = typer.Option(
+    # Ubuntu 24.04's Typer 0.9 requires typing.Optional for nullable CLI options.
+    explicit_pairing: Optional[bool] = typer.Option(  # noqa: UP045
         None,
         "--explicit-pairing/--no-explicit-pairing",
         help="Call Pair immediately instead of Connect (default depends on the adapter)",
