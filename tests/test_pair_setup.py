@@ -537,6 +537,7 @@ def test_transport_wait_samples_bluez_at_a_bounded_rate(monkeypatch):
     ] + [BackendStatus(map=True, pbap=True, ancs=True)]
     snapshots = []
     clients = []
+    progress = []
 
     class FakeClient:
         def __init__(self):
@@ -558,11 +559,43 @@ def test_transport_wait_samples_bluez_at_a_bounded_rate(monkeypatch):
         timeout=10,
         attempt={},
         device_path="/device",
+        transports_changed=lambda current: progress.append((now[0], current.as_tuple())),
     )
 
     assert result.as_tuple() == (True, True, True)
     assert snapshots == [0.0, 2.0]
     assert len(clients) == 1
+    # MAP/PBAP must reach the client before the helper finishes waiting for ANCS.
+    assert progress == [(0.0, (True, True, False)), (2.5, (True, True, True))]
+
+
+@pytest.mark.parametrize("backend_error", [False, True])
+def test_transport_progress_clears_lost_connections(monkeypatch, backend_error):
+    from blueferry.client import BackendError
+    from blueferry.models import BackendStatus
+
+    now = [0.0]
+    progress = []
+
+    def read_status():
+        if now[0] < 1:
+            return BackendStatus(map=True, pbap=True)
+        if backend_error:
+            raise BackendError("Daemon stopped")
+        return BackendStatus()
+
+    monkeypatch.setattr(pair_setup.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(pair_setup.time, "sleep", lambda seconds: now.__setitem__(0, now[0] + seconds))
+    monkeypatch.setattr(pair_setup, "_record_bluez_state", lambda *_args: None)
+
+    result = pair_setup._wait_for_daemon_transports(
+        timeout=2,
+        status_reader=read_status,
+        transports_changed=lambda current: progress.append((now[0], current.as_tuple())),
+    )
+
+    assert result == pair_setup.PairingTransports()
+    assert progress == [(0.0, (True, True, False)), (1.0, (False, False, False))]
 
 
 def test_teardown_trace_survives_quickshell_helper_processes(monkeypatch):
@@ -1486,7 +1519,17 @@ def test_complete_pairing_starts_profiles_while_pairing_advert_is_active(monkeyp
     )
     monkeypatch.setattr(pair_setup, "_restart_user_service", lambda: calls.append("restart"))
 
-    result = pair_setup.complete_pairing(device.mac, _allow_headless=True)
+    def wait_for_transports(*, transports_changed, **_kwargs):
+        state = pair_setup.PairingTransports(True, True, True)
+        transports_changed(state)
+        return state
+
+    monkeypatch.setattr(pair_setup, "_wait_for_daemon_transports", wait_for_transports)
+    result = pair_setup.complete_pairing(
+        device.mac,
+        _allow_headless=True,
+        transports_changed=lambda state: calls.append(("transports", state.as_tuple())),
+    )
 
     assert result.device.mac == device.mac
     assert result.ancs == "connected"
@@ -1500,6 +1543,7 @@ def test_complete_pairing_starts_profiles_while_pairing_advert_is_active(monkeyp
         ("advert", "hci0"),
         "config",
         "restart",
+        ("transports", (True, True, True)),
         ("unregister", "hci0"),
     ]
 
@@ -1549,7 +1593,7 @@ def test_compatibility_pairing_continues_when_solicitation_is_unavailable(
     monkeypatch.setattr(
         pair_setup,
         "_handoff_to_daemon",
-        lambda selected, adapter, selected_policy, _attempt: calls.append(
+        lambda selected, adapter, selected_policy, _attempt, **_kwargs: calls.append(
             ("handoff", selected.mac, adapter, selected_policy.ancs_enabled)
         )
         or pair_setup.PairingTransports(map=True, pbap=True, ancs=False),

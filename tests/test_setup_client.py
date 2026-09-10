@@ -163,6 +163,7 @@ def test_isolated_pairing_answers_helper_confirmation(monkeypatch):
             self.stdin = Input()
             self.stdout = iter([
                 '{"event":"confirmation","passkey":"123456"}\n',
+                '{"event":"transports","map":true,"pbap":true,"ancs":false}\n',
                 '{"ok":true,"device":' + __import__("json").dumps(device.to_dict())
                 + ',"ancs_ready":true}\n',
             ])

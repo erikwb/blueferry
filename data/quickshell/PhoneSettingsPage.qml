@@ -11,6 +11,8 @@ Rectangle {
   required property var status
   property var busy: ({})
   readonly property var theme: ferryTheme
+  readonly property var connectionStatus: root.setup.pairing
+    ? root.setup.pairingTransports : root.status
   readonly property bool showIphoneSetup: root.setup.compatibilityLoaded
     && onboarding.stage === "iphone-settings" && onboarding.pendingIphoneSetupTasks().length > 0
   signal closeRequested
@@ -24,7 +26,7 @@ Rectangle {
     notificationsSupported: root.setup.notificationsSupported && root.setup.ancsEnabled && !root.setup.compatibilityModeOverride
     bluezActive: root.setup.bluezActive
     configured: root.setup.configured
-    backendStatus: root.status
+    backendStatus: root.connectionStatus
     pairingReady: root.setup.pairingReady
   }
 
@@ -281,8 +283,9 @@ Rectangle {
         }
         FerryInfoRow {
           ferryTheme: root.theme
+          objectName: "messagesConnection"
           label: "Messages"
-          value: onboarding.mapConnectionRefused() ? "Connection refused" : root.status.map ? "Connected" : "Unavailable"
+          value: onboarding.mapConnectionRefused() ? "Connection refused" : root.connectionStatus.map ? "Connected" : "Unavailable"
           Layout.fillWidth: true
         }
         FerryLabel {
@@ -296,19 +299,21 @@ Rectangle {
         }
         FerryInfoRow {
           ferryTheme: root.theme
+          objectName: "contactsConnection"
           label: "Contacts"
-          value: root.status.pbap ? "Connected" : "Unavailable"
+          value: root.connectionStatus.pbap ? "Connected" : "Unavailable"
           Layout.fillWidth: true
         }
         FerryInfoRow {
           ferryTheme: root.theme
+          objectName: "notificationsConnection"
           label: "Notifications"
-          value: root.status.ancs ? "Connected" : "Unavailable"
+          value: root.connectionStatus.ancs ? "Connected" : "Unavailable"
           Layout.fillWidth: true
         }
         FerryLabel {
           ferryTheme: root.theme
-          visible: root.setup.configured && onboarding.notificationsSupported && root.status.map === true && root.status.pbap === true && !root.status.ancs
+          visible: root.setup.configured && onboarding.notificationsSupported && root.connectionStatus.map === true && root.connectionStatus.pbap === true && !root.connectionStatus.ancs
           text: root.ancsUnavailableHint()
           color: root.ancsLimited() ? root.theme.surfaceText : root.theme.warning
           wrapMode: Text.Wrap

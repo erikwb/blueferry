@@ -314,6 +314,7 @@ class SetupClient:
         display: pair_setup.DisplayCallback | None = None,
         compatibility_mode: bool = False,
         explicit_pairing: bool = False,
+        transports_changed: pair_setup.TransportCallback | None = None,
     ) -> PairingOutcome:
         return pair_setup.complete_pairing(
             mac,
@@ -322,6 +323,7 @@ class SetupClient:
             display=display,
             compatibility_mode=compatibility_mode,
             explicit_pairing=explicit_pairing,
+            transports_changed=transports_changed,
         )
 
     def complete_isolated(

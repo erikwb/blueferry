@@ -271,6 +271,7 @@ def pairing_complete(
     import sys
 
     from blueferry.errors import PairingError
+    from blueferry.pairing_types import PairingTransports
     from blueferry.setup_client import SetupClient
 
     if debug:
@@ -290,6 +291,14 @@ def pairing_complete(
 
     def display(passkey: int) -> None:
         emit({"event": "display", "passkey": f"{passkey:06d}"})
+
+    def transports_changed(transports: PairingTransports) -> None:
+        emit({
+            "event": "transports",
+            "map": transports.map,
+            "pbap": transports.pbap,
+            "ancs": transports.ancs,
+        })
 
     try:
         if not interactive_agent:
@@ -316,6 +325,7 @@ def pairing_complete(
             display=display,
             compatibility_mode=compatibility_mode,
             explicit_pairing=explicit_pairing,
+            transports_changed=transports_changed,
         )
         emit(result.to_dict())
     except PairingError as error:

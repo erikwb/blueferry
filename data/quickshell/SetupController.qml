@@ -20,6 +20,7 @@ QtObject {
   property var pairingDevices: []
   property int selectedDeviceIndex: -1
   property string pairingStatus: ""
+  property var pairingTransports: ({map: false, pbap: false, ancs: false})
   property string configurationError: ""
   property bool bluezActive: false
   property bool hardwareSupported: false
@@ -164,6 +165,7 @@ QtObject {
     cancel("devices")
     cancel("compatibility")
     pairingStatus = "Starting secure pairing…"
+    pairingTransports = ({map: false, pbap: false, ancs: false})
     pairingIssueReport = ""
     clearConfirmation()
     request("pair", command, true, {adapter: adapter})
@@ -200,7 +202,14 @@ QtObject {
     if (!pending[kind] || pending[kind].id !== id || (kind !== "pair" && kind !== "forget")) return
     try {
       const data = JSON.parse(line)
-      if (data.event === "display") {
+      if (kind === "pair" && data.event === "transports") {
+        if (typeof data.map !== "boolean" || typeof data.pbap !== "boolean"
+            || typeof data.ancs !== "boolean") return
+        pairingTransports = {map: data.map, pbap: data.pbap, ancs: data.ancs}
+        pairingStatus = data.map && data.pbap
+          ? "Messages and contacts are connected. Finishing setup…"
+          : "Checking Bluetooth services…"
+      } else if (data.event === "display") {
         pairingPasskey = String(data.passkey || "")
         pairingStatus = "Compare this code with the code on your iPhone."
       } else if (data.event === "confirmation") {

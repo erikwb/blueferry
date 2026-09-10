@@ -10,6 +10,7 @@ import pytest
 from typer.testing import CliRunner
 
 from blueferry import cli, pairing_cli, quirks_report, setup_client
+from blueferry.pairing_types import PairingTransports
 
 
 def test_pair_setup_debug_enables_diagnostic_logging(monkeypatch):
@@ -71,10 +72,12 @@ def test_interactive_pairing_emits_code_and_waits_for_acceptance(monkeypatch):
             adapter=None,
             compatibility_mode=False,
             explicit_pairing=False,
+            transports_changed=None,
         ):
             assert compatibility_mode is False
             assert explicit_pairing is False
             observed.append((mac, adapter, confirmation(12345)))
+            transports_changed(PairingTransports(map=True, pbap=True, ancs=False))
             return SimpleNamespace(to_dict=lambda: {"ok": True, "device": {"mac": mac}})
 
     monkeypatch.setattr(setup_client, "SetupClient", Setup)
@@ -98,6 +101,7 @@ def test_interactive_pairing_emits_code_and_waits_for_acceptance(monkeypatch):
     assert events == [
         {"event": "confirmation", "passkey": "", "purpose": "bind"},
         {"event": "confirmation", "passkey": "012345"},
+        {"event": "transports", "map": True, "pbap": True, "ancs": False},
         {"ok": True, "device": {"mac": "02:00:00:00:00:01"}},
     ]
     assert observed == [

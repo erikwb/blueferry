@@ -55,6 +55,7 @@ MAX_DISCOVERY_SECONDS = 30
 
 ConfirmationCallback = Callable[[int | None], bool]
 DisplayCallback = Callable[[int], None]
+TransportCallback = Callable[[PairingTransports], None]
 
 
 class _TransportStatus(Protocol):
@@ -778,6 +779,7 @@ def _wait_for_daemon_transports(
     notifications_supported: bool = True,
     device_path: str | None = None,
     status_reader: Callable[[], _TransportStatus] | None = None,
+    transports_changed: TransportCallback | None = None,
 ) -> PairingTransports:
     """Observe the daemon while the pairing advert and agent remain active."""
     from blueferry.client import BackendClient, BackendError
@@ -799,10 +801,10 @@ def _wait_for_daemon_transports(
         try:
             status = reader()
         except BackendError:
-            time.sleep(0.5)
-            continue
-        _remember_daemon_status(attempt, status)
-        current = PairingTransports(status.map, status.pbap, status.ancs)
+            current = PairingTransports()
+        else:
+            _remember_daemon_status(attempt, status)
+            current = PairingTransports(status.map, status.pbap, status.ancs)
         if current != previous:
             log.debug(
                 "daemon transport state: MAP=%s PBAP=%s ANCS=%s",
@@ -817,8 +819,10 @@ def _wait_for_daemon_transports(
                 if current.ancs and not was.ancs:
                     quirks_report.mark(attempt, "ancs_ready")
             previous = current
-        if status.ancs or (
-            not notifications_supported and status.map and status.pbap
+            if transports_changed is not None:
+                transports_changed(current)
+        if current.ancs or (
+            not notifications_supported and current.map and current.pbap
         ):
             return current
         time.sleep(0.5)
@@ -854,6 +858,7 @@ def complete_pairing(
     display: DisplayCallback | None = None,
     compatibility_mode: bool = False,
     explicit_pairing: bool = False,
+    transports_changed: TransportCallback | None = None,
     _allow_headless: bool = False,
 ) -> PairingOutcome:
     """Pair if needed and finish every Linux-side BlueFerry setup step."""
@@ -872,6 +877,7 @@ def complete_pairing(
             display=display,
             compatibility_mode=compatibility_mode,
             explicit_pairing=explicit_pairing,
+            transports_changed=transports_changed,
             attempt=attempt,
         )
     except PairingError as error:
@@ -1451,6 +1457,8 @@ def _handoff_to_daemon(
     adapter: str,
     policy: PairingPolicy,
     attempt: PairingAttempt,
+    *,
+    transports_changed: TransportCallback | None = None,
 ) -> PairingTransports:
     if policy.ancs_enabled:
         write_local_env(device.mac, adapter)
@@ -1470,6 +1478,7 @@ def _handoff_to_daemon(
         attempt=attempt,
         notifications_supported=policy.ancs_enabled,
         device_path=device.device_path,
+        transports_changed=transports_changed,
     )
     log.info(
         "pairing-window result: MAP=%s PBAP=%s ANCS=%s",
@@ -1513,6 +1522,7 @@ def _execute_pairing(
     display: DisplayCallback | None = None,
     compatibility_mode: bool = False,
     explicit_pairing: bool = False,
+    transports_changed: TransportCallback | None = None,
     attempt: PairingAttempt,
 ) -> PairingOutcome:
     preparation = _prepare_pairing(
@@ -1556,6 +1566,7 @@ def _execute_pairing(
                 selected_adapter,
                 policy,
                 attempt,
+                transports_changed=transports_changed,
             )
         finally:
             _cleanup_pairing_resources(

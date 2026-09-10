@@ -1020,8 +1020,27 @@ def quickshell_setup(qml_engine):
        check(!setup.explicitPairing, "adapter switch lost opt-out");
        setup.requestPairing();
        check(!requests[requests.length-1].argv.includes("--explicit-pairing"), "manual opt-out ignored");''',
+    '''ready(); setup.setExplicitPairing(true); setup.requestPairing();
+       const first = setup.pending.pair.id;
+       const connected = '{"event":"transports","map":true,"pbap":true,"ancs":false}';
+       setup.receiveLine(first, "pair", connected);
+       check(setup.pairingTransports.map && setup.pairingTransports.pbap, "live services missing");
+       check(setup.pairing && !setup.configured, "progress completed pairing prematurely");
+       check(setup.pairingStatus.includes("Messages and contacts are connected"), "progress text missing");
+       setup.receiveLine(first, "pair", '{"event":"transports","map":false,"pbap":false}');
+       check(setup.pairingTransports.map, "malformed progress accepted");
+       reply("pair", {ok:false,error:"Cancelled"}, 1);
+       setup.requestPairing();
+       check(!setup.pairingTransports.map && !setup.pairingTransports.pbap, "new attempt kept old services");
+       setup.receiveLine(first, "pair", connected);
+       setup.receiveLine(setup.pending.pair.id, "forget", connected);
+       check(!setup.pairingTransports.map, "stale or wrong-kind progress accepted");
+       setup.receiveLine(setup.pending.pair.id, "pair", connected);
+       setup.receiveLine(setup.pending.pair.id, "pair", '{"event":"transports","map":false,"pbap":false,"ancs":false}');
+       check(!setup.pairingTransports.map && !setup.pairingTransports.pbap, "lost services stayed connected");''',
 ], ids=["first-install", "adapter-switch", "cancel-scan", "failed-pair", "replacement-snapshot",
-        "forget-confirmation", "pair-success", "failed-helpers", "missing-helper", "explicit-default"])
+        "forget-confirmation", "pair-success", "failed-helpers", "missing-helper", "explicit-default",
+        "live-transports"])
 def test_quickshell_setup_responses(qml_engine, quickshell_setup, scenario):
     result = qml_engine.evaluate("(function() {" + scenario + "})()")
     assert not result.isError(), result.toString()
@@ -1087,9 +1106,32 @@ def test_quickshell_settings_bindings_and_unverified_pairing(qml_engine, quicksh
     QMetaObject.invokeMethod(pair, "clicked")
     assert quickshell_setup.property("pairing")
     assert not pair.property("enabled")
+    messages = page.findChild(QObject, "messagesConnection")
+    contacts = page.findChild(QObject, "contactsConnection")
+    notifications = page.findChild(QObject, "notificationsConnection")
+    assert messages.property("value") == contacts.property("value") == "Unavailable"
+    _evaluate(qml_engine, '''
+        setup.receiveLine(setup.pending.pair.id, "pair",
+            '{"event":"transports","map":false,"pbap":true,"ancs":false}');
+    ''')
+    assert contacts.property("value") == "Connected"
+    assert messages.property("value") == "Unavailable"
+    _evaluate(qml_engine, '''
+        setup.receiveLine(setup.pending.pair.id, "pair",
+            '{"event":"transports","map":true,"pbap":true,"ancs":false}');
+    ''')
+    assert messages.property("value") == contacts.property("value") == "Connected"
+    assert notifications.property("value") == "Unavailable"
+    assert quickshell_setup.property("pairing")
     result = qml_engine.evaluate('''reply("pair", {ok:false,error:"Cancelled"},1);
         setup.configured = true;''')
     assert not result.isError(), result.toString()
+    # Once the helper exits, ordinary backend status owns the connection rows.
+    assert messages.property("value") == contacts.property("value") == "Unavailable"
+    _evaluate(qml_engine, '''page.status = Object.assign({}, page.status,
+        {map: true, pbap: true, ancs: true});''')
+    assert messages.property("value") == contacts.property("value") == "Connected"
+    assert notifications.property("value") == "Connected"
     QGuiApplication.processEvents()
     qml_engine.warnings.disconnect(warnings.extend)
     assert not warnings, "\n".join(w.toString() for w in warnings)
