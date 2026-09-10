@@ -1164,7 +1164,10 @@ def test_adapter_selection_prefers_le_advertising_but_honors_explicit_choice(mon
     assert explicit["pairing_ready"] is False
 
 
-def test_explicit_pairing_default_matches_only_the_selected_rtl8761bu(monkeypatch):
+@pytest.mark.parametrize("explicit_usb_id", ["0BDA:8771", "13D3:3586", "0bda:8922"])
+def test_explicit_pairing_default_matches_only_the_selected_listed_adapter(
+    monkeypatch, explicit_usb_id,
+):
     class Manager:
         def GetManagedObjects(self):
             return {f"/org/bluez/hci{n}": {"org.bluez.Adapter1": {}} for n in range(3)}
@@ -1175,7 +1178,7 @@ def test_explicit_pairing_default_matches_only_the_selected_rtl8761bu(monkeypatc
         )
         return type("Result", (), {"returncode": 0, "stdout": stdout})()
 
-    usb_ids = {"hci0": "8087:0029", "hci1": "0BDA:8771", "hci2": "0bda:c85b"}
+    usb_ids = {"hci0": "8087:0029", "hci1": explicit_usb_id, "hci2": "0bda:c85b"}
     monkeypatch.setattr(pair_setup, "_object_manager", Manager)
     monkeypatch.setattr(pair_setup, "run_command", controller_info)
     monkeypatch.setattr(pair_setup, "bluez_support_status", lambda: {"active": True})

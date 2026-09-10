@@ -36,9 +36,12 @@ _BT_COMPANIES = {
 # does not complete on them. Messages and contacts still work.
 ANCS_LIMITED_VENDORS = frozenset({"realtek", "broadcom", "cypress"})
 
-# RTL8761BU can abort Connect-first pairing before authentication (#144).
-# This is a client default; users can still select Connect-first explicitly.
-_EXPLICIT_PAIRING_USB_IDS = frozenset({"0bda:8771"})
+# Adapter-specific client defaults; users can still select Connect-first explicitly.
+_EXPLICIT_PAIRING_USB_IDS = frozenset({
+    "0bda:8771",  # RTL8761BU: Connect can abort before authentication (#144).
+    "0bda:8922",  # Realtek: MAP/PBAP success with explicit pairing (#68).
+    "13d3:3586",  # AzureWave RTL8852CE: explicit pairing restored ANCS (#58).
+})
 
 
 def ancs_limited_vendor(vendor: object) -> bool:

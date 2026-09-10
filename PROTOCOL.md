@@ -124,10 +124,13 @@ connection. MAP and PBAP are its successful end state; absence of Notification
 Access is expected and group messages may consequently lack ANCS-derived group
 metadata.
 
-The RTL8761BU (`0bda:8771`) defaults to explicit pairing because its initial
-`Connect` can abort before authentication (#144). Clients apply this default
-from the shared adapter probe and retain manual checkbox choices per adapter
-for the current session. The CLI wizard uses the same default;
+The RTL8761BU (`0bda:8771`), AzureWave RTL8852CE (`13d3:3586`), and Realtek
+`0bda:8922` default to explicit pairing. RTL8761BU can abort its initial `Connect`
+before authentication (#144); explicit pairing restored ANCS on the RTL8852CE
+(#58) and was used for a successful MAP/PBAP connection on `0bda:8922` (#68).
+Clients apply these defaults from the shared adapter probe and retain manual
+checkbox choices per adapter for the current session. The CLI wizard uses the
+same defaults;
 `--no-explicit-pairing` selects Connect-first instead. This does not change the
 ANCS compatibility mode or require explicit pairing on other Realtek adapters.
 
