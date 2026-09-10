@@ -145,6 +145,11 @@ blueferry-qt          # KDE Plasma
 blueferry-quickshell  # Quickshell
 ```
 
+BlueFerry requires an adapter with Bluetooth Classic and Bluetooth 4.0 or newer
+with LE advertising support. LE advertising is needed to enable the iPhone's
+messages and contacts, including in compatibility mode. Bluetooth 3-only
+adapters are incompatible.
+
 Then:
 
 1. Keep the iPhone unlocked with **Settings → Bluetooth** open.

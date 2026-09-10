@@ -49,11 +49,14 @@ class IPhonePage(Gtk.Box):
         self._storage_unlock_attempted = False
         self._pairing_issue_report = ""
         self._compatibility_override = False
+        self._explicit_pairing_overrides: dict[str, bool] = {}
         self._applying_pairing_mode = False
 
         page = Adw.PreferencesPage()
         self.append(page)
 
+        self._hardware_group = Adw.PreferencesGroup()
+        page.add(self._hardware_group)
         self._pairing_group = Adw.PreferencesGroup(
             title=_("Pair an iPhone"),
             description=_(
@@ -78,8 +81,9 @@ class IPhonePage(Gtk.Box):
         )
         self._device_row.connect("notify::selected", lambda *_args: self._selection_changed())
         self._hardware_row = Adw.ActionRow(
-            title=_("Bluetooth Controller"),
+            title=_("Adapter Compatibility"),
             subtitle=_("Checking compatibility…"),
+            subtitle_lines=0,
             use_markup=False,
         )
         self._adapter_model = Gtk.StringList()
@@ -102,7 +106,7 @@ class IPhonePage(Gtk.Box):
         )
         self._activate_button.connect("clicked", self._confirm_activate_bluez)
         self._bluez_row.add_suffix(self._activate_button)
-        self._pairing_group.add(self._hardware_row)
+        self._hardware_group.add(self._hardware_row)
         self._pairing_group.add(self._adapter_row)
         self._pairing_group.add(self._bluez_row)
 
@@ -142,6 +146,9 @@ class IPhonePage(Gtk.Box):
             ),
         )
         self._explicit_pairing_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
+        self._explicit_pairing_switch.connect(
+            "notify::active", self._explicit_pairing_changed
+        )
         self._explicit_pairing_row.add_suffix(self._explicit_pairing_switch)
         self._explicit_pairing_row.set_activatable_widget(
             self._explicit_pairing_switch
@@ -388,6 +395,10 @@ class IPhonePage(Gtk.Box):
 
     def _update_phone_controls(self) -> None:
         configured = bool(self._configuration and self._configuration.configured)
+        self._hardware_group.set_visible(
+            not configured
+            or bool(self._compatibility and not self._compatibility.pairing_ready)
+        )
         self._pairing_group.set_visible(not configured)
         self._paired_group.set_visible(configured)
         device = self._configured_device()
@@ -410,7 +421,7 @@ class IPhonePage(Gtk.Box):
                 self._last_status.verified_iphone_setup,
                 notifications_supported=notifications_supported,
             )
-        )
+        ) if configured and self._compatibility and self._compatibility.pairing_ready else set()
         for key, row in self._iphone_setup_rows.items():
             row.set_visible(key in remaining)
         self._iphone_setup_group.set_visible(configured and bool(remaining))
@@ -429,7 +440,10 @@ class IPhonePage(Gtk.Box):
         )
         self._explicit_pairing_switch.set_sensitive(not busy)
         selected = self._selected_device()
-        self._pair_button.set_sensitive(not busy and bool(selected))
+        self._pair_button.set_sensitive(
+            not busy and bool(selected)
+            and bool(self._compatibility and self._compatibility.pairing_ready)
+        )
         self._pair_button.set_label(
             _("Use Existing Pairing") if selected and selected.paired else _("Pair Selected iPhone")
         )
@@ -448,6 +462,12 @@ class IPhonePage(Gtk.Box):
         if self._compatibility is not None:
             self._apply_bluetooth_support_status(self._compatibility)
         self._update_onboarding()
+
+    def _explicit_pairing_changed(self, *_args) -> None:
+        if not self._applying_pairing_mode and self._compatibility is not None:
+            self._explicit_pairing_overrides[self._compatibility.adapter] = (
+                self._explicit_pairing_switch.get_active()
+            )
 
     def _apply_bluetooth_support_status(self, compatibility) -> None:
         active = compatibility.bearer_api_active
@@ -480,7 +500,6 @@ class IPhonePage(Gtk.Box):
         adapters = list(compatibility.adapters)
         self._applying_adapter = True
         if len(adapters) > 1:
-            self._hardware_row.set_visible(False)
             self._adapter_row.set_visible(True)
             labels = [option.label for option in adapters]
             self._adapter_model.splice(0, self._adapter_model.get_n_items(), labels)
@@ -492,26 +511,31 @@ class IPhonePage(Gtk.Box):
             self._adapter_row.set_selected(selected)
         else:
             self._adapter_row.set_visible(False)
-            self._hardware_row.set_visible(True)
-            if not compatibility.available:
-                hardware = _("Capabilities could not be verified; pairing is still available")
-            elif not compatibility.hardware_supported:
-                hardware = _("Compatibility warning; pairing is still available")
-            elif compatibility.notifications_supported:
-                hardware = _("Compatible")
-            else:
-                hardware = _("Compatible for Messages and Contacts")
-            self._hardware_row.set_subtitle(
-                _("{adapter} — {status}").format(
-                    adapter=compatibility.adapter or _("No Adapter"),
-                    status=hardware,
-                )
+        self._hardware_row.set_visible(True)
+        if not compatibility.available:
+            hardware = _("Capabilities could not be verified; pairing is still available")
+        elif not compatibility.hardware_supported:
+            hardware = compatibility.issue
+        elif compatibility.notifications_supported:
+            hardware = _("Compatible")
+        else:
+            hardware = _("Compatible for Messages and Contacts")
+        self._hardware_row.set_subtitle(
+            _("{adapter} — {status}").format(
+                adapter=compatibility.adapter or _("No Adapter"),
+                status=hardware,
             )
+        )
         self._applying_adapter = False
         self._applying_pairing_mode = True
         self._compatibility_switch.set_active(
             self._compatibility_override
             or not compatibility.notifications_supported
+        )
+        self._explicit_pairing_switch.set_active(
+            self._explicit_pairing_overrides.get(
+                compatibility.adapter, compatibility.explicit_pairing_default,
+            )
         )
         self._applying_pairing_mode = False
         self._apply_bluetooth_support_status(compatibility)

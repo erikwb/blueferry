@@ -55,6 +55,16 @@ def test_unverified_controller_still_requests_a_device() -> None:
     )
 
 
+def test_incompatible_controller_never_prompts_for_iphone_permissions() -> None:
+    for configured in (False, True):
+        assert derive_stage(
+            setup_loaded=True,
+            configured=configured,
+            compatibility={"pairing_ready": False, "notifications_supported": False},
+            status={"daemon": True},
+        ) is OnboardingStage.INCOMPATIBLE
+
+
 def test_optional_ancs_transport_controls_activation_step() -> None:
     inactive = {**COMPATIBLE, "bearer_api_active": False}
     assert (

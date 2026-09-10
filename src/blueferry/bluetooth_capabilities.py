@@ -36,6 +36,13 @@ _BT_COMPANIES = {
 # does not complete on them. Messages and contacts still work.
 ANCS_LIMITED_VENDORS = frozenset({"realtek", "broadcom", "cypress"})
 
+# Adapter-specific client defaults; users can still select Connect-first explicitly.
+_EXPLICIT_PAIRING_USB_IDS = frozenset({
+    "0bda:8771",  # RTL8761BU: Connect can abort before authentication (#144).
+    "0bda:8922",  # Realtek: MAP/PBAP success with explicit pairing (#68).
+    "13d3:3586",  # AzureWave RTL8852CE: explicit pairing restored ANCS (#58).
+})
+
 
 def ancs_limited_vendor(vendor: object) -> bool:
     """Return True when iPhone notification pairing is not expected to finish."""
@@ -408,13 +415,6 @@ def _hci_sort_key(name: str) -> tuple[int, int | str]:
     return (1, name)
 
 
-def _pairing_capable(inspected: tuple | None) -> bool:
-    if inspected is None:
-        return False
-    available, _supported, _current, _error, _identity, fields = inspected
-    return bool(available and fields["classic"] and fields["secure_pairing"])
-
-
 def adapter_label(name: str, hardware: dict[str, object] | None = None) -> str:
     """Human controller name plus the hci index so two cards stay distinct."""
     hardware = hardware or {}
@@ -449,19 +449,27 @@ def _profile_fields(
     low_energy = "le" in supported
     advertising = "advertising" in supported
     secure_pairing = bool({"ssp", "secure-conn"} & supported)
-    messages_supported = available and classic and secure_pairing
-    notifications_supported = (
-        available and low_energy and advertising and bearer_supported
-    )
+    # MAP/PBAP carry data over Classic, but iOS exposes their permissions only
+    # after LE solicitation. Compatibility mode still needs that advertisement.
+    messages_supported = available and classic and secure_pairing and low_energy and advertising
+    notifications_supported = messages_supported and bearer_supported
     missing = [
         label for present, label in (
-            (classic, "BR/EDR"), (secure_pairing, "secure pairing")
+            (classic, "Bluetooth Classic (BR/EDR)"),
+            (secure_pairing, "secure pairing"),
+            (low_energy, "Bluetooth LE"),
+            (advertising, "LE advertising"),
         ) if not present
     ]
     if not available:
         issue = command_error or f"Bluetooth adapter {adapter} is unavailable"
     elif missing:
-        issue = "Controller lacks " + ", ".join(missing)
+        issue = (
+            "Incompatible Bluetooth adapter: missing " + ", ".join(missing) + ". "
+            "BlueFerry requires Bluetooth Classic and Bluetooth 4.0 or newer "
+            "with LE advertising to enable iPhone messages and contacts. "
+            "Use a compatible adapter."
+        )
     elif notifications_supported and not bearer_active:
         issue = "Bluetooth support must be activated before pairing"
     elif not notifications_supported:
@@ -481,9 +489,9 @@ def _profile_fields(
         "notifications_supported": notifications_supported,
         "bearer_api_supported": bearer_supported,
         "bearer_api_active": bearer_active,
-        # Capability discovery selects a mode; the pairing transaction decides
-        # whether the adapter actually works.
-        "pairing_ready": True,
+        # A failed probe is inconclusive (#28); only confirmed missing
+        # capabilities prevent pairing (#143).
+        "pairing_ready": not available or messages_supported,
         "issue": issue,
         "supported_settings": sorted(supported),
         "current_settings": sorted(current),
@@ -571,19 +579,21 @@ def compatibility(
         inspected[name] = (available, supported, current, error, identity, fields)
     if adapter_name is not None and adapter_name in inspected:
         chosen = adapter_name
-    elif _pairing_capable(inspected.get(requested)):
-        chosen = requested
     else:
-        chosen = next(
-            (
-                str(option["name"])
-                for option in options
-                if _pairing_capable(inspected.get(str(option["name"])))
-            ),
+        # Prefer verified hardware, then an inconclusive probe that still
+        # permits pairing. Honor the configured adapter within each tier.
+        preferred = sorted(options, key=lambda option: option["name"] != requested)
+        fallback = next(
+            (str(option["name"]) for option in preferred if option["pairing_ready"]),
             names[0],
         )
+        chosen = next(
+            (str(option["name"]) for option in preferred if option["hardware_supported"]),
+            fallback,
+        )
     _available, _supported, _current, _error, identity, fields = inspected[str(chosen)]
-    vendor = str(hardware_by_name.get(str(chosen), {}).get("vendor") or "")
+    hardware = hardware_by_name.get(str(chosen), {})
+    vendor = str(hardware.get("vendor") or "")
     result: dict[str, object] = {
         "adapter": chosen,
         **fields,
@@ -591,6 +601,9 @@ def compatibility(
         "adapters": options,
         "controller_vendor": vendor,
         "ancs_limited_controller": ancs_limited_vendor(vendor),
+        "explicit_pairing_default": (
+            str(hardware.get("usb_id") or "").casefold() in _EXPLICIT_PAIRING_USB_IDS
+        ),
     }
     if "manufacturer_id" in identity:
         result["manufacturer_id"] = identity["manufacturer_id"]

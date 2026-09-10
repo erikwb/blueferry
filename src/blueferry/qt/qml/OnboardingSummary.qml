@@ -15,6 +15,7 @@ Kirigami.InlineMessage {
         + htmlEscape(detailForStage(storagePolicy, storageState))
     type: stage === "ready" || stage === "ready-without-ancs"
         ? Kirigami.MessageType.Positive
+        : stage === "incompatible" ? Kirigami.MessageType.Error
         : Kirigami.MessageType.Information
 
     function htmlEscape(value) {
@@ -56,6 +57,7 @@ Kirigami.InlineMessage {
     function titleForStage() {
         const titles = {
             "checking": qsTr("Checking Bluetooth Support"),
+            "incompatible": qsTr("Incompatible Bluetooth Adapter"),
             "activate-bluetooth": qsTr("Activate Bluetooth Support"),
             "select-device": qsTr("Pair an iPhone"),
             "starting": qsTr("Starting the Background Service"),
@@ -69,6 +71,7 @@ Kirigami.InlineMessage {
     function detailForStage(storagePolicy, storageState) {
         const details = {
             "checking": qsTr("Inspecting the selected Bluetooth controller without changing it."),
+            "incompatible": compatibility.issue || "",
             "activate-bluetooth": qsTr("The packaged BlueZ bearer support needs one authorized Bluetooth restart."),
             "select-device": qsTr("Scan for and select your iPhone here, then choose Pair. When the pairing request appears on the iPhone, approve it and confirm that the codes match. Pairing may appear idle for up to 15 seconds. After it completes, return to the Bluetooth device list and open this computer's ⓘ page a few times; turn on any new toggles that appear. System Notification access is also how BlueFerry recognizes group text threads; without it, a group text appears as a one-to-one conversation with its sender."),
             "starting": qsTr("The configured backend is starting. This normally takes a few seconds."),

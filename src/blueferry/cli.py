@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+from typing import Optional
 
 import typer
 
@@ -142,10 +143,11 @@ def pair_setup(
             "(recommended for iOS 18 or earlier)"
         ),
     ),
-    explicit_pairing: bool = typer.Option(
-        False,
-        "--explicit-pairing",
-        help="Call Pair immediately instead of initiating pairing with Connect",
+    # Ubuntu 24.04's Typer 0.9 requires typing.Optional for nullable CLI options.
+    explicit_pairing: Optional[bool] = typer.Option(  # noqa: UP045
+        None,
+        "--explicit-pairing/--no-explicit-pairing",
+        help="Call Pair immediately instead of Connect (default depends on the adapter)",
     ),
 ):
     """First-run wizard: pick a paired iPhone, write the local config,
@@ -269,6 +271,7 @@ def pairing_complete(
     import sys
 
     from blueferry.errors import PairingError
+    from blueferry.pairing_types import PairingTransports
     from blueferry.setup_client import SetupClient
 
     if debug:
@@ -289,6 +292,14 @@ def pairing_complete(
     def display(passkey: int) -> None:
         emit({"event": "display", "passkey": f"{passkey:06d}"})
 
+    def transports_changed(transports: PairingTransports) -> None:
+        emit({
+            "event": "transports",
+            "map": transports.map,
+            "pbap": transports.pbap,
+            "ancs": transports.ancs,
+        })
+
     try:
         if not interactive_agent:
             raise PairingError(
@@ -302,6 +313,9 @@ def pairing_complete(
         setup = SetupClient()
         selected = adapter.strip() or None
         if replace_saved_mac:
+            compatibility = setup.compatibility(selected)
+            if not compatibility.pairing_ready:
+                raise PairingError(compatibility.issue)
             saved = setup.configuration().adapter or None
             setup.prepare_replacement(replace_saved_mac, mac, adapter=saved)
         result = setup.complete(
@@ -311,6 +325,7 @@ def pairing_complete(
             display=display,
             compatibility_mode=compatibility_mode,
             explicit_pairing=explicit_pairing,
+            transports_changed=transports_changed,
         )
         emit(result.to_dict())
     except PairingError as error:

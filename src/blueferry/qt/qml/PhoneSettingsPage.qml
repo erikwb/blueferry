@@ -63,6 +63,7 @@ Kirigami.ScrollablePage {
     }
     property string effectiveStage: iphonePage.bridge.onboardingStage
     property bool compatibilityModeOverride: false
+    property var explicitPairingOverrides: ({})
 
     ColumnLayout {
         width: parent.width
@@ -157,7 +158,7 @@ Kirigami.ScrollablePage {
                     ? qsTr("Could Not Verify — Pairing Still Available")
                     : iphonePage.bridge.compatibility.hardware_supported
                         ? qsTr("Compatible")
-                        : qsTr("Compatibility Warning — Pairing Still Available")
+                        : qsTr("Incompatible")
             }
 
             Controls.Label {
@@ -252,10 +253,18 @@ Kirigami.ScrollablePage {
 
         Controls.CheckBox {
             id: explicitPairing
+            objectName: "explicitPairingCheckBox"
             Layout.fillWidth: true
             visible: !iphonePage.bridge.configured
             text: qsTr("Use explicit Bluetooth pairing")
-            enabled: !iphonePage.bridge.busy
+            checked: iphonePage.explicitPairingOverrides[iphonePage.bridge.compatibility.adapter]
+                ?? (iphonePage.bridge.compatibility.explicit_pairing_default === true)
+            enabled: iphonePage.bridge.compatibilityLoaded && !iphonePage.bridge.busy
+            onClicked: {
+                const overrides = Object.assign({}, iphonePage.explicitPairingOverrides)
+                overrides[iphonePage.bridge.compatibility.adapter] = checked
+                iphonePage.explicitPairingOverrides = overrides
+            }
             Accessible.description: qsTr("Skips the initial Bluetooth connection attempt and calls Pair immediately. Try this for controllers that cancel normal pairing.")
         }
 
@@ -268,6 +277,7 @@ Kirigami.ScrollablePage {
                 icon.name: "network-connect"
                 enabled: iphonePage.device !== null
                     && iphonePage.bridge.compatibilityLoaded
+                    && iphonePage.bridge.compatibility.pairing_ready !== false
                     && !iphonePage.bridge.busy
                 onClicked: {
                     iphonePage.pairingRequested(
@@ -290,6 +300,7 @@ Kirigami.ScrollablePage {
         Controls.Label {
             Layout.fillWidth: true
             visible: !iphonePage.bridge.configured && compatibilityMode.checked
+                && iphonePage.bridge.compatibility.pairing_ready !== false
             wrapMode: Text.Wrap
             text: qsTr("BlueFerry will still advertise ANCS solicitation so the iPhone exposes its Messages and Contacts permissions, but it will not connect system notifications.")
         }

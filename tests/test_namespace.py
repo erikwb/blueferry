@@ -191,12 +191,6 @@ def test_gui_pairing_requires_confirmation_before_replacing_saved_target() -> No
     assert "--replace-saved-mac" in quickshell
 
 
-def test_capability_checks_do_not_disable_pairing_buttons() -> None:
-    gtk = (ROOT / "src/blueferry/ui/status.py").read_text()
-    assert "self._pair_button.set_sensitive(not busy and bool(selected))" in gtk
-    # Qt and Quickshell use behavioral checks against loaded settings pages.
-
-
 def test_quickshell_launcher_can_focus_an_existing_conversation() -> None:
     launcher = (ROOT / "data" / "blueferry-quickshell").read_text()
     qml = (ROOT / "data" / "quickshell" / "shell.qml").read_text()

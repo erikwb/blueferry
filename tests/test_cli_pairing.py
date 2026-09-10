@@ -6,9 +6,11 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from typer.testing import CliRunner
 
 from blueferry import cli, pairing_cli, quirks_report, setup_client
+from blueferry.pairing_types import PairingTransports
 
 
 def test_pair_setup_debug_enables_diagnostic_logging(monkeypatch):
@@ -28,9 +30,23 @@ def test_pair_setup_debug_enables_diagnostic_logging(monkeypatch):
         ("wizard", {
             "verify_after": False,
             "compatibility_mode": False,
-            "explicit_pairing": False,
+            "explicit_pairing": None,
         }),
     ]
+
+
+@pytest.mark.parametrize("flag,expected", [
+    ("--explicit-pairing", True), ("--no-explicit-pairing", False),
+])
+def test_pair_setup_can_override_the_adapter_default(monkeypatch, flag, expected):
+    observed = []
+    monkeypatch.setattr(
+        pairing_cli, "run_wizard",
+        lambda **kwargs: observed.append(kwargs["explicit_pairing"]) or 0,
+    )
+    result = CliRunner().invoke(cli.app, ["pair-setup", "--no-verify", flag])
+    assert result.exit_code == 0
+    assert observed == [expected]
 
 
 def test_interactive_pairing_emits_code_and_waits_for_acceptance(monkeypatch):
@@ -39,6 +55,10 @@ def test_interactive_pairing_emits_code_and_waits_for_acceptance(monkeypatch):
     class Setup:
         def configuration(self):
             return SimpleNamespace(adapter="hci0")
+
+        def compatibility(self, adapter):
+            assert adapter == "hci1"
+            return SimpleNamespace(pairing_ready=True)
 
         def prepare_replacement(self, previous_mac, next_mac, *, adapter=None):
             observed.append(("replace", previous_mac, next_mac, adapter))
@@ -52,10 +72,12 @@ def test_interactive_pairing_emits_code_and_waits_for_acceptance(monkeypatch):
             adapter=None,
             compatibility_mode=False,
             explicit_pairing=False,
+            transports_changed=None,
         ):
             assert compatibility_mode is False
             assert explicit_pairing is False
             observed.append((mac, adapter, confirmation(12345)))
+            transports_changed(PairingTransports(map=True, pbap=True, ancs=False))
             return SimpleNamespace(to_dict=lambda: {"ok": True, "device": {"mac": mac}})
 
     monkeypatch.setattr(setup_client, "SetupClient", Setup)
@@ -79,6 +101,7 @@ def test_interactive_pairing_emits_code_and_waits_for_acceptance(monkeypatch):
     assert events == [
         {"event": "confirmation", "passkey": "", "purpose": "bind"},
         {"event": "confirmation", "passkey": "012345"},
+        {"event": "transports", "map": True, "pbap": True, "ancs": False},
         {"ok": True, "device": {"mac": "02:00:00:00:00:01"}},
     ]
     assert observed == [
@@ -106,6 +129,32 @@ def test_pairing_complete_refuses_the_headless_path(monkeypatch):
         "pairing-complete requires an interactive BlueFerry client"
     )
     assert called == []
+
+
+def test_pairing_replacement_rejects_incompatible_adapter_before_forgetting(monkeypatch):
+    message = "Incompatible Bluetooth adapter: missing Bluetooth LE"
+    calls = []
+
+    class Setup:
+        def compatibility(self, adapter):
+            assert adapter == "hci1"
+            return SimpleNamespace(pairing_ready=False, issue=message)
+
+        def prepare_replacement(self, *_args, **_kwargs):
+            calls.append("forget")
+
+        def complete(self, *_args, **_kwargs):
+            calls.append("pair")
+
+    monkeypatch.setattr(setup_client, "SetupClient", Setup)
+    result = CliRunner().invoke(cli.app, [
+        "pairing-complete", "02:00:00:00:00:01", "--interactive-agent",
+        "--adapter", "hci1", "--replace-saved-mac", "02:00:00:00:00:02",
+        "--compatibility-mode",
+    ], input="yes\n")
+    assert result.exit_code == 2
+    assert json.loads(result.stdout.splitlines()[-1]) == {"ok": False, "error": message}
+    assert calls == []
 
 
 def test_pairing_complete_failure_includes_report_path(monkeypatch):

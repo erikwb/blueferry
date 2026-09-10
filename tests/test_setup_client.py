@@ -60,6 +60,7 @@ def test_compatibility_and_configuration_are_typed(monkeypatch):
             "notifications_supported": True,
             "bearer_api_active": True,
             "pairing_ready": True,
+            "explicit_pairing_default": True,
             "issue": "",
             "supported_settings": ["br/edr", "le"],
         },
@@ -80,6 +81,8 @@ def test_compatibility_and_configuration_are_typed(monkeypatch):
 
     assert client.compatibility().pairing_ready is True
     assert client.compatibility().adapter == "hci2"
+    assert client.compatibility().explicit_pairing_default is True
+    assert client.compatibility().to_dict()["explicit_pairing_default"] is True
     assert client.configuration().configured is False
     assert client.configuration().pairing_issue_report == ""
 
@@ -160,6 +163,7 @@ def test_isolated_pairing_answers_helper_confirmation(monkeypatch):
             self.stdin = Input()
             self.stdout = iter([
                 '{"event":"confirmation","passkey":"123456"}\n',
+                '{"event":"transports","map":true,"pbap":true,"ancs":false}\n',
                 '{"ok":true,"device":' + __import__("json").dumps(device.to_dict())
                 + ',"ancs_ready":true}\n',
             ])

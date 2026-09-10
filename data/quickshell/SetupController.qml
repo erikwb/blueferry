@@ -20,16 +20,22 @@ QtObject {
   property var pairingDevices: []
   property int selectedDeviceIndex: -1
   property string pairingStatus: ""
+  property var pairingTransports: ({map: false, pbap: false, ancs: false})
   property string configurationError: ""
   property bool bluezActive: false
   property bool hardwareSupported: false
+  property bool pairingReady: true
+  property string compatibilityIssue: ""
   property bool notificationsSupported: false
   property bool ancsLimitedController: false
   property string controllerVendor: ""
   property bool compatibilityLoaded: false
   property bool ancsEnabled: true
   property bool compatibilityModeOverride: false
-  property bool explicitPairingOverride: false
+  property bool explicitPairingDefault: false
+  property var explicitPairingOverrides: ({})
+  readonly property bool explicitPairing: explicitPairingOverrides[adapterName]
+    ?? explicitPairingDefault
   property bool configured: false
   property bool targetSaved: false
   property bool targetBonded: false
@@ -50,7 +56,7 @@ QtObject {
   readonly property bool activating: pending.activate !== undefined
   readonly property bool changingPhone: pairing || forgetting
   readonly property bool canPair: selectedPairingDevice() !== null
-    && compatibilityLoaded && !scanning && !changingPhone && !activating
+    && compatibilityLoaded && pairingReady && !scanning && !changingPhone && !activating
 
   function selectedPairingDevice() {
     return selectedDeviceIndex >= 0 && selectedDeviceIndex < pairingDevices.length
@@ -59,6 +65,12 @@ QtObject {
 
   function configuredPairingDevice() {
     return pairingDevices.find(device => device.mac === configuredMac) || null
+  }
+
+  function setExplicitPairing(enabled) {
+    const overrides = Object.assign({}, explicitPairingOverrides)
+    overrides[adapterName] = enabled
+    explicitPairingOverrides = overrides
   }
 
   function cancel(kind) {
@@ -131,7 +143,7 @@ QtObject {
       ? String(device.adapter_path).split("/").pop() : adapterName
     if (adapter) command.push("--adapter", adapter)
     if (!notificationsSupported || compatibilityModeOverride) command.push("--compatibility-mode")
-    if (explicitPairingOverride) command.push("--explicit-pairing")
+    if (explicitPairing) command.push("--explicit-pairing")
     if (!device.paired && targetSaved) {
       command.push("--replace-saved-mac", configuredMac)
       pendingReplacement = {command: command, adapter: adapter}
@@ -153,6 +165,7 @@ QtObject {
     cancel("devices")
     cancel("compatibility")
     pairingStatus = "Starting secure pairing…"
+    pairingTransports = ({map: false, pbap: false, ancs: false})
     pairingIssueReport = ""
     clearConfirmation()
     request("pair", command, true, {adapter: adapter})
@@ -189,7 +202,14 @@ QtObject {
     if (!pending[kind] || pending[kind].id !== id || (kind !== "pair" && kind !== "forget")) return
     try {
       const data = JSON.parse(line)
-      if (data.event === "display") {
+      if (kind === "pair" && data.event === "transports") {
+        if (typeof data.map !== "boolean" || typeof data.pbap !== "boolean"
+            || typeof data.ancs !== "boolean") return
+        pairingTransports = {map: data.map, pbap: data.pbap, ancs: data.ancs}
+        pairingStatus = data.map && data.pbap
+          ? "Messages and contacts are connected. Finishing setup…"
+          : "Checking Bluetooth services…"
+      } else if (data.event === "display") {
         pairingPasskey = String(data.passkey || "")
         pairingStatus = "Compare this code with the code on your iPhone."
       } else if (data.event === "confirmation") {
@@ -214,6 +234,9 @@ QtObject {
     if (kind === "compatibility") {
       compatibilityLoaded = true
       hardwareSupported = false
+      explicitPairingDefault = false
+      pairingReady = true
+      compatibilityIssue = message
       notificationsSupported = false
       ancsLimitedController = false
       controllerVendor = ""
@@ -246,6 +269,9 @@ QtObject {
       if (kind === "compatibility") {
         if (typeof data.notifications_supported !== "boolean") throw new Error("Invalid compatibility response")
         hardwareSupported = data.hardware_supported === true
+        explicitPairingDefault = data.explicit_pairing_default === true
+        pairingReady = data.pairing_ready !== false
+        compatibilityIssue = String(data.issue || "")
         notificationsSupported = data.notifications_supported === true
         ancsLimitedController = data.ancs_limited_controller === true
         controllerVendor = String(data.controller_vendor || "")

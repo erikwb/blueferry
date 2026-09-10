@@ -5,7 +5,7 @@ import pytest
 from blueferry import pairing_cli
 from blueferry.bluetooth_devices import PairedDevice
 from blueferry.pairing_cli import _print_ancs_repair_hint, _print_iphone_steps
-from blueferry.setup_client import DISCOVERY_SECONDS
+from blueferry.setup_client import DISCOVERY_SECONDS, BluetoothCompatibility
 from blueferry.setup_verification import CONTACTS
 
 
@@ -125,6 +125,12 @@ def test_cli_requires_phone_side_forget_before_clearing_saved_target(
             return SimpleNamespace(saved=True, mac="02:00:00:00:00:01", adapter="hci1")
 
         @staticmethod
+        def compatibility():
+            return SimpleNamespace(
+                adapter="hci1", pairing_ready=True, adapters=(), explicit_pairing_default=False,
+            )
+
+        @staticmethod
         def forget(mac, *, adapter=None):
             forgotten.append((mac, adapter))
             raise pairing_cli.PairingError("stop after forget")
@@ -149,6 +155,74 @@ def test_cli_requires_phone_side_forget_before_clearing_saved_target(
     assert "Forget This Device" in output
 
 
+def test_cli_labels_adapter_choices_and_checks_an_explicit_incompatible_choice(monkeypatch, capsys):
+    compatibility = BluetoothCompatibility.from_dict({
+        "adapter": "hci1", "pairing_ready": True,
+        "adapters": [
+            {"name": "hci0", "label": "Built-in (hci0)", "available": True,
+             "pairing_ready": False},
+            {"name": "hci1", "label": "Dongle (hci1)", "available": False,
+             "pairing_ready": True},
+        ],
+    })
+    selected = []
+
+    class Setup:
+        def configuration(self):
+            return SimpleNamespace(saved=True)
+
+        def compatibility(self, adapter=None):
+            selected.append(adapter)
+            if adapter is None:
+                return compatibility
+            return BluetoothCompatibility.from_dict({
+                "adapter": adapter, "pairing_ready": False,
+                "issue": "Incompatible Bluetooth adapter: missing Bluetooth LE",
+            })
+
+        def forget(self, *_args, **_kwargs):
+            pytest.fail("removed the saved phone for an incompatible choice")
+
+    monkeypatch.setattr(pairing_cli, "SetupClient", Setup)
+    monkeypatch.setattr(pairing_cli.typer, "prompt", lambda *_a, **_kw: "1")
+    assert pairing_cli.run_wizard(verify_after=False) == 1
+    assert selected == [None, "hci0"]
+    output = capsys.readouterr().out
+    assert "[1] Built-in (hci0) (incompatible)" in output
+    assert "[2] Dongle (hci1) (selected) (unverified)" in output
+    assert "Incompatible Bluetooth adapter: missing Bluetooth LE" in output
+
+
+@pytest.mark.parametrize("saved", [False, True])
+def test_cli_incompatible_adapter_stops_before_scanning_or_forgetting(monkeypatch, capsys, saved):
+    message = "Incompatible Bluetooth adapter: missing Bluetooth LE"
+
+    class Setup:
+        @staticmethod
+        def configuration():
+            return SimpleNamespace(saved=saved, mac="02:00:00:00:00:01", adapter="hci0")
+
+        @staticmethod
+        def compatibility():
+            return SimpleNamespace(adapter="hci0", adapters=(), pairing_ready=False, issue=message)
+
+        @staticmethod
+        def devices(**_kwargs):
+            pytest.fail("scanned with an incompatible adapter")
+
+        @staticmethod
+        def forget(*_args, **_kwargs):
+            pytest.fail("removed a bond with an incompatible adapter")
+
+    monkeypatch.setattr(pairing_cli, "SetupClient", Setup)
+    monkeypatch.setattr(
+        pairing_cli.typer, "confirm",
+        lambda *_args, **_kwargs: pytest.fail("prompted for incompatible pairing"),
+    )
+    assert pairing_cli.run_wizard(verify_after=False, compatibility_mode=True) == 1
+    assert message in capsys.readouterr().out
+
+
 @pytest.mark.parametrize(
     ("hardware_supported", "notifications_supported", "issue", "expected_mode"),
     [
@@ -156,6 +230,9 @@ def test_cli_requires_phone_side_forget_before_clearing_saved_target(
         (False, False, "btmgmt timed out", True),
     ],
 )
+@pytest.mark.parametrize("default,override,expected_explicit", [
+    (False, None, False), (True, None, True), (True, False, False), (False, True, True),
+])
 def test_cli_wizard_supplies_its_own_pairing_agent_ui(
     monkeypatch,
     capsys,
@@ -163,6 +240,9 @@ def test_cli_wizard_supplies_its_own_pairing_agent_ui(
     notifications_supported,
     issue,
     expected_mode,
+    default,
+    override,
+    expected_explicit,
 ) -> None:
     prompts = []
     observed = []
@@ -180,6 +260,8 @@ def test_cli_wizard_supplies_its_own_pairing_agent_ui(
     compatibility = SimpleNamespace(
         adapter="hci0",
         hardware_supported=hardware_supported,
+        pairing_ready=True,
+        explicit_pairing_default=default,
         issue=issue,
         notifications_supported=notifications_supported,
         bearer_api_active=True,
@@ -211,7 +293,7 @@ def test_cli_wizard_supplies_its_own_pairing_agent_ui(
             explicit_pairing=False,
         ):
             assert compatibility_mode is expected_mode
-            assert explicit_pairing is False
+            assert explicit_pairing is expected_explicit
             observed.append((mac, adapter, confirmation(12345)))
             display(12345)
             return SimpleNamespace(device=device, ancs_ready=True)
@@ -230,7 +312,7 @@ def test_cli_wizard_supplies_its_own_pairing_agent_ui(
     monkeypatch.setattr(pairing_cli.typer, "confirm", confirm)
     monkeypatch.setattr(pairing_cli, "_print_iphone_steps", lambda *_args, **_kwargs: None)
 
-    assert pairing_cli.run_wizard(verify_after=False) == 0
+    assert pairing_cli.run_wizard(verify_after=False, explicit_pairing=override) == 0
     assert observed == [(device.mac, "hci0", True)]
     assert prompts == [
         ("\nUse this device?", {"default": True}),
@@ -271,6 +353,8 @@ def test_cli_wizard_preserves_report_for_unexpected_pairing_failure(
             return SimpleNamespace(
                 adapter="hci0",
                 hardware_supported=True,
+                pairing_ready=True,
+                explicit_pairing_default=False,
                 issue="",
                 notifications_supported=True,
                 bearer_api_active=True,
@@ -320,6 +404,8 @@ def test_cli_wizard_points_at_pairing_issue_when_ancs_stays_down(
     compatibility = SimpleNamespace(
         adapter="hci0",
         hardware_supported=True,
+        pairing_ready=True,
+        explicit_pairing_default=False,
         issue="",
         notifications_supported=True,
         bearer_api_active=True,

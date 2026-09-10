@@ -138,6 +138,28 @@ def test_quickshell_unverified_controller_still_reaches_device_selection(
     presenter.deleteLater()
 
 
+def test_qt_incompatible_adapter_explains_missing_capabilities(qml_engine):
+    from blueferry.models import BackendStatus
+    from blueferry.onboarding import derive_stage
+
+    compatibility = {
+        "pairing_ready": False,
+        "issue": "Incompatible Bluetooth adapter: missing Bluetooth LE and LE advertising",
+    }
+    stage = derive_stage(
+        setup_loaded=True, configured=False,
+        compatibility=compatibility, status=BackendStatus(),
+    )
+    component = _component(qml_engine, "src/blueferry/qt/qml/OnboardingSummary.qml")
+    summary = component.createWithInitialProperties({
+        "stage": str(stage), "compatibility": compatibility, "status": {},
+    })
+    assert summary is not None
+    assert "Incompatible Bluetooth Adapter" in summary.property("text")
+    assert compatibility["issue"] in summary.property("text")
+    summary.deleteLater()
+
+
 def test_quickshell_long_message_is_truncated_to_the_timeline_height(
     qml_engine,
 ) -> None:
@@ -560,6 +582,16 @@ def test_phone_settings_pairing_uses_loaded_selection_and_busy_state(qml_engine,
     bridge.setProperty("compatibilityLoaded", True)
     assert button.property("enabled")
     assert _settings_object(window, "adapterSelector").property("currentIndex") == 1
+    unverified = bridge.property("compatibility")
+    if hasattr(unverified, "toVariant"):
+        unverified = unverified.toVariant()
+    bridge.setProperty("compatibility", {
+        **unverified, "available": True, "pairing_ready": False,
+        "issue": "Incompatible Bluetooth adapter: missing Bluetooth LE",
+    })
+    assert not button.property("enabled")
+    bridge.setProperty("compatibility", unverified)
+    assert button.property("enabled")
     bridge.setProperty("busy", True)
     assert not button.property("enabled")
     bridge.setProperty("busy", False)
@@ -569,6 +601,37 @@ def test_phone_settings_pairing_uses_loaded_selection_and_busy_state(qml_engine,
     ]
     bridge.setProperty("devices", [])
     assert not button.property("enabled")
+
+
+def test_qt_explicit_pairing_default_preserves_per_adapter_choices(qml_engine, settings_window):
+    window, bridge = settings_window
+    bridge.setProperty("setupLoaded", True)
+    bridge.setProperty("compatibilityLoaded", True)
+    bridge.setProperty("devices", [{"mac": "NEW", "display_name": "Phone", "paired": False}])
+    checkbox = _settings_object(window, "explicitPairingCheckBox")
+    pair = _settings_object(window, "pairPhoneButton")
+    rtl = {"adapter": "hci1", "explicit_pairing_default": True}
+    other = {"adapter": "hci0", "explicit_pairing_default": False}
+    bridge.setProperty("compatibility", rtl)
+    assert checkbox.property("checked")
+    QMetaObject.invokeMethod(pair, "clicked")
+    assert _evaluate(qml_engine, "testBridge.calls[0].args") == ["NEW", True, True]
+
+    QMetaObject.invokeMethod(checkbox, "toggle")
+    QMetaObject.invokeMethod(checkbox, "clicked")
+    bridge.setProperty("compatibility", {**rtl, "powered": True})
+    assert not checkbox.property("checked")
+    QMetaObject.invokeMethod(pair, "clicked")
+    assert _evaluate(qml_engine, "testBridge.calls[1].args") == ["NEW", True, False]
+
+    bridge.setProperty("compatibility", other)
+    assert not checkbox.property("checked")
+    QMetaObject.invokeMethod(checkbox, "toggle")
+    QMetaObject.invokeMethod(checkbox, "clicked")
+    bridge.setProperty("compatibility", rtl)
+    assert not checkbox.property("checked")
+    bridge.setProperty("compatibility", other)
+    assert checkbox.property("checked")
 
 
 @pytest.mark.parametrize("confirm", [False, True])
@@ -896,7 +959,7 @@ def quickshell_setup(qml_engine):
        reply("configuration", {configured:false,saved:false});
        check(setup.pairingIssueReport === "/tmp/fake-report", "failure report lost");''',
     '''ready(); setup.targetSaved = true; setup.configuredMac = "OLD";
-       setup.explicitPairingOverride = true; setup.requestPairing();
+       setup.setExplicitPairing(true); setup.requestPairing();
        check(!setup.pairing && setup.pendingReplacement, "replacement skipped confirmation");
        setup.configuredMac = "OTHER"; setup.adapterName = "hci9";
        setup.pairingDevices = [{mac:"OTHER-NEW"}]; setup.confirmReplacement();
@@ -935,8 +998,49 @@ def quickshell_setup(qml_engine):
        ready(); setup.requestPairing();
        setup.finish(setup.pending.pair.id,"pair",0,"","");
        check(!setup.configured && !setup.pairing && setup.pairingStatus.includes("no result"), "empty success accepted");''',
+    '''ready();
+       function selectAdapter(adapter, defaultValue) {
+         setup.loadCompatibility(adapter);
+         reply("compatibility", {adapter:adapter, notifications_supported:false,
+           explicit_pairing_default:defaultValue});
+         reply("devices", [{mac:"NEW",adapter_path:"/org/bluez/"+adapter}]);
+       }
+       selectAdapter("hci1", true);
+       check(setup.explicitPairing, "RTL8761BU did not default to explicit pairing");
+       setup.requestPairing();
+       check(requests[requests.length-1].argv.includes("--explicit-pairing"), "default not forwarded");
+       reply("pair", {ok:false,error:"Cancelled"}, 1);
+       setup.setExplicitPairing(false);
+       selectAdapter("hci1", true);
+       check(!setup.explicitPairing, "refresh overwrote manual opt-out");
+       selectAdapter("hci0", false);
+       check(!setup.explicitPairing, "default leaked to another adapter");
+       setup.setExplicitPairing(true);
+       selectAdapter("hci1", true);
+       check(!setup.explicitPairing, "adapter switch lost opt-out");
+       setup.requestPairing();
+       check(!requests[requests.length-1].argv.includes("--explicit-pairing"), "manual opt-out ignored");''',
+    '''ready(); setup.setExplicitPairing(true); setup.requestPairing();
+       const first = setup.pending.pair.id;
+       const connected = '{"event":"transports","map":true,"pbap":true,"ancs":false}';
+       setup.receiveLine(first, "pair", connected);
+       check(setup.pairingTransports.map && setup.pairingTransports.pbap, "live services missing");
+       check(setup.pairing && !setup.configured, "progress completed pairing prematurely");
+       check(setup.pairingStatus.includes("Messages and contacts are connected"), "progress text missing");
+       setup.receiveLine(first, "pair", '{"event":"transports","map":false,"pbap":false}');
+       check(setup.pairingTransports.map, "malformed progress accepted");
+       reply("pair", {ok:false,error:"Cancelled"}, 1);
+       setup.requestPairing();
+       check(!setup.pairingTransports.map && !setup.pairingTransports.pbap, "new attempt kept old services");
+       setup.receiveLine(first, "pair", connected);
+       setup.receiveLine(setup.pending.pair.id, "forget", connected);
+       check(!setup.pairingTransports.map, "stale or wrong-kind progress accepted");
+       setup.receiveLine(setup.pending.pair.id, "pair", connected);
+       setup.receiveLine(setup.pending.pair.id, "pair", '{"event":"transports","map":false,"pbap":false,"ancs":false}');
+       check(!setup.pairingTransports.map && !setup.pairingTransports.pbap, "lost services stayed connected");''',
 ], ids=["first-install", "adapter-switch", "cancel-scan", "failed-pair", "replacement-snapshot",
-        "forget-confirmation", "pair-success", "failed-helpers", "missing-helper"])
+        "forget-confirmation", "pair-success", "failed-helpers", "missing-helper", "explicit-default",
+        "live-transports"])
 def test_quickshell_setup_responses(qml_engine, quickshell_setup, scenario):
     result = qml_engine.evaluate("(function() {" + scenario + "})()")
     assert not result.isError(), result.toString()
@@ -961,12 +1065,73 @@ def test_quickshell_settings_bindings_and_unverified_pairing(qml_engine, quicksh
     QGuiApplication.processEvents()
     pair = page.findChild(QObject, "pairPhoneButton")
     assert pair.property("enabled")
+    _evaluate(qml_engine, '''
+        setup.loadCompatibility("hci1");
+        reply("compatibility", {adapter: "hci1", available: true, pairing_ready: false,
+            hardware_supported: false, notifications_supported: false,
+            issue: "Incompatible Bluetooth adapter: missing Bluetooth LE"});
+        reply("devices", [{mac: "OLD", paired: true, adapter_path: "/org/bluez/hci1"}]);
+        setup.compatibilityModeOverride = true;
+        setup.setExplicitPairing(true);
+        setup.requestPairing();
+        check(!setup.pairing, "incompatible controller started pairing");
+    ''')
+    assert not pair.property("enabled")
+    message = page.findChild(QObject, "hardwareCompatibilityMessage")
+    assert message.property("visible")
+    assert "Incompatible Bluetooth adapter" in message.property("text")
+    _evaluate(qml_engine, '''
+        setup.configured = true;
+        page.status = Object.assign({}, page.status, {daemon: true});
+    ''')
+    heading = page.findChild(QObject, "iphoneSetupHeading")
+    instructions = page.findChild(QObject, "iphoneSetupInstructions")
+    assert not pair.property("visible")
+    assert message.property("visible")
+    assert not heading.property("visible")
+    assert not instructions.property("visible")
+    _evaluate(qml_engine, '''
+        setup.loadCompatibility("hci0");
+        setup.finish(setup.pending.compatibility.id, "compatibility", 1, "", "btmgmt timed out");
+        setup.loadDevices(false);
+        reply("devices", [{mac: "NEW", adapter_path: "/org/bluez/hci0"}]);
+    ''')
+    assert pair.property("enabled")
+    assert not message.property("visible")
+    assert heading.property("visible")
+    assert instructions.property("visible")
+    assert "Enable Show Message Notifications" in instructions.property("text")
+    _evaluate(qml_engine, "setup.configured = false")
+    assert not heading.property("visible")
     QMetaObject.invokeMethod(pair, "clicked")
     assert quickshell_setup.property("pairing")
     assert not pair.property("enabled")
+    messages = page.findChild(QObject, "messagesConnection")
+    contacts = page.findChild(QObject, "contactsConnection")
+    notifications = page.findChild(QObject, "notificationsConnection")
+    assert messages.property("value") == contacts.property("value") == "Unavailable"
+    _evaluate(qml_engine, '''
+        setup.receiveLine(setup.pending.pair.id, "pair",
+            '{"event":"transports","map":false,"pbap":true,"ancs":false}');
+    ''')
+    assert contacts.property("value") == "Connected"
+    assert messages.property("value") == "Unavailable"
+    _evaluate(qml_engine, '''
+        setup.receiveLine(setup.pending.pair.id, "pair",
+            '{"event":"transports","map":true,"pbap":true,"ancs":false}');
+    ''')
+    assert messages.property("value") == contacts.property("value") == "Connected"
+    assert notifications.property("value") == "Unavailable"
+    assert quickshell_setup.property("pairing")
     result = qml_engine.evaluate('''reply("pair", {ok:false,error:"Cancelled"},1);
         setup.configured = true;''')
     assert not result.isError(), result.toString()
+    # Once the helper exits, ordinary backend status owns the connection rows.
+    assert messages.property("value") == contacts.property("value") == "Unavailable"
+    _evaluate(qml_engine, '''page.status = Object.assign({}, page.status,
+        {map: true, pbap: true, ancs: true});''')
+    assert messages.property("value") == contacts.property("value") == "Connected"
+    assert notifications.property("value") == "Connected"
     QGuiApplication.processEvents()
     qml_engine.warnings.disconnect(warnings.extend)
     assert not warnings, "\n".join(w.toString() for w in warnings)
