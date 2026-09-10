@@ -1043,7 +1043,8 @@ def test_compatibility_explains_missing_classic_transport(monkeypatch):
     status = pair_setup.bluetooth_compatibility("hci0")
 
     assert status["hardware_supported"] is False
-    assert status["pairing_ready"] is True
+    assert status["pairing_ready"] is False
+    assert status["notifications_supported"] is False
     assert "BR/EDR" in status["issue"]
 
 
@@ -1076,7 +1077,11 @@ def test_btmgmt_timeout_is_advisory_and_keeps_pairing_available(monkeypatch):
     assert status["adapters"][0]["pairing_ready"] is True
 
 
-def test_classic_only_controller_supports_core_without_ancs(monkeypatch):
+@pytest.mark.parametrize("version,settings,missing", [
+    (5, "powered ssp br/edr", "Bluetooth LE"),
+    (6, "powered ssp br/edr le", "LE advertising"),
+])
+def test_controller_without_le_advertising_is_incompatible(monkeypatch, version, settings, missing):
     monkeypatch.setattr(
         pair_setup,
         "_object_manager",
@@ -1090,7 +1095,11 @@ def test_classic_only_controller_supports_core_without_ancs(monkeypatch):
             (),
             {
                 "returncode": 0,
-                "stdout": "supported settings: powered ssp br/edr\n",
+                "stdout": (
+                    f"addr 02:00:00:00:00:01 version {version} manufacturer 15\n"
+                    f"supported settings: {settings}\n"
+                    "current settings: powered ssp br/edr\n"
+                ),
             },
         )(),
     )
@@ -1102,9 +1111,57 @@ def test_classic_only_controller_supports_core_without_ancs(monkeypatch):
 
     status = pair_setup.bluetooth_compatibility("hci0")
 
-    assert status["messages_supported"] is True
+    assert status["hci_version"] == version
+    assert status["hardware_supported"] is False
+    assert status["messages_supported"] is False
     assert status["notifications_supported"] is False
-    assert status["pairing_ready"] is True
+    assert status["pairing_ready"] is False
+    assert "Incompatible Bluetooth adapter" in status["issue"]
+    assert missing in status["issue"]
+    assert "Bluetooth 4.0 or newer" in status["issue"]
+    assert status["adapters"][0]["pairing_ready"] is False
+
+
+def test_adapter_selection_prefers_le_advertising_but_honors_explicit_choice(monkeypatch):
+    monkeypatch.setattr(pair_setup.config, "ADAPTER", "hci0")
+
+    class Manager:
+        def GetManagedObjects(self):
+            return {
+                "/org/bluez/hci0": {"org.bluez.Adapter1": {}},
+                "/org/bluez/hci1": {"org.bluez.Adapter1": {}},
+            }
+
+    def controller_info(command, **_kwargs):
+        if command[0] == "bluetoothctl":
+            stdout = "bluetoothctl: 5.72\n"
+        else:
+            # hci0 matches #143; hci1 matches the Bluetooth 4.0 MAP success in
+            # #113, with LE supported but currently switched off.
+            version, extra = (5, "") if command[2] == "0" else (6, "le advertising")
+            stdout = (
+                f"addr 02:00:00:00:00:01 version {version} manufacturer 15\n"
+                f"supported settings: powered ssp br/edr {extra}\n"
+                "current settings: powered ssp br/edr\n"
+            )
+        return type("Result", (), {"returncode": 0, "stdout": stdout})()
+
+    monkeypatch.setattr(pair_setup, "_object_manager", Manager)
+    monkeypatch.setattr(pair_setup, "run_command", controller_info)
+    monkeypatch.setattr(pair_setup, "bluez_support_status", lambda: {"active": False})
+
+    automatic = pair_setup.bluetooth_compatibility()
+    assert automatic["adapter"] == "hci1"
+    assert automatic["hci_version"] == 6
+    assert automatic["messages_supported"] is True
+    assert automatic["pairing_ready"] is True
+    assert automatic["notifications_supported"] is False
+    assert "le" not in automatic["current_settings"]
+    assert automatic["adapters"][0]["hardware_supported"] is False
+
+    explicit = pair_setup.bluetooth_compatibility("hci0")
+    assert explicit["adapter"] == "hci0"
+    assert explicit["pairing_ready"] is False
 
 
 def test_controller_snapshot_does_not_repeat_btmgmt_or_systemctl(monkeypatch):
@@ -1696,6 +1753,29 @@ def test_unverified_controller_reaches_the_real_pairing_transaction(
         pair_setup.complete_pairing(device.mac, _allow_headless=True)
 
     assert "continuing with pairing" in caplog.text
+
+
+@pytest.mark.parametrize("paired", [False, True])
+@pytest.mark.parametrize("compatibility_mode", [False, True])
+def test_incompatible_adapter_stops_before_setup_changes(monkeypatch, paired, compatibility_mode):
+    device = _device(paired=paired)
+    monkeypatch.setattr(pair_setup, "_device", lambda *_args, **_kwargs: device)
+    compatibility = {
+        "available": True, "hardware_supported": False, "pairing_ready": False,
+        "notifications_supported": False, "low_energy": False, "advertising": False,
+        "issue": "Incompatible Bluetooth adapter: missing Bluetooth LE and LE advertising",
+    }
+    monkeypatch.setattr(pair_setup, "bluetooth_compatibility", lambda *_args: compatibility)
+    monkeypatch.setattr(pair_setup, "_controller_snapshot", lambda *_args: compatibility)
+    monkeypatch.setattr(
+        pair_setup, "_apply_phone_audio_policy",
+        lambda *_args: pytest.fail("incompatible adapter changed system configuration"),
+    )
+    with pytest.raises(pair_setup.PairingError, match="Incompatible Bluetooth adapter"):
+        pair_setup._execute_pairing(
+            device.mac, compatibility_mode=compatibility_mode,
+            attempt=pair_setup.quirks_report.start_attempt(interactive=False),
+        )
 
 
 def test_complete_pairing_prepares_the_selected_adapter_not_a_leftover_bond(

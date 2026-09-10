@@ -121,8 +121,8 @@ def configuration_status() -> dict:
 def bluetooth_compatibility(adapter_name: str | None = None) -> dict:
     """Describe whether a controller supports BlueFerry's transports.
 
-    MAP and PBAP require BR/EDR. The proven ANCS pairing flow additionally
-    requires LE advertising and secure pairing. This check is read-only and
+    MAP and PBAP require BR/EDR, secure pairing, and LE advertising to expose
+    the iPhone's permissions. This check is read-only and
     intentionally uses ``btmgmt info`` rather than vendor/model allowlists.
     """
     if adapter_name is not None and not config.is_valid_adapter(adapter_name):
@@ -1171,6 +1171,8 @@ def _prepare_pairing(
     compatibility = bluetooth_compatibility(selected_adapter)
     attempt["controller"] = _controller_snapshot(selected_adapter, compatibility)
     quirks_report.mark(attempt, "compatibility_ready")
+    if compatibility.get("pairing_ready") is False:
+        raise PairingError(compatibility["issue"])
     if not compatibility["hardware_supported"]:
         issue = compatibility["issue"] or "Controller capabilities could not be verified"
         log.warning(

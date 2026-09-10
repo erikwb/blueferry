@@ -302,6 +302,9 @@ def pairing_complete(
         setup = SetupClient()
         selected = adapter.strip() or None
         if replace_saved_mac:
+            compatibility = setup.compatibility(selected)
+            if not compatibility.pairing_ready:
+                raise PairingError(compatibility.issue)
             saved = setup.configuration().adapter or None
             setup.prepare_replacement(replace_saved_mac, mac, adapter=saved)
         result = setup.complete(

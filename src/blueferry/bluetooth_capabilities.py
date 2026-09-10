@@ -411,8 +411,8 @@ def _hci_sort_key(name: str) -> tuple[int, int | str]:
 def _pairing_capable(inspected: tuple | None) -> bool:
     if inspected is None:
         return False
-    available, _supported, _current, _error, _identity, fields = inspected
-    return bool(available and fields["classic"] and fields["secure_pairing"])
+    _available, _supported, _current, _error, _identity, fields = inspected
+    return bool(fields["hardware_supported"])
 
 
 def adapter_label(name: str, hardware: dict[str, object] | None = None) -> str:
@@ -449,19 +449,27 @@ def _profile_fields(
     low_energy = "le" in supported
     advertising = "advertising" in supported
     secure_pairing = bool({"ssp", "secure-conn"} & supported)
-    messages_supported = available and classic and secure_pairing
-    notifications_supported = (
-        available and low_energy and advertising and bearer_supported
-    )
+    # MAP/PBAP carry data over Classic, but iOS exposes their permissions only
+    # after LE solicitation. Compatibility mode still needs that advertisement.
+    messages_supported = available and classic and secure_pairing and low_energy and advertising
+    notifications_supported = messages_supported and bearer_supported
     missing = [
         label for present, label in (
-            (classic, "BR/EDR"), (secure_pairing, "secure pairing")
+            (classic, "Bluetooth Classic (BR/EDR)"),
+            (secure_pairing, "secure pairing"),
+            (low_energy, "Bluetooth LE"),
+            (advertising, "LE advertising"),
         ) if not present
     ]
     if not available:
         issue = command_error or f"Bluetooth adapter {adapter} is unavailable"
     elif missing:
-        issue = "Controller lacks " + ", ".join(missing)
+        issue = (
+            "Incompatible Bluetooth adapter: missing " + ", ".join(missing) + ". "
+            "BlueFerry requires Bluetooth Classic and Bluetooth 4.0 or newer "
+            "with LE advertising to enable iPhone messages and contacts. "
+            "Use a compatible adapter."
+        )
     elif notifications_supported and not bearer_active:
         issue = "Bluetooth support must be activated before pairing"
     elif not notifications_supported:
@@ -481,9 +489,9 @@ def _profile_fields(
         "notifications_supported": notifications_supported,
         "bearer_api_supported": bearer_supported,
         "bearer_api_active": bearer_active,
-        # Capability discovery selects a mode; the pairing transaction decides
-        # whether the adapter actually works.
-        "pairing_ready": True,
+        # A failed probe is inconclusive (#28); only confirmed missing
+        # capabilities prevent pairing (#143).
+        "pairing_ready": not available or messages_supported,
         "issue": issue,
         "supported_settings": sorted(supported),
         "current_settings": sorted(current),

@@ -429,7 +429,10 @@ class IPhonePage(Gtk.Box):
         )
         self._explicit_pairing_switch.set_sensitive(not busy)
         selected = self._selected_device()
-        self._pair_button.set_sensitive(not busy and bool(selected))
+        self._pair_button.set_sensitive(
+            not busy and bool(selected)
+            and bool(self._compatibility and self._compatibility.pairing_ready)
+        )
         self._pair_button.set_label(
             _("Use Existing Pairing") if selected and selected.paired else _("Pair Selected iPhone")
         )
@@ -480,7 +483,6 @@ class IPhonePage(Gtk.Box):
         adapters = list(compatibility.adapters)
         self._applying_adapter = True
         if len(adapters) > 1:
-            self._hardware_row.set_visible(False)
             self._adapter_row.set_visible(True)
             labels = [option.label for option in adapters]
             self._adapter_model.splice(0, self._adapter_model.get_n_items(), labels)
@@ -492,21 +494,21 @@ class IPhonePage(Gtk.Box):
             self._adapter_row.set_selected(selected)
         else:
             self._adapter_row.set_visible(False)
-            self._hardware_row.set_visible(True)
-            if not compatibility.available:
-                hardware = _("Capabilities could not be verified; pairing is still available")
-            elif not compatibility.hardware_supported:
-                hardware = _("Compatibility warning; pairing is still available")
-            elif compatibility.notifications_supported:
-                hardware = _("Compatible")
-            else:
-                hardware = _("Compatible for Messages and Contacts")
-            self._hardware_row.set_subtitle(
-                _("{adapter} — {status}").format(
-                    adapter=compatibility.adapter or _("No Adapter"),
-                    status=hardware,
-                )
+        self._hardware_row.set_visible(True)
+        if not compatibility.available:
+            hardware = _("Capabilities could not be verified; pairing is still available")
+        elif not compatibility.hardware_supported:
+            hardware = compatibility.issue
+        elif compatibility.notifications_supported:
+            hardware = _("Compatible")
+        else:
+            hardware = _("Compatible for Messages and Contacts")
+        self._hardware_row.set_subtitle(
+            _("{adapter} — {status}").format(
+                adapter=compatibility.adapter or _("No Adapter"),
+                status=hardware,
             )
+        )
         self._applying_adapter = False
         self._applying_pairing_mode = True
         self._compatibility_switch.set_active(

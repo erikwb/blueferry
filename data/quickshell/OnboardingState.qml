@@ -5,8 +5,10 @@ QtObject {
   required property bool bluezActive
   required property bool configured
   required property var backendStatus
+  property bool pairingReady: true
 
   readonly property string stage: {
+    if (!pairingReady) return "incompatible"
     if (notificationsSupported && !bluezActive) return "activate-bluetooth"
     if (!configured) return "select-device"
     if (backendStatus.map && backendStatus.pbap) {

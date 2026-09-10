@@ -23,6 +23,7 @@ Rectangle {
     bluezActive: root.setup.bluezActive
     configured: root.setup.configured
     backendStatus: root.status
+    pairingReady: root.setup.pairingReady
   }
 
   function ancsLimited() {
@@ -89,6 +90,15 @@ Rectangle {
           wrapMode: Text.Wrap
           Layout.fillWidth: true
           visible: text !== ""
+        }
+        FerryLabel {
+          ferryTheme: root.theme
+          objectName: "hardwareCompatibilityMessage"
+          text: root.setup.compatibilityIssue
+          textFormat: Text.PlainText
+          wrapMode: Text.Wrap
+          Layout.fillWidth: true
+          visible: root.setup.compatibilityLoaded && !root.setup.pairingReady
         }
         FerryLabel {
           ferryTheme: root.theme
@@ -179,7 +189,7 @@ Rectangle {
         }
         FerryLabel {
           ferryTheme: root.theme
-          visible: !root.setup.configured && compatibilityMode.checked
+          visible: !root.setup.configured && compatibilityMode.checked && root.setup.pairingReady
           text: "Messages and contacts remain available. System notifications will be disabled; group texts may appear as individual conversations."
           wrapMode: Text.Wrap
           Layout.fillWidth: true

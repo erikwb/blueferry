@@ -98,9 +98,23 @@ connection hung and ended in `le-connection-abort-by-local`, while MAP/PBAP
 worked when attempted first. BlueZ still reported its LE bearer as paired and
 bonded, so those properties cannot predict whether the phone will answer.
 
-BlueFerry therefore resolves two delivery modes. Full mode requires a
-controller with BR/EDR, LE, and advertising plus BlueZ 5.86 or newer. Its
-bearer API must already be active or be activatable through the package's
+Both delivery modes require a controller with BR/EDR, secure pairing, and
+Bluetooth LE advertising (Bluetooth 4.0 or newer). MAP/PBAP carry data over
+Classic, but their iPhone permissions depend on LE solicitation. A successful
+capability probe that confirms missing features marks the adapter incompatible;
+a failed probe remains advisory because working adapters can time out
+([#28](https://github.com/erikwb/blueferry/issues/28)).
+
+The closed-issue review for #143 found no successful MAP report on a
+Bluetooth 3-only controller. The Broadcom MAP/PBAP success in
+[#113](https://github.com/erikwb/blueferry/issues/113) reports HCI version 6
+(Bluetooth 4.0), LE, and advertising. The Realtek success in
+[#17](https://github.com/erikwb/blueferry/issues/17) also supports LE advertising.
+ANCS connection failures on those adapters do not imply missing LE hardware.
+
+BlueFerry therefore resolves two delivery modes. Full mode additionally
+requires BlueZ 5.86 or newer. Its bearer API must already be active or be
+activatable through the package's
 systemd drop-in before pairing proceeds. Compatibility mode is selected
 automatically when ANCS is unavailable or explicitly for iOS 18 and earlier.
 It still broadcasts ANCS solicitation when the controller can advertise,

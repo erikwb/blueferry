@@ -47,7 +47,7 @@ def resolve_pairing_policy(
     """Choose full ANCS setup or the MAP/PBAP compatibility recipe.
 
     The short-lived ANCS solicitation is independent of connecting ANCS. It
-    remains enabled whenever the adapter can advertise because older iOS uses
+    remains enabled whenever the adapter can advertise because iOS uses
     it as the signal that exposes MAP/PBAP permissions.
     """
     ancs_capable = bool(compatibility.get("notifications_supported", False))

@@ -138,6 +138,28 @@ def test_quickshell_unverified_controller_still_reaches_device_selection(
     presenter.deleteLater()
 
 
+def test_qt_incompatible_adapter_explains_missing_capabilities(qml_engine):
+    from blueferry.models import BackendStatus
+    from blueferry.onboarding import derive_stage
+
+    compatibility = {
+        "pairing_ready": False,
+        "issue": "Incompatible Bluetooth adapter: missing Bluetooth LE and LE advertising",
+    }
+    stage = derive_stage(
+        setup_loaded=True, configured=False,
+        compatibility=compatibility, status=BackendStatus(),
+    )
+    component = _component(qml_engine, "src/blueferry/qt/qml/OnboardingSummary.qml")
+    summary = component.createWithInitialProperties({
+        "stage": str(stage), "compatibility": compatibility, "status": {},
+    })
+    assert summary is not None
+    assert "Incompatible Bluetooth Adapter" in summary.property("text")
+    assert compatibility["issue"] in summary.property("text")
+    summary.deleteLater()
+
+
 def test_quickshell_long_message_is_truncated_to_the_timeline_height(
     qml_engine,
 ) -> None:
@@ -560,6 +582,16 @@ def test_phone_settings_pairing_uses_loaded_selection_and_busy_state(qml_engine,
     bridge.setProperty("compatibilityLoaded", True)
     assert button.property("enabled")
     assert _settings_object(window, "adapterSelector").property("currentIndex") == 1
+    unverified = bridge.property("compatibility")
+    if hasattr(unverified, "toVariant"):
+        unverified = unverified.toVariant()
+    bridge.setProperty("compatibility", {
+        **unverified, "available": True, "pairing_ready": False,
+        "issue": "Incompatible Bluetooth adapter: missing Bluetooth LE",
+    })
+    assert not button.property("enabled")
+    bridge.setProperty("compatibility", unverified)
+    assert button.property("enabled")
     bridge.setProperty("busy", True)
     assert not button.property("enabled")
     bridge.setProperty("busy", False)
@@ -961,6 +993,29 @@ def test_quickshell_settings_bindings_and_unverified_pairing(qml_engine, quicksh
     QGuiApplication.processEvents()
     pair = page.findChild(QObject, "pairPhoneButton")
     assert pair.property("enabled")
+    _evaluate(qml_engine, '''
+        setup.loadCompatibility("hci1");
+        reply("compatibility", {adapter: "hci1", available: true, pairing_ready: false,
+            hardware_supported: false, notifications_supported: false,
+            issue: "Incompatible Bluetooth adapter: missing Bluetooth LE"});
+        reply("devices", [{mac: "OLD", paired: true, adapter_path: "/org/bluez/hci1"}]);
+        setup.compatibilityModeOverride = true;
+        setup.explicitPairingOverride = true;
+        setup.requestPairing();
+        check(!setup.pairing, "incompatible controller started pairing");
+    ''')
+    assert not pair.property("enabled")
+    message = page.findChild(QObject, "hardwareCompatibilityMessage")
+    assert message.property("visible")
+    assert "Incompatible Bluetooth adapter" in message.property("text")
+    _evaluate(qml_engine, '''
+        setup.loadCompatibility("hci0");
+        setup.finish(setup.pending.compatibility.id, "compatibility", 1, "", "btmgmt timed out");
+        setup.loadDevices(false);
+        reply("devices", [{mac: "NEW", adapter_path: "/org/bluez/hci0"}]);
+    ''')
+    assert pair.property("enabled")
+    assert not message.property("visible")
     QMetaObject.invokeMethod(pair, "clicked")
     assert quickshell_setup.property("pairing")
     assert not pair.property("enabled")

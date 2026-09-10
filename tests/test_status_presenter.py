@@ -22,6 +22,34 @@ def test_backend_incompatibility_is_preserved_on_the_status_page():
     assert "incompatible" not in connection_subtitle(BackendStatus().to_dict(), reachable=False)
 
 
+def test_gtk_pairing_blocks_incompatible_hardware_but_allows_unverified_hardware():
+    from types import SimpleNamespace
+
+    from blueferry.setup_client import BluetoothCompatibility
+    from blueferry.ui.status import IPhonePage
+
+    enabled = []
+    widget = SimpleNamespace(set_sensitive=lambda _value: None, set_spinning=lambda _value: None)
+    page = SimpleNamespace(
+        _setup_spinner=widget, _activate_button=widget, _scan_button=widget,
+        _adapter_row=widget, _compatibility_switch=widget, _explicit_pairing_switch=widget,
+        _forget_button=widget,
+        _pair_button=SimpleNamespace(set_sensitive=enabled.append, set_label=lambda _label: None),
+        _selected_device=lambda: SimpleNamespace(paired=True),
+        _update_phone_controls=lambda: None,
+        _compatibility=None,
+    )
+    for available, pairing_ready in ((True, False), (False, True), (True, True)):
+        page._compatibility = BluetoothCompatibility.from_dict({
+            "available": available, "pairing_ready": pairing_ready,
+            "notifications_supported": False,
+        })
+        IPhonePage._set_pairing_busy(page, False)
+    assert enabled == [False, True, True]
+    IPhonePage._set_pairing_busy(page, True)
+    assert enabled[-1] is False
+
+
 def test_connection_summary_includes_degraded_detail_and_retry() -> None:
     subtitle = connection_subtitle(
         {

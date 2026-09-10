@@ -40,6 +40,10 @@ def test_interactive_pairing_emits_code_and_waits_for_acceptance(monkeypatch):
         def configuration(self):
             return SimpleNamespace(adapter="hci0")
 
+        def compatibility(self, adapter):
+            assert adapter == "hci1"
+            return SimpleNamespace(pairing_ready=True)
+
         def prepare_replacement(self, previous_mac, next_mac, *, adapter=None):
             observed.append(("replace", previous_mac, next_mac, adapter))
 
@@ -106,6 +110,32 @@ def test_pairing_complete_refuses_the_headless_path(monkeypatch):
         "pairing-complete requires an interactive BlueFerry client"
     )
     assert called == []
+
+
+def test_pairing_replacement_rejects_incompatible_adapter_before_forgetting(monkeypatch):
+    message = "Incompatible Bluetooth adapter: missing Bluetooth LE"
+    calls = []
+
+    class Setup:
+        def compatibility(self, adapter):
+            assert adapter == "hci1"
+            return SimpleNamespace(pairing_ready=False, issue=message)
+
+        def prepare_replacement(self, *_args, **_kwargs):
+            calls.append("forget")
+
+        def complete(self, *_args, **_kwargs):
+            calls.append("pair")
+
+    monkeypatch.setattr(setup_client, "SetupClient", Setup)
+    result = CliRunner().invoke(cli.app, [
+        "pairing-complete", "02:00:00:00:00:01", "--interactive-agent",
+        "--adapter", "hci1", "--replace-saved-mac", "02:00:00:00:00:02",
+        "--compatibility-mode",
+    ], input="yes\n")
+    assert result.exit_code == 2
+    assert json.loads(result.stdout.splitlines()[-1]) == {"ok": False, "error": message}
+    assert calls == []
 
 
 def test_pairing_complete_failure_includes_report_path(monkeypatch):

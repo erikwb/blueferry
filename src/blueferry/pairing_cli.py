@@ -77,6 +77,33 @@ def run_wizard(
     except PairingError as error:
         typer.echo(typer.style(str(error), fg=typer.colors.RED))
         return 1
+    try:
+        compatibility = setup.compatibility()
+    except PairingError as error:
+        typer.echo(typer.style(str(error), fg=typer.colors.RED))
+        return 1
+    if len(compatibility.adapters) > 1:
+        typer.echo("Bluetooth controllers:\n")
+        for index, option in enumerate(compatibility.adapters, 1):
+            marker = " (selected)" if option.name == compatibility.adapter else ""
+            typer.echo(f"  [{index}] {option.label}{marker}")
+        raw = typer.prompt("Use which controller?", default="").strip()
+        if raw:
+            try:
+                picked = compatibility.adapters[int(raw) - 1]
+            except (ValueError, IndexError):
+                typer.echo(typer.style("Invalid choice.", fg=typer.colors.RED))
+                return 1
+            try:
+                compatibility = setup.compatibility(picked.name)
+            except PairingError as error:
+                typer.echo(typer.style(str(error), fg=typer.colors.RED))
+                return 1
+    typer.echo(f"Controller: {compatibility.adapter}")
+    if not compatibility.pairing_ready:
+        typer.echo(typer.style(compatibility.issue, fg=typer.colors.RED))
+        return 1
+    # Validate the selected adapter before removing the saved phone's bond.
     if configuration.saved:
         typer.echo(
             typer.style(
@@ -102,30 +129,6 @@ def run_wizard(
             return 1
         typer.echo(typer.style("✓ Previous target forgotten", fg=typer.colors.GREEN))
         configuration = setup.configuration()
-
-    try:
-        compatibility = setup.compatibility()
-    except PairingError as error:
-        typer.echo(typer.style(str(error), fg=typer.colors.RED))
-        return 1
-    if len(compatibility.adapters) > 1:
-        typer.echo("Bluetooth controllers:\n")
-        for index, option in enumerate(compatibility.adapters, 1):
-            marker = " (selected)" if option.name == compatibility.adapter else ""
-            typer.echo(f"  [{index}] {option.label}{marker}")
-        raw = typer.prompt("Use which controller?", default="").strip()
-        if raw:
-            try:
-                picked = compatibility.adapters[int(raw) - 1]
-            except (ValueError, IndexError):
-                typer.echo(typer.style("Invalid choice.", fg=typer.colors.RED))
-                return 1
-            try:
-                compatibility = setup.compatibility(picked.name)
-            except PairingError as error:
-                typer.echo(typer.style(str(error), fg=typer.colors.RED))
-                return 1
-    typer.echo(f"Controller: {compatibility.adapter}")
     if not compatibility.hardware_supported:
         typer.echo(
             typer.style(

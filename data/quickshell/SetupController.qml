@@ -23,6 +23,8 @@ QtObject {
   property string configurationError: ""
   property bool bluezActive: false
   property bool hardwareSupported: false
+  property bool pairingReady: true
+  property string compatibilityIssue: ""
   property bool notificationsSupported: false
   property bool ancsLimitedController: false
   property string controllerVendor: ""
@@ -50,7 +52,7 @@ QtObject {
   readonly property bool activating: pending.activate !== undefined
   readonly property bool changingPhone: pairing || forgetting
   readonly property bool canPair: selectedPairingDevice() !== null
-    && compatibilityLoaded && !scanning && !changingPhone && !activating
+    && compatibilityLoaded && pairingReady && !scanning && !changingPhone && !activating
 
   function selectedPairingDevice() {
     return selectedDeviceIndex >= 0 && selectedDeviceIndex < pairingDevices.length
@@ -214,6 +216,8 @@ QtObject {
     if (kind === "compatibility") {
       compatibilityLoaded = true
       hardwareSupported = false
+      pairingReady = true
+      compatibilityIssue = message
       notificationsSupported = false
       ancsLimitedController = false
       controllerVendor = ""
@@ -246,6 +250,8 @@ QtObject {
       if (kind === "compatibility") {
         if (typeof data.notifications_supported !== "boolean") throw new Error("Invalid compatibility response")
         hardwareSupported = data.hardware_supported === true
+        pairingReady = data.pairing_ready !== false
+        compatibilityIssue = String(data.issue || "")
         notificationsSupported = data.notifications_supported === true
         ancsLimitedController = data.ancs_limited_controller === true
         controllerVendor = String(data.controller_vendor || "")

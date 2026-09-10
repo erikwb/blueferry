@@ -157,7 +157,7 @@ Kirigami.ScrollablePage {
                     ? qsTr("Could Not Verify — Pairing Still Available")
                     : iphonePage.bridge.compatibility.hardware_supported
                         ? qsTr("Compatible")
-                        : qsTr("Compatibility Warning — Pairing Still Available")
+                        : qsTr("Incompatible")
             }
 
             Controls.Label {
@@ -268,6 +268,7 @@ Kirigami.ScrollablePage {
                 icon.name: "network-connect"
                 enabled: iphonePage.device !== null
                     && iphonePage.bridge.compatibilityLoaded
+                    && iphonePage.bridge.compatibility.pairing_ready !== false
                     && !iphonePage.bridge.busy
                 onClicked: {
                     iphonePage.pairingRequested(
@@ -290,6 +291,7 @@ Kirigami.ScrollablePage {
         Controls.Label {
             Layout.fillWidth: true
             visible: !iphonePage.bridge.configured && compatibilityMode.checked
+                && iphonePage.bridge.compatibility.pairing_ready !== false
             wrapMode: Text.Wrap
             text: qsTr("BlueFerry will still advertise ANCS solicitation so the iPhone exposes its Messages and Contacts permissions, but it will not connect system notifications.")
         }

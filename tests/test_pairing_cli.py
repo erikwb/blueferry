@@ -125,6 +125,10 @@ def test_cli_requires_phone_side_forget_before_clearing_saved_target(
             return SimpleNamespace(saved=True, mac="02:00:00:00:00:01", adapter="hci1")
 
         @staticmethod
+        def compatibility():
+            return SimpleNamespace(adapter="hci1", pairing_ready=True, adapters=())
+
+        @staticmethod
         def forget(mac, *, adapter=None):
             forgotten.append((mac, adapter))
             raise pairing_cli.PairingError("stop after forget")
@@ -147,6 +151,36 @@ def test_cli_requires_phone_side_forget_before_clearing_saved_target(
     output = capsys.readouterr().out
     assert "Before answering Yes, forget this PC on the iPhone too" in output
     assert "Forget This Device" in output
+
+
+@pytest.mark.parametrize("saved", [False, True])
+def test_cli_incompatible_adapter_stops_before_scanning_or_forgetting(monkeypatch, capsys, saved):
+    message = "Incompatible Bluetooth adapter: missing Bluetooth LE"
+
+    class Setup:
+        @staticmethod
+        def configuration():
+            return SimpleNamespace(saved=saved, mac="02:00:00:00:00:01", adapter="hci0")
+
+        @staticmethod
+        def compatibility():
+            return SimpleNamespace(adapter="hci0", adapters=(), pairing_ready=False, issue=message)
+
+        @staticmethod
+        def devices(**_kwargs):
+            pytest.fail("scanned with an incompatible adapter")
+
+        @staticmethod
+        def forget(*_args, **_kwargs):
+            pytest.fail("removed a bond with an incompatible adapter")
+
+    monkeypatch.setattr(pairing_cli, "SetupClient", Setup)
+    monkeypatch.setattr(
+        pairing_cli.typer, "confirm",
+        lambda *_args, **_kwargs: pytest.fail("prompted for incompatible pairing"),
+    )
+    assert pairing_cli.run_wizard(verify_after=False, compatibility_mode=True) == 1
+    assert message in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(
@@ -180,6 +214,7 @@ def test_cli_wizard_supplies_its_own_pairing_agent_ui(
     compatibility = SimpleNamespace(
         adapter="hci0",
         hardware_supported=hardware_supported,
+        pairing_ready=True,
         issue=issue,
         notifications_supported=notifications_supported,
         bearer_api_active=True,
@@ -271,6 +306,7 @@ def test_cli_wizard_preserves_report_for_unexpected_pairing_failure(
             return SimpleNamespace(
                 adapter="hci0",
                 hardware_supported=True,
+                pairing_ready=True,
                 issue="",
                 notifications_supported=True,
                 bearer_api_active=True,
@@ -320,6 +356,7 @@ def test_cli_wizard_points_at_pairing_issue_when_ancs_stays_down(
     compatibility = SimpleNamespace(
         adapter="hci0",
         hardware_supported=True,
+        pairing_ready=True,
         issue="",
         notifications_supported=True,
         bearer_api_active=True,
