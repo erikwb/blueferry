@@ -13,9 +13,11 @@ os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import Property, QMetaObject, QObject, QUrl, Slot
+from PySide6.QtCore import Property, QMetaObject, QObject, QPointF, Qt, QUrl, Slot
 from PySide6.QtGui import QColor, QGuiApplication
 from PySide6.QtQml import QQmlComponent, QQmlEngine
+from PySide6.QtQuick import QQuickWindow
+from PySide6.QtTest import QTest
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -521,6 +523,78 @@ def _settings_object(window, name):
     return obj
 
 
+def _click_control(window, control):
+    # Exercise Qt's actual pointer handling, including toggling checked before
+    # clicked. Emitting clicked directly would miss a broken checkbox binding.
+    QTest.qWait(30)
+    assert control.property("visible") and control.property("enabled")
+    point = control.mapToScene(QPointF(10, control.height() / 2)).toPoint()
+    assert 0 <= point.x() < window.width() and 0 <= point.y() < window.height()
+    QTest.mouseClick(window, Qt.LeftButton, Qt.NoModifier, point)
+    QGuiApplication.processEvents()
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+@pytest.mark.parametrize("compatibility", [False, True])
+@pytest.mark.parametrize("replace", [False, True])
+def test_qt_pairing_checkbox_reaches_the_helper(
+    qml_engine, monkeypatch, explicit, compatibility, replace,
+):
+    from types import SimpleNamespace
+
+    from blueferry.qt.controller import BridgeController
+    from blueferry.setup_client import ConfigurationState
+
+    calls, operations = [], []
+    setup = SimpleNamespace(complete_isolated=lambda mac, **options: calls.append((mac, options)))
+    bridge = BridgeController(backend=object(), setup=setup, subscribe=False, autostart=False)
+    bridge._setup_loaded = True
+    bridge._compatibility = {
+        "adapter": "hci1", "notifications_supported": not compatibility,
+        "explicit_pairing_default": not explicit,
+    }
+    bridge._devices = [{"mac": "NEW", "display_name": "Phone", "paired": False,
+                        "adapter_path": "/org/bluez/hci1"}]
+    bridge._configuration = ConfigurationState.from_dict({
+        "configured": False, "saved": replace, "mac": "OLD" if replace else "",
+    })
+    monkeypatch.setattr(bridge, "_run", lambda operation, *_args, **_kwargs: operations.append(operation))
+    component = _component(qml_engine, "src/blueferry/qt/qml/Main.qml")
+    window = component.createWithInitialProperties({"bridge": bridge, "height": 1600})
+    assert window is not None
+    try:
+        bridge.setupLoadedChanged.emit()
+        QGuiApplication.processEvents()
+        checkbox = _settings_object(window, "explicitPairingCheckBox")
+        assert checkbox.property("checked") is not explicit
+        _click_control(window, checkbox)
+        assert checkbox.property("checked") is explicit
+        # A capability refresh must preserve the manual choice.
+        bridge._compatibility = {**bridge._compatibility, "powered": True}
+        bridge.compatibilityChanged.emit()
+        assert checkbox.property("checked") is explicit
+        _click_control(window, _settings_object(window, "pairPhoneButton"))
+        if replace:
+            dialog = _settings_object(window, "replaceTargetDialog")
+            assert dialog.property("visible")
+            qml_engine.globalObject().setProperty("pairingDialog", qml_engine.newQObject(dialog))
+            _evaluate(qml_engine, "pairingDialog.customFooterActions[0].trigger()")
+        assert len(operations) == 1
+        operations[0]()
+        assert len(calls) == 1
+        mac, options = calls[0]
+        assert mac == "NEW"
+        assert options["adapter"] == "hci1"
+        assert options.get("explicit_pairing", False) is explicit
+        assert options.get("compatibility_mode", False) is compatibility
+        assert options["replace_saved_mac"] == ("OLD" if replace else "")
+    finally:
+        window.close()
+        window.deleteLater()
+        QGuiApplication.processEvents()
+        bridge.deleteLater()
+
+
 @pytest.mark.parametrize("policy,storage_state,label", [
     ("encrypted", "locked", "Locked"), ("plaintext", "ready", "Available"),
     ("none", "disabled", "Disabled"),
@@ -916,6 +990,62 @@ def quickshell_setup(qml_engine):
     yield controller
     controller.deleteLater()
     QGuiApplication.processEvents()
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+@pytest.mark.parametrize("compatibility", [False, True])
+@pytest.mark.parametrize("replace", [False, True])
+def test_quickshell_pairing_checkbox_reaches_the_helper(
+    qml_engine, quickshell_setup, explicit, compatibility, replace,
+):
+    theme_component = _component(qml_engine, "data/quickshell/ThemePalette.qml")
+    theme = theme_component.create()
+    component = _component(qml_engine, "data/quickshell/PhoneSettingsPage.qml")
+    page = component.createWithInitialProperties({
+        "ferryTheme": theme, "setup": quickshell_setup, "status": {},
+        "width": 620, "height": 1600,
+    })
+    assert page is not None
+    window = QQuickWindow()
+    window.resize(620, 1600)
+    page.setParentItem(window.contentItem())
+    window.show()
+    try:
+        _evaluate(qml_engine, '''
+            setup.loadCompatibility("hci1");
+            reply("compatibility", ''' + __import__("json").dumps({
+                "adapter": "hci1", "notifications_supported": not compatibility,
+                "explicit_pairing_default": not explicit,
+            }) + ''');
+            reply("devices", [{mac:"NEW",adapter_path:"/org/bluez/hci1"}]);
+        ''')
+        quickshell_setup.setProperty("targetSaved", replace)
+        quickshell_setup.setProperty("configuredMac", "OLD" if replace else "")
+        checkbox = _settings_object(page, "explicitPairingCheckBox")
+        assert checkbox.property("checked") is not explicit
+        _click_control(window, checkbox)
+        assert checkbox.property("checked") is explicit
+        # Scanning after selecting the option must leave it selected.
+        _evaluate(qml_engine, '''setup.loadDevices(true);
+            reply("devices", [{mac:"NEW",adapter_path:"/org/bluez/hci1"}]);''')
+        assert checkbox.property("checked") is explicit
+        _click_control(window, _settings_object(page, "pairPhoneButton"))
+        if replace:
+            _evaluate(qml_engine, "setup.confirmReplacement()")
+        command = _evaluate(qml_engine, "requests[requests.length - 1].argv")
+        assert command[:3] == ["/usr/bin/blueferry", "pairing-complete", "NEW"]
+        assert ("--explicit-pairing" in command) is explicit
+        assert ("--compatibility-mode" in command) is compatibility
+        assert command[command.index("--adapter") + 1] == "hci1"
+        assert ("--replace-saved-mac" in command) is replace
+        if replace:
+            assert command[command.index("--replace-saved-mac") + 1] == "OLD"
+    finally:
+        window.close()
+        page.deleteLater()
+        window.deleteLater()
+        QGuiApplication.processEvents()
+        theme.deleteLater()
 
 
 @pytest.mark.parametrize("scenario", [
