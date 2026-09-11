@@ -714,9 +714,17 @@ class IPhonePage(Gtk.Box):
         if not device:
             self._toast(_("Scan for and select an iPhone first"))
             return
+        # Capture choices on the GTK thread before confirmation or worker
+        # dispatch, so a later refresh cannot change this pairing request.
+        compatibility_mode = self._compatibility_switch.get_active()
+        explicit_pairing = self._explicit_pairing_switch.get_active()
         configuration = self._configuration
         if device.paired or configuration is None or not configuration.saved:
-            self._start_pairing(device)
+            self._start_pairing(
+                device,
+                compatibility_mode=compatibility_mode,
+                explicit_pairing=explicit_pairing,
+            )
             return
 
         dialog = Adw.AlertDialog(
@@ -739,6 +747,8 @@ class IPhonePage(Gtk.Box):
                 self._start_pairing(
                     device,
                     replace_saved_mac=configuration.mac,
+                    compatibility_mode=compatibility_mode,
+                    explicit_pairing=explicit_pairing,
                 )
 
         dialog.connect("response", responded)
@@ -748,6 +758,8 @@ class IPhonePage(Gtk.Box):
         self,
         device: PairedDevice,
         *,
+        compatibility_mode: bool,
+        explicit_pairing: bool,
         replace_saved_mac: str = "",
     ) -> None:
         self._toast(_("Activating Bluetooth, then starting secure pairing…"))
@@ -832,8 +844,8 @@ class IPhonePage(Gtk.Box):
                 display=display,
                 adapter=device.adapter_path.rsplit("/", 1)[-1],
                 replace_saved_mac=replace_saved_mac,
-                compatibility_mode=self._compatibility_switch.get_active(),
-                explicit_pairing=self._explicit_pairing_switch.get_active(),
+                compatibility_mode=compatibility_mode,
+                explicit_pairing=explicit_pairing,
             ),
             completed,
         )
