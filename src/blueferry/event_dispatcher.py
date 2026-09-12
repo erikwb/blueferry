@@ -12,6 +12,7 @@ from gi.repository import GLib
 
 from blueferry.ancs.constants import MESSAGES_APP_ID
 from blueferry.bus import get_session_bus
+from blueferry.client_activation import request_message_activation
 from blueferry.events import sms_group_sent_event, sms_sent_event
 from blueferry.limits import MAX_ANCS_FINGERPRINTS
 from blueferry.sinks import Sink
@@ -216,9 +217,8 @@ class EventDispatcher:
     def set_dbus_service(self, service) -> None:
         self.dbus_service = service
 
-    def _open_message(self, handle: str) -> None:
-        if self.dbus_service is not None:
-            self.dbus_service.emit_open_message(handle)
+    def _open_message(self, handle: str, token: str) -> None:
+        request_message_activation(handle, token)
 
     def message(self, event) -> None:
         if getattr(event, "kind", "") == "sms_received" and self.on_incoming_message is not None:

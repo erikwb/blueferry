@@ -5,8 +5,22 @@ import json
 import threading
 from types import SimpleNamespace
 
+import pytest
+
 from blueferry.models import Thread
-from blueferry.quickshell_bridge import QuickshellBridge, _RequestWorkers
+from blueferry.quickshell_bridge import QuickshellBridge, RequestError, _RequestWorkers
+
+
+def test_only_the_desktop_bridge_can_change_the_preferred_client(monkeypatch):
+    active = []
+    monkeypatch.setattr("blueferry.quickshell_bridge.record_client_use", active.append)
+    widget = QuickshellBridge(FakeClient())
+    with pytest.raises(RequestError, match="unsupported method"):
+        widget.dispatch("client_active", {})
+    assert active == []
+    desktop = QuickshellBridge(FakeClient(), desktop_client=True)
+    desktop.dispatch("client_active", {})
+    assert active == ["quickshell"]
 
 
 class FakeClient:

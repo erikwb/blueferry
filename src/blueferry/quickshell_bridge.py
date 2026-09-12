@@ -15,6 +15,7 @@ from typing import Any, TextIO
 
 from blueferry.bus import get_session_bus
 from blueferry.client import BackendClient
+from blueferry.client_activation import record_client_use
 from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH
 
 MAX_REQUEST_CHARS = 1_048_576
@@ -60,10 +61,13 @@ class QuickshellBridge:
         self,
         client: BackendClient,
         output: TextIO = sys.stdout,
+        *,
+        desktop_client: bool = False,
     ) -> None:
         self.client = client
         self.output = output
         self._output_lock = threading.Lock()
+        self.desktop_client = desktop_client
 
     def emit(self, payload: Mapping[str, Any]) -> None:
         line = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
@@ -76,6 +80,9 @@ class QuickshellBridge:
         self.emit({"event": name, "data": data})
 
     def dispatch(self, method: str, args: Mapping[str, Any]) -> object:
+        if method == "client_active" and self.desktop_client:
+            record_client_use("quickshell")
+            return None
         if method == "status":
             return self.client.status().to_dict()
         if method == "threads":
@@ -224,7 +231,16 @@ def main() -> int:
     from gi.repository import GLib
 
     DBusGMainLoop(set_as_default=True)
-    bridge = QuickshellBridge(BackendClient())
+    desktop_client = "--desktop-client" in sys.argv[1:]
+    bridge = QuickshellBridge(BackendClient(), desktop_client=desktop_client)
+    activation = None
+    if desktop_client:
+        from blueferry.glib_client_activation import ClientActivation
+
+        activation = ClientActivation(
+            "quickshell", lambda handle, _token: bridge.emit_event("open-message", handle),
+        )
+        record_client_use("quickshell")
     workers = _RequestWorkers(bridge)
     signal_matches = _install_signal_receivers(bridge)
     loop = GLib.MainLoop()
@@ -239,6 +255,8 @@ def main() -> int:
     try:
         loop.run()
     finally:
+        if activation is not None:
+            activation.close()
         for match in signal_matches:
             remove: Callable[[], object] | None = getattr(match, "remove", None)
             if remove is not None:

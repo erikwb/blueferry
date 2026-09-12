@@ -8,6 +8,7 @@ A separate process from the daemon. Its application id is
 from __future__ import annotations
 
 import logging
+import os
 import sys
 
 import gi
@@ -15,9 +16,11 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw, Gdk, Gio, Gtk  # noqa: E402
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
 
 from blueferry import __version__  # noqa: E402
+from blueferry.client_activation import record_client_use  # noqa: E402
+from blueferry.glib_client_activation import ClientActivation  # noqa: E402
 from blueferry.i18n import _  # noqa: E402
 from blueferry.ui.client import DaemonClient  # noqa: E402
 from blueferry.ui.window import MainWindow  # noqa: E402
@@ -36,11 +39,20 @@ _CSS = """
 
 class BlueFerryApp(Adw.Application):
     def __init__(self) -> None:
-        super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
+        super().__init__(
+            application_id=APP_ID,
+            flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE | Gio.ApplicationFlags.SEND_ENVIRONMENT,
+        )
+        self.add_main_option(
+            "message", 0, GLib.OptionFlags.NONE, GLib.OptionArg.STRING,
+            "Open the conversation containing a message handle", "HANDLE",
+        )
         self._client: DaemonClient | None = None
+        self._activation: ClientActivation | None = None
 
     def do_startup(self) -> None:
         Adw.Application.do_startup(self)
+        self._activation = ClientActivation("gtk", self._open_message)
         for name, callback in (
             ("about", self._show_about),
             ("shortcuts", self._show_shortcuts),
@@ -99,15 +111,44 @@ class BlueFerryApp(Adw.Application):
         dialog.present(self.props.active_window)
 
     def do_activate(self) -> None:
+        self._open_message("", "")
+
+    def do_command_line(self, command_line: Gio.ApplicationCommandLine) -> int:
+        handle = command_line.get_options_dict().lookup_value("message", None)
+        token = (
+            command_line.getenv("XDG_ACTIVATION_TOKEN")
+            or command_line.getenv("DESKTOP_STARTUP_ID") or ""
+        )
+        self._open_message(handle.unpack() if handle is not None else "", token)
+        return 0
+
+    def _open_message(self, handle: str, token: str) -> None:
         win = self.props.active_window
         if win is None:
             if self._client is None:
                 self._client = DaemonClient()
             win = MainWindow(application=self, client=self._client)
-        win.present()
-        win.present_initial_setup()
+            win.connect("notify::is-active", self._window_active_changed)
+        if token:
+            win.set_startup_id(token)
+        if handle:
+            win.open_message(handle)
+        else:
+            win.present()
+        record_client_use("gtk")
+        if not handle:
+            win.present_initial_setup()
+        # A later manual activation must not accidentally reuse this token.
+        os.environ.pop("XDG_ACTIVATION_TOKEN", None)
+        os.environ.pop("DESKTOP_STARTUP_ID", None)
+
+    def _window_active_changed(self, win: Gtk.Window, _pspec) -> None:
+        if win.is_active():
+            record_client_use("gtk")
 
     def do_shutdown(self) -> None:
+        if self._activation is not None:
+            self._activation.close()
         if self._client is not None:
             self._client.stop()
         Adw.Application.do_shutdown(self)

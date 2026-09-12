@@ -19,7 +19,6 @@ from __future__ import annotations
 import json
 import logging
 from html import escape
-from pathlib import Path
 from typing import Protocol
 
 import dbus
@@ -28,6 +27,7 @@ import dbus.exceptions
 from blueferry import config
 from blueferry.ancs.events import AncsEvent
 from blueferry.bus import get_session_bus
+from blueferry.client_activation import activation_argv, select_client
 from blueferry.events import SmsEvent
 from blueferry.limits import MAX_DESKTOP_MESSAGE_TRACKERS
 from blueferry.notification_policy import (
@@ -61,40 +61,18 @@ _ANCS_EXPIRE_MS = config.NOTIFICATION_TIMEOUT_MS
 # because the iPhone marked it read (so we'd be in a write-self-write loop).
 # Reason 1 is the normal finite-timeout path and must not mark the phone read.
 _REASON_DISMISSED = 2
-_CLIENT_LAUNCHERS = (
-    "/usr/bin/blueferry-quickshell",
-    "/usr/bin/blueferry-gtk",
-    "/usr/bin/blueferry-qt",
-)
-
-
-def _open_conversation_argv(handle: str) -> list[str]:
-    """Return an argv that focuses a client on this opaque message handle."""
-    if not handle:
-        return []
-    for binary in _CLIENT_LAUNCHERS:
-        if Path(binary).is_file():
-            if binary.endswith("quickshell"):
-                return [binary, "--message", handle]
-            return [binary]
-    return []
 
 
 def _notification_hints(handle: str) -> dict[str, object]:
     hints: dict[str, object] = {"urgency": dbus.Byte(1)}
-    argv = _open_conversation_argv(handle)
-    if not argv:
+    if not handle:
         return hints
-    binary = argv[0]
-    if binary.endswith("quickshell"):
-        hints["desktop-entry"] = "io.weirdware.BlueFerry.Quickshell"
-    elif binary.endswith("gtk"):
-        hints["desktop-entry"] = "io.weirdware.BlueFerry.Gtk"
-    elif binary.endswith("-qt"):
-        hints["desktop-entry"] = "io.weirdware.BlueFerry.Qt"
+    client = select_client(get_session_bus().list_names())
+    if client is not None:
+        hints["desktop-entry"] = client.desktop_id
     # Omarchy's notification shell prefers this JSON argv over a live
     # libnotify action, and it survives a shell restart.
-    hints["omarchy-exec-argv"] = json.dumps(argv)
+    hints["omarchy-exec-argv"] = json.dumps(activation_argv(handle))
     return hints
 
 
@@ -135,6 +113,7 @@ class LibnotifySink:
         # the message in their private thread snapshot without broadcasting a
         # phone number or message body on the session bus.
         self._open_messages: dict[int, str] = {}
+        self._activation_tokens: dict[int, str] = {}
         # notification_id -> SignalMatch for the per-Message1 PropertiesChanged sub
         self._msg_subs: dict[int, _SignalMatch] = {}
 
@@ -146,11 +125,14 @@ class LibnotifySink:
         self._action_match = self._notif.connect_to_signal(
             "ActionInvoked", self._on_action,
         )
+        self._token_match = self._notif.connect_to_signal(
+            "ActivationToken", self._on_activation_token,
+        )
         log.info("libnotify sink ready (expiring + bidirectional read-sync)")
 
     def close(self) -> None:
         """Release signal watches before a notification-daemon replacement."""
-        for attribute in ("_match", "_action_match"):
+        for attribute in ("_match", "_action_match", "_token_match"):
             match = getattr(self, attribute, None)
             if match is not None:
                 try:
@@ -166,6 +148,7 @@ class LibnotifySink:
         self._msg_subs.clear()
         self._pending.clear()
         self._open_messages.clear()
+        getattr(self, "_activation_tokens", {}).clear()
 
     def _policy(self) -> str:
         provider = getattr(self, "_notification_policy", None)
@@ -250,6 +233,7 @@ class LibnotifySink:
             oldest = next(iter(tracked))
             self._pending.pop(oldest, None)
             open_messages.pop(oldest, None)
+            getattr(self, "_activation_tokens", {}).pop(oldest, None)
             subscription = self._msg_subs.pop(oldest, None)
             if subscription is not None:
                 try:
@@ -327,8 +311,17 @@ class LibnotifySink:
 
     # ---- Linux user dismisses → mark-read on iPhone ----------------------
 
+    def _on_activation_token(self, nid, token) -> None:
+        """The notification server supplies a single-use token before the action."""
+        try:
+            nid_i = int(nid)
+        except (TypeError, ValueError):
+            return
+        if nid_i in self._open_messages and len(str(token)) <= 4096:
+            self._activation_tokens[nid_i] = str(token)
+
     def _on_action(self, nid, action) -> None:
-        """Route a notification click to every currently running client."""
+        """Route a notification click to one client, starting it if necessary."""
         try:
             nid_i = int(nid)
         except (TypeError, ValueError):
@@ -337,8 +330,9 @@ class LibnotifySink:
             return
         handle = getattr(self, "_open_messages", {}).get(nid_i)
         callback = getattr(self, "_on_open_message", None)
+        token = getattr(self, "_activation_tokens", {}).pop(nid_i, "")
         if handle and callback is not None:
-            callback(handle)
+            callback(handle, token)
 
     def _on_closed(self, nid, reason) -> None:
         try:
@@ -348,6 +342,7 @@ class LibnotifySink:
             return
 
         getattr(self, "_open_messages", {}).pop(nid_i, None)
+        getattr(self, "_activation_tokens", {}).pop(nid_i, None)
         message_path = self._pending.pop(nid_i, None)
 
         # Always remove the per-message subscription, no matter the reason

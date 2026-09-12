@@ -9,6 +9,7 @@ Item {
 
   property int nextRequestId: 1
   property bool ready: false
+  property bool desktopClient: false
   property var queuedRequests: []
   property var latestRequests: ({})
   property var latestMethods: ({})
@@ -84,7 +85,9 @@ Item {
   Process {
     id: bridgeProcess
     running: true
-    command: ["/usr/bin/blueferry-quickshell-bridge"]
+    command: bridge.desktopClient
+             ? ["/usr/bin/blueferry-quickshell-bridge", "--desktop-client"]
+             : ["/usr/bin/blueferry-quickshell-bridge"]
     stdinEnabled: true
     stdout: SplitParser {
       onRead: function(line) { bridge.handleLine(line) }

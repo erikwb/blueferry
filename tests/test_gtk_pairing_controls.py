@@ -12,7 +12,7 @@ import pytest
 
 
 @pytest.mark.private_dbus
-@pytest.mark.parametrize("scenario", ["controls", "error-toasts"])
+@pytest.mark.parametrize("scenario", ["controls", "error-toasts", "activation"])
 def test_gtk_pairing_ui(tmp_path, scenario):
     executable = shutil.which("gtk4-broadwayd")
     if executable is None:
@@ -23,6 +23,7 @@ def test_gtk_pairing_ui(tmp_path, scenario):
         os.environ, XDG_RUNTIME_DIR=str(runtime), GDK_BACKEND="broadway",
         BROADWAY_DISPLAY=":0", GTK_A11Y="none", GSETTINGS_BACKEND="memory",
         PYTHONPATH=str(Path(__file__).resolve().parents[1] / "src"),
+        XDG_CONFIG_HOME=str(tmp_path / "config"),
     )
     # Both the GTK display and its HTTP endpoint use private Unix sockets.
     daemon = subprocess.Popen(
@@ -206,8 +207,63 @@ def _exercise_error_toasts():
             window.destroy()
 
 
+def _exercise_gtk_activation():
+    import threading
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from blueferry import client_activation
+    from blueferry.ui import app as app_module
+
+    calls, errors = [], []
+
+    class Window(app_module.Adw.ApplicationWindow):
+        def __init__(self, application, client):
+            super().__init__(application=application)
+
+        def set_startup_id(self, token):
+            calls.append(("token", token))
+            super().set_startup_id(token)
+
+        def open_message(self, handle):
+            calls.append(("message", handle))
+            self.present()
+
+        def present_initial_setup(self):
+            calls.append(("setup", ""))
+
+    def request_existing():
+        try:
+            assert client_activation.open_message("existing", "warm-token")
+        except Exception as error:
+            errors.append(error)
+        finally:
+            app_module.GLib.idle_add(app.quit)
+
+    def after_startup():
+        threading.Thread(target=request_existing, daemon=True).start()
+        return False
+
+    with (
+        patch.object(app_module, "MainWindow", Window),
+        patch.object(app_module, "DaemonClient", lambda: SimpleNamespace(stop=lambda: None)),
+        patch.dict(os.environ, {"XDG_ACTIVATION_TOKEN": "cold-token"}),
+    ):
+        app = app_module.BlueFerryApp()
+        app_module.GLib.timeout_add(100, after_startup)
+        app_module.GLib.timeout_add_seconds(10, app.quit)
+        assert app.run(["blueferry-gtk", "--message", "cold"]) == 0
+    assert not errors, errors
+    assert calls == [
+        ("token", "cold-token"), ("message", "cold"),
+        ("token", "warm-token"), ("message", "existing"),
+    ], calls
+
+
 if __name__ == "__main__":
     if sys.argv[1] == "controls":
         _exercise_gtk_controls()
-    else:
+    elif sys.argv[1] == "error-toasts":
         _exercise_error_toasts()
+    else:
+        _exercise_gtk_activation()

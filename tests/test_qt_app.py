@@ -1,6 +1,7 @@
 """Qt process integration that does not construct a graphical application."""
 from __future__ import annotations
 
+import os
 import signal
 
 import pytest
@@ -8,6 +9,28 @@ import pytest
 pytest.importorskip("PySide6")
 
 from blueferry.qt import app as app_module
+
+
+def test_focus_token_is_available_before_show_and_does_not_leak(monkeypatch):
+    calls = []
+    monkeypatch.setattr(app_module, "record_client_use", lambda *_args: None)
+
+    class Window:
+        def show(self):
+            calls.append(("show", os.environ.get("XDG_ACTIVATION_TOKEN")))
+
+        def raise_(self):
+            pass
+
+        def requestActivate(self):
+            calls.append(("activate", os.environ.get("XDG_ACTIVATION_TOKEN")))
+
+    app_module._present_window(Window(), "focus-token")
+    app_module._present_window(Window())
+    assert calls == [
+        ("show", "focus-token"), ("activate", "focus-token"),
+        ("show", None), ("activate", None),
+    ]
 
 
 class _Signal:
