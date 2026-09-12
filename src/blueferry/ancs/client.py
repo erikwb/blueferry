@@ -179,6 +179,7 @@ class AncsClient:
         self._bearer_connected: bool | None = None
         self._bearer_ready = False
         self._transport_blocked = False
+        self._subscribe_failures = 0
         self._owned_notify_paths: set[str] = set()
 
         # In-flight per-notification attribute requests + app-name cache
@@ -427,9 +428,15 @@ class AncsClient:
         removal alone therefore cannot define the subscription lifecycle.
         """
         if connected is None:
+            previous = self._bearer_connected
             self._bearer_connected = None
-            self._bearer_ready = False
-            self._cancel_bearer_settle()
+            if previous is False or self._transport_blocked:
+                log.info("iPhone device reconnected; rebuilding ANCS subscription")
+                self._transport_blocked = False
+                self._cancel_transport_reset()
+                self._subscribe_failures = 0
+            if self._started and previous is not True:
+                self._schedule_bearer_settle()
             return
         previous = self._bearer_connected
         self._bearer_connected = connected
@@ -437,6 +444,7 @@ class AncsClient:
             self._bearer_ready = False
             self._cancel_bearer_settle()
             self._cancel_transport_reset()
+            self._subscribe_failures = 0
             had_state = bool(
                 self._notify_started
                 or self._authorized
@@ -464,11 +472,12 @@ class AncsClient:
             log.info("iPhone LE bearer reconnected; rebuilding ANCS subscription")
             self._transport_blocked = False
             self._cancel_transport_reset()
+            self._subscribe_failures = 0
         if self._started:
             self._schedule_bearer_settle()
 
     def _schedule_bearer_settle(self) -> None:
-        if self._bearer_settle_id is not None or self._bearer_connected is not True:
+        if self._bearer_settle_id is not None or self._bearer_connected is False:
             return
         self._bearer_settle_id = self._schedule(
             BEARER_SETTLE_SECONDS,
@@ -477,9 +486,10 @@ class AncsClient:
 
     def _finish_bearer_settle(self) -> bool:
         self._bearer_settle_id = None
-        if not self._started or self._bearer_connected is not True:
+        if not self._started or self._bearer_connected is False:
             return False
         self._bearer_ready = True
+        self._transport_blocked = False
         self._try_subscribe()
         return False
 
@@ -502,7 +512,7 @@ class AncsClient:
         self._clear_characteristic_subscription(stop_notify=False)
         if (
             self._started
-            and self._bearer_connected is True
+            and self._bearer_connected is not False
             and self._on_transport_failure is not None
             and self._transport_reset_id is None
         ):
@@ -518,10 +528,16 @@ class AncsClient:
         if (
             self._started
             and self._transport_blocked
-            and self._bearer_connected is True
+            and self._bearer_connected is not False
             and self._on_transport_failure is not None
         ):
             self._on_transport_failure()
+        if self._started and self._bearer_connected is None:
+            # On BlueZ < 5.86, Bearer.LE1 is absent so BlueZ provides no
+            # per-bearer disconnect signal. Unblock transport and schedule
+            # a retry so an incoming or solicited LE link can be picked up.
+            self._transport_blocked = False
+            self._schedule_subscribe_retry()
         return False
 
     def _cancel_transport_reset(self) -> None:
@@ -784,14 +800,20 @@ class AncsClient:
             or not (self._ns_path and self._ds_path and self._cp_path)
         ):
             return
+        delay = min(
+            SUBSCRIBE_RETRY_SECONDS * (2 ** min(self._subscribe_failures, 4)),
+            30,
+        )
+        self._subscribe_failures += 1
         self._subscribe_retry_id = self._schedule(
-            SUBSCRIBE_RETRY_SECONDS,
+            delay,
             self._retry_subscribe,
         )
 
     def _retry_subscribe(self) -> bool:
         self._subscribe_retry_id = None
         if self._started:
+            self._transport_blocked = False
             self._try_subscribe()
         return False
 
@@ -893,6 +915,7 @@ class AncsClient:
             return
         self._authorized = True
         self._was_authorized = True
+        self._subscribe_failures = 0
         self._cancel_authorization_retry()
         log.info("ANCS notification access authorized for %s", self.device_path)
         if self.on_status is not None:
