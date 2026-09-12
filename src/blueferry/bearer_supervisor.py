@@ -813,10 +813,14 @@ class BearerSupervisor:
             return
         self._disconnecting.discard("le")
         name, message = _connect_error_parts(error)
-        if name in {
-            "org.bluez.Error.NotConnected",
-            "org.bluez.Error.AlreadyDisconnected",
-        } or "not connected" in message.casefold():
+        if (
+            name in {
+                "org.bluez.Error.NotConnected",
+                "org.bluez.Error.AlreadyDisconnected",
+            }
+            or "not connected" in message.casefold()
+            or bearer_connected_unavailable(error)
+        ):
             self._complete_le_reset()
             return
         self._le_reset_failures += 1

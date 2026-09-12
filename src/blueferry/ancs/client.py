@@ -104,6 +104,12 @@ def _connection_was_lost(error: dbus.exceptions.DBusException) -> bool:
     )
 
 
+def _in_progress(error: dbus.exceptions.DBusException) -> bool:
+    """Return whether BlueZ rejected StartNotify because a prior CCC write is
+    still pending internally for this D-Bus sender."""
+    return (error.get_dbus_name() or "").casefold().endswith(".inprogress")
+
+
 def _notification_is_already_stopped(
     error: dbus.exceptions.DBusException,
 ) -> bool:
@@ -710,6 +716,16 @@ class AncsClient:
                     log.debug("could not roll back ANCS signal watch", exc_info=True)
             if _connection_was_lost(e):
                 self._mark_transport_failed()
+            elif _in_progress(e):
+                # BlueZ tracks pending CCC writes per D-Bus sender. A prior
+                # StartNotify from this daemon may still be "in progress"
+                # internally (e.g. after an LE reset that didn't complete the
+                # ATT write). Call StopNotify to clear the stale pending
+                # state, then retry.
+                log.info(
+                    "ANCS clearing stale InProgress state via StopNotify"
+                )
+                self._force_stop_notify_and_retry(bus, ns_path, ds_path)
             else:
                 # Do not StopNotify a characteristic that succeeded before a
                 # later CCC write failed. Our ownership set lets the retry
@@ -782,6 +798,43 @@ class AncsClient:
         except Exception:
             log.debug("could not remove ANCS subscription retry", exc_info=True)
         self._subscribe_retry_id = None
+
+    def _force_stop_notify_and_retry(
+        self,
+        bus: dbus.SystemBus,
+        ns_path: str,
+        ds_path: str,
+    ) -> None:
+        """Call StopNotify on ANCS characteristics to clear a stale InProgress
+        state in BlueZ, then schedule a normal subscribe retry.
+
+        BlueZ tracks pending CCC (Client Characteristic Configuration) writes
+        per D-Bus sender.  After an LE reset the previous write may still be
+        marked 'in progress' internally even though the ATT transport was torn
+        down, causing every subsequent StartNotify from the same sender to fail
+        with ``org.bluez.Error.InProgress``.  A StopNotify call cancels the
+        stale write and allows a fresh StartNotify to succeed.
+        """
+        for path in (ns_path, ds_path):
+            try:
+                char = dbus.Interface(
+                    bus.get_object("org.bluez", path),
+                    "org.bluez.GattCharacteristic1",
+                )
+                char.StopNotify(timeout=DBUS_CALL_TIMEOUT_SECONDS)
+                log.debug("StopNotify cleared InProgress on %s", path)
+            except dbus.exceptions.DBusException as stop_err:
+                # StopNotify may fail if BlueZ already tore down the
+                # registration — that's fine, the stale state is gone either
+                # way.
+                log.debug(
+                    "StopNotify on %s during InProgress recovery: %s",
+                    path,
+                    stop_err.get_dbus_name(),
+                )
+        self._owned_notify_paths.discard(ns_path)
+        self._owned_notify_paths.discard(ds_path)
+        self._schedule_subscribe_retry()
 
     def _queue_authorization_probe(self) -> None:
         if not self._notify_started or self._authorized:
