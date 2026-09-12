@@ -154,6 +154,9 @@ def test_exit_race_relaunches_but_timeout_does_not_duplicate(preferences, monkey
 @pytest.mark.parametrize("key", ["gtk", "qt", "quickshell", "systemd"])
 def test_real_client_dbus_activation(tmp_path, monkeypatch, key):
     """Exercise both actual event-loop adapters on an isolated session bus."""
+    if key == "qt":
+        # Debian package builds do not require the optional Qt runtime.
+        pytest.importorskip("PySide6")
     monkeypatch.setattr(activation.config, "CONFIG_DIR", tmp_path)
     environment = dict(os.environ, XDG_CONFIG_HOME=str(tmp_path))
     process = subprocess.Popen(
