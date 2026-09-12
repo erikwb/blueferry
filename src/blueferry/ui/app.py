@@ -11,6 +11,7 @@ import logging
 import os
 import sys
 
+import dbus
 import gi
 
 gi.require_version("Gtk", "4.0")
@@ -19,7 +20,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
 
 from blueferry import __version__  # noqa: E402
-from blueferry.client_activation import record_client_use  # noqa: E402
+from blueferry.client_activation import forward_to_legacy_gtk, record_client_use  # noqa: E402
 from blueferry.glib_client_activation import ClientActivation  # noqa: E402
 from blueferry.i18n import _  # noqa: E402
 from blueferry.ui.client import DaemonClient  # noqa: E402
@@ -112,6 +113,16 @@ class BlueFerryApp(Adw.Application):
 
     def do_activate(self) -> None:
         self._open_message("", "")
+
+    def do_handle_local_options(self, options: GLib.VariantDict) -> int:
+        handle = options.lookup_value("message", None)
+        token = os.environ.get("XDG_ACTIVATION_TOKEN") or os.environ.get("DESKTOP_STARTUP_ID", "")
+        try:
+            forwarded = forward_to_legacy_gtk(handle.unpack() if handle is not None else "", token)
+        except dbus.DBusException:
+            logging.getLogger(__name__).exception("could not activate the existing GTK client")
+            return 1
+        return -1 if forwarded is None else 0 if forwarded else 1
 
     def do_command_line(self, command_line: Gio.ApplicationCommandLine) -> int:
         handle = command_line.get_options_dict().lookup_value("message", None)

@@ -38,6 +38,50 @@ def test_running_client_wins_over_last_used_and_desktop(preferences):
     assert client.key == "quickshell"
 
 
+def test_legacy_gtk_counts_as_running_after_upgrade(preferences):
+    activation.record_client_use("qt")
+    client = activation.select_client(
+        [activation.GTK_CLIENT.desktop_id], environment={"XDG_CURRENT_DESKTOP": "KDE"},
+    )
+    assert client == activation.GTK_CLIENT
+
+
+def test_gtk_finishing_startup_uses_new_endpoint_after_activation(preferences):
+    calls = []
+
+    def get_object(name, _path, **_kwargs):
+        if name == activation.GTK_CLIENT.desktop_id:
+            return SimpleNamespace(Activate=lambda data, **_kw: calls.append(("activate", dict(data))))
+        assert name == activation.GTK_CLIENT.bus_name  # no legacy daemon call
+        return SimpleNamespace(OpenMessage=lambda *args, **_kw: calls.append(("open", args)))
+
+    bus = SimpleNamespace(get_object=get_object, name_has_owner=lambda _name: True)
+    assert activation._open_legacy_gtk(bus, "message", "single-use-token")
+    assert calls == [
+        ("activate", {"activation-token": "single-use-token", "desktop-startup-id": "single-use-token"}),
+        ("open", ("message", "")),
+    ]
+
+
+@pytest.mark.parametrize("raises", [False, True])
+def test_legacy_gtk_exit_during_forwarding_allows_fresh_start(preferences, monkeypatch, raises):
+    def forward(*_args):
+        if raises:
+            raise dbus.DBusException("old window exited")
+        return False
+
+    launched = []
+    monkeypatch.setattr(activation, "_open_legacy_gtk", forward)
+    monkeypatch.setattr(activation.dbus, "SessionBus", lambda **_kw: SimpleNamespace(
+        list_names=lambda: [activation.GTK_CLIENT.desktop_id],
+        name_has_owner=lambda _name: False, close=lambda: None,
+    ))
+    monkeypatch.setattr(activation.subprocess, "Popen", lambda argv, **_kw: launched.append(argv))
+    assert activation.forward_to_legacy_gtk("handle", "") is None
+    assert activation.open_message("handle", "")
+    assert launched == [[activation.GTK_CLIENT.executable, "--message=handle"]]
+
+
 def test_most_recent_running_client_wins(preferences, monkeypatch):
     monkeypatch.setattr(activation.time, "time_ns", lambda: 100)
     activation.record_client_use("gtk")

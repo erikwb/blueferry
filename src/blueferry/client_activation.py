@@ -12,6 +12,7 @@ import logging
 import os
 import subprocess  # nosec B404
 import sys
+import threading
 import time
 import uuid
 from collections.abc import Mapping, Sequence
@@ -23,10 +24,12 @@ import dbus.mainloop
 
 from blueferry import config
 from blueferry.private_files import atomic_write_private_text, read_private_text
+from blueferry.protocol import BUS_NAME, MESSAGES_IFACE, OBJECT_PATH
 
 log = logging.getLogger(__name__)
 ACTIVATION_INTERFACE = "io.weirdware.BlueFerry.Client"
 ACTIVATION_PATH = "/io/weirdware/BlueFerry/Client"
+_recency_lock = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -48,6 +51,7 @@ CLIENTS = (
     DesktopClient("qt", "io.weirdware.BlueFerry.Qt"),
     DesktopClient("quickshell", "io.weirdware.BlueFerry.Quickshell"),
 )
+GTK_CLIENT = next(client for client in CLIENTS if client.key == "gtk")
 
 
 def _recency_path(client: DesktopClient) -> Path:
@@ -57,7 +61,10 @@ def _recency_path(client: DesktopClient) -> Path:
 def record_client_use(key: str) -> None:
     client = next(client for client in CLIENTS if client.key == key)
     try:
-        atomic_write_private_text(_recency_path(client), str(time.time_ns()), maximum_bytes=64)
+        # GTK/Qt record on the GUI thread; QS also receives focus on its stdin
+        # reader. Keep a slower write from replacing a newer timestamp.
+        with _recency_lock:
+            atomic_write_private_text(_recency_path(client), str(time.time_ns()), maximum_bytes=64)
     except OSError:
         log.warning("could not remember the active desktop client", exc_info=True)
 
@@ -82,7 +89,10 @@ def select_client(
         preferred = "quickshell"
     else:
         preferred = "gtk"
-    live = [client for client in CLIENTS if client.bus_name in running]
+    live = [client for client in CLIENTS if (
+        client.bus_name in running
+        or (client == GTK_CLIENT and client.desktop_id in running)
+    )]
     candidates = live or [client for client in CLIENTS if os.access(client.executable, os.X_OK)]
     return max(
         candidates, key=lambda client: (_last_used(client), client.key == preferred), default=None,
@@ -118,6 +128,61 @@ def request_message_activation(handle: str, token: str) -> None:
         log.exception("could not start desktop client activation")
 
 
+def _open_legacy_gtk(bus, handle: str, token: str) -> bool:
+    """Keep a pre-upgrade GTK window (and its drafts) alive while activating it."""
+    gtk = bus.get_object(
+        GTK_CLIENT.desktop_id, "/" + GTK_CLIENT.desktop_id.replace(".", "/"), introspect=False,
+    )
+    platform_data = dbus.Dictionary({}, signature="sv")
+    if token:
+        platform_data["activation-token"] = token
+        platform_data["desktop-startup-id"] = token
+    gtk.Activate(platform_data, dbus_interface="org.freedesktop.Application", timeout=3)
+    if handle:
+        # An up-to-date GTK process may have been between acquiring its
+        # GApplication name and registering our endpoint. Activate returns
+        # after startup, so retry the modern path before using the relay.
+        if bus.name_has_owner(GTK_CLIENT.bus_name):
+            bus.get_object(GTK_CLIENT.bus_name, ACTIVATION_PATH, introspect=False).OpenMessage(
+                handle, "", dbus_interface=ACTIVATION_INTERFACE, timeout=3,
+            )
+            record_client_use("gtk")
+            return True
+        # Only the daemon can emit the sender-authenticated legacy signal.
+        # GTK's Gio application and dbus-python listener use different bus
+        # connections; the daemon targets connections belonging to this PID.
+        daemon = bus.get_object(BUS_NAME, OBJECT_PATH, introspect=False)
+        if not daemon.OpenLegacyGtkMessage(
+            handle, gtk.bus_name, dbus_interface=MESSAGES_IFACE, timeout=3,
+        ):
+            return False
+    record_client_use("gtk")
+    return True
+
+
+def forward_to_legacy_gtk(handle: str, token: str) -> bool | None:
+    """Preflight GTK's command line: old GApplications cannot receive it.
+
+    None means normal GApplication startup/forwarding should continue.
+    """
+    bus = dbus.SessionBus(private=True, mainloop=dbus.mainloop.NULL_MAIN_LOOP)
+    try:
+        running = bus.list_names()
+        if GTK_CLIENT.bus_name in running or GTK_CLIENT.desktop_id not in running:
+            return None
+        try:
+            forwarded = _open_legacy_gtk(bus, handle, token)
+        except dbus.DBusException:
+            if bus.name_has_owner(GTK_CLIENT.desktop_id):
+                raise
+            return None
+        if not forwarded and not bus.name_has_owner(GTK_CLIENT.desktop_id):
+            return None  # the old window closed; continue normal GTK startup
+        return forwarded
+    finally:
+        bus.close()
+
+
 def open_message(handle: str, token: str) -> bool:
     """Run in a short-lived helper; focus a live client or launch the selected one."""
     bus = dbus.SessionBus(private=True, mainloop=dbus.mainloop.NULL_MAIN_LOOP)
@@ -127,16 +192,26 @@ def open_message(handle: str, token: str) -> bool:
         if client is None:
             log.warning("no BlueFerry graphical client is installed")
             return False
-        if client.bus_name in running:
+        live_name = (
+            client.bus_name if client.bus_name in running
+            else client.desktop_id if client == GTK_CLIENT and client.desktop_id in running
+            else None
+        )
+        if live_name is not None:
             try:
-                bus.get_object(client.bus_name, ACTIVATION_PATH, introspect=False).OpenMessage(
-                    handle, token, dbus_interface=ACTIVATION_INTERFACE, timeout=3,
-                )
-                return True
+                if live_name == GTK_CLIENT.desktop_id:
+                    forwarded = _open_legacy_gtk(bus, handle, token)
+                    if forwarded or bus.name_has_owner(live_name):
+                        return forwarded
+                else:
+                    bus.get_object(client.bus_name, ACTIVATION_PATH, introspect=False).OpenMessage(
+                        handle, token, dbus_interface=ACTIVATION_INTERFACE, timeout=3,
+                    )
+                    return True
             except dbus.DBusException:
                 # A GUI can exit after selection. Only relaunch when its name
                 # vanished; a timeout must not open a second, competing client.
-                if bus.name_has_owner(client.bus_name):
+                if bus.name_has_owner(live_name):
                     log.warning("the running %s client did not accept activation", client.key)
                     return False
         argv = [client.executable, f"--message={handle}"]

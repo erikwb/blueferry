@@ -139,6 +139,14 @@
     <method name="IsHealthy">
       <arg name="healthy" type="b" direction="out"/>
     </method>
+    <method name="OpenLegacyGtkMessage">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Route a notification to a GTK window left open across an upgrade"/>
+      <arg name="handle" type="s" direction="in"/>
+      <arg name="application_owner" type="s" direction="in"/>
+      <arg name="delivered" type="b" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors" value="InvalidArgs"/>
+    </method>
   </interface>
   <interface name="io.weirdware.BlueFerry.Events1">
     <annotation name="org.freedesktop.DBus.Description"

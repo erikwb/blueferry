@@ -175,6 +175,16 @@ class _RequestWorkers:
             self.bridge.handle_line(self.pending.get())
 
     def submit(self, line: str) -> None:
+        # Focus describes the client at receipt time. It must not wait behind
+        # slow backend I/O and then overwrite a newer client's preference.
+        if len(line) <= MAX_REQUEST_CHARS:
+            try:
+                request = json.loads(line)
+            except (ValueError, RecursionError):
+                request = None
+            if isinstance(request, dict) and request.get("method") == "client_active":
+                self.bridge.handle_line(line)  # retain normal validation and widget opt-out
+                return
         try:
             self.pending.put_nowait(line)
         except queue.Full:

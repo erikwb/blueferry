@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -192,6 +193,58 @@ def test_slow_send_does_not_block_status_requests() -> None:
     workers.submit('{"id":2,"method":"status","args":{}}')
     assert status_called.wait(1)
     release_send.set()
+
+
+def test_focus_bypasses_busy_backend_workers_and_preserves_newer_client(monkeypatch, tmp_path):
+    from blueferry import client_activation
+    from blueferry.quickshell_bridge import REQUEST_WORKERS
+
+    monkeypatch.setattr(client_activation.config, "CONFIG_DIR", tmp_path)
+    busy = threading.Barrier(REQUEST_WORKERS + 1)
+    release = threading.Event()
+
+    class BlockingClient(FakeClient):
+        def status(self):
+            busy.wait(timeout=5)
+            assert release.wait(5)
+            return super().status()
+
+    output = io.StringIO()
+    bridge = QuickshellBridge(BlockingClient(), output, desktop_client=True)
+    workers = _RequestWorkers(bridge)
+    try:
+        for index in range(REQUEST_WORKERS):
+            workers.submit(json.dumps({"id": index, "method": "status", "args": {}}))
+        busy.wait(timeout=5)
+        workers.submit('{"id":100,"method":"client_active","args":{}}')
+        assert json.loads(output.getvalue()) == {
+            "id": 100, "method": "client_active", "ok": True, "result": None,
+        }
+        client_activation.record_client_use("gtk")
+    finally:
+        release.set()
+    deadline = time.monotonic() + 5
+    while len(output.getvalue().splitlines()) < REQUEST_WORKERS + 1:
+        assert time.monotonic() < deadline
+        time.sleep(.01)
+    running = [client.bus_name for client in client_activation.CLIENTS]
+    assert client_activation.select_client(running).key == "gtk"
+
+
+@pytest.mark.parametrize("line,desktop", [
+    ('{"id":true,"method":"client_active","args":{}}', True),
+    ('{"id":1,"method":"client_active","args":[]}', True),
+    ('{"id":1,"method":"client_active","args":{}}', False),
+])
+def test_immediate_focus_still_validates_requests(monkeypatch, line, desktop):
+    recorded = []
+    monkeypatch.setattr("blueferry.quickshell_bridge.record_client_use", recorded.append)
+    output = io.StringIO()
+    bridge = QuickshellBridge(FakeClient(), output, desktop_client=desktop)
+    workers = _RequestWorkers(bridge)
+    workers.submit(line)
+    assert not json.loads(output.getvalue())["ok"]
+    assert not recorded
 
 
 def test_stdin_reader_drains_batched_lines_without_another_write():
