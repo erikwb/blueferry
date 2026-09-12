@@ -1483,6 +1483,7 @@ Item {
 ''')
     (tmp_path / "BackendBridge.qml").write_text('''import QtQuick
 Item {
+  property bool desktopClient: false
   property var calls: []
   property int nextId: 1
   signal response(string method, int requestId, var result)

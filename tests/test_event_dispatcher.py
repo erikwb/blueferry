@@ -201,17 +201,21 @@ def test_only_an_incoming_map_message_verifies_message_notifications():
     assert verified == [True]
 
 
-def test_notification_action_is_broadcast_through_current_dbus_service():
+def test_notification_action_routes_to_one_client_even_without_backend_service(monkeypatch):
+    opened = []
+    monkeypatch.setattr(
+        event_dispatcher, "request_message_activation",
+        lambda handle, token: opened.append((handle, token)),
+    )
     dispatcher = EventDispatcher(
         object(),
         submit_obex=lambda *_args, **_kwargs: None,
     )
     service = _Service()
-    dispatcher.set_dbus_service(service)
+    dispatcher._open_message("message-opaque-42", "focus-token")
 
-    dispatcher._open_message("message-opaque-42")
-
-    assert service.events == [("open", "message-opaque-42")]
+    assert service.events == []
+    assert opened == [("message-opaque-42", "focus-token")]
 
 
 def test_libnotify_is_added_when_notification_server_appears(monkeypatch):

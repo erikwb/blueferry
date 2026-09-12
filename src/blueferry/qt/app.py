@@ -1,6 +1,7 @@
 """PySide6/Kirigami application entry point."""
 from __future__ import annotations
 
+import argparse
 import os
 import signal
 import sys
@@ -12,6 +13,8 @@ from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuickControls2 import QQuickStyle
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
+from blueferry.client_activation import record_client_use
+from blueferry.qt.activation import ClientActivation
 from blueferry.qt.controller import BridgeController
 
 APP_ID = "io.weirdware.BlueFerry.Qt"
@@ -53,10 +56,16 @@ def _install_terminal_signal_handlers(application: QGuiApplication) -> QTimer:
     return timer
 
 
-def _present_window(window: QWindow) -> None:
+def _present_window(window: QWindow, token: str | None = None) -> None:
+    # Qt Wayland consumes XDG_ACTIVATION_TOKEN in requestActivate(), including
+    # for an already-created window. Set it before show() as that can activate.
+    if token:
+        os.environ["XDG_ACTIVATION_TOKEN"] = token
     window.show()
     window.raise_()
     window.requestActivate()
+    os.environ.pop("XDG_ACTIVATION_TOKEN", None)
+    record_client_use("qt")
 
 
 def _create_system_tray(
@@ -101,16 +110,26 @@ def _create_system_tray(
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    parser.add_argument("--message", default="")
+    args, qt_args = parser.parse_known_args(sys.argv[1:])
+    wayland_token = os.environ.pop("XDG_ACTIVATION_TOKEN", "")
+    token = wayland_token or os.environ.get("DESKTOP_STARTUP_ID", "")
     if not os.environ.get("QT_QUICK_CONTROLS_STYLE"):
         QQuickStyle.setStyle("org.kde.desktop")
 
-    application = QApplication(sys.argv)
+    application = QApplication([sys.argv[0], *qt_args])
+    # The X11 platform reads its startup ID while constructing QApplication.
+    os.environ.pop("DESKTOP_STARTUP_ID", None)
     application.setApplicationName("blueferry")
     application.setApplicationDisplayName("BlueFerry")
     application.setOrganizationDomain("weirdware.io")
     application.setDesktopFileName(APP_ID)
     application.setWindowIcon(QIcon.fromTheme(APP_ICON))
     _install_translation(application)
+    activation = ClientActivation(application)
+    if not activation.primary:
+        return 0 if activation.forward(args.message, token) else 1
 
     controller = BridgeController(parent=application)
     engine = QQmlApplicationEngine()
@@ -118,13 +137,37 @@ def main() -> int:
     qml = files("blueferry.qt").joinpath("qml/Main.qml")
     engine.load(QUrl.fromLocalFile(str(qml)))
     if not engine.rootObjects():
+        activation.close()
         return 1
     window = engine.rootObjects()[0]
-    controller.messageOpenRequested.connect(lambda _handle: _present_window(window))
+    pending_token: str | None = None
+
+    def present_message(_handle: str) -> None:
+        nonlocal pending_token
+        focus_token, pending_token = pending_token, None
+        _present_window(window, focus_token)
+
+    def activate_message(handle: str, activation_token: str) -> None:
+        nonlocal pending_token
+        pending_token = activation_token
+        if handle:
+            controller.messageOpenRequested.emit(handle)
+        else:
+            present_message("")
+
+    activation.requested.connect(activate_message)
+    controller.messageOpenRequested.connect(present_message)
+    window.activeChanged.connect(lambda: record_client_use("qt") if window.isActive() else None)
+    def ready() -> None:
+        activate_message(args.message, token)
+        activation.ready()
+
+    QTimer.singleShot(0, ready)
     system_tray = _create_system_tray(application, window)
     terminal_signal_timer = _install_terminal_signal_handlers(application)
     exit_code = application.exec()
     terminal_signal_timer.stop()
+    activation.close()
     if system_tray is not None:
         system_tray.hide()
     return exit_code

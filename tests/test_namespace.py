@@ -208,7 +208,8 @@ def test_quickshell_launcher_can_focus_an_existing_conversation() -> None:
 def test_quickshell_keeps_private_dbus_values_out_of_process_arguments() -> None:
     quickshell = _qml_bundle(ROOT / "data/quickshell")
 
-    assert 'command: ["/usr/bin/blueferry-quickshell-bridge"]' in quickshell
+    assert '["/usr/bin/blueferry-quickshell-bridge", "--desktop-client"]' in quickshell
+    assert ': ["/usr/bin/blueferry-quickshell-bridge"]' in quickshell
     assert 'backendBridge.request("send"' in quickshell
     assert 'backendBridge.request("send_to_thread"' in quickshell
     assert 'backendBridge.request("set_group_participants"' in quickshell

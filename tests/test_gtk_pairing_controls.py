@@ -12,7 +12,7 @@ import pytest
 
 
 @pytest.mark.private_dbus
-@pytest.mark.parametrize("scenario", ["controls", "error-toasts"])
+@pytest.mark.parametrize("scenario", ["controls", "error-toasts", "activation", "upgrade-activation"])
 def test_gtk_pairing_ui(tmp_path, scenario):
     executable = shutil.which("gtk4-broadwayd")
     if executable is None:
@@ -23,6 +23,7 @@ def test_gtk_pairing_ui(tmp_path, scenario):
         os.environ, XDG_RUNTIME_DIR=str(runtime), GDK_BACKEND="broadway",
         BROADWAY_DISPLAY=":0", GTK_A11Y="none", GSETTINGS_BACKEND="memory",
         PYTHONPATH=str(Path(__file__).resolve().parents[1] / "src"),
+        XDG_CONFIG_HOME=str(tmp_path / "config"),
     )
     # Both the GTK display and its HTTP endpoint use private Unix sockets.
     daemon = subprocess.Popen(
@@ -206,8 +207,188 @@ def _exercise_error_toasts():
             window.destroy()
 
 
+def _exercise_gtk_activation():
+    import threading
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from blueferry import client_activation
+    from blueferry.ui import app as app_module
+
+    calls, errors = [], []
+
+    class Window(app_module.Adw.ApplicationWindow):
+        def __init__(self, application, client):
+            super().__init__(application=application)
+
+        def set_startup_id(self, token):
+            calls.append(("token", token))
+            super().set_startup_id(token)
+
+        def open_message(self, handle):
+            calls.append(("message", handle))
+            self.present()
+
+        def present_initial_setup(self):
+            calls.append(("setup", ""))
+
+    def request_existing():
+        try:
+            assert client_activation.open_message("existing", "warm-token")
+        except Exception as error:
+            errors.append(error)
+        finally:
+            app_module.GLib.idle_add(app.quit)
+
+    def after_startup():
+        threading.Thread(target=request_existing, daemon=True).start()
+        return False
+
+    with (
+        patch.object(app_module, "MainWindow", Window),
+        patch.object(app_module, "DaemonClient", lambda: SimpleNamespace(stop=lambda: None)),
+        patch.dict(os.environ, {"XDG_ACTIVATION_TOKEN": "cold-token"}),
+    ):
+        app = app_module.BlueFerryApp()
+        app_module.GLib.timeout_add(100, after_startup)
+        app_module.GLib.timeout_add_seconds(10, app.quit)
+        assert app.run(["blueferry-gtk", "--message", "cold"]) == 0
+    assert not errors, errors
+    assert calls == [
+        ("token", "cold-token"), ("message", "cold"),
+        ("token", "warm-token"), ("message", "existing"),
+    ], calls
+
+
+def _serve_activation_backend():
+    from types import SimpleNamespace
+
+    import dbus.service
+    from gi.repository import GLib
+
+    from blueferry.bus import get_session_bus
+    from blueferry.dbus_service import MessagesService
+    from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH
+
+    bus = get_session_bus()
+    name = dbus.service.BusName(BUS_NAME, bus=bus, do_not_queue=True)
+    service = MessagesService(name, SimpleNamespace(map=None, pbap=None, map_path=None))
+    # A second process listening for the same backend signal must not be
+    # activated by the legacy relay. The GTK process has two bus connections.
+    observer = dbus.SessionBus(private=True)
+    match = observer.add_signal_receiver(
+        lambda handle: print("unexpected-broadcast:" + str(handle), flush=True),
+        signal_name="OpenMessageRequested", dbus_interface=EVENTS_IFACE,
+        bus_name=BUS_NAME, path=OBJECT_PATH,
+    )
+    print("ready", flush=True)
+    loop = GLib.MainLoop()
+    GLib.timeout_add_seconds(25, loop.quit)
+    try:
+        loop.run()
+    finally:
+        match.remove()
+        observer.close()
+        service.close()
+
+
+def _exercise_gtk_upgrade_activation():
+    import select
+    import threading
+
+    import gi
+    gi.require_version("Adw", "1")
+    gi.require_version("Gtk", "4.0")
+    from gi.repository import Adw, Gio, GLib, Gtk
+
+    from blueferry.bus import get_session_bus
+    from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH
+
+    backend = subprocess.Popen(
+        [sys.executable, __file__, "activation-backend"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0,
+    )
+    calls, errors = [], []
+    done = threading.Event()
+
+    class LegacyApp(Adw.Application):
+        """The shipped GTK interface before --message/Client.Gtk existed."""
+        def __init__(self):
+            super().__init__(
+                application_id="io.weirdware.BlueFerry.Gtk",
+                flags=Gio.ApplicationFlags.DEFAULT_FLAGS,
+            )
+            self.window = None
+
+        def do_startup(self):
+            Adw.Application.do_startup(self)
+            self.match = get_session_bus().add_signal_receiver(
+                self.open_message, signal_name="OpenMessageRequested", dbus_interface=EVENTS_IFACE,
+                bus_name=BUS_NAME, path=OBJECT_PATH,
+            )
+
+        def do_activate(self):
+            if self.window is None:
+                self.draft = Gtk.Entry(text="unsent draft")
+                self.window = Adw.ApplicationWindow(application=self, content=self.draft)
+            self.window.present()
+
+        def open_message(self, handle):
+            calls.append(str(handle))
+            self.window.present()
+
+    def activate_from_new_client():
+        try:
+            commands = [
+                [sys.executable, "-m", "blueferry.ui.app", "--message=from-new-gtk"],
+                [sys.executable, "-m", "blueferry.client_activation", "--message=from-notification"],
+                [sys.executable, "-m", "blueferry.ui.app"],
+            ]
+            for command in commands:
+                result = subprocess.run(command, capture_output=True, text=True, timeout=10)
+                assert result.returncode == 0, result.stdout + result.stderr
+        except Exception as error:
+            errors.append(error)
+        finally:
+            done.set()
+
+    def start_requests():
+        threading.Thread(target=activate_from_new_client, daemon=True).start()
+        return False
+
+    def check_done():
+        if done.is_set() and (errors or len(calls) == 2):
+            app.quit()
+            return False
+        return True
+
+    try:
+        assert select.select([backend.stdout], [], [], 5)[0], "backend did not start"
+        assert backend.stdout.readline() == b"ready\n"
+        app = LegacyApp()
+        GLib.timeout_add(100, start_requests)
+        GLib.timeout_add(10, check_done)
+        GLib.timeout_add_seconds(20, app.quit)
+        assert app.run(["blueferry-gtk"]) == 0
+        assert not errors, errors
+        assert calls == ["from-new-gtk", "from-notification"], calls
+        assert app.draft.get_text() == "unsent draft"
+        app.match.remove()
+    finally:
+        backend.terminate()
+        output, error = backend.communicate(timeout=5)
+        assert b"unexpected-broadcast" not in output, output
+        assert not error, error
+
+
 if __name__ == "__main__":
     if sys.argv[1] == "controls":
         _exercise_gtk_controls()
-    else:
+    elif sys.argv[1] == "error-toasts":
         _exercise_error_toasts()
+    elif sys.argv[1] == "upgrade-activation":
+        _exercise_gtk_upgrade_activation()
+    elif sys.argv[1] == "activation-backend":
+        _serve_activation_backend()
+    else:
+        _exercise_gtk_activation()

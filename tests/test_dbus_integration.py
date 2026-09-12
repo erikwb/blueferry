@@ -132,6 +132,34 @@ def _request_in_thread(name, method, *args):
     return thread, outcome
 
 
+@pytest.mark.parametrize("handle,owner", [
+    ("", ":1.1"), ("x" * 1025, ":1.1"), ("handle", ""),
+    ("handle", "io.weirdware.BlueFerry.Gtk"), ("handle", ":invalid"),
+])
+def test_legacy_activation_rejects_invalid_requests(public_service, handle, owner):
+    name, *_ = public_service
+    thread, outcome = _request_in_thread(name, "OpenLegacyGtkMessage", handle, owner)
+    _dispatch_until(lambda: bool(outcome))
+    thread.join(1)
+    assert outcome["error"].get_dbus_name().endswith(".InvalidArgs")
+
+
+def test_legacy_activation_does_not_route_to_a_replaced_owner(public_service):
+    from blueferry.client_activation import GTK_CLIENT
+
+    name, *_ = public_service
+    gtk_bus = dbus.SessionBus(private=True)
+    gtk_name = dbus.service.BusName(GTK_CLIENT.desktop_id, bus=gtk_bus, do_not_queue=True)
+    try:
+        thread, outcome = _request_in_thread(name, "OpenLegacyGtkMessage", "handle", ":999.999")
+        _dispatch_until(lambda: bool(outcome))
+        thread.join(1)
+        assert not outcome["value"]
+    finally:
+        del gtk_name  # release the name before closing the connection
+        gtk_bus.close()
+
+
 def test_fresh_profile_unlock_and_snapshots_use_the_compatible_public_client(
     public_service, tmp_path, monkeypatch,
 ):

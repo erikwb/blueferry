@@ -6,13 +6,20 @@ import logging
 
 import dbus
 import dbus.exceptions
+import dbus.lowlevel
 import dbus.service
 
 from blueferry.backend_operations import BackendDependencies, BackendOperations, SessionState
 from blueferry.background_worker import BackgroundWorker
 from blueferry.bus import get_session_bus
+from blueferry.client_activation import GTK_CLIENT
 from blueferry.dbus_security import CallerGuard
-from blueferry.errors import BlueFerryError, OperationFailedError, ResponseTooLargeError
+from blueferry.errors import (
+    BlueFerryError,
+    InvalidArgumentsError,
+    OperationFailedError,
+    ResponseTooLargeError,
+)
 from blueferry.limits import MAX_DBUS_JSON_BYTES
 from blueferry.protocol import (
     BUS_NAME,
@@ -424,6 +431,47 @@ class MessagesService(dbus.service.Object):
         return self._sync(lambda: self._authorized(
             sender, "status", self.operations.is_healthy
         ))
+
+    @dbus.service.method(
+        IFACE, in_signature="ss", out_signature="b", sender_keyword="sender",
+    )
+    def OpenLegacyGtkMessage(self, handle: str, application_owner: str, sender=None) -> bool:
+        """Deliver to an older GTK process without broadcasting to other clients."""
+        return self._sync(lambda: self._authorized(
+            sender, "read", lambda: self._open_legacy_gtk_message(handle, application_owner),
+        ))
+
+    def _open_legacy_gtk_message(self, handle: str, application_owner: str) -> bool:
+        if not handle or len(handle) > 1024 or len(application_owner) > 255:
+            raise InvalidArgumentsError("invalid legacy client activation")
+        try:
+            dbus.validate_bus_name(application_owner, allow_well_known=False)
+        except ValueError as error:
+            raise InvalidArgumentsError("invalid legacy application owner") from error
+        bus = self.connection
+        broker = dbus.Interface(
+            bus.get_object("org.freedesktop.DBus", "/org/freedesktop/DBus", introspect=False),
+            "org.freedesktop.DBus",
+        )
+        try:
+            if bus.get_name_owner(GTK_CLIENT.desktop_id) != application_owner:
+                return False
+            pid = broker.GetConnectionUnixProcessID(application_owner)
+        except dbus.DBusException:
+            return False  # the selected window closed before delivery
+        for peer in bus.list_names():
+            if not peer.startswith(":"):
+                continue
+            try:
+                if broker.GetConnectionUnixProcessID(peer) != pid:
+                    continue
+            except dbus.DBusException:
+                continue  # a connection disappeared during the snapshot
+            message = dbus.lowlevel.SignalMessage(OBJECT_PATH, EVENTS_IFACE, "OpenMessageRequested")
+            message.set_destination(peer)
+            message.append(handle, signature="s")
+            bus.send_message(message)
+        return True
 
     @dbus.service.signal(EVENTS_IFACE, signature="a{sv}")
     def HistoryChanged(self, props):

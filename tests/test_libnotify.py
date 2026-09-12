@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -12,6 +13,13 @@ from blueferry.sinks.libnotify import (
     _MESSAGE_EXPIRE_MS,
     LibnotifySink,
 )
+
+
+@pytest.fixture(autouse=True)
+def activation_clients(monkeypatch, tmp_path):
+    monkeypatch.setattr(libnotify_mod, "get_session_bus", lambda: SimpleNamespace(list_names=lambda: []))
+    monkeypatch.setattr("blueferry.client_activation.config.CONFIG_DIR", tmp_path)
+    monkeypatch.setattr("blueferry.client_activation.os.access", lambda *_args: False)
 
 
 class _FakeNotifications:
@@ -89,7 +97,7 @@ def test_clicking_message_popup_requests_opaque_message_handle(monkeypatch) -> N
     sink._pending = {}
     sink._open_messages = {}
     sink._msg_subs = {}
-    sink._on_open_message = opened.append
+    sink._on_open_message = lambda handle, token: opened.append((handle, token))
     event = SimpleNamespace(
         kind="sms_received",
         handle="message-opaque-42",
@@ -102,22 +110,19 @@ def test_clicking_message_popup_requests_opaque_message_handle(monkeypatch) -> N
 
     assert list(sink._notif.calls[0][5]) == ["default", "Open conversation"]
     sink._on_action(1, "default")
-    assert opened == ["message-opaque-42"]
+    assert opened == [("message-opaque-42", "")]
 
     sink._on_closed(1, 1)
     sink._on_action(1, "default")
-    assert opened == ["message-opaque-42"]
+    assert opened == [("message-opaque-42", "")]
 
 
 def test_message_popup_includes_omarchy_open_argv(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(
         "blueferry.sinks.libnotify.config.SHOW_NOTIFICATION_CONTENT", True
     )
-    launcher = tmp_path / "blueferry-quickshell"
-    launcher.write_text("#!/bin/sh\n")
-    launcher.chmod(0o755)
     monkeypatch.setattr(
-        libnotify_mod, "_CLIENT_LAUNCHERS", (str(launcher),)
+        "blueferry.client_activation.os.access", lambda path, _mode: path.endswith("quickshell")
     )
     sink = LibnotifySink.__new__(LibnotifySink)
     sink._notif = _FakeNotifications()
@@ -137,9 +142,8 @@ def test_message_popup_includes_omarchy_open_argv(tmp_path, monkeypatch) -> None
     hints = sink._notif.calls[0][-2]
     assert hints["desktop-entry"] == "io.weirdware.BlueFerry.Quickshell"
     assert json.loads(str(hints["omarchy-exec-argv"])) == [
-        str(launcher),
-        "--message",
-        "message-opaque-42",
+        sys.executable, "-m", "blueferry.client_activation",
+        "--message=message-opaque-42",
     ]
 
 
@@ -330,6 +334,9 @@ def test_close_releases_all_signal_watches_and_trackers() -> None:
     sink = LibnotifySink.__new__(LibnotifySink)
     sink._match = _Match()
     sink._action_match = _Match()
+    sink._token_match = _Match()
+    token_match = sink._token_match
+    sink._activation_tokens = {7: "single-use"}
     message_match = _Match()
     sink._msg_subs = {7: message_match}
     sink._pending = {7: "/session/message1"}
@@ -341,9 +348,30 @@ def test_close_releases_all_signal_watches_and_trackers() -> None:
 
     assert owner_match.removed is True
     assert action_match.removed is True
+    assert token_match.removed is True
+    assert sink._activation_tokens == {}
     assert message_match.removed is True
     assert sink._match is None
     assert sink._action_match is None
     assert sink._msg_subs == {}
     assert sink._pending == {}
     assert sink._open_messages == {}
+
+
+def test_tokens_are_scoped_to_notification_and_consumed_once(monkeypatch):
+    sink = LibnotifySink.__new__(LibnotifySink)
+    sink._open_messages = {1: "first", 2: "second"}
+    sink._activation_tokens = {}
+    sink._pending = {}
+    sink._msg_subs = {}
+    opened = []
+    sink._on_open_message = lambda *args: opened.append(args)
+    sink._on_activation_token(999, "unrelated")
+    sink._on_activation_token(1, "gnome-token")
+    sink._on_action(2, "default")
+    sink._on_action(1, "default")
+    sink._on_action(1, "default")
+    assert opened == [("second", ""), ("first", "gnome-token"), ("first", "")]
+    sink._on_activation_token(1, "unused")
+    sink._on_closed(1, 1)
+    assert sink._activation_tokens == {}

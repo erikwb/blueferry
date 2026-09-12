@@ -126,6 +126,10 @@ ShellRoot {
   function presentWindow() {
     phoneSettingsVisible = false
     window.visible = true
+    backendBridge.request("client_active", {})
+    Qt.callLater(function() {
+      if (applicationSurface.Window.window) applicationSurface.Window.window.requestActivate()
+    })
   }
 
   function openThread(key) {
@@ -188,7 +192,7 @@ ShellRoot {
     onFinished: (id, kind, code, output, diagnostic) => setupController.finish(id, kind, code, output, diagnostic)
   }
 
-  BackendBridge { id: backendBridge }
+  BackendBridge { id: backendBridge; desktopClient: true }
 
   IpcHandler {
     target: "blueferry"
@@ -381,7 +385,10 @@ ShellRoot {
 
     Pane {
       id: applicationSurface
-      Window.onActiveChanged: root.markSelectedThreadRead()
+      Window.onActiveChanged: {
+        root.markSelectedThreadRead()
+        if (applicationSurface.Window.active) backendBridge.request("client_active", {})
+      }
       anchors.fill: parent
       padding: 0
       font.family: theme.fontFamily

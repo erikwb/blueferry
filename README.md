@@ -50,6 +50,12 @@ Download the native packages for your distribution from the
 Install `blueferry-backend` plus the client for your desktop. The backend also
 includes the `blueferry-tui` terminal client.
 
+Clicking a message notification opens its conversation in a running graphical
+client, preferring the most recently used one. If none is running, BlueFerry
+opens the last client you used. With no previous choice, it prefers GTK on
+GNOME, Qt on KDE, and Quickshell on Omarchy/Hyprland, using an installed client
+if the preferred one is unavailable.
+
 For Arch Linux or CachyOS, download the `.pkg.tar.zst` files and install them
 with pacman. For example, to install the GTK client:
 

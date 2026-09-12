@@ -103,6 +103,9 @@ class MainWindow(Adw.ApplicationWindow):
         self.present_phone_settings()
 
     def _on_open_message_requested(self, _client, handle: str) -> None:
+        self.open_message(handle)
+
+    def open_message(self, handle: str) -> None:
         self._phone_dialog.close()
         self.present()
         self.messages.open_message(handle)
