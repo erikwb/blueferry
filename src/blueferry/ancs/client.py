@@ -408,8 +408,12 @@ class AncsClient:
         # StartNotify only proves that BlueZ subscribed to the GATT
         # characteristics. iOS notification access is usable only after an
         # authorized Control Point round trip succeeds.
+        bearer_settled = (
+            (self._bearer_connected is True and self._bearer_ready)
+            or self._bearer_connected is None
+        )
         return (
-            (self._bearer_connected is True and self._bearer_ready or self._bearer_connected is None)
+            bearer_settled
             and not self._transport_blocked
             and self.subscribed
             and self.authorized
