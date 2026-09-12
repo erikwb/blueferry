@@ -348,10 +348,14 @@ def bluez_support_status(
             except OSError:
                 argv = []
             active = b"-E" in argv or b"--experimental" in argv
-    drop_in = Path("/usr/lib/systemd/system/bluetooth.service.d/blueferry.conf")
+    drop_ins = (
+        Path("/usr/lib/systemd/system/bluetooth.service.d/blueferry.conf"),
+        Path("/etc/systemd/system/bluetooth.service.d/experimental.conf"),
+        Path("/etc/systemd/system/bluetooth.service.d/blueferry.conf"),
+    )
     return {
         "active": active,
-        "packaged_drop_in": drop_in.exists(),
+        "packaged_drop_in": any(drop_in.exists() for drop_in in drop_ins),
         "exec_start": command,
     }
 
@@ -452,7 +456,7 @@ def _profile_fields(
     # MAP/PBAP carry data over Classic, but iOS exposes their permissions only
     # after LE solicitation. Compatibility mode still needs that advertisement.
     messages_supported = available and classic and secure_pairing and low_energy and advertising
-    notifications_supported = messages_supported and bearer_supported
+    notifications_supported = messages_supported and (bearer_supported or bearer_active)
     missing = [
         label for present, label in (
             (classic, "Bluetooth Classic (BR/EDR)"),
@@ -561,7 +565,7 @@ def compatibility(
             supported,
             current,
             error,
-            bearer_active and bearer_supported,
+            bearer_active,
             bearer_supported,
         )
         options.append(

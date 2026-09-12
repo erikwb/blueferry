@@ -536,6 +536,78 @@ def test_start_notify_failure_retries_without_rediscovery(monkeypatch) -> None:
     assert ds.start_calls == 1
 
 
+def test_in_progress_start_notify_clears_via_stop_notify_and_retries(monkeypatch) -> None:
+    scheduled = []
+    writes = []
+    stop_calls = []
+
+    class _Characteristic:
+        def __init__(self, path: str, *, in_progress_once: bool = False) -> None:
+            self.path = path
+            self.in_progress_once = in_progress_once
+            self.start_calls = 0
+
+        def StartNotify(self, **_kwargs) -> None:
+            self.start_calls += 1
+            if self.in_progress_once:
+                self.in_progress_once = False
+                raise client_module.dbus.exceptions.DBusException(
+                    "Operation already in progress",
+                    name="org.bluez.Error.InProgress",
+                )
+
+        def StopNotify(self, **_kwargs) -> None:
+            stop_calls.append(self.path)
+
+        def WriteValue(self, value, _options, **_kwargs) -> None:
+            writes.append(bytes(value))
+
+    ns = _Characteristic("/device/ns", in_progress_once=True)
+    ds = _Characteristic("/device/ds")
+    cp = _Characteristic("/device/cp")
+    bus = _CharacteristicBus(
+        {"/device/ns": ns, "/device/ds": ds, "/device/cp": cp}
+    )
+    monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
+    monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
+    monkeypatch.setattr(
+        client_module.GLib,
+        "timeout_add_seconds",
+        lambda _delay, _callback: 9,
+    )
+    monkeypatch.setattr(client_module.GLib, "source_remove", lambda _timer: None)
+    client = AncsClient(
+        "/device",
+        lambda _event: None,
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+    )
+    client._started = True
+    client._bearer_connected = True
+    client._bearer_ready = True
+    client._ns_path = "/device/ns"
+    client._ds_path = "/device/ds"
+    client._cp_path = "/device/cp"
+
+    client._try_subscribe()
+
+    assert client.subscribed is False
+    assert "/device/ns" in stop_calls
+    assert "/device/ds" in stop_calls
+    assert len(scheduled) == 1
+    assert scheduled[0][0] == client_module.SUBSCRIBE_RETRY_SECONDS
+
+    # Fire the retry callback
+    scheduled[0][1]()
+
+    assert client.subscribed is True
+    assert len(writes) == 1
+    _complete_authorization_probe(client)
+    assert client.authorized is True
+    assert client.connected is True
+    assert ns.start_calls == 2
+    assert ds.start_calls == 1
+
+
 def test_initial_subscription_waits_for_a_settled_le_bearer(monkeypatch) -> None:
     calls = []
 
@@ -1367,3 +1439,47 @@ def test_control_point_failure_keeps_ancs_unready_and_retries(
     _complete_authorization_probe(client)
     assert client.authorized is True
     assert client.connected is True
+
+
+def test_legacy_bluez_transport_failure_recovers_without_per_bearer_signal(
+    monkeypatch,
+) -> None:
+    scheduled = []
+    resets = []
+
+    class _ControlPoint:
+        @staticmethod
+        def WriteValue(_value, _options, **_kwargs) -> None:
+            raise client_module.dbus.exceptions.DBusException(
+                "Not connected",
+                name="org.bluez.Error.Failed",
+            )
+
+    bus = _CharacteristicBus({"/device/cp": _ControlPoint()})
+    monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
+    monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
+    client = AncsClient(
+        "/device",
+        lambda _event: None,
+        on_transport_failure=lambda: resets.append(True),
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+    )
+    client._started = True
+    client._bearer_connected = None  # Legacy BlueZ < 5.86
+    client._bearer_ready = True
+    client._ns_path = "/device/ns"
+    client._ds_path = "/device/ds"
+    client._cp_path = "/device/cp"
+    client._notify_started = True
+
+    client._request_attrs(Notification.parse(_notification(42)))
+
+    assert client._transport_blocked is True
+    assert scheduled[0][0] == client_module.TRANSPORT_RESET_SECONDS
+    # Fire the transport reset
+    scheduled.pop(0)[1]()
+    assert resets == [True]
+    # On legacy BlueZ, transport_blocked is unblocked and retry is scheduled
+    assert client._transport_blocked is False
+    assert len(scheduled) == 1
+    assert scheduled[0][0] == client_module.SUBSCRIBE_RETRY_SECONDS

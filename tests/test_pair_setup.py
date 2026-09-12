@@ -1269,6 +1269,47 @@ def test_explicit_pairing_default_matches_only_the_selected_listed_adapter(
         assert compatibility["notifications_supported"] is True
 
 
+def test_compatibility_supports_notifications_on_active_legacy_bluez(monkeypatch):
+    class Manager:
+        def GetManagedObjects(self):
+            return {"/org/bluez/hci0": {"org.bluez.Adapter1": {}}}
+
+    def controller_info(command, **_kwargs):
+        stdout = "bluetoothctl: 5.72\n" if command[0] == "bluetoothctl" else (
+            "supported settings: powered ssp br/edr le advertising secure-conn\n"
+        )
+        return type("Result", (), {"returncode": 0, "stdout": stdout})()
+
+    monkeypatch.setattr(pair_setup, "_object_manager", Manager)
+    monkeypatch.setattr(pair_setup, "run_command", controller_info)
+    monkeypatch.setattr(
+        pair_setup, "bluez_support_status",
+        lambda: {"active": True, "packaged_drop_in": True},
+    )
+    monkeypatch.setattr(
+        pair_setup.capabilities, "controller_hardware",
+        lambda _adapter, **_kwargs: {"usb_id": "8087:0a2a"},
+    )
+
+    compatibility = pair_setup.bluetooth_compatibility("hci0")
+    assert compatibility["messages_supported"] is True
+    assert compatibility["notifications_supported"] is True
+    assert compatibility["bearer_api_supported"] is False
+    assert compatibility["bearer_api_active"] is True
+    assert compatibility["issue"] == ""
+
+    # Inactive experimental daemon on legacy BlueZ must disable notifications
+    monkeypatch.setattr(
+        pair_setup, "bluez_support_status",
+        lambda: {"active": False, "packaged_drop_in": True},
+    )
+    inactive_compat = pair_setup.bluetooth_compatibility("hci0")
+    assert inactive_compat["notifications_supported"] is False
+    assert inactive_compat["bearer_api_supported"] is False
+    assert inactive_compat["bearer_api_active"] is False
+    assert inactive_compat["issue"] == "Messages and contacts are supported; per-app notifications are not"
+
+
 def test_controller_snapshot_does_not_repeat_btmgmt_or_systemctl(monkeypatch):
     calls = []
 
