@@ -409,8 +409,7 @@ class AncsClient:
         # characteristics. iOS notification access is usable only after an
         # authorized Control Point round trip succeeds.
         return (
-            self._bearer_connected is True
-            and self._bearer_ready
+            (self._bearer_connected is True and self._bearer_ready or self._bearer_connected is None)
             and not self._transport_blocked
             and self.subscribed
             and self.authorized
@@ -644,7 +643,9 @@ class AncsClient:
         # BlueZ keeps bonded ANCS objects after ATT drops. StartNotify/CP on
         # those objects returns Not connected / No ATT transport and never
         # reaches iOS, so the notification-access prompt does not appear.
-        if self._bearer_connected is not True or not self._bearer_ready:
+        if self._bearer_connected is False or (
+            self._bearer_connected is True and not self._bearer_ready
+        ):
             return
         if not (self._ns_path and self._ds_path and self._cp_path):
             return

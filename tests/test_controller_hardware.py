@@ -5,6 +5,7 @@ from blueferry.bluetooth_capabilities import (
     ancs_limited_vendor,
     bluez_bearer_api_supported,
     bluez_stack,
+    bluez_support_status,
     controller_hardware,
 )
 from blueferry.errors import PairingError
@@ -206,3 +207,22 @@ def test_activate_bluez_support_requires_systemctl(tmp_path) -> None:
         assert str(error) == "systemctl is unavailable"
     else:
         raise AssertionError("activate_bluez_support accepted a missing systemctl")
+
+
+def test_bluez_support_status_checks_etc_drop_ins(monkeypatch) -> None:
+    from pathlib import Path
+
+    drop_in_path = "/etc/systemd/system/bluetooth.service.d/experimental.conf"
+    monkeypatch.setattr(
+        Path, "exists",
+        lambda self: str(self) == drop_in_path,
+    )
+
+    def run_cmd(args, **kwargs):
+        if "--property=MainPID" in args:
+            return type("Result", (), {"returncode": 0, "stdout": "0\n"})()
+        return type("Result", (), {"returncode": 0, "stdout": ""})()
+
+    status = bluez_support_status(run_command=run_cmd)
+    assert status["packaged_drop_in"] is True
+    assert status["active"] is False

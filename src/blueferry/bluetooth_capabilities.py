@@ -491,7 +491,7 @@ def _profile_fields(
         "hardware_supported": messages_supported,
         "messages_supported": messages_supported,
         "notifications_supported": notifications_supported,
-        "bearer_api_supported": bearer_supported or bearer_active,
+        "bearer_api_supported": bearer_supported,
         "bearer_api_active": bearer_active,
         # A failed probe is inconclusive (#28); only confirmed missing
         # capabilities prevent pairing (#143).

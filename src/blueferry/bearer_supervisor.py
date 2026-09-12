@@ -230,8 +230,20 @@ class BearerSupervisor:
             # must not rewrite PreferredBearer underneath itself.
             self._le_preference_restore_pending = True
             self._restore_le_preference()
+        if self.bredr_connected:
+            self._schedule_le_connect()
         if self._running:
             self._tick()
+
+    def confirm_le_connected(self) -> None:
+        """Record live LE connectivity confirmed by GATT/ANCS activity.
+
+        On BlueZ < 5.86, Bearer.LE1 is absent and Device1.Connected is
+        aggregate (true when only BR/EDR is connected). GATT activity
+        such as an ANCS authorization round-trip provides the missing
+        per-bearer confirmation.
+        """
+        self._update_state("le", True)
 
     def hold_le(self) -> None:
         """Prevent outbound LE dialing during a MAP/PBAP attempt.
@@ -868,10 +880,16 @@ class BearerSupervisor:
         except dbus.exceptions.DBusException as error:
             if not bearer_connected_unavailable(error):
                 raise
-            return bool(
+            # On BlueZ < 5.86, Bearer.LE1 is absent and Device1.Connected is
+            # aggregate (true for BR/EDR-only links). Keep the LE state unknown
+            # until GATT/ANCS activity confirms it, unless Device1 is completely
+            # disconnected.
+            device_connected = bool(
                 properties.Get("org.bluez.Device1", "Connected", timeout=5.0)
-                and properties.Get("org.bluez.Device1", "ServicesResolved", timeout=5.0)
             )
+            if not device_connected:
+                return False
+            return True if self._states.get("le") is True else None
 
     def _connect_bluez(
         self,
@@ -897,24 +915,10 @@ class BearerSupervisor:
         else:
             interface = _INTERFACES[kind]
 
-        def _handle_error(error: Exception) -> None:
-            if kind == "le" and bearer_connected_unavailable(error):
-                try:
-                    fallback = dbus.Interface(device, "org.bluez.Device1")
-                    fallback.Connect(
-                        reply_handler=on_success,
-                        error_handler=on_error,
-                        timeout=float(CONNECT_TIMEOUT_SECONDS),
-                    )
-                    return
-                except Exception as fallback_error:
-                    error = fallback_error
-            on_error(error)
-
         bearer = dbus.Interface(device, interface)
         bearer.Connect(
             reply_handler=on_success,
-            error_handler=_handle_error,
+            error_handler=on_error,
             timeout=float(CONNECT_TIMEOUT_SECONDS),
         )
 
