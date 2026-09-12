@@ -1573,3 +1573,49 @@ def test_legacy_disconnect_during_start_notify_cannot_publish_stale_subscription
     assert h.radio.writes == h.radio.stops == 0
     assert ns_path in h.client._owned_notify_paths
     assert h.client._subscribe_retry_id is not None
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("removed", [("ns",), ("ds",), ("cp",), ("ns", "ds", "cp")])
+def test_rediscovery_after_transport_failure_resumes_only_legacy_probes(legacy_ancs, legacy, removed):
+    h = legacy_ancs
+    h.radio.att = False
+    h.client.observe_bearer_state(None if legacy else True, legacy_connected=legacy)
+    h.client.start()
+    h.fire(h.client._bearer_settle_id)
+    assert h.client._transport_blocked is True
+
+    uuids = {"ns": NOTIFICATION_SOURCE_CHAR, "ds": DATA_SOURCE_CHAR, "cp": CONTROL_POINT_CHAR}
+    for name in removed:
+        h.client._on_iface_removed(f"/device/service/{name}", ["org.bluez.GattCharacteristic1"])
+    assert h.client._subscribe_retry_id is None
+    h.radio.att = True
+    for index, name in enumerate(reversed(removed)):
+        h.client._on_iface_added(f"/device/service/{name}", {
+            "org.bluez.GattCharacteristic1": {"UUID": uuids[name]},
+        })
+        if index < len(removed) - 1:
+            assert h.client._subscribe_retry_id is None
+    assert h.client.subscribed is False
+
+    if legacy:
+        retry_id = h.client._subscribe_retry_id
+        assert retry_id is not None
+        # Duplicate discovery must neither bypass the delay nor add retries.
+        h.client._on_iface_added("/device/service/ns", {
+            "org.bluez.GattCharacteristic1": {"UUID": NOTIFICATION_SOURCE_CHAR},
+        })
+        assert h.client._subscribe_retry_id == retry_id
+        assert h.fire(retry_id) == 4
+        _complete_authorization_probe(h.client)
+        assert h.client.connected is True
+        assert h.client._bearer_connected is None
+        assert h.radio.resets == 0
+    else:
+        # Native recovery must still wait for an actual LE reset, even though
+        # the cached characteristics reappeared while Connected stayed true.
+        assert h.client._subscribe_retry_id is None
+        assert h.client._transport_blocked is True
+        h.fire(h.client._transport_reset_id)
+        assert h.radio.resets == 1
+    assert h.radio.stops == 0

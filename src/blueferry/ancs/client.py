@@ -604,6 +604,13 @@ class AncsClient:
         elif uuid == CONTROL_POINT_CHAR:
             self._cp_path = path_s
             log.info("ANCS Control Point found:       %s", path_s)
+        if self._legacy_connected and self._transport_blocked:
+            # Removal cancels the old retry. Once all characteristics return,
+            # resume bounded GATT probes without requiring an LE state change
+            # that legacy BlueZ cannot report. Native recovery still waits for
+            # its monitored bearer to cycle.
+            self._schedule_subscribe_retry()
+            return
         self._try_subscribe()
 
     def _on_iface_removed(self, path, ifaces):

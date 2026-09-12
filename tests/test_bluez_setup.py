@@ -1,6 +1,8 @@
 """BLE advertisement shape and cleanup regressions."""
 from __future__ import annotations
 
+from uuid import UUID
+
 import dbus
 import pytest
 
@@ -18,13 +20,32 @@ class TestAncsAdvertisement:
         assert bool(props["Discoverable"])
         assert int(props["DiscoverableTimeout"]) == 180
         assert props["ManufacturerData"].signature == "qv"
-        assert props["ServiceData"].signature == "sv"
         assert bytes(props["ManufacturerData"][dbus.UInt16(0xFFFF)]) == (
             b"\x50\xb0\x13\xf0"
         )
-        assert bytes(props["ServiceData"][
-            "00009999-0000-1000-8000-00805f9b34fb"
-        ]) == b"\x9e\x85\x39\x96"
+
+    def test_pairing_payload_fits_legacy_advertising_budget(self):
+        props = bluez_setup._AncsAdvert.GetAll(None, "org.bluez.LEAdvertisement1")
+
+        def uuid_width(value):
+            # BlueZ compresses Bluetooth-base UUIDs to their 16-bit form.
+            value = str(UUID(str(value)))
+            if value.startswith("0000") and value[8:] == "-0000-1000-8000-00805f9b34fb":
+                return 2
+            return 16
+
+        # Every AD element has a length byte and a type byte. Manufacturer
+        # elements also include a 16-bit company ID. BlueZ puts LocalName in
+        # the separate scan response for our connectable legacy advertisement.
+        length = 2 + sum(uuid_width(value) for value in props["SolicitUUIDs"])
+        length += sum(4 + len(value) for value in props.get("ManufacturerData", {}).values())
+        length += sum(
+            2 + uuid_width(key) + len(value)
+            for key, value in props.get("ServiceData", {}).items()
+        )
+        length += 3 if props.get("Discoverable") else 0
+        length += 3 if "tx-power" in props.get("Includes", ()) else 0
+        assert length <= 31, f"advertisement needs {length} bytes; legacy limit is 31"
 
     def test_rejects_unknown_interface(self):
         with pytest.raises(dbus.exceptions.DBusException):
