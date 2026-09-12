@@ -88,10 +88,10 @@ class MainWindow(Adw.ApplicationWindow):
         self._on_availability(client, client.available)
 
     def toast(self, text: str) -> None:
-        self._toasts.add_toast(Adw.Toast(title=text))
+        self._toasts.add_toast(Adw.Toast(title=text, use_markup=False))
 
     def phone_toast(self, text: str) -> None:
-        self._phone_toasts.add_toast(Adw.Toast(title=text))
+        self._phone_toasts.add_toast(Adw.Toast(title=text, use_markup=False))
 
     def present_phone_settings(self) -> None:
         self._phone_dialog.present(self)

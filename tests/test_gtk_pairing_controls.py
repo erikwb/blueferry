@@ -1,4 +1,4 @@
-"""Exercise real GTK switches on a private Broadway display, without Bluetooth."""
+"""Exercise GTK pairing controls and errors on a private Broadway display."""
 from __future__ import annotations
 
 import os
@@ -12,7 +12,8 @@ import pytest
 
 
 @pytest.mark.private_dbus
-def test_gtk_explicit_pairing_controls(tmp_path):
+@pytest.mark.parametrize("scenario", ["controls", "error-toasts"])
+def test_gtk_pairing_ui(tmp_path, scenario):
     executable = shutil.which("gtk4-broadwayd")
     if executable is None:
         pytest.skip("GTK4 Broadway is not installed")
@@ -35,7 +36,7 @@ def test_gtk_explicit_pairing_controls(tmp_path):
             assert time.monotonic() < deadline, "Broadway did not create its display socket"
             time.sleep(0.02)
         result = subprocess.run(
-            [sys.executable, str(Path(__file__).resolve())], env=environment,
+            [sys.executable, str(Path(__file__).resolve()), scenario], env=environment,
             capture_output=True, text=True, timeout=30,
         )
         assert result.returncode == 0, result.stdout + result.stderr
@@ -150,5 +151,63 @@ def _exercise_gtk_controls():
                         assert options["replace_saved_mac"] == ("OLD" if replace else "")
 
 
+def _exercise_error_toasts():
+    import io
+    import traceback
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from gi.repository import GLib
+
+    from blueferry import setup_client
+    from blueferry.ui.window import Adw, Gtk, MainWindow
+
+    Adw.init()
+    try:
+        raise RuntimeError("Could not prepare <iPhone> & Bluetooth")
+    except RuntimeError:
+        diagnostic = traceback.format_exc()
+    # Real tracebacks contain markup-like names such as <module>, and errors
+    # can contain literal angle brackets and ampersands as well.
+    process = SimpleNamespace(
+        stdin=io.StringIO(), stdout=iter(()), stderr=io.StringIO(diagnostic),
+        wait=lambda **_kwargs: 1, poll=lambda: 1,
+    )
+    with patch.object(setup_client.subprocess, "Popen", return_value=process):
+        try:
+            setup_client.SetupClient().complete_isolated(
+                "02:00:00:00:00:01", confirmation=lambda _passkey: True,
+            )
+        except setup_client.PairingError as error:
+            message = f"Setup failed: {error}"
+        else:
+            raise AssertionError("The failed helper must raise PairingError")
+    assert diagnostic.strip() in message
+
+    def label_texts(widget):
+        if isinstance(widget, Gtk.Label):
+            yield widget.get_text()
+        child = widget.get_first_child()
+        while child is not None:
+            yield from label_texts(child)
+            child = child.get_next_sibling()
+
+    for show_toast in (MainWindow.toast, MainWindow.phone_toast):
+        overlay = Adw.ToastOverlay(child=Gtk.Label(label="Test content"))
+        window = Gtk.Window(default_width=680, default_height=620, child=overlay)
+        try:
+            window.present()
+            show_toast(SimpleNamespace(_toasts=overlay, _phone_toasts=overlay), message)
+            context = GLib.MainContext.default()
+            while context.pending():
+                context.iteration(False)
+            assert message in list(label_texts(overlay)), "GTK lost the diagnostic text"
+        finally:
+            window.destroy()
+
+
 if __name__ == "__main__":
-    _exercise_gtk_controls()
+    if sys.argv[1] == "controls":
+        _exercise_gtk_controls()
+    else:
+        _exercise_error_toasts()
