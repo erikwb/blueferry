@@ -1,10 +1,13 @@
 """The persisted pairing policy controls long-lived ANCS work."""
 
+import pytest
+
 from blueferry import daemon
 
 
 class _Bearer:
     le_state = False
+    legacy_connected = False
 
     def __init__(self, calls):
         self.calls = calls
@@ -127,13 +130,16 @@ def test_compatibility_daemon_solicits_but_never_starts_ancs(monkeypatch):
     assert value.ancs is None
 
 
-def test_full_daemon_starts_ancs_client(monkeypatch):
+@pytest.mark.parametrize("legacy", [False, True])
+def test_full_daemon_starts_ancs_client(monkeypatch, legacy):
     calls = []
 
     def app_filter(app_id):
         return app_id == "com.example.Allowed"
 
     value = _daemon(calls)
+    value.bearers.legacy_connected = legacy
+    value.bearers.le_state = None if legacy else False
     _ready_bluetooth(monkeypatch, calls)
     monkeypatch.setattr(daemon.config, "ANCS_ENABLED", True)
     monkeypatch.setattr(daemon.config, "include_ancs_app", app_filter)
@@ -144,8 +150,8 @@ def test_full_daemon_starts_ancs_client(monkeypatch):
             calls.append(("previously-authorized", kwargs["previously_authorized"]))
             calls.append(("app-filter", kwargs["include_app_notification"]))
 
-        def observe_bearer_state(self, connected):
-            calls.append(("ancs-bearer", connected))
+        def observe_bearer_state(self, connected, *, legacy_connected=False):
+            calls.append(("ancs-bearer", connected, legacy_connected))
 
         def start(self):
             calls.append("ancs-start")
@@ -160,7 +166,7 @@ def test_full_daemon_starts_ancs_client(monkeypatch):
     assert "ancs-client" in calls
     assert ("previously-authorized", False) in calls
     assert ("app-filter", app_filter) in calls
-    assert ("ancs-bearer", False) in calls
+    assert ("ancs-bearer", None if legacy else False, legacy) in calls
     assert "ancs-start" in calls
     assert value.ancs is not None
 
@@ -181,7 +187,7 @@ def test_full_daemon_preserves_known_ancs_reconnect_protection(monkeypatch):
             calls.append(("previously-authorized", kwargs["previously_authorized"]))
 
         @staticmethod
-        def observe_bearer_state(_connected):
+        def observe_bearer_state(_connected, *, legacy_connected=False):
             return None
 
         @staticmethod

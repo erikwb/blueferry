@@ -69,6 +69,8 @@ AUTHORIZATION_RETRY_SECONDS = 5
 MANAGER_RETRY_SECONDS = 2
 BEARER_SETTLE_SECONDS = 2
 TRANSPORT_RESET_SECONDS = 15
+LEGACY_RETRY_CAP_SECONDS = 60
+LEGACY_HEALTH_SECONDS = 60
 
 _BLUEZ_BUS_NAME = "org.bluez"
 _DBUS_BUS_NAME = "org.freedesktop.DBus"
@@ -171,9 +173,12 @@ class AncsClient:
         # evidence that the rebuilt GATT transport is stale.
         self._was_authorized = previously_authorized
         self._bearer_connected: bool | None = None
+        self._legacy_connected = False
+        self._legacy_retry_delay = SUBSCRIBE_RETRY_SECONDS
         self._bearer_ready = False
         self._transport_blocked = False
         self._owned_notify_paths: set[str] = set()
+        self._subscription_generation = 0
 
         # In-flight per-notification attribute requests + app-name cache
         self._app_name_cache: OrderedDict[str, str] = OrderedDict()
@@ -201,6 +206,7 @@ class AncsClient:
         self._authorization_retry_id: int | None = None
         self._bearer_settle_id: int | None = None
         self._transport_reset_id: int | None = None
+        self._legacy_health_id: int | None = None
         self._started = False
 
     # ---- lifecycle ------------------------------------------------------
@@ -230,7 +236,7 @@ class AncsClient:
             except Exception:
                 log.debug("could not remove partial BlueZ owner watch", exc_info=True)
             raise
-        if self._bearer_connected is True:
+        if self._transport_available:
             self._schedule_bearer_settle()
 
     def _bind_manager_and_rescan(self) -> None:
@@ -334,6 +340,8 @@ class AncsClient:
             self._cancel_subscribe_retry()
             self._clear_characteristic_subscription(stop_notify=False)
             self._bearer_connected = None
+            self._legacy_connected = False
+            self._legacy_retry_delay = SUBSCRIBE_RETRY_SECONDS
             self._bearer_ready = False
             self._transport_blocked = False
             self._owned_notify_paths.clear()
@@ -398,33 +406,54 @@ class AncsClient:
         return self._authorized
 
     @property
+    def _transport_available(self) -> bool:
+        return self._bearer_connected is True or self._legacy_connected
+
+    @property
     def connected(self) -> bool:
         # StartNotify only proves that BlueZ subscribed to the GATT
         # characteristics. iOS notification access is usable only after an
         # authorized Control Point round trip succeeds.
         return (
-            self._bearer_connected is True
+            self._transport_available
             and self._bearer_ready
             and not self._transport_blocked
             and self.subscribed
             and self.authorized
         )
 
-    def observe_bearer_state(self, connected: bool | None) -> None:
+    def observe_bearer_state(
+        self, connected: bool | None, *, legacy_connected: bool = False,
+    ) -> None:
         """Invalidate stale GATT state and rebuild it after an LE reconnect.
 
         BlueZ retains ANCS characteristic objects, and sometimes their
         ``Notifying`` property, across a physical LE disconnect. ObjectManager
         removal alone therefore cannot define the subscription lifecycle.
+
+        ``legacy_connected`` means Device1 is connected and the LE bearer API
+        is absent. It permits GATT probes; only an ANCS response proves LE up.
         """
-        if connected is None:
+        legacy_changed = self._legacy_connected != legacy_connected
+        self._legacy_connected = legacy_connected
+        if legacy_changed:
+            self._cancel_subscribe_retry()
+            self._cancel_bearer_settle()
+            self._cancel_transport_reset()
+            self._clear_characteristic_subscription(stop_notify=False)
+            self._bearer_ready = False
+            self._transport_blocked = False
+            self._legacy_retry_delay = SUBSCRIBE_RETRY_SECONDS
+            if self.on_status is not None:
+                self.on_status()
+        if connected is None and not legacy_connected:
             self._bearer_connected = None
             self._bearer_ready = False
             self._cancel_bearer_settle()
             return
         previous = self._bearer_connected
         self._bearer_connected = connected
-        if not connected:
+        if not self._transport_available:
             self._bearer_ready = False
             self._cancel_bearer_settle()
             self._cancel_transport_reset()
@@ -449,7 +478,7 @@ class AncsClient:
                 self.on_status()
             return
 
-        if previous is True:
+        if previous is True and not legacy_changed:
             return
         if previous is False:
             log.info("iPhone LE bearer reconnected; rebuilding ANCS subscription")
@@ -459,7 +488,7 @@ class AncsClient:
             self._schedule_bearer_settle()
 
     def _schedule_bearer_settle(self) -> None:
-        if self._bearer_settle_id is not None or self._bearer_connected is not True:
+        if self._bearer_settle_id is not None or not self._transport_available:
             return
         self._bearer_settle_id = self._schedule(
             BEARER_SETTLE_SECONDS,
@@ -468,7 +497,7 @@ class AncsClient:
 
     def _finish_bearer_settle(self) -> bool:
         self._bearer_settle_id = None
-        if not self._started or self._bearer_connected is not True:
+        if not self._started or not self._transport_available:
             return False
         self._bearer_ready = True
         self._try_subscribe()
@@ -484,14 +513,18 @@ class AncsClient:
         self._bearer_settle_id = None
 
     def _mark_transport_failed(self) -> None:
-        """Latch a stale GATT transport until LE genuinely cycles."""
+        """Reset a monitored bearer, or back off GATT probes on legacy BlueZ."""
         was_connected = self.connected
         self._transport_blocked = True
         self._bearer_ready = False
         self._cancel_bearer_settle()
         self._cancel_subscribe_retry()
         self._clear_characteristic_subscription(stop_notify=False)
-        if (
+        if self._legacy_connected:
+            # No targeted reset exists here. Keep CCC ownership intact and
+            # allow BlueZ to finish or restore its registrations on inbound LE.
+            self._schedule_subscribe_retry()
+        elif (
             self._started
             and self._bearer_connected is True
             and self._on_transport_failure is not None
@@ -571,6 +604,13 @@ class AncsClient:
         elif uuid == CONTROL_POINT_CHAR:
             self._cp_path = path_s
             log.info("ANCS Control Point found:       %s", path_s)
+        if self._legacy_connected and self._transport_blocked:
+            # Removal cancels the old retry. Once all characteristics return,
+            # resume bounded GATT probes without requiring an LE state change
+            # that legacy BlueZ cannot report. Native recovery still waits for
+            # its monitored bearer to cycle.
+            self._schedule_subscribe_retry()
+            return
         self._try_subscribe()
 
     def _on_iface_removed(self, path, ifaces):
@@ -590,7 +630,9 @@ class AncsClient:
 
     def _clear_characteristic_subscription(self, *, stop_notify: bool = True) -> None:
         """Remove receivers and notification ownership before rediscovery."""
+        self._subscription_generation += 1
         self._cancel_authorization_retry()
+        self._cancel_legacy_health()
         for match in self._characteristic_signal_matches:
             try:
                 match.remove()
@@ -633,21 +675,26 @@ class AncsClient:
     def _try_subscribe(self) -> None:
         if self._notify_started:
             return
-        if self._transport_blocked:
+        if self._transport_blocked or self._subscribe_retry_id is not None:
             return
         # BlueZ keeps bonded ANCS objects after ATT drops. StartNotify/CP on
         # those objects returns Not connected / No ATT transport and never
         # reaches iOS, so the notification-access prompt does not appear.
-        if self._bearer_connected is not True or not self._bearer_ready:
+        if not self._transport_available or not self._bearer_ready:
             return
         if not (self._ns_path and self._ds_path and self._cp_path):
             return
         generation = self._bluez_owner_generation
+        subscription_generation = self._subscription_generation
         ns_path = self._ns_path
         ds_path = self._ds_path
 
         def current_attempt() -> bool:
-            return self._started and generation == self._bluez_owner_generation
+            return (
+                self._started
+                and generation == self._bluez_owner_generation
+                and subscription_generation == self._subscription_generation
+            )
 
         def remove_attempt_matches(matches) -> None:
             for match in matches:
@@ -688,14 +735,14 @@ class AncsClient:
             )
             if self._should_start_notify(ns_path):
                 ns.StartNotify(timeout=DBUS_CALL_TIMEOUT_SECONDS)
-                if current_attempt():
+                if generation == self._bluez_owner_generation and ns_path == self._ns_path:
                     self._owned_notify_paths.add(ns_path)
             if not current_attempt():
                 remove_attempt_matches(matches)
                 return
             if self._should_start_notify(ds_path):
                 ds.StartNotify(timeout=DBUS_CALL_TIMEOUT_SECONDS)
-                if current_attempt():
+                if generation == self._bluez_owner_generation and ds_path == self._ds_path:
                     self._owned_notify_paths.add(ds_path)
         except dbus.exceptions.DBusException as e:
             if not current_attempt():
@@ -763,14 +810,18 @@ class AncsClient:
             or not (self._ns_path and self._ds_path and self._cp_path)
         ):
             return
-        self._subscribe_retry_id = self._schedule(
-            SUBSCRIBE_RETRY_SECONDS,
-            self._retry_subscribe,
-        )
+        delay = SUBSCRIBE_RETRY_SECONDS
+        if self._legacy_connected:
+            delay = self._legacy_retry_delay
+            self._legacy_retry_delay = min(delay * 2, LEGACY_RETRY_CAP_SECONDS)
+        self._subscribe_retry_id = self._schedule(delay, self._retry_subscribe)
 
     def _retry_subscribe(self) -> bool:
         self._subscribe_retry_id = None
         if self._started:
+            if self._legacy_connected:
+                self._transport_blocked = False
+                self._bearer_ready = True
             self._try_subscribe()
         return False
 
@@ -783,8 +834,8 @@ class AncsClient:
             log.debug("could not remove ANCS subscription retry", exc_info=True)
         self._subscribe_retry_id = None
 
-    def _queue_authorization_probe(self) -> None:
-        if not self._notify_started or self._authorized:
+    def _queue_authorization_probe(self, *, health_check: bool = False) -> None:
+        if not self._notify_started or (self._authorized and not health_check):
             return
         request = _PendingRequest(
             key="authorization",
@@ -831,6 +882,8 @@ class AncsClient:
         self._authorization_retry_id = None
 
     def _mark_authorized(self) -> None:
+        self._legacy_retry_delay = SUBSCRIBE_RETRY_SECONDS
+        self._schedule_legacy_health()
         if self._authorized:
             return
         self._authorized = True
@@ -840,11 +893,36 @@ class AncsClient:
         if self.on_status is not None:
             self.on_status()
 
+    def _schedule_legacy_health(self) -> None:
+        # Device1 can stay connected through Classic after LE disappears. A
+        # content-free round trip prevents retaining an obsolete ANCS success.
+        if self._started and self._legacy_connected and self._legacy_health_id is None:
+            self._legacy_health_id = self._schedule(
+                LEGACY_HEALTH_SECONDS, self._check_legacy_health,
+            )
+
+    def _check_legacy_health(self) -> bool:
+        self._legacy_health_id = None
+        if self._started and self._legacy_connected and self._authorized:
+            self._queue_authorization_probe(health_check=True)
+            if self._authorized:
+                self._schedule_legacy_health()
+        return False
+
+    def _cancel_legacy_health(self) -> None:
+        if self._legacy_health_id is not None:
+            self._cancel(self._legacy_health_id)
+            self._legacy_health_id = None
+
     # ---- Notification Source: new/modified/removed events --------------
 
     def _on_ns_changed(self, iface, changed, _invalidated):
         if iface != "org.bluez.GattCharacteristic1":
             return
+        if self._legacy_connected and changed.get("Notifying") is not None:
+            if not changed["Notifying"]:
+                self._mark_transport_failed()
+                return
         value = changed.get("Value")
         if value is None:
             return
@@ -936,7 +1014,9 @@ class AncsClient:
             name = error.get_dbus_name() or type(error).__name__
             detail = error.get_dbus_message() or str(error)
             log.warning("ANCS CP WriteValue failed: %s: %s", name, detail)
-            if _connection_was_lost(error):
+            if _connection_was_lost(error) or (
+                self._legacy_connected and request.authorization_probe
+            ):
                 self._mark_transport_failed()
                 return
             self._abandon_request(request)
@@ -957,10 +1037,12 @@ class AncsClient:
             request.assembler.command if request else "none",
         )
         self._request_timeout_id = None
-        if request is not None and request.authorization_probe and self._was_authorized:
+        if (
+            request is not None and request.authorization_probe
+            and (self._was_authorized or self._legacy_connected)
+        ):
             log.warning(
-                "previously authorized ANCS transport stopped responding; "
-                "resetting the LE bearer"
+                "ANCS authorization probe stopped responding; recovering the transport"
             )
             # A completed Control Point write followed by silence can mean
             # BlueZ retained dead CCC registrations despite Notifying=true.
@@ -1016,6 +1098,10 @@ class AncsClient:
     def _on_ds_changed(self, iface, changed, _invalidated):
         if iface != "org.bluez.GattCharacteristic1":
             return
+        if self._legacy_connected and changed.get("Notifying") is not None:
+            if not changed["Notifying"]:
+                self._mark_transport_failed()
+                return
         value = changed.get("Value")
         if value is None:
             return

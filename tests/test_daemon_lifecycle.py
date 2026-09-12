@@ -186,13 +186,15 @@ def test_successful_empty_phonebook_verifies_contact_permission():
     assert verified == [daemon_mod.CONTACTS]
 
 
-def test_status_exposes_split_ancs_and_last_le_error(monkeypatch):
+@pytest.mark.parametrize("ancs_connected", [False, True])
+def test_status_exposes_split_ancs_and_last_le_error(monkeypatch, ancs_connected):
     instance = _bare_daemon()
     instance.contacts = SimpleNamespace(count=lambda: 0)
     instance.ancs = SimpleNamespace(
-        connected=False, subscribed=True, authorized=False,
+        connected=ancs_connected, subscribed=True, authorized=ancs_connected,
     )
     instance.bearers = SimpleNamespace(
+        le_connected=False,
         snapshot=lambda: {
             "bredr": True,
             "le": False,
@@ -201,16 +203,17 @@ def test_status_exposes_split_ancs_and_last_le_error(monkeypatch):
         }
     )
     instance.setup_verification = SimpleNamespace(verified=())
+    instance._mark_setup_task = lambda _task: False
     monkeypatch.setattr(daemon_mod, "history_count", lambda **_kwargs: 0)
 
     status = instance._status()
 
-    assert status["ancs"] is False
+    assert status["ancs"] is ancs_connected
     assert status["ancs_subscribed"] is True
-    assert status["ancs_authorized"] is False
+    assert status["ancs_authorized"] is ancs_connected
     assert status["contacts_only_notifications"] is False
     assert status["bredr"] is True
-    assert status["le"] is False
+    assert status["le"] is ancs_connected
     assert status["last_le_error"] == "org.bluez.Error.Failed"
     assert status["last_le_error_message"] == "le-connection-abort-by-local"
     assert status["_build_id"] == "0.6.0-6"

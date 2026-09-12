@@ -470,7 +470,7 @@ class IPhonePage(Gtk.Box):
             )
 
     def _apply_bluetooth_support_status(self, compatibility) -> None:
-        active = compatibility.bearer_api_active
+        active = compatibility.experimental
         compatibility_mode = self._compatibility_switch.get_active()
         if compatibility_mode:
             self._bluez_row.set_subtitle(

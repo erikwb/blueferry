@@ -167,7 +167,7 @@ def run_wizard(
     if (
         not effective_compatibility_mode
         and compatibility.notifications_supported
-        and not compatibility.bearer_api_active
+        and not compatibility.experimental
     ):
         if not typer.confirm(
             "Activate Bluetooth support? This briefly disconnects Bluetooth devices.",

@@ -275,7 +275,7 @@ QtObject {
         notificationsSupported = data.notifications_supported === true
         ancsLimitedController = data.ancs_limited_controller === true
         controllerVendor = String(data.controller_vendor || "")
-        bluezActive = data.bearer_api_active === true
+        bluezActive = (data.experimental ?? data.bearer_api_active) === true
         adapterName = String(data.adapter || adapterName)
         adapters = Array.isArray(data.adapters) ? data.adapters : []
         compatibilityLoaded = true

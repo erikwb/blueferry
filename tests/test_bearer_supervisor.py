@@ -1826,3 +1826,105 @@ def test_stable_le_clears_classic_backoff_once() -> None:
     now = quiet_until
     scheduled[0][1]()
     assert attempts == [("bredr", 0.0), ("bredr", retry_at), ("bredr", quiet_until)]
+
+
+def test_legacy_device_connection_is_not_reported_as_le(monkeypatch):
+    import dbus
+
+    state = {"connected": True, "native": False, "read_error": False}
+    observed = []
+    connections = []
+    disconnects = []
+
+    class Properties:
+        def Get(self, interface, _name, **_kwargs):
+            if state["read_error"]:
+                raise dbus.exceptions.DBusException(
+                    "Timeout", name="org.freedesktop.DBus.Error.NoReply",
+                )
+            if interface.startswith("org.bluez.Bearer.") and not state["native"]:
+                raise dbus.exceptions.DBusException(
+                    "No such interface", name="org.freedesktop.DBus.Error.InvalidArgs",
+                )
+            return state["connected"]
+
+    class Bus:
+        def get_object(self, _name, _path):
+            return Properties()
+
+    monkeypatch.setattr(bearer_supervisor, "get_system_bus", Bus)
+    monkeypatch.setattr(dbus, "Interface", lambda value, _iface: value)
+    supervisor = BearerSupervisor(
+        "/device", connect=lambda kind, *_args: connections.append(kind),
+        disconnect=lambda kind, *_args: disconnects.append(kind),
+        on_le_state=lambda value: observed.append((value, supervisor.legacy_connected)),
+        schedule=lambda *_args: 1, cancel=lambda _timer: None,
+    )
+    supervisor.start()
+    assert supervisor.bredr_connected is True
+    assert supervisor.le_state is None
+    assert supervisor.le_connected is False
+    assert supervisor.legacy_connected is True
+    assert observed == [(None, True)]
+    supervisor.recover_le_transport()
+    assert supervisor._le_reset_pending is False
+    assert connections == disconnects == []
+
+    state["read_error"] = True
+    supervisor.poke()
+    assert supervisor.legacy_connected is False
+    assert observed[-1] == (None, False)
+    state["read_error"] = False
+    supervisor.poke()
+    assert observed[-1] == (None, True)
+    state["connected"] = False
+    supervisor.poke()
+    assert observed[-1] == (False, False)
+    assert connections == ["bredr"]
+
+    # Device discovery can add the native interface without a daemon restart.
+    state.update(connected=True, native=True)
+    supervisor.poke()
+    assert supervisor.le_state is True
+    assert supervisor.legacy_connected is False
+    supervisor.reset_after_bluez_restart()
+    assert supervisor.le_state is True
+    assert supervisor.legacy_connected is False
+    assert observed[-1] == (True, False)
+
+
+def test_transient_le_probe_failure_is_not_cached_as_missing_api(monkeypatch):
+    import dbus
+
+    calls = []
+
+    class Properties:
+        def Get(self, interface, _name, **_kwargs):
+            calls.append(interface)
+            if len(calls) == 1:
+                raise dbus.exceptions.DBusException(
+                    "Timeout", name="org.freedesktop.DBus.Error.NoReply",
+                )
+            return True
+
+    class Bus:
+        def get_object(self, _name, _path):
+            return Properties()
+
+    monkeypatch.setattr(bearer_supervisor, "get_system_bus", Bus)
+    monkeypatch.setattr(dbus, "Interface", lambda value, _iface: value)
+    supervisor = BearerSupervisor("/device")
+    assert supervisor._read("le") is None
+    assert supervisor.legacy_connected is False
+    assert supervisor._read("le") is True
+    assert calls == ["org.bluez.Bearer.LE1"] * 2
+
+
+def test_invalid_arguments_do_not_alone_imply_missing_bearer_api():
+    import dbus
+
+    assert bearer_supervisor.bearer_connected_unavailable(
+        dbus.exceptions.DBusException(
+            "Invalid arguments", name="org.freedesktop.DBus.Error.InvalidArgs",
+        )
+    ) is False

@@ -9,6 +9,7 @@ from typing import Any, Protocol
 
 from blueferry.i18n import _
 from blueferry.models import BackendStatus
+from blueferry.pairing_policy import experimental_support_active
 from blueferry.setup_verification import remaining_iphone_setup_tasks
 
 ANCS_REPAIR_HINT = _(
@@ -157,7 +158,10 @@ def derive_stage(
         return OnboardingStage.CHECKING
     if compatibility.get("pairing_ready") is False:
         return OnboardingStage.INCOMPATIBLE
-    if compatibility.get("notifications_supported") and not compatibility.get("bearer_api_active"):
+    if (
+        compatibility.get("notifications_supported")
+        and not experimental_support_active(compatibility)
+    ):
         return OnboardingStage.ACTIVATE_BLUETOOTH
     if not configured:
         return OnboardingStage.SELECT_DEVICE

@@ -5,8 +5,8 @@ the Linux side:
 
 1. Adapter Class-of-Device set to A/V Hands-Free (Major=4 Minor=8).
 2. A connectable, discoverable BLE peripheral advert is active with
-   SolicitUUIDs containing the ANCS UUID.  The small manufacturer/service
-   payloads keep the advertisement visible to iOS during first pairing.
+   SolicitUUIDs containing the ANCS UUID, with a small manufacturer payload
+   retained from the working first-pairing flow.
 3. Adapter is powered.
 
 This module owns those three concerns. Class-of-Device changes run through a
@@ -146,11 +146,10 @@ def set_cod(
 class _AncsAdvert(dbus.service.Object):
     """LEAdvertisement1 object shaped like a real ANCS accessory.
 
-    SolicitUUIDs is the meaningful protocol field.  The otherwise inert
-    manufacturer/service payloads mirror the working ancs4linux pairing flow:
+    SolicitUUIDs is the meaningful protocol field. The otherwise inert
+    manufacturer payload is retained from the working ancs4linux pairing flow:
     some iOS/controller combinations ignored the solicitation-only advert
-    during first pairing.  0xffff and 0x9999 are explicitly test/private IDs;
-    they do not impersonate a hardware vendor or service.
+    during first pairing. The payload fits in a legacy advertising packet.
     """
 
     PATH = config.BLE_ADVERT_DBUS_PATH
@@ -179,12 +178,10 @@ class _AncsAdvert(dbus.service.Object):
                     signature="y", variant_level=1,
                 ),
             }, signature="qv"),
-            "ServiceData": dbus.Dictionary({
-                "00009999-0000-1000-8000-00805f9b34fb": dbus.Array(
-                    [dbus.Byte(v) for v in (0x9E, 0x85, 0x39, 0x96)],
-                    signature="y", variant_level=1,
-                ),
-            }, signature="sv"),
+            # Legacy advertising has 31 bytes: solicitation uses 18, the
+            # manufacturer field 8, and flags 3. Dummy ServiceData and the
+            # optional tx-power include would overflow that budget. LocalName
+            # goes in the separate scan response on this advertising type.
             # Scoped to this advertisement rather than making the whole
             # adapter permanently discoverable.  Three minutes is enough for
             # a deliberate first-pair operation; ANCS solicitation remains
@@ -192,7 +189,6 @@ class _AncsAdvert(dbus.service.Object):
             "Discoverable": dbus.Boolean(True),
             "DiscoverableTimeout": dbus.UInt16(180),
             "LocalName": dbus.String(config.BLE_ADVERT_LOCAL_NAME),
-            "Includes": dbus.Array(["tx-power"], signature="s"),
         }
 
     @dbus.service.method("org.freedesktop.DBus.Properties",

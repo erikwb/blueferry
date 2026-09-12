@@ -31,7 +31,11 @@ so the bundle cannot replace or conflict with `python3-textual`.
 The backend intentionally leaves the distribution's `bluetooth.service`
 unchanged: installing, upgrading, or removing the DEB never enables `-E` or
 restarts Bluetooth. MAP messages and PBAP contacts work with the package's
-BlueZ 5.72 minimum. ANCS notifications are available only when the machine
-already has BlueZ 5.86 or newer and its running `bluetoothd` exposes the
-experimental bearer API through `-E` or `--experimental`; otherwise BlueFerry
-automatically stays in MAP/PBAP-only mode.
+BlueZ 5.72 minimum. ANCS notifications also require the running `bluetoothd`
+to enable experimental support through `-E` or `--experimental`. BlueZ 5.86
+and newer provide per-bearer connection monitoring and recovery. On older
+BlueZ, BlueFerry waits for the iPhone's solicited LE connection and verifies
+ANCS through a content-free GATT request/response. It retries failed GATT
+requests without disconnecting Classic or cancelling pending notification
+registrations. Without experimental support, BlueFerry automatically stays
+in MAP/PBAP-only mode.

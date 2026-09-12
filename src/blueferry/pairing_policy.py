@@ -8,6 +8,11 @@ from enum import Enum
 from typing import Any
 
 
+def experimental_support_active(compatibility: Mapping[str, Any]) -> bool:
+    """Read bluetoothd's -E state, accepting replies from older backends."""
+    return bool(compatibility.get("experimental", compatibility.get("bearer_api_active", False)))
+
+
 class PairingMode(str, Enum):
     """End-to-end behavior selected for one iPhone bond."""
 

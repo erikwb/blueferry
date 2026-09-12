@@ -1635,3 +1635,34 @@ Item {
     log = result.stdout + result.stderr
     assert result.returncode == 0 and "BLUEFERRY_GROUP_REPLY_OK" in log, log
     assert "WARN scene:" not in log and "ReferenceError" not in log and "TypeError" not in log, log
+
+
+@pytest.mark.parametrize("fields,active", [
+    ({"experimental": True, "bearer_api_active": False}, True),
+    ({"experimental": True, "bearer_api_active": True}, True),
+    ({"experimental": False, "bearer_api_active": True}, False),
+    ({"bearer_api_active": True}, True),
+    ({"bearer_api_active": False}, False),
+    ({}, False),
+])
+def test_quickshell_activation_uses_experimental_state(qml_engine, quickshell_setup, fields, active):
+    import json
+
+    compatibility = {"notifications_supported": True, "adapter": "hci0", **fields}
+    for _ in range(2):
+        _evaluate(qml_engine, '''
+            setup.loadCompatibility("hci0");
+            reply("compatibility", ''' + json.dumps(compatibility) + ''');
+        ''')
+        assert quickshell_setup.property("bluezActive") is active
+
+    component = _component(qml_engine, "data/quickshell/OnboardingState.qml")
+    presenter = component.createWithInitialProperties({
+        "notificationsSupported": quickshell_setup.property("notificationsSupported"),
+        "bluezActive": quickshell_setup.property("bluezActive"),
+        "configured": False,
+        "backendStatus": {},
+    })
+    assert presenter is not None
+    assert presenter.property("stage") == ("select-device" if active else "activate-bluetooth")
+    presenter.deleteLater()
