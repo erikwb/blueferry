@@ -265,6 +265,7 @@ def test_cli_wizard_supplies_its_own_pairing_agent_ui(
         issue=issue,
         notifications_supported=notifications_supported,
         bearer_api_active=True,
+        experimental=True,
         adapters=(),
     )
 
@@ -358,6 +359,7 @@ def test_cli_wizard_preserves_report_for_unexpected_pairing_failure(
                 issue="",
                 notifications_supported=True,
                 bearer_api_active=True,
+                experimental=True,
                 adapters=(),
             )
 
@@ -409,6 +411,7 @@ def test_cli_wizard_points_at_pairing_issue_when_ancs_stays_down(
         issue="",
         notifications_supported=True,
         bearer_api_active=True,
+        experimental=True,
         adapters=(),
     )
 

@@ -109,7 +109,7 @@ def test_notification_capable_packages_reload_and_restart_running_bluetooth() ->
     assert "if [ $1 -eq 0 ]" in rpm_spec
 
 
-def test_deb_is_map_pbap_only_and_does_not_manage_bluetooth_service() -> None:
+def test_deb_does_not_manage_bluetooth_service() -> None:
     control = (ROOT / "packaging/deb/control").read_text()
     rules = (ROOT / "packaging/deb/rules").read_text()
     install = (ROOT / "packaging/deb/blueferry-backend.install").read_text()
@@ -124,7 +124,6 @@ def test_deb_is_map_pbap_only_and_does_not_manage_bluetooth_service() -> None:
     assert not (ROOT / "packaging/deb/blueferry-backend.postrm").exists()
     assert "MAP messages and PBAP contacts" in readme
     assert "never enables `-E` or" in readme
-    assert "already has BlueZ 5.86 or newer" in readme
 
 
 def test_deb_and_rpm_install_secret_service_client_bindings() -> None:

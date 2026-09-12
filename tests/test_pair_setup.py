@@ -2896,3 +2896,40 @@ def test_pairing_without_bearer_api_continues_with_map_and_pbap(monkeypatch):
     assert result.ancs == "disabled"
     assert result.ancs_enabled is False
     assert result.ancs_ready is False
+
+
+@pytest.mark.parametrize("version", ["5.72", "5.85", "5.86", "5.87"])
+@pytest.mark.parametrize("active,packaged", [(False, False), (False, True), (True, False)])
+def test_ancs_support_does_not_require_native_bearer_controls(monkeypatch, version, active, packaged):
+    from blueferry.onboarding import OnboardingStage, derive_stage
+    from blueferry.setup_client import BluetoothCompatibility
+
+    class Manager:
+        def GetManagedObjects(self):
+            return {"/org/bluez/hci0": {"org.bluez.Adapter1": {}}}
+
+    def run(command, **_kwargs):
+        stdout = (
+            f"bluetoothctl: {version}\n" if command[0] == "bluetoothctl" else
+            "supported settings: powered ssp br/edr le advertising\n"
+            "current settings: powered ssp br/edr le advertising\n"
+        )
+        return type("Result", (), {"returncode": 0, "stdout": stdout, "stderr": ""})()
+
+    monkeypatch.setattr(pair_setup, "_object_manager", Manager)
+    monkeypatch.setattr(pair_setup, "run_command", run)
+    monkeypatch.setattr(pair_setup, "bluez_support_status", lambda: {
+        "active": active, "packaged_drop_in": packaged,
+    })
+    status = pair_setup.bluetooth_compatibility("hci0")
+    assert status["notifications_supported"] is (active or packaged)
+    assert status["bearer_api_supported"] is (version in {"5.86", "5.87"} and (active or packaged))
+    assert status["bearer_api_active"] is (version in {"5.86", "5.87"} and active)
+    compatibility = BluetoothCompatibility.from_dict(status)
+    assert compatibility.experimental is active
+    assert derive_stage(
+        setup_loaded=True, configured=False,
+        compatibility=compatibility.to_dict(), status={},
+    ) is (OnboardingStage.ACTIVATE_BLUETOOTH if packaged and not active else OnboardingStage.SELECT_DEVICE)
+    policy = pair_setup.resolve_pairing_policy(status)
+    assert policy.ancs_enabled is (active or packaged)

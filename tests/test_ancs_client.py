@@ -677,7 +677,9 @@ def test_previously_authorized_subscription_waits_for_a_settled_bearer(
     ]
 
 
-def test_partial_start_notify_failure_reuses_live_subscription(monkeypatch) -> None:
+@pytest.mark.parametrize("error_name", ["org.bluez.Error.Failed", "org.bluez.Error.InProgress"])
+@pytest.mark.parametrize("legacy", [False, True])
+def test_partial_start_notify_failure_reuses_live_subscription(monkeypatch, error_name, legacy) -> None:
     scheduled = []
 
     class _Characteristic:
@@ -697,7 +699,7 @@ def test_partial_start_notify_failure_reuses_live_subscription(monkeypatch) -> N
                 self.fail_once = False
                 raise client_module.dbus.exceptions.DBusException(
                     "not ready",
-                    name="org.bluez.Error.Failed",
+                    name=error_name,
                 )
             self.notifying = True
 
@@ -727,7 +729,8 @@ def test_partial_start_notify_failure_reuses_live_subscription(monkeypatch) -> N
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
     )
     client._started = True
-    client._bearer_connected = True
+    client._bearer_connected = None if legacy else True
+    client._legacy_connected = legacy
     client._bearer_ready = True
     client._ns_path = "/device/ns"
     client._ds_path = "/device/ds"
@@ -736,14 +739,14 @@ def test_partial_start_notify_failure_reuses_live_subscription(monkeypatch) -> N
     client._try_subscribe()
 
     assert ns.start_calls == 1
-    assert ns.stop_calls == 0
+    assert ns.stop_calls == ds.stop_calls == 0
     assert ds.start_calls == 1
     assert client.subscribed is False
 
     scheduled[0][1]()
 
     assert ns.start_calls == 1
-    assert ns.stop_calls == 0
+    assert ns.stop_calls == ds.stop_calls == 0
     assert ds.start_calls == 2
     assert client.subscribed is True
 
@@ -1367,3 +1370,206 @@ def test_control_point_failure_keeps_ancs_unready_and_retries(
     _complete_authorization_probe(client)
     assert client.authorized is True
     assert client.connected is True
+
+
+@pytest.fixture
+def legacy_ancs(monkeypatch):
+    """A cached ANCS service with controllable ATT and deterministic timers."""
+    from types import SimpleNamespace
+
+    pending = {}
+    serial = 0
+
+    def schedule(delay, callback):
+        nonlocal serial
+        serial += 1
+        pending[serial] = (delay, callback)
+        return serial
+
+    def cancel(timer):
+        pending.pop(timer, None)
+
+    def fire(timer):
+        delay, callback = pending.pop(timer)
+        assert callback() is False
+        return delay
+
+    radio = SimpleNamespace(att=True, writes=0, stops=0, resets=0)
+
+    class Characteristic:
+        notifying = False
+
+        def Get(self, _iface, _name, **_kwargs):
+            return self.notifying
+
+        def StartNotify(self, **_kwargs):
+            # BlueZ may accept StartNotify for a disconnected cached object.
+            self.notifying = True
+
+        def StopNotify(self, **_kwargs):
+            radio.stops += 1
+
+        def WriteValue(self, *_args, **_kwargs):
+            radio.writes += 1
+            if not radio.att:
+                raise client_module.dbus.exceptions.DBusException(
+                    "No ATT transport", name="org.bluez.Error.Failed",
+                )
+
+    uuids = [NOTIFICATION_SOURCE_CHAR, DATA_SOURCE_CHAR, CONTROL_POINT_CHAR]
+    paths = [f"/device/service/{name}" for name in ("ns", "ds", "cp")]
+    manager = _ObjectManager({
+        path: {"org.bluez.GattCharacteristic1": {"UUID": uuid}}
+        for path, uuid in zip(paths, uuids, strict=True)
+    })
+    objects = {path: Characteristic() for path in paths}
+    bus = _CharacteristicBus({"/": manager, **objects})
+    monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
+    monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
+    monkeypatch.setattr(client_module.GLib, "timeout_add_seconds", schedule)
+    monkeypatch.setattr(client_module.GLib, "source_remove", cancel)
+
+    def reset():
+        radio.resets += 1
+
+    client = AncsClient(
+        "/device", lambda _event: None, on_transport_failure=reset,
+        schedule=schedule, cancel=cancel,
+    )
+    return SimpleNamespace(
+        client=client, radio=radio, pending=pending, fire=fire, objects=objects,
+    )
+
+
+def _start_legacy_ancs(harness):
+    client = harness.client
+    client.observe_bearer_state(None, legacy_connected=True)
+    client.start()
+    harness.fire(client._bearer_settle_id)
+
+
+def test_legacy_cached_characteristics_do_not_prove_le_connected(legacy_ancs):
+    h = legacy_ancs
+    h.radio.att = False
+    _start_legacy_ancs(h)
+
+    assert h.radio.writes == 1
+    assert h.client.connected is False
+    assert h.client.authorized is False
+    assert h.client._subscribe_retry_id is not None
+    assert h.radio.resets == h.radio.stops == 0
+
+
+def test_unknown_bearer_does_not_enable_legacy_fallback(legacy_ancs):
+    h = legacy_ancs
+    h.client.observe_bearer_state(None)
+    h.client.start()
+    assert h.radio.writes == 0
+    assert h.pending == {}
+    assert h.client.connected is False
+
+
+@pytest.mark.parametrize("connected_before_start", [False, True])
+def test_legacy_startup_waits_for_authorization(legacy_ancs, connected_before_start):
+    h = legacy_ancs
+    if not connected_before_start:
+        h.client.start()
+    h.client.observe_bearer_state(None, legacy_connected=True)
+    h.client.start()
+    h.fire(h.client._bearer_settle_id)
+
+    assert h.client.subscribed is True
+    assert h.client.connected is False
+    _complete_authorization_probe(h.client)
+    assert h.client.connected is True
+    assert h.client._bearer_connected is None
+    assert h.client._legacy_health_id is not None
+
+
+def test_legacy_retry_backs_off_and_recovers_without_a_bearer_transition(legacy_ancs):
+    h = legacy_ancs
+    h.radio.att = False
+    _start_legacy_ancs(h)
+    delays = [h.fire(h.client._subscribe_retry_id) for _ in range(8)]
+    assert delays == [2, 4, 8, 16, 32, 60, 60, 60]
+    assert h.radio.resets == h.radio.stops == 0
+    h.radio.att = True
+    h.fire(h.client._subscribe_retry_id)
+    _complete_authorization_probe(h.client)
+    assert h.client.connected is True
+    assert h.client._legacy_retry_delay == client_module.SUBSCRIBE_RETRY_SECONDS
+
+
+def test_legacy_health_expires_when_only_classic_remains_connected(legacy_ancs):
+    h = legacy_ancs
+    _start_legacy_ancs(h)
+    _complete_authorization_probe(h.client)
+    h.radio.att = False
+    h.fire(h.client._legacy_health_id)
+
+    assert h.client.connected is False
+    assert h.client._subscribe_retry_id is not None
+    assert h.client._legacy_health_id is None
+    assert h.radio.resets == h.radio.stops == 0
+
+
+def test_legacy_silent_health_probe_retries_without_stop_notify(legacy_ancs):
+    h = legacy_ancs
+    _start_legacy_ancs(h)
+    _complete_authorization_probe(h.client)
+    h.fire(h.client._legacy_health_id)
+    h.fire(h.client._request_timeout_id)
+
+    assert h.client.connected is False
+    assert h.client._subscribe_retry_id is not None
+    assert h.radio.resets == h.radio.stops == 0
+    h.fire(h.client._subscribe_retry_id)
+    _complete_authorization_probe(h.client)
+    assert h.client.connected is True
+
+
+@pytest.mark.parametrize("handler", ["_on_ns_changed", "_on_ds_changed"])
+def test_legacy_dropped_notification_registration_invalidates_health(legacy_ancs, handler):
+    h = legacy_ancs
+    _start_legacy_ancs(h)
+    _complete_authorization_probe(h.client)
+    getattr(h.client, handler)("org.bluez.GattCharacteristic1", {"Notifying": False}, [])
+    assert h.client.connected is False
+    assert h.client._subscribe_retry_id is not None
+    assert h.radio.stops == 0
+
+
+@pytest.mark.parametrize("event", ["disconnect", "read-error", "bluez-exit", "stop"])
+def test_legacy_lifecycle_cancels_health_and_retries(legacy_ancs, event):
+    h = legacy_ancs
+    _start_legacy_ancs(h)
+    _complete_authorization_probe(h.client)
+    if event == "disconnect":
+        h.client.observe_bearer_state(False)
+    elif event == "read-error":
+        h.client.observe_bearer_state(None)
+    elif event == "bluez-exit":
+        h.client._on_bluez_owner_changed("org.bluez", ":1.1", "")
+    else:
+        h.client.stop()
+    assert h.client.connected is False
+    assert h.pending == {}
+    assert h.radio.stops == 0
+
+
+def test_legacy_disconnect_during_start_notify_cannot_publish_stale_subscription(legacy_ancs):
+    h = legacy_ancs
+    ns_path = "/device/service/ns"
+    ns = h.objects[ns_path]
+
+    def start_notify(**_kwargs):
+        ns.notifying = True
+        h.client._on_ns_changed("org.bluez.GattCharacteristic1", {"Notifying": False}, [])
+
+    ns.StartNotify = start_notify
+    _start_legacy_ancs(h)
+    assert h.client.subscribed is False
+    assert h.client.connected is False
+    assert h.radio.writes == h.radio.stops == 0
+    assert ns_path in h.client._owned_notify_paths
+    assert h.client._subscribe_retry_id is not None

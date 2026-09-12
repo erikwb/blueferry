@@ -173,7 +173,9 @@ class Daemon:
         if connected is not True:
             self.solicitation.set_needed(True)
         if self.ancs is not None:
-            self.ancs.observe_bearer_state(connected)
+            self.ancs.observe_bearer_state(
+                connected, legacy_connected=self.bearers.legacy_connected,
+            )
 
     def _on_ancs_status(self) -> None:
         # StartNotify is not the success boundary.  Keep solicitation on air
@@ -349,7 +351,10 @@ class Daemon:
                 ),
             )
             try:
-                candidate.observe_bearer_state(self.bearers.le_state)
+                candidate.observe_bearer_state(
+                    self.bearers.le_state,
+                    legacy_connected=self.bearers.legacy_connected,
+                )
                 candidate.start()
             except Exception:
                 candidate.stop()
@@ -491,6 +496,9 @@ class Daemon:
             "ancs_subscribed": bool(ancs and ancs.subscribed),
             "ancs_authorized": bool(ancs and ancs.authorized),
             **self.bearers.snapshot(),
+            # Legacy BlueZ has no LE Connected property. ANCS itself can
+            # prove LE usable without inventing a native bearer transition.
+            "le": self.bearers.le_connected or bool(ancs and ancs.connected),
             "contacts": self.contacts.count(),
             "events": history_count(storage=self.storage),
             "verified_iphone_setup": list(self.setup_verification.verified),

@@ -442,8 +442,9 @@ def _profile_fields(
     supported: set[str],
     current: set[str],
     command_error: str,
-    bearer_active: bool,
+    experimental_active: bool,
     bearer_supported: bool,
+    notifications_configurable: bool,
 ) -> dict[str, object]:
     classic = bool({"br/edr", "bredr"} & supported)
     low_energy = "le" in supported
@@ -452,7 +453,8 @@ def _profile_fields(
     # MAP/PBAP carry data over Classic, but iOS exposes their permissions only
     # after LE solicitation. Compatibility mode still needs that advertisement.
     messages_supported = available and classic and secure_pairing and low_energy and advertising
-    notifications_supported = messages_supported and bearer_supported
+    # Legacy BlueZ can expose ANCS GATT without the newer bearer controls.
+    notifications_supported = messages_supported and notifications_configurable
     missing = [
         label for present, label in (
             (classic, "Bluetooth Classic (BR/EDR)"),
@@ -470,7 +472,7 @@ def _profile_fields(
             "with LE advertising to enable iPhone messages and contacts. "
             "Use a compatible adapter."
         )
-    elif notifications_supported and not bearer_active:
+    elif notifications_supported and not experimental_active:
         issue = "Bluetooth support must be activated before pairing"
     elif not notifications_supported:
         issue = "Messages and contacts are supported; per-app notifications are not"
@@ -488,7 +490,7 @@ def _profile_fields(
         "messages_supported": messages_supported,
         "notifications_supported": notifications_supported,
         "bearer_api_supported": bearer_supported,
-        "bearer_api_active": bearer_active,
+        "bearer_api_active": experimental_active and bearer_supported,
         # A failed probe is inconclusive (#28); only confirmed missing
         # capabilities prevent pairing (#143).
         "pairing_ready": not available or messages_supported,
@@ -533,12 +535,12 @@ def compatibility(
         support = support_status()
     except PairingError:
         support = {}
-    bearer_active = bool(support.get("active"))
-    bearer_configurable = bearer_active or bool(support.get("packaged_drop_in"))
-    stack = bluez_stack(run_command=run_command, experimental=bearer_active)
+    experimental_active = bool(support.get("active"))
+    experimental_configurable = experimental_active or bool(support.get("packaged_drop_in"))
+    stack = bluez_stack(run_command=run_command, experimental=experimental_active)
     bearer_supported = (
         bluez_bearer_api_supported(stack.get("bluez_version"))
-        and bearer_configurable
+        and experimental_configurable
     )
     options: list[dict[str, object]] = []
     inspected: dict[str, tuple] = {}
@@ -561,8 +563,9 @@ def compatibility(
             supported,
             current,
             error,
-            bearer_active and bearer_supported,
+            experimental_active,
             bearer_supported,
+            experimental_configurable,
         )
         options.append(
             {

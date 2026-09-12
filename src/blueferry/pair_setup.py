@@ -22,7 +22,11 @@ from blueferry.bluetooth_devices import PairedDevice
 from blueferry.bus import get_session_bus, get_system_bus
 from blueferry.commands import run_command
 from blueferry.errors import CommandError, PairingError
-from blueferry.pairing_policy import PairingPolicy, resolve_pairing_policy
+from blueferry.pairing_policy import (
+    PairingPolicy,
+    experimental_support_active,
+    resolve_pairing_policy,
+)
 from blueferry.pairing_types import PairingAttempt, PairingOutcome, PairingTransports
 from blueferry.private_files import atomic_write_private_text, read_private_text
 from blueferry.setup_verification import clear_setup_verification
@@ -949,6 +953,7 @@ _COMPATIBILITY_REPORT_KEYS = (
     "notifications_supported",
     "bearer_api_supported",
     "bearer_api_active",
+    "experimental",
     "supported_settings",
     "current_settings",
     "manufacturer_id",
@@ -1072,7 +1077,7 @@ def _controller_snapshot(adapter: str, compatibility: dict) -> dict:
             controller.update(
                 capabilities.bluez_stack(
                     run_command=run_command,
-                    experimental=compatibility.get("bearer_api_active"),
+                    experimental=experimental_support_active(compatibility),
                     timeout=2,
                 )
             )
@@ -1201,7 +1206,7 @@ def _prepare_pairing(
         "enabled" if policy.solicitation_enabled else "unavailable",
         policy.reason,
     )
-    if policy.ancs_enabled and not compatibility["bearer_api_active"]:
+    if policy.ancs_enabled and not experimental_support_active(compatibility):
         raise PairingError(
             "Activate Bluetooth support before pairing or re-pairing the iPhone"
         )
