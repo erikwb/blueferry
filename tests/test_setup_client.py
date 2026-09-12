@@ -407,7 +407,7 @@ def test_isolated_pairing_reports_exit_status_and_logs_bounded_stderr(
     with pytest.raises(
         setup_client.PairingError,
         match=r"Pairing helper exited without a result \(status 7\)",
-    ):
+    ) as raised:
         setup_client.SetupClient().complete_isolated(
             device.mac,
             confirmation=lambda _passkey: True,
@@ -415,3 +415,41 @@ def test_isolated_pairing_reports_exit_status_and_logs_bounded_stderr(
 
     assert "discarded-prefix" not in caplog.text
     assert diagnostic[-100:] in caplog.text
+    assert diagnostic[-100:] in str(raised.value)
+
+
+def test_isolated_pairing_unexpected_exit_status_includes_diagnostic_stderr(
+    monkeypatch,
+    caplog,
+):
+    device = _device()
+
+    class Process:
+        stdin = io.StringIO()
+        stdout = iter(['{"ok":true,"device":' + json.dumps(device.to_dict()) + "}\n"])
+        stderr = io.StringIO("traceback or error detail")
+
+        @staticmethod
+        def wait(*_args, **_kwargs):
+            return 3
+
+        @staticmethod
+        def poll():
+            return 3
+
+    monkeypatch.setattr(
+        setup_client.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: Process(),
+    )
+
+    with pytest.raises(
+        setup_client.PairingError,
+        match=r"Pairing helper exited unexpectedly \(status 3\): traceback or error detail",
+    ) as raised:
+        setup_client.SetupClient().complete_isolated(
+            device.mac,
+            confirmation=lambda _passkey: True,
+        )
+
+    assert "traceback or error detail" in str(raised.value)

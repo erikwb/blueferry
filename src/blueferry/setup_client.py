@@ -66,6 +66,15 @@ def _read_helper_stderr(stream: IO[str], diagnostics: _BoundedDiagnostics) -> No
         return
 
 
+def _drain_diagnostics(
+    diagnostics: _BoundedDiagnostics,
+    diagnostics_thread: threading.Thread | None,
+) -> str:
+    if diagnostics_thread is not None:
+        diagnostics_thread.join(timeout=0.25)
+    return diagnostics.text()
+
+
 def _helper_lines(
     stream: IO[str],
     *,
@@ -401,7 +410,11 @@ class SetupClient:
                         timeout=PAIRING_HELPER_IDLE_TIMEOUT_SECONDS,
                     )
                     if status != 0:
-                        raise PairingError(f"Pairing helper exited unexpectedly (status {status})")
+                        detail = _drain_diagnostics(diagnostics, diagnostics_thread)
+                        message = f"Pairing helper exited unexpectedly (status {status})"
+                        if detail:
+                            message = f"{message}: {detail}"
+                        raise PairingError(message)
                     return PairingOutcome.from_dict(event)
                 elif event.get("ok") is False:
                     path = str(event.get("report_path") or "").strip()
@@ -413,7 +426,11 @@ class SetupClient:
                 process,
                 timeout=PAIRING_HELPER_IDLE_TIMEOUT_SECONDS,
             )
-            raise PairingError(f"Pairing helper exited without a result (status {status})")
+            detail = _drain_diagnostics(diagnostics, diagnostics_thread)
+            message = f"Pairing helper exited without a result (status {status})"
+            if detail:
+                message = f"{message}: {detail}"
+            raise PairingError(message)
         except BaseException:
             failed = True
             raise
