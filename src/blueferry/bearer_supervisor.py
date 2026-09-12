@@ -94,10 +94,14 @@ def bearer_connected_unavailable(error: Exception) -> bool:
         "org.freedesktop.DBus.Error.UnknownInterface",
         "org.freedesktop.DBus.Error.UnknownMethod",
         "org.freedesktop.DBus.Error.UnknownProperty",
+        "org.freedesktop.DBus.Error.InvalidArgs",
     }:
         return True
     detail = (error.get_dbus_message() or "").casefold()
-    return "no such property" in detail and "connected" in detail
+    return (
+        ("no such property" in detail and "connected" in detail)
+        or "no such interface" in detail
+    )
 
 
 ReadConnected = Callable[[str], bool | None]
@@ -855,7 +859,15 @@ class BearerSupervisor:
                         timeout=5.0,
                     )
                 )
-        return bool(properties.Get(_INTERFACES[kind], "Connected", timeout=5.0))
+        try:
+            return bool(properties.Get(_INTERFACES[kind], "Connected", timeout=5.0))
+        except dbus.exceptions.DBusException as error:
+            if not bearer_connected_unavailable(error):
+                raise
+            return bool(
+                properties.Get("org.bluez.Device1", "Connected", timeout=5.0)
+                and properties.Get("org.bluez.Device1", "ServicesResolved", timeout=5.0)
+            )
 
     def _connect_bluez(
         self,
@@ -868,6 +880,7 @@ class BearerSupervisor:
         # the targeted Classic method avoids rewriting PreferredBearer and
         # disturbing ANCS. If that method is marker-only, profile reconnects
         # still establish their own OBEX transports.
+        device = get_system_bus().get_object("org.bluez", self.device_path)
         if kind == "bredr":
             interface = (
                 _INTERFACES["bredr"]
@@ -879,13 +892,25 @@ class BearerSupervisor:
             )
         else:
             interface = _INTERFACES[kind]
-        bearer = dbus.Interface(
-            get_system_bus().get_object("org.bluez", self.device_path),
-            interface,
-        )
+
+        def _handle_error(error: Exception) -> None:
+            if kind == "le" and bearer_connected_unavailable(error):
+                try:
+                    fallback = dbus.Interface(device, "org.bluez.Device1")
+                    fallback.Connect(
+                        reply_handler=on_success,
+                        error_handler=on_error,
+                        timeout=float(CONNECT_TIMEOUT_SECONDS),
+                    )
+                    return
+                except Exception as fallback_error:
+                    error = fallback_error
+            on_error(error)
+
+        bearer = dbus.Interface(device, interface)
         bearer.Connect(
             reply_handler=on_success,
-            error_handler=on_error,
+            error_handler=_handle_error,
             timeout=float(CONNECT_TIMEOUT_SECONDS),
         )
 
