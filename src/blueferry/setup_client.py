@@ -403,22 +403,9 @@ class SetupClient:
             text=True,
             bufsize=1,
         )
-        if process.stdin is None or process.stdout is None:
-            _stop_helper(process)
-            for stream in (process.stdin, process.stdout, process.stderr):
-                _close_helper_pipe(stream)
-            raise PairingError("Could not open the pairing helper pipes")
         diagnostics = _BoundedDiagnostics(PAIRING_HELPER_DIAGNOSTIC_CHARS)
         diagnostics_thread: threading.Thread | None = None
-        if process.stderr is not None:
-            diagnostics_thread = threading.Thread(
-                target=_read_helper_stderr,
-                args=(process.stderr, diagnostics),
-                name="blueferry-pairing-diagnostics",
-                daemon=True,
-            )
-            diagnostics_thread.start()
-        output = _HelperOutput(process.stdout)
+        output: _HelperOutput | None = None
         confirmation_deadline: float | None = None
 
         def remaining_timeout() -> float:
@@ -428,6 +415,17 @@ class SetupClient:
 
         failed = False
         try:
+            if process.stdin is None or process.stdout is None:
+                raise PairingError("Could not open the pairing helper pipes")
+            if process.stderr is not None:
+                diagnostics_thread = threading.Thread(
+                    target=_read_helper_stderr,
+                    args=(process.stderr, diagnostics),
+                    name="blueferry-pairing-diagnostics",
+                    daemon=True,
+                )
+                diagnostics_thread.start()
+            output = _HelperOutput(process.stdout)
             while True:
                 timeout = remaining_timeout()
                 if confirmation_deadline is not None and timeout <= 0:
@@ -504,9 +502,14 @@ class SetupClient:
                 _stop_helper(process)
             finally:
                 _close_helper_pipe(process.stdin)
-                output.close()
-                if diagnostics_thread is not None:
+                if output is not None:
+                    output.close()
+                else:
+                    _close_helper_pipe(process.stdout)
+                if diagnostics_thread is not None and diagnostics_thread.ident is not None:
                     diagnostics_thread.join(timeout=0.25)
+                else:
+                    _close_helper_pipe(process.stderr)
                 if failed and (details := diagnostics.text()):
                     log.warning("Pairing helper diagnostics (bounded tail): %s", details)
 

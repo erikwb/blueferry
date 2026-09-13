@@ -125,6 +125,24 @@ def test_confirmation_callback_failure_closes_pipes_and_stops_helper(helper):
     _assert_closed(processes[0])
 
 
+@pytest.mark.parametrize("reader", ["diagnostics", "output"])
+def test_reader_start_failure_closes_pipes_and_stops_helper(helper, monkeypatch, reader):
+    processes = helper("import time\ntime.sleep(2)\n")
+    start = threading.Thread.start
+
+    def fail_start(thread):
+        if thread.name == f"blueferry-pairing-{reader}":
+            raise RuntimeError("cannot start new thread")
+        return start(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", fail_start)
+    with pytest.raises(RuntimeError, match="cannot start new thread"):
+        setup_client.SetupClient().complete_isolated(
+            _MAC, confirmation=lambda _passkey: True,
+        )
+    _assert_closed(processes[0])
+
+
 @pytest.mark.parametrize("noisy", [False, True], ids=["idle", "continuous-output"])
 def test_closed_confirmation_pipe_has_bounded_recovery(helper, monkeypatch, noisy):
     monkeypatch.setattr(setup_client, "PAIRING_HELPER_STOP_TIMEOUT_SECONDS", 0.1)
