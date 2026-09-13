@@ -171,7 +171,7 @@ def _exercise_error_toasts():
     # Real tracebacks contain markup-like names such as <module>, and errors
     # can contain literal angle brackets and ampersands as well.
     process = SimpleNamespace(
-        stdin=io.StringIO(), stdout=iter(()), stderr=io.StringIO(diagnostic),
+        stdin=io.StringIO(), stdout=io.StringIO(), stderr=io.StringIO(diagnostic),
         wait=lambda **_kwargs: 1, poll=lambda: 1,
     )
     with patch.object(setup_client.subprocess, "Popen", return_value=process):

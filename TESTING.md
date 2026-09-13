@@ -76,6 +76,10 @@ generations before operations, including after daemon replacement; lifecycle
 tests verify that packaged upgrade recovery runs before compatibility checks.
 Client-model and setup-facade tests use plain mappings and monkeypatched
 operations; they must not probe BlueZ merely to exercise serialization.
+Pairing-helper IPC tests substitute inert Python subprocesses with real pipes.
+They cover exit during confirmation, failed writes and flushes, retained error
+reports, bounded recovery, and stream cleanup with a full output queue. These
+subprocesses never invoke the actual pairing helper or access Bluetooth.
 Shared conversation tests exercise partial failures and recovery in either order,
 and reject stale recipient approvals even when the backend remembers the new
 roster. Presentation tests feed the same derived thread metadata through Qt and
