@@ -158,15 +158,19 @@ def test_isolated_pairing_answers_helper_confirmation(monkeypatch):
         def flush(self):
             pass
 
+        def close(self):
+            self.written = self.getvalue()
+            super().close()
+
     class Process:
         def __init__(self):
             self.stdin = Input()
-            self.stdout = iter([
+            self.stdout = io.StringIO("".join([
                 '{"event":"confirmation","passkey":"123456"}\n',
                 '{"event":"transports","map":true,"pbap":true,"ancs":false}\n',
                 '{"ok":true,"device":' + __import__("json").dumps(device.to_dict())
                 + ',"ancs_ready":true}\n',
-            ])
+            ]))
             self.stderr = io.StringIO()
 
         @staticmethod
@@ -191,7 +195,7 @@ def test_isolated_pairing_answers_helper_confirmation(monkeypatch):
         replace_saved_mac="02:00:00:00:00:02",
     )
 
-    assert process.stdin.getvalue() == "yes\n"
+    assert process.stdin.written == "yes\n"
     assert result.ancs_ready is True
     assert commands[0][-4:] == [
         "--adapter", "hci1", "--replace-saved-mac", "02:00:00:00:00:02",
@@ -203,10 +207,10 @@ def test_pairing_helper_timeout_resets_after_user_confirmation(monkeypatch):
 
     class Process:
         stdin = io.StringIO()
-        stdout = iter([
+        stdout = io.StringIO("".join([
             '{"event":"confirmation","passkey":"123456"}\n',
             '{"ok":true,"device":' + json.dumps(device.to_dict()) + "}\n",
-        ])
+        ]))
         stderr = io.StringIO()
 
         @staticmethod
@@ -246,13 +250,13 @@ def test_isolated_pairing_preserves_report_path_on_failure(monkeypatch):
     class Process:
         def __init__(self):
             self.stdin = io.StringIO()
-            self.stdout = iter([
+            self.stdout = io.StringIO("".join([
                 json.dumps({
                     "ok": False,
                     "error": "Bluetooth confirmation did not complete",
                     "report_path": "/tmp/quirks-test.json",
                 }) + "\n"
-            ])
+            ]))
             self.stderr = io.StringIO()
 
         @staticmethod
@@ -287,9 +291,9 @@ def test_isolated_pairing_adds_pairing_mode_helper_flags(monkeypatch):
 
     class Process:
         stdin = io.StringIO()
-        stdout = iter([
+        stdout = io.StringIO("".join([
             '{"ok":true,"device":' + json.dumps(device.to_dict()) + "}\n",
-        ])
+        ]))
         stderr = io.StringIO()
 
         @staticmethod
@@ -328,6 +332,9 @@ def test_isolated_pairing_times_out_and_kills_a_stuck_helper(monkeypatch, caplog
         def __next__(self):
             released.wait()
             raise StopIteration
+
+        def close(self):
+            pass
 
     class Process:
         def __init__(self):
@@ -387,7 +394,7 @@ def test_isolated_pairing_reports_exit_status_and_logs_bounded_stderr(
 
     class Process:
         stdin = io.StringIO()
-        stdout = iter(())
+        stdout = io.StringIO()
         stderr = io.StringIO("discarded-prefix" + diagnostic)
 
         @staticmethod
@@ -426,7 +433,7 @@ def test_isolated_pairing_unexpected_exit_status_includes_diagnostic_stderr(
 
     class Process:
         stdin = io.StringIO()
-        stdout = iter(['{"ok":true,"device":' + json.dumps(device.to_dict()) + "}\n"])
+        stdout = io.StringIO('{"ok":true,"device":' + json.dumps(device.to_dict()) + "}\n")
         stderr = io.StringIO("traceback or error detail")
 
         @staticmethod

@@ -9,9 +9,10 @@ import queue
 import subprocess  # nosec B404
 import sys
 import threading
-from collections.abc import Iterator, Mapping
+import time
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import IO, Any
+from typing import IO, Any, cast
 
 from blueferry import pair_setup, quirks_report
 from blueferry.bluetooth_devices import PairedDevice
@@ -26,6 +27,16 @@ PAIRING_HELPER_DIAGNOSTIC_CHARS = 4096
 log = logging.getLogger(__name__)
 
 _PAIRING_HELPER_EOF = object()
+
+
+def _close_helper_pipe(stream: IO[str] | None) -> None:
+    if stream is not None:
+        try:
+            stream.close()
+        except OSError:
+            # Closing stdin flushes it again, including after a failed write.
+            # The pipe still closes; do not replace the original pairing error.
+            log.debug("Could not flush a pairing helper pipe on close", exc_info=True)
 
 
 class _BoundedDiagnostics:
@@ -48,14 +59,26 @@ class _BoundedDiagnostics:
 def _read_helper_stdout(
     stream: IO[str],
     pending: queue.Queue[object],
+    stopped: threading.Event,
 ) -> None:
+    def publish(item: object) -> bool:
+        while not stopped.is_set():
+            try:
+                pending.put(item, timeout=0.1)
+                return True
+            except queue.Full:
+                continue
+        return False
+
     try:
         for line in stream:
-            pending.put(line)
+            if not publish(line):
+                return
     except Exception as exc:  # pragma: no cover - OS pipe errors are timing-specific
-        pending.put(exc)
+        publish(exc)
     finally:
-        pending.put(_PAIRING_HELPER_EOF)
+        _close_helper_pipe(stream)
+        publish(_PAIRING_HELPER_EOF)
 
 
 def _read_helper_stderr(stream: IO[str], diagnostics: _BoundedDiagnostics) -> None:
@@ -64,6 +87,8 @@ def _read_helper_stderr(stream: IO[str], diagnostics: _BoundedDiagnostics) -> No
             diagnostics.append(chunk)
     except Exception:  # pragma: no cover - diagnostics must never mask pairing
         return
+    finally:
+        _close_helper_pipe(stream)
 
 
 def _drain_diagnostics(
@@ -75,29 +100,36 @@ def _drain_diagnostics(
     return diagnostics.text()
 
 
-def _helper_lines(
-    stream: IO[str],
-    *,
-    idle_timeout: float,
-) -> Iterator[str]:
-    pending: queue.Queue[object] = queue.Queue(maxsize=64)
-    threading.Thread(
-        target=_read_helper_stdout,
-        args=(stream, pending),
-        name="blueferry-pairing-output",
-        daemon=True,
-    ).start()
-    while True:
+class _HelperOutput:
+    """Bounded stdout reader that can stop even when its queue is full."""
+
+    def __init__(self, stream: IO[str]) -> None:
+        self._pending: queue.Queue[object] = queue.Queue(maxsize=64)
+        self._stopped = threading.Event()
+        self._thread = threading.Thread(
+            target=_read_helper_stdout,
+            args=(stream, self._pending, self._stopped),
+            name="blueferry-pairing-output",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def read(self, timeout: float) -> str | None:
         try:
-            item = pending.get(timeout=idle_timeout)
+            item = self._pending.get(timeout=timeout)
         except queue.Empty as exc:
             raise PairingError("Pairing helper timed out") from exc
         if item is _PAIRING_HELPER_EOF:
-            return
+            return None
         if isinstance(item, Exception):
             raise PairingError("Could not read from the pairing helper") from item
-        if isinstance(item, str):
-            yield item
+        return cast(str, item)
+
+    def close(self) -> None:
+        self._stopped.set()
+        # The reader owns stdout and closes it itself. Closing a TextIOWrapper
+        # on this thread could block on the reader's lock during an OS read.
+        self._thread.join(timeout=0.25)
 
 
 def _wait_for_helper(
@@ -373,6 +405,8 @@ class SetupClient:
         )
         if process.stdin is None or process.stdout is None:
             _stop_helper(process)
+            for stream in (process.stdin, process.stdout, process.stderr):
+                _close_helper_pipe(stream)
             raise PairingError("Could not open the pairing helper pipes")
         diagnostics = _BoundedDiagnostics(PAIRING_HELPER_DIAGNOSTIC_CHARS)
         diagnostics_thread: threading.Thread | None = None
@@ -384,12 +418,30 @@ class SetupClient:
                 daemon=True,
             )
             diagnostics_thread.start()
+        output = _HelperOutput(process.stdout)
+        confirmation_deadline: float | None = None
+
+        def remaining_timeout() -> float:
+            if confirmation_deadline is None:
+                return PAIRING_HELPER_IDLE_TIMEOUT_SECONDS
+            return max(0.0, confirmation_deadline - time.monotonic())
+
         failed = False
         try:
-            for line in _helper_lines(
-                process.stdout,
-                idle_timeout=PAIRING_HELPER_IDLE_TIMEOUT_SECONDS,
-            ):
+            while True:
+                timeout = remaining_timeout()
+                if confirmation_deadline is not None and timeout <= 0:
+                    raise PairingError("Pairing helper stopped accepting confirmation")
+                try:
+                    line = output.read(timeout)
+                except PairingError as error:
+                    if confirmation_deadline is not None:
+                        raise PairingError(
+                            "Pairing helper stopped accepting confirmation"
+                        ) from error
+                    raise
+                if line is None:
+                    break
                 try:
                     event = json.loads(line)
                 except json.JSONDecodeError:
@@ -397,17 +449,28 @@ class SetupClient:
                 if not isinstance(event, dict):
                     continue
                 if event.get("event") == "confirmation":
+                    if confirmation_deadline is not None:
+                        continue
                     raw = str(event.get("passkey", ""))
                     accepted = confirmation(int(raw) if raw else None)
-                    process.stdin.write("yes\n" if accepted else "no\n")
-                    process.stdin.flush()
+                    try:
+                        process.stdin.write("yes\n" if accepted else "no\n")
+                        process.stdin.flush()
+                    except BrokenPipeError:
+                        _close_helper_pipe(process.stdin)
+                        # The helper may have failed while the dialog was open.
+                        # Drain its queued result to preserve the error/report,
+                        # but give a broken protocol only a bounded grace period.
+                        confirmation_deadline = (
+                            time.monotonic() + PAIRING_HELPER_STOP_TIMEOUT_SECONDS
+                        )
                 elif event.get("event") == "display":
                     if display is not None:
                         display(int(str(event["passkey"])))
                 elif event.get("ok") is True:
                     status = _wait_for_helper(
                         process,
-                        timeout=PAIRING_HELPER_IDLE_TIMEOUT_SECONDS,
+                        timeout=remaining_timeout(),
                     )
                     if status != 0:
                         detail = _drain_diagnostics(diagnostics, diagnostics_thread)
@@ -415,6 +478,8 @@ class SetupClient:
                         if detail:
                             message = f"{message}: {detail}"
                         raise PairingError(message)
+                    if confirmation_deadline is not None:
+                        raise PairingError("Could not deliver pairing confirmation to the helper")
                     return PairingOutcome.from_dict(event)
                 elif event.get("ok") is False:
                     path = str(event.get("report_path") or "").strip()
@@ -424,7 +489,7 @@ class SetupClient:
                     )
             status = _wait_for_helper(
                 process,
-                timeout=PAIRING_HELPER_IDLE_TIMEOUT_SECONDS,
+                timeout=remaining_timeout(),
             )
             detail = _drain_diagnostics(diagnostics, diagnostics_thread)
             message = f"Pairing helper exited without a result (status {status})"
@@ -435,11 +500,15 @@ class SetupClient:
             failed = True
             raise
         finally:
-            _stop_helper(process)
-            if diagnostics_thread is not None:
-                diagnostics_thread.join(timeout=0.25)
-            if failed and (details := diagnostics.text()):
-                log.warning("Pairing helper diagnostics (bounded tail): %s", details)
+            try:
+                _stop_helper(process)
+            finally:
+                _close_helper_pipe(process.stdin)
+                output.close()
+                if diagnostics_thread is not None:
+                    diagnostics_thread.join(timeout=0.25)
+                if failed and (details := diagnostics.text()):
+                    log.warning("Pairing helper diagnostics (bounded tail): %s", details)
 
     def forget(self, mac: str, *, adapter: str | None = None) -> None:
         pair_setup.forget_device(mac, adapter=adapter)
