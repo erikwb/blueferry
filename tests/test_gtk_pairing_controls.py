@@ -11,9 +11,10 @@ from pathlib import Path
 import pytest
 
 
-@pytest.mark.private_dbus
 @pytest.mark.parametrize("scenario", [
-    "controls", "error-toasts", "activation", "upgrade-activation", "message-links",
+    "controls", "error-toasts", "message-links",
+    pytest.param("activation", marks=pytest.mark.private_dbus),
+    pytest.param("upgrade-activation", marks=pytest.mark.private_dbus),
 ])
 def test_gtk_pairing_ui(tmp_path, scenario):
     executable = shutil.which("gtk4-broadwayd")
@@ -404,6 +405,13 @@ def _exercise_message_links():
     # the signal before its default handler so this test cannot open a browser.
     urls = []
     body.connect("activate-link", lambda _label, url: urls.append(url) or True)
+    for rejected in (
+        "file:///tmp/blueferry-link-test", "javascript:alert(1)", "data:text/plain,hello",
+        "mailto:friend@example.com", "custom:action", "//example.com", "https:example.com",
+        "https://trusted.example@other.example/", "https://example.com/\u202etest",
+    ):
+        assert body.emit("activate-link", rejected) is True
+    assert urls == []
     start = text.index("https://")
     body.select_region(start, start)
     body.emit("activate-current-link")

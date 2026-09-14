@@ -8,9 +8,14 @@ from __future__ import annotations
 
 import re
 from html import escape
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 _WEB_URL_START = re.compile(r"(?<![\w@/])(?:https?://|www\.)", re.IGNORECASE)
+_WEB_SCHEME = re.compile(r"https?://", re.IGNORECASE | re.ASCII)
+# Unicode Bidi_Control characters; ordinary RTL letters and emoji are allowed.
+_BIDI_CONTROLS = frozenset(
+    "\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069"
+)
 _TRAILING_PUNCTUATION = ".,;:!?'\"\u2018\u2019\u201c\u201d\u2026"
 _URL_DELIMITERS = frozenset(
     '<>"\u201c\u201d\u2018\u2019\u00ab\u00bb\u2039\u203a'
@@ -23,6 +28,25 @@ _BRACKETS = {
     "\u300c": "\u300d", "\u300e": "\u300f",
 }
 _CLOSING_BRACKETS = frozenset(_BRACKETS.values())
+
+
+def is_safe_web_url(url: str) -> bool:
+    """Allow explicit web URLs without credentials or direction-control tricks."""
+    if not _WEB_SCHEME.match(url):
+        return False
+    if any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in url):
+        return False
+    if "\\" in url or _BIDI_CONTROLS.intersection(unquote(url)):
+        return False
+    try:
+        parsed = urlsplit(url)
+        if not parsed.hostname or parsed.username is not None or parsed.password is not None:
+            return False
+        # Accessing port also validates malformed port numbers.
+        _ = parsed.port
+    except ValueError:
+        return False
+    return True
 
 
 def _url_end(body: str, start: int, *, single_quoted: bool) -> int:
@@ -52,6 +76,10 @@ def linkify_message(body: str) -> str:
     The caller's original body remains unchanged for previews and storage.
     """
     body = body.replace("\r\n", "\n").replace("\r", "\n")
+    # A direction control outside the URL can also change how its label looks.
+    # Keep such messages readable, but do not make any of their text clickable.
+    if _BIDI_CONTROLS.intersection(body):
+        return escape(body)
     parts: list[str] = []
     offset = 0
     search_from = 0
@@ -65,13 +93,7 @@ def linkify_message(body: str) -> str:
         search_from = end
         label = body[match.start():end].rstrip(_TRAILING_PUNCTUATION)
         url = "https://" + label if label.lower().startswith("www.") else label
-        try:
-            parsed = urlsplit(url)
-            if not parsed.hostname or "\\" in url:
-                continue
-            # Accessing port also validates malformed port numbers.
-            _ = parsed.port
-        except ValueError:
+        if not is_safe_web_url(url):
             continue
         parts.append(escape(body[offset:match.start()]))
         parts.append(f'<a href="{escape(url, quote=True)}">{escape(label)}</a>')

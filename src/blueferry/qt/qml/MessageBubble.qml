@@ -62,7 +62,9 @@ Rectangle {
             background: null
             color: Kirigami.Theme.textColor
             Accessible.name: qsTr("Message: ") + root.message.body
-            onLinkActivated: link => Qt.openUrlExternally(link)
+            onLinkActivated: link => {
+                if (/^https?:\/\//i.test(link)) Qt.openUrlExternally(link)
+            }
             HoverHandler {
                 cursorShape: parent.hoveredLink ? Qt.PointingHandCursor : Qt.IBeamCursor
             }

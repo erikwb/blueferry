@@ -4,7 +4,7 @@ from html.parser import HTMLParser
 
 import pytest
 
-from blueferry.message_links import linkify_message
+from blueferry.message_links import is_safe_web_url, linkify_message
 from blueferry.models import ThreadMessage
 
 
@@ -86,3 +86,58 @@ def test_message_markup_normalizes_line_endings_without_changing_the_body(line_e
     markup = _Markup(payload["body_markup"])
     assert "".join(markup.text) == visible
     assert markup.links == ["https://example.com"]
+
+
+@pytest.mark.parametrize("url", [
+    "https://trusted.example@other.example/",
+    "https://user:password@example.com/",
+    "https://@example.com/",
+    "https://:password@example.com/",
+    "https://user%40trusted.example@other.example/",
+    "https://example.com/%E2%80%AEexe.txt",
+    "https://example.com/%e2%81%a6hidden",
+])
+def test_deceptive_urls_remain_plain_text(url):
+    assert not is_safe_web_url(url)
+    body = f"See {url} or https://example.org"
+    markup = _Markup(linkify_message(body))
+    assert markup.links == ["https://example.org"]
+    assert "".join(markup.text) == body
+
+
+@pytest.mark.parametrize("control", [
+    "\u061c", "\u200e", "\u200f", "\u202a", "\u202b", "\u202c", "\u202d", "\u202e",
+    "\u2066", "\u2067", "\u2068", "\u2069",
+])
+def test_direction_controls_cannot_disguise_a_clickable_url(control):
+    assert not is_safe_web_url(f"https://example.com/{control}exe.txt")
+    # Controls surrounding a link can affect its visible text too.
+    for body in (
+        f"{control}https://example.com/", f"https://example.com/{control}exe.txt",
+        f"https://example.com/ {control}other text",
+    ):
+        markup = _Markup(linkify_message(body))
+        assert markup.links == []
+        assert "".join(markup.text) == body
+
+
+@pytest.mark.parametrize("url", [
+    "file:///tmp/blueferry-link-test", "javascript:alert(1)", "data:text/plain,hello",
+    "mailto:friend@example.com", "custom:action", "//example.com", "https:example.com",
+    " https://example.com", "https://example.com/\nnext", "https:///path",
+    "https://example.com:bad", "https://[oops", "https://example.com\\@other.example",
+    "www.example.com", "http\u017f://example.com",
+])
+def test_url_activation_policy_rejects_non_web_or_malformed_urls(url):
+    assert not is_safe_web_url(url)
+
+
+@pytest.mark.parametrize("url", [
+    "http://example.com", "HTTPS://example.com:8080/a?b=1&c=2#part",
+    "https://[::1]/", "https://例え.jp/道", "https://example.com/مرحبا",
+    "https://example.com/a%20b?email=friend@example.com",
+])
+def test_url_activation_policy_accepts_ordinary_web_urls(url):
+    assert is_safe_web_url(url)
+    markup = _Markup(linkify_message(f"مرحبا 🚀 {url}"))
+    assert markup.links == [url]

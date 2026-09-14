@@ -135,7 +135,9 @@ Rectangle {
       persistentSelection: true
       clip: true
       Accessible.name: "Message body"
-      onLinkActivated: link => Qt.openUrlExternally(link)
+      onLinkActivated: link => {
+        if (/^https?:\/\//i.test(link)) Qt.openUrlExternally(link)
+      }
 
       HoverHandler {
         cursorShape: messageBody.hoveredLink ? Qt.PointingHandCursor : Qt.IBeamCursor

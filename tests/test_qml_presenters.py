@@ -13,7 +13,7 @@ os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import Property, QMetaObject, QObject, QPointF, Qt, QUrl, Slot
+from PySide6.QtCore import Q_ARG, Property, QMetaObject, QObject, QPointF, Qt, QUrl, Slot
 from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication
 from PySide6.QtQml import QQmlComponent, QQmlEngine
 from PySide6.QtQuick import QQuickWindow
@@ -447,6 +447,56 @@ def test_message_links_open_on_click_and_preserve_copy(
         window.close()
         bubble.deleteLater()
         window.deleteLater()
+        QGuiApplication.processEvents()
+
+
+@pytest.mark.parametrize("client", ["qt", "quickshell"])
+def test_message_link_activation_rechecks_the_scheme(qml_engine, client):
+    class UrlHandler(QObject):
+        def __init__(self):
+            super().__init__()
+            self.urls = []
+
+        @Slot(QUrl)
+        def open_url(self, url):
+            self.urls.append(url.toString())
+
+    theme = _BubbleTheme()
+    properties = {
+        "message": {"body": "Message text", "outgoing": False},
+        "availableWidth": 480.0, "showSender": False,
+    }
+    if client == "quickshell":
+        path = "data/quickshell/QuickshellMessageBubble.qml"
+        properties.update(availableHeight=600.0, ferryTheme=theme)
+    else:
+        path = "src/blueferry/qt/qml/MessageBubble.qml"
+    component = _component(qml_engine, path)
+    bubble = component.createWithInitialProperties(properties)
+    assert bubble is not None
+    body = bubble.findChild(QObject, "messageBody")
+    assert body is not None
+    handler = UrlHandler()
+    schemes = ("http", "https", "file", "javascript", "data", "mailto", "custom")
+    for scheme in schemes:
+        QDesktopServices.setUrlHandler(scheme, handler, "open_url")
+    try:
+        # Inject at the activation signal, bypassing the formatter to exercise
+        # the final guard. All desktop URL handlers are intercepted.
+        for rejected in (
+            "file:///tmp/blueferry-link-test", "javascript:alert(1)", "data:text/plain,hello",
+            "mailto:friend@example.com", "custom:action", "//example.com", "https:example.com",
+            " https://example.com", "relative/path",
+        ):
+            assert QMetaObject.invokeMethod(body, "linkActivated", Q_ARG(str, rejected))
+        assert handler.urls == []
+        for accepted in ("http://example.com", "HTTPS://example.com/path"):
+            assert QMetaObject.invokeMethod(body, "linkActivated", Q_ARG(str, accepted))
+        assert handler.urls == ["http://example.com", "https://example.com/path"]
+    finally:
+        for scheme in schemes:
+            QDesktopServices.unsetUrlHandler(scheme)
+        bubble.deleteLater()
         QGuiApplication.processEvents()
 
 
