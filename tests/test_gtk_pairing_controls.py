@@ -391,8 +391,8 @@ def _exercise_message_links():
 
     Gtk.init()
     page = SimpleNamespace(_msg_list=Gtk.ListBox())
-    text = '  <b>literal</b> & 🚀\nhttps://example.com/a?x=1&y=2.\n\nwww.example.org\n'
-    message = ThreadMessage.from_dict({"body": text})
+    text = '  <b>literal</b> & 🚀\n“https://example.com/a?x=1&y=2”—see above\n\nwww.example.org\n'
+    message = ThreadMessage.from_dict({"body": text.replace("\n", "\r\n")})
     ConversationsPage._append_bubble(page, message, is_group=False)
     row = page._msg_list.get_row_at_index(0)
     bubble = row.get_child().get_first_child()

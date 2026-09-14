@@ -344,7 +344,10 @@ def test_quickshell_message_body_is_selectable_and_copyable(qml_engine) -> None:
 
 @pytest.mark.parametrize("client", ["qt", "quickshell"])
 @pytest.mark.parametrize("outgoing", [False, True])
-def test_message_links_open_on_click_and_preserve_copy(qml_engine, client, outgoing):
+@pytest.mark.parametrize("line_ending", ["\n", "\r\n", "\r"])
+def test_message_links_open_on_click_and_preserve_copy(
+    qml_engine, client, outgoing, line_ending,
+):
     from blueferry.models import ThreadMessage
 
     class UrlHandler(QObject):
@@ -358,11 +361,12 @@ def test_message_links_open_on_click_and_preserve_copy(qml_engine, client, outgo
 
     theme = _BubbleTheme()
     text = (
-        '\n  <b>literal</b> 🚀\nhttps://example.com/a_(b)?x=1&y=2.\n\n'
-        'www.example.org/page\n\t end  \n'
+        '\n  <b>literal</b> 🚀\n“https://example.com/a_(b)?x=1&y=2”—see above\n\n'
+        '(www.example.org/page)—see above\n\t end  \n'
     )
+    original = text.replace("\n", line_ending)
     properties = {
-        "message": ThreadMessage.from_dict({"body": text, "outgoing": outgoing}).to_dict(),
+        "message": ThreadMessage.from_dict({"body": original, "outgoing": outgoing}).to_dict(),
         "availableWidth": 480.0, "showSender": False,
     }
     if client == "quickshell":
@@ -422,6 +426,21 @@ def test_message_links_open_on_click_and_preserve_copy(qml_engine, client, outgo
         assert _evaluate(qml_engine, "linkBody.wrapMode") != 0
         assert body.property("lineCount") >= text.count("\n")
         assert body.property("contentWidth") <= body.property("width")
+        rich_line_count = body.property("lineCount")
+        # Compare with the old plain-text renderer, including CRLF handling.
+        plain_message = dict(properties["message"])
+        del plain_message["body_markup"]
+        assert plain_message["body"] == original
+        plain_bubble = component.createWithInitialProperties({
+            **properties, "message": plain_message,
+        })
+        assert plain_bubble is not None
+        try:
+            QGuiApplication.processEvents()
+            plain_body = plain_bubble.findChild(QObject, "messageBody")
+            assert plain_body.property("lineCount") == rich_line_count
+        finally:
+            plain_bubble.deleteLater()
     finally:
         QDesktopServices.unsetUrlHandler("https")
         qml_engine.globalObject().deleteProperty("linkBody")

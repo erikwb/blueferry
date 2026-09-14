@@ -10,44 +10,60 @@ import re
 from html import escape
 from urllib.parse import urlsplit
 
-_WEB_URL = re.compile(
-    r"(?<![\w@/])(?:https?://|www\.)[^\s<>\"\x00-\x1f\x7f]+",
-    re.IGNORECASE,
-)
+_WEB_URL_START = re.compile(r"(?<![\w@/])(?:https?://|www\.)", re.IGNORECASE)
 _TRAILING_PUNCTUATION = ".,;:!?'\"\u2018\u2019\u201c\u201d\u2026"
-_CLOSING_BRACKETS = {"(": ")", "[": "]", "{": "}"}
+_URL_DELIMITERS = frozenset(
+    '<>"\u201c\u201d\u2018\u2019\u00ab\u00bb\u2039\u203a'
+    '\u3002\uff0c\u3001\uff01\uff1f\uff1b\uff1a'
+)
+_BRACKETS = {
+    "(": ")", "[": "]", "{": "}",
+    # Full-width and CJK brackets.
+    "\uff08": "\uff09", "\uff3b": "\uff3d", "\uff5b": "\uff5d",
+    "\u300c": "\u300d", "\u300e": "\u300f",
+}
+_CLOSING_BRACKETS = frozenset(_BRACKETS.values())
 
 
-def _trim_url(candidate: str) -> str:
-    # Keep balanced parentheses in URLs such as Wikipedia article names, while
-    # leaving surrounding prose punctuation outside the clickable region.
-    excess = {
-        closing: candidate.count(closing) - candidate.count(opening)
-        for opening, closing in _CLOSING_BRACKETS.items()
-    }
-    end = len(candidate)
-    while end:
-        last = candidate[end - 1]
-        if last in _TRAILING_PUNCTUATION:
-            end -= 1
-        elif excess.get(last, 0) > 0:
-            excess[last] -= 1
-            end -= 1
-        else:
-            break
-    return candidate[:end]
+def _url_end(body: str, start: int, *, single_quoted: bool) -> int:
+    """Stop at prose delimiters, keeping balanced URL brackets (including IPv6)."""
+    brackets: list[str] = []
+    for index in range(start, len(body)):
+        char = body[index]
+        if (
+            char.isspace() or ord(char) < 32 or ord(char) == 127
+            or char in _URL_DELIMITERS or (single_quoted and char == "'")
+        ):
+            return index
+        if char in _BRACKETS:
+            brackets.append(_BRACKETS[char])
+        elif char in _CLOSING_BRACKETS:
+            if not brackets or brackets[-1] != char:
+                return index
+            brackets.pop()
+    return len(body)
 
 
 def linkify_message(body: str) -> str:
     """Return GTK-compatible link markup, preserving the original visible text.
 
-    QML wraps this in a whitespace-preserving span and applies its theme's link
-    color. The original body remains available for previews, copying and storage.
+    Normalize line endings for display: Qt's rich-text parser treats CRLF as
+    two breaks. QML adds a whitespace-preserving span and its theme's link color.
+    The caller's original body remains unchanged for previews and storage.
     """
+    body = body.replace("\r\n", "\n").replace("\r", "\n")
     parts: list[str] = []
     offset = 0
-    for match in _WEB_URL.finditer(body):
-        label = _trim_url(match.group())
+    search_from = 0
+    while match := _WEB_URL_START.search(body, search_from):
+        end = _url_end(
+            body, match.end(),
+            single_quoted=match.start() > 0 and body[match.start() - 1] == "'",
+        )
+        # Resume at the delimiter, so another link immediately after it is
+        # still found. Each candidate is scanned only once.
+        search_from = end
+        label = body[match.start():end].rstrip(_TRAILING_PUNCTUATION)
         url = "https://" + label if label.lower().startswith("www.") else label
         try:
             parsed = urlsplit(url)
