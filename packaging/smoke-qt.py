@@ -32,7 +32,7 @@ def main() -> int:
         ):
             os.environ.pop(variable, None)
 
-        from PySide6.QtCore import QTimer
+        from PySide6.QtCore import QObject, QTimer, Signal
 
         from blueferry.qt import app as qt_app
 
@@ -41,12 +41,25 @@ def main() -> int:
 
         controller_type = qt_app.BridgeController
 
+        class InertActivation(QObject):
+            """Keep single-instance activation off the deliberately absent bus."""
+
+            requested = Signal(str, str)
+            primary = True
+
+            def ready(self):
+                pass
+
+            def close(self):
+                pass
+
         def inert_controller(*, parent):
             controller = controller_type(subscribe=False, autostart=False, parent=parent)
             QTimer.singleShot(250, parent.quit)
             return controller
 
         with (
+            patch.object(qt_app, "ClientActivation", InertActivation),
             patch.object(qt_app, "BridgeController", inert_controller),
             patch.object(qt_app, "_create_system_tray", return_value=None),
         ):
