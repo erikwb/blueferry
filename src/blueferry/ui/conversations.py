@@ -15,6 +15,7 @@ from blueferry.conversation_state import (
     ReplyPlan,
 )
 from blueferry.i18n import _
+from blueferry.message_links import is_safe_web_url, linkify_message
 from blueferry.models import BackendStatus, Thread, ThreadMessage
 from blueferry.recipients import participant_lines as _participant_lines
 from blueferry.ui.status_presenter import (
@@ -939,13 +940,16 @@ class ConversationsPage(Gtk.Box):
                 )
             )
         body = Gtk.Label(
-            label=message.body,
+            label=linkify_message(message.body),
+            use_markup=True,
             xalign=0,
             wrap=True,
             wrap_mode=Pango.WrapMode.WORD_CHAR,
             selectable=True,
             max_width_chars=46,
         )
+        # Returning True consumes a rejected link before GTK's URI launcher.
+        body.connect("activate-link", lambda _label, url: not is_safe_web_url(url))
         bubble.append(body)
         ts = format_ts(message.timestamp)
         if ts:

@@ -75,7 +75,7 @@ Rectangle {
   TextMetrics {
     id: bodyMetrics
     font: messageBody.font
-    text: messageBody.text
+    text: root.message.body
   }
 
   TextMetrics {
@@ -115,8 +115,13 @@ Rectangle {
       objectName: "messageBody"
       width: parent.width
       height: root.renderedBodyHeight
-      text: root.message.body
-      textFormat: TextEdit.PlainText
+      text: root.message.body_markup !== undefined
+        ? "<style>a { color: " + root.messageText + "; }</style>"
+          + "<span style=\"white-space: pre-wrap;\">"
+          + root.message.body_markup + "</span>"
+        : root.message.body
+      textFormat: root.message.body_markup !== undefined
+        ? TextEdit.RichText : TextEdit.PlainText
       color: root.messageText
       selectionColor: root.ferryTheme.accent
       selectedTextColor: root.ferryTheme.highlightedText
@@ -130,6 +135,13 @@ Rectangle {
       persistentSelection: true
       clip: true
       Accessible.name: "Message body"
+      onLinkActivated: link => {
+        if (/^https?:\/\//i.test(link)) Qt.openUrlExternally(link)
+      }
+
+      HoverHandler {
+        cursorShape: messageBody.hoveredLink ? Qt.PointingHandCursor : Qt.IBeamCursor
+      }
 
       Rectangle {
         id: overflowIndicator

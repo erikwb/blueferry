@@ -35,6 +35,7 @@ _CSS = """
   background: @accent_bg_color;
   color: @accent_fg_color;
 }
+.msg-out label link { color: @accent_fg_color; }
 """
 
 
