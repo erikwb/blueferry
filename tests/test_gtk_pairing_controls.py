@@ -12,7 +12,9 @@ import pytest
 
 
 @pytest.mark.private_dbus
-@pytest.mark.parametrize("scenario", ["controls", "error-toasts", "activation", "upgrade-activation"])
+@pytest.mark.parametrize("scenario", [
+    "controls", "error-toasts", "activation", "upgrade-activation", "message-links",
+])
 def test_gtk_pairing_ui(tmp_path, scenario):
     executable = shutil.which("gtk4-broadwayd")
     if executable is None:
@@ -381,6 +383,37 @@ def _exercise_gtk_upgrade_activation():
         assert not error, error
 
 
+def _exercise_message_links():
+    from types import SimpleNamespace
+
+    from blueferry.models import ThreadMessage
+    from blueferry.ui.conversations import ConversationsPage, Gtk
+
+    Gtk.init()
+    page = SimpleNamespace(_msg_list=Gtk.ListBox())
+    text = '  <b>literal</b> & 🚀\nhttps://example.com/a?x=1&y=2.\n\nwww.example.org\n'
+    message = ThreadMessage.from_dict({"body": text})
+    ConversationsPage._append_bubble(page, message, is_group=False)
+    row = page._msg_list.get_row_at_index(0)
+    bubble = row.get_child().get_first_child()
+    body = bubble.get_first_child()
+    assert isinstance(body, Gtk.Label)
+    assert body.get_text() == text
+    assert body.get_use_markup() and body.get_selectable() and body.get_wrap()
+    # GTK's native link activation uses the user's default URI handler. Stop
+    # the signal before its default handler so this test cannot open a browser.
+    urls = []
+    body.connect("activate-link", lambda _label, url: urls.append(url) or True)
+    start = text.index("https://")
+    body.select_region(start, start)
+    body.emit("activate-current-link")
+    assert urls == ["https://example.com/a?x=1&y=2"]
+    body.select_region(0, -1)
+    selected, start, end = body.get_selection_bounds()
+    assert selected
+    assert text[start:end] == text
+
+
 if __name__ == "__main__":
     if sys.argv[1] == "controls":
         _exercise_gtk_controls()
@@ -390,5 +423,7 @@ if __name__ == "__main__":
         _exercise_gtk_upgrade_activation()
     elif sys.argv[1] == "activation-backend":
         _serve_activation_backend()
+    elif sys.argv[1] == "message-links":
+        _exercise_message_links()
     else:
         _exercise_gtk_activation()

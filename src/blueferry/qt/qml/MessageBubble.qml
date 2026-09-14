@@ -47,15 +47,25 @@ Rectangle {
             color: Kirigami.Theme.textColor
         }
         Controls.TextArea {
+            objectName: "messageBody"
             Layout.maximumWidth: root.availableWidth * 0.7
-            text: root.message.body
-            textFormat: TextEdit.PlainText
+            text: root.message.body_markup !== undefined
+                ? "<style>a { color: " + Kirigami.Theme.linkColor + "; }</style>"
+                    + "<span style=\"white-space: pre-wrap;\">"
+                    + root.message.body_markup + "</span>"
+                : root.message.body
+            textFormat: root.message.body_markup !== undefined
+                ? TextEdit.RichText : TextEdit.PlainText
             readOnly: true
             selectByMouse: true
             wrapMode: Text.Wrap
             background: null
             color: Kirigami.Theme.textColor
-            Accessible.name: qsTr("Message: ") + text
+            Accessible.name: qsTr("Message: ") + root.message.body
+            onLinkActivated: link => Qt.openUrlExternally(link)
+            HoverHandler {
+                cursorShape: parent.hoveredLink ? Qt.PointingHandCursor : Qt.IBeamCursor
+            }
         }
         Controls.Label {
             text: root.message.display_timestamp || ""

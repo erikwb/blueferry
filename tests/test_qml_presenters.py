@@ -14,7 +14,7 @@ os.environ["QT_QPA_PLATFORM"] = "offscreen"
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import Property, QMetaObject, QObject, QPointF, Qt, QUrl, Slot
-from PySide6.QtGui import QColor, QGuiApplication
+from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication
 from PySide6.QtQml import QQmlComponent, QQmlEngine
 from PySide6.QtQuick import QQuickWindow
 from PySide6.QtTest import QTest
@@ -165,16 +165,20 @@ def test_qt_incompatible_adapter_explains_missing_capabilities(qml_engine):
 def test_quickshell_long_message_is_truncated_to_the_timeline_height(
     qml_engine,
 ) -> None:
+    from blueferry.message_links import linkify_message
+
     component = _component(
         qml_engine,
         "data/quickshell/QuickshellMessageBubble.qml",
     )
     theme = _BubbleTheme()
+    text = " ".join(["long message https://example.com/"] * 300)
     bubble = component.createWithInitialProperties({
         "message": {
             "outgoing": False,
             "sender": "A friend",
-            "body": " ".join(["long message"] * 300),
+            "body": text,
+            "body_markup": linkify_message(text),
             "display_timestamp": "10:42 PM",
         },
         "availableWidth": 480.0,
@@ -336,6 +340,95 @@ def test_quickshell_message_body_is_selectable_and_copyable(qml_engine) -> None:
     assert clipboard.text() == message_text
     clipboard.clear()
     bubble.deleteLater()
+
+
+@pytest.mark.parametrize("client", ["qt", "quickshell"])
+@pytest.mark.parametrize("outgoing", [False, True])
+def test_message_links_open_on_click_and_preserve_copy(qml_engine, client, outgoing):
+    from blueferry.models import ThreadMessage
+
+    class UrlHandler(QObject):
+        def __init__(self):
+            super().__init__()
+            self.urls = []
+
+        @Slot(QUrl)
+        def open_url(self, url):
+            self.urls.append(url.toString())
+
+    theme = _BubbleTheme()
+    text = (
+        '\n  <b>literal</b> 🚀\nhttps://example.com/a_(b)?x=1&y=2.\n\n'
+        'www.example.org/page\n\t end  \n'
+    )
+    properties = {
+        "message": ThreadMessage.from_dict({"body": text, "outgoing": outgoing}).to_dict(),
+        "availableWidth": 480.0, "showSender": False,
+    }
+    if client == "quickshell":
+        path = "data/quickshell/QuickshellMessageBubble.qml"
+        properties.update(availableHeight=600.0, ferryTheme=theme)
+    else:
+        path = "src/blueferry/qt/qml/MessageBubble.qml"
+    component = _component(qml_engine, path)
+    bubble = component.createWithInitialProperties(properties)
+    assert bubble is not None
+    window = QQuickWindow()
+    window.resize(480, 600)
+    bubble.setParentItem(window.contentItem())
+    if client == "qt":
+        bubble.setHeight(bubble.implicitHeight())
+    body = bubble.findChild(QObject, "messageBody")
+    assert body is not None
+    qml_engine.globalObject().setProperty("linkBody", qml_engine.newQObject(body))
+    handler = UrlHandler()
+    QDesktopServices.setUrlHandler("https", handler, "open_url")
+
+    def point_at(position):
+        # QML text positions count UTF-16 code units, including emoji.
+        position = len(text[:position].encode("utf-16-le")) // 2
+        return _evaluate(qml_engine, f'''(() => {{
+            const rect = linkBody.positionToRectangle({position});
+            return linkBody.mapToItem(null, rect.x + 1, rect.y + rect.height / 2);
+        }})()''').toPoint()
+
+    try:
+        window.show()
+        QTest.qWait(30)
+        assert not handler.urls  # Rendering alone must never open the browser.
+        for label, url in [
+            ("https://example.com/a_(b)?x=1&y=2", "https://example.com/a_(b)?x=1&y=2"),
+            ("www.example.org/page", "https://www.example.org/page"),
+        ]:
+            QTest.mouseClick(window, Qt.LeftButton, Qt.NoModifier,
+                             point_at(text.index(label) + 3))
+            QGuiApplication.processEvents()
+            assert handler.urls[-1:] == [url]
+        assert len(handler.urls) == 2
+        # Selecting part of a URL must not also launch it on mouse release.
+        start = text.index("https://") + 2
+        QTest.mousePress(window, Qt.LeftButton, Qt.NoModifier, point_at(start))
+        QTest.mouseMove(window, point_at(start + 10), delay=30)
+        QTest.mouseRelease(window, Qt.LeftButton, Qt.NoModifier, point_at(start + 10))
+        assert body.property("selectedText")
+        assert len(handler.urls) == 2
+        QMetaObject.invokeMethod(body, "selectAll")
+        clipboard = QGuiApplication.clipboard()
+        clipboard.clear()
+        QMetaObject.invokeMethod(body, "copy")
+        assert clipboard.text() == text
+        clipboard.clear()
+        assert len(handler.urls) == 2
+        assert _evaluate(qml_engine, "linkBody.wrapMode") != 0
+        assert body.property("lineCount") >= text.count("\n")
+        assert body.property("contentWidth") <= body.property("width")
+    finally:
+        QDesktopServices.unsetUrlHandler("https")
+        qml_engine.globalObject().deleteProperty("linkBody")
+        window.close()
+        bubble.deleteLater()
+        window.deleteLater()
+        QGuiApplication.processEvents()
 
 
 def test_quickshell_thread_preview_stays_inside_one_line(qml_engine) -> None:

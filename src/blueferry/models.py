@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from blueferry.connectivity import is_map_connection_refused
+from blueferry.message_links import linkify_message
 from blueferry.recipients import group_confirmation_token
 from blueferry.time_display import format_message_timestamp
 
@@ -163,7 +164,7 @@ class ThreadMessage:
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> ThreadMessage:
         known = {
-            "handle", "body", "timestamp", "display_timestamp", "outgoing",
+            "handle", "body", "body_markup", "timestamp", "display_timestamp", "outgoing",
             "sender", "read",
         }
         return cls(
@@ -181,6 +182,7 @@ class ThreadMessage:
             **self.extra,
             "handle": self.handle,
             "body": self.body,
+            "body_markup": linkify_message(self.body),
             "timestamp": self.timestamp,
             "display_timestamp": format_message_timestamp(self.timestamp),
             "outgoing": self.outgoing,
