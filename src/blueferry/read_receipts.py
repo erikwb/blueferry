@@ -75,7 +75,10 @@ class ReadReceiptQueue:
         self._arm()
 
     def _arm(self) -> None:
-        if self._pending and self._timer is None:
+        if not self._closed and self._pending and self._timer is None:
+            # Expired receipts rejected by a full worker retry once per second.
+            # Keep their original deadlines so retries never delay newer reads
+            # or shorten those messages' ANCS grace period.
             delay = max(1, math.ceil(min(self._pending.values()) - self._clock()))
             self._timer = self._schedule(delay, self._flush)
 
@@ -92,21 +95,21 @@ class ReadReceiptQueue:
             return False
         now = self._clock()
         handles = [handle for handle, deadline in self._pending.items() if deadline <= now]
-        for handle in handles:
-            del self._pending[handle]
-        self._arm()
         if not handles:
+            self._arm()
             return False
 
         def write() -> None:
-            # A queued operation can outlive a reconnect or daemon shutdown.
-            # Never reuse old message handles on a replacement MAP session.
-            if (
-                not self._closed
-                and self._sessions.map is session
-                and self._sessions.map_path == session_path
-            ):
-                set_session_messages_read(session_path, handles)
+            for handle in handles:
+                # Each blocking write can overlap a reconnect or shutdown.
+                # Finish that call, then stop before touching another message.
+                if (
+                    self._closed
+                    or self._sessions.map is not session
+                    or self._sessions.map_path != session_path
+                ):
+                    return
+                set_session_messages_read(session_path, [handle])
 
         def failed(error: Exception) -> None:
             log.debug("delayed MAP mark-read failed: %s", error)
@@ -115,6 +118,12 @@ class ReadReceiptQueue:
             self._submit(write, on_error=failed)
         except Exception as error:
             failed(error)
+        else:
+            # Only acceptance transfers ownership to the worker. A rejected
+            # submission has made no phone changes and is safe to retry.
+            for handle in handles:
+                self._pending.pop(handle, None)
+        self._arm()
         return False
 
     def close(self) -> None:

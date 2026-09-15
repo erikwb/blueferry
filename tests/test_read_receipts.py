@@ -8,6 +8,7 @@ import pytest
 from blueferry import config, read_receipts
 from blueferry.backend_operations import BackendDependencies, BackendOperations
 from blueferry.history import append_event
+from blueferry.obex import map_read
 from blueferry.read_receipts import READ_RECEIPT_DELAY_SECONDS, ReadReceiptQueue
 from blueferry.sinks.libnotify import LibnotifySink
 
@@ -46,8 +47,7 @@ def receipts(monkeypatch):
     writes = []
     sessions = SimpleNamespace(map=object(), map_path="/session/map")
     monkeypatch.setattr(
-        read_receipts, "set_session_messages_read",
-        lambda path, handles: writes.append((path, list(handles))),
+        map_read, "set_message_read", writes.append,
     )
     queue = ReadReceiptQueue(
         sessions,
@@ -68,7 +68,7 @@ def test_reads_wait_without_occupying_obex_and_complete_without_ancs(receipts):
     assert len(r.jobs) == 1
     assert r.writes == []
     r.jobs.pop()()
-    assert r.writes == [("/session/map", ["message-1"])]
+    assert r.writes == ["/session/map/message-1"]
     assert r.clock.timers == {}
 
 
@@ -80,10 +80,10 @@ def test_duplicate_reads_do_not_extend_delay_and_new_reads_get_the_full_delay(re
     r.queue.defer("/session/map", ["message-2"])
     r.clock.advance(READ_RECEIPT_DELAY_SECONDS - 2)
     r.jobs.pop()()
-    assert r.writes == [("/session/map", ["message-1"])]
+    assert r.writes == ["/session/map/message-1"]
     r.clock.advance(2)
     r.jobs.pop()()
-    assert r.writes[-1] == ("/session/map", ["message-2"])
+    assert r.writes[-1] == "/session/map/message-2"
     assert len(r.writes) == 2
 
 
@@ -114,7 +114,7 @@ def test_new_session_reads_do_not_inherit_old_deadlines(receipts):
     assert r.jobs == []
     r.clock.advance(2)
     r.jobs.pop()()
-    assert r.writes == [("/session/map", ["new-message"])]
+    assert r.writes == ["/session/map/new-message"]
 
 
 @pytest.mark.parametrize("worker_already_queued", [False, True])
@@ -133,6 +133,28 @@ def test_shutdown_cancels_pending_and_queued_receipts(receipts, worker_already_q
     assert r.writes == []
 
 
+@pytest.mark.parametrize("interruption", ["shutdown", "disconnect", "same-path", "different-path"])
+def test_interruption_during_a_write_stops_the_rest_of_the_batch(receipts, monkeypatch, interruption):
+    r = receipts
+
+    def write(path):
+        r.writes.append(path)
+        if interruption == "shutdown":
+            r.queue.close()
+        elif interruption == "disconnect":
+            r.sessions.map = None
+        else:
+            r.sessions.map = object()
+            if interruption == "different-path":
+                r.sessions.map_path = "/session/replacement"
+
+    monkeypatch.setattr(map_read, "set_message_read", write)
+    r.queue.defer("/session/map", ["one", "two", "three"])
+    r.clock.advance(READ_RECEIPT_DELAY_SECONDS)
+    r.jobs.pop()()
+    assert r.writes == ["/session/map/one"]
+
+
 def test_stale_popup_paths_are_ignored(receipts):
     r = receipts
     r.queue.defer_path("/old-session/message-1")
@@ -147,10 +169,10 @@ def test_full_queue_never_flushes_early(receipts, monkeypatch):
     assert r.jobs == []
     r.clock.advance(READ_RECEIPT_DELAY_SECONDS)
     r.jobs.pop()()
-    assert r.writes == [("/session/map", ["one", "two"])]
+    assert r.writes == ["/session/map/one", "/session/map/two"]
 
 
-def test_worker_rejection_does_not_break_later_reads(receipts):
+def test_worker_rejection_retries_the_original_read_without_another_request(receipts):
     r = receipts
     submit = r.queue._submit
 
@@ -161,10 +183,60 @@ def test_worker_rejection_does_not_break_later_reads(receipts):
     r.queue.defer("/session/map", ["one"])
     r.clock.advance(READ_RECEIPT_DELAY_SECONDS)
     r.queue._submit = submit
-    r.queue.defer("/session/map", ["two"])
-    r.clock.advance(READ_RECEIPT_DELAY_SECONDS)
+    r.clock.advance(1)
+    assert len(r.jobs) == 1
     r.jobs.pop()()
-    assert r.writes == [("/session/map", ["two"])]
+    assert r.writes == ["/session/map/one"]
+    r.clock.advance(READ_RECEIPT_DELAY_SECONDS)
+    assert r.jobs == []
+    assert r.clock.timers == {}
+
+
+def test_repeated_rejections_preserve_deadlines_and_do_not_acknowledge_new_reads_early(receipts):
+    r = receipts
+    attempts = []
+
+    def submit(operation, **_kwargs):
+        attempts.append(r.clock.now)
+        if len(attempts) <= 3:
+            raise RuntimeError("OBEX operation queue is full")
+        r.jobs.append(operation)
+
+    r.queue._submit = submit
+    r.queue.defer("/session/map", ["one"])
+    r.clock.advance(READ_RECEIPT_DELAY_SECONDS)
+    r.queue.defer("/session/map", ["one", "two"])
+    r.clock.advance(3)
+    assert attempts == [105, 106, 107, 108]
+    assert len(r.jobs) == 1
+    r.jobs.pop()()
+    assert r.writes == ["/session/map/one"]
+    r.clock.advance(2)
+    r.jobs.pop()()
+    assert r.writes == ["/session/map/one", "/session/map/two"]
+    assert r.clock.timers == {}
+
+
+@pytest.mark.parametrize("interruption", ["shutdown", "disconnect", "reconnect"])
+def test_retry_is_discarded_on_shutdown_or_session_loss(receipts, interruption):
+    r = receipts
+    submit = r.queue._submit
+
+    def full(*_args, **_kwargs):
+        raise RuntimeError("OBEX operation queue is full")
+
+    r.queue._submit = full
+    r.queue.defer("/session/map", ["one"])
+    r.clock.advance(READ_RECEIPT_DELAY_SECONDS)
+    assert r.clock.timers
+    if interruption == "shutdown":
+        r.queue.close()
+    else:
+        r.sessions.map = None if interruption == "disconnect" else object()
+    r.queue._submit = submit
+    r.clock.advance(READ_RECEIPT_DELAY_SECONDS)
+    assert r.jobs == []
+    assert r.clock.timers == {}
 
 
 def test_late_ancs_groups_a_message_already_read_locally(receipts, monkeypatch, tmp_path):
@@ -196,7 +268,7 @@ def test_late_ancs_groups_a_message_already_read_locally(receipts, monkeypatch, 
     assert thread["messages"][0]["handle"] == "message-1"
     r.clock.advance(1)
     r.jobs.pop()()
-    assert r.writes == [("/session/map", ["message-1"])]
+    assert r.writes == ["/session/map/message-1"]
 
 
 def test_popup_dismissal_uses_the_same_grace_period(receipts):
@@ -210,4 +282,4 @@ def test_popup_dismissal_uses_the_same_grace_period(receipts):
     assert r.jobs == []
     r.clock.advance(1)
     r.jobs.pop()()
-    assert r.writes == [("/session/map", ["message-1"])]
+    assert r.writes == ["/session/map/message-1"]
