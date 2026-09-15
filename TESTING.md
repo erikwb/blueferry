@@ -80,6 +80,10 @@ Pairing-helper IPC tests substitute inert Python subprocesses with real pipes.
 They cover exit during confirmation, failed writes and flushes, retained error
 reports, bounded recovery, and stream cleanup with a full output queue. These
 subprocesses never invoke the actual pairing helper or access Bluetooth.
+Read-receipt tests use a fake clock and inert OBEX worker to verify that local
+reads remain immediate, phone reads wait for the ANCS grace period, and late
+group metadata still joins the message. Reconnects and shutdown must discard
+pending phone acknowledgements instead of reusing stale message handles.
 Shared conversation tests exercise partial failures and recovery in either order,
 and reject stale recipient approvals even when the backend remembers the new
 roster. Presentation tests feed the same derived thread metadata through Qt and

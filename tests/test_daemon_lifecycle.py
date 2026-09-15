@@ -18,6 +18,7 @@ def _bare_daemon():
     instance = object.__new__(daemon_mod.Daemon)
     instance.sessions = object()
     instance.obex_worker = SimpleNamespace(submit=lambda *_args, **_kwargs: None)
+    instance.read_receipts = SimpleNamespace(defer=lambda *_args: None, close=lambda: None)
     instance.contacts = SimpleNamespace(refresh=lambda: 0, count=lambda: 0)
     instance.connectivity = Connectivity()
     instance.notification_policy = SimpleNamespace(

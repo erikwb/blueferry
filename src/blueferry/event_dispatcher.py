@@ -51,7 +51,7 @@ class EventDispatcher:
         self,
         contacts,
         *,
-        submit_obex,
+        defer_mark_read: Callable[[str], None],
         historical_ancs=(),
         notification_policy=None,
         contacts_only_notifications=None,
@@ -63,7 +63,7 @@ class EventDispatcher:
         cancel: Callable[[int], object] = GLib.source_remove,
     ) -> None:
         self.contacts = contacts
-        self.submit_obex = submit_obex
+        self.defer_mark_read = defer_mark_read
         self.sinks: list[Sink] = []
         self.dbus_service = None
         self.notification_policy = notification_policy
@@ -146,7 +146,7 @@ class EventDispatcher:
             return True
         try:
             sink = self._notification_sink_factory(
-                submit_obex=self.submit_obex,
+                defer_mark_read=self.defer_mark_read,
                 notification_policy=self.notification_policy,
                 contacts_only_notifications=self.contacts_only_notifications,
                 on_open_message=self._open_message,

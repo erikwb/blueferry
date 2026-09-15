@@ -132,7 +132,7 @@ def test_replayed_ancs_event_is_not_sent_to_any_sink():
     event = _event()
     dispatcher = EventDispatcher(
         object(),
-        submit_obex=lambda *_args, **_kwargs: None,
+        defer_mark_read=lambda _path: None,
         historical_ancs=[_historical(event)],
     )
     sink = _Sink()
@@ -151,7 +151,7 @@ def test_modified_notification_with_same_id_is_delivered_once():
     current = _event("new body")
     dispatcher = EventDispatcher(
         object(),
-        submit_obex=lambda *_args, **_kwargs: None,
+        defer_mark_read=lambda _path: None,
         historical_ancs=[_historical(previous)],
     )
     sink = _Sink()
@@ -175,7 +175,7 @@ def test_system_notification_only_reaches_explicit_ephemeral_sink():
     service = _Service()
     dispatcher = EventDispatcher(
         object(),
-        submit_obex=lambda *_args, **_kwargs: None,
+        defer_mark_read=lambda _path: None,
     )
     dispatcher.sinks = [durable, ephemeral]
     dispatcher.set_dbus_service(service)
@@ -191,7 +191,7 @@ def test_only_an_incoming_map_message_verifies_message_notifications():
     verified = []
     dispatcher = EventDispatcher(
         object(),
-        submit_obex=lambda *_args, **_kwargs: None,
+        defer_mark_read=lambda _path: None,
         on_incoming_message=lambda: verified.append(True),
     )
 
@@ -209,7 +209,7 @@ def test_notification_action_routes_to_one_client_even_without_backend_service(m
     )
     dispatcher = EventDispatcher(
         object(),
-        submit_obex=lambda *_args, **_kwargs: None,
+        defer_mark_read=lambda _path: None,
     )
     service = _Service()
     dispatcher._open_message("message-opaque-42", "focus-token")
@@ -235,7 +235,7 @@ def test_libnotify_is_added_when_notification_server_appears(monkeypatch):
 
     dispatcher = EventDispatcher(
         object(),
-        submit_obex=lambda *_args, **_kwargs: None,
+        defer_mark_read=lambda _path: None,
         contacts_only_notifications=lambda: True,
         notification_sink_factory=create_sink,
         session_bus=bus,
@@ -264,7 +264,7 @@ def test_owned_but_not_ready_notification_server_is_retried(monkeypatch):
 
     dispatcher = EventDispatcher(
         object(),
-        submit_obex=lambda *_args, **_kwargs: None,
+        defer_mark_read=lambda _path: None,
         notification_sink_factory=create_sink,
         session_bus=bus,
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or len(scheduled),
@@ -294,7 +294,7 @@ def test_notification_owner_replacement_rebuilds_sink(monkeypatch):
 
     dispatcher = EventDispatcher(
         object(),
-        submit_obex=lambda *_args, **_kwargs: None,
+        defer_mark_read=lambda _path: None,
         notification_sink_factory=create_sink,
         session_bus=bus,
     )
@@ -318,7 +318,7 @@ def test_dispatcher_stop_removes_owner_watch_and_retry(monkeypatch):
 
     dispatcher = EventDispatcher(
         object(),
-        submit_obex=lambda *_args, **_kwargs: None,
+        defer_mark_read=lambda _path: None,
         notification_sink_factory=unavailable_sink,
         session_bus=bus,
         schedule=lambda _delay, _callback: 9,
