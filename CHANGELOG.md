@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.8.1](https://github.com/erikwb/blueferry/releases/tag/v0.8.1) - 2026-09-14
+
+### Added
+
+- Make web links clickable in GTK, Qt, and Quickshell messages while keeping
+  message text literal and restricting links to HTTP and HTTPS.
+
+### Changed
+
+- Enable explicit pairing by default for Bluetooth adapters with USB IDs
+  `0bda:8771`, `0bda:8922`, and `13d3:3586`, with a per-adapter override.
+- Identify adapters that lack the required Classic Bluetooth, LE, or advertising
+  support before pairing. Prefer a compatible adapter when choosing automatically
+  and keep an existing saved phone when its replacement cannot be paired.
+
+### Fixed
+
+- Recover encrypted storage automatically when the desktop keyring becomes
+  available after startup, without restarting the daemon. Validate stored data
+  before resuming writes and restore contact and conversation caches.
+- Open notification conversations in the active or most recently used desktop
+  client, preserve existing GTK windows across upgrades, and launch clients
+  outside the daemon's service sandbox.
+- Honor GTK pairing options across confirmation dialogs and background work.
+  Handle pairing helper pipe failures without hanging and retain diagnostic
+  output and report paths in errors.
+- Show live message and contact connection status during Quickshell pairing,
+  and avoid showing iPhone permission instructions for incompatible adapters.
+- Let the installed Qt package smoke test run without a desktop session bus.
+
 ## [0.8.0](https://github.com/erikwb/blueferry/releases/tag/v0.8.0) - 2026-09-07
 
 ### Added

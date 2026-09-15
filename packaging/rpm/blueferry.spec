@@ -1,5 +1,5 @@
 Name:           blueferry-backend
-Version:        0.8.0
+Version:        0.8.1
 Release:        1%{?dist}
 Summary:        iPhone Bluetooth bridge backend, daemon, and CLI
 License:        GPL-2.0-or-later AND MIT AND BSD-2-Clause AND PSF-2.0
@@ -197,6 +197,14 @@ fi
 %{_metainfodir}/io.weirdware.BlueFerry.Qt.metainfo.xml
 
 %changelog
+* Mon Sep 14 2026 BlueFerry Contributors <blueferry@weirdware.io> - 0.8.1-1
+- Add clickable web links to GTK, Qt, and Quickshell messages.
+- Recover encrypted storage after keyring startup races without a daemon restart.
+- Detect incompatible Bluetooth adapters and apply explicit pairing defaults.
+- Fix GTK pairing options, pairing helper pipe failures, and diagnostic reporting.
+- Open notification conversations in the active or most recently used client.
+- Show live Quickshell pairing transport status and fix the Qt package smoke test.
+
 * Mon Sep 07 2026 BlueFerry Contributors <blueferry@weirdware.io> - 0.8.0-1
 - Add starred and unread conversations, contact-based conversation grouping,
   and notification filtering.

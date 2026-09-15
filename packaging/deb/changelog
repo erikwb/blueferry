@@ -1,3 +1,17 @@
+blueferry (0.8.1-1) unstable; urgency=medium
+
+  * Add clickable web links to GTK, Qt, and Quickshell messages.
+  * Recover encrypted storage after keyring startup races without a daemon
+    restart.
+  * Detect incompatible Bluetooth adapters and apply explicit pairing defaults.
+  * Fix GTK pairing options, pairing helper pipe failures, and diagnostic
+    reporting.
+  * Open notification conversations in the active or most recently used client.
+  * Show live Quickshell pairing transport status and fix the Qt package smoke
+    test.
+
+ -- BlueFerry Contributors <blueferry@weirdware.io>  Mon, 14 Sep 2026 20:27:35 -0400
+
 blueferry (0.8.0-1) unstable; urgency=medium
 
   * Add starred and unread conversations, contact-based conversation grouping,
