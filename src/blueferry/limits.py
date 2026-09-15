@@ -53,6 +53,7 @@ MAX_DBUS_JSON_BYTES = 8 * 1024 * 1024
 # Long-lived daemon queues and subscriptions must remain bounded even if a
 # peer or desktop service stops completing work normally.
 MAX_OBEX_PENDING_OPERATIONS = 256
+MAX_PENDING_READ_RECEIPTS = 2_000
 MAX_DESKTOP_MESSAGE_TRACKERS = 256
 MAX_PHONEBOOK_CONTACTS = 65_535
 MAX_CONTACT_ADDRESSES_PER_CARD = 64

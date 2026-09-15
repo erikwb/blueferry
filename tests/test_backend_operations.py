@@ -694,7 +694,7 @@ def test_starred_thread_is_pinned_above_newer_conversations(
     assert store.keys() == []
 
 
-def test_mark_thread_read_updates_local_history_and_queues_map(
+def test_mark_thread_read_updates_local_history_and_defers_map(
     tmp_path, monkeypatch,
 ) -> None:
     path = tmp_path / "events.sqlite"
@@ -718,12 +718,9 @@ def test_mark_thread_read_updates_local_history_and_queues_map(
         "seen_at": "2026-08-12T10:01:00+00:00",
     }, path=path)
     mapped = []
-    monkeypatch.setattr(
-        backend_operations,
-        "set_session_messages_read",
-        lambda session, handles: mapped.append((session, list(handles))),
+    operations = _operations(
+        defer_mark_read=lambda session, handles: mapped.append((session, list(handles))),
     )
-    operations = _operations()
     alice = next(
         thread for thread in operations.list_threads(10) if thread["name"] == "Alice"
     )
@@ -754,15 +751,10 @@ def test_mark_thread_read_skips_map_without_a_session(tmp_path, monkeypatch) -> 
         "seen_at": "2026-08-12T10:00:00+00:00",
     }, path=path)
     mapped = []
-    monkeypatch.setattr(
-        backend_operations,
-        "set_session_messages_read",
-        lambda *_args: mapped.append(True),
-    )
     sessions = _Sessions()
     sessions.map = None
     operations = BackendOperations(
-        sessions, BackendDependencies(submit_obex=lambda *_a, **_k: None)
+        sessions, BackendDependencies(defer_mark_read=lambda *_args: mapped.append(True))
     )
 
     thread = operations.list_threads(10)[0]

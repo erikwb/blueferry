@@ -56,7 +56,6 @@ from blueferry.limits import (
 )
 from blueferry.named_groups import stored_named_group_key
 from blueferry.obex.map_query import list_recent_messages
-from blueferry.obex.map_read import set_session_messages_read
 from blueferry.obex.map_send import send_group_message, send_message
 from blueferry.protocol import MESSAGES_API_VERSION
 from blueferry.recipients import InvalidRecipient, group_confirmation_token, validate_recipient
@@ -153,6 +152,7 @@ class BackendDependencies:
     """Explicit optional capabilities supplied by the daemon composition root."""
 
     submit_obex: Callable[..., object] | None = None
+    defer_mark_read: Callable[[str, Sequence[str]], None] | None = None
     on_sent: Callable[[str, str, str], None] | None = None
     on_group_sent: Callable[..., None] | None = None
     pull_contacts: Callable[[], int] | None = None
@@ -496,7 +496,7 @@ class BackendOperations:
             raise InvalidArgumentsError(str(error)) from error
 
     def mark_thread_read(self, thread_key: str) -> int:
-        """Mark incoming messages in one conversation read locally and on MAP."""
+        """Mark incoming messages read locally and defer the phone acknowledgement."""
         if not thread_key.strip() or len(thread_key) > 1024:
             raise InvalidArgumentsError("invalid thread key")
         thread = self._conversations.find(thread_key)
@@ -517,14 +517,12 @@ class BackendOperations:
             raise NotReadyError(storage.status.detail)
         updated = mark_event_handles_read(handles, storage=storage)
         self._conversations.invalidate()
-        if self.sessions.map is None:
-            return updated
-        map_path = self.sessions.map_path
-        self._queue(
-            lambda: set_session_messages_read(map_path, handles),
-            lambda _result: None,
-            lambda error: log.debug("MAP mark-read failed: %s", error),
-        )
+        defer = self.dependencies.defer_mark_read
+        if self.sessions.map is not None and defer is not None:
+            try:
+                defer(self.sessions.map_path, handles)
+            except Exception as error:
+                log.debug("could not defer MAP mark-read: %s", error)
         return updated
 
     def find_contacts(self, query: str) -> list[dict[str, str]]:

@@ -40,6 +40,7 @@ from blueferry.obex.worker import ObexWorker
 from blueferry.pair_setup import bond_status
 from blueferry.profile_supervisor import ProfileSessions, ProfileSupervisor
 from blueferry.protocol import BUS_NAME
+from blueferry.read_receipts import ReadReceiptQueue
 from blueferry.setup_verification import (
     CONTACTS,
     MESSAGE_NOTIFICATIONS,
@@ -83,6 +84,12 @@ class Daemon:
     def __init__(self) -> None:
         self.sessions = SessionManager()
         self.obex_worker = ObexWorker()
+        self.read_receipts = ReadReceiptQueue(
+            self.sessions,
+            submit=self.obex_worker.submit,
+            schedule=GLib.timeout_add_seconds,
+            cancel=GLib.source_remove,
+        )
         # Claim the application bus name before touching the keyring. That
         # prevents two simultaneous first launches from creating different
         # keys for the same database.
@@ -96,7 +103,7 @@ class Daemon:
         self.setup_verification = SetupVerification(config.IPHONE_MAC)
         self.events = EventDispatcher(
             self.contacts,
-            submit_obex=self.obex_worker.submit,
+            defer_mark_read=self.read_receipts.defer_path,
             notification_policy=lambda: self.notification_policy.value,
             contacts_only_notifications=(
                 lambda: self.notification_policy.contacts_only
@@ -218,6 +225,7 @@ class Daemon:
                 on_sent=self.events.sent,
                 on_group_sent=self.events.group_sent,
                 submit_obex=self.obex_worker.submit,
+                defer_mark_read=self.read_receipts.defer,
                 pull_contacts=self._pull_contacts,
                 on_contacts_pulled=self._contacts_pulled,
                 contacts=self.contacts,
@@ -607,6 +615,7 @@ class Daemon:
 
     def stop(self) -> None:
         log.info("=== BlueFerry stopping ===")
+        self.read_receipts.close()
         self.adapter_class.stop()
         self.bearers.stop()
         self.profiles.stop()

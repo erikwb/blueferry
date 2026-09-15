@@ -4,8 +4,9 @@ Body format: title = display sender (contact name or phone number),
              body  = SMS text (truncated at ~280 chars to avoid huge popups).
 
 Popups request a finite lifetime. If the user explicitly dismisses an SMS
-popup before it expires, we mark that message read on the iPhone. If the
-iPhone marks it read while the popup is visible, we close it early.
+popup before it expires, we defer marking that message read on the iPhone so
+ANCS has time to deliver its group metadata. If the iPhone marks it read while
+the popup is visible, we close it early.
 
 Read-state sync:
   Linux dismiss → MAP Message1.Properties.Set(Read=true)  → iPhone marks read
@@ -18,6 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from html import escape
 from typing import Protocol
 
@@ -76,12 +78,6 @@ def _notification_hints(handle: str) -> dict[str, object]:
     return hints
 
 
-def _mark_message_read(message_path: str) -> None:
-    from blueferry.obex.map_read import set_message_read
-
-    set_message_read(message_path)
-
-
 class LibnotifySink:
     name = "libnotify"
     # New sinks fail closed in EventDispatcher. This one accepts system ANCS
@@ -91,12 +87,12 @@ class LibnotifySink:
     def __init__(
         self,
         *,
-        submit_obex,
+        defer_mark_read: Callable[[str], None],
         notification_policy=None,
         contacts_only_notifications=None,
         on_open_message=None,
     ) -> None:
-        self._submit_obex = submit_obex
+        self._defer_mark_read = defer_mark_read
         self._notification_policy = notification_policy
         self._contacts_only_notifications = contacts_only_notifications
         self._on_open_message = on_open_message
@@ -362,18 +358,7 @@ class LibnotifySink:
         # marked it read).
         if reason_i != _REASON_DISMISSED:
             return
-        def succeeded(_result) -> None:
-            log.info("marked %s as read on iPhone (user dismissed popup)",
-                     message_path.rsplit("/", 1)[-1])
-
-        def failed(error) -> None:
-            log.debug("mark-read failed for %s: %s", message_path, error)
-
         try:
-            self._submit_obex(
-                lambda: _mark_message_read(message_path),
-                on_success=succeeded,
-                on_error=failed,
-            )
+            self._defer_mark_read(message_path)
         except Exception as error:
-            failed(error)
+            log.debug("could not defer mark-read for %s: %s", message_path, error)

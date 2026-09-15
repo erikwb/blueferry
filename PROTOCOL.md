@@ -417,6 +417,13 @@ or app display-name attributes are requested. Even when mirroring is enabled,
 included non-Messages content is never written to history or placed on
 BlueFerry's D-Bus event feed.
 
+Conversation reads update local history immediately. The daemon delays the
+corresponding MAP read acknowledgements by at least five seconds, including
+those caused by dismissing desktop message notifications. This gives ANCS time
+to fetch group metadata before iOS removes the notification. The delay does not
+block the OBEX worker or require ANCS to arrive; pending acknowledgements are
+discarded if their MAP session is replaced or the daemon stops.
+
 ## Historical HFP result
 
 HFP calling is not part of BlueFerry, but the experiment produced one useful
