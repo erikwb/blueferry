@@ -40,6 +40,13 @@
   </developer>
 
   <releases>
+    <release version="0.8.1" date="2026-09-14">
+      <description>
+        <p>Adds clickable web links and automatic storage recovery after keyring
+        startup delays. Fixes pairing options, helper failures, and notification
+        activation, and detects incompatible Bluetooth adapters before pairing.</p>
+      </description>
+    </release>
     <release version="0.8.0" date="2026-09-07">
       <description>
         <p>Adds starred and unread conversations, groups messages by synced
