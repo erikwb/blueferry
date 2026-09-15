@@ -94,10 +94,14 @@ def bearer_connected_unavailable(error: Exception) -> bool:
         "org.freedesktop.DBus.Error.UnknownInterface",
         "org.freedesktop.DBus.Error.UnknownMethod",
         "org.freedesktop.DBus.Error.UnknownProperty",
+        "org.freedesktop.DBus.Error.InvalidArgs",
     }:
         return True
     detail = (error.get_dbus_message() or "").casefold()
-    return "no such property" in detail and "connected" in detail
+    return (
+        ("no such property" in detail and "connected" in detail)
+        or "no such interface" in detail
+    )
 
 
 ReadConnected = Callable[[str], bool | None]
@@ -226,8 +230,20 @@ class BearerSupervisor:
             # must not rewrite PreferredBearer underneath itself.
             self._le_preference_restore_pending = True
             self._restore_le_preference()
+        if self.bredr_connected:
+            self._schedule_le_connect()
         if self._running:
             self._tick()
+
+    def confirm_le_connected(self) -> None:
+        """Record live LE connectivity confirmed by GATT/ANCS activity.
+
+        On BlueZ < 5.86, Bearer.LE1 is absent and Device1.Connected is
+        aggregate (true when only BR/EDR is connected). GATT activity
+        such as an ANCS authorization round-trip provides the missing
+        per-bearer confirmation.
+        """
+        self._update_state("le", True)
 
     def hold_le(self) -> None:
         """Prevent outbound LE dialing during a MAP/PBAP attempt.
@@ -809,10 +825,14 @@ class BearerSupervisor:
             return
         self._disconnecting.discard("le")
         name, message = _connect_error_parts(error)
-        if name in {
-            "org.bluez.Error.NotConnected",
-            "org.bluez.Error.AlreadyDisconnected",
-        } or "not connected" in message.casefold():
+        if (
+            name in {
+                "org.bluez.Error.NotConnected",
+                "org.bluez.Error.AlreadyDisconnected",
+            }
+            or "not connected" in message.casefold()
+            or bearer_connected_unavailable(error)
+        ):
             self._complete_le_reset()
             return
         self._le_reset_failures += 1
@@ -855,7 +875,21 @@ class BearerSupervisor:
                         timeout=5.0,
                     )
                 )
-        return bool(properties.Get(_INTERFACES[kind], "Connected", timeout=5.0))
+        try:
+            return bool(properties.Get(_INTERFACES[kind], "Connected", timeout=5.0))
+        except dbus.exceptions.DBusException as error:
+            if not bearer_connected_unavailable(error):
+                raise
+            # On BlueZ < 5.86, Bearer.LE1 is absent and Device1.Connected is
+            # aggregate (true for BR/EDR-only links). Keep the LE state unknown
+            # until GATT/ANCS activity confirms it, unless Device1 is completely
+            # disconnected.
+            device_connected = bool(
+                properties.Get("org.bluez.Device1", "Connected", timeout=5.0)
+            )
+            if not device_connected:
+                return False
+            return True if self._states.get("le") is True else None
 
     def _connect_bluez(
         self,
@@ -868,6 +902,7 @@ class BearerSupervisor:
         # the targeted Classic method avoids rewriting PreferredBearer and
         # disturbing ANCS. If that method is marker-only, profile reconnects
         # still establish their own OBEX transports.
+        device = get_system_bus().get_object("org.bluez", self.device_path)
         if kind == "bredr":
             interface = (
                 _INTERFACES["bredr"]
@@ -879,10 +914,8 @@ class BearerSupervisor:
             )
         else:
             interface = _INTERFACES[kind]
-        bearer = dbus.Interface(
-            get_system_bus().get_object("org.bluez", self.device_path),
-            interface,
-        )
+
+        bearer = dbus.Interface(device, interface)
         bearer.Connect(
             reply_handler=on_success,
             error_handler=on_error,

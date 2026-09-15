@@ -678,6 +678,94 @@ def test_bluez_falls_back_when_classic_bearer_is_marker_only(monkeypatch) -> Non
     ]
 
 
+def test_bluez_reports_none_when_le_bearer_is_missing(monkeypatch) -> None:
+    calls = []
+
+    class Properties:
+        def __init__(self, connected=True):
+            self.connected = connected
+
+        def Get(self, interface, name, *, timeout):
+            calls.append((interface, name, timeout))
+            if interface == "org.bluez.Bearer.LE1":
+                raise bearer_supervisor.dbus.exceptions.DBusException(
+                    "No such interface",
+                    name="org.freedesktop.DBus.Error.InvalidArgs",
+                )
+            if interface == "org.bluez.Device1" and name == "Connected":
+                return self.connected
+            return True
+
+    class Bus:
+        def __init__(self, props):
+            self.props = props
+
+        def get_object(self, _service, _path):
+            return object()
+
+    props = Properties(connected=True)
+    monkeypatch.setattr(bearer_supervisor, "get_system_bus", lambda: Bus(props))
+    monkeypatch.setattr(
+        bearer_supervisor.dbus,
+        "Interface",
+        lambda _object, _interface: props,
+    )
+
+    supervisor = BearerSupervisor("/device")
+    # When Device1 is connected but LE is unconfirmed, state is unknown (None)
+    assert supervisor._read_bluez_connected("le") is None
+
+    # When GATT activity confirms LE connectivity, state becomes True
+    supervisor.confirm_le_connected()
+    assert supervisor._read_bluez_connected("le") is True
+
+    # When Device1 is disconnected, state is False
+    props.connected = False
+    assert supervisor._read_bluez_connected("le") is False
+
+
+def test_bluez_connect_fails_cleanly_when_le_bearer_is_missing(monkeypatch) -> None:
+    calls = []
+
+    class Bearer:
+        def __init__(self, interface):
+            self.interface = interface
+
+        def Connect(self, *, reply_handler, error_handler, timeout):
+            calls.append((self.interface, timeout))
+            error_handler(
+                bearer_supervisor.dbus.exceptions.DBusException(
+                    "No such method",
+                    name="org.freedesktop.DBus.Error.UnknownMethod",
+                )
+            )
+
+    class Bus:
+        @staticmethod
+        def get_object(_service, _path):
+            return object()
+
+    monkeypatch.setattr(bearer_supervisor, "get_system_bus", Bus)
+    monkeypatch.setattr(
+        bearer_supervisor.dbus,
+        "Interface",
+        lambda _object, interface: Bearer(interface),
+    )
+
+    succeeded = []
+    failed = []
+    BearerSupervisor("/device")._connect_bluez(
+        "le",
+        lambda: succeeded.append(True),
+        lambda error: failed.append(error),
+    )
+
+    assert succeeded == []
+    assert len(failed) == 1
+    assert calls == [("org.bluez.Bearer.LE1", 45.0)]
+
+
+
 def test_bluez_preference_ignores_a_missing_preferred_bearer_property(monkeypatch) -> None:
     class Properties:
         @staticmethod

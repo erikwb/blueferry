@@ -178,6 +178,8 @@ class Daemon:
     def _on_ancs_status(self) -> None:
         # StartNotify is not the success boundary.  Keep solicitation on air
         # until a Control Point/Data Source round trip proves ANCS usable.
+        if self.ancs is not None and self.ancs.connected and self.bearers.le_state is None:
+            self.bearers.confirm_le_connected()
         self._sync_solicitation()
         self._emit_status()
 

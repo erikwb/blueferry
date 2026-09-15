@@ -31,7 +31,8 @@ so the bundle cannot replace or conflict with `python3-textual`.
 The backend intentionally leaves the distribution's `bluetooth.service`
 unchanged: installing, upgrading, or removing the DEB never enables `-E` or
 restarts Bluetooth. MAP messages and PBAP contacts work with the package's
-BlueZ 5.72 minimum. ANCS notifications are available only when the machine
+BlueZ 5.72 minimum. ANCS notifications are available when the machine
 already has BlueZ 5.86 or newer and its running `bluetoothd` exposes the
-experimental bearer API through `-E` or `--experimental`; otherwise BlueFerry
+experimental bearer API through `-E` or `--experimental`, or on BlueZ 5.72+
+using device fallback when experimental mode is enabled; otherwise BlueFerry
 automatically stays in MAP/PBAP-only mode.

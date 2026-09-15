@@ -179,12 +179,6 @@ class _AncsAdvert(dbus.service.Object):
                     signature="y", variant_level=1,
                 ),
             }, signature="qv"),
-            "ServiceData": dbus.Dictionary({
-                "00009999-0000-1000-8000-00805f9b34fb": dbus.Array(
-                    [dbus.Byte(v) for v in (0x9E, 0x85, 0x39, 0x96)],
-                    signature="y", variant_level=1,
-                ),
-            }, signature="sv"),
             # Scoped to this advertisement rather than making the whole
             # adapter permanently discoverable.  Three minutes is enough for
             # a deliberate first-pair operation; ANCS solicitation remains
@@ -207,7 +201,12 @@ _advert_registered = False
 
 def advert_registered() -> bool:
     """Return whether the current BlueZ owner accepted our advertisement."""
-    return _advert_registered
+    if not _advert_registered:
+        return False
+    active = _active_advertisements()
+    if active is not None and active == 0:
+        return False
+    return True
 
 
 def forget_advert_registration() -> None:
