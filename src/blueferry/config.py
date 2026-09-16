@@ -18,6 +18,7 @@ LOCAL_ENV_KEYS = frozenset({
     "BLUEFERRY_SHOW_NOTIFICATION_CONTENT",
     "BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE",
     "BLUEFERRY_NOTIFICATION_TIMEOUT_MS",
+    "BLUEFERRY_MARK_READ_ON_DISMISS",
     "BLUEFERRY_HISTORY_RETENTION_DAYS",
     "BLUEFERRY_HISTORY_MAX_EVENTS",
     "BLUEFERRY_HISTORY_MAX_PAYLOAD_BYTES",
@@ -203,6 +204,14 @@ KEEP_PHONE_AUDIO_ON_PHONE: bool = _env_bool(
 NOTIFICATION_TIMEOUT_MS: int = _env_int(
     "BLUEFERRY_NOTIFICATION_TIMEOUT_MS", 8_000, 1_000, 60_000
 )
+MARK_READ_ON_DISMISS: bool = _env_bool("BLUEFERRY_MARK_READ_ON_DISMISS", True)
+"""Whether dismissing a message's desktop popup marks it read on the iPhone.
+
+Some notification-center "block" actions (menu bar do-not-disturb toggles,
+some panel widgets) dismiss the popup rather than merely hiding it, which
+would otherwise mark the message read on the phone without the user ever
+seeing it.
+"""
 HISTORY_RETENTION_DAYS: int = _env_int(
     "BLUEFERRY_HISTORY_RETENTION_DAYS", 30, 1, 3650
 )

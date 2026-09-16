@@ -273,10 +273,17 @@ The common retention settings live in `~/.config/blueferry/local.env`:
 BLUEFERRY_SHOW_NOTIFICATION_CONTENT=false
 BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE=true
 BLUEFERRY_NOTIFICATION_TIMEOUT_MS=8000
+BLUEFERRY_MARK_READ_ON_DISMISS=false
 BLUEFERRY_HISTORY_RETENTION_DAYS=30
 BLUEFERRY_HISTORY_MAX_EVENTS=10000
 BLUEFERRY_HISTORY_MAX_PAYLOAD_BYTES=268435456
 ```
+
+By default, dismissing a message's desktop popup marks it read on the
+iPhone too. Some notification-center "block" or do-not-disturb actions
+dismiss the popup instead of just hiding it, which silently marks the message
+read on the phone. Set `BLUEFERRY_MARK_READ_ON_DISMISS=false` if you don't
+want desktop dismissal to ever change read state on the iPhone.
 
 When **All iPhone Notifications** is selected, optional exact bundle-ID rules
 can limit which non-Messages ANCS apps create desktop popups:

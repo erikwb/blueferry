@@ -5,7 +5,8 @@ Body format: title = display sender (contact name or phone number),
 
 Popups request a finite lifetime. If the user explicitly dismisses an SMS
 popup before it expires, we defer marking that message read on the iPhone so
-ANCS has time to deliver its group metadata. If the iPhone marks it read while
+ANCS has time to deliver its group metadata (unless
+BLUEFERRY_MARK_READ_ON_DISMISS is false). If the iPhone marks it read while
 the popup is visible, we close it early.
 
 Read-state sync:
@@ -357,6 +358,8 @@ class LibnotifySink:
         # which is fired when we closed it ourselves because iPhone already
         # marked it read).
         if reason_i != _REASON_DISMISSED:
+            return
+        if not config.MARK_READ_ON_DISMISS:
             return
         try:
             self._defer_mark_read(message_path)
