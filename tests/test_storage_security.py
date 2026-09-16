@@ -369,7 +369,8 @@ def test_pruning_reasserts_private_encrypted_metadata(tmp_path) -> None:
             "UPDATE events SET kind = 'sms_received', occurred_at = 123"
         )
 
-    prune_events(path=path, storage=storage)
+    # Age pruning is not under test here; the fixed seen_at must never expire.
+    prune_events(path=path, storage=storage, retention_days=3650)
 
     with closing(sqlite3.connect(path)) as database:
         assert database.execute(
