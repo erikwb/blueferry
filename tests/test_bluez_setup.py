@@ -18,13 +18,10 @@ class TestAncsAdvertisement:
         assert bool(props["Discoverable"])
         assert int(props["DiscoverableTimeout"]) == 180
         assert props["ManufacturerData"].signature == "qv"
-        assert props["ServiceData"].signature == "sv"
         assert bytes(props["ManufacturerData"][dbus.UInt16(0xFFFF)]) == (
             b"\x50\xb0\x13\xf0"
         )
-        assert bytes(props["ServiceData"][
-            "00009999-0000-1000-8000-00805f9b34fb"
-        ]) == b"\x9e\x85\x39\x96"
+        assert "ServiceData" not in props
 
     def test_rejects_unknown_interface(self):
         with pytest.raises(dbus.exceptions.DBusException):
