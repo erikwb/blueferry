@@ -123,3 +123,32 @@ def test_worker_rejects_an_unbounded_operation_backlog(monkeypatch) -> None:
         worker.submit(lambda: None)
     release.set()
     worker.shutdown()
+
+
+def test_recovery_reservation_waits_for_callback_and_excludes_new_sends(monkeypatch):
+    monkeypatch.setattr(worker_mod, "initialize_obex_worker_bus", lambda: None)
+    monkeypatch.setattr(worker_mod, "close_obex_worker_bus", lambda: None)
+    callbacks = []
+    queued = threading.Event()
+
+    def idle(fn, *args):
+        callbacks.append((fn, args))
+        queued.set()
+
+    monkeypatch.setattr(worker_mod.GLib, "idle_add", idle)
+    worker = worker_mod.ObexWorker()
+    try:
+        future = worker.submit(lambda: "sent")
+        future.result(timeout=2)
+        assert queued.wait(timeout=2)
+        assert not worker.reserve_if_idle()  # Delivery may itself queue more work.
+        fn, args = callbacks.pop(0)
+        fn(*args)
+        assert worker.reserve_if_idle()
+        with pytest.raises(RuntimeError, match="recovery"):
+            worker.submit(lambda: "another send")
+        exclusive = worker.submit(lambda: "cycle", reserved=True)
+        assert exclusive.result(timeout=2) == "cycle"
+        worker.release()
+    finally:
+        worker.shutdown()

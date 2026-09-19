@@ -349,6 +349,16 @@ journalctl --user -u blueferry -f
 If messages work but names do not, use **Sync Contacts** or run
 `blueferry contacts-sync`.
 
+If notifications previously worked with the same phone and adapter but stay
+unavailable for five minutes, BlueFerry can attempt one adapter power cycle.
+It first tries an LE-only reset and checks that the phone still answers a
+read-only MAP request. Automatic cycling is skipped while another Bluetooth
+device is connected, discovery is active, or BlueFerry is transferring data.
+It also respects Bluetooth being turned off and explicit permission failures.
+The attempt limit survives backend restarts: another cycle requires ten minutes
+of verified notification connectivity, and cycles are at least an hour apart.
+Recovery decisions and failures appear in the backend journal.
+
 Pairing failures save a scrubbed report that can be attached to a GitHub issue.
 It includes the package build and source SHA, pairing mode, controller details,
 and an ordered setup timeline. Please also include the iPhone model and iOS

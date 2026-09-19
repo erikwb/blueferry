@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from blueferry import config
-from blueferry.settings_store import SettingsStore
+from blueferry.settings_store import BLUETOOTH_RECOVERY_KEY, SettingsStore
 
 MESSAGE_NOTIFICATIONS = "message-notifications"
 CONTACTS = "contacts"
@@ -75,4 +75,11 @@ def remaining_iphone_setup_tasks(
 
 def clear_setup_verification(path: Path | None = None) -> None:
     """Clear phone-scoped evidence while retaining all other preferences."""
-    SettingsStore(path or config.SETTINGS_JSON).update(**{_SETTINGS_KEY: {}})
+    settings = SettingsStore(path or config.SETTINGS_JSON)
+    values: dict = {_SETTINGS_KEY: {}}
+    recovery = settings.read().get(BLUETOOTH_RECOVERY_KEY)
+    if isinstance(recovery, dict):
+        # A previous bond's working ANCS connection cannot authorize recovery
+        # during new setup. Keep the power-cycle timestamp across re-pairing.
+        values[BLUETOOTH_RECOVERY_KEY] = {**recovery, "verified": False, "spent": True}
+    settings.update(**values)

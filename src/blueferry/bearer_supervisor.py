@@ -284,14 +284,18 @@ class BearerSupervisor:
         if self._running:
             self._tick()
 
-    def recover_le_transport(self) -> None:
+    @property
+    def busy(self) -> bool:
+        return bool(self._connecting or self._disconnecting)
+
+    def recover_le_transport(self, *, allow_disconnected: bool = False) -> None:
         """Request one serialized LE reset after GATT and bearer state diverge."""
         if not self._running:
             return
         # A successful reset is published locally as disconnected before the
         # polling source can see a replacement inbound link. Ignore duplicate
         # failure reports during that synthetic down-state.
-        if self._states["le"] is False:
+        if self._states["le"] is False and not allow_disconnected:
             return
         if not self._le_reset_pending:
             log.warning(

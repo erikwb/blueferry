@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from blueferry.settings_store import SettingsStore
+from blueferry.settings_store import BLUETOOTH_RECOVERY_KEY, SettingsStore
 from blueferry.setup_verification import (
     CONTACTS,
     MESSAGE_NOTIFICATIONS,
@@ -45,4 +45,16 @@ def test_clear_verification_preserves_other_settings(tmp_path) -> None:
     assert SettingsStore(path).read() == {
         "desktop_notifications": "messages",
         "verified_iphone_setup": {},
+    }
+
+
+def test_forgetting_phone_clears_recovery_evidence_but_preserves_cooldown(tmp_path):
+    path = tmp_path / "settings.json"
+    settings = SettingsStore(path)
+    settings.update(**{BLUETOOTH_RECOVERY_KEY: {
+        "verified": True, "spent": False, "last_attempt": 1000.0,
+    }})
+    clear_setup_verification(path)
+    assert settings.read()[BLUETOOTH_RECOVERY_KEY] == {
+        "verified": False, "spent": True, "last_attempt": 1000.0,
     }

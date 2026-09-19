@@ -1,5 +1,7 @@
 """The persisted pairing policy controls long-lived ANCS work."""
 
+from types import SimpleNamespace
+
 from blueferry import daemon
 
 
@@ -75,6 +77,11 @@ class _AdapterClass:
 
 def _daemon(calls):
     value = daemon.Daemon.__new__(daemon.Daemon)
+    value.recovery = SimpleNamespace(
+        active=False,
+        start=lambda: calls.append("recovery-start"),
+        invalidate=lambda **_kwargs: calls.append("recovery-invalidate"),
+    )
     value.bearers = _Bearer(calls)
     value.events = _Events(calls)
     value.profiles = _Profiles(calls)
@@ -206,11 +213,75 @@ def test_bluez_restart_reapplies_profile_gate_before_resetting_bearers():
     value._on_bluez_restart()
 
     assert calls == [
+        "recovery-invalidate",
         "adapter-class-poke",
         "solicitation-reset",
         "bearers-hold-le",
         ("profiles-reconnect", "bluetoothd restarted", False),
         "bearers-reset",
+    ]
+
+
+def test_recovery_observation_excludes_permissions_and_missing_profiles(monkeypatch):
+    calls = []
+    value = _daemon(calls)
+    value._initializing = False
+    value.bearers.bredr_connected = True
+    value.bearers.busy = False
+    value.solicitation.active = lambda: True
+    value.ancs = SimpleNamespace(connected=False, health_proof=123.0, permission_denied=False)
+    monkeypatch.setattr(daemon.config, "ANCS_ENABLED", True)
+    assert value._recovery_observation().eligible
+    value.ancs.permission_denied = True
+    assert not value._recovery_observation().eligible
+    value.ancs.permission_denied = False
+    value.profiles.ready = False
+    assert not value._recovery_observation().eligible
+    value.profiles.ready = True
+    monkeypatch.setattr(daemon.config, "ANCS_ENABLED", False)
+    assert not value._recovery_observation().eligible
+
+
+def test_own_power_events_and_owner_changes_do_not_start_parallel_recovery():
+    calls = []
+    value = _daemon(calls)
+    value.recovery.active = True
+    value._on_adapter_power_changed("org.bluez.Adapter1", {"Powered": False}, [])
+    assert calls == []
+    value._on_bluez_restart()
+    assert calls == ["recovery-invalidate"]
+    value.recovery.active = False
+    value._on_adapter_power_changed("org.bluez.Adapter1", {"Powered": False}, [])
+    assert calls == ["recovery-invalidate", "recovery-invalidate"]
+
+
+def test_recovery_pause_and_resume_keep_map_first_order():
+    value = _daemon([])
+    calls = []
+    value.adapter_class = SimpleNamespace(
+        stop=lambda: calls.append("class-stop"), start=lambda: calls.append("class-start"),
+    )
+    value.bearers = SimpleNamespace(
+        stop=lambda: calls.append("bearers-stop"), start=lambda: calls.append("bearers-start"),
+        hold_le=lambda: calls.append("hold-le"),
+        reset_after_bluez_restart=lambda: calls.append("bearers-reset"),
+    )
+    value.profiles = SimpleNamespace(
+        pause=lambda: calls.append("profiles-pause"),
+        resume=lambda: calls.append("profiles-resume"),
+    )
+    value.solicitation = SimpleNamespace(
+        stop=lambda: calls.append("advert-stop"), start=lambda: calls.append("advert-start"),
+    )
+    value.sessions = SimpleNamespace(close_all=lambda **kw: calls.append(("forget", kw)))
+    value.ancs = SimpleNamespace(observe_bearer_state=lambda state: calls.append(("ancs", state)))
+    value._pause_for_recovery()
+    value._resume_after_recovery()
+    assert calls == [
+        "class-stop", "bearers-stop", "profiles-pause", "advert-stop",
+        ("forget", {"remove_remote": False}), ("ancs", False),
+        "class-start", "advert-start", "hold-le", "bearers-reset",
+        "profiles-resume", "bearers-start",
     ]
 
 

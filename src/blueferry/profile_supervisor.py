@@ -84,6 +84,7 @@ class ProfileSupervisor:
         self._ready = False
         self._ever_ready = False
         self._stopping = False
+        self._paused = False
         self._generation = 0
         self._first_attempt_completed = False
         self.sessions.set_on_lost(self.session_lost)
@@ -105,7 +106,7 @@ class ProfileSupervisor:
 
     def open(self) -> None:
         """Queue one open attempt unless another transition is in flight."""
-        if self._stopping or self._opening or self._closing:
+        if self._stopping or self._paused or self._opening or self._closing:
             return
         if self.sessions.map is not None and self.sessions.pbap is not None:
             self._mark_ready()
@@ -128,7 +129,7 @@ class ProfileSupervisor:
 
     def reconnect(self, reason: str, *, remove_remote_sessions: bool = True) -> None:
         """Discard current consumers and sessions, then reconnect shortly."""
-        if self._stopping:
+        if self._stopping or self._paused:
             return
         if self._closing:
             log.debug("ignoring duplicate profile loss during cleanup: %s", reason)
@@ -176,6 +177,24 @@ class ProfileSupervisor:
         # in-flight open, but do not send RemoveSession into the dead channel:
         # BlueZ 5.87 can NULL-dereference read_err in gobex/read_packet there.
         self.reconnect(reason, remove_remote_sessions=False)
+
+    def pause(self) -> None:
+        """Quiesce retries while an idle OBEX worker is reserved for recovery."""
+        self._paused = True
+        self._generation += 1
+        self._opening = False
+        self._closing = False
+        if self._retry_id is not None:
+            self._cancel(self._retry_id)
+            self._retry_id = None
+        self._ready = False
+        self._on_lost("Bluetooth adapter recovery")
+        self.connectivity.lost("Bluetooth adapter recovery")
+        self._on_status()
+
+    def resume(self) -> None:
+        self._paused = False
+        self.reconnect("Bluetooth adapter recovery completed", remove_remote_sessions=False)
 
     def stop(self) -> None:
         """Cancel future transitions; worker shutdown performs final cleanup."""

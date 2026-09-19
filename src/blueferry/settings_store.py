@@ -13,6 +13,7 @@ from blueferry.private_files import atomic_write_private_text, read_private_text
 # characters), plus roster digests and encryption framing. Keep local.env
 # parsing on its smaller, independent config limit.
 MAX_SETTINGS_FILE_BYTES = 4 * 1024 * 1024
+BLUETOOTH_RECOVERY_KEY = "bluetooth_recovery"
 _UPDATE_LOCK = Lock()
 
 

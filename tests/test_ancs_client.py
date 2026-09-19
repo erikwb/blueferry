@@ -74,6 +74,39 @@ def _complete_authorization_probe(client: AncsClient) -> None:
     )
 
 
+def test_health_probe_requires_a_new_response_and_does_not_read_messages(monkeypatch):
+    client = AncsClient("/device", lambda _event: None)
+    client._bearer_connected = True
+    client._bearer_ready = True
+    client._notify_started = True
+    client._authorized = True
+    client.health_proof = 10.0
+    monkeypatch.setattr(client, "_pump_requests", lambda: None)
+    monkeypatch.setattr(client_module.time, "monotonic", lambda: 100.0)
+
+    client.probe_health()
+    assert client.health_proof == 10.0
+    client._active_request = client._request_queue.popleft()
+    assert client._active_request.notification is None
+    assert client._active_request.assembler.command == CommandID.GetAppAttributes
+    client.probe_health()
+    assert not client._request_queue
+    _complete_authorization_probe(client)
+    assert client.health_proof == 100.0
+
+
+def test_explicit_permission_failure_blocks_power_recovery_until_authorized():
+    import dbus
+
+    client = AncsClient("/device", lambda _event: None)
+    client._observe_permission_error(dbus.exceptions.DBusException(
+        "permission denied", name="org.bluez.Error.NotAuthorized",
+    ))
+    assert client.permission_denied
+    client._mark_authorized()
+    assert not client.permission_denied
+
+
 def test_duplicate_notification_uid_is_coalesced_before_control_point_exists() -> None:
     client = AncsClient("/device", lambda _event: None)
     changed = {"Value": _notification(42)}
