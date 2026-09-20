@@ -255,6 +255,15 @@ def test_own_power_events_and_owner_changes_do_not_start_parallel_recovery():
     assert calls == ["recovery-invalidate", "recovery-invalidate"]
 
 
+def test_wake_does_not_resume_profiles_while_power_restoration_is_pending():
+    calls = []
+    value = _daemon(calls)
+    value.recovery.active = True
+    value.bearers.poke = lambda: calls.append("bearers-poke")
+    value._on_prepare_for_sleep(False)
+    assert calls == ["recovery-invalidate"]
+
+
 def test_recovery_pause_and_resume_keep_map_first_order():
     value = _daemon([])
     calls = []

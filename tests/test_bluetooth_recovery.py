@@ -65,7 +65,9 @@ class Harness:
     def create(self):
         self.recovery = mod.BluetoothRecovery(
             PHONE,
-            SimpleNamespace(read=lambda: self.state, cycle=self.cycle),
+            SimpleNamespace(read=lambda: self.state, cycle=self.cycle,
+                            restore_pending=False, restore=self.restore,
+                            start_monitoring=lambda: None, stop_monitoring=lambda: None),
             self.worker,
             observe=lambda: self.observed,
             probe=lambda: self.calls.append("probe"),
@@ -89,6 +91,11 @@ class Harness:
             raise RuntimeError("cancelled")
         assert expected == self.state
         self.calls.append("cycle")
+
+    def restore(self):
+        assert self.worker.reserved
+        self.calls.append("restore")
+        self.recovery.adapter.restore_pending = False
 
     def tick(self, seconds=0):
         remaining = seconds
@@ -294,7 +301,7 @@ def bluez(monkeypatch):
     fake.Set = set_property
     monkeypatch.setattr(mod, "get_system_bus", lambda: SimpleNamespace(
         get_name_owner=lambda *_: fake.owner,
-        get_object=lambda *_: fake,
+        get_object=lambda *_, **_kwargs: fake,
     ))
     monkeypatch.setattr(mod.dbus, "Interface", lambda obj, _interface: obj)
     return adapter, fake
@@ -427,7 +434,7 @@ def test_removed_bond_forgets_eligibility_across_restart(h):
     assert not h.calls and not h.worker.jobs
 
 
-def test_timed_out_power_off_waits_for_transition_before_restoring(bluez, monkeypatch):
+def test_timed_out_power_off_waits_for_transition_before_restoring(bluez):
     adapter, fake = bluez
     before = adapter.read()
     original_set = fake.Set
@@ -440,22 +447,382 @@ def test_timed_out_power_off_waits_for_transition_before_restoring(bluez, monkey
         fake.props["PowerState"] = "on-disabling"
         raise RuntimeError("off reply timed out")
 
-    def settle(_delay):
-        fake.props.update(Powered=False, PowerState="off")
-
     fake.Set = delayed_off
-    monkeypatch.setattr(mod.time, "sleep", settle)
     with pytest.raises(RuntimeError, match="off reply timed out"):
         adapter.cycle(before, threading.Event())
+    assert adapter.restore_pending
+    assert fake.writes == [False]
+    # Still pending long after the original D-Bus deadline: never send another
+    # power-off or mistake Powered=true/on-disabling for restored power.
+    for _ in range(5):
+        adapter.restore()
+    assert adapter.restore_pending
+    assert fake.writes == [False]
+    fake.props.update(Powered=False, PowerState="off")
+    adapter.restore()
     assert fake.writes == [False, True]
+    assert not adapter.restore_pending
 
 
-def test_wait_for_power_transition_is_bounded(bluez, monkeypatch):
+def test_shutdown_restoration_wait_is_bounded(bluez, monkeypatch):
     adapter, fake = bluez
+    adapter._restore = adapter.read()
     fake.props["PowerState"] = "on-disabling"
     times = iter([100.0, 101.0, 131.0])
     monkeypatch.setattr(mod.time, "monotonic", lambda: next(times))
     monkeypatch.setattr(mod.time, "sleep", lambda _delay: None)
-    with pytest.raises(RuntimeError, match="transition did not finish"):
-        adapter._settled_power(fake)
+    adapter.finish_shutdown()
+    assert adapter.restore_pending
+    assert not fake.writes
+
+
+@pytest.mark.parametrize("failure", ["read-off", "read-on", "power-on"])
+def test_transient_restore_failure_is_retried_without_another_cycle(h, bluez, failure):
+    adapter, fake = bluez
+    h.recovery.adapter = adapter
+    h.prepare_cycle()
+    original_read = fake.GetManagedObjects
+    original_set = fake.Set
+    failed = False
+
+    def read(**kwargs):
+        nonlocal failed
+        if not failed and ((failure == "read-off" and fake.writes == [False])
+                           or (failure == "read-on" and fake.writes == [False, True])):
+            failed = True
+            raise RuntimeError("temporary read failure")
+        return original_read(**kwargs)
+
+    def power(interface, name, value, **kwargs):
+        nonlocal failed
+        if failure == "power-on" and value and not failed:
+            failed = True
+            raise RuntimeError("temporary Set failure before delivery")
+        original_set(interface, name, value, **kwargs)
+
+    fake.GetManagedObjects = read
+    fake.Set = power
+    h.worker.finish()
+    assert failed and adapter.restore_pending
+    assert h.recovery.active and h.worker.reserved
+    assert "resume" not in h.calls
+    record = h.settings.read()[mod.SETTINGS_KEY]
+    h.tick(10)
+    h.worker.finish()
+    assert not adapter.restore_pending
+    assert not h.recovery.active and not h.worker.reserved
+    assert h.calls[-1] == "resume"
+    assert fake.writes == [False, True]
+    assert fake.props["Powered"]
+    assert h.settings.read()[mod.SETTINGS_KEY] == record
+    h.tick(7200)
+    assert not h.worker.jobs
+
+
+def test_late_power_off_keeps_the_worker_reserved_until_restored(h, bluez):
+    adapter, fake = bluez
+    h.recovery.adapter = adapter
+    h.prepare_cycle()
+    original_set = fake.Set
+
+    def late_off(interface, name, value, **kwargs):
+        if value:
+            original_set(interface, name, value, **kwargs)
+        else:
+            fake.writes.append(False)
+            fake.props["PowerState"] = "on-disabling"
+            raise RuntimeError("off reply timed out")
+
+    fake.Set = late_off
+    h.worker.finish()
+    for _ in range(12):
+        h.tick(10)
+        assert len(h.worker.jobs) == 1
+        h.worker.finish()
+        assert h.recovery.active and h.worker.reserved
+        assert "resume" not in h.calls
+        assert fake.writes == [False]
+    fake.props.update(Powered=False, PowerState="off")
+    h.tick(10)
+    h.worker.finish()
+    assert fake.writes == [False, True]
+    assert not h.recovery.active and not h.worker.reserved
+    assert h.calls.count("pause") == h.calls.count("resume") == 1
+
+
+@pytest.mark.parametrize("change", ["owner", "address", "replug", "connection", "discovery"])
+def test_proxy_creation_cannot_hide_changes_before_power_off(bluez, monkeypatch, change):
+    adapter, fake = bluez
+    before = adapter.read()
+    peer = {"Connected": False, "Paired": False}
+    fake.objects[adapter.path + "/dev_00_00_00_00_00_01"] = {"org.bluez.Device1": peer}
+    bus = mod.get_system_bus()
+
+    def get_object(_owner, path, **kwargs):
+        assert kwargs == {"introspect": False}
+        if path == adapter.path:
+            if change == "owner":
+                fake.owner = ":1.3"
+            elif change == "address":
+                fake.props["Address"] = "00:00:00:00:00:99"
+            elif change == "replug":
+                # Even reinserting the same controller invalidates the snapshot.
+                adapter._interfaces_changed(adapter.path, ["org.bluez.Adapter1"])
+            elif change == "connection":
+                peer["Connected"] = True
+            else:
+                fake.props["Discovering"] = True
+        return fake
+
+    bus.get_object = get_object
+    monkeypatch.setattr(mod, "get_system_bus", lambda: bus)
+    with pytest.raises(RuntimeError, match="conditions changed"):
+        adapter.cycle(before, threading.Event())
+    assert not fake.writes and not adapter.restore_pending
+
+
+def test_signal_after_snapshot_cancels_power_request(bluez, monkeypatch):
+    adapter, fake = bluez
+    before = adapter.read()
+    original_read = adapter.read
+
+    def read():
+        result = original_read()
+        adapter._properties_changed("org.bluez.Device1", {"Connected": True}, [],
+                                    path=adapter.path + "/dev_00_00_00_00_00_01")
+        return result
+
+    monkeypatch.setattr(adapter, "read", read)
+    with pytest.raises(RuntimeError, match="conditions changed"):
+        adapter.cycle(before, threading.Event())
+    assert not fake.writes
+
+
+@pytest.mark.parametrize("bond", ["Paired", "Bonded"])
+def test_disconnected_bonded_peer_disables_automatic_cycling(bluez, bond):
+    adapter, fake = bluez
+    fake.objects[adapter.path + "/dev_00_00_00_00_00_01"] = {
+        "org.bluez.Device1": {"Connected": False, bond: True},
+    }
+    before = adapter.read()
+    assert not before.safe
+    with pytest.raises(RuntimeError, match="conditions changed"):
+        adapter.cycle(before, threading.Event())
+    assert not fake.writes
+
+
+def test_missing_power_transition_property_disables_cycling(bluez):
+    adapter, fake = bluez
+    fake.props.pop("PowerState")
+    before = adapter.read()
+    assert not before.safe
+    with pytest.raises(RuntimeError, match="conditions changed"):
+        adapter.cycle(before, threading.Event())
+    assert not fake.writes
+
+
+@pytest.mark.parametrize("change", ["owner", "replug", "rfkill"])
+def test_pending_restoration_abandons_a_replaced_or_blocked_controller(h, bluez, change):
+    adapter, fake = bluez
+    h.recovery.adapter = adapter
+    h.prepare_cycle()
+    original_set = fake.Set
+
+    def power(interface, name, value, **kwargs):
+        if value:
+            raise RuntimeError("temporary failure")
+        original_set(interface, name, value, **kwargs)
+
+    fake.Set = power
+    h.worker.finish()
+    assert h.recovery.active and adapter.restore_pending
+    fake.Set = original_set
+    if change == "owner":
+        adapter._owner_changed("org.bluez", fake.owner, ":1.3")
+    elif change == "replug":
+        adapter._interfaces_changed(adapter.path, ["org.bluez.Adapter1"])
+    else:
+        fake.props["PowerState"] = "off-blocked"
+    h.tick(10)
+    h.worker.finish()
+    assert fake.writes == [False]
+    assert not adapter.restore_pending and not h.recovery.active
+    assert not h.worker.reserved
+
+
+def test_successful_power_on_followed_by_user_power_off_is_not_reversed(bluez):
+    adapter, fake = bluez
+    before = adapter.read()
+    original_read = fake.GetManagedObjects
+
+    def read(**kwargs):
+        if fake.writes == [False, True]:
+            raise RuntimeError("temporary read failure")
+        return original_read(**kwargs)
+
+    fake.GetManagedObjects = read
+    with pytest.raises(RuntimeError, match="temporary read failure"):
+        adapter.cycle(before, threading.Event())
+    assert adapter.restore_pending
+    fake.GetManagedObjects = original_read
+    fake.props.update(Powered=False, PowerState="off")
+    with pytest.raises(RuntimeError, match="turned off after restoration"):
+        adapter.restore()
+    assert not adapter.restore_pending
+    assert fake.writes == [False, True]
+    assert not fake.props["Powered"]
+
+
+def test_shutdown_retries_restoration_after_the_main_loop_stops(bluez):
+    adapter, fake = bluez
+    adapter._restore = adapter.read()
+    fake.props.update(Powered=False, PowerState="off")
+    adapter.finish_shutdown()
+    assert fake.writes == [True]
+    assert fake.props["Powered"] and not adapter.restore_pending
+
+
+def test_cancel_after_power_off_still_restores_the_radio(bluez):
+    adapter, fake = bluez
+    before = adapter.read()
+    cancelled = threading.Event()
+    original_set = fake.Set
+
+    def power(*args, **kwargs):
+        original_set(*args, **kwargs)
+        cancelled.set()
+
+    fake.Set = power
+    adapter.cycle(before, cancelled)
+    assert fake.writes == [False, True]
+    assert not adapter.restore_pending
+
+
+def test_suspend_defers_pending_restore_work_until_resume(h):
+    h.prepare_cycle()
+    h.recovery.adapter.restore_pending = True
+    h.worker.finish(RuntimeError("restore delayed"))
+    h.recovery.invalidate(suspended=True)
+    h.tick(100)
+    assert not h.worker.jobs
+    assert h.recovery.active and h.worker.reserved
+    h.recovery.invalidate(suspended=False)
+    assert "resume" not in h.calls
+    h.tick(10)
+    h.worker.finish()
+    assert h.calls[-2:] == ["restore", "resume"]
+
+
+@pytest.mark.parametrize("event", ["adapter-property", "target-bond", "peer-bearer", "peer-added"])
+def test_monitored_changes_invalidate_even_an_identical_later_snapshot(bluez, monkeypatch, event):
+    adapter, fake = bluez
+    bus = mod.get_system_bus()
+    signals = {}
+    removed = []
+
+    def subscribe(callback, **kwargs):
+        signals[kwargs["signal_name"]] = callback
+        return SimpleNamespace(remove=lambda: removed.append(kwargs["signal_name"]))
+
+    bus.add_signal_receiver = subscribe
+    monkeypatch.setattr(mod, "get_system_bus", lambda: bus)
+    adapter.start_monitoring()
+    adapter.start_monitoring()
+    before = adapter.read()
+    # Signals may report changes which reverted before the final snapshot.
+    # The guard must remember these events, not merely compare property values.
+    properties = signals["PropertiesChanged"]
+    if event == "adapter-property":
+        properties("org.bluez.Adapter1", {}, ["Discovering"], path=adapter.path)
+    elif event == "target-bond":
+        properties("org.bluez.Device1", {"Bonded": False}, [], path=adapter.device_path)
+    elif event == "peer-bearer":
+        properties("org.bluez.Bearer.LE1", {"Connected": True}, [],
+                   path=adapter.path + "/dev_00_00_00_00_00_01")
+    else:
+        signals["InterfacesAdded"](adapter.path + "/dev_00_00_00_00_00_01",
+                                   {"org.bluez.Device1": {"Connected": False}})
+    assert adapter.read().safe
+    with pytest.raises(RuntimeError, match="conditions changed"):
+        adapter.cycle(before, threading.Event())
+    assert not fake.writes
+    adapter.stop_monitoring()
+    adapter.stop_monitoring()
+    assert sorted(removed) == sorted(signals)
+
+
+def test_unrelated_device_events_do_not_invalidate_recovery(bluez):
+    adapter, fake = bluez
+    before = adapter.read()
+    adapter._interfaces_changed("/org/bluez/hci0", ["org.bluez.Adapter1"])
+    adapter._properties_changed("org.bluez.Adapter1", {"Powered": False}, [],
+                                path="/org/bluez/hci0")
+    adapter._properties_changed("org.bluez.Device1", {"RSSI": -50}, [],
+                                path=adapter.device_path)
+    adapter._properties_changed("org.bluez.Device1", {"Connected": True}, [],
+                                path=adapter.device_path)
+    adapter.cycle(before, threading.Event())
+    assert fake.writes == [False, True]
+
+
+def test_monitor_registration_failure_cleans_up_and_does_not_enable_recovery(h, bluez, monkeypatch):
+    adapter, _fake = bluez
+    h.recovery.stop()
+    h.recovery.adapter = adapter
+    bus = mod.get_system_bus()
+    calls = []
+
+    def subscribe(_callback, **_kwargs):
+        calls.append("subscribe")
+        if len(calls) == 2:
+            raise RuntimeError("subscription failed")
+        return SimpleNamespace(remove=lambda: calls.append("remove"))
+
+    bus.add_signal_receiver = subscribe
+    monkeypatch.setattr(mod, "get_system_bus", lambda: bus)
+    with pytest.raises(RuntimeError, match="subscription failed"):
+        h.recovery.start()
+    h.ready_to_probe()
+    assert calls == ["subscribe", "subscribe", "remove"]
+    assert not h.worker.jobs
+
+
+def test_signal_during_inspection_discards_the_snapshot(bluez):
+    adapter, fake = bluez
+    original_read = fake.GetManagedObjects
+
+    def read(**kwargs):
+        objects = original_read(**kwargs)
+        adapter._properties_changed("org.bluez.Adapter1", {"Discoverable": True}, [],
+                                    path=adapter.path)
+        return objects
+
+    fake.GetManagedObjects = read
+    with pytest.raises(RuntimeError, match="changed during inspection"):
+        adapter.read()
+
+
+def test_shutdown_still_restores_after_a_read_error(bluez, monkeypatch):
+    adapter, fake = bluez
+    adapter._restore = adapter.read()
+    fake.props.update(Powered=False, PowerState="off")
+    original_read = fake.GetManagedObjects
+
+    def fail_once(**_kwargs):
+        fake.GetManagedObjects = original_read
+        raise RuntimeError("temporary read failure")
+
+    fake.GetManagedObjects = fail_once
+    monkeypatch.setattr(mod.time, "sleep", lambda _seconds: None)
+    adapter.finish_shutdown()
+    assert fake.writes == [True]
+    assert not adapter.restore_pending
+
+
+def test_second_power_cycle_is_refused_while_restoration_is_pending(bluez):
+    adapter, fake = bluez
+    before = adapter.read()
+    adapter._restore = before
+    with pytest.raises(RuntimeError, match="restoration is still pending"):
+        adapter.cycle(before, threading.Event())
     assert not fake.writes

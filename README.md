@@ -352,11 +352,17 @@ If messages work but names do not, use **Sync Contacts** or run
 If notifications previously worked with the same phone and adapter but stay
 unavailable for five minutes, BlueFerry can attempt one adapter power cycle.
 It first tries an LE-only reset and checks that the phone still answers a
-read-only MAP request. Automatic cycling is skipped while another Bluetooth
-device is connected, discovery is active, or BlueFerry is transferring data.
+read-only MAP request. Automatic cycling is skipped if another Bluetooth
+device is paired or connected to that adapter, discovery is active, or BlueFerry
+is transferring data. It also requires BlueZ to report power transitions.
 It also respects Bluetooth being turned off and explicit permission failures.
 The attempt limit survives backend restarts: another cycle requires ten minutes
 of verified notification connectivity, and cycles are at least an hour apart.
+If a power request times out, the running backend keeps checking the original
+controller and retries restoration without issuing another power-off request.
+Restoration stops if the controller is replaced, bluetoothd restarts, or rfkill
+blocks it. D-Bus cannot make checking an adapter and changing its power atomic;
+BlueFerry watches for changes and rechecks immediately before requesting power-off.
 Recovery decisions and failures appear in the backend journal.
 
 Pairing failures save a scrubbed report that can be attached to a GitHub issue.

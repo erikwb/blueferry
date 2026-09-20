@@ -488,7 +488,7 @@ class Daemon:
 
     def _on_prepare_for_sleep(self, sleeping) -> None:
         self.recovery.invalidate(suspended=bool(sleeping))
-        if bool(sleeping):
+        if bool(sleeping) or self.recovery.active:
             return
         log.info("system resumed — refreshing Bluetooth profile sessions")
         self.bearers.poke()
@@ -729,11 +729,15 @@ class Daemon:
         # state only; the D-Bus disconnect and the next open's stale cleanup
         # release whatever obexd still holds.
         self.obex_worker.shutdown(
-            cleanup=lambda: self.sessions.close_all(remove_remote=False),
+            cleanup=self._cleanup_bluetooth_worker,
         )
         self.storage.close()
         self.sessions.stop_monitoring()
         main_loop.quit()
+
+    def _cleanup_bluetooth_worker(self) -> None:
+        self.recovery.adapter.finish_shutdown()
+        self.sessions.close_all(remove_remote=False)
 
     def run(self) -> int:
         # `start()` must be inside the try.  A partially-completed startup can

@@ -34,6 +34,9 @@ class AdapterState:
     address: str
     powered: bool
     safe: bool
+    power_state: str = "on"
+    revision: int = 0
+    incarnation: int = 0
 
 
 class BluezRecoveryAdapter:
@@ -42,11 +45,92 @@ class BluezRecoveryAdapter:
     def __init__(self, adapter: str, phone: str) -> None:
         self.path = f"/org/bluez/{adapter}"
         self.device_path = f"{self.path}/dev_{phone.replace(':', '_')}"
+        self._revision = 0
+        self._incarnation = 0
+        self._matches: list = []
+        self._restore: AdapterState | None = None
+        self._power_on_replied = False
+
+    @property
+    def restore_pending(self) -> bool:
+        return self._restore is not None
+
+    def start_monitoring(self) -> None:
+        """Observe topology on GLib's connection before collecting evidence."""
+        if self._matches:
+            return
+        bus = get_system_bus()
+        try:
+            for signal in ("InterfacesAdded", "InterfacesRemoved"):
+                self._matches.append(bus.add_signal_receiver(
+                    self._interfaces_changed,
+                    dbus_interface="org.freedesktop.DBus.ObjectManager",
+                    signal_name=signal, bus_name="org.bluez", path="/",
+                ))
+            self._matches.append(bus.add_signal_receiver(
+                self._properties_changed,
+                dbus_interface="org.freedesktop.DBus.Properties",
+                signal_name="PropertiesChanged", bus_name="org.bluez",
+                path_keyword="path",
+            ))
+            self._matches.append(bus.add_signal_receiver(
+                self._owner_changed,
+                dbus_interface="org.freedesktop.DBus",
+                signal_name="NameOwnerChanged", bus_name="org.freedesktop.DBus",
+                arg0="org.bluez",
+            ))
+        except Exception:
+            self.stop_monitoring()
+            raise
+
+    def stop_monitoring(self) -> None:
+        for match in self._matches:
+            try:
+                match.remove()
+            except Exception:
+                log.debug("could not remove Bluetooth recovery monitor", exc_info=True)
+        self._matches.clear()
+
+    def _interfaces_changed(self, path, interfaces) -> None:
+        if path == self.path and "org.bluez.Adapter1" in interfaces:
+            self._incarnation += 1
+            self._revision += 1
+        elif str(path).startswith(self.path + "/") and any(
+            name in interfaces for name in (
+                "org.bluez.Device1", "org.bluez.Bearer.LE1", "org.bluez.Bearer.BREDR1",
+            )
+        ):
+            self._revision += 1
+
+    def _owner_changed(self, _name, _old, _new) -> None:
+        self._incarnation += 1
+        self._revision += 1
+
+    def _properties_changed(self, interface, changed, invalidated, *, path) -> None:
+        names = set(changed) | set(invalidated)
+        relevant = False
+        if path == self.path and interface == "org.bluez.Adapter1":
+            relevant = bool(names & {"Address", "Powered", "PowerState",
+                                     "Discovering", "Discoverable"})
+        elif str(path).startswith(self.path + "/"):
+            if interface == "org.bluez.Device1":
+                watched = {"Paired", "Bonded", "Blocked"}
+                if path != self.device_path:
+                    watched.add("Connected")
+                relevant = bool(names & watched)
+            elif path != self.device_path and interface in {
+                "org.bluez.Bearer.LE1", "org.bluez.Bearer.BREDR1",
+            }:
+                relevant = "Connected" in names
+        if relevant:
+            self._revision += 1
 
     def read(self) -> AdapterState:
+        revision = self._revision
+        incarnation = self._incarnation
         bus = get_system_bus()
         owner = str(bus.get_name_owner("org.bluez"))
-        manager = dbus.Interface(bus.get_object(owner, "/"),
+        manager = dbus.Interface(bus.get_object(owner, "/", introspect=False),
                                  "org.freedesktop.DBus.ObjectManager")
         objects = manager.GetManagedObjects(timeout=5.0)
         props = objects[self.path]["org.bluez.Adapter1"]
@@ -54,7 +138,9 @@ class BluezRecoveryAdapter:
         powered = bool(props["Powered"])
         safe = (
             powered
-            and str(props.get("PowerState", "on")) == "on"
+            # Without PowerState a timed-out Set(False) cannot be distinguished
+            # from an idle, powered controller. Do not start that transaction.
+            and str(props.get("PowerState", "")) == "on"
             and not props.get("Discovering", True)
             and not props.get("Discoverable", True)
             and bool(phone.get("Bonded", phone.get("Paired", False)))
@@ -66,54 +152,102 @@ class BluezRecoveryAdapter:
             device = interfaces.get("org.bluez.Device1")
             if device is not None and (
                 device.get("Connected", True)
+                or device.get("Paired", False)
+                or device.get("Bonded", False)
                 or interfaces.get("org.bluez.Bearer.LE1", {}).get("Connected", False)
                 or interfaces.get("org.bluez.Bearer.BREDR1", {}).get("Connected", False)
             ):
                 safe = False
-        return AdapterState(owner, str(props["Address"]).upper(), powered, safe)
+        if revision != self._revision:
+            raise RuntimeError("adapter topology changed during inspection")
+        return AdapterState(owner, str(props["Address"]).upper(), powered, safe,
+                            str(props.get("PowerState", "")), revision, incarnation)
+
+    def _properties(self, owner: str):
+        # Resolve the proxy before the final snapshot, and avoid asynchronous
+        # introspection inserting another round trip between that check and Set.
+        return dbus.Interface(
+            get_system_bus().get_object(owner, self.path, introspect=False),
+            "org.freedesktop.DBus.Properties",
+        )
 
     def cycle(self, expected: AdapterState, cancelled: threading.Event) -> None:
         """Run on the reserved worker; shutdown waits for the restore attempt.
 
-        Recheck just before power-off. A unique bus owner prevents an old
-        request from modifying a replacement bluetoothd; the controller address
-        prevents an hci index reused by another dongle from being powered on.
+        D-Bus has no atomic identity-check-and-Set operation. Resolve the proxy
+        first, recheck the snapshot and signal revision immediately before Set,
+        and decline shared adapters even when their other bonds are disconnected.
         """
+        if self.restore_pending:
+            raise RuntimeError("adapter power restoration is still pending")
+        props = self._properties(expected.owner)
         current = self.read()
-        if cancelled.is_set() or current != expected or not current.safe:
+        if (cancelled.is_set() or current != expected or not current.safe
+                or self._revision != current.revision):
             raise RuntimeError("adapter recovery conditions changed")
-        props = dbus.Interface(get_system_bus().get_object(expected.owner, self.path),
-                               "org.freedesktop.DBus.Properties")
+        # Set can reach BlueZ even when its reply times out. Keep restoration
+        # independent of the spent cycle budget until power is known to settle.
+        self._restore = expected
+        self._power_on_replied = False
         try:
             props.Set("org.bluez.Adapter1", "Powered", dbus.Boolean(False), timeout=15.0)
-            if self.read().powered:
-                raise RuntimeError("adapter did not power off")
         finally:
-            # Even a timed-out Set may have reached BlueZ. Restore only this
-            # transaction's controller, never a new owner or rfkill-blocked one.
-            # A pending power-off can outlive its D-Bus reply deadline. Wait for
-            # that transition before restoring power instead of treating the
-            # old Powered=true value as proof that restoration is unnecessary.
-            state = self._settled_power(props)
-            current = self.read()
-            if current.owner != expected.owner or current.address != expected.address:
-                raise RuntimeError("controller changed during Bluetooth recovery")
-            if not state["Powered"] and state.get("PowerState") != "off-blocked":
-                props.Set("org.bluez.Adapter1", "Powered", dbus.Boolean(True),
-                          timeout=15.0)
-            if not props.Get("org.bluez.Adapter1", "Powered", timeout=5.0):
-                raise RuntimeError("adapter power could not be restored")
+            self.restore()
 
-    @staticmethod
-    def _settled_power(props) -> dict:
+    def restore(self) -> None:
+        """One bounded attempt; transient failures retain the restoration intent.
+
+        Only the worker accesses this transaction. GLib checks restore_pending
+        after its completion and retries without ever sending another power-off.
+        """
+        expected = self._restore
+        if expected is None:
+            return
+        if self._incarnation != expected.incarnation:
+            self._restore = None
+            raise RuntimeError("controller changed during Bluetooth recovery")
+        props = self._properties(expected.owner)
+        current = self._restoration_state(expected)
+        if current.power_state not in {"on", "off"}:
+            return  # Includes pending transitions and missing/unknown state.
+        if not current.powered and current.power_state == "off":
+            if self._power_on_replied:
+                self._restore = None
+                raise RuntimeError("Bluetooth was turned off after restoration")
+            if self._incarnation != expected.incarnation:
+                self._restore = None
+                raise RuntimeError("controller changed during Bluetooth recovery")
+            props.Set("org.bluez.Adapter1", "Powered", dbus.Boolean(True), timeout=15.0)
+            self._power_on_replied = True
+            # A successful reply alone does not prove the final state. Read
+            # once more; an error or pending transition keeps restoration owed.
+            current = self._restoration_state(expected)
+        if current.powered and current.power_state == "on":
+            self._restore = None
+
+    def _restoration_state(self, expected: AdapterState) -> AdapterState:
+        current = self.read()
+        if (current.owner != expected.owner or current.address != expected.address
+                or current.incarnation != expected.incarnation):
+            self._restore = None
+            raise RuntimeError("controller changed during Bluetooth recovery")
+        if current.power_state == "off-blocked":
+            self._restore = None
+            raise RuntimeError("adapter power could not be restored: rfkill blocked")
+        return current
+
+    def finish_shutdown(self) -> None:
+        """Give an interrupted restoration a bounded final chance on the worker."""
         deadline = time.monotonic() + 30
-        while True:
-            state = dict(props.GetAll("org.bluez.Adapter1", timeout=5.0))
-            if state.get("PowerState") not in {"on-disabling", "off-enabling"}:
-                return state
-            if time.monotonic() >= deadline:
-                raise RuntimeError("adapter power transition did not finish")
-            time.sleep(0.2)
+        while self.restore_pending and time.monotonic() < deadline:
+            try:
+                self.restore()
+            except Exception:
+                log.debug("Bluetooth restoration during shutdown failed", exc_info=True)
+            if self.restore_pending:
+                time.sleep(0.2)
+        if self.restore_pending:
+            log.error("Bluetooth power restoration is unfinished at daemon shutdown")
 
 
 def probe_map(session_path: str) -> None:
@@ -182,12 +316,15 @@ class BluetoothRecovery:
         self._soft_reset_at: float | None = None
         self._probing = False
         self.active = False
+        self._operation_pending = False
+        self._restore_wait_logged = False
         self._resume_pending = False
         self._cancelled = threading.Event()
 
     def start(self) -> None:
         if self._running:
             return
+        self.adapter.start_monitoring()
         self._running = True
         self._timer = self._schedule(POLL_SECONDS, self._tick)
 
@@ -210,6 +347,7 @@ class BluetoothRecovery:
     def stop(self) -> None:
         self._running = False
         self.invalidate()
+        self.adapter.stop_monitoring()
         if self._timer is not None:
             self._cancel(self._timer)
             self._timer = None
@@ -250,7 +388,19 @@ class BluetoothRecovery:
     def _tick(self) -> bool:
         if not self._running:
             return False
-        if self._suspended or self.active:
+        if self._suspended:
+            return True
+        if self.active:
+            if not self._operation_pending:
+                self._operation_pending = True
+                try:
+                    self.worker.submit(
+                        self.adapter.restore, reserved=True,
+                        on_success=lambda _result: self._finished(None),
+                        on_error=self._finished,
+                    )
+                except Exception as error:
+                    self._finished(error)
             return True
         try:
             self._check()
@@ -371,6 +521,8 @@ class BluetoothRecovery:
             self.worker.release()
             return False
         self.active = True
+        self._operation_pending = True
+        self._restore_wait_logged = False
         self._cancelled = threading.Event()
         try:
             self._pause()
@@ -386,6 +538,17 @@ class BluetoothRecovery:
         return False
 
     def _finished(self, error: Exception | None) -> None:
+        self._operation_pending = False
+        if self.adapter.restore_pending:
+            # Keep profile traffic paused and the worker reserved. This is a
+            # continuation of the original transaction, not a second cycle.
+            if not self._restore_wait_logged:
+                log.warning("Bluetooth power restoration pending; retrying power-on only: %s",
+                            error or "power transition still in progress")
+                self._restore_wait_logged = True
+            elif error is not None:
+                log.debug("Bluetooth power restoration still pending: %s", error)
+            return
         self.active = False
         self.worker.release()
         self.invalidate(suspended=self._suspended)
