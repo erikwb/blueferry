@@ -311,9 +311,11 @@ stops the daemon's connection attempts.
   remain available when iOS rejects the other profile; in particular, a MAP
   refusal must not prevent PBAP contacts access.
 - Serialize blocking MAP/PBAP operations on one worker.
-- Defer automatic contact downloads until MAP connects. A bulk PBAP transfer
-  must not occupy the worker while the user enables message access and MAP
-  needs to retry. Explicit contact sync remains available with PBAP alone.
+- Give initial MAP retries up to three minutes before an automatic contact
+  download occupies the worker. Download sooner when MAP connects, and allow
+  PBAP-only automatic sync after the grace period even if MAP never connects.
+  Do not restart the grace period on retries or daily refreshes. Explicit
+  contact sync remains immediately available and satisfies a deferred pull.
 - Give MAP and PBAP separate private D-Bus owners. Before retrying a missing
   profile, close only its old connection so BlueZ discards that owner's stale
   or unfinished session. Route session, message, and transfer calls through

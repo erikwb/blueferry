@@ -67,6 +67,9 @@ def classic_reachable(bearers: BearerSupervisor, sessions: ProfileSessions) -> b
 
 # How often to re-pull the iPhone's phonebook (so the cache picks up new contacts)
 CONTACTS_REFRESH_SEC = 24 * 60 * 60  # 24h
+# Give initial MAP retries the permission window before starting a bulk PBAP
+# transfer, but keep contact sync available when only PBAP ever connects.
+CONTACTS_MAP_GRACE_SECONDS = 180
 
 # Notice package replacement promptly without relying on pacman to reach into
 # every logged-in user's systemd instance.
@@ -155,6 +158,8 @@ class Daemon:
         self._initializing = True
         self._contacts_refresh_pending = False
         self._contacts_refresh_deferred = False
+        self._contacts_map_wait_id: int | None = None
+        self._contacts_map_wait_finished = False
         self.profiles = ProfileSupervisor(
             self.sessions,
             self.obex_worker,
@@ -288,7 +293,7 @@ class Daemon:
         if self.storage.status.can_write:
             if self.contacts.count() > 0:
                 self._mark_setup_task(CONTACTS)
-            else:
+            if self.contacts.count() == 0 or self._contacts_refresh_deferred:
                 self._refresh_contacts()
         self._emit_status()
 
@@ -430,7 +435,7 @@ class Daemon:
     def _post_available_sessions_setup(self) -> None:
         """Start consumers for whichever OBEX profiles are currently live."""
         # Bulk PBAP transfers share the MAP worker. Defer automatic pulls
-        # until MAP is available so enabling messages can be retried promptly.
+        # during MAP's initial grace period so message access can retry promptly.
         if self.sessions.pbap is not None and (
             self.contacts.count() == 0 or self._contacts_refresh_deferred
         ):
@@ -477,6 +482,8 @@ class Daemon:
 
     def _contacts_pulled(self, pulled: int) -> int:
         """GLib-side cache refresh after a successful PBAP pull."""
+        # Manual sync also satisfies a deferred automatic refresh.
+        self._finish_contacts_map_wait()
         count = self.contacts.refresh()
         # Completing PullAll proves that the iPhone granted Sync Contacts,
         # even when its phonebook is empty.
@@ -539,10 +546,14 @@ class Daemon:
             or not self.storage.status.can_write
         ):
             return
-        if self.sessions.map is None:
+        if self.sessions.map is None and not self._contacts_map_wait_finished:
             self._contacts_refresh_deferred = True
+            if self._contacts_map_wait_id is None:
+                self._contacts_map_wait_id = GLib.timeout_add_seconds(
+                    CONTACTS_MAP_GRACE_SECONDS, self._resume_deferred_contacts,
+                )
             return
-        self._contacts_refresh_deferred = False
+        self._finish_contacts_map_wait()
         self._contacts_refresh_pending = True
 
         def succeeded(pulled):
@@ -558,6 +569,21 @@ class Daemon:
             self.obex_worker.submit(self._pull_contacts, on_success=succeeded, on_error=failed)
         except Exception as error:
             failed(error)
+
+    def _finish_contacts_map_wait(self) -> None:
+        self._contacts_map_wait_finished = True
+        self._contacts_refresh_deferred = False
+        if self._contacts_map_wait_id is not None:
+            GLib.source_remove(self._contacts_map_wait_id)
+            self._contacts_map_wait_id = None
+
+    def _resume_deferred_contacts(self) -> bool:
+        self._contacts_map_wait_id = None
+        self._contacts_map_wait_finished = True
+        # If PBAP or storage is unavailable at expiry, leave the deferred
+        # flag set so their recovery triggers the download without a new wait.
+        self._refresh_contacts()
+        return False
 
     def _periodic_refresh_contacts(self) -> bool:
         """GLib timeout callback. Return True to keep the timer running."""
@@ -628,6 +654,7 @@ class Daemon:
         self.profiles.stop()
         for tid_attr in (
             "_contacts_refresh_id",
+            "_contacts_map_wait_id",
             "_release_check_id",
             "_target_config_check_id",
             "_storage_retry_id",

@@ -97,6 +97,34 @@ def test_real_late_failure_does_not_leave_false_registered_state(advertising_man
     dispatch_until(bluez_setup.advert_registered)
 
 
+def test_retirement_cancels_real_pending_reply_dispatch(advertising_manager, monkeypatch):
+    manager = advertising_manager
+    received = []
+    registered = bluez_setup._AncsAdvert._registered
+
+    def record_reply(advert):
+        received.append(advert.path)
+        registered(advert)
+
+    monkeypatch.setattr(bluez_setup._AncsAdvert, '_registered', record_reply)
+    bluez_setup.register_advert('hci7')
+    assert isinstance(bluez_setup._advert_instance.request, dbus.lowlevel.PendingCall)
+    dispatch_until(lambda: manager.requests)
+    old_path, _, old_reply, _ = manager.requests[0]
+    bluez_setup.unregister_advert('hci7')
+    dispatch_until(lambda: old_path in manager.removed)
+    old_reply()
+
+    bluez_setup.register_advert('hci7')
+    dispatch_until(lambda: len(manager.requests) == 2)
+    new_path, _, new_reply, _ = manager.requests[1]
+    new_reply()
+    dispatch_until(bluez_setup.advert_registered)
+    # Both replies were sent on the same service connection. The old reply
+    # must be cancelled at D-Bus dispatch, not merely ignored in _registered.
+    assert received == [new_path]
+
+
 def test_real_obex_retry_releases_only_its_profile_owner():
     service_bus = dbus.SessionBus(private=True)
     service_bus.set_exit_on_disconnect(False)

@@ -181,22 +181,31 @@ def adverts(monkeypatch):
     requests, removed, dispatched = [], [], []
 
     class Manager:
-        def RegisterAdvertisement(self, path, options, **kwargs):
-            request = SimpleNamespace(path=str(path), options=options, **kwargs)
-            request.cancelled = False
-            def cancel():
-                request.cancelled = True
-            request.cancel = cancel
-            requests.append(request)
-            return request
+        bus_name = ':1.42'
 
         def UnregisterAdvertisement(self, path, **kwargs):
             assert kwargs['signature'] == 'o'
             removed.append(str(path))
 
+    def call_async(*, bus_name, object_path, dbus_interface, method, args, **kwargs):
+        assert bus_name == Manager.bus_name
+        assert object_path == '/org/bluez/hci7'
+        assert dbus_interface == 'org.bluez.LEAdvertisingManager1'
+        assert method == 'RegisterAdvertisement'
+        path, options = args
+        request = SimpleNamespace(path=str(path), options=options, **kwargs)
+        request.cancelled = False
+        def cancel():
+            request.cancelled = True
+        request.cancel = cancel
+        requests.append(request)
+        return request
+
     context = SimpleNamespace(iteration=lambda _block: dispatched.pop(0)() if dispatched else None)
     monkeypatch.setattr(bluez_setup, '_advert_instance', None)
-    monkeypatch.setattr(bluez_setup, 'get_system_bus', lambda: SimpleNamespace(get_object=lambda *a, **k: None))
+    monkeypatch.setattr(bluez_setup, 'get_system_bus', lambda: SimpleNamespace(
+        get_object=lambda *a, **k: None, call_async=call_async,
+    ))
     monkeypatch.setattr(bluez_setup.dbus, 'Interface', lambda *a: Manager())
     monkeypatch.setattr(bluez_setup.dbus.service.Object, '__init__', lambda *a: None)
     monkeypatch.setattr(bluez_setup.dbus.service.Object, 'remove_from_connection', lambda *a: None)

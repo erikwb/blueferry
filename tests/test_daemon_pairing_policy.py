@@ -313,12 +313,16 @@ def test_automatic_contacts_wait_for_map_but_manual_sync_still_works(monkeypatch
     value.storage = SimpleNamespace(status=SimpleNamespace(can_write=True))
     value._contacts_refresh_pending = False
     value._contacts_refresh_deferred = False
+    value._contacts_map_wait_id = None
+    value._contacts_map_wait_finished = False
     value._contacts_refresh_id = 1
     value.listener = object()
     value._pull_contacts = lambda: 42
     value._contacts_pulled = lambda n: n
     value._emit_status = lambda: None
     value.obex_worker = SimpleNamespace(submit=lambda operation, **handlers: jobs.append(operation))
+    monkeypatch.setattr(daemon.GLib, 'timeout_add_seconds', lambda *_args: 123)
+    monkeypatch.setattr(daemon.GLib, 'source_remove', lambda _: True)
     profiles = ProfileSupervisor(
         value.sessions, value.obex_worker, Connectivity(),
         on_ready=lambda: None, on_lost=lambda _: None, on_status=lambda: None,

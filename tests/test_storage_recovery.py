@@ -77,6 +77,8 @@ def recovery(tmp_path, monkeypatch):
     daemon._contacts_refresh_id = None
     daemon._contacts_refresh_pending = False
     daemon._contacts_refresh_deferred = False
+    daemon._contacts_map_wait_id = None
+    daemon._contacts_map_wait_finished = False
     daemon.listener = None
     daemon.sessions = SimpleNamespace(pbap=object(), map=None, report_error=lambda _error: None)
     daemon.obex_worker = _Queue()

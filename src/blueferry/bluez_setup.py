@@ -158,6 +158,7 @@ class _AncsAdvert(dbus.service.Object):
 
     def __init__(self, adapter: str, path: str) -> None:
         bus = get_system_bus()
+        self._bus = bus
         # Pin the proxy to this BlueZ owner. A late cleanup must never reach
         # a replacement bluetoothd. Explicit signatures avoid introspection.
         self.manager = dbus.Interface(
@@ -175,9 +176,16 @@ class _AncsAdvert(dbus.service.Object):
     def start(self) -> None:
         self.pending = True
         try:
-            self.request = self.manager.RegisterAdvertisement(
-                dbus.ObjectPath(self.path), dbus.Dictionary({}, signature="sv"),
+            # Proxy methods discard call_async's PendingCall. Use the
+            # connection API so retirement can really cancel reply dispatch,
+            # while retaining the proxy's pinned BlueZ owner for both calls.
+            self.request = self._bus.call_async(
+                bus_name=self.manager.bus_name,
+                object_path=f"/org/bluez/{self.adapter}",
+                dbus_interface="org.bluez.LEAdvertisingManager1",
+                method="RegisterAdvertisement",
                 signature="oa{sv}",
+                args=(dbus.ObjectPath(self.path), dbus.Dictionary({}, signature="sv")),
                 reply_handler=self._registered,
                 error_handler=self._failed,
                 timeout=float(ADVERT_ACTIVATION_TIMEOUT_SECONDS),

@@ -58,6 +58,9 @@ def _bare_daemon():
     instance._initialization_retry_id = None
     instance._target_config_check_id = None
     instance._storage_retry_id = None
+    instance._contacts_refresh_deferred = False
+    instance._contacts_map_wait_id = None
+    instance._contacts_map_wait_finished = False
     instance._initializing = True
     instance._running_release = "0.6.0-6"
     instance._running_build_sha = None
@@ -141,13 +144,15 @@ def test_stop_does_not_ask_obexd_to_remove_sessions(monkeypatch):
     monkeypatch.setattr(daemon_mod.main_loop, "quit", lambda: None)
     removed = []
     instance._storage_retry_id = 99
+    instance._contacts_map_wait_id = 98
     monkeypatch.setattr(daemon_mod.GLib, "source_remove", removed.append)
 
     instance.stop()
 
     assert closed == [{"remove_remote": False}]
-    assert removed == [99]
+    assert removed == [98, 99]
     assert instance._storage_retry_id is None
+    assert instance._contacts_map_wait_id is None
 
 
 def test_storage_poll_survives_a_transient_scheduling_failure():
@@ -245,7 +250,7 @@ def test_missing_bond_never_prepares_or_connects_bluetooth(monkeypatch):
     monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args: False)
     monkeypatch.setattr(
         daemon_mod.bluez_setup,
-        "prepare",
+        "prepare_classic",
         lambda: prepared.append(True),
     )
 
