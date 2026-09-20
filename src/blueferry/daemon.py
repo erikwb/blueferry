@@ -160,6 +160,7 @@ class Daemon:
         self._startup_id: int | None = None
         self._initialization_retry_id: int | None = None
         self._initializing = True
+        self._bluetooth_initialized = False
         self._contacts_refresh_pending = False
         self.profiles = ProfileSupervisor(
             self.sessions,
@@ -204,6 +205,8 @@ class Daemon:
         )
 
     def _pause_for_recovery(self) -> None:
+        if not self._bluetooth_initialized:
+            return  # Startup restoration precedes all Bluetooth supervision.
         self.adapter_class.stop()
         self.bearers.stop()
         self.profiles.pause()
@@ -213,6 +216,12 @@ class Daemon:
             self.ancs.observe_bearer_state(False)
 
     def _resume_after_recovery(self) -> None:
+        if not self._bluetooth_initialized:
+            # Startup restoration must finish before creating profile sessions
+            # or advertisements on a radio whose power-off may still be pending.
+            if self._initialization_retry_id is None:
+                self._initialization_retry_id = GLib.idle_add(self._initialize)
+            return
         self.adapter_class.start()
         self.solicitation.start()
         self.bearers.hold_le()
@@ -361,6 +370,10 @@ class Daemon:
         return False
 
     def _initialize_bluetooth(self) -> None:
+        if config.ANCS_ENABLED or self.recovery.adapter.restore_pending:
+            self.recovery.start()
+        if self.recovery.active or self.recovery.adapter.restore_pending:
+            return
         if bond_status(config.IPHONE_MAC, config.ADAPTER) is not True:
             raise PairingRequiredError(
                 "the saved iPhone is not currently paired; open a client to pair it"
@@ -423,8 +436,9 @@ class Daemon:
         # Signal subscriptions belong to the GLib thread; the blocking session
         # creation itself belongs to the serialized OBEX worker.
         self.profiles.start()
-        if config.ANCS_ENABLED:
-            self.recovery.start()
+        self._bluetooth_initialized = True
+        if not config.ANCS_ENABLED:
+            self.recovery.stop()
 
         if not self.profiles.ready:
             log.warning("=== BlueFerry running in DEGRADED mode ===")

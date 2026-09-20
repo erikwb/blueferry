@@ -48,6 +48,16 @@ def test_clear_verification_preserves_other_settings(tmp_path) -> None:
     }
 
 
+def test_forgetting_phone_discards_pending_power_restoration(tmp_path):
+    from blueferry.settings_store import BLUETOOTH_RESTORE_KEY
+
+    path = tmp_path / "settings.json"
+    settings = SettingsStore(path)
+    settings.update(**{BLUETOOTH_RESTORE_KEY: {"phase": "off"}})
+    clear_setup_verification(path)
+    assert settings.read()[BLUETOOTH_RESTORE_KEY] is None
+
+
 def test_forgetting_phone_clears_recovery_evidence_but_preserves_cooldown(tmp_path):
     path = tmp_path / "settings.json"
     settings = SettingsStore(path)

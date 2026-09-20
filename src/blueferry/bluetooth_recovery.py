@@ -7,13 +7,18 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 import dbus
 from gi.repository import GLib
 
 from blueferry.bus import get_system_bus, obex
 from blueferry.obex.worker import ObexWorker
-from blueferry.settings_store import BLUETOOTH_RECOVERY_KEY, SettingsStore
+from blueferry.settings_store import (
+    BLUETOOTH_RECOVERY_KEY,
+    BLUETOOTH_RESTORE_KEY,
+    SettingsStore,
+)
 
 log = logging.getLogger(__name__)
 
@@ -39,21 +44,90 @@ class AdapterState:
     incarnation: int = 0
 
 
+@dataclass
+class _PowerRestore:
+    expected: AdapterState
+    bus_id: str
+    instance: str
+    saw_off: bool = False
+    completed: bool = False
+
+
 class BluezRecoveryAdapter:
     """Use only the selected controller, pinned to its BlueZ owner and address."""
 
-    def __init__(self, adapter: str, phone: str) -> None:
+    def __init__(self, adapter: str, phone: str, *, settings: SettingsStore | None = None) -> None:
         self.path = f"/org/bluez/{adapter}"
         self.device_path = f"{self.path}/dev_{phone.replace(':', '_')}"
         self._revision = 0
         self._incarnation = 0
         self._matches: list = []
-        self._restore: AdapterState | None = None
-        self._power_on_replied = False
+        self._settings = settings or SettingsStore()
+        # The worker owns power requests; GLib can complete a transaction from
+        # a signal while a synchronous Set is still waiting for its reply.
+        # Never hold this lock across D-Bus calls.
+        self._restore_lock = threading.RLock()
+        raw = self._settings.read().get(BLUETOOTH_RESTORE_KEY)
+        self._restore = self._load_restore(raw)
+        self._stale_record = raw is not None and self._restore is None
 
     @property
     def restore_pending(self) -> bool:
-        return self._restore is not None
+        with self._restore_lock:
+            return self._restore is not None or self._stale_record
+
+    def _load_restore(self, raw) -> _PowerRestore | None:
+        if not isinstance(raw, dict) or raw.get("version") != 1:
+            return None
+        if raw.get("path") != self.path or raw.get("device") != self.device_path:
+            return None
+        if any(not isinstance(raw.get(key), str) or not raw[key]
+               for key in ("owner", "address", "bus_id", "instance")):
+            return None
+        if (not raw["owner"].startswith(":") or not isinstance(raw.get("phase"), str)
+                or raw["phase"] not in {"off", "on"}):
+            return None
+        try:
+            dbus.validate_bus_name(raw["owner"])
+        except (ValueError, TypeError):
+            return None
+        return _PowerRestore(
+            AdapterState(raw["owner"], raw["address"], True, True),
+            raw["bus_id"], raw["instance"],
+            saw_off=raw["phase"] == "on",
+        )
+
+    def _persist_restore(self, transaction: _PowerRestore, *, phase: str) -> None:
+        self._settings.update(**{BLUETOOTH_RESTORE_KEY: {
+            "version": 1, "path": self.path, "device": self.device_path,
+            "owner": transaction.expected.owner, "address": transaction.expected.address,
+            "bus_id": transaction.bus_id, "instance": transaction.instance, "phase": phase,
+        }})
+
+    def _complete_restore(self, transaction: _PowerRestore) -> None:
+        with self._restore_lock:
+            transaction.completed = True
+            if self._restore is transaction:
+                # Retain the completed latch if clearing the journal fails.
+                # Retrying that write must never switch a radio on again.
+                self._settings.update(**{BLUETOOTH_RESTORE_KEY: None})
+                self._restore = None
+
+    @staticmethod
+    def _bus_id() -> str:
+        proxy = get_system_bus().get_object(
+            "org.freedesktop.DBus", "/org/freedesktop/DBus", introspect=False,
+        )
+        return str(dbus.Interface(proxy, "org.freedesktop.DBus").GetId(
+            signature="", timeout=5.0,
+        ))
+
+    def _adapter_instance(self) -> str:
+        # The address can survive unplug/replug while the daemon is stopped.
+        # The kernel's adapter directory identifies that particular insertion;
+        # the bus UUID independently prevents reuse across system-bus restarts.
+        info = (Path("/sys/class/bluetooth") / self.path.rsplit("/", 1)[1]).stat()
+        return f"{info.st_dev}:{info.st_ino}"
 
     def start_monitoring(self) -> None:
         """Observe topology on GLib's connection before collecting evidence."""
@@ -112,6 +186,17 @@ class BluezRecoveryAdapter:
         if path == self.path and interface == "org.bluez.Adapter1":
             relevant = bool(names & {"Address", "Powered", "PowerState",
                                      "Discovering", "Discoverable"})
+            with self._restore_lock:
+                transaction = self._restore
+                if transaction is not None and "Powered" in changed:
+                    if not changed["Powered"]:
+                        transaction.saw_off = True
+                    elif transaction.saw_off:
+                        try:
+                            self._complete_restore(transaction)
+                        except (OSError, ValueError):
+                            log.warning("could not clear completed Bluetooth restoration",
+                                        exc_info=True)
         elif str(path).startswith(self.path + "/"):
             if interface == "org.bluez.Device1":
                 watched = {"Paired", "Bonded", "Blocked"}
@@ -181,58 +266,105 @@ class BluezRecoveryAdapter:
         if self.restore_pending:
             raise RuntimeError("adapter power restoration is still pending")
         props = self._properties(expected.owner)
-        current = self.read()
-        if (cancelled.is_set() or current != expected or not current.safe
-                or self._revision != current.revision):
-            raise RuntimeError("adapter recovery conditions changed")
-        # Set can reach BlueZ even when its reply times out. Keep restoration
-        # independent of the spent cycle budget until power is known to settle.
-        self._restore = expected
-        self._power_on_replied = False
+        transaction = _PowerRestore(expected, self._bus_id(), self._adapter_instance())
+        with self._restore_lock:
+            # Journal before dispatch, independently of the spent attempt.
+            # Failure here forbids power-off, including after a process restart.
+            self._persist_restore(transaction, phase="off")
+            self._restore = transaction
         try:
-            props.Set("org.bluez.Adapter1", "Powered", dbus.Boolean(False), timeout=15.0)
+            if self._adapter_instance() != transaction.instance:
+                raise RuntimeError("adapter recovery conditions changed")
+            current = self.read()
+            if (cancelled.is_set() or current != expected or not current.safe
+                    or self._revision != current.revision or transaction.completed):
+                raise RuntimeError("adapter recovery conditions changed")
+        except Exception:
+            self._complete_restore(transaction)  # No power request was sent.
+            raise
+        try:
+            props.Set("org.bluez.Adapter1", "Powered", dbus.Boolean(False),
+                      signature="ssv", timeout=15.0)
         finally:
             self.restore()
 
     def restore(self) -> None:
         """One bounded attempt; transient failures retain the restoration intent.
 
-        Only the worker accesses this transaction. GLib checks restore_pending
-        after its completion and retries without ever sending another power-off.
+        GLib may observe completion while the worker waits for a reply. The
+        completed latch and journal cleanup are shared under _restore_lock.
         """
-        expected = self._restore
-        if expected is None:
-            return
-        if self._incarnation != expected.incarnation:
-            self._restore = None
-            raise RuntimeError("controller changed during Bluetooth recovery")
+        with self._restore_lock:
+            if self._stale_record:
+                self._settings.update(**{BLUETOOTH_RESTORE_KEY: None})
+                self._stale_record = False
+            transaction = self._restore
+            if transaction is None:
+                return
+            if transaction.completed:
+                self._complete_restore(transaction)
+                return
+        expected = transaction.expected
+        if self._bus_id() != transaction.bus_id:
+            self._complete_restore(transaction)
+            raise RuntimeError("system bus changed during Bluetooth recovery")
         props = self._properties(expected.owner)
-        current = self._restoration_state(expected)
+        current = self._restoration_state(transaction)
         if current.power_state not in {"on", "off"}:
             return  # Includes pending transitions and missing/unknown state.
         if not current.powered and current.power_state == "off":
-            if self._power_on_replied:
-                self._restore = None
-                raise RuntimeError("Bluetooth was turned off after restoration")
-            if self._incarnation != expected.incarnation:
-                self._restore = None
-                raise RuntimeError("controller changed during Bluetooth recovery")
-            props.Set("org.bluez.Adapter1", "Powered", dbus.Boolean(True), timeout=15.0)
-            self._power_on_replied = True
-            # A successful reply alone does not prove the final state. Read
-            # once more; an error or pending transition keeps restoration owed.
-            current = self._restoration_state(expected)
+            with self._restore_lock:
+                if transaction.completed:
+                    self._complete_restore(transaction)
+                    return
+                if self._incarnation != expected.incarnation:
+                    self._complete_restore(transaction)
+                    raise RuntimeError("controller changed during Bluetooth recovery")
+                # An on signal can complete restoration even if Set's reply is
+                # lost. Seeing off first excludes old on signals from preflight.
+                transaction.saw_off = True
+                self._persist_restore(transaction, phase="on")
+            # Journal I/O precedes the last identity check too: a slow disk
+            # must not create a large gap between inspection and the request.
+            current = self._restoration_state(transaction)
+            if transaction.completed or current.powered or current.power_state != "off":
+                if transaction.completed or (current.powered and current.power_state == "on"):
+                    self._complete_restore(transaction)
+                return
+            props.Set("org.bluez.Adapter1", "Powered", dbus.Boolean(True),
+                      signature="ssv", timeout=15.0)
+            # BlueZ acknowledges Set only after completing its power request.
+            # A subsequent user power-off must not become another restore.
+            self._complete_restore(transaction)
+            return
         if current.powered and current.power_state == "on":
-            self._restore = None
+            self._complete_restore(transaction)
 
-    def _restoration_state(self, expected: AdapterState) -> AdapterState:
-        current = self.read()
+    def _restoration_state(self, transaction: _PowerRestore) -> AdapterState:
+        expected = transaction.expected
+        try:
+            instance = self._adapter_instance()
+            if instance != transaction.instance or self._incarnation != expected.incarnation:
+                self._complete_restore(transaction)
+                raise RuntimeError("controller changed during Bluetooth recovery")
+            current = self.read()
+        except (FileNotFoundError, KeyError):
+            self._complete_restore(transaction)
+            raise RuntimeError("controller disappeared during Bluetooth recovery")
+        except dbus.exceptions.DBusException as error:
+            if error.get_dbus_name() in {
+                "org.freedesktop.DBus.Error.NameHasNoOwner",
+                "org.freedesktop.DBus.Error.ServiceUnknown",
+                "org.freedesktop.DBus.Error.UnknownObject",
+            }:
+                self._complete_restore(transaction)
+            raise
         if (current.owner != expected.owner or current.address != expected.address
                 or current.incarnation != expected.incarnation):
-            self._restore = None
+            self._complete_restore(transaction)
             raise RuntimeError("controller changed during Bluetooth recovery")
         if current.power_state == "off-blocked":
-            self._restore = None
+            self._complete_restore(transaction)
             raise RuntimeError("adapter power could not be restored: rfkill blocked")
         return current
 
@@ -327,6 +459,32 @@ class BluetoothRecovery:
         self.adapter.start_monitoring()
         self._running = True
         self._timer = self._schedule(POLL_SECONDS, self._tick)
+        if self.adapter.restore_pending:
+            self._continue_restoration()
+
+    def _continue_restoration(self) -> None:
+        if not self.active:
+            if not self.worker.reserve_if_idle():
+                return
+            self.active = True
+            self._restore_wait_logged = False
+            try:
+                self._pause()
+            except Exception as error:
+                self._finished(error)
+                return
+            log.info("finishing an interrupted Bluetooth power restoration")
+        if self._operation_pending:
+            return
+        self._operation_pending = True
+        try:
+            self.worker.submit(
+                self.adapter.restore, reserved=True,
+                on_success=lambda _result: self._finished(None),
+                on_error=self._finished,
+            )
+        except Exception as error:
+            self._finished(error)
 
     def invalidate(self, *, suspended: bool | None = None) -> None:
         """Discard observations across sleep, owner changes, and user power-off."""
@@ -390,17 +548,8 @@ class BluetoothRecovery:
             return False
         if self._suspended:
             return True
-        if self.active:
-            if not self._operation_pending:
-                self._operation_pending = True
-                try:
-                    self.worker.submit(
-                        self.adapter.restore, reserved=True,
-                        on_success=lambda _result: self._finished(None),
-                        on_error=self._finished,
-                    )
-                except Exception as error:
-                    self._finished(error)
+        if self.active or self.adapter.restore_pending:
+            self._continue_restoration()
             return True
         try:
             self._check()

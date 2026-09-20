@@ -62,10 +62,10 @@ class Harness:
         self.idles = []
         self.create()
 
-    def create(self):
+    def create(self, adapter=None):
         self.recovery = mod.BluetoothRecovery(
             PHONE,
-            SimpleNamespace(read=lambda: self.state, cycle=self.cycle,
+            adapter or SimpleNamespace(read=lambda: self.state, cycle=self.cycle,
                             restore_pending=False, restore=self.restore,
                             start_monitoring=lambda: None, stop_monitoring=lambda: None),
             self.worker,
@@ -280,13 +280,15 @@ def test_clock_rollback_and_corrupt_limit_fail_closed(h):
 
 
 @pytest.fixture
-def bluez(monkeypatch):
-    adapter = mod.BluezRecoveryAdapter("hci1", PHONE)
+def bluez(monkeypatch, tmp_path):
+    adapter = mod.BluezRecoveryAdapter("hci1", PHONE,
+                                      settings=SettingsStore(tmp_path / "radio-settings.json"))
     props = {"Address": RADIO, "Powered": True, "Discovering": False,
              "Discoverable": False, "PowerState": "on"}
     objects = {adapter.path: {"org.bluez.Adapter1": props},
                adapter.device_path: {"org.bluez.Device1": {"Paired": True}}}
-    fake = SimpleNamespace(props=props, objects=objects, writes=[], owner=":1.2", fail_off=False)
+    fake = SimpleNamespace(props=props, objects=objects, writes=[], owner=":1.2", fail_off=False,
+                           bus_id="test-system-bus", instance="test-adapter-insertion")
 
     def set_property(_interface, _name, value, **_kwargs):
         fake.writes.append(bool(value))
@@ -296,14 +298,17 @@ def bluez(monkeypatch):
             raise RuntimeError("reply lost after powering off")
 
     fake.GetManagedObjects = lambda **_kwargs: objects
+    fake.GetId = lambda **_kwargs: fake.bus_id
     fake.GetAll = lambda *_args, **_kwargs: props
     fake.Get = lambda _interface, name, **_kwargs: props[name]
     fake.Set = set_property
     monkeypatch.setattr(mod, "get_system_bus", lambda: SimpleNamespace(
         get_name_owner=lambda *_: fake.owner,
         get_object=lambda *_, **_kwargs: fake,
+        add_signal_receiver=lambda *_, **_kwargs: SimpleNamespace(remove=lambda: None),
     ))
     monkeypatch.setattr(mod.dbus, "Interface", lambda obj, _interface: obj)
+    monkeypatch.setattr(mod.BluezRecoveryAdapter, "_adapter_instance", lambda _self: fake.instance)
     return adapter, fake
 
 
@@ -466,7 +471,7 @@ def test_timed_out_power_off_waits_for_transition_before_restoring(bluez):
 
 def test_shutdown_restoration_wait_is_bounded(bluez, monkeypatch):
     adapter, fake = bluez
-    adapter._restore = adapter.read()
+    adapter._restore = mod._PowerRestore(adapter.read(), fake.bus_id, fake.instance)
     fake.props["PowerState"] = "on-disabling"
     times = iter([100.0, 101.0, 131.0])
     monkeypatch.setattr(mod.time, "monotonic", lambda: next(times))
@@ -476,7 +481,7 @@ def test_shutdown_restoration_wait_is_bounded(bluez, monkeypatch):
     assert not fake.writes
 
 
-@pytest.mark.parametrize("failure", ["read-off", "read-on", "power-on"])
+@pytest.mark.parametrize("failure", ["read-off", "power-on"])
 def test_transient_restore_failure_is_retried_without_another_cycle(h, bluez, failure):
     adapter, fake = bluez
     h.recovery.adapter = adapter
@@ -661,13 +666,11 @@ def test_successful_power_on_followed_by_user_power_off_is_not_reversed(bluez):
         return original_read(**kwargs)
 
     fake.GetManagedObjects = read
-    with pytest.raises(RuntimeError, match="temporary read failure"):
-        adapter.cycle(before, threading.Event())
-    assert adapter.restore_pending
+    adapter.cycle(before, threading.Event())
+    assert not adapter.restore_pending
     fake.GetManagedObjects = original_read
     fake.props.update(Powered=False, PowerState="off")
-    with pytest.raises(RuntimeError, match="turned off after restoration"):
-        adapter.restore()
+    adapter.restore()
     assert not adapter.restore_pending
     assert fake.writes == [False, True]
     assert not fake.props["Powered"]
@@ -675,7 +678,7 @@ def test_successful_power_on_followed_by_user_power_off_is_not_reversed(bluez):
 
 def test_shutdown_retries_restoration_after_the_main_loop_stops(bluez):
     adapter, fake = bluez
-    adapter._restore = adapter.read()
+    adapter._restore = mod._PowerRestore(adapter.read(), fake.bus_id, fake.instance)
     fake.props.update(Powered=False, PowerState="off")
     adapter.finish_shutdown()
     assert fake.writes == [True]
@@ -804,7 +807,7 @@ def test_signal_during_inspection_discards_the_snapshot(bluez):
 
 def test_shutdown_still_restores_after_a_read_error(bluez, monkeypatch):
     adapter, fake = bluez
-    adapter._restore = adapter.read()
+    adapter._restore = mod._PowerRestore(adapter.read(), fake.bus_id, fake.instance)
     fake.props.update(Powered=False, PowerState="off")
     original_read = fake.GetManagedObjects
 
@@ -822,7 +825,227 @@ def test_shutdown_still_restores_after_a_read_error(bluez, monkeypatch):
 def test_second_power_cycle_is_refused_while_restoration_is_pending(bluez):
     adapter, fake = bluez
     before = adapter.read()
-    adapter._restore = before
+    adapter._restore = mod._PowerRestore(before, fake.bus_id, fake.instance)
     with pytest.raises(RuntimeError, match="restoration is still pending"):
         adapter.cycle(before, threading.Event())
+    assert not fake.writes
+
+
+@pytest.mark.parametrize("signal_before_error", [False, True])
+def test_observed_power_on_completes_a_lost_reply_before_user_power_off(bluez, signal_before_error):
+    adapter, fake = bluez
+    expected = adapter.read()
+    original_set = fake.Set
+
+    def lost_on_reply(interface, name, value, **kwargs):
+        original_set(interface, name, value, **kwargs)
+        if value:
+            if signal_before_error:
+                adapter._properties_changed("org.bluez.Adapter1", {"Powered": True}, [],
+                                            path=adapter.path)
+            raise RuntimeError("power-on reply lost after success")
+
+    fake.Set = lost_on_reply
+    with pytest.raises(RuntimeError, match="reply lost"):
+        adapter.cycle(expected, threading.Event())
+    if not signal_before_error:
+        assert adapter.restore_pending
+        adapter._properties_changed("org.bluez.Adapter1", {"Powered": True}, [],
+                                    path=adapter.path)
+    assert not adapter.restore_pending
+    fake.props.update(Powered=False, PowerState="off")
+    adapter._properties_changed("org.bluez.Adapter1", {"Powered": False}, [], path=adapter.path)
+    fake.Set = original_set
+    adapter.restore()
+    assert fake.writes == [False, True]
+    assert not fake.props["Powered"]
+    restarted = mod.BluezRecoveryAdapter("hci1", PHONE, settings=adapter._settings)
+    assert not restarted.restore_pending
+
+
+def test_old_on_signal_does_not_discard_a_pending_power_off(bluez):
+    adapter, fake = bluez
+    expected = adapter.read()
+
+    def delayed_off(*_args, **_kwargs):
+        fake.writes.append(False)
+        fake.props["PowerState"] = "on-disabling"
+        adapter._properties_changed("org.bluez.Adapter1", {"Powered": True}, [], path=adapter.path)
+        raise RuntimeError("off reply timed out")
+
+    fake.Set = delayed_off
+    with pytest.raises(RuntimeError, match="timed out"):
+        adapter.cycle(expected, threading.Event())
+    assert adapter.restore_pending
+
+
+def test_shutdown_deadline_keeps_restoration_durable_for_the_next_daemon(h, bluez, monkeypatch):
+    adapter, fake = bluez
+    h.recovery.adapter = adapter
+    h.prepare_cycle()
+    original_set = fake.Set
+
+    def delayed_off(_interface, _name, value, **_kwargs):
+        assert not value
+        fake.writes.append(False)
+        fake.props["PowerState"] = "on-disabling"
+        raise RuntimeError("off reply timed out")
+
+    fake.Set = delayed_off
+    h.worker.finish()
+    h.recovery.stop()
+    times = iter([100, 101, 131])
+    monkeypatch.setattr(mod.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(mod.time, "sleep", lambda _seconds: None)
+    adapter.finish_shutdown()
+    assert adapter.restore_pending
+    budget = h.settings.read()[mod.SETTINGS_KEY]
+    fake.props.update(Powered=False, PowerState="off")
+    fake.Set = original_set
+    # New adapter, recovery coordinator, and worker; only disk state survives.
+    restarted = mod.BluezRecoveryAdapter("hci1", PHONE, settings=adapter._settings)
+    assert restarted.restore_pending
+    h.worker = Worker()
+    h.create(adapter=restarted)
+    assert h.recovery.active and h.worker.reserved
+    assert h.calls[-1] == "pause"
+    h.worker.finish()
+    assert fake.writes == [False, True]
+    assert fake.props["Powered"] and not restarted.restore_pending
+    assert not h.recovery.active and not h.worker.reserved
+    assert h.calls[-1] == "resume"
+    assert h.settings.read()[mod.SETTINGS_KEY] == budget
+    assert adapter._settings.read()[mod.BLUETOOTH_RESTORE_KEY] is None
+
+
+@pytest.mark.parametrize("change", ["bus", "owner", "address", "insertion", "missing", "rfkill", "phone", "path"])
+def test_durable_restoration_never_targets_a_changed_identity(bluez, change):
+    adapter, fake = bluez
+    expected = adapter.read()
+    original_set = fake.Set
+
+    def fail_on(interface, name, value, **kwargs):
+        if value:
+            raise RuntimeError("power-on temporarily failed")
+        original_set(interface, name, value, **kwargs)
+
+    fake.Set = fail_on
+    with pytest.raises(RuntimeError, match="temporarily failed"):
+        adapter.cycle(expected, threading.Event())
+    fake.Set = original_set
+    if change == "bus":
+        fake.bus_id = "replacement-system-bus"
+    elif change == "owner":
+        fake.owner = ":1.99"
+    elif change == "address":
+        fake.props["Address"] = "00:00:00:00:00:99"
+    elif change == "insertion":
+        fake.instance = "same-dongle-new-insertion"
+    elif change == "missing":
+        del fake.objects[adapter.path]
+    elif change == "rfkill":
+        fake.props["PowerState"] = "off-blocked"
+    restarted = mod.BluezRecoveryAdapter(
+        "hci2" if change == "path" else "hci1",
+        "00:00:00:00:00:01" if change == "phone" else PHONE,
+        settings=adapter._settings,
+    )
+    if change in {"phone", "path"}:
+        restarted.restore()  # Invalid journal is removed without any D-Bus mutation.
+    else:
+        with pytest.raises(RuntimeError):
+            restarted.restore()
+    assert not restarted.restore_pending
+    assert fake.writes == [False]
+    assert adapter._settings.read()[mod.BLUETOOTH_RESTORE_KEY] is None
+
+
+def test_failed_journal_write_prevents_power_off(bluez, monkeypatch):
+    adapter, fake = bluez
+
+    def fail(**_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(adapter._settings, "update", fail)
+    with pytest.raises(OSError, match="disk full"):
+        adapter.cycle(adapter.read(), threading.Event())
+    assert not fake.writes and not adapter.restore_pending
+
+
+@pytest.mark.parametrize("on_was_delivered", [False, True])
+def test_restart_finishes_an_unacknowledged_power_on_without_another_cycle(bluez, on_was_delivered):
+    adapter, fake = bluez
+    original_set = fake.Set
+
+    def uncertain_on(interface, name, value, **kwargs):
+        if value:
+            if on_was_delivered:
+                original_set(interface, name, value, **kwargs)
+            raise RuntimeError("no power-on reply")
+        original_set(interface, name, value, **kwargs)
+
+    fake.Set = uncertain_on
+    with pytest.raises(RuntimeError, match="no power-on reply"):
+        adapter.cycle(adapter.read(), threading.Event())
+    assert adapter.restore_pending
+    fake.Set = original_set
+    restarted = mod.BluezRecoveryAdapter("hci1", PHONE, settings=adapter._settings)
+    restarted.restore()
+    assert fake.writes == [False, True]
+    assert fake.props["Powered"]
+    assert not restarted.restore_pending
+    assert adapter._settings.read()[mod.BLUETOOTH_RESTORE_KEY] is None
+
+
+@pytest.mark.parametrize("via_signal", [False, True])
+def test_failed_completion_write_retries_only_the_journal_after_user_power_off(bluez, monkeypatch, via_signal):
+    adapter, fake = bluez
+    original_update = adapter._settings.update
+    original_set = fake.Set
+
+    def fail_clear(**kwargs):
+        if kwargs.get(mod.BLUETOOTH_RESTORE_KEY, "absent") is None:
+            raise OSError("cannot clear journal")
+        original_update(**kwargs)
+
+    def power(interface, name, value, **kwargs):
+        original_set(interface, name, value, **kwargs)
+        if value and via_signal:
+            adapter._properties_changed("org.bluez.Adapter1", {"Powered": True}, [], path=adapter.path)
+            raise RuntimeError("on reply lost")
+
+    fake.Set = power
+    monkeypatch.setattr(adapter._settings, "update", fail_clear)
+    with pytest.raises((OSError, RuntimeError)):
+        adapter.cycle(adapter.read(), threading.Event())
+    assert adapter.restore_pending
+    fake.props.update(Powered=False, PowerState="off")
+    monkeypatch.setattr(adapter._settings, "update", original_update)
+    adapter.restore()
+    assert not adapter.restore_pending
+    assert fake.writes == [False, True]
+    assert not fake.props["Powered"]
+
+
+def test_startup_restoration_waits_for_an_idle_worker_without_spending_a_new_attempt(h):
+    h.recovery.stop()
+    h.worker.busy = True
+    h.recovery.adapter.restore_pending = True
+    h.recovery.start()
+    assert not h.worker.jobs and not h.recovery.active
+    h.worker.busy = False
+    h.tick(10)
+    assert h.recovery.active and h.worker.reserved
+    h.worker.finish()
+    assert h.calls == ["pause", "restore", "resume"]
+    assert h.settings.read()[mod.SETTINGS_KEY]["spent"] is False
+
+
+@pytest.mark.parametrize("raw", [{}, [], {"version": 1, "path": "/org/bluez/hci1", "device": "/org/bluez/hci1/dev_11_22_33_44_55_66", "owner": ":1.2", "address": RADIO, "bus_id": "test", "instance": "test", "phase": []}])
+def test_malformed_restoration_journal_is_discarded_without_power_changes(bluez, raw):
+    adapter, fake = bluez
+    adapter._settings.update(**{mod.BLUETOOTH_RESTORE_KEY: raw})
+    restarted = mod.BluezRecoveryAdapter("hci1", PHONE, settings=adapter._settings)
+    restarted.restore()
+    assert not restarted.restore_pending
     assert not fake.writes

@@ -79,7 +79,9 @@ def _daemon(calls):
     value = daemon.Daemon.__new__(daemon.Daemon)
     value.recovery = SimpleNamespace(
         active=False,
+        adapter=SimpleNamespace(restore_pending=False),
         start=lambda: calls.append("recovery-start"),
+        stop=lambda: None,
         invalidate=lambda **_kwargs: calls.append("recovery-invalidate"),
     )
     value.bearers = _Bearer(calls)
@@ -97,6 +99,8 @@ def _daemon(calls):
     value.ancs = None
     value._dbus_service = None
     value._watch_sleep_resume = lambda: calls.append("sleep-watch")
+    value._bluetooth_initialized = True
+    value._initialization_retry_id = None
     return value
 
 
@@ -262,6 +266,28 @@ def test_wake_does_not_resume_profiles_while_power_restoration_is_pending():
     value.bearers.poke = lambda: calls.append("bearers-poke")
     value._on_prepare_for_sleep(False)
     assert calls == ["recovery-invalidate"]
+
+
+def test_startup_waits_for_saved_restoration_before_any_bluetooth_setup(monkeypatch):
+    calls = []
+    value = _daemon(calls)
+    value._bluetooth_initialized = False
+    value.recovery.adapter.restore_pending = True
+    # Restoring an already-issued operation also applies if ANCS was disabled
+    # between the previous daemon's shutdown and this startup.
+    monkeypatch.setattr(daemon.config, "ANCS_ENABLED", False)
+    value._initialize_bluetooth()
+    assert calls == ["recovery-start"]
+    value._pause_for_recovery()
+    assert calls == ["recovery-start"]
+    scheduled = []
+    monkeypatch.setattr(daemon.GLib, "idle_add", lambda callback: scheduled.append(callback) or 42)
+    value.recovery.adapter.restore_pending = False
+    value._resume_after_recovery()
+    value._resume_after_recovery()
+    assert scheduled == [value._initialize]
+    assert value._initialization_retry_id == 42
+    assert calls == ["recovery-start"]
 
 
 def test_recovery_pause_and_resume_keep_map_first_order():

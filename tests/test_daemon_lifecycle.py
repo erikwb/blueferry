@@ -17,8 +17,8 @@ def _ignore_the_hosts_installed_build_sha(monkeypatch):
 def _bare_daemon():
     instance = object.__new__(daemon_mod.Daemon)
     instance.recovery = SimpleNamespace(
-        stop=lambda: None, forget_phone=lambda: None,
-        adapter=SimpleNamespace(finish_shutdown=lambda: None),
+        active=False, start=lambda: None, stop=lambda: None, forget_phone=lambda: None,
+        adapter=SimpleNamespace(finish_shutdown=lambda: None, restore_pending=False),
     )
     instance._power_match = None
     instance.sessions = object()
