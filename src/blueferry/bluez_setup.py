@@ -16,6 +16,7 @@ Bluetooth reset without granting raw Bluetooth capabilities to BlueFerry.
 """
 from __future__ import annotations
 
+import itertools
 import logging
 import os
 import time
@@ -24,6 +25,7 @@ from typing import Any
 import dbus
 import dbus.exceptions
 import dbus.service
+from gi.repository import GLib
 
 from blueferry import config
 from blueferry.bus import bluez, get_system_bus
@@ -32,9 +34,8 @@ from blueferry.errors import CommandError, PairingError
 
 log = logging.getLogger(__name__)
 
-ADVERT_DBUS_TIMEOUT_SECONDS = 1
 ADVERT_ACTIVATION_TIMEOUT_SECONDS = 15
-ADVERT_POLL_INTERVAL_SECONDS = 0.25
+ADVERT_POLL_INTERVAL_SECONDS = 0.05
 PAIRING_ADVERT_SETTLE_SECONDS = 5
 POLKIT_UNAVAILABLE_MESSAGE = (
     "No Polkit authentication is available to set device class, "
@@ -155,11 +156,78 @@ class _AncsAdvert(dbus.service.Object):
 
     PATH = config.BLE_ADVERT_DBUS_PATH
 
+    def __init__(self, adapter: str, path: str) -> None:
+        bus = get_system_bus()
+        # Pin the proxy to this BlueZ owner. A late cleanup must never reach
+        # a replacement bluetoothd. Explicit signatures avoid introspection.
+        self.manager = dbus.Interface(
+            bus.get_object("org.bluez", f"/org/bluez/{adapter}", introspect=False),
+            "org.bluez.LEAdvertisingManager1",
+        )
+        super().__init__(bus, path)
+        self.adapter = adapter
+        self.path = path
+        self.registered = False
+        self.pending = False
+        self.retired = False
+        self.request: Any = None
+
+    def start(self) -> None:
+        self.pending = True
+        try:
+            self.request = self.manager.RegisterAdvertisement(
+                dbus.ObjectPath(self.path), dbus.Dictionary({}, signature="sv"),
+                signature="oa{sv}",
+                reply_handler=self._registered,
+                error_handler=self._failed,
+                timeout=float(ADVERT_ACTIVATION_TIMEOUT_SECONDS),
+            )
+        except dbus.exceptions.DBusException as error:
+            self._failed(error)
+
+    def _registered(self) -> None:
+        if self.retired or not self.pending:
+            return
+        self.pending = False
+        self.registered = True
+        self.request = None
+        log.info("BLE advert registered: %s", self.path)
+
+    def _failed(self, error: dbus.exceptions.DBusException) -> None:
+        if self.retired:
+            return
+        self.request = None
+        log.warning("RegisterAdvertisement failed: %s: %s",
+                    error.get_dbus_name(), error.get_dbus_message())
+        # NoReply and AlreadyExists are not activation proof. Retire this
+        # unique path so an unresolved request cannot poison future retries.
+        self.retire()
+
+    def retire(self, *, unregister: bool = True) -> None:
+        if self.retired:
+            return
+        self.retired = True
+        self.pending = self.registered = False
+        if self.request is not None:
+            self.request.cancel()
+            self.request = None
+        if unregister:
+            try:
+                self.manager.UnregisterAdvertisement(
+                    dbus.ObjectPath(self.path), signature="o",
+                    reply_handler=lambda: None,
+                    error_handler=lambda error: log.debug(
+                        "UnregisterAdvertisement: %s", error.get_dbus_name()),
+                    timeout=5.0,
+                )
+            except dbus.exceptions.DBusException:
+                log.debug("could not unregister retired advert", exc_info=True)
+        self.remove_from_connection()
+
     @dbus.service.method("org.bluez.LEAdvertisement1",
                          in_signature="", out_signature="")
     def Release(self) -> None:
-        global _advert_registered
-        _advert_registered = False
+        self.retire(unregister=False)
         log.info("BlueZ released the ANCS solicitation advertisement")
         return None
 
@@ -202,33 +270,24 @@ class _AncsAdvert(dbus.service.Object):
 
 
 _advert_instance: _AncsAdvert | None = None
-_advert_registered = False
+_advert_serial = itertools.count(1)
 
 
 def advert_registered() -> bool:
     """Return whether the current BlueZ owner accepted our advertisement."""
-    return _advert_registered
+    return bool(_advert_instance and _advert_instance.registered)
+
+
+def advert_registration_pending() -> bool:
+    return bool(_advert_instance and _advert_instance.pending)
 
 
 def forget_advert_registration() -> None:
     """Discard registration state that belonged to a departed BlueZ owner."""
-    global _advert_registered
-    _advert_registered = False
-
-
-def _active_advertisements(adapter: str | None = None) -> int | None:
-    """Return BlueZ's active-advert count, or None if it is unavailable."""
-    adapter = adapter or config.ADAPTER
-    try:
-        value = dbus.Interface(
-            get_system_bus().get_object(
-                "org.bluez", f"/org/bluez/{adapter}"
-            ),
-            "org.freedesktop.DBus.Properties",
-        ).Get("org.bluez.LEAdvertisingManager1", "ActiveInstances")
-        return int(value)
-    except dbus.exceptions.DBusException:
-        return None
+    global _advert_instance
+    previous, _advert_instance = _advert_instance, None
+    if previous is not None:
+        previous.retire(unregister=False)
 
 
 def register_advert(
@@ -236,103 +295,59 @@ def register_advert(
     *,
     settle_for_pairing: bool = False,
 ) -> bool:
-    """Register the BLE advertisement on the system bus.
+    """Start registration; only a successful BlueZ reply means active.
 
-    Idempotent — calling twice is harmless because BlueZ will reject the
-    second registration and we treat that as success.
+    Daemon callers return immediately and let GLib dispatch both BlueZ's
+    GetAll request and the eventual reply. Pairing callers wait with dispatch
+    enabled, then leave a settling interval before handing off to the daemon.
+    ActiveInstances includes *pending* BlueZ registrations and proves nothing
+    about whether a particular advertisement reached the controller.
     """
-    global _advert_instance, _advert_registered
+    global _advert_instance
     adapter = adapter or config.ADAPTER
-    if _advert_instance is None:
-        _advert_instance = _AncsAdvert(get_system_bus(), _AncsAdvert.PATH)
+    if not config.is_valid_adapter(adapter):
+        raise ValueError("invalid Bluetooth adapter name")
+    current = _advert_instance
+    if current is not None and current.adapter != adapter:
+        current.retire()
+    if current is None or current.retired:
+        # BlueZ keys registrations by sender + object path. Never reuse a
+        # path that could still have a pending controller completion.
+        try:
+            current = _AncsAdvert(adapter, f"{_AncsAdvert.PATH}/r{next(_advert_serial)}")
+        except dbus.exceptions.DBusException:
+            log.warning("could not access the BlueZ advertising manager", exc_info=True)
+            return False
+        _advert_instance = current
+        current.start()
+    if not settle_for_pairing:
+        return current.registered
 
-    ad_mgr = bluez(f"/org/bluez/{adapter}",
-                   "org.bluez.LEAdvertisingManager1")
-    active_before = _active_advertisements(adapter)
-    activation_deadline = time.monotonic() + ADVERT_ACTIVATION_TIMEOUT_SECONDS
-    try:
-        # Hardware-offloaded advertisements on the MediaTek controller can
-        # activate without BlueZ replying to this call. Use a short D-Bus
-        # timeout, then observe the actual controller state instead of making
-        # pairing wait for a reply that may never arrive.
-        ad_mgr.RegisterAdvertisement(
-            dbus.ObjectPath(_AncsAdvert.PATH),
-            dbus.Dictionary({}, signature="sv"),
-            timeout=float(ADVERT_DBUS_TIMEOUT_SECONDS),
-        )
-        _advert_registered = True
-        log.info("BLE advert registered: %s", _AncsAdvert.PATH)
-        if settle_for_pairing:
-            time.sleep(PAIRING_ADVERT_SETTLE_SECONDS)
-        return True
-    except dbus.exceptions.DBusException as e:
-        name = e.get_dbus_name()
-        if name == "org.bluez.Error.AlreadyExists":
-            _advert_registered = True
-            log.info("BLE advert already registered")
-            return True
-        if name == "org.freedesktop.DBus.Error.NoReply":
-            while True:
-                # Only claim this registration succeeded if the count
-                # increased. `count > 0` can mistake an unrelated or stale
-                # advertisement for ours.
-                active_after = _active_advertisements(adapter)
-                if (active_before is not None and active_after is not None
-                        and active_after > active_before):
-                    _advert_registered = True
-                    log.info("BLE advert activated after delayed reply "
-                             "(ActiveInstances=%d→%d)",
-                             active_before, active_after)
-                    if settle_for_pairing:
-                        time.sleep(PAIRING_ADVERT_SETTLE_SECONDS)
-                    return True
-                remaining = activation_deadline - time.monotonic()
-                if remaining <= 0:
-                    break
-                time.sleep(min(ADVERT_POLL_INTERVAL_SECONDS, remaining))
-        log.error("RegisterAdvertisement failed: %s: %s",
-                  name, e.get_dbus_message())
+    context = GLib.MainContext.default()
+    deadline = time.monotonic() + ADVERT_ACTIVATION_TIMEOUT_SECONDS
+    while current.pending and time.monotonic() < deadline:
+        context.iteration(False)
+        time.sleep(ADVERT_POLL_INTERVAL_SECONDS)
+    if current.pending:
+        log.warning("timed out waiting for ANCS advertisement registration")
+        current.retire()
+    if not current.registered:
         return False
+    deadline = time.monotonic() + PAIRING_ADVERT_SETTLE_SECONDS
+    while current.registered and time.monotonic() < deadline:
+        context.iteration(False)
+        time.sleep(ADVERT_POLL_INTERVAL_SECONDS)
+    return current.registered
 
 
 def unregister_advert(adapter: str | None = None) -> None:
     """Best-effort unregister; safe to call on shutdown."""
-    global _advert_registered
+    global _advert_instance
     adapter = adapter or config.ADAPTER
-    try:
-        ad_mgr = bluez(f"/org/bluez/{adapter}",
-                       "org.bluez.LEAdvertisingManager1")
-        ad_mgr.UnregisterAdvertisement(_AncsAdvert.PATH)
-        log.info("BLE advert unregistered: %s", _AncsAdvert.PATH)
-    except dbus.exceptions.DBusException as e:
-        log.debug("UnregisterAdvertisement: %s", e.get_dbus_name())
-    finally:
-        _advert_registered = False
-
-
-# ---- one-shot startup ---------------------------------------------------
-
-def prepare(
-    *,
-    adapter: str | None = None,
-    authorize: bool = False,
-    settle_for_pairing: bool = False,
-) -> bool:
-    """Run all the prerequisites. Returns False if anything critical failed.
-
-    Idempotent. Safe to call on every daemon start.
-    """
-    ok = True
-    adapter = adapter or config.ADAPTER
-    cod = current_cod(adapter)
-    log.info("current adapter Class = 0x%06x", cod or 0)
-    if not desired_cod_matches(cod):
-        ok &= set_cod(adapter=adapter, authorize=authorize)
-    else:
-        log.info("CoD already matches A/V Hands-Free, leaving as-is")
-
-    ok &= register_advert(adapter, settle_for_pairing=settle_for_pairing)
-    return ok
+    current = _advert_instance
+    if current is not None and current.adapter == adapter:
+        _advert_instance = None
+        current.retire()
 
 
 def prepare_classic(*, adapter: str | None = None, authorize: bool = False) -> bool:

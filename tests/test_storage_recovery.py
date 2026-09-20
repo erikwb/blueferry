@@ -76,6 +76,7 @@ def recovery(tmp_path, monkeypatch):
     daemon._dbus_service = None
     daemon._contacts_refresh_id = None
     daemon._contacts_refresh_pending = False
+    daemon._contacts_refresh_deferred = False
     daemon.listener = None
     daemon.sessions = SimpleNamespace(pbap=object(), map=None, report_error=lambda _error: None)
     daemon.obex_worker = _Queue()
@@ -286,6 +287,8 @@ def test_recovery_rejects_replaced_key_before_announcing_ready_or_writing(recove
 @pytest.mark.parametrize("cached", [False, True])
 def test_keyring_recovery_resumes_initial_phonebook_sync(recovery, monkeypatch, cached):
     r = recovery
+    r.daemon.sessions.map = object()
+    r.daemon.listener = object()
     if cached:
         r.wallet.locked = False
         r.storage.refresh(allow_prompt=False)
@@ -330,6 +333,7 @@ def test_preparation_failure_does_not_publish_writable_storage(recovery, monkeyp
 
 def test_contact_queue_failure_does_not_hide_storage_recovery(recovery, monkeypatch):
     r = recovery
+    r.daemon.sessions.map = object()
     submit = r.daemon.obex_worker.submit
 
     def full(*_args, **_kwargs):

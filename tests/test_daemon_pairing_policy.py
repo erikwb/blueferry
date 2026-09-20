@@ -1,5 +1,7 @@
 """The persisted pairing policy controls long-lived ANCS work."""
 
+from types import SimpleNamespace
+
 from blueferry import daemon
 
 
@@ -97,7 +99,7 @@ def _ready_bluetooth(monkeypatch, calls):
     monkeypatch.setattr(daemon, "bond_status", lambda *_args: True)
     monkeypatch.setattr(
         daemon.bluez_setup,
-        "prepare",
+        "prepare_classic",
         lambda: calls.append("solicitation-prepare") or True,
     )
 
@@ -294,3 +296,54 @@ def test_partial_map_starts_listener_without_contacts_work(monkeypatch):
     assert calls == ["map-listener", "map-listener-start"]
     assert isinstance(value.listener, Listener)
     assert value._contacts_refresh_id is None
+
+
+def test_automatic_contacts_wait_for_map_but_manual_sync_still_works(monkeypatch):
+    from blueferry.backend_operations import BackendDependencies, BackendOperations
+    from blueferry.connectivity import Connectivity
+    from blueferry.obex.sessions import SessionError
+    from blueferry.profile_supervisor import ProfileSupervisor
+
+    jobs, timers, published = [], [], []
+    value = daemon.Daemon.__new__(daemon.Daemon)
+    value.sessions = SimpleNamespace(map=None, pbap=object(),
+                                     set_on_lost=lambda callback: None,
+                                     open_all=lambda: None)
+    value.contacts = SimpleNamespace(count=lambda: 0)
+    value.storage = SimpleNamespace(status=SimpleNamespace(can_write=True))
+    value._contacts_refresh_pending = False
+    value._contacts_refresh_deferred = False
+    value._contacts_refresh_id = 1
+    value.listener = object()
+    value._pull_contacts = lambda: 42
+    value._contacts_pulled = lambda n: n
+    value._emit_status = lambda: None
+    value.obex_worker = SimpleNamespace(submit=lambda operation, **handlers: jobs.append(operation))
+    profiles = ProfileSupervisor(
+        value.sessions, value.obex_worker, Connectivity(),
+        on_ready=lambda: None, on_lost=lambda _: None, on_status=lambda: None,
+        on_partial_ready=value._post_available_sessions_setup,
+        schedule=lambda delay, callback: timers.append(callback) or 1,
+    )
+    profiles._open_failed(0, SessionError('CreateSession(MAP) failed: Forbidden'))
+    value._on_storage_changed()  # Wallet unlock must not bypass the same gate.
+    assert not jobs
+    assert value._contacts_refresh_deferred
+    timers.pop()()
+    assert jobs == [value.sessions.open_all]
+    jobs.clear()
+
+    operations = BackendOperations(value.sessions, BackendDependencies(
+        submit_obex=lambda operation, **handlers: jobs.append(operation),
+        pull_contacts=value._pull_contacts, on_contacts_pulled=value._contacts_pulled,
+    ))
+    operations.sync_contacts(published.append, published.append)
+    assert jobs == [value._pull_contacts]
+    jobs.clear()
+
+    value.sessions.map = object()
+    value._post_available_sessions_setup()
+    assert jobs == [value._pull_contacts]
+    assert not value._contacts_refresh_deferred
+    value._post_available_sessions_setup()
+    assert len(jobs) == 1

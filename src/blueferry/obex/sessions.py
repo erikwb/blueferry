@@ -14,7 +14,13 @@ import dbus
 import dbus.exceptions
 
 from blueferry import config
-from blueferry.bus import get_session_bus, obex
+from blueferry.bus import (
+    bind_obex_profile_session,
+    close_obex_profile_bus,
+    get_session_bus,
+    new_obex_profile_bus,
+    obex,
+)
 from blueferry.errors import ObexError
 
 log = logging.getLogger(__name__)
@@ -44,54 +50,35 @@ class ObexSession:
         return obex(self.path, "org.freedesktop.DBus.Properties")
 
 
-def _client() -> dbus.Interface:
-    return obex("/org/bluez/obex", "org.bluez.obex.Client1")
-
-
-def _remove_stale_sessions(targets: set[str]) -> None:
-    """Remove only stale sessions for this iPhone and requested profiles."""
-    try:
-        manager = obex("/", "org.freedesktop.DBus.ObjectManager")
-        managed = manager.GetManagedObjects()
-    except dbus.exceptions.DBusException as error:
-        log.debug("could not inspect existing OBEX sessions: %s", error)
-        return
-    try:
-        client = _client()
-    except dbus.exceptions.DBusException as error:
-        log.debug("could not access OBEX client for stale cleanup: %s", error)
-        return
-    for path, interfaces in managed.items():
-        props = interfaces.get("org.bluez.obex.Session1")
-        if not props:
-            continue
-        destination = str(props.get("Destination", "")).upper()
-        target = str(props.get("Target", "")).upper()
-        if destination != config.IPHONE_MAC.upper() or target not in targets:
-            continue
-        try:
-            client.RemoveSession(path, timeout=5.0)
-            log.info("removed stale %s session: %s", target, path)
-        except dbus.exceptions.DBusException as error:
-            log.debug("could not remove stale session %s: %s", path, error)
-
-
 def _create_session(target: str, *, retry_on_forbidden: bool = True) -> ObexSession:
     log.info("creating OBEX session (Target=%s)", target)
     log.debug("OBEX destination: %s", config.IPHONE_MAC)
+    # A per-profile owner lets us discard stale or timed-out attempts without
+    # RemoveSession (which crashes some BlueZ 5.87 paths) or dropping PBAP
+    # just because MAP needs another attempt. Session1.Target is a UUID, not
+    # the MAP/PBAP alias accepted by CreateSession; do not infer ownership
+    # from a global ObjectManager inventory.
+    bus = new_obex_profile_bus(target)
     try:
-        path = str(_client().CreateSession(
+        client = dbus.Interface(
+            bus.get_object("org.bluez.obex", "/org/bluez/obex"),
+            "org.bluez.obex.Client1",
+        )
+        path = str(client.CreateSession(
             config.IPHONE_MAC, {"Target": target}, timeout=30.0
         ))
+        bind_obex_profile_session(target, path)
         return ObexSession(target=target, path=path)
     except dbus.exceptions.DBusException as e:
+        close_obex_profile_bus(target)
         msg = e.get_dbus_message() or ""
         if retry_on_forbidden and ("Forbidden" in msg or "0x43" in msg):
-            log.warning("OBEX %s got Forbidden — removing only matching "
-                        "stale sessions and retrying once", target)
-            _remove_stale_sessions({target})
+            log.warning("OBEX %s got Forbidden — retrying once with a fresh owner", target)
             return _create_session(target, retry_on_forbidden=False)
         raise SessionError(f"CreateSession({target}) failed: {e.get_dbus_name()}: {msg}")
+    except Exception:
+        close_obex_profile_bus(target)
+        raise
 
 
 class SessionManager:
@@ -175,12 +162,6 @@ class SessionManager:
         self.start_monitoring()
         if self.map is not None and self.pbap is not None:
             return
-        missing = {
-            target
-            for target, session in (("MAP", self.map), ("PBAP", self.pbap))
-            if session is None
-        }
-        _remove_stale_sessions(missing)
         failures: list[Exception] = []
         for target, attribute in (("MAP", "map"), ("PBAP", "pbap")):
             if getattr(self, attribute) is not None:
@@ -208,36 +189,30 @@ class SessionManager:
         MAP connection.
         """
         self.start_monitoring()
-        _remove_stale_sessions({"PBAP"})
         self.pbap = _create_session("PBAP")
         log.info("PBAP session: %s", self.pbap.path)
 
     def close_all(self, *, remove_remote: bool = True) -> None:
-        """Forget both sessions, optionally asking obexd to remove them first.
+        """Forget both sessions, optionally releasing their private owners.
 
         Recovery from an observed transport loss must not call RemoveSession:
         BlueZ 5.87 can crash when that request drives an already-disconnected
         GObex channel into read_packet(). Daemon shutdown must not call it
         either: the same D-Bus dispatch path SIGSEGVs even after a long-lived
-        healthy session. The next open attempt can clean up any surviving
-        stale object after the reconnect delay.
+        healthy session. Closing the private owners instead lets BlueZ clean
+        up on owner loss. Deferred cleanup happens on the next open attempt
+        or worker shutdown.
         """
         self._closing = True
         try:
             if not remove_remote:
                 log.debug("discarding local OBEX session state after transport loss")
                 return
-            client = _client()
-            for sess in (self.map, self.pbap):
-                if sess is None:
-                    continue
+            for target in ("MAP", "PBAP"):
                 try:
-                    client.RemoveSession(sess.path, timeout=5.0)
-                    log.info("closed %s session: %s", sess.target, sess.path)
+                    close_obex_profile_bus(target)
                 except dbus.exceptions.DBusException as e:
-                    log.debug(
-                        "RemoveSession(%s): %s", sess.path, e.get_dbus_name()
-                    )
+                    log.debug("closing %s owner: %s", target, e.get_dbus_name())
         finally:
             self.map = None
             self.pbap = None

@@ -154,6 +154,7 @@ class Daemon:
         self._initialization_retry_id: int | None = None
         self._initializing = True
         self._contacts_refresh_pending = False
+        self._contacts_refresh_deferred = False
         self.profiles = ProfileSupervisor(
             self.sessions,
             self.obex_worker,
@@ -323,9 +324,9 @@ class Daemon:
         # Repair it before opening either bearer and continue supervising it
         # for bluetoothd/controller resets during this daemon generation.
         self.adapter_class.start()
-        if not bluez_setup.prepare():
+        if not bluez_setup.prepare_classic():
             log.warning(
-                "bluez_setup.prepare reported issues — continuing anyway, "
+                "adapter preparation reported issues — continuing anyway, "
                 "but MAP/PBAP may be refused. Re-pair on iPhone after the "
                 "adapter is in A/V Hands-Free CoD if the toggles aren't there."
             )
@@ -428,9 +429,11 @@ class Daemon:
 
     def _post_available_sessions_setup(self) -> None:
         """Start consumers for whichever OBEX profiles are currently live."""
-        # Warm contacts; if empty, do a one-time pull. PBAP pull is cheap.
-        if self.sessions.pbap is not None and self.contacts.count() == 0:
-            log.info("contacts cache empty — pulling from iPhone via PBAP")
+        # Bulk PBAP transfers share the MAP worker. Defer automatic pulls
+        # until MAP is available so enabling messages can be retried promptly.
+        if self.sessions.pbap is not None and (
+            self.contacts.count() == 0 or self._contacts_refresh_deferred
+        ):
             self._refresh_contacts()
 
         # Schedule periodic contacts refresh
@@ -536,6 +539,10 @@ class Daemon:
             or not self.storage.status.can_write
         ):
             return
+        if self.sessions.map is None:
+            self._contacts_refresh_deferred = True
+            return
+        self._contacts_refresh_deferred = False
         self._contacts_refresh_pending = True
 
         def succeeded(pulled):
