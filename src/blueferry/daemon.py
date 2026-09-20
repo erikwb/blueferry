@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import signal
+from collections.abc import Callable
 
 import dbus
 from gi.repository import GLib
@@ -30,6 +31,7 @@ from blueferry.history import (
     history_count,
     mark_event_handles_read,
 )
+from blueferry.limits import MAX_OBEX_PENDING_OPERATIONS
 from blueferry.notification_policy import (
     ALL_NOTIFICATIONS,
     NotificationPolicyStore,
@@ -67,6 +69,9 @@ def classic_reachable(bearers: BearerSupervisor, sessions: ProfileSessions) -> b
 
 # How often to re-pull the iPhone's phonebook (so the cache picks up new contacts)
 CONTACTS_REFRESH_SEC = 24 * 60 * 60  # 24h
+# Give initial MAP retries the permission window before starting a bulk PBAP
+# transfer, but keep contact sync available when only PBAP ever connects.
+CONTACTS_MAP_GRACE_SECONDS = 180
 
 # Notice package replacement promptly without relying on pacman to reach into
 # every logged-in user's systemd instance.
@@ -135,6 +140,8 @@ class Daemon:
         self._bus_name = None
         self._dbus_service: MessagesService | None = None
         self._sleep_match = None
+        self._bluez_owner_match = None
+        self._bluez_owner_generation = 0
         packaged_release = installed_release()
         self._packaged = packaged_release is not None
         self._running_release = packaged_release or __version__
@@ -154,6 +161,14 @@ class Daemon:
         self._initialization_retry_id: int | None = None
         self._initializing = True
         self._contacts_refresh_pending = False
+        self._contacts_initial_sync_done = False
+        self._contacts_storage_generation = 0
+        self._contacts_sync_waiters: list[
+            tuple[Callable[[int], None], Callable[[Exception], None]]
+        ] = []
+        self._contacts_refresh_deferred = False
+        self._contacts_map_wait_id: int | None = None
+        self._contacts_map_wait_finished = False
         self.profiles = ProfileSupervisor(
             self.sessions,
             self.obex_worker,
@@ -226,8 +241,7 @@ class Daemon:
                 on_group_sent=self.events.group_sent,
                 submit_obex=self.obex_worker.submit,
                 defer_mark_read=self.read_receipts.defer,
-                pull_contacts=self._pull_contacts,
-                on_contacts_pulled=self._contacts_pulled,
+                sync_contacts=self._sync_contacts,
                 contacts=self.contacts,
                 status_provider=self._status,
                 notification_policy=self.notification_policy,
@@ -279,6 +293,10 @@ class Daemon:
 
     def _apply_storage_preparation(self, prepared: PreparedStorage) -> None:
         self.contacts.adopt_cache(prepared.contacts)
+        # Preparing storage can replace an archive cleared by a policy change.
+        # An older in-flight pull must not satisfy this cache's initial sync.
+        self._contacts_storage_generation += 1
+        self._contacts_initial_sync_done = False
         self.events.seed_historical_ancs(prepared.historical_ancs)
         if prepared.has_messages:
             self._mark_setup_task(MESSAGE_NOTIFICATIONS)
@@ -287,7 +305,7 @@ class Daemon:
         if self.storage.status.can_write:
             if self.contacts.count() > 0:
                 self._mark_setup_task(CONTACTS)
-            else:
+            if self._contacts_refresh_needed():
                 self._refresh_contacts()
         self._emit_status()
 
@@ -323,12 +341,13 @@ class Daemon:
         # Repair it before opening either bearer and continue supervising it
         # for bluetoothd/controller resets during this daemon generation.
         self.adapter_class.start()
-        if not bluez_setup.prepare():
+        if not bluez_setup.prepare_classic():
             log.warning(
-                "bluez_setup.prepare reported issues — continuing anyway, "
+                "adapter preparation reported issues — continuing anyway, "
                 "but MAP/PBAP may be refused. Re-pair on iPhone after the "
                 "adapter is in A/V Hands-Free CoD if the toggles aren't there."
             )
+        self._watch_bluez_owner()
         self.solicitation.start()
 
         # A bond records trust but does not guarantee a live connection. The
@@ -346,7 +365,6 @@ class Daemon:
                 device_path,
                 on_event=self.events.ancs,
                 on_status=self._on_ancs_status,
-                on_bluez_restart=self._on_bluez_restart,
                 on_transport_failure=self.bearers.recover_le_transport,
                 include_non_message_notifications=lambda: (
                     self.notification_policy.value == ALL_NOTIFICATIONS
@@ -356,13 +374,16 @@ class Daemon:
                     NOTIFICATION_ACCESS in self.setup_verification.verified
                 ),
             )
+            # Publish before start(): its initial D-Bus sweep can dispatch
+            # an owner change that must invalidate the in-progress scan.
+            self.ancs = candidate
             try:
                 candidate.observe_bearer_state(self.bearers.le_state)
                 candidate.start()
             except Exception:
+                self.ancs = None
                 candidate.stop()
                 raise
-            self.ancs = candidate
         elif not config.ANCS_ENABLED:
             log.info("ANCS connection disabled by pairing compatibility policy")
         self._watch_sleep_resume()
@@ -381,12 +402,44 @@ class Daemon:
         # The "ready" line in the happy path is emitted by
         # _post_sessions_setup, so we don't duplicate it here.
 
+    def _watch_bluez_owner(self) -> None:
+        """Supervise bluetoothd even when compatibility mode disables ANCS."""
+        if self._bluez_owner_match is None:
+            self._bluez_owner_match = get_system_bus().add_signal_receiver(
+                self._on_bluez_owner_changed,
+                dbus_interface="org.freedesktop.DBus",
+                signal_name="NameOwnerChanged",
+                bus_name="org.freedesktop.DBus",
+                arg0="org.bluez",
+            )
+
+    def _on_bluez_owner_changed(self, _name, old_owner, new_owner) -> None:
+        if self._bluez_owner_match is None:
+            return
+        self._bluez_owner_generation += 1
+        generation = self._bluez_owner_generation
+        if old_owner:
+            bluez_setup.forget_advert_registration()
+        if new_owner:
+            # Reset before ANCS publishes status: that callback can already
+            # register an advert with the replacement owner. Forgetting it
+            # afterwards would discard a new registration as if it were old.
+            self.solicitation.reset_after_bluez_restart()
+        # Clear ANCS's old bearer observation before resetting the supervisor
+        # that publishes its replacement. Otherwise the ANCS reset can erase
+        # the new observation until the next physical link transition.
+        if self.ancs is not None:
+            self.ancs.observe_bluez_owner(old_owner, new_owner)
+        if (
+            new_owner
+            and self._bluez_owner_match is not None
+            and generation == self._bluez_owner_generation
+        ):
+            self._on_bluez_restart()
+
     def _on_bluez_restart(self) -> None:
         """Reapply MAP-first ordering before accepting the new BlueZ owner."""
         self.adapter_class.poke()
-        # The advertisement registration belonged to the old owner.  Prime
-        # inbound LE immediately instead of waiting for another link event.
-        self.solicitation.reset_after_bluez_restart()
         # Hold first because resetting bearer observations immediately probes
         # the replacement daemon. The old OBEX transport is already gone, so
         # discard its local sessions without asking obexd to remove them.
@@ -428,9 +481,9 @@ class Daemon:
 
     def _post_available_sessions_setup(self) -> None:
         """Start consumers for whichever OBEX profiles are currently live."""
-        # Warm contacts; if empty, do a one-time pull. PBAP pull is cheap.
-        if self.sessions.pbap is not None and self.contacts.count() == 0:
-            log.info("contacts cache empty — pulling from iPhone via PBAP")
+        # Bulk PBAP transfers share the MAP worker. Defer automatic pulls
+        # during MAP's initial grace period so message access can retry promptly.
+        if self.sessions.pbap is not None and self._contacts_refresh_needed():
             self._refresh_contacts()
 
         # Schedule periodic contacts refresh
@@ -474,6 +527,8 @@ class Daemon:
 
     def _contacts_pulled(self, pulled: int) -> int:
         """GLib-side cache refresh after a successful PBAP pull."""
+        # Manual sync also satisfies a deferred automatic refresh.
+        self._finish_contacts_map_wait()
         count = self.contacts.refresh()
         # Completing PullAll proves that the iPhone granted Sync Contacts,
         # even when its phonebook is empty.
@@ -528,6 +583,12 @@ class Daemon:
             self._controller_identity_cache = cached
         return cached
 
+    def _contacts_refresh_needed(self) -> bool:
+        """Whether startup or recovery still owes an automatic contact sync."""
+        return self._contacts_refresh_deferred or (
+            not self._contacts_initial_sync_done and self.contacts.count() == 0
+        )
+
     def _refresh_contacts(self) -> None:
         """Best-effort wrapper used by startup and the periodic timer."""
         if (
@@ -536,21 +597,100 @@ class Daemon:
             or not self.storage.status.can_write
         ):
             return
+        if self.sessions.map is None and not self._contacts_map_wait_finished:
+            self._contacts_refresh_deferred = True
+            if self._contacts_map_wait_id is None:
+                self._contacts_map_wait_id = GLib.timeout_add_seconds(
+                    CONTACTS_MAP_GRACE_SECONDS, self._resume_deferred_contacts,
+                )
+            return
+        self._finish_contacts_map_wait()
+        self._sync_contacts()
+
+    def _sync_contacts(
+        self,
+        success: Callable[[int], None] | None = None,
+        failure: Callable[[Exception], None] | None = None,
+    ) -> None:
+        """Join or start one contact pull; called and completed on GLib."""
+        if success is not None and failure is not None:
+            # Coalescing must retain the worker queue's bound on callers.
+            if len(self._contacts_sync_waiters) >= MAX_OBEX_PENDING_OPERATIONS:
+                failure(RuntimeError("too many pending contact sync requests"))
+                return
+            self._contacts_sync_waiters.append((success, failure))
+        if self._contacts_refresh_pending:
+            return
         self._contacts_refresh_pending = True
+        generation = self._contacts_storage_generation
 
         def succeeded(pulled):
-            self._contacts_refresh_pending = False
-            self._contacts_pulled(pulled)
+            try:
+                count = self._contacts_pulled(pulled)
+            except Exception as error:
+                failed(error)
+            else:
+                self._contacts_sync_finished(generation, count=count)
 
         def failed(error):
-            self._contacts_refresh_pending = False
-            log.error("contacts refresh failed; using previous cache: %s", error)
-            self.sessions.report_error(error)
+            self._contacts_sync_finished(generation, error=error)
 
         try:
             self.obex_worker.submit(self._pull_contacts, on_success=succeeded, on_error=failed)
         except Exception as error:
             failed(error)
+
+    def _contacts_sync_finished(
+        self, generation: int, *, count: int = 0, error: Exception | None = None,
+    ) -> None:
+        waiters, self._contacts_sync_waiters = self._contacts_sync_waiters, []
+        self._contacts_refresh_pending = False
+        if error is None and generation == self._contacts_storage_generation:
+            # Zero usable destinations is still a successful sync. Retrying
+            # MAP must not repeatedly download the same empty contact cache.
+            self._contacts_initial_sync_done = True
+        if error is not None:
+            log.error("contacts refresh failed; using previous cache: %s", error)
+            try:
+                self.sessions.report_error(error)
+            except Exception:
+                log.exception("could not report contact sync transport failure")
+        for success, failure in waiters:
+            try:
+                if error is None:
+                    success(count)
+                else:
+                    failure(error)
+            except Exception:
+                log.exception("contact sync completion callback failed")
+        if (
+            error is not None
+            and self._contacts_refresh_deferred
+            and self._contacts_map_wait_finished
+        ):
+            # A manual pull can span the grace deadline. Its failure must not
+            # consume the deferred automatic request. Automatic attempts clear
+            # this flag before queuing, so this cannot form a retry loop.
+            self._refresh_contacts()
+        elif generation != self._contacts_storage_generation and self._contacts_refresh_needed():
+            # Storage became ready while this older pull was pending, so its
+            # recovery callback could not queue the replacement download yet.
+            self._refresh_contacts()
+
+    def _finish_contacts_map_wait(self) -> None:
+        self._contacts_map_wait_finished = True
+        self._contacts_refresh_deferred = False
+        if self._contacts_map_wait_id is not None:
+            GLib.source_remove(self._contacts_map_wait_id)
+            self._contacts_map_wait_id = None
+
+    def _resume_deferred_contacts(self) -> bool:
+        self._contacts_map_wait_id = None
+        self._contacts_map_wait_finished = True
+        # If PBAP or storage is unavailable at expiry, leave the deferred
+        # flag set so their recovery triggers the download without a new wait.
+        self._refresh_contacts()
+        return False
 
     def _periodic_refresh_contacts(self) -> bool:
         """GLib timeout callback. Return True to keep the timer running."""
@@ -615,12 +755,19 @@ class Daemon:
 
     def stop(self) -> None:
         log.info("=== BlueFerry stopping ===")
+        owner_match, self._bluez_owner_match = self._bluez_owner_match, None
+        if owner_match is not None:
+            try:
+                owner_match.remove()
+            except Exception:
+                log.debug("could not remove BlueZ owner watch", exc_info=True)
         self.read_receipts.close()
         self.adapter_class.stop()
         self.bearers.stop()
         self.profiles.stop()
         for tid_attr in (
             "_contacts_refresh_id",
+            "_contacts_map_wait_id",
             "_release_check_id",
             "_target_config_check_id",
             "_storage_retry_id",

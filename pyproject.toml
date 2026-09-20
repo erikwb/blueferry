@@ -72,6 +72,13 @@ pythonpath = ["src"]
 markers = [
   "private_dbus: requires an explicitly isolated dbus-run-session",
 ]
+filterwarnings = [
+  # PyGObject 3.56 warns while importing its own deprecated GLib alias.
+  'ignore:^GLib\.unix_signal_add_full is deprecated; use GLibUnix\.signal_add_full instead$:DeprecationWarning:gi\.overrides$',
+  # Its asyncio integration probes these deprecated Python 3.14 APIs on
+  # every GLib context iteration. Keep warnings from our own code visible.
+  "ignore:^'asyncio\\.(AbstractEventLoopPolicy|get_event_loop_policy)' is deprecated and slated for removal in Python 3\\.16$:DeprecationWarning:gi\\.events$",
+]
 
 [tool.ruff]
 line-length = 100

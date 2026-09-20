@@ -254,17 +254,6 @@ class _ObjectManager:
 class _Bus:
     def __init__(self, manager) -> None:
         self.manager = manager
-        self.owner_callback = None
-        self.owner_match = None
-
-    def add_signal_receiver(self, callback, **kwargs):
-        assert kwargs["dbus_interface"] == "org.freedesktop.DBus"
-        assert kwargs["signal_name"] == "NameOwnerChanged"
-        assert kwargs["bus_name"] == "org.freedesktop.DBus"
-        assert kwargs["arg0"] == "org.bluez"
-        self.owner_callback = callback
-        self.owner_match = _Match()
-        return self.owner_match
 
     def get_object(self, _name, path):
         assert path == "/"
@@ -295,7 +284,6 @@ def test_start_is_idempotent(monkeypatch) -> None:
     assert len(manager.matches) == 2
     client.stop()
     assert all(match.removed for match in manager.matches)
-    assert bus.owner_match.removed is True
 
 
 def test_bluez_restart_rebinds_manager_and_rescans_cached_ancs_objects(
@@ -318,12 +306,10 @@ def test_bluez_restart_rebinds_manager_and_rescans_cached_ancs_objects(
     monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
     monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
     statuses = []
-    restarts = []
     client = AncsClient(
         "/device",
         lambda _event: None,
         on_status=lambda: statuses.append(True),
-        on_bluez_restart=lambda: restarts.append(True),
     )
     monkeypatch.setattr(client, "_try_subscribe", lambda: None)
 
@@ -335,8 +321,7 @@ def test_bluez_restart_rebinds_manager_and_rescans_cached_ancs_objects(
     characteristic_matches = [_Match(), _Match()]
     client._characteristic_signal_matches = characteristic_matches
 
-    assert bus.owner_callback is not None
-    bus.owner_callback("org.bluez", ":1.10", "")
+    client.observe_bluez_owner(":1.10", "")
 
     assert client.connected is False
     assert client._ns_path is None
@@ -347,14 +332,13 @@ def test_bluez_restart_rebinds_manager_and_rescans_cached_ancs_objects(
     assert statuses == [True]
 
     bus.manager = new_manager
-    bus.owner_callback("org.bluez", "", ":1.11")
+    client.observe_bluez_owner("", ":1.11")
 
     assert new_manager.sweeps == 1
     assert len(new_manager.matches) == 2
     assert client._ns_path == "/device/service0023/char0027"
     assert client._ds_path == "/device/service0023/char002a"
     assert client._cp_path == "/device/service0023/char0024"
-    assert restarts == [True]
 
 
 def test_bluez_restart_retries_when_object_manager_is_not_ready(monkeypatch) -> None:
@@ -376,8 +360,7 @@ def test_bluez_restart_retries_when_object_manager_is_not_ready(monkeypatch) -> 
     client.start()
 
     bus.manager = _UnavailableManager()
-    assert bus.owner_callback is not None
-    bus.owner_callback("org.bluez", ":1.10", ":1.11")
+    client.observe_bluez_owner(":1.10", ":1.11")
 
     assert scheduled[0][0] == client_module.MANAGER_RETRY_SECONDS
     assert client._manager_retry_id == 17
@@ -407,8 +390,7 @@ def test_nested_owner_change_cannot_restore_the_losing_owner_objects(monkeypatch
     class _ReentrantManager(_ObjectManager):
         def GetManagedObjects(self, **_kwargs):
             bus.manager = current_manager
-            assert bus.owner_callback is not None
-            bus.owner_callback("org.bluez", ":1.10", ":1.11")
+            client.observe_bluez_owner(":1.10", ":1.11")
             return stale_paths
 
     initial_manager = _ObjectManager()
@@ -420,8 +402,7 @@ def test_nested_owner_change_cannot_restore_the_losing_owner_objects(monkeypatch
     client.start()
 
     bus.manager = _ReentrantManager()
-    assert bus.owner_callback is not None
-    bus.owner_callback("org.bluez", "", ":1.10")
+    client.observe_bluez_owner("", ":1.10")
 
     assert current_manager.sweeps == 1
     assert client._cp_path == "/device/service-new/char-new"

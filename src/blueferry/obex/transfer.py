@@ -37,7 +37,7 @@ class TransferStatusWatch:
         self._prefix = f"{session_path}/"
         self._condition = threading.Condition()
         self._terminal: OrderedDict[str, str] = OrderedDict()
-        self._match = get_obex_bus().add_signal_receiver(
+        self._match = get_obex_bus(session_path).add_signal_receiver(
             self._changed, signal_name="PropertiesChanged",
             dbus_interface="org.freedesktop.DBus.Properties",
             bus_name="org.bluez.obex", arg0=_TRANSFER_IFACE, path_keyword="path",

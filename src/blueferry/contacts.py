@@ -280,10 +280,9 @@ class ContactsResolver:
         self._thread_addresses = prepared._thread_addresses
 
     def refresh(self) -> int:
-        """Re-read the SQLite cache into memory. Returns new count."""
-        self._mem.clear()
-        self._records.clear()
-        self._warm()
+        """Replace the cache only after a successful read; propagate failures."""
+        prepared = ContactsResolver(storage=self.storage, strict=True)
+        self.adopt_cache(prepared)
         return len(self._mem)
 
     def find_by_name(self, query: str) -> list[tuple[str, str]]:

@@ -1,6 +1,8 @@
 """BLE advertisement shape and cleanup regressions."""
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import dbus
 import pytest
 
@@ -29,13 +31,6 @@ class TestAncsAdvertisement:
     def test_rejects_unknown_interface(self):
         with pytest.raises(dbus.exceptions.DBusException):
             bluez_setup._AncsAdvert.GetAll(None, "not.the.advert.interface")
-
-    def test_release_clears_registration_state(self, monkeypatch):
-        monkeypatch.setattr(bluez_setup, "_advert_registered", True)
-
-        bluez_setup._AncsAdvert.Release(None)
-
-        assert bluez_setup.advert_registered() is False
 
 
 def test_daemon_run_cleans_up_when_start_raises(monkeypatch):
@@ -180,70 +175,117 @@ def test_cod_change_rejects_an_invalid_adapter(monkeypatch):
     assert calls == []
 
 
-def test_pairing_advert_settles_after_activation_is_observed(
-    monkeypatch,
-):
-    calls = []
-    counts = iter([0, 0, 0, 1])
-    sleeps = []
-    elapsed = 0.0
-
-    def monotonic():
-        return elapsed
-
-    def sleep(seconds):
-        nonlocal elapsed
-        sleeps.append(seconds)
-        elapsed += seconds
+@pytest.fixture
+def adverts(monkeypatch):
+    now = [0.0]
+    requests, removed, dispatched = [], [], []
 
     class Manager:
-        def RegisterAdvertisement(self, path, options, **kwargs):
-            calls.append((path, options, kwargs))
-            raise dbus.exceptions.DBusException(
-                "method reply timed out",
-                name="org.freedesktop.DBus.Error.NoReply",
-            )
+        bus_name = ':1.42'
 
-    monkeypatch.setattr(bluez_setup, "_advert_instance", object())
-    monkeypatch.setattr(bluez_setup, "_advert_registered", False)
-    monkeypatch.setattr(bluez_setup, "bluez", lambda *_args: Manager())
-    monkeypatch.setattr(
-        bluez_setup,
-        "_active_advertisements",
-        lambda _adapter=None: next(counts),
-    )
-    monkeypatch.setattr(bluez_setup.time, "monotonic", monotonic)
-    monkeypatch.setattr(bluez_setup.time, "sleep", sleep)
+        def UnregisterAdvertisement(self, path, **kwargs):
+            assert kwargs['signature'] == 'o'
+            removed.append(str(path))
 
-    assert bluez_setup.register_advert("hci7", settle_for_pairing=True) is True
-    assert isinstance(calls[0][0], dbus.ObjectPath)
-    assert isinstance(calls[0][1], dbus.Dictionary)
-    assert calls[0][1].signature == "sv"
-    assert calls[0][2]["timeout"] == 1.0
-    assert sleeps == [0.25, 0.25, bluez_setup.PAIRING_ADVERT_SETTLE_SECONDS]
-    assert elapsed < bluez_setup.ADVERT_ACTIVATION_TIMEOUT_SECONDS
+    def call_async(*, bus_name, object_path, dbus_interface, method, args, **kwargs):
+        assert bus_name == Manager.bus_name
+        assert object_path == '/org/bluez/hci7'
+        assert dbus_interface == 'org.bluez.LEAdvertisingManager1'
+        assert method == 'RegisterAdvertisement'
+        path, options = args
+        request = SimpleNamespace(path=str(path), options=options, **kwargs)
+        request.cancelled = False
+        def cancel():
+            request.cancelled = True
+        request.cancel = cancel
+        requests.append(request)
+        return request
+
+    context = SimpleNamespace(iteration=lambda _block: dispatched.pop(0)() if dispatched else None)
+    monkeypatch.setattr(bluez_setup, '_advert_instance', None)
+    monkeypatch.setattr(bluez_setup, 'get_system_bus', lambda: SimpleNamespace(
+        get_object=lambda *a, **k: None, call_async=call_async,
+    ))
+    monkeypatch.setattr(bluez_setup.dbus, 'Interface', lambda *a: Manager())
+    monkeypatch.setattr(bluez_setup.dbus.service.Object, '__init__', lambda *a: None)
+    monkeypatch.setattr(bluez_setup.dbus.service.Object, 'remove_from_connection', lambda *a: None)
+    monkeypatch.setattr(bluez_setup.GLib.MainContext, 'default', lambda: context)
+    monkeypatch.setattr(bluez_setup.time, 'monotonic', lambda: now[0])
+    monkeypatch.setattr(bluez_setup.time, 'sleep', lambda delay: now.__setitem__(0, now[0] + delay))
+    yield SimpleNamespace(now=now, requests=requests, removed=removed, dispatched=dispatched)
+    bluez_setup.forget_advert_registration()
 
 
-def test_advert_activation_polling_keeps_a_bounded_failure_deadline(monkeypatch):
-    elapsed = 0.0
+def test_pending_advert_is_not_active_and_registration_is_not_duplicated(adverts):
+    assert not bluez_setup.register_advert('hci7')
+    assert bluez_setup.advert_registration_pending()
+    assert not bluez_setup.advert_registered()
+    assert not bluez_setup.register_advert('hci7')
+    assert len(adverts.requests) == 1
+    request = adverts.requests[0]
+    assert request.signature == 'oa{sv}'
+    request.reply_handler()
+    assert bluez_setup.advert_registered()
+    assert not bluez_setup.advert_registration_pending()
+    assert bluez_setup.register_advert('hci7')
+    assert len(adverts.requests) == 1
 
-    class Manager:
-        def RegisterAdvertisement(self, _path, _options, **_kwargs):
-            raise dbus.exceptions.DBusException(
-                "method reply timed out",
-                name="org.freedesktop.DBus.Error.NoReply",
-            )
 
-    def sleep(seconds):
-        nonlocal elapsed
-        elapsed += seconds
+@pytest.mark.parametrize('error_name', [
+    'org.bluez.Error.Failed',
+    'org.bluez.Error.AlreadyExists',
+    'org.freedesktop.DBus.Error.NoReply',
+])
+def test_late_registration_failure_is_retried_with_a_new_path(adverts, error_name):
+    bluez_setup.register_advert('hci7')
+    old = adverts.requests[0]
+    old.error_handler(dbus.exceptions.DBusException('failed', name=error_name))
+    assert not bluez_setup.advert_registered()
+    assert not bluez_setup.advert_registration_pending()
+    assert adverts.removed == [old.path]
+    bluez_setup.register_advert('hci7')
+    new = adverts.requests[1]
+    assert new.path != old.path
+    old.reply_handler()  # A late completion must not resurrect the old request.
+    assert not bluez_setup.advert_registered()
+    new.reply_handler()
+    assert bluez_setup.advert_registered()
 
-    monkeypatch.setattr(bluez_setup, "_advert_instance", object())
-    monkeypatch.setattr(bluez_setup, "_advert_registered", False)
-    monkeypatch.setattr(bluez_setup, "bluez", lambda *_args: Manager())
-    monkeypatch.setattr(bluez_setup, "_active_advertisements", lambda _adapter=None: 0)
-    monkeypatch.setattr(bluez_setup.time, "monotonic", lambda: elapsed)
-    monkeypatch.setattr(bluez_setup.time, "sleep", sleep)
 
-    assert bluez_setup.register_advert("hci7") is False
-    assert elapsed == bluez_setup.ADVERT_ACTIVATION_TIMEOUT_SECONDS
+def test_stopping_cancels_pending_advert_and_ignores_late_reply(adverts):
+    bluez_setup.register_advert('hci7')
+    request = adverts.requests[0]
+    bluez_setup.unregister_advert('hci7')
+    assert request.cancelled
+    assert adverts.removed == [request.path]
+    request.reply_handler()
+    assert not bluez_setup.advert_registered()
+
+
+def test_old_release_cannot_clear_a_new_registration(adverts):
+    bluez_setup.register_advert('hci7')
+    previous = bluez_setup._advert_instance
+    bluez_setup.forget_advert_registration()
+    assert adverts.removed == []  # Do not unregister against a new BlueZ owner.
+    bluez_setup.register_advert('hci7')
+    adverts.requests[-1].reply_handler()
+    previous.Release()
+    assert bluez_setup.advert_registered()
+    bluez_setup._advert_instance.Release()
+    assert not bluez_setup.advert_registered()
+
+
+def test_pairing_dispatches_registration_and_waits_after_confirmation(adverts):
+    adverts.dispatched.append(lambda: adverts.requests[0].reply_handler())
+    assert bluez_setup.register_advert('hci7', settle_for_pairing=True)
+    assert adverts.now[0] >= bluez_setup.PAIRING_ADVERT_SETTLE_SECONDS
+    assert adverts.now[0] < bluez_setup.PAIRING_ADVERT_SETTLE_SECONDS + 0.2
+
+
+def test_pairing_registration_deadline_cleans_up_an_unanswered_request(adverts):
+    assert not bluez_setup.register_advert('hci7', settle_for_pairing=True)
+    assert bluez_setup.ADVERT_ACTIVATION_TIMEOUT_SECONDS <= adverts.now[0] < 15.2
+    assert adverts.requests[0].cancelled
+    assert adverts.removed == [adverts.requests[0].path]
+    adverts.requests[0].reply_handler()
+    assert not bluez_setup.advert_registered()

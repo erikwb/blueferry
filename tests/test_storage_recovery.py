@@ -76,6 +76,12 @@ def recovery(tmp_path, monkeypatch):
     daemon._dbus_service = None
     daemon._contacts_refresh_id = None
     daemon._contacts_refresh_pending = False
+    daemon._contacts_initial_sync_done = False
+    daemon._contacts_storage_generation = 0
+    daemon._contacts_sync_waiters = []
+    daemon._contacts_refresh_deferred = False
+    daemon._contacts_map_wait_id = None
+    daemon._contacts_map_wait_finished = False
     daemon.listener = None
     daemon.sessions = SimpleNamespace(pbap=object(), map=None, report_error=lambda _error: None)
     daemon.obex_worker = _Queue()
@@ -286,6 +292,8 @@ def test_recovery_rejects_replaced_key_before_announcing_ready_or_writing(recove
 @pytest.mark.parametrize("cached", [False, True])
 def test_keyring_recovery_resumes_initial_phonebook_sync(recovery, monkeypatch, cached):
     r = recovery
+    r.daemon.sessions.map = object()
+    r.daemon.listener = object()
     if cached:
         r.wallet.locked = False
         r.storage.refresh(allow_prompt=False)
@@ -316,6 +324,53 @@ def test_keyring_recovery_resumes_initial_phonebook_sync(recovery, monkeypatch, 
     assert not r.daemon.obex_worker.jobs
 
 
+@pytest.mark.parametrize('previous_pull', ['complete', 'late_success', 'late_failure'])
+def test_policy_change_resyncs_an_empty_cache_despite_an_older_pull(
+    recovery, monkeypatch, previous_pull,
+):
+    r = recovery
+    r.daemon.sessions.map = object()
+    r.daemon.listener = object()
+    records = [('Alice', [], [])]  # Valid contact, but zero usable destinations.
+
+    def pull(_sessions, *, storage):
+        return ContactRepository(storage).replace(records)
+
+    monkeypatch.setattr(daemon_mod, 'pull_phonebook', pull)
+    r.wallet.locked = False
+    r.unlock()
+    if previous_pull == 'complete':
+        r.daemon.obex_worker.finish()
+        r.daemon._post_available_sessions_setup()
+        assert not r.daemon.obex_worker.jobs
+    else:
+        operation, old_callbacks = r.daemon.obex_worker.jobs.pop(0)
+        if previous_pull == 'late_success':
+            pulled = operation()  # Delay only the GLib completion callback.
+
+    r.operations.change_storage_async(
+        r.queue.submit, r.outcomes.append, lambda error: pytest.fail(str(error)),
+        policy='plaintext',
+    )
+    r.queue.finish()
+    assert r.outcomes[-1]['storage_state'] == 'ready'
+    assert r.daemon.contacts.records() == []  # Changing policy cleared the archive.
+    if previous_pull != 'complete':
+        assert not r.daemon.obex_worker.jobs
+        if previous_pull == 'late_success':
+            old_callbacks['on_success'](pulled)
+        else:
+            old_callbacks['on_error'](RuntimeError('old download failed'))
+
+    assert len(r.daemon.obex_worker.jobs) == 1
+    r.daemon.obex_worker.finish()
+    assert r.daemon.contacts.records() == records
+    assert r.daemon.contacts.count() == 0
+    r.daemon._post_available_sessions_setup()
+    r.daemon._on_storage_changed()
+    assert not r.daemon.obex_worker.jobs
+
+
 def test_preparation_failure_does_not_publish_writable_storage(recovery, monkeypatch):
     def fail(**_kwargs):
         raise OSError("disk unavailable")
@@ -330,6 +385,7 @@ def test_preparation_failure_does_not_publish_writable_storage(recovery, monkeyp
 
 def test_contact_queue_failure_does_not_hide_storage_recovery(recovery, monkeypatch):
     r = recovery
+    r.daemon.sessions.map = object()
     submit = r.daemon.obex_worker.submit
 
     def full(*_args, **_kwargs):

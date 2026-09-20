@@ -6,6 +6,7 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -86,3 +87,30 @@ def test_system_bus_connection_is_not_shared_with_worker_thread(monkeypatch) -> 
     assert worker_connections[0] is not main_connection
     assert len(connections) == 2
     assert mainloops == [None, bus.dbus.mainloop.NULL_MAIN_LOOP]
+
+
+def test_profile_owner_replacement_keeps_sibling_and_routes_child_objects(monkeypatch):
+    connections = []
+    def connect(*, private):
+        assert private
+        connection = SimpleNamespace(closed=False)
+        connection.set_exit_on_disconnect = lambda value: None
+        connection.close = lambda: setattr(connection, 'closed', True)
+        connections.append(connection)
+        return connection
+    monkeypatch.setattr(bus.dbus, 'SessionBus', connect)
+    map_owner = bus.new_obex_profile_bus('MAP')
+    bus.bind_obex_profile_session('MAP', '/session1')
+    pbap_owner = bus.new_obex_profile_bus('PBAP')
+    bus.bind_obex_profile_session('PBAP', '/session2')
+    assert bus.get_obex_bus('/session1/message1') is map_owner
+    assert bus.get_obex_bus('/session2/transfer1') is pbap_owner
+
+    new_owner = bus.new_obex_profile_bus('MAP')
+    bus.bind_obex_profile_session('MAP', '/session3')
+    assert map_owner.closed
+    assert not pbap_owner.closed
+    assert bus.get_obex_bus('/session3') is new_owner
+    assert bus.get_obex_bus('/session2') is pbap_owner
+    bus.close_obex_worker_bus()
+    assert all(connection.closed for connection in connections)
