@@ -76,6 +76,7 @@ def recovery(tmp_path, monkeypatch):
     daemon._dbus_service = None
     daemon._contacts_refresh_id = None
     daemon._contacts_refresh_pending = False
+    daemon._contacts_sync_waiters = []
     daemon._contacts_refresh_deferred = False
     daemon._contacts_map_wait_id = None
     daemon._contacts_map_wait_finished = False

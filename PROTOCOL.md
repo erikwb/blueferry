@@ -316,6 +316,8 @@ stops the daemon's connection attempts.
   PBAP-only automatic sync after the grace period even if MAP never connects.
   Do not restart the grace period on retries or daily refreshes. Explicit
   contact sync remains immediately available and satisfies a deferred pull.
+  Manual and automatic sync share one pending transfer, including when a manual
+  download spans the grace deadline; all waiting callers receive its result.
 - Give MAP and PBAP separate private D-Bus owners. Before retrying a missing
   profile, close only its old connection so BlueZ discards that owner's stale
   or unfinished session. Route session, message, and transfer calls through

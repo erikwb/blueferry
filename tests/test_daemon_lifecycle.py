@@ -59,6 +59,7 @@ def _bare_daemon():
     instance._target_config_check_id = None
     instance._storage_retry_id = None
     instance._contacts_refresh_deferred = False
+    instance._contacts_sync_waiters = []
     instance._contacts_map_wait_id = None
     instance._contacts_map_wait_finished = False
     instance._initializing = True

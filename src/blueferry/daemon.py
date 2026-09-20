@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import signal
+from collections.abc import Callable
 
 import dbus
 from gi.repository import GLib
@@ -30,6 +31,7 @@ from blueferry.history import (
     history_count,
     mark_event_handles_read,
 )
+from blueferry.limits import MAX_OBEX_PENDING_OPERATIONS
 from blueferry.notification_policy import (
     ALL_NOTIFICATIONS,
     NotificationPolicyStore,
@@ -157,6 +159,9 @@ class Daemon:
         self._initialization_retry_id: int | None = None
         self._initializing = True
         self._contacts_refresh_pending = False
+        self._contacts_sync_waiters: list[
+            tuple[Callable[[int], None], Callable[[Exception], None]]
+        ] = []
         self._contacts_refresh_deferred = False
         self._contacts_map_wait_id: int | None = None
         self._contacts_map_wait_finished = False
@@ -232,8 +237,7 @@ class Daemon:
                 on_group_sent=self.events.group_sent,
                 submit_obex=self.obex_worker.submit,
                 defer_mark_read=self.read_receipts.defer,
-                pull_contacts=self._pull_contacts,
-                on_contacts_pulled=self._contacts_pulled,
+                sync_contacts=self._sync_contacts,
                 contacts=self.contacts,
                 status_provider=self._status,
                 notification_policy=self.notification_policy,
@@ -554,21 +558,66 @@ class Daemon:
                 )
             return
         self._finish_contacts_map_wait()
+        self._sync_contacts()
+
+    def _sync_contacts(
+        self,
+        success: Callable[[int], None] | None = None,
+        failure: Callable[[Exception], None] | None = None,
+    ) -> None:
+        """Join or start one contact pull; called and completed on GLib."""
+        if success is not None and failure is not None:
+            # Coalescing must retain the worker queue's bound on callers.
+            if len(self._contacts_sync_waiters) >= MAX_OBEX_PENDING_OPERATIONS:
+                failure(RuntimeError("too many pending contact sync requests"))
+                return
+            self._contacts_sync_waiters.append((success, failure))
+        if self._contacts_refresh_pending:
+            return
         self._contacts_refresh_pending = True
 
         def succeeded(pulled):
-            self._contacts_refresh_pending = False
-            self._contacts_pulled(pulled)
+            try:
+                count = self._contacts_pulled(pulled)
+            except Exception as error:
+                failed(error)
+            else:
+                self._contacts_sync_finished(count=count)
 
         def failed(error):
-            self._contacts_refresh_pending = False
-            log.error("contacts refresh failed; using previous cache: %s", error)
-            self.sessions.report_error(error)
+            self._contacts_sync_finished(error=error)
 
         try:
             self.obex_worker.submit(self._pull_contacts, on_success=succeeded, on_error=failed)
         except Exception as error:
             failed(error)
+
+    def _contacts_sync_finished(self, *, count: int = 0, error: Exception | None = None) -> None:
+        waiters, self._contacts_sync_waiters = self._contacts_sync_waiters, []
+        self._contacts_refresh_pending = False
+        if error is not None:
+            log.error("contacts refresh failed; using previous cache: %s", error)
+            try:
+                self.sessions.report_error(error)
+            except Exception:
+                log.exception("could not report contact sync transport failure")
+        for success, failure in waiters:
+            try:
+                if error is None:
+                    success(count)
+                else:
+                    failure(error)
+            except Exception:
+                log.exception("contact sync completion callback failed")
+        if (
+            error is not None
+            and self._contacts_refresh_deferred
+            and self._contacts_map_wait_finished
+        ):
+            # A manual pull can span the grace deadline. Its failure must not
+            # consume the deferred automatic request. Automatic attempts clear
+            # this flag before queuing, so this cannot form a retry loop.
+            self._refresh_contacts()
 
     def _finish_contacts_map_wait(self) -> None:
         self._contacts_map_wait_finished = True

@@ -312,6 +312,7 @@ def test_automatic_contacts_wait_for_map_but_manual_sync_still_works(monkeypatch
     value.contacts = SimpleNamespace(count=lambda: 0)
     value.storage = SimpleNamespace(status=SimpleNamespace(can_write=True))
     value._contacts_refresh_pending = False
+    value._contacts_sync_waiters = []
     value._contacts_refresh_deferred = False
     value._contacts_map_wait_id = None
     value._contacts_map_wait_finished = False
@@ -320,7 +321,11 @@ def test_automatic_contacts_wait_for_map_but_manual_sync_still_works(monkeypatch
     value._pull_contacts = lambda: 42
     value._contacts_pulled = lambda n: n
     value._emit_status = lambda: None
-    value.obex_worker = SimpleNamespace(submit=lambda operation, **handlers: jobs.append(operation))
+    handlers = []
+    def submit(operation, **callbacks):
+        jobs.append(operation)
+        handlers.append(callbacks)
+    value.obex_worker = SimpleNamespace(submit=submit)
     monkeypatch.setattr(daemon.GLib, 'timeout_add_seconds', lambda *_args: 123)
     monkeypatch.setattr(daemon.GLib, 'source_remove', lambda _: True)
     profiles = ProfileSupervisor(
@@ -336,13 +341,15 @@ def test_automatic_contacts_wait_for_map_but_manual_sync_still_works(monkeypatch
     timers.pop()()
     assert jobs == [value.sessions.open_all]
     jobs.clear()
+    handlers.clear()
 
     operations = BackendOperations(value.sessions, BackendDependencies(
-        submit_obex=lambda operation, **handlers: jobs.append(operation),
-        pull_contacts=value._pull_contacts, on_contacts_pulled=value._contacts_pulled,
+        sync_contacts=value._sync_contacts,
     ))
     operations.sync_contacts(published.append, published.append)
     assert jobs == [value._pull_contacts]
+    handlers.pop()['on_success'](42)
+    assert published == [42]
     jobs.clear()
 
     value.sessions.map = object()

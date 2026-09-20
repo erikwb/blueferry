@@ -9,7 +9,7 @@ from blueferry.backend_operations import BackendDependencies, BackendOperations
 
 @pytest.fixture
 def contacts_setup(monkeypatch):
-    jobs, timers, removed, verified = [], {}, [], []
+    jobs, timers, removed, verified, errors = [], {}, [], [], []
     cached = [0]
     timer_serial = 0
 
@@ -36,12 +36,17 @@ def contacts_setup(monkeypatch):
         operation, handlers = jobs.pop(0)
         handlers['on_success'](operation())
 
+    def fail(error):
+        _operation, handlers = jobs.pop(0)
+        handlers['on_error'](error)
+
     value = daemon_mod.Daemon.__new__(daemon_mod.Daemon)
-    value.sessions = SimpleNamespace(map=None, pbap=object())
+    value.sessions = SimpleNamespace(map=None, pbap=object(), report_error=errors.append)
     value.storage = SimpleNamespace(status=SimpleNamespace(can_write=True))
     value.contacts = SimpleNamespace(count=lambda: cached[0], refresh=lambda: cached[0])
     value._contacts_refresh_id = 99
     value._contacts_refresh_pending = False
+    value._contacts_sync_waiters = []
     value._contacts_refresh_deferred = False
     value._contacts_map_wait_id = None
     value._contacts_map_wait_finished = False
@@ -55,9 +60,11 @@ def contacts_setup(monkeypatch):
     )
     monkeypatch.setattr(daemon_mod.GLib, 'timeout_add_seconds', schedule)
     monkeypatch.setattr(daemon_mod.GLib, 'source_remove', cancel)
+    operations = BackendOperations(value.sessions, BackendDependencies(sync_contacts=value._sync_contacts))
     return SimpleNamespace(
         daemon=value, jobs=jobs, timers=timers, removed=removed,
         expire=expire, finish=finish, cached=cached, verified=verified,
+        fail=fail, errors=errors, operations=operations,
     )
 
 
@@ -110,12 +117,7 @@ def test_manual_sync_satisfies_the_deferred_automatic_pull(contacts_setup):
     r.daemon._refresh_contacts()
     timer = r.daemon._contacts_map_wait_id
     completed = []
-    operations = BackendOperations(r.daemon.sessions, BackendDependencies(
-        submit_obex=r.daemon.obex_worker.submit,
-        pull_contacts=r.daemon._pull_contacts,
-        on_contacts_pulled=r.daemon._contacts_pulled,
-    ))
-    operations.sync_contacts(completed.append, lambda error: pytest.fail(str(error)))
+    r.operations.sync_contacts(completed.append, lambda error: pytest.fail(str(error)))
     r.finish()
     assert completed == [3]
     assert r.removed == [timer]
@@ -123,6 +125,125 @@ def test_manual_sync_satisfies_the_deferred_automatic_pull(contacts_setup):
     r.daemon._post_available_sessions_setup()
     assert not r.jobs
     assert not r.timers
+
+
+def test_manual_sync_spanning_deadline_prevents_a_second_download(contacts_setup):
+    r = contacts_setup
+    r.daemon._refresh_contacts()
+    completed, failures = [], []
+    r.operations.sync_contacts(completed.append, failures.append)
+    r.expire(r.daemon._contacts_map_wait_id)
+    r.daemon._periodic_refresh_contacts()
+    assert len(r.jobs) == 1
+    r.finish()
+    assert completed == [3]
+    assert not failures
+    assert not r.jobs
+    assert not r.daemon._contacts_refresh_pending
+    assert not r.daemon._contacts_refresh_deferred
+
+
+def test_manual_callers_join_an_automatic_download(contacts_setup):
+    r = contacts_setup
+    r.daemon._refresh_contacts()
+    r.expire(r.daemon._contacts_map_wait_id)
+    completed, failures = [], []
+    r.operations.sync_contacts(completed.append, failures.append)
+    r.operations.sync_contacts(completed.append, failures.append)
+    assert len(r.jobs) == 1
+    r.finish()
+    assert completed == [3, 3]
+    assert r.verified == [daemon_mod.CONTACTS]
+    assert not failures
+    assert not r.daemon._contacts_sync_waiters
+
+
+def test_failed_manual_sync_after_deadline_leaves_one_automatic_attempt(contacts_setup):
+    r = contacts_setup
+    r.daemon._refresh_contacts()
+    completed, failures = [], []
+    for _caller in range(2):
+        r.operations.sync_contacts(completed.append, failures.append)
+    r.expire(r.daemon._contacts_map_wait_id)
+    error = RuntimeError('phonebook download failed')
+    r.fail(error)
+    assert len(failures) == 2
+    assert not completed
+    assert r.errors == [error]  # One failed transfer, one transport report.
+    assert len(r.jobs) == 1
+    assert not r.daemon._contacts_refresh_deferred
+    assert not r.daemon._contacts_sync_waiters
+
+    r.fail(error)
+    assert not r.jobs  # The automatic fallback must not become a retry loop.
+    assert not r.daemon._contacts_refresh_pending
+    r.operations.sync_contacts(completed.append, failures.append)
+    r.finish()
+    assert completed == [3]
+
+
+def test_queue_failure_releases_manual_waiters_and_allows_retry(contacts_setup):
+    r = contacts_setup
+    submit = r.daemon.obex_worker.submit
+    error = RuntimeError('OBEX operation queue is full')
+    def reject(*_args, **_kwargs):
+        raise error
+    r.daemon.obex_worker.submit = reject
+    completed, failures = [], []
+    r.operations.sync_contacts(completed.append, failures.append)
+    assert len(failures) == 1
+    assert r.errors == [error]
+    assert not r.daemon._contacts_refresh_pending
+    assert not r.daemon._contacts_sync_waiters
+    r.daemon.obex_worker.submit = submit
+    r.operations.sync_contacts(completed.append, failures.append)
+    r.finish()
+    assert completed == [3]
+
+
+def test_cache_refresh_failure_releases_every_waiter(contacts_setup):
+    r = contacts_setup
+    completed, failures = [], []
+    for _caller in range(2):
+        r.operations.sync_contacts(completed.append, failures.append)
+    error = RuntimeError('contact cache could not refresh')
+    def reject():
+        raise error
+    r.daemon.contacts.refresh = reject
+    r.finish()
+    assert not completed
+    assert len(failures) == 2
+    assert r.errors == [error]
+    assert not r.daemon._contacts_refresh_pending
+    assert not r.daemon._contacts_sync_waiters
+
+
+def test_a_broken_client_reply_cannot_strand_other_waiters(contacts_setup):
+    r = contacts_setup
+    def broken_reply(_result):
+        raise RuntimeError('client disappeared')
+    r.operations.sync_contacts(broken_reply, broken_reply)
+    completed = []
+    r.operations.sync_contacts(completed.append, broken_reply)
+    r.finish()
+    assert completed == [3]
+    assert not r.daemon._contacts_refresh_pending
+    assert not r.daemon._contacts_sync_waiters
+    assert not r.errors  # Reply delivery is not a Bluetooth failure.
+
+
+def test_coalesced_manual_requests_remain_bounded(contacts_setup, monkeypatch):
+    r = contacts_setup
+    monkeypatch.setattr(daemon_mod, 'MAX_OBEX_PENDING_OPERATIONS', 2)
+    completed, failures = [], []
+    for _caller in range(3):
+        r.operations.sync_contacts(completed.append, failures.append)
+    assert len(r.jobs) == 1
+    assert len(r.daemon._contacts_sync_waiters) == 2
+    assert len(failures) == 1
+    assert not r.errors
+    r.finish()
+    assert completed == [3, 3]
 
 
 @pytest.mark.parametrize('unavailable', ['storage', 'pbap'])
