@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import threading
 import time
+from types import SimpleNamespace
 
 import dbus
 import dbus.service
@@ -10,7 +11,9 @@ import pytest
 from gi.repository import GLib
 
 from blueferry import bluez_setup, bus
+from blueferry import daemon as daemon_mod
 from blueferry.obex.sessions import SessionManager
+from blueferry.solicitation_supervisor import SolicitationSupervisor
 
 pytestmark = pytest.mark.private_dbus
 
@@ -33,8 +36,8 @@ def advertising_manager(monkeypatch):
     client_bus.set_exit_on_disconnect(False)
 
     class Manager(dbus.service.Object):
-        def __init__(self):
-            super().__init__(service_bus, '/org/bluez/hci7')
+        def __init__(self, connection=service_bus):
+            super().__init__(connection, '/org/bluez/hci7')
             self.requests = []
             self.removed = []
 
@@ -44,7 +47,7 @@ def advertising_manager(monkeypatch):
         def RegisterAdvertisement(self, path, _options, reply, error, sender=None):
             # BlueZ must call back into the registering application before
             # it can finish registration. A blocking client deadlocks this.
-            props = dbus.Interface(service_bus.get_object(sender, path, introspect=False),
+            props = dbus.Interface(self.connection.get_object(sender, path, introspect=False),
                                    'org.freedesktop.DBus.Properties')
             props.GetAll('org.bluez.LEAdvertisement1', signature='s',
                          reply_handler=lambda values: self.requests.append((str(path), values, reply, error)),
@@ -123,6 +126,57 @@ def test_retirement_cancels_real_pending_reply_dispatch(advertising_manager, mon
     # Both replies were sent on the same service connection. The old reply
     # must be cancelled at D-Bus dispatch, not merely ignored in _registered.
     assert received == [new_path]
+
+
+def test_bluez_owner_loss_without_release_recreates_compatibility_advert(
+    advertising_manager, monkeypatch,
+):
+    manager = advertising_manager
+    monkeypatch.setattr(daemon_mod.config, 'ANCS_ENABLED', False)
+    monkeypatch.setattr(daemon_mod, 'get_system_bus', bluez_setup.get_system_bus)
+    reconnected = []
+    value = daemon_mod.Daemon.__new__(daemon_mod.Daemon)
+    value._bluez_owner_match = None
+    value._bluez_owner_generation = 0
+    value.ancs = None
+    value.adapter_class = SimpleNamespace(poke=lambda: None)
+    value.bearers = SimpleNamespace(hold_le=lambda: None, reset_after_bluez_restart=lambda: None)
+    value.profiles = SimpleNamespace(reconnect=lambda *args, **kwargs: reconnected.append((args, kwargs)))
+    value.solicitation = SolicitationSupervisor(
+        'hci7', schedule=lambda *_args: 1, cancel=lambda _timer: None,
+    )
+    replacement_bus = dbus.SessionBus(private=True)
+    replacement_bus.set_exit_on_disconnect(False)
+    replacement = type(manager)(replacement_bus)
+    try:
+        value._watch_bluez_owner()
+        value.solicitation.start()
+        dispatch_until(lambda: manager.requests)
+        old_path, _props, reply, _error = manager.requests[0]
+        reply()
+        dispatch_until(bluez_setup.advert_registered)
+
+        # A crashed bluetoothd cannot call Release. Losing its well-known
+        # name generates the same owner-loss signal without that callback.
+        manager.connection.release_name('org.bluez')
+        dispatch_until(lambda: not bluez_setup.advert_registered())
+        assert not reconnected  # Wait for a replacement before reconnecting.
+        replacement_bus.request_name('org.bluez', dbus.bus.NAME_FLAG_DO_NOT_QUEUE)
+        dispatch_until(lambda: replacement.requests)
+        new_path, _props, reply, _error = replacement.requests[0]
+        assert new_path != old_path
+        reply()
+        dispatch_until(bluez_setup.advert_registered)
+        assert reconnected == [(('bluetoothd restarted',), {'remove_remote_sessions': False})]
+        value.solicitation.stop()
+        dispatch_until(lambda: new_path in replacement.removed)
+    finally:
+        match, value._bluez_owner_match = value._bluez_owner_match, None
+        if match is not None:
+            match.remove()
+        value.solicitation.stop()
+        replacement.remove_from_connection()
+        replacement_bus.close()
 
 
 def test_real_obex_retry_releases_only_its_profile_owner():

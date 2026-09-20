@@ -318,6 +318,9 @@ stops the daemon's connection attempts.
   contact sync remains immediately available and satisfies a deferred pull.
   Manual and automatic sync share one pending transfer, including when a manual
   download spans the grace deadline; all waiting callers receive its result.
+  A successful sync with zero usable destinations still completes initial sync;
+  profile retries must not download it again. Manual and daily refreshes remain
+  available, and preparing replacement storage resets initial sync completion.
 - Give MAP and PBAP separate private D-Bus owners. Before retrying a missing
   profile, close only its old connection so BlueZ discards that owner's stale
   or unfinished session. Route session, message, and transfer calls through

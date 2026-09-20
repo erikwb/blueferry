@@ -82,6 +82,7 @@ class ProfileSupervisor:
         self._opening = False
         self._closing = False
         self._ready = False
+        self._consumers_active = False
         self._ever_ready = False
         self._stopping = False
         self._generation = 0
@@ -139,8 +140,11 @@ class ProfileSupervisor:
         generation = self._generation
         self.connectivity.lost(reason)
         self._on_status()
-        if self._ready:
-            self._ready = False
+        self._ready = False
+        # Partial readiness can start consumers too. SessionManager may
+        # already have cleared both sessions before notifying us of loss.
+        if self._consumers_active:
+            self._consumers_active = False
             self._on_lost(reason)
         self._opening = False
         self._closing = True
@@ -182,6 +186,7 @@ class ProfileSupervisor:
         self._stopping = True
         self._generation += 1
         self._ready = False
+        self._consumers_active = False
         self._opening = False
         self._closing = False
         self.connectivity.stopping()
@@ -213,6 +218,7 @@ class ProfileSupervisor:
         if self._ready:
             return
         self._ready = True
+        self._consumers_active = True
         self._on_ready()
 
     def _open_failed(self, generation: int, error: Exception) -> None:
@@ -231,6 +237,7 @@ class ProfileSupervisor:
                 self.sessions.map is not None,
                 self.sessions.pbap is not None,
             )
+            self._consumers_active = True
             self._on_partial_ready()
         authorization_required = isinstance(error, SessionError) and (
             "Forbidden" in message or "0x43" in message

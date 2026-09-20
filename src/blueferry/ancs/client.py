@@ -71,8 +71,6 @@ BEARER_SETTLE_SECONDS = 2
 TRANSPORT_RESET_SECONDS = 15
 
 _BLUEZ_BUS_NAME = "org.bluez"
-_DBUS_BUS_NAME = "org.freedesktop.DBus"
-_DBUS_INTERFACE = "org.freedesktop.DBus"
 
 
 @dataclass(slots=True)
@@ -129,6 +127,7 @@ class AncsClient:
 
     Idempotent: calling start() multiple times is harmless; if chars are
     already present at start time, we hook them immediately.
+    The daemon forwards bluetoothd owner changes through observe_bluez_owner().
     """
 
     def __init__(
@@ -138,7 +137,6 @@ class AncsClient:
         on_status: Callable[[], None] | None = None,
         include_non_message_notifications: Callable[[], bool] | None = None,
         include_app_notification: Callable[[str], bool] | None = None,
-        on_bluez_restart: Callable[[], None] | None = None,
         on_transport_failure: Callable[[], None] | None = None,
         *,
         previously_authorized: bool = False,
@@ -148,7 +146,6 @@ class AncsClient:
         self.device_path = device_path
         self.on_event = on_event
         self.on_status = on_status
-        self._on_bluez_restart = on_bluez_restart
         self._on_transport_failure = on_transport_failure
         self._include_non_message_notifications = (
             include_non_message_notifications or (lambda: False)
@@ -190,7 +187,6 @@ class AncsClient:
         # subscriptions are shorter-lived and are rebuilt as one unit whenever
         # BlueZ removes any part of the ANCS service.
         self._manager_signal_matches: list = []
-        self._owner_signal_match = None
         self._characteristic_signal_matches: list = []
         self._bluez_owner_generation = 0
         self._bluez_owner_available = True
@@ -209,26 +205,12 @@ class AncsClient:
         if self._started:
             return
         log.info("ANCS client starting; watching %s", self.device_path)
-        bus = get_system_bus()
-        owner_match = bus.add_signal_receiver(
-            self._on_bluez_owner_changed,
-            dbus_interface=_DBUS_INTERFACE,
-            signal_name="NameOwnerChanged",
-            bus_name=_DBUS_BUS_NAME,
-            arg0=_BLUEZ_BUS_NAME,
-        )
-        self._owner_signal_match = owner_match
         self._bluez_owner_available = True
         self._started = True
         try:
             self._bind_manager_and_rescan()
         except Exception:
             self._started = False
-            self._owner_signal_match = None
-            try:
-                owner_match.remove()
-            except Exception:
-                log.debug("could not remove partial BlueZ owner watch", exc_info=True)
             raise
         if self._bearer_connected is True:
             self._schedule_bearer_settle()
@@ -310,8 +292,8 @@ class AncsClient:
                 log.debug("could not remove ANCS manager watch", exc_info=True)
         self._manager_signal_matches = []
 
-    def _on_bluez_owner_changed(self, _name, old_owner, new_owner) -> None:
-        """Rebuild discovery when bluetoothd replaces its D-Bus owner.
+    def observe_bluez_owner(self, old_owner, new_owner) -> None:
+        """Rebuild discovery on an owner change forwarded by the daemon.
 
         BlueZ can recreate cached GATT objects before dbus-python retargets an
         existing well-known-name signal match.  Connecting fresh manager
@@ -343,8 +325,6 @@ class AncsClient:
         if not new_owner:
             return
         log.info("BlueZ owner available; rebuilding ANCS discovery")
-        if self._on_bluez_restart is not None:
-            self._on_bluez_restart()
         if self._manager_bind_in_progress:
             log.debug("deferring ANCS discovery rebuild until the current sweep finishes")
             return
@@ -540,12 +520,6 @@ class AncsClient:
         )
         self._owned_notify_paths.clear()
         self._remove_manager_watches()
-        if self._owner_signal_match is not None:
-            try:
-                self._owner_signal_match.remove()
-            except Exception:
-                log.debug("could not remove BlueZ owner watch", exc_info=True)
-            self._owner_signal_match = None
         self._ns_path = self._ds_path = self._cp_path = None
         if was_connected and self.on_status is not None:
             self.on_status()

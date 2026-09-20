@@ -29,6 +29,12 @@ if not _running_private_suite:
 # thread-default context stacks deadlock the suite. Force a headless platform
 # and no theme plugin before any test module can import PySide6.
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
+# GTK and Qt run in separate processes in production, but these tests load
+# both toolkits. With Qt 6.11, GTK initializing GLib before Qt can leave Qt's
+# worker dispatcher cleaning up after GLib's thread-local context stack has
+# been destroyed. Use Qt's native dispatcher here; tests that need GLib
+# dispatch explicitly iterate its context themselves.
+os.environ["QT_NO_GLIB"] = "1"
 # Package builds can reuse Qt's per-user compiled QML cache even though they
 # are testing a newly extracted source tree at the same path. Always compile
 # the QML under test from its current source.

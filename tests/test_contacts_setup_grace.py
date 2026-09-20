@@ -1,10 +1,14 @@
 """MAP gets a bounded head start without starving usable PBAP contacts."""
+import sqlite3
+from contextlib import closing
 from types import SimpleNamespace
 
 import pytest
 
+from blueferry import config, contact_repository
 from blueferry import daemon as daemon_mod
 from blueferry.backend_operations import BackendDependencies, BackendOperations
+from blueferry.contacts import ContactsResolver
 
 
 @pytest.fixture
@@ -46,6 +50,8 @@ def contacts_setup(monkeypatch):
     value.contacts = SimpleNamespace(count=lambda: cached[0], refresh=lambda: cached[0])
     value._contacts_refresh_id = 99
     value._contacts_refresh_pending = False
+    value._contacts_initial_sync_done = False
+    value._contacts_storage_generation = 0
     value._contacts_sync_waiters = []
     value._contacts_refresh_deferred = False
     value._contacts_map_wait_id = None
@@ -91,6 +97,107 @@ def test_pbap_only_sync_resumes_at_deadline_and_daily_refresh_does_not_wait_agai
     assert len(r.jobs) == 1
     assert not r.timers
     r.finish()
+
+
+@pytest.mark.parametrize('initial_sync', ['automatic', 'manual'])
+def test_successful_zero_contact_sync_is_not_repeated_on_recovery(contacts_setup, initial_sync):
+    r = contacts_setup
+    r.daemon._pull_contacts = lambda: 0
+    r.daemon._post_available_sessions_setup()
+    completed, failures = [], []
+    if initial_sync == 'automatic':
+        r.expire(r.daemon._contacts_map_wait_id)
+    else:
+        r.operations.sync_contacts(completed.append, failures.append)
+    r.finish()
+    assert r.cached[0] == 0
+    assert r.verified == [daemon_mod.CONTACTS]
+
+    for _retry in range(5):
+        r.daemon._post_available_sessions_setup()
+        r.daemon._on_storage_changed()
+    r.daemon.sessions.map = object()
+    r.daemon._post_available_sessions_setup()
+    assert not r.jobs
+    assert not r.timers
+
+    r.operations.sync_contacts(completed.append, failures.append)
+    assert len(r.jobs) == 1
+    r.finish()
+    assert completed == ([0, 0] if initial_sync == 'manual' else [0])
+    assert not failures
+    r.daemon._periodic_refresh_contacts()
+    assert len(r.jobs) == 1
+    r.finish()
+    r.daemon._post_available_sessions_setup()
+    assert not r.jobs
+
+
+def test_failed_initial_contact_sync_can_retry_on_profile_recovery(contacts_setup):
+    r = contacts_setup
+    r.daemon._post_available_sessions_setup()
+    r.expire(r.daemon._contacts_map_wait_id)
+    r.fail(RuntimeError('temporary download failure'))
+    assert not r.jobs
+    r.daemon._post_available_sessions_setup()
+    assert len(r.jobs) == 1
+    r.finish()
+    r.daemon._post_available_sessions_setup()
+    assert not r.jobs
+
+
+@pytest.mark.parametrize('previously_cached', [False, True])
+def test_locked_cache_reload_preserves_contacts_and_does_not_complete_initial_sync(
+    contacts_setup, tmp_path, monkeypatch, previously_cached,
+):
+    r = contacts_setup
+    monkeypatch.setattr(config, 'STATE_DIR', tmp_path)
+    monkeypatch.setattr(config, 'CONTACTS_DB', tmp_path / 'contacts.sqlite')
+    # Exercise a real SQLite lock without spending its default five-second
+    # busy timeout on each failure.
+    connect = sqlite3.connect
+    monkeypatch.setattr(sqlite3, 'connect', lambda path: connect(path, timeout=0))
+    repository = contact_repository.ContactRepository()
+    previous = [('Bob', ['15555550111'], ['bob@example.com'])] if previously_cached else []
+    repository.replace(previous)
+    r.daemon.contacts = ContactsResolver()
+    previous_addresses = r.daemon.contacts.thread_addresses('15555550111')
+    replacement = [('Alice', ['15555550222'], ['alice@example.com'])]
+    r.daemon._pull_contacts = lambda: repository.replace(replacement)
+
+    completed, failed = [], []
+    r.operations.sync_contacts(completed.append, failed.append)
+    operation, handlers = r.jobs.pop(0)
+    pulled = operation()
+    with closing(sqlite3.connect(config.CONTACTS_DB)) as locker:
+        locker.execute('BEGIN EXCLUSIVE')
+        try:
+            handlers['on_success'](pulled)
+        finally:
+            locker.rollback()
+
+    assert not completed
+    assert len(failed) == 1 and 'database is locked' in str(failed[0])
+    assert len(r.errors) == 1 and isinstance(r.errors[0], sqlite3.OperationalError)
+    assert not r.daemon._contacts_initial_sync_done
+    assert not r.daemon._contacts_refresh_pending
+    assert not r.daemon._contacts_sync_waiters
+    assert r.daemon.contacts.records() == previous
+    assert r.daemon.contacts.thread_addresses('15555550111') == previous_addresses
+    assert r.daemon.contacts.count() == (2 if previously_cached else 0)
+    assert repository.load(strict=True) == replacement
+
+    if previously_cached:
+        r.operations.sync_contacts(completed.append, failed.append)
+    else:
+        r.daemon._post_available_sessions_setup()
+    assert len(r.jobs) == 1
+    r.finish()
+    assert r.daemon.contacts.records() == replacement
+    assert not r.daemon.contacts.thread_addresses('15555550111')
+    assert r.daemon._contacts_initial_sync_done
+    r.daemon._post_available_sessions_setup()
+    assert not r.jobs
 
 
 def test_map_connecting_early_cancels_the_wait_and_starts_one_pull(contacts_setup):
