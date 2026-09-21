@@ -294,17 +294,32 @@ def test_read_state_trackers_are_bounded(monkeypatch) -> None:
     assert sink._notif.calls == [("close", 1)]
 
 
-def test_deliberate_dismissal_defers_the_correct_mark_read() -> None:
+def test_deliberate_dismissal_defers_the_correct_mark_read(monkeypatch) -> None:
     deferred = []
     sink = LibnotifySink.__new__(LibnotifySink)
     sink._pending = {7: "/session/message1"}
     sink._msg_subs = {}
     sink._defer_mark_read = deferred.append
+    monkeypatch.setattr(libnotify_mod.config, "MARK_READ_ON_DISMISS", True)
 
     sink._on_closed(7, 2)
 
     assert sink._pending == {}
     assert deferred == ["/session/message1"]
+
+
+def test_mark_read_on_dismiss_disabled_skips_the_write(monkeypatch) -> None:
+    deferred = []
+    sink = LibnotifySink.__new__(LibnotifySink)
+    sink._pending = {7: "/session/message1"}
+    sink._msg_subs = {}
+    sink._defer_mark_read = deferred.append
+    monkeypatch.setattr(libnotify_mod.config, "MARK_READ_ON_DISMISS", False)
+
+    sink._on_closed(7, 2)
+
+    assert sink._pending == {}
+    assert deferred == []
 
 
 @pytest.mark.parametrize("reason", [1, 3])

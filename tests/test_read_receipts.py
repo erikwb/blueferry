@@ -271,8 +271,9 @@ def test_late_ancs_groups_a_message_already_read_locally(receipts, monkeypatch, 
     assert r.writes == ["/session/map/message-1"]
 
 
-def test_popup_dismissal_uses_the_same_grace_period(receipts):
+def test_popup_dismissal_uses_the_same_grace_period(receipts, monkeypatch):
     r = receipts
+    monkeypatch.setattr(config, "MARK_READ_ON_DISMISS", True)
     sink = LibnotifySink.__new__(LibnotifySink)
     sink._pending = {7: "/session/map/message-1"}
     sink._msg_subs = {}
