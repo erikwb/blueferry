@@ -311,9 +311,22 @@ stops the daemon's connection attempts.
   remain available when iOS rejects the other profile; in particular, a MAP
   refusal must not prevent PBAP contacts access.
 - Serialize blocking MAP/PBAP operations on one worker.
-- Before opening, remove only stale sessions for the target phone and profile.
-- On `Forbidden`, retry once after targeted stale-session cleanup rather than
-  restarting all of obexd.
+- Give initial MAP retries up to three minutes before an automatic contact
+  download occupies the worker. Download sooner when MAP connects, and allow
+  PBAP-only automatic sync after the grace period even if MAP never connects.
+  Do not restart the grace period on retries or daily refreshes. Explicit
+  contact sync remains immediately available and satisfies a deferred pull.
+  Manual and automatic sync share one pending transfer, including when a manual
+  download spans the grace deadline; all waiting callers receive its result.
+  A successful sync with zero usable destinations still completes initial sync;
+  profile retries must not download it again. Manual and daily refreshes remain
+  available, and preparing replacement storage resets initial sync completion.
+- Give MAP and PBAP separate private D-Bus owners. Before retrying a missing
+  profile, close only its old connection so BlueZ discards that owner's stale
+  or unfinished session. Route session, message, and transfer calls through
+  the corresponding owner. Do not infer ownership from `Session1.Target`
+  (which is a UUID), restart obexd, or use its crash-prone `RemoveSession` path.
+- On `Forbidden`, retry once with a fresh owner for that profile.
 - Treat disappearance of a session object or the `org.bluez.obex` bus owner as
   connection loss. Poll MAP/PBAP every 5 seconds until the first successful
   connection, then every 15 seconds for later reconnects. Preserve an iPhone
@@ -372,6 +385,12 @@ healthy, subject to a three-minute minimum permission window. It is restored
 when LE or either protocol becomes unhealthy, when BlueZ releases it, and when
 bluetoothd changes D-Bus owner. This both preserves the iOS permission signal
 and avoids occupying an advertising instance indefinitely after recovery.
+Registration runs asynchronously so BlueZ can call the exported advertisement's
+`GetAll` method before replying. Only a successful registration reply establishes
+readiness: `ActiveInstances` includes pending requests. Failed or timed-out
+registrations are retired and retried with a new object path; a late reply or
+`Release` for an old object cannot change the current registration. Pairing waits
+for that reply while dispatching D-Bus, and the daemon keeps its main loop free.
 
 After LE connects, BlueFerry waits for BlueZ to enumerate the ANCS service and
 its Notification Source, Data Source, and Control Point characteristics. A

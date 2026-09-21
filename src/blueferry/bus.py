@@ -62,10 +62,13 @@ def initialize_obex_worker_bus() -> None:
     private connection and is the only thread that performs slow profile I/O.
     """
     _thread_state.obex_bus = dbus.SessionBus(private=True)
+    _thread_state.obex_bus.set_exit_on_disconnect(False)
 
 
 def close_obex_worker_bus() -> None:
     """Close the current worker thread's private connection, if any."""
+    for target in tuple(getattr(_thread_state, "obex_profiles", {})):
+        close_obex_profile_bus(target)
     bus = getattr(_thread_state, "obex_bus", None)
     if bus is None:
         return
@@ -75,14 +78,52 @@ def close_obex_worker_bus() -> None:
         del _thread_state.obex_bus
 
 
-def get_obex_bus():
+def close_obex_profile_bus(target: str) -> None:
+    """Release only sessions owned by our connection for this profile.
+
+    BlueZ tears down sessions when their unique D-Bus owner disappears. This
+    avoids its unsafe RemoveSession path and never touches another client's
+    sessions or our healthy sibling profile.
+    """
+    profiles = getattr(_thread_state, "obex_profiles", {})
+    entry = profiles.pop(target, None)
+    if entry is not None:
+        entry[0].close()
+
+
+def new_obex_profile_bus(target: str):
+    """Start one profile attempt with a fresh, independently owned session."""
+    close_obex_profile_bus(target)
+    profiles = getattr(_thread_state, "obex_profiles", None)
+    if profiles is None:
+        profiles = _thread_state.obex_profiles = {}
+    connection = dbus.SessionBus(private=True)
+    # These connections are deliberately closed during recovery while GLib
+    # continues dispatching. libdbus must not exit the daemon on disconnect.
+    connection.set_exit_on_disconnect(False)
+    profiles[target] = (connection, None)
+    return connection
+
+
+def bind_obex_profile_session(target: str, path: str) -> None:
+    """Route subsequent session/message/transfer calls through their owner."""
+    profiles = _thread_state.obex_profiles
+    connection, _previous = profiles[target]
+    profiles[target] = (connection, path)
+
+
+def get_obex_bus(path: str | None = None):
     """Use the worker-owned connection for operations and transfer watches."""
+    if path is not None:
+        for connection, session in getattr(_thread_state, "obex_profiles", {}).values():
+            if session and (path == session or path.startswith(session + "/")):
+                return connection
     return getattr(_thread_state, "obex_bus", None) or get_session_bus()
 
 
 def obex(path: str, iface: str) -> dbus.Interface:
     """Return an interface on a BlueZ OBEX session object."""
-    bus = get_obex_bus()
+    bus = get_obex_bus(path)
     return dbus.Interface(
         bus.get_object("org.bluez.obex", path), iface
     )

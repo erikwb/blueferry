@@ -174,3 +174,41 @@ def test_stop_cancels_reconciliation_and_removes_advertisement() -> None:
 
     assert calls == [("cancel", 7), ("unregister", "hci7")]
     assert scheduled[0][1]() is False
+
+
+def test_pending_registration_gets_full_hold_after_it_completes():
+    state = {'registered': False, 'pending': False}
+    requests, removed, timers = [], [], []
+    now = [0.0]
+    def register(_adapter):
+        requests.append(now[0])
+        state['pending'] = True
+        return False
+    supervisor = SolicitationSupervisor(
+        'hci7', register=register,
+        unregister=lambda _adapter: removed.append(now[0]),
+        is_registered=lambda: state['registered'], is_pending=lambda: state['pending'],
+        clock=lambda: now[0], schedule=lambda _, callback: timers.append(callback) or 1,
+    )
+    supervisor.start()
+    timers[0]()
+    assert requests == [0.0]
+    now[0] = 20.0
+    state.update(registered=True, pending=False)
+    supervisor.set_needed(False)
+    now[0] = 180.0
+    timers[0]()
+    assert not removed
+    now[0] = 200.0
+    timers[0]()
+    assert removed == [200.0]
+
+
+def test_stop_cancels_a_registration_that_has_not_finished():
+    removed = []
+    supervisor = SolicitationSupervisor(
+        'hci7', is_registered=lambda: False, is_pending=lambda: True,
+        unregister=removed.append,
+    )
+    supervisor.stop()
+    assert removed == ['hci7']

@@ -155,8 +155,7 @@ class BackendDependencies:
     defer_mark_read: Callable[[str, Sequence[str]], None] | None = None
     on_sent: Callable[[str, str, str], None] | None = None
     on_group_sent: Callable[..., None] | None = None
-    pull_contacts: Callable[[], int] | None = None
-    on_contacts_pulled: Callable[[int], int] | None = None
+    sync_contacts: Callable[[Success, Failure], None] | None = None
     contacts: ContactIndex | None = None
     status_provider: Callable[[], dict[str, Any]] | None = None
     notification_policy: NotificationPolicy | None = None
@@ -1003,27 +1002,23 @@ class BackendOperations:
             raise NotReadyError(
                 "PBAP session not open — check Sync Contacts on the iPhone"
             )
-        if (
-            self.dependencies.pull_contacts is None
-            or self.dependencies.on_contacts_pulled is None
-        ):
+        sync = self.dependencies.sync_contacts
+        if sync is None:
             raise NotReadyError("contact sync is unavailable")
-        pull_contacts = self.dependencies.pull_contacts
-        on_contacts_pulled = self.dependencies.on_contacts_pulled
 
-        def succeeded(pulled: int) -> None:
+        def failed(error: Exception) -> None:
+            # The shared sync owns transport failure reporting, once per
+            # transfer rather than once for each waiting client.
+            failure(OperationFailedError("ContactSync", error))
+
+        def succeeded(count: int) -> None:
             try:
-                count = on_contacts_pulled(pulled)
                 self.invalidate_conversations()
                 success(count)
             except Exception as error:
-                self._operation_failed("ContactSync", error, failure)
+                failed(error)
 
-        self._queue(
-            pull_contacts,
-            succeeded,
-            lambda error: self._operation_failed("ContactSync", error, failure),
-        )
+        sync(succeeded, failed)
 
     def is_healthy(self) -> bool:
         return self.sessions.map is not None

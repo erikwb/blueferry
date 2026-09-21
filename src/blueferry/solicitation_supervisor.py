@@ -44,6 +44,7 @@ class SolicitationSupervisor:
         register: Register = bluez_setup.register_advert,
         unregister: Unregister = bluez_setup.unregister_advert,
         is_registered: IsRegistered = bluez_setup.advert_registered,
+        is_pending: IsRegistered = bluez_setup.advert_registration_pending,
         forget_registration: ForgetRegistration = (
             bluez_setup.forget_advert_registration
         ),
@@ -57,6 +58,7 @@ class SolicitationSupervisor:
         self._register = register
         self._unregister = unregister
         self._is_registered = is_registered
+        self._is_pending = is_pending
         self._forget_registration = forget_registration
         self._minimum_on_seconds = minimum_on_seconds
         self._schedule = schedule
@@ -66,6 +68,7 @@ class SolicitationSupervisor:
         self._dialing = False
         self._timer_id: int | None = None
         self._hold_until = 0.0
+        self._was_registered = False
 
     @property
     def needed(self) -> bool:
@@ -115,7 +118,7 @@ class SolicitationSupervisor:
             except Exception:
                 log.debug("could not remove solicitation health timer", exc_info=True)
             self._timer_id = None
-        if self._is_registered():
+        if self._is_registered() or self._is_pending():
             self._unregister(self.adapter)
 
     def _tick(self) -> bool:
@@ -126,15 +129,26 @@ class SolicitationSupervisor:
 
     def _reconcile(self) -> None:
         registered = self._is_registered()
+        if registered and not self._was_registered:
+            # Registration can complete after start(), or after a failed
+            # helper-to-daemon handoff. Give the actual broadcast a full hold.
+            self._begin_hold()
+        self._was_registered = registered
         if self._dialing and self._clock() >= self._hold_until:
             # After the post-pair hold, advertising during an outbound dial
             # can make BlueZ abort its own Connect. During the hold, keep
             # the advert: that is the inbound door iOS uses.
-            if registered:
+            if registered or self._is_pending():
                 self._unregister(self.adapter)
+                self._was_registered = False
             return
         if self._needed and not registered:
-            if not self._register(self.adapter):
+            if self._is_pending():
+                return
+            if self._register(self.adapter):
+                self._was_registered = True
+                self._begin_hold()
+            elif not self._is_pending():
                 log.warning(
                     "ANCS solicitation is unavailable; retrying in %ds",
                     RECONCILE_SECONDS,
@@ -145,6 +159,7 @@ class SolicitationSupervisor:
             and self._clock() >= self._hold_until
         ):
             self._unregister(self.adapter)
+            self._was_registered = False
 
     def _begin_hold(self) -> None:
         self._hold_until = max(

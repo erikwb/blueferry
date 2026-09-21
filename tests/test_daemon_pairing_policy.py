@@ -2,6 +2,8 @@
 
 from types import SimpleNamespace
 
+import pytest
+
 from blueferry import daemon
 
 
@@ -98,6 +100,8 @@ def _daemon(calls):
     value.setup_verification = type("Verification", (), {"verified": ()})()
     value.ancs = None
     value._dbus_service = None
+    value._bluez_owner_match = None
+    value._bluez_owner_generation = 0
     value._watch_sleep_resume = lambda: calls.append("sleep-watch")
     value._bluetooth_initialized = True
     value._initialization_retry_id = None
@@ -105,12 +109,21 @@ def _daemon(calls):
 
 
 def _ready_bluetooth(monkeypatch, calls):
+    watches = []
+
+    def watch(callback, **kwargs):
+        match = SimpleNamespace(remove=lambda: None)
+        watches.append((callback, kwargs, match))
+        return match
+
+    monkeypatch.setattr(daemon, 'get_system_bus', lambda: SimpleNamespace(add_signal_receiver=watch))
     monkeypatch.setattr(daemon, "bond_status", lambda *_args: True)
     monkeypatch.setattr(
         daemon.bluez_setup,
-        "prepare",
+        "prepare_classic",
         lambda: calls.append("solicitation-prepare") or True,
     )
+    return watches
 
 
 def test_compatibility_daemon_solicits_but_never_starts_ancs(monkeypatch):
@@ -217,9 +230,7 @@ def test_bluez_restart_reapplies_profile_gate_before_resetting_bearers():
     value._on_bluez_restart()
 
     assert calls == [
-        "recovery-invalidate",
         "adapter-class-poke",
-        "solicitation-reset",
         "bearers-hold-le",
         ("profiles-reconnect", "bluetoothd restarted", False),
         "bearers-reset",
@@ -246,13 +257,16 @@ def test_recovery_observation_excludes_permissions_and_missing_profiles(monkeypa
     assert not value._recovery_observation().eligible
 
 
-def test_own_power_events_and_owner_changes_do_not_start_parallel_recovery():
+def test_own_power_events_and_owner_changes_do_not_start_parallel_recovery(monkeypatch):
     calls = []
     value = _daemon(calls)
+    _ready_bluetooth(monkeypatch, calls)
+    value._watch_bluez_owner()
+    monkeypatch.setattr(daemon.bluez_setup, 'forget_advert_registration', lambda: None)
     value.recovery.active = True
     value._on_adapter_power_changed("org.bluez.Adapter1", {"Powered": False}, [])
     assert calls == []
-    value._on_bluez_restart()
+    value._on_bluez_owner_changed('org.bluez', ':1.1', ':1.2')
     assert calls == ["recovery-invalidate"]
     value.recovery.active = False
     value._on_adapter_power_changed("org.bluez.Adapter1", {"Powered": False}, [])
@@ -320,6 +334,113 @@ def test_recovery_pause_and_resume_keep_map_first_order():
     ]
 
 
+@pytest.mark.parametrize('ancs_enabled', [False, True])
+@pytest.mark.parametrize('split_change', [False, True])
+def test_bluez_owner_watch_recovers_once_in_both_pairing_modes(monkeypatch, ancs_enabled, split_change):
+    calls = []
+    value = _daemon(calls)
+    watches = _ready_bluetooth(monkeypatch, calls)
+    monkeypatch.setattr(daemon.config, 'ANCS_ENABLED', ancs_enabled)
+    monkeypatch.setattr(daemon.bluez_setup, 'forget_advert_registration', lambda: calls.append('forget-advert'))
+    monkeypatch.setattr(daemon, 'AncsClient', lambda *_args, **_kwargs: SimpleNamespace(
+        observe_bearer_state=lambda _state: None,
+        start=lambda: None,
+        observe_bluez_owner=lambda old, new: calls.append(('ancs-owner', old, new)),
+    ))
+    value._initialize_bluetooth()
+    value._initialize_bluetooth()
+    assert len(watches) == 1
+    callback, filters, _match = watches[0]
+    assert filters == {
+        'dbus_interface': 'org.freedesktop.DBus',
+        'signal_name': 'NameOwnerChanged',
+        'bus_name': 'org.freedesktop.DBus',
+        'arg0': 'org.bluez',
+    }
+    calls.clear()
+    if split_change:
+        callback('org.bluez', ':1.1', '')
+        callback('org.bluez', '', ':1.2')
+    else:
+        callback('org.bluez', ':1.1', ':1.2')
+    expected = ['recovery-invalidate', 'forget-advert']
+    if ancs_enabled and split_change:
+        expected += [('ancs-owner', ':1.1', '')]
+    if split_change:
+        expected += ['recovery-invalidate']
+    expected += ['solicitation-reset']
+    if ancs_enabled:
+        expected += [('ancs-owner', '' if split_change else ':1.1', ':1.2')]
+    assert calls == expected + [
+        'adapter-class-poke', 'bearers-hold-le',
+        ('profiles-reconnect', 'bluetoothd restarted', False), 'bearers-reset',
+    ]
+
+
+def test_nested_owner_loss_during_ancs_rescan_does_not_restart_absent_bluez(monkeypatch):
+    calls = []
+    value = _daemon(calls)
+    _ready_bluetooth(monkeypatch, calls)
+    value._watch_bluez_owner()
+    monkeypatch.setattr(daemon.bluez_setup, 'forget_advert_registration', lambda: None)
+
+    def rescan(_old, new):
+        if new:
+            value._on_bluez_owner_changed('org.bluez', new, '')
+
+    value.ancs = SimpleNamespace(observe_bluez_owner=rescan)
+    value._on_bluez_owner_changed('org.bluez', ':1.1', ':1.2')
+    assert calls == ['recovery-invalidate', 'solicitation-reset', 'recovery-invalidate']
+
+
+def test_owner_change_during_initial_ancs_scan_is_forwarded(monkeypatch):
+    calls, observed = [], []
+    value = _daemon(calls)
+    watches = _ready_bluetooth(monkeypatch, calls)
+    monkeypatch.setattr(daemon.config, 'ANCS_ENABLED', True)
+    monkeypatch.setattr(daemon.bluez_setup, 'forget_advert_registration', lambda: None)
+
+    def start():
+        watches[0][0]('org.bluez', ':1.1', ':1.2')
+
+    candidate = SimpleNamespace(
+        observe_bearer_state=lambda _state: None,
+        start=start,
+        observe_bluez_owner=lambda old, new: observed.append((old, new)),
+    )
+    monkeypatch.setattr(daemon, 'AncsClient', lambda *_args, **_kwargs: candidate)
+    value._initialize_bluetooth()
+    assert observed == [(':1.1', ':1.2')]
+    assert calls.count('bearers-reset') == 1
+    assert value.ancs is candidate
+
+
+def test_failed_ancs_start_can_retry_without_leaking_an_owner_watch(monkeypatch):
+    calls, started, stopped = [], [], []
+    value = _daemon(calls)
+    watches = _ready_bluetooth(monkeypatch, calls)
+    monkeypatch.setattr(daemon.config, 'ANCS_ENABLED', True)
+
+    def start():
+        started.append(True)
+        if len(started) == 1:
+            raise RuntimeError('ObjectManager unavailable')
+
+    monkeypatch.setattr(daemon, 'AncsClient', lambda *_args, **_kwargs: SimpleNamespace(
+        observe_bearer_state=lambda _state: None,
+        start=start,
+        stop=lambda: stopped.append(True),
+    ))
+    with pytest.raises(RuntimeError, match='ObjectManager unavailable'):
+        value._initialize_bluetooth()
+    assert value.ancs is None
+    assert stopped == [True]
+    value._initialize_bluetooth()
+    assert value.ancs is not None
+    assert len(started) == 2
+    assert len(watches) == 1
+
+
 def test_solicitation_stays_up_until_profiles_and_ancs_are_ready(monkeypatch):
     calls = []
     value = _daemon(calls)
@@ -347,6 +468,8 @@ def test_partial_pbap_starts_contacts_without_map_listener(monkeypatch):
         {"count": lambda _self: 0, "resolve": lambda _self, raw: raw},
     )()
     value._contacts_refresh_id = None
+    value._contacts_refresh_deferred = False
+    value._contacts_initial_sync_done = False
     value.listener = None
     value._refresh_contacts = lambda: calls.append("refresh-contacts")
     value._periodic_refresh_contacts = lambda: True
@@ -400,3 +523,143 @@ def test_partial_map_starts_listener_without_contacts_work(monkeypatch):
     assert calls == ["map-listener", "map-listener-start"]
     assert isinstance(value.listener, Listener)
     assert value._contacts_refresh_id is None
+
+
+def test_map_only_listener_is_replaced_after_obexd_restarts(monkeypatch):
+    from blueferry.connectivity import Connectivity
+    from blueferry.obex import sessions as sessions_mod
+    from blueferry.profile_supervisor import ProfileSupervisor
+
+    jobs, timers, listeners = [], [], []
+    value = daemon.Daemon.__new__(daemon.Daemon)
+    value.sessions = sessions_mod.SessionManager()
+    value.contacts = SimpleNamespace(count=lambda: 0)
+    value._contacts_refresh_id = None
+    value.listener = None
+    value.events = SimpleNamespace(message=lambda _event: None)
+    value.solicitation = _Solicitation([])
+    value.obex_worker = SimpleNamespace(
+        submit=lambda operation, **callbacks: jobs.append((operation, callbacks)),
+    )
+
+    class Listener:
+        def __init__(self, *, sessions, **_kwargs):
+            self.path = sessions.map_path
+            self.running = False
+            listeners.append(self)
+
+        def start(self):
+            self.running = True
+
+        def stop(self):
+            self.running = False
+
+    def create_session(target):
+        if target == "PBAP":
+            raise sessions_mod.SessionError("PBAP unavailable")
+        return sessions_mod.ObexSession("MAP", "/session0")
+
+    def finish_job():
+        operation, callbacks = jobs.pop(0)
+        try:
+            result = operation()
+        except Exception as error:
+            callbacks["on_error"](error)
+        else:
+            callbacks["on_success"](result)
+
+    monkeypatch.setattr(daemon, "MapEventListener", Listener)
+    monkeypatch.setattr(value.sessions, "start_monitoring", lambda: None)
+    monkeypatch.setattr(sessions_mod, "_create_session", create_session)
+    profiles = ProfileSupervisor(
+        value.sessions, value.obex_worker, Connectivity(),
+        on_ready=value._post_available_sessions_setup,
+        on_partial_ready=value._post_available_sessions_setup,
+        on_lost=value._profiles_lost,
+        on_status=lambda: None,
+        schedule=lambda _delay, callback: timers.append(callback) or len(timers),
+        cancel=lambda _timer: None,
+    )
+    profiles.start()
+    finish_job()
+    original = value.listener
+    assert original.running
+    assert not profiles.ready
+
+    value.sessions._on_name_owner_changed("org.bluez.obex", ":1.2", "")
+    assert value.listener is None
+    assert not original.running
+    finish_job()  # Serialized cleanup of the old sessions.
+    timers[-1]()  # Retry on the replacement obexd owner.
+    finish_job()
+
+    assert len(listeners) == 2
+    assert value.listener is listeners[-1]
+    assert value.listener.running
+    # A replacement obexd can reuse paths; it still needs a fresh listener.
+    assert value.listener.path == original.path
+    assert not profiles.ready  # PBAP is still unavailable.
+
+
+def test_automatic_contacts_wait_for_map_but_manual_sync_still_works(monkeypatch):
+    from blueferry.backend_operations import BackendDependencies, BackendOperations
+    from blueferry.connectivity import Connectivity
+    from blueferry.obex.sessions import SessionError
+    from blueferry.profile_supervisor import ProfileSupervisor
+
+    jobs, timers, published = [], [], []
+    value = daemon.Daemon.__new__(daemon.Daemon)
+    value.sessions = SimpleNamespace(map=None, pbap=object(),
+                                     set_on_lost=lambda callback: None,
+                                     open_all=lambda: None)
+    value.contacts = SimpleNamespace(count=lambda: 0)
+    value.storage = SimpleNamespace(status=SimpleNamespace(can_write=True))
+    value._contacts_refresh_pending = False
+    value._contacts_initial_sync_done = False
+    value._contacts_storage_generation = 0
+    value._contacts_sync_waiters = []
+    value._contacts_refresh_deferred = False
+    value._contacts_map_wait_id = None
+    value._contacts_map_wait_finished = False
+    value._contacts_refresh_id = 1
+    value.listener = object()
+    value._pull_contacts = lambda: 42
+    value._contacts_pulled = lambda n: n
+    value._emit_status = lambda: None
+    handlers = []
+    def submit(operation, **callbacks):
+        jobs.append(operation)
+        handlers.append(callbacks)
+    value.obex_worker = SimpleNamespace(submit=submit)
+    monkeypatch.setattr(daemon.GLib, 'timeout_add_seconds', lambda *_args: 123)
+    monkeypatch.setattr(daemon.GLib, 'source_remove', lambda _: True)
+    profiles = ProfileSupervisor(
+        value.sessions, value.obex_worker, Connectivity(),
+        on_ready=lambda: None, on_lost=lambda _: None, on_status=lambda: None,
+        on_partial_ready=value._post_available_sessions_setup,
+        schedule=lambda delay, callback: timers.append(callback) or 1,
+    )
+    profiles._open_failed(0, SessionError('CreateSession(MAP) failed: Forbidden'))
+    value._on_storage_changed()  # Wallet unlock must not bypass the same gate.
+    assert not jobs
+    assert value._contacts_refresh_deferred
+    timers.pop()()
+    assert jobs == [value.sessions.open_all]
+    jobs.clear()
+    handlers.clear()
+
+    operations = BackendOperations(value.sessions, BackendDependencies(
+        sync_contacts=value._sync_contacts,
+    ))
+    operations.sync_contacts(published.append, published.append)
+    assert jobs == [value._pull_contacts]
+    handlers.pop()['on_success'](42)
+    assert published == [42]
+    jobs.clear()
+
+    value.sessions.map = object()
+    value._post_available_sessions_setup()
+    assert jobs == [value._pull_contacts]
+    assert not value._contacts_refresh_deferred
+    value._post_available_sessions_setup()
+    assert len(jobs) == 1
