@@ -81,7 +81,7 @@ def _daemon(calls):
     value = daemon.Daemon.__new__(daemon.Daemon)
     value.recovery = SimpleNamespace(
         active=False,
-        adapter=SimpleNamespace(restore_pending=False),
+        adapter=SimpleNamespace(restore_pending=False, cleanup_pending=False),
         start=lambda: calls.append("recovery-start"),
         stop=lambda: None,
         invalidate=lambda **_kwargs: calls.append("recovery-invalidate"),
@@ -302,6 +302,22 @@ def test_startup_waits_for_saved_restoration_before_any_bluetooth_setup(monkeypa
     assert scheduled == [value._initialize]
     assert value._initialization_retry_id == 42
     assert calls == ["recovery-start"]
+
+
+def test_compatibility_startup_keeps_journal_cleanup_running_without_delaying_profiles(monkeypatch):
+    calls = []
+    value = _daemon(calls)
+    value.recovery.adapter.cleanup_pending = True
+    value.recovery.stop = lambda: calls.append("recovery-stop")
+    _ready_bluetooth(monkeypatch, calls)
+    monkeypatch.setattr(daemon.config, "ANCS_ENABLED", False)
+
+    value._initialize_bluetooth()
+
+    assert calls[0] == "recovery-start"
+    assert "profiles-start" in calls
+    assert "recovery-stop" not in calls
+    assert value.ancs is None
 
 
 def test_recovery_pause_and_resume_keep_map_first_order():

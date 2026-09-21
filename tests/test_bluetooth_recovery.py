@@ -1,6 +1,7 @@
 """Recovery must fail closed without ever touching the host's Bluetooth."""
 from __future__ import annotations
 
+import errno
 import threading
 from dataclasses import replace
 from types import SimpleNamespace
@@ -67,6 +68,7 @@ class Harness:
             PHONE,
             adapter or SimpleNamespace(read=lambda: self.state, cycle=self.cycle,
                             restore_pending=False, restore=self.restore,
+                            cleanup_pending=False, cleanup_journal=lambda: None,
                             start_monitoring=lambda: None, stop_monitoring=lambda: None),
             self.worker,
             observe=lambda: self.observed,
@@ -972,6 +974,116 @@ def test_failed_journal_write_prevents_power_off(bluez, monkeypatch):
     assert not fake.writes and not adapter.restore_pending
 
 
+@pytest.mark.parametrize("retry", [None, "same-process", "restart"])
+@pytest.mark.parametrize("error_type", [OSError, ValueError])
+def test_failed_phase_write_still_restores_power(bluez, monkeypatch, retry, error_type):
+    adapter, fake = bluez
+    original_update = adapter._settings.update
+    original_set = fake.Set
+
+    def fail_phase(**kwargs):
+        journal = kwargs.get(mod.BLUETOOTH_RESTORE_KEY)
+        if isinstance(journal, dict) and journal["phase"] == "on":
+            raise error_type("cannot update journal")
+        original_update(**kwargs)
+
+    def fail_on_once(interface, name, value, **kwargs):
+        if value:
+            fake.Set = original_set
+            raise RuntimeError("power-on temporarily failed")
+        original_set(interface, name, value, **kwargs)
+
+    monkeypatch.setattr(adapter._settings, "update", fail_phase)
+    if retry is None:
+        adapter.cycle(adapter.read(), threading.Event())
+    else:
+        fake.Set = fail_on_once
+        with pytest.raises(RuntimeError, match="temporarily failed"):
+            adapter.cycle(adapter.read(), threading.Event())
+        assert fake.writes == [False]
+        assert adapter.restore_pending
+        assert adapter._settings.read()[mod.BLUETOOTH_RESTORE_KEY]["phase"] == "off"
+        if retry == "restart":
+            adapter = mod.BluezRecoveryAdapter("hci1", PHONE, settings=adapter._settings)
+        adapter.restore()
+    assert fake.writes == [False, True]
+    assert fake.props["Powered"]
+    assert not adapter.restore_pending and not adapter.cleanup_pending
+    assert adapter._settings.read()[mod.BLUETOOTH_RESTORE_KEY] is None
+
+
+def test_failed_phase_write_still_rechecks_controller_identity(bluez, monkeypatch):
+    adapter, fake = bluez
+    original_update = adapter._settings.update
+
+    def replace_during_write(**kwargs):
+        journal = kwargs.get(mod.BLUETOOTH_RESTORE_KEY)
+        if isinstance(journal, dict) and journal["phase"] == "on":
+            fake.instance = "replacement-controller"
+            raise OSError(errno.ENOSPC, "No space left on device")
+        original_update(**kwargs)
+
+    monkeypatch.setattr(adapter._settings, "update", replace_during_write)
+    with pytest.raises(RuntimeError, match="controller changed"):
+        adapter.cycle(adapter.read(), threading.Event())
+    assert fake.writes == [False]
+    assert not adapter.restore_pending
+
+
+@pytest.mark.parametrize("via_signal", [False, True])
+@pytest.mark.parametrize("fail_phase", [False, True])
+def test_journal_cleanup_failure_resumes_profiles_and_retries_without_reserving_worker(
+    h, bluez, monkeypatch, via_signal, fail_phase,
+):
+    adapter, fake = bluez
+    h.recovery.adapter = adapter
+    original_update = adapter._settings.update
+    original_set = fake.Set
+
+    def fail_write(**kwargs):
+        journal = kwargs.get(mod.BLUETOOTH_RESTORE_KEY, "absent")
+        if journal is None or (fail_phase and isinstance(journal, dict) and journal["phase"] == "on"):
+            raise OSError(errno.ENOSPC, "No space left on device")
+        original_update(**kwargs)
+
+    def power(interface, name, value, **kwargs):
+        original_set(interface, name, value, **kwargs)
+        if value and via_signal:
+            adapter._properties_changed("org.bluez.Adapter1", {"Powered": True}, [], path=adapter.path)
+            raise RuntimeError("on reply lost")
+
+    monkeypatch.setattr(adapter._settings, "update", fail_write)
+    fake.Set = power
+    h.prepare_cycle()
+    h.worker.finish()
+    assert fake.writes == [False, True]
+    assert fake.props["Powered"]
+    assert not adapter.restore_pending and adapter.cleanup_pending
+    assert not h.recovery.active and not h.worker.reserved
+    assert h.calls[-1] == "resume"
+    # Ordinary messaging can use the worker while cleanup keeps failing.
+    h.worker.submit(lambda: h.calls.append("message-sync"), on_success=lambda _result: None)
+    h.tick(30)
+    h.worker.finish()
+    assert h.calls[-1] == "message-sync"
+    assert not h.worker.jobs and not h.worker.reserved
+    assert h.calls.count("pause") == h.calls.count("resume") == 1
+    # Even a rearmed attempt must wait until the old journal is gone.
+    h.recovery._save(spent=False, last_attempt=0)
+    h.ready_to_probe()
+    assert not h.worker.jobs
+    assert h.calls.count("reset-le") == 1
+    assert adapter.cleanup_pending
+    monkeypatch.setattr(adapter._settings, "update", original_update)
+    h.worker.busy = True
+    h.tick(10)
+    assert not adapter.cleanup_pending
+    assert adapter._settings.read()[mod.BLUETOOTH_RESTORE_KEY] is None
+    assert fake.writes == [False, True]
+    assert not h.worker.reserved
+    assert h.calls.count("pause") == h.calls.count("resume") == 1
+
+
 @pytest.mark.parametrize("on_was_delivered", [False, True])
 def test_restart_finishes_an_unacknowledged_power_on_without_another_cycle(bluez, on_was_delivered):
     adapter, fake = bluez
@@ -1016,13 +1128,23 @@ def test_failed_completion_write_retries_only_the_journal_after_user_power_off(b
 
     fake.Set = power
     monkeypatch.setattr(adapter._settings, "update", fail_clear)
-    with pytest.raises((OSError, RuntimeError)):
+    if via_signal:
+        with pytest.raises(RuntimeError, match="on reply lost"):
+            adapter.cycle(adapter.read(), threading.Event())
+    else:
         adapter.cycle(adapter.read(), threading.Event())
-    assert adapter.restore_pending
+    assert not adapter.restore_pending and adapter.cleanup_pending
+    journal = adapter._settings.read()[mod.BLUETOOTH_RESTORE_KEY]
+    with pytest.raises(RuntimeError, match="journal cleanup is still pending"):
+        adapter.cycle(adapter.read(), threading.Event())
+    assert adapter._settings.read()[mod.BLUETOOTH_RESTORE_KEY] == journal
     fake.props.update(Powered=False, PowerState="off")
+    adapter.restore()
+    assert not adapter.restore_pending and adapter.cleanup_pending
+    assert fake.writes == [False, True]
     monkeypatch.setattr(adapter._settings, "update", original_update)
     adapter.restore()
-    assert not adapter.restore_pending
+    assert not adapter.restore_pending and not adapter.cleanup_pending
     assert fake.writes == [False, True]
     assert not fake.props["Powered"]
 
@@ -1049,3 +1171,50 @@ def test_malformed_restoration_journal_is_discarded_without_power_changes(bluez,
     restarted.restore()
     assert not restarted.restore_pending
     assert not fake.writes
+
+
+def test_stale_journal_cleanup_failure_does_not_pause_profiles_on_startup(h, bluez, monkeypatch):
+    adapter, fake = bluez
+    adapter._settings.update(**{mod.BLUETOOTH_RESTORE_KEY: {}})
+    restarted = mod.BluezRecoveryAdapter("hci1", PHONE, settings=adapter._settings)
+    original_update = restarted._settings.update
+
+    def fail_clear(**_kwargs):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(restarted._settings, "update", fail_clear)
+    h.recovery.stop()
+    h.create(adapter=restarted)
+    h.ready_to_probe()
+    assert not h.recovery.active and not h.worker.reserved
+    assert not h.calls and not h.worker.jobs
+    assert not restarted.restore_pending and restarted.cleanup_pending
+    monkeypatch.setattr(restarted._settings, "update", original_update)
+    h.tick(10)
+    assert not restarted.cleanup_pending
+    assert not fake.writes
+
+
+@pytest.mark.parametrize("disk_recovers", [False, True])
+def test_shutdown_retries_journal_cleanup_without_waiting_for_it(bluez, monkeypatch, disk_recovers):
+    adapter, fake = bluez
+    original_update = adapter._settings.update
+
+    def fail_clear(**kwargs):
+        if kwargs.get(mod.BLUETOOTH_RESTORE_KEY, "absent") is None:
+            raise OSError(errno.ENOSPC, "No space left on device")
+        original_update(**kwargs)
+
+    monkeypatch.setattr(adapter._settings, "update", fail_clear)
+    adapter.cycle(adapter.read(), threading.Event())
+    assert not adapter.restore_pending and adapter.cleanup_pending
+    if disk_recovers:
+        monkeypatch.setattr(adapter._settings, "update", original_update)
+    sleeps = []
+    monkeypatch.setattr(mod.time, "sleep", sleeps.append)
+    fake.props.update(Powered=False, PowerState="off")
+    adapter.finish_shutdown()
+    assert not sleeps
+    assert adapter.cleanup_pending is not disk_recovers
+    assert fake.writes == [False, True]
+    assert not fake.props["Powered"]

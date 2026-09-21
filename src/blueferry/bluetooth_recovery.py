@@ -70,11 +70,19 @@ class BluezRecoveryAdapter:
         raw = self._settings.read().get(BLUETOOTH_RESTORE_KEY)
         self._restore = self._load_restore(raw)
         self._stale_record = raw is not None and self._restore is None
+        self._cleanup_error_logged = False
 
     @property
     def restore_pending(self) -> bool:
         with self._restore_lock:
-            return self._restore is not None or self._stale_record
+            return self._restore is not None and not self._restore.completed
+
+    @property
+    def cleanup_pending(self) -> bool:
+        with self._restore_lock:
+            return self._stale_record or (
+                self._restore is not None and self._restore.completed
+            )
 
     def _load_restore(self, raw) -> _PowerRestore | None:
         if not isinstance(raw, dict) or raw.get("version") != 1:
@@ -108,10 +116,26 @@ class BluezRecoveryAdapter:
         with self._restore_lock:
             transaction.completed = True
             if self._restore is transaction:
-                # Retain the completed latch if clearing the journal fails.
-                # Retrying that write must never switch a radio on again.
+                self.cleanup_journal()
+
+    def cleanup_journal(self) -> None:
+        """Retry disk cleanup without holding up profiles or touching the radio."""
+        with self._restore_lock:
+            if not self.cleanup_pending:
+                return
+            try:
                 self._settings.update(**{BLUETOOTH_RESTORE_KEY: None})
-                self._restore = None
+            except (OSError, ValueError):
+                # Keep the completed latch: a later manual power-off must not
+                # turn a cleanup retry into another power-on request.
+                report = log.debug if self._cleanup_error_logged else log.warning
+                report("could not clear Bluetooth restoration journal; retrying cleanup",
+                       exc_info=True)
+                self._cleanup_error_logged = True
+                return
+            self._restore = None
+            self._stale_record = False
+            self._cleanup_error_logged = False
 
     @staticmethod
     def _bus_id() -> str:
@@ -192,11 +216,7 @@ class BluezRecoveryAdapter:
                     if not changed["Powered"]:
                         transaction.saw_off = True
                     elif transaction.saw_off:
-                        try:
-                            self._complete_restore(transaction)
-                        except (OSError, ValueError):
-                            log.warning("could not clear completed Bluetooth restoration",
-                                        exc_info=True)
+                        self._complete_restore(transaction)
         elif str(path).startswith(self.path + "/"):
             if interface == "org.bluez.Device1":
                 watched = {"Paired", "Bonded", "Blocked"}
@@ -265,6 +285,8 @@ class BluezRecoveryAdapter:
         """
         if self.restore_pending:
             raise RuntimeError("adapter power restoration is still pending")
+        if self.cleanup_pending:
+            raise RuntimeError("adapter restoration journal cleanup is still pending")
         props = self._properties(expected.owner)
         transaction = _PowerRestore(expected, self._bus_id(), self._adapter_instance())
         with self._restore_lock:
@@ -295,14 +317,9 @@ class BluezRecoveryAdapter:
         completed latch and journal cleanup are shared under _restore_lock.
         """
         with self._restore_lock:
-            if self._stale_record:
-                self._settings.update(**{BLUETOOTH_RESTORE_KEY: None})
-                self._stale_record = False
+            self.cleanup_journal()
             transaction = self._restore
-            if transaction is None:
-                return
-            if transaction.completed:
-                self._complete_restore(transaction)
+            if transaction is None or transaction.completed:
                 return
         expected = transaction.expected
         if self._bus_id() != transaction.bus_id:
@@ -323,7 +340,13 @@ class BluezRecoveryAdapter:
                 # An on signal can complete restoration even if Set's reply is
                 # lost. Seeing off first excludes old on signals from preflight.
                 transaction.saw_off = True
-                self._persist_restore(transaction, phase="on")
+                try:
+                    self._persist_restore(transaction, phase="on")
+                except (OSError, ValueError):
+                    # The initial journal already records our obligation to
+                    # restore power. Disk failure must not strand the radio off.
+                    log.warning("could not update Bluetooth restoration journal; "
+                                "continuing power-on", exc_info=True)
             # Journal I/O precedes the last identity check too: a slow disk
             # must not create a large gap between inspection and the request.
             current = self._restoration_state(transaction)
@@ -380,6 +403,7 @@ class BluezRecoveryAdapter:
                 time.sleep(0.2)
         if self.restore_pending:
             log.error("Bluetooth power restoration is unfinished at daemon shutdown")
+        self.cleanup_journal()
 
 
 def probe_map(session_path: str) -> None:
@@ -537,6 +561,7 @@ class BluetoothRecovery:
         last = self._record.get("last_attempt", 0)
         return (
             self._known(state)
+            and not self.adapter.cleanup_pending
             and self._record.get("spent") is False
             and type(last) in (int, float)
             and math.isfinite(last)
@@ -552,6 +577,7 @@ class BluetoothRecovery:
             self._continue_restoration()
             return True
         try:
+            self.adapter.cleanup_journal()
             self._check()
         except Exception:
             # Missing properties, bus errors, and unplugged controllers provide

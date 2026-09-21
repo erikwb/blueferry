@@ -388,7 +388,8 @@ class Daemon:
         return False
 
     def _initialize_bluetooth(self) -> None:
-        if config.ANCS_ENABLED or self.recovery.adapter.restore_pending:
+        if (config.ANCS_ENABLED or self.recovery.adapter.restore_pending
+                or self.recovery.adapter.cleanup_pending):
             self.recovery.start()
         if self.recovery.active or self.recovery.adapter.restore_pending:
             return
@@ -458,7 +459,7 @@ class Daemon:
         # creation itself belongs to the serialized OBEX worker.
         self.profiles.start()
         self._bluetooth_initialized = True
-        if not config.ANCS_ENABLED:
+        if not config.ANCS_ENABLED and not self.recovery.adapter.cleanup_pending:
             self.recovery.stop()
 
         if not self.profiles.ready:
