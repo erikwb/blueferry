@@ -79,6 +79,13 @@ class _AdapterClass:
 
 def _daemon(calls):
     value = daemon.Daemon.__new__(daemon.Daemon)
+    value.recovery = SimpleNamespace(
+        active=False,
+        adapter=SimpleNamespace(restore_pending=False, cleanup_pending=False),
+        start=lambda: calls.append("recovery-start"),
+        stop=lambda: None,
+        invalidate=lambda **_kwargs: calls.append("recovery-invalidate"),
+    )
     value.bearers = _Bearer(calls)
     value.events = _Events(calls)
     value.profiles = _Profiles(calls)
@@ -96,6 +103,8 @@ def _daemon(calls):
     value._bluez_owner_match = None
     value._bluez_owner_generation = 0
     value._watch_sleep_resume = lambda: calls.append("sleep-watch")
+    value._bluetooth_initialized = True
+    value._initialization_retry_id = None
     return value
 
 
@@ -228,6 +237,119 @@ def test_bluez_restart_reapplies_profile_gate_before_resetting_bearers():
     ]
 
 
+def test_recovery_observation_excludes_permissions_and_missing_profiles(monkeypatch):
+    calls = []
+    value = _daemon(calls)
+    value._initializing = False
+    value.bearers.bredr_connected = True
+    value.bearers.busy = False
+    value.solicitation.active = lambda: True
+    value.ancs = SimpleNamespace(connected=False, health_proof=123.0, permission_denied=False)
+    monkeypatch.setattr(daemon.config, "ANCS_ENABLED", True)
+    assert value._recovery_observation().eligible
+    value.ancs.permission_denied = True
+    assert not value._recovery_observation().eligible
+    value.ancs.permission_denied = False
+    value.profiles.ready = False
+    assert not value._recovery_observation().eligible
+    value.profiles.ready = True
+    monkeypatch.setattr(daemon.config, "ANCS_ENABLED", False)
+    assert not value._recovery_observation().eligible
+
+
+def test_own_power_events_and_owner_changes_do_not_start_parallel_recovery(monkeypatch):
+    calls = []
+    value = _daemon(calls)
+    _ready_bluetooth(monkeypatch, calls)
+    value._watch_bluez_owner()
+    monkeypatch.setattr(daemon.bluez_setup, 'forget_advert_registration', lambda: None)
+    value.recovery.active = True
+    value._on_adapter_power_changed("org.bluez.Adapter1", {"Powered": False}, [])
+    assert calls == []
+    value._on_bluez_owner_changed('org.bluez', ':1.1', ':1.2')
+    assert calls == ["recovery-invalidate"]
+    value.recovery.active = False
+    value._on_adapter_power_changed("org.bluez.Adapter1", {"Powered": False}, [])
+    assert calls == ["recovery-invalidate", "recovery-invalidate"]
+
+
+def test_wake_does_not_resume_profiles_while_power_restoration_is_pending():
+    calls = []
+    value = _daemon(calls)
+    value.recovery.active = True
+    value.bearers.poke = lambda: calls.append("bearers-poke")
+    value._on_prepare_for_sleep(False)
+    assert calls == ["recovery-invalidate"]
+
+
+def test_startup_waits_for_saved_restoration_before_any_bluetooth_setup(monkeypatch):
+    calls = []
+    value = _daemon(calls)
+    value._bluetooth_initialized = False
+    value.recovery.adapter.restore_pending = True
+    # Restoring an already-issued operation also applies if ANCS was disabled
+    # between the previous daemon's shutdown and this startup.
+    monkeypatch.setattr(daemon.config, "ANCS_ENABLED", False)
+    value._initialize_bluetooth()
+    assert calls == ["recovery-start"]
+    value._pause_for_recovery()
+    assert calls == ["recovery-start"]
+    scheduled = []
+    monkeypatch.setattr(daemon.GLib, "idle_add", lambda callback: scheduled.append(callback) or 42)
+    value.recovery.adapter.restore_pending = False
+    value._resume_after_recovery()
+    value._resume_after_recovery()
+    assert scheduled == [value._initialize]
+    assert value._initialization_retry_id == 42
+    assert calls == ["recovery-start"]
+
+
+def test_compatibility_startup_keeps_journal_cleanup_running_without_delaying_profiles(monkeypatch):
+    calls = []
+    value = _daemon(calls)
+    value.recovery.adapter.cleanup_pending = True
+    value.recovery.stop = lambda: calls.append("recovery-stop")
+    _ready_bluetooth(monkeypatch, calls)
+    monkeypatch.setattr(daemon.config, "ANCS_ENABLED", False)
+
+    value._initialize_bluetooth()
+
+    assert calls[0] == "recovery-start"
+    assert "profiles-start" in calls
+    assert "recovery-stop" not in calls
+    assert value.ancs is None
+
+
+def test_recovery_pause_and_resume_keep_map_first_order():
+    value = _daemon([])
+    calls = []
+    value.adapter_class = SimpleNamespace(
+        stop=lambda: calls.append("class-stop"), start=lambda: calls.append("class-start"),
+    )
+    value.bearers = SimpleNamespace(
+        stop=lambda: calls.append("bearers-stop"), start=lambda: calls.append("bearers-start"),
+        hold_le=lambda: calls.append("hold-le"),
+        reset_after_bluez_restart=lambda: calls.append("bearers-reset"),
+    )
+    value.profiles = SimpleNamespace(
+        pause=lambda: calls.append("profiles-pause"),
+        resume=lambda: calls.append("profiles-resume"),
+    )
+    value.solicitation = SimpleNamespace(
+        stop=lambda: calls.append("advert-stop"), start=lambda: calls.append("advert-start"),
+    )
+    value.sessions = SimpleNamespace(close_all=lambda **kw: calls.append(("forget", kw)))
+    value.ancs = SimpleNamespace(observe_bearer_state=lambda state: calls.append(("ancs", state)))
+    value._pause_for_recovery()
+    value._resume_after_recovery()
+    assert calls == [
+        "class-stop", "bearers-stop", "profiles-pause", "advert-stop",
+        ("forget", {"remove_remote": False}), ("ancs", False),
+        "class-start", "advert-start", "hold-le", "bearers-reset",
+        "profiles-resume", "bearers-start",
+    ]
+
+
 @pytest.mark.parametrize('ancs_enabled', [False, True])
 @pytest.mark.parametrize('split_change', [False, True])
 def test_bluez_owner_watch_recovers_once_in_both_pairing_modes(monkeypatch, ancs_enabled, split_change):
@@ -257,9 +379,11 @@ def test_bluez_owner_watch_recovers_once_in_both_pairing_modes(monkeypatch, ancs
         callback('org.bluez', '', ':1.2')
     else:
         callback('org.bluez', ':1.1', ':1.2')
-    expected = ['forget-advert']
+    expected = ['recovery-invalidate', 'forget-advert']
     if ancs_enabled and split_change:
         expected += [('ancs-owner', ':1.1', '')]
+    if split_change:
+        expected += ['recovery-invalidate']
     expected += ['solicitation-reset']
     if ancs_enabled:
         expected += [('ancs-owner', '' if split_change else ':1.1', ':1.2')]
@@ -282,7 +406,7 @@ def test_nested_owner_loss_during_ancs_rescan_does_not_restart_absent_bluez(monk
 
     value.ancs = SimpleNamespace(observe_bluez_owner=rescan)
     value._on_bluez_owner_changed('org.bluez', ':1.1', ':1.2')
-    assert calls == ['solicitation-reset']
+    assert calls == ['recovery-invalidate', 'solicitation-reset', 'recovery-invalidate']
 
 
 def test_owner_change_during_initial_ancs_scan_is_forwarded(monkeypatch):

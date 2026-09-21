@@ -20,6 +20,12 @@ from blueferry.backend_lifecycle import installed_release
 from blueferry.backend_operations import BackendDependencies
 from blueferry.bearer_supervisor import BearerSupervisor
 from blueferry.bluetooth_capabilities import ancs_limited_vendor, controller_hardware
+from blueferry.bluetooth_recovery import (
+    BluetoothRecovery,
+    BluezRecoveryAdapter,
+    RecoveryObservation,
+    probe_map,
+)
 from blueferry.build_info import build_id, installed_build_sha, running_build_sha
 from blueferry.bus import get_system_bus, main_loop
 from blueferry.confirmed_groups import ConfirmedGroupsStore
@@ -140,6 +146,7 @@ class Daemon:
         self._bus_name = None
         self._dbus_service: MessagesService | None = None
         self._sleep_match = None
+        self._power_match = None
         self._bluez_owner_match = None
         self._bluez_owner_generation = 0
         packaged_release = installed_release()
@@ -160,6 +167,7 @@ class Daemon:
         self._startup_id: int | None = None
         self._initialization_retry_id: int | None = None
         self._initializing = True
+        self._bluetooth_initialized = False
         self._contacts_refresh_pending = False
         self._contacts_initial_sync_done = False
         self._contacts_storage_generation = 0
@@ -185,6 +193,56 @@ class Daemon:
             ),
             attempt_ready=lambda: classic_reachable(self.bearers, self.sessions),
         )
+        self.recovery = BluetoothRecovery(
+            config.IPHONE_MAC,
+            BluezRecoveryAdapter(config.ADAPTER, config.IPHONE_MAC),
+            self.obex_worker,
+            observe=self._recovery_observation,
+            probe=lambda: probe_map(self.sessions.map_path),
+            probe_health=lambda: self.ancs.probe_health() if self.ancs else None,
+            reset_le=lambda: self.bearers.recover_le_transport(allow_disconnected=True),
+            pause=self._pause_for_recovery,
+            resume=self._resume_after_recovery,
+        )
+
+    def _recovery_observation(self) -> RecoveryObservation:
+        ancs = self.ancs
+        return RecoveryObservation(
+            healthy=bool(ancs and ancs.connected and not ancs.permission_denied),
+            health_proof=ancs.health_proof if ancs else None,
+            eligible=bool(
+                config.ANCS_ENABLED and ancs and not ancs.permission_denied
+                and not self._initializing and self.profiles.ready
+                and self.bearers.bredr_connected and self.bearers.le_state is not None
+                and self.solicitation.active()
+            ),
+            busy=self.bearers.busy,
+        )
+
+    def _pause_for_recovery(self) -> None:
+        if not self._bluetooth_initialized:
+            return  # Startup restoration precedes all Bluetooth supervision.
+        self.adapter_class.stop()
+        self.bearers.stop()
+        self.profiles.pause()
+        self.solicitation.stop()
+        self.sessions.close_all(remove_remote=False)
+        if self.ancs is not None:
+            self.ancs.observe_bearer_state(False)
+
+    def _resume_after_recovery(self) -> None:
+        if not self._bluetooth_initialized:
+            # Startup restoration must finish before creating profile sessions
+            # or advertisements on a radio whose power-off may still be pending.
+            if self._initialization_retry_id is None:
+                self._initialization_retry_id = GLib.idle_add(self._initialize)
+            return
+        self.adapter_class.start()
+        self.solicitation.start()
+        self.bearers.hold_le()
+        self.bearers.reset_after_bluez_restart()
+        self.profiles.resume()
+        self.bearers.start()
 
     def _emit_status(self) -> None:
         emit = getattr(self._dbus_service, "emit_status", None)
@@ -330,6 +388,11 @@ class Daemon:
         return False
 
     def _initialize_bluetooth(self) -> None:
+        if (config.ANCS_ENABLED or self.recovery.adapter.restore_pending
+                or self.recovery.adapter.cleanup_pending):
+            self.recovery.start()
+        if self.recovery.active or self.recovery.adapter.restore_pending:
+            return
         if bond_status(config.IPHONE_MAC, config.ADAPTER) is not True:
             raise PairingRequiredError(
                 "the saved iPhone is not currently paired; open a client to pair it"
@@ -395,6 +458,9 @@ class Daemon:
         # Signal subscriptions belong to the GLib thread; the blocking session
         # creation itself belongs to the serialized OBEX worker.
         self.profiles.start()
+        self._bluetooth_initialized = True
+        if not config.ANCS_ENABLED and not self.recovery.adapter.cleanup_pending:
+            self.recovery.stop()
 
         if not self.profiles.ready:
             log.warning("=== BlueFerry running in DEGRADED mode ===")
@@ -418,9 +484,13 @@ class Daemon:
             return
         self._bluez_owner_generation += 1
         generation = self._bluez_owner_generation
+        # Invalidate before discovery or advertising can dispatch more D-Bus
+        # work. An interrupted power restoration keeps ordinary reconnects
+        # paused until the recovery controller explicitly resumes them.
+        self.recovery.invalidate()
         if old_owner:
             bluez_setup.forget_advert_registration()
-        if new_owner:
+        if new_owner and not self.recovery.active:
             # Reset before ANCS publishes status: that callback can already
             # register an advert with the replacement owner. Forgetting it
             # afterwards would discard a new registration as if it were old.
@@ -432,6 +502,7 @@ class Daemon:
             self.ancs.observe_bluez_owner(old_owner, new_owner)
         if (
             new_owner
+            and not self.recovery.active
             and self._bluez_owner_match is not None
             and generation == self._bluez_owner_generation
         ):
@@ -459,6 +530,15 @@ class Daemon:
 
     def _watch_sleep_resume(self) -> None:
         """Refresh profile sessions after suspend without waiting for a send."""
+        if self._power_match is None:
+            self._power_match = get_system_bus().add_signal_receiver(
+                self._on_adapter_power_changed,
+                dbus_interface="org.freedesktop.DBus.Properties",
+                signal_name="PropertiesChanged",
+                bus_name="org.bluez",
+                path=f"/org/bluez/{config.ADAPTER}",
+                arg0="org.bluez.Adapter1",
+            )
         if self._sleep_match is not None:
             return
         try:
@@ -472,8 +552,13 @@ class Daemon:
         except dbus.exceptions.DBusException:
             log.debug("logind sleep monitoring unavailable", exc_info=True)
 
+    def _on_adapter_power_changed(self, _interface, changed, invalidated) -> None:
+        if not self.recovery.active and ("Powered" in changed or "Powered" in invalidated):
+            self.recovery.invalidate()
+
     def _on_prepare_for_sleep(self, sleeping) -> None:
-        if bool(sleeping):
+        self.recovery.invalidate(suspended=bool(sleeping))
+        if bool(sleeping) or self.recovery.active:
             return
         log.info("system resumed — refreshing Bluetooth profile sessions")
         self.bearers.poke()
@@ -739,6 +824,7 @@ class Daemon:
             # ``None`` is deliberately ignored above because it represents an
             # unavailable adapter or transient BlueZ inspection failure.
             log.info("saved iPhone bond was removed; stopping daemon")
+            self.recovery.forget_phone()
             main_loop.quit()
             return False
         if not mac:
@@ -761,6 +847,7 @@ class Daemon:
                 owner_match.remove()
             except Exception:
                 log.debug("could not remove BlueZ owner watch", exc_info=True)
+        self.recovery.stop()
         self.read_receipts.close()
         self.adapter_class.stop()
         self.bearers.stop()
@@ -793,6 +880,12 @@ class Daemon:
             except Exception:
                 log.debug("could not remove sleep monitor", exc_info=True)
             self._sleep_match = None
+        if self._power_match is not None:
+            try:
+                self._power_match.remove()
+            except Exception:
+                log.debug("could not remove power monitor", exc_info=True)
+            self._power_match = None
         if self._dbus_service is not None:
             self._dbus_service.close()
         # BlueZ 5.87 SIGSEGVs in gobex when RemoveSession runs on shutdown,
@@ -800,11 +893,15 @@ class Daemon:
         # state only; the D-Bus disconnect and the next open's stale cleanup
         # release whatever obexd still holds.
         self.obex_worker.shutdown(
-            cleanup=lambda: self.sessions.close_all(remove_remote=False),
+            cleanup=self._cleanup_bluetooth_worker,
         )
         self.storage.close()
         self.sessions.stop_monitoring()
         main_loop.quit()
+
+    def _cleanup_bluetooth_worker(self) -> None:
+        self.recovery.adapter.finish_shutdown()
+        self.sessions.close_all(remove_remote=False)
 
     def run(self) -> int:
         # `start()` must be inside the try.  A partially-completed startup can

@@ -128,20 +128,31 @@ def test_retirement_cancels_real_pending_reply_dispatch(advertising_manager, mon
     assert received == [new_path]
 
 
-def test_bluez_owner_loss_without_release_recreates_compatibility_advert(
-    advertising_manager, monkeypatch,
+@pytest.mark.parametrize('restoring_power', [False, True])
+def test_bluez_owner_loss_recreates_advert_only_after_power_restoration(
+    advertising_manager, monkeypatch, restoring_power,
 ):
     manager = advertising_manager
     monkeypatch.setattr(daemon_mod.config, 'ANCS_ENABLED', False)
     monkeypatch.setattr(daemon_mod, 'get_system_bus', bluez_setup.get_system_bus)
-    reconnected = []
+    reconnected, invalidated, observed = [], [], []
     value = daemon_mod.Daemon.__new__(daemon_mod.Daemon)
     value._bluez_owner_match = None
     value._bluez_owner_generation = 0
-    value.ancs = None
-    value.adapter_class = SimpleNamespace(poke=lambda: None)
-    value.bearers = SimpleNamespace(hold_le=lambda: None, reset_after_bluez_restart=lambda: None)
-    value.profiles = SimpleNamespace(reconnect=lambda *args, **kwargs: reconnected.append((args, kwargs)))
+    value._bluetooth_initialized = True
+    value.recovery = SimpleNamespace(active=False, invalidate=lambda: invalidated.append(True))
+    value.ancs = (
+        SimpleNamespace(observe_bluez_owner=lambda old, new: observed.append((str(old), str(new))))
+        if restoring_power else None
+    )
+    value.adapter_class = SimpleNamespace(poke=lambda: None, start=lambda: None)
+    value.bearers = SimpleNamespace(
+        hold_le=lambda: None, reset_after_bluez_restart=lambda: None, start=lambda: None,
+    )
+    value.profiles = SimpleNamespace(
+        reconnect=lambda *args, **kwargs: reconnected.append((args, kwargs)),
+        resume=lambda: reconnected.append('resume'),
+    )
     value.solicitation = SolicitationSupervisor(
         'hci7', schedule=lambda *_args: 1, cancel=lambda _timer: None,
     )
@@ -156,18 +167,38 @@ def test_bluez_owner_loss_without_release_recreates_compatibility_advert(
         reply()
         dispatch_until(bluez_setup.advert_registered)
 
+        if restoring_power:
+            value.recovery.active = True
+            value.solicitation.stop()
+            dispatch_until(lambda: old_path in manager.removed)
+
         # A crashed bluetoothd cannot call Release. Losing its well-known
         # name generates the same owner-loss signal without that callback.
         manager.connection.release_name('org.bluez')
-        dispatch_until(lambda: not bluez_setup.advert_registered())
+        dispatch_until(lambda: len(invalidated) == 1)
+        assert not bluez_setup.advert_registered()
         assert not reconnected  # Wait for a replacement before reconnecting.
         replacement_bus.request_name('org.bluez', dbus.bus.NAME_FLAG_DO_NOT_QUEUE)
+        dispatch_until(lambda: len(invalidated) == 2)
+        if restoring_power:
+            assert observed == [
+                (manager.connection.get_unique_name(), ''),
+                ('', replacement_bus.get_unique_name()),
+            ]
+            assert not replacement.requests
+            assert not bluez_setup.advert_registration_pending()
+            assert not reconnected
+            value.recovery.active = False
+            value._resume_after_recovery()
         dispatch_until(lambda: replacement.requests)
         new_path, _props, reply, _error = replacement.requests[0]
         assert new_path != old_path
         reply()
         dispatch_until(bluez_setup.advert_registered)
-        assert reconnected == [(('bluetoothd restarted',), {'remove_remote_sessions': False})]
+        expected = ['resume'] if restoring_power else [
+            (('bluetoothd restarted',), {'remove_remote_sessions': False}),
+        ]
+        assert reconnected == expected
         value.solicitation.stop()
         dispatch_until(lambda: new_path in replacement.removed)
     finally:

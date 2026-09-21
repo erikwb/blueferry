@@ -1,6 +1,7 @@
 """MAP gets a bounded head start without starving usable PBAP contacts."""
 import sqlite3
 from contextlib import closing
+from queue import Queue
 from types import SimpleNamespace
 
 import pytest
@@ -9,6 +10,7 @@ from blueferry import config, contact_repository
 from blueferry import daemon as daemon_mod
 from blueferry.backend_operations import BackendDependencies, BackendOperations
 from blueferry.contacts import ContactsResolver
+from blueferry.obex import worker as worker_mod
 
 
 @pytest.fixture
@@ -351,6 +353,37 @@ def test_coalesced_manual_requests_remain_bounded(contacts_setup, monkeypatch):
     assert not r.errors
     r.finish()
     assert completed == [3, 3]
+
+
+def test_coalesced_sync_and_power_recovery_share_the_worker_safely(contacts_setup, monkeypatch):
+    r = contacts_setup
+    callbacks = Queue()
+    monkeypatch.setattr(worker_mod, 'initialize_obex_worker_bus', lambda: None)
+    monkeypatch.setattr(worker_mod, 'close_obex_worker_bus', lambda: None)
+    monkeypatch.setattr(worker_mod.GLib, 'idle_add', lambda fn, *args: callbacks.put((fn, args)))
+    worker = worker_mod.ObexWorker()
+    r.daemon.obex_worker = worker
+    completed, failed = [], []
+    try:
+        r.operations.sync_contacts(completed.append, failed.append)
+        callback, args = callbacks.get(timeout=2)
+        r.operations.sync_contacts(completed.append, failed.append)
+        assert not worker.reserve_if_idle()  # The sync's replies are still pending.
+        callback(*args)
+        assert completed == [3, 3]
+        assert worker.reserve_if_idle()
+        r.operations.sync_contacts(completed.append, failed.append)
+        assert len(failed) == 1 and 'recovery' in str(failed[0])
+        assert not r.daemon._contacts_refresh_pending
+        assert not r.daemon._contacts_sync_waiters
+        worker.release()
+        r.operations.sync_contacts(completed.append, failed.append)
+        callback, args = callbacks.get(timeout=2)
+        callback(*args)
+        assert completed == [3, 3, 3]
+        assert callbacks.empty()
+    finally:
+        worker.shutdown()
 
 
 @pytest.mark.parametrize('unavailable', ['storage', 'pbap'])

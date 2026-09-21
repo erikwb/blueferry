@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -162,6 +163,8 @@ class AncsClient:
         self._cp_path: str | None = None
         self._notify_started = False
         self._authorized = False
+        self.health_proof: float | None = None
+        self.permission_denied = False
         # Keep this across bearer/subscription resets. A silent Control Point
         # probe can mean "permission not granted yet" during onboarding, but
         # after this client has already received an authorized response it is
@@ -677,6 +680,7 @@ class AncsClient:
                 log.debug("discarded stale ANCS subscribe attempt after BlueZ changed owner")
                 return
             log.warning("ANCS StartNotify failed: %s", e.get_dbus_name())
+            self._observe_permission_error(e)
             for match in matches:
                 try:
                     match.remove()
@@ -757,8 +761,13 @@ class AncsClient:
             log.debug("could not remove ANCS subscription retry", exc_info=True)
         self._subscribe_retry_id = None
 
-    def _queue_authorization_probe(self) -> None:
-        if not self._notify_started or self._authorized:
+    def probe_health(self) -> None:
+        """Verify a quiet, healthy transport without requesting message content."""
+        if self.connected and self._active_request is None and not self._request_queue:
+            self._queue_authorization_probe(force=True)
+
+    def _queue_authorization_probe(self, *, force: bool = False) -> None:
+        if not self._notify_started or (self._authorized and not force):
             return
         request = _PendingRequest(
             key="authorization",
@@ -805,6 +814,8 @@ class AncsClient:
         self._authorization_retry_id = None
 
     def _mark_authorized(self) -> None:
+        self.health_proof = time.monotonic()
+        self.permission_denied = False
         if self._authorized:
             return
         self._authorized = True
@@ -910,6 +921,7 @@ class AncsClient:
             name = error.get_dbus_name() or type(error).__name__
             detail = error.get_dbus_message() or str(error)
             log.warning("ANCS CP WriteValue failed: %s: %s", name, detail)
+            self._observe_permission_error(error)
             if _connection_was_lost(error):
                 self._mark_transport_failed()
                 return
@@ -923,6 +935,14 @@ class AncsClient:
         self._request_timeout_id = GLib.timeout_add_seconds(
             REQUEST_TIMEOUT_SECONDS, self._request_timed_out
         )
+
+    def _observe_permission_error(self, error: dbus.exceptions.DBusException) -> None:
+        name = error.get_dbus_name() or ""
+        detail = (error.get_dbus_message() or "").casefold()
+        if name.endswith((".NotAuthorized", ".NotPermitted")) or any(
+            word in detail for word in ("not authorized", "permission denied", "forbidden")
+        ):
+            self.permission_denied = True
 
     def _request_timed_out(self) -> bool:
         request = self._active_request

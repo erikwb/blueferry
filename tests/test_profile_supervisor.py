@@ -110,6 +110,53 @@ def test_open_is_serialized_and_readiness_is_edge_triggered() -> None:
     assert ready == [True]
 
 
+def test_adapter_recovery_pauses_session_loss_retries_and_resumes_map_first():
+    gates = []
+    supervisor, sessions, worker, scheduled, _ready, lost, _statuses = make_supervisor(
+        attempt_pending=lambda: gates.append("hold-le"),
+        first_attempt=lambda: gates.append("enable-le"),
+    )
+    supervisor.start()
+    worker.succeed()
+    supervisor.pause()
+    supervisor.session_lost("adapter powered off")
+    supervisor.open()
+    assert not worker.jobs
+    assert not supervisor.ready
+    assert lost == ["Bluetooth adapter recovery"]
+    supervisor.resume()
+    assert gates[-1] == "hold-le"
+    worker.succeed()
+    assert sessions.remote_closes == [False]
+    scheduled[-1][1]()
+    worker.succeed()
+    assert supervisor.ready
+    assert gates[-1] == "enable-le"
+    assert lost == ["Bluetooth adapter recovery"]
+
+
+@pytest.mark.parametrize("profile", ["map", "pbap"])
+def test_recovery_pause_discards_partial_consumers_once(profile):
+    supervisor, sessions, worker, scheduled, _ready, lost, _statuses = make_supervisor(
+        partial_ready=lambda: None,
+    )
+    supervisor.start()
+    setattr(sessions, profile, ObexSession(profile.upper(), f"/{profile}"))
+    worker.fail(SessionError("other profile unavailable"))
+    assert not supervisor.ready
+    supervisor.pause()
+    supervisor.pause()
+    supervisor.session_lost("adapter powered off")
+    supervisor.resume()
+    assert lost == ["Bluetooth adapter recovery"]
+    worker.succeed()
+    scheduled[-1][1]()
+    worker.succeed()
+    assert supervisor.ready
+    supervisor.session_lost("new session disappeared")
+    assert lost == ["Bluetooth adapter recovery", "new session disappeared"]
+
+
 def test_forbidden_failure_polls_and_retries() -> None:
     supervisor, _sessions, worker, scheduled, _ready, _lost, _statuses = (
         make_supervisor()

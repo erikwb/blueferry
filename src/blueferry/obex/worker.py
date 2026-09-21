@@ -33,6 +33,7 @@ class ObexWorker:
             initializer=initialize_obex_worker_bus,
         )
         self._closed = False
+        self._reserved = False
         self._futures: set[Future] = set()
         self._lock = threading.Lock()
 
@@ -42,27 +43,49 @@ class ObexWorker:
         *,
         on_success: Callable[[Any], None] | None = None,
         on_error: Callable[[Exception], None] | None = None,
+        reserved: bool = False,
     ) -> Future:
         with self._lock:
             if self._closed:
                 raise RuntimeError("OBEX worker is shut down")
+            if self._reserved != reserved:
+                raise RuntimeError("Bluetooth recovery is in progress")
             if len(self._futures) >= MAX_OBEX_PENDING_OPERATIONS:
                 raise RuntimeError("OBEX operation queue is full")
             future = self._executor.submit(operation)
             self._futures.add(future)
 
         def completed(done: Future) -> None:
-            with self._lock:
-                self._futures.discard(done)
             # Queued work is deliberately cancelled during shutdown. There
             # is no useful result to deliver once the daemon is exiting, and
             # treating cancellation as an operation failure only adds noise.
             if done.cancelled():
+                with self._lock:
+                    self._futures.discard(done)
                 return
-            GLib.idle_add(self._deliver, done, on_success, on_error)
+            GLib.idle_add(self._deliver_pending, done, on_success, on_error)
 
         future.add_done_callback(completed)
         return future
+
+    def reserve_if_idle(self) -> bool:
+        """Exclude new transfers, including work whose callback is pending."""
+        with self._lock:
+            if self._closed or self._reserved or self._futures:
+                return False
+            self._reserved = True
+            return True
+
+    def release(self) -> None:
+        with self._lock:
+            self._reserved = False
+
+    def _deliver_pending(self, future, on_success, on_error) -> bool:
+        try:
+            return self._deliver(future, on_success, on_error)
+        finally:
+            with self._lock:
+                self._futures.discard(future)
 
     @staticmethod
     def _deliver(

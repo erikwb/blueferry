@@ -349,6 +349,29 @@ journalctl --user -u blueferry -f
 If messages work but names do not, use **Sync Contacts** or run
 `blueferry contacts-sync`.
 
+If notifications previously worked with the same phone and adapter but stay
+unavailable for five minutes, BlueFerry can attempt one adapter power cycle.
+It first tries an LE-only reset and checks that the phone still answers a
+read-only MAP request. Automatic cycling is skipped if another Bluetooth
+device is paired or connected to that adapter, discovery is active, or BlueFerry
+is transferring data. It requires BlueZ to report power transitions and
+respects Bluetooth being turned off and explicit permission failures.
+The attempt limit survives backend restarts: another cycle requires ten minutes
+of verified notification connectivity, and cycles are at least an hour apart.
+If a power request times out, the running backend keeps checking the original
+controller and retries restoration without issuing another power-off request.
+Pending restoration also survives backend restarts and finishes before normal
+Bluetooth setup resumes. Once power-on is confirmed by a reply or observed
+after power-off, restoration ends; a later manual power-off is left alone.
+Once power-off has been requested, a failed journal update does not prevent
+power-on. Failed journal cleanup is retried without pausing messaging; further
+automatic power cycles wait until cleanup succeeds.
+Restoration stops if the controller is unplugged, bluetoothd or the system bus
+restarts, the configured phone changes, or rfkill blocks it.
+D-Bus cannot make checking an adapter and changing its power atomic;
+BlueFerry watches for changes and rechecks immediately before requesting power-off.
+Recovery decisions and failures appear in the backend journal.
+
 Pairing failures save a scrubbed report that can be attached to a GitHub issue.
 It includes the package build and source SHA, pairing mode, controller details,
 and an ordered setup timeline. Please also include the iPhone model and iOS

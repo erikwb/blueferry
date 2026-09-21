@@ -16,6 +16,11 @@ def _ignore_the_hosts_installed_build_sha(monkeypatch):
 
 def _bare_daemon():
     instance = object.__new__(daemon_mod.Daemon)
+    instance.recovery = SimpleNamespace(
+        active=False, start=lambda: None, stop=lambda: None, forget_phone=lambda: None,
+        adapter=SimpleNamespace(finish_shutdown=lambda: None, restore_pending=False),
+    )
+    instance._power_match = None
     instance.sessions = object()
     instance.obex_worker = SimpleNamespace(submit=lambda *_args, **_kwargs: None)
     instance.read_receipts = SimpleNamespace(defer=lambda *_args: None, close=lambda: None)
