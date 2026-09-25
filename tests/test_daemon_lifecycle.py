@@ -139,6 +139,7 @@ def test_stop_does_not_ask_obexd_to_remove_sessions(monkeypatch):
     instance.bearers = SimpleNamespace(stop=lambda: None)
     instance.profiles = SimpleNamespace(stop=lambda: None)
     instance.listener = None
+    instance.mns_watch = None
     instance.ancs = None
     instance.solicitation = SimpleNamespace(stop=lambda: None)
     instance.events = SimpleNamespace(stop=lambda: None)
@@ -408,3 +409,23 @@ def test_classic_reachable_accepts_an_open_obex_session() -> None:
     assert daemon_mod.classic_reachable(bearers, sessions) is False
     bearers = SimpleNamespace(bredr_connected=True)
     assert daemon_mod.classic_reachable(bearers, sessions) is True
+
+
+def test_mns_loss_reconnects_map_once_per_outage():
+    from types import SimpleNamespace
+
+    from blueferry import daemon
+
+    reconnects = []
+    instance = daemon.Daemon.__new__(daemon.Daemon)
+    instance.profiles = SimpleNamespace(reconnect=reconnects.append)
+    instance._mns_reconnect_spent = False
+
+    instance._mns_missing("the iPhone closed MAP notifications")
+    # The fresh MAP session did not bring MNS back either.
+    instance._mns_missing("the iPhone did not open MAP notifications")
+    assert reconnects == ["the iPhone closed MAP notifications"]
+
+    instance._mns_present()
+    instance._mns_missing("the iPhone closed MAP notifications")
+    assert reconnects == ["the iPhone closed MAP notifications"] * 2

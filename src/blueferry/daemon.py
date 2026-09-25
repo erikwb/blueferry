@@ -43,6 +43,7 @@ from blueferry.notification_policy import (
     NotificationPolicyStore,
 )
 from blueferry.obex.map_events import MapEventListener
+from blueferry.obex.mns_watch import MnsWatch
 from blueferry.obex.sessions import SessionManager
 from blueferry.obex.worker import ObexWorker
 from blueferry.pair_setup import bond_status
@@ -123,6 +124,9 @@ class Daemon:
             on_incoming_message=lambda: self._verify_setup_task(MESSAGE_NOTIFICATIONS),
         )
         self.listener: MapEventListener | None = None
+        self.mns_watch: MnsWatch | None = None
+        # One MAP reconnect per MNS outage; seeing MNS again rearms it.
+        self._mns_reconnect_spent = False
         self.ancs: AncsClient | None = None
         self.adapter_class = AdapterClassSupervisor(config.ADAPTER)
         self.solicitation = SolicitationSupervisor(config.ADAPTER)
@@ -524,6 +528,9 @@ class Daemon:
     def _profiles_lost(self, _reason: str) -> None:
         """Stop consumers that hold objects belonging to old sessions."""
         self.solicitation.set_needed(True)
+        if self.mns_watch is not None:
+            self.mns_watch.stop()
+            self.mns_watch = None
         if self.listener is not None:
             self.listener.stop()
             self.listener = None
@@ -588,6 +595,28 @@ class Daemon:
                 submit_obex=self.obex_worker.submit,
             )
             self.listener.start()
+            self.mns_watch = MnsWatch(
+                config.IPHONE_MAC,
+                on_missing=self._mns_missing,
+                on_present=self._mns_present,
+            )
+            self.mns_watch.start()
+
+    def _mns_present(self) -> None:
+        self._mns_reconnect_spent = False
+
+    def _mns_missing(self, reason: str) -> None:
+        """Recreate MAP, whose registration is what makes the iPhone open MNS."""
+        if self._mns_reconnect_spent:
+            log.warning(
+                "%s again after reconnecting MAP; new messages will not arrive "
+                "until the iPhone reconnects",
+                reason,
+            )
+            return
+        self._mns_reconnect_spent = True
+        log.warning("%s; reconnecting MAP", reason)
+        self.profiles.reconnect(reason)
 
     def _message_read(self, handle: str) -> None:
         if mark_event_handles_read([handle], storage=self.storage):
@@ -868,6 +897,8 @@ class Daemon:
                 except Exception:
                     log.debug("could not remove daemon timer", exc_info=True)
                 setattr(self, tid_attr, None)
+        if self.mns_watch is not None:
+            self.mns_watch.stop()
         if self.listener is not None:
             self.listener.stop()
         if self.ancs is not None:
