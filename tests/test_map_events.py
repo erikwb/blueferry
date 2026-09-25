@@ -185,3 +185,23 @@ def test_listener_subscribes_to_read_updates_for_its_entire_lifetime(monkeypatch
     assert subscriptions[1][1]["path_keyword"] == "path"
     listener.stop()
     assert removed == [True, True]
+
+
+def test_listener_fetches_mns_pushes_but_not_listed_messages(monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(map_events, "_mkstemp_path", lambda *_a: Path("/nonexistent"))
+    submitted = []
+    listener = map_events.MapEventListener(
+        SimpleNamespace(map=SimpleNamespace(path="/session1")),
+        lambda _event: None,
+        submit_obex=lambda operation, **callbacks: submitted.append(operation),
+    )
+
+    for handle, status in [("message1", "complete"), ("message2", "notification")]:
+        listener._on_interfaces_added(
+            f"/session1/{handle}",
+            {"org.bluez.obex.Message1": {"Status": status}},
+        )
+
+    assert len(submitted) == 1

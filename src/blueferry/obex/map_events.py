@@ -23,6 +23,9 @@ log = logging.getLogger(__name__)
 EventCallback = Callable[[SmsEvent], None]
 SubmitObex = Callable[..., object]
 FETCH_TIMEOUT_SEC = 120
+# obexd gives objects created by an MNS NewMessage event this status. Objects
+# created by ListMessages carry the listing's reception_status instead.
+MNS_NEW_MESSAGE_STATUS = "notification"
 
 
 def _mkstemp_path(prefix: str, suffix: str) -> Path:
@@ -158,6 +161,10 @@ class MapEventListener:
 
         props = dict(ifaces["org.bluez.obex.Message1"])
         handle = path_s.rsplit("/", 1)[-1]
+        if str(props.get("Status", "")) != MNS_NEW_MESSAGE_STATUS:
+            # A message listing (sms-list), not a push; it must not notify.
+            log.debug("ignoring listed Message1 %s", handle)
+            return
         log.info(
             "new Message1 at %s (Status=%s Type=%s Size=%s) — queuing body fetch",
             handle, props.get("Status"), props.get("Type"), props.get("Size"),

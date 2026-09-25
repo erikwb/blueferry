@@ -77,6 +77,20 @@ class _AdapterClass:
         self.calls.append("adapter-class-poke")
 
 
+def _mns_watch(calls):
+    class Watch:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def start(self):
+            calls.append("mns-watch-start")
+
+        def stop(self):
+            calls.append("mns-watch-stop")
+
+    return Watch
+
+
 def _daemon(calls):
     value = daemon.Daemon.__new__(daemon.Daemon)
     value.recovery = SimpleNamespace(
@@ -529,14 +543,16 @@ def test_partial_map_starts_listener_without_contacts_work(monkeypatch):
     )()
     value._contacts_refresh_id = None
     value.listener = None
+    value.mns_watch = None
     value._refresh_contacts = lambda: calls.append("unexpected-contacts-refresh")
     value.events = type("Events", (), {"message": lambda *_args: None})()
     value.obex_worker = type("Worker", (), {"submit": lambda *_args: None})()
     monkeypatch.setattr(daemon, "MapEventListener", Listener)
+    monkeypatch.setattr(daemon, "MnsWatch", _mns_watch(calls))
 
     value._post_available_sessions_setup()
 
-    assert calls == ["map-listener", "map-listener-start"]
+    assert calls == ["map-listener", "map-listener-start", "mns-watch-start"]
     assert isinstance(value.listener, Listener)
     assert value._contacts_refresh_id is None
 
@@ -552,6 +568,7 @@ def test_map_only_listener_is_replaced_after_obexd_restarts(monkeypatch):
     value.contacts = SimpleNamespace(count=lambda: 0)
     value._contacts_refresh_id = None
     value.listener = None
+    value.mns_watch = None
     value.events = SimpleNamespace(message=lambda _event: None)
     value.solicitation = _Solicitation([])
     value.obex_worker = SimpleNamespace(
@@ -584,7 +601,9 @@ def test_map_only_listener_is_replaced_after_obexd_restarts(monkeypatch):
         else:
             callbacks["on_success"](result)
 
+    watch_calls = []
     monkeypatch.setattr(daemon, "MapEventListener", Listener)
+    monkeypatch.setattr(daemon, "MnsWatch", _mns_watch(watch_calls))
     monkeypatch.setattr(value.sessions, "start_monitoring", lambda: None)
     monkeypatch.setattr(sessions_mod, "_create_session", create_session)
     profiles = ProfileSupervisor(
@@ -615,6 +634,8 @@ def test_map_only_listener_is_replaced_after_obexd_restarts(monkeypatch):
     # A replacement obexd can reuse paths; it still needs a fresh listener.
     assert value.listener.path == original.path
     assert not profiles.ready  # PBAP is still unavailable.
+    # The MNS watch follows the listener's session lifecycle.
+    assert watch_calls == ["mns-watch-start", "mns-watch-stop", "mns-watch-start"]
 
 
 def test_automatic_contacts_wait_for_map_but_manual_sync_still_works(monkeypatch):
