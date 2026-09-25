@@ -77,6 +77,20 @@ class _AdapterClass:
         self.calls.append("adapter-class-poke")
 
 
+def _mns_watch(calls):
+    class Watch:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def start(self):
+            calls.append("mns-watch-start")
+
+        def stop(self):
+            calls.append("mns-watch-stop")
+
+    return Watch
+
+
 def _daemon(make_daemon, calls):
     """A real daemon whose Bluetooth-facing collaborators record calls."""
     value = make_daemon()
@@ -525,6 +539,7 @@ def test_partial_map_starts_listener_without_contacts_work(make_daemon, monkeypa
         submit=lambda *_args, **_kwargs: calls.append("unexpected-obex-work"),
     )
     monkeypatch.setattr(daemon, "MapEventListener", Listener)
+    monkeypatch.setattr(daemon, "MnsWatch", _mns_watch(calls))
     monkeypatch.setattr(
         daemon.GLib,
         "timeout_add_seconds",
@@ -533,7 +548,7 @@ def test_partial_map_starts_listener_without_contacts_work(make_daemon, monkeypa
 
     value._post_available_sessions_setup()
 
-    assert calls == ["map-listener", "map-listener-start"]
+    assert calls == ["map-listener", "map-listener-start", "mns-watch-start"]
     assert isinstance(value.listener, Listener)
     assert not value.contact_sync.pending
     assert not value.contact_sync.deferred
@@ -577,7 +592,9 @@ def test_map_only_listener_is_replaced_after_obexd_restarts(make_daemon, monkeyp
         else:
             callbacks["on_success"](result)
 
+    watch_calls = []
     monkeypatch.setattr(daemon, "MapEventListener", Listener)
+    monkeypatch.setattr(daemon, "MnsWatch", _mns_watch(watch_calls))
     monkeypatch.setattr(value.sessions, "start_monitoring", lambda: None)
     monkeypatch.setattr(sessions_mod, "_create_session", create_session)
     profiles = ProfileSupervisor(
@@ -608,6 +625,8 @@ def test_map_only_listener_is_replaced_after_obexd_restarts(make_daemon, monkeyp
     # A replacement obexd can reuse paths; it still needs a fresh listener.
     assert value.listener.path == original.path
     assert not profiles.ready  # PBAP is still unavailable.
+    # The MNS watch follows the listener's session lifecycle.
+    assert watch_calls == ["mns-watch-start", "mns-watch-stop", "mns-watch-start"]
 
 
 def test_automatic_contacts_wait_for_map_but_manual_sync_still_works(make_daemon, monkeypatch):
@@ -632,6 +651,7 @@ def test_automatic_contacts_wait_for_map_but_manual_sync_still_works(make_daemon
     monkeypatch.setattr(daemon, 'MapEventListener', lambda **_kwargs: SimpleNamespace(
         start=lambda: listeners.append(True),
     ))
+    monkeypatch.setattr(daemon, 'MnsWatch', _mns_watch([]))
     monkeypatch.setattr(daemon.GLib, 'timeout_add_seconds', lambda *_args: 123)
     monkeypatch.setattr(daemon.GLib, 'source_remove', lambda _: True)
     profiles = ProfileSupervisor(
