@@ -119,18 +119,21 @@ def test_failed_body_fetch_does_not_persist_an_unusable_event() -> None:
 
 
 def test_phone_read_updates_persist_without_notification_and_survive_fetch_race(
-    monkeypatch, tmp_path,
+    make_daemon,
 ):
     from types import SimpleNamespace
 
-    from blueferry import config, daemon
     from blueferry.history import append_event, read_events
 
-    monkeypatch.setattr(config, "EVENTS_DB", tmp_path / "history.sqlite")
-    append_event({"kind": "sms_received", "handle": "message1", "is_read": False})
     changed = []
-    service = daemon.Daemon.__new__(daemon.Daemon)
-    service.storage = None
+    service = make_daemon()
+    # Settle local storage as unencrypted so history needs no desktop keyring.
+    assert service.storage.set_policy("plaintext", allow_prompt=False).can_write
+    storage = service.storage
+    append_event(
+        {"kind": "sms_received", "handle": "message1", "is_read": False},
+        storage=storage,
+    )
     service._dbus_service = SimpleNamespace(emit_history_changed=lambda: changed.append(True))
     received = []
     listener = map_events.MapEventListener(
@@ -148,7 +151,7 @@ def test_phone_read_updates_persist_without_notification_and_survive_fetch_race(
     listener._on_message_properties(
         "org.bluez.obex.Message1", {"Read": True}, [], path="/session1/message1",
     )
-    assert read_events()[0]["is_read"] is True
+    assert read_events(storage=storage)[0]["is_read"] is True
     assert changed == [True]
     listener._fetched("message1", "/session1/message1", {}, SimpleNamespace(
         sender_address="+15551234567", body="hello", status="UNREAD",

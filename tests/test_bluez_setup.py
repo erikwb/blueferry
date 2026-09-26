@@ -33,11 +33,9 @@ class TestAncsAdvertisement:
             bluez_setup._AncsAdvert.GetAll(None, "not.the.advert.interface")
 
 
-def test_daemon_run_cleans_up_when_start_raises(monkeypatch):
+def test_daemon_run_cleans_up_when_start_raises(make_daemon, monkeypatch):
     """A partial startup must not leak a hardware advertisement."""
-    from blueferry import daemon as daemon_mod
-
-    instance = object.__new__(daemon_mod.Daemon)
+    instance = make_daemon()
     stopped = []
 
     def fail_start():

@@ -49,6 +49,10 @@ style dependencies fail this check even when CLI/TUI startup still succeeds.
   unlock prompt, or inspect the user's encrypted BlueFerry databases.
 - Lifecycle and concurrency tests assert externally meaningful outcomes, not
   private call order unless the order itself prevents a leak or race.
+- Daemon tests build a real `Daemon` with the `make_daemon` fixture, which
+  isolates every state path, and replace only hardware-facing collaborators.
+  Never assemble one with `Daemon.__new__` and hand-set private fields.
+  Behavior that has its own class, such as `ContactSync`, is tested directly.
 - Packaging tests keep runtime identifiers and installed metadata consistent.
 - A test should remain valid if the implementation is rewritten without
   changing the behavior it protects.
