@@ -18,7 +18,9 @@ def _bare_daemon():
     instance = object.__new__(daemon_mod.Daemon)
     instance.recovery = SimpleNamespace(
         active=False, start=lambda: None, stop=lambda: None, forget_phone=lambda: None,
-        adapter=SimpleNamespace(finish_shutdown=lambda: None, restore_pending=False),
+        adapter=SimpleNamespace(
+            finish_shutdown=lambda: None, reload_journal=lambda: None, restore_pending=False,
+        ),
     )
     instance._power_match = None
     instance.sessions = object()
@@ -86,6 +88,7 @@ def test_start_publishes_dbus_before_scheduling_bluetooth(monkeypatch):
     order = []
     scheduled = []
     periodic = []
+    instance.recovery.adapter.reload_journal = lambda: order.append("recovery")
 
     monkeypatch.setattr(daemon_mod.config, "ensure_dirs", lambda: order.append("dirs"))
     monkeypatch.setattr(
@@ -121,14 +124,14 @@ def test_start_publishes_dbus_before_scheduling_bluetooth(monkeypatch):
 
     instance.start()
 
-    assert order == ["dirs", "claim", "service", "storage"]
+    assert order == ["dirs", "claim", "recovery", "service", "storage"]
     assert len(scheduled) == 1
     assert (daemon_mod.STORAGE_RETRY_SEC, instance._retry_storage) in periodic
     assert instance._initializing is True
 
     scheduled[0]()
 
-    assert order == ["dirs", "claim", "service", "storage", "bluetooth"]
+    assert order == ["dirs", "claim", "recovery", "service", "storage", "bluetooth"]
     assert instance._initializing is False
 
 
@@ -169,6 +172,38 @@ def test_stop_does_not_ask_obexd_to_remove_sessions(monkeypatch):
     assert instance._bluez_owner_match is None
     instance._on_bluez_owner_changed('org.bluez', ':1.1', ':1.2')
     assert instance._bluez_owner_generation == 0
+
+
+@pytest.mark.parametrize("owns_name", [False, True])
+def test_failed_startup_only_restores_bluetooth_for_bus_owner(monkeypatch, owns_name):
+    instance = _bare_daemon()
+    calls = []
+    instance.recovery.adapter.reload_journal = lambda: calls.append("reload")
+    instance.recovery.adapter.finish_shutdown = lambda: calls.append("restore")
+    for name in ("adapter_class", "bearers", "profiles", "solicitation"):
+        setattr(instance, name, SimpleNamespace(stop=lambda: None))
+    instance.events.stop = lambda: None
+    instance.listener = None
+    instance.ancs = None
+    instance._sleep_match = None
+    instance.storage.close = lambda: None
+    instance.sessions = SimpleNamespace(
+        close_all=lambda **_kwargs: calls.append("close-local-sessions"),
+        stop_monitoring=lambda: None,
+    )
+    instance.obex_worker.shutdown = lambda **kwargs: kwargs["cleanup"]()
+    monkeypatch.setattr(daemon_mod.config, "ensure_dirs", lambda: None)
+    monkeypatch.setattr(daemon_mod.main_loop, "quit", lambda: None)
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("startup failed")
+
+    monkeypatch.setattr(daemon_mod, "claim_bus_name", (lambda: object()) if owns_name else fail)
+    monkeypatch.setattr(daemon_mod, "MessagesService", fail)
+    with pytest.raises(RuntimeError, match="startup failed"):
+        instance.run()
+    assert calls == (["reload", "restore", "close-local-sessions"] if owns_name
+                     else ["close-local-sessions"])
 
 
 def test_storage_poll_survives_a_transient_scheduling_failure():

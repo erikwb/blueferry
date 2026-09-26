@@ -291,6 +291,9 @@ class Daemon:
         # the control surface before any Bluetooth operation that can wait on
         # hardware or the phone.
         self._bus_name = claim_bus_name()
+        # Construction may overlap the previous daemon finishing recovery.
+        # Only its successor may refresh or act on the persisted obligation.
+        self.recovery.adapter.reload_journal()
         self._dbus_service = MessagesService(
             self._bus_name,
             self.sessions,
@@ -900,7 +903,10 @@ class Daemon:
         main_loop.quit()
 
     def _cleanup_bluetooth_worker(self) -> None:
-        self.recovery.adapter.finish_shutdown()
+        # A second daemon still runs stop() when claiming the name fails. It
+        # must not replay or clear recovery state belonging to the live owner.
+        if self._bus_name is not None:
+            self.recovery.adapter.finish_shutdown()
         self.sessions.close_all(remove_remote=False)
 
     def run(self) -> int:
