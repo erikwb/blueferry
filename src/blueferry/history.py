@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from collections.abc import Iterable
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
@@ -263,6 +264,66 @@ def _bump_generation(database: sqlite3.Connection) -> None:
     )
 
 
+class _HandleIndex:
+    """Received-message MAP handles mapped to their history row ids.
+
+    Row ids come from AUTOINCREMENT and are never reused, so rows at or below
+    ``scanned_through`` can only disappear, never change identity. Each lookup
+    therefore decrypts only rows appended since the previous one. A recreated
+    database has a new random instance id in ``meta`` and starts over.
+    """
+
+    def __init__(self, identity: int) -> None:
+        self.identity = identity
+        self.scanned_through = 0
+        self.rows: dict[str, list[int]] = {}
+
+
+_handle_indexes: dict[Path, _HandleIndex] = {}
+_handle_indexes_lock = threading.Lock()
+
+
+def _received_handle_rows(
+    database: sqlite3.Connection,
+    target: Path,
+    storage: StorageSecurity | None,
+) -> dict[str, list[int]] | None:
+    """Return the current handle index, or ``None`` after failing closed."""
+    database.execute(
+        "INSERT OR IGNORE INTO meta(key, value) VALUES ('instance', random())"
+    )
+    (identity,) = database.execute(
+        "SELECT value FROM meta WHERE key = 'instance'"
+    ).fetchone()
+    (newest,) = database.execute("SELECT COALESCE(MAX(id), 0) FROM events").fetchone()
+    index = _handle_indexes.get(target)
+    if index is None or index.identity != identity or newest < index.scanned_through:
+        index = _HandleIndex(identity)
+        _handle_indexes[target] = index
+    for event_id, payload in database.execute(
+        "SELECT id, payload_json FROM events WHERE id > ? ORDER BY id",
+        (index.scanned_through,),
+    ):
+        try:
+            event = _deserialize(payload, storage)
+        except CorruptStorageError:
+            _handle_indexes.pop(target, None)
+            if storage is not None:
+                storage.fail_closed(
+                    "Encrypted local history could not be authenticated"
+                )
+            return None
+        except (ValueError, RuntimeError):
+            event = None
+        index.scanned_through = int(event_id)
+        if event is None or str(event.get("kind") or "") != "sms_received":
+            continue
+        handle = str(event.get("handle") or "")
+        if handle:
+            index.rows.setdefault(handle, []).append(int(event_id))
+    return index.rows
+
+
 def mark_event_handles_read(
     handles: Iterable[str],
     *,
@@ -279,34 +340,47 @@ def mark_event_handles_read(
         return 0
     if storage is not None and not storage.status.can_write:
         return 0
+    target = path or config.EVENTS_DB
     updated = 0
-    with closing(_open_database(path)) as database, database:
-        for event_id, payload in database.execute(
-            "SELECT id, payload_json FROM events"
-        ):
-            try:
-                event = _deserialize(payload, storage)
-            except CorruptStorageError:
-                if storage is not None:
-                    storage.fail_closed(
-                        "Encrypted local history could not be authenticated"
-                    )
-                return 0
-            except (ValueError, RuntimeError):
-                continue
-            if event is None:
-                continue
-            if str(event.get("kind") or "") != "sms_received":
-                continue
-            handle = str(event.get("handle") or "")
-            if handle not in selected or event.get("is_read") is True:
-                continue
-            event["is_read"] = True
-            database.execute(
-                "UPDATE events SET payload_json = ? WHERE id = ?",
-                (_serialize(event, storage), int(event_id)),
-            )
-            updated += 1
+    with (
+        _handle_indexes_lock,
+        closing(_open_database(target)) as database,
+        database,
+    ):
+        rows = _received_handle_rows(database, target, storage)
+        if rows is None:
+            return 0
+        for handle in sorted(selected):
+            for event_id in rows.get(handle, ()):
+                row = database.execute(
+                    "SELECT payload_json FROM events WHERE id = ?", (event_id,)
+                ).fetchone()
+                if row is None:
+                    continue  # Pruned or deleted since it was indexed.
+                try:
+                    event = _deserialize(row[0], storage)
+                except CorruptStorageError:
+                    _handle_indexes.pop(target, None)
+                    if storage is not None:
+                        storage.fail_closed(
+                            "Encrypted local history could not be authenticated"
+                        )
+                    return 0
+                except (ValueError, RuntimeError):
+                    continue
+                if (
+                    event is None
+                    or str(event.get("kind") or "") != "sms_received"
+                    or str(event.get("handle") or "") != handle
+                    or event.get("is_read") is True
+                ):
+                    continue
+                event["is_read"] = True
+                database.execute(
+                    "UPDATE events SET payload_json = ? WHERE id = ?",
+                    (_serialize(event, storage), event_id),
+                )
+                updated += 1
         if updated:
             _bump_generation(database)
     return updated
@@ -351,8 +425,14 @@ def prune_events(
     max_events: int | None = None,
     max_payload_bytes: int | None = None,
     storage: StorageSecurity | None = None,
+    expire_by_age: bool = True,
 ) -> int:
-    """Transactionally enforce history age and count limits."""
+    """Transactionally enforce history age and count limits.
+
+    The count and byte ceilings need no decryption. The age sweep and metadata
+    normalization decrypt every retained row, so a caller on a hot path can
+    skip them with ``expire_by_age=False`` and run the full sweep less often.
+    """
     if storage is not None and not storage.status.can_read:
         return 0
     selected_max = max_events or config.HISTORY_MAX_EVENTS
@@ -388,9 +468,10 @@ def prune_events(
         )
         expired: list[int] = []
         validated: list[int] = []
-        for event_id, payload in database.execute(
+        swept = database.execute(
             "SELECT id, payload_json FROM events ORDER BY id"
-        ):
+        ) if expire_by_age else ()
+        for event_id, payload in swept:
             try:
                 event = _deserialize(payload, storage)
             except CorruptStorageError:
@@ -415,9 +496,11 @@ def prune_events(
                 ((event_id,) for event_id in expired),
             )
         if validated:
+            # Rewriting an already-normalized row still dirties its page, and
+            # secure_delete then overwrites it. Touch only rows that need it.
             database.executemany(
                 "UPDATE events SET kind = 'private', occurred_at = NULL "
-                "WHERE id = ?",
+                "WHERE id = ? AND (kind != 'private' OR occurred_at IS NOT NULL)",
                 ((event_id,) for event_id in validated),
             )
         total = 0
