@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from blueferry import daemon
+from blueferry import contact_sync, daemon
 
 
 class _Bearer:
@@ -77,8 +77,9 @@ class _AdapterClass:
         self.calls.append("adapter-class-poke")
 
 
-def _daemon(calls):
-    value = daemon.Daemon.__new__(daemon.Daemon)
+def _daemon(make_daemon, calls):
+    """A real daemon whose Bluetooth-facing collaborators record calls."""
+    value = make_daemon()
     value.recovery = SimpleNamespace(
         active=False,
         adapter=SimpleNamespace(restore_pending=False, cleanup_pending=False),
@@ -94,17 +95,8 @@ def _daemon(calls):
     value.phone_audio = type(
         "Audio", (), {"reconcile": lambda self, **_kwargs: False}
     )()
-    value.notification_policy = type(
-        "Policy", (), {"value": "messages", "contacts_only": False}
-    )()
-    value.setup_verification = type("Verification", (), {"verified": ()})()
-    value.ancs = None
-    value._dbus_service = None
-    value._bluez_owner_match = None
-    value._bluez_owner_generation = 0
+    # logind and adapter power watches need the real system bus.
     value._watch_sleep_resume = lambda: calls.append("sleep-watch")
-    value._bluetooth_initialized = True
-    value._initialization_retry_id = None
     return value
 
 
@@ -126,9 +118,9 @@ def _ready_bluetooth(monkeypatch, calls):
     return watches
 
 
-def test_compatibility_daemon_solicits_but_never_starts_ancs(monkeypatch):
+def test_compatibility_daemon_solicits_but_never_starts_ancs(make_daemon, monkeypatch):
     calls = []
-    value = _daemon(calls)
+    value = _daemon(make_daemon, calls)
     _ready_bluetooth(monkeypatch, calls)
     monkeypatch.setattr(daemon.config, "ANCS_ENABLED", False)
     monkeypatch.setattr(
@@ -151,13 +143,13 @@ def test_compatibility_daemon_solicits_but_never_starts_ancs(monkeypatch):
     assert value.ancs is None
 
 
-def test_full_daemon_starts_ancs_client(monkeypatch):
+def test_full_daemon_starts_ancs_client(make_daemon, monkeypatch):
     calls = []
 
     def app_filter(app_id):
         return app_id == "com.example.Allowed"
 
-    value = _daemon(calls)
+    value = _daemon(make_daemon, calls)
     _ready_bluetooth(monkeypatch, calls)
     monkeypatch.setattr(daemon.config, "ANCS_ENABLED", True)
     monkeypatch.setattr(daemon.config, "include_ancs_app", app_filter)
@@ -189,14 +181,10 @@ def test_full_daemon_starts_ancs_client(monkeypatch):
     assert value.ancs is not None
 
 
-def test_full_daemon_preserves_known_ancs_reconnect_protection(monkeypatch):
+def test_full_daemon_preserves_known_ancs_reconnect_protection(make_daemon, monkeypatch):
     calls = []
-    value = _daemon(calls)
-    value.setup_verification = type(
-        "Verification",
-        (),
-        {"verified": (daemon.NOTIFICATION_ACCESS,)},
-    )()
+    value = _daemon(make_daemon, calls)
+    value.setup_verification.mark(daemon.NOTIFICATION_ACCESS)
     _ready_bluetooth(monkeypatch, calls)
     monkeypatch.setattr(daemon.config, "ANCS_ENABLED", True)
 
@@ -223,9 +211,9 @@ def test_full_daemon_preserves_known_ancs_reconnect_protection(monkeypatch):
     assert ("previously-authorized", True) in calls
 
 
-def test_bluez_restart_reapplies_profile_gate_before_resetting_bearers():
+def test_bluez_restart_reapplies_profile_gate_before_resetting_bearers(make_daemon):
     calls = []
-    value = _daemon(calls)
+    value = _daemon(make_daemon, calls)
 
     value._on_bluez_restart()
 
@@ -237,9 +225,9 @@ def test_bluez_restart_reapplies_profile_gate_before_resetting_bearers():
     ]
 
 
-def test_recovery_observation_excludes_permissions_and_missing_profiles(monkeypatch):
+def test_recovery_observation_excludes_permissions_and_missing_profiles(make_daemon, monkeypatch):
     calls = []
-    value = _daemon(calls)
+    value = _daemon(make_daemon, calls)
     value._initializing = False
     value.bearers.bredr_connected = True
     value.bearers.busy = False
@@ -257,9 +245,9 @@ def test_recovery_observation_excludes_permissions_and_missing_profiles(monkeypa
     assert not value._recovery_observation().eligible
 
 
-def test_own_power_events_and_owner_changes_do_not_start_parallel_recovery(monkeypatch):
+def test_own_power_events_and_owner_changes_do_not_start_parallel_recovery(make_daemon, monkeypatch):
     calls = []
-    value = _daemon(calls)
+    value = _daemon(make_daemon, calls)
     _ready_bluetooth(monkeypatch, calls)
     value._watch_bluez_owner()
     monkeypatch.setattr(daemon.bluez_setup, 'forget_advert_registration', lambda: None)
@@ -273,19 +261,18 @@ def test_own_power_events_and_owner_changes_do_not_start_parallel_recovery(monke
     assert calls == ["recovery-invalidate", "recovery-invalidate"]
 
 
-def test_wake_does_not_resume_profiles_while_power_restoration_is_pending():
+def test_wake_does_not_resume_profiles_while_power_restoration_is_pending(make_daemon):
     calls = []
-    value = _daemon(calls)
+    value = _daemon(make_daemon, calls)
     value.recovery.active = True
     value.bearers.poke = lambda: calls.append("bearers-poke")
     value._on_prepare_for_sleep(False)
     assert calls == ["recovery-invalidate"]
 
 
-def test_startup_waits_for_saved_restoration_before_any_bluetooth_setup(monkeypatch):
+def test_startup_waits_for_saved_restoration_before_any_bluetooth_setup(make_daemon, monkeypatch):
     calls = []
-    value = _daemon(calls)
-    value._bluetooth_initialized = False
+    value = _daemon(make_daemon, calls)
     value.recovery.adapter.restore_pending = True
     # Restoring an already-issued operation also applies if ANCS was disabled
     # between the previous daemon's shutdown and this startup.
@@ -304,9 +291,9 @@ def test_startup_waits_for_saved_restoration_before_any_bluetooth_setup(monkeypa
     assert calls == ["recovery-start"]
 
 
-def test_compatibility_startup_keeps_journal_cleanup_running_without_delaying_profiles(monkeypatch):
+def test_compatibility_startup_keeps_journal_cleanup_running_without_delaying_profiles(make_daemon, monkeypatch):
     calls = []
-    value = _daemon(calls)
+    value = _daemon(make_daemon, calls)
     value.recovery.adapter.cleanup_pending = True
     value.recovery.stop = lambda: calls.append("recovery-stop")
     _ready_bluetooth(monkeypatch, calls)
@@ -320,8 +307,11 @@ def test_compatibility_startup_keeps_journal_cleanup_running_without_delaying_pr
     assert value.ancs is None
 
 
-def test_recovery_pause_and_resume_keep_map_first_order():
-    value = _daemon([])
+def test_recovery_pause_and_resume_keep_map_first_order(make_daemon, monkeypatch):
+    value = _daemon(make_daemon, [])
+    _ready_bluetooth(monkeypatch, [])
+    monkeypatch.setattr(daemon.config, "ANCS_ENABLED", False)
+    value._initialize_bluetooth()
     calls = []
     value.adapter_class = SimpleNamespace(
         stop=lambda: calls.append("class-stop"), start=lambda: calls.append("class-start"),
@@ -352,9 +342,9 @@ def test_recovery_pause_and_resume_keep_map_first_order():
 
 @pytest.mark.parametrize('ancs_enabled', [False, True])
 @pytest.mark.parametrize('split_change', [False, True])
-def test_bluez_owner_watch_recovers_once_in_both_pairing_modes(monkeypatch, ancs_enabled, split_change):
+def test_bluez_owner_watch_recovers_once_in_both_pairing_modes(make_daemon, monkeypatch, ancs_enabled, split_change):
     calls = []
-    value = _daemon(calls)
+    value = _daemon(make_daemon, calls)
     watches = _ready_bluetooth(monkeypatch, calls)
     monkeypatch.setattr(daemon.config, 'ANCS_ENABLED', ancs_enabled)
     monkeypatch.setattr(daemon.bluez_setup, 'forget_advert_registration', lambda: calls.append('forget-advert'))
@@ -393,9 +383,9 @@ def test_bluez_owner_watch_recovers_once_in_both_pairing_modes(monkeypatch, ancs
     ]
 
 
-def test_nested_owner_loss_during_ancs_rescan_does_not_restart_absent_bluez(monkeypatch):
+def test_nested_owner_loss_during_ancs_rescan_does_not_restart_absent_bluez(make_daemon, monkeypatch):
     calls = []
-    value = _daemon(calls)
+    value = _daemon(make_daemon, calls)
     _ready_bluetooth(monkeypatch, calls)
     value._watch_bluez_owner()
     monkeypatch.setattr(daemon.bluez_setup, 'forget_advert_registration', lambda: None)
@@ -409,9 +399,9 @@ def test_nested_owner_loss_during_ancs_rescan_does_not_restart_absent_bluez(monk
     assert calls == ['recovery-invalidate', 'solicitation-reset', 'recovery-invalidate']
 
 
-def test_owner_change_during_initial_ancs_scan_is_forwarded(monkeypatch):
+def test_owner_change_during_initial_ancs_scan_is_forwarded(make_daemon, monkeypatch):
     calls, observed = [], []
-    value = _daemon(calls)
+    value = _daemon(make_daemon, calls)
     watches = _ready_bluetooth(monkeypatch, calls)
     monkeypatch.setattr(daemon.config, 'ANCS_ENABLED', True)
     monkeypatch.setattr(daemon.bluez_setup, 'forget_advert_registration', lambda: None)
@@ -431,9 +421,9 @@ def test_owner_change_during_initial_ancs_scan_is_forwarded(monkeypatch):
     assert value.ancs is candidate
 
 
-def test_failed_ancs_start_can_retry_without_leaking_an_owner_watch(monkeypatch):
+def test_failed_ancs_start_can_retry_without_leaking_an_owner_watch(make_daemon, monkeypatch):
     calls, started, stopped = [], [], []
-    value = _daemon(calls)
+    value = _daemon(make_daemon, calls)
     watches = _ready_bluetooth(monkeypatch, calls)
     monkeypatch.setattr(daemon.config, 'ANCS_ENABLED', True)
 
@@ -457,9 +447,9 @@ def test_failed_ancs_start_can_retry_without_leaking_an_owner_watch(monkeypatch)
     assert len(watches) == 1
 
 
-def test_solicitation_stays_up_until_profiles_and_ancs_are_ready(monkeypatch):
+def test_solicitation_stays_up_until_profiles_and_ancs_are_ready(make_daemon, monkeypatch):
     calls = []
-    value = _daemon(calls)
+    value = _daemon(make_daemon, calls)
     monkeypatch.setattr(daemon.config, "ANCS_ENABLED", True)
     value.ancs = type("Ancs", (), {"connected": True})()
 
@@ -474,26 +464,26 @@ def test_solicitation_stays_up_until_profiles_and_ancs_are_ready(monkeypatch):
     ]
 
 
-def test_partial_pbap_starts_contacts_without_map_listener(monkeypatch):
-    calls = []
-    value = daemon.Daemon.__new__(daemon.Daemon)
-    value.sessions = type("Sessions", (), {"map": None, "pbap": object()})()
-    value.contacts = type(
-        "Contacts",
-        (),
-        {"count": lambda _self: 0, "resolve": lambda _self, raw: raw},
-    )()
-    value._contacts_refresh_id = None
-    value._contacts_refresh_deferred = False
-    value._contacts_initial_sync_done = False
-    value.listener = None
-    value._refresh_contacts = lambda: calls.append("refresh-contacts")
-    value._periodic_refresh_contacts = lambda: True
-    monkeypatch.setattr(
-        daemon.GLib,
-        "timeout_add_seconds",
-        lambda delay, _callback: calls.append(("schedule", delay)) or 77,
+def _writable_storage(value):
+    """Settle storage as an unencrypted store so contact sync may write."""
+    assert value.storage.set_policy("plaintext", allow_prompt=False).can_write
+
+
+def test_partial_pbap_starts_contacts_without_map_listener(make_daemon, monkeypatch):
+    calls, timers = [], {}
+    value = make_daemon()
+    _writable_storage(value)
+    value.sessions.pbap = object()
+    value.obex_worker = SimpleNamespace(
+        submit=lambda _operation, **_callbacks: calls.append("pull-contacts"),
     )
+
+    def schedule(delay, callback):
+        calls.append(("schedule", delay))
+        timers[delay] = callback
+        return 77
+
+    monkeypatch.setattr(daemon.GLib, "timeout_add_seconds", schedule)
     monkeypatch.setattr(
         daemon,
         "MapEventListener",
@@ -502,15 +492,23 @@ def test_partial_pbap_starts_contacts_without_map_listener(monkeypatch):
 
     value._post_available_sessions_setup()
 
+    # PBAP alone still owes the initial pull; MAP gets its head start first.
     assert calls == [
-        "refresh-contacts",
-        ("schedule", daemon.CONTACTS_REFRESH_SEC),
+        ("schedule", contact_sync.CONTACTS_MAP_GRACE_SECONDS),
+        ("schedule", contact_sync.CONTACTS_REFRESH_SEC),
     ]
-    assert value._contacts_refresh_id == 77
+    assert value.contact_sync.deferred
+    assert value.listener is None
+    calls.clear()
+
+    assert timers[contact_sync.CONTACTS_MAP_GRACE_SECONDS]() is False
+
+    assert calls == ["pull-contacts"]
+    assert value.contact_sync.pending
     assert value.listener is None
 
 
-def test_partial_map_starts_listener_without_contacts_work(monkeypatch):
+def test_partial_map_starts_listener_without_contacts_work(make_daemon, monkeypatch):
     calls = []
 
     class Listener:
@@ -520,39 +518,34 @@ def test_partial_map_starts_listener_without_contacts_work(monkeypatch):
         def start(self):
             calls.append("map-listener-start")
 
-    value = daemon.Daemon.__new__(daemon.Daemon)
-    value.sessions = type("Sessions", (), {"map": object(), "pbap": None})()
-    value.contacts = type(
-        "Contacts",
-        (),
-        {"count": lambda _self: 0, "resolve": lambda _self, raw: raw},
-    )()
-    value._contacts_refresh_id = None
-    value.listener = None
-    value._refresh_contacts = lambda: calls.append("unexpected-contacts-refresh")
-    value.events = type("Events", (), {"message": lambda *_args: None})()
-    value.obex_worker = type("Worker", (), {"submit": lambda *_args: None})()
+    value = make_daemon()
+    _writable_storage(value)
+    value.sessions.map = object()
+    value.obex_worker = SimpleNamespace(
+        submit=lambda *_args, **_kwargs: calls.append("unexpected-obex-work"),
+    )
     monkeypatch.setattr(daemon, "MapEventListener", Listener)
+    monkeypatch.setattr(
+        daemon.GLib,
+        "timeout_add_seconds",
+        lambda delay, _callback: calls.append(("unexpected-schedule", delay)) or 1,
+    )
 
     value._post_available_sessions_setup()
 
     assert calls == ["map-listener", "map-listener-start"]
     assert isinstance(value.listener, Listener)
-    assert value._contacts_refresh_id is None
+    assert not value.contact_sync.pending
+    assert not value.contact_sync.deferred
 
 
-def test_map_only_listener_is_replaced_after_obexd_restarts(monkeypatch):
+def test_map_only_listener_is_replaced_after_obexd_restarts(make_daemon, monkeypatch):
     from blueferry.connectivity import Connectivity
     from blueferry.obex import sessions as sessions_mod
     from blueferry.profile_supervisor import ProfileSupervisor
 
     jobs, timers, listeners = [], [], []
-    value = daemon.Daemon.__new__(daemon.Daemon)
-    value.sessions = sessions_mod.SessionManager()
-    value.contacts = SimpleNamespace(count=lambda: 0)
-    value._contacts_refresh_id = None
-    value.listener = None
-    value.events = SimpleNamespace(message=lambda _event: None)
+    value = make_daemon()
     value.solicitation = _Solicitation([])
     value.obex_worker = SimpleNamespace(
         submit=lambda operation, **callbacks: jobs.append((operation, callbacks)),
@@ -617,36 +610,28 @@ def test_map_only_listener_is_replaced_after_obexd_restarts(monkeypatch):
     assert not profiles.ready  # PBAP is still unavailable.
 
 
-def test_automatic_contacts_wait_for_map_but_manual_sync_still_works(monkeypatch):
+def test_automatic_contacts_wait_for_map_but_manual_sync_still_works(make_daemon, monkeypatch):
+    from blueferry import contacts as contacts_mod
     from blueferry.backend_operations import BackendDependencies, BackendOperations
     from blueferry.connectivity import Connectivity
     from blueferry.obex.sessions import SessionError
     from blueferry.profile_supervisor import ProfileSupervisor
 
-    jobs, timers, published = [], [], []
-    value = daemon.Daemon.__new__(daemon.Daemon)
-    value.sessions = SimpleNamespace(map=None, pbap=object(),
-                                     set_on_lost=lambda callback: None,
-                                     open_all=lambda: None)
-    value.contacts = SimpleNamespace(count=lambda: 0)
-    value.storage = SimpleNamespace(status=SimpleNamespace(can_write=True))
-    value._contacts_refresh_pending = False
-    value._contacts_initial_sync_done = False
-    value._contacts_storage_generation = 0
-    value._contacts_sync_waiters = []
-    value._contacts_refresh_deferred = False
-    value._contacts_map_wait_id = None
-    value._contacts_map_wait_finished = False
-    value._contacts_refresh_id = 1
-    value.listener = object()
-    value._pull_contacts = lambda: 42
-    value._contacts_pulled = lambda n: n
-    value._emit_status = lambda: None
-    handlers = []
+    jobs, handlers, timers, published, listeners = [], [], [], [], []
+    value = make_daemon()
+    _writable_storage(value)
+    value.sessions.pbap = object()
+
     def submit(operation, **callbacks):
         jobs.append(operation)
         handlers.append(callbacks)
+
     value.obex_worker = SimpleNamespace(submit=submit)
+    monkeypatch.setattr(contacts_mod, 'pull_phonebook', lambda *_args, **_kwargs: 42)
+    monkeypatch.setattr(value.contacts, 'refresh', lambda: 42)
+    monkeypatch.setattr(daemon, 'MapEventListener', lambda **_kwargs: SimpleNamespace(
+        start=lambda: listeners.append(True),
+    ))
     monkeypatch.setattr(daemon.GLib, 'timeout_add_seconds', lambda *_args: 123)
     monkeypatch.setattr(daemon.GLib, 'source_remove', lambda _: True)
     profiles = ProfileSupervisor(
@@ -658,24 +643,28 @@ def test_automatic_contacts_wait_for_map_but_manual_sync_still_works(monkeypatch
     profiles._open_failed(0, SessionError('CreateSession(MAP) failed: Forbidden'))
     value._on_storage_changed()  # Wallet unlock must not bypass the same gate.
     assert not jobs
-    assert value._contacts_refresh_deferred
+    assert value.contact_sync.deferred
     timers.pop()()
     assert jobs == [value.sessions.open_all]
     jobs.clear()
     handlers.clear()
 
     operations = BackendOperations(value.sessions, BackendDependencies(
-        sync_contacts=value._sync_contacts,
+        sync_contacts=value.contact_sync.sync,
     ))
     operations.sync_contacts(published.append, published.append)
-    assert jobs == [value._pull_contacts]
-    handlers.pop()['on_success'](42)
+    assert len(jobs) == 1
+    assert value.contact_sync.waiting == 1
+    handlers.pop()['on_success'](jobs.pop()())
     assert published == [42]
-    jobs.clear()
+    # The manual pull satisfies the automatic one that was waiting for MAP.
+    assert not value.contact_sync.deferred
+    assert value.contact_sync.initial_sync_done
 
     value.sessions.map = object()
     value._post_available_sessions_setup()
-    assert jobs == [value._pull_contacts]
-    assert not value._contacts_refresh_deferred
+    assert listeners == [True]
+    assert not jobs
     value._post_available_sessions_setup()
-    assert len(jobs) == 1
+    assert not jobs
+    assert listeners == [True]
