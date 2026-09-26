@@ -15,8 +15,15 @@ from blueferry.obex import worker as worker_mod
 
 
 class _Storage:
+    """Writable storage whose snapshots need no key."""
+
+    revision = 0
+
     def __init__(self):
         self.status = SimpleNamespace(can_write=True)
+
+    def snapshot(self):
+        return SimpleNamespace(close=lambda: None)
 
 
 @pytest.fixture

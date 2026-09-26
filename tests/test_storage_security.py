@@ -604,3 +604,33 @@ def test_settings_updates_preserve_unrelated_preferences(tmp_path) -> None:
         "desktop_notifications": "messages",
         "local_data": "none",
     }
+
+
+def test_revision_tracks_key_and_policy_changes_only(tmp_path) -> None:
+    storage = _storage(tmp_path)
+    start = storage.revision
+
+    storage.refresh(allow_prompt=False)  # Same key again.
+    assert storage.revision == start
+
+    storage.set_policy("plaintext")
+    after_policy = storage.revision
+    assert after_policy != start
+    storage.set_policy("plaintext")
+    assert storage.revision == after_policy
+
+    storage.set_policy("encrypted")
+    unlocked = storage.revision
+    assert unlocked != after_policy
+    storage.fail_closed("simulated authentication failure")
+    assert storage.revision != unlocked
+
+
+def test_snapshot_key_survives_the_live_key_being_forgotten(tmp_path) -> None:
+    storage = _storage(tmp_path)
+    reader = storage.snapshot()
+    storage.fail_closed("simulated authentication failure")
+
+    sealed = reader.encrypt("private", purpose="contact-record-v1")
+    assert reader.decrypt(sealed, purpose="contact-record-v1") == "private"
+    reader.close()

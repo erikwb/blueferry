@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 from gi.repository import GLib
 
 from blueferry import contacts as contacts_module
-from blueferry.contacts import ContactsResolver
+from blueferry.contacts import ContactsResolver, clear_contact_cache
 from blueferry.limits import MAX_OBEX_PENDING_OPERATIONS
 from blueferry.storage_security import StorageSecurity
 
@@ -32,6 +32,10 @@ CONTACTS_MAP_GRACE_SECONDS = 180
 Success = Callable[[int], None]
 Failure = Callable[[Exception], None]
 Pull = Callable[..., int]
+
+
+class StorageChangedDuringSync(RuntimeError):
+    """Local storage changed policy or key while a pull was writing the cache."""
 
 
 class ContactSync:
@@ -142,14 +146,22 @@ class ContactSync:
             return
         self._pending = True
         generation = self._generation
+        # The download can take minutes. Give it a private key buffer: the
+        # live one is zeroed in place whenever storage relocks, changes
+        # policy, or fails closed.
+        revision = self._storage.revision
+        storage = self._storage.snapshot()
         pull = self._pull or contacts_module.pull_phonebook
 
         def download() -> int:
-            return pull(self._sessions, storage=self._storage)
+            try:
+                return pull(self._sessions, storage=storage)
+            finally:
+                storage.close()
 
         def succeeded(pulled: int) -> None:
             try:
-                count = self._pulled(pulled)
+                count = self._pulled(pulled, revision)
             except Exception as error:
                 failed(error)
             else:
@@ -161,6 +173,7 @@ class ContactSync:
         try:
             self._submit(download, on_success=succeeded, on_error=failed)
         except Exception as error:
+            storage.close()
             failed(error)
 
     def stop(self) -> None:
@@ -173,8 +186,19 @@ class ContactSync:
                     log.debug("could not remove contact sync timer", exc_info=True)
                 setattr(self, attribute, None)
 
-    def _pulled(self, pulled: int) -> int:
+    def _pulled(self, pulled: int, revision: int) -> int:
         """GLib-side cache refresh after a successful PBAP pull."""
+        if self._storage.revision != revision:
+            # The worker sealed the cache under a policy or key that is no
+            # longer current. It is only a cache of the phone's contacts, so
+            # erase it and download again rather than keep unreadable or
+            # under-protected rows.
+            clear_contact_cache()
+            self._contacts.refresh()
+            self._initial_sync_done = False
+            raise StorageChangedDuringSync(
+                "local storage changed during contact sync; downloading again"
+            )
         # Manual sync also satisfies a deferred automatic refresh.
         self._finish_map_wait()
         count = self._contacts.refresh()
@@ -187,11 +211,14 @@ class ContactSync:
     ) -> None:
         waiters, self._waiters = self._waiters, []
         self._pending = False
+        stale = isinstance(error, StorageChangedDuringSync)
         if error is None and generation == self._generation:
             # Zero usable destinations is still a successful sync. Retrying
             # MAP must not repeatedly download the same empty contact cache.
             self._initial_sync_done = True
-        if error is not None:
+        if stale:
+            log.info("discarded a contact pull: %s", error)
+        elif error is not None:
             log.error("contacts refresh failed; using previous cache: %s", error)
             try:
                 self._sessions.report_error(error)
@@ -214,9 +241,9 @@ class ContactSync:
             # consume the deferred automatic request. Automatic attempts clear
             # this flag before queuing, so this cannot form a retry loop.
             self.refresh()
-        elif generation != self._generation and self.needed():
-            # Storage became ready while this older pull was pending, so its
-            # recovery callback could not queue the replacement download yet.
+        elif (stale or generation != self._generation) and self.needed():
+            # Storage changed while this pull was pending, so its recovery
+            # callback could not queue the replacement download yet.
             self.refresh()
 
     def _finish_map_wait(self) -> None:
