@@ -13,7 +13,7 @@ from gi.repository import GLib, GObject
 
 from blueferry.backend_lifecycle import ensure_backend_current
 from blueferry.bus import get_session_bus
-from blueferry.client import BackendClient
+from blueferry.client import BackendClient, CompatibilityCache
 from blueferry.models import BackendStatus
 from blueferry.protocol import (
     BUS_NAME,
@@ -68,6 +68,9 @@ class DaemonClient(GObject.Object):
             max_workers=1,
             thread_name_prefix="blueferry-gtk-mutation",
         )
+        # Each call opens a private connection, but all share one session bus,
+        # so a verified daemon owner stays verified across calls.
+        self._compatibility = CompatibilityCache()
         self._stopped = False
         self.available = False  # is the daemon reachable on D-Bus?
         self.healthy = False  # is the MAP session up?
@@ -117,8 +120,7 @@ class DaemonClient(GObject.Object):
         self._read_executor.shutdown(wait=False, cancel_futures=True)
         self._mutation_executor.shutdown(wait=False, cancel_futures=True)
 
-    @staticmethod
-    def _call_backend(operation: Callable[[BackendClient], T]) -> T:
+    def _call_backend(self, operation: Callable[[BackendClient], T]) -> T:
         """Call the shared backend facade on a worker-owned connection."""
         bus = dbus.SessionBus(
             private=True,
@@ -128,7 +130,8 @@ class DaemonClient(GObject.Object):
             backend = BackendClient(
                 interface_factory=lambda name: dbus.Interface(
                     bus.get_object(BUS_NAME, OBJECT_PATH), name
-                )
+                ),
+                compatibility=self._compatibility,
             )
             return operation(backend)
         finally:
