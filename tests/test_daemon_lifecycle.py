@@ -298,7 +298,7 @@ def test_missing_bond_never_prepares_or_connects_bluetooth(monkeypatch):
     prepared = []
     audio = []
     instance.phone_audio = SimpleNamespace(reconcile=lambda **kwargs: audio.append(kwargs))
-    monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args: False)
+    monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(
         daemon_mod.bluez_setup,
         "prepare_classic",
@@ -316,7 +316,7 @@ def test_bonded_start_reconciles_phone_audio_before_adapter_class(monkeypatch):
     instance = _bare_daemon()
     order = []
     monkeypatch.setattr(daemon_mod.config, "KEEP_PHONE_AUDIO_ON_PHONE", True)
-    monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args: True)
+    monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args, **_kwargs: True)
     instance.phone_audio = SimpleNamespace(
         reconcile=lambda **kwargs: order.append(("audio", kwargs["enabled"]))
     )
@@ -393,7 +393,7 @@ def test_removing_bond_stops_active_daemon_without_restart(monkeypatch):
     )
     monkeypatch.setattr(daemon_mod.config, "IPHONE_MAC", "02:00:00:00:00:01")
     monkeypatch.setattr(daemon_mod.config, "ADAPTER", "hci0")
-    monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args: False)
+    monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(daemon_mod.main_loop, "quit", lambda: stopped.append(True))
 
     assert instance._check_target_config() is False
@@ -411,7 +411,7 @@ def test_transient_bond_inspection_failure_keeps_daemon_running(monkeypatch):
     )
     monkeypatch.setattr(daemon_mod.config, "IPHONE_MAC", "02:00:00:00:00:01")
     monkeypatch.setattr(daemon_mod.config, "ADAPTER", "hci0")
-    monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args: None)
+    monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(daemon_mod.main_loop, "quit", lambda: stopped.append(True))
 
     assert instance._check_target_config() is True

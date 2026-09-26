@@ -239,17 +239,24 @@ def _take_pending_teardown(adapter: str) -> dict[str, object] | None:
     return trace
 
 
-def bond_status(mac: str, adapter: str) -> bool | None:
+def bond_status(
+    mac: str, adapter: str, *, timeout: float | None = None,
+) -> bool | None:
     """Return paired state, or ``None`` if the adapter cannot be inspected.
 
     Merely retaining a MAC in ``local.env`` is not proof of a usable setup:
     package removal deliberately preserves that file while a user may remove
-    the BlueZ bond independently.
+    the BlueZ bond independently. Callers on the daemon's main loop pass a
+    short ``timeout`` so a wedged bluetoothd cannot stall every client call.
     """
     adapter_path = f"/org/bluez/{adapter}"
     device_path = f"{adapter_path}/dev_{mac.replace(':', '_')}"
     try:
-        managed = _object_manager().GetManagedObjects()
+        manager = _object_manager()
+        managed = (
+            manager.GetManagedObjects() if timeout is None
+            else manager.GetManagedObjects(timeout=timeout)
+        )
     except dbus.exceptions.DBusException:
         return None
     adapter_ifaces = managed.get(dbus.ObjectPath(adapter_path), managed.get(adapter_path))

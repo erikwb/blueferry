@@ -117,7 +117,7 @@ def _ready_bluetooth(monkeypatch, calls):
         return match
 
     monkeypatch.setattr(daemon, 'get_system_bus', lambda: SimpleNamespace(add_signal_receiver=watch))
-    monkeypatch.setattr(daemon, "bond_status", lambda *_args: True)
+    monkeypatch.setattr(daemon, "bond_status", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(
         daemon.bluez_setup,
         "prepare_classic",

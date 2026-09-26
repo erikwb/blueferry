@@ -83,6 +83,9 @@ CONTACTS_MAP_GRACE_SECONDS = 180
 # every logged-in user's systemd instance.
 PACKAGE_RELEASE_CHECK_SEC = 10
 TARGET_CONFIG_CHECK_SEC = 2
+# The periodic bond check runs on the GLib loop. A timeout reads as "cannot
+# inspect", which the check already treats as transient.
+BOND_CHECK_TIMEOUT_SEC = 2.0
 STORAGE_RETRY_SEC = 5
 RESTART_AFTER_UPGRADE_EXIT = 75
 
@@ -396,7 +399,9 @@ class Daemon:
             self.recovery.start()
         if self.recovery.active or self.recovery.adapter.restore_pending:
             return
-        if bond_status(config.IPHONE_MAC, config.ADAPTER) is not True:
+        if bond_status(
+            config.IPHONE_MAC, config.ADAPTER, timeout=BOND_CHECK_TIMEOUT_SEC,
+        ) is not True:
             raise PairingRequiredError(
                 "the saved iPhone is not currently paired; open a client to pair it"
             )
@@ -817,7 +822,7 @@ class Daemon:
     def _check_target_config(self) -> bool:
         mac, adapter = config.current_target()
         if mac == config.IPHONE_MAC and adapter == config.ADAPTER:
-            bonded = bond_status(mac, adapter)
+            bonded = bond_status(mac, adapter, timeout=BOND_CHECK_TIMEOUT_SEC)
             if bonded is not False:
                 return True
             # The daemon may already have initialized its supervisors when a
