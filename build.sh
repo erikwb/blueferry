@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build Arch split packages from the current working tree, including uncommitted
-# hardening changes. Nothing is installed unless makepkg is given -i.
+# edits to tracked or staged files. Nothing is installed unless makepkg is given -i.
 
 set -euo pipefail
 
@@ -15,9 +15,9 @@ Usage:
   ./build.sh --prepare-only   Only refresh packaging/arch/blueferry-*.tar.gz
   ./build.sh -- <args...>     Pass arbitrary arguments to makepkg
 
-The snapshot contains tracked and untracked, non-ignored files from the
-current working tree. Build artifacts, .git, virtualenvs, caches, and private
-runtime data are excluded by .gitignore.
+The snapshot contains the working-tree contents of every file in the Git
+index, including uncommitted edits. Untracked files are left out and listed;
+stage a new file with `git add` to include it.
 EOF
 }
 
@@ -75,8 +75,17 @@ snapshot_work=$(mktemp -d)
 trap 'rm -f -- "$temporary"; rm -rf -- "$snapshot_work"' EXIT
 
 mapfile -d '' candidates < <(
-    git -C "$ROOT" ls-files --cached --others --exclude-standard -z
+    git -C "$ROOT" ls-files --cached -z
 )
+# Untracked files (scratch work, a website checkout, lock files) must never
+# ship silently. Stage a new file with `git add` to include it.
+mapfile -t untracked < <(
+    git -C "$ROOT" ls-files --others --exclude-standard --directory
+)
+if (( ${#untracked[@]} > 0 )); then
+    echo "note: leaving untracked paths out of the source snapshot:" >&2
+    printf '  %s\n' "${untracked[@]}" >&2
+fi
 files=()
 for file in "${candidates[@]}"; do
     # Deleted tracked files remain in the index until committed.

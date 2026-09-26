@@ -31,8 +31,17 @@ if [[ "$version" != "$spec_version" ]]; then
 fi
 
 mapfile -d '' candidates < <(
-    git -C "$ROOT" ls-files --cached --others --exclude-standard -z
+    git -C "$ROOT" ls-files --cached -z
 )
+# Untracked files (scratch work, a website checkout, lock files) must never
+# ship silently. Stage a new file with `git add` to include it.
+mapfile -t untracked < <(
+    git -C "$ROOT" ls-files --others --exclude-standard --directory
+)
+if (( ${#untracked[@]} > 0 )); then
+    echo "note: leaving untracked paths out of the source snapshot:" >&2
+    printf '  %s\n' "${untracked[@]}" >&2
+fi
 files=()
 for file in "${candidates[@]}"; do
     if [[ -e "$ROOT/$file" || -L "$ROOT/$file" ]]; then

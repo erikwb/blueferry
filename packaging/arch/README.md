@@ -31,9 +31,10 @@ cd packaging/arch
 makepkg --cleanbuild --force -si
 ```
 
-`build.sh` snapshots the current working tree, including uncommitted files,
-and writes the checksum used by the PKGBUILD. Building alone does not pair a
-phone or change the live Bluetooth configuration. Installing the backend
+`build.sh` snapshots the current working tree, including uncommitted edits to
+tracked or staged files; untracked files are left out and listed. It writes the
+checksum used by the PKGBUILD. Building alone does not pair a phone or change
+the live Bluetooth configuration. Installing the backend
 restarts Bluetooth if it is already running, briefly disconnecting active
 devices. Package checks run the linters and device-isolated test suite before
 building. Finished package archives are left in `packaging/arch/`.
