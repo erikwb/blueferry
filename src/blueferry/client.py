@@ -40,13 +40,40 @@ class BackendError(BlueFerryError):
     pass
 
 
+class CompatibilityCache:
+    """Daemon unique bus names already verified as API-compatible.
+
+    A bus never reuses a unique name, so a replacement daemon is always a new
+    entry and is checked again. Share one cache between clients that talk to
+    the same session bus to skip the per-call GetStatus round trip.
+    """
+
+    def __init__(self) -> None:
+        self._owners: set[str] = set()
+
+    def __contains__(self, owner: object) -> bool:
+        return owner in self._owners
+
+    def add(self, owner: str) -> None:
+        self._owners.add(owner)
+
+
+def _unique_owner(interface: object) -> str | None:
+    # dbus-python binds a proxy to the name's unique owner when it is created.
+    # Test doubles and other factories without one are checked on every call.
+    owner = getattr(interface, "bus_name", None)
+    return owner if isinstance(owner, str) and owner.startswith(":") else None
+
+
 class BackendClient:
     def __init__(
         self,
         *,
         interface_factory: Callable[[str], dbus.Interface] | None = None,
+        compatibility: CompatibilityCache | None = None,
     ) -> None:
         self._interface_factory = interface_factory
+        self._compatibility = compatibility if compatibility is not None else CompatibilityCache()
 
     def _raw_iface(self, name: str) -> dbus.Interface:
         if self._interface_factory is not None:
@@ -57,13 +84,19 @@ class BackendClient:
     def _iface(self, name: str) -> dbus.Interface:
         interface = self._raw_iface(name)
         # Check the same owner-bound proxy used for the operation. A daemon
-        # replacement must not inherit an earlier process's compatibility.
+        # replacement has a new unique name, so it never inherits an earlier
+        # process's compatibility.
+        owner = _unique_owner(interface)
+        if owner is not None and owner in self._compatibility:
+            return interface
         try:
             status = decode_mapping(interface.GetStatus(timeout=STATUS_CALL_TIMEOUT_SEC))
         except (dbus.exceptions.DBusException, ValueError) as error:
             raise BackendError(str(error)) from error
         if error_message := backend_compatibility_error(status):
             raise BackendError(error_message)
+        if owner is not None:
+            self._compatibility.add(owner)
         return interface
 
     def is_healthy(self) -> bool:

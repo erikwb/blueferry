@@ -6,86 +6,22 @@ from types import SimpleNamespace
 import pytest
 
 from blueferry import daemon as daemon_mod
-from blueferry.connectivity import Connectivity
 
 
-@pytest.fixture(autouse=True)
-def _ignore_the_hosts_installed_build_sha(monkeypatch):
-    monkeypatch.setattr(daemon_mod, "installed_build_sha", lambda: None)
+def _idle_recovery():
+    """Recovery supervision watches the system bus; these tests run without it."""
+    return SimpleNamespace(
+        active=False, start=lambda: None,
+        adapter=SimpleNamespace(restore_pending=False, cleanup_pending=False),
+    )
 
 
-def _bare_daemon():
-    instance = object.__new__(daemon_mod.Daemon)
-    instance.recovery = SimpleNamespace(
-        active=False, start=lambda: None, stop=lambda: None, forget_phone=lambda: None,
-        adapter=SimpleNamespace(finish_shutdown=lambda: None, restore_pending=False),
-    )
-    instance._power_match = None
-    instance.sessions = object()
-    instance.obex_worker = SimpleNamespace(submit=lambda *_args, **_kwargs: None)
-    instance.read_receipts = SimpleNamespace(defer=lambda *_args: None, close=lambda: None)
-    instance.contacts = SimpleNamespace(refresh=lambda: 0, count=lambda: 0)
-    instance.connectivity = Connectivity()
-    instance.notification_policy = SimpleNamespace(
-        value="messages", contacts_only=False
-    )
-    instance.starred_threads = SimpleNamespace(
-        keys=lambda: [],
-        migrate=lambda: None,
-        set_starred=lambda *_args, **_kwargs: False,
-        discard=lambda *_args, **_kwargs: None,
-        clear=lambda: None,
-    )
-    instance.confirmed_groups = SimpleNamespace(
-        migrate=lambda: None,
-        matches=lambda *_args, **_kwargs: False,
-        matching_rosters=lambda _rosters: set(),
-        remember=lambda *_args, **_kwargs: None,
-        forget=lambda *_args, **_kwargs: None,
-        clear=lambda: None,
-    )
-    storage_status = SimpleNamespace(
-        policy="encrypted", state="ready", detail="", can_read=True
-    )
-    instance.storage = SimpleNamespace(
-        status=storage_status,
-        refresh=lambda **_kwargs: storage_status,
-    )
-    instance.events = SimpleNamespace(
-        sent=lambda *_args: None,
-        group_sent=lambda *_args: None,
-        set_dbus_service=lambda *_args: None,
-    )
-    instance._bus_name = None
-    instance._dbus_service = None
-    instance._bluez_owner_match = None
-    instance._bluez_owner_generation = 0
-    instance._packaged = False
-    instance._startup_id = None
-    instance._initialization_retry_id = None
-    instance._target_config_check_id = None
-    instance._storage_retry_id = None
-    instance._contacts_refresh_deferred = False
-    instance._contacts_initial_sync_done = False
-    instance._contacts_storage_generation = 0
-    instance._contacts_sync_waiters = []
-    instance._contacts_map_wait_id = None
-    instance._contacts_map_wait_finished = False
-    instance._initializing = True
-    instance._running_release = "0.6.0-6"
-    instance._running_build_sha = None
-    instance._running_build_id = "0.6.0-6"
-    instance._release_missing_checks = 0
-    instance._restart_after_upgrade = False
-    instance.phone_audio = SimpleNamespace(reconcile=lambda **_kwargs: False)
-    return instance
-
-
-def test_start_publishes_dbus_before_scheduling_bluetooth(monkeypatch):
-    instance = _bare_daemon()
+def test_start_publishes_dbus_before_scheduling_bluetooth(make_daemon, monkeypatch):
+    instance = make_daemon()
     order = []
     scheduled = []
     periodic = []
+    instance.recovery.adapter.reload_journal = lambda: order.append("recovery")
 
     monkeypatch.setattr(daemon_mod.config, "ensure_dirs", lambda: order.append("dirs"))
     monkeypatch.setattr(
@@ -121,19 +57,19 @@ def test_start_publishes_dbus_before_scheduling_bluetooth(monkeypatch):
 
     instance.start()
 
-    assert order == ["dirs", "claim", "service", "storage"]
+    assert order == ["dirs", "claim", "recovery", "service", "storage"]
     assert len(scheduled) == 1
     assert (daemon_mod.STORAGE_RETRY_SEC, instance._retry_storage) in periodic
     assert instance._initializing is True
 
     scheduled[0]()
 
-    assert order == ["dirs", "claim", "service", "storage", "bluetooth"]
+    assert order == ["dirs", "claim", "recovery", "service", "storage", "bluetooth"]
     assert instance._initializing is False
 
 
-def test_stop_does_not_ask_obexd_to_remove_sessions(monkeypatch):
-    instance = _bare_daemon()
+def test_stop_does_not_ask_obexd_to_remove_sessions(make_daemon, monkeypatch):
+    instance = make_daemon()
     closed = []
     instance.adapter_class = SimpleNamespace(stop=lambda: None)
     instance.bearers = SimpleNamespace(stop=lambda: None)
@@ -155,24 +91,62 @@ def test_stop_does_not_ask_obexd_to_remove_sessions(monkeypatch):
     )
     monkeypatch.setattr(daemon_mod.main_loop, "quit", lambda: None)
     removed = []
+    contact_timers_stopped = []
     instance._storage_retry_id = 99
-    instance._contacts_map_wait_id = 98
+    monkeypatch.setattr(
+        instance.contact_sync, "stop", lambda: contact_timers_stopped.append(True),
+    )
     monkeypatch.setattr(daemon_mod.GLib, "source_remove", removed.append)
 
     instance.stop()
 
     assert closed == [{"remove_remote": False}]
-    assert removed == [98, 99]
+    assert removed == [99]
+    assert contact_timers_stopped == [True]
     assert instance._storage_retry_id is None
-    assert instance._contacts_map_wait_id is None
     assert owner_watches_removed == [True]
     assert instance._bluez_owner_match is None
     instance._on_bluez_owner_changed('org.bluez', ':1.1', ':1.2')
     assert instance._bluez_owner_generation == 0
 
 
-def test_storage_poll_survives_a_transient_scheduling_failure():
-    instance = _bare_daemon()
+@pytest.mark.parametrize("owns_name", [False, True])
+def test_failed_startup_only_restores_bluetooth_for_bus_owner(make_daemon, monkeypatch, owns_name):
+    instance = make_daemon()
+    calls = []
+    instance.recovery.adapter.reload_journal = lambda: calls.append("reload")
+    instance.recovery.adapter.finish_shutdown = lambda: calls.append("restore")
+    for name in ("adapter_class", "bearers", "profiles", "solicitation"):
+        setattr(instance, name, SimpleNamespace(stop=lambda: None))
+    instance.events.stop = lambda: None
+    instance.listener = None
+    instance.ancs = None
+    instance._sleep_match = None
+    instance.storage.close = lambda: None
+    instance.sessions = SimpleNamespace(
+        close_all=lambda **_kwargs: calls.append("close-local-sessions"),
+        stop_monitoring=lambda: None,
+    )
+    instance.obex_worker = SimpleNamespace(
+        submit=instance.obex_worker.submit,
+        shutdown=lambda **kwargs: kwargs["cleanup"](),
+    )
+    monkeypatch.setattr(daemon_mod.config, "ensure_dirs", lambda: None)
+    monkeypatch.setattr(daemon_mod.main_loop, "quit", lambda: None)
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("startup failed")
+
+    monkeypatch.setattr(daemon_mod, "claim_bus_name", (lambda: object()) if owns_name else fail)
+    monkeypatch.setattr(daemon_mod, "MessagesService", fail)
+    with pytest.raises(RuntimeError, match="startup failed"):
+        instance.run()
+    assert calls == (["reload", "restore", "close-local-sessions"] if owns_name
+                     else ["close-local-sessions"])
+
+
+def test_storage_poll_survives_a_transient_scheduling_failure(make_daemon):
+    instance = make_daemon()
     attempts = []
 
     def retry():
@@ -186,8 +160,8 @@ def test_storage_poll_survives_a_transient_scheduling_failure():
     assert len(attempts) == 2
 
 
-def test_startup_queues_storage_preparation_after_publishing_service():
-    instance = _bare_daemon()
+def test_startup_queues_storage_preparation_after_publishing_service(make_daemon):
+    instance = make_daemon()
     calls = []
     instance._dbus_service = SimpleNamespace(
         retry_storage_unlock=lambda **kwargs: calls.append(kwargs),
@@ -196,20 +170,16 @@ def test_startup_queues_storage_preparation_after_publishing_service():
     assert calls == [{"initialize": True}]
 
 
-def test_successful_empty_phonebook_verifies_contact_permission():
-    instance = _bare_daemon()
-    instance.contacts = SimpleNamespace(refresh=lambda: 0)
-    verified = []
-    instance._mark_setup_task = verified.append
+def test_completed_phonebook_pull_verifies_contact_permission(make_daemon):
+    instance = make_daemon()
 
-    count = instance._contacts_pulled(0)
+    instance._contacts_refreshed()
 
-    assert count == 0
-    assert verified == [daemon_mod.CONTACTS]
+    assert daemon_mod.CONTACTS in instance.setup_verification.verified
 
 
-def test_status_exposes_split_ancs_and_last_le_error(monkeypatch):
-    instance = _bare_daemon()
+def test_status_exposes_split_ancs_and_last_le_error(make_daemon, monkeypatch):
+    instance = make_daemon()
     instance.contacts = SimpleNamespace(count=lambda: 0)
     instance.ancs = SimpleNamespace(
         connected=False, subscribed=True, authorized=False,
@@ -238,8 +208,8 @@ def test_status_exposes_split_ancs_and_last_le_error(monkeypatch):
     assert status["_build_id"] == "0.6.0-6"
 
 
-def test_failed_hardware_initialization_leaves_control_service_alive(monkeypatch):
-    instance = _bare_daemon()
+def test_failed_hardware_initialization_leaves_control_service_alive(make_daemon, monkeypatch):
+    instance = make_daemon()
     scheduled = []
 
     def fail():
@@ -258,12 +228,13 @@ def test_failed_hardware_initialization_leaves_control_service_alive(monkeypatch
     assert scheduled[0][0] == 5
 
 
-def test_missing_bond_never_prepares_or_connects_bluetooth(monkeypatch):
-    instance = _bare_daemon()
+def test_missing_bond_never_prepares_or_connects_bluetooth(make_daemon, monkeypatch):
+    instance = make_daemon()
+    instance.recovery = _idle_recovery()
     prepared = []
     audio = []
     instance.phone_audio = SimpleNamespace(reconcile=lambda **kwargs: audio.append(kwargs))
-    monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args: False)
+    monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(
         daemon_mod.bluez_setup,
         "prepare_classic",
@@ -277,11 +248,12 @@ def test_missing_bond_never_prepares_or_connects_bluetooth(monkeypatch):
     assert audio == []
 
 
-def test_bonded_start_reconciles_phone_audio_before_adapter_class(monkeypatch):
-    instance = _bare_daemon()
+def test_bonded_start_reconciles_phone_audio_before_adapter_class(make_daemon, monkeypatch):
+    instance = make_daemon()
+    instance.recovery = _idle_recovery()
     order = []
     monkeypatch.setattr(daemon_mod.config, "KEEP_PHONE_AUDIO_ON_PHONE", True)
-    monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args: True)
+    monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args, **_kwargs: True)
     instance.phone_audio = SimpleNamespace(
         reconcile=lambda **kwargs: order.append(("audio", kwargs["enabled"]))
     )
@@ -295,8 +267,8 @@ def test_bonded_start_reconciles_phone_audio_before_adapter_class(monkeypatch):
     assert order == [("audio", True), "class"]
 
 
-def test_transient_missing_release_marker_does_not_stop_daemon(monkeypatch):
-    instance = _bare_daemon()
+def test_transient_missing_release_marker_does_not_stop_daemon(make_daemon, monkeypatch):
+    instance = make_daemon()
     releases = iter([None, "0.6.0-6"])
     stopped = []
     monkeypatch.setattr(daemon_mod, "installed_release", lambda: next(releases))
@@ -308,8 +280,8 @@ def test_transient_missing_release_marker_does_not_stop_daemon(monkeypatch):
     assert stopped == []
 
 
-def test_persistent_missing_release_marker_stops_cleanly(monkeypatch):
-    instance = _bare_daemon()
+def test_persistent_missing_release_marker_stops_cleanly(make_daemon, monkeypatch):
+    instance = make_daemon()
     stopped = []
     monkeypatch.setattr(daemon_mod, "installed_release", lambda: None)
     monkeypatch.setattr(daemon_mod.main_loop, "quit", lambda: stopped.append(True))
@@ -321,8 +293,8 @@ def test_persistent_missing_release_marker_stops_cleanly(monkeypatch):
     assert stopped == [True]
 
 
-def test_changed_build_sha_restarts_the_packaged_daemon(monkeypatch):
-    instance = _bare_daemon()
+def test_changed_build_sha_restarts_the_packaged_daemon(make_daemon, monkeypatch):
+    instance = make_daemon()
     instance._running_build_sha = "a" * 64
     instance._running_build_id = "0.6.0-6+sha." + "a" * 12
     stopped = []
@@ -335,8 +307,8 @@ def test_changed_build_sha_restarts_the_packaged_daemon(monkeypatch):
     assert stopped == [True]
 
 
-def test_clearing_saved_target_stops_daemon_without_restart(monkeypatch):
-    instance = _bare_daemon()
+def test_clearing_saved_target_stops_daemon_without_restart(make_daemon, monkeypatch):
+    instance = make_daemon()
     stopped = []
     monkeypatch.setattr(daemon_mod.config, "current_target", lambda: ("", "hci0"))
     monkeypatch.setattr(daemon_mod.config, "IPHONE_MAC", "02:00:00:00:00:01")
@@ -348,8 +320,8 @@ def test_clearing_saved_target_stops_daemon_without_restart(monkeypatch):
     assert stopped == [True]
 
 
-def test_removing_bond_stops_active_daemon_without_restart(monkeypatch):
-    instance = _bare_daemon()
+def test_removing_bond_stops_active_daemon_without_restart(make_daemon, monkeypatch):
+    instance = make_daemon()
     stopped = []
     monkeypatch.setattr(
         daemon_mod.config,
@@ -358,7 +330,7 @@ def test_removing_bond_stops_active_daemon_without_restart(monkeypatch):
     )
     monkeypatch.setattr(daemon_mod.config, "IPHONE_MAC", "02:00:00:00:00:01")
     monkeypatch.setattr(daemon_mod.config, "ADAPTER", "hci0")
-    monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args: False)
+    monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(daemon_mod.main_loop, "quit", lambda: stopped.append(True))
 
     assert instance._check_target_config() is False
@@ -366,8 +338,8 @@ def test_removing_bond_stops_active_daemon_without_restart(monkeypatch):
     assert stopped == [True]
 
 
-def test_transient_bond_inspection_failure_keeps_daemon_running(monkeypatch):
-    instance = _bare_daemon()
+def test_transient_bond_inspection_failure_keeps_daemon_running(make_daemon, monkeypatch):
+    instance = make_daemon()
     stopped = []
     monkeypatch.setattr(
         daemon_mod.config,
@@ -376,15 +348,15 @@ def test_transient_bond_inspection_failure_keeps_daemon_running(monkeypatch):
     )
     monkeypatch.setattr(daemon_mod.config, "IPHONE_MAC", "02:00:00:00:00:01")
     monkeypatch.setattr(daemon_mod.config, "ADAPTER", "hci0")
-    monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args: None)
+    monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(daemon_mod.main_loop, "quit", lambda: stopped.append(True))
 
     assert instance._check_target_config() is True
     assert stopped == []
 
 
-def test_changing_saved_target_requests_restart(monkeypatch):
-    instance = _bare_daemon()
+def test_changing_saved_target_requests_restart(make_daemon, monkeypatch):
+    instance = make_daemon()
     stopped = []
     monkeypatch.setattr(
         daemon_mod.config,

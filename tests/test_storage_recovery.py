@@ -9,12 +9,14 @@ import pytest
 from gi.repository import GLib
 
 from blueferry import config
+from blueferry import contacts as contacts_mod
 from blueferry import daemon as daemon_mod
 from blueferry import history as history_mod
 from blueferry import storage_preparation as preparation_mod
 from blueferry.ancs.constants import MESSAGES_APP_ID
 from blueferry.backend_operations import BackendDependencies, BackendOperations
 from blueferry.contact_repository import ContactRepository
+from blueferry.contact_sync import CONTACTS_REFRESH_SEC
 from blueferry.contacts import ContactsResolver
 from blueferry.events import SmsEvent
 from blueferry.history import append_event, read_events
@@ -41,6 +43,9 @@ class _Queue:
     def submit(self, operation, **handlers):
         self.jobs.append((operation, handlers))
 
+    def shutdown(self, **_kwargs):
+        self.jobs.clear()
+
     def finish(self):
         operation, handlers = self.jobs.pop(0)
         try:
@@ -52,39 +57,27 @@ class _Queue:
 
 
 @pytest.fixture
-def recovery(tmp_path, monkeypatch):
-    monkeypatch.setattr(config, "STATE_DIR", tmp_path)
-    monkeypatch.setattr(config, "EVENTS_DB", tmp_path / "events.sqlite")
-    monkeypatch.setattr(config, "CONTACTS_DB", tmp_path / "contacts.sqlite")
+def recovery(make_daemon, monkeypatch):
     monkeypatch.setattr(config, "HISTORY_RETENTION_DAYS", 30)
-    monkeypatch.setattr(GLib, "timeout_add_seconds", lambda *_args: 1)
+    scheduled = []
+    monkeypatch.setattr(
+        GLib, "timeout_add_seconds", lambda delay, _callback: scheduled.append(delay) or 1,
+    )
     monkeypatch.setattr(GLib, "source_remove", lambda _source: True)
     wallet = _Wallet()
-    storage = StorageSecurity(
-        settings=SettingsStore(tmp_path / "settings.json"), key_provider=wallet,
+    monkeypatch.setattr(daemon_mod, "ObexWorker", _Queue)
+    monkeypatch.setattr(
+        daemon_mod, "StorageSecurity",
+        lambda **kwargs: StorageSecurity(key_provider=wallet, **kwargs),
     )
-    daemon = object.__new__(daemon_mod.Daemon)
-    daemon.storage = storage
-    daemon.contacts = ContactsResolver(storage=storage)
-    daemon.starred_threads = SimpleNamespace(migrate=lambda: None)
-    daemon.confirmed_groups = SimpleNamespace(migrate=lambda: None)
+    daemon = make_daemon()
+    daemon.sessions.pbap = object()  # PBAP is live; MAP is not.
+    monkeypatch.setattr(daemon.sessions, "report_error", lambda _error: None)
+    storage = daemon.storage
     seeded = []
     daemon.events = SimpleNamespace(seed_historical_ancs=seeded.extend)
-    daemon._mark_setup_task = lambda _task: None
     published = []
-    daemon._emit_status = lambda: published.append(storage.status)
-    daemon._dbus_service = None
-    daemon._contacts_refresh_id = None
-    daemon._contacts_refresh_pending = False
-    daemon._contacts_initial_sync_done = False
-    daemon._contacts_storage_generation = 0
-    daemon._contacts_sync_waiters = []
-    daemon._contacts_refresh_deferred = False
-    daemon._contacts_map_wait_id = None
-    daemon._contacts_map_wait_finished = False
-    daemon.listener = None
-    daemon.sessions = SimpleNamespace(pbap=object(), map=None, report_error=lambda _error: None)
-    daemon.obex_worker = _Queue()
+    monkeypatch.setattr(daemon, "_emit_status", lambda: published.append(storage.status))
     operations = BackendOperations(daemon.sessions, BackendDependencies(
         storage=storage, contacts=daemon.contacts,
         prepare_storage=preparation_mod.prepare_storage,
@@ -99,11 +92,11 @@ def recovery(tmp_path, monkeypatch):
         method(queue.submit, outcomes.append, lambda error: pytest.fail(str(error)))
         queue.finish()
 
-    yield SimpleNamespace(
+    return SimpleNamespace(
         storage=storage, wallet=wallet, daemon=daemon, operations=operations,
         queue=queue, outcomes=outcomes, published=published, seeded=seeded, unlock=unlock,
+        scheduled=scheduled,
     )
-    storage.close()
 
 
 def test_late_keyring_restores_contacts_history_and_message_retention(tmp_path, monkeypatch):
@@ -303,13 +296,13 @@ def test_keyring_recovery_resumes_initial_phonebook_sync(recovery, monkeypatch, 
     r.daemon.contacts.refresh()
     r.daemon._post_available_sessions_setup()
     assert not r.daemon.obex_worker.jobs  # Defer pulls while persistence is unavailable.
-    assert r.daemon._contacts_refresh_id is not None
+    assert CONTACTS_REFRESH_SEC in r.scheduled  # The daily refresh is armed regardless.
 
     def pull(_sessions, *, storage):
         assert storage.status.can_write
         return ContactRepository(storage).replace([("Alice", ["15551111111"], [])])
 
-    monkeypatch.setattr(daemon_mod, "pull_phonebook", pull)
+    monkeypatch.setattr(contacts_mod, "pull_phonebook", pull)
     r.wallet.locked = False
     r.unlock()
     if cached:
@@ -336,7 +329,7 @@ def test_policy_change_resyncs_an_empty_cache_despite_an_older_pull(
     def pull(_sessions, *, storage):
         return ContactRepository(storage).replace(records)
 
-    monkeypatch.setattr(daemon_mod, 'pull_phonebook', pull)
+    monkeypatch.setattr(contacts_mod, 'pull_phonebook', pull)
     r.wallet.locked = False
     r.unlock()
     if previous_pull == 'complete':
@@ -396,9 +389,9 @@ def test_contact_queue_failure_does_not_hide_storage_recovery(recovery, monkeypa
     r.unlock()
     assert r.outcomes[-1]["storage_state"] == "ready"
     assert r.published[-1].state == "ready"
-    assert not r.daemon._contacts_refresh_pending
+    assert not r.daemon.contact_sync.pending
     monkeypatch.setattr(r.daemon.obex_worker, "submit", submit)
-    r.daemon._refresh_contacts()
+    r.daemon.contact_sync.refresh()
     assert len(r.daemon.obex_worker.jobs) == 1
 
 

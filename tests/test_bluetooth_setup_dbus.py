@@ -130,15 +130,14 @@ def test_retirement_cancels_real_pending_reply_dispatch(advertising_manager, mon
 
 @pytest.mark.parametrize('restoring_power', [False, True])
 def test_bluez_owner_loss_recreates_advert_only_after_power_restoration(
-    advertising_manager, monkeypatch, restoring_power,
+    advertising_manager, make_daemon, monkeypatch, restoring_power,
 ):
     manager = advertising_manager
     monkeypatch.setattr(daemon_mod.config, 'ANCS_ENABLED', False)
     monkeypatch.setattr(daemon_mod, 'get_system_bus', bluez_setup.get_system_bus)
     reconnected, invalidated, observed = [], [], []
-    value = daemon_mod.Daemon.__new__(daemon_mod.Daemon)
-    value._bluez_owner_match = None
-    value._bluez_owner_generation = 0
+    value = make_daemon()
+    # Recovery may only resume supervision after Bluetooth initialization.
     value._bluetooth_initialized = True
     value.recovery = SimpleNamespace(active=False, invalidate=lambda: invalidated.append(True))
     value.ancs = (

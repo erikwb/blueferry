@@ -270,6 +270,7 @@ class StorageSecurity:
         self._request_lock = RLock()
         self._preparation_waiters: list[Callable[[StorageStatus], None]] = []
         self._failure_generation = 0
+        self._revision = 0
         if self._policy == NO_STORAGE:
             self._state = "disabled"
             self._detail = "Local data is not retained"
@@ -285,6 +286,16 @@ class StorageSecurity:
     @property
     def status(self) -> StorageStatus:
         return StorageStatus(self._policy, self._state, self._detail)
+
+    @property
+    def revision(self) -> int:
+        """Changes whenever the policy or key changes.
+
+        A background writer holding a ``snapshot()`` compares this before and
+        after its work to detect output sealed under a policy or key that is
+        no longer current.
+        """
+        return self._revision
 
     @property
     def settings_path(self) -> Path:
@@ -501,8 +512,10 @@ class StorageSecurity:
             on_error(error)
 
     def _accept_key(self, key: bytes) -> None:
-        self._forget_key()
-        self._key = bytearray(key)
+        if self._key is None or bytes(self._key) != key:
+            self._forget_key()
+            self._key = bytearray(key)
+            self._revision += 1
         self._state = "ready"
         self._detail = "Local data is encrypted with the desktop keyring"
 
@@ -532,6 +545,8 @@ class StorageSecurity:
         previous = self._policy
         self._settings.update(local_data=selected)
         self._policy = selected
+        if previous != selected:
+            self._revision += 1
         if selected == NO_STORAGE:
             self._forget_key()
             self._state = "disabled"
@@ -581,6 +596,7 @@ class StorageSecurity:
         if self._key is not None:
             for index in range(len(self._key)):
                 self._key[index] = 0
+            self._revision += 1
         self._key = None
 
     def encrypt(self, plaintext: str, *, purpose: str) -> str:

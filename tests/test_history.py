@@ -221,3 +221,85 @@ def test_ancs_history_retains_only_minimal_messages_correlation_data(
     database_bytes = path.read_bytes()
     assert b"Secret system body" not in database_bytes
     assert b"/private/device/path" not in database_bytes
+
+
+def _count_decryptions(monkeypatch) -> list[str]:
+    decoded: list[str] = []
+    original = history_module._deserialize
+
+    def counting(payload, storage):
+        decoded.append(payload)
+        return original(payload, storage)
+
+    monkeypatch.setattr(history_module, "_deserialize", counting)
+    return decoded
+
+
+def test_mark_read_decrypts_only_rows_appended_since_the_last_lookup(
+    tmp_path, monkeypatch,
+) -> None:
+    path = tmp_path / "events.sqlite"
+    for index in range(20):
+        append_event({"kind": "sms_received", "handle": f"old-{index}"}, path=path)
+    assert mark_event_handles_read(["old-3"], path=path) == 1
+    decoded = _count_decryptions(monkeypatch)
+
+    append_event({"kind": "sms_received", "handle": "new"}, path=path)
+    assert mark_event_handles_read(["new"], path=path) == 1
+    # The appended row, then the matched row before updating it.
+    assert len(decoded) == 2
+    assert mark_event_handles_read(["old-7"], path=path) == 1
+    assert len(decoded) == 3
+
+
+def test_mark_read_index_survives_deletion_and_a_replaced_database(tmp_path) -> None:
+    path = tmp_path / "events.sqlite"
+    append_event({"kind": "sms_received", "handle": "gone"}, path=path)
+    append_event({"kind": "sms_received", "handle": "kept"}, path=path)
+    assert mark_event_handles_read(["kept"], path=path) == 1
+    prune_events(path=path, max_events=1)
+    assert mark_event_handles_read(["gone"], path=path) == 0
+
+    # A recreated file restarts row ids, possibly on a reused inode. Stale
+    # ids must not hide its rows.
+    path.unlink()
+    for handle in ("a", "b", "c"):
+        append_event({"kind": "sms_received", "handle": handle}, path=path)
+    assert mark_event_handles_read(["b"], path=path) == 1
+    assert [event.get("is_read") for event in read_events(path=path)] == [None, True, None]
+
+
+def test_prune_can_skip_the_age_sweep_but_keeps_hard_ceilings(
+    tmp_path, monkeypatch,
+) -> None:
+    path = tmp_path / "events.sqlite"
+    old = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
+    for index in range(4):
+        append_event({"kind": "sms_received", "body": str(index), "seen_at": old}, path=path)
+    decoded = _count_decryptions(monkeypatch)
+
+    assert prune_events(path=path, max_events=3, expire_by_age=False) == 1
+    assert decoded == []
+    assert [event["body"] for event in read_events(path=path)] == ["1", "2", "3"]
+    assert prune_events(path=path, retention_days=30) == 3
+
+
+def test_sqlite_sink_runs_the_full_age_sweep_at_most_hourly(tmp_path, monkeypatch) -> None:
+    from blueferry.sinks import sqlite as sink_module
+
+    now = [1000.0]
+    sweeps: list[bool] = []
+    sink = sink_module.SqliteSink(path=tmp_path / "events.sqlite", clock=lambda: now[0])
+    monkeypatch.setattr(
+        sink_module, "prune_events",
+        lambda **kwargs: sweeps.append(kwargs["expire_by_age"]) or 0,
+    )
+
+    def append(count: int) -> None:
+        for _ in range(count):
+            sink._append({"kind": "sms_received", "body": "x"})
+
+    append(20)
+    now[0] += sink_module.AGE_SWEEP_INTERVAL_SEC
+    append(20)
+    assert sweeps == [False, False, True, False]

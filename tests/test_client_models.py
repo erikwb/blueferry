@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from blueferry.client import BackendClient, BackendError
+from blueferry.client import BackendClient, BackendError, CompatibilityCache
 from blueferry.limits import MAX_CONTACT_ADDRESSES_PER_CARD
 from blueferry.models import BackendStatus, EventRecord, Thread
 from blueferry.protocol import MESSAGES_API_VERSION
@@ -127,6 +127,39 @@ def test_compatibility_is_rechecked_when_the_backend_is_replaced():
         client.send_to_thread("address:phone:15551111111", "draft")
     assert calls == []
     assert client.status(check_compatibility=False).daemon is True
+
+
+def test_verified_daemon_owner_is_not_rechecked_until_it_is_replaced():
+    status_reads = []
+    sends = []
+
+    class Messages(_Messages):
+        def __init__(self, owner, status):
+            self.bus_name = owner
+            self._status = status
+
+        def GetStatus(self, **kwargs):
+            status_reads.append(self.bus_name)
+            return json.dumps(self._status)
+
+        def SendToThreadChecked(self, *args, **kwargs):
+            sends.append(self.bus_name)
+            return "/transfer/test"
+
+    current = Messages(":1.5", {"api_version": MESSAGES_API_VERSION})
+    shared = CompatibilityCache()
+    client = BackendClient(interface_factory=lambda _: current, compatibility=shared)
+    client.threads()
+    client.mark_thread_read("address:email:test@example.com")
+    # Another client on the same bus reuses the verification.
+    BackendClient(interface_factory=lambda _: current, compatibility=shared).threads()
+    assert status_reads == [":1.5"]
+
+    current = Messages(":1.9", {"daemon": True})
+    with pytest.raises(BackendError, match="incompatible"):
+        client.send_to_thread("address:phone:15551111111", "draft")
+    assert status_reads == [":1.5", ":1.9"]
+    assert sends == []
 
 
 def test_backend_client_returns_shared_models(monkeypatch):

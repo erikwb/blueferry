@@ -373,6 +373,9 @@ after power-off, restoration ends; a later manual power-off is left alone.
 Once power-off has been requested, a failed journal update does not prevent
 power-on. Failed journal cleanup is retried without pausing messaging; further
 automatic power cycles wait until cleanup succeeds.
+Recovery state is refreshed after acquiring the backend's D-Bus name, and a
+second daemon that cannot acquire it does not attempt restoration during
+shutdown.
 Restoration stops if the controller is unplugged, bluetoothd or the system bus
 restarts, the configured phone changes, or rfkill blocks it.
 D-Bus cannot make checking an adapter and changing its power atomic;

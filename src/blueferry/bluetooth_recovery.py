@@ -67,10 +67,17 @@ class BluezRecoveryAdapter:
         # a signal while a synchronous Set is still waiting for its reply.
         # Never hold this lock across D-Bus calls.
         self._restore_lock = threading.RLock()
-        raw = self._settings.read().get(BLUETOOTH_RESTORE_KEY)
-        self._restore = self._load_restore(raw)
-        self._stale_record = raw is not None and self._restore is None
+        self._restore: _PowerRestore | None = None
+        self._stale_record = False
         self._cleanup_error_logged = False
+        self.reload_journal()
+
+    def reload_journal(self) -> None:
+        """Refresh startup state after claiming the daemon's exclusive bus name."""
+        with self._restore_lock:
+            raw = self._settings.read().get(BLUETOOTH_RESTORE_KEY)
+            self._restore = self._load_restore(raw)
+            self._stale_record = raw is not None and self._restore is None
 
     @property
     def restore_pending(self) -> bool:

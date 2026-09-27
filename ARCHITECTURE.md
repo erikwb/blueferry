@@ -1,8 +1,10 @@
 # Architecture
 
-BlueFerry is a per-user Bluetooth bridge with multiple presentation
-clients. The backend is the only process that owns long-lived iPhone profile
-sessions or persistent message state.
+BlueFerry is a per-user Bluetooth bridge from a paired iPhone to the Linux
+desktop, with several interchangeable presentation clients. One unprivileged
+backend daemon owns every long-lived iPhone profile session (MAP, PBAP, ANCS)
+and all persistent message state; clients talk to it over a private session
+D-Bus API.
 
 ```text
 GTK client ───────┐
@@ -13,397 +15,441 @@ Quickshell client ┘                         │
                                            └── private state and notifications
 ```
 
+Empirical iPhone and BlueZ behavior is recorded in `PROTOCOL.md`; test safety
+rules are in `TESTING.md`.
+
+## Module map
+
+All paths are relative to `src/blueferry/` unless noted.
+
+### Backend core
+
+| Module | Responsibility |
+| --- | --- |
+| `daemon.py` | Orchestrates lifecycle: publishes D-Bus, then starts Bluetooth, supervisors, state, and sinks; builds `BackendDependencies`. |
+| `backend_operations.py` | Toolkit- and transport-neutral application operations: validation, thread routing, and policy. |
+| `dbus_service.py` | Session D-Bus adapter (`Messages1`/`Events1`) that maps operations to wire types; claims the bus name. |
+| `dbus_security.py` | Caller UID validation and per-connection/daemon-wide rate limits. |
+| `protocol.py` | Stable D-Bus identifiers and the API-generation compatibility check. |
+| `event_dispatcher.py` | Builds messages from MAP/ANCS events and fans them out to persistence, desktop, and D-Bus sinks. |
+| `events.py` | Normalized MAP event dataclasses (`SmsEvent`) and address/timestamp normalization. |
+| `threads.py` | Backend-owned conversation projection, thread keys, and reply-routing metadata. |
+| `grouping.py` | Correlates MAP iMessages with ANCS Messages notification metadata to recover group membership. |
+| `named_groups.py` | Named-group identity keys and saved reply routes. |
+| `confirmed_groups.py` | Persistent confirmed group rosters in the owner-only settings document. |
+| `starred_threads.py` | Persistent starred-conversation keys in the settings document. |
+| `notification_policy.py` | Persistent desktop notification preferences. |
+| `private_preferences.py` | Encrypts a whole preference collection under the storage policy. |
+| `settings_store.py` | Small atomic store shared by daemon-owned preferences. |
+| `read_receipts.py` | Delays MAP read acknowledgements so ANCS can still deliver group metadata. |
+| `recipients.py` | Recipient validation, participant-line parsing, and group confirmation tokens (shared by backend and Python clients). |
+| `connectivity.py` | MAP/PBAP connectivity state machine and retry policy, independent of GLib and BlueZ. |
+| `profile_supervisor.py` | Owns MAP/PBAP open, close, retry, loss, and resume transitions. |
+| `background_worker.py` | Bounded local jobs completed on the owning GLib loop. |
+| `bus.py` | Lazy D-Bus connections and GLib integration, including the OBEX worker's private bus. |
+| `limits.py` | Central safety and resource limits. |
+| `errors.py` | Application error hierarchy shared across transport and presentation. |
+| `commands.py` | The only path for running external commands (argv, absolute paths, normalized failures). |
+| `config.py` | Environment-backed configuration (`local.env`) and private runtime paths. |
+| `private_files.py` | Race-resistant owner-only reads and atomic writes for small files. |
+| `build_info.py` | Package release + source-SHA build identity. |
+| `wireplumber_policy.py` | Manages one WirePlumber fragment that keeps iPhone audio on the phone. |
+
+### Bluetooth transports and supervision
+
+| Module | Responsibility |
+| --- | --- |
+| `obex/sessions.py` | Long-lived MAP and PBAP OBEX sessions, reopened only on observed failure. |
+| `obex/worker.py` | Single worker serializing all blocking OBEX operations. |
+| `obex/transfer.py` | Shared `Transfer1` completion handling. |
+| `obex/map_events.py` | MAP MNS event subscription and asynchronous bMessage retrieval. |
+| `obex/map_query.py` | Direct MAP folder listing and message fetch. |
+| `obex/map_send.py` | Builds and pushes outgoing bMessages (direct and group). |
+| `obex/map_read.py` | Best-effort MAP read-state write-back. |
+| `obex/bmessage.py` | Minimal bMessage parser. |
+| `contacts.py` | PBAP phonebook pull, vCard parsing, and address-to-name resolution. |
+| `contact_sync.py` | Schedules PBAP pulls (MAP grace period, daily refresh, joined manual requests) and discards pulls that span a storage key or policy change. |
+| `contact_repository.py` | Contact-cache SQLite schema, replacement transaction, encryption, legacy cleanup. |
+| `vcard.py` | Linear, resource-bounded vCard block extraction. |
+| `ancs/client.py` | ANCS GATT client: subscribes to characteristics, requests attributes, emits `AncsEvent`s. |
+| `ancs/parsers.py` | Pure ANCS wire-format parsers and command builders. |
+| `ancs/constants.py` | ANCS spec constants. |
+| `ancs/events.py` | `AncsEvent`, the normalized per-app notification. |
+| `ancs/sequencer.py` | Bounded, duplicate-aware backlog of serialized ANCS requests. |
+| `bearer_supervisor.py` | Connects BR/EDR first, then keeps LE connected alongside it. |
+| `solicitation_supervisor.py` | Keeps the ANCS solicitation advertisement on air until ANCS is proven healthy. |
+| `adapter_class_supervisor.py` | Detects Class-of-Device drift and repairs it through the constrained system helper. |
+| `bluetooth_recovery.py` | Last-resort, rate-limited adapter power cycle for persistent ANCS outages. |
+| `bluez_setup.py` | Adapter preparation: Class-of-Device and the ANCS solicitation advertisement. |
+| `bluetooth_capabilities.py` | Controller capability probing and packaged BlueZ activation. |
+| `bluetooth_devices.py` | Typed BlueZ device projection for setup and clients. |
+
+### Sinks
+
+| Module | Responsibility |
+| --- | --- |
+| `sinks/__init__.py` | Sink protocol: `handle(event)` plus optional `handle_ancs`. |
+| `sinks/sqlite.py` | Persists events to the private history store. |
+| `sinks/libnotify.py` | Desktop notifications via `org.freedesktop.Notifications`, including open and dismiss actions. |
+
+### Storage and privacy
+
+| Module | Responsibility |
+| --- | --- |
+| `history.py` | Bounded, encrypted SQLite event history with a monotonic revision. |
+| `storage_security.py` | Retention policy and Secret Service-backed AES-256-GCM encryption. |
+| `storage_preparation.py` | Worker-side storage validation before the daemon commits it. |
+| `text_safety.py` | Escaping for remote text at terminal presentation boundaries. |
+| `message_links.py` | Escaped markup with safe clickable web URLs, shared by GTK and QML. |
+
+### Pairing and setup
+
+| Module | Responsibility |
+| --- | --- |
+| `pair_setup.py` | Low-level discovery, pairing, and first-run configuration. |
+| `setup_client.py` | Typed setup API used by GTK, Qt, and the CLI wizard; runs the isolated pairing helper. |
+| `pairing_policy.py` | Resolves controller capability and user overrides into one of two pairing recipes. |
+| `pairing_agent.py` | Short-lived BlueZ pairing agent for interactive setup. |
+| `pairing_types.py` | Typed state passed between pairing stages. |
+| `pairing_cli.py` | Interactive terminal pairing wizard. |
+| `pairing_diagnostics.py` | Bounded, privacy-preserving pairing diagnostics. |
+| `quirks_report.py` | Scrubbed pairing/adapter reports for issue filing. |
+| `setup_verification.py` | Non-sensitive evidence that iPhone setup capabilities work. |
+| `onboarding.py` | Toolkit-neutral first-run stage derivation. |
+
+### Shared client layer
+
+| Module | Responsibility |
+| --- | --- |
+| `client.py` | Synchronous, toolkit-neutral daemon client. |
+| `client_wire.py` | Validates and decodes `Messages1` JSON into models for every Python client. |
+| `models.py` | Typed client-side models (`BackendStatus`, `Thread`, …); `Thread` derives unread counts, approval tokens, and roster-warning keys. |
+| `conversation_state.py` | Toolkit-neutral conversation snapshot, contact search, and reply planning. |
+| `backend_lifecycle.py` | Starts the daemon and restarts one that predates installed files. |
+| `client_activation.py` | Picks and activates one desktop client (recency files, notification-open forwarding). |
+| `glib_client_activation.py` | GLib adapter for client activation (GTK and the Quickshell bridge). |
+| `time_display.py` | Human-readable local timestamps for all clients. |
+| `i18n.py` | gettext helpers for Python presentation layers. |
+
+### Clients and entry points
+
+| Module | Responsibility |
+| --- | --- |
+| `cli.py`, `__main__.py` | Typer CLI (`run`, `doctor`, sync, setup, and hidden `pairing-*` JSON helpers). |
+| `cli_messages.py` | CLI message listing, recipient selection, and send. |
+| `cli_common.py` | Small CLI presentation helpers. |
+| `tui.py` | Textual terminal client. |
+| `tui_launcher.py` | Launches the TUI with the package-private Textual bundle when present. |
+| `ui/app.py` | GTK4/libadwaita application entry point. |
+| `ui/window.py` | Main GTK window. |
+| `ui/conversations.py` | GTK conversations page: history, group confirmation, replies. |
+| `ui/status.py` | GTK iPhone page: setup, health, preferences, maintenance. |
+| `ui/status_presenter.py` | Pure presentation rules for the status page. |
+| `ui/client.py` | Asynchronous GTK backend calls and D-Bus invalidations. |
+| `ui/setup_runner.py` | GTK-independent worker for blocking setup operations. |
+| `ui/util.py` | Small UI helpers. |
+| `qt/app.py` | PySide6/Kirigami entry point. |
+| `qt/controller.py` | Asynchronous `BridgeController` exposed to QML. |
+| `qt/tasks.py` | Qt worker primitive. |
+| `qt/activation.py` | Qt adapter for client activation. |
+| `qt/qml/Main.qml` | Kirigami window: navigation and composition. |
+| `qt/qml/ConversationLogic.qml` | Thread lookup, roster-warning dedup, participant parsing (also used by Quickshell). |
+| `qt/qml/PhoneSettingsPage.qml` | Qt setup and preferences page. |
+| `qt/qml/PhoneSettingsDialogs.qml` | Window-owned settings/pairing dialogs that outlive the page. |
+| `qt/qml/OnboardingSummary.qml` | Renders the onboarding stage message. |
+| `qt/qml/GroupConfirmationDialog.qml` | Group recipient confirmation before sending. |
+| `qt/qml/NewMessageDialog.qml` | New message composition. |
+| `qt/qml/ExpandingMessageComposer.qml` | Growing message editor. |
+| `qt/qml/MessageBubble.qml` | Message bubble. |
+| `quickshell_bridge.py` | Persistent stdin/stdout JSON bridge from Quickshell to the session D-Bus API. |
+
+### Quickshell client (`data/quickshell/`)
+
+| File | Responsibility |
+| --- | --- |
+| `shell.qml` | Root: conversations, group recipients, and roster warnings. |
+| `BackendBridge.qml` | Drives `blueferry-quickshell-bridge`; request IDs and latest-only delivery. |
+| `ConversationLogic.qml` | Development wrapper importing the Qt file; packaging installs the Qt file directly. |
+| `OnboardingState.qml` | QML re-implementation of first-run stage derivation (see known duplication). |
+| `SetupController.qml` | Pure setup state; emits requests with monotonic IDs. |
+| `SetupTransport.qml` | Creates one `SetupJob` per request and routes tagged output. |
+| `SetupJob.qml` | One `pairing-*` helper process with a deadline. |
+| `PhoneSettingsPage.qml` | Setup and preferences view. |
+| `Theme.qml` | Reads public Omarchy theme files. |
+| `ThemePalette.qml` | Pure color/geometry tokens with a system-palette fallback. |
+| `Ferry*.qml` | Styled controls (button, check box, combo box, label, text field, composer, section label, info row). |
+| `QuickshellMessageBubble.qml`, `QuickshellThreadPreview.qml` | Message bubble and thread preview. |
+
+`data/blueferry-quickshell` is the launcher script, and
+`data/io.weirdware.BlueFerry.xml` is the canonical D-Bus introspection
+contract.
+
 ## Process boundaries
 
 - `blueferry-backend` owns MAP, PBAP, ANCS, contact resolution, thread
   identity, history retention, notification policy, and the private D-Bus API.
-- GTK, Qt, TUI, and Quickshell are replaceable clients. They receive opaque
-  thread keys and cannot construct different recipients for an existing thread.
-- `pair_setup` is the low-level setup boundary. `setup_client` exposes its
-  typed operations to GTK, Qt, and the interactive CLI wizard. Quickshell uses
-  private, short-lived `pairing-*` JSON helpers only for setup operations that
-  must work before the backend is configured. `pairing_policy` resolves
-  controller capability and user overrides into one concrete recipe. Setup
-  discovers and pairs devices, writes the selected MAC and ANCS policy to the
-  user's configuration, and asks systemd to authorize and run system-level
-  setup operations.
-- `onboarding` derives a toolkit-neutral first-run stage from configuration,
-  controller capabilities, the selected bond, and backend status. Controller
-  support is detected from read-only capabilities instead of vendor names. A
-  raw hardware view remains separate from the saved target's ANCS policy so a
-  compatibility pairing can reach `ready-without-ancs` without making the
-  controller appear permanently incapable of full pairing. GTK, Kirigami,
-  Quickshell, and the CLI share pair/configure/re-pair and verified-readiness
-  semantics.
-- The daemon runs unprivileged and has no sudo command path.
+  It runs unprivileged and has no sudo command path.
+- GTK, Qt, TUI, Quickshell, and the CLI message commands are replaceable
+  clients. They receive opaque thread keys and cannot construct different
+  recipients for an existing thread.
+- Within the backend, `dbus_service` is only a wire adapter over
+  `backend_operations`; `daemon` orchestrates lifecycle, `event_dispatcher`
+  owns fan-out, and `profile_supervisor` owns profile transitions. Its worker,
+  session, and timer protocols make races testable without BlueZ.
+- PBAP transport and parsing (`contacts`) stay separate from persistence
+  (`contact_repository`).
 
-Stable D-Bus identifiers live in `blueferry.protocol`. The service exports
-`Messages1` for commands and snapshots and `Events1` for content-free live
-coordination. A future
-incompatible API must use a new interface suffix rather than silently changing
-existing method contracts. `data/io.weirdware.BlueFerry.xml` is the
-canonical introspection contract, is installed under `dbus-1/interfaces`, and
-is checked against the dbus-python decorators in the service implementation.
+## D-Bus API and compatibility
 
-`GetStatus.api_version` advertises the messaging compatibility generation
-(currently 2 for roster-bound replies), independently of the package release.
-Additive compatible changes keep that generation. All shared-client operations
-check the advertised generation on the same owner-bound proxy they invoke;
-missing, malformed, or different generations prompt users to install the most
-recent version of BlueFerry before reads or mutations. Compatibility is rechecked
-after daemon replacement. Lifecycle recovery reads status without this check so it can
-restart an outdated packaged daemon first, then requires a compatible API.
-Source installs also require compatibility even without package markers.
+- `Messages1` carries commands and unicast snapshots; `Events1` carries
+  content-free live coordination. Identifiers live in `protocol.py`.
+- `data/io.weirdware.BlueFerry.xml` is canonical, installed under
+  `dbus-1/interfaces`, and checked against the service's dbus-python
+  decorators.
+- `GetStatus.api_version` is the messaging compatibility generation
+  (currently 2, roster-bound replies), independent of the package release.
+  Additive compatible changes keep the generation; incompatible changes need a
+  new interface suffix, never a silent contract change.
+- Shared clients check the generation on the same owner-bound proxy they
+  invoke. A verified daemon is remembered by its unique bus name, which a
+  replacement never reuses, so it is checked once rather than per call. Missing, malformed, or
+  different generations prompt the user to update before any read or
+  mutation. Lifecycle recovery alone reads status unchecked so it can restart
+  an outdated daemon first.
+- Payloads cross the bus as JSON and are decoded immediately by `client_wire`
+  into `models`, which retain unknown fields for forward compatibility.
+- **What never crosses the bus:** `HistoryChanged` carries only a daemon-local
+  revision, `StatusChanged` has no arguments, and `OpenMessageRequested`
+  carries only a bounded opaque MAP handle. Message records, sender
+  identities, ANCS fields, contacts, and connectivity details are never
+  broadcast. Expected errors use stable, length-bounded names under
+  `io.weirdware.BlueFerry.Error`; unexpected exceptions and OBEX details stay
+  in the daemon log.
+- Every public method checks the caller's UID against the backend's and
+  applies per-connection plus daemon-wide quotas, with separate limits for
+  sends, contact sync, storage unlock, destructive operations, reads, and
+  status. Reconnecting does not reset daemon-wide limits. Snapshot sizes,
+  query text, and replies are bounded.
+- `ListThreads` fits an 8 MiB budget by keeping the newest contiguous tail of
+  each thread, capped at 500 messages per thread, and includes retained
+  starred threads outside the normal 2,000-event window. `messages_truncated`
+  signals truncation. These limits never delete events or change reply
+  recipients.
 
-`Events1.HistoryChanged` carries only a daemon-local revision and
-`Events1.StatusChanged` has no arguments. `Events1.OpenMessageRequested`
-carries only a bounded, opaque MAP handle after the user invokes a desktop
-message notification; clients locate it in their own private thread snapshot.
-Complete message records, sender identities, ANCS fields, contacts, and
-connectivity details are never broadcast on the session bus. The daemon emits
-invalidations at message, contact-cache, connectivity, ANCS subscription,
-initialization, and storage transitions. Clients verify MAP/PBAP success
-without mistaking Linux-side bond creation for end-to-end success.
+### Group replies and roster tokens
 
-Backend payloads cross D-Bus as JSON to keep the wire contract simple. Both
-Python client implementations decode them immediately into the shared models
-in `blueferry.models`; those records retain unknown fields for forward
-compatibility. Toolkit presentation code either consumes their typed fields or
-explicitly converts them to dictionaries. Quickshell has no generic QML D-Bus
-client, so its persistent stdin bridge converts the same models back to JSON
-while calling the daemon over the session bus. This keeps private request data
-out of process arguments without adding a Plasma-specific dependency.
-The bridge owns all Quickshell messaging, contact, status, and preference
-requests; there is no parallel messaging CLI protocol. Pairing remains a
-separate short-lived helper protocol because it precedes daemon availability
-and must exchange confirmation prompts with the QML client.
-All Python transports share `client_wire` for response-shape validation and
-model conversion; synchronous and toolkit-specific scheduling remain separate.
-Qt message composition and group confirmation live in standalone QML components
-with an explicit bridge dependency; the window handles navigation.
-`PhoneSettingsPage.qml` owns the Qt setup and preferences view. It receives the
-bridge explicitly and emits requests for navigation and confirmation. The
-window retains its page instance when settings closes and owns
-`PhoneSettingsDialogs.qml` separately, so an ongoing pairing prompt can still
-appear while conversations are open. Replacement confirmation retains both
-phone addresses from the original request across setup refreshes.
-Quickshell's `SetupController.qml` owns setup state and emits requests with
-monotonic IDs. `SetupTransport.qml` creates one `SetupJob.qml` per helper and
-returns tagged output only after process exit and both streams finish. The
-controller ignores superseded or cancelled results, invalidates saved-phone
-reads before pairing/unpairing, and binds replacement approval to the original
-phone addresses and adapter. Interactive prompts accept input only for the
-active request. Cancelled scans terminate their helper; all jobs have deadlines.
-Quickshell's `PhoneSettingsPage.qml` receives setup, backend status, busy state,
-and theme explicitly. Shared `Ferry*` controls contain the client styling.
-`Theme.qml` watches public Omarchy theme files; `ThemePalette.qml` derives
-colors and geometry without file or process access. It follows the system
-monospace alias and keeps outgoing bubbles blue independently of shell accent.
-GTK and Qt contact searches use `ConversationState` request sequences, and Qt
-retains that typed state across refreshes and sends. Qt and TUI share the snapshot
-loader; GTK feeds its independent asynchronous read results into the same state.
-Snapshots distinguish an untouched source, a failed read, and a successful empty
-history. Status and history errors clear only when their own read recovers, and a
-failed status read marks the backend unavailable while retaining the last history.
-Storage is shown as unavailable after failed reads, with the last known policy
-retained; before the first successful read, the policy is unknown.
-The shared reply planner validates the roster token retained by a confirmation
-dialog and provides blocked-reply messages. Qt additionally binds its pending
-dialog to the original conversation and draft. Quickshell's transport coalesces
-contact queries and delivers only the latest request's result or failure.
-Quickshell shows group recipients above the conversation and treats Send as
-approval of a reply-ready roster, including a saved named-group members list.
-It sends the displayed roster token so the backend can reject stale routes;
-missing or changed members still require review before replying.
-Saving members replaces the displayed thread before replies are enabled.
-Conversation reads carry request IDs; a successful save invalidates older
-reads and starts a fresh snapshot, so delayed results cannot undo the edit.
+- The backend owns reply routing. Reply addresses always come from the
+  backend projection.
+- Group replies use `SendToThreadChecked`, which binds approval to the exact
+  roster and roster-warning token the client displayed. The backend rejects
+  stale tokens, even if another client already confirmed the new roster.
+  Legacy `SendToThread` still works for direct threads only.
+- Tokens are computed by `recipients.group_confirmation_token` over the exact
+  displayed addresses, formatting included. Only transport destinations are
+  normalized.
+- `models.Thread` derives unread counts, approval tokens, and roster-warning
+  keys from existing backend fields, so they need no new API generation. Qt
+  and the Quickshell bridge serialize them for QML so JavaScript does not
+  recompute them.
+- Group sender labels are display-only and never affect identity or routing.
 
-`Thread` derives unread counts, group approval tokens, and roster-warning keys.
-Both Qt and the Quickshell bridge serialize these fields for QML, so JavaScript
-does not recompute them. The token implementation lives in `recipients` and is
-also used by the backend; it preserves the spelling of displayed addresses.
-These presentation fields are computed by the client from existing backend
-fields and require no new D-Bus API generation.
+## Client architecture
 
-`ConversationLogic.qml` holds Qt/Quickshell thread lookup, warning deduplication,
-and participant parsing helpers. The Quickshell source wrapper imports
-the canonical Qt QML file for development; its package installs that file directly
-so it has no runtime dependency on the Qt client. Python/QML behavior tests cover
-the shared contracts, including serialized approval tokens and participant line parsing.
-GTK and TUI use the same Python participant parser in `recipients`.
+### Shared layer
 
-`ListThreads` includes retained starred conversations even when their last event
-falls outside the ordinary 2,000-event window. The cached projection scans retained
-history when stars exist, preserving older group correlation evidence. Responses
-fit the 8 MiB JSON budget by retaining contiguous newest-message tails fairly
-across threads. `messages_truncated` tells clients to show a history notice; this
-also covers the existing 500-message per-thread display cap. These limits never
-delete stored events or change reply recipients.
+- All Python transports decode through `client_wire`. Scheduling
+  (synchronous, GLib, Qt, Textual) is toolkit-specific.
+- `conversation_state` holds snapshot and reply logic for GTK, Qt, and TUI.
+  Snapshots distinguish an untouched source, a failed read, and an empty
+  history. A failed status read marks the backend unavailable but keeps the
+  last history. Storage state is unknown until the first successful read.
+- The reply planner validates the roster token held by the confirmation
+  dialog. GTK and TUI keep the dialog's token across refreshes.
+- `onboarding` derives the first-run stage from configuration, read-only
+  controller capabilities (never vendor names), the selected bond, and backend
+  status. Raw hardware capability is kept separate from the saved target's
+  ANCS policy, so a compatibility pairing can reach `ready-without-ancs`.
+- No presentation main loop blocks on the backend, BlueZ, or systemd.
+- User-visible Python strings go through gettext, QML strings through `qsTr`.
+  `po/POTFILES.in` is the translation inventory.
 
-Group-thread messages include a display-only sender label derived from the
-resolved MAP contact or the correlated Messages notification. It never
-participates in thread identity or reply routing; outgoing labels are localized
-by each client from the existing `outgoing` flag.
+### Per-toolkit notes
 
-`backend_operations` owns validation, thread routing, and application policy.
-`dbus_service` is only a wire-type adapter over those operations. `daemon`
-orchestrates lifecycle and supplies one typed `BackendDependencies` object,
-while `event_dispatcher` owns persistence/notification
-fan-out. `ProfileSupervisor` owns MAP/PBAP open, close, retry, loss, and resume
-transitions; its worker, session, and timer protocols make those races testable
-without BlueZ. Interactive pairing rendering lives separately from the BlueZ
-pairing service. GTK and Qt run the agent workflow in a GLib/D-Bus-isolated
-helper and reserve stdout for its JSON interaction protocol. The normal
-interactive transaction registers a device-scoped default agent and calls
-`Device1.Connect()` so the iPhone initiates authentication. A separate
-explicit-pairing override calls `Device1.Pair()` for controllers that cancel
-Connect-first. The temporary agent remains present while the bond is trusted,
-Classic settles, solicitation is registered, and the daemon makes its first
-MAP/PBAP attempt; cleanup then releases the advertisement and agent in order.
-`SetupClient.complete()` requires a confirmation callback. The isolated GTK
-and Qt helper is always launched with its interactive agent protocol, while
-the Quickshell pairing and forget helpers require an explicit interactive flag
-and a positive line-protocol approval before changing the saved target. The
-terminal wizard supplies its confirmation callback directly. A library caller
-cannot silently fall through to a desktop Bluetooth agent.
-User-facing CLI message commands use the same backend client as graphical UIs. Group
-replies use `SendToThreadChecked`, which binds approval to the exact roster and
-roster-warning token displayed by the client. The backend rejects stale tokens
-even if another client has already confirmed the new roster. GTK and TUI retain
-the dialog's token across refreshes; Qt and Quickshell use the same check at the
-wire boundary. The legacy `SendToThread` signature remains available for direct
-threads; group calls require an updated client. Approval tokens use the exact
-displayed addresses, including formatting; only transport destinations are
-normalized. Reply addresses always come
-from the backend projection.
+- **GTK** (GTK4/libadwaita): snapshot reads are serialized on a private bus
+  connection owned by a worker, and sends use dbus-python reply handlers.
+  Asynchronous results feed `ConversationState`. Onboarding uses
+  `onboarding.OnboardingState`.
+- **Qt/Kirigami**: `BridgeController` serializes work in a QThreadPool,
+  coalesces `Events1` invalidations, and keeps `ConversationState` across
+  refreshes and sends. The pending group dialog is bound to its original
+  conversation and draft. `Main.qml` handles only navigation. Settings
+  dialogs belong to the window so pairing prompts survive closing the page.
+- **TUI** (Textual): shares the snapshot loader with Qt. Blocking calls run in
+  workers with thread-owned D-Bus connections. Signals trigger coalesced
+  refreshes, with a bounded periodic fallback. Every native backend package
+  includes it. DEB/RPM bundle Textual in a private vendor directory that only
+  packaged entry points activate.
+- **Quickshell**: QML has no generic D-Bus client, so one persistent
+  `quickshell_bridge` process handles all messaging, contact, status, and
+  preference requests over stdin. Private data never goes in process argv.
+  Setup uses the separate short-lived `pairing-*` helpers, because setup
+  happens before the daemon is available. Quickshell sends the displayed
+  roster token so the backend can reject stale routes. Superseded or
+  cancelled setup results are ignored, and each helper has a deadline.
 
-## Pairing policy
+### Known duplication
 
-Pairing has two independent axes rather than a growing table of device quirks:
+The Quickshell client does not share all of its semantics with the Python
+layer:
 
-- Delivery mode is `full` when ANCS is supported and selected. Compatibility
-  mode, selected explicitly for older iOS or automatically when ANCS is
-  unavailable, persists `BLUEFERRY_ANCS_ENABLED=false`; MAP and PBAP remain the
-  success boundary and the daemon never enables LE/ANCS for that target.
-- Authentication strategy is normally `iphone-initiated-connect`. The user may
-  independently select `explicit-device-pair` when a controller cancels the
-  Connect-first transaction. Both strategies still require BlueFerry's
-  interactive confirmation path.
+- `data/quickshell/OnboardingState.qml` re-implements stage derivation and
+  pending iPhone setup tasks rather than using `onboarding.py`.
+- `qt/qml/ConversationLogic.qml`, used by both Qt and Quickshell,
+  re-implements thread lookup, roster-warning deduplication, and participant
+  parsing (written to match `recipients.participant_lines`). Quickshell uses no
+  `conversation_state` logic. Python/QML behavior tests cover parts of these
+  contracts, such as serialized tokens and participant parsing.
 
-ANCS connection policy and ANCS solicitation are deliberately separate. After
-the Classic bond is trusted and settled, setup broadcasts solicitation whenever
-the controller can advertise, including compatibility mode. Real-device testing
-indicates that older iOS uses this signal to expose its MAP/PBAP permission
-toggles even though BlueFerry must not connect ANCS. At runtime a dedicated
-supervisor keeps solicitation on air until MAP/PBAP and an end-to-end ANCS
-Control Point round trip are both healthy, preserves a three-minute permission
-window, and re-registers the advertisement if BlueZ releases it or changes
-D-Bus owner. Full mode holds a missing LE bearer behind every MAP/PBAP reconnect
-attempt. A genuine LE disconnect grants one fresh outbound bootstrap, and a
-later Classic return grants another if that attempt was spent while the phone
-was absent; solicitation remains the durable fallback between those lifecycle
-events. Compatibility mode leaves LE disabled. Pairing reports record the
-resolved policy, controller capability, ordered timeline, package build ID,
-and full source-content SHA.
+A change to these rules has to be made in both places.
 
-The adapter Class-of-Device is volatile controller state. The unprivileged
-daemon checks it at startup, after a BlueZ owner change, and periodically. On
-drift it starts one fixed, capability-bounded systemd helper that can only set
-the validated adapter index to A/V Hands-Free; a narrow Polkit rule permits
-that operation for an active local session without exposing general `btmgmt`
-or systemd control.
+## Pairing and setup
 
-## Lifecycle
+- **Layers:** `pair_setup` is the low-level boundary. `setup_client` exposes
+  typed operations to GTK, Qt, and the CLI wizard, and Quickshell reaches the
+  same operations through the `pairing-*` JSON helpers. Setup writes the
+  selected MAC and ANCS policy to user configuration and asks systemd for
+  privileged steps.
+- **Two independent axes** (`pairing_policy`) replace a table of device
+  quirks:
+  - *Delivery mode*: `full` when ANCS is supported and selected. Otherwise
+    compatibility mode persists `BLUEFERRY_ANCS_ENABLED=false`, MAP/PBAP is the
+    success boundary, and the daemon never enables LE/ANCS for that target.
+  - *Authentication*: normally `iphone-initiated-connect`, where a
+    device-scoped agent is registered and `Device1.Connect()` lets the iPhone
+    start authentication. `explicit-device-pair` (`Device1.Pair()`) is an
+    override for controllers that cancel Connect-first.
+- **Confirmation is mandatory.** `SetupClient.complete()` requires a
+  confirmation callback. GTK and Qt run the agent in a helper isolated from
+  GLib and D-Bus, and its stdout is reserved for the JSON interaction
+  protocol. The Quickshell pairing and forget helpers require an explicit
+  interactive flag and a positive approval over the line protocol. No caller
+  can fall through to a desktop Bluetooth agent.
+- The temporary agent stays registered until the daemon's first MAP/PBAP
+  attempt. Success means MAP/PBAP works end to end, not only that a bond
+  exists on the Linux side.
+- ANCS solicitation is separate from ANCS connection policy. It is broadcast
+  after the Classic bond settles, in compatibility mode too, because older iOS
+  uses it to expose the MAP/PBAP permission toggles.
+- Pairing reports record the resolved policy, controller capability, ordered
+  timeline, build ID, and full source SHA, with addresses and home paths
+  scrubbed.
 
-The backend unit is a systemd user service with `Type=dbus`. Session D-Bus can
-activate it on demand. The backend package owns a vendor
-`default.target.wants` link, and `ConditionPathExists` skips users without a
-pairing configuration. This makes login autostart package-owned and reversible
-while still receiving incoming events when no client is open.
+## Bluetooth supervision and recovery
 
-Startup publishes the D-Bus control surface before beginning hardware work.
-Bluetooth initialization is deferred until the GLib loop is dispatching, and
-`GetStatus` reports `initializing` and degraded profile state explicitly.
-MAP/PBAP connectivity moves through explicit initializing, connecting, ready,
-degraded, reconnecting, authorization-required, map-connection-refused, and
-stopping states. Failed profile opens poll every 5 seconds until the first
-successful MAP/PBAP connection, then every 15 seconds for later reconnects.
-MAP and PBAP opens are independent: if iOS rejects one profile, the other
-session and its consumers remain available while only the missing profile is
-retried. Full readiness still requires both profiles.
-Suspend/resume and observed OBEX loss enter the same reconnection path. The
-refusal state preserves the iPhone's
-`Connection refused (111)` detail so clients can explain that another computer
-may currently own its single MAP connection.
+- **Worker model:** one dedicated worker with its own session-bus connection
+  serializes every blocking MAP/PBAP operation. Its backlog is bounded, and
+  results return through GLib before touching daemon state. Slow D-Bus
+  methods use deferred replies, so status and BlueZ events stay dispatchable
+  during transfers. Wallet operations use a separate worker (120 s
+  cancellable deadline) and never occupy the Bluetooth worker.
+- **Profiles:** connectivity moves through explicit states (initializing,
+  connecting, ready, degraded, reconnecting, authorization-required,
+  map-connection-refused, stopping). Retries happen every 5 s until the first
+  success and every 15 s afterwards. MAP and PBAP recover independently, and
+  full readiness requires both. `Connection refused (111)` is kept so clients
+  can explain that another computer may hold the phone's single MAP
+  connection.
+- **Bearers:** `bearer_supervisor` keeps BR/EDR and LE connected, independent
+  of desktop applets. In full mode a missing LE bearer holds back MAP/PBAP
+  reconnects. Compatibility mode leaves LE disabled.
+- **Solicitation:** `solicitation_supervisor` keeps the advertisement on air
+  until MAP/PBAP and an ANCS Control Point round trip are both healthy. It
+  re-registers the advertisement if BlueZ releases it or changes owner.
+- **Class-of-Device:** this setting is volatile. The daemon checks it at
+  startup, on BlueZ owner change, and periodically. On drift it runs one fixed
+  systemd helper that can only set the validated adapter to A/V Hands-Free, as
+  permitted by a narrow Polkit rule. No general `btmgmt` or systemd access is
+  exposed.
+- **Recovery:** `bluetooth_recovery` performs a last-resort power cycle of the
+  selected controller only. It runs after a sustained ANCS outage on a setup
+  that previously worked, tries an LE-only reset first, and allows one cycle
+  per outage. Only sustained, verified ANCS health rearms it, and cycles are
+  at least an hour apart. Limits and pending restoration survive restarts.
+  It skips adapters in use by other devices, discovery, or transfers. User
+  details are in `README.md`.
+- **Read receipts** go through `read_receipts`, which delays MAP write-back so
+  ANCS can still fetch group metadata. Local reads take effect immediately.
 
-Native packages install release and source-content SHA markers owned by the
-backend package. The daemon publishes their combined identity as the private
-`_build_id` status field, formatted as the package release plus a twelve-digit
-SHA prefix; pairing reports retain that ID and the complete SHA. A running
-daemon notices a changed marker and exits with status 75 so systemd restarts
-it; clients compare `_build_id` and perform a serialized fallback restart if an
-older process is still running. Missing SHA markers retain compatibility with
-older/source builds, and lifecycle tests replace marker reads and command
-runners so installed host state can never restart a real service. Content
-hashing distinguishes local rebuilds that retain the same package version.
-Package scripts never try to address arbitrary logged-in users' service
-managers; distro systemd hooks reload changed user-unit metadata.
+## Storage and privacy
 
-## Data and trust
-
-- The iPhone is remote input. Sender-provided names, vCards, notification text,
-  recipients, and timestamps are parsed and validated before use.
-- Contact names are display metadata; normalized phone or email addresses are
-  identities. This keeps same-name contacts and group participants distinct.
-- The backend owns reply routing. Clients use an opaque thread key and must
-  confirm a group's participants before the first reply. Named-group ANCS
-  notifications initially produce a read-only thread; only the backend can
-  retain a user-supplied route, and it requires all observed senders to remain
-  in that route. A sender outside an established route produces a distinct
-  roster-change warning and disables replies. Routes are local metadata and do
-  not modify iPhone groups; named groups with exactly the same name still share
-  one key because ANCS provides no conversation identifier. The named-group
-  routing module preserves spelling in versioned keys (NFC with surrounding
-  whitespace trimmed), so case, internal whitespace, and compatibility
-  characters no longer cause additional collisions.
-- Retained named-group history is re-keyed in the conversation projection;
-  reading it never rewrites the database. Old name-folded keys remain aliases
-  for stars and operations only when the projected history identifies a single
-  spelling. Multiple spellings disable both that alias and any old shared
-  roster until participants are supplied for each conversation. New roster
-  records use the versioned key, and old send approvals require a fresh
-  confirmation. A roster edit does not change the conversation key.
-- Message history and the contact cache are user-private (`0700` directories,
-  `0600` SQLite files). Their sensitive records are authenticated and encrypted
-  with AES-256-GCM under one random application key held by the desktop Secret
-  Service. GNOME Keyring and KWallet are reached through the same libsecret
-  interface; toolkit clients never handle the key. Generic key lookup
-  attributes are intentionally non-sensitive.
-- Starred thread keys and confirmed group rosters are also sensitive: keys
-  can contain contact addresses. Each complete collection in `settings.json`
-  is encrypted with its own purpose string under the history storage policy.
-  Legacy plaintext collections are encrypted during explicit daemon storage
-  initialization, or scrubbed when the wallet is locked or retention is disabled.
-  Preference reads never rewrite settings; a thread snapshot reads and decrypts
-  the confirmed-roster collection at most once. Settings have a separate
-  4 MiB bound for the two 200-entry collections and encryption framing;
-  `local.env` retains its 64 KiB bound.
-- Passive daemon startup loads an existing key only from an already unlocked
-  collection. It neither creates an item nor requests a wallet prompt. If the
-  key is unavailable or ciphertext authentication fails, storage fails closed
-  while live message delivery continues. An explicit client action may create
-  or unlock the key through the desktop's normal wallet UI.
-- History writes, pruning, and clearing are transactions; a monotonic database
-  revision invalidates the conversation projection. Event kind, timestamp, and
-  content are all inside the authenticated ciphertext. Unframed plaintext and
-  a wrong or replaced key fail closed without deleting the stored records.
-- ANCS is app-identified before content is requested. Under the default
-  policy, unrelated app/system content is never fetched. Under the opt-in
-  `all` policy, optional exact bundle-ID allow/block rules are applied before
-  notification attributes are fetched. Included content is delivered only to
-  an explicitly ephemeral popup sink, never retained or broadcast on D-Bus.
-  Apple Messages retains only the fields required for group correlation, and
-  those raw records are not exposed by the public event-query method.
-- Logs exclude message bodies, notification text, and recipient identities at
-  every level. UI markup and terminal output are escaped at their respective
+- **Remote input is untrusted.** Names, vCards, notification text,
+  recipients, and timestamps from the iPhone are parsed and validated before
+  use. Parsers, transfers, contacts, replies, and retained payloads all have
+  explicit limits (`limits.py`).
+- **Identity:** normalized phone or email addresses are identities, and
+  contact names are display metadata only.
+- **Group routing:** named-group ANCS notifications start as read-only
+  threads. Only the backend retains a user-supplied route, and every observed
+  sender must remain in it. A sender outside the route raises a roster-change
+  warning and disables replies. Routes are local and never modify iPhone
+  groups. Two named groups with the same name share a key because ANCS has no
+  conversation ID. Versioned keys preserve spelling (NFC, trimmed), and editing
+  a roster does not change the key. Legacy name-folded keys remain aliases
+  only when history shows a single spelling, and reading history never
+  rewrites the database.
+- **Encryption at rest:** history and the contact cache live in `0700`
+  directories as `0600` SQLite files. Sensitive records, including event kind,
+  timestamp, and content, are encrypted with AES-256-GCM under one random key
+  held by the Secret Service through libsecret. Clients never handle the key,
+  and keyring lookup attributes are non-sensitive. Starred keys and confirmed
+  rosters in `settings.json` are encrypted per collection.
+- **Fail closed:** passive startup only loads a key from an already unlocked
+  collection and never prompts. If the key is missing or wrong, or plaintext
+  is unframed, storage becomes unavailable without deleting records while live
+  delivery continues. Only an explicit client action may create or unlock the
+  key. History writes are transactional, and a monotonic revision invalidates
+  the projection.
+- **ANCS content:** the app is identified before any content is requested.
+  The default policy never fetches content from other apps. The opt-in `all`
+  policy applies exact bundle-ID allow/block rules first and delivers content
+  only to an ephemeral popup sink, never retained or broadcast. Apple Messages
+  keeps only the fields needed for group correlation.
+- **Logs** exclude message bodies, notification text, and recipient
+  identities at every level. Markup and terminal output are escaped at their
   display boundaries.
-- Configuration files are owner-only, size-bounded, and opened without
-  following final symlinks. Only named BlueFerry settings are accepted;
-  systemd never sources the file as a general process environment.
-- Every public method obtains the caller's unique bus name and credentials from
-  the bus daemon, rejects callers whose Unix UID differs from the backend, and
-  applies per-connection plus daemon-wide quotas. Sends, contact sync, storage
-  unlock, destructive operations, reads, and status probes have separate
-  limits. Disconnecting revokes the cached caller identity; reconnecting does
-  not reset daemon-wide consequential-operation limits. Snapshot counts, event
-  kinds, body projections, query text, and serialized JSON replies are bounded.
-- Expected D-Bus failures expose stable, length-bounded messages. Unexpected
-  exceptions and lower-level OBEX details stay in the private daemon log rather
-  than returning device paths or implementation details to callers.
-- The Unix login session is the local security boundary. Native processes
-  running as the same user can call the session D-Bus API and, while the wallet
-  is unlocked, may be able to request its secrets. Encryption protects retained
-  data at rest; it does not isolate BlueFerry from a compromised login session.
-  Sandboxed clients must be granted the `io.weirdware.BlueFerry` bus name
-  explicitly.
+- **Configuration** files are owner-only, size-bounded, opened without
+  following final symlinks, and restricted to named settings. systemd never
+  sources them as a process environment.
+- **Trust boundary:** the Unix login session. Same-user processes can call
+  the API and, while the wallet is unlocked, may be able to request its
+  secrets. Encryption protects data at rest, not against a compromised
+  session. Sandboxed clients need explicit access to the
+  `io.weirdware.BlueFerry` name.
 
-## I/O model
+## Lifecycle and packaging
 
-The backend uses dbus-python with one GLib event loop. Bus connections are
-created lazily at the I/O edge, so importing parsers or models does not require
-a live desktop or system bus. One dedicated worker owns a private session-bus
-connection and serializes every blocking MAP/PBAP operation: session creation,
-sends, phonebook pulls, message queries, and incoming-body downloads. Its
-backlog is bounded, and results are marshalled back through GLib before
-touching daemon state. Bluetooth transfers, parsers, contact cardinality,
-desktop read-state watches, D-Bus replies, and retained payload bytes all have
-explicit resource ceilings.
-
-PBAP download and vCard parsing live in `contacts`; `contact_repository` owns
-the contact schema, replacement transaction, encrypted records, and legacy
-plaintext cleanup. This keeps Bluetooth failure handling outside persistence.
-
-Slow public D-Bus methods use deferred replies, so Bluetooth waits never block
-the daemon's event loop. Status, lifecycle signals, and incoming BlueZ events
-remain dispatchable while an OBEX transfer is active. Conversation requests
-coalesce into one background history read and projection using independent
-contact and key snapshots. Results are published only if both the history
-revision and the invalidation generation still match; stale results and
-failures are retried. Correlation indexes repeated bodies by timestamp and
-stops once it finds two candidates, preserving ambiguity without scanning
-every occurrence of a common message.
-
-Explicit wallet operations use a separate worker with a 120-second cancellable
-deadline. Key installation, policy changes, and replies remain on GLib; late
-results after cancellation or a new authentication failure cannot enable
-storage. Wallet waits never occupy the serialized Bluetooth worker.
-
-The GTK client serializes
-snapshot reads on a worker-owned private bus connection and marshals results to
-GLib; its sends use dbus-python reply handlers. The Qt/KDE client exposes an
-asynchronous controller to Kirigami, serializes work in a QThreadPool, and
-coalesces Events1 invalidations into snapshot refreshes. Neither presentation main loop waits
-on the backend, BlueZ, or systemd.
-
-Every native backend package includes the TUI. Arch uses the distribution's
-`python-textual` package, while DEB and RPM backend packages carry the Textual
-runtime in a private vendor directory. The launcher activates that private
-runtime only from packaged entry points, so
-it cannot hijack a venv or source checkout. Blocking snapshot reads and sends
-run in Textual workers with thread-owned D-Bus connections;
-content-free HistoryChanged and StatusChanged signals trigger coalesced refreshes,
-with a bounded periodic refresh as a fallback. The client pumps its GLib signal
-context without blocking Textual, follows notification-open requests, adapts to
-narrow terminals, and preserves backend-owned direct and group reply routing.
-
-GTK follows the GNOME stack with GTK4, libadwaita navigation, adaptive
-breakpoints, application actions, and Adwaita dialogs. KDE follows the Plasma
-stack with Qt Quick Controls, Kirigami navigation and pages, KDE's desktop
-style, and event-driven QDBus subscriptions. User-visible Python strings pass
-through gettext and QML strings use `qsTr`; `po/POTFILES.in` is the translation
-source inventory.
-
-All external commands cross `commands.run_command`, which accepts argv rather
-than shell text; installed runtime commands use absolute paths. The boundary
-normalizes missing executables, timeouts, and non-zero exits. Expected
-application failures use the hierarchy in `errors`; the D-Bus adapter maps
-those to stable names below `io.weirdware.BlueFerry.Error`.
+- The backend is a `Type=dbus` systemd user service that can be D-Bus
+  activated. It is autostarted through a package-owned
+  `default.target.wants` link and skipped by `ConditionPathExists` when no
+  pairing configuration exists.
+- D-Bus is published before hardware work, and `GetStatus` reports
+  `initializing` and degraded state explicitly.
+- Packages install release and source-SHA markers. The daemon publishes them
+  as `_build_id` and exits with status 75 when the markers change, so systemd
+  restarts it. Clients compare `_build_id` and fall back to a serialized
+  restart. Package scripts never address other users' service managers.
+- All external commands go through `commands.run_command`. Lifecycle tests
+  replace marker reads and command runners, so they can never restart a real
+  service.
 
 ## Tests
 
-Pure parser, routing, retention, and lifecycle tests run without a live D-Bus.
-The harness rejects attempts to open the user's real session or system bus.
-Presentation tests inject fake clients and verify typed model conversion and
-off-main-thread dispatch. The Arch package check additionally runs one public
-API round trip inside an activation-free private bus, validates
-desktop/AppStream metadata, imports both Python clients, lints Kirigami and
-Quickshell QML, and builds every split package from a deterministic snapshot.
-See `TESTING.md` for the safety and quality rules.
-
-Empirical iPhone and BlueZ behavior is recorded separately in `PROTOCOL.md`.
-Architecture should depend only on findings that remain reproducible there,
-not on one-off experiment scripts.
+Parser, routing, retention, and lifecycle tests run without a live D-Bus, and
+the harness rejects the real session and system buses. Presentation tests
+inject fake clients. The Arch package check also runs one API round trip on a
+private bus, validates desktop/AppStream metadata, lints the Kirigami and
+Quickshell QML, and builds every split package. Architecture should depend
+only on findings that stay reproducible in `PROTOCOL.md`.
 
 ## Growth rules
 

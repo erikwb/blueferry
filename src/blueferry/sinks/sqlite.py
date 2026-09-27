@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -15,6 +17,11 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+# Count and size ceilings are cheap and enforced every few writes. The age
+# sweep decrypts the whole archive, so it runs at most this often; storage
+# preparation also runs it at every startup and unlock.
+AGE_SWEEP_INTERVAL_SEC = 60 * 60
+
 
 class SqliteSink:
     name = "sqlite"
@@ -24,9 +31,12 @@ class SqliteSink:
         path: Path | None = None,
         *,
         storage: StorageSecurity | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.path = path
         self.storage = storage
+        self._clock = clock
+        self._last_age_sweep = clock()
         self._writes_since_prune = 0
         self._unavailable_logged = False
         if storage is not None:
@@ -67,7 +77,13 @@ class SqliteSink:
             self._writes_since_prune += 1
             if self._writes_since_prune >= 10:
                 self._writes_since_prune = 0
-                removed = prune_events(path=self.path, storage=self.storage)
+                now = self._clock()
+                sweep = now - self._last_age_sweep >= AGE_SWEEP_INTERVAL_SEC
+                if sweep:
+                    self._last_age_sweep = now
+                removed = prune_events(
+                    path=self.path, storage=self.storage, expire_by_age=sweep,
+                )
                 if removed:
                     log.info("pruned %d expired history events", removed)
         except (OSError, TypeError, ValueError, sqlite3.Error):

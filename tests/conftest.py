@@ -73,3 +73,53 @@ def isolate_dbus(monkeypatch, request):
     monkeypatch.setattr(bus_module, "_thread_state", threading.local())
     monkeypatch.setattr(dbus, "SessionBus", _forbid_live_bus("session"))
     monkeypatch.setattr(dbus, "SystemBus", _forbid_live_bus("system"))
+
+
+@pytest.fixture
+def isolated_state(tmp_path, monkeypatch):
+    """Point every BlueFerry configuration and state path at ``tmp_path``."""
+    from blueferry import config
+
+    config_dir = tmp_path / "config"
+    state_dir = tmp_path / "state"
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(mode=0o700)
+    monkeypatch.setattr(config, "CONFIG_DIR", config_dir)
+    monkeypatch.setattr(config, "LOCAL_ENV_PATH", config_dir / "local.env")
+    monkeypatch.setattr(config, "SETTINGS_JSON", config_dir / "settings.json")
+    monkeypatch.setattr(config, "STATE_DIR", state_dir)
+    monkeypatch.setattr(config, "EVENTS_DB", state_dir / "events.sqlite")
+    monkeypatch.setattr(config, "CONTACTS_DB", state_dir / "contacts.sqlite")
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime_dir))
+    return tmp_path
+
+
+@pytest.fixture
+def make_daemon(isolated_state, monkeypatch):
+    """Build real daemons against isolated state.
+
+    Construction performs no D-Bus or Bluetooth I/O, so tests exercise the
+    daemon's actual wiring instead of hand-assembling its private fields.
+    Replace a hardware-facing collaborator on the instance when a test needs
+    to observe it.
+    """
+    from blueferry import daemon as daemon_mod
+    from blueferry.obex import worker as worker_mod
+
+    # The worker thread would otherwise open its own bus connection.
+    monkeypatch.setattr(worker_mod, "initialize_obex_worker_bus", lambda: None)
+    monkeypatch.setattr(worker_mod, "close_obex_worker_bus", lambda: None)
+    monkeypatch.setattr(daemon_mod, "installed_release", lambda: "0.6.0-6")
+    monkeypatch.setattr(daemon_mod, "installed_build_sha", lambda: None)
+    built = []
+
+    def make():
+        instance = daemon_mod.Daemon()
+        # Tests may swap these on the instance; always release the originals.
+        built.append((instance.obex_worker, instance.storage))
+        return instance
+
+    yield make
+    for worker, storage in built:
+        worker.shutdown()
+        storage.close()
