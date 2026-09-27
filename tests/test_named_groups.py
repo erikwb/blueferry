@@ -8,6 +8,7 @@ from blueferry import backend_operations, config
 from blueferry.backend_operations import BackendDependencies, BackendOperations
 from blueferry.confirmed_groups import ConfirmedGroupsStore
 from blueferry.errors import ConfirmationRequiredError, NotFoundError
+from blueferry.group_routes import GroupRoutesStore
 from blueferry.grouping import correlate_group_events
 from blueferry.history import append_event, read_events
 from blueferry.named_groups import legacy_named_group_key, named_group_key
@@ -164,6 +165,7 @@ def backend(tmp_path, monkeypatch):
             submit_obex=submit,
             starred_threads=StarredThreadsStore(settings),
             confirmed_groups=ConfirmedGroupsStore(settings),
+            group_routes=GroupRoutesStore(settings),
         ),
     )
 
@@ -213,8 +215,9 @@ def test_roster_saved_through_legacy_alias_uses_new_key_and_reloads(backend):
     updated = backend.set_group_participants(old_key, [ALICE, BOB])
     assert updated["key"] == key
     assert updated["reply_ready"] is True
-    [saved] = read_events(kinds={"group_route"})
+    [saved] = backend.dependencies.group_routes.routes()
     assert saved["group_key"] == key
+    assert read_events(kinds={"group_route"}) == []  # Rosters are not history.
     assert not backend.dependencies.confirmed_groups.matches(old_key, group_confirmation_token([ALICE, BOB]))
     restarted = BackendOperations(backend.sessions, backend.dependencies)
     assert restarted.list_threads(10)[0]["recipients"] == [ALICE, BOB]

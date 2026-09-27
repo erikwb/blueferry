@@ -33,6 +33,7 @@ from blueferry.contact_sync import ContactSync
 from blueferry.contacts import ContactsResolver
 from blueferry.dbus_service import MessagesService, claim_bus_name
 from blueferry.event_dispatcher import EventDispatcher
+from blueferry.group_routes import GroupRoutesStore
 from blueferry.history import (
     history_count,
     mark_event_handles_read,
@@ -107,6 +108,7 @@ class Daemon:
         self.notification_policy = NotificationPolicyStore()
         self.starred_threads = StarredThreadsStore(storage=self.storage)
         self.confirmed_groups = ConfirmedGroupsStore(storage=self.storage)
+        self.group_routes = GroupRoutesStore(storage=self.storage)
         self.setup_verification = SetupVerification(config.IPHONE_MAC)
         self.events = EventDispatcher(
             self.contacts,
@@ -302,6 +304,7 @@ class Daemon:
                 on_notification_policy_changed=self._emit_status,
                 starred_threads=self.starred_threads,
                 confirmed_groups=self.confirmed_groups,
+                group_routes=self.group_routes,
                 storage=self.storage,
                 prepare_storage=prepare_storage,
                 on_storage_prepared=self._apply_storage_preparation,

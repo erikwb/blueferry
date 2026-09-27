@@ -1,13 +1,30 @@
 """Fail-closed isolation from the user's desktop and paired devices."""
 from __future__ import annotations
 
+import atexit
 import os
+import shutil
+import tempfile
 import threading
 
-import dbus
-import pytest
+# Before anything imports blueferry.config: its default paths are the
+# operator's real configuration, history, and contact cache. Point them at a
+# throwaway tree so even a test that undoes its own isolation cannot reach
+# private data or load the operator's local.env.
+_scratch_home = tempfile.mkdtemp(prefix="blueferry-tests-")
+atexit.register(shutil.rmtree, _scratch_home, True)
+for _variable, _child in (
+    ("XDG_CONFIG_HOME", "config"),
+    ("XDG_STATE_HOME", "state"),
+    ("XDG_RUNTIME_DIR", "runtime"),
+):
+    os.makedirs(os.path.join(_scratch_home, _child), mode=0o700)
+    os.environ[_variable] = os.path.join(_scratch_home, _child)
 
-from blueferry import bus as bus_module
+import dbus  # noqa: E402
+import pytest  # noqa: E402
+
+from blueferry import bus as bus_module  # noqa: E402
 
 # conftest is loaded before pytest imports test modules. Poison live bus
 # addresses here—not merely in a fixture—so GTK/Gio collection-time probes

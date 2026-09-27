@@ -40,8 +40,12 @@ addresses are retained; editing and syncing contacts updates the grouping.
 
 Group replies are deliberately cautious. Bluetooth does not give BlueFerry a
 reliable group ID or complete roster, so it disables replies when the
-participants are unclear. Named groups may ask you to confirm a local reply
-roster. This does not change the group on the iPhone.
+participants are unclear. For a named group, BlueFerry learns members only from
+the people who send to it, so it asks you to confirm the full reply list once.
+That saved list is kept until you delete the conversation, clear history, or
+change the storage mode; it does not change the group on the iPhone. A message is filed under its group
+only when BlueFerry also receives the iPhone's notification for it; without
+one, it appears in the sender's one-to-one conversation.
 
 ## Install
 
@@ -257,11 +261,12 @@ can also choose unencrypted storage or **Do not retain local data**. Changing
 storage modes clears the existing cache so encrypted and plaintext records are
 never mixed.
 
-Starred conversations and saved group confirmations follow the same storage
-policy as history. Older plaintext preferences are encrypted during upgrade
-when the wallet is available; if it is locked, those old preferences are
-cleared so contact identities are no longer retained in plaintext. You can
-star conversations and confirm group rosters again after unlocking.
+Starred conversations, saved group participants, and group confirmations follow
+the same storage policy as history. Older plaintext preferences are encrypted
+during upgrade when the wallet is available; if it is locked, those old
+preferences are cleared so contact identities are no longer retained in
+plaintext. You can star conversations and confirm group rosters again after
+unlocking.
 
 Configuration lives in `~/.config/blueferry`; local state lives in
 `~/.local/state/blueferry`. Uninstalling packages does not delete either
