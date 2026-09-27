@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#ffffff">
+  <meta name="description" content="BlueFerry is an open source Linux client for your iPhone's messages, connected over Bluetooth.">
+  <meta property="og:title" content="BlueFerry — iPhone messages on Linux">
+  <meta property="og:description" content="Read and send iMessage, SMS, and RCS from Linux through a paired iPhone.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://blueferry.weirdware.io/">
+  <meta property="og:image" content="https://blueferry.weirdware.io/assets/quickshell.png">
+  <link rel="canonical" href="https://blueferry.weirdware.io/">
+  <link rel="icon" href="assets/blueferry.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css">
+  <script src="site.js" defer></script>
+  <title>BlueFerry — iPhone messages on Linux</title>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header>
+    <div class="project-title">
+      <img src="assets/blueferry.svg" width="42" height="42" alt="">
+      <h1>BlueFerry</h1>
+      <a class="version" href="https://github.com/erikwb/blueferry/releases/tag/v0.8.1">0.8.1</a>
+    </div>
+    <nav aria-label="Project links">
+      <a href="#install">Install</a>
+      <a href="https://github.com/erikwb/blueferry#readme">Documentation</a>
+      <a href="https://github.com/erikwb/blueferry">Source</a>
+      <a href="https://github.com/erikwb/blueferry/issues">Issues</a>
+    </nav>
+  </header>
+
+  <main id="main">
+    <p>BlueFerry brings your iPhone’s messages to Linux over Bluetooth.
+      Read and send iMessage, SMS, and RCS from a GTK, KDE, Quickshell, or terminal client.</p>
+    <p>Your computer talks directly to your phone using Bluetooth protocols that iOS
+      supports natively. No proxy, iPhone app, jailbreak, or iCloud login is required.</p>
+    <p>Bluetooth support varies between adapters and iOS
+      versions, and there are still <a href="#limitations">some limitations</a>.</p>
+
+    <figure class="client-screenshots">
+      <nav class="screenshot-choices" aria-label="Client screenshots">
+        <a href="assets/quickshell.png" data-width="900" data-height="660" data-description="BlueFerry's Quickshell client showing sample conversations and blue outgoing messages.">Quickshell</a>
+        <a href="assets/gtk.png" data-width="990" data-height="710" data-description="BlueFerry's GTK client showing a sample conversation with Alex Chen.">GTK</a>
+        <a href="assets/qt.png" data-width="980" data-height="680" data-description="BlueFerry's KDE client showing a sample conversation with Alex Chen.">KDE / Kirigami</a>
+        <a href="assets/terminal.png" data-width="1482" data-height="1026" data-description="BlueFerry's terminal client showing sample conversations and a reply draft.">Terminal</a>
+      </nav>
+      <a id="screenshot-full-size" href="assets/quickshell.png" aria-label="View the Quickshell screenshot at full size"><img id="client-screenshot" src="assets/quickshell.png" width="900" height="660" alt="BlueFerry's Quickshell client showing sample conversations and blue outgoing messages."></a>
+    </figure>
+
+    <section id="install" aria-labelledby="install-title">
+      <h2 id="install-title">Install</h2>
+      <p>Download <code>blueferry-backend</code> and any clients you want to use.
+        The backend package includes the terminal client.</p>
+      <div id="install-fallback">
+        <p><a href="https://github.com/erikwb/blueferry/releases/tag/v0.8.1">Download the 0.8.1 packages</a> for Arch, Debian-based distributions, or Fedora.</p>
+      </div>
+      <div id="install-controls" hidden>
+        <div class="distribution-select">
+          <label for="distribution">Distribution
+            <select id="distribution">
+              <option value="arch">Arch / CachyOS / Omarchy</option>
+              <option value="debian">Debian 13 / Ubuntu 26.04 / PikaOS IV</option>
+              <option value="ubuntu">Ubuntu 24.04 / Mint 22.3 / Pop!_OS 24.04</option>
+              <option value="fedora43">Fedora 43 / 44</option>
+              <option value="fedora45">Fedora 45</option>
+            </select>
+          </label>
+        </div>
+        <p id="package-summary" class="small" aria-live="polite"></p>
+        <p id="package-downloads" class="download-links"></p>
+        <div class="code-heading"><span>Run in the folder containing the packages you downloaded:</span><button type="button" data-copy="package-command" aria-label="Copy package installation command" hidden>Copy</button></div>
+        <pre><code id="package-command"></code></pre>
+        <p class="small">Launch your client from the app menu, or run <code>blueferry-tui</code> in a terminal.</p>
+      </div>
+      <p class="small">See the <a href="https://github.com/erikwb/blueferry/releases/latest">latest release</a>,
+        <a href="https://github.com/erikwb/blueferry/blob/main/packaging/README.md">supported distributions</a>,
+        or <a href="https://github.com/erikwb/blueferry#build-packages-from-source">build from source</a>.</p>
+
+      <h3>Pairing</h3>
+      <ol>
+        <li>Keep your iPhone unlocked with <strong>Settings → Bluetooth</strong> open.</li>
+        <li>Scan for the phone in BlueFerry, select <strong>Pair</strong>, and confirm the code on both devices.</li>
+        <li>On the phone, tap <strong>ⓘ</strong> beside the computer. Enable <strong>Show Message Notifications</strong>
+          and <strong>Sync Contacts</strong>, then wait for both connections in BlueFerry.</li>
+      </ol>
+      <p>There are more details in the <a href="https://github.com/erikwb/blueferry#pair-an-iphone">pairing guide</a>.
+        After setup, the backend starts automatically and reconnects after normal Bluetooth interruptions.</p>
+    </section>
+
+    <section aria-labelledby="omarchy-title">
+      <h2 id="omarchy-title">Omarchy plugin</h2>
+      <p>The <a href="https://github.com/erikwb/omarchy-blueferry">bar widget</a> shows connection status
+        and unread conversations, with a reply field under each one. Install the backend and
+        Quickshell client first, then add the plugin:</p>
+      <div class="code-heading"><span>Omarchy Quattro</span><button type="button" data-copy="plugin-command" aria-label="Copy Omarchy plugin command" hidden>Copy</button></div>
+      <pre><code id="plugin-command">omarchy plugin add https://github.com/erikwb/omarchy-blueferry.git</code></pre>
+      <p>Enable it in <strong>Setup → Plugins</strong> and add it to your bar.</p>
+    </section>
+
+    <section id="limitations" aria-labelledby="limitations-title">
+      <h2 id="limitations-title">What to expect</h2>
+      <ul>
+        <li>BlueFerry keeps messages it sees while connected. It does not download your iCloud
+          Messages archive or provide complete sent-message history.</li>
+        <li>Attachments, reactions, typing indicators, calls, and FaceTime are not supported.</li>
+        <li>Group replies work when the participants can be identified safely. Some groups
+          need a local member list confirmed in the app first.</li>
+        <li>Optional iPhone system notifications depend on the local Bluetooth stack.
+          Messages and contacts can work without that connection.</li>
+        <li>Realtek Bluetooth cards generally do not support system notifications or group chats.</li>
+      </ul>
+    </section>
+  </main>
+
+  <div id="copy-status" role="status" aria-live="polite"></div>
+</body>
+</html>
