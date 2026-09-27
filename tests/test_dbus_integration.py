@@ -503,10 +503,10 @@ def test_projection_does_not_block_status_and_retries_after_history_changes(
     entered = threading.Event()
     release = threading.Event()
     project = service.operations._project_conversations
-    def blocked(events, contacts, stars):
+    def blocked(*args):
         entered.set()
         assert release.wait(4), "projection fixture was not released"
-        return project(events, contacts, stars)
+        return project(*args)
     monkeypatch.setattr(service.operations, "_project_conversations", blocked)
     projection_thread, projection = _request_in_thread(name, "ListThreads", dbus.UInt32(10))
     try:

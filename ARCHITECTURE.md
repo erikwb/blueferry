@@ -37,6 +37,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `grouping.py` | Correlates MAP iMessages with ANCS Messages notification metadata to recover group membership. |
 | `named_groups.py` | Named-group identity keys and saved reply routes. |
 | `confirmed_groups.py` | Persistent confirmed group rosters in the owner-only settings document. |
+| `group_routes.py` | Saved named-group reply rosters in the settings document, outside history retention. |
 | `starred_threads.py` | Persistent starred-conversation keys in the settings document. |
 | `notification_policy.py` | Persistent desktop notification preferences. |
 | `private_preferences.py` | Encrypts a whole preference collection under the storage policy. |
@@ -392,7 +393,9 @@ A change to these rules has to be made in both places.
   threads. Only the backend retains a user-supplied route, and every observed
   sender must remain in it. A sender outside the route raises a roster-change
   warning and disables replies. Routes are local and never modify iPhone
-  groups. Two named groups with the same name share a key because ANCS has no
+  groups. They are preferences in `settings.json`, not history events, so
+  retention and the bounded conversation window never discard a route that
+  is still in use. Two named groups with the same name share a key because ANCS has no
   conversation ID. Versioned keys preserve spelling (NFC, trimmed), and editing
   a roster does not change the key. Legacy name-folded keys remain aliases
   only when history shows a single spelling, and reading history never
@@ -401,8 +404,9 @@ A change to these rules has to be made in both places.
   directories as `0600` SQLite files. Sensitive records, including event kind,
   timestamp, and content, are encrypted with AES-256-GCM under one random key
   held by the Secret Service through libsecret. Clients never handle the key,
-  and keyring lookup attributes are non-sensitive. Starred keys and confirmed
-  rosters in `settings.json` are encrypted per collection.
+  and keyring lookup attributes are non-sensitive. Starred keys, saved group
+  routes, and confirmed rosters in `settings.json` are encrypted per
+  collection.
 - **Fail closed:** passive startup only loads a key from an already unlocked
   collection and never prompts. If the key is missing or wrong, or plaintext
   is unframed, storage becomes unavailable without deleting records while live

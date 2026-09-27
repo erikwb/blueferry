@@ -29,7 +29,6 @@ from blueferry.grouping import (
     correlate_group_events,
 )
 from blueferry.history import (
-    append_event,
     clear_events,
     delete_event_rows,
     history_revision,
@@ -135,6 +134,16 @@ class StarredThreads(Protocol):
     def clear(self) -> None: ...
 
 
+class GroupRoutes(Protocol):
+    def routes(self) -> list[dict]: ...
+
+    def save(self, route: dict, *, replacing: Iterable[str] = ()) -> None: ...
+
+    def discard(self, thread_keys: Iterable[str]) -> None: ...
+
+    def clear(self) -> None: ...
+
+
 class ConfirmedGroups(Protocol):
     def matching_rosters(self, rosters: Mapping[str, str]) -> set[str]: ...
 
@@ -162,6 +171,7 @@ class BackendDependencies:
     on_notification_policy_changed: Callable[[], None] | None = None
     starred_threads: StarredThreads | None = None
     confirmed_groups: ConfirmedGroups | None = None
+    group_routes: GroupRoutes | None = None
     storage: StorageSecurity | None = None
     prepare_storage: Callable[[StorageSecurity], Any] | None = None
     on_storage_prepared: Callable[[Any], None] | None = None
@@ -190,13 +200,18 @@ class BackendOperations:
         )
 
     def _build_conversations(self, events: list[dict]) -> list[dict]:
-        return self._project_conversations(events, self.dependencies.contacts, self._starred_keys())
+        return self._project_conversations(
+            events, self.dependencies.contacts, self._starred_keys(), self._group_routes(),
+        )
 
     @staticmethod
     def _project_conversations(
         events: list[dict], contacts: ContactIndex | None, stars: set[str],
+        routes: Sequence[dict] = (),
     ) -> list[dict]:
-        threads = build_threads(events, contacts)
+        # Saved rosters follow history so they override any legacy record
+        # that storage preparation has not yet moved out of the archive.
+        threads = build_threads([*events, *routes], contacts)
         if not stars:
             return threads
         recent = {str(event.get("handle") or "") for event in events[-MAX_CONVERSATION_EVENTS:]}
@@ -209,6 +224,7 @@ class BackendOperations:
     ) -> None:
         def job_factory() -> Callable[[], list[dict]]:
             stars = self._starred_keys()
+            routes = self._group_routes()
             contacts = self.dependencies.contacts
             resolver = contacts.snapshot() if contacts is not None else None
             storage = self.dependencies.storage
@@ -222,7 +238,7 @@ class BackendOperations:
                     )
                     if reader is not None and reader.status.state == "error":
                         raise CorruptStorageError(reader.status.detail)
-                    return self._project_conversations(events, resolver, stars)
+                    return self._project_conversations(events, resolver, stars, routes)
                 finally:
                     if reader is not None:
                         reader.close()
@@ -426,6 +442,10 @@ class BackendOperations:
             return set()
         return {str(key) for key in store.keys()}
 
+    def _group_routes(self) -> list[dict]:
+        store = self.dependencies.group_routes
+        return store.routes() if store is not None else []
+
     def _group_roster_confirmed(self, thread_key: str, token: str) -> bool:
         if self._confirmed_groups.get(thread_key) == token:
             return True
@@ -598,6 +618,9 @@ class BackendOperations:
         storage = self.dependencies.storage
         if storage is not None and not storage.status.can_write:
             raise NotReadyError(storage.status.detail)
+        routes = self.dependencies.group_routes
+        if routes is None:
+            raise NotReadyError("saved group participants are unavailable")
 
         members: list[str] = []
         for recipient in normalized:
@@ -615,8 +638,8 @@ class BackendOperations:
             "seen_at": datetime.now(timezone.utc).isoformat(),
         }
         try:
-            append_event(route, storage=storage)
-        except (OSError, RuntimeError, ValueError, sqlite3.Error) as error:
+            routes.save(route, replacing=conversation_keys(thread))
+        except (OSError, RuntimeError, ValueError) as error:
             log.error("could not retain named group participants: %s", error)
             raise NotReadyError(
                 "could not retain the group participant list"
@@ -654,6 +677,8 @@ class BackendOperations:
         clear_events()
         if self.dependencies.starred_threads is not None:
             self.dependencies.starred_threads.clear()
+        if self.dependencies.group_routes is not None:
+            self.dependencies.group_routes.clear()
         self._clear_confirmed_groups()
         self.invalidate_conversations()
 
@@ -810,6 +835,8 @@ class BackendOperations:
         self._forget_confirmed_groups(resolved_keys | preference_keys)
         if self.dependencies.starred_threads is not None:
             self.dependencies.starred_threads.discard(list(preference_keys))
+        if self.dependencies.group_routes is not None:
+            self.dependencies.group_routes.discard(resolved_keys | preference_keys)
         self.invalidate_conversations()
         return len(selected)
 
@@ -835,6 +862,8 @@ class BackendOperations:
             clear_contact_cache()
             if self.dependencies.starred_threads is not None:
                 self.dependencies.starred_threads.clear()
+            if self.dependencies.group_routes is not None:
+                self.dependencies.group_routes.clear()
             self._clear_confirmed_groups()
         return selected
 

@@ -15,6 +15,7 @@ from blueferry.errors import (
     NotReadyError,
     OperationFailedError,
 )
+from blueferry.group_routes import GroupRoutesStore
 from blueferry.grouping import named_group_key
 from blueferry.history import append_event, read_events
 from blueferry.limits import (
@@ -528,7 +529,18 @@ def test_named_group_roster_is_validated_and_persisted(monkeypatch) -> None:
                 "+15552222222": "Alice",
             }.get(address)
 
-    operations = _operations(contacts=Contacts())
+    retained = []
+
+    class Routes:
+        @staticmethod
+        def save(route, *, replacing=()):
+            retained.append((route, set(replacing)))
+
+        @staticmethod
+        def routes():
+            return []
+
+    operations = _operations(contacts=Contacts(), group_routes=Routes())
     provisional = {
         "key": "group:named:test",
         "name": "Crew",
@@ -539,16 +551,10 @@ def test_named_group_roster_is_validated_and_persisted(monkeypatch) -> None:
         "reply_ready": False,
     }
     updated = {**provisional, "reply_ready": True}
-    retained = []
     monkeypatch.setattr(
         operations._conversations,
         "find",
         lambda _key: updated if retained else provisional,
-    )
-    monkeypatch.setattr(
-        backend_operations,
-        "append_event",
-        lambda event, **_kwargs: retained.append(event),
     )
 
     operations._confirmed_groups[provisional["key"]] = "stale"
@@ -558,11 +564,13 @@ def test_named_group_roster_is_validated_and_persisted(monkeypatch) -> None:
 
     assert result["reply_ready"] is True
     assert provisional["key"] not in operations._confirmed_groups
-    assert retained[0]["group_name"] == "Crew"
-    assert retained[0]["group_members"] == ["Beau", "Alice"]
-    assert retained[0]["group_recipients"] == [
+    saved, replacing = retained[0]
+    assert saved["group_name"] == "Crew"
+    assert saved["group_members"] == ["Beau", "Alice"]
+    assert saved["group_recipients"] == [
         "+15551111111", "+15552222222"
     ]
+    assert provisional["key"] in replacing
 
 
 def test_named_group_roster_cannot_omit_an_observed_sender(monkeypatch) -> None:
@@ -606,7 +614,7 @@ def test_named_group_key_survives_roster_save_and_history_reload(
         "body": "hello",
         "seen_at": "2026-08-12T10:00:23+00:00",
     })
-    operations = _operations()
+    operations = _operations(group_routes=GroupRoutesStore(tmp_path / "settings.json"))
 
     assert operations.list_threads(10)[0]["key"] == key
     updated = operations.set_group_participants(
