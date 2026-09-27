@@ -21,13 +21,13 @@ for (const choice of screenshotChoices) {
 
 // These packages belong to the release advertised on this page. Updating the
 // release means updating the filenames and visible version together.
-const release = "https://github.com/erikwb/blueferry/releases/download/v0.8.0/";
+const release = "https://github.com/erikwb/blueferry/releases/download/v0.8.1/";
 const distributions = {
-  arch: { clients: ["gtk", "qt", "quickshell", "tui"], command: "sudo pacman -U", file: name => `${name}-0.8.0-1-any.pkg.tar.zst` },
-  debian: { clients: ["gtk", "qt", "tui"], command: "sudo apt install", file: name => `${name}_0.8.0-1_all.deb` },
-  ubuntu: { clients: ["gtk", "tui"], command: "sudo apt install", file: name => `${name}_0.8.0-1_all.deb` },
-  fedora43: { clients: ["gtk", "qt", "tui"], command: "sudo dnf install", file: name => `${name}-0.8.0-1.fc43.noarch.rpm` },
-  fedora45: { clients: ["gtk", "qt", "tui"], command: "sudo dnf install", file: name => `${name}-0.8.0-1.fc45.noarch.rpm` },
+  arch: { clients: ["gtk", "qt", "quickshell", "tui"], command: "sudo pacman -U", file: name => `${name}-0.8.1-1-any.pkg.tar.zst` },
+  debian: { clients: ["gtk", "qt", "tui"], command: "sudo apt install", file: name => `${name}_0.8.1-1_all.deb` },
+  ubuntu: { clients: ["gtk", "tui"], command: "sudo apt install", file: name => `${name}_0.8.1-1_all.deb` },
+  fedora43: { clients: ["gtk", "qt", "tui"], command: "sudo dnf install", file: name => `${name}-0.8.1-1.fc43.noarch.rpm` },
+  fedora45: { clients: ["gtk", "qt", "tui"], command: "sudo dnf install", file: name => `${name}-0.8.1-1.fc45.noarch.rpm` },
 };
 const clientLabels = { gtk: "GTK", qt: "KDE Plasma", quickshell: "Quickshell" };
 const distributionSelect = document.getElementById("distribution");
@@ -48,7 +48,7 @@ function updateInstall() {
   });
   document.getElementById("package-downloads").replaceChildren(...links);
   const distributionLabel = distributionSelect.selectedOptions[0].textContent;
-  document.getElementById("package-summary").textContent = `BlueFerry 0.8.0 packages for ${distributionLabel}:`;
+  document.getElementById("package-summary").textContent = `BlueFerry 0.8.1 packages for ${distributionLabel}:`;
   document.getElementById("package-command").textContent = `${distribution.command} ./${distribution.file("blueferry-*")}`;
 }
 
