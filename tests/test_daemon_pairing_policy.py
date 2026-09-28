@@ -116,6 +116,11 @@ def _daemon(make_daemon, calls):
     # The asynchronous adapter-state read for the proximity lock is covered
     # in test_proximity_lock_daemon; keep it off this fake bus.
     value._read_adapter_inhibitors = lambda: None
+    # Opt-in tethering has its own tests; keep its Network1 watch inert here.
+    value.tether = SimpleNamespace(
+        active=False, start=lambda: None, stop=lambda: None,
+        reset_after_bluez_restart=lambda: None, maybe_autoconnect=lambda: None,
+    )
     return value
 
 

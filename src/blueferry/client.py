@@ -48,8 +48,16 @@ from blueferry.protocol import (
     SNAPSHOT_CALL_TIMEOUT_SEC,
     STATUS_CALL_TIMEOUT_SEC,
     STORAGE_CALL_TIMEOUT_SEC,
+    TETHER_CALL_TIMEOUT_SEC,
+    TETHER_IFACE,
     backend_compatibility_error,
 )
+from blueferry.tether_status import TetherStatus
+
+_MISSING_API_ERRORS = frozenset({
+    "org.freedesktop.DBus.Error.UnknownMethod",
+    "org.freedesktop.DBus.Error.UnknownInterface",
+})
 
 
 class BackendError(BlueFerryError):
@@ -573,3 +581,29 @@ class BackendClient:
 
     def hold_and_answer_call(self) -> None:
         self._calls_call("HoldAndAnswer", timeout=CALL_CONTROL_TIMEOUT_SEC)
+    # ---- Tether1 (independent of the messaging API generation) -----------
+
+    def _tether_call(self, method: str) -> TetherStatus:
+        try:
+            value = getattr(self._raw_iface(TETHER_IFACE), method)(
+                timeout=TETHER_CALL_TIMEOUT_SEC
+            )
+            return TetherStatus.from_dict(decode_mapping(value))
+        except dbus.exceptions.DBusException as error:
+            if error.get_dbus_name() in _MISSING_API_ERRORS:
+                raise BackendError(
+                    "The running BlueFerry backend does not support tethering; "
+                    "update and restart it."
+                ) from error
+            raise BackendError(error.get_dbus_message() or str(error)) from error
+        except ValueError as error:
+            raise BackendError(str(error)) from error
+
+    def tether_state(self) -> TetherStatus:
+        return self._tether_call("GetState")
+
+    def tether_connect(self) -> TetherStatus:
+        return self._tether_call("Connect")
+
+    def tether_disconnect(self) -> TetherStatus:
+        return self._tether_call("Disconnect")

@@ -17,6 +17,9 @@ MEDIA_IFACE = f"{BUS_NAME}.Media1"
 # introspection is stable; its methods fail with CallsDisabled when the
 # feature is off. Calls1 does not change MESSAGES_API_VERSION.
 CALLS_IFACE = f"{BUS_NAME}.Calls1"
+# Optional, separately versioned Bluetooth PAN control. It is not part of the
+# messaging generation below, so clients must tolerate its absence.
+TETHER_IFACE = f"{BUS_NAME}.Tether1"
 ERROR_PREFIX = f"{BUS_NAME}.Error"
 
 # Compatibility generation, independent of package versions. Generation 2
@@ -50,6 +53,8 @@ MEDIA_CALL_TIMEOUT_SEC = 25
 # oFono bounds its own call-control requests at 30 seconds (Dial waits for the
 # phone to accept the call); leave room for the backend's reply.
 CALL_CONTROL_TIMEOUT_SEC = 40
+# Tether1 methods only start or stop work; progress arrives by TetherChanged.
+TETHER_CALL_TIMEOUT_SEC = 10
 
 # One phonebook pull or incoming-body fetch may already be ahead of an
 # interactive request on the serialized OBEX worker. This is a client-side

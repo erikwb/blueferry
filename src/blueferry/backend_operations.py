@@ -223,6 +223,12 @@ class CallControl(Protocol):
     def swap(self, success: Success, failure: Failure) -> None: ...
 
     def hold_and_answer(self, success: Success, failure: Failure) -> None: ...
+class TetherControl(Protocol):
+    def snapshot(self) -> dict[str, object]: ...
+
+    def connect(self, *, automatic: bool = False) -> dict[str, object]: ...
+
+    def disconnect(self) -> dict[str, object]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -259,6 +265,7 @@ class BackendDependencies:
     set_calls_enabled: Callable[[bool], dict[str, Any]] | None = None
     set_phone_battery_warning: Callable[[bool], dict[str, Any]] | None = None
     set_media_mpris: Callable[[bool], dict[str, Any]] | None = None
+    tether: TetherControl | None = None
 
 
 class BackendOperations:
@@ -1384,6 +1391,19 @@ class BackendOperations:
             raise NotReadyError(
                 "could not save the media control preference"
             ) from error
+    def _tether(self) -> TetherControl:
+        if self.dependencies.tether is None:
+            raise NotReadyError("Bluetooth tethering is unavailable in this backend")
+        return self.dependencies.tether
+
+    def tether_state(self) -> dict[str, object]:
+        return self._tether().snapshot()
+
+    def tether_connect(self) -> dict[str, object]:
+        return self._tether().connect()
+
+    def tether_disconnect(self) -> dict[str, object]:
+        return self._tether().disconnect()
 
     def is_healthy(self) -> bool:
         return self.sessions.map is not None

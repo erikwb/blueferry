@@ -58,6 +58,9 @@ _RULES: dict[str, tuple[RateRule, ...]] = {
     "calls-dial": (RateRule(6, 60), RateRule(60, 3_600)),
     "calls-answer": (RateRule(10, 60), RateRule(120, 3_600)),
     "calls-control": (RateRule(60, 60), RateRule(600, 3_600)),
+    # Each tether command pages the phone and may create a NetworkManager
+    # profile; toggling is interactive, so allow bursts but not a stream.
+    "tether": (RateRule(10, 60), RateRule(60, 3_600)),
 }
 
 
