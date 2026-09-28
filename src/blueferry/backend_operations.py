@@ -15,6 +15,7 @@ from typing import Any, Protocol
 
 from blueferry.contacts import clear_contact_cache
 from blueferry.errors import (
+    CallsDisabledError,
     ConfirmationRequiredError,
     InvalidArgumentsError,
     NotFoundError,
@@ -159,6 +160,40 @@ class ConfirmedGroups(Protocol):
     def clear(self) -> None: ...
 
 
+class CallControl(Protocol):
+    """Optional HFP call control (see ``blueferry.calls.controller``)."""
+
+    @property
+    def enabled(self) -> bool: ...
+
+    def snapshot(self) -> dict[str, object]: ...
+
+    def list_calls(self) -> dict[str, object]: ...
+
+    def dial(self, number: object, success: Success, failure: Failure) -> None: ...
+
+    def answer(self, call_id: object, success: Success, failure: Failure) -> None: ...
+
+    def hangup(self, call_id: object, success: Success, failure: Failure) -> None: ...
+
+    def hangup_all(self, success: Success, failure: Failure) -> None: ...
+
+    def send_tones(
+        self, call_id: object, tones: object, success: Success, failure: Failure,
+    ) -> None: ...
+
+    def swap(self, success: Success, failure: Failure) -> None: ...
+
+    def hold_and_answer(self, success: Success, failure: Failure) -> None: ...
+
+
+_CALLS_DISABLED_STATUS: dict[str, object] = {
+    "calls_enabled": False,
+    "calls_state": "disabled",
+    "calls_available": False,
+}
+
+
 @dataclass(frozen=True, slots=True)
 class BackendDependencies:
     """Explicit optional capabilities supplied by the daemon composition root."""
@@ -180,6 +215,7 @@ class BackendDependencies:
     on_storage_prepared: Callable[[Any], None] | None = None
     on_storage_changed: Callable[[], None] | None = None
     set_proximity_lock: Callable[[bool, int], dict[str, Any]] | None = None
+    calls: CallControl | None = None
 
 
 class BackendOperations:
@@ -675,6 +711,10 @@ class BackendOperations:
                 self.get_contacts_only_notifications()
             ),
         }
+        calls = self.dependencies.calls
+        status.update(
+            calls.snapshot() if calls is not None else _CALLS_DISABLED_STATUS
+        )
         if self.dependencies.status_provider is not None:
             status.update(self.dependencies.status_provider())
         status["api_version"] = MESSAGES_API_VERSION
@@ -1077,3 +1117,39 @@ class BackendOperations:
 
     def is_healthy(self) -> bool:
         return self.sessions.map is not None
+
+    # ---- optional phone calls -------------------------------------------
+
+    def _call_control(self) -> CallControl:
+        calls = self.dependencies.calls
+        if calls is None or not calls.enabled:
+            raise CallsDisabledError(
+                "phone calls are disabled; set BLUEFERRY_CALLS_ENABLED=true"
+            )
+        return calls
+
+    def list_calls(self) -> dict[str, object]:
+        return self._call_control().list_calls()
+
+    def dial(self, number: str, success: Success, failure: Failure) -> None:
+        self._call_control().dial(number, success, failure)
+
+    def answer_call(self, call_id: str, success: Success, failure: Failure) -> None:
+        self._call_control().answer(call_id, success, failure)
+
+    def hangup_call(self, call_id: str, success: Success, failure: Failure) -> None:
+        self._call_control().hangup(call_id, success, failure)
+
+    def hangup_all_calls(self, success: Success, failure: Failure) -> None:
+        self._call_control().hangup_all(success, failure)
+
+    def send_call_tones(
+        self, call_id: str, tones: str, success: Success, failure: Failure,
+    ) -> None:
+        self._call_control().send_tones(call_id, tones, success, failure)
+
+    def swap_calls(self, success: Success, failure: Failure) -> None:
+        self._call_control().swap(success, failure)
+
+    def hold_and_answer_call(self, success: Success, failure: Failure) -> None:
+        self._call_control().hold_and_answer(success, failure)

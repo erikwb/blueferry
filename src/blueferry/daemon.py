@@ -28,6 +28,7 @@ from blueferry.bluetooth_recovery import (
 )
 from blueferry.build_info import build_id, installed_build_sha, running_build_sha
 from blueferry.bus import get_system_bus, main_loop
+from blueferry.calls.controller import CallController
 from blueferry.confirmed_groups import ConfirmedGroupsStore
 from blueferry.connectivity import Connectivity
 from blueferry.contact_sync import ContactSync
@@ -166,6 +167,18 @@ class Daemon:
             on_le_dial=self.solicitation.set_dialing,
             inbound_le_primed=self.solicitation.active,
         )
+        # Optional HFP calls through oFono. Inert unless explicitly enabled;
+        # construction performs no I/O. oFono is only asked to page the phone
+        # (Modem.Powered) while the Classic bearer is up.
+        self.calls = CallController(
+            enabled=config.CALLS_ENABLED,
+            mac=config.IPHONE_MAC,
+            adapter=config.ADAPTER,
+            resolve_contact=self.contacts.resolve,
+            on_calls_changed=self._emit_calls_changed,
+            on_state_changed=self._emit_status,
+            phone_reachable=lambda: self.bearers.bredr_connected,
+        )
         self.contact_sync = ContactSync(
             sessions=self.sessions,
             storage=self.storage,
@@ -277,6 +290,7 @@ class Daemon:
 
     def _bearer_status_changed(self) -> None:
         self.proximity.bearer_changed()
+        self.calls.poke()
         self._emit_status()
 
     def _proximity_presence(self) -> bool | None:
@@ -291,6 +305,11 @@ class Daemon:
             grace,
         )
         return self.proximity.snapshot()
+
+    def _emit_calls_changed(self) -> None:
+        emit = getattr(self._dbus_service, "emit_calls_changed", None)
+        if emit is not None:
+            emit()
 
     def _observe_le_state(self, connected: bool | None) -> None:
         if connected is not True:
@@ -358,6 +377,7 @@ class Daemon:
                 on_storage_prepared=self._apply_storage_preparation,
                 on_storage_changed=self._on_storage_changed,
                 set_proximity_lock=self._set_proximity_lock,
+                calls=self.calls,
             ),
         )
         self.events.set_dbus_service(self._dbus_service)
@@ -509,6 +529,9 @@ class Daemon:
         # Sinks don't need the OBEX sessions — set them up now so ANCS events
         # still reach the desktop while MAP/PBAP are degraded.
         self.events.setup()
+        # Optional calls only observe oFono; failures there never degrade
+        # messaging, and a missing oFono is retried in the background.
+        self.calls.start()
 
         # Signal subscriptions belong to the GLib thread; the blocking session
         # creation itself belongs to the serialized OBEX worker.
@@ -878,6 +901,7 @@ class Daemon:
                 log.debug("could not remove BlueZ owner watch", exc_info=True)
         self.proximity.stop()
         self.recovery.stop()
+        self.calls.stop()
         self.read_receipts.close()
         self.adapter_class.stop()
         self.bearers.stop()

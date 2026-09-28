@@ -53,6 +53,9 @@ class BackendStatus:
     storage_detail: str = ""
     controller_vendor: str = ""
     ancs_limited_controller: bool = False
+    calls_enabled: bool = False
+    calls_state: str = "disabled"
+    calls_available: bool = False
     extra: Mapping[str, Any] = field(default_factory=dict, repr=False)
 
     @property
@@ -89,6 +92,9 @@ class BackendStatus:
             "map_connection_refused",
             "controller_vendor",
             "ancs_limited_controller",
+            "calls_enabled",
+            "calls_state",
+            "calls_available",
         }
         return cls(
             daemon=_bool(value.get("daemon")),
@@ -119,6 +125,9 @@ class BackendStatus:
             storage_detail=_str(value.get("storage_detail")),
             controller_vendor=_str(value.get("controller_vendor")),
             ancs_limited_controller=_bool(value.get("ancs_limited_controller")),
+            calls_enabled=_bool(value.get("calls_enabled")),
+            calls_state=_str(value.get("calls_state"), "disabled"),
+            calls_available=_bool(value.get("calls_available")),
             extra={key: item for key, item in value.items() if key not in known},
         )
 
@@ -148,7 +157,91 @@ class BackendStatus:
             "map_connection_refused": self.map_connection_refused,
             "controller_vendor": self.controller_vendor,
             "ancs_limited_controller": self.ancs_limited_controller,
+            "calls_enabled": self.calls_enabled,
+            "calls_state": self.calls_state,
+            "calls_available": self.calls_available,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class CallInfo:
+    """One phone call from Calls1.ListCalls (optional HFP feature)."""
+
+    call_id: str
+    state: str
+    direction: str = "unknown"
+    number: str = ""
+    network_name: str = ""
+    contact_name: str = ""
+    multiparty: bool = False
+    emergency: bool = False
+    first_seen: str = ""
+    extra: Mapping[str, Any] = field(default_factory=dict, repr=False)
+
+    @property
+    def ringing(self) -> bool:
+        return self.state in {"incoming", "waiting"}
+
+    @property
+    def display_peer(self) -> str:
+        return self.contact_name or self.network_name or self.number or "Unknown caller"
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> CallInfo:
+        known = {
+            "call_id", "state", "direction", "number", "network_name",
+            "contact_name", "multiparty", "emergency", "first_seen",
+        }
+        return cls(
+            call_id=_str(value.get("call_id")),
+            state=_str(value.get("state"), "unknown"),
+            direction=_str(value.get("direction"), "unknown"),
+            number=_str(value.get("number")),
+            network_name=_str(value.get("network_name")),
+            contact_name=_str(value.get("contact_name")),
+            multiparty=_bool(value.get("multiparty")),
+            emergency=_bool(value.get("emergency")),
+            first_seen=_str(value.get("first_seen")),
+            extra={key: item for key, item in value.items() if key not in known},
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            **self.extra,
+            "call_id": self.call_id,
+            "state": self.state,
+            "direction": self.direction,
+            "number": self.number,
+            "network_name": self.network_name,
+            "contact_name": self.contact_name,
+            "multiparty": self.multiparty,
+            "emergency": self.emergency,
+            "first_seen": self.first_seen,
+            "display_peer": self.display_peer,
+            "ringing": self.ringing,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class CallsSnapshot:
+    state: str = "disabled"
+    calls: tuple[CallInfo, ...] = ()
+
+    @property
+    def available(self) -> bool:
+        return self.state == "ready"
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> CallsSnapshot:
+        items = value.get("calls")
+        return cls(
+            state=_str(value.get("state"), "unknown"),
+            calls=tuple(
+                CallInfo.from_dict(item)
+                for item in (items if isinstance(items, list) else [])
+                if isinstance(item, Mapping) and isinstance(item.get("call_id"), str)
+            ),
+        )
 
 
 @dataclass(frozen=True, slots=True)
