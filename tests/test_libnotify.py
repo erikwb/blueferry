@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from blueferry.notification_open_map import OpenTarget, resolve_open_target
 from blueferry.sinks import libnotify as libnotify_mod
 from blueferry.sinks.libnotify import (
     _ANCS_EXPIRE_MS,
@@ -380,3 +381,216 @@ def test_tokens_are_scoped_to_notification_and_consumed_once(monkeypatch):
     sink._on_activation_token(1, "unused")
     sink._on_closed(1, 1)
     assert sink._activation_tokens == {}
+
+
+# ---- per-app notification click rules --------------------------------------
+
+_HOSTILE_TITLE = "$(touch /tmp/pwned)`id`; rm -rf ~ && https://evil.example/"
+_HOSTILE_BODY = "javascript:alert(1) file:///etc/passwd org.evil.App.desktop %u {body}"
+
+
+class _CountingNotifications(_FakeNotifications):
+    def __init__(self) -> None:
+        super().__init__()
+        self.next_id = 40
+
+    def Notify(self, *args):
+        self.calls.append(args)
+        self.next_id += 1
+        return self.next_id
+
+
+def _clickable_sink(rules, opened, monkeypatch):
+    monkeypatch.setattr("blueferry.sinks.libnotify.config.SHOW_NOTIFICATION_CONTENT", True)
+    sink = LibnotifySink.__new__(LibnotifySink)
+    sink._notification_policy = lambda: "all"
+    sink._notif = _CountingNotifications()
+    sink._pending = {}
+    sink._msg_subs = {}
+    sink._open_messages = {}
+    sink._open_apps = {}
+    sink._activation_tokens = {}
+    sink._last_open_target = float("-inf")
+    sink._open_target = lambda app_id: resolve_open_target(rules, app_id)
+    sink._on_open_target = lambda target, token: opened.append((target, token))
+    sink._on_open_message = lambda *_args: pytest.fail("not a message popup")
+    return sink
+
+
+def _ancs(app_id, title=_HOSTILE_TITLE, body=_HOSTILE_BODY):
+    return SimpleNamespace(app_name="App", app_id=app_id, title=title, body=body)
+
+
+def test_mapped_app_popup_opens_only_the_configured_target(monkeypatch) -> None:
+    opened = []
+    rules = {"com.apple.mobilemail": "org.mozilla.Thunderbird.desktop"}
+    sink = _clickable_sink(rules, opened, monkeypatch)
+
+    sink.handle_ancs(_ancs("com.apple.mobilemail"))
+    [call] = sink._notif.calls
+    assert list(call[5]) == ["default", "Open"]
+    assert bool(call[6]["transient"]) is True
+    assert json.loads(call[6]["omarchy-exec-argv"]) == [
+        sys.executable, "-m", "blueferry.notification_open",
+        "--desktop-id=org.mozilla.Thunderbird.desktop",
+    ]
+    nid = sink._notif.next_id
+
+    sink._on_activation_token(nid, "wayland-token")
+    sink._on_action(nid, "default")
+
+    assert opened == [
+        (OpenTarget("desktop", "org.mozilla.Thunderbird.desktop"), "wayland-token"),
+    ]
+    # Nothing from the notification reaches the launcher.
+    launched = repr(opened)
+    for fragment in ("touch", "pwned", "rm -rf", "evil", "passwd", "javascript", "{body}"):
+        assert fragment not in launched
+
+
+def test_unmapped_app_popup_keeps_todays_behaviour(monkeypatch) -> None:
+    opened = []
+    sink = _clickable_sink({"com.apple.mobilemail": "https://mail.example.com/"}, opened, monkeypatch)
+
+    sink.handle_ancs(_ancs("com.example.Other"))
+    [call] = sink._notif.calls
+    assert list(call[5]) == []
+    nid = sink._notif.next_id
+
+    sink._on_activation_token(nid, "token")
+    sink._on_action(nid, "default")
+
+    assert opened == []
+    assert sink._open_apps == {}
+    assert sink._activation_tokens == {}
+
+
+def test_empty_mapping_matches_the_previous_popup_exactly(monkeypatch) -> None:
+    sink = _clickable_sink({}, [], monkeypatch)
+
+    sink.handle_ancs(_ancs("com.apple.mobilemail", title="Inbox", body="New mail"))
+
+    # The exact Notify() arguments this popup had before click rules existed.
+    [(app, replaces, icon, title, body, actions, hints, timeout)] = sink._notif.calls
+    assert (app, int(replaces), icon) == ("BlueFerry", 0, "phone-symbolic")
+    assert title == "\U0001f4f1 App"
+    assert body == "Inbox \u2014 New mail"
+    assert list(actions) == []
+    assert actions.signature == "s"
+    assert dict(hints) == {"urgency": 1, "transient": True}
+    assert set(hints) == {"urgency", "transient"}
+    assert int(timeout) == _ANCS_EXPIRE_MS
+    assert sink._open_apps == {}
+
+
+def test_a_popup_opens_its_target_at_most_once(monkeypatch) -> None:
+    opened = []
+    now = [100.0]
+    monkeypatch.setattr(libnotify_mod.time, "monotonic", lambda: now[0])
+    sink = _clickable_sink({"com.slack": "slack.desktop"}, opened, monkeypatch)
+    sink.handle_ancs(_ancs("com.slack"))
+    nid = sink._notif.next_id
+
+    sink._on_action(nid, "default")
+    now[0] += 5.0
+    sink._on_action(nid, "default")
+
+    assert len(opened) == 1
+
+
+def test_rule_removed_after_the_popup_appeared_is_not_launched(monkeypatch) -> None:
+    opened = []
+    rules = {"net.whatsapp.WhatsApp": "https://web.whatsapp.com"}
+    sink = _clickable_sink(rules, opened, monkeypatch)
+    sink.handle_ancs(_ancs("net.whatsapp.WhatsApp"))
+    rules.clear()
+
+    sink._on_action(sink._notif.next_id, "default")
+
+    assert opened == []
+
+
+def test_rule_changed_after_the_popup_appeared_uses_the_current_target(monkeypatch) -> None:
+    opened = []
+    rules = {"net.whatsapp.WhatsApp": "https://web.whatsapp.com"}
+    sink = _clickable_sink(rules, opened, monkeypatch)
+    sink.handle_ancs(_ancs("net.whatsapp.WhatsApp"))
+    rules["net.whatsapp.WhatsApp"] = "whatsapp.desktop"
+
+    sink._on_action(sink._notif.next_id, "default")
+
+    assert opened == [(OpenTarget("desktop", "whatsapp.desktop"), "")]
+
+
+def test_click_rules_never_apply_to_other_actions_or_closed_popups(monkeypatch) -> None:
+    opened = []
+    sink = _clickable_sink({"com.slack": "slack.desktop"}, opened, monkeypatch)
+    sink.handle_ancs(_ancs("com.slack"))
+    nid = sink._notif.next_id
+
+    sink._on_action(nid, "dismiss")
+    sink._on_action(nid + 100, "default")
+    sink._on_closed(nid, 1)
+    sink._on_action(nid, "default")
+
+    assert opened == []
+    assert sink._open_apps == {}
+
+
+def test_repeated_action_signals_launch_at_most_once_per_interval(monkeypatch) -> None:
+    opened = []
+    now = [100.0]
+    monkeypatch.setattr(libnotify_mod.time, "monotonic", lambda: now[0])
+    sink = _clickable_sink({"com.slack": "slack.desktop"}, opened, monkeypatch)
+    for _ in range(3):
+        sink.handle_ancs(_ancs("com.slack"))
+    first = sink._notif.next_id - 2
+
+    sink._on_action(first, "default")
+    sink._on_action(first + 1, "default")
+    now[0] += 1.5
+    sink._on_action(first + 2, "default")
+
+    assert len(opened) == 2
+
+
+def test_a_failing_rule_lookup_leaves_the_popup_unclickable(monkeypatch) -> None:
+    sink = _clickable_sink({}, [], monkeypatch)
+
+    def broken(_app_id):
+        raise RuntimeError("settings unavailable")
+
+    sink._open_target = broken
+    sink.handle_ancs(_ancs("com.slack"))
+
+    assert list(sink._notif.calls[0][5]) == []
+
+
+def test_messages_popups_and_legacy_sinks_are_unaffected(monkeypatch) -> None:
+    monkeypatch.setattr("blueferry.sinks.libnotify.config.SHOW_NOTIFICATION_CONTENT", True)
+    # A sink built without the new collaborators behaves as before.
+    sink = LibnotifySink.__new__(LibnotifySink)
+    sink._notification_policy = lambda: "all"
+    sink._notif = _FakeNotifications()
+    sink.handle_ancs(_ancs("com.slack"))
+    assert list(sink._notif.calls[0][5]) == []
+    sink._on_action(1, "default")
+
+    opened = []
+    mapped = _clickable_sink({"com.apple.MobileSMS": "https://example.com"}, opened, monkeypatch)
+    mapped.handle_ancs(_ancs("com.apple.MobileSMS"))
+    assert mapped._notif.calls == []
+
+
+def test_click_trackers_are_bounded_and_released_on_close(monkeypatch) -> None:
+    sink = _clickable_sink({"com.slack": "slack.desktop"}, [], monkeypatch)
+    monkeypatch.setattr(libnotify_mod, "MAX_DESKTOP_MESSAGE_TRACKERS", 2)
+    for _ in range(4):
+        sink.handle_ancs(_ancs("com.slack"))
+
+    assert len(sink._open_apps) == 2
+    assert ("close", 41) in sink._notif.calls
+
+    sink._match = sink._action_match = sink._token_match = None
+    sink.close()
+    assert sink._open_apps == {}

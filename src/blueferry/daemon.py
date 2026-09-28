@@ -129,6 +129,7 @@ class Daemon:
             contacts_only_notifications=(
                 lambda: self.notification_policy.contacts_only
             ),
+            notification_open_target=self.notification_policy.open_target,
             storage=self.storage,
             on_incoming_message=lambda: self._verify_setup_task(MESSAGE_NOTIFICATIONS),
         )

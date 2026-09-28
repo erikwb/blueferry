@@ -15,6 +15,7 @@ from blueferry.bus import get_session_bus
 from blueferry.client_activation import request_message_activation
 from blueferry.events import sms_group_sent_event, sms_sent_event
 from blueferry.limits import MAX_ANCS_FINGERPRINTS
+from blueferry.notification_open import request_open_target
 from blueferry.sinks import Sink
 from blueferry.sinks.libnotify import LibnotifySink
 from blueferry.sinks.sqlite import SqliteSink
@@ -55,6 +56,7 @@ class EventDispatcher:
         historical_ancs=(),
         notification_policy=None,
         contacts_only_notifications=None,
+        notification_open_target=None,
         storage=None,
         on_incoming_message=None,
         notification_sink_factory: Callable[..., Sink] = LibnotifySink,
@@ -68,6 +70,7 @@ class EventDispatcher:
         self.dbus_service = None
         self.notification_policy = notification_policy
         self.contacts_only_notifications = contacts_only_notifications
+        self.notification_open_target = notification_open_target
         self.storage = storage
         self.on_incoming_message = on_incoming_message
         self._notification_sink_factory = notification_sink_factory
@@ -150,6 +153,8 @@ class EventDispatcher:
                 notification_policy=self.notification_policy,
                 contacts_only_notifications=self.contacts_only_notifications,
                 on_open_message=self._open_message,
+                open_target=self.notification_open_target,
+                on_open_target=self._open_target,
             )
         except Exception:
             log.exception("libnotify sink failed to init — continuing")
@@ -219,6 +224,9 @@ class EventDispatcher:
 
     def _open_message(self, handle: str, token: str) -> None:
         request_message_activation(handle, token)
+
+    def _open_target(self, target, token: str) -> None:
+        request_open_target(target, token)
 
     def message(self, event) -> None:
         if getattr(event, "kind", "") == "sms_received" and self.on_incoming_message is not None:

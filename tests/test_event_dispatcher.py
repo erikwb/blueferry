@@ -218,6 +218,38 @@ def test_notification_action_routes_to_one_client_even_without_backend_service(m
     assert opened == [("message-opaque-42", "focus-token")]
 
 
+def test_notification_click_rule_is_handed_to_the_launcher_helper(monkeypatch):
+    from blueferry.notification_open_map import OpenTarget
+
+    launched = []
+    monkeypatch.setattr(
+        event_dispatcher, "request_open_target",
+        lambda target, token: launched.append((target, token)),
+    )
+    monkeypatch.setattr(event_dispatcher, "SqliteSink", _SqliteSink)
+    received = {}
+
+    def create_sink(**kwargs):
+        received.update(kwargs)
+        return _NotificationSink()
+
+    def rule(app_id):
+        return OpenTarget("url", "https://web.whatsapp.com") if app_id == "net.whatsapp.WhatsApp" else None
+
+    dispatcher = EventDispatcher(
+        object(),
+        defer_mark_read=lambda _path: None,
+        notification_open_target=rule,
+        notification_sink_factory=create_sink,
+        session_bus=_Bus(owner=True),
+    )
+    dispatcher.setup()
+
+    assert received["open_target"] is rule
+    received["on_open_target"](rule("net.whatsapp.WhatsApp"), "focus-token")
+    assert launched == [(OpenTarget("url", "https://web.whatsapp.com"), "focus-token")]
+
+
 def test_libnotify_is_added_when_notification_server_appears(monkeypatch):
     monkeypatch.setattr(event_dispatcher, "SqliteSink", _SqliteSink)
     bus = _Bus()
