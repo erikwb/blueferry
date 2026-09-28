@@ -112,3 +112,27 @@ def test_stop_cancels_reconciliation() -> None:
 
     assert calls[-1] == ("cancel", 7)
     assert scheduled[0][1]() is False
+
+
+def test_authorization_refusal_pauses_repair_until_bluez_restarts() -> None:
+    from blueferry.bluez_setup import CodAuthorizationRefused
+
+    attempts = []
+    scheduled = []
+    supervisor = AdapterClassSupervisor(
+        "hci7",
+        read_class=lambda _adapter: 0x104,
+        matches=lambda value: value == 0x408,
+        repair=lambda adapter: attempts.append(adapter)
+        or (_ for _ in ()).throw(CodAuthorizationRefused("add a sudoers rule")),
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer_id: None,
+    )
+
+    supervisor.start()
+    for _minute in range(5):
+        assert scheduled[0][1]() is True
+    assert attempts == ["hci7"]
+
+    supervisor.poke()
+    assert attempts == ["hci7", "hci7"]

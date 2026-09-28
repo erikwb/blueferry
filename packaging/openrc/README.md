@@ -115,15 +115,46 @@ and experimental mode reads as inactive.
 
 ## Bluetooth device class
 
-Pairing needs the adapter's Class of Device set to A/V Hands-Free. systemd
-packages set it through the argument-validated `blueferry-set-cod` helper,
-started as a Polkit-authorized system unit. OpenRC has no such path yet, so
-set the class as an administrator before pairing, and again after Bluetooth
-restarts because the setting is volatile:
+Pairing needs the adapter's Class of Device set to A/V Hands-Free, and the
+daemon repairs it whenever it drifts, for example after Bluetooth restarts.
+systemd packages run the argument-validated helper
+`/usr/lib/blueferry/blueferry-set-cod` as a sandboxed system unit that a
+narrow Polkit rule lets active local sessions start. Without systemd,
+BlueFerry runs the same helper as
+`sudo -n -- /usr/lib/blueferry/blueferry-set-cod N`, where the adapter index
+is its only argument. `-n` never prompts, so an administrator authorizes it
+with a sudoers rule (edit with `visudo -f /etc/sudoers.d/blueferry` and adjust
+the group):
 
-```sh
-sudo /usr/lib/blueferry/blueferry-set-cod 0   # adapter hci0
 ```
+%wheel ALL=(root) NOPASSWD: /usr/lib/blueferry/blueferry-set-cod ^[0-9]+$
+```
+
+The `^[0-9]+$` argument pattern needs sudo 1.9.10 or newer; the helper also
+rejects anything but one decimal index. Without the rule, setup explains how
+to add it or how to run the helper once by hand, for example
+`sudo /usr/lib/blueferry/blueferry-set-cod 0` for `hci0`.
+
+Notes and trade-offs:
+
+- The rule runs a short shell script as full root. Unlike the systemd unit it
+  has no capability bounding set or sandbox, and it applies to every session
+  of the listed users, not only active local ones. It can still only set the
+  class of an existing adapter to 4/8.
+- `sudo -n` also succeeds without a rule while a sudo timestamp from a recent
+  `sudo` in the same terminal is cached. Authorization then comes from that
+  cache, not from BlueFerry.
+- After sudo refuses, the daemon stops retrying until bluetoothd restarts, so
+  a missing rule does not fill the authentication log every minute.
+- The optional OpenRC user service sets `no_new_privs`, which makes sudo
+  impossible for the daemon. BlueFerry detects this and does not call sudo.
+  Pairing, which runs from the desktop session, and the D-Bus-activated daemon
+  are unaffected. With the user service, either rerun the helper after
+  Bluetooth restarts or set `no_new_privs=""` in
+  `~/.config/rc/conf.d/blueferry`, giving up that hardening measure.
+- Setting file capabilities on `blueferry-set-cod` has no effect, because the
+  kernel ignores them on scripts. Granting them to `btmgmt` would give every
+  local user all Bluetooth management commands, so it is not supported.
 
 ## WirePlumber
 

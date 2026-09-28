@@ -13,6 +13,8 @@ This module owns those three concerns. Class-of-Device changes run through a
 hardened, argument-validating systemd service; its fixed operation is available
 to an active local daemon so volatile controller state can be repaired after a
 Bluetooth reset without granting raw Bluetooth capabilities to BlueFerry.
+Without systemd, the same fixed helper runs through ``sudo -n`` so that only a
+narrow, administrator-installed sudoers rule authorizes it, never a prompt.
 """
 from __future__ import annotations
 
@@ -27,7 +29,7 @@ import dbus.exceptions
 import dbus.service
 from gi.repository import GLib
 
-from blueferry import config
+from blueferry import config, service_manager
 from blueferry.bus import bluez, get_system_bus
 from blueferry.commands import run_command
 from blueferry.errors import CommandError, PairingError
@@ -49,6 +51,38 @@ _POLKIT_UNAVAILABLE_MARKERS = (
     "interactive authentication required",
     "no authentication agent",
 )
+
+# Non-systemd authorization: the packaged helper validates its single decimal
+# argument and runs only ``btmgmt --index N class 4 8``.
+SET_COD_HELPER = "/usr/lib/blueferry/blueferry-set-cod"
+SUDO = "/usr/bin/sudo"
+COD_AUTHORIZATION_UNAVAILABLE_MESSAGE = (
+    "Setting the Bluetooth device class needs administrator rights, and "
+    "systemd is not available to authorize it. Allow "
+    f"{SET_COD_HELPER} through sudo (see BlueFerry's OpenRC notes) or run: "
+    f"sudo {SET_COD_HELPER} {{index}}"
+)
+SUDO_NOT_AUTHORIZED_MESSAGE = (
+    "sudo did not allow BlueFerry to set the Bluetooth device class without a "
+    f"password. Add a sudoers rule for {SET_COD_HELPER} (see BlueFerry's "
+    f"OpenRC notes) or run: sudo {SET_COD_HELPER} {{index}}"
+)
+SUDO_NO_NEW_PRIVILEGES_MESSAGE = (
+    "sudo cannot set the Bluetooth device class from a process with "
+    "no_new_privs set, such as the default OpenRC BlueFerry service. See "
+    f"BlueFerry's OpenRC notes, or run: sudo {SET_COD_HELPER} {{index}}"
+)
+_SUDO_REFUSAL_MARKERS = (
+    "a password is required",
+    "is not allowed to execute",
+    "is not in the sudoers file",
+    "may not run sudo",
+    "a terminal is required",
+)
+
+
+class CodAuthorizationRefused(PairingError):
+    """No non-interactive authorization exists for the device-class helper."""
 
 
 # ---- Class-of-Device ----------------------------------------------------
@@ -81,6 +115,33 @@ def _polkit_authentication_unavailable(output: str) -> bool:
     return any(marker in normalized for marker in _POLKIT_UNAVAILABLE_MARKERS)
 
 
+def _executable(path: str) -> bool:
+    return os.path.isfile(path) and os.access(path, os.X_OK)
+
+
+def _no_new_privs(status_path: str = "/proc/self/status") -> bool:
+    """Return whether this process can no longer gain privileges via sudo."""
+    try:
+        with open(status_path, encoding="ascii") as status:
+            return any(line.split() == ["NoNewPrivs:", "1"] for line in status)
+    except (OSError, UnicodeError):
+        return False
+
+
+def _sudo_cod_command(index: str) -> list[str]:
+    """Return the only non-systemd authorization path, or raise with guidance."""
+    if not _executable(SET_COD_HELPER) or not _executable(SUDO):
+        raise CodAuthorizationRefused(
+            COD_AUTHORIZATION_UNAVAILABLE_MESSAGE.format(index=index)
+        )
+    if _no_new_privs():
+        # sudo would fail and log an authentication error on every attempt.
+        raise CodAuthorizationRefused(
+            SUDO_NO_NEW_PRIVILEGES_MESSAGE.format(index=index)
+        )
+    return [SUDO, "-n", "--", SET_COD_HELPER, index]
+
+
 def set_cod(
     *,
     adapter: str | None = None,
@@ -101,15 +162,21 @@ def set_cod(
         if not authorize:
             log.warning("adapter CoD differs; pairing setup must authorize the change")
             return False
-        systemctl = "/usr/bin/systemctl"
-        if not os.path.isfile(systemctl) or not os.access(systemctl, os.X_OK):
-            log.error("systemctl is unavailable; cannot authorize adapter setup")
-            return False
-        cmd = [
-            systemctl,
-            "start",
-            f"blueferry-btmgmt-set-class@{index}.service",
-        ]
+        if service_manager.init_system() == service_manager.SYSTEMD:
+            systemctl = "/usr/bin/systemctl"
+            if not os.path.isfile(systemctl) or not os.access(systemctl, os.X_OK):
+                log.error("systemctl is unavailable; cannot authorize adapter setup")
+                return False
+            cmd = [
+                systemctl,
+                "start",
+                f"blueferry-btmgmt-set-class@{index}.service",
+            ]
+        else:
+            # is_valid_adapter() admits leading zeros ("hci07"); the helper
+            # and sudoers rule see the canonical decimal index.
+            index = str(int(index))
+            cmd = _sudo_cod_command(index)
     log.info("setting adapter CoD via: %s", " ".join(cmd))
     if dry_run:
         return True
@@ -134,6 +201,16 @@ def set_cod(
                 and "not found" in normalized
             ):
                 raise PairingError(DEVICE_CLASS_SERVICE_MISSING_MESSAGE)
+        elif cmd[0] == SUDO:
+            normalized = output.casefold()
+            if "no new privileges" in normalized:
+                raise CodAuthorizationRefused(
+                    SUDO_NO_NEW_PRIVILEGES_MESSAGE.format(index=index)
+                )
+            if any(marker in normalized for marker in _SUDO_REFUSAL_MARKERS):
+                raise CodAuthorizationRefused(
+                    SUDO_NOT_AUTHORIZED_MESSAGE.format(index=index)
+                )
         log.error("btmgmt class %d %d failed (rc=%d): %s",
                   config.COD_MAJOR, config.COD_MINOR, r.returncode,
                   output)

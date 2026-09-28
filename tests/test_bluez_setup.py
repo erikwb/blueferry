@@ -173,6 +173,143 @@ def test_cod_change_rejects_an_invalid_adapter(monkeypatch):
     assert calls == []
 
 
+def _without_systemd(monkeypatch, *, executables, no_new_privs=False, result=None):
+    from blueferry import service_manager
+
+    calls = []
+    monkeypatch.setattr(bluez_setup.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(
+        service_manager, "init_system", lambda: service_manager.OPENRC,
+    )
+    monkeypatch.setattr(bluez_setup, "_executable", lambda path: path in executables)
+    monkeypatch.setattr(bluez_setup, "_no_new_privs", lambda: no_new_privs)
+    monkeypatch.setattr(
+        bluez_setup,
+        "run_command",
+        lambda args, **kwargs: calls.append((args, kwargs))
+        or result
+        or SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+    return calls
+
+
+def test_without_systemd_the_helper_runs_through_noninteractive_sudo(monkeypatch):
+    calls = _without_systemd(
+        monkeypatch,
+        executables={bluez_setup.SET_COD_HELPER, bluez_setup.SUDO},
+    )
+
+    assert bluez_setup.set_cod(adapter="hci07", authorize=True) is True
+    assert calls[0][0] == [
+        "/usr/bin/sudo", "-n", "--", "/usr/lib/blueferry/blueferry-set-cod", "7",
+    ]
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        "sudo: a password is required\n",
+        "alice is not in the sudoers file.\n",
+        "Sorry, user alice is not allowed to execute "
+        "'/usr/lib/blueferry/blueferry-set-cod 2' as root on host.\n",
+    ],
+)
+def test_unauthorized_sudo_explains_the_sudoers_rule(monkeypatch, stderr):
+    _without_systemd(
+        monkeypatch,
+        executables={bluez_setup.SET_COD_HELPER, bluez_setup.SUDO},
+        result=SimpleNamespace(returncode=1, stdout="", stderr=stderr),
+    )
+
+    with pytest.raises(bluez_setup.CodAuthorizationRefused) as failure:
+        bluez_setup.set_cod(adapter="hci2", authorize=True)
+
+    assert str(failure.value) == bluez_setup.SUDO_NOT_AUTHORIZED_MESSAGE.format(index="2")
+    assert "sudo /usr/lib/blueferry/blueferry-set-cod 2" in str(failure.value)
+
+
+def test_no_new_privs_process_never_invokes_sudo(monkeypatch):
+    calls = _without_systemd(
+        monkeypatch,
+        executables={bluez_setup.SET_COD_HELPER, bluez_setup.SUDO},
+        no_new_privs=True,
+    )
+
+    with pytest.raises(bluez_setup.CodAuthorizationRefused, match="no_new_privs"):
+        bluez_setup.set_cod(adapter="hci0", authorize=True)
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Name:\tpython\nNoNewPrivs:\t1\nSeccomp:\t0\n", True),
+        ("Name:\tpython\nNoNewPrivs:\t0\n", False),
+        ("Name:\tpython\n", False),
+    ],
+)
+def test_no_new_privs_is_read_from_proc_status(tmp_path, text, expected):
+    status = tmp_path / "status"
+    status.write_text(text)
+
+    assert bluez_setup._no_new_privs(str(status)) is expected
+    assert bluez_setup._no_new_privs(str(tmp_path / "missing")) is False
+
+
+def test_sudo_under_no_new_privs_is_explained(monkeypatch):
+    _without_systemd(
+        monkeypatch,
+        executables={bluez_setup.SET_COD_HELPER, bluez_setup.SUDO},
+        result=SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr=(
+                'sudo: The "no new privileges" flag is set, which prevents '
+                "sudo from running as root.\n"
+            ),
+        ),
+    )
+
+    with pytest.raises(bluez_setup.CodAuthorizationRefused, match="no_new_privs"):
+        bluez_setup.set_cod(adapter="hci0", authorize=True)
+
+
+def test_failed_helper_under_sudo_is_not_mislabelled(monkeypatch):
+    _without_systemd(
+        monkeypatch,
+        executables={bluez_setup.SET_COD_HELPER, bluez_setup.SUDO},
+        result=SimpleNamespace(returncode=1, stdout="", stderr="Invalid index\n"),
+    )
+
+    assert bluez_setup.set_cod(adapter="hci0", authorize=True) is False
+
+
+@pytest.mark.parametrize(
+    "executables",
+    [set(), {bluez_setup.SUDO}, {bluez_setup.SET_COD_HELPER}],
+)
+def test_without_an_authorization_path_no_command_runs(monkeypatch, executables):
+    calls = _without_systemd(monkeypatch, executables=executables)
+
+    with pytest.raises(bluez_setup.CodAuthorizationRefused) as failure:
+        bluez_setup.set_cod(adapter="hci3", authorize=True)
+
+    assert calls == []
+    assert str(failure.value) == (
+        bluez_setup.COD_AUTHORIZATION_UNAVAILABLE_MESSAGE.format(index="3")
+    )
+
+
+def test_unauthorized_cod_change_never_tries_sudo(monkeypatch):
+    calls = _without_systemd(
+        monkeypatch,
+        executables={bluez_setup.SET_COD_HELPER, bluez_setup.SUDO},
+    )
+
+    assert bluez_setup.set_cod(adapter="hci0", authorize=False) is False
+    assert calls == []
+
+
 @pytest.fixture
 def adverts(monkeypatch):
     now = [0.0]

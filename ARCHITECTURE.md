@@ -381,7 +381,10 @@ A change to these rules has to be made in both places.
   startup, on BlueZ owner change, and periodically. On drift it runs one fixed
   systemd helper that can only set the validated adapter to A/V Hands-Free, as
   permitted by a narrow Polkit rule. No general `btmgmt` or systemd access is
-  exposed.
+  exposed. Without systemd, the same helper runs only through `sudo -n` and an
+  administrator-installed sudoers rule. BlueFerry never prompts for or stores
+  credentials, skips sudo under `no_new_privs`, and pauses repair after a
+  refusal until bluetoothd restarts.
 - **Recovery:** `bluetooth_recovery` performs a last-resort power cycle of the
   selected controller only. It runs after a sustained ANCS outage on a setup
   that previously worked, tries an LE-only reset first, and allows one cycle

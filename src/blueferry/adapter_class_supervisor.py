@@ -51,6 +51,9 @@ class AdapterClassSupervisor:
         self._cancel = cancel
         self._running = False
         self._timer_id: int | None = None
+        # Set after an authorization refusal so a missing sudoers rule is not
+        # retried (and logged by sudo) every minute; a BlueZ restart clears it.
+        self._repair_paused = False
 
     def start(self) -> None:
         if self._running:
@@ -63,6 +66,7 @@ class AdapterClassSupervisor:
     def poke(self) -> None:
         """Recheck immediately, notably after bluetoothd changes owner."""
         if self._running:
+            self._repair_paused = False
             self._reconcile()
 
     def stop(self) -> None:
@@ -90,7 +94,7 @@ class AdapterClassSupervisor:
         if cod is None:
             log.debug("adapter Class-of-Device is temporarily unavailable")
             return
-        if self._matches(cod):
+        if self._matches(cod) or self._repair_paused:
             return
         log.warning(
             "adapter Class-of-Device drifted to 0x%06x; restoring A/V Hands-Free",
@@ -98,6 +102,14 @@ class AdapterClassSupervisor:
         )
         try:
             repaired = self._repair(self.adapter)
+        except bluez_setup.CodAuthorizationRefused as error:
+            self._repair_paused = True
+            log.warning(
+                "could not restore adapter Class-of-Device: %s "
+                "Retrying after the next Bluetooth restart.",
+                error,
+            )
+            return
         except Exception:
             log.warning("could not restore adapter Class-of-Device", exc_info=True)
             return
