@@ -300,6 +300,9 @@ contract.
 - **Quickshell**: QML has no generic D-Bus client, so one persistent
   `quickshell_bridge` process handles all messaging, contact, status, and
   preference requests over stdin. Private data never goes in process argv.
+  It sends a `host` event at startup, and its `status` replies also carry
+  `bluetooth_restart_command`: the host's BlueZ restart command (`""` when
+  unknown), used in the ANCS repair hint even while the daemon is down.
   Setup uses the separate short-lived `pairing-*` helpers, because setup
   happens before the daemon is available. Quickshell sends the displayed
   roster token so the backend can reject stale routes. Superseded or

@@ -121,6 +121,8 @@ Kirigami.ScrollablePage {
             status: iphonePage.bridge.status
             storagePolicy: iphonePage.bridge.status.storage_policy || ""
             storageState: iphonePage.bridge.status.storage_state || ""
+            bluetoothRestartCommand: iphonePage.bridge.bluetoothRestartCommand
+                ?? "sudo systemctl restart bluetooth.service"
         }
 
         Kirigami.FormLayout {
