@@ -10,7 +10,6 @@ from importlib.resources import files
 from PySide6.QtCore import QLocale, QTimer, QTranslator, QUrl
 from PySide6.QtGui import QAction, QGuiApplication, QIcon, QWindow
 from PySide6.QtQml import QQmlApplicationEngine
-from PySide6.QtQuickControls2 import QQuickStyle
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from blueferry.client_activation import record_client_use
@@ -22,6 +21,28 @@ APP_ICON = "io.weirdware.BlueFerry"
 TRANSLATION_DIR = os.environ.get(
         "BLUEFERRY_QT_LOCALE_DIR", "/usr/share/blueferry/translations"
         )
+DEFAULT_QUICK_CONTROLS_STYLE = "org.kde.desktop"
+
+
+def _select_quick_controls_style() -> None:
+    """Default to the KDE style unless the user chose another one.
+
+    This must run before the QML engine loads Qt Quick Controls. Where the
+    PySide6.QtQuickControls2 binding exists, QQuickStyle.setStyle() is used.
+    Some distributions omit that binding; there QT_QUICK_CONTROLS_STYLE is
+    set instead. That fallback ranks below the -style argument and
+    QT_STYLE_OVERRIDE, so a widget style name given there (e.g. "breeze")
+    selects a Controls style that does not exist. The fallback variable is
+    also inherited by child processes, which is harmless.
+    """
+    if os.environ.get("QT_QUICK_CONTROLS_STYLE"):
+        return
+    try:
+        from PySide6.QtQuickControls2 import QQuickStyle
+    except ImportError:
+        os.environ["QT_QUICK_CONTROLS_STYLE"] = DEFAULT_QUICK_CONTROLS_STYLE
+    else:
+        QQuickStyle.setStyle(DEFAULT_QUICK_CONTROLS_STYLE)
 
 
 def _install_translation(application: QGuiApplication) -> None:
@@ -115,8 +136,7 @@ def main() -> int:
     args, qt_args = parser.parse_known_args(sys.argv[1:])
     wayland_token = os.environ.pop("XDG_ACTIVATION_TOKEN", "")
     token = wayland_token or os.environ.get("DESKTOP_STARTUP_ID", "")
-    if not os.environ.get("QT_QUICK_CONTROLS_STYLE"):
-        QQuickStyle.setStyle("org.kde.desktop")
+    _select_quick_controls_style()
 
     application = QApplication([sys.argv[0], *qt_args])
     # The X11 platform reads its startup ID while constructing QApplication.
