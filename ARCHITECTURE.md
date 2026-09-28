@@ -39,7 +39,8 @@ All paths are relative to `src/blueferry/` unless noted.
 | `confirmed_groups.py` | Persistent confirmed group rosters in the owner-only settings document. |
 | `group_routes.py` | Saved named-group reply rosters in the settings document, outside history retention. |
 | `starred_threads.py` | Persistent starred-conversation keys in the settings document. |
-| `notification_policy.py` | Persistent desktop notification preferences. |
+| `notification_policy.py` | Persistent desktop notification preferences, including per-app click rules. |
+| `notification_open_map.py` | Strict validation and exact-match resolution of notification click rules (bundle ID to http(s) URL or desktop-entry ID). |
 | `private_preferences.py` | Encrypts a whole preference collection under the storage policy. |
 | `settings_store.py` | Small atomic store shared by daemon-owned preferences. |
 | `glib_timers.py` | `schedule_periodic`: a repeating GLib timer whose owner forgets the source id once GLib destroys the source (false return or exception). |
@@ -131,6 +132,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `backend_lifecycle.py` | Starts the daemon and restarts one that predates installed files. |
 | `client_activation.py` | Picks and activates one desktop client (recency files, notification-open forwarding). |
 | `glib_client_activation.py` | GLib adapter for client activation (GTK and the Quickshell bridge). |
+| `notification_open.py` | Opens a click rule's URL or desktop entry through Gio in a helper process, via a transient systemd user unit when available. |
 | `time_display.py` | Human-readable local timestamps for all clients. |
 | `i18n.py` | gettext helpers for Python presentation layers. |
 
@@ -142,6 +144,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `cli_messages.py` | CLI message listing, recipient selection, and send. |
 | `cli_common.py` | Small CLI presentation helpers. |
 | `cli_proximity.py` | `proximity-lock` status, dry run, enable, and disable. |
+| `cli_notifications.py` | `notifications open-map` rule editing. |
 | `tui.py` | Textual terminal client. |
 | `tui_launcher.py` | Launches the TUI with the package-private Textual bundle when present. |
 | `ui/app.py` | GTK4/libadwaita application entry point. |
@@ -160,6 +163,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `qt/qml/ConversationLogic.qml` | Thread lookup, roster-warning dedup, participant parsing (also used by Quickshell). |
 | `qt/qml/PhoneSettingsPage.qml` | Qt setup and preferences page. |
 | `qt/qml/PhoneSettingsDialogs.qml` | Window-owned settings/pairing dialogs that outlive the page. |
+| `qt/qml/NotificationOpenMapEditor.qml` | Loaded editor for notification click rules (shown with the "all" policy). |
 | `qt/qml/OnboardingSummary.qml` | Renders the onboarding stage message. |
 | `qt/qml/ProximityLockSettings.qml` | Away-lock toggle, grace period, and warning; loaded only for daemons that report it. |
 | `qt/qml/GroupConfirmationDialog.qml` | Group recipient confirmation before sending. |
@@ -433,6 +437,17 @@ A change to these rules has to be made in both places.
   policy applies exact bundle-ID allow/block rules first and delivers content
   only to an ephemeral popup sink, never retained or broadcast. Apple Messages
   keeps only the fields needed for group correlation.
+- **Notification click rules** map an exact bundle ID to an `http(s)` URL or
+  a desktop-entry ID. They are fixed user configuration: the popup's content
+  is never interpolated into a target, and nothing is passed to a shell. The
+  store, the D-Bus method, the daemon's spawn, the helper's command line, and
+  the final Gio launch each revalidate the target. The daemon starts a
+  helper process (never launching on its GLib loop or inside its sandbox);
+  under systemd the helper asks the user manager for a transient
+  `app-blueferry-open-*.service` so the app runs outside the backend's
+  cgroup and restrictions, then launches through Gio with the notification
+  server's activation token. Removing a rule takes effect even for popups
+  that are already visible.
 - **Logs** exclude message bodies, notification text, and recipient
   identities at every level. Markup and terminal output are escaped at their
   display boundaries.
