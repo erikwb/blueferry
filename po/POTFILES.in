@@ -16,3 +16,4 @@ src/blueferry/qt/qml/NewMessageDialog.qml
 src/blueferry/qt/qml/ProximityLockSettings.qml
 src/blueferry/qt/qml/CallsDialog.qml
 src/blueferry/qt/qml/PhoneCallsSettings.qml
+src/blueferry/qt/qml/PhoneStatusIndicator.qml

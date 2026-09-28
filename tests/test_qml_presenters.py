@@ -13,7 +13,7 @@ os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import Q_ARG, Property, QMetaObject, QObject, QPointF, Qt, QUrl, Slot
+from PySide6.QtCore import Q_ARG, Property, QEvent, QMetaObject, QObject, QPointF, Qt, QUrl, Slot
 from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication
 from PySide6.QtQml import QQmlComponent, QQmlEngine
 from PySide6.QtQuick import QQuickWindow
@@ -863,6 +863,84 @@ def test_optional_calls_dialog_lists_calls_and_dials_through_the_bridge(
     }
     assert QMetaObject.invokeMethod(dialog, "close")
     QGuiApplication.processEvents()
+
+
+def test_optional_phone_status_indicator_appears_only_with_known_values(
+    qml_engine, settings_window,
+):
+    window, bridge = settings_window
+    # Default status (calls off, or oFono without values): nothing is loaded.
+    assert window.findChild(QObject, "phoneStatusIndicator") is None
+    bridge.setProperty("status", {
+        "calls_enabled": True,
+        "phone_battery_level": None,
+        "phone_signal_strength": None,
+    })
+    QGuiApplication.processEvents()
+    assert window.findChild(QObject, "phoneStatusIndicator") is None
+
+    bridge.setProperty("status", {
+        "calls_enabled": True,
+        "phone_battery_level": 40,
+        "phone_signal_strength": 80,
+        "phone_network_name": "Sunrise",
+        "phone_network_status": "roaming",
+    })
+    QGuiApplication.processEvents()
+    indicator = _settings_object(window, "phoneStatusIndicator")
+    assert _settings_object(window, "phoneBatteryLabel").property("text") == "40 %"
+    assert indicator.property("batteryIconName") == "battery-040"
+    assert indicator.property("signalIconName") == "network-mobile-80"
+    assert indicator.property("summary") == (
+        "iPhone battery about 40 % · Signal 80 % · Sunrise (roaming)"
+    )
+
+    # The operator name is remote text: the tooltip must not render HTML.
+    bridge.setProperty("status", {
+        "calls_enabled": True,
+        "phone_battery_level": 40,
+        "phone_network_name": "<b>Sun</b>",
+        "phone_network_status": "registered",
+    })
+    QGuiApplication.processEvents()
+    tool_tip = indicator.findChild(QObject, "phoneStatusToolTip")
+    assert tool_tip is not None
+    content = tool_tip.property("contentItem")
+    label = content.findChild(QObject, "phoneStatusToolTipLabel")
+    assert label is not None
+    qml_engine.globalObject().setProperty("phoneToolTipLabel", qml_engine.newQObject(label))
+    # Qt::PlainText is 0 (AutoText, the style default, is 2).
+    assert _evaluate(qml_engine, "phoneToolTipLabel.textFormat") == int(Qt.TextFormat.PlainText.value)
+    # Text.Wrap is 4, like the style's own tooltip label.
+    assert _evaluate(qml_engine, "phoneToolTipLabel.wrapMode") == 4
+    assert label.property("text") == "iPhone battery about 40 % · <b>Sun</b>"
+
+    # A long name wraps inside the style's 14-grid-unit width cap.
+    bridge.setProperty("status", {
+        "calls_enabled": True,
+        "phone_battery_level": 40,
+        "phone_network_name": "Very Long Operator Name " * 3,
+        "phone_network_status": "registered",
+    })
+    QGuiApplication.processEvents()
+    cap = label.property("maxTextWidth")
+    assert cap > 0
+    assert content.property("implicitWidth") <= cap
+    assert label.property("contentWidth") <= cap
+    assert label.property("lineCount") > 1
+
+    # Signal only: the battery parts hide, the indicator stays.
+    bridge.setProperty("status", {"calls_enabled": True, "phone_signal_strength": 20})
+    QGuiApplication.processEvents()
+    assert _settings_object(window, "phoneBatteryLabel").property("visible") is False
+    assert indicator.property("batteryIconName") == ""
+    assert indicator.property("summary") == "Signal 20 %"
+
+    bridge.setProperty("status", {})
+    QGuiApplication.processEvents()
+    # The Loader releases its item with deleteLater().
+    QGuiApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert window.findChild(QObject, "phoneStatusIndicator") is None
 
 
 def test_phone_settings_first_run_and_reopening_keep_the_page_alive(qml_engine, settings_window):
