@@ -58,3 +58,13 @@ MAX_PENDING_READ_RECEIPTS = 2_000
 MAX_DESKTOP_MESSAGE_TRACKERS = 256
 MAX_PHONEBOOK_CONTACTS = 65_535
 MAX_CONTACT_ADDRESSES_PER_CARD = 64
+
+# PBAP call history. iOS keeps a short recent-calls list; these bounds only
+# stop a malformed or hostile peer from forcing unbounded work or storage.
+MAX_CALL_HISTORY_PER_FOLDER = 1_000
+MAX_CALL_HISTORY_BYTES = 8 * 1024 * 1024
+MAX_CALL_HISTORY_RECORDS = 2_000
+MAX_CALL_HISTORY_QUERY_LIMIT = 2_000
+# Missed-call identities already announced (or silently seeded). Bounded, and
+# additionally aged out with the history retention window.
+MAX_CALL_HISTORY_SEEN_KEYS = 5_000
