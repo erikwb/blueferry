@@ -30,6 +30,7 @@ import dbus.exceptions
 from blueferry import config
 from blueferry.ancs.events import AncsEvent
 from blueferry.bus import get_session_bus
+from blueferry.call_history import MAX_INDIVIDUAL_MISSED_CALL_POPUPS, MissedCallNotice
 from blueferry.client_activation import activation_argv, select_client
 from blueferry.events import SmsEvent
 from blueferry.limits import MAX_DESKTOP_MESSAGE_TRACKERS
@@ -39,6 +40,7 @@ from blueferry.notification_policy import (
     NO_NOTIFICATIONS,
 )
 from blueferry.text_safety import terminal_text
+from blueferry.time_display import format_message_timestamp
 
 
 class _SignalMatch(Protocol):
@@ -284,6 +286,62 @@ class LibnotifySink:
             )
         except dbus.exceptions.DBusException as e:
             log.error("libnotify Notify (ANCS) failed: %s", e.get_dbus_name())
+
+    # ---- missed calls (PBAP call history) --------------------------------
+
+    def handle_missed_calls(
+        self,
+        notices: list[MissedCallNotice],
+        *,
+        individual_limit: int = MAX_INDIVIDUAL_MISSED_CALL_POPUPS,
+    ) -> None:
+        """Announce newly missed calls; a burst collapses into one summary."""
+        if self._policy() == NO_NOTIFICATIONS:
+            return
+        if self._contacts_only():
+            notices = [notice for notice in notices if notice.known_contact]
+        if not notices:
+            return
+        if len(notices) > individual_limit:
+            title = f"\U0001f4de {len(notices)} missed calls"
+            if config.SHOW_NOTIFICATION_CONTENT:
+                callers = list(dict.fromkeys(
+                    notice.caller or "Unknown caller" for notice in notices
+                ))
+                body = ", ".join(callers)
+            else:
+                body = "Missed calls on your iPhone"
+            self._notify_missed_call(title, body)
+            return
+        for notice in notices:
+            if config.SHOW_NOTIFICATION_CONTENT:
+                title = f"\U0001f4de {notice.caller or 'Unknown caller'}"
+                when = format_message_timestamp(notice.occurred_at.isoformat())
+                body = f"Missed call · {when}" if when else "Missed call"
+            else:
+                title = "\U0001f4de Missed call"
+                body = "Missed call on your iPhone"
+            self._notify_missed_call(title, body)
+
+    def _notify_missed_call(self, title: str, body: str) -> None:
+        if len(body) > _BODY_LIMIT:
+            body = body[:_BODY_LIMIT - 1] + "…"
+        # Caller names and numbers come from the phone: escape like SMS text.
+        title = escape(terminal_text(title).replace("\n", " "))
+        body = escape(terminal_text(body))
+        try:
+            self._notif.Notify(
+                _APP_NAME,
+                dbus.UInt32(0),
+                "call-missed-symbolic",
+                title,
+                body,
+                dbus.Array([], signature="s"),
+                dbus.Dictionary({"urgency": dbus.Byte(1)}, signature="sv"),
+                dbus.Int32(_MESSAGE_EXPIRE_MS),
+            )
+        except dbus.exceptions.DBusException as e:
+            log.error("libnotify Notify (missed call) failed: %s", e.get_dbus_name())
 
     # ---- iPhone marks read → close our popup ----------------------------
 

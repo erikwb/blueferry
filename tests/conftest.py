@@ -337,6 +337,7 @@ def isolated_state(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "STATE_DIR", state_dir)
     monkeypatch.setattr(config, "EVENTS_DB", state_dir / "events.sqlite")
     monkeypatch.setattr(config, "CONTACTS_DB", state_dir / "contacts.sqlite")
+    monkeypatch.setattr(config, "CALLS_DB", state_dir / "calls.sqlite")
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime_dir))
     return tmp_path
 
