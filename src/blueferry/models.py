@@ -331,3 +331,63 @@ class EventRecord:
 
     def to_dict(self) -> dict[str, Any]:
         return dict(self.data)
+
+
+CALL_DIRECTIONS = frozenset({"missed", "incoming", "outgoing"})
+
+
+@dataclass(frozen=True, slots=True)
+class CallHistoryEntry:
+    """One retained iPhone call as returned by ``ListCallHistory``."""
+
+    direction: str
+    timestamp: str
+    address: str = ""
+    name: str | None = None
+    contact_name: str | None = None
+    extra: Mapping[str, Any] = field(default_factory=dict, repr=False)
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> CallHistoryEntry | None:
+        direction = _str(value.get("direction"))
+        timestamp = _str(value.get("timestamp"))
+        if direction not in CALL_DIRECTIONS or not timestamp:
+            return None
+        name = value.get("name")
+        contact = value.get("contact_name")
+        return cls(
+            direction=direction,
+            timestamp=timestamp,
+            address=_str(value.get("address")),
+            name=name if isinstance(name, str) and name else None,
+            contact_name=contact if isinstance(contact, str) and contact else None,
+            extra={
+                key: item for key, item in value.items()
+                if key not in {"direction", "timestamp", "address", "name", "contact_name"}
+            },
+        )
+
+    @property
+    def missed(self) -> bool:
+        return self.direction == "missed"
+
+    @property
+    def display_caller(self) -> str:
+        return self.name or self.address or "Unknown caller"
+
+    @property
+    def display_time(self) -> str:
+        return format_message_timestamp(self.timestamp)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Presentation mapping for toolkit clients (Qt/QML)."""
+        return {
+            "direction": self.direction,
+            "timestamp": self.timestamp,
+            "address": self.address,
+            "name": self.name or "",
+            "contactName": self.contact_name or "",
+            "caller": self.display_caller,
+            "time": self.display_time,
+            "missed": self.missed,
+        }

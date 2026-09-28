@@ -8,6 +8,7 @@ import dbus.exceptions
 
 from blueferry.bus import get_session_bus
 from blueferry.client_wire import (
+    decode_call_history,
     decode_contact_records,
     decode_contacts,
     decode_events,
@@ -18,7 +19,7 @@ from blueferry.client_wire import (
 )
 from blueferry.errors import BlueFerryError
 from blueferry.limits import MAX_CONTACT_PAGE
-from blueferry.models import BackendStatus, EventRecord, Thread
+from blueferry.models import BackendStatus, CallHistoryEntry, EventRecord, Thread
 from blueferry.protocol import (
     BUS_NAME,
     CLEAR_CALL_TIMEOUT_SEC,
@@ -57,6 +58,12 @@ class CompatibilityCache:
 
     def add(self, owner: str) -> None:
         self._owners.add(owner)
+
+
+def _dbus_message(error: Exception) -> str:
+    if isinstance(error, dbus.exceptions.DBusException):
+        return error.get_dbus_message() or str(error)
+    return str(error)
 
 
 def _unique_owner(interface: object) -> str | None:
@@ -219,6 +226,22 @@ class BackendClient:
     def sync_contacts(self) -> int:
         try:
             return int(self._iface(MESSAGES_IFACE).SyncContacts(
+                timeout=OBEX_CALL_TIMEOUT_SEC
+            ))
+        except dbus.exceptions.DBusException as error:
+            raise BackendError(error.get_dbus_message() or str(error)) from error
+
+    def call_history(self, limit: int = 200) -> list[CallHistoryEntry]:
+        try:
+            return decode_call_history(self._iface(MESSAGES_IFACE).ListCallHistory(
+                dbus.UInt32(limit), timeout=SNAPSHOT_CALL_TIMEOUT_SEC,
+            ))
+        except (dbus.exceptions.DBusException, ValueError) as error:
+            raise BackendError(_dbus_message(error)) from error
+
+    def sync_call_history(self) -> int:
+        try:
+            return int(self._iface(MESSAGES_IFACE).SyncCallHistory(
                 timeout=OBEX_CALL_TIMEOUT_SEC
             ))
         except dbus.exceptions.DBusException as error:
