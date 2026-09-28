@@ -12,8 +12,9 @@ import dbus
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
+from typer.testing import CliRunner
 
-from blueferry import config
+from blueferry import cli_calls, config
 from blueferry.backend_operations import BackendDependencies, BackendOperations
 from blueferry.calls.phone_status import (
     HANDSFREE_IFACE,
@@ -27,6 +28,7 @@ from blueferry.calls.phone_status import (
     parse_network_status,
     parse_signal_strength,
 )
+from blueferry.cli import app
 from blueferry.event_dispatcher import EventDispatcher
 from blueferry.models import BackendStatus, phone_status_fields
 from blueferry.sinks.libnotify import LibnotifySink
@@ -282,3 +284,83 @@ def test_status_model_decodes_phone_fields_defensively() -> None:
     assert malformed.phone_network_name is None
     assert phone_status_fields(malformed) == []
     assert BackendStatus.from_dict({}).phone_battery_level is None
+
+
+# ---- CLI ---------------------------------------------------------------------------
+
+
+def test_phone_status_fields_skip_unknown_registration_and_optional_network() -> None:
+    unknown = BackendStatus.from_dict({"phone_network_status": "unknown"})
+    assert phone_status_fields(unknown) == []
+    named_unknown = BackendStatus.from_dict({
+        "phone_network_name": "Sunrise", "phone_network_status": "unknown",
+    })
+    assert phone_status_fields(named_unknown) == [("Network", "Sunrise")]
+    searching = BackendStatus.from_dict({"phone_network_status": "searching"})
+    assert phone_status_fields(searching) == [("Network", "searching")]
+
+    full = BackendStatus.from_dict({
+        "phone_battery_level": 20, "phone_signal_strength": 40,
+        "phone_network_name": "Sunrise", "phone_network_status": "registered",
+    })
+    assert phone_status_fields(full, include_network=False) == [
+        ("Battery", "about 20 %"), ("Signal", "40 %"),
+    ]
+
+
+class _StatusClient:
+    def __init__(self, **status) -> None:
+        self._status = BackendStatus.from_dict(status)
+
+    def status(self):
+        return self._status
+
+
+def _invoke(monkeypatch, client, *args):
+    monkeypatch.setattr(cli_calls, "_client", lambda: client)
+    return CliRunner().invoke(app, ["phone-status", *args])
+
+
+def test_cli_phone_status_prints_known_values(monkeypatch) -> None:
+    result = _invoke(monkeypatch, _StatusClient(
+        calls_enabled=True, calls_state="ready",
+        phone_battery_level=40, phone_signal_strength=60,
+        phone_network_name="Sun\x1b[2Jrise", phone_network_status="registered",
+    ))
+
+    assert result.exit_code == 0, result.output
+    assert "Battery: about 40 %" in result.output
+    assert "Signal:  60 %" in result.output
+    assert "Network:" in result.output and "\x1b" not in result.output
+    assert "20 % steps" in result.output
+
+
+def test_cli_phone_status_explains_disabled_and_unknown(monkeypatch) -> None:
+    disabled = _invoke(monkeypatch, _StatusClient())
+    assert disabled.exit_code == 0
+    assert "BLUEFERRY_CALLS_ENABLED=true" in disabled.output
+
+    unknown = _invoke(monkeypatch, _StatusClient(calls_enabled=True, calls_state="searching"))
+    assert unknown.exit_code == 0
+    assert "Phone status unknown" in unknown.output and "searching" in unknown.output
+
+
+def test_cli_phone_status_json_has_exactly_the_phone_keys(monkeypatch) -> None:
+    result = _invoke(monkeypatch, _StatusClient(calls_enabled=True, phone_battery_level=100), "--json")
+
+    assert json.loads(result.output) == {
+        "phone_battery_level": 100, "phone_signal_strength": None,
+        "phone_network_name": None, "phone_network_status": None,
+    }
+
+
+def test_cli_phone_status_reports_backend_errors(monkeypatch) -> None:
+    from blueferry.client import BackendError
+
+    class Failing:
+        def status(self):
+            raise BackendError("daemon is not running")
+
+    result = _invoke(monkeypatch, Failing())
+    assert result.exit_code == 3
+    assert "Could not read status" in result.output

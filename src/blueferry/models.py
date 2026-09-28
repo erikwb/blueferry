@@ -207,22 +207,28 @@ CALLS_STATE_TEXT: Mapping[str, str] = {
 """Plain-text call-state explanations shared by the CLI and TUI."""
 
 
-def phone_status_fields(status: BackendStatus) -> list[tuple[str, str]]:
+def phone_status_fields(
+    status: BackendStatus, *, include_network: bool = True,
+) -> list[tuple[str, str]]:
     """Label/value pairs for the phone's battery, signal, and network.
 
     Empty when nothing is known (calls disabled, oFono absent, modem
-    offline). Shared by the CLI and the TUI.
+    unpowered). ``include_network=False`` leaves out the operator line,
+    e.g. for a compact header. Shared by the CLI and the TUI.
     """
     fields: list[tuple[str, str]] = []
     if status.phone_battery_level is not None:
         fields.append(("Battery", f"about {status.phone_battery_level} %"))
     if status.phone_signal_strength is not None:
         fields.append(("Signal", f"{status.phone_signal_strength} %"))
+    if not include_network:
+        return fields
     network = status.phone_network_name or ""
-    if status.phone_network_status == "roaming":
-        network = f"{network} (roaming)".strip()
-    elif status.phone_network_status not in (None, "registered"):
-        network = f"{network} ({status.phone_network_status})".strip()
+    registration = status.phone_network_status
+    # "registered" is the normal case and "unknown" adds nothing a reader
+    # could act on; every other state is worth showing.
+    if registration not in (None, "registered", "unknown"):
+        network = f"{network} ({registration})" if network else registration
     if network:
         fields.append(("Network", network))
     return fields

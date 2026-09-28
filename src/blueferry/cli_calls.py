@@ -1,14 +1,16 @@
 """Optional phone-call CLI (`blueferry calls ...`) over the Calls1 interface."""
 from __future__ import annotations
 
+import json
 import sys
 from collections.abc import Callable
 from typing import TypeVar
 
 import typer
 
+from blueferry.calls.phone_status import PHONE_STATUS_KEYS
 from blueferry.client import BackendClient, BackendError
-from blueferry.models import CALLS_STATE_TEXT, CallInfo, CallsSnapshot
+from blueferry.models import CALLS_STATE_TEXT, CallInfo, CallsSnapshot, phone_status_fields
 from blueferry.text_safety import terminal_text
 
 T = TypeVar("T")
@@ -20,7 +22,6 @@ calls_app = typer.Typer(
 )
 
 
-
 def _interactive() -> bool:
     return sys.stdin.isatty()
 
@@ -29,11 +30,11 @@ def _client() -> BackendClient:
     return BackendClient()
 
 
-def _run(action: Callable[[], T]) -> T:
+def _run(action: Callable[[], T], failure: str = "Call failed") -> T:
     try:
         return action()
     except BackendError as error:
-        typer.echo(typer.style(f"Call failed: {error}", fg=typer.colors.RED), err=True)
+        typer.echo(typer.style(f"{failure}: {error}", fg=typer.colors.RED), err=True)
         raise typer.Exit(code=3) from None
 
 
@@ -181,3 +182,30 @@ def calls_hold_answer() -> None:
     """Hold the active call and answer the waiting one."""
     _run(lambda: _client().hold_and_answer_call())
     typer.echo("Answered the waiting call.")
+
+
+def phone_status(
+    as_json: bool = typer.Option(False, "--json", help="Print the raw status keys as JSON"),
+) -> None:
+    """Show the iPhone's battery, signal, and network (needs calls enabled)."""
+    status = _run(lambda: _client().status(), "Could not read status")
+    if as_json:
+        typer.echo(json.dumps({key: status.to_dict()[key] for key in PHONE_STATUS_KEYS}))
+        return
+    if not status.calls_enabled:
+        typer.echo(
+            "Phone status comes from the optional HFP calls integration; "
+            "set BLUEFERRY_CALLS_ENABLED=true."
+        )
+        return
+    fields = phone_status_fields(status)
+    if not fields:
+        typer.echo(
+            f"Phone status unknown — calls: {status.calls_state} "
+            f"({CALLS_STATE_TEXT.get(status.calls_state, '')})".rstrip()
+        )
+        return
+    for label, value in fields:
+        typer.echo(f"{label + ':':<9}{terminal_text(value)}")
+    if status.phone_battery_level is not None:
+        typer.echo("(The iPhone reports its battery to hands-free devices in 20 % steps.)")

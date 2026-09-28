@@ -420,6 +420,30 @@ def test_delete_key_confirms_and_deletes_current_conversation() -> None:
     _run_headless(scenario())
 
 
+def test_textual_masthead_shows_optional_phone_battery_and_signal() -> None:
+    class PhoneStatusBackend(_Backend):
+        @staticmethod
+        def status() -> BackendStatus:
+            return BackendStatus(
+                daemon=True, map=True, pbap=True, ancs=True, calls_enabled=True,
+                phone_battery_level=60, phone_signal_strength=80,
+                phone_network_name="Sunrise", phone_network_status="registered",
+            )
+
+    async def scenario() -> None:
+        app = BlueFerryApp(TuiState(PhoneStatusBackend()), monitor_factory=lambda: None)
+
+        async with app.run_test(size=(120, 36)) as pilot:
+            connection = await _wait_for_static_text_containing(
+                app, pilot, "#connection-summary", "Battery about 60 %",
+            )
+            assert connection.render().plain == (
+                "iPhone connected  ·  Battery about 60 %  ·  Signal 80 %"
+            )
+
+    _run_headless(scenario())
+
+
 def test_textual_treats_realtek_ancs_gap_as_expected(monkeypatch) -> None:
     class LimitedAncsBackend(_Backend):
         @staticmethod
