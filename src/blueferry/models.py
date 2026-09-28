@@ -29,6 +29,17 @@ def _str(value: Any, default: str = "") -> str:
     return value if isinstance(value, str) else default
 
 
+def _percent(value: Any) -> int | None:
+    """An optional 0-100 value; anything else is "unknown"."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if 0 <= value <= 100 else None
+
+
+def _optional_str(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
 @dataclass(frozen=True, slots=True)
 class BackendStatus:
     daemon: bool = False
@@ -57,6 +68,11 @@ class BackendStatus:
     calls_enabled: bool | None = None
     calls_state: str = "disabled"
     calls_available: bool = False
+    # Optional, from the HFP calls integration; None means unknown.
+    phone_battery_level: int | None = None
+    phone_signal_strength: int | None = None
+    phone_network_name: str | None = None
+    phone_network_status: str | None = None
     extra: Mapping[str, Any] = field(default_factory=dict, repr=False)
 
     @property
@@ -96,6 +112,10 @@ class BackendStatus:
             "calls_enabled",
             "calls_state",
             "calls_available",
+            "phone_battery_level",
+            "phone_signal_strength",
+            "phone_network_name",
+            "phone_network_status",
         }
         return cls(
             daemon=_bool(value.get("daemon")),
@@ -129,6 +149,10 @@ class BackendStatus:
             calls_enabled=_bool(value["calls_enabled"]) if "calls_enabled" in value else None,
             calls_state=_str(value.get("calls_state"), "disabled"),
             calls_available=_bool(value.get("calls_available")),
+            phone_battery_level=_percent(value.get("phone_battery_level")),
+            phone_signal_strength=_percent(value.get("phone_signal_strength")),
+            phone_network_name=_optional_str(value.get("phone_network_name")),
+            phone_network_status=_optional_str(value.get("phone_network_status")),
             extra={key: item for key, item in value.items() if key not in known},
         )
 
@@ -163,6 +187,10 @@ class BackendStatus:
             "ancs_limited_controller": self.ancs_limited_controller,
             "calls_state": self.calls_state,
             "calls_available": self.calls_available,
+            "phone_battery_level": self.phone_battery_level,
+            "phone_signal_strength": self.phone_signal_strength,
+            "phone_network_name": self.phone_network_name,
+            "phone_network_status": self.phone_network_status,
         }
 
 
@@ -177,6 +205,27 @@ CALLS_STATE_TEXT: Mapping[str, str] = {
                       "bluetoothd with -P hfp (keep -E), then reconnect the iPhone.",
 }
 """Plain-text call-state explanations shared by the CLI and TUI."""
+
+
+def phone_status_fields(status: BackendStatus) -> list[tuple[str, str]]:
+    """Label/value pairs for the phone's battery, signal, and network.
+
+    Empty when nothing is known (calls disabled, oFono absent, modem
+    offline). Shared by the CLI and the TUI.
+    """
+    fields: list[tuple[str, str]] = []
+    if status.phone_battery_level is not None:
+        fields.append(("Battery", f"about {status.phone_battery_level} %"))
+    if status.phone_signal_strength is not None:
+        fields.append(("Signal", f"{status.phone_signal_strength} %"))
+    network = status.phone_network_name or ""
+    if status.phone_network_status == "roaming":
+        network = f"{network} (roaming)".strip()
+    elif status.phone_network_status not in (None, "registered"):
+        network = f"{network} ({status.phone_network_status})".strip()
+    if network:
+        fields.append(("Network", network))
+    return fields
 
 
 @dataclass(frozen=True, slots=True)

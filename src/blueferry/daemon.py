@@ -38,6 +38,7 @@ from blueferry.build_info import build_id, installed_build_sha, running_build_sh
 from blueferry.bus import get_system_bus, main_loop
 from blueferry.calls.controller import CallController
 from blueferry.calls.settings import CallsSettings
+from blueferry.calls.phone_status import PhoneStatus
 from blueferry.commands import run_command
 from blueferry.confirmed_groups import ConfirmedGroupsStore
 from blueferry.connectivity import Connectivity
@@ -205,6 +206,7 @@ class Daemon:
             on_event=self.events.call,
             phone_reachable=lambda: self.bearers.bredr_connected,
             hfp_conflict=self._bluez_hfp_conflict,
+            on_phone_status=self._on_phone_status,
         )
         self.contact_sync = ContactSync(
             sessions=self.sessions,
@@ -410,6 +412,11 @@ class Daemon:
             operation(call_id, lambda _result: None, failed)
         except BlueFerryError as error:
             log.info("could not %s the call from its notification (%s)", action, error.dbus_suffix)
+
+    def _on_phone_status(self, status: PhoneStatus) -> None:
+        """The phone's battery/signal/operator changed: content-free signal."""
+        del status  # clients fetch the values with GetStatus
+        self._emit_status()
 
     def _observe_le_state(self, connected: bool | None) -> None:
         if connected is not True:

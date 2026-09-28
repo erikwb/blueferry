@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
+from blueferry.calls.phone_status import UNKNOWN_PHONE_STATUS
 from blueferry.contacts import clear_contact_cache
 from blueferry.errors import (
     CALLS_DISABLED_HINT,

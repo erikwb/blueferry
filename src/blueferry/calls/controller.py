@@ -38,6 +38,11 @@ before Powered. oFono's HFP driver registers ``VoiceCallManager`` already
 while powering the modem (``hfp_pre_sim``), so its presence in ``Interfaces``
 alone does not mean call control works: the controller treats the modem as
 voice-ready only when it is Online *and* lists ``VoiceCallManager``.
+
+Phone status: once the modem is online the controller also watches the
+``Handsfree`` and ``NetworkRegistration`` interfaces, when oFono lists them,
+for the phone's battery, signal, and operator (see ``phone_status``). They are
+strictly observational; a missing interface only leaves those values unknown.
 """
 from __future__ import annotations
 
@@ -84,6 +89,12 @@ from blueferry.calls.ofono import (
     interface_missing,
     public_error,
     service_missing,
+)
+from blueferry.calls.phone_status import (
+    HANDSFREE_IFACE,
+    PHONE_STATUS_IFACES,
+    PhoneStatus,
+    apply_properties,
 )
 from blueferry.errors import (
     CALLS_DISABLED_HINT,
@@ -146,6 +157,7 @@ class CallController:
         on_event: Callable[[CallEvent], None] | None = None,
         phone_reachable: Callable[[], bool] | None = None,
         hfp_conflict: Callable[[], bool] | None = None,
+        on_phone_status: Callable[[PhoneStatus], None] | None = None,
         schedule: Schedule = GLib.timeout_add_seconds,
         cancel: Cancel = GLib.source_remove,
     ) -> None:
@@ -159,6 +171,7 @@ class CallController:
         self._on_event = on_event or (lambda _event: None)
         self._phone_reachable = phone_reachable or (lambda: True)
         self._hfp_conflict = hfp_conflict or (lambda: False)
+        self._on_phone_status = on_phone_status or (lambda _status: None)
         self._schedule = schedule
         self._cancel = cancel
 
@@ -193,6 +206,15 @@ class CallController:
         self._last_reachable = False
         # Log each distinct discovery failure once, not on every retry.
         self._last_discovery_error = ""
+        # Phone battery/signal/operator from Handsfree and NetworkRegistration.
+        self._phone = PhoneStatus()
+        self._phone_path: str | None = None
+        self._phone_matches: dict[str, SignalMatch] = {}
+        # A fresh token per watched interface; replies to a superseded
+        # GetProperties request are dropped.
+        self._phone_tokens: dict[str, object] = {}
+        self._phone_errors: set[str] = set()
+        self._phone_announced = False
 
     # ---- public state -------------------------------------------------
 
@@ -212,8 +234,12 @@ class CallController:
         """Whether the phone reports any call (ringing, dialing, active, held)."""
         return bool(self._calls)
 
+    @property
+    def phone_status(self) -> PhoneStatus:
+        return self._phone
+
     def snapshot(self) -> dict[str, object]:
-        """Non-sensitive status fields merged into GetStatus.
+        """Status fields merged into the unicast GetStatus reply.
 
         While calls are off only ``calls_enabled`` is reported: clients use
         its presence to offer the opt-in, and nothing else about calls is
@@ -225,6 +251,7 @@ class CallController:
             "calls_enabled": self.enabled,
             "calls_state": self._state,
             "calls_available": self.available,
+            **self._phone.to_status(),
         }
 
     def list_calls(self) -> dict[str, object]:
@@ -627,6 +654,7 @@ class CallController:
             log.debug("could not power down the iPhone HFP modem", exc_info=True)
 
     def _release_modem(self) -> None:
+        self._drop_phone_status()
         self._remove(self._modem_match)
         self._modem_match = None
         self._modem = None
@@ -671,11 +699,13 @@ class CallController:
             if self._bound_path != modem.path:
                 self._bind(modem.path)
             self._set_state(CALLS_READY)
+            self._sync_phone_status()
             return
         if self._bound_path is not None:
             # Online dropped or the phone disconnected: its calls are gone.
             log.info("iPhone HFP modem went offline")
             self._unbind(emit=True)
+        self._drop_phone_status()
         if not self._blocked:
             self._set_state(CALLS_CONNECTING)
         if self._request_in_flight or self._retry_id is not None:
@@ -939,6 +969,111 @@ class CallController:
         log.info("call %s ended", call_id)
         self._emit("call_ended", record)
         self._calls_changed()
+
+    # ---- internals: phone battery, signal, operator -----------------------
+
+    def _sync_phone_status(self) -> None:
+        """Watch the status interfaces the online modem currently lists."""
+        modem = self._modem
+        if (
+            modem is None or not self._running or not modem.voice_ready
+            or self._bound_path != modem.path
+        ):
+            self._drop_phone_status()
+            return
+        if self._phone_path not in (None, modem.path):
+            self._drop_phone_status()
+        wanted = {iface for iface in PHONE_STATUS_IFACES if iface in modem.interfaces}
+        previous = self._phone
+        for iface in [iface for iface in self._phone_matches if iface not in wanted]:
+            self._unwatch_phone(iface)
+        self._phone_changed(previous)
+        for iface in PHONE_STATUS_IFACES:
+            if iface in wanted and iface not in self._phone_matches:
+                self._watch_phone(modem.path, iface)
+
+    def _watch_phone(self, path: str, iface: str) -> None:
+        token = object()
+
+        def changed(name: object, value: object) -> None:
+            if self._phone_tokens.get(iface) is not token:
+                return
+            self._apply_phone(
+                lambda status: status.with_handsfree(name, value)
+                if iface == HANDSFREE_IFACE else status.with_network(name, value)
+            )
+
+        try:
+            match = self._ensure_transport().watch(
+                self._guard(changed), interface=iface, signal="PropertyChanged", path=path,
+            )
+        except Exception:
+            if f"watch:{iface}" not in self._phone_errors:
+                log.info("could not watch the iPhone's %s properties", iface, exc_info=True)
+            self._phone_errors.add(f"watch:{iface}")
+            return
+        self._phone_path = path
+        self._phone_matches[iface] = match
+        self._phone_tokens[iface] = token
+        if not self._phone_announced:
+            self._phone_announced = True
+            log.info("reading the iPhone's battery and signal indicators through oFono")
+
+        def replied(properties: object = None) -> None:
+            if self._phone_tokens.get(iface) is not token:
+                return
+            self._phone_errors.discard(f"get:{iface}")
+            self._apply_phone(lambda status: apply_properties(status, iface, properties))
+
+        def failed(error: Exception) -> None:
+            if self._phone_tokens.get(iface) is not token:
+                return
+            # Values stay unknown; the next Online/Interfaces change retries.
+            key = f"get:{iface}"
+            if key in self._phone_errors:
+                return
+            self._phone_errors.add(key)
+            if interface_missing(error):
+                log.debug("oFono %s disappeared before GetProperties", iface)
+            else:
+                log.info("oFono %s GetProperties failed: %s", iface, public_error(error))
+
+        self._call(path, iface, "GetProperties", "", (), replied, failed)
+
+    def _unwatch_phone(self, iface: str) -> None:
+        self._remove(self._phone_matches.pop(iface, None))
+        self._phone_tokens.pop(iface, None)
+        self._phone = (
+            self._phone.without_handsfree() if iface == HANDSFREE_IFACE
+            else self._phone.without_network()
+        )
+        if not self._phone_matches:
+            self._phone_path = None
+
+    def _drop_phone_status(self) -> None:
+        previous = self._phone
+        for iface in list(self._phone_matches):
+            self._unwatch_phone(iface)
+        self._phone = PhoneStatus()
+        self._phone_path = None
+        self._phone_announced = False
+        if self._running:
+            self._phone_changed(previous)
+
+    def _apply_phone(self, update: Callable[[PhoneStatus], PhoneStatus]) -> None:
+        previous = self._phone
+        self._phone = update(previous)
+        self._phone_changed(previous)
+
+    def _phone_changed(self, previous: PhoneStatus) -> None:
+        # Only published values matter: e.g. a strength update while the
+        # phone is unregistered changes nothing a client can see.
+        if previous.to_status() == self._phone.to_status():
+            return
+        try:
+            self._on_phone_status(self._phone)
+        except Exception:
+            log.exception("phone status callback failed")
 
     # ---- call control -----------------------------------------------------
 
