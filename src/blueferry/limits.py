@@ -58,3 +58,19 @@ MAX_PENDING_READ_RECEIPTS = 2_000
 MAX_DESKTOP_MESSAGE_TRACKERS = 256
 MAX_PHONEBOOK_CONTACTS = 65_535
 MAX_CONTACT_ADDRESSES_PER_CARD = 64
+
+# Contact photos (opt-in, BLUEFERRY_CONTACT_PHOTOS). iOS sends address-book
+# thumbnails; a decoded avatar larger than this is not useful and is dropped
+# rather than stored. The encoded limit adds room for base64 expansion and
+# folding whitespace. The total budget bounds one sync's retained photos; the
+# whole transfer is already capped by MAX_PHONEBOOK_BYTES.
+MAX_CONTACT_PHOTO_BYTES = 256 * 1024
+MAX_CONTACT_PHOTO_CHARS = (MAX_CONTACT_PHOTO_BYTES * 4 // 3) + 64 * 1024
+MAX_CONTACT_PHOTOS_TOTAL_BYTES = 16 * 1024 * 1024
+# Wall-clock bound on photo decoding per sync (expected: well under 1 s).
+MAX_CONTACT_PHOTO_DECODE_SECONDS = 5.0
+MAX_CONTACT_PHOTO_FILES = 64
+# Header-declared pixel size accepted anywhere (daemon, clients, and the
+# image-path handed to notification servers). A small file can declare an
+# enormous canvas; decoders without their own limit would allocate it.
+MAX_CONTACT_PHOTO_DIMENSION = 2048

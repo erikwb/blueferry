@@ -109,10 +109,18 @@ class _Card:
 
     Only kept properties are retained, so memory stays bounded by the card
     budget plus one property head, however large a skipped value is.
+
+    With a positive ``photo_limit`` the first PHOTO property is retained
+    unfolded as ``photo`` (``group.PHOTO;params:value``) under that separate
+    budget instead of being dropped; a larger one is dropped as before. The
+    body is the same either way.
     """
 
-    def __init__(self, limit: int) -> None:
+    def __init__(self, limit: int, photo_limit: int = 0) -> None:
         self.limit = limit
+        self.photo_limit = photo_limit
+        self.photo: str | None = None
+        self.photo_seen = False
         self.lines: list[str] = []
         self.size = 0  # kept lines plus one line break each
         self.overflowed = False
@@ -123,6 +131,7 @@ class _Card:
         self.present = present  # whether a property is open
         self.decided = False  # whether its head has been read
         self.skipped = False
+        self.retaining = False  # a skipped PHOTO kept as ``photo``
         self.head = ""
         self.quoted = False
         self.encoding: frozenset[str] = frozenset()
@@ -185,14 +194,19 @@ class _Card:
             self.parts[-1] = last
 
     def _add(self, text: str) -> None:
-        if self.skipped:
+        if self.skipped and not self.retaining:
             return
         if text:
             self.parts.append(text)
             self.property_size += len(text)
         if not self.decided:
             self._read_head(text)
-        if self.decided and not self.skipped:
+        if self.retaining:
+            if self.property_size > self.photo_limit:
+                # Too large to keep: consume the rest like any skipped value.
+                self.retaining = False
+                self.parts = []
+        elif self.decided and not self.skipped:
             self._check_budget()
 
     def _read_head(self, text: str) -> None:
@@ -214,9 +228,14 @@ class _Card:
         name, *parameters = _split_unquoted(head, ";")
         self.encoding = frozenset(part.strip().upper() for part in parameters)
         self.base64_open = bool(self.encoding & _BASE64_PARAMETERS)
-        if name.strip().rsplit(".", 1)[-1].upper() in _SKIPPED_PROPERTIES:
+        selected = name.strip().rsplit(".", 1)[-1].upper()
+        if selected in _SKIPPED_PROPERTIES:
             self.skipped = True
-            self.parts = []
+            if selected == "PHOTO" and self.photo_limit > 0 and not self.photo_seen:
+                self.photo_seen = True
+                self.retaining = True
+            else:
+                self.parts = []
 
     def _check_budget(self) -> None:
         if self.size + self.property_size > self.limit:
@@ -225,6 +244,10 @@ class _Card:
             self.parts = []
 
     def _close_property(self) -> None:
+        if self.retaining and not self.overflowed:
+            self.photo = "".join(self.parts)
+            self.retaining = False
+            self.parts = []
         if not self.present or self.overflowed or self.skipped:
             return
         self.decided = True
@@ -267,8 +290,46 @@ def iter_vcard_bodies(
     ``BEGIN:VCARD`` and ``END:VCARD`` always delimit cards, even inside a
     malformed value, so a broken property never reaches another card.
     """
+    for body, _photo in _iter_cards(
+        blob, maximum=maximum, max_card_chars=max_card_chars, max_photo_chars=0,
+    ):
+        yield body
+
+
+def iter_vcard_cards(
+    blob: str | Iterable[str],
+    *,
+    maximum: int,
+    max_card_chars: int = MAX_VCARD_CHARS,
+    max_photo_chars: int,
+) -> Iterator[tuple[str, str | None]]:
+    """Yield ``(body, photo)``: :func:`iter_vcard_bodies` plus each card's photo.
+
+    The bodies are exactly the ones :func:`iter_vcard_bodies` yields, so
+    contact parsing is unchanged. ``photo`` is the unfolded
+    ``group.PHOTO;params:value`` text of the card's first PHOTO property, or
+    ``None`` when there is none or it exceeds ``max_photo_chars``. Photo text
+    has its own budget and never counts against the card budget. LOGO, SOUND,
+    KEY and any further PHOTO are still dropped unread.
+    """
+    return _iter_cards(
+        blob,
+        maximum=maximum,
+        max_card_chars=max_card_chars,
+        max_photo_chars=max(1, int(max_photo_chars)),
+    )
+
+
+def _iter_cards(
+    blob: str | Iterable[str],
+    *,
+    maximum: int,
+    max_card_chars: int,
+    max_photo_chars: int,
+) -> Iterator[tuple[str, str | None]]:
     selected_maximum = max(0, int(maximum))
     selected_card_limit = max(0, int(max_card_chars))
+    selected_photo_limit = max(0, int(max_photo_chars))
     yielded = 0
     card: _Card | None = None
 
@@ -282,13 +343,14 @@ def iter_vcard_bodies(
         if card is not None and line[:1] in (" ", "\t") and card.present:
             marker = ""  # a folded continuation is never a marker
         if marker == "begin:vcard":
-            card = _Card(selected_card_limit)
+            card = _Card(selected_card_limit, selected_photo_limit)
             continue
         if marker == "end:vcard":
             body = card.finish() if card is not None else None
+            photo = card.photo if card is not None else None
             card = None
             if body is not None:
-                yield body
+                yield body, photo
                 yielded += 1
                 if yielded >= selected_maximum:
                     return

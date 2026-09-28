@@ -9,27 +9,32 @@ from __future__ import annotations
 import logging
 import tempfile
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from copy import copy
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import dbus
 
+from blueferry import config
 from blueferry.bus import obex
+from blueferry.contact_photos import decode_vcard_photo
 from blueferry.contact_repository import ContactRecord, ContactRepository
 from blueferry.events import canonical_address, is_email_shaped, normalize_phone
 from blueferry.limits import (
     MAX_CONTACT_ADDRESS_CHARS,
     MAX_CONTACT_ADDRESSES_PER_CARD,
     MAX_CONTACT_NAME_CHARS,
+    MAX_CONTACT_PHOTO_CHARS,
+    MAX_CONTACT_PHOTO_DECODE_SECONDS,
+    MAX_CONTACT_PHOTOS_TOTAL_BYTES,
     MAX_PHONEBOOK_BYTES,
     MAX_PHONEBOOK_CONTACTS,
 )
 from blueferry.obex.sessions import SessionManager
 from blueferry.obex.transfer import wait_for_transfer
 from blueferry.private_files import runtime_private_directory
-from blueferry.vcard import iter_bounded_lines, iter_vcard_bodies
+from blueferry.vcard import iter_bounded_lines, iter_vcard_bodies, iter_vcard_cards
 
 if TYPE_CHECKING:
     from blueferry.storage_security import StorageSecurity
@@ -53,43 +58,100 @@ def _pbap_pull_filters(max_contacts: int) -> dict:
         "Format": dbus.String("vcard30"),
     }
 
+def _parse_card(body: str) -> tuple[str | None, list[str], list[str]] | None:
+    """Return one card's name with every safe phone and email address."""
+    fn: str | None = None
+    phones: list[str] = []
+    emails: list[str] = []
+    # Bodies are joined with "\n"; split only there so other Unicode
+    # line separators stay inside a value, as in the streamed path.
+    for line in body.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        if line.upper().startswith("FN:"):
+            name = line[3:].strip()
+            fn = name[:MAX_CONTACT_NAME_CHARS] or None
+        elif line.upper().startswith("TEL"):
+            # forms: TEL:1234, TEL;TYPE=CELL:1234, TEL;TYPE=CELL,VOICE:1234
+            _, _, val = line.partition(":")
+            if len(val) > MAX_CONTACT_ADDRESS_CHARS:
+                continue
+            norm = normalize_phone(val)
+            if norm and len(phones) < MAX_CONTACT_ADDRESSES_PER_CARD:
+                phones.append(norm)
+        elif line.upper().startswith("EMAIL"):
+            _, _, value = line.partition(":")
+            value = value.strip()
+            if len(value) > MAX_CONTACT_ADDRESS_CHARS:
+                continue
+            if (
+                is_email_shaped(value)
+                and len(emails) < MAX_CONTACT_ADDRESSES_PER_CARD
+            ):
+                emails.append(value.casefold())
+    if fn or phones or emails:
+        return (fn, list(dict.fromkeys(phones)), list(dict.fromkeys(emails)))
+    return None
+
+
 def _parse_vcard_records(
     blob: str | Iterable[str], *, maximum: int = MAX_PHONEBOOK_CONTACTS,
 ) -> list[tuple[str | None, list[str], list[str]]]:
     """Return names with every safe phone and email messaging address."""
     out: list[tuple[str | None, list[str], list[str]]] = []
     for body in iter_vcard_bodies(blob, maximum=maximum):
-        fn: str | None = None
-        phones: list[str] = []
-        emails: list[str] = []
-        for line in body.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            if line.upper().startswith("FN:"):
-                name = line[3:].strip()
-                fn = name[:MAX_CONTACT_NAME_CHARS] or None
-            elif line.upper().startswith("TEL"):
-                # forms: TEL:1234, TEL;TYPE=CELL:1234, TEL;TYPE=CELL,VOICE:1234
-                _, _, val = line.partition(":")
-                if len(val) > MAX_CONTACT_ADDRESS_CHARS:
-                    continue
-                norm = normalize_phone(val)
-                if norm and len(phones) < MAX_CONTACT_ADDRESSES_PER_CARD:
-                    phones.append(norm)
-            elif line.upper().startswith("EMAIL"):
-                _, _, value = line.partition(":")
-                value = value.strip()
-                if len(value) > MAX_CONTACT_ADDRESS_CHARS:
-                    continue
-                if (
-                    is_email_shaped(value)
-                    and len(emails) < MAX_CONTACT_ADDRESSES_PER_CARD
-                ):
-                    emails.append(value.casefold())
-        if fn or phones or emails:
-            out.append((fn, list(dict.fromkeys(phones)),
-                        list(dict.fromkeys(emails))))
+        record = _parse_card(body)
+        if record is not None:
+            out.append(record)
+    return out
+
+
+def _parse_vcard_entries(
+    blob: str | Iterable[str],
+    *,
+    maximum: int = MAX_PHONEBOOK_CONTACTS,
+    clock: Callable[[], float] = time.monotonic,
+) -> list[tuple[ContactRecord, bytes | None]]:
+    """Return each contact record paired with its validated photo bytes.
+
+    Used only when contact photos are enabled. Records match
+    :func:`_parse_vcard_records` for the same cards; photos are decoded
+    without interpreting pixels and are dropped once the per-sync photo
+    budget is spent.
+
+    Cost on the OBEX worker: ``decode_vcard_photo`` rejects an oversized
+    encoded value before any base64 work, and its JPEG header walk is capped
+    in segments and fill bytes. A hostile maximum-size value measured about
+    1.2 ms (base64 plus header walk), and the transfer cap (64 MiB) admits
+    fewer than 200 such values, so a sync spends well under a second here.
+    The byte budget only applies after decoding, so a wall-clock budget
+    additionally stops photo decoding if that estimate is ever wrong.
+    """
+    out: list[tuple[ContactRecord, bytes | None]] = []
+    budget = MAX_CONTACT_PHOTOS_TOTAL_BYTES
+    deadline = clock() + MAX_CONTACT_PHOTO_DECODE_SECONDS
+    skipped = 0
+    for body, prop in iter_vcard_cards(
+        blob, maximum=maximum, max_photo_chars=MAX_CONTACT_PHOTO_CHARS,
+    ):
+        record = _parse_card(body)
+        if record is None:
+            continue
+        photo = None
+        if prop is not None and budget > 0:
+            if clock() < deadline:
+                photo = decode_vcard_photo(prop)
+            else:
+                skipped += 1
+        if photo is not None:
+            if len(photo) > budget:
+                photo = None
+            else:
+                budget -= len(photo)
+        out.append((record, photo))
+    if skipped:
+        log.warning("contact photo decoding took too long; skipped %d photos", skipped)
     return out
 
 
@@ -110,10 +172,15 @@ def pull_phonebook(
     *,
     max_contacts: int = 65535,
     storage: StorageSecurity | None = None,
+    photos: bool | None = None,
 ) -> int:
     """Pull the iPhone's main phonebook over PBAP and return contact count.
 
-    Replaces the local cache atomically (transaction).
+    Replaces the local cache atomically (transaction). ``photos`` defaults to
+    ``BLUEFERRY_CONTACT_PHOTOS``. The request is identical either way: without
+    a PBAP ``Fields`` filter the iPhone already includes PHOTO in this single
+    pull, so enabling photos only stops discarding bytes that were transferred
+    anyway. Photos are retained only with a storage policy object.
     """
     max_contacts = max(1, min(int(max_contacts), MAX_PHONEBOOK_CONTACTS))
     if storage is not None and not storage.status.can_write:
@@ -178,6 +245,21 @@ def pull_phonebook(
             )
         phonebook_size()
 
+        if (config.CONTACT_PHOTOS if photos is None else photos) and storage is not None:
+            # Same streamed read as below; the photo-aware iterator yields
+            # the identical card bodies plus each card's first PHOTO.
+            with out.open(errors="replace") as stream:
+                entries = _parse_vcard_entries(
+                    iter_bounded_lines(stream), maximum=max_contacts,
+                )
+            log.info(
+                "parsed %d contacts (%d with photos) from %d bytes",
+                len(entries), sum(photo is not None for _record, photo in entries), size,
+            )
+            return ContactRepository(storage).replace(
+                [record for record, _photo in entries],
+                photos=[photo for _record, photo in entries],
+            )
         # Stream lines rather than read_text() plus splitlines(): the
         # phonebook may be up to MAX_PHONEBOOK_BYTES, and two whole copies of
         # it are not needed to extract bounded cards.
@@ -226,16 +308,25 @@ class ContactsResolver:
         self._repository = ContactRepository(storage)
         self._mem: dict[str, set[str]] = {}
         self._records: list[ContactRecord] = []
+        self.photo_revision = 0
         self._warm(strict=strict)
 
     def _warm(self, *, strict: bool = False) -> None:
-        loaded = [_sanitized(record) for record in self._repository.load(strict=strict)]
+        # Photo references are only loaded when the option is on, so the
+        # disabled resolver is exactly the photo-blind one.
+        entries = (
+            self._repository.load_entries(strict=strict)
+            if config.CONTACT_PHOTOS
+            else [(record, None) for record in self._repository.load(strict=strict)]
+        )
+        loaded = [(_sanitized(record), photo) for record, photo in entries]
         # Order once here rather than per page: the cache is rebuilt only by
         # refresh(), and paging must not pay for a sort on every call.
-        loaded.sort(key=lambda record: (
-            (record[0] or "").casefold(), record[1], record[2]
+        loaded.sort(key=lambda entry: (
+            (entry[0][0] or "").casefold(), entry[0][1], entry[0][2]
         ))
-        self._records.extend(loaded)
+        self._records.extend(record for record, _photo in loaded)
+        photos = [photo for _record, photo in loaded]
         for name, phones, emails in self._records:
             if name:
                 for address in (*phones, *emails):
@@ -262,10 +353,17 @@ class ContactsResolver:
         for identity, records in owners.items():
             if len(records) == 1:
                 unique.setdefault(next(iter(records)), []).append(identity)
-        for addresses in unique.values():
+        # Photos follow the same rule as reply routing: an address shared by
+        # two records never shows either person's picture.
+        self._photo_refs: dict[str, int] = {}
+        for index, addresses in unique.items():
             ordered = tuple(sorted(addresses))
             for identity in ordered:
                 self._thread_addresses[identity] = ordered
+            photo = photos[index] if index < len(photos) else None
+            if photo is not None:
+                for identity in ordered:
+                    self._photo_refs[identity] = photo
 
     def thread_addresses(self, raw: str | None) -> tuple[str, ...]:
         """Unambiguous address identities from the same PBAP record."""
@@ -277,6 +375,7 @@ class ContactsResolver:
         resolver._mem = self._mem.copy()
         resolver._records = self._records.copy()
         resolver._thread_addresses = self._thread_addresses.copy()
+        resolver._photo_refs = self._photo_refs.copy()
         return resolver
 
     def adopt_cache(self, prepared: ContactsResolver) -> None:
@@ -284,6 +383,9 @@ class ContactsResolver:
         self._mem = prepared._mem
         self._records = prepared._records
         self._thread_addresses = prepared._thread_addresses
+        self._photo_refs = prepared._photo_refs
+        # Content-free: lets clients drop cached avatars after any reload.
+        self.photo_revision += 1
 
     def refresh(self) -> int:
         """Replace the cache only after a successful read; propagate failures."""
@@ -349,3 +451,21 @@ class ContactsResolver:
 
     def count(self) -> int:
         return len(self._mem)
+
+    def photo_ref(self, raw: str | None) -> int | None:
+        """Stored photo id for the one record that owns ``raw``, if any."""
+        identity = canonical_address(raw)
+        if identity is None:
+            return None
+        return self._photo_refs.get(identity)
+
+    def photo_count(self) -> int:
+        return len(set(self._photo_refs.values()))
+
+    def load_photo(self, ref: int) -> bytes | None:
+        return self._repository.load_photo(ref)
+
+    def photo(self, raw: str | None) -> bytes | None:
+        """Validated photo bytes for an unambiguous address, else ``None``."""
+        ref = self.photo_ref(raw)
+        return self.load_photo(ref) if ref is not None else None
