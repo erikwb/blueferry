@@ -21,6 +21,7 @@ from blueferry.cli_notifications import notifications_app
 from blueferry.cli_otp import otp_check, otp_status
 from blueferry.cli_proximity import proximity_app
 from blueferry.notification_policy import NotificationPolicyStore
+from blueferry.cli_tether import tether
 
 app = typer.Typer(
     add_completion=False,
@@ -616,6 +617,7 @@ app.command("media")(media)
 app.add_typer(notification_actions_app, name="notification-actions")
 app.add_typer(calls_app, name="calls")
 app.command("phone-status")(phone_status)
+app.command("tether")(tether)
 
 
 @app.command()
