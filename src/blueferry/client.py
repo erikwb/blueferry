@@ -16,6 +16,7 @@ from blueferry.client_wire import (
     decode_thread,
     decode_threads,
 )
+from blueferry.contact_photos import valid_photo
 from blueferry.errors import BlueFerryError
 from blueferry.limits import MAX_CONTACT_PAGE
 from blueferry.models import BackendStatus, EventRecord, Thread
@@ -173,6 +174,22 @@ class BackendClient:
             ))
         except (dbus.exceptions.DBusException, ValueError) as error:
             raise BackendError(str(error)) from error
+
+    def contact_photo(self, address: str) -> bytes:
+        """Raw avatar bytes for one address, or ``b""`` when none is available.
+
+        The bytes come from the phone's address book: decode them only with
+        a hardened image loader and never write them anywhere shared. Replies
+        that exceed the protocol's size bound or lack a JPEG/PNG signature are
+        discarded here as well, so a replaced or buggy daemon cannot widen it.
+        """
+        try:
+            value = self._iface(MESSAGES_IFACE).GetContactPhoto(
+                address, timeout=CONTACT_CALL_TIMEOUT_SEC, byte_arrays=True,
+            )
+        except dbus.exceptions.DBusException as error:
+            raise BackendError(error.get_dbus_message() or str(error)) from error
+        return valid_photo(bytes(value)) or b""
 
     def set_group_participants(
         self, thread_key: str, recipients: list[str]

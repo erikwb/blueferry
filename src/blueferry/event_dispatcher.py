@@ -57,6 +57,7 @@ class EventDispatcher:
         contacts_only_notifications=None,
         storage=None,
         on_incoming_message=None,
+        contact_photo: Callable[[str | None], str | None] | None = None,
         notification_sink_factory: Callable[..., Sink] = LibnotifySink,
         session_bus=None,
         schedule: Callable[[int, Callable[[], bool]], int] = GLib.timeout_add_seconds,
@@ -70,6 +71,7 @@ class EventDispatcher:
         self.contacts_only_notifications = contacts_only_notifications
         self.storage = storage
         self.on_incoming_message = on_incoming_message
+        self.contact_photo = contact_photo
         self._notification_sink_factory = notification_sink_factory
         self._session_bus = session_bus
         self._schedule = schedule
@@ -144,12 +146,17 @@ class EventDispatcher:
             return False
         if any(sink.name == "libnotify" for sink in self.sinks):
             return True
+        options: dict[str, object] = {}
+        if self.contact_photo is not None:
+            # Passed only when opted in, so the disabled sink is unchanged.
+            options["contact_photo"] = self.contact_photo
         try:
             sink = self._notification_sink_factory(
                 defer_mark_read=self.defer_mark_read,
                 notification_policy=self.notification_policy,
                 contacts_only_notifications=self.contacts_only_notifications,
                 on_open_message=self._open_message,
+                **options,
             )
         except Exception:
             log.exception("libnotify sink failed to init — continuing")

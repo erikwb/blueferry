@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
+from blueferry.contact_repository import PhotoStoreBusy
 from blueferry.contacts import clear_contact_cache
 from blueferry.errors import (
     ConfirmationRequiredError,
@@ -109,6 +110,8 @@ class ContactIndex(Protocol):
 
     def resolve(self, address: str | None) -> str | None: ...
 
+    def photo(self, address: str | None) -> bytes | None: ...
+
     def refresh(self) -> int: ...
 
 
@@ -180,6 +183,7 @@ class BackendDependencies:
     on_storage_prepared: Callable[[Any], None] | None = None
     on_storage_changed: Callable[[], None] | None = None
     set_proximity_lock: Callable[[bool, int], dict[str, Any]] | None = None
+    contact_photos: bool = False
 
 
 class BackendOperations:
@@ -580,6 +584,28 @@ class BackendOperations:
             )
         ]
 
+    def contact_photo(self, address: str) -> bytes:
+        """Return the validated photo of the one contact owning ``address``.
+
+        Empty when photos are disabled, the address is unknown or ambiguous,
+        or the contact has no usable photo. Bytes are a bounded JPEG or PNG
+        that the caller must decode with a hardened toolkit loader.
+        """
+        selected = str(address).strip()
+        if not selected or len(selected) > MAX_CONTACT_ADDRESS_CHARS:
+            raise InvalidArgumentsError("contact address is empty or too long")
+        if not self.dependencies.contact_photos:
+            return b""
+        contacts = self.dependencies.contacts
+        if contacts is None:
+            raise NotReadyError("contact cache is unavailable")
+        try:
+            return contacts.photo(selected) or b""
+        except PhotoStoreBusy as error:
+            # A sync holds the database. Clients retry NotReady later rather
+            # than remembering the contact as photo-less.
+            raise NotReadyError("contact photos are being updated; retry later") from error
+
     def set_group_participants(
         self, thread_key: str, recipients: Sequence[object]
     ) -> dict:
@@ -674,6 +700,7 @@ class BackendOperations:
             "contacts_only_notifications": (
                 self.get_contacts_only_notifications()
             ),
+            "contact_photos": bool(self.dependencies.contact_photos),
         }
         if self.dependencies.status_provider is not None:
             status.update(self.dependencies.status_provider())

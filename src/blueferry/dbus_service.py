@@ -235,6 +235,15 @@ class MessagesService(dbus.service.Object):
         ))
 
     @dbus.service.method(
+        IFACE, in_signature="s", out_signature="ay", sender_keyword="sender"
+    )
+    def GetContactPhoto(self, address: str, sender=None) -> dbus.ByteArray:
+        return self._sync(lambda: self._authorized(
+            sender, "contact-photo",
+            lambda: dbus.ByteArray(self.operations.contact_photo(address)),
+        ))
+
+    @dbus.service.method(
         IFACE, in_signature="sas", out_signature="s", sender_keyword="sender",
         async_callbacks=("reply_handler", "error_handler"),
     )

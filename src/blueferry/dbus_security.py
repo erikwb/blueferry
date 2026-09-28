@@ -37,12 +37,23 @@ class RateRule:
 _RULES: dict[str, tuple[RateRule, ...]] = {
     "status": (RateRule(600, 60),),
     "read": (RateRule(240, 60),),
+    # Avatars are fetched once per contact and cached by clients until the
+    # content-free contact_photo_revision status key changes.
+    "contact-photo": (RateRule(120, 60), RateRule(1_200, 3_600)),
     "send": (RateRule(30, 60), RateRule(200, 3_600)),
     "contact-sync": (RateRule(6, 600), RateRule(20, 3_600)),
     "settings": (RateRule(30, 60),),
     "conversation-delete": (RateRule(60, 60), RateRule(500, 3_600)),
     "destructive": (RateRule(6, 600),),
     "unlock": (RateRule(6, 600),),
+}
+
+
+# Daemon-wide ("*") windows that differ from the per-caller ones. Several
+# clients (Qt, GTK, a Quickshell bridge) may each fill a conversation list at
+# once; one caller's quota must not exhaust the others'.
+_GLOBAL_RULES: dict[str, tuple[RateRule, ...]] = {
+    "contact-photo": (RateRule(600, 60), RateRule(6_000, 3_600)),
 }
 
 
@@ -131,8 +142,9 @@ class CallerGuard:
         if rules is None:
             raise RuntimeError(f"unknown D-Bus authorization action: {action}")
         now = self._clock()
-        for scope in (sender, "*"):
-            for rule in rules:
+        scoped = ((sender, rules), ("*", _GLOBAL_RULES.get(action, rules)))
+        for scope, selected in scoped:
+            for rule in selected:
                 key = (scope, action, rule.seconds)
                 attempts = self._attempts[key]
                 cutoff = now - rule.seconds
@@ -142,6 +154,6 @@ class CallerGuard:
                     raise RateLimitError(
                         "too many requests; wait before trying again"
                     )
-        for scope in (sender, "*"):
-            for rule in rules:
+        for scope, selected in scoped:
+            for rule in selected:
                 self._attempts[(scope, action, rule.seconds)].append(now)
