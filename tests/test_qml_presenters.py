@@ -607,6 +607,8 @@ def settings_window(qml_engine):
         import QtQuick
         QtObject {
             property var calls: []
+            property var phoneCalls: []
+            property string callsState: "disabled"
             property var status: ({})
             property var threads: []
             property var devices: []
@@ -645,6 +647,11 @@ def settings_window(qml_engine):
             function forgetDevice(mac) { record("forgetDevice", [mac]); }
             function activateBluetooth() { record("activateBluetooth", []); }
             function filePairingIssue() { record("filePairingIssue", []); }
+            function refreshCalls() { record("refreshCalls", []); }
+            function dialCall(number) { record("dialCall", [number]); }
+            function answerCall(callId) { record("answerCall", [callId]); }
+            function hangupCall(callId) { record("hangupCall", [callId]); }
+            function hangupAllCalls() { record("hangupAllCalls", []); }
         }
     ''', QUrl())
     assert not component.isError(), [error.toString() for error in component.errors()]
@@ -780,6 +787,41 @@ def test_qt_storage_label_reports_unavailability_after_failed_reads(settings_win
         bridge.setProperty("status", state.status.to_dict())
         labels.append(status_label.property("text"))
     assert labels == [label, "Unavailable", label]
+
+
+def test_optional_calls_dialog_lists_calls_and_dials_through_the_bridge(
+    qml_engine, settings_window,
+):
+    window, bridge = settings_window
+    # Calls off (the default): the dialog is never instantiated.
+    assert window.findChild(QObject, "callsDialog") is None
+    bridge.setProperty("status", {"calls_enabled": True})
+    QGuiApplication.processEvents()
+    dialog = _settings_object(window, "callsDialog")
+    assert dialog.property("callsReady") is False
+    bridge.setProperty("callsState", "ready")
+    bridge.setProperty("phoneCalls", [
+        {"call_id": "voicecall01", "state": "incoming", "ringing": True, "display_peer": "Alice"},
+    ])
+    assert QMetaObject.invokeMethod(dialog, "open")
+    # onOpened runs after the popup's enter transition.
+    for _ in range(100):
+        if _evaluate(qml_engine, "testBridge.calls.length"):
+            break
+        QTest.qWait(20)
+
+    assert dialog.property("callsReady") is True
+    assert _evaluate(qml_engine, "testBridge.calls.map(call => call.method)") == ["refreshCalls"]
+    _settings_object(window, "callsNumberField").setProperty("text", "+41 79 123 45 67")
+    qml_engine.globalObject().setProperty("callsDialog", qml_engine.newQObject(dialog))
+    # "Hang Up All" needs more than one call; "Dial" needs a number.
+    assert _evaluate(qml_engine, "callsDialog.customFooterActions[0].enabled") is False
+    _evaluate(qml_engine, "callsDialog.customFooterActions[1].trigger()")
+    assert _evaluate(qml_engine, "testBridge.calls[1]") == {
+        "method": "dialCall", "args": ["+41 79 123 45 67"],
+    }
+    assert QMetaObject.invokeMethod(dialog, "close")
+    QGuiApplication.processEvents()
 
 
 def test_phone_settings_first_run_and_reopening_keep_the_page_alive(qml_engine, settings_window):
