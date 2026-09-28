@@ -1762,3 +1762,289 @@ def test_owner_change_drops_the_old_daemons_pending_write(monkeypatch) -> None:
     cp.writes[0]["reply_handler"]()
     assert client._cp_write_token is not None
     assert client._active_request.notification.id == 2
+
+# ---- opt-in notification actions ------------------------------------------
+
+_BOTH_ACTIONS = EventFlag.PositiveAction | EventFlag.NegativeAction
+
+
+def _complete_labelled_response(
+    client: AncsClient, uid: int, app_id: str, *labels: tuple[int, str],
+) -> None:
+    request = client._request_queue.popleft()
+    client._active_request = request
+    response = (
+        bytes([CommandID.GetNotificationAttributes])
+        + struct.pack("<I", uid)
+        + _attribute(0, app_id)
+        + _attribute(1, "Alice")
+        + _attribute(2, "")
+        + _attribute(3, "Incoming call")
+    )
+    for attribute_id, value in labels:
+        response += _attribute(attribute_id, value)
+    client._on_ds_changed(
+        "org.bluez.GattCharacteristic1", {"Value": response}, []
+    )
+
+
+class _AsyncControlPoint:
+    """Records asynchronous WriteValue calls without completing them."""
+
+    def __init__(self) -> None:
+        self.writes: list[dict] = []
+
+    def WriteValue(self, value, options, **kwargs) -> None:
+        assert "reply_handler" in kwargs and "error_handler" in kwargs
+        self.writes.append({"value": bytes(value), "options": options, **kwargs})
+
+
+class _ActionBus:
+    def __init__(self, control_point) -> None:
+        self.control_point = control_point
+
+    def get_object(self, _name, path, introspect=True):
+        assert path == "/device/cp"
+        return self.control_point
+
+
+def _action_client(monkeypatch, *, enabled=True, removed=None):
+    emitted = []
+    cp = _AsyncControlPoint()
+    monkeypatch.setattr(client_module, "get_system_bus", lambda: _ActionBus(cp))
+    monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
+    client = AncsClient(
+        "/device",
+        emitted.append,
+        include_non_message_notifications=lambda: True,
+        notification_actions=enabled,
+        on_notification_removed=removed,
+        schedule=lambda _delay, _callback: 5,
+        cancel=lambda _source: None,
+    )
+    client._started = True
+    client._notify_started = True
+    client._authorized = True
+    client._bearer_connected = True
+    client._bearer_ready = True
+    client._cp_path = "/device/cp"
+    client._app_name_cache["com.apple.mobilephone"] = "Phone"
+    # Attribute requests are completed by hand below; actions must not need
+    # the serialized request pump at all.
+    monkeypatch.setattr(client, "_pump_requests", lambda: None)
+    return client, cp, emitted
+
+
+def _deliver_call(client, uid=42, flags=_BOTH_ACTIONS, labels=((6, "Accept"), (7, "Decline"))):
+    client._request_attrs(Notification.parse(_notification(uid, flags=flags)))
+    _complete_app_probe(client, uid, "com.apple.mobilephone")
+    _complete_labelled_response(client, uid, "com.apple.mobilephone", *labels)
+
+
+def test_disabled_actions_request_no_labels_even_for_flagged_apps(monkeypatch) -> None:
+    client, cp, _emitted = _action_client(monkeypatch, enabled=False)
+    client._request_attrs(Notification.parse(_notification(42, flags=_BOTH_ACTIONS)))
+    _complete_app_probe(client, 42, "com.apple.mobilephone")
+
+    request = client._request_queue.popleft()
+    assert request.assembler.attribute_ids == (0, 1, 2, 3)
+    assert request.packet == client_module.build_get_notification_attributes(42)
+
+    results = []
+    assert client.perform_notification_action(42, True, results.append) is False
+    assert results == [client_module.ACTION_UNAVAILABLE]
+    assert cp.writes == []
+
+
+def test_enabled_actions_request_only_announced_labels(monkeypatch) -> None:
+    client, _cp, _emitted = _action_client(monkeypatch)
+    client._request_attrs(
+        Notification.parse(_notification(42, flags=EventFlag.NegativeAction))
+    )
+    _complete_app_probe(client, 42, "com.example.Calendar")
+
+    request = client._request_queue.popleft()
+    assert request.assembler.attribute_ids == (0, 1, 2, 3, 7)
+    assert request.packet.endswith(bytes([7]))
+
+
+def test_enabled_actions_never_request_labels_for_messages(monkeypatch) -> None:
+    client, _cp, _emitted = _action_client(monkeypatch)
+    client._request_attrs(Notification.parse(_notification(42, flags=_BOTH_ACTIONS)))
+    _complete_app_probe(client, 42, MESSAGES_APP_ID)
+
+    assert client._request_queue.popleft().assembler.attribute_ids == (0, 1, 2, 3)
+
+
+def test_labels_reach_the_event_and_positive_click_writes_action(monkeypatch) -> None:
+    client, cp, emitted = _action_client(monkeypatch)
+    _deliver_call(client)
+
+    assert emitted[0].positive_action_label == "Accept"
+    assert emitted[0].negative_action_label == "Decline"
+    results = []
+
+    assert client.perform_notification_action(42, True, results.append) is True
+
+    assert len(cp.writes) == 1
+    assert cp.writes[0]["value"] == bytes.fromhex("02" "2a000000" "00")
+    assert results == []  # asynchronous: nothing reported until BlueZ replies
+    cp.writes[0]["reply_handler"]()
+    assert results == [client_module.ACTION_SENT]
+
+
+def test_action_is_single_use_per_notification(monkeypatch) -> None:
+    client, cp, _emitted = _action_client(monkeypatch)
+    _deliver_call(client)
+    results = []
+
+    client.perform_notification_action(42, False, results.append)
+    cp.writes[0]["reply_handler"]()
+    client.perform_notification_action(42, False, results.append)
+    client.perform_notification_action(42, True, results.append)
+
+    assert len(cp.writes) == 1
+    assert cp.writes[0]["value"][-1] == 1
+    assert results == [
+        client_module.ACTION_SENT,
+        client_module.ACTION_UNAVAILABLE,
+        client_module.ACTION_UNAVAILABLE,
+    ]
+
+
+def test_unannounced_action_is_refused_without_writing(monkeypatch) -> None:
+    client, cp, _emitted = _action_client(monkeypatch)
+    _deliver_call(client, flags=EventFlag.PositiveAction, labels=((6, "Accept"),))
+    results = []
+
+    assert client.perform_notification_action(42, False, results.append) is False
+    assert client.perform_notification_action(99, True, results.append) is False
+    assert results == [client_module.ACTION_UNAVAILABLE] * 2
+    assert cp.writes == []
+
+
+def test_empty_labels_do_not_make_a_notification_actionable(monkeypatch) -> None:
+    client, cp, emitted = _action_client(monkeypatch)
+    _deliver_call(client, labels=((6, ""), (7, "")))
+
+    assert emitted[0].has_actions is False
+    assert client.perform_notification_action(42, True) is False
+    assert cp.writes == []
+
+
+def _dbus_error(message: str, name: str = "org.bluez.Error.Failed"):
+    return client_module.dbus.exceptions.DBusException(message, name=name)
+
+
+@pytest.mark.parametrize(
+    "error,result",
+    [
+        (_dbus_error("Operation failed with ATT error: 0xa2"),
+         client_module.ACTION_UNAVAILABLE),
+        (_dbus_error("Operation failed with ATT error: 0xa3"),
+         client_module.ACTION_REJECTED),
+        (_dbus_error("Operation failed with ATT error: 0xa0"),
+         client_module.ACTION_UNSUPPORTED),
+        (_dbus_error("Operation failed with ATT error: 0xa1"),
+         client_module.ACTION_UNSUPPORTED),
+        (_dbus_error("Did not receive a reply",
+                     "org.freedesktop.DBus.Error.NoReply"),
+         client_module.ACTION_FAILED),
+    ],
+)
+def test_action_write_errors_map_to_results(monkeypatch, error, result) -> None:
+    client, cp, _emitted = _action_client(monkeypatch)
+    _deliver_call(client)
+    results = []
+    client.perform_notification_action(42, True, results.append)
+
+    cp.writes[0]["error_handler"](error)
+
+    assert results == [result]
+    assert client.connected is True
+    assert not client._actions_in_flight
+
+
+def test_lost_connection_during_action_invalidates_transport(monkeypatch) -> None:
+    status = []
+    client, cp, _emitted = _action_client(monkeypatch)
+    client.on_status = lambda: status.append(client.connected)
+    _deliver_call(client)
+    results = []
+    client.perform_notification_action(42, True, results.append)
+
+    cp.writes[0]["error_handler"](_dbus_error("Not connected"))
+
+    assert results == [client_module.ACTION_DISCONNECTED]
+    assert client.connected is False
+    assert status == [False]
+
+
+def test_action_while_disconnected_is_refused(monkeypatch) -> None:
+    client, cp, _emitted = _action_client(monkeypatch)
+    _deliver_call(client)
+    client._authorized = False
+    results = []
+
+    assert client.perform_notification_action(42, True, results.append) is False
+    assert results == [client_module.ACTION_DISCONNECTED]
+    assert cp.writes == []
+
+
+def test_concurrent_actions_are_bounded(monkeypatch) -> None:
+    client, cp, _emitted = _action_client(monkeypatch)
+    limit = client_module.MAX_ANCS_ACTIONS_IN_FLIGHT
+    for uid in range(1, limit + 2):
+        _deliver_call(client, uid=uid)
+    results = []
+
+    for uid in range(1, limit + 2):
+        client.perform_notification_action(uid, True, results.append)
+
+    assert len(cp.writes) == limit
+    assert results == [client_module.ACTION_BUSY]
+    cp.writes[0]["reply_handler"]()
+    assert client.perform_notification_action(limit + 1, True, results.append)
+
+
+def test_phone_removal_retires_actions_and_reports_only_the_uid(monkeypatch) -> None:
+    removed = []
+    client, cp, _emitted = _action_client(monkeypatch, removed=removed.append)
+    _deliver_call(client)
+    client._request_attrs(Notification.parse(_notification(43)))
+    _complete_app_probe(client, 43, "com.apple.mobilephone")
+    _complete_labelled_response(client, 43, "com.apple.mobilephone")
+
+    for uid in (43, 42):
+        client._on_ns_changed(
+            "org.bluez.GattCharacteristic1",
+            {"Value": struct.pack(
+                "<BBBBI", EventID.NotificationRemoved, 0, 1, 0, uid
+            )},
+            [],
+        )
+
+    # 43 never offered an action, so no desktop popup needs closing.
+    assert removed == [42]
+    assert client.perform_notification_action(42, True) is False
+    assert cp.writes == []
+
+
+def test_session_reset_invalidates_previous_uids(monkeypatch) -> None:
+    client, cp, _emitted = _action_client(monkeypatch)
+    _deliver_call(client)
+    client.perform_notification_action(42, True)
+    pending = cp.writes[-1]
+    _deliver_call(client, uid=7)
+
+    client.observe_bearer_state(False)
+    client.observe_bearer_state(True)
+    client._notify_started = True
+    client._authorized = True
+    client._bearer_ready = True
+    results = []
+
+    assert client.perform_notification_action(7, True, results.append) is False
+    assert results == [client_module.ACTION_UNAVAILABLE]
+    # A late reply from the old session still reports to its caller safely.
+    pending["reply_handler"]()

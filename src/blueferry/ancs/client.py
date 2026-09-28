@@ -18,6 +18,12 @@ Protocol behavior established by the pairing experiments:
   requesting Title+Subtitle+Message, and the response comes back on DS.
 
 - App display names are looked up lazily via GetAppAttributes and cached.
+
+- With the opt-in BLUEFERRY_ANCS_ACTIONS, the full request also asks for the
+  action labels announced by the Notification Source flags, and a clicked
+  desktop action is sent back as PerformNotificationAction. That command has
+  no Data Source response, so it is written asynchronously outside the
+  serialized request backlog and never blocks the GLib main loop.
 """
 from __future__ import annotations
 
@@ -38,6 +44,8 @@ from blueferry.ancs.constants import (
     DATA_SOURCE_CHAR,
     MESSAGES_APP_ID,
     NOTIFICATION_SOURCE_CHAR,
+    ActionID,
+    AncsErrorCode,
     CommandID,
     EventID,
 )
@@ -48,14 +56,18 @@ from blueferry.ancs.parsers import (
     DataSourceEvent,
     Notification,
     NotificationAttributes,
+    att_error_code,
     build_get_app_attributes,
     build_get_notification_app_identifier,
     build_get_notification_attributes,
+    build_perform_notification_action,
     parse_notification_app_identifier,
 )
 from blueferry.ancs.sequencer import RequestBacklog
 from blueferry.bus import get_system_bus
 from blueferry.limits import (
+    MAX_ANCS_ACTIONABLE,
+    MAX_ANCS_ACTIONS_IN_FLIGHT,
     MAX_ANCS_APP_CACHE,
     MAX_ANCS_PENDING_PER_APP,
     MAX_ANCS_REQUESTS,
@@ -78,6 +90,16 @@ TRANSPORT_RESET_SECONDS = 15
 
 _BLUEZ_BUS_NAME = "org.bluez"
 
+# PerformNotificationAction outcomes reported to the caller. They carry no
+# notification content and are safe to log.
+ACTION_SENT = "sent"
+ACTION_UNAVAILABLE = "unavailable"      # not offered, consumed, or removed
+ACTION_DISCONNECTED = "disconnected"
+ACTION_BUSY = "busy"
+ACTION_REJECTED = "rejected"            # iOS reported Action Failed
+ACTION_UNSUPPORTED = "unsupported"      # iOS rejected the command itself
+ACTION_FAILED = "failed"
+
 
 @dataclass(slots=True)
 class _PendingRequest:
@@ -89,6 +111,7 @@ class _PendingRequest:
     expected_app_id: str | None = None
     authorization_probe: bool = False
     busy_retries: int = 0
+    action_label_ids: tuple[int, ...] = ()
 
 
 _APP_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")
@@ -107,6 +130,22 @@ def _connection_was_lost(error: dbus.exceptions.DBusException) -> bool:
         or "not connected" in detail
         or "no att transport" in detail
     )
+
+
+def _action_error_result(error: dbus.exceptions.DBusException) -> tuple[str, int | None]:
+    """Map a failed PerformNotificationAction write to a result and ATT code."""
+    if _connection_was_lost(error):
+        return ACTION_DISCONNECTED, None
+    code = att_error_code(error.get_dbus_message() or str(error))
+    if code == AncsErrorCode.InvalidParameter:
+        # The UID no longer names a notification on the phone, typically
+        # because it was handled or cleared there first.
+        return ACTION_UNAVAILABLE, code
+    if code == AncsErrorCode.ActionFailed:
+        return ACTION_REJECTED, code
+    if code in (AncsErrorCode.UnknownCommand, AncsErrorCode.InvalidCommand):
+        return ACTION_UNSUPPORTED, code
+    return ACTION_FAILED, code
 
 
 def _notification_is_already_stopped(
@@ -147,6 +186,8 @@ class AncsClient:
         on_transport_failure: Callable[[], None] | None = None,
         *,
         previously_authorized: bool = False,
+        notification_actions: bool = False,
+        on_notification_removed: Callable[[int], None] | None = None,
         schedule: Callable[[int, Callable[[], bool]], int] = GLib.timeout_add_seconds,
         cancel: Callable[[int], object] = GLib.source_remove,
     ) -> None:
@@ -162,6 +203,8 @@ class AncsClient:
         )
         self._schedule = schedule
         self._cancel = cancel
+        self._notification_actions = bool(notification_actions)
+        self._on_notification_removed = on_notification_removed
 
         # Char path slots — set as InterfacesAdded fires
         self._ns_path: str | None = None
@@ -198,6 +241,14 @@ class AncsClient:
         # InProgress. Only the matching reply/error callback clears it.
         self._cp_write_token: object | None = None
         self._cp_busy_retry_id: int | None = None
+
+        # UID -> (positive offered, negative offered) for notifications whose
+        # action labels were delivered in the current ANCS session. UIDs are
+        # only meaningful within one session, so a subscription reset clears
+        # this and any older desktop action becomes unavailable.
+        self._actionable: OrderedDict[int, tuple[bool, bool]] = OrderedDict()
+        self._actions_in_flight: set[int] = set()
+        self._action_session = 0
 
         # ObjectManager watches live for the client lifetime. Characteristic
         # subscriptions are shorter-lived and are rebuilt as one unit whenever
@@ -595,6 +646,7 @@ class AncsClient:
         self._notify_started = False
         self._authorized = False
         self._reset_requests()
+        self._reset_actions()
 
     def _stop_bluez_notifications(self) -> None:
         """Remove notification ownership created by us while ATT is up."""
@@ -854,14 +906,15 @@ class AncsClient:
         except ValueError as e:
             log.error("NS parse failed: %s", e)
             return
+        if n.type == EventID.NotificationRemoved:
+            log.debug("ANCS removed uid=%d", n.id)
+            self._forget_actionable(n.id)
+            return
         # Skip pre-existing (notifications that already existed on the
         # iPhone at our connect time — too noisy on initial subscribe).
         if n.is_preexisting:
             log.debug("ANCS preexisting event uid=%d cat=%d — skipping",
                       n.id, n.category)
-            return
-        if n.type == EventID.NotificationRemoved:
-            log.debug("ANCS removed uid=%d", n.id)
             return
         # Added or Modified → identify the source app without content first.
         self._request_attrs(n)
@@ -882,9 +935,14 @@ class AncsClient:
         ))
 
     def _request_full_attrs(self, n: Notification, app_id: str) -> None:
-        # BlueFerry cannot act on ANCS action labels, so do not request them.
-        pkt = build_get_notification_attributes(n.id)
-        expected = [0, 1, 2, 3]
+        # Action labels are requested only when the opt-in is enabled and the
+        # Notification Source flags announced an action. Messages popups come
+        # from MAP, so its ANCS copy never offers actions.
+        label_ids: tuple[int, ...] = ()
+        if self._notification_actions and app_id != MESSAGES_APP_ID:
+            label_ids = n.action_label_ids()
+        pkt = build_get_notification_attributes(n.id, action_label_ids=label_ids)
+        expected = [0, 1, 2, 3, *label_ids]
         self._enqueue(_PendingRequest(
             key=f"notification:{n.id}",
             packet=pkt,
@@ -895,6 +953,7 @@ class AncsClient:
             ),
             notification=n,
             expected_app_id=app_id,
+            action_label_ids=label_ids,
         ))
 
     def _enqueue(self, request: _PendingRequest) -> None:
@@ -1172,7 +1231,9 @@ class AncsClient:
                     log.debug("discarding ANCS notification after app probe")
             else:
                 try:
-                    attrs = NotificationAttributes.parse(ev.body)
+                    attrs = NotificationAttributes.parse(
+                        ev.body, request.action_label_ids
+                    )
                 except ValueError as error:
                     log.error("NotificationAttributes parse failed: %s", error)
                     self._abandon_request(request)
@@ -1265,7 +1326,11 @@ class AncsClient:
             title=attrs.title,
             subtitle=attrs.subtitle,
             body=attrs.message,
+            positive_action_label=attrs.positive_action_label,
+            negative_action_label=attrs.negative_action_label,
         )
+        if self._notification_actions:
+            self._remember_actionable(event)
         log.info("ANCS event (%d-char body)", len(event.body or ""))
         log.debug(
             "ANCS event metadata: title-chars=%d body-chars=%d",
@@ -1276,3 +1341,140 @@ class AncsClient:
             self.on_event(event)
         except Exception:
             log.exception("on_event callback raised")
+
+    # ---- PerformNotificationAction (opt-in) -----------------------------
+
+    def _remember_actionable(self, event: AncsEvent) -> None:
+        offered = (
+            bool(event.positive_action_label),
+            bool(event.negative_action_label),
+        )
+        if not any(offered):
+            self._actionable.pop(event.notification_id, None)
+            return
+        self._actionable[event.notification_id] = offered
+        self._actionable.move_to_end(event.notification_id)
+        while len(self._actionable) > MAX_ANCS_ACTIONABLE:
+            self._actionable.popitem(last=False)
+
+    def _forget_actionable(self, notification_id: int) -> None:
+        if self._actionable.pop(notification_id, None) is None:
+            return
+        callback = self._on_notification_removed
+        if callback is None:
+            return
+        try:
+            callback(notification_id)
+        except Exception:
+            log.exception("ANCS notification-removed callback raised")
+
+    def _reset_actions(self) -> None:
+        self._actionable.clear()
+        self._actions_in_flight.clear()
+        self._action_session += 1
+
+    def perform_notification_action(
+        self,
+        notification_id: int,
+        positive: bool,
+        on_result: Callable[[str], None] | None = None,
+    ) -> bool:
+        """Ask the iPhone to run one notification's positive/negative action.
+
+        Only an action announced in the current ANCS session can be sent, and
+        each notification accepts one action. The write is asynchronous; the
+        outcome (one of the ``ACTION_*`` strings) is passed to ``on_result``.
+        Returns whether the write was dispatched.
+        """
+        kind = "positive" if positive else "negative"
+
+        def finish(result: str) -> None:
+            if on_result is None:
+                return
+            try:
+                on_result(result)
+            except Exception:
+                log.exception("ANCS action result callback raised")
+
+        try:
+            uid = int(notification_id)
+        except (TypeError, ValueError):
+            finish(ACTION_UNAVAILABLE)
+            return False
+        offered = self._actionable.get(uid) if self._notification_actions else None
+        if offered is None or not offered[0 if positive else 1]:
+            log.info("ANCS %s action for uid=%d is not available", kind, uid)
+            finish(ACTION_UNAVAILABLE)
+            return False
+        cp_path = self._cp_path
+        if not self.connected or cp_path is None:
+            log.info("ANCS %s action for uid=%d skipped: not connected", kind, uid)
+            finish(ACTION_DISCONNECTED)
+            return False
+        if (
+            uid in self._actions_in_flight
+            or len(self._actions_in_flight) >= MAX_ANCS_ACTIONS_IN_FLIGHT
+        ):
+            log.info("ANCS %s action for uid=%d skipped: busy", kind, uid)
+            finish(ACTION_BUSY)
+            return False
+        packet = build_perform_notification_action(
+            uid, ActionID.Positive if positive else ActionID.Negative
+        )
+        # One action per notification: a second click must never repeat a
+        # destructive action such as Decline or Delete.
+        del self._actionable[uid]
+        self._actions_in_flight.add(uid)
+        generation = self._bluez_owner_generation
+        session = self._action_session
+
+        def current() -> bool:
+            return (
+                self._started
+                and generation == self._bluez_owner_generation
+                and session == self._action_session
+            )
+
+        def on_reply(*_args) -> None:
+            if session == self._action_session:
+                self._actions_in_flight.discard(uid)
+            log.info("ANCS %s action for uid=%d sent", kind, uid)
+            finish(ACTION_SENT)
+
+        def on_error(error: Exception) -> None:
+            if session == self._action_session:
+                self._actions_in_flight.discard(uid)
+            if isinstance(error, dbus.exceptions.DBusException):
+                result, code = _action_error_result(error)
+                name = error.get_dbus_name() or type(error).__name__
+            else:
+                result, code, name = ACTION_FAILED, None, type(error).__name__
+            log.warning(
+                "ANCS %s action for uid=%d failed: %s (%s, ATT %s)",
+                kind,
+                uid,
+                result,
+                name,
+                f"0x{code:02x}" if code is not None else "n/a",
+            )
+            if result == ACTION_DISCONNECTED and current():
+                self._mark_transport_failed()
+            finish(result)
+
+        try:
+            dbus.Interface(
+                get_system_bus().get_object(
+                    _BLUEZ_BUS_NAME, cp_path, introspect=False
+                ),
+                "org.bluez.GattCharacteristic1",
+            ).WriteValue(
+                [dbus.Byte(value) for value in packet],
+                {},
+                reply_handler=on_reply,
+                error_handler=on_error,
+                timeout=DBUS_CALL_TIMEOUT_SECONDS,
+            )
+        except Exception as error:  # dispatch itself failed synchronously
+            on_error(error)
+            return False
+        return True

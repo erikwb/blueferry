@@ -22,6 +22,12 @@ class AncsEvent:
     subtitle: str
     body: str
 
+    # iOS-supplied action button labels. Empty unless BLUEFERRY_ANCS_ACTIONS
+    # is enabled and the Notification Source flags announced the action.
+    # They are presentation strings, never retained or put on D-Bus.
+    positive_action_label: str = ""
+    negative_action_label: str = ""
+
     seen_at: datetime = field(
         default_factory=lambda: datetime.now(timezone.utc)
     )
@@ -32,6 +38,10 @@ class AncsEvent:
         if self.title:
             return self.title
         return self.app_name or self.app_id or "Notification"
+
+    @property
+    def has_actions(self) -> bool:
+        return bool(self.positive_action_label or self.negative_action_label)
 
     def correlation_dict(self) -> dict:
         """Return only the Messages fields required for group correlation."""
