@@ -932,7 +932,7 @@ class AncsClient:
         if not current_attempt():
             log.debug("discarded stale ANCS write completion after BlueZ changed owner")
             return
-        self._request_timeout_id = GLib.timeout_add_seconds(
+        self._request_timeout_id = self._schedule(
             REQUEST_TIMEOUT_SECONDS, self._request_timed_out
         )
 
@@ -977,7 +977,7 @@ class AncsClient:
             self._request_queue.finish(request.key)
         if self._request_timeout_id is not None:
             try:
-                GLib.source_remove(self._request_timeout_id)
+                self._cancel(self._request_timeout_id)
             except Exception:
                 log.debug("could not remove ANCS request timer", exc_info=True)
             self._request_timeout_id = None

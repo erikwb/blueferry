@@ -389,6 +389,7 @@ def test_bluez_restart_retries_when_object_manager_is_not_ready(monkeypatch) -> 
         "/device",
         lambda _event: None,
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 17,
+        cancel=lambda _timer: None,
     )
     client.start()
 
@@ -510,16 +511,11 @@ def test_start_notify_failure_retries_without_rediscovery(monkeypatch) -> None:
     )
     monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
     monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
-    monkeypatch.setattr(
-        client_module.GLib,
-        "timeout_add_seconds",
-        lambda _delay, _callback: 9,
-    )
-    monkeypatch.setattr(client_module.GLib, "source_remove", lambda _timer: None)
     client = AncsClient(
         "/device",
         lambda _event: None,
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer: None,
     )
     client._started = True
     client._bearer_connected = True
@@ -570,13 +566,12 @@ def test_initial_subscription_waits_for_a_settled_le_bearer(monkeypatch) -> None
     })
     monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
     monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
-    # AncsClient binds its scheduler default at import time, so patching
-    # GLib here would not stop a real settle timer from outliving the test.
     scheduled = []
     client = AncsClient(
         "/device",
         lambda _event: None,
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 9,
+        cancel=lambda _timer: None,
     )
     client._started = True
     client._bearer_connected = False
@@ -616,12 +611,12 @@ def test_missing_att_transport_resets_a_connected_le_bearer(monkeypatch) -> None
     })
     monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
     monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
-    monkeypatch.setattr(client_module.GLib, "source_remove", lambda _timer: None)
     client = AncsClient(
         "/device",
         lambda _event: None,
         on_transport_failure=lambda: resets.append(True),
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer: None,
     )
     client._started = True
     client._bearer_connected = True
@@ -662,16 +657,12 @@ def test_previously_authorized_subscription_waits_for_a_settled_bearer(
     })
     monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
     monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
-    monkeypatch.setattr(
-        client_module.GLib,
-        "timeout_add_seconds",
-        lambda _delay, _callback: 9,
-    )
     client = AncsClient(
         "/device",
         lambda _event: None,
         previously_authorized=True,
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer: None,
     )
     client._started = True
     client._bearer_connected = False
@@ -735,15 +726,11 @@ def test_partial_start_notify_failure_reuses_live_subscription(monkeypatch) -> N
     )
     monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
     monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
-    monkeypatch.setattr(
-        client_module.GLib,
-        "timeout_add_seconds",
-        lambda _delay, _callback: 9,
-    )
     client = AncsClient(
         "/device",
         lambda _event: None,
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer: None,
     )
     client._started = True
     client._bearer_connected = True
@@ -801,17 +788,12 @@ def test_le_reconnect_refreshes_registrations_only_after_a_silent_probe(
     )
     monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
     monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
-    monkeypatch.setattr(
-        client_module.GLib,
-        "timeout_add_seconds",
-        lambda _delay, _callback: 9,
-    )
-    monkeypatch.setattr(client_module.GLib, "source_remove", lambda _timer: None)
     client = AncsClient(
         "/device",
         lambda _event: None,
         on_status=lambda: statuses.append(True),
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer: None,
     )
     client._started = True
     client._bearer_connected = True
@@ -897,17 +879,12 @@ def test_le_reconnect_does_not_stop_notify_while_att_may_be_down(
     )
     monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
     monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
-    monkeypatch.setattr(
-        client_module.GLib,
-        "timeout_add_seconds",
-        lambda _delay, _callback: 9,
-    )
-    monkeypatch.setattr(client_module.GLib, "source_remove", lambda _timer: None)
     client = AncsClient(
         "/device",
         lambda _event: None,
         previously_authorized=True,
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer: None,
     )
     client._started = True
     client._bearer_connected = False
@@ -958,18 +935,12 @@ def test_le_reconnect_starts_notify_only_when_bluez_dropped_ccc(
     )
     monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
     monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
-    # The Control Point write arms a request timeout directly on GLib.
-    monkeypatch.setattr(
-        client_module.GLib,
-        "timeout_add_seconds",
-        lambda _delay, _callback: 9,
-    )
-    monkeypatch.setattr(client_module.GLib, "source_remove", lambda _timer: None)
     client = AncsClient(
         "/device",
         lambda _event: None,
         previously_authorized=True,
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer: None,
     )
     client._started = True
     client._bearer_connected = False
@@ -1021,17 +992,12 @@ def test_unknown_notifying_property_does_not_skip_start_notify(
     )
     monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
     monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
-    monkeypatch.setattr(
-        client_module.GLib,
-        "timeout_add_seconds",
-        lambda _delay, _callback: 9,
-    )
-    monkeypatch.setattr(client_module.GLib, "source_remove", lambda _timer: None)
     client = AncsClient(
         "/device",
         lambda _event: None,
         previously_authorized=True,
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer: None,
     )
     client._started = True
     client._bearer_connected = False
@@ -1088,6 +1054,7 @@ def test_reconnect_control_point_failure_keeps_solicitation_needed(
         previously_authorized=True,
         on_transport_failure=lambda: resets.append(True),
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer: None,
     )
     client._started = True
     client._ns_path = "/device/ns"
@@ -1131,6 +1098,7 @@ def test_not_connected_control_point_failure_invalidates_ancs_health(
         on_status=lambda: statuses.append(True),
         on_transport_failure=lambda: resets.append(True),
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer: None,
     )
     client._started = True
     client._bearer_connected = True
@@ -1179,17 +1147,12 @@ def test_authorization_timeout_resets_previously_authorized_transport(
     bus = _CharacteristicBus({"/device/cp": _ControlPoint()})
     monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
     monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
-    monkeypatch.setattr(
-        client_module.GLib,
-        "timeout_add_seconds",
-        lambda _delay, _callback: 91,
-    )
-    monkeypatch.setattr(client_module.GLib, "source_remove", lambda _timer: None)
     client = AncsClient(
         "/device",
         lambda _event: None,
         on_transport_failure=lambda: resets.append(True),
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer: None,
     )
     client._started = True
     client._notify_started = True
@@ -1209,9 +1172,14 @@ def test_authorization_timeout_resets_previously_authorized_transport(
     assert client.connected is False
     assert client.subscribed is False
     assert client._transport_blocked is True
-    assert scheduled[0][0] == client_module.TRANSPORT_RESET_SECONDS
+    # The probe's own timeout goes through the injected scheduler as well;
+    # the reset is the timer armed by the timeout handling.
+    assert (client_module.REQUEST_TIMEOUT_SECONDS, client._request_timed_out) in scheduled
+    assert scheduled[-1] == (
+        client_module.TRANSPORT_RESET_SECONDS, client._request_transport_reset,
+    )
 
-    scheduled[0][1]()
+    scheduled[-1][1]()
     assert resets == [True]
 
 
@@ -1229,16 +1197,12 @@ def test_initial_authorization_timeout_keeps_retrying_without_transport_reset(
     bus = _CharacteristicBus({"/device/cp": _ControlPoint()})
     monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
     monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
-    monkeypatch.setattr(
-        client_module.GLib,
-        "timeout_add_seconds",
-        lambda _delay, _callback: 91,
-    )
     client = AncsClient(
         "/device",
         lambda _event: None,
         on_transport_failure=lambda: resets.append(True),
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer: None,
     )
     client._started = True
     client._notify_started = True
@@ -1251,8 +1215,48 @@ def test_initial_authorization_timeout_keeps_retrying_without_transport_reset(
 
     assert client.subscribed is True
     assert client._transport_blocked is False
-    assert scheduled[0][0] == client_module.AUTHORIZATION_RETRY_SECONDS
+    assert scheduled == [
+        (client_module.REQUEST_TIMEOUT_SECONDS, client._request_timed_out),
+        (client_module.AUTHORIZATION_RETRY_SECONDS, client._retry_authorization),
+    ]
     assert resets == []
+
+
+def test_request_timeout_is_armed_and_cancelled_through_injected_timers(
+    monkeypatch,
+) -> None:
+    scheduled = []
+    cancelled = []
+
+    class _ControlPoint:
+        @staticmethod
+        def WriteValue(_value, _options, **_kwargs) -> None:
+            pass
+
+    bus = _CharacteristicBus({"/device/cp": _ControlPoint()})
+    monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
+    monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
+    client = AncsClient(
+        "/device",
+        lambda _event: None,
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 41,
+        cancel=cancelled.append,
+    )
+    client._started = True
+    client._notify_started = True
+    client._bearer_connected = True
+    client._bearer_ready = True
+    client._cp_path = "/device/cp"
+
+    client._queue_authorization_probe()
+    assert scheduled == [
+        (client_module.REQUEST_TIMEOUT_SECONDS, client._request_timed_out),
+    ]
+
+    _complete_authorization_probe(client)
+    assert client.authorized is True
+    assert cancelled == [41]
+    assert client._request_timeout_id is None
 
 
 def test_owner_change_during_start_notify_preserves_new_subscription(
@@ -1323,12 +1327,12 @@ def test_owner_change_during_control_point_write_preserves_new_request(
     bus = _CharacteristicBus({"/device/cp": _ControlPoint()})
     monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
     monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
-    monkeypatch.setattr(
-        client_module.GLib,
-        "timeout_add_seconds",
-        lambda *args: timeout_calls.append(args) or 92,
+    client = AncsClient(
+        "/device",
+        lambda _event: None,
+        schedule=lambda *args: timeout_calls.append(args) or 92,
+        cancel=lambda _timer: None,
     )
-    client = AncsClient("/device", lambda _event: None)
     client._started = True
     client._notify_started = True
     client._bearer_connected = True
@@ -1363,16 +1367,11 @@ def test_control_point_failure_keeps_ancs_unready_and_retries(
     bus = _CharacteristicBus({"/device/cp": cp})
     monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
     monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
-    monkeypatch.setattr(
-        client_module.GLib,
-        "timeout_add_seconds",
-        lambda _delay, _callback: 9,
-    )
-    monkeypatch.setattr(client_module.GLib, "source_remove", lambda _timer: None)
     client = AncsClient(
         "/device",
         lambda _event: None,
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer: None,
     )
     client._started = True
     client._notify_started = True
