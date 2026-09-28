@@ -522,11 +522,12 @@ Kirigami.ApplicationWindow {
                                 contentItem: RowLayout {
                                     spacing: Kirigami.Units.smallSpacing
 
-                                    Kirigami.Icon {
-                                        source: threadDelegate.modelData.is_group
-                                            ? "system-users" : "user-identity"
-                                        implicitWidth: Kirigami.Units.iconSizes.smallMedium
-                                        implicitHeight: implicitWidth
+                                    ContactAvatar {
+                                        bridge: root.bridge
+                                        group: threadDelegate.modelData.is_group
+                                        address: !threadDelegate.modelData.is_group
+                                            && threadDelegate.modelData.recipients.length === 1
+                                            ? threadDelegate.modelData.recipients[0] : ""
                                     }
                                     ColumnLayout {
                                         Layout.fillWidth: true

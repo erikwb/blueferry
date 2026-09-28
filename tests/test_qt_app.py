@@ -209,6 +209,9 @@ def _fake_main_collaborators(monkeypatch, events):
             pass
 
     class Engine:
+        def addImageProvider(self, _name, _provider) -> None:
+            pass
+
         def setInitialProperties(self, _properties) -> None:
             pass
 
@@ -224,7 +227,10 @@ def _fake_main_collaborators(monkeypatch, events):
     )
     monkeypatch.setattr(app_module, "_install_translation", lambda _application: None)
     monkeypatch.setattr(app_module, "ClientActivation", Activation)
-    monkeypatch.setattr(app_module, "BridgeController", lambda *, parent: object())
+    monkeypatch.setattr(
+        app_module, "BridgeController",
+        lambda *, parent: types.SimpleNamespace(avatar_bytes=lambda _key: None),
+    )
     monkeypatch.setattr(app_module, "QQmlApplicationEngine", Engine)
 
 
