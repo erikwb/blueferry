@@ -18,6 +18,8 @@ LOCAL_ENV_KEYS = frozenset({
     "BLUEFERRY_SHOW_NOTIFICATION_CONTENT",
     "BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE",
     "BLUEFERRY_CALLS_ENABLED",
+    "BLUEFERRY_PHONE_BATTERY_NOTIFY",
+    "BLUEFERRY_PHONE_BATTERY_LOW_PERCENT",
     "BLUEFERRY_NOTIFICATION_TIMEOUT_MS",
     "BLUEFERRY_MARK_READ_ON_DISMISS",
     "BLUEFERRY_HISTORY_RETENTION_DAYS",
@@ -221,6 +223,16 @@ exposes the private ``Calls1`` interface. The WirePlumber phone-audio policy
 then keeps the hands-free roles so call audio can reach this computer, while
 still stripping ``a2dp_sink`` when ``KEEP_PHONE_AUDIO_ON_PHONE`` is true.
 """
+PHONE_BATTERY_NOTIFY: bool = _env_opt_in("BLUEFERRY_PHONE_BATTERY_NOTIFY")
+"""Default-off desktop warning when the iPhone's battery runs low.
+
+Only effective with ``CALLS_ENABLED``: the level comes from the HFP
+``battchg`` indicator that oFono publishes for the online hands-free modem.
+"""
+PHONE_BATTERY_LOW_PERCENT: int = _env_int(
+    "BLUEFERRY_PHONE_BATTERY_LOW_PERCENT", 20, 0, 80
+)
+"""Warn at or below this level. HFP reports 0-100 % in 20 % steps only."""
 NOTIFICATION_TIMEOUT_MS: int = _env_int(
     "BLUEFERRY_NOTIFICATION_TIMEOUT_MS", 8_000, 1_000, 60_000
 )

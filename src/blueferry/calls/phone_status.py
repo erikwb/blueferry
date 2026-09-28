@@ -160,7 +160,9 @@ class LowBatteryMonitor:
     """
 
     def __init__(self, threshold: int) -> None:
-        self.threshold = max(0, min(100, int(threshold)))
+        # Above 80 % the re-arm level (threshold + one step) would exceed
+        # 100 %, and the warning could never fire again.
+        self.threshold = max(0, min(100 - BATTERY_STEP_PERCENT, int(threshold)))
         self._warned = False
 
     @property

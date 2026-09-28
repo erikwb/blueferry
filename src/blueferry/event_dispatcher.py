@@ -250,6 +250,20 @@ class EventDispatcher:
             except Exception:
                 log.exception("sink %s failed on a call event", sink.name)
 
+    def phone_battery_low(self, percent: int) -> None:
+        """Warn local desktop sinks that the phone's battery is low.
+
+        Not persisted and not broadcast; GetStatus carries the level.
+        """
+        for sink in self.sinks:
+            handler = getattr(sink, "handle_phone_battery_low", None)
+            if handler is None:
+                continue
+            try:
+                handler(percent)
+            except Exception:
+                log.exception("sink %s failed on a phone battery warning", sink.name)
+
     def sent(self, recipient: str, body: str, transfer_path: str) -> None:
         event = sms_sent_event(
             recipient,

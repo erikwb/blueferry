@@ -13,11 +13,13 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+from blueferry import config
 from blueferry.backend_operations import BackendDependencies, BackendOperations
 from blueferry.calls.phone_status import (
     HANDSFREE_IFACE,
     NETWORK_REGISTRATION_IFACE,
     PHONE_STATUS_KEYS,
+    LowBatteryMonitor,
     PhoneStatus,
     apply_properties,
     parse_battery_charge,
@@ -25,7 +27,9 @@ from blueferry.calls.phone_status import (
     parse_network_status,
     parse_signal_strength,
 )
+from blueferry.event_dispatcher import EventDispatcher
 from blueferry.models import BackendStatus, phone_status_fields
+from blueferry.sinks.libnotify import LibnotifySink
 
 PROPERTY_SETTINGS = settings(max_examples=150, derandomize=True, deadline=None)
 
@@ -102,6 +106,149 @@ def test_get_properties_replaces_only_its_interface() -> None:
     assert refreshed.to_status()["phone_network_status"] == "roaming"
     # A malformed reply keeps the previous values instead of wiping them.
     assert apply_properties(status, HANDSFREE_IFACE, [1, 2]) == status
+
+
+# ---- low-battery warning -------------------------------------------------------
+
+
+def test_low_battery_warns_once_per_discharge_cycle() -> None:
+    monitor = LowBatteryMonitor(20)
+
+    observed = [monitor.observe(level) for level in (100, 60, 40, 20, 20, 0, 20, 0)]
+    assert observed == [False, False, False, True, False, False, False, False]
+
+    # Unknown (disconnect, oFono restart) neither warns nor re-arms.
+    assert monitor.observe(None) is False
+    assert monitor.observe(20) is False
+    # Charging one HFP step above the threshold re-arms the next cycle.
+    assert monitor.observe(40) is False
+    assert monitor.observe(20) is True
+
+
+def test_low_battery_threshold_is_clamped_and_first_reading_can_warn() -> None:
+    assert LowBatteryMonitor(250).threshold == 80
+    assert LowBatteryMonitor(100).threshold == 80
+    assert LowBatteryMonitor(-5).threshold == 0
+    monitor = LowBatteryMonitor(20)
+    assert monitor.observe(0) is True
+    assert monitor.warned
+    # The highest threshold can still re-arm: 100 % is one step above 80 %.
+    top = LowBatteryMonitor(100)
+    assert [top.observe(level) for level in (80, 100, 80)] == [True, False, True]
+
+
+@pytest.mark.parametrize("value,expected", [
+    (None, False), ("", False), ("false", False), ("true", True), ("1", True),
+])
+def test_battery_warning_is_strictly_opt_in(monkeypatch, value, expected) -> None:
+    if value is None:
+        monkeypatch.delenv("BLUEFERRY_PHONE_BATTERY_NOTIFY", raising=False)
+    else:
+        monkeypatch.setenv("BLUEFERRY_PHONE_BATTERY_NOTIFY", value)
+    assert config._env_opt_in("BLUEFERRY_PHONE_BATTERY_NOTIFY") is expected
+
+
+def test_battery_keys_are_read_from_local_env(tmp_path) -> None:
+    path = tmp_path / "local.env"
+    path.write_text(
+        "BLUEFERRY_PHONE_BATTERY_NOTIFY=true\nBLUEFERRY_PHONE_BATTERY_LOW_PERCENT=40\n"
+    )
+    path.chmod(0o600)
+
+    assert config.read_local_env(path) == {
+        "BLUEFERRY_PHONE_BATTERY_NOTIFY": "true",
+        "BLUEFERRY_PHONE_BATTERY_LOW_PERCENT": "40",
+    }
+
+
+# ---- daemon wiring -------------------------------------------------------------
+
+
+def _daemon_with_recorders(make_daemon):
+    instance = make_daemon()
+    seen: list[object] = []
+    instance._emit_status = lambda: seen.append("status")
+    instance.events.phone_battery_low = lambda percent: seen.append(("low", percent))
+    return instance, seen
+
+
+def test_phone_status_changes_emit_status_but_warn_only_when_opted_in(
+    make_daemon, monkeypatch,
+) -> None:
+    monkeypatch.setattr(config, "PHONE_BATTERY_NOTIFY", False)
+    instance, seen = _daemon_with_recorders(make_daemon)
+
+    instance._on_phone_status(PhoneStatus(battery_steps=0))
+    assert seen == ["status"]
+
+    monkeypatch.setattr(config, "PHONE_BATTERY_NOTIFY", True)
+    instance, seen = _daemon_with_recorders(make_daemon)
+    for steps in (3, 1, 1, None, 1, 0, 3, 1):
+        instance._on_phone_status(PhoneStatus(battery_steps=steps))
+
+    assert seen.count("status") == 8
+    assert [item for item in seen if item != "status"] == [("low", 20), ("low", 20)]
+
+
+def test_daemon_wires_the_controller_to_its_phone_status_handler(make_daemon) -> None:
+    instance = make_daemon()
+
+    assert instance.calls._on_phone_status == instance._on_phone_status
+    assert instance.low_battery.threshold == config.PHONE_BATTERY_LOW_PERCENT
+
+
+# ---- desktop warning -------------------------------------------------------------
+
+
+class _FakeNotifications:
+    def __init__(self) -> None:
+        self.calls: list[tuple] = []
+
+    def Notify(self, *args):
+        self.calls.append(args)
+        return 7
+
+
+def _sink(policy="messages"):
+    sink = LibnotifySink.__new__(LibnotifySink)
+    sink._notification_policy = lambda: policy
+    sink._notif = _FakeNotifications()
+    return sink
+
+
+def test_libnotify_battery_warning_respects_the_notification_policy() -> None:
+    sink = _sink()
+    sink.handle_phone_battery_low(20)
+
+    notify = sink._notif.calls[0]
+    assert "battery low" in notify[3]
+    assert "About 20 %" in notify[4]
+    assert list(notify[5]) == []
+
+    silent = _sink("none")
+    silent.handle_phone_battery_low(0)
+    assert silent._notif.calls == []
+
+
+def test_dispatcher_routes_the_warning_to_sinks_that_opt_in() -> None:
+    dispatcher = EventDispatcher.__new__(EventDispatcher)
+    received = []
+
+    class Broken:
+        name = "broken"
+
+        def handle_phone_battery_low(self, _percent):
+            raise RuntimeError("sink bug")
+
+    dispatcher.sinks = [
+        SimpleNamespace(name="plain"),
+        Broken(),
+        SimpleNamespace(name="ok", handle_phone_battery_low=received.append),
+    ]
+
+    dispatcher.phone_battery_low(20)
+
+    assert received == [20]
 
 
 # ---- backend and client model ------------------------------------------------
