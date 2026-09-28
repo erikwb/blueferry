@@ -512,6 +512,14 @@ ModalScreen {
     width: 46;
 }
 
+#calls-dialog {
+    width: 76;
+}
+
+#calls-number {
+    height: 3;
+}
+
 #help-close {
     width: 12;
     min-width: 12;
