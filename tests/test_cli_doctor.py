@@ -31,3 +31,18 @@ def test_doctor_still_fails_when_the_adapter_is_unreachable(monkeypatch) -> None
 
     assert result.exit_code == 1
     assert "One or more checks FAILED." in result.output
+
+
+def test_doctor_warns_when_autocopy_has_no_clipboard_helper(monkeypatch) -> None:
+    from blueferry import otp_clipboard
+
+    _healthy_non_cod_checks(monkeypatch)
+    monkeypatch.setattr(cli.bluez_setup, "current_cod", lambda: 0x240404)
+    monkeypatch.setattr(cli.bluez_setup, "desired_cod_matches", lambda _cod: True)
+    monkeypatch.setattr(config, "OTP_AUTOCOPY", True)
+    monkeypatch.setattr(otp_clipboard.shutil, "which", lambda _tool: None)
+
+    result = CliRunner().invoke(cli.app, ["doctor"])
+
+    assert result.exit_code == 0
+    assert "Checks completed with warnings." in result.output
