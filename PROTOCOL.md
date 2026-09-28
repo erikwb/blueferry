@@ -285,6 +285,26 @@ Contact names are display data, not identities. Phone numbers and email
 addresses are normalized and stored separately; a name that resolves to more
 than one address must remain ambiguous.
 
+### Call history (unverified on hardware)
+
+BlueFerry's opt-in call history relies on the PBAP call-history phonebooks,
+selected with `Select("int", "ich" | "och" | "mch")` and pulled with the same
+`PullAll` filters as the main phonebook. **This path has not yet been
+exercised against an iPhone**; the following are expectations from the PBAP
+specification and third-party reports, not captured observations:
+
+- Entries carry `X-IRMC-CALL-DATETIME;MISSED|RECEIVED|DIALED:<timestamp>`
+  plus `TEL` and, for known callers, `N`/`FN`. Timestamps without `Z` or an
+  offset are treated as local time.
+- iOS is reported to fill `ich`, `och`, and `mch`, while the combined `cch`
+  listing is unreliable, so BlueFerry pulls the three lists and merges them.
+  A call present in both `ich` and `mch` is treated as missed.
+- An empty listing is a valid answer (for example, no missed calls).
+- PBAP offers no change notification; BlueFerry polls.
+
+Record the phone model, iOS version, and BlueZ version here once the behavior
+has been observed.
+
 ## OBEX lifecycle
 
 iOS and obexd behave poorly when MAP/PBAP sessions or operations are repeatedly
