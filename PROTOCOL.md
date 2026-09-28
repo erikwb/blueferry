@@ -277,6 +277,15 @@ The iPhone phonebook is available through BlueZ's
   zero-byte file.
 - vCards contain `FN`, multiple `TEL` values, and `EMAIL` values. Retaining
   emails is necessary for contacts that exist only as Apple-ID destinations.
+- BlueFerry sends no `Fields` filter, and BlueZ then omits the PBAP Filter
+  application parameter. The PBAP specification treats a missing filter as
+  "all attributes", so inline `PHOTO` values are already part of this single
+  bulk pull whether or not BlueFerry keeps them. gutbash/blue reports iOS
+  including photos without a filter. The opt-in contact-photo feature
+  therefore reuses the same pull rather than adding a second photo-only pull
+  or per-entry `Pull` calls. BlueFerry itself has not captured a photo-bearing
+  iOS phonebook yet, so how iOS encodes PHOTO (vCard 3.0 `ENCODING=b`,
+  folded base64, JPEG) is expected but unverified.
 - Small or fast BlueZ transfers can disappear from D-Bus with status `gone`
   just before the output file becomes visible. Preserve the initial transfer
   properties and allow a short, bounded file-visibility grace period.

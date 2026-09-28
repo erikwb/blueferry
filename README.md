@@ -316,6 +316,35 @@ journalctl --user -u blueferry -f | grep "ANCS app observed"
 
 Restart the user service after editing `local.env` settings.
 
+### Contact photos (optional)
+
+Contact photos are off by default. To show the iPhone's contact pictures as
+avatars in the Qt conversation list and as desktop notification icons, add
+this to `local.env`, restart the user service, and sync contacts:
+
+```bash
+BLUEFERRY_CONTACT_PHOTOS=true
+```
+
+The iPhone already sends photos in the normal contact download, so this
+doesn't add a second Bluetooth transfer. BlueFerry just stops throwing them
+away. Photos are stored in the contact cache with the same encryption, storage
+mode, and replacement as the contacts, and are deleted the next time the
+backend starts with the option off. Only JPEG and PNG photos up to 256 KiB and
+2048×2048 pixels are kept. A photo shows only when its address belongs to
+exactly one contact. The backend never decodes an image: the Qt client and the
+notification server do. For notifications, the backend puts a temporary
+owner-only copy of the photo under `$XDG_RUNTIME_DIR/blueferry`, passes it as
+the notification's `image-path`, and deletes it when contacts change or the
+backend stops. Plasma is expected to show that image. Neither Plasma nor any
+other notification server has been tested with it yet, so a server that
+ignores `image-path` just shows the usual icon. Before going back to a
+BlueFerry release without this option, turn it off and start the backend once.
+That start erases the stored photos; an older release doesn't know about them
+and would keep them indefinitely. `blueferry contacts-photo NAME -o FILE`
+exports one cached photo. The GTK, terminal, and Quickshell clients don't show
+avatars yet.
+
 When WirePlumber 0.5 or newer is installed, BlueFerry keeps calls and music on
 the iPhone by writing
 `~/.config/wireplumber/wireplumber.conf.d/99-blueferry-keep-phone-audio.conf`
@@ -386,6 +415,7 @@ blueferry sms-send '+15551234567' 'on my way'
 blueferry sms-send person@icloud.com 'hello from Linux'
 blueferry sms-send Alice 'running late'
 blueferry contacts-sync
+blueferry contacts-photo Alice --output alice.jpg   # needs BLUEFERRY_CONTACT_PHOTOS
 blueferry history-clear
 blueferry doctor
 ```

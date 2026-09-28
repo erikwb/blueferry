@@ -73,7 +73,8 @@ All paths are relative to `src/blueferry/` unless noted.
 | `contacts.py` | PBAP phonebook pull, vCard parsing, and address-to-name resolution. |
 | `contact_sync.py` | Schedules PBAP pulls (MAP grace period, daily refresh, joined manual requests) and discards pulls that span a storage key or policy change. |
 | `contact_repository.py` | Contact-cache SQLite schema, replacement transaction, encryption, legacy cleanup. |
-| `vcard.py` | Linear, resource-bounded vCard block extraction. |
+| `vcard.py` | Linear, resource-bounded vCard block extraction; the photo-aware variant splits PHOTO out under its own budget. |
+| `contact_photos.py` | Opt-in contact photos: bounded base64 PHOTO decoding (JPEG/PNG signatures only, no URIs, no pixel decoding) and volatile owner-only copies for notification icons. |
 | `ancs/client.py` | ANCS GATT client: subscribes to characteristics, requests attributes, emits `AncsEvent`s. |
 | `ancs/parsers.py` | Pure ANCS wire-format parsers and command builders. |
 | `ancs/constants.py` | ANCS spec constants. |
@@ -140,6 +141,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | --- | --- |
 | `cli.py`, `__main__.py` | Typer CLI (`run`, `doctor`, sync, setup, and hidden `pairing-*` JSON helpers). |
 | `cli_messages.py` | CLI message listing, recipient selection, and send. |
+| `cli_contacts.py` | `contacts-photo` export of one cached contact photo. |
 | `cli_common.py` | Small CLI presentation helpers. |
 | `cli_proximity.py` | `proximity-lock` status, dry run, enable, and disable. |
 | `tui.py` | Textual terminal client. |
@@ -155,6 +157,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `qt/app.py` | PySide6/Kirigami entry point. |
 | `qt/controller.py` | Asynchronous `BridgeController` exposed to QML. |
 | `qt/tasks.py` | Qt worker primitive. |
+| `qt/avatars.py` | Image provider that decodes opt-in contact photos with `QImageReader` after header and size checks. |
 | `qt/activation.py` | Qt adapter for client activation. |
 | `qt/qml/Main.qml` | Kirigami window: navigation and composition. |
 | `qt/qml/ConversationLogic.qml` | Thread lookup, roster-warning dedup, participant parsing (also used by Quickshell). |
@@ -166,6 +169,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `qt/qml/NewMessageDialog.qml` | New message composition. |
 | `qt/qml/ExpandingMessageComposer.qml` | Growing message editor. |
 | `qt/qml/MessageBubble.qml` | Message bubble. |
+| `qt/qml/ContactAvatar.qml` | Conversation icon, replaced by the contact photo when the option is on. |
 | `quickshell_bridge.py` | Persistent stdin/stdout JSON bridge from Quickshell to the session D-Bus API. |
 
 ### Quickshell client (`data/quickshell/`)
@@ -428,6 +432,24 @@ A change to these rules has to be made in both places.
   delivery continues. Only an explicit client action may create or unlock the
   key. History writes are transactional, and a monotonic revision invalidates
   the projection.
+- **Contact photos** are opt-in (`BLUEFERRY_CONTACT_PHOTOS`). The daemon keeps
+  inline JPEG/PNG bytes within size limits. It checks the declared canvas by
+  reading the header and never decodes pixels. It stores the raw bytes
+  AES-GCM-sealed in a BLOB next to the contact records, in the same
+  transaction, and erases them at startup when the option is off. The photo
+  table is created only when a sync stores a photo, and the off-path check is
+  read-only, so a profile that never opted in keeps the upstream schema.
+  Releases without this feature don't clear the table, so the README asks
+  users to disable the option and start the backend once before downgrading.
+  Photo reads open the database read-only with a short lock timeout. While a
+  sync holds the database, or a hot journal from a crash awaits rollback, they
+  return `NotReady`, which clients retry. Clients get them through
+  `GetContactPhoto(address) -> ay`. It has its own rate-limit bucket (with a
+  higher daemon-wide window, so several clients can fill their lists) and
+  returns a photo only for an unambiguous address. Clients drop cached photos
+  when the content-free `contact_photo_revision` status key changes.
+  Presentation processes decode the images with toolkit loaders. Notification
+  icons are temporary `image-path` files in the runtime directory.
 - **ANCS content:** the app is identified before any content is requested.
   The default policy never fetches content from other apps. The opt-in `all`
   policy applies exact bundle-ID allow/block rules first and delivers content
