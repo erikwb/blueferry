@@ -570,15 +570,13 @@ def test_initial_subscription_waits_for_a_settled_le_bearer(monkeypatch) -> None
     })
     monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
     monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
-    monkeypatch.setattr(
-        client_module.GLib,
-        "timeout_add_seconds",
-        lambda _delay, _callback: 9,
-    )
+    # AncsClient binds its scheduler default at import time, so patching
+    # GLib here would not stop a real settle timer from outliving the test.
+    scheduled = []
     client = AncsClient(
         "/device",
         lambda _event: None,
-        schedule=lambda _delay, _callback: 7,
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 9,
     )
     client._started = True
     client._bearer_connected = False
@@ -593,7 +591,10 @@ def test_initial_subscription_waits_for_a_settled_le_bearer(monkeypatch) -> None
     assert client.subscribed is False
 
     client.observe_bearer_state(True)
-    assert client._bearer_settle_id is not None
+    assert client._bearer_settle_id == 9
+    assert [delay for delay, _callback in scheduled] == [
+        client_module.BEARER_SETTLE_SECONDS
+    ]
 
 
 def test_missing_att_transport_resets_a_connected_le_bearer(monkeypatch) -> None:
@@ -957,6 +958,7 @@ def test_le_reconnect_starts_notify_only_when_bluez_dropped_ccc(
     )
     monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
     monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
+    # The Control Point write arms a request timeout directly on GLib.
     monkeypatch.setattr(
         client_module.GLib,
         "timeout_add_seconds",
