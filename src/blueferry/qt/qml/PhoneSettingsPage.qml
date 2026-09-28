@@ -409,6 +409,20 @@ Kirigami.ScrollablePage {
                 Accessible.description: qsTr("Unknown senders remain available in message history.")
             }
         }
+        // Click rules only apply to non-Messages popups, which exist only in
+        // the "all" policy. Load the editor (and its backend read) on demand.
+        Loader {
+            objectName: "notificationOpenMapLoader"
+            Layout.fillWidth: true
+            active: iphonePage.bridge.status.daemon === true
+                && iphonePage.bridge.status.notification_policy === "all"
+            visible: active
+            sourceComponent: Component {
+                NotificationOpenMapEditor {
+                    bridge: iphonePage.bridge
+                }
+            }
+        }
 
         // Only daemons that report the proximity keys support the setting.
         Loader {

@@ -13,7 +13,17 @@ os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import Q_ARG, Property, QMetaObject, QObject, QPointF, Qt, QUrl, Slot
+from PySide6.QtCore import (
+    Q_ARG,
+    Property,
+    QMetaObject,
+    QObject,
+    QPointF,
+    Qt,
+    QUrl,
+    Signal,
+    Slot,
+)
 from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication
 from PySide6.QtQml import QQmlComponent, QQmlEngine
 from PySide6.QtQuick import QQuickWindow
@@ -1909,3 +1919,90 @@ Item {
     log = result.stdout + result.stderr
     assert result.returncode == 0 and "BLUEFERRY_GROUP_REPLY_OK" in log, log
     assert "WARN scene:" not in log and "ReferenceError" not in log and "TypeError" not in log, log
+
+
+class _OpenRuleBridge(QObject):
+    """Inert recorder: the editor may only request validated backend edits."""
+
+    notificationOpenMapChanged = Signal()
+    statusChanged = Signal()
+    busyChanged = Signal()
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._rules: list[dict] = []
+        self.calls: list[tuple] = []
+
+    @Property("QVariantList", notify=notificationOpenMapChanged)
+    def notificationOpenMap(self):
+        return self._rules
+
+    @Property("QVariantMap", notify=statusChanged)
+    def status(self):
+        return {"daemon": True, "notification_policy": "all"}
+
+    @Property(bool, notify=busyChanged)
+    def busy(self):
+        return False
+
+    @Slot()
+    def loadNotificationOpenMap(self) -> None:
+        self.calls.append(("load",))
+
+    @Slot(str, str)
+    def setNotificationOpenTarget(self, bundle_id: str, target: str) -> None:
+        self.calls.append(("set", bundle_id, target))
+
+    @Slot(str)
+    def removeNotificationOpenTarget(self, bundle_id: str) -> None:
+        self.calls.append(("remove", bundle_id))
+
+    def publish(self, rules) -> None:
+        self._rules = rules
+        self.notificationOpenMapChanged.emit()
+
+
+def test_qt_click_rule_editor_adds_lists_and_removes_rules(qml_engine) -> None:
+    bridge = _OpenRuleBridge()
+    component = _component(qml_engine, "src/blueferry/qt/qml/NotificationOpenMapEditor.qml")
+    editor = component.createWithInitialProperties({"bridge": bridge})
+    assert editor is not None, "\n".join(error.toString() for error in component.errors())
+    try:
+        assert bridge.calls == [("load",)]
+        # Rule edits made elsewhere (CLI) arrive as a status refresh.
+        bridge.statusChanged.emit()
+        assert bridge.calls == [("load",), ("load",)]
+        bundle = editor.findChild(QObject, "openRuleBundleField")
+        target = editor.findChild(QObject, "openRuleTargetField")
+        add = editor.findChild(QObject, "addOpenRule")
+        assert add.property("enabled") is False
+
+        bundle.setProperty("text", "  net.whatsapp.WhatsApp ")
+        target.setProperty("text", "https://web.whatsapp.com")
+        assert add.property("enabled") is True
+        QMetaObject.invokeMethod(add, "clicked")
+        assert bridge.calls[-1] == ("set", "net.whatsapp.WhatsApp", "https://web.whatsapp.com")
+
+        # The form clears only once the backend returns the accepted rule.
+        assert bundle.property("text") != ""
+        bridge.publish([{
+            "bundle_id": "net.whatsapp.WhatsApp",
+            "target": "https://web.whatsapp.com",
+            "kind": "url",
+        }])
+        QGuiApplication.processEvents()
+        assert bundle.property("text") == ""
+        assert target.property("text") == ""
+
+        def visual_children(item):
+            for child in item.childItems():
+                yield child
+                yield from visual_children(child)
+
+        [remove] = [
+            item for item in visual_children(editor) if item.objectName() == "removeOpenRule"
+        ]
+        QMetaObject.invokeMethod(remove, "clicked")
+        assert bridge.calls[-1] == ("remove", "net.whatsapp.WhatsApp")
+    finally:
+        editor.deleteLater()

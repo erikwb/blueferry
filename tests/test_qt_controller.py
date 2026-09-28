@@ -867,3 +867,81 @@ def test_proximity_lock_setting_is_forwarded_and_merged_into_status(monkeypatch)
     assert controller.status["proximity_lock_enabled"] is True
     assert controller.status["proximity_lock_grace_sec"] == 120
     assert changes == [True]
+
+
+def _synchronous(controller, monkeypatch):
+    def run(operation, on_done=None, on_failed=None, **_kwargs):
+        try:
+            value = operation()
+        except Exception as error:
+            (on_failed or controller._operation_failed)(str(error))
+            return
+        if on_done is not None:
+            on_done(value)
+
+    monkeypatch.setattr(controller, "_run", run)
+
+
+def test_notification_click_rules_are_loaded_edited_and_exposed_to_qml(monkeypatch):
+    from blueferry.notification_open_map import open_map_entries
+
+    class _RuleBackend(_Backend):
+        def __init__(self):
+            super().__init__()
+            self.rules = {"com.slack": "slack.desktop"}
+            self.calls = []
+
+        def notification_open_map(self):
+            self.calls.append(("list",))
+            return open_map_entries(self.rules)
+
+        def set_notification_open_target(self, bundle_id, target):
+            self.calls.append(("set", bundle_id, target))
+            self.rules[bundle_id] = target
+            return open_map_entries(self.rules)
+
+        def remove_notification_open_target(self, bundle_id):
+            self.calls.append(("remove", bundle_id))
+            return self.rules.pop(bundle_id, None) is not None
+
+    backend = _RuleBackend()
+    controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+    _synchronous(controller, monkeypatch)
+    changes = []
+    controller.notificationOpenMapChanged.connect(lambda: changes.append(True))
+
+    controller.loadNotificationOpenMap()
+    assert controller.notificationOpenMap == [
+        {"bundle_id": "com.slack", "target": "slack.desktop", "kind": "desktop"},
+    ]
+
+    controller.setNotificationOpenTarget(" net.whatsapp.WhatsApp ", " https://web.whatsapp.com ")
+    controller.setNotificationOpenTarget("", "https://ignored.example")
+    controller.removeNotificationOpenTarget("com.slack")
+
+    assert backend.calls == [
+        ("list",),
+        ("set", "net.whatsapp.WhatsApp", "https://web.whatsapp.com"),
+        ("remove", "com.slack"),
+        ("list",),
+    ]
+    assert controller.notificationOpenMap == [
+        {"bundle_id": "net.whatsapp.WhatsApp", "target": "https://web.whatsapp.com", "kind": "url"},
+    ]
+    assert len(changes) == 3
+
+
+def test_rejected_notification_click_rule_is_reported_without_changing_the_list(monkeypatch):
+    class _RejectingBackend(_Backend):
+        def set_notification_open_target(self, _bundle_id, _target):
+            raise BackendError("target must be an http(s) URL or a desktop entry ID")
+
+    controller = BridgeController(
+        backend=_RejectingBackend(), setup=object(), subscribe=False, autostart=False,
+    )
+    _synchronous(controller, monkeypatch)
+
+    controller.setNotificationOpenTarget("com.example.App", "javascript:alert(1)")
+
+    assert controller.notificationOpenMap == []
+    assert "http(s) URL" in controller.errorText

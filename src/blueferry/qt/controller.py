@@ -54,6 +54,7 @@ class BridgeController(QObject):
     pairingConfirmationRequested = Signal(str)
     pairingIssueReportChanged = Signal()
     messageOpenRequested = Signal(str)
+    notificationOpenMapChanged = Signal()
     groupConfirmationRequested = Signal(str, str, str)
     threadSendSucceeded = Signal(str, str)
     messageSendSucceeded = Signal(str, str)
@@ -81,6 +82,7 @@ class BridgeController(QObject):
         self._contact_results: list[dict] = []
         self._state = ConversationState(select_first=False)
         self._status: dict = {}
+        self._notification_open_map: list[dict] = []
         self._devices: list[dict] = []
         self._bluetooth_active = False
         self._busy_count = 0
@@ -117,6 +119,10 @@ class BridgeController(QObject):
     @Property("QVariantMap", notify=statusChanged)
     def status(self):
         return self._status
+
+    @Property("QVariantList", notify=notificationOpenMapChanged)
+    def notificationOpenMap(self):
+        return self._notification_open_map
 
     @Property("QVariantList", notify=devicesChanged)
     def devices(self):
@@ -617,6 +623,38 @@ class BridgeController(QObject):
                 bool(enabled), int(grace_seconds)
             ),
             completed,
+        )
+
+    def _open_map_updated(self, value: object) -> None:
+        if isinstance(value, list):
+            self._notification_open_map = [dict(rule) for rule in value if isinstance(rule, dict)]
+            self.notificationOpenMapChanged.emit()
+
+    @Slot()
+    def loadNotificationOpenMap(self) -> None:
+        self._run(
+            self._backend.notification_open_map, self._open_map_updated, busy=False,
+        )
+
+    @Slot(str, str)
+    def setNotificationOpenTarget(self, bundle_id: str, target: str) -> None:
+        bundle = str(bundle_id or "").strip()
+        selected = str(target or "").strip()
+        if not bundle or not selected:
+            return
+        self._run(
+            lambda: self._backend.set_notification_open_target(bundle, selected),
+            self._open_map_updated,
+        )
+
+    @Slot(str)
+    def removeNotificationOpenTarget(self, bundle_id: str) -> None:
+        bundle = str(bundle_id or "").strip()
+        if not bundle:
+            return
+        self._run(
+            lambda: self._backend.remove_notification_open_target(bundle),
+            lambda _removed: self.loadNotificationOpenMap(),
         )
 
     @Slot(str)

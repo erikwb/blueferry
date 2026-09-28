@@ -9,6 +9,7 @@ src/blueferry/qt/controller.py
 src/blueferry/qt/qml/Main.qml
 src/blueferry/qt/qml/PhoneSettingsPage.qml
 src/blueferry/qt/qml/PhoneSettingsDialogs.qml
+src/blueferry/qt/qml/NotificationOpenMapEditor.qml
 src/blueferry/qt/qml/MessageBubble.qml
 src/blueferry/qt/qml/OnboardingSummary.qml
 src/blueferry/qt/qml/GroupConfirmationDialog.qml
