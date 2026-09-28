@@ -142,6 +142,18 @@ sudo dnf builddep packaging/rpm/blueferry.spec
 
 Finished packages are written to `dist/rpm/`.
 
+#### OpenRC systems
+
+On OpenRC, install BlueFerry's D-Bus activation file and let the session bus
+start the backend; no init script is needed. An optional OpenRC user service
+(OpenRC 0.62 or newer) is only for desktops whose session bus is
+`$XDG_RUNTIME_DIR/bus`. Do not create one on `dbus-run-session` desktops such
+as Plasma under greetd or SDDM. For iPhone system notifications, start
+`bluetoothd` with `-E` (see `/etc/conf.d/bluetooth`) and run
+`sudo rc-service bluetooth restart`. Without systemd, the daemon also runs
+without the systemd unit's sandboxing. See
+[packaging/openrc/README.md](packaging/openrc/README.md) before setting up.
+
 See [packaging/README.md](packaging/README.md) for the exact support matrix and
 more packaging details.
 
@@ -405,6 +417,9 @@ For logs and prerequisite checks:
 blueferry doctor
 journalctl --user -u blueferry -f
 ```
+
+With the optional OpenRC user service, the backend log is
+`~/.local/state/blueferry/daemon.log`.
 
 If messages work but names do not, use **Sync Contacts** or run
 `blueferry contacts-sync`.

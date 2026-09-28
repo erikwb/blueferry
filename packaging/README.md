@@ -43,3 +43,8 @@ provide a sufficiently recent Textual, so those backend packages contain a
 pinned private copy of Textual 8 and its pure-Python dependency closure. The
 private bundle is not installed into the system Python package directory. See
 each recipe's README for local commands.
+
+OpenRC systems are not in the CI matrix and have no package recipe. Without
+systemd the backend relies on D-Bus activation. `openrc/` holds installation
+notes and an optional user-service script for desktops whose session bus is
+managed by OpenRC.
