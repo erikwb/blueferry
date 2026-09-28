@@ -71,6 +71,20 @@ class EventFlag:
 class CommandID:
     GetNotificationAttributes = 0
     GetAppAttributes = 1
+    PerformNotificationAction = 2
+
+
+class ActionID:
+    Positive = 0
+    Negative = 1
+
+
+class AncsErrorCode:
+    """ATT application error codes returned by a Control Point write."""
+    UnknownCommand = 0xA0
+    InvalidCommand = 0xA1
+    InvalidParameter = 0xA2
+    ActionFailed = 0xA3
 
 
 class NotificationAttributeID:
@@ -78,6 +92,10 @@ class NotificationAttributeID:
     Title = 1
     Subtitle = 2
     Message = 3
+    MessageSize = 4
+    Date = 5
+    PositiveActionLabel = 6
+    NegativeActionLabel = 7
 
 
 class AppAttributeID:
