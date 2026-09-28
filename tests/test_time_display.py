@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import locale
+from collections.abc import Iterator
 from datetime import datetime, timezone
 
 import pytest
@@ -20,6 +22,38 @@ NOW = datetime(2026, 8, 9, 14, 30, tzinfo=timezone.utc)
     ],
 )
 def test_human_calendar_labels(value: str, expected: str) -> None:
+    assert format_message_timestamp(value, now=NOW) == expected
+
+
+@pytest.fixture
+def german_time_locale() -> Iterator[None]:
+    # GTK and Qt call setlocale(LC_ALL, ""), so a user's LC_TIME reaches strftime.
+    previous = locale.setlocale(locale.LC_TIME)
+    for name in ("de_CH.UTF-8", "de_DE.UTF-8", "de_CH.utf8", "de_DE.utf8"):
+        try:
+            locale.setlocale(locale.LC_TIME, name)
+        except locale.Error:
+            continue
+        break
+    else:
+        pytest.skip("no German locale is installed")
+    try:
+        yield
+    finally:
+        locale.setlocale(locale.LC_TIME, previous)
+
+
+@pytest.mark.usefixtures("german_time_locale")
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("2026-08-09T13:05:00+00:00", "Today at 1:05 PM"),
+        ("2026-08-06T09:00:00+00:00", "Thursday at 9:00 AM"),
+        ("2026-03-20T18:45:00+00:00", "Mar 20 at 6:45 PM"),
+        ("2025-12-31T00:05:00+00:00", "Dec 31, 2025 at 12:05 AM"),
+    ],
+)
+def test_labels_stay_english_under_a_foreign_time_locale(value: str, expected: str) -> None:
     assert format_message_timestamp(value, now=NOW) == expected
 
 
