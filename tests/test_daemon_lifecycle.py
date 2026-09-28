@@ -373,6 +373,88 @@ def test_changing_saved_target_requests_restart(make_daemon, monkeypatch):
     assert stopped == [True]
 
 
+def _stop_saved_target_by_clearing(_instance, monkeypatch):
+    monkeypatch.setattr(daemon_mod.config, "current_target", lambda: ("", "hci0"))
+
+
+def _stop_saved_target_by_changing(_instance, monkeypatch):
+    monkeypatch.setattr(
+        daemon_mod.config, "current_target", lambda: ("02:00:00:00:00:02", "hci1"),
+    )
+
+
+def _stop_saved_target_by_removing_bond(instance, monkeypatch):
+    # Keep the ANCS recovery budget out of the settings file.
+    monkeypatch.setattr(instance.recovery, "forget_phone", lambda: None)
+    monkeypatch.setattr(
+        daemon_mod.config, "current_target", lambda: ("02:00:00:00:00:01", "hci0"),
+    )
+    monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args, **_kwargs: False)
+
+
+def _stop_package_by_removing_marker(_instance, monkeypatch):
+    monkeypatch.setattr(daemon_mod, "installed_release", lambda: None)
+
+
+def _stop_package_by_upgrading(_instance, monkeypatch):
+    monkeypatch.setattr(daemon_mod, "installed_release", lambda: "0.6.0-7")
+
+
+@pytest.mark.parametrize(
+    ("timer_attr", "callback", "arrange"),
+    [
+        ("_target_config_check_id", "_check_target_config", _stop_saved_target_by_clearing),
+        ("_target_config_check_id", "_check_target_config", _stop_saved_target_by_changing),
+        ("_target_config_check_id", "_check_target_config",
+         _stop_saved_target_by_removing_bond),
+        ("_release_check_id", "_check_package_release", _stop_package_by_removing_marker),
+        ("_release_check_id", "_check_package_release", _stop_package_by_upgrading),
+    ],
+)
+def test_stop_does_not_remove_a_timer_that_stopped_itself(
+    make_daemon, monkeypatch, timer_attr, callback, arrange,
+):
+    # Returning False makes GLib destroy the source. Removing its ID again
+    # during shutdown makes GLib warn "Source ID ... was not found".
+    instance = make_daemon()
+    monkeypatch.setattr(daemon_mod.config, "IPHONE_MAC", "02:00:00:00:00:01")
+    monkeypatch.setattr(daemon_mod.config, "ADAPTER", "hci0")
+    monkeypatch.setattr(daemon_mod.main_loop, "quit", lambda: None)
+    arrange(instance, monkeypatch)
+    removed = []
+    monkeypatch.setattr(daemon_mod.GLib, "source_remove", removed.append)
+    setattr(instance, timer_attr, 42)
+
+    # A missing release marker needs consecutive misses before it stops.
+    for _ in range(3):
+        if not getattr(instance, callback)():
+            break
+    else:
+        pytest.fail(f"{callback} never stopped itself")
+    instance.stop()
+
+    assert removed == []
+
+
+def test_stop_removes_a_target_check_that_keeps_running(make_daemon, monkeypatch):
+    instance = make_daemon()
+    monkeypatch.setattr(
+        daemon_mod.config, "current_target", lambda: ("02:00:00:00:00:01", "hci0"),
+    )
+    monkeypatch.setattr(daemon_mod.config, "IPHONE_MAC", "02:00:00:00:00:01")
+    monkeypatch.setattr(daemon_mod.config, "ADAPTER", "hci0")
+    monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(daemon_mod.main_loop, "quit", lambda: None)
+    removed = []
+    monkeypatch.setattr(daemon_mod.GLib, "source_remove", removed.append)
+    instance._target_config_check_id = 42
+
+    assert instance._check_target_config() is True
+    instance.stop()
+
+    assert removed == [42]
+
+
 def test_classic_reachable_accepts_an_open_obex_session() -> None:
     bearers = SimpleNamespace(bredr_connected=False)
     sessions = SimpleNamespace(map=object(), pbap=None)

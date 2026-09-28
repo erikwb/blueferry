@@ -691,6 +691,7 @@ class Daemon:
             if self._release_missing_checks < 3:
                 return True
             log.info("package release marker remains absent; stopping daemon")
+            self._release_check_id = None  # GLib removes it after False.
             main_loop.quit()
             return False
         self._release_missing_checks = 0
@@ -700,6 +701,7 @@ class Daemon:
             current_build,
         )
         self._restart_after_upgrade = True
+        self._release_check_id = None  # GLib removes it after False.
         main_loop.quit()
         return False
 
@@ -717,6 +719,7 @@ class Daemon:
             # unavailable adapter or transient BlueZ inspection failure.
             log.info("saved iPhone bond was removed; stopping daemon")
             self.recovery.forget_phone()
+            self._target_config_check_id = None  # GLib removes it after False.
             main_loop.quit()
             return False
         if not mac:
@@ -728,6 +731,7 @@ class Daemon:
                 adapter,
             )
             self._restart_after_upgrade = True
+        self._target_config_check_id = None  # GLib removes it after False.
         main_loop.quit()
         return False
 
