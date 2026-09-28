@@ -117,6 +117,7 @@ class CallHistorySync:
         self._periodic_id: int | None = None
         self._initial_id: int | None = None
         self._stopped = False
+        self._synced = False
 
     @property
     def pending(self) -> bool:
@@ -148,6 +149,10 @@ class CallHistorySync:
     def storage_changed(self) -> None:
         if not self._storage.status.can_read:
             self.discard_cache()
+        elif not self._synced:
+            # A wallet unlocked after PBAP connected: do not wait a full
+            # polling interval for the first list.
+            self.refresh()
 
     def profiles_available(self) -> None:
         """Start the polling timer and one prompt sync once PBAP is live."""
@@ -246,6 +251,7 @@ class CallHistorySync:
                 "local storage changed during call history sync"
             )
         self._records = list(result.records)
+        self._synced = True
         if result.changed:
             self._on_changed()
         if result.seeded:

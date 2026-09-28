@@ -397,7 +397,10 @@ BLUEFERRY_CALL_HISTORY_INTERVAL_SEC=300
   the wallet key by default, unencrypted if you chose that, and not kept at all
   with **Do not retain local data**. Calls older than
   `BLUEFERRY_HISTORY_RETENTION_DAYS` are removed. **Clear history**, changing
-  the storage mode, or turning the option off again erases it.
+  the storage mode, or turning the option off again erases it. Because the
+  missed-call check compares against that stored list, neither the list nor
+  missed-call popups work while the wallet is locked or with **Do not retain
+  local data**.
 - BlueFerry mirrors the phone's current lists; it is not a separate archive.
   Calls you delete on the iPhone disappear on the next refresh.
 - Bluetooth has no "new call" event for this, so the list is refreshed every

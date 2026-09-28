@@ -392,3 +392,18 @@ def test_blocking_pull_runs_on_the_obex_worker_thread(storage, monkeypatch) -> N
 def test_disabled_config_default_is_off() -> None:
     assert "BLUEFERRY_CALL_HISTORY_ENABLED" in config.LOCAL_ENV_KEYS
     assert config._env_bool("BLUEFERRY_CALL_HISTORY_ENABLED_UNSET_FOR_TEST", False) is False
+
+
+def test_unlocking_storage_triggers_the_first_sync_only(harness, wallet) -> None:
+    _lock(harness.storage, wallet)
+    harness.sync.refresh()
+    assert harness.jobs == []
+
+    wallet.locked = False
+    harness.storage.refresh(allow_prompt=False)
+    harness.sync.storage_changed()
+    assert len(harness.jobs) == 1
+    harness.run()
+
+    harness.sync.storage_changed()
+    assert harness.jobs == [], "later storage changes wait for the timer"
