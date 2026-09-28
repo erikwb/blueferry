@@ -3340,3 +3340,89 @@ Item {
     log = result.stdout + result.stderr
     assert result.returncode == 0 and "BLUEFERRY_AVATARS_OK" in log, log
     assert "WARN scene:" not in log and "ReferenceError" not in log and "TypeError" not in log, log
+
+class _TetherBridge(QObject):
+    """Inert recorder standing in for BridgeController; it performs no I/O."""
+
+    from PySide6.QtCore import Signal as _Signal
+
+    tetherChanged = _Signal()
+    statusChanged = _Signal()
+
+    def __init__(self, tether: dict) -> None:
+        super().__init__()
+        self._tether = tether
+        self.requests: list[bool] = []
+
+    @Property("QVariantMap", notify=tetherChanged)
+    def tether(self):
+        return self._tether
+
+    @Property("QVariantMap", notify=statusChanged)
+    def status(self):
+        return {"daemon": True}
+
+    @Slot(bool)
+    def setTetherEnabled(self, enabled: bool) -> None:
+        self.requests.append(bool(enabled))
+
+    def update(self, tether: dict) -> None:
+        self._tether = tether
+        self.tetherChanged.emit()
+
+
+_tether_components: list = []
+
+
+def _tether_section(qml_engine, tether: dict):
+    bridge = _TetherBridge(tether)
+    component = _component(qml_engine, "src/blueferry/qt/qml/TetherSection.qml")
+    section = component.createWithInitialProperties({"bridge": bridge})
+    assert section is not None, "\n".join(error.toString() for error in component.errors())
+    switch = section.findChild(QObject, "tetherSwitch")
+    # Keep the component alive for as long as the object it created.
+    _tether_components.append(component)
+    return bridge, section, switch
+
+
+def test_tether_switch_is_an_explicit_request_that_follows_daemon_state(qml_engine) -> None:
+    bridge, section, switch = _tether_section(qml_engine, {
+        "available": True, "state": "off", "summary": "Not sharing",
+    })
+    assert switch.property("checked") is False
+    assert switch.property("enabled") is True
+    assert bridge.requests == []  # loading the page never tethers
+
+    switch.setProperty("checked", True)
+    QMetaObject.invokeMethod(switch, "toggled")
+    QGuiApplication.processEvents()
+
+    assert bridge.requests == [True]
+    # Until the daemon reports back, the switch shows the daemon's state.
+    assert switch.property("checked") is False
+
+    bridge.update({"available": True, "state": "connected", "summary": "Using hotspot"})
+    QGuiApplication.processEvents()
+    assert switch.property("checked") is True
+    summary = section.findChild(QObject, "tetherSummary")
+    assert summary.property("text") == "Using hotspot"
+    section.deleteLater()
+
+
+def test_tether_switch_is_disabled_while_a_request_is_pending(qml_engine) -> None:
+    _bridge, section, switch = _tether_section(qml_engine, {
+        "available": True, "state": "connecting", "pending": False, "summary": "",
+    })
+    assert switch.property("enabled") is False
+    section.deleteLater()
+
+
+def test_tether_failure_is_shown_as_a_warning(qml_engine) -> None:
+    _bridge, section, _switch = _tether_section(qml_engine, {
+        "available": True, "state": "failed", "error": "hotspot-refused",
+        "summary": "Turn on Personal Hotspot",
+    })
+    warning = section.findChild(QObject, "tetherError")
+    assert warning.property("visible") is True
+    assert warning.property("text") == "Turn on Personal Hotspot"
+    section.deleteLater()

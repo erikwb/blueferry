@@ -1469,3 +1469,91 @@ def test_mpris_setting_is_forwarded_and_merged_into_status(monkeypatch):
     )
     controller.setMprisPlayer(True)
     assert controller.status["media_mpris_enabled"] is True
+
+class _TetherBackend(_Backend):
+    def __init__(self, *, fail: str | None = None):
+        super().__init__()
+        self.fail = fail
+        self.tether_calls: list[str] = []
+
+    def _tether(self, name, state):
+        from blueferry.tether_status import TetherStatus
+
+        self.tether_calls.append(name)
+        if self.fail:
+            raise BackendError(self.fail)
+        return TetherStatus.from_dict(state)
+
+    def tether_state(self):
+        return self._tether("state", {"state": "off"})
+
+    def tether_connect(self):
+        return self._tether("connect", {"state": "connecting", "backend": "networkmanager"})
+
+    def tether_disconnect(self):
+        return self._tether("disconnect", {"state": "disconnecting"})
+
+
+def _tether_controller(backend):
+    return BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+
+
+def _settle(controller) -> None:
+    """Finish worker tasks and deliver their queued results to the controller."""
+    from PySide6.QtCore import QCoreApplication
+
+    application = QCoreApplication.instance() or QCoreApplication([])
+    controller._pool.waitForDone(1000)
+    for _ in range(5):
+        application.processEvents()
+
+
+def test_tether_state_is_exposed_with_shared_guidance():
+    backend = _TetherBackend()
+    controller = _tether_controller(backend)
+    assert controller.tether == {"available": False}
+
+    controller.refreshTether()
+    _settle(controller)
+
+    assert controller.tether["available"] is True
+    assert controller.tether["state"] == "off"
+    assert "Not sharing" in controller.tether["summary"]
+    assert backend.tether_calls == ["state"]
+    assert controller.busy is False
+
+
+def test_tether_toggle_sends_exactly_one_explicit_request():
+    backend = _TetherBackend()
+    controller = _tether_controller(backend)
+
+    controller.setTetherEnabled(True)
+    controller.setTetherEnabled(True)  # ignored while the first is pending
+    _settle(controller)
+
+    assert backend.tether_calls == ["connect"]
+    assert controller.tether["state"] == "connecting"
+    assert controller.tether["pending"] is False
+
+    controller.setTetherEnabled(False)
+    _settle(controller)
+    assert backend.tether_calls == ["connect", "disconnect"]
+
+
+def test_tether_unavailable_backend_hides_the_control():
+    controller = _tether_controller(_TetherBackend(fail="does not support tethering"))
+    controller.refreshTether()
+    _settle(controller)
+    assert controller.tether == {"available": False}
+
+
+def test_failed_tether_request_reports_and_clears_pending():
+    backend = _TetherBackend(fail="the iPhone is not connected over Bluetooth yet")
+    controller = _tether_controller(backend)
+    controller._tether = {"available": True, "state": "off"}
+
+    controller.setTetherEnabled(True)
+    _settle(controller)
+
+    assert controller.tether["pending"] is False
+    assert "not connected over Bluetooth" in controller.errorText

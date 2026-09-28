@@ -23,3 +23,5 @@ src/blueferry/qt/qml/MediaControlSettings.qml
 src/blueferry/qt/qml/CallsDialog.qml
 src/blueferry/qt/qml/PhoneCallsSettings.qml
 src/blueferry/qt/qml/PhoneStatusIndicator.qml
+src/blueferry/qt/qml/TetherSection.qml
+src/blueferry/tether_status.py
