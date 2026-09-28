@@ -57,6 +57,7 @@ class EventDispatcher:
         contacts_only_notifications=None,
         storage=None,
         on_incoming_message=None,
+        on_call_action: Callable[[str, str], None] | None = None,
         notification_sink_factory: Callable[..., Sink] = LibnotifySink,
         session_bus=None,
         schedule: Callable[[int, Callable[[], bool]], int] = GLib.timeout_add_seconds,
@@ -70,6 +71,7 @@ class EventDispatcher:
         self.contacts_only_notifications = contacts_only_notifications
         self.storage = storage
         self.on_incoming_message = on_incoming_message
+        self.on_call_action = on_call_action
         self._notification_sink_factory = notification_sink_factory
         self._session_bus = session_bus
         self._schedule = schedule
@@ -150,6 +152,7 @@ class EventDispatcher:
                 notification_policy=self.notification_policy,
                 contacts_only_notifications=self.contacts_only_notifications,
                 on_open_message=self._open_message,
+                on_call_action=self.on_call_action,
             )
         except Exception:
             log.exception("libnotify sink failed to init — continuing")
@@ -230,6 +233,22 @@ class EventDispatcher:
                 log.exception("sink %s failed on event %s", sink.name, event.handle)
         if self.dbus_service is not None:
             self.dbus_service.emit_history_changed()
+
+    def call(self, event) -> None:
+        """Deliver an optional HFP call event to local desktop sinks only.
+
+        Call events are not written to history, and nothing about them is
+        broadcast here; the call controller emits the content-free
+        CallsChanged invalidation itself.
+        """
+        for sink in self.sinks:
+            handler = getattr(sink, "handle_call", None)
+            if handler is None:
+                continue
+            try:
+                handler(event)
+            except Exception:
+                log.exception("sink %s failed on a call event", sink.name)
 
     def sent(self, recipient: str, body: str, transfer_path: str) -> None:
         event = sms_sent_event(

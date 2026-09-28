@@ -30,6 +30,7 @@ import dbus.exceptions
 from blueferry import config
 from blueferry.ancs.events import AncsEvent
 from blueferry.bus import get_session_bus
+from blueferry.calls.model import CallEvent
 from blueferry.client_activation import activation_argv, select_client
 from blueferry.events import SmsEvent
 from blueferry.limits import MAX_DESKTOP_MESSAGE_TRACKERS
@@ -65,6 +66,11 @@ _ANCS_EXPIRE_MS = config.NOTIFICATION_TIMEOUT_MS
 # Reason 1 is the normal finite-timeout path and must not mark the phone read.
 _REASON_DISMISSED = 2
 
+# Incoming-call popups stay until the call stops ringing; the sink closes
+# them itself when the call is answered, declined, or disappears.
+_CALL_EXPIRE_MS = 0
+_CALL_ACTIONS = ("answer", "decline")
+
 
 def _notification_hints(handle: str) -> dict[str, object]:
     hints: dict[str, object] = {"urgency": dbus.Byte(1)}
@@ -92,8 +98,14 @@ class LibnotifySink:
         notification_policy=None,
         contacts_only_notifications=None,
         on_open_message=None,
+        on_call_action=None,
     ) -> None:
         self._defer_mark_read = defer_mark_read
+        # (call_id, "answer" | "decline") from an incoming-call popup button.
+        self._on_call_action = on_call_action
+        # notification_id <-> call_id for ringing-call popups.
+        self._call_notifications: dict[int, str] = {}
+        self._call_popups: dict[str, int] = {}
         self._notification_policy = notification_policy
         self._contacts_only_notifications = contacts_only_notifications
         self._on_open_message = on_open_message
@@ -146,6 +158,8 @@ class LibnotifySink:
         self._pending.clear()
         self._open_messages.clear()
         getattr(self, "_activation_tokens", {}).clear()
+        getattr(self, "_call_notifications", {}).clear()
+        getattr(self, "_call_popups", {}).clear()
 
     def _policy(self) -> str:
         provider = getattr(self, "_notification_policy", None)
@@ -285,6 +299,67 @@ class LibnotifySink:
         except dbus.exceptions.DBusException as e:
             log.error("libnotify Notify (ANCS) failed: %s", e.get_dbus_name())
 
+    # ---- optional phone calls ---------------------------------------------
+
+    def _call_maps(self) -> tuple[dict[int, str], dict[str, int]]:
+        if not hasattr(self, "_call_notifications"):
+            self._call_notifications = {}
+            self._call_popups = {}
+        return self._call_notifications, self._call_popups
+
+    def handle_call(self, event: CallEvent) -> None:
+        """Show a ringing call with Answer/Decline; close it once it stops."""
+        record = event.call
+        notifications, popups = self._call_maps()
+        if event.kind == "call_ended" or not record.ringing:
+            nid = popups.pop(record.call_id, None)
+            if nid is None:
+                return
+            notifications.pop(nid, None)
+            try:
+                self._notif.CloseNotification(dbus.UInt32(nid))
+            except dbus.exceptions.DBusException as error:
+                log.debug("could not close call popup: %s", error.get_dbus_name())
+            return
+        if record.call_id in popups or self._policy() == NO_NOTIFICATIONS:
+            return
+        heading = "Call waiting" if record.state == "waiting" else "Incoming call"
+        title = escape(terminal_text(f"\U0001f4de {heading}").replace("\n", " "))
+        if config.SHOW_NOTIFICATION_CONTENT:
+            peer = record.display_peer
+            if record.number and peer != record.number:
+                peer = f"{peer}\n{record.number}"
+            body = escape(terminal_text(peer))
+        else:
+            # Like message popups, hidden content keeps the caller off screen.
+            body = heading
+        # contacts_only deliberately does not apply: a call from an unknown
+        # number still needs a chance to be answered or declined.
+        actions: list[str] = []
+        if getattr(self, "_on_call_action", None) is not None:
+            actions = ["answer", "Answer", "decline", "Decline"]
+        try:
+            nid = int(self._notif.Notify(
+                _APP_NAME,
+                dbus.UInt32(0),
+                "call-start",
+                title,
+                body,
+                dbus.Array(actions, signature="s"),
+                dbus.Dictionary({
+                    "urgency": dbus.Byte(2),
+                    # The call itself is the record; do not keep stale
+                    # "incoming call" entries in the notification history.
+                    "transient": dbus.Boolean(True),
+                }, signature="sv"),
+                dbus.Int32(_CALL_EXPIRE_MS),
+            ))
+        except dbus.exceptions.DBusException as error:
+            log.error("libnotify Notify (call) failed: %s", error.get_dbus_name())
+            return
+        notifications[nid] = record.call_id
+        popups[record.call_id] = nid
+
     # ---- iPhone marks read → close our popup ----------------------------
 
     def _on_msg_props(self, nid: int, iface: str, changed) -> None:
@@ -323,6 +398,12 @@ class LibnotifySink:
             nid_i = int(nid)
         except (TypeError, ValueError):
             return
+        call_id = getattr(self, "_call_notifications", {}).get(nid_i)
+        if call_id is not None:
+            callback = getattr(self, "_on_call_action", None)
+            if str(action) in _CALL_ACTIONS and callback is not None:
+                callback(call_id, str(action))
+            return
         if str(action) != "default":
             return
         handle = getattr(self, "_open_messages", {}).get(nid_i)
@@ -340,6 +421,9 @@ class LibnotifySink:
 
         getattr(self, "_open_messages", {}).pop(nid_i, None)
         getattr(self, "_activation_tokens", {}).pop(nid_i, None)
+        call_id = getattr(self, "_call_notifications", {}).pop(nid_i, None)
+        if call_id is not None:
+            getattr(self, "_call_popups", {}).pop(call_id, None)
         message_path = self._pending.pop(nid_i, None)
 
         # Always remove the per-message subscription, no matter the reason

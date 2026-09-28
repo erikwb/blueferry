@@ -34,6 +34,7 @@ from blueferry.connectivity import Connectivity
 from blueferry.contact_sync import ContactSync
 from blueferry.contacts import ContactsResolver
 from blueferry.dbus_service import MessagesService, claim_bus_name
+from blueferry.errors import BlueFerryError
 from blueferry.event_dispatcher import EventDispatcher
 from blueferry.glib_timers import schedule_periodic
 from blueferry.group_routes import GroupRoutesStore
@@ -132,6 +133,7 @@ class Daemon:
             ),
             storage=self.storage,
             on_incoming_message=lambda: self._verify_setup_task(MESSAGE_NOTIFICATIONS),
+            on_call_action=self._notification_call_action,
         )
         self.listener: MapEventListener | None = None
         self.mns_watch: MnsWatch | None = None
@@ -177,6 +179,7 @@ class Daemon:
             resolve_contact=self.contacts.resolve,
             on_calls_changed=self._emit_calls_changed,
             on_state_changed=self._emit_status,
+            on_event=self.events.call,
             phone_reachable=lambda: self.bearers.bredr_connected,
         )
         self.contact_sync = ContactSync(
@@ -310,6 +313,23 @@ class Daemon:
         emit = getattr(self._dbus_service, "emit_calls_changed", None)
         if emit is not None:
             emit()
+
+    def _notification_call_action(self, call_id: str, action: str) -> None:
+        """Answer or decline from an incoming-call desktop notification."""
+        operation = self.calls.answer if action == "answer" else self.calls.hangup
+
+        def failed(error: Exception) -> None:
+            # The controller already logged oFono's error name; never log the
+            # raw oFono text here, it can contain the caller's number.
+            log.debug(
+                "notification %s failed: %s", action,
+                getattr(error, "dbus_suffix", type(error).__name__),
+            )
+
+        try:
+            operation(call_id, lambda _result: None, failed)
+        except BlueFerryError as error:
+            log.info("could not %s the call from its notification (%s)", action, error.dbus_suffix)
 
     def _observe_le_state(self, connected: bool | None) -> None:
         if connected is not True:
