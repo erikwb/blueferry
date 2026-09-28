@@ -136,6 +136,19 @@
       <annotation name="io.weirdware.BlueFerry.Errors"
                   value="NotReady,ContactSyncFailed"/>
     </method>
+    <method name="ListCallHistory">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Opt-in retained iPhone call history, newest first, as a JSON array"/>
+      <arg name="limit" type="u" direction="in"/>
+      <arg name="json" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="NotReady,ResponseTooLarge"/>
+    </method>
+    <method name="SyncCallHistory">
+      <arg name="retained_count" type="u" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="NotReady,CallHistorySyncFailed"/>
+    </method>
     <method name="IsHealthy">
       <arg name="healthy" type="b" direction="out"/>
     </method>
@@ -169,5 +182,6 @@
     <signal name="OpenMessageRequested">
       <arg name="handle" type="s"/>
     </signal>
+    <signal name="CallHistoryChanged"/>
   </interface>
 </node>

@@ -725,3 +725,71 @@ def test_live_signal_contains_only_an_opaque_revision(public_service) -> None:
 
     assert set(received[0]) == {"revision"}
     assert int(received[0]["revision"]) == 1
+
+
+def test_call_history_is_not_ready_until_opted_in(public_service) -> None:
+    name, _pending, _policy, _policy_changes, _service = public_service
+
+    thread, outcome = _request_in_thread(name, "ListCallHistory", dbus.UInt32(5))
+    _dispatch_until(lambda: not thread.is_alive())
+    thread.join(timeout=1)
+
+    error = outcome["error"]
+    assert error.get_dbus_name() == "io.weirdware.BlueFerry.Error.NotReady"
+    assert "BLUEFERRY_CALL_HISTORY_ENABLED" in error.get_dbus_message()
+
+
+def test_call_history_round_trip_and_content_free_signal(public_service) -> None:
+    from datetime import datetime, timezone
+
+    from blueferry.call_history import MISSED, CallRecord
+
+    name, _pending, _policy, _policy_changes, service = public_service
+    moment = datetime.now(timezone.utc).replace(microsecond=0)
+    record = CallRecord(
+        direction=MISSED, occurred_at=moment, raw_time="20260928T120000Z",
+        address="+15551230001", phone="15551230001", name="Card Name",
+    )
+
+    class _History:
+        def records(self):
+            return [record]
+
+        def sync(self, success, _failure):
+            success(1)
+
+        def discard_cache(self):
+            pass
+
+    service.operations.dependencies = replace(
+        service.operations.dependencies, call_history=_History(),
+    )
+    connection = dbus.SessionBus(private=True)
+    received = []
+    match = connection.add_signal_receiver(
+        lambda *args: received.append(args),
+        dbus_interface=EVENTS_IFACE,
+        signal_name="CallHistoryChanged",
+        bus_name=name,
+        path=OBJECT_PATH,
+    )
+    try:
+        list_thread, listed = _request_in_thread(name, "ListCallHistory", dbus.UInt32(5))
+        _dispatch_until(lambda: not list_thread.is_alive())
+        sync_thread, synced = _request_in_thread(name, "SyncCallHistory")
+        _dispatch_until(lambda: not sync_thread.is_alive())
+        service.emit_call_history_changed()
+        _dispatch_until(lambda: bool(received))
+    finally:
+        match.remove()
+        connection.close()
+
+    assert json.loads(str(listed["value"])) == [{
+        "direction": "missed",
+        "timestamp": moment.isoformat(),
+        "address": "+15551230001",
+        "name": "Card Name",
+        "contact_name": None,
+    }]
+    assert int(synced["value"]) == 1
+    assert received == [()]

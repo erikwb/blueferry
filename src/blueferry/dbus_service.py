@@ -437,6 +437,37 @@ class MessagesService(dbus.service.Object):
         )
 
     @dbus.service.method(
+        IFACE, in_signature="u", out_signature="s", sender_keyword="sender"
+    )
+    def ListCallHistory(self, limit: int, sender=None) -> str:
+        """Retained iPhone call history, newest first (opt-in feature)."""
+        return self._sync(lambda: self._authorized(
+            sender, "read",
+            lambda: self._json_response(self.operations.list_call_history(limit)),
+        ))
+
+    @dbus.service.method(
+        IFACE, in_signature="", out_signature="u",
+        async_callbacks=("reply_handler", "error_handler"),
+        sender_keyword="sender",
+    )
+    def SyncCallHistory(self, reply_handler, error_handler, sender=None) -> None:
+        def respond(count: int) -> None:
+            reply_handler(dbus.UInt32(count))
+
+        self._async(
+            lambda: self._authorized(
+                sender,
+                "call-history-sync",
+                lambda: self.operations.sync_call_history(
+                    respond,
+                    lambda error: error_handler(self._dbus_error(error)),
+                ),
+            ),
+            error_handler,
+        )
+
+    @dbus.service.method(
         IFACE, in_signature="", out_signature="b", sender_keyword="sender"
     )
     def IsHealthy(self, sender=None) -> bool:
@@ -497,6 +528,10 @@ class MessagesService(dbus.service.Object):
     def OpenMessageRequested(self, handle: str):
         """A desktop notification requested an opaque message handle."""
 
+    @dbus.service.signal(EVENTS_IFACE, signature="")
+    def CallHistoryChanged(self):
+        """Retained call history changed; clients call ListCallHistory."""
+
     def emit_history_changed(self) -> None:
         try:
             self._change_revision += 1
@@ -511,6 +546,12 @@ class MessagesService(dbus.service.Object):
             self.StatusChanged()
         except Exception:
             log.exception("StatusChanged emit failed")
+
+    def emit_call_history_changed(self) -> None:
+        try:
+            self.CallHistoryChanged()
+        except Exception:
+            log.exception("CallHistoryChanged emit failed")
 
     def emit_open_message(self, handle: str) -> None:
         try:
