@@ -338,6 +338,39 @@ class MessagesService(dbus.service.Object):
     @dbus.service.method(
         IFACE, in_signature="", out_signature="s", sender_keyword="sender"
     )
+    def GetNotificationOpenMap(self, sender=None) -> str:
+        return self._sync(lambda: self._authorized(
+            sender, "status",
+            lambda: self._json_response(self.operations.get_notification_open_map()),
+        ))
+
+    @dbus.service.method(
+        IFACE, in_signature="ss", out_signature="s", sender_keyword="sender"
+    )
+    def SetNotificationOpenTarget(
+        self, bundle_id: str, target: str, sender=None,
+    ) -> str:
+        return self._sync(lambda: self._authorized(
+            sender, "settings",
+            lambda: self._json_response(
+                self.operations.set_notification_open_target(
+                    str(bundle_id), str(target)
+                )
+            ),
+        ))
+
+    @dbus.service.method(
+        IFACE, in_signature="s", out_signature="b", sender_keyword="sender"
+    )
+    def RemoveNotificationOpenTarget(self, bundle_id: str, sender=None) -> bool:
+        return self._sync(lambda: self._authorized(
+            sender, "settings",
+            lambda: self.operations.remove_notification_open_target(str(bundle_id)),
+        ))
+
+    @dbus.service.method(
+        IFACE, in_signature="", out_signature="s", sender_keyword="sender"
+    )
     def GetStoragePolicy(self, sender=None) -> str:
         return self._sync(lambda: self._authorized(
             sender, "status", self.operations.get_storage_policy

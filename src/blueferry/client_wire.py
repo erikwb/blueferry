@@ -34,6 +34,18 @@ def decode_mapping(value: object) -> dict[str, Any]:
     return decode_json(value, dict)
 
 
+def decode_open_map(value: object) -> list[dict[str, str]]:
+    """Notification click rules: ``bundle_id``, ``target`` and ``kind`` strings."""
+    rules = []
+    for item in decode_json(value, list):
+        if not isinstance(item, Mapping):
+            continue
+        rule = {key: item.get(key) for key in ("bundle_id", "target", "kind")}
+        if all(isinstance(field, str) and field for field in rule.values()):
+            rules.append({key: str(field) for key, field in rule.items()})
+    return rules
+
+
 def decode_status(value: object) -> BackendStatus:
     return BackendStatus.from_dict(decode_mapping(value))
 

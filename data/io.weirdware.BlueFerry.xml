@@ -110,6 +110,22 @@
       <annotation name="io.weirdware.BlueFerry.Errors"
                   value="InvalidArgs,NotReady"/>
     </method>
+    <method name="GetNotificationOpenMap">
+      <arg name="rules_json" type="s" direction="out"/>
+    </method>
+    <method name="SetNotificationOpenTarget">
+      <arg name="bundle_id" type="s" direction="in"/>
+      <arg name="target" type="s" direction="in"/>
+      <arg name="rules_json" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady"/>
+    </method>
+    <method name="RemoveNotificationOpenTarget">
+      <arg name="bundle_id" type="s" direction="in"/>
+      <arg name="removed" type="b" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady"/>
+    </method>
     <method name="GetStoragePolicy">
       <arg name="policy" type="s" direction="out"/>
     </method>

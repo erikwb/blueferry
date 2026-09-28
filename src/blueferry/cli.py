@@ -12,6 +12,7 @@ import typer
 from blueferry import bluez_setup, config
 from blueferry.cli_common import setup_logging as _setup_logging
 from blueferry.cli_messages import sms_list, sms_send
+from blueferry.cli_notifications import notifications_app
 from blueferry.cli_proximity import proximity_app
 
 app = typer.Typer(
@@ -494,6 +495,7 @@ def history_clear(
 app.command("sms-list")(sms_list)
 app.command("sms-send")(sms_send)
 app.add_typer(proximity_app, name="proximity-lock")
+app.add_typer(notifications_app, name="notifications")
 
 
 @app.command()

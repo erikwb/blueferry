@@ -54,6 +54,7 @@ from blueferry.limits import (
     MAX_THREAD_QUERY_LIMIT,
 )
 from blueferry.named_groups import stored_named_group_key
+from blueferry.notification_open_map import open_map_entries
 from blueferry.obex.map_query import list_recent_messages
 from blueferry.obex.map_send import send_group_message, send_message
 from blueferry.protocol import MESSAGES_API_VERSION
@@ -122,6 +123,13 @@ class NotificationPolicy(Protocol):
     def set(self, value: str) -> str: ...
 
     def set_contacts_only(self, enabled: bool) -> bool: ...
+
+    @property
+    def open_map(self) -> dict[str, str]: ...
+
+    def set_open_target(self, bundle_id: str, target: str) -> dict[str, str]: ...
+
+    def remove_open_target(self, bundle_id: str) -> bool: ...
 
 
 class StarredThreads(Protocol):
@@ -1020,6 +1028,42 @@ class BackendOperations:
             raise NotReadyError(
                 "could not save the proximity lock preference"
             ) from error
+
+    def get_notification_open_map(self) -> list[dict[str, str]]:
+        policy = self.dependencies.notification_policy
+        if policy is None:
+            return []
+        return open_map_entries(policy.open_map)
+
+    def set_notification_open_target(
+        self, bundle_id: str, target: str
+    ) -> list[dict[str, str]]:
+        policy = self.dependencies.notification_policy
+        if policy is None:
+            raise NotReadyError("notification policy storage is unavailable")
+        if not isinstance(bundle_id, str) or not isinstance(target, str):
+            raise InvalidArgumentsError("bundle ID and target must be strings")
+        try:
+            mapping = policy.set_open_target(bundle_id, target)
+        except ValueError as error:
+            raise InvalidArgumentsError(str(error)) from error
+        if self.dependencies.on_notification_policy_changed is not None:
+            self.dependencies.on_notification_policy_changed()
+        return open_map_entries(mapping)
+
+    def remove_notification_open_target(self, bundle_id: str) -> bool:
+        policy = self.dependencies.notification_policy
+        if policy is None:
+            raise NotReadyError("notification policy storage is unavailable")
+        if not isinstance(bundle_id, str) or len(bundle_id) > 1024:
+            raise InvalidArgumentsError("invalid bundle ID")
+        try:
+            removed = policy.remove_open_target(bundle_id)
+        except ValueError as error:
+            raise InvalidArgumentsError(str(error)) from error
+        if removed and self.dependencies.on_notification_policy_changed is not None:
+            self.dependencies.on_notification_policy_changed()
+        return removed
 
     def list_recent(
         self, folder: str, limit: int, success: Success, failure: Failure
