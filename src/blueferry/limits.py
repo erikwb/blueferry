@@ -58,3 +58,8 @@ MAX_PENDING_READ_RECEIPTS = 2_000
 MAX_DESKTOP_MESSAGE_TRACKERS = 256
 MAX_PHONEBOOK_CONTACTS = 65_535
 MAX_CONTACT_ADDRESSES_PER_CARD = 64
+
+# Notification-click mappings launch local applications, so both the number
+# of rules and each configured target stay small and explicit.
+MAX_NOTIFICATION_OPEN_MAPPINGS = 64
+MAX_NOTIFICATION_OPEN_URL_CHARS = 2048
