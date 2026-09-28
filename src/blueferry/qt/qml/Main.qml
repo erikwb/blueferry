@@ -17,6 +17,7 @@ Kirigami.ApplicationWindow {
     onIphoneSettingsPageChanged: Qt.callLater(root.markSelectedThreadRead)
     property bool firstRunRedirected: false
     property var iphoneSettingsPage: null
+    property var recentCallsPage: null
     property string pendingMessageHandle: ""
 
     visible: true
@@ -108,6 +109,29 @@ Kirigami.ApplicationWindow {
         pageStack.removePage(page)
     }
 
+    function openRecentCalls() {
+        if (!recentCallsLoader.item)
+            return
+        if (recentCallsPage !== null) {
+            pageStack.currentIndex = pageStack.depth - 1
+            return
+        }
+        closePhoneSettings()
+        recentCallsPage = pageStack.push(recentCallsLoader.item)
+        // Records are fetched only while the page is open.
+        bridge.watchCallHistory(true)
+    }
+
+    function closeRecentCalls() {
+        if (recentCallsPage === null)
+            return
+        // Remove before clearing the reference: the Loader stays active while
+        // recentCallsPage is set, so the page is never destroyed on the stack.
+        pageStack.removePage(recentCallsPage)
+        recentCallsPage = null
+        bridge.watchCallHistory(false)
+    }
+
     function togglePhoneSettings() {
         if (iphoneSettingsPage !== null)
             closePhoneSettings()
@@ -140,6 +164,11 @@ Kirigami.ApplicationWindow {
                 root.bridge.refresh()
         }
 
+        function onStatusChanged() {
+            if (root.bridge.callHistoryEnabled !== true)
+                root.closeRecentCalls()
+        }
+
         function onSetupLoadedChanged() {
             if (root.bridge.setupLoaded && !root.bridge.configured && !root.firstRunRedirected) {
                 root.firstRunRedirected = true
@@ -170,6 +199,13 @@ Kirigami.ApplicationWindow {
                 text: qsTr("iPhone Settings")
                 icon.name: "phone"
                 onTriggered: root.openPhoneSettings()
+            },
+            Kirigami.Action {
+                text: qsTr("Recent Calls")
+                icon.name: "call-start"
+                // Opt-in backend feature (BLUEFERRY_CALL_HISTORY_ENABLED).
+                visible: root.bridge.callHistoryEnabled === true
+                onTriggered: root.openRecentCalls()
             },
             Kirigami.Action {
                 text: qsTr("Keyboard Shortcuts")
@@ -806,6 +842,20 @@ Kirigami.ApplicationWindow {
         asynchronous: false
         visible: false
         sourceComponent: iphonePageComponent
+    }
+
+    Loader {
+        id: recentCallsLoader
+        // Created only while the backend reports the opt-in feature, and
+        // kept visually parented like the settings page (see above). A page
+        // still on the stack stays alive until it has been removed.
+        active: root.bridge.callHistoryEnabled === true || root.recentCallsPage !== null
+        asynchronous: false
+        visible: false
+        sourceComponent: RecentCallsPage {
+            bridge: root.bridge
+            onCloseRequested: root.closeRecentCalls()
+        }
     }
 
     Component {

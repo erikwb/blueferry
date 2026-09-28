@@ -57,6 +57,7 @@ class BridgeController(QObject):
     groupConfirmationRequested = Signal(str, str, str)
     threadSendSucceeded = Signal(str, str)
     messageSendSucceeded = Signal(str, str)
+    callHistoryChanged = Signal()
 
     def __init__(
         self,
@@ -100,6 +101,16 @@ class BridgeController(QObject):
         self._refresh_timer.setSingleShot(True)
         self._refresh_timer.setInterval(100)
         self._refresh_timer.timeout.connect(self.refresh)
+        self._call_history: list[dict] = []
+        self._call_history_error = ""
+        self._call_history_loading = False
+        self._call_history_again = False
+        # Only a visible Recent Calls page keeps call records in this process.
+        self._call_history_watched = False
+        self._call_history_timer = QTimer(self)
+        self._call_history_timer.setSingleShot(True)
+        self._call_history_timer.setInterval(100)
+        self._call_history_timer.timeout.connect(self.loadCallHistory)
         self._bus = QDBusConnection.sessionBus() if subscribe else None
         if subscribe:
             self._subscribe()
@@ -117,6 +128,18 @@ class BridgeController(QObject):
     @Property("QVariantMap", notify=statusChanged)
     def status(self):
         return self._status
+
+    @Property(bool, notify=statusChanged)
+    def callHistoryEnabled(self) -> bool:
+        return self._status.get("call_history_enabled") is True
+
+    @Property("QVariantList", notify=callHistoryChanged)
+    def callHistory(self):
+        return self._call_history
+
+    @Property(str, notify=callHistoryChanged)
+    def callHistoryError(self) -> str:
+        return self._call_history_error
 
     @Property("QVariantList", notify=devicesChanged)
     def devices(self):
@@ -293,6 +316,14 @@ class BridgeController(QObject):
             self,
             SLOT("_openMessageRequested(QString)"),
         )
+        self._bus.connect(
+            BUS_NAME,
+            OBJECT_PATH,
+            EVENTS_IFACE,
+            "CallHistoryChanged",
+            self,
+            SLOT("_callHistoryInvalidated()"),
+        )
 
     @Slot("QVariantMap")
     def _historyChanged(self, _revision) -> None:
@@ -305,6 +336,77 @@ class BridgeController(QObject):
     @Slot(str)
     def _openMessageRequested(self, handle: str) -> None:
         self.messageOpenRequested.emit(handle)
+
+    @Slot()
+    def _callHistoryInvalidated(self) -> None:
+        # The signal carries nothing; only a shown list is refetched.
+        if self.callHistoryEnabled and self._call_history_watched:
+            self._call_history_timer.start()
+
+    @Slot(bool)
+    def watchCallHistory(self, watched: bool) -> None:
+        """The Recent Calls page opened (load now) or closed (forget it)."""
+        self._call_history_watched = bool(watched)
+        if self._call_history_watched:
+            self.loadCallHistory()
+            return
+        self._call_history_timer.stop()
+        self._call_history_again = False
+        if self._call_history or self._call_history_error:
+            self._call_history = []
+            self._call_history_error = ""
+            self.callHistoryChanged.emit()
+
+    @Slot()
+    def loadCallHistory(self) -> None:
+        """Fetch the opt-in call list; never touches the conversation error."""
+        if not self.callHistoryEnabled or not self._call_history_watched:
+            return
+        if self._call_history_loading:
+            self._call_history_again = True
+            return
+        self._call_history_loading = True
+
+        def operation() -> list[dict]:
+            return [entry.to_dict() for entry in self._backend.call_history(200)]
+
+        def completed(value: object) -> None:
+            # A reply that lands after the page closed is discarded.
+            if self._call_history_watched:
+                self._call_history = list(value) if isinstance(value, list) else []
+                self._call_history_error = ""
+                self.callHistoryChanged.emit()
+            finished()
+
+        def failed(message: str) -> None:
+            if self._call_history_watched:
+                self._call_history_error = message or _("Call history is unavailable")
+                self.callHistoryChanged.emit()
+            finished()
+
+        def finished() -> None:
+            self._call_history_loading = False
+            if self._call_history_again:
+                self._call_history_again = False
+                self.loadCallHistory()
+
+        self._run(operation, completed, failed, busy=False)
+
+    @Slot()
+    def syncCallHistory(self) -> None:
+        if not self.callHistoryEnabled:
+            return
+
+        def failed(message: str) -> None:
+            if self._call_history_watched:
+                self._call_history_error = message or _("Call history sync failed")
+                self.callHistoryChanged.emit()
+
+        self._run(
+            self._backend.sync_call_history,
+            lambda _value: self.loadCallHistory(),
+            failed,
+        )
 
     @Slot()
     def start(self) -> None:
