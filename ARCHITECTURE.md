@@ -55,7 +55,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `config.py` | Environment-backed configuration (`local.env`) and private runtime paths. |
 | `private_files.py` | Race-resistant owner-only reads and atomic writes for small files. |
 | `build_info.py` | Package release + source-SHA build identity. |
-| `wireplumber_policy.py` | Manages one WirePlumber fragment that keeps iPhone audio on the phone. |
+| `wireplumber_policy.py` | Manages one WirePlumber fragment that keeps iPhone audio on the phone (keeps the hands-free roles when calls are enabled). |
 | `proximity_lock.py` | Opt-in lock-only desktop lock after the iPhone's bearers stay down for a grace period; lock dispatch via ScreenSaver, then logind. |
 
 ### Bluetooth transports and supervision
@@ -86,14 +86,17 @@ All paths are relative to `src/blueferry/` unless noted.
 | `bluez_setup.py` | Adapter preparation: Class-of-Device and the ANCS solicitation advertisement. |
 | `bluetooth_capabilities.py` | Controller capability probing and packaged BlueZ activation. |
 | `bluetooth_devices.py` | Typed BlueZ device projection for setup and clients. |
+| `calls/model.py` | Optional HFP calls: pure oFono property parsing, modem selection, dial/DTMF/call-id validation. |
+| `calls/ofono.py` | Asynchronous oFono system-bus transport (hand-built calls with NO_AUTO_START, no synchronous owner lookup). |
+| `calls/controller.py` | Optional HFP calls: oFono modem discovery, Powered→Online bring-up, call tracking and control, backoff. |
 
 ### Sinks
 
 | Module | Responsibility |
 | --- | --- |
-| `sinks/__init__.py` | Sink protocol: `handle(event)` plus optional `handle_ancs`. |
+| `sinks/__init__.py` | Sink protocol: `handle(event)` plus optional `handle_ancs` and `handle_call` (optional HFP calls, desktop UI only). |
 | `sinks/sqlite.py` | Persists events to the private history store. |
-| `sinks/libnotify.py` | Desktop notifications via `org.freedesktop.Notifications`, including open and dismiss actions. |
+| `sinks/libnotify.py` | Desktop notifications via `org.freedesktop.Notifications`, including open and dismiss actions and optional incoming-call Answer/Decline. |
 
 ### Storage and privacy
 
@@ -142,8 +145,10 @@ All paths are relative to `src/blueferry/` unless noted.
 | `cli_messages.py` | CLI message listing, recipient selection, and send. |
 | `cli_common.py` | Small CLI presentation helpers. |
 | `cli_proximity.py` | `proximity-lock` status, dry run, enable, and disable. |
+| `cli_calls.py` | Optional `blueferry calls` commands over `Calls1`. |
 | `tui.py` | Textual terminal client. |
 | `tui_launcher.py` | Launches the TUI with the package-private Textual bundle when present. |
+| `tui_calls.py` | Optional Textual calls panel. |
 | `ui/app.py` | GTK4/libadwaita application entry point. |
 | `ui/window.py` | Main GTK window. |
 | `ui/conversations.py` | GTK conversations page: history, group confirmation, replies. |
@@ -164,6 +169,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `qt/qml/ProximityLockSettings.qml` | Away-lock toggle, grace period, and warning; loaded only for daemons that report it. |
 | `qt/qml/GroupConfirmationDialog.qml` | Group recipient confirmation before sending. |
 | `qt/qml/NewMessageDialog.qml` | New message composition. |
+| `qt/qml/CallsDialog.qml` | Optional phone-calls dialog (list, dial, answer, hang up). |
 | `qt/qml/ExpandingMessageComposer.qml` | Growing message editor. |
 | `qt/qml/MessageBubble.qml` | Message bubble. |
 | `quickshell_bridge.py` | Persistent stdin/stdout JSON bridge from Quickshell to the session D-Bus API. |
@@ -211,6 +217,13 @@ contract.
   controls that are not messaging (the opt-in away lock); their state is
   reported through `Messages1.GetStatus`, and the compatibility check runs
   through `Messages1` on the same owner. Identifiers live in `protocol.py`.
+- `Calls1` is the optional, default-off HFP call interface. It is always
+  exported; with `BLUEFERRY_CALLS_ENABLED` unset its methods fail with
+  `CallsDisabled`, and a missing oFono or modem yields `CallsUnavailable`.
+  Its `CallsChanged` invalidation on `Events1` has no arguments; caller
+  numbers and names are only returned by the rate-limited `ListCalls`.
+  Dialing has its own strict quota. Adding it did not change the API
+  generation.
 - `data/io.weirdware.BlueFerry.xml` is canonical, installed under
   `dbus-1/interfaces`, and checked against the service's dbus-python
   decorators.
@@ -395,6 +408,30 @@ A change to these rules has to be made in both places.
   only its state keys through the existing argument-free `StatusChanged`.
 - **Read receipts** go through `read_receipts`, which delays MAP write-back so
   ANCS can still fetch group metadata. Local reads take effect immediately.
+
+## Optional phone calls
+
+- `calls.controller` only observes and drives oFono on the system bus; BlueZ
+  and PipeWire/WirePlumber own the HFP profile and SCO audio. oFono is an
+  optional runtime service: `ServiceUnknown` means "unavailable", retried
+  every 60 s and immediately on an `org.ofono` owner change. Calls carry
+  NO_AUTO_START, so BlueFerry never makes the bus activate oFono. oFono's
+  shipped D-Bus policy only admits root and `at_console`; `AccessDenied` is
+  also "unavailable" and logged once.
+- `Dial` accepts plain numbers only (`+` and digits); `*`/`#` service codes
+  are rejected so a caller cannot reconfigure the phone (for example call
+  forwarding). Keypad symbols remain available as DTMF on an active call.
+- The modem must end in the configured iPhone's `dev_…` path and be of type
+  `hfp`; the configured adapter wins, then Online, then Powered. iOS needs
+  `Powered=true`, a confirming `PropertyChanged`, then `Online=true`.
+  `Powered` is only requested while the Classic bearer is connected, so an
+  absent phone is not paged; bearer status changes poke the controller.
+- Discovery and bring-up back off 1/2/4/8/15 s, then poll every 30 s; a
+  30 s watchdog retries a modem that never confirms. Replies and signals
+  carry a generation, so an oFono restart or modem removal drops stale
+  state; control replies still reach their D-Bus caller.
+- Call events go to local desktop sinks only (`handle_call`); they are not
+  persisted and nothing about them is broadcast except `CallsChanged`.
 
 ## Storage and privacy
 

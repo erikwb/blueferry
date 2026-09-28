@@ -457,6 +457,15 @@ profile, making startup ordering and distribution integration fragile. That
 complexity, dependency burden, and the project's messaging focus are why the
 feature was removed despite protocol feasibility.
 
+A later opt-in integration (`BLUEFERRY_CALLS_ENABLED`, default off; see
+README "Phone calls") relies on the user's own oFono/WirePlumber setup and
+adds no dependency. It works around one part of the fragility: with iOS the
+oFono HFP modem stays unpowered until `Modem.Powered=true` is set, and oFono
+rejects `Online=true` until it has reported `Powered=true`. This sequence was
+taken from tincan's oFono controller; it has not yet been re-verified by
+BlueFerry against the device list above. The profile registration race itself
+is unchanged.
+
 ## Pairing diagnostics
 
 Each pairing attempt records the resolved delivery mode, authentication

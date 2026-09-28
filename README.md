@@ -29,8 +29,9 @@ on, so don't make it your only way to receive an important message yet.
 
 BlueFerry only knows about messages it sees while connected; it does not
 download your iCloud Messages archive. Attachments, reactions, typing
-indicators, FaceTime, calls, and complete sent-message history are not
-supported.
+indicators, FaceTime, and complete sent-message history are not supported.
+Phone calls are off by default; an experimental, opt-in oFono integration is
+described under [Phone calls](#phone-calls-optional-experimental).
 
 Direct conversations combine the phone numbers and email addresses that belong
 unambiguously to one synced contact. Replies use the most recent incoming
@@ -325,7 +326,123 @@ auto-connect on phone cards so a later `bluetooth-a2dp-autoconnect` rule cannot
 steal the stream. A failed pairing attempt removes a fragment that attempt
 installed. After a successful bond the daemon keeps reconciling the same
 file. Set `BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE=false` to remove BlueFerry's
-fragment only.
+fragment only. With the optional phone calls enabled, the fragment keeps the
+hands-free roles (`hfp_hf`, `hsp_hs`) and still removes `a2dp_sink`: music
+stays on the iPhone, calls can come to this computer.
+
+## Phone calls (optional, experimental)
+
+BlueFerry can answer, decline, place, and hang up iPhone calls through
+[oFono](https://git.kernel.org/pub/scm/network/ofono/ofono.git)'s Hands-Free
+Profile support. This is **off by default** and not needed for messaging.
+An earlier HFP experiment was removed from BlueFerry because oFono and
+PipeWire's native HFP backend race for the same BlueZ profile (see
+[Historical HFP result](PROTOCOL.md#historical-hfp-result)); this opt-in
+integration leaves that choice and its setup to you, adds no package
+dependency, and keeps working normally when oFono is missing.
+
+The integration was developed against oFono 2.18 and is **not yet verified
+end-to-end on hardware**; treat it as a preview.
+
+Requirements:
+
+- oFono running as a system service, with its HFP hands-free plugin.
+  BlueFerry never starts oFono itself (its calls carry D-Bus NO_AUTO_START).
+- oFono's D-Bus policy must admit your user. oFono's shipped `ofono.conf`
+  (for example `/etc/dbus-1/system.d/ofono.conf` or
+  `/usr/share/dbus-1/system.d/ofono.conf`, depending on the distribution)
+  only allows root and `at_console` sessions; a desktop without console tracking gets
+  `AccessDenied` and BlueFerry reports calls as **unavailable** (logged once).
+  A minimal drop-in, for example `/etc/dbus-1/system.d/ofono-local.conf`:
+
+  ```xml
+  <!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-BUS Bus Configuration 1.0//EN"
+   "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+  <busconfig>
+    <policy user="your-login">
+      <allow send_destination="org.ofono"/>
+    </policy>
+  </busconfig>
+  ```
+
+  Security meaning: every process running as that user (or, with
+  `<policy group="…">`, as any member of that group) may fully control oFono,
+  i.e. place, answer, and end calls and change settings of every modem oFono
+  manages, not only BlueFerry. Prefer `user=` over a broad group. The system
+  bus normally picks up the new file by itself; otherwise reload it.
+- PipeWire/WirePlumber configured to hand HFP to oFono. Your own fragment
+  should only select the backend, for example
+  `~/.config/wireplumber/wireplumber.conf.d/51-bluez-ofono.conf`:
+
+  ```text
+  monitor.bluez.properties = {
+    bluez5.hfphsp-backend = "ofono"
+  }
+  ```
+
+  Do not set roles there: BlueFerry's `99-` phone-audio fragment (above)
+  overrides `bluez5.roles` and, with calls enabled, keeps `hfp_hf` and
+  `hsp_hs` while still removing `a2dp_sink`. If you set
+  `BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE=false`, BlueFerry manages no roles and
+  your own `bluez5.roles` must include `hfp_hf`.
+
+Enable it in `~/.config/blueferry/local.env` and restart the user service:
+
+```bash
+BLUEFERRY_CALLS_ENABLED=true
+```
+
+Toggling the flag rewrites the phone-audio fragment. BlueFerry restarts
+`wireplumber.service` only through systemd; on hosts where WirePlumber is not
+a systemd user service (for example OpenRC with a session launcher), restart
+WirePlumber yourself, e.g. `gentoo-pipewire-launcher restart`. The backend
+log then says "WirePlumber fragment changed; restart WirePlumber to apply".
+
+What happens then:
+
+- The backend looks for the iPhone's oFono modem (type `hfp`, path ending in
+  `dev_XX_XX_XX_XX_XX_XX` for the paired phone). iOS does not power this modem
+  up by itself: BlueFerry sets `Powered=true` while the Classic link is up,
+  waits for oFono to confirm it, then sets `Online=true`. Call control is
+  ready once the modem is online and lists oFono's call manager. It also
+  raises oFono's call volume to 100 % because the 50 % default is nearly
+  inaudible with an iPhone.
+- An incoming call shows a desktop notification with **Answer** and
+  **Decline** (without the caller when
+  `BLUEFERRY_SHOW_NOTIFICATION_CONTENT=false`; the contacts-only notification
+  setting deliberately does not apply to calls). The Qt client has a
+  **Phone Calls** dialog, the terminal client a calls panel (`c`) and an
+  "Incoming call" notice, and the CLI a `calls` command group:
+
+  ```bash
+  blueferry calls                 # state and current calls
+  blueferry calls dial '+41 79 123 45 67'
+  blueferry calls answer          # the ringing call
+  blueferry calls dtmf 1234#      # tones on the active call
+  blueferry calls hangup          # or: hangup --all
+  ```
+
+- `dial` accepts plain numbers only (an optional leading `+` and digits;
+  spaces, dashes, dots, parentheses, and slashes are ignored). `*` and `#`
+  are refused: dialed, they form service codes such as `**21*…#` that
+  reconfigure the phone (call forwarding) rather than place a call. Use
+  `dtmf` for keypad symbols during a call.
+- With a second call, answering holds the active call (HoldAndAnswer);
+  `swap` and `hold-answer` are available, but "release and answer" is not
+  exposed. Hanging up the held call of two relies on the phone supporting
+  `AT+CHLD=1x` through oFono and still needs hardware verification.
+- If oFono is not installed, not running, or denies access, calls report
+  **unavailable**; BlueFerry notices when oFono starts. Call details are only
+  returned by the private `Calls1.ListCalls` method; the broadcast
+  `CallsChanged` signal carries no content. Calls are not written to message
+  history.
+
+Troubleshooting: if `blueferry calls` stays at **searching** although the
+iPhone is connected, the likely cause is the startup-order race between oFono
+and WirePlumber for the HFP profile. Restart oFono after WirePlumber
+(`sudo rc-service ofono restart` on OpenRC, `sudo systemctl restart ofono` on
+systemd), then check the backend log for the modem. Audio routing itself is
+PipeWire's job; BlueFerry only controls the call.
 
 ## Lock when the iPhone goes away
 
@@ -467,7 +584,8 @@ The deeper design and protocol notes live in
 
 BlueFerry began from
 [iphonebridge](https://github.com/gabrielmeir53/iphonebridge), created by Gabe
-Shatunovsky. The ANCS constants and wire-format code are adapted from
+Shatunovsky. Parts of the optional oFono call controller are adapted from
+[tincan](https://github.com/quad341/tincan) under the MIT License. The ANCS constants and wire-format code are adapted from
 [ANCS4Linux](https://github.com/bmh129/ancs4linux), by Paweł Zmarzły and
 Bradley Harmon, under GPL-2.0-or-later.
 
