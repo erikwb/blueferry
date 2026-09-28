@@ -118,6 +118,10 @@ package_blueferry-backend() {
     'python-typer>=0.12'
     'systemd'
   )
+  optdepends=(
+    'wl-clipboard: copy one-time codes on Wayland (BLUEFERRY_OTP_AUTOCOPY)'
+    'xclip: copy one-time codes on X11 (BLUEFERRY_OTP_AUTOCOPY)'
+  )
   cd "$pkgbase-$pkgver"
   install -d "$pkgdir/$_site"
   cp -a "$srcdir/$_stage/$_site/blueferry" "$pkgdir/$_site/"

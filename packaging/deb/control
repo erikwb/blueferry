@@ -41,6 +41,7 @@ Depends:
  python3-typer (>= 0.9),
  systemd,
 Recommends: gnome-keyring | keepassxc
+Suggests: wl-clipboard | xclip | xsel
 Description: iPhone Bluetooth bridge backend, daemon, and CLI
  BlueFerry connects an iPhone to a Linux desktop over Bluetooth for messages
  and contacts. This package contains the backend service,

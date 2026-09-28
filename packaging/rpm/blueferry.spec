@@ -34,6 +34,7 @@ Requires:       python3dist(cryptography) >= 41
 Requires:       python3dist(typer) >= 0.9
 Requires:       systemd
 Recommends:     gnome-keyring
+Suggests:       wl-clipboard
 Provides:       bundled(python3dist(linkify-it-py)) = 2.1.0
 Provides:       bundled(python3dist(markdown-it-py)) = 4.2.0
 Provides:       bundled(python3dist(mdit-py-plugins)) = 0.6.1
