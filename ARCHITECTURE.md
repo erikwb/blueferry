@@ -94,6 +94,9 @@ All paths are relative to `src/blueferry/` unless noted.
 | `sinks/__init__.py` | Sink protocol: `handle(event)` plus optional `handle_ancs`. |
 | `sinks/sqlite.py` | Persists events to the private history store. |
 | `sinks/libnotify.py` | Desktop notifications via `org.freedesktop.Notifications`, including open and dismiss actions. |
+| `sinks/otp_clipboard.py` | Opt-in: copies one-time codes from new incoming MAP messages to the clipboard and shows a transient confirmation. |
+| `otp.py` | Pure, keyword-anchored one-time code detection with false-positive filters. |
+| `otp_clipboard.py` | Chooses wl-copy/xclip/xsel and owns one foreground clipboard helper; clearing stops a helper that still owns the code. |
 
 ### Storage and privacy
 
@@ -142,6 +145,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `cli_messages.py` | CLI message listing, recipient selection, and send. |
 | `cli_common.py` | Small CLI presentation helpers. |
 | `cli_proximity.py` | `proximity-lock` status, dry run, enable, and disable. |
+| `cli_otp.py` | `otp-status` and `otp-check` for one-time code auto-copy. |
 | `tui.py` | Textual terminal client. |
 | `tui_launcher.py` | Launches the TUI with the package-private Textual bundle when present. |
 | `ui/app.py` | GTK4/libadwaita application entry point. |
@@ -433,9 +437,15 @@ A change to these rules has to be made in both places.
   policy applies exact bundle-ID allow/block rules first and delivers content
   only to an ephemeral popup sink, never retained or broadcast. Apple Messages
   keeps only the fields needed for group correlation.
-- **Logs** exclude message bodies, notification text, and recipient
-  identities at every level. Markup and terminal output are escaped at their
-  display boundaries.
+- **Logs** exclude message bodies, notification text, one-time codes, and
+  recipient identities at every level. Markup and terminal output are escaped
+  at their display boundaries.
+- **One-time codes** (opt-in `BLUEFERRY_OTP_AUTOCOPY`) go from the daemon
+  straight to a clipboard helper's stdin, never to argv, the BlueFerry API,
+  logs, or storage. The transient confirmation popup includes the code only
+  when notification content is enabled. The daemon writes the clipboard
+  itself: a background Wayland client needs a data-control helper such as
+  `wl-copy`, and a GUI client would need the code over the bus.
 - **Configuration** files are owner-only, size-bounded, opened without
   following final symlinks, and restricted to named settings. systemd never
   sources them as a process environment.

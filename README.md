@@ -314,6 +314,38 @@ daemon run without logging its notification content:
 journalctl --user -u blueferry -f | grep "ANCS app observed"
 ```
 
+### One-time codes
+
+BlueFerry can copy verification codes (2FA/OTP) from newly received SMS and
+iMessages to the clipboard. This is off by default because it changes the
+clipboard without you doing anything:
+
+```bash
+BLUEFERRY_OTP_AUTOCOPY=true
+# Optional: clear the clipboard after this many seconds (0 = keep, max 600)
+BLUEFERRY_OTP_CLEAR_SECONDS=60
+```
+
+Only a message that has just arrived counts: sent messages, history, and
+messages older than ten minutes are ignored. A number is treated as a code only
+when a word like "code", "verification", "Bestätigungscode", "code de
+vérification", or "codice" is next to it; amounts, dates, times, phone numbers,
+and order or tracking numbers are skipped. `G-123456` and `123-456` are copied
+as `123456`. Check what a message would copy with
+`echo 'Your code is 123456' | blueferry otp-check`.
+
+A short popup confirms the copy. It shows the code and sender only when
+`BLUEFERRY_SHOW_NOTIFICATION_CONTENT` is on; with the notification setting
+**None** the code is copied silently. The code is never logged, stored, or
+published on BlueFerry's D-Bus API, so there is no command to show it again.
+
+The backend copies with `wl-copy` from wl-clipboard on Wayland, or `xclip` or
+`xsel` on X11; `blueferry otp-status` shows which one it finds. With
+wl-clipboard 2.3 or newer the code is marked as sensitive, so Klipper and other
+clipboard managers keep it out of their history; older versions and the X11
+tools cannot do that. The clear timer only clears a code that is still on the
+clipboard, and stopping the backend clears a code it still holds.
+
 Restart the user service after editing `local.env` settings.
 
 When WirePlumber 0.5 or newer is installed, BlueFerry keeps calls and music on
@@ -387,6 +419,7 @@ blueferry sms-send person@icloud.com 'hello from Linux'
 blueferry sms-send Alice 'running late'
 blueferry contacts-sync
 blueferry history-clear
+blueferry otp-status
 blueferry doctor
 ```
 
