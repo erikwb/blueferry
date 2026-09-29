@@ -1,8 +1,10 @@
 """Worker retries and transfer signals on an isolated, activation-free bus."""
 from __future__ import annotations
 
+import gc
 import threading
 import time
+import weakref
 
 import dbus
 import dbus.service
@@ -15,6 +17,84 @@ from blueferry.obex import map_send, transfer
 from blueferry.obex.sessions import SessionManager
 
 pytestmark = pytest.mark.private_dbus
+
+
+@pytest.mark.parametrize('cleanup_fails', [False, True])
+def test_failed_transfer_subscription_releases_watches_and_preserves_other_receivers(
+    monkeypatch, cleanup_fails,
+):
+    observer = dbus.SessionBus(private=True)
+    observer.set_exit_on_disconnect(False)
+    observer.request_name('org.bluez.obex', dbus.bus.NAME_FLAG_DO_NOT_QUEUE)
+    monkeypatch.setattr(transfer, 'get_session_bus', lambda: observer)
+    original_add_match = observer.add_match_string
+    references = []
+    # Capture a weak reference without retaining exception tracebacks or
+    # relying on dbus-python's internal receiver containers.
+    original_subscribe = transfer.TransferStatusWatch._subscribe
+
+    def subscribe(self):
+        references.append(weakref.ref(self))
+        return original_subscribe(self)
+
+    monkeypatch.setattr(transfer.TransferStatusWatch, '_subscribe', subscribe)
+    unrelated_received = threading.Event()
+    unrelated = observer.add_signal_receiver(
+        lambda *_args, **_kwargs: unrelated_received.set(),
+        signal_name='PropertiesChanged', dbus_interface='org.freedesktop.DBus.Properties',
+        bus_name='org.bluez.obex', arg0='org.bluez.obex.Transfer1', path_keyword='path',
+    )
+
+    def reject_transfer_rule(rule):
+        if "arg0='org.bluez.obex.Transfer1'" in rule:
+            raise dbus.exceptions.DBusException(
+                'simulated match-rule limit', name='org.freedesktop.DBus.Error.LimitsExceeded',
+            )
+        return original_add_match(rule)
+
+    monkeypatch.setattr(observer, 'add_match_string', reject_transfer_rule)
+    original_remove_match = observer.remove_match_string_non_blocking
+    if cleanup_fails:
+        def reject_cleanup(_rule):
+            raise dbus.exceptions.DBusException(
+                'simulated cleanup failure', name='org.freedesktop.DBus.Error.Disconnected',
+            )
+        monkeypatch.setattr(observer, 'remove_match_string_non_blocking', reject_cleanup)
+
+    def failed_attempt():
+        try:
+            transfer.TransferStatusWatch('/session')
+        except dbus.exceptions.DBusException as error:
+            assert error.get_dbus_name() == 'org.freedesktop.DBus.Error.LimitsExceeded'
+        else:
+            pytest.fail('subscription unexpectedly succeeded')
+
+    try:
+        for _ in range(3):
+            failed_attempt()
+        gc.collect()
+        assert all(reference() is None for reference in references)
+        # An unrelated, healthy receiver on the shared bus remains usable.
+        monkeypatch.setattr(observer, 'add_match_string', original_add_match)
+        monkeypatch.setattr(observer, 'remove_match_string_non_blocking', original_remove_match)
+        watch = transfer.TransferStatusWatch('/session')
+        watch.close()
+        assert observer.get_is_connected()
+        signal = dbus.lowlevel.SignalMessage(
+            '/session/transfer1', 'org.freedesktop.DBus.Properties', 'PropertiesChanged',
+        )
+        signal.append('org.bluez.obex.Transfer1', {'Status': 'complete'}, [], signature='sa{sv}as')
+        observer.send_message(signal)
+        context = GLib.MainContext.default()
+        deadline = time.monotonic() + 5
+        while not unrelated_received.is_set() and time.monotonic() < deadline:
+            context.iteration(False)
+            time.sleep(0.001)
+        assert unrelated_received.is_set()
+    finally:
+        monkeypatch.setattr(observer, 'remove_match_string_non_blocking', original_remove_match)
+        unrelated.remove()
+        observer.close()
 
 
 @pytest.mark.parametrize('status', ['complete', 'error', None])

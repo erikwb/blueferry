@@ -38,7 +38,7 @@ def test_worker_waits_for_main_thread_subscription_and_removes_watch_there(monke
         return SimpleNamespace(remove=lambda: calls.append(('remove', threading.get_ident())))
 
     monkeypatch.setattr(transfer.GLib, 'idle_add', schedule)
-    monkeypatch.setattr(transfer, 'get_session_bus', lambda: SimpleNamespace(add_signal_receiver=subscribe))
+    monkeypatch.setattr(transfer, '_add_transfer_receiver', subscribe)
 
     def run():
         try:
@@ -115,7 +115,7 @@ def test_watch_timeout_during_subscription_removes_late_match_on_main_thread(mon
 
     monkeypatch.setattr(transfer.GLib, 'idle_add', schedule)
     monkeypatch.setattr(transfer, '_WATCH_SETUP_TIMEOUT_S', 0.01)
-    monkeypatch.setattr(transfer, 'get_session_bus', lambda: SimpleNamespace(add_signal_receiver=subscribe))
+    monkeypatch.setattr(transfer, '_add_transfer_receiver', subscribe)
 
     def run():
         try:

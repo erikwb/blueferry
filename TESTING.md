@@ -100,6 +100,9 @@ on the main thread before a push; early completion/error signals survive object
 disappearance, and disappearance without a terminal signal remains ambiguous.
 Inert concurrency tests cover watch setup failures, timeouts when GLib has
 stopped, and main-thread receiver removal.
+Rejected D-Bus match rules must release abandoned transfer watches, preserve
+other receivers on the shared bus, and report the setup error even if remote
+rule cleanup fails.
 Bluetooth compatibility tests feed inert `btmgmt info` text through the parser
 and fake BlueZ's object inventory. They assert capabilities rather than
 controller brands and never execute `btmgmt` against the host.

@@ -8,6 +8,7 @@ from collections import OrderedDict
 from collections.abc import Callable
 
 import dbus
+from dbus.connection import Connection
 from gi.repository import GLib
 
 from blueferry.bus import get_session_bus, obex
@@ -25,6 +26,30 @@ _DISAPPEARED_ERRORS = frozenset({
 
 class TransferFailed(RuntimeError):
     """BlueZ reported an explicit transfer failure."""
+
+
+def _add_transfer_receiver(callback: Callable[..., None]):
+    """Install one sender-bound receiver, rolling back a failed AddMatch."""
+    connection = get_session_bus()
+    owner = str(connection.get_name_owner("org.bluez.obex"))
+    # BusConnection.add_signal_receiver also creates a NameOwnerWatch, which
+    # can itself leak when setup fails before returning its match. A transfer
+    # belongs to one obexd instance: bind its unique sender directly and keep
+    # the local match handle before asking the bus to route its signals.
+    match = Connection.add_signal_receiver(
+        connection, callback, signal_name="PropertiesChanged",
+        dbus_interface="org.freedesktop.DBus.Properties",
+        bus_name=owner, arg0=_TRANSFER_IFACE, path_keyword="path",
+    )
+    try:
+        connection.add_match_string(str(match))
+    except Exception:
+        try:
+            match.remove()
+        except Exception:
+            log.debug("could not roll back transfer status watch", exc_info=True)
+        raise
+    return match
 
 
 class TransferStatusWatch:
@@ -63,11 +88,7 @@ class TransferStatusWatch:
                 self._ready.set()
                 return False
         try:
-            match = get_session_bus().add_signal_receiver(
-                self._changed, signal_name="PropertiesChanged",
-                dbus_interface="org.freedesktop.DBus.Properties",
-                bus_name="org.bluez.obex", arg0=_TRANSFER_IFACE, path_keyword="path",
-            )
+            match = _add_transfer_receiver(self._changed)
             with self._condition:
                 closed = self._closed
                 if not closed:
