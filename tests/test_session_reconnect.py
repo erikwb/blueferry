@@ -150,7 +150,7 @@ def owned_sessions(monkeypatch):
         closed = False
 
         def __init__(self, **kwargs):
-            assert kwargs == {'private': True}
+            assert kwargs == {'private': True, 'mainloop': None}
             self.owner = len(owners)
             owners.append(self)
 

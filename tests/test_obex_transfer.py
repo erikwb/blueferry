@@ -1,6 +1,8 @@
 """Pure transfer-state tests; no BlueZ or OBEX connection is opened."""
 from __future__ import annotations
 
+import threading
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import dbus
@@ -8,7 +10,7 @@ import pytest
 
 from blueferry.errors import SendOutcomeUnknownError
 from blueferry.obex import transfer
-from blueferry.obex.transfer import TransferFailed, wait_for_transfer
+from blueferry.obex.transfer import TransferFailed, TransferStatusWatch, wait_for_transfer
 
 
 @pytest.fixture(autouse=True)
@@ -16,6 +18,152 @@ def cancel(monkeypatch):
     interface = Mock()
     monkeypatch.setattr(transfer, "obex", lambda *_args: interface)
     return interface.Cancel
+
+
+def test_worker_waits_for_main_thread_subscription_and_removes_watch_there(monkeypatch):
+    scheduled = []
+    pending = threading.Event()
+    ready = threading.Event()
+    release = threading.Event()
+    calls = []
+    result = {}
+
+    def schedule(callback):
+        scheduled.append(callback)
+        pending.set()
+
+    def subscribe(callback, **_kwargs):
+        calls.append(('subscribe', threading.get_ident()))
+        result['callback'] = callback
+        return SimpleNamespace(remove=lambda: calls.append(('remove', threading.get_ident())))
+
+    monkeypatch.setattr(transfer.GLib, 'idle_add', schedule)
+    monkeypatch.setattr(transfer, 'get_session_bus', lambda: SimpleNamespace(add_signal_receiver=subscribe))
+
+    def run():
+        try:
+            watch = TransferStatusWatch('/session')
+            result['watch'] = watch
+            ready.set()
+            assert release.wait(5)
+            watch.close()
+        except Exception as error:
+            result['error'] = error
+            ready.set()
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    try:
+        assert pending.wait(5)
+        assert not ready.is_set()
+        assert scheduled.pop(0)() is False
+        assert ready.wait(5)
+        assert 'error' not in result
+        result['callback']('org.bluez.obex.Transfer1', {'Status': 'complete'}, [], path='/session/transfer1')
+        assert result['watch'].terminal('/session/transfer1') == 'complete'
+    finally:
+        release.set()
+        worker.join(5)
+    assert not worker.is_alive()
+    assert calls == [('subscribe', threading.get_ident())]
+    assert scheduled.pop(0)() is False
+    assert calls == [('subscribe', threading.get_ident()), ('remove', threading.get_ident())]
+
+
+def test_timed_out_watch_never_subscribes_when_glib_resumes(monkeypatch):
+    scheduled = []
+    errors = []
+    monkeypatch.setattr(transfer.GLib, 'idle_add', scheduled.append)
+    monkeypatch.setattr(transfer, '_WATCH_SETUP_TIMEOUT_S', 0.01)
+    get_bus = Mock(side_effect=AssertionError('late subscription'))
+    monkeypatch.setattr(transfer, 'get_session_bus', get_bus)
+
+    def run():
+        try:
+            TransferStatusWatch('/session')
+        except Exception as error:
+            errors.append(error)
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    worker.join(5)
+    assert not worker.is_alive()
+    assert len(errors) == 1
+    assert isinstance(errors[0], TimeoutError)
+    for callback in scheduled:
+        assert callback() is False
+    get_bus.assert_not_called()
+
+
+def test_watch_timeout_during_subscription_removes_late_match_on_main_thread(monkeypatch):
+    scheduled = []
+    pending = threading.Event()
+    subscribing = threading.Event()
+    finished = threading.Event()
+    removed = []
+    errors = []
+
+    def schedule(callback):
+        scheduled.append(callback)
+        pending.set()
+        assert subscribing.wait(5)
+
+    def subscribe(*_args, **_kwargs):
+        subscribing.set()
+        assert finished.wait(5)
+        return SimpleNamespace(remove=lambda: removed.append(threading.get_ident()))
+
+    monkeypatch.setattr(transfer.GLib, 'idle_add', schedule)
+    monkeypatch.setattr(transfer, '_WATCH_SETUP_TIMEOUT_S', 0.01)
+    monkeypatch.setattr(transfer, 'get_session_bus', lambda: SimpleNamespace(add_signal_receiver=subscribe))
+
+    def run():
+        try:
+            TransferStatusWatch('/session')
+        except Exception as error:
+            errors.append(error)
+        finally:
+            finished.set()
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    assert pending.wait(5)
+    assert scheduled.pop(0)() is False
+    worker.join(5)
+    assert not worker.is_alive()
+    assert len(errors) == 1
+    assert isinstance(errors[0], TimeoutError)
+    assert removed == [threading.get_ident()]
+    assert scheduled.pop(0)() is False
+    assert removed == [threading.get_ident()]
+
+
+def test_subscription_failure_reaches_worker_without_waiting_for_timeout(monkeypatch):
+    scheduled = []
+    pending = threading.Event()
+    errors = []
+    original = RuntimeError('session bus unavailable')
+
+    def schedule(callback):
+        scheduled.append(callback)
+        pending.set()
+
+    monkeypatch.setattr(transfer.GLib, 'idle_add', schedule)
+    monkeypatch.setattr(transfer, 'get_session_bus', Mock(side_effect=original))
+
+    def run():
+        try:
+            TransferStatusWatch('/session')
+        except Exception as error:
+            errors.append(error)
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    assert pending.wait(5)
+    assert scheduled.pop(0)() is False
+    worker.join(5)
+    assert not worker.is_alive()
+    assert errors == [original]
 
 
 class _Clock:

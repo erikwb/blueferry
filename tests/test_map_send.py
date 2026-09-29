@@ -26,7 +26,7 @@ def transfer_signals(monkeypatch):
     callbacks = []
     bus = Mock()
     bus.add_signal_receiver.side_effect = lambda callback, **kwargs: callbacks.append(callback) or Mock()
-    monkeypatch.setattr(transfer, "get_obex_bus", lambda _path: bus)
+    monkeypatch.setattr(transfer, "get_session_bus", lambda: bus)
     return callbacks
 
 
