@@ -94,6 +94,15 @@ Shared conversation tests exercise partial failures and recovery in either order
 and reject stale recipient approvals even when the backend remembers the new
 roster. Presentation tests feed the same derived thread metadata through Qt and
 Quickshell and retain adapter coverage for delayed confirmation dialogs.
+Private D-Bus OBEX tests retry MAP repeatedly while retaining PBAP and verify
+that worker connections stay outside GLib dispatch. Transfer watches subscribe
+on the main thread before a push; early completion/error signals survive object
+disappearance, and disappearance without a terminal signal remains ambiguous.
+Inert concurrency tests cover watch setup failures, timeouts when GLib has
+stopped, and main-thread receiver removal.
+Rejected D-Bus match rules must release abandoned transfer watches, preserve
+other receivers on the shared bus, and report the setup error even if remote
+rule cleanup fails.
 Bluetooth compatibility tests feed inert `btmgmt info` text through the parser
 and fake BlueZ's object inventory. They assert capabilities rather than
 controller brands and never execute `btmgmt` against the host.
