@@ -23,14 +23,16 @@ from blueferry.sinks.sqlite import SqliteSink
 _OTP_SINK_NAME = "otp-clipboard"
 
 
-def _default_otp_sink(*, notification_policy) -> Sink:
+def _default_otp_sink(*, notification_policy, session_bus=None) -> Sink:
     from blueferry.otp_clipboard import ClipboardWriter
-    from blueferry.sinks.otp_clipboard import OtpClipboardSink
+    from blueferry.sinks.otp_clipboard import DesktopNotifier, OtpClipboardSink
 
     return OtpClipboardSink(
         writer=ClipboardWriter(clear_after_s=config.OTP_CLEAR_SECONDS),
         notification_policy=notification_policy,
+        notifier=DesktopNotifier(session_bus),
     )
+
 
 log = logging.getLogger(__name__)
 
@@ -139,7 +141,10 @@ class EventDispatcher:
             return
         try:
             self.sinks.append(
-                self._otp_sink_factory(notification_policy=self.notification_policy)
+                self._otp_sink_factory(
+                    notification_policy=self.notification_policy,
+                    session_bus=self._session_bus,
+                )
             )
         except Exception:
             log.exception("one-time code clipboard sink failed to init — continuing")

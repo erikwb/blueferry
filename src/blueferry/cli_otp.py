@@ -21,10 +21,16 @@ def status_lines(
     enabled: bool,
     clear_after_s: int,
     environ: Mapping[str, str],
-    find: Callable[[Mapping[str, str]], ClipboardTarget | None] = find_target,
-    probe_sensitive: Callable[[str], bool] = supports_sensitive_hint,
+    find: Callable[[Mapping[str, str]], ClipboardTarget | None] | None = None,
+    probe_sensitive: Callable[[str], bool] | None = None,
 ) -> tuple[list[str], bool]:
-    """Describe auto-copy for this session; return (lines, has_warning)."""
+    """Describe auto-copy for this session; return (lines, has_warning).
+
+    Defaults resolve at call time so tests can replace the module-level
+    helpers; the real probe starts ``wl-copy --help``.
+    """
+    find = find or find_target
+    probe_sensitive = probe_sensitive or supports_sensitive_hint
     lines = [
         "One-time code auto-copy: " + ("enabled" if enabled else "disabled"),
         "Clear after: "

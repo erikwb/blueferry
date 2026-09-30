@@ -5,7 +5,8 @@ it: a code should be pasteable even when no BlueFerry window is open, and
 passing it to a client would put the code on the session bus. On Wayland a
 background process can only own the clipboard through a data-control
 protocol, which Qt does not use but ``wl-copy`` (wl-clipboard) does; KWin,
-wlroots compositors, and others support it.
+wlroots compositors, and others support it. GNOME/Mutter without
+data-control is untested.
 
 The helper runs in the foreground and owns the selection for as long as it
 lives. That makes "clear the clipboard only if it still holds the code"
@@ -14,9 +15,14 @@ helper exits on its own, so a helper that is still running still owns the
 code, and stopping it clears the selection.
 
 The code is written to the helper's stdin, never to argv (argv is readable
-by every local user). With wl-clipboard 2.3 or newer ``--sensitive`` also
-offers ``x-kde-passwordManagerHint: secret`` so Klipper and other clipboard
+by every local user), and the helper gets only an allowlisted environment.
+With wl-clipboard 2.3 or newer ``--sensitive`` also offers
+``x-kde-passwordManagerHint: secret`` so Klipper and other clipboard
 managers keep the code out of their history.
+
+Nothing here blocks the GLib main loop: the ``--sensitive`` probe runs on a
+background worker, helpers are reaped by a GLib child watch, and stopping a
+helper escalates to SIGKILL from a timer instead of waiting.
 """
 from __future__ import annotations
 
@@ -24,14 +30,15 @@ import logging
 import os
 import re
 import shutil
+import signal
 import stat
 
-# Only for the Popen type and TimeoutExpired; commands.py spawns processes.
+# Only for the Popen type; commands.py spawns processes.
 import subprocess  # nosec B404
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from blueferry import commands
 from blueferry.errors import CommandError
@@ -40,9 +47,18 @@ log = logging.getLogger(__name__)
 
 _WAYLAND_SOCKET = re.compile(r"^wayland-[0-9]+$")
 _PROBE_TIMEOUT_S = 2.0
-_STOP_TIMEOUT_S = 1.0
+_KILL_AFTER_MS = 1000
+
+# The helper needs to find its display and a temporary directory, nothing
+# else from the daemon's environment.
+_HELPER_ENV_KEYS = frozenset({
+    "PATH", "HOME", "TMPDIR", "XDG_RUNTIME_DIR", "WAYLAND_DISPLAY", "DISPLAY",
+    "XAUTHORITY", "LANG",
+})
 
 DisplayKind = Literal["wayland", "x11"]
+TicketState = Literal["running", "exited", "failed", "superseded"]
+Submit = Callable[..., None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +69,20 @@ class ClipboardTarget:
     tool: str
     executable: str
     env_overrides: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(eq=False)
+class ClipboardTicket:
+    """One started helper; identity distinguishes overlapping copies."""
+
+    tool: str
+    process: Any
+    returncode: int | None = None
+    pidfd: int | None = field(default=None, repr=False)
+
+    @property
+    def running(self) -> bool:
+        return self.returncode is None
 
 
 def _wayland_sockets(runtime_dir: str | None) -> list[str]:
@@ -78,8 +108,9 @@ def _wayland_sockets(runtime_dir: str | None) -> list[str]:
 def find_target(
     environ: Mapping[str, str],
     *,
-    which: Callable[[str], str | None] = shutil.which,
-    list_sockets: Callable[[str | None], list[str]] = _wayland_sockets,
+    which: Callable[[str], str | None] | None = None,
+    list_sockets: Callable[[str | None], list[str]] | None = None,
+    exclude: frozenset[str] = frozenset(),
 ) -> ClipboardTarget | None:
     """Choose a clipboard helper for the graphical session, or ``None``.
 
@@ -87,23 +118,45 @@ def find_target(
     to the service manager, and its environment never changes afterwards.
     When the variable is missing, a single ``wayland-N`` socket in the
     owner-only runtime directory identifies the session unambiguously.
+    Helpers named in ``exclude`` are skipped (used to fall back to X11 when
+    wl-copy could not reach the guessed display).
     """
-    wl_copy = which("wl-copy")
+    lookup = which or shutil.which
+    sockets_in = list_sockets or _wayland_sockets
+
+    def resolve(tool: str) -> str | None:
+        if tool in exclude:
+            return None
+        found = lookup(tool)
+        return os.path.abspath(found) if found else None
+
+    wl_copy = resolve("wl-copy")
     if wl_copy:
         display = environ.get("WAYLAND_DISPLAY", "").strip()
         if display:
             return ClipboardTarget("wayland", "wl-copy", wl_copy)
-        sockets = list_sockets(environ.get("XDG_RUNTIME_DIR"))
+        sockets = sockets_in(environ.get("XDG_RUNTIME_DIR"))
         if len(sockets) == 1:
             return ClipboardTarget(
                 "wayland", "wl-copy", wl_copy, (("WAYLAND_DISPLAY", sockets[0]),)
             )
     if environ.get("DISPLAY", "").strip():
         for tool in ("xclip", "xsel"):
-            executable = which(tool)
+            executable = resolve(tool)
             if executable:
                 return ClipboardTarget("x11", tool, executable)
     return None
+
+
+def helper_environment(environ: Mapping[str, str], target: ClipboardTarget) -> dict[str, str]:
+    """Return the allowlisted environment for a clipboard helper."""
+    env = {
+        key: value
+        for key, value in environ.items()
+        if key in _HELPER_ENV_KEYS or key.startswith("LC_")
+    }
+    env.update(target.env_overrides)
+    return env
 
 
 def copy_argv(target: ClipboardTarget, *, sensitive: bool) -> tuple[str, ...]:
@@ -112,7 +165,9 @@ def copy_argv(target: ClipboardTarget, *, sensitive: bool) -> tuple[str, ...]:
     Every helper stays in the foreground so its lifetime equals ownership of
     the selection. ``--paste-once`` is deliberately not used: clipboard
     managers read each new selection immediately and would consume the
-    single paste.
+    single paste. An explicit ``--type text/plain`` still offers the usual
+    text aliases and spares wl-copy from inferring a type (which can spawn
+    ``xdg-mime``).
     """
     if target.tool == "wl-copy":
         argv = [target.executable, "--foreground", "--type", "text/plain"]
@@ -131,14 +186,57 @@ def copy_argv(target: ClipboardTarget, *, sensitive: bool) -> tuple[str, ...]:
 def supports_sensitive_hint(
     executable: str,
     *,
-    run: Callable[..., subprocess.CompletedProcess[str]] = commands.run_command,
+    run: Callable[..., subprocess.CompletedProcess[str]] | None = None,
 ) -> bool:
-    """Return whether this wl-copy offers ``--sensitive`` (wl-clipboard 2.3+)."""
+    """Return whether this wl-copy offers ``--sensitive`` (wl-clipboard 2.3+).
+
+    This starts ``wl-copy --help``; the daemon runs it on a worker thread.
+    """
+    runner = run or commands.run_command
     try:
-        result = run([executable, "--help"], timeout=_PROBE_TIMEOUT_S, check=False)
+        result = runner([executable, "--help"], timeout=_PROBE_TIMEOUT_S, check=False)
     except CommandError:
         return False
     return "--sensitive" in f"{result.stdout}\n{result.stderr}"
+
+
+def _exit_code(status: int) -> int:
+    try:
+        return os.waitstatus_to_exitcode(status)
+    except ValueError:
+        return -1
+
+
+def send_signal(ticket: ClipboardTicket, signum: int) -> None:
+    """Signal a helper that has not been reaped yet.
+
+    A pidfd cannot hit a recycled PID; plain ``kill`` is the fallback where
+    pidfds are unavailable.
+    """
+    if not ticket.running:
+        return
+    try:
+        if ticket.pidfd is not None:
+            signal.pidfd_send_signal(ticket.pidfd, signum)
+        else:
+            os.kill(int(ticket.process.pid), signum)
+    except ProcessLookupError:
+        pass
+
+
+def _open_pidfd(pid: int) -> int | None:
+    try:
+        return os.pidfd_open(pid)
+    except (AttributeError, OSError):
+        return None
+
+
+def _glib_watch_child(pid: int, callback: Callable[[int, int], None]) -> int:
+    from gi.repository import GLib
+
+    return GLib.child_watch_add(
+        GLib.PRIORITY_DEFAULT, pid, lambda child, status: callback(child, status)
+    )
 
 
 class ClipboardWriter:
@@ -149,34 +247,96 @@ class ClipboardWriter:
         *,
         clear_after_s: int = 0,
         environ: Mapping[str, str] | None = None,
-        find: Callable[[Mapping[str, str]], ClipboardTarget | None] = find_target,
-        spawn: Callable[..., subprocess.Popen[bytes]] = commands.spawn_command,
-        probe_sensitive: Callable[[str], bool] = supports_sensitive_hint,
-        schedule: Callable[[int, Callable[[], bool]], int] | None = None,
+        find: Callable[..., ClipboardTarget | None] | None = None,
+        spawn: Callable[..., Any] | None = None,
+        probe_sensitive: Callable[[str], bool] | None = None,
+        submit_probe: Submit | None = None,
+        schedule_ms: Callable[[int, Callable[[], bool]], int] | None = None,
         cancel: Callable[[int], object] | None = None,
+        watch_child: Callable[[int, Callable[[int, int], None]], object] | None = None,
+        signal_helper: Callable[[ClipboardTicket, int], None] | None = None,
+        open_pidfd: Callable[[int], int | None] = _open_pidfd,
     ) -> None:
-        if schedule is None or cancel is None:
+        self._worker = None
+        if schedule_ms is None or cancel is None:
             from gi.repository import GLib
 
-            schedule = schedule or GLib.timeout_add_seconds
+            schedule_ms = schedule_ms or GLib.timeout_add
             cancel = cancel or GLib.source_remove
+        if submit_probe is None:
+            from blueferry.background_worker import BackgroundWorker
+
+            self._worker = BackgroundWorker("otp-clipboard-probe", maximum=2)
+            submit_probe = self._worker.submit
         self.clear_after_s = max(0, int(clear_after_s))
         self._environ = environ
-        self._find = find
-        self._spawn = spawn
-        self._probe_sensitive = probe_sensitive
-        self._schedule = schedule
+        self._find = find or find_target
+        self._spawn = spawn or commands.spawn_command
+        self._probe_sensitive = probe_sensitive or supports_sensitive_hint
+        self._submit_probe = submit_probe
+        self._schedule_ms = schedule_ms
         self._cancel = cancel
+        self._watch_child = watch_child or _glib_watch_child
+        self._signal = signal_helper or send_signal
+        self._open_pidfd = open_pidfd
+        # executable -> True/False once probed; missing while unknown.
         self._sensitive: dict[str, bool] = {}
-        self._owner: subprocess.Popen[bytes] | None = None
+        self._probing: set[str] = set()
+        self._owner: ClipboardTicket | None = None
+        # Stopped helpers stay referenced until reaped, so Popen never reaps
+        # them behind the GLib child watch.
+        self._stopping: dict[int, ClipboardTicket] = {}
         self._clear_id: int | None = None
         self._warned_missing = False
         self._warned_insensitive = False
 
-    def copy(self, code: str) -> str | None:
-        """Copy ``code``; return the helper name, or ``None`` on failure."""
-        environ = self._environ if self._environ is not None else os.environ
-        target = self._find(environ)
+    def _current_environ(self) -> Mapping[str, str]:
+        return self._environ if self._environ is not None else os.environ
+
+    # ---- sensitive-hint probe ------------------------------------------
+
+    def start_probe(self) -> None:
+        """Probe wl-copy for ``--sensitive`` in the background, once."""
+        target = self._find(self._current_environ())
+        if target is not None and target.tool == "wl-copy":
+            self._probe(target.executable)
+
+    def _probe(self, executable: str) -> None:
+        if executable in self._sensitive or executable in self._probing:
+            return
+        self._probing.add(executable)
+        try:
+            self._submit_probe(
+                lambda: self._probe_sensitive(executable),
+                on_success=lambda result: self._probed(executable, bool(result)),
+                on_error=lambda _error: self._probed(executable, False),
+            )
+        except RuntimeError:
+            self._probing.discard(executable)
+            log.debug("could not queue the wl-copy capability probe")
+
+    def _probed(self, executable: str, sensitive: bool) -> None:
+        self._probing.discard(executable)
+        self._sensitive[executable] = sensitive
+        if not sensitive:
+            self._warn_insensitive("wl-copy")
+
+    def _warn_insensitive(self, tool: str) -> None:
+        if self._warned_insensitive:
+            return
+        self._warned_insensitive = True
+        log.warning(
+            "%s cannot mark clipboard data as sensitive; clipboard managers "
+            "may keep copied codes in their history (wl-clipboard 2.3+ can)",
+            tool,
+        )
+
+    # ---- copying ---------------------------------------------------------
+
+    def copy(self, code: str, *, exclude: frozenset[str] = frozenset()) -> ClipboardTicket | None:
+        """Copy ``code``; return a ticket for the helper, or ``None``."""
+        environ = self._current_environ()
+        target = self._find(environ, exclude=exclude)
         if target is None:
             if not self._warned_missing:
                 log.warning(
@@ -187,45 +347,59 @@ class ClipboardWriter:
             return None
         sensitive = False
         if target.tool == "wl-copy":
-            if target.executable not in self._sensitive:
-                self._sensitive[target.executable] = self._probe_sensitive(target.executable)
-            sensitive = self._sensitive[target.executable]
-        if not sensitive and not self._warned_insensitive:
-            log.warning(
-                "%s cannot mark clipboard data as sensitive; clipboard managers "
-                "may keep copied codes in their history (wl-clipboard 2.3+ can)",
-                target.tool,
-            )
-            self._warned_insensitive = True
+            known = self._sensitive.get(target.executable)
+            if known is None:
+                # Not probed yet: copy now without the hint rather than wait.
+                self._probe(target.executable)
+            sensitive = bool(known)
+        else:
+            self._warn_insensitive(target.tool)
         self.release()
-        env = dict(environ)
-        env.update(target.env_overrides)
         try:
-            self._owner = self._spawn(
-                copy_argv(target, sensitive=sensitive), stdin_text=code, env=env
+            process = self._spawn(
+                copy_argv(target, sensitive=sensitive),
+                stdin_text=code,
+                env=helper_environment(environ, target),
             )
         except (CommandError, ValueError) as error:
             log.warning("clipboard helper %s failed: %s", target.tool, error)
             return None
+        ticket = ClipboardTicket(target.tool, process, pidfd=self._open_pidfd(process.pid))
+        self._owner = ticket
+        try:
+            self._watch_child(process.pid, lambda _pid, status: self._exited(ticket, status))
+        except Exception:
+            log.debug("could not watch the clipboard helper", exc_info=True)
         if self.clear_after_s:
-            owner = self._owner
-            self._clear_id = self._schedule(
-                self.clear_after_s, lambda: self._expire(owner)
+            self._clear_id = self._schedule_ms(
+                self.clear_after_s * 1000, lambda: self._expire(ticket)
             )
-        return target.tool
+        return ticket
 
-    def helper_failed(self) -> bool:
-        """True when the current helper already exited with an error."""
-        owner = self._owner
-        if owner is None:
-            return True
-        returncode = owner.poll()
-        return returncode is not None and returncode != 0
+    def state(self, ticket: ClipboardTicket) -> TicketState:
+        """Describe a ticket; a newer copy or a release supersedes it."""
+        if ticket is not self._owner:
+            return "superseded"
+        if ticket.running:
+            return "running"
+        return "exited" if ticket.returncode == 0 else "failed"
 
-    def _expire(self, owner: subprocess.Popen[bytes]) -> bool:
+    def _exited(self, ticket: ClipboardTicket, status: int) -> None:
+        ticket.returncode = _exit_code(status)
+        # GLib reaped the child; stop Popen from ever waiting on it again.
+        ticket.process.returncode = ticket.returncode
+        if ticket.pidfd is not None:
+            try:
+                os.close(ticket.pidfd)
+            except OSError:
+                pass
+            ticket.pidfd = None
+        self._stopping.pop(id(ticket), None)
+
+    def _expire(self, ticket: ClipboardTicket) -> bool:
         self._clear_id = None
-        if owner is self._owner:
-            if owner.poll() is None:
+        if ticket is self._owner:
+            if ticket.running:
                 log.info("cleared the one-time code from the clipboard")
             self.release()
         return False
@@ -238,13 +412,21 @@ class ClipboardWriter:
             except Exception:
                 log.debug("could not cancel the clipboard clear timer", exc_info=True)
             self._clear_id = None
-        owner, self._owner = self._owner, None
-        if owner is None:
+        ticket, self._owner = self._owner, None
+        if ticket is None or not ticket.running:
             return
-        if owner.poll() is None:
-            owner.terminate()
-            try:
-                owner.wait(timeout=_STOP_TIMEOUT_S)
-            except subprocess.TimeoutExpired:
-                owner.kill()
-                owner.wait()
+        self._stopping[id(ticket)] = ticket
+        self._signal(ticket, signal.SIGTERM)
+        self._schedule_ms(_KILL_AFTER_MS, lambda: self._kill_if_running(ticket))
+
+    def _kill_if_running(self, ticket: ClipboardTicket) -> bool:
+        if ticket.running:
+            self._signal(ticket, signal.SIGKILL)
+        return False
+
+    def close(self) -> None:
+        """Release the clipboard and stop the probe worker."""
+        self.release()
+        if self._worker is not None:
+            self._worker.close()
+            self._worker = None

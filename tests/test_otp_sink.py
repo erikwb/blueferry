@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 
@@ -10,7 +11,7 @@ from blueferry import event_dispatcher
 from blueferry.event_dispatcher import EventDispatcher
 from blueferry.events import SmsEvent, sms_sent_event
 from blueferry.sinks import otp_clipboard as sink_module
-from blueferry.sinks.otp_clipboard import OtpClipboardSink, notification_text
+from blueferry.sinks.otp_clipboard import DesktopNotifier, OtpClipboardSink, notification_text
 
 CODE = "482913"
 NOW = datetime(2026, 9, 28, 12, 0, tzinfo=timezone.utc)
@@ -18,22 +19,68 @@ BODY = f"Your verification code is {CODE}. Don't share it."
 
 
 class _Writer:
-    def __init__(self, *, tool="wl-copy", failed=False, clear_after_s=0) -> None:
-        self.copied: list[str] = []
-        self.tool = tool
-        self.failed = failed
+    """Fake ClipboardWriter; ``outcomes`` scripts each copy's final state."""
+
+    def __init__(self, *, outcomes=None, clear_after_s=0) -> None:
+        self.copied: list[tuple[str, frozenset]] = []
+        self.outcomes = list(outcomes or [])
         self.clear_after_s = clear_after_s
         self.released = False
+        self.probed = False
+        self.owner = None
 
-    def copy(self, code: str):
-        self.copied.append(code)
-        return self.tool
+    def start_probe(self) -> None:
+        self.probed = True
 
-    def helper_failed(self) -> bool:
-        return self.failed
+    def copy(self, code: str, *, exclude=frozenset()):
+        self.copied.append((code, frozenset(exclude)))
+        state = self.outcomes.pop(0) if self.outcomes else "running"
+        if state is None:
+            return None
+        tool = "xclip" if "wl-copy" in exclude else "wl-copy"
+        ticket = SimpleNamespace(tool=tool, final_state=state)
+        self.owner = ticket
+        return ticket
 
-    def release(self) -> None:
+    def state(self, ticket):
+        if ticket is not self.owner:
+            return "superseded"
+        return ticket.final_state
+
+    def close(self) -> None:
         self.released = True
+
+
+class _Notifier:
+    def __init__(self) -> None:
+        self.shown: list[tuple[str, str]] = []
+        self.closed = False
+
+    def notify(self, summary: str, body: str) -> None:
+        self.shown.append((summary, body))
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _Timers:
+    def __init__(self) -> None:
+        self.pending: dict[int, object] = {}
+        self.next_id = 1
+
+    def schedule(self, _delay, callback) -> int:
+        source = self.next_id
+        self.next_id += 1
+        self.pending[source] = callback
+        return source
+
+    def cancel(self, source) -> None:
+        self.pending.pop(source, None)
+
+    def settle(self) -> None:
+        while self.pending:
+            source = next(iter(self.pending))
+            self.pending.pop(source)()
 
 
 def _received(body=BODY, *, handle="message1", path="/org/bluez/obex/client/session1/message1",
@@ -52,33 +99,34 @@ def _received(body=BODY, *, handle="message1", path="/org/bluez/obex/client/sess
 
 
 def _sink(writer=None, *, policy="messages"):
-    notified: list[tuple[str, str]] = []
-    scheduled = []
+    notifier = _Notifier()
+    timers = _Timers()
     sink = OtpClipboardSink(
         writer=writer or _Writer(),
         notification_policy=lambda: policy,
-        notify=lambda summary, body: notified.append((summary, body)),
-        schedule_ms=lambda delay, callback: scheduled.append(callback) or 1,
+        notifier=notifier,
+        schedule_ms=timers.schedule,
+        cancel=timers.cancel,
         now=lambda: NOW,
     )
+    return sink, notifier, timers
 
-    def settle() -> None:
-        while scheduled:
-            scheduled.pop(0)()
 
-    return sink, notified, settle
+def _codes(writer) -> list[str]:
+    return [code for code, _exclude in writer.copied]
 
 
 def test_new_incoming_code_is_copied_and_announced(monkeypatch) -> None:
     monkeypatch.setattr(sink_module.config, "SHOW_NOTIFICATION_CONTENT", False)
     writer = _Writer()
-    sink, notified, settle = _sink(writer)
+    sink, notifier, timers = _sink(writer)
 
+    assert writer.probed is True
     sink.handle(_received())
-    settle()
+    timers.settle()
 
-    assert writer.copied == [CODE]
-    assert notified == [("Verification code copied", "Paste it with Ctrl+V.")]
+    assert _codes(writer) == [CODE]
+    assert notifier.shown == [("Verification code copied", "Paste it with Ctrl+V.")]
 
 
 @pytest.mark.parametrize(
@@ -95,46 +143,98 @@ def test_new_incoming_code_is_copied_and_announced(monkeypatch) -> None:
 )
 def test_only_new_incoming_messages_with_a_code_are_copied(event) -> None:
     writer = _Writer()
-    sink, notified, settle = _sink(writer)
+    sink, notifier, timers = _sink(writer)
 
     sink.handle(event)
-    settle()
+    timers.settle()
 
     assert writer.copied == []
-    assert notified == []
+    assert notifier.shown == []
+
+
+def test_stale_message_is_logged_without_content(caplog) -> None:
+    caplog.set_level(logging.DEBUG)
+    sink, _notifier, _timers = _sink()
+
+    sink.handle(_received(age=timedelta(minutes=30)))
+
+    assert "ignoring a message 1800 seconds old" in caplog.text
+    assert CODE not in caplog.text
 
 
 def test_the_same_message_is_copied_only_once() -> None:
     writer = _Writer()
-    sink, _notified, settle = _sink(writer)
+    sink, _notifier, timers = _sink(writer)
 
     sink.handle(_received())
     sink.handle(_received())
-    settle()
+    timers.settle()
 
-    assert writer.copied == [CODE]
+    assert _codes(writer) == [CODE]
 
 
-def test_failed_helper_does_not_claim_success(caplog) -> None:
+def test_failed_wl_copy_falls_back_to_x11_once(caplog) -> None:
     caplog.set_level(logging.DEBUG)
-    sink, notified, settle = _sink(_Writer(failed=True))
+    writer = _Writer(outcomes=["failed", "running"])
+    sink, notifier, timers = _sink(writer)
 
     sink.handle(_received())
-    settle()
+    timers.settle()
 
-    assert notified == []
+    assert writer.copied == [(CODE, frozenset()), (CODE, frozenset({"wl-copy"}))]
+    assert len(notifier.shown) == 1
+    assert "copied a one-time code to the clipboard via xclip" in caplog.text
     assert CODE not in caplog.text
+
+
+def test_failed_fallback_does_not_claim_success(caplog) -> None:
+    caplog.set_level(logging.DEBUG)
+    writer = _Writer(outcomes=["failed", "failed"])
+    sink, notifier, timers = _sink(writer)
+
+    sink.handle(_received())
+    timers.settle()
+
+    assert len(writer.copied) == 2
+    assert notifier.shown == []
+    assert "xclip could not take the clipboard" in caplog.text
+    assert CODE not in caplog.text
+
+
+def test_two_codes_within_the_confirm_delay_confirm_only_the_newer() -> None:
+    writer = _Writer(outcomes=["running", "running"])
+    sink, notifier, timers = _sink(writer)
+
+    sink.handle(_received(handle="message1"))
+    sink.handle(_received(body="Your verification code is 135790", handle="message2"))
+    timers.settle()
+
+    assert _codes(writer) == [CODE, "135790"]
+    assert len(notifier.shown) == 1
+
+
+def test_close_cancels_pending_confirmations() -> None:
+    writer = _Writer()
+    sink, notifier, timers = _sink(writer)
+    sink.handle(_received())
+
+    sink.close()
+    timers.settle()
+
+    assert notifier.shown == []
+    assert notifier.closed is True
+    assert writer.released is True
 
 
 def test_notifications_off_still_copies_silently() -> None:
     writer = _Writer()
-    sink, notified, settle = _sink(writer, policy="none")
+    sink, notifier, timers = _sink(writer, policy="none")
 
     sink.handle(_received())
-    settle()
+    timers.settle()
 
-    assert writer.copied == [CODE]
-    assert notified == []
+    assert _codes(writer) == [CODE]
+    assert notifier.shown == []
 
 
 def test_code_is_shown_only_when_content_is_allowed() -> None:
@@ -155,24 +255,84 @@ def test_notification_text_escapes_remote_sender() -> None:
 def test_code_never_reaches_the_log(caplog, monkeypatch) -> None:
     monkeypatch.setattr(sink_module.config, "SHOW_NOTIFICATION_CONTENT", True)
     caplog.set_level(logging.DEBUG)
-    sink, notified, settle = _sink()
+    sink, notifier, timers = _sink()
 
     sink.handle(_received())
-    settle()
+    timers.settle()
 
-    assert notified and CODE in notified[0][0]
+    assert notifier.shown and CODE in notifier.shown[0][0]
     assert "copied a one-time code" in caplog.text
     assert CODE not in caplog.text
     assert "15551234567" not in caplog.text
 
 
-def test_close_releases_the_clipboard_helper() -> None:
-    writer = _Writer()
-    sink, _notified, _settle = _sink(writer)
+# ---- desktop notifier ---------------------------------------------------
 
-    sink.close()
 
-    assert writer.released is True
+class _NotificationBus:
+    def __init__(self, *, owner: bool) -> None:
+        self.owner = owner
+        self.callback = None
+        self.lookups = 0
+        self.calls = []
+        self.match = SimpleNamespace(removed=False)
+        self.match.remove = lambda: setattr(self.match, "removed", True)
+
+    def add_signal_receiver(self, callback, **kwargs):
+        assert kwargs["arg0"] == "org.freedesktop.Notifications"
+        self.callback = callback
+        return self.match
+
+    def name_has_owner(self, _name) -> bool:
+        return self.owner
+
+    def get_object(self, _name, _path):
+        self.lookups += 1
+        bus = self
+
+        class _Object:
+            def get_dbus_method(self, member, dbus_interface=None):
+                def call(*args, **kwargs):
+                    bus.calls.append((member, args, kwargs))
+                return call
+
+        return _Object()
+
+
+def test_notifier_follows_the_notification_owner() -> None:
+    bus = _NotificationBus(owner=False)
+    notifier = DesktopNotifier(bus)
+
+    notifier.notify("Verification code copied", "Paste it with Ctrl+V.")
+    assert bus.lookups == 0
+
+    bus.callback("org.freedesktop.Notifications", "", ":1.7")
+    notifier.notify("Verification code copied", "Paste it with Ctrl+V.")
+    notifier.notify("Verification code copied", "Paste it with Ctrl+V.")
+    assert bus.lookups == 1
+    [(_member, args, kwargs)] = bus.calls[:1]
+    hints = args[6]
+    assert bool(hints["transient"]) is True
+    assert "category" not in hints
+    assert "reply_handler" in kwargs and "error_handler" in kwargs
+
+    # A replaced notification daemon is resolved again.
+    bus.callback("org.freedesktop.Notifications", ":1.7", ":1.9")
+    notifier.notify("Verification code copied", "Paste it with Ctrl+V.")
+    assert bus.lookups == 2
+
+    notifier.close()
+    assert bus.match.removed is True
+
+
+def test_notifier_without_a_bus_is_inert() -> None:
+    class _BrokenBus:
+        def add_signal_receiver(self, *_args, **_kwargs):
+            raise RuntimeError("no bus")
+
+    notifier = DesktopNotifier(_BrokenBus())
+    notifier.notify("Verification code copied", "Paste it with Ctrl+V.")
+    notifier.close()
 
 
 # ---- dispatcher wiring --------------------------------------------------
@@ -253,16 +413,23 @@ def test_autocopy_is_off_by_default_and_configurable(tmp_path) -> None:
 
 def test_enabled_autocopy_receives_messages_and_is_released_on_stop(monkeypatch) -> None:
     writer = _Writer()
-    sink, _notified, settle = _sink(writer)
-    dispatcher = _dispatcher(monkeypatch, enabled=True, factory=lambda **_kwargs: sink)
+    sink, _notifier, timers = _sink(writer)
+    received_kwargs = []
+
+    def factory(**kwargs):
+        received_kwargs.append(kwargs)
+        return sink
+
+    dispatcher = _dispatcher(monkeypatch, enabled=True, factory=factory)
 
     dispatcher.setup()
     dispatcher.setup()
     assert dispatcher.names.count("otp-clipboard") == 1
+    assert isinstance(received_kwargs[0]["session_bus"], _Bus)
 
     dispatcher.message(_received())
-    settle()
-    assert writer.copied == [CODE]
+    timers.settle()
+    assert _codes(writer) == [CODE]
 
     dispatcher.stop()
     assert writer.released is True
