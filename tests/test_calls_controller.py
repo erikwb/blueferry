@@ -1304,7 +1304,7 @@ def test_get_properties_failure_leaves_values_unknown_and_logs_once(caplog) -> N
     assert _phone_keys(controller)["phone_battery_level"] == 40
 
 
-def test_interface_removal_offline_and_owner_loss_clear_phone_status() -> None:
+def test_interface_removal_power_loss_and_owner_loss_clear_phone_status() -> None:
     controller, transport, _timers, _changes, _events, published = _phone_ready()
     transport.take("GetProperties").on_reply(_handsfree_props(4))
     transport.take("GetProperties").on_reply(_netreg_props())
@@ -1316,8 +1316,13 @@ def test_interface_removal_offline_and_owner_loss_clear_phone_status() -> None:
     assert _phone_keys(controller)["phone_network_name"] is None
     assert _phone_keys(controller)["phone_battery_level"] == 80
 
+    # Online dropping keeps the atoms in oFono, and so the values.
     transport.emit(MODEM_IFACE, "PropertyChanged", MODEM, "Online", dbus.Boolean(False))
     assert controller.state == CALLS_CONNECTING
+    assert _phone_keys(controller)["phone_battery_level"] == 80
+    assert not any(m.removed for m in transport.matches if m.interface == HANDSFREE)
+
+    transport.emit(MODEM_IFACE, "PropertyChanged", MODEM, "Powered", dbus.Boolean(False))
     assert all(v is None for v in _phone_keys(controller).values())
     assert all(m.removed for m in transport.matches if m.interface == HANDSFREE)
     assert published[-1]["phone_battery_level"] is None
@@ -1381,3 +1386,30 @@ def test_disabled_controller_reports_unknown_phone_status_without_io() -> None:
 
     assert all(v is None for v in _phone_keys(controller).values())
     assert transport.pending == [] and transport.matches == [] and timers.entries == {}
+
+
+def test_powered_modem_reports_battery_while_online_is_still_pending() -> None:
+    published = []
+    controller, transport, _timers, _changes, _events = _build(
+        on_phone_status=lambda status: published.append(status.to_status()),
+    )
+    controller.start()
+    # oFono lists the atoms from hfp_pre_sim on, before Online.
+    transport.take("GetModems").on_reply([_modem(True, False, ONLINE_WITH_STATUS)])
+
+    assert controller.state == CALLS_CONNECTING
+    transport.take("GetProperties").on_reply(_handsfree_props(2))
+    transport.take("GetProperties").on_reply(_netreg_props())
+    assert _phone_keys(controller)["phone_battery_level"] == 40
+    assert _phone_keys(controller)["phone_network_name"] == "Sunrise"
+    # The Online request is still outstanding; phone status does not wait.
+    assert transport.take("SetProperty").args[0] == "Online"
+
+
+def test_unpowered_modem_is_never_asked_for_phone_status() -> None:
+    controller, transport, _timers, _changes, _events = _build(reachable=lambda: False)
+    controller.start()
+    transport.take("GetModems").on_reply([_modem(False, False, ONLINE_WITH_STATUS)])
+
+    assert [p for p in transport.pending if p.method == "GetProperties"] == []
+    assert all(v is None for v in _phone_keys(controller).values())

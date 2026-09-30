@@ -39,10 +39,12 @@ while powering the modem (``hfp_pre_sim``), so its presence in ``Interfaces``
 alone does not mean call control works: the controller treats the modem as
 voice-ready only when it is Online *and* lists ``VoiceCallManager``.
 
-Phone status: once the modem is online the controller also watches the
-``Handsfree`` and ``NetworkRegistration`` interfaces, when oFono lists them,
-for the phone's battery, signal, and operator (see ``phone_status``). They are
-strictly observational; a missing interface only leaves those values unknown.
+Phone status: oFono creates ``Handsfree`` and ``NetworkRegistration`` in the
+same ``hfp_pre_sim`` step, and they survive Online dropping. The controller
+therefore watches them, when oFono lists them, from ``Powered=true`` on (see
+``phone_status``), so the battery stays visible even when the Online step is
+stuck in the oFono/WirePlumber profile race. They are strictly
+observational; a missing interface only leaves those values unknown.
 """
 from __future__ import annotations
 
@@ -694,18 +696,18 @@ class CallController:
             return
         if modem.powered:
             self._powered_path = modem.path
+        # Independent of call control: needs only a powered modem.
+        self._sync_phone_status()
         if modem.voice_ready:
             self._cancel_timer("_bringup_id")
             if self._bound_path != modem.path:
                 self._bind(modem.path)
             self._set_state(CALLS_READY)
-            self._sync_phone_status()
             return
         if self._bound_path is not None:
             # Online dropped or the phone disconnected: its calls are gone.
             log.info("iPhone HFP modem went offline")
             self._unbind(emit=True)
-        self._drop_phone_status()
         if not self._blocked:
             self._set_state(CALLS_CONNECTING)
         if self._request_in_flight or self._retry_id is not None:
@@ -973,12 +975,13 @@ class CallController:
     # ---- internals: phone battery, signal, operator -----------------------
 
     def _sync_phone_status(self) -> None:
-        """Watch the status interfaces the online modem currently lists."""
+        """Watch the status interfaces the powered modem currently lists.
+
+        Only ``Powered=false``, a vanished interface, modem removal, an oFono
+        owner change, or ``stop()`` clear the values; Online dropping does not.
+        """
         modem = self._modem
-        if (
-            modem is None or not self._running or not modem.voice_ready
-            or self._bound_path != modem.path
-        ):
+        if modem is None or not self._running or not modem.powered:
             self._drop_phone_status()
             return
         if self._phone_path not in (None, modem.path):
