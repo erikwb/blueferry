@@ -151,6 +151,34 @@ def glib_source_guard():
     )
 
 
+_TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _require_private_bus_helper(factory):
+    """Reject private connections that test code opens without the helper.
+
+    libdbus exits the process when a closed private connection with
+    exit-on-disconnect still set is dispatched, which turns one failing
+    private-bus test into a silent pytest crash. ``tests.private_bus``
+    disables that; production callers are left untouched.
+    """
+    @functools.wraps(factory)
+    def connect(*args, **kwargs):
+        if kwargs.get("private"):
+            caller = os.path.abspath(sys._getframe(1).f_code.co_filename)
+            if (
+                os.path.dirname(caller) == _TESTS_DIR
+                and os.path.basename(caller) != "private_bus.py"
+            ):
+                raise AssertionError(
+                    "open private test-bus connections with "
+                    "tests.private_bus.open_private_bus"
+                )
+        return factory(*args, **kwargs)
+
+    return connect
+
+
 @pytest.fixture(autouse=True)
 def isolate_dbus(monkeypatch, request):
     """Make accidental BlueZ, OBEX, daemon, and notification access fatal.
@@ -164,6 +192,8 @@ def isolate_dbus(monkeypatch, request):
         expected = os.environ.get(PRIVATE_BUS_ADDRESS_ENV)
         if not active or active != expected:
             pytest.skip("requires an explicitly isolated dbus-run-session")
+        monkeypatch.setattr(dbus, "SessionBus", _require_private_bus_helper(dbus.SessionBus))
+        monkeypatch.setattr(dbus, "SystemBus", _require_private_bus_helper(dbus.SystemBus))
         return
 
     monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", _unreachable_bus)

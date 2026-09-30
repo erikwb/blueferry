@@ -57,6 +57,12 @@ style dependencies fail this check even when CLI/TUI startup still succeeds.
   The autouse `glib_source_guard` in `tests/conftest.py` fails any test that
   leaves a GLib timer or idle source armed, because it would fire later on an
   orphaned object inside an unrelated test.
+- Private-bus tests open their own connections with
+  `tests.private_bus.open_private_bus`, which disables libdbus's
+  exit-on-disconnect. Otherwise a closed connection that a failing test keeps
+  alive makes the next GLib iteration exit pytest with status 1 and no report.
+  `tests/conftest.py` rejects `dbus.SessionBus(private=True)` and
+  `dbus.SystemBus(private=True)` called directly from test code.
 - Daemon tests build a real `Daemon` with the `make_daemon` fixture, which
   isolates every state path, and replace only hardware-facing collaborators.
   Never assemble one with `Daemon.__new__` and hand-set private fields.

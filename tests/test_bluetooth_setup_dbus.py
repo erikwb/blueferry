@@ -14,6 +14,7 @@ from blueferry import bluez_setup, bus
 from blueferry import daemon as daemon_mod
 from blueferry.obex.sessions import SessionManager
 from blueferry.solicitation_supervisor import SolicitationSupervisor
+from tests.private_bus import open_private_bus
 
 pytestmark = pytest.mark.private_dbus
 
@@ -29,11 +30,9 @@ def dispatch_until(done):
 
 @pytest.fixture
 def advertising_manager(monkeypatch):
-    service_bus = dbus.SessionBus(private=True)
-    service_bus.set_exit_on_disconnect(False)
+    service_bus = open_private_bus()
     service_bus.request_name('org.bluez', dbus.bus.NAME_FLAG_DO_NOT_QUEUE)
-    client_bus = dbus.SessionBus(private=True)
-    client_bus.set_exit_on_disconnect(False)
+    client_bus = open_private_bus()
 
     class Manager(dbus.service.Object):
         def __init__(self, connection=service_bus):
@@ -155,8 +154,7 @@ def test_bluez_owner_loss_recreates_advert_only_after_power_restoration(
     value.solicitation = SolicitationSupervisor(
         'hci7', schedule=lambda *_args: 1, cancel=lambda _timer: None,
     )
-    replacement_bus = dbus.SessionBus(private=True)
-    replacement_bus.set_exit_on_disconnect(False)
+    replacement_bus = open_private_bus()
     replacement = type(manager)(replacement_bus)
     try:
         value._watch_bluez_owner()
@@ -210,8 +208,7 @@ def test_bluez_owner_loss_recreates_advert_only_after_power_restoration(
 
 
 def test_real_obex_retry_releases_only_its_profile_owner():
-    service_bus = dbus.SessionBus(private=True)
-    service_bus.set_exit_on_disconnect(False)
+    service_bus = open_private_bus()
     service_bus.request_name('org.bluez.obex', dbus.bus.NAME_FLAG_DO_NOT_QUEUE)
     lost, calls = set(), []
 
