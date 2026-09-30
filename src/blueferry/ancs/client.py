@@ -188,6 +188,7 @@ class AncsClient:
         previously_authorized: bool = False,
         notification_actions: bool = False,
         on_notification_removed: Callable[[int], None] | None = None,
+        on_actions_reset: Callable[[], None] | None = None,
         schedule: Callable[[int, Callable[[], bool]], int] = GLib.timeout_add_seconds,
         cancel: Callable[[int], object] = GLib.source_remove,
     ) -> None:
@@ -205,6 +206,7 @@ class AncsClient:
         self._cancel = cancel
         self._notification_actions = bool(notification_actions)
         self._on_notification_removed = on_notification_removed
+        self._on_actions_reset = on_actions_reset
 
         # Char path slots — set as InterfacesAdded fires
         self._ns_path: str | None = None
@@ -1372,6 +1374,14 @@ class AncsClient:
         self._actionable.clear()
         self._actions_in_flight.clear()
         self._action_session += 1
+        if self._on_actions_reset is None:
+            return
+        # UIDs are session-scoped and may be reused by the next session, so
+        # desktop buttons wired to the old ones must go away.
+        try:
+            self._on_actions_reset()
+        except Exception:
+            log.exception("ANCS actions-reset callback raised")
 
     def perform_notification_action(
         self,
@@ -1411,10 +1421,9 @@ class AncsClient:
             log.info("ANCS %s action for uid=%d skipped: not connected", kind, uid)
             finish(ACTION_DISCONNECTED)
             return False
-        if (
-            uid in self._actions_in_flight
-            or len(self._actions_in_flight) >= MAX_ANCS_ACTIONS_IN_FLIGHT
-        ):
+        # A UID leaves _actionable before its write starts, so the same
+        # notification cannot be in flight twice; only the global cap applies.
+        if len(self._actions_in_flight) >= MAX_ANCS_ACTIONS_IN_FLIGHT:
             log.info("ANCS %s action for uid=%d skipped: busy", kind, uid)
             finish(ACTION_BUSY)
             return False

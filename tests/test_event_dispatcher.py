@@ -343,6 +343,9 @@ def test_ancs_action_callback_and_removal_reach_the_notification_sink(monkeypatc
         def close_ancs_notification(self, uid):
             closed.append(uid)
 
+        def close_all_ancs_notifications(self):
+            closed.append("all")
+
     def create_sink(**kwargs):
         received.update(kwargs)
         return _ActionSink()
@@ -360,9 +363,10 @@ def test_ancs_action_callback_and_removal_reach_the_notification_sink(monkeypatc
     dispatcher.setup()
 
     dispatcher.ancs_removed(42)
+    dispatcher.ancs_actions_reset()
 
     assert received["on_ancs_action"] is perform
-    assert closed == [42]
+    assert closed == [42, "all"]
 
 
 def test_ancs_actions_default_to_disabled_in_the_sink_factory(monkeypatch):
@@ -380,6 +384,7 @@ def test_ancs_actions_default_to_disabled_in_the_sink_factory(monkeypatch):
         session_bus=_Bus(owner=True),
     )
     dispatcher.setup()
-    dispatcher.ancs_removed(42)  # sinks without the hook are skipped
+    dispatcher.ancs_removed(42)  # sinks without the hooks are skipped
+    dispatcher.ancs_actions_reset()
 
     assert received["on_ancs_action"] is None

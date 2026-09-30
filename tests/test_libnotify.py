@@ -404,8 +404,11 @@ class _NotificationObject:
         self.calls.append(("notify", self.next_id, args))
         return self.next_id
 
-    def _CloseNotification(self, notification_id):
+    def _CloseNotification(self, notification_id, **kwargs):
+        # The action-popup path must close asynchronously.
+        assert "reply_handler" in kwargs and "error_handler" in kwargs
         self.calls.append(("close", int(notification_id)))
+        kwargs["reply_handler"]()
 
 
 def _action_sink(monkeypatch, *, enabled: bool, callback=None, policy="all"):
@@ -603,3 +606,80 @@ def test_close_forgets_actionable_popups(monkeypatch) -> None:
     sink.close()
 
     assert sink._ancs_actions == {}
+
+
+def test_hidden_notification_content_also_hides_action_labels(monkeypatch) -> None:
+    invoked = []
+    sink, server = _action_sink(
+        monkeypatch, enabled=True, callback=lambda *args: invoked.append(args),
+    )
+    monkeypatch.setattr(libnotify_mod.config, "SHOW_NOTIFICATION_CONTENT", False)
+
+    sink.handle_ancs(_call_event(positive_action_label="Pay CHF 50 to Bob"))
+    (_, nid, args), = _notify_calls(server)
+    server.signals["ActionInvoked"](nid, "ancs-positive")
+
+    assert list(args[5]) == []
+    assert "Bob" not in repr(args)
+    assert int(args[7]) == libnotify_mod._ANCS_EXPIRE_MS
+    assert invoked == []
+
+
+def test_markup_is_removed_from_action_labels(monkeypatch) -> None:
+    sink, server = _action_sink(monkeypatch, enabled=True, callback=lambda *a: True)
+
+    sink.handle_ancs(_call_event(
+        positive_action_label="<b>Accept</b>", negative_action_label="Tom & Jerry",
+    ))
+
+    (_, _nid, args), = _notify_calls(server)
+    assert list(args[5]) == [
+        "ancs-positive", "bAccept/b", "ancs-negative", "Tom  Jerry",
+    ]
+
+
+def test_markup_only_label_offers_no_button(monkeypatch) -> None:
+    sink, server = _action_sink(monkeypatch, enabled=True, callback=lambda *a: True)
+
+    sink.handle_ancs(_call_event(positive_action_label="<>", negative_action_label=""))
+
+    (_, _nid, args), = _notify_calls(server)
+    assert list(args[5]) == []
+
+
+def test_action_popups_use_the_longer_action_timeout(monkeypatch) -> None:
+    monkeypatch.setattr(libnotify_mod, "_ANCS_ACTION_EXPIRE_MS", 30_000)
+    monkeypatch.setattr(libnotify_mod, "_ANCS_EXPIRE_MS", 8_000)
+    sink, server = _action_sink(monkeypatch, enabled=True, callback=lambda *a: True)
+
+    sink.handle_ancs(_call_event())
+    sink.handle_ancs(_call_event(
+        notification_id=43, positive_action_label="", negative_action_label="",
+    ))
+
+    with_actions, without_actions = _notify_calls(server)
+    assert int(with_actions[2][7]) == 30_000
+    assert int(without_actions[2][7]) == 8_000
+
+
+def test_session_reset_retires_every_action_popup(monkeypatch) -> None:
+    invoked = []
+    sink, server = _action_sink(
+        monkeypatch, enabled=True,
+        callback=lambda uid, positive, _done: invoked.append((uid, positive)),
+    )
+    sink.handle_ancs(_call_event())
+    sink.handle_ancs(_call_event(notification_id=43))
+    old = [call[1] for call in _notify_calls(server)]
+
+    sink.close_all_ancs_notifications()
+    # The next session reuses UID 42 for an unrelated notification.
+    sink.handle_ancs(_call_event(positive_action_label="Delete"))
+    for nid in old:
+        server.signals["ActionInvoked"](nid, "ancs-positive")
+
+    assert [("close", nid) for nid in old] == [
+        call for call in server.calls if call[0] == "close"
+    ]
+    assert invoked == []
+    assert list(sink._ancs_actions.values()) == [42]

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Callable
 from html import escape
 from typing import Protocol
@@ -38,7 +39,7 @@ from blueferry.ancs.events import AncsEvent
 from blueferry.bus import get_session_bus
 from blueferry.client_activation import activation_argv, select_client
 from blueferry.events import SmsEvent
-from blueferry.limits import MAX_ANCS_ACTIONABLE, MAX_DESKTOP_MESSAGE_TRACKERS
+from blueferry.limits import MAX_ANCS_ACTION_POPUPS, MAX_DESKTOP_MESSAGE_TRACKERS
 from blueferry.notification_policy import (
     ALL_NOTIFICATIONS,
     DEFAULT_NOTIFICATION_POLICY,
@@ -59,6 +60,9 @@ _MESSAGE_EXPIRE_MS = config.NOTIFICATION_TIMEOUT_MS
 # they have no desktop-to-phone read-state path, so keeping every popup around
 # indefinitely only creates notification-center clutter.
 _ANCS_EXPIRE_MS = config.NOTIFICATION_TIMEOUT_MS
+# Popups with iPhone action buttons (a ringing call, an invitation) need to
+# stay long enough to be answered.
+_ANCS_ACTION_EXPIRE_MS = config.ANCS_ACTION_TIMEOUT_MS
 
 # NotificationClosed reason codes (org.freedesktop.Notifications spec):
 #   1 = expired (timeout)
@@ -76,6 +80,10 @@ _REASON_DISMISSED = 2
 # iPhone action.
 _ANCS_POSITIVE_ACTION = "ancs-positive"
 _ANCS_NEGATIVE_ACTION = "ancs-negative"
+# Action labels are plain strings, but some notification servers interpret
+# markup in them. Drop markup-significant characters instead of escaping, so a
+# server that does not parse markup shows no literal entities.
+_LABEL_MARKUP_RE = re.compile(r"[<>&]")
 _ANCS_ACTION_FEEDBACK = {
     "unavailable": "The notification is no longer available on the iPhone.",
     "disconnected": "The iPhone is not connected.",
@@ -289,7 +297,11 @@ class LibnotifySink:
             body = body[:_BODY_LIMIT - 1] + "…"
         title = escape(terminal_text(title).replace("\n", " "))
         body = escape(terminal_text(body))
-        actions = self._ancs_action_buttons(event)
+        actions = (
+            self._ancs_action_buttons(event)
+            if getattr(event, "has_actions", False)
+            else []
+        )
         try:
             # No mark-read sync exists for ANCS, so use a normal finite popup
             # lifetime. The event remains available in private SQLite history.
@@ -307,7 +319,7 @@ class LibnotifySink:
                     # explicitly bypass desktop notification persistence.
                     "transient": dbus.Boolean(True),
                 }, signature="sv"),
-                dbus.Int32(_ANCS_EXPIRE_MS),
+                dbus.Int32(_ANCS_ACTION_EXPIRE_MS if actions else _ANCS_EXPIRE_MS),
             )
         except dbus.exceptions.DBusException as e:
             log.error("libnotify Notify (ANCS) failed: %s", e.get_dbus_name())
@@ -316,8 +328,10 @@ class LibnotifySink:
             self._track_ancs_actions(int(nid), int(event.notification_id))
 
     def _ancs_actions_enabled(self) -> bool:
+        # Labels are app-defined ("Pay CHF 50 to Bob"), so they count as
+        # notification content and follow BLUEFERRY_SHOW_NOTIFICATION_CONTENT.
         return (
-            config.ANCS_ACTIONS
+            config.ancs_actions_active()
             and getattr(self, "_on_ancs_action", None) is not None
         )
 
@@ -332,7 +346,8 @@ class LibnotifySink:
         ):
             # Action labels are plain text in the spec, but some servers
             # render them loosely; apply the same display sanitizing.
-            text = terminal_text(str(label or "")).replace("\n", " ").strip()
+            text = terminal_text(str(label or "")).replace("\n", " ")
+            text = _LABEL_MARKUP_RE.sub("", text).strip()
             if text:
                 actions += [key, text]
         return actions
@@ -343,7 +358,7 @@ class LibnotifySink:
             tracked = self._ancs_actions = {}
         tracked.pop(nid, None)
         tracked[nid] = uid
-        while len(tracked) > MAX_ANCS_ACTIONABLE:
+        while len(tracked) > MAX_ANCS_ACTION_POPUPS:
             tracked.pop(next(iter(tracked)))
 
     def close_ancs_notification(self, uid: int) -> None:
@@ -351,17 +366,40 @@ class LibnotifySink:
         tracked = getattr(self, "_ancs_actions", {})
         for nid in [nid for nid, value in tracked.items() if value == uid]:
             tracked.pop(nid, None)
-            try:
-                self._notif.CloseNotification(dbus.UInt32(nid))
-            except dbus.exceptions.DBusException as error:
-                log.debug("CloseNotification(%d): %s", nid, error.get_dbus_name())
+            self._close_async(nid)
+
+    def close_all_ancs_notifications(self) -> None:
+        """Retire every action popup when the ANCS session (and UIDs) reset.
+
+        A new session may reuse a UID, so an old button must never stay
+        wired to it.
+        """
+        tracked = getattr(self, "_ancs_actions", {})
+        stale = list(tracked)
+        tracked.clear()
+        for nid in stale:
+            self._close_async(nid)
+
+    def _close_async(self, nid: int) -> None:
+        def failed(error) -> None:
+            name = getattr(error, "get_dbus_name", lambda: None)()
+            log.debug("CloseNotification(%d): %s", nid, name or type(error).__name__)
+
+        try:
+            self._notif.CloseNotification(
+                dbus.UInt32(nid),
+                reply_handler=lambda *_args: None,
+                error_handler=failed,
+            )
+        except dbus.exceptions.DBusException as error:
+            failed(error)
 
     def _invoke_ancs_action(self, nid: int, action: str) -> None:
         # Pop first: a notification's action is single-use even if the server
         # delivers ActionInvoked twice.
         uid = getattr(self, "_ancs_actions", {}).pop(nid, None)
         callback = getattr(self, "_on_ancs_action", None)
-        if uid is None or callback is None or not config.ANCS_ACTIONS:
+        if uid is None or callback is None or not config.ancs_actions_active():
             return
         positive = action == _ANCS_POSITIVE_ACTION
         try:

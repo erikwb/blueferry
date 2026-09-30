@@ -231,6 +231,17 @@ class EventDispatcher:
             except Exception:
                 log.exception("sink %s failed to close ANCS popup", sink.name)
 
+    def ancs_actions_reset(self) -> None:
+        """Retire every action popup after the ANCS session reset its UIDs."""
+        for sink in self.sinks:
+            close_all = getattr(sink, "close_all_ancs_notifications", None)
+            if close_all is None:
+                continue
+            try:
+                close_all()
+            except Exception:
+                log.exception("sink %s failed to retire ANCS popups", sink.name)
+
     def _open_message(self, handle: str, token: str) -> None:
         request_message_activation(handle, token)
 

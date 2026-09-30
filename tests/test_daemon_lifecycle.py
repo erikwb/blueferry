@@ -576,6 +576,7 @@ def test_enabled_ancs_actions_forward_clicks_to_the_live_client(
     make_daemon, monkeypatch,
 ):
     monkeypatch.setattr(daemon_mod.config, "ANCS_ACTIONS", True)
+    monkeypatch.setattr(daemon_mod.config, "SHOW_NOTIFICATION_CONTENT", True)
     instance = make_daemon()
     results = []
     perform = instance.events.perform_ancs_action
@@ -602,3 +603,39 @@ def test_ancs_removal_reaches_the_current_dispatcher(make_daemon):
     instance._ancs_notification_removed(43)
 
     assert removed == [42]
+
+
+def test_hidden_content_keeps_ancs_actions_off(make_daemon, monkeypatch):
+    monkeypatch.setattr(daemon_mod.config, "ANCS_ACTIONS", True)
+    monkeypatch.setattr(daemon_mod.config, "SHOW_NOTIFICATION_CONTENT", False)
+    instance = make_daemon()
+    instance.contacts = SimpleNamespace(count=lambda: 0)
+    instance.setup_verification = SimpleNamespace(verified=())
+    monkeypatch.setattr(daemon_mod, "history_count", lambda **_kwargs: 0)
+
+    assert instance.events.perform_ancs_action is None
+    assert instance._status()["ancs_actions"] is False
+
+
+def test_ancs_session_reset_reaches_the_current_dispatcher(make_daemon):
+    instance = make_daemon()
+    resets = []
+    instance.events = SimpleNamespace(ancs_actions_reset=lambda: resets.append(True))
+
+    instance._ancs_actions_reset()
+    instance.events = SimpleNamespace()
+    instance._ancs_actions_reset()
+
+    assert resets == [True]
+
+
+def test_ancs_action_timeout_is_a_bounded_local_setting(monkeypatch):
+    from blueferry import config
+
+    assert "BLUEFERRY_ANCS_ACTION_TIMEOUT_MS" in config.LOCAL_ENV_KEYS
+    for raw, expected in (("500", 1_000), ("45000", 45_000), ("999999", 120_000),
+                          ("junk", 30_000)):
+        monkeypatch.setenv("BLUEFERRY_ANCS_ACTION_TIMEOUT_MS", raw)
+        assert config._env_int(
+            "BLUEFERRY_ANCS_ACTION_TIMEOUT_MS", 30_000, 1_000, 120_000
+        ) == expected

@@ -23,6 +23,8 @@ MAX_ANCS_FINGERPRINTS = 10_000
 # allow a few concurrent PerformNotificationAction writes.
 MAX_ANCS_ACTIONABLE = 64
 MAX_ANCS_ACTIONS_IN_FLIGHT = 4
+# Desktop popups that still carry live iPhone action buttons.
+MAX_ANCS_ACTION_POPUPS = 64
 
 # D-Bus snapshots are presentation data, not an unlimited archive export. Keep
 # pathological messages or very busy threads from producing enormous replies;

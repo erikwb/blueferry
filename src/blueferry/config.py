@@ -16,6 +16,7 @@ LOCAL_ENV_KEYS = frozenset({
     "BLUEFERRY_ANCS_APP_ALLOWLIST",
     "BLUEFERRY_ANCS_APP_BLOCKLIST",
     "BLUEFERRY_ANCS_ACTIONS",
+    "BLUEFERRY_ANCS_ACTION_TIMEOUT_MS",
     "BLUEFERRY_SHOW_NOTIFICATION_CONTENT",
     "BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE",
     "BLUEFERRY_NOTIFICATION_TIMEOUT_MS",
@@ -195,6 +196,8 @@ ANCS_ACTIONS: bool = _env_bool("BLUEFERRY_ANCS_ACTIONS", False)
 Off by default because it changes the desktop notification UI and lets a
 click act on the phone. It applies only to non-Messages popups shown by the
 "All iPhone Notifications" policy; nothing is invoked without a click.
+Labels are chosen by the sending app and can contain content, so actions stay
+off while BLUEFERRY_SHOW_NOTIFICATION_CONTENT is false.
 """
 
 
@@ -216,6 +219,15 @@ KEEP_PHONE_AUDIO_ON_PHONE: bool = _env_bool(
 NOTIFICATION_TIMEOUT_MS: int = _env_int(
     "BLUEFERRY_NOTIFICATION_TIMEOUT_MS", 8_000, 1_000, 60_000
 )
+def ancs_actions_active() -> bool:
+    """Whether ANCS action labels may be requested and shown at all."""
+    return ANCS_ACTIONS and SHOW_NOTIFICATION_CONTENT
+
+
+ANCS_ACTION_TIMEOUT_MS: int = _env_int(
+    "BLUEFERRY_ANCS_ACTION_TIMEOUT_MS", 30_000, 1_000, 120_000
+)
+"""Lifetime of ANCS popups that carry action buttons (e.g. a ringing call)."""
 MARK_READ_ON_DISMISS: bool = _env_bool("BLUEFERRY_MARK_READ_ON_DISMISS", True)
 """Whether dismissing a message's desktop popup marks it read on the iPhone.
 

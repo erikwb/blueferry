@@ -132,7 +132,7 @@ class Daemon:
             storage=self.storage,
             on_incoming_message=lambda: self._verify_setup_task(MESSAGE_NOTIFICATIONS),
             perform_ancs_action=(
-                self._perform_ancs_action if config.ANCS_ACTIONS else None
+                self._perform_ancs_action if config.ancs_actions_active() else None
             ),
         )
         self.listener: MapEventListener | None = None
@@ -494,8 +494,11 @@ class Daemon:
                 previously_authorized=(
                     NOTIFICATION_ACCESS in self.setup_verification.verified
                 ),
-                notification_actions=config.ANCS_ACTIONS,
+                # Labels are app-defined content: never request them while
+                # notification content is hidden.
+                notification_actions=config.ancs_actions_active(),
                 on_notification_removed=self._ancs_notification_removed,
+                on_actions_reset=self._ancs_actions_reset,
             )
             # Publish before start(): its initial D-Bus sweep can dispatch
             # an owner change that must invalidate the in-progress scan.
@@ -778,6 +781,12 @@ class Daemon:
         if removed is not None:
             removed(notification_id)
 
+    def _ancs_actions_reset(self) -> None:
+        """Close action popups whose UIDs died with the ANCS session."""
+        reset = getattr(self.events, "ancs_actions_reset", None)
+        if reset is not None:
+            reset()
+
     def _contacts_refreshed(self) -> None:
         """GLib-side follow-up after a pull replaced the contact cache."""
         # Completing PullAll proves that the iPhone granted Sync Contacts,
@@ -801,7 +810,7 @@ class Daemon:
             "ancs": bool(ancs and ancs.connected),
             "ancs_subscribed": bool(ancs and ancs.subscribed),
             "ancs_authorized": bool(ancs and ancs.authorized),
-            "ancs_actions": config.ANCS_ACTIONS,
+            "ancs_actions": config.ancs_actions_active(),
             **self.bearers.snapshot(),
             **self.proximity.snapshot(),
             "contacts": self.contacts.count(),
