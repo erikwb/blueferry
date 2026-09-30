@@ -407,3 +407,278 @@ def test_unlocking_storage_triggers_the_first_sync_only(harness, wallet) -> None
 
     harness.sync.storage_changed()
     assert harness.jobs == [], "later storage changes wait for the timer"
+
+
+# ---- MAP gating (#165), requests, and worker refusals ------------------------
+
+class _Timers:
+    """Recording GLib stand-in: callbacks run only when a test fires them."""
+
+    def __init__(self) -> None:
+        self.pending: dict[int, tuple[int, object]] = {}
+        self.cancelled: list[int] = []
+        self._next = 0
+
+    def schedule(self, delay, callback) -> int:
+        self._next += 1
+        self.pending[self._next] = (delay, callback)
+        return self._next
+
+    def cancel(self, source) -> None:
+        self.cancelled.append(source)
+        self.pending.pop(source, None)
+
+    def delays(self) -> list[int]:
+        return sorted(delay for delay, _callback in self.pending.values())
+
+    def fire(self, delay: int) -> None:
+        for source, (scheduled, callback) in list(self.pending.items()):
+            if scheduled == delay:
+                keep = callback()
+                if not keep:
+                    self.pending.pop(source, None)
+                return
+        raise AssertionError(f"no timer with delay {delay}")
+
+
+@pytest.fixture
+def gated(storage):
+    timers = _Timers()
+    phone = SimpleNamespace(calls=[_call(OUTGOING, 1)], pulls=0)
+    jobs, errors = [], []
+    sessions = SimpleNamespace(map=None, pbap=object(), report_error=errors.append)
+
+    def pull(_sessions):
+        phone.pulls += 1
+        return list(phone.calls)
+
+    sync = CallHistorySync(
+        sessions=sessions, storage=storage,
+        submit=lambda operation, **handlers: jobs.append((operation, handlers)),
+        on_changed=lambda: None, on_missed=lambda _records: None,
+        pull=pull, schedule=timers.schedule, cancel=timers.cancel,
+        interval=300, clock=lambda: NOW,
+    )
+
+    def run():
+        while jobs:
+            operation, handlers = jobs.pop(0)
+            handlers["on_success"](operation())
+
+    yield SimpleNamespace(
+        sync=sync, sessions=sessions, timers=timers, jobs=jobs, run=run,
+        phone=phone, errors=errors,
+    )
+    sync.stop()
+
+
+GRACE = call_history_sync.CALL_HISTORY_MAP_GRACE_SECONDS
+INITIAL = call_history_sync.CALL_HISTORY_INITIAL_DELAY_SEC
+REQUEST = call_history_sync.CALL_HISTORY_REQUEST_DELAY_SEC
+
+
+def test_no_automatic_pull_before_map_or_its_grace_period(gated) -> None:
+    gated.sync.profiles_available()
+    gated.timers.fire(INITIAL)
+    gated.timers.fire(300)
+
+    assert gated.jobs == []
+    assert gated.sync.deferred
+    assert GRACE in gated.timers.delays()
+
+
+def test_pbap_only_setup_pulls_once_after_the_grace_period(gated) -> None:
+    gated.sync.profiles_available()
+    gated.timers.fire(INITIAL)
+
+    gated.timers.fire(GRACE)
+    assert len(gated.jobs) == 1
+    gated.run()
+    # MAP never connected: the periodic tick stays off.
+    gated.timers.fire(300)
+    assert gated.jobs == []
+    assert gated.phone.pulls == 1
+
+
+def test_map_arrival_catches_up_a_deferred_pull(gated) -> None:
+    gated.sync.profiles_available()
+    gated.timers.fire(INITIAL)
+    assert gated.jobs == []
+
+    gated.sessions.map = object()
+    gated.sync.profiles_available()
+
+    assert len(gated.jobs) == 1
+    assert not gated.sync.deferred
+
+
+def test_every_automatic_pull_yields_while_map_reconnects(gated) -> None:
+    gated.sessions.map = object()
+    gated.sync.profiles_available()
+    gated.timers.fire(INITIAL)
+    gated.run()
+    assert gated.phone.pulls == 1
+
+    gated.sessions.map = None  # MAP dropped; its retries need the worker
+    gated.timers.fire(300)
+    gated.sync.request_sync("test")
+    gated.timers.fire(REQUEST)
+    gated.sync.profiles_available()  # PBAP-only partial readiness
+    gated.timers.fire(INITIAL)
+    assert gated.jobs == []
+
+    gated.sessions.map = object()
+    gated.sync.profiles_available()
+    assert len(gated.jobs) == 1
+
+
+def test_explicit_client_sync_is_never_gated(gated) -> None:
+    results = []
+
+    gated.sync.sync(results.append, results.append)
+    gated.run()
+
+    assert results == [1]
+
+
+def test_requests_coalesce_and_one_follow_up_runs_after_a_busy_pull(gated) -> None:
+    gated.sessions.map = object()
+    gated.sync.request_sync("call ended")
+    gated.sync.request_sync("call ended")
+    assert gated.timers.delays() == [REQUEST]
+
+    gated.timers.fire(REQUEST)
+    assert len(gated.jobs) == 1
+    # Two more requests while that pull runs: exactly one follow-up.
+    gated.sync.request_sync("call ended")
+    gated.timers.fire(REQUEST)
+    gated.sync.request_sync("call ended")
+    gated.timers.fire(REQUEST)
+    assert len(gated.jobs) == 1
+    gated.run()
+
+    assert gated.phone.pulls == 2
+    assert gated.jobs == []
+
+
+def test_stop_cancels_grace_and_request_timers(gated) -> None:
+    gated.sync.profiles_available()
+    gated.timers.fire(INITIAL)
+    gated.sync.request_sync("test")
+
+    gated.sync.stop()
+
+    assert gated.timers.pending == {}
+    gated.sync.request_sync("late")
+    assert gated.timers.pending == {}
+
+
+def test_worker_refusal_is_not_blamed_on_pbap(gated, caplog) -> None:
+    def refuse(*_args, **_kwargs):
+        raise RuntimeError("Bluetooth recovery is in progress")
+
+    gated.sync._submit = refuse
+    failures = []
+
+    with caplog.at_level("INFO"):
+        gated.sync.sync(failures.append, failures.append)
+
+    assert [str(error) for error in failures] == ["Bluetooth recovery is in progress"]
+    assert gated.errors == []
+    assert not gated.sync.pending
+    assert not [record for record in caplog.records if record.levelname == "ERROR"]
+
+
+def test_pull_uses_three_bounded_listings_in_order(monkeypatch) -> None:
+    from blueferry import contacts as contacts_module
+    from blueferry.limits import MAX_CALL_HISTORY_BYTES, MAX_CALL_HISTORY_PER_FOLDER
+
+    calls = []
+
+    def listing(sessions, phonebook, **kwargs):
+        calls.append((phonebook, kwargs))
+        return (
+            "BEGIN:VCARD\nTEL:+15551230001\n"
+            "X-IRMC-CALL-DATETIME:20260928T120000Z\nEND:VCARD\n"
+        )
+
+    monkeypatch.setattr(contacts_module, "pull_vcard_listing", listing)
+
+    records = call_history_sync.pull_call_history(SimpleNamespace())
+
+    assert [phonebook for phonebook, _kwargs in calls] == ["ich", "och", "mch"]
+    for _phonebook, kwargs in calls:
+        assert kwargs == {
+            "max_entries": MAX_CALL_HISTORY_PER_FOLDER,
+            "max_bytes": MAX_CALL_HISTORY_BYTES,
+            "allow_empty": True,
+            "overall_timeout_s": call_history_sync.CALL_HISTORY_TRANSFER_MAX_SECONDS,
+        }
+    # Folder direction fills the missing type; ich and mch collapse to missed.
+    assert sorted(record.direction for record in records) == [MISSED, OUTGOING]
+
+
+def test_a_failing_folder_aborts_the_whole_pull(monkeypatch) -> None:
+    from blueferry import contacts as contacts_module
+
+    calls = []
+
+    def listing(sessions, phonebook, **kwargs):
+        calls.append(phonebook)
+        if phonebook == "och":
+            raise RuntimeError("transfer failed")
+        return ""
+
+    monkeypatch.setattr(contacts_module, "pull_vcard_listing", listing)
+
+    with pytest.raises(RuntimeError, match="transfer failed"):
+        call_history_sync.pull_call_history(SimpleNamespace())
+    assert calls == ["ich", "och"]
+
+
+# ---- repository write minimization -----------------------------------------
+
+def _row_state():
+    with closing(sqlite3.connect(config.CALLS_DB)) as connection:
+        rows = connection.execute("SELECT id, payload FROM calls ORDER BY id").fetchall()
+        state = connection.execute("SELECT payload FROM state").fetchall()
+    return rows, state
+
+
+def test_unchanged_poll_rewrites_nothing(storage) -> None:
+    repository = CallHistoryRepository(storage)
+    calls = [_call(MISSED, 5), _call(INCOMING, 10)]
+    repository.replace(calls, now=NOW)
+    before = _row_state()
+
+    result = repository.replace(calls, now=NOW)
+
+    # Fresh AES-GCM nonces would change every payload on any rewrite.
+    assert _row_state() == before
+    assert not result.changed
+
+
+def test_new_missed_call_rewrites_rows_and_state(storage) -> None:
+    repository = CallHistoryRepository(storage)
+    repository.replace([_call(INCOMING, 10)], now=NOW)
+    rows, state = _row_state()
+
+    repository.replace([_call(MISSED, 1), _call(INCOMING, 10)], now=NOW)
+
+    new_rows, new_state = _row_state()
+    assert len(new_rows) == 2 and new_rows != rows
+    assert new_state != state
+
+
+def test_unusable_announcement_state_seeds_again_silently(storage) -> None:
+    repository = CallHistoryRepository(storage)
+    repository.replace([], now=NOW)
+    with closing(sqlite3.connect(config.CALLS_DB)) as connection, connection:
+        connection.execute(
+            "UPDATE state SET payload = ? WHERE name = 'seen'",
+            (repository._seal(["not", "a", "mapping"], "call-state-v1"),),
+        )
+
+    result = repository.replace([_call(MISSED, 1)], now=NOW)
+
+    assert result.seeded and result.new_missed == []

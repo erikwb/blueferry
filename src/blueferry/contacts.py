@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 import tempfile
 import time
 from collections.abc import Iterable, Iterator
@@ -115,6 +116,7 @@ def open_vcard_listing(
     max_entries: int,
     max_bytes: int | None = None,
     allow_empty: bool = False,
+    overall_timeout_s: float = _PHONEBOOK_TRANSFER_MAX_SECONDS,
 ) -> Iterator[TextIO]:
     """Select one PBAP phonebook in ``int/telecom`` and open its vCards.
 
@@ -123,6 +125,8 @@ def open_vcard_listing(
     caller can stream it instead of holding the whole text in memory.
     """
     byte_limit = MAX_PHONEBOOK_BYTES if max_bytes is None else int(max_bytes)
+    # PBAP's MaxCount is a UInt16; never let a caller overflow it.
+    max_entries = max(1, min(int(max_entries), MAX_PHONEBOOK_CONTACTS))
     temporary_root = _phonebook_temp_root()
     pbap = obex(sessions.pbap_path, "org.bluez.obex.PhonebookAccess1")
     log.info("PBAP Select(int, %s)", phonebook)
@@ -161,7 +165,7 @@ def open_vcard_listing(
             transfer_path,
             initial_status=initial_status,
             timeout_s=60,
-            overall_timeout_s=_PHONEBOOK_TRANSFER_MAX_SECONDS,
+            overall_timeout_s=overall_timeout_s,
             property_timeout_s=10.0,
             allow_disappearance=True,
             get_progress=listing_size,
@@ -196,6 +200,7 @@ def pull_vcard_listing(
     max_entries: int,
     max_bytes: int | None = None,
     allow_empty: bool = False,
+    overall_timeout_s: float = _PHONEBOOK_TRANSFER_MAX_SECONDS,
 ) -> str:
     """Return one PBAP phonebook's vCards as text. Worker thread only.
 
@@ -208,6 +213,7 @@ def pull_vcard_listing(
         max_entries=max_entries,
         max_bytes=max_bytes,
         allow_empty=allow_empty,
+        overall_timeout_s=overall_timeout_s,
     ) as stream:
         return stream.read()
 
@@ -226,13 +232,14 @@ def pull_phonebook(
     if storage is not None and not storage.status.can_write:
         raise RuntimeError(storage.status.detail)
     with open_vcard_listing(sessions, "pb", max_entries=max_contacts) as stream:
+        size = os.fstat(stream.fileno()).st_size
         # Stream lines rather than read() plus splitlines(): the phonebook
         # may be up to MAX_PHONEBOOK_BYTES, and two whole copies of it are
         # not needed to extract bounded cards.
         parsed = _parse_vcard_records(
             iter_bounded_lines(stream), maximum=max_contacts,
         )
-    log.info("parsed %d contacts", len(parsed))
+    log.info("parsed %d contacts from %d bytes", len(parsed), size)
 
     return ContactRepository(storage).replace(parsed)
 

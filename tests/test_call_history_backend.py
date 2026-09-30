@@ -24,7 +24,14 @@ from blueferry.sinks.libnotify import LibnotifySink
 from blueferry.storage_preparation import prepare_storage
 from blueferry.storage_security import StorageSecurity
 
-NOW = datetime.now(timezone.utc).replace(microsecond=0)
+# A fixed instant keeps these tests deterministic. Retention is widened so
+# repository calls that use the real clock never age these records out.
+NOW = datetime(2026, 9, 28, 12, 0, tzinfo=timezone.utc)
+
+
+@pytest.fixture(autouse=True)
+def long_retention(monkeypatch):
+    monkeypatch.setattr(config, "HISTORY_RETENTION_DAYS", 3650)
 
 
 def _call(direction, minutes_ago, number="15551230001", name=None) -> CallRecord:
@@ -355,3 +362,35 @@ def test_call_history_signal_carries_no_payload() -> None:
     assert signal._dbus_signature == ""
     method = MessagesService.ListCallHistory
     assert (method._dbus_in_signature, method._dbus_out_signature) == ("u", "s")
+
+
+def test_daemon_request_hook_is_a_no_op_when_disabled(make_daemon, monkeypatch) -> None:
+    monkeypatch.setattr(config, "CALL_HISTORY_ENABLED", False)
+    daemon = make_daemon()
+
+    daemon.request_call_history_sync("call ended")  # must not raise
+
+    monkeypatch.setattr(config, "CALL_HISTORY_ENABLED", True)
+    enabled = make_daemon()
+    requested = []
+    monkeypatch.setattr(enabled.call_history, "request_sync", requested.append)
+    enabled.request_call_history_sync("call ended")
+    assert requested == ["call ended"]
+
+
+def test_listing_resolves_double_zero_numbers_through_the_plus_form(storage) -> None:
+    record = CallRecord(
+        direction=MISSED, occurred_at=NOW, raw_time="20260928T120000Z",
+        address="0041 79 555 01 23", phone="0041795550123", name=None,
+    )
+    operations = BackendOperations(_Sessions(), BackendDependencies(
+        storage=storage,
+        contacts=SimpleNamespace(
+            resolve=lambda raw: "Anna" if raw == "+41795550123" else None,
+        ),
+        call_history=_History([record]),
+    ))
+
+    [entry] = operations.list_call_history(5)
+
+    assert entry["contact_name"] == "Anna"

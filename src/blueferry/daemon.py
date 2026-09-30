@@ -28,7 +28,12 @@ from blueferry.bluetooth_recovery import (
 )
 from blueferry.build_info import build_id, installed_build_sha, running_build_sha
 from blueferry.bus import get_system_bus, main_loop
-from blueferry.call_history import CallRecord, MissedCallNotice, display_caller
+from blueferry.call_history import (
+    CallRecord,
+    MissedCallNotice,
+    display_caller,
+    resolve_contact_name,
+)
 from blueferry.call_history_sync import CallHistorySync
 from blueferry.confirmed_groups import ConfirmedGroupsStore
 from blueferry.connectivity import Connectivity
@@ -786,6 +791,16 @@ class Daemon:
             self._dbus_service.emit_history_changed()
         self._emit_status()
 
+    def request_call_history_sync(self, reason: str) -> None:
+        """Integration hook, e.g. for an HFP "call ended" event.
+
+        A no-op unless call history is enabled. Requests coalesce and respect
+        the MAP gating of automatic pulls; ``reason`` must not contain
+        personal data because it is logged.
+        """
+        if self.call_history is not None:
+            self.call_history.request_sync(reason)
+
     def _call_history_changed(self) -> None:
         if self._dbus_service is not None:
             self._dbus_service.emit_call_history_changed()
@@ -796,7 +811,7 @@ class Daemon:
             return
         notices = []
         for record in records:
-            resolved = self.contacts.resolve(record.phone or record.address)
+            resolved = resolve_contact_name(record, self.contacts.resolve)
             notices.append(MissedCallNotice(
                 caller=display_caller(record, resolved),
                 known_contact=resolved is not None,

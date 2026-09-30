@@ -5,6 +5,14 @@ replacement write, runs on the shared OBEX worker. Everything else, including
 the in-memory snapshot served to D-Bus clients and the missed-call callback,
 runs on the GLib loop. PBAP has no change notification, so the phone is polled
 at ``BLUEFERRY_CALL_HISTORY_INTERVAL_SEC`` and on explicit client request.
+
+Automatic pulls yield to MAP, which shares the single worker (see #165 and
+``ContactSync``): while a MAP session that was connected is being
+re-established, every automatic pull is deferred until profiles report
+availability again. When MAP has never connected in this daemon, automatic
+pulls wait for the same three-minute grace period as contact sync and the
+periodic tick stays off; only prompt, grace-expiry, and requested pulls run.
+Explicit client syncs are never gated.
 """
 from __future__ import annotations
 
@@ -28,6 +36,7 @@ from blueferry.call_history_repository import (
     ReplaceResult,
     clear_call_history,
 )
+from blueferry.contact_sync import CONTACTS_MAP_GRACE_SECONDS
 from blueferry.limits import (
     MAX_CALL_HISTORY_BYTES,
     MAX_CALL_HISTORY_PER_FOLDER,
@@ -43,6 +52,14 @@ log = logging.getLogger(__name__)
 
 # Let MAP's first message fetch and the contact pull reach the worker first.
 CALL_HISTORY_INITIAL_DELAY_SEC = 20
+# Same head start as contact sync gives MAP's initial permission retries.
+CALL_HISTORY_MAP_GRACE_SECONDS = CONTACTS_MAP_GRACE_SECONDS
+# Coalescing window for request_sync(): iOS writes its call log shortly after
+# a call ends, and bursts of requests should produce a single pull.
+CALL_HISTORY_REQUEST_DELAY_SEC = 5
+# Upper bound for one call-history listing transfer. These listings are small;
+# a stuck transfer must not hold the shared worker for the phonebook's 30 min.
+CALL_HISTORY_TRANSFER_MAX_SECONDS = 120
 # Never announce a call that is older than this, even if it was never seen:
 # after a long time offline the list is useful, a burst of stale popups is not.
 MISSED_CALL_NOTIFY_MAX_AGE = timedelta(hours=12)
@@ -75,6 +92,7 @@ def pull_call_history(sessions: SessionManager) -> list[CallRecord]:
             max_bytes=MAX_CALL_HISTORY_BYTES,
             # An empty missed-calls list is an ordinary answer.
             allow_empty=True,
+            overall_timeout_s=CALL_HISTORY_TRANSFER_MAX_SECONDS,
         )
         parsed = parse_call_history(blob, folder_direction=direction)
         log.info("PBAP %s: %d calls", phonebook, len(parsed))
@@ -118,10 +136,24 @@ class CallHistorySync:
         self._initial_id: int | None = None
         self._stopped = False
         self._synced = False
+        # MAP gating (mirrors ContactSync; see module docstring).
+        self._deferred = False
+        self._map_seen = False
+        self._map_wait_id: int | None = None
+        self._map_wait_finished = False
+        # request_sync(): one coalescing timer, and one follow-up pull when a
+        # request arrives while a pull (possibly started too early) runs.
+        self._request_id: int | None = None
+        self._resync = False
 
     @property
     def pending(self) -> bool:
         return self._pending
+
+    @property
+    def deferred(self) -> bool:
+        """An automatic pull is owed once MAP is back or its grace expires."""
+        return self._deferred
 
     def records(self) -> list[CallRecord]:
         """Newest-first retained calls; expired entries are filtered out."""
@@ -141,40 +173,89 @@ class CallHistorySync:
             self._records = []
             self._on_changed()
 
-    def clear(self) -> None:
-        """Erase retained call history on disk and in memory."""
-        clear_call_history()
-        self.discard_cache()
-
     def storage_changed(self) -> None:
         if not self._storage.status.can_read:
             self.discard_cache()
-        elif not self._synced:
+        elif not self._synced or self._deferred:
             # A wallet unlocked after PBAP connected: do not wait a full
-            # polling interval for the first list.
-            self.refresh()
+            # polling interval for the first list. MAP gating still applies.
+            self.refresh("storage")
 
     def profiles_available(self) -> None:
-        """Start the polling timer and one prompt sync once PBAP is live."""
+        """Start the polling timer and one prompt sync once PBAP is live.
+
+        Also called when MAP returns, which is where a deferred pull is
+        caught up.
+        """
         if self._stopped or self._sessions.pbap is None:
             return
+        if self._sessions.map is not None:
+            self._map_seen = True
         if self._periodic_id is None:
             self._periodic_id = self._schedule(self._interval, self._periodic)
         if self._initial_id is None:
             self._initial_id = self._schedule(
                 CALL_HISTORY_INITIAL_DELAY_SEC, self._initial,
             )
+        if self._deferred and self._sessions.map is not None:
+            self.refresh("deferred")
 
-    def refresh(self) -> None:
-        """Best-effort automatic sync used by the timers."""
-        if (
-            self._stopped
-            or self._pending
-            or self._sessions.pbap is None
-            or not self._storage.status.can_write
-        ):
+    def request_sync(self, reason: str) -> None:
+        """Ask for a prompt pull, e.g. after the phone reports a call ended.
+
+        Requests within ``CALL_HISTORY_REQUEST_DELAY_SEC`` coalesce into one
+        pull, a request during a running pull schedules exactly one follow-up,
+        and the MAP gating of automatic pulls applies. ``reason`` is logged
+        and must not contain personal data.
+        """
+        if self._stopped:
             return
+        log.info("call history sync requested (%s)", reason)
+        if self._request_id is not None:
+            return
+        self._request_id = self._schedule(
+            CALL_HISTORY_REQUEST_DELAY_SEC, self._requested,
+        )
+
+    def refresh(self, reason: str = "automatic") -> None:
+        """Best-effort automatic sync, gated so MAP keeps the worker first."""
+        if self._stopped:
+            return
+        if self._pending:
+            if reason == "request":
+                self._resync = True
+            return
+        if self._sessions.pbap is None or not self._storage.status.can_write:
+            # PBAP recovery calls profiles_available(), storage recovery
+            # calls storage_changed(); either one re-enters here.
+            if reason in {"request", "deferred"}:
+                self._deferred = True
+            return
+        if self._sessions.map is not None:
+            self._map_seen = True
+        elif self._map_seen:
+            # MAP was connected and is being re-established. Its retries need
+            # the shared worker; catch up once profiles are available again.
+            self._defer(reason)
+            return
+        elif not self._map_wait_finished:
+            self._defer(reason)
+            if self._map_wait_id is None:
+                self._map_wait_id = self._schedule(
+                    CALL_HISTORY_MAP_GRACE_SECONDS, self._map_wait_expired,
+                )
+            return
+        elif reason == "periodic":
+            # MAP never connected: no background polling, only prompt,
+            # requested, and explicit pulls.
+            return
+        self._deferred = False
         self.sync()
+
+    def _defer(self, reason: str) -> None:
+        if not self._deferred:
+            log.info("call history sync deferred until MAP is available (%s)", reason)
+        self._deferred = True
 
     def sync(self, success: Success | None = None, failure: Failure | None = None) -> None:
         """Join or start one call-history sync; called and completed on GLib."""
@@ -238,8 +319,11 @@ class CallHistorySync:
                 on_error=failed,
             )
         except Exception as error:
+            # The worker refused the job (recovery in progress, queue full,
+            # shutting down). No PBAP transfer happened, so it is no evidence
+            # of a broken PBAP session.
             storage.close()
-            self._finished(error=error)
+            self._finished(error=error, transport=False)
 
     def _stored(self, result: ReplaceResult, revision: int, now: datetime) -> int:
         if self._storage.revision != revision:
@@ -291,10 +375,15 @@ class CallHistorySync:
                     failure(error)
             except Exception:
                 log.exception("call history completion callback failed")
+        if self._resync:
+            self._resync = False
+            self.refresh("request")
 
     def stop(self) -> None:
         self._stopped = True
-        for attribute in ("_periodic_id", "_initial_id"):
+        for attribute in (
+            "_periodic_id", "_initial_id", "_map_wait_id", "_request_id",
+        ):
             source = getattr(self, attribute)
             if source is not None:
                 try:
@@ -306,9 +395,21 @@ class CallHistorySync:
     def _initial(self) -> bool:
         # Rearm so a later PBAP reconnect also gets one prompt sync.
         self._initial_id = None
-        self.refresh()
+        self.refresh("initial")
+        return False
+
+    def _map_wait_expired(self) -> bool:
+        self._map_wait_id = None
+        self._map_wait_finished = True
+        if self._deferred:
+            self.refresh("grace")
+        return False
+
+    def _requested(self) -> bool:
+        self._request_id = None
+        self.refresh("request")
         return False
 
     def _periodic(self) -> bool:
-        self.refresh()
+        self.refresh("periodic")
         return True

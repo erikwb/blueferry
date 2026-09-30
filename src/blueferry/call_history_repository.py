@@ -140,7 +140,9 @@ class CallHistoryRepository:
             return None
         value = self._open_value(row[0], _STATE_PURPOSE)
         if not isinstance(value, dict):
-            return {}
+            # Unusable state: seed again silently rather than treating every
+            # retained missed call as new.
+            return None
         return {
             str(key): float(stamp)
             for key, stamp in value.items()
@@ -202,7 +204,7 @@ class CallHistoryRepository:
             if previous is None:
                 raise CorruptStorageError("retained call history failed authentication")
             seeded = seen is None
-            known = seen or {}
+            known = dict(seen or {})
             missed = [record for record in kept if record.direction == MISSED]
             new_missed = [] if seeded else [
                 record for record in missed if record.key not in known
@@ -219,19 +221,25 @@ class CallHistoryRepository:
             changed = [record.to_storage() for record in previous] != [
                 record.to_storage() for record in reversed(kept)
             ]
-            with connection:
-                connection.execute("DELETE FROM calls")
-                # Insert oldest-first so row order matches time order.
-                for record in reversed(kept):
-                    connection.execute(
-                        "INSERT INTO calls(payload) VALUES (?)",
-                        (self._seal(record.to_storage(), _RECORD_PURPOSE),),
-                    )
-                connection.execute(
-                    "INSERT INTO state(name, payload) VALUES ('seen', ?) "
-                    "ON CONFLICT(name) DO UPDATE SET payload = excluded.payload",
-                    (self._seal(retained_seen, _STATE_PURPOSE),),
-                )
+            seen_changed = retained_seen != seen
+            # An unchanged poll (the common case every few minutes) must not
+            # rewrite and re-encrypt the whole mirror.
+            if changed or seen_changed:
+                with connection:
+                    if changed:
+                        connection.execute("DELETE FROM calls")
+                        # Insert oldest-first so row order matches time order.
+                        for record in reversed(kept):
+                            connection.execute(
+                                "INSERT INTO calls(payload) VALUES (?)",
+                                (self._seal(record.to_storage(), _RECORD_PURPOSE),),
+                            )
+                    if seen_changed:
+                        connection.execute(
+                            "INSERT INTO state(name, payload) VALUES ('seen', ?) "
+                            "ON CONFLICT(name) DO UPDATE SET payload = excluded.payload",
+                            (self._seal(retained_seen, _STATE_PURPOSE),),
+                        )
         return ReplaceResult(
             records=kept, new_missed=new_missed, seeded=seeded, changed=changed,
         )
