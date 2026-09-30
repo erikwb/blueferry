@@ -145,6 +145,23 @@ class ProximityLockSettings:
             stored_enabled if isinstance(stored_enabled, bool) else bool(fallback_enabled)
         )
         self._grace = clamp_grace(payload.get(self.GRACE_KEY), fallback_grace)
+        if default_enabled is None and isinstance(stored_enabled, bool):
+            self._note_overridden("BLUEFERRY_PROXIMITY_LOCK", bool(fallback_enabled),
+                                  self._enabled)
+        if default_grace is None and self.GRACE_KEY in payload:
+            self._note_overridden("BLUEFERRY_PROXIMITY_LOCK_GRACE_SEC", fallback_grace,
+                                  self._grace)
+
+    @staticmethod
+    def _note_overridden(name: str, seeded: object, effective: object) -> None:
+        """Say once, at startup, that a set seed value is not in effect."""
+        if name in os.environ and seeded != effective:
+            log.info(
+                "%s is ignored because a proximity lock preference was saved "
+                "in settings.json (using %s)",
+                name,
+                effective,
+            )
 
     @property
     def enabled(self) -> bool:

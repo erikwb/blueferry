@@ -342,7 +342,8 @@ blueferry proximity-lock disable
 
 `BLUEFERRY_PROXIMITY_LOCK=true` and `BLUEFERRY_PROXIMITY_LOCK_GRACE_SEC=60`
 (10–3600) in `local.env` set the initial values; a choice saved through a
-client or the CLI takes precedence.
+client or the CLI takes precedence, and the daemon logs once at startup when
+it ignores a differing `local.env` or environment value for that reason.
 
 **This is a lock trigger, not a security feature.** Bluetooth presence can be
 relayed or spoofed, and the phone turning off Bluetooth looks the same as the

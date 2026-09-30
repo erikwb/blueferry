@@ -468,6 +468,39 @@ def test_settings_env_default_used_until_a_value_is_saved(isolated_state) -> Non
     assert (reloaded.enabled, reloaded.grace_sec) == (False, 120)
 
 
+def test_saved_preference_overriding_the_environment_is_logged_once(
+    isolated_state, monkeypatch, caplog,
+) -> None:
+    from blueferry import config
+
+    pl.ProximityLockSettings(default_enabled=False).set(False, 120)
+    monkeypatch.setenv("BLUEFERRY_PROXIMITY_LOCK", "true")
+    monkeypatch.setenv("BLUEFERRY_PROXIMITY_LOCK_GRACE_SEC", "30")
+    monkeypatch.setattr(config, "PROXIMITY_LOCK", True)
+    monkeypatch.setattr(config, "PROXIMITY_LOCK_GRACE_SEC", 30)
+    with caplog.at_level("INFO", logger="blueferry.proximity_lock"):
+        settings = pl.ProximityLockSettings()
+    assert (settings.enabled, settings.grace_sec) == (False, 120)
+    messages = [record.getMessage() for record in caplog.records]
+    assert len(messages) == 2
+    assert "BLUEFERRY_PROXIMITY_LOCK is ignored" in messages[0]
+    assert "BLUEFERRY_PROXIMITY_LOCK_GRACE_SEC is ignored" in messages[1]
+
+
+def test_matching_or_unset_environment_is_not_logged(
+    isolated_state, monkeypatch, caplog,
+) -> None:
+    from blueferry import config
+
+    pl.ProximityLockSettings(default_enabled=False).set(True, 60)
+    monkeypatch.delenv("BLUEFERRY_PROXIMITY_LOCK", raising=False)
+    monkeypatch.setenv("BLUEFERRY_PROXIMITY_LOCK_GRACE_SEC", "60")
+    monkeypatch.setattr(config, "PROXIMITY_LOCK_GRACE_SEC", 60)
+    with caplog.at_level("INFO", logger="blueferry.proximity_lock"):
+        pl.ProximityLockSettings()
+    assert caplog.records == []
+
+
 @pytest.mark.parametrize(("enabled", "grace"), [
     ("yes", 60), (True, 9), (True, 3601), (True, 60.0), (True, True),
 ])
