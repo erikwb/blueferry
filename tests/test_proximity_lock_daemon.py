@@ -348,3 +348,48 @@ def test_disconnect_reason_watch_is_installed_once_and_tolerantly(
     ))
     failing._watch_sleep_resume()
     assert failing._disconnect_match is None
+
+
+def test_daemon_constructor_wiring_locks_through_the_real_dispatcher(
+    make_daemon, monkeypatch,
+) -> None:
+    """Drive the ProximityLock built in Daemon.__init__, not a replacement."""
+    clock = FakeClock()
+    timers = FakeTimers(clock)
+    calls: list[tuple] = []
+
+    def fake_call(bus, service, path, interface, method, signature, args,
+                  reply, error, *, timeout):
+        calls.append((bus, method))
+        reply()
+
+    monkeypatch.setattr(daemon_mod.config, "PROXIMITY_LOCK", True)
+    monkeypatch.setattr(daemon_mod.config, "PROXIMITY_LOCK_GRACE_SEC", 20)
+    monkeypatch.setattr(daemon_mod.GLib, "timeout_add_seconds", timers.schedule)
+    monkeypatch.setattr(daemon_mod.GLib, "source_remove", timers.cancel)
+    monkeypatch.setattr(pl, "_dbus_async_call", fake_call)
+    monkeypatch.setattr(pl, "time", SimpleNamespace(monotonic=clock))
+    instance = make_daemon()
+    statuses = []
+    instance._emit_status = lambda: statuses.append(True)
+
+    assert instance.bearers._on_status == instance._bearer_status_changed
+    assert instance.proximity.enabled is True
+    assert instance.proximity.grace_sec == 20
+
+    # Only the bearer cache is replaced; its callback is the daemon's own.
+    instance.bearers = SimpleNamespace(
+        bredr_state=None, le_state=None, stop=lambda: None, snapshot=dict,
+    )
+
+    def link(bredr):
+        instance.bearers.bredr_state = bredr
+        instance._bearer_status_changed()
+
+    link(True)
+    assert instance._status()["proximity_lock"] == pl.STATE_ARMED
+    link(False)
+    timers.advance(20)
+    assert calls == [("session", "Lock")]
+    assert instance._status()["proximity_lock_last_result"] == pl.RESULT_SCREENSAVER
+    assert statuses
