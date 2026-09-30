@@ -70,6 +70,10 @@ AUTHORIZATION_RETRY_SECONDS = 5
 MANAGER_RETRY_SECONDS = 2
 BEARER_SETTLE_SECONDS = 2
 TRANSPORT_RESET_SECONDS = 15
+# A stale LE bond cycles the link about every two seconds for as long as the
+# phone is nearby. Report bearer cycles at INFO at most once per interval and
+# summarize the rest; the bearer supervisor owns the actionable warning.
+BEARER_CYCLE_LOG_SECONDS = 60
 
 _BLUEZ_BUS_NAME = "org.bluez"
 
@@ -143,6 +147,7 @@ class AncsClient:
         previously_authorized: bool = False,
         schedule: Callable[[int, Callable[[], bool]], int] = GLib.timeout_add_seconds,
         cancel: Callable[[int], object] = GLib.source_remove,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.device_path = device_path
         self.on_event = on_event
@@ -156,6 +161,9 @@ class AncsClient:
         )
         self._schedule = schedule
         self._cancel = cancel
+        self._clock = clock
+        # kind -> (last INFO time, cycles demoted to DEBUG since then)
+        self._bearer_cycle_logs: dict[str, tuple[float, int]] = {}
 
         # Char path slots — set as InterfacesAdded fires
         self._ns_path: str | None = None
@@ -421,7 +429,10 @@ class AncsClient:
             )
             if not had_state:
                 return
-            log.info("iPhone LE bearer disconnected; resetting ANCS subscription")
+            self._log_bearer_cycle(
+                "disconnected",
+                "iPhone LE bearer disconnected; resetting ANCS subscription",
+            )
             self._cancel_subscribe_retry()
             # Do not StopNotify: bluetoothd 5.87 SIGSEGVs in register_notify_cb
             # when a CCC enable completes after that registration was freed or
@@ -435,11 +446,29 @@ class AncsClient:
         if previous is True:
             return
         if previous is False:
-            log.info("iPhone LE bearer reconnected; rebuilding ANCS subscription")
+            self._log_bearer_cycle(
+                "reconnected",
+                "iPhone LE bearer reconnected; rebuilding ANCS subscription",
+            )
             self._transport_blocked = False
             self._cancel_transport_reset()
         if self._started:
             self._schedule_bearer_settle()
+
+    def _log_bearer_cycle(self, kind: str, message: str) -> None:
+        """Log a bearer cycle at INFO, demoting rapid repeats to DEBUG."""
+        now = self._clock()
+        last = self._bearer_cycle_logs.get(kind)
+        if last is not None and now - last[0] < BEARER_CYCLE_LOG_SECONDS:
+            self._bearer_cycle_logs[kind] = (last[0], last[1] + 1)
+            log.debug("%s", message)
+            return
+        suppressed = last[1] if last is not None else 0
+        self._bearer_cycle_logs[kind] = (now, 0)
+        if suppressed:
+            log.info("%s (%d more since the last report)", message, suppressed)
+        else:
+            log.info("%s", message)
 
     def _schedule_bearer_settle(self) -> None:
         if self._bearer_settle_id is not None or self._bearer_connected is not True:
