@@ -185,6 +185,8 @@ def _daemon_with_recorders(make_daemon):
     instance = make_daemon()
     seen: list[object] = []
     instance._emit_status = lambda: seen.append("status")
+    # Run deferred StatusChanged emissions immediately.
+    instance._idle_add = lambda callback, **_options: callback()
     instance.events.phone_battery_low = lambda percent: seen.append(("low", percent))
     return instance, seen
 
@@ -205,6 +207,73 @@ def test_phone_status_changes_emit_status_but_warn_only_when_opted_in(
 
     assert seen.count("status") == 8
     assert [item for item in seen if item != "status"] == [("low", 20), ("low", 20)]
+
+
+def test_calls_and_phone_status_changes_share_one_deferred_status_changed(make_daemon) -> None:
+    instance = make_daemon()
+    seen: list[str] = []
+    queued: list = []
+    instance._emit_status = lambda: seen.append("status")
+    instance._idle_add = lambda callback, **_options: queued.append(callback) or 1
+
+    # A modem losing power: calls state and phone values change together.
+    instance.calls._on_state_changed()
+    instance._on_phone_status(PhoneStatus())
+    instance._on_phone_status(PhoneStatus(battery_steps=2))
+    assert seen == [] and len(queued) == 1
+
+    assert queued.pop()() is False
+    assert seen == ["status"]
+    # The next burst schedules a new emission.
+    instance._on_phone_status(PhoneStatus())
+    assert len(queued) == 1
+
+
+def test_deferred_status_uses_default_priority(make_daemon) -> None:
+    from gi.repository import GLib
+
+    instance = make_daemon()
+    calls: list[dict] = []
+    instance._idle_add = lambda _callback, **options: calls.append(options) or 1
+
+    instance._emit_status_soon()
+
+    assert calls == [{"priority": GLib.PRIORITY_DEFAULT}]
+
+
+def test_status_is_still_emitted_when_deferring_fails(make_daemon) -> None:
+    instance = make_daemon()
+    seen: list[str] = []
+    instance._emit_status = lambda: seen.append("status")
+
+    def broken(_callback, **_options):
+        raise RuntimeError("no main loop")
+
+    instance._idle_add = broken
+    instance._emit_status_soon()
+    instance._emit_status_soon()
+
+    assert seen == ["status", "status"]
+
+
+def test_failed_deferred_status_emission_is_logged_and_rearmed(make_daemon, caplog) -> None:
+    import logging
+
+    instance = make_daemon()
+    queued: list = []
+    instance._idle_add = lambda callback, **_options: queued.append(callback) or 1
+
+    def broken():
+        raise RuntimeError("bus gone")
+
+    instance._emit_status = broken
+    instance._emit_status_soon()
+    with caplog.at_level(logging.ERROR, logger="blueferry.daemon"):
+        assert queued.pop()() is False
+    assert "StatusChanged emission failed" in caplog.text
+    # The pending flag was cleared: the next change schedules again.
+    instance._emit_status_soon()
+    assert len(queued) == 1
 
 
 def test_daemon_wires_the_controller_to_its_phone_status_handler(make_daemon) -> None:

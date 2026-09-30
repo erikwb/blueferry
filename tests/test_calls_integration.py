@@ -137,6 +137,8 @@ def test_controller_changes_reach_the_bus_signals(make_daemon) -> None:
         emit_status=lambda: emitted.append("status"),
     )
 
+    # StatusChanged from the calls controller is deferred to the main loop.
+    instance._idle_add = lambda callback, **_options: callback()
     # The controller holds the daemon's callbacks from construction.
     instance.calls._on_calls_changed()
     instance.calls._on_state_changed()

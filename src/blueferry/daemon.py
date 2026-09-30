@@ -193,6 +193,11 @@ class Daemon:
             on_le_dial=self.solicitation.set_dialing,
             inbound_le_primed=self.solicitation.active,
         )
+        # Calls-state and phone-status changes often arrive in bursts (a
+        # modem going away, a flapping indicator); coalesce their
+        # StatusChanged into one per main-loop iteration.
+        self._status_emit_pending = False
+        self._idle_add: Callable[..., int] = GLib.idle_add
         # Optional HFP calls through oFono. Inert unless explicitly enabled;
         # construction performs no I/O. oFono is only asked to page the phone
         # (Modem.Powered) while the Classic bearer is up.
@@ -202,7 +207,7 @@ class Daemon:
             adapter=config.ADAPTER,
             resolve_contact=self.contacts.resolve,
             on_calls_changed=self._emit_calls_changed,
-            on_state_changed=self._emit_status,
+            on_state_changed=self._emit_status_soon,
             on_event=self.events.call,
             phone_reachable=lambda: self.bearers.bredr_connected,
             hfp_conflict=self._bluez_hfp_conflict,
@@ -367,6 +372,29 @@ class Daemon:
                 self.phone_audio.reconcile(enabled=True)
 
         _in_background(apply, "blueferry-phone-audio")
+    def _emit_status_soon(self) -> None:
+        """Emit one StatusChanged for everything changed in this iteration."""
+        if self._status_emit_pending:
+            return
+        self._status_emit_pending = True
+
+        def flush() -> bool:
+            self._status_emit_pending = False
+            try:
+                self._emit_status()
+            except Exception:
+                # An idle callback must not raise into the GLib loop; the
+                # next change schedules a fresh emission.
+                log.exception("StatusChanged emission failed")
+            return False
+
+        try:
+            # GLib.idle_add defaults to PRIORITY_DEFAULT_IDLE, which busy
+            # D-Bus traffic can starve; status is as urgent as other events.
+            self._idle_add(flush, priority=GLib.PRIORITY_DEFAULT)
+        except Exception:
+            log.debug("could not defer StatusChanged; emitting now", exc_info=True)
+            flush()
 
     def _bluez_hfp_conflict(self) -> bool:
         """Whether bluetoothd's own HFP plugin can be what blocks oFono.
@@ -417,7 +445,7 @@ class Daemon:
 
     def _on_phone_status(self, status: PhoneStatus) -> None:
         """The phone's battery/signal/operator changed: content-free signal."""
-        self._emit_status()
+        self._emit_status_soon()
         if not config.PHONE_BATTERY_NOTIFY:
             return
         percent = status.battery_percent
