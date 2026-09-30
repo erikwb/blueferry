@@ -300,7 +300,7 @@ class _CharacteristicBus:
     def add_signal_receiver(self, *_args, **_kwargs):
         return _Match()
 
-    def get_object(self, _name, path):
+    def get_object(self, _name, path, **_kwargs):
         return self.characteristics[path]
 
 
@@ -500,8 +500,9 @@ def test_start_notify_failure_retries_without_rediscovery(monkeypatch) -> None:
         def StopNotify(self, **_kwargs) -> None:
             pass
 
-        def WriteValue(self, value, _options, **_kwargs) -> None:
+        def WriteValue(self, value, _options, **kwargs) -> None:
             writes.append(bytes(value))
+            kwargs["reply_handler"]()
 
     ns = _Characteristic(fail_once=True)
     ds = _Characteristic()
@@ -556,8 +557,9 @@ def test_initial_subscription_waits_for_a_settled_le_bearer(monkeypatch) -> None
         def StartNotify(self, **_kwargs) -> None:
             calls.append(("start", self.name))
 
-        def WriteValue(self, _value, _options, **_kwargs) -> None:
+        def WriteValue(self, _value, _options, **kwargs) -> None:
             calls.append(("write", self.name))
+            kwargs["reply_handler"]()
 
     bus = _CharacteristicBus({
         "/device/ns": _Characteristic("ns"),
@@ -647,8 +649,9 @@ def test_previously_authorized_subscription_waits_for_a_settled_bearer(
         def StartNotify(self, **_kwargs) -> None:
             calls.append(("start", self.name))
 
-        def WriteValue(self, _value, _options, **_kwargs) -> None:
+        def WriteValue(self, _value, _options, **kwargs) -> None:
             calls.append(("write", self.name))
+            kwargs["reply_handler"]()
 
     bus = _CharacteristicBus({
         "/device/ns": _Characteristic("ns"),
@@ -715,8 +718,8 @@ def test_partial_start_notify_failure_reuses_live_subscription(monkeypatch) -> N
             self.stop_calls += 1
 
         @staticmethod
-        def WriteValue(_value, _options, **_kwargs) -> None:
-            return None
+        def WriteValue(_value, _options, **kwargs) -> None:
+            kwargs["reply_handler"]()
 
     ns = _Characteristic()
     ds = _Characteristic(fail_once=True)
@@ -777,8 +780,9 @@ def test_le_reconnect_refreshes_registrations_only_after_a_silent_probe(
         def StopNotify(self, **_kwargs) -> None:
             calls.append(("stop", self.name))
 
-        def WriteValue(self, _value, _options, **_kwargs) -> None:
+        def WriteValue(self, _value, _options, **kwargs) -> None:
             calls.append(("write", self.name))
+            kwargs["reply_handler"]()
 
     ns = _Characteristic("ns")
     ds = _Characteristic("ds")
@@ -868,8 +872,9 @@ def test_le_reconnect_does_not_stop_notify_while_att_may_be_down(
             calls.append(("stop", self.name))
 
         @staticmethod
-        def WriteValue(_value, _options, **_kwargs) -> None:
+        def WriteValue(_value, _options, **kwargs) -> None:
             calls.append("write")
+            kwargs["reply_handler"]()
 
     ns = _Characteristic("ns")
     ds = _Characteristic("ds")
@@ -924,8 +929,9 @@ def test_le_reconnect_starts_notify_only_when_bluez_dropped_ccc(
             calls.append(("stop", self.name))
 
         @staticmethod
-        def WriteValue(_value, _options, **_kwargs) -> None:
+        def WriteValue(_value, _options, **kwargs) -> None:
             calls.append("write")
+            kwargs["reply_handler"]()
 
     ns = _Characteristic("ns", notifying=False)
     ds = _Characteristic("ds", notifying=True)
@@ -981,8 +987,9 @@ def test_unknown_notifying_property_does_not_skip_start_notify(
             calls.append(("stop", self.name))
 
         @staticmethod
-        def WriteValue(_value, _options, **_kwargs) -> None:
+        def WriteValue(_value, _options, **kwargs) -> None:
             calls.append("write")
+            kwargs["reply_handler"]()
 
     ns = _Characteristic("ns")
     ds = _Characteristic("ds")
@@ -1033,11 +1040,11 @@ def test_reconnect_control_point_failure_keeps_solicitation_needed(
             raise AssertionError("StopNotify should be skipped")
 
         @staticmethod
-        def WriteValue(_value, _options, **_kwargs) -> None:
-            raise client_module.dbus.exceptions.DBusException(
+        def WriteValue(_value, _options, **kwargs) -> None:
+            kwargs["error_handler"](client_module.dbus.exceptions.DBusException(
                 "Not connected",
                 name="org.bluez.Error.Failed",
-            )
+            ))
 
     bus = _CharacteristicBus(
         {
@@ -1083,11 +1090,11 @@ def test_not_connected_control_point_failure_invalidates_ancs_health(
 
     class _ControlPoint:
         @staticmethod
-        def WriteValue(_value, _options, **_kwargs) -> None:
-            raise client_module.dbus.exceptions.DBusException(
+        def WriteValue(_value, _options, **kwargs) -> None:
+            kwargs["error_handler"](client_module.dbus.exceptions.DBusException(
                 "Not connected",
                 name="org.bluez.Error.Failed",
-            )
+            ))
 
     bus = _CharacteristicBus({"/device/cp": _ControlPoint()})
     monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
@@ -1141,8 +1148,8 @@ def test_authorization_timeout_resets_previously_authorized_transport(
 
     class _ControlPoint:
         @staticmethod
-        def WriteValue(_value, _options, **_kwargs) -> None:
-            pass
+        def WriteValue(_value, _options, **kwargs) -> None:
+            kwargs["reply_handler"]()
 
     bus = _CharacteristicBus({"/device/cp": _ControlPoint()})
     monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
@@ -1191,8 +1198,8 @@ def test_initial_authorization_timeout_keeps_retrying_without_transport_reset(
 
     class _ControlPoint:
         @staticmethod
-        def WriteValue(_value, _options, **_kwargs) -> None:
-            pass
+        def WriteValue(_value, _options, **kwargs) -> None:
+            kwargs["reply_handler"]()
 
     bus = _CharacteristicBus({"/device/cp": _ControlPoint()})
     monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
@@ -1230,8 +1237,8 @@ def test_request_timeout_is_armed_and_cancelled_through_injected_timers(
 
     class _ControlPoint:
         @staticmethod
-        def WriteValue(_value, _options, **_kwargs) -> None:
-            pass
+        def WriteValue(_value, _options, **kwargs) -> None:
+            kwargs["reply_handler"]()
 
     bus = _CharacteristicBus({"/device/cp": _ControlPoint()})
     monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
@@ -1318,11 +1325,12 @@ def test_owner_change_during_control_point_write_preserves_new_request(
 
     class _ControlPoint:
         @staticmethod
-        def WriteValue(_value, _options, **_kwargs) -> None:
+        def WriteValue(_value, _options, **kwargs) -> None:
             client._bluez_owner_generation += 1
             client._request_queue.clear()
             client._active_request = replacement_request
             client._request_timeout_id = 91
+            kwargs["reply_handler"]()
 
     bus = _CharacteristicBus({"/device/cp": _ControlPoint()})
     monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
@@ -1355,13 +1363,15 @@ def test_control_point_failure_keeps_ancs_unready_and_retries(
         def __init__(self) -> None:
             self.fail = True
 
-        def WriteValue(self, _value, _options, **_kwargs) -> None:
+        def WriteValue(self, _value, _options, **kwargs) -> None:
             if self.fail:
                 self.fail = False
-                raise client_module.dbus.exceptions.DBusException(
+                kwargs["error_handler"](client_module.dbus.exceptions.DBusException(
                     "Insufficient authorization",
                     name="org.bluez.Error.Failed",
-                )
+                ))
+                return
+            kwargs["reply_handler"]()
 
     cp = _ControlPoint()
     bus = _CharacteristicBus({"/device/cp": cp})
@@ -1392,3 +1402,143 @@ def test_control_point_failure_keeps_ancs_unready_and_retries(
     _complete_authorization_probe(client)
     assert client.authorized is True
     assert client.connected is True
+
+
+# ---- asynchronous Control Point writes -------------------------------------
+
+class _PendingControlPoint:
+    """Accepts WriteValue calls and leaves their completion to the test."""
+
+    def __init__(self) -> None:
+        self.writes: list[dict] = []
+
+    def WriteValue(self, value, options, **kwargs) -> None:
+        assert callable(kwargs.get("reply_handler"))
+        assert callable(kwargs.get("error_handler"))
+        self.writes.append({"value": bytes(value), **kwargs})
+
+
+def _async_write_client(monkeypatch, control_point):
+    timers = []
+    bus = _CharacteristicBus({"/device/cp": control_point})
+    monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
+    monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
+    # Every ANCS timer, including the request timeout, goes through the
+    # injected scheduler; no real GLib source is ever armed.
+    client = AncsClient(
+        "/device",
+        lambda _event: None,
+        schedule=lambda delay, callback: timers.append((delay, callback)) or len(timers),
+        cancel=lambda _source: None,
+    )
+    client._started = True
+    client._notify_started = True
+    client._authorized = True
+    client._bearer_connected = True
+    client._bearer_ready = True
+    client._cp_path = "/device/cp"
+    return client, timers
+
+
+def _app_probe_response(uid: int, app_id: str) -> bytes:
+    return (
+        bytes([CommandID.GetNotificationAttributes])
+        + struct.pack("<I", uid)
+        + _attribute(0, app_id)
+    )
+
+
+def test_control_point_write_returns_before_bluez_replies(monkeypatch) -> None:
+    cp = _PendingControlPoint()
+    client, timers = _async_write_client(monkeypatch, cp)
+
+    client._request_attrs(Notification.parse(_notification(1)))
+    client._request_attrs(Notification.parse(_notification(2)))
+
+    # One write in flight, the second request still queued behind it, and
+    # the response timer not armed until BlueZ confirms the write.
+    assert [write["value"][1:5] for write in cp.writes] == [struct.pack("<I", 1)]
+    assert len(client._request_queue) == 1
+    assert timers == []
+
+    cp.writes[0]["reply_handler"]()
+    assert [callback for _delay, callback in timers] == [client._request_timed_out]
+    assert timers[0][0] == client_module.REQUEST_TIMEOUT_SECONDS
+    assert len(cp.writes) == 1
+
+    client._on_ds_changed(
+        "org.bluez.GattCharacteristic1",
+        {"Value": _app_probe_response(1, "com.example.Private")},
+        [],
+    )
+    assert [write["value"][1:5] for write in cp.writes] == [
+        struct.pack("<I", 1), struct.pack("<I", 2),
+    ]
+
+
+def test_response_before_write_reply_does_not_arm_a_stale_timer(monkeypatch) -> None:
+    cp = _PendingControlPoint()
+    client, timers = _async_write_client(monkeypatch, cp)
+    client._request_attrs(Notification.parse(_notification(1)))
+    client._request_attrs(Notification.parse(_notification(2)))
+    first = cp.writes[0]
+
+    client._on_ds_changed(
+        "org.bluez.GattCharacteristic1",
+        {"Value": _app_probe_response(1, "com.example.Private")},
+        [],
+    )
+    first["reply_handler"]()
+
+    assert timers == []
+    assert len(cp.writes) == 2
+    assert client._active_request is not None
+    assert client._active_request.notification.id == 2
+
+
+def test_async_write_failure_releases_the_queue(monkeypatch) -> None:
+    cp = _PendingControlPoint()
+    client, _timers = _async_write_client(monkeypatch, cp)
+    client._request_attrs(Notification.parse(_notification(1)))
+    client._request_attrs(Notification.parse(_notification(2)))
+
+    cp.writes[0]["error_handler"](client_module.dbus.exceptions.DBusException(
+        "Operation failed with ATT error: 0x0e", name="org.bluez.Error.Failed",
+    ))
+
+    assert len(cp.writes) == 2
+    assert client.connected is True
+
+
+def test_async_write_losing_the_link_latches_transport_failure(monkeypatch) -> None:
+    cp = _PendingControlPoint()
+    client, _timers = _async_write_client(monkeypatch, cp)
+    client._request_attrs(Notification.parse(_notification(1)))
+
+    cp.writes[0]["error_handler"](client_module.dbus.exceptions.DBusException(
+        "Not connected", name="org.bluez.Error.Failed",
+    ))
+
+    assert client.connected is False
+    assert client._transport_blocked is True
+
+
+def test_write_that_fails_before_dispatch_is_handled_like_a_reply(monkeypatch) -> None:
+    class _ClosedBus:
+        writes = 0
+
+        def WriteValue(self, _value, _options, **_kwargs) -> None:
+            self.writes += 1
+            if self.writes == 1:
+                raise client_module.dbus.exceptions.DBusException(
+                    "connection closed",
+                    name="org.freedesktop.DBus.Error.Disconnected",
+                )
+
+    cp = _ClosedBus()
+    client, _timers = _async_write_client(monkeypatch, cp)
+    client._request_attrs(Notification.parse(_notification(1)))
+    client._request_attrs(Notification.parse(_notification(2)))
+
+    assert cp.writes == 2
+    assert client._active_request.notification.id == 2

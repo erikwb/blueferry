@@ -905,16 +905,17 @@ class AncsClient:
                 and self._active_request is request
             )
 
-        try:
-            dbus.Interface(
-                get_system_bus().get_object("org.bluez", cp_path),
-                "org.bluez.GattCharacteristic1",
-            ).WriteValue(
-                [dbus.Byte(value) for value in request.packet],
-                {},
-                timeout=DBUS_CALL_TIMEOUT_SECONDS,
+        def written(*_args) -> None:
+            if not current_attempt():
+                # Also reached when the complete Data Source response arrived
+                # before BlueZ delivered the write reply.
+                log.debug("discarded stale ANCS write completion after BlueZ changed owner")
+                return
+            self._request_timeout_id = self._schedule(
+                REQUEST_TIMEOUT_SECONDS, self._request_timed_out
             )
-        except dbus.exceptions.DBusException as error:
+
+        def failed(error: dbus.exceptions.DBusException) -> None:
             if not current_attempt():
                 log.debug("discarded stale ANCS write failure after BlueZ changed owner")
                 return
@@ -928,13 +929,25 @@ class AncsClient:
             self._abandon_request(request)
             self._active_request = None
             self._pump_requests()
-            return
-        if not current_attempt():
-            log.debug("discarded stale ANCS write completion after BlueZ changed owner")
-            return
-        self._request_timeout_id = self._schedule(
-            REQUEST_TIMEOUT_SECONDS, self._request_timed_out
-        )
+
+        # Asynchronous so a slow or wedged ATT write can never stall the GLib
+        # main loop for DBUS_CALL_TIMEOUT_SECONDS. _active_request stays set
+        # until the reply or the Data Source response, so the Control Point
+        # remains strictly serialized.
+        try:
+            dbus.Interface(
+                get_system_bus().get_object("org.bluez", cp_path, introspect=False),
+                "org.bluez.GattCharacteristic1",
+            ).WriteValue(
+                [dbus.Byte(value) for value in request.packet],
+                {},
+                reply_handler=written,
+                error_handler=failed,
+                timeout=DBUS_CALL_TIMEOUT_SECONDS,
+            )
+        except dbus.exceptions.DBusException as error:
+            # dbus-python can still fail before dispatch, e.g. on a closed bus.
+            failed(error)
 
     def _observe_permission_error(self, error: dbus.exceptions.DBusException) -> None:
         name = error.get_dbus_name() or ""
