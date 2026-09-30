@@ -500,6 +500,37 @@ def test_message_link_activation_rechecks_the_scheme(qml_engine, client):
         QGuiApplication.processEvents()
 
 
+def test_quickshell_phone_status_shows_only_known_battery_and_signal(qml_engine) -> None:
+    component = _component(qml_engine, "data/quickshell/QuickshellPhoneStatus.qml")
+    theme = _BubbleTheme()
+
+    hidden = component.createWithInitialProperties({
+        "ferryTheme": theme,
+        "status": {"calls_enabled": True, "phone_battery_level": None,
+                   "phone_network_name": "Sunrise"},
+    })
+    assert hidden is not None
+    assert hidden.property("visible") is False
+    assert hidden.property("text") == ""
+
+    shown = component.createWithInitialProperties({
+        "ferryTheme": theme,
+        "status": {"phone_battery_level": 60, "phone_signal_strength": 80,
+                   "phone_network_name": "<b>Sunrise</b>"},
+    })
+    assert shown.property("visible") is True
+    # The operator name is deliberately not part of the compact header.
+    assert shown.property("text") == "BATTERY 60 % · SIGNAL 80 %"
+
+    malformed = component.createWithInitialProperties({
+        "ferryTheme": theme,
+        "status": {"phone_battery_level": "60", "phone_signal_strength": 400},
+    })
+    assert malformed.property("visible") is False
+    for item in (hidden, shown, malformed):
+        item.deleteLater()
+
+
 def test_quickshell_thread_preview_stays_inside_one_line(qml_engine) -> None:
     component = _component(
         qml_engine,
