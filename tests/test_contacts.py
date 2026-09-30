@@ -20,6 +20,7 @@ from blueferry.limits import (
     MAX_CONTACT_NAME_CHARS,
 )
 from blueferry.obex import transfer
+from blueferry.vcard import iter_vcard_bodies
 
 
 def test_pbap_filters_use_phonebook_access_names():
@@ -301,6 +302,88 @@ def test_oversized_or_unterminated_vcards_do_not_hide_later_contacts() -> None:
     assert _parse_vcard_records(blob) == [
         ("Safe", ["15551234567"], []),
     ]
+
+
+def _folded(text: str, width: int = 75) -> str:
+    return "\n ".join(text[i:i + width] for i in range(0, len(text), width))
+
+
+def test_large_contact_photo_does_not_discard_the_card() -> None:
+    # An 800 KiB JPEG is ~1.07 MiB of base64: over the 1 MiB card budget.
+    photo = "/9j/" + "A" * (1_100_000)
+    blob = (
+        "BEGIN:VCARD\nVERSION:3.0\nFN:Pictured\n"
+        + "PHOTO;ENCODING=b;TYPE=JPEG:" + _folded(photo) + "\n"
+        + "TEL;TYPE=CELL:+15551234567\nEMAIL:p@example.com\nEND:VCARD\n"
+        # vCard 2.1: unindented base64 continuation lines end at a blank line.
+        + "BEGIN:VCARD\nVERSION:2.1\nFN:Old Style\n"
+        + "PHOTO;ENCODING=BASE64;TYPE=JPEG:/9j/AAAA\n"
+        + "\n".join(["A" * 76] * 20_000) + "\n\n"
+        + "TEL;CELL:+15557654321\nEND:VCARD\n"
+    )
+
+    assert _parse_vcard_records(blob) == [
+        ("Pictured", ["15551234567"], ["p@example.com"]),
+        ("Old Style", ["15557654321"], []),
+    ]
+
+
+def test_photo_skipping_keeps_other_fields_and_the_card_budget() -> None:
+    blob = (
+        "BEGIN:VCARD\nFN:A\nNOTE:x\n PHOTO;folded note text\n"
+        "item1.PHOTO;VALUE=uri:https://example.invalid/a.jpg\nTEL:+15550000001\nEND:VCARD\n"
+        "BEGIN:VCARD\nFN:" + "y" * 300 + "\nPHOTO;ENCODING=b:QUJD\nEND:VCARD\n"
+    )
+    bodies = list(iter_vcard_bodies(blob, maximum=10, max_card_chars=200))
+    # A folded line that merely starts with "PHOTO" is not a property; a
+    # grouped PHOTO is skipped; a non-photo overflow still discards its card.
+    assert bodies == ["FN:A\nNOTE:x\n PHOTO;folded note text\nTEL:+15550000001"]
+
+
+def test_large_logo_sound_and_key_values_are_skipped_like_photos() -> None:
+    blob = "".join(
+        f"BEGIN:VCARD\nVERSION:3.0\nFN:{name}\n"
+        + f"{prop};ENCODING=b;TYPE={kind}:" + _folded("A" * 1_100_000) + "\n"
+        + f"TEL:+1555000000{index}\nEND:VCARD\n"
+        for index, (name, prop, kind) in enumerate([
+            ("Logo Co", "LOGO", "PNG"),
+            ("Sound Person", "SOUND", "WAVE"),
+            ("Key Holder", "item2.KEY", "PGP"),
+        ])
+    )
+
+    assert _parse_vcard_records(blob) == [
+        ("Logo Co", ["15550000000"], []),
+        ("Sound Person", ["15550000001"], []),
+        ("Key Holder", ["15550000002"], []),
+    ]
+
+
+def test_quoted_printable_photo_continues_through_soft_line_breaks() -> None:
+    # vCard 2.1 QUOTED-PRINTABLE: a line ending in "=" continues unindented,
+    # and those lines may contain ":" (as "=3A" does not have to be used).
+    body = "=\n".join(["=FF=D8=FF=E0:" + "=00" * 25] * 20_000)
+    blob = (
+        "BEGIN:VCARD\nVERSION:2.1\nFN:Printable\n"
+        + "PHOTO;ENCODING=QUOTED-PRINTABLE;TYPE=JPEG:" + body + "\n"
+        + "TEL;CELL:+15551112222\nNOTE:after=\nEND:VCARD\n"
+    )
+
+    assert _parse_vcard_records(blob) == [("Printable", ["15551112222"], [])]
+    [card] = list(iter_vcard_bodies(blob, maximum=1))
+    # The last photo line has no soft break, so TEL starts a new property.
+    assert card == "VERSION:2.1\nFN:Printable\nTEL;CELL:+15551112222\nNOTE:after="
+
+
+def test_skipped_photo_lines_with_crlf_line_endings() -> None:
+    photo = "/9j/" + "A" * 1_100_000
+    blob = (
+        "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Windows Style\r\n"
+        + "PHOTO;ENCODING=b:" + _folded(photo).replace("\n", "\r\n") + "\r\n"
+        + "EMAIL:w@example.com\r\nEND:VCARD\r\n"
+    )
+
+    assert _parse_vcard_records(blob) == [("Windows Style", [], ["w@example.com"])]
 
 
 def test_find_by_name_returns_phone_and_email_destinations(tmp_path, monkeypatch):
