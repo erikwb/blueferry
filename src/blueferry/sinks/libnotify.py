@@ -295,7 +295,14 @@ class LibnotifySink:
         *,
         individual_limit: int = MAX_INDIVIDUAL_MISSED_CALL_POPUPS,
     ) -> None:
-        """Announce newly missed calls; a burst collapses into one summary."""
+        """Announce newly missed calls; a burst collapses into one summary.
+
+        Deliberately shown under the default ``messages`` policy, not only
+        ``all``: a missed call is person-to-person communication like a
+        message, and ``BLUEFERRY_CALL_HISTORY_ENABLED`` plus
+        ``BLUEFERRY_MISSED_CALL_NOTIFICATIONS`` are the user's explicit
+        consent. ``none`` and contacts-only still apply.
+        """
         if self._policy() == NO_NOTIFICATIONS:
             return
         if self._contacts_only():

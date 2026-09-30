@@ -300,7 +300,17 @@ specification and third-party reports, not captured observations:
   listing is unreliable, so BlueFerry pulls the three lists and merges them.
   A call present in both `ich` and `mch` is treated as missed.
 - An empty listing is a valid answer (for example, no missed calls).
-- PBAP offers no change notification; BlueFerry polls.
+- PBAP offers no change notification; BlueFerry polls. Automatic pulls share
+  the single OBEX worker, so they follow the contact-sync MAP gating (defer
+  while MAP reconnects, three-minute grace when MAP never connected) and each
+  listing transfer is bounded to two minutes, far below the phonebook's 30.
+- BlueFerry requests `vcard30`. vCard 3.0 text escapes (`\;`, `\,`, `\\`,
+  `\n`) are resolved; vCard 2.1 `QUOTED-PRINTABLE`/`CHARSET` encodings are
+  **not** decoded, on the assumption that iOS honors the requested format.
+- Numbers are compared digits-only with the `00` international prefix folded
+  into the `+` form, so `+41…` and `0041…` are one caller.
+- Offset-free timestamps are interpreted in the desktop's time zone, so the
+  "announce only calls younger than 12 hours" rule is measured there too.
 
 Record the phone model, iOS version, and BlueZ version here once the behavior
 has been observed.
