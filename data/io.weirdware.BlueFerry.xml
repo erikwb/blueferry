@@ -110,13 +110,6 @@
       <annotation name="io.weirdware.BlueFerry.Errors"
                   value="InvalidArgs,NotReady"/>
     </method>
-    <method name="SetProximityLock">
-      <arg name="enabled" type="b" direction="in"/>
-      <arg name="grace_seconds" type="u" direction="in"/>
-      <arg name="status_json" type="s" direction="out"/>
-      <annotation name="io.weirdware.BlueFerry.Errors"
-                  value="InvalidArgs,NotReady"/>
-    </method>
     <method name="GetStoragePolicy">
       <arg name="policy" type="s" direction="out"/>
     </method>
@@ -153,6 +146,17 @@
       <arg name="application_owner" type="s" direction="in"/>
       <arg name="delivered" type="b" direction="out"/>
       <annotation name="io.weirdware.BlueFerry.Errors" value="InvalidArgs"/>
+    </method>
+  </interface>
+  <interface name="io.weirdware.BlueFerry.Presence1">
+    <annotation name="org.freedesktop.DBus.Description"
+                value="Opt-in lock-only desktop lock when the iPhone goes away; state is in Messages1.GetStatus"/>
+    <method name="SetProximityLock">
+      <arg name="enabled" type="b" direction="in"/>
+      <arg name="grace_seconds" type="u" direction="in"/>
+      <arg name="status_json" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady"/>
     </method>
   </interface>
   <interface name="io.weirdware.BlueFerry.Events1">

@@ -5,7 +5,7 @@ from pathlib import Path
 from xml.etree import ElementTree
 
 from blueferry.dbus_service import MessagesService
-from blueferry.protocol import EVENTS_IFACE, MESSAGES_IFACE, OBJECT_PATH
+from blueferry.protocol import EVENTS_IFACE, MESSAGES_IFACE, OBJECT_PATH, PRESENCE_IFACE
 
 CONTRACT = Path(__file__).resolve().parents[1] / "data/io.weirdware.BlueFerry.xml"
 
@@ -18,23 +18,31 @@ def _signature(member, direction: str) -> str:
     )
 
 
-def test_contract_matches_exported_methods_and_signals() -> None:
-    node = ElementTree.parse(CONTRACT).getroot()
-    assert node.attrib["name"] == OBJECT_PATH
-
-    messages = node.find(f"interface[@name='{MESSAGES_IFACE}']")
-    assert messages is not None
-    xml_methods = {method.attrib["name"]: method for method in messages.findall("method")}
+def _check_methods(node, interface_name: str) -> None:
+    interface = node.find(f"interface[@name='{interface_name}']")
+    assert interface is not None, interface_name
+    xml_methods = {method.attrib["name"]: method for method in interface.findall("method")}
     exported_methods = {
         name: member
         for name, member in vars(MessagesService).items()
-        if getattr(member, "_dbus_interface", None) == MESSAGES_IFACE
+        if getattr(member, "_dbus_interface", None) == interface_name
         and getattr(member, "_dbus_is_method", False)
     }
     assert xml_methods.keys() == exported_methods.keys()
     for name, member in exported_methods.items():
         assert _signature(xml_methods[name], "in") == member._dbus_in_signature
         assert _signature(xml_methods[name], "out") == member._dbus_out_signature
+
+
+def test_contract_matches_exported_methods_and_signals() -> None:
+    node = ElementTree.parse(CONTRACT).getroot()
+    assert node.attrib["name"] == OBJECT_PATH
+    assert {
+        interface.attrib["name"] for interface in node.findall("interface")
+    } == {MESSAGES_IFACE, EVENTS_IFACE, PRESENCE_IFACE}
+
+    _check_methods(node, MESSAGES_IFACE)
+    _check_methods(node, PRESENCE_IFACE)
 
     events = node.find(f"interface[@name='{EVENTS_IFACE}']")
     assert events is not None

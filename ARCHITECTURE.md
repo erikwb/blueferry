@@ -28,7 +28,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | --- | --- |
 | `daemon.py` | Orchestrates lifecycle: publishes D-Bus, then starts Bluetooth, supervisors, state, and sinks; builds `BackendDependencies`. |
 | `backend_operations.py` | Toolkit- and transport-neutral application operations: validation, thread routing, and policy. |
-| `dbus_service.py` | Session D-Bus adapter (`Messages1`/`Events1`) that maps operations to wire types; claims the bus name. |
+| `dbus_service.py` | Session D-Bus adapter (`Messages1`/`Events1`/`Presence1`) that maps operations to wire types; claims the bus name. |
 | `dbus_security.py` | Caller UID validation and per-connection/daemon-wide rate limits. |
 | `protocol.py` | Stable D-Bus identifiers and the API-generation compatibility check. |
 | `event_dispatcher.py` | Builds messages from MAP/ANCS events and fans them out to persistence, desktop, and D-Bus sinks. |
@@ -207,7 +207,10 @@ contract.
 ## D-Bus API and compatibility
 
 - `Messages1` carries commands and unicast snapshots; `Events1` carries
-  content-free live coordination. Identifiers live in `protocol.py`.
+  content-free live coordination. `Presence1` holds desktop-presence
+  controls that are not messaging (the opt-in away lock); their state is
+  reported through `Messages1.GetStatus`, and the compatibility check runs
+  through `Messages1` on the same owner. Identifiers live in `protocol.py`.
 - `data/io.weirdware.BlueFerry.xml` is canonical, installed under
   `dbus-1/interfaces`, and checked against the service's dbus-python
   decorators.
@@ -387,9 +390,9 @@ A change to these rules has to be made in both places.
   a continuous grace period, and is inhibited by suspend, adapter power-off,
   discovery, recovery, and a forgotten phone. It never unlocks: Bluetooth
   presence is not an authentication factor. Locking is asynchronous
-  (`org.freedesktop.ScreenSaver.Lock`, then logind `Session.Lock`), and
-  `GetStatus` reports only its state keys through the existing
-  argument-free `StatusChanged`.
+  (`org.freedesktop.ScreenSaver.Lock`, then logind `Session.Lock`). It is
+  configured through `Presence1.SetProximityLock`, and `GetStatus` reports
+  only its state keys through the existing argument-free `StatusChanged`.
 - **Read receipts** go through `read_receipts`, which delays MAP write-back so
   ANCS can still fetch group metadata. Local reads take effect immediately.
 

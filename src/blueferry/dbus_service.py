@@ -26,6 +26,7 @@ from blueferry.protocol import (
     ERROR_PREFIX,
     EVENTS_IFACE,
     OBJECT_PATH,
+    PRESENCE_IFACE,
 )
 from blueferry.protocol import (
     MESSAGES_IFACE as IFACE,
@@ -324,7 +325,7 @@ class MessagesService(dbus.service.Object):
         ))
 
     @dbus.service.method(
-        IFACE, in_signature="bu", out_signature="s", sender_keyword="sender"
+        PRESENCE_IFACE, in_signature="bu", out_signature="s", sender_keyword="sender"
     )
     def SetProximityLock(self, enabled: bool, grace_seconds: int, sender=None) -> str:
         return self._sync(lambda: self._authorized(

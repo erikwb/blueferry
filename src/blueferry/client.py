@@ -29,6 +29,7 @@ from blueferry.protocol import (
     OBEX_CALL_TIMEOUT_SEC,
     OBJECT_PATH,
     POLICY_CALL_TIMEOUT_SEC,
+    PRESENCE_IFACE,
     SNAPSHOT_CALL_TIMEOUT_SEC,
     STATUS_CALL_TIMEOUT_SEC,
     STORAGE_CALL_TIMEOUT_SEC,
@@ -277,9 +278,18 @@ class BackendClient:
         except dbus.exceptions.DBusException as error:
             raise BackendError(error.get_dbus_message() or str(error)) from error
 
+    def _presence_iface(self) -> dbus.Interface:
+        # Presence1 has no GetStatus; check compatibility through Messages1
+        # and address Presence1 on that same owner-bound object.
+        messages = self._iface(MESSAGES_IFACE)
+        proxy = getattr(messages, "proxy_object", None)
+        if proxy is None:
+            return self._raw_iface(PRESENCE_IFACE)
+        return dbus.Interface(proxy, PRESENCE_IFACE)
+
     def set_proximity_lock(self, enabled: bool, grace_seconds: int) -> dict:
         try:
-            return decode_mapping(self._iface(MESSAGES_IFACE).SetProximityLock(
+            return decode_mapping(self._presence_iface().SetProximityLock(
                 dbus.Boolean(enabled),
                 dbus.UInt32(grace_seconds),
                 timeout=POLICY_CALL_TIMEOUT_SEC,

@@ -28,6 +28,7 @@ from blueferry.protocol import (
     MESSAGES_API_VERSION,
     MESSAGES_IFACE,
     OBJECT_PATH,
+    PRESENCE_IFACE,
 )
 from blueferry.recipients import group_confirmation_token
 from blueferry.settings_store import SettingsStore
@@ -671,11 +672,20 @@ def test_proximity_lock_setter_round_trips_and_rejects_bad_grace(public_service)
     def change() -> None:
         connection, interface = _client(name)
         try:
+            presence = dbus.Interface(interface.proxy_object, PRESENCE_IFACE)
             outcome["set"] = json.loads(str(
-                interface.SetProximityLock(True, dbus.UInt32(45), timeout=5)
+                presence.SetProximityLock(True, dbus.UInt32(45), timeout=5)
             ))
             try:
                 interface.SetProximityLock(True, dbus.UInt32(1), timeout=5)
+            except dbus.exceptions.DBusException as error:
+                outcome["not_on_messages"] = error.get_dbus_name()
+            client = BackendClient(
+                interface_factory=lambda iface: dbus.Interface(interface.proxy_object, iface)
+            )
+            outcome["client"] = client.set_proximity_lock(False, 30)
+            try:
+                presence.SetProximityLock(True, dbus.UInt32(1), timeout=5)
             except dbus.exceptions.DBusException as error:
                 outcome["error"] = error.get_dbus_name()
         finally:
@@ -688,9 +698,11 @@ def test_proximity_lock_setter_round_trips_and_rejects_bad_grace(public_service)
 
     assert outcome == {
         "set": {"proximity_lock_enabled": True, "proximity_lock_grace_sec": 45},
+        "not_on_messages": "org.freedesktop.DBus.Error.UnknownMethod",
+        "client": {"proximity_lock_enabled": False, "proximity_lock_grace_sec": 30},
         "error": "io.weirdware.BlueFerry.Error.InvalidArgs",
     }
-    assert policy.proximity == (True, 45)
+    assert policy.proximity == (False, 30)
 
 
 def test_live_signal_contains_only_an_opaque_revision(public_service) -> None:
