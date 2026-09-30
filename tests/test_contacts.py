@@ -386,6 +386,71 @@ def test_skipped_photo_lines_with_crlf_line_endings() -> None:
     assert _parse_vcard_records(blob) == [("Windows Style", [], ["w@example.com"])]
 
 
+def test_line_iterables_parse_like_whole_text() -> None:
+    import io
+
+    blob = (
+        "BEGIN:VCARD\r\nFN:One\r\nPHOTO;ENCODING=b:QUJD\r\n DEFG\r\n"
+        "TEL:+15550000001\r\nEND:VCARD\r\n"
+        "BEGIN:VCARD\nFN:Two\nEMAIL:two@example.com\nEND:VCARD"
+    )
+    expected = [("One", ["15550000001"], []), ("Two", [], ["two@example.com"])]
+    assert _parse_vcard_records(blob) == expected
+    assert _parse_vcard_records(io.StringIO(blob, newline=None)) == expected
+    assert _parse_vcard_records(blob.splitlines(keepends=True)) == expected
+
+
+def test_streamed_lines_are_bounded_and_media_chunks_are_still_skipped() -> None:
+    import io
+
+    from blueferry.vcard import iter_bounded_lines
+
+    photo = "PHOTO;ENCODING=b:" + "A" * 50_000  # one unfolded 50 kB line
+    blob = f"BEGIN:VCARD\nFN:Long\n{photo}\nTEL:+15550002222\nEND:VCARD\n"
+    pieces = list(iter_bounded_lines(io.StringIO(blob), limit=4096))
+    assert max(len(piece) for piece in pieces) <= 4096
+    assert _parse_vcard_records(iter_bounded_lines(io.StringIO(blob), limit=4096)) == [
+        ("Long", ["15550002222"], []),
+    ]
+
+
+def test_unicode_line_separators_stay_inside_values() -> None:
+    blob = "BEGIN:VCARD\nFN:Ann\u2028Lee\nTEL:+15550003333\nEND:VCARD\n"
+    import io
+
+    assert _parse_vcard_records(io.StringIO(blob)) == [
+        ("Ann\u2028Lee", ["15550003333"], []),
+    ]
+
+
+def test_phonebook_is_streamed_from_the_transfer_file(tmp_path, monkeypatch) -> None:
+    card = "BEGIN:VCARD\r\nFN:Streamed\r\nTEL:+15550001111\r\nEND:VCARD\r\n"
+    replaced = []
+
+    class _Pbap:
+        def Select(self, *_args, **_kwargs):
+            pass
+
+        def PullAll(self, path, *_args, **_kwargs):
+            Path(path).write_text(card)
+            return "/transfer/phonebook", {"Status": "complete", "Size": len(card)}
+
+    def no_whole_file_read(*_args, **_kwargs):
+        raise AssertionError("the phonebook must be streamed, not read whole")
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setattr(contacts, "obex", lambda *_args: _Pbap())
+    monkeypatch.setattr(contacts, "wait_for_transfer", lambda *_args, **_kwargs: "complete")
+    monkeypatch.setattr(Path, "read_text", no_whole_file_read)
+    monkeypatch.setattr(
+        contact_repository.ContactRepository, "replace",
+        lambda _self, records: replaced.append(records) or len(records),
+    )
+
+    assert contacts.pull_phonebook(SimpleNamespace(pbap_path="/pbap")) == 1
+    assert replaced == [[("Streamed", ["15550001111"], [])]]
+
+
 def test_find_by_name_returns_phone_and_email_destinations(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "STATE_DIR", tmp_path)
     monkeypatch.setattr(config, "CONTACTS_DB", tmp_path / "contacts.sqlite")

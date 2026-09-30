@@ -1,7 +1,8 @@
 """Linear, resource-bounded extraction of vCard blocks."""
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
+from typing import TextIO
 
 from blueferry.limits import MAX_VCARD_CHARS
 
@@ -54,8 +55,18 @@ def _continues_skipped(line: str, previous: str, quoted_printable: bool) -> bool
     return bool(stripped) and set(stripped) <= _BASE64_CHARACTERS
 
 
+def iter_bounded_lines(stream: TextIO, *, limit: int = MAX_VCARD_CHARS) -> Iterator[str]:
+    """Read a text stream line by line, splitting any line longer than ``limit``.
+
+    A phonebook without line breaks must not become one enormous string. A
+    split piece of an over-long property is either skipped media data (base64
+    only) or text that overflows the card budget anyway.
+    """
+    return iter(lambda: stream.readline(max(1, int(limit))), "")
+
+
 def iter_vcard_bodies(
-    blob: str,
+    blob: str | Iterable[str],
     *,
     maximum: int,
     max_card_chars: int = MAX_VCARD_CHARS,
@@ -66,6 +77,11 @@ def iter_vcard_bodies(
     malformed input and ensures a run of unterminated begin markers stays
     linear rather than making a regex retry the remainder for every marker.
     Oversized cards are discarded through their matching terminator.
+
+    ``blob`` is either the whole text or an iterable of lines, such as a text
+    file opened with universal newlines. Iterating a file keeps only the
+    current line and card in memory instead of the whole phonebook plus its
+    split copy.
 
     PHOTO, LOGO, SOUND, and KEY properties (with their continuation lines)
     are skipped and do not count against ``max_card_chars``: nothing here
@@ -83,7 +99,12 @@ def iter_vcard_bodies(
     skipping: tuple[str, bool] | None = None
     previous = ""
 
-    for line in blob.splitlines():
+    source = (
+        blob.splitlines()
+        if isinstance(blob, str)
+        else (line.rstrip("\r\n") for line in blob)
+    )
+    for line in source:
         marker = line.strip().casefold()
         if marker == "begin:vcard":
             active = True
