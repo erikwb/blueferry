@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import atexit
+import functools
 import os
 import shutil
+import sys
 import tempfile
 import threading
 
@@ -23,6 +25,39 @@ for _variable, _child in (
 
 import dbus  # noqa: E402
 import pytest  # noqa: E402
+from gi.repository import GLib  # noqa: E402
+
+# Before anything imports blueferry: record every GLib timer and idle source
+# armed from Python so the guard below can fail a test that leaves one behind.
+# Supervisors bind GLib.timeout_add_seconds as a default argument at import
+# time, so the wrappers must already be in place when those modules load.
+# A leaked source fires later on an orphaned object inside whichever test
+# happens to iterate the default main context, and on the private test bus
+# that can stall an unrelated test on a blocking D-Bus call.
+# Raise rather than assert so the ordering check survives ``python -O``.
+if any(name == "blueferry" or name.startswith("blueferry.") for name in sys.modules):
+    raise RuntimeError("GLib source guard must be installed before blueferry is imported")
+_glib_sources_armed: list[tuple[int, str, object]] | None = None
+
+
+def _record_glib_source(name: str):
+    original = getattr(GLib, name)
+    assert callable(original), f"GLib.{name} is not callable"
+
+    @functools.wraps(original)
+    def armed(*args, **kwargs):
+        source_id = original(*args, **kwargs)
+        record = _glib_sources_armed
+        if record is not None:
+            callback = next((arg for arg in args if callable(arg)), None)
+            record.append((source_id, name, callback))
+        return source_id
+
+    setattr(GLib, name, armed)
+
+
+for _glib_name in ("timeout_add", "timeout_add_seconds", "idle_add"):
+    _record_glib_source(_glib_name)
 
 from blueferry import bus as bus_module  # noqa: E402
 
@@ -68,6 +103,52 @@ def _forbid_live_bus(kind: str):
         )
 
     return forbidden
+
+
+class GlibSourceGuard:
+    """Sources armed through GLib during the current test."""
+
+    def __init__(self) -> None:
+        self.armed: list[tuple[int, str, object]] = []
+
+    def live(self) -> list[tuple[int, str, object]]:
+        context = GLib.MainContext.default()
+        live = []
+        for source_id, name, callback in self.armed:
+            source = context.find_source_by_id(source_id)
+            if source is not None and not source.is_destroyed():
+                live.append((source_id, name, callback))
+        return live
+
+
+@pytest.fixture(autouse=True)
+def glib_source_guard():
+    """Fail a test that leaves a GLib timer or idle source armed.
+
+    Tests inject ``schedule``/``cancel`` fakes into supervisors instead of
+    arming real sources. Private D-Bus tests may use real GLib dispatch, but
+    everything they arm must have fired or been removed by teardown. This
+    fixture is defined first so its teardown runs after every other
+    function-scoped fixture has cleaned up.
+    """
+    global _glib_sources_armed
+    guard = GlibSourceGuard()
+    _glib_sources_armed = guard.armed
+    try:
+        yield guard
+    finally:
+        _glib_sources_armed = None
+    leaked = guard.live()
+    for source_id, _name, _callback in leaked:
+        # Do not let the orphan fire inside a later, unrelated test.
+        GLib.source_remove(source_id)
+    assert not leaked, (
+        "test left GLib sources armed; inject schedule/cancel fakes: "
+        + ", ".join(
+            f"GLib.{name}({getattr(callback, '__qualname__', None) or repr(callback)})"
+            for _id, name, callback in leaked
+        )
+    )
 
 
 @pytest.fixture(autouse=True)
