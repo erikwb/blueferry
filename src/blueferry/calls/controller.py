@@ -215,6 +215,9 @@ class CallController:
         # A fresh token per watched interface; replies to a superseded
         # GetProperties request are dropped.
         self._phone_tokens: dict[str, object] = {}
+        # Pending one-shot GetProperties retries, per interface.
+        self._phone_retries: dict[str, int] = {}
+        # Log-once keys, reset whenever the phone status is dropped.
         self._phone_errors: set[str] = set()
         self._phone_announced = False
 
@@ -1022,28 +1025,64 @@ class CallController:
             self._phone_announced = True
             log.info("reading the iPhone's battery and signal indicators through oFono")
 
+        self._read_phone(path, iface, token, retry=True)
+
+    def _read_phone(self, path: str, iface: str, token: object, *, retry: bool) -> None:
+        """GetProperties for one watched interface, with one delayed retry.
+
+        The first Handsfree.GetProperties makes oFono send AT+CNUM to the
+        phone; a concurrent call meanwhile fails with org.ofono.Error.InProgress,
+        and a slow phone can fail it outright. PropertyChanged alone would
+        leave the battery unknown until it next changes, so a failure other
+        than a vanished interface schedules a single retry.
+        """
+        def current() -> bool:
+            return self._phone_tokens.get(iface) is token
+
         def replied(properties: object = None) -> None:
-            if self._phone_tokens.get(iface) is not token:
+            if not current():
                 return
             self._phone_errors.discard(f"get:{iface}")
             self._apply_phone(lambda status: apply_properties(status, iface, properties))
 
         def failed(error: Exception) -> None:
-            if self._phone_tokens.get(iface) is not token:
+            if not current():
                 return
-            # Values stay unknown; the next Online/Interfaces change retries.
             key = f"get:{iface}"
-            if key in self._phone_errors:
-                return
-            self._phone_errors.add(key)
-            if interface_missing(error):
-                log.debug("oFono %s disappeared before GetProperties", iface)
-            else:
-                log.info("oFono %s GetProperties failed: %s", iface, public_error(error))
+            if key not in self._phone_errors:
+                self._phone_errors.add(key)
+                if interface_missing(error):
+                    log.debug("oFono %s disappeared before GetProperties", iface)
+                else:
+                    log.info("oFono %s GetProperties failed: %s", iface, public_error(error))
+            if retry and not interface_missing(error):
+                self._schedule_phone_retry(path, iface, token)
 
         self._call(path, iface, "GetProperties", "", (), replied, failed)
 
+    def _schedule_phone_retry(self, path: str, iface: str, token: object) -> None:
+        if iface in self._phone_retries:
+            return
+
+        def fire() -> bool:
+            self._phone_retries.pop(iface, None)
+            if self._running and self._phone_tokens.get(iface) is token:
+                self._read_phone(path, iface, token, retry=False)
+            return False
+
+        self._phone_retries[iface] = self._schedule(RETRY_STEADY_SEC, fire)
+
+    def _cancel_phone_retry(self, iface: str) -> None:
+        source = self._phone_retries.pop(iface, None)
+        if source is None:
+            return
+        try:
+            self._cancel(source)
+        except Exception:
+            log.debug("could not remove phone-status retry timer", exc_info=True)
+
     def _unwatch_phone(self, iface: str) -> None:
+        self._cancel_phone_retry(iface)
         self._remove(self._phone_matches.pop(iface, None))
         self._phone_tokens.pop(iface, None)
         self._phone = (
@@ -1060,6 +1099,8 @@ class CallController:
         self._phone = PhoneStatus()
         self._phone_path = None
         self._phone_announced = False
+        # A new modem session logs its own first failure again.
+        self._phone_errors.clear()
         if self._running:
             self._phone_changed(previous)
 

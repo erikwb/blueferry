@@ -1413,3 +1413,93 @@ def test_unpowered_modem_is_never_asked_for_phone_status() -> None:
 
     assert [p for p in transport.pending if p.method == "GetProperties"] == []
     assert all(v is None for v in _phone_keys(controller).values())
+
+
+def test_in_progress_get_properties_is_retried_once() -> None:
+    controller, transport, timers, _changes, _events, published = _phone_ready(
+        [VOICE_CALL_MANAGER_IFACE, HANDSFREE],
+    )
+
+    # oFono is still waiting for AT+CNUM from an earlier caller.
+    transport.take("GetProperties").on_error(_missing("org.ofono.Error.InProgress"))
+    assert all(v is None for v in _phone_keys(controller).values())
+    assert controller_mod.RETRY_STEADY_SEC in timers.delays()
+
+    timers.fire_all()
+    retry = transport.take("GetProperties")
+    assert (retry.interface, retry.path) == (HANDSFREE, MODEM)
+    retry.on_reply(_handsfree_props(4))
+    assert _phone_keys(controller)["phone_battery_level"] == 80
+    assert published[-1]["phone_battery_level"] == 80
+
+
+def test_phone_status_retry_is_single_and_skips_vanished_interfaces() -> None:
+    _controller, transport, timers, *_ = _phone_ready([VOICE_CALL_MANAGER_IFACE, HANDSFREE])
+
+    transport.take("GetProperties").on_error(_missing("org.ofono.Error.Failed"))
+    timers.fire_all()
+    transport.take("GetProperties").on_error(_missing("org.ofono.Error.Failed"))
+    assert controller_mod.RETRY_STEADY_SEC not in timers.delays()
+    assert [p for p in transport.pending if p.method == "GetProperties"] == []
+
+    _controller2, transport2, timers2, *_ = _phone_ready([VOICE_CALL_MANAGER_IFACE, HANDSFREE])
+    transport2.take("GetProperties").on_error(
+        _missing("org.freedesktop.DBus.Error.UnknownInterface"),
+    )
+    assert controller_mod.RETRY_STEADY_SEC not in timers2.delays()
+
+
+def test_pending_phone_status_retry_is_cancelled_by_unwatch_and_stop() -> None:
+    _controller, transport, timers, *_ = _phone_ready([VOICE_CALL_MANAGER_IFACE, HANDSFREE])
+    transport.take("GetProperties").on_error(_missing("org.ofono.Error.InProgress"))
+    assert controller_mod.RETRY_STEADY_SEC in timers.delays()
+
+    transport.emit(MODEM_IFACE, "PropertyChanged", MODEM, "Interfaces",
+                   dbus.Array([VOICE_CALL_MANAGER_IFACE], signature="s"))
+    assert controller_mod.RETRY_STEADY_SEC not in timers.delays()
+
+    controller2, transport2, timers2, *_ = _phone_ready([VOICE_CALL_MANAGER_IFACE, HANDSFREE])
+    transport2.take("GetProperties").on_error(_missing("org.ofono.Error.InProgress"))
+    controller2.stop()
+    assert timers2.entries == {}
+    assert [p for p in transport2.pending if p.method == "GetProperties"] == []
+
+
+def test_phone_status_failures_are_logged_once_per_modem_session(caplog) -> None:
+    import logging
+
+    caplog.set_level(logging.INFO, logger="blueferry.calls.controller")
+    _controller, transport, timers, *_ = _phone_ready([VOICE_CALL_MANAGER_IFACE, HANDSFREE])
+
+    def failures():
+        return [r for r in caplog.records if "GetProperties failed" in r.getMessage()]
+
+    transport.take("GetProperties").on_error(_missing("org.ofono.Error.Failed"))
+    timers.fire_all()
+    transport.take("GetProperties").on_error(_missing("org.ofono.Error.Failed"))
+    assert len(failures()) == 1
+
+    # Power cycle = new session: its first failure is reported again.
+    for powered in (False, True):
+        transport.emit(MODEM_IFACE, "PropertyChanged", MODEM, "Powered", dbus.Boolean(powered))
+    transport.take("GetProperties").on_error(_missing("org.ofono.Error.Failed"))
+    assert len(failures()) == 2
+
+
+def test_phone_values_and_own_number_never_reach_logs_or_state(caplog) -> None:
+    import logging
+
+    caplog.set_level(logging.DEBUG)
+    controller, transport, *_ = _phone_ready()
+    transport.take("GetProperties").on_reply(_handsfree_props(3))
+    transport.take("GetProperties").on_reply(_netreg_props(name="Sunrise", strength=80))
+    transport.emit(NETREG, "PropertyChanged", MODEM, "Name", dbus.String("Salt Mobile"))
+    transport.emit(HANDSFREE, "PropertyChanged", MODEM, "BatteryChargeLevel", dbus.Byte(1))
+
+    logged = " ".join(record.getMessage() for record in caplog.records)
+    for secret in ("Sunrise", "Salt Mobile", "+41791234567"):
+        assert secret not in logged
+    assert not [r for r in caplog.records if "battery" in r.getMessage().lower()
+                and any(char.isdigit() for char in r.getMessage())]
+    assert "+41791234567" not in repr(controller.phone_status)
+    assert "SubscriberNumbers" not in repr(controller.phone_status)
