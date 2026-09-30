@@ -111,6 +111,9 @@ def _daemon(make_daemon, calls):
     )()
     # logind and adapter power watches need the real system bus.
     value._watch_sleep_resume = lambda: calls.append("sleep-watch")
+    # The asynchronous adapter-state read for the proximity lock is covered
+    # in test_proximity_lock_daemon; keep it off this fake bus.
+    value._read_adapter_inhibitors = lambda: None
     return value
 
 

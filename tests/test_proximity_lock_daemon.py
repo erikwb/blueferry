@@ -223,3 +223,62 @@ def test_stop_disarms(rig) -> None:
     rig.daemon.proximity.stop()
     rig.timers.advance(3600)
     assert rig.locker.calls == 0
+
+
+class _AdapterBus:
+    """Records asynchronous Adapter1 GetAll calls; the test answers them."""
+
+    def __init__(self) -> None:
+        self.pending: list[tuple] = []
+
+    def call_async(self, service, path, interface, method, signature, args,
+                   reply, error, timeout=None):
+        assert (service, interface, method, args) == (
+            "org.bluez", "org.freedesktop.DBus.Properties", "GetAll",
+            ("org.bluez.Adapter1",),
+        )
+        self.pending.append((reply, error))
+
+
+def _restartable(rig, monkeypatch) -> _AdapterBus:
+    bus = _AdapterBus()
+    monkeypatch.setattr(daemon_mod, "get_system_bus", lambda: bus)
+    monkeypatch.setattr(daemon_mod.bluez_setup, "forget_advert_registration", lambda: None)
+    rig.daemon.solicitation = SimpleNamespace(reset_after_bluez_restart=lambda: None)
+    rig.daemon.adapter_class = SimpleNamespace(poke=lambda: None, stop=lambda: None)
+    rig.daemon._bluez_owner_match = object()
+    return bus
+
+
+def test_bluetoothd_loss_clears_adapter_inhibitors(rig, monkeypatch) -> None:
+    _restartable(rig, monkeypatch)
+    changed = rig.daemon._on_adapter_power_changed
+    changed("org.bluez.Adapter1", {"Powered": False, "Discovering": True}, [])
+    assert rig.daemon.proximity.snapshot()["proximity_lock_inhibited"] == (
+        "adapter-off,discovering"
+    )
+    # bluetoothd exits: its PropertiesChanged "off/discovering" can never be
+    # withdrawn by the process that set it.
+    rig.daemon._on_bluez_owner_changed("org.bluez", ":1.1", "")
+    assert rig.daemon.proximity.snapshot()["proximity_lock_inhibited"] == ""
+
+
+def test_bluetoothd_restart_reseeds_adapter_inhibitors(rig, monkeypatch) -> None:
+    bus = _restartable(rig, monkeypatch)
+    rig.daemon._on_adapter_power_changed("org.bluez.Adapter1", {"Discovering": True}, [])
+    rig.daemon._on_bluez_owner_changed("org.bluez", ":1.1", ":1.2")
+    assert rig.daemon.proximity.snapshot()["proximity_lock_inhibited"] == ""
+    assert len(bus.pending) == 1
+
+    reply, _error = bus.pending.pop()
+    reply({"Powered": True, "Discovering": True, "Address": "ignored"})
+    assert rig.daemon.proximity.snapshot()["proximity_lock_inhibited"] == "discovering"
+
+    rig.daemon._on_bluez_owner_changed("org.bluez", ":1.2", ":1.3")
+    stale, _error = bus.pending.pop(0)
+    rig.daemon._on_bluez_owner_changed("org.bluez", ":1.3", ":1.4")
+    stale({"Powered": False})  # answered by a superseded bluetoothd
+    assert "adapter-off" not in rig.daemon.proximity.snapshot()["proximity_lock_inhibited"]
+    _current, failed = bus.pending.pop()
+    failed(RuntimeError("no adapter"))  # tolerated
+    assert rig.daemon.proximity.snapshot()["proximity_lock_inhibited"] == ""

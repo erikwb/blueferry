@@ -542,6 +542,11 @@ class Daemon:
         # work. An interrupted power restoration keeps ordinary reconnects
         # paused until the recovery controller explicitly resumes them.
         self.recovery.invalidate()
+        if old_owner:
+            # Adapter power and discovery state belonged to the old
+            # bluetoothd; the replacement is read again in _on_bluez_restart.
+            self.proximity.inhibit(INHIBIT_ADAPTER_OFF, False)
+            self.proximity.inhibit(INHIBIT_DISCOVERING, False)
         # Bearer observations from the old bluetoothd no longer prove presence.
         self.proximity.reset()
         if old_owner:
@@ -576,6 +581,46 @@ class Daemon:
             remove_remote_sessions=False,
         )
         self.bearers.reset_after_bluez_restart()
+        self._read_adapter_inhibitors()
+
+    def _read_adapter_inhibitors(self) -> None:
+        """Seed the adapter-derived proximity inhibitors from bluetoothd.
+
+        PropertiesChanged only reports changes, so after startup or a
+        bluetoothd restart the current Powered/Discovering values are read
+        once, asynchronously. A reply from a superseded owner is ignored.
+        """
+        generation = self._bluez_owner_generation
+
+        def reply(properties) -> None:
+            if generation == self._bluez_owner_generation:
+                self._apply_adapter_inhibitors(properties)
+
+        def failed(error) -> None:
+            log.debug("could not read adapter state for proximity lock: %s", error)
+
+        try:
+            get_system_bus().call_async(
+                "org.bluez",
+                f"/org/bluez/{config.ADAPTER}",
+                "org.freedesktop.DBus.Properties",
+                "GetAll",
+                "s",
+                ("org.bluez.Adapter1",),
+                reply,
+                failed,
+                timeout=5.0,
+            )
+        except dbus.exceptions.DBusException as error:
+            failed(error)
+
+    def _apply_adapter_inhibitors(self, properties) -> None:
+        # Turning Bluetooth off on the desktop, or discovery for pairing, is a
+        # deliberate local action, not the phone walking away.
+        if "Powered" in properties:
+            self.proximity.inhibit(INHIBIT_ADAPTER_OFF, not bool(properties["Powered"]))
+        if "Discovering" in properties:
+            self.proximity.inhibit(INHIBIT_DISCOVERING, bool(properties["Discovering"]))
 
     def _profiles_lost(self, _reason: str) -> None:
         """Stop consumers that hold objects belonging to old sessions."""
@@ -598,6 +643,7 @@ class Daemon:
                 path=f"/org/bluez/{config.ADAPTER}",
                 arg0="org.bluez.Adapter1",
             )
+            self._read_adapter_inhibitors()
         if self._sleep_match is not None:
             return
         try:
@@ -614,12 +660,7 @@ class Daemon:
     def _on_adapter_power_changed(self, _interface, changed, invalidated) -> None:
         if not self.recovery.active and ("Powered" in changed or "Powered" in invalidated):
             self.recovery.invalidate()
-        # Turning Bluetooth off on the desktop, or discovery for pairing, is a
-        # deliberate local action, not the phone walking away.
-        if "Powered" in changed:
-            self.proximity.inhibit(INHIBIT_ADAPTER_OFF, not bool(changed["Powered"]))
-        if "Discovering" in changed:
-            self.proximity.inhibit(INHIBIT_DISCOVERING, bool(changed["Discovering"]))
+        self._apply_adapter_inhibitors(changed)
 
     def _on_prepare_for_sleep(self, sleeping) -> None:
         self.recovery.invalidate(suspended=bool(sleeping))
