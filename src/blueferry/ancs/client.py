@@ -909,7 +909,10 @@ class AncsClient:
             if not current_attempt():
                 # Also reached when the complete Data Source response arrived
                 # before BlueZ delivered the write reply.
-                log.debug("discarded stale ANCS write completion after BlueZ changed owner")
+                log.debug(
+                    "discarded ANCS write completion after the request "
+                    "already completed or the owner changed"
+                )
                 return
             self._request_timeout_id = self._schedule(
                 REQUEST_TIMEOUT_SECONDS, self._request_timed_out
@@ -940,13 +943,22 @@ class AncsClient:
                 "org.bluez.GattCharacteristic1",
             ).WriteValue(
                 [dbus.Byte(value) for value in request.packet],
-                {},
+                # Without introspection dbus-python cannot infer a{sv} from
+                # an empty dict and raises before sending.
+                dbus.Dictionary({}, signature="sv"),
                 reply_handler=written,
                 error_handler=failed,
                 timeout=DBUS_CALL_TIMEOUT_SECONDS,
             )
-        except dbus.exceptions.DBusException as error:
-            # dbus-python can still fail before dispatch, e.g. on a closed bus.
+        except Exception as error:
+            # dbus-python can still fail before dispatch, e.g. on a closed bus
+            # (DBusException) or while marshalling (ValueError/TypeError). The
+            # request must always be released, or the queue stalls forever.
+            if not isinstance(error, dbus.exceptions.DBusException):
+                error = dbus.exceptions.DBusException(
+                    f"{type(error).__name__}: {error}",
+                    name="org.freedesktop.DBus.Error.InvalidArgs",
+                )
             failed(error)
 
     def _observe_permission_error(self, error: dbus.exceptions.DBusException) -> None:

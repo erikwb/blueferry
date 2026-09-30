@@ -1415,6 +1415,11 @@ class _PendingControlPoint:
     def WriteValue(self, value, options, **kwargs) -> None:
         assert callable(kwargs.get("reply_handler"))
         assert callable(kwargs.get("error_handler"))
+        # Marshal exactly as dbus-python does on a proxy without
+        # introspection: a bare {} cannot be typed and would raise here.
+        client_module.dbus.lowlevel.MethodCallMessage(
+            "org.bluez", "/dev/cp", "org.bluez.GattCharacteristic1", "WriteValue",
+        ).append(value, options)
         self.writes.append({"value": bytes(value), **kwargs})
 
 
@@ -1542,3 +1547,26 @@ def test_write_that_fails_before_dispatch_is_handled_like_a_reply(monkeypatch) -
 
     assert cp.writes == 2
     assert client._active_request.notification.id == 2
+
+
+@pytest.mark.parametrize("failure", [ValueError, TypeError])
+def test_marshalling_failure_before_dispatch_releases_the_request(
+    monkeypatch, failure,
+) -> None:
+    class _Unmarshallable:
+        writes = 0
+
+        def WriteValue(self, _value, _options, **_kwargs) -> None:
+            self.writes += 1
+            if self.writes == 1:
+                raise failure("Unable to guess signature from an empty dict")
+
+    cp = _Unmarshallable()
+    client, timers = _async_write_client(monkeypatch, cp)
+    client._request_attrs(Notification.parse(_notification(1)))
+    client._request_attrs(Notification.parse(_notification(2)))
+
+    assert cp.writes == 2
+    assert client._active_request.notification.id == 2
+    assert client.connected is True
+    assert timers == []
