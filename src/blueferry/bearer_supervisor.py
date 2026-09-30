@@ -195,6 +195,11 @@ class BearerSupervisor:
         return self._states["le"] is True
 
     @property
+    def bredr_state(self) -> bool | None:
+        """Return the latest observed BR/EDR bearer state."""
+        return self._states["bredr"]
+
+    @property
     def le_state(self) -> bool | None:
         """Return the latest observed LE bearer state."""
         return self._states["le"]

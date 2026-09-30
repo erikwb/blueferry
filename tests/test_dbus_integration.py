@@ -59,6 +59,12 @@ class _Policy:
         self.contacts_only = enabled
         return enabled
 
+    def set_proximity_lock(self, enabled: bool, grace: int) -> dict:
+        if not 10 <= grace <= 3600:
+            raise ValueError("grace period out of range")
+        self.proximity = (enabled, grace)
+        return {"proximity_lock_enabled": enabled, "proximity_lock_grace_sec": grace}
+
 
 @pytest.fixture
 def public_service():
@@ -81,6 +87,7 @@ def public_service():
             status_provider=lambda: {"initializing": False},
             notification_policy=policy,
             on_notification_policy_changed=lambda: policy_changes.append(True),
+            set_proximity_lock=policy.set_proximity_lock,
         ),
     )
     try:
@@ -655,6 +662,35 @@ def test_notification_policy_round_trips_without_profile_io(public_service) -> N
     assert policy.value == "none"
     assert policy.contacts_only is True
     assert policy_changes == [True, True]
+
+
+def test_proximity_lock_setter_round_trips_and_rejects_bad_grace(public_service) -> None:
+    name, _pending, policy, _changes, _service = public_service
+    outcome = {}
+
+    def change() -> None:
+        connection, interface = _client(name)
+        try:
+            outcome["set"] = json.loads(str(
+                interface.SetProximityLock(True, dbus.UInt32(45), timeout=5)
+            ))
+            try:
+                interface.SetProximityLock(True, dbus.UInt32(1), timeout=5)
+            except dbus.exceptions.DBusException as error:
+                outcome["error"] = error.get_dbus_name()
+        finally:
+            connection.close()
+
+    client_thread = threading.Thread(target=change)
+    client_thread.start()
+    _dispatch_until(lambda: not client_thread.is_alive())
+    client_thread.join(timeout=1)
+
+    assert outcome == {
+        "set": {"proximity_lock_enabled": True, "proximity_lock_grace_sec": 45},
+        "error": "io.weirdware.BlueFerry.Error.InvalidArgs",
+    }
+    assert policy.proximity == (True, 45)
 
 
 def test_live_signal_contains_only_an_opaque_revision(public_service) -> None:

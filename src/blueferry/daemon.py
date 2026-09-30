@@ -51,6 +51,15 @@ from blueferry.obex.worker import ObexWorker
 from blueferry.pair_setup import bond_status
 from blueferry.profile_supervisor import ProfileSessions, ProfileSupervisor
 from blueferry.protocol import BUS_NAME
+from blueferry.proximity_lock import (
+    INHIBIT_ADAPTER_OFF,
+    INHIBIT_DISCOVERING,
+    INHIBIT_FORGOTTEN,
+    INHIBIT_RECOVERY,
+    ProximityLock,
+    ProximityLockSettings,
+    presence_from_bearers,
+)
 from blueferry.read_receipts import ReadReceiptQueue
 from blueferry.setup_verification import (
     CONTACTS,
@@ -131,6 +140,17 @@ class Daemon:
         self.adapter_class = AdapterClassSupervisor(config.ADAPTER)
         self.solicitation = SolicitationSupervisor(config.ADAPTER)
         self.phone_audio = WirePlumberPhoneAudioPolicy()
+        # Opt-in convenience lock. It only reads bearer state the supervisor
+        # below already polls and never unlocks anything.
+        self.proximity_settings = ProximityLockSettings()
+        self.proximity = ProximityLock(
+            enabled=self.proximity_settings.enabled,
+            grace_sec=self.proximity_settings.grace_sec,
+            read_presence=self._proximity_presence,
+            on_status=self._emit_status,
+            schedule=GLib.timeout_add_seconds,
+            cancel=GLib.source_remove,
+        )
         device_path = (
             f"/org/bluez/{config.ADAPTER}/"
             f"dev_{config.IPHONE_MAC.replace(':', '_')}"
@@ -141,7 +161,7 @@ class Daemon:
         self.bearers = BearerSupervisor(
             device_path,
             le_enabled=False,
-            on_status=self._emit_status,
+            on_status=self._bearer_status_changed,
             on_le_state=self._observe_le_state,
             on_le_dial=self.solicitation.set_dialing,
             inbound_le_primed=self.solicitation.active,
@@ -221,6 +241,8 @@ class Daemon:
         )
 
     def _pause_for_recovery(self) -> None:
+        # The recovery power cycle drops the link on purpose.
+        self.proximity.inhibit(INHIBIT_RECOVERY)
         if not self._bluetooth_initialized:
             return  # Startup restoration precedes all Bluetooth supervision.
         self.adapter_class.stop()
@@ -237,6 +259,7 @@ class Daemon:
             # or advertisements on a radio whose power-off may still be pending.
             if self._initialization_retry_id is None:
                 self._initialization_retry_id = GLib.idle_add(self._initialize)
+            self.proximity.inhibit(INHIBIT_RECOVERY, False)
             return
         self.adapter_class.start()
         self.solicitation.start()
@@ -244,11 +267,29 @@ class Daemon:
         self.bearers.reset_after_bluez_restart()
         self.profiles.resume()
         self.bearers.start()
+        self.proximity.inhibit(INHIBIT_RECOVERY, False)
 
     def _emit_status(self) -> None:
         emit = getattr(self._dbus_service, "emit_status", None)
         if emit is not None:
             emit()
+
+    def _bearer_status_changed(self) -> None:
+        self.proximity.refresh()
+        self._emit_status()
+
+    def _proximity_presence(self) -> bool | None:
+        return presence_from_bearers(self.bearers.bredr_state, self.bearers.le_state)
+
+    def _set_proximity_lock(self, enabled: bool, grace_sec: int) -> dict:
+        selected, grace = self.proximity_settings.set(enabled, grace_sec)
+        self.proximity.configure(selected, grace)
+        log.info(
+            "proximity lock %s (grace %ds)",
+            "enabled" if selected else "disabled",
+            grace,
+        )
+        return self.proximity.snapshot()
 
     def _observe_le_state(self, connected: bool | None) -> None:
         if connected is not True:
@@ -315,6 +356,7 @@ class Daemon:
                 prepare_storage=prepare_storage,
                 on_storage_prepared=self._apply_storage_preparation,
                 on_storage_changed=self._on_storage_changed,
+                set_proximity_lock=self._set_proximity_lock,
             ),
         )
         self.events.set_dbus_service(self._dbus_service)
@@ -500,6 +542,8 @@ class Daemon:
         # work. An interrupted power restoration keeps ordinary reconnects
         # paused until the recovery controller explicitly resumes them.
         self.recovery.invalidate()
+        # Bearer observations from the old bluetoothd no longer prove presence.
+        self.proximity.reset()
         if old_owner:
             bluez_setup.forget_advert_registration()
         if new_owner and not self.recovery.active:
@@ -570,13 +614,26 @@ class Daemon:
     def _on_adapter_power_changed(self, _interface, changed, invalidated) -> None:
         if not self.recovery.active and ("Powered" in changed or "Powered" in invalidated):
             self.recovery.invalidate()
+        # Turning Bluetooth off on the desktop, or discovery for pairing, is a
+        # deliberate local action, not the phone walking away.
+        if "Powered" in changed:
+            self.proximity.inhibit(INHIBIT_ADAPTER_OFF, not bool(changed["Powered"]))
+        if "Discovering" in changed:
+            self.proximity.inhibit(INHIBIT_DISCOVERING, bool(changed["Discovering"]))
 
     def _on_prepare_for_sleep(self, sleeping) -> None:
         self.recovery.invalidate(suspended=bool(sleeping))
-        if bool(sleeping) or self.recovery.active:
+        if bool(sleeping):
+            self.proximity.suspending()
+            return
+        if self.recovery.active:
+            self.proximity.resumed()
             return
         log.info("system resumed — refreshing Bluetooth profile sessions")
         self.bearers.poke()
+        # After the fresh bearer read: a link that has not come back yet
+        # after resume must not count as the phone leaving.
+        self.proximity.resumed()
         self.profiles.reconnect("system resumed")
 
     def _post_available_sessions_setup(self) -> None:
@@ -658,6 +715,7 @@ class Daemon:
             "ancs_subscribed": bool(ancs and ancs.subscribed),
             "ancs_authorized": bool(ancs and ancs.authorized),
             **self.bearers.snapshot(),
+            **self.proximity.snapshot(),
             "contacts": self.contacts.count(),
             "events": history_count(storage=self.storage),
             "verified_iphone_setup": list(self.setup_verification.verified),
@@ -728,9 +786,11 @@ class Daemon:
             # ``None`` is deliberately ignored above because it represents an
             # unavailable adapter or transient BlueZ inspection failure.
             log.info("saved iPhone bond was removed; stopping daemon")
+            self.proximity.inhibit(INHIBIT_FORGOTTEN)
             self.recovery.forget_phone()
             main_loop.quit()
             return False
+        self.proximity.inhibit(INHIBIT_FORGOTTEN)
         if not mac:
             log.info("saved iPhone target was cleared; stopping daemon")
         else:
@@ -751,6 +811,7 @@ class Daemon:
                 owner_match.remove()
             except Exception:
                 log.debug("could not remove BlueZ owner watch", exc_info=True)
+        self.proximity.stop()
         self.recovery.stop()
         self.read_receipts.close()
         self.adapter_class.stop()

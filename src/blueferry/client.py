@@ -277,6 +277,20 @@ class BackendClient:
         except dbus.exceptions.DBusException as error:
             raise BackendError(error.get_dbus_message() or str(error)) from error
 
+    def set_proximity_lock(self, enabled: bool, grace_seconds: int) -> dict:
+        try:
+            return decode_mapping(self._iface(MESSAGES_IFACE).SetProximityLock(
+                dbus.Boolean(enabled),
+                dbus.UInt32(grace_seconds),
+                timeout=POLICY_CALL_TIMEOUT_SEC,
+            ))
+        except (dbus.exceptions.DBusException, ValueError) as error:
+            raise BackendError(
+                error.get_dbus_message()
+                if isinstance(error, dbus.exceptions.DBusException)
+                else str(error)
+            ) from error
+
     def storage_policy(self) -> str:
         try:
             return str(self._iface(MESSAGES_IFACE).GetStoragePolicy(

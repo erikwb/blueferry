@@ -324,6 +324,17 @@ class MessagesService(dbus.service.Object):
         ))
 
     @dbus.service.method(
+        IFACE, in_signature="bu", out_signature="s", sender_keyword="sender"
+    )
+    def SetProximityLock(self, enabled: bool, grace_seconds: int, sender=None) -> str:
+        return self._sync(lambda: self._authorized(
+            sender, "settings",
+            lambda: self._json_response(self.operations.set_proximity_lock(
+                bool(enabled), int(grace_seconds)
+            )),
+        ))
+
+    @dbus.service.method(
         IFACE, in_signature="", out_signature="s", sender_keyword="sender"
     )
     def GetStoragePolicy(self, sender=None) -> str:
