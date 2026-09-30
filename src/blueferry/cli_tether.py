@@ -44,6 +44,11 @@ def tether(
     Turn on Personal Hotspot on the iPhone first. With NetworkManager the
     connection is configured automatically; otherwise run a DHCP client on
     the reported interface.
+
+    Exit status: 0 when the requested state was reached (or, with --wait 0,
+    the request was accepted and is in progress); 1 when it was not reached;
+    2 when the request was rejected, for example because the iPhone is not
+    connected or the backend is unavailable.
     """
     selected = action.strip().casefold()
     if selected not in _ACTIONS:
@@ -67,7 +72,10 @@ def tether(
         raise typer.Exit(code=2) from None
 
     _emit(status, as_json)
-    if selected == "on" and status.state != "connected":
-        raise typer.Exit(code=1)
-    if selected == "off" and status.state != "off":
-        raise typer.Exit(code=1)
+    if selected == "status":
+        return
+    target = "connected" if selected == "on" else "off"
+    pending = "connecting" if selected == "on" else "disconnecting"
+    if status.state == target or (not wait and status.state == pending):
+        return
+    raise typer.Exit(code=1)

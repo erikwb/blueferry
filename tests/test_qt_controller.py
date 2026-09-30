@@ -8,11 +8,12 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-from blueferry.client import BackendError
+from blueferry.client import BackendError, TetherUnsupportedError
 from blueferry.conversation_state import ConversationSnapshot
 from blueferry.models import BackendStatus, Thread
 from blueferry.qt.controller import BridgeController
 from blueferry.setup_client import ConfigurationState
+from blueferry.tether_status import TetherStatus
 
 
 def _apply_threads(controller, threads):
@@ -1471,15 +1472,16 @@ def test_mpris_setting_is_forwarded_and_merged_into_status(monkeypatch):
     assert controller.status["media_mpris_enabled"] is True
 
 class _TetherBackend(_Backend):
-    def __init__(self, *, fail: str | None = None):
+    def __init__(self, *, fail: str | None = None, unsupported: bool = False):
         super().__init__()
         self.fail = fail
+        self.unsupported = unsupported
         self.tether_calls: list[str] = []
 
     def _tether(self, name, state):
-        from blueferry.tether_status import TetherStatus
-
         self.tether_calls.append(name)
+        if self.unsupported:
+            raise TetherUnsupportedError("the running backend does not support tethering")
         if self.fail:
             raise BackendError(self.fail)
         return TetherStatus.from_dict(state)
@@ -1501,8 +1503,11 @@ def _tether_controller(backend):
 def _settle(controller) -> None:
     """Finish worker tasks and deliver their queued results to the controller."""
     from PySide6.QtCore import QCoreApplication
+    from PySide6.QtGui import QGuiApplication
 
-    application = QCoreApplication.instance() or QCoreApplication([])
+    # A GUI application: later QML tests in the same process need one, and
+    # Qt cannot replace a plain QCoreApplication once it exists.
+    application = QCoreApplication.instance() or QGuiApplication([])
     controller._pool.waitForDone(1000)
     for _ in range(5):
         application.processEvents()
@@ -1540,11 +1545,29 @@ def test_tether_toggle_sends_exactly_one_explicit_request():
     assert backend.tether_calls == ["connect", "disconnect"]
 
 
-def test_tether_unavailable_backend_hides_the_control():
-    controller = _tether_controller(_TetherBackend(fail="does not support tethering"))
+def test_backend_without_tether1_hides_the_control():
+    controller = _tether_controller(_TetherBackend(unsupported=True))
+    controller._tether = {"available": True, "state": "off"}
     controller.refreshTether()
     _settle(controller)
     assert controller.tether == {"available": False}
+    assert controller.errorText == ""
+
+
+def test_transient_tether_read_failure_keeps_the_last_state():
+    backend = _TetherBackend()
+    controller = _tether_controller(backend)
+    controller.refreshTether()
+    _settle(controller)
+    before = dict(controller.tether)
+
+    backend.fail = "status timed out"
+    controller.refreshTether()
+    _settle(controller)
+
+    assert controller.tether == before
+    assert controller.tether["available"] is True
+    assert "status timed out" in controller.errorText
 
 
 def test_failed_tether_request_reports_and_clears_pending():

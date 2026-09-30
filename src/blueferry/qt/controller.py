@@ -20,7 +20,7 @@ from PySide6.QtDBus import QDBusConnection
 from blueferry import __version__
 from blueferry.backend_lifecycle import ensure_backend_current, restart_backend
 from blueferry.bluetooth_devices import iphone_candidates
-from blueferry.client import BackendClient
+from blueferry.client import BackendClient, TetherUnsupportedError
 from blueferry.conversation_state import (
     ConversationSnapshot,
     ConversationState,
@@ -1164,17 +1164,35 @@ class BridgeController(QObject):
         }
         self.tetherChanged.emit()
 
-    def _tether_unavailable(self, _message: str) -> None:
-        # An older daemon without Tether1, or no daemon: hide the control.
-        self._tether = {"available": False}
-        self.tetherChanged.emit()
+    def _tether_result(self, value: object) -> None:
+        if value is None:
+            # The running daemon has no Tether1 (an older release): hide the
+            # control. Any other failure keeps the last known state.
+            self._tether = {"available": False}
+            self.tetherChanged.emit()
+            return
+        self._apply_tether(value)
+
+    def _tether_failed(self, message: str) -> None:
+        if self._tether.get("pending") is True:
+            self._tether = {**self._tether, "pending": False}
+            self.tetherChanged.emit()
+        self._operation_failed(message)
+
+    def _tether_request(self, request: Callable[[], object]) -> Callable[[], object]:
+        def run() -> object:
+            try:
+                return request()
+            except TetherUnsupportedError:
+                return None
+        return run
 
     @Slot()
     def refreshTether(self) -> None:
         self._run(
-            lambda: self._backend.tether_state(),
-            self._apply_tether,
-            self._tether_unavailable,
+            self._tether_request(lambda: self._backend.tether_state()),
+            self._tether_result,
+            self._tether_failed,
             busy=False,
         )
 
@@ -1191,12 +1209,10 @@ class BridgeController(QObject):
             return self._backend.tether_disconnect()
 
         def failed(message: str) -> None:
-            self._tether = {**self._tether, "pending": False}
-            self.tetherChanged.emit()
-            self._operation_failed(message)
+            self._tether_failed(message)
             self._tether_timer.start()
 
-        self._run(request, self._apply_tether, failed, busy=False)
+        self._run(self._tether_request(request), self._tether_result, failed, busy=False)
 
     @Slot(str)
     def setStoragePolicy(self, policy: str) -> None:

@@ -70,8 +70,9 @@ def tether_error_hint(token: str) -> str:
     """Actionable guidance for one backend error token."""
     hints = {
         "hotspot-refused": _(
-            "The iPhone refused the connection. Turn on Settings → Personal "
-            "Hotspot → Allow Others to Join, keep that screen open, and try again."
+            "Could not connect to the Personal Hotspot. This usually means it "
+            "is off: turn on Settings → Personal Hotspot → Allow Others to "
+            "Join on the iPhone, keep that screen open, and try again."
         ),
         "activation-failed": _(
             "The connection could not be started. Make sure Personal Hotspot "

@@ -3344,10 +3344,8 @@ Item {
 class _TetherBridge(QObject):
     """Inert recorder standing in for BridgeController; it performs no I/O."""
 
-    from PySide6.QtCore import Signal as _Signal
-
-    tetherChanged = _Signal()
-    statusChanged = _Signal()
+    tetherChanged = Signal()
+    statusChanged = Signal()
 
     def __init__(self, tether: dict) -> None:
         super().__init__()

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 from typer.testing import CliRunner
@@ -82,11 +83,35 @@ def test_on_gives_up_after_the_wait(fake) -> None:
     assert client.calls.count("state") == 3
 
 
-def test_off_without_wait_returns_immediately(fake) -> None:
-    client = fake(_Client([{"state": "disconnecting"}]))
-    result = runner.invoke(cli.app, ["tether", "off", "--wait", "0"])
-    assert client.calls == ["disconnect"]
-    assert result.exit_code == 1  # not yet off
+@pytest.mark.parametrize(("action", "state"), [("off", "disconnecting"), ("on", "connecting")])
+def test_without_wait_an_accepted_request_exits_0(fake, action, state) -> None:
+    client = fake(_Client([{"state": state}]))
+    result = runner.invoke(cli.app, ["tether", action, "--wait", "0"])
+    assert client.calls == ["disconnect" if action == "off" else "connect"]
+    assert result.exit_code == 0
+
+
+def test_without_wait_a_failed_request_exits_1(fake) -> None:
+    fake(_Client([{"state": "failed", "error": "hotspot-refused"}]))
+    result = runner.invoke(cli.app, ["tether", "on", "--wait", "0"])
+    assert result.exit_code == 1
+
+
+def test_help_documents_the_exit_status(fake) -> None:
+    # Under GitHub Actions Typer forces Rich into terminal mode, so with Rich
+    # installed the help has ANSI codes and panel borders inside wrapped
+    # lines. Compare the plain words.
+    result = runner.invoke(
+        cli.app,
+        ["tether", "--help"],
+        env={"NO_COLOR": "1", "TERM": "dumb", "COLUMNS": "200"},
+    )
+    assert result.exit_code == 0
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+    text = " ".join(plain.replace("\u2502", " ").split())
+    assert "Exit status: 0" in text
+    assert "1 when it was not reached" in text
+    assert "2 when the request was rejected" in text
 
 
 def test_json_output_is_the_decoded_state(fake) -> None:
