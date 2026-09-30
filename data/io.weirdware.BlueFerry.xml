@@ -159,6 +159,26 @@
                   value="InvalidArgs,NotReady"/>
     </method>
   </interface>
+  <interface name="io.weirdware.BlueFerry.Media1">
+    <annotation name="org.freedesktop.DBus.Description"
+                value="Opt-in iPhone now-playing and media commands over Apple Media Service"/>
+    <annotation name="io.weirdware.BlueFerry.Errors"
+                value="AuthorizationRequired,RateLimited"/>
+    <method name="GetNowPlaying">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="JSON snapshot; enabled is false unless BLUEFERRY_MEDIA_CONTROL_ENABLED is set"/>
+      <arg name="json" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="ResponseTooLarge"/>
+    </method>
+    <method name="SendMediaCommand">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="play, pause, toggle, next, previous, volume-up, volume-down, repeat, shuffle, skip-forward, skip-backward, like, dislike, bookmark"/>
+      <arg name="command" type="s" direction="in"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady,MediaCommandFailed"/>
+    </method>
+  </interface>
   <interface name="io.weirdware.BlueFerry.Events1">
     <annotation name="org.freedesktop.DBus.Description"
                 value="Content-free live invalidations; snapshots are fetched with Messages1"/>
@@ -168,6 +188,10 @@
     <signal name="StatusChanged"/>
     <signal name="OpenMessageRequested">
       <arg name="handle" type="s"/>
+    </signal>
+    <signal name="NowPlayingChanged">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Content-free; fetch details with Media1.GetNowPlaying"/>
     </signal>
   </interface>
 </node>

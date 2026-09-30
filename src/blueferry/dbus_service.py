@@ -25,6 +25,7 @@ from blueferry.protocol import (
     BUS_NAME,
     ERROR_PREFIX,
     EVENTS_IFACE,
+    MEDIA_IFACE,
     OBJECT_PATH,
     PRESENCE_IFACE,
 )
@@ -54,6 +55,11 @@ class MessagesService(dbus.service.Object):
         # One active lookup plus an interactive request queued behind a
         # cancelled passive lookup. The executor still runs one job at a time.
         self._wallet_worker = BackgroundWorker("blueferry-wallet", maximum=2)
+
+    @property
+    def caller_guard(self) -> CallerGuard:
+        """Shared so every media entry point draws from the same buckets."""
+        return self._caller_guard
 
     @staticmethod
     def _dbus_error(error: Exception) -> dbus.exceptions.DBusException:
@@ -485,6 +491,36 @@ class MessagesService(dbus.service.Object):
             bus.send_message(message)
         return True
 
+    # ---- Media1: opt-in iPhone now-playing and media control -------------
+
+    @dbus.service.method(
+        MEDIA_IFACE, in_signature="", out_signature="s", sender_keyword="sender"
+    )
+    def GetNowPlaying(self, sender=None) -> str:
+        return self._sync(lambda: self._authorized(
+            sender, "media-read",
+            lambda: self._json_response(self.operations.now_playing()),
+        ))
+
+    @dbus.service.method(
+        MEDIA_IFACE, in_signature="s", out_signature="",
+        async_callbacks=("reply_handler", "error_handler"),
+        sender_keyword="sender",
+    )
+    def SendMediaCommand(
+        self, command: str, reply_handler, error_handler, sender=None,
+    ) -> None:
+        self._async(
+            lambda: self._authorized(
+                sender, "media-command",
+                lambda: self.operations.send_media_command(
+                    str(command), reply_handler,
+                    lambda error: error_handler(self._dbus_error(error)),
+                ),
+            ),
+            error_handler,
+        )
+
     @dbus.service.signal(EVENTS_IFACE, signature="a{sv}")
     def HistoryChanged(self, props):
         """Private history changed; payload contains only a local revision."""
@@ -496,6 +532,16 @@ class MessagesService(dbus.service.Object):
     @dbus.service.signal(EVENTS_IFACE, signature="s")
     def OpenMessageRequested(self, handle: str):
         """A desktop notification requested an opaque message handle."""
+
+    @dbus.service.signal(EVENTS_IFACE, signature="")
+    def NowPlayingChanged(self):
+        """iPhone now-playing changed; clients call Media1.GetNowPlaying."""
+
+    def emit_now_playing_changed(self) -> None:
+        try:
+            self.NowPlayingChanged()
+        except Exception:
+            log.exception("NowPlayingChanged emit failed")
 
     def emit_history_changed(self) -> None:
         try:
