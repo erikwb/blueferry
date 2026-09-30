@@ -53,6 +53,7 @@ class BackendStatus:
     storage_detail: str = ""
     controller_vendor: str = ""
     ancs_limited_controller: bool = False
+    otp_autocopy: bool = False
     extra: Mapping[str, Any] = field(default_factory=dict, repr=False)
 
     @property
@@ -89,6 +90,7 @@ class BackendStatus:
             "map_connection_refused",
             "controller_vendor",
             "ancs_limited_controller",
+            "otp_autocopy",
         }
         return cls(
             daemon=_bool(value.get("daemon")),
@@ -119,6 +121,7 @@ class BackendStatus:
             storage_detail=_str(value.get("storage_detail")),
             controller_vendor=_str(value.get("controller_vendor")),
             ancs_limited_controller=_bool(value.get("ancs_limited_controller")),
+            otp_autocopy=_bool(value.get("otp_autocopy")),
             extra={key: item for key, item in value.items() if key not in known},
         )
 
@@ -148,6 +151,7 @@ class BackendStatus:
             "map_connection_refused": self.map_connection_refused,
             "controller_vendor": self.controller_vendor,
             "ancs_limited_controller": self.ancs_limited_controller,
+            "otp_autocopy": self.otp_autocopy,
         }
 
 

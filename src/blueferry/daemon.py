@@ -790,6 +790,8 @@ class Daemon:
             "contacts_only_notifications": (
                 self.notification_policy.contacts_only
             ),
+            # Configuration only; codes themselves never cross the bus.
+            "otp_autocopy": config.OTP_AUTOCOPY,
             "storage_policy": self.storage.status.policy,
             "storage_state": self.storage.status.state,
             "storage_detail": self.storage.status.detail,
