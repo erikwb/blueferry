@@ -634,7 +634,7 @@ def test_markup_is_removed_from_action_labels(monkeypatch) -> None:
 
     (_, _nid, args), = _notify_calls(server)
     assert list(args[5]) == [
-        "ancs-positive", "bAccept/b", "ancs-negative", "Tom  Jerry",
+        "ancs-positive", "Accept", "ancs-negative", "Tom Jerry",
     ]
 
 

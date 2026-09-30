@@ -219,6 +219,8 @@ KEEP_PHONE_AUDIO_ON_PHONE: bool = _env_bool(
 NOTIFICATION_TIMEOUT_MS: int = _env_int(
     "BLUEFERRY_NOTIFICATION_TIMEOUT_MS", 8_000, 1_000, 60_000
 )
+
+
 def ancs_actions_active() -> bool:
     """Whether ANCS action labels may be requested and shown at all."""
     return ANCS_ACTIONS and SHOW_NOTIFICATION_CONTENT
@@ -228,6 +230,7 @@ ANCS_ACTION_TIMEOUT_MS: int = _env_int(
     "BLUEFERRY_ANCS_ACTION_TIMEOUT_MS", 30_000, 1_000, 120_000
 )
 """Lifetime of ANCS popups that carry action buttons (e.g. a ringing call)."""
+
 MARK_READ_ON_DISMISS: bool = _env_bool("BLUEFERRY_MARK_READ_ON_DISMISS", True)
 """Whether dismissing a message's desktop popup marks it read on the iPhone.
 

@@ -1374,7 +1374,7 @@ class AncsClient:
         self._actionable.clear()
         self._actions_in_flight.clear()
         self._action_session += 1
-        if self._on_actions_reset is None:
+        if not self._notification_actions or self._on_actions_reset is None:
             return
         # UIDs are session-scoped and may be reused by the next session, so
         # desktop buttons wired to the old ones must go away.
@@ -1478,7 +1478,9 @@ class AncsClient:
                 "org.bluez.GattCharacteristic1",
             ).WriteValue(
                 [dbus.Byte(value) for value in packet],
-                {},
+                # Without introspection dbus-python cannot infer a{sv} from
+                # an empty dict and raises before sending.
+                dbus.Dictionary({}, signature="sv"),
                 reply_handler=on_reply,
                 error_handler=on_error,
                 timeout=DBUS_CALL_TIMEOUT_SECONDS,

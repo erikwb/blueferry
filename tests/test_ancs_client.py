@@ -1796,6 +1796,11 @@ class _AsyncControlPoint:
 
     def WriteValue(self, value, options, **kwargs) -> None:
         assert "reply_handler" in kwargs and "error_handler" in kwargs
+        # Marshal exactly as dbus-python does on a proxy without
+        # introspection: a bare {} cannot be typed and would raise here.
+        client_module.dbus.lowlevel.MethodCallMessage(
+            "org.bluez", "/dev/cp", "org.bluez.GattCharacteristic1", "WriteValue",
+        ).append(value, options)
         self.writes.append({"value": bytes(value), "options": options, **kwargs})
 
 
@@ -2062,3 +2067,25 @@ def test_session_reset_tells_the_desktop_to_retire_old_buttons(monkeypatch) -> N
 
     assert resets == [True]
     assert client.perform_notification_action(42, True) is False
+
+
+def test_action_write_options_marshal_without_introspection() -> None:
+    import dbus.lowlevel
+
+    message = dbus.lowlevel.MethodCallMessage(
+        "org.bluez", "/dev/cp", "org.bluez.GattCharacteristic1", "WriteValue",
+    )
+    with pytest.raises(ValueError):
+        message.append([client_module.dbus.Byte(0)], {})
+
+
+def test_disabled_actions_never_report_an_actions_reset(monkeypatch) -> None:
+    resets = []
+    client, _cp, _emitted = _action_client(
+        monkeypatch, enabled=False, reset=lambda: resets.append(True)
+    )
+
+    client.observe_bearer_state(False)
+    client._reset_actions()
+
+    assert resets == []

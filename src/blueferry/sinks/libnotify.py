@@ -83,6 +83,7 @@ _ANCS_NEGATIVE_ACTION = "ancs-negative"
 # Action labels are plain strings, but some notification servers interpret
 # markup in them. Drop markup-significant characters instead of escaping, so a
 # server that does not parse markup shows no literal entities.
+_LABEL_TAG_RE = re.compile(r"<[^>]*>")
 _LABEL_MARKUP_RE = re.compile(r"[<>&]")
 _ANCS_ACTION_FEEDBACK = {
     "unavailable": "The notification is no longer available on the iPhone.",
@@ -347,7 +348,8 @@ class LibnotifySink:
             # Action labels are plain text in the spec, but some servers
             # render them loosely; apply the same display sanitizing.
             text = terminal_text(str(label or "")).replace("\n", " ")
-            text = _LABEL_MARKUP_RE.sub("", text).strip()
+            text = _LABEL_MARKUP_RE.sub("", _LABEL_TAG_RE.sub("", text))
+            text = " ".join(text.split())
             if text:
                 actions += [key, text]
         return actions
