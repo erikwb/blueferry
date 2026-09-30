@@ -38,6 +38,7 @@ _INHIBIT_TEXT = {
     pl.INHIBIT_RECOVERY: "BlueFerry is recovering the Bluetooth adapter",
     pl.INHIBIT_FORGOTTEN: "the iPhone was forgotten",
     pl.INHIBIT_STOPPED: "the service is stopping",
+    pl.INHIBIT_LOCAL_DISCONNECT: "this computer disconnected the iPhone",
 }
 
 

@@ -177,6 +177,7 @@ class Daemon:
         self._dbus_service: MessagesService | None = None
         self._sleep_match = None
         self._power_match = None
+        self._disconnect_match = None
         self._bluez_owner_match = None
         self._bluez_owner_generation = 0
         packaged_release = installed_release()
@@ -644,6 +645,22 @@ class Daemon:
                 arg0="org.bluez.Adapter1",
             )
             self._read_adapter_inhibitors()
+        if self._disconnect_match is None:
+            # Device1.Disconnected(reason, message) is documented in BlueZ
+            # 5.87; on builds without it the match simply never fires.
+            try:
+                self._disconnect_match = get_system_bus().add_signal_receiver(
+                    self._on_device_disconnected,
+                    dbus_interface="org.bluez.Device1",
+                    signal_name="Disconnected",
+                    bus_name="org.bluez",
+                    path=(
+                        f"/org/bluez/{config.ADAPTER}/"
+                        f"dev_{config.IPHONE_MAC.replace(':', '_')}"
+                    ),
+                )
+            except dbus.exceptions.DBusException:
+                log.debug("BlueZ disconnect reasons unavailable", exc_info=True)
         if self._sleep_match is not None:
             return
         try:
@@ -656,6 +673,13 @@ class Daemon:
             )
         except dbus.exceptions.DBusException:
             log.debug("logind sleep monitoring unavailable", exc_info=True)
+
+    def _on_device_disconnected(self, reason="", _message="") -> None:
+        # Only the reason code is inspected or logged, never the message.
+        code = str(reason)[:128]
+        log.debug("iPhone disconnected (%s)", code)
+        if code.rsplit(".", 1)[-1].casefold() == "local":
+            self.proximity.local_disconnect()
 
     def _on_adapter_power_changed(self, _interface, changed, invalidated) -> None:
         if not self.recovery.active and ("Powered" in changed or "Powered" in invalidated):
@@ -893,6 +917,12 @@ class Daemon:
             except Exception:
                 log.debug("could not remove power monitor", exc_info=True)
             self._power_match = None
+        if self._disconnect_match is not None:
+            try:
+                self._disconnect_match.remove()
+            except Exception:
+                log.debug("could not remove disconnect monitor", exc_info=True)
+            self._disconnect_match = None
         if self._dbus_service is not None:
             self._dbus_service.close()
         # BlueZ 5.87 SIGSEGVs in gobex when RemoveSession runs on shutdown,

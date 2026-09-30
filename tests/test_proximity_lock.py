@@ -717,3 +717,42 @@ def test_plan_describes_the_dispatch_order_without_calling() -> None:
     assert "ScreenSaver" in plan[0]
     assert any("XDG_SESSION_ID" in step for step in plan)
     assert bus.calls == []
+
+
+# ---- desktop-side disconnect (BlueZ Device1.Disconnected reason Local) ----
+
+
+def test_local_disconnect_pauses_until_the_next_connection() -> None:
+    harness = Harness(grace=30)
+    harness.see(True)
+    harness.see(False)
+    harness.lock.local_disconnect()  # arrives after the poll saw the loss
+    harness.timers.advance(3600)
+    assert harness.locker.calls == 0
+    assert harness.lock.snapshot()["proximity_lock_inhibited"] == "local-disconnect"
+
+    harness.see(True)  # reconnect ends the pause and is fresh presence
+    assert harness.lock.state == pl.STATE_ARMED
+    assert harness.lock.snapshot()["proximity_lock_inhibited"] == ""
+    harness.see(False)
+    harness.timers.advance(30)
+    assert harness.locker.calls == 1
+
+
+def test_local_disconnect_before_the_poll_ignores_the_loss() -> None:
+    harness = Harness(grace=30)
+    harness.see(True)
+    harness.lock.local_disconnect()
+    harness.see(False)
+    harness.timers.advance(3600)
+    assert harness.locker.calls == 0
+
+
+def test_local_disconnect_does_not_override_other_inhibitors() -> None:
+    harness = Harness(grace=30)
+    harness.see(True)
+    harness.lock.inhibit(pl.INHIBIT_ADAPTER_OFF)
+    harness.lock.local_disconnect()
+    harness.see(True)
+    assert harness.lock.state == pl.STATE_IDLE
+    assert harness.lock.snapshot()["proximity_lock_inhibited"] == "adapter-off"

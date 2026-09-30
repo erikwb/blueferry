@@ -362,6 +362,10 @@ How it decides:
 - It never locks while the system is suspending, while desktop Bluetooth is
   off, during Bluetooth discovery or pairing, while BlueFerry itself is
   recovering the adapter, or after the iPhone is forgotten.
+- When BlueZ reports that this computer ended the connection (for example
+  "Disconnect" in a desktop Bluetooth applet), the lock pauses until the
+  iPhone is connected again. Older BlueZ versions without this report
+  simply do not pause.
 
 Locking uses `org.freedesktop.ScreenSaver.Lock` on the session bus (KDE
 Plasma and others) and falls back to `org.freedesktop.login1.Session.Lock`

@@ -25,7 +25,7 @@ ColumnLayout {
             return qsTr("Locked the desktop; waiting for your iPhone to return")
         case "idle":
             return status.proximity_lock_inhibited
-                ? qsTr("Paused (Bluetooth off, discovery, suspend, or recovery)")
+                ? qsTr("Paused (Bluetooth off, discovery, suspend, recovery, or disconnected from this computer)")
                 : qsTr("Waiting to see your iPhone connected")
         default:
             return qsTr("Off")

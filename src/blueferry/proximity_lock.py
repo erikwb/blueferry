@@ -58,6 +58,10 @@ INHIBIT_DISCOVERING = "discovering"
 INHIBIT_RECOVERY = "recovery"
 INHIBIT_FORGOTTEN = "forgotten"
 INHIBIT_STOPPED = "stopped"
+# BlueZ Device1.Disconnected reported org.bluez.Reason.Local: this desktop
+# ended the connection (for example a Bluetooth applet's Disconnect). Unlike
+# the other inhibitors it ends with the next observed connection.
+INHIBIT_LOCAL_DISCONNECT = "local-disconnect"
 
 RESULT_SCREENSAVER = "screensaver"
 # kscreenlocker delays its Lock() reply until the greeter is up. A reply that
@@ -519,9 +523,22 @@ class ProximityLock:
 
     def bearer_changed(self) -> None:
         """A bearer transition was just observed; its cached state is fresh."""
+        present = self._read()
+        if present is True:
+            # The phone is connected again after a desktop-side disconnect.
+            # This transition is itself fresh presence.
+            self._inhibitors.discard(INHIBIT_LOCAL_DISCONNECT)
         if self._enabled and not self._inhibitors:
-            self._observe(self._read())
+            self._observe(present)
         self._emit_if_changed()
+
+    def local_disconnect(self) -> None:
+        """BlueZ reports that this desktop ended the connection.
+
+        This only pauses the lock; the polled bearer state stays the source
+        of truth, and the next observed connection ends the pause.
+        """
+        self.inhibit(INHIBIT_LOCAL_DISCONNECT)
 
     def _read(self) -> bool | None:
         try:

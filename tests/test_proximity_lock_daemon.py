@@ -282,3 +282,69 @@ def test_bluetoothd_restart_reseeds_adapter_inhibitors(rig, monkeypatch) -> None
     _current, failed = bus.pending.pop()
     failed(RuntimeError("no adapter"))  # tolerated
     assert rig.daemon.proximity.snapshot()["proximity_lock_inhibited"] == ""
+
+
+@pytest.mark.parametrize(("reason", "pauses"), [
+    ("org.bluez.Reason.Local", True),
+    ("org.bluez.Reason.Timeout", False),
+    ("org.bluez.Reason.Remote", False),
+    ("", False),
+])
+def test_disconnect_reason_local_pauses_the_lock(rig, reason, pauses) -> None:
+    rig.link(True)
+    rig.link(False)
+    rig.daemon._on_device_disconnected(reason, "free-form message")
+    rig.timers.advance(3600)
+    assert (rig.locker.calls == 0) is pauses
+    if pauses:
+        rig.link(True)
+        assert rig.daemon.proximity.state == pl.STATE_ARMED
+
+
+def test_disconnect_reason_watch_is_installed_once_and_tolerantly(
+    make_daemon, monkeypatch,
+) -> None:
+    import dbus
+
+    instance = make_daemon()
+    watched = []
+
+    def add_signal_receiver(callback, **kwargs):
+        if kwargs.get("signal_name") == "Disconnected":
+            watched.append(kwargs)
+            return SimpleNamespace(remove=lambda: None)
+        return SimpleNamespace(remove=lambda: None)
+
+    bus = SimpleNamespace(
+        add_signal_receiver=add_signal_receiver,
+        call_async=lambda *_args, **_kwargs: None,
+        get_object=lambda *_args: (_ for _ in ()).throw(
+            dbus.exceptions.DBusException("no logind")
+        ),
+    )
+    monkeypatch.setattr(daemon_mod, "get_system_bus", lambda: bus)
+    monkeypatch.setattr(daemon_mod.config, "IPHONE_MAC", "02:00:00:00:00:01")
+    monkeypatch.setattr(daemon_mod.config, "ADAPTER", "hci0")
+    instance._watch_sleep_resume()
+    assert watched == [{
+        "dbus_interface": "org.bluez.Device1",
+        "signal_name": "Disconnected",
+        "bus_name": "org.bluez",
+        "path": "/org/bluez/hci0/dev_02_00_00_00_00_01",
+    }]
+    instance._watch_sleep_resume()  # idempotent
+    assert len(watched) == 1
+
+    # A bus that refuses the match must not break startup.
+    failing = make_daemon()
+
+    def refuse(callback, **kwargs):
+        if kwargs.get("signal_name") == "Disconnected":
+            raise dbus.exceptions.DBusException("match rejected")
+        return SimpleNamespace(remove=lambda: None)
+
+    monkeypatch.setattr(daemon_mod, "get_system_bus", lambda: SimpleNamespace(
+        add_signal_receiver=refuse, call_async=bus.call_async, get_object=bus.get_object,
+    ))
+    failing._watch_sleep_resume()
+    assert failing._disconnect_match is None
