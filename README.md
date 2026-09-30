@@ -314,6 +314,42 @@ daemon run without logging its notification content:
 journalctl --user -u blueferry -f | grep "ANCS app observed"
 ```
 
+### iPhone notification actions (opt-in)
+
+iOS attaches actions to some notifications, such as **Accept**/**Decline** on
+an incoming call or calendar invitation, or **Clear**. With
+**All iPhone Notifications** selected, you can show them as buttons on the
+desktop popup:
+
+```bash
+BLUEFERRY_ANCS_ACTIONS=true
+# Popups with action buttons stay longer than ordinary ones (1000-120000 ms):
+BLUEFERRY_ANCS_ACTION_TIMEOUT_MS=30000
+```
+
+Clicking a button asks the iPhone to perform that action through ANCS. This is
+independent of hands-free calling: *Accept* on a call answers it on the
+iPhone, and the audio stays wherever iOS routes it. Nothing is sent to the
+phone unless you click a labelled button. Dismissing or letting a popup
+expire never touches the phone, and each popup runs at most one action.
+Messages popups come from MAP and keep their existing open and dismiss
+behavior.
+
+The button text is chosen by the app that sent the notification, so it can
+contain content (for example "Pay CHF 50 to Bob"). Actions therefore stay off
+while `BLUEFERRY_SHOW_NOTIFICATION_CONTENT=false`: the labels are then not even
+requested from the iPhone. When the iPhone connection is re-established,
+popups whose buttons belonged to the previous connection are closed, because
+iOS may reuse their notification numbers.
+
+If the notification was already handled on the iPhone, or the phone
+disconnected in the meantime, BlueFerry shows a short "iPhone action not
+completed" notice instead. `blueferry doctor` reports whether the setting is
+enabled, and `GetStatus` includes `ancs_actions`.
+
+This has only been exercised against simulated ANCS responses so far, not a
+physical iPhone.
+
 Restart the user service after editing `local.env` settings.
 
 When WirePlumber 0.5 or newer is installed, BlueFerry keeps calls and music on

@@ -441,6 +441,25 @@ or app display-name attributes are requested. Even when mirroring is enabled,
 included non-Messages content is never written to history or placed on
 BlueFerry's D-Bus event feed.
 
+With the opt-in `BLUEFERRY_ANCS_ACTIONS`, BlueFerry reads the Notification
+Source `PositiveAction`/`NegativeAction` event flags. For an included
+non-Messages notification it appends `PositiveActionLabel` (6) and/or
+`NegativeActionLabel` (7) to the attribute request; unlike title, subtitle and
+message, these take no maximum-length parameter. A clicked popup button is
+sent as `PerformNotificationAction` (command 2, the 32-bit notification UID,
+action 0 for positive or 1 for negative). That command produces no Data
+Source response, so it is written asynchronously outside the serialized
+attribute backlog and cannot disturb response reassembly. iOS reports failure
+as an ATT error on the write, which BlueZ surfaces as
+`org.bluez.Error.Failed: Operation failed with ATT error: 0xNN`: `0xA2`
+(invalid parameter) means the UID no longer exists, typically because the
+notification was handled on the phone first; `0xA3` means the action failed;
+`0xA0`/`0xA1` mean the command was not understood. UIDs are valid only within
+one ANCS session, so a subscription reset discards every pending action and
+closes the desktop popups still wired to the old UIDs. Labels are app-defined
+strings and are requested only while notification content is shown. This path
+is verified only against simulated responses, not a physical iPhone.
+
 Conversation reads update local history immediately. The daemon delays the
 corresponding MAP read acknowledgements by at least five seconds, including
 those caused by dismissing desktop message notifications. This gives ANCS time
