@@ -134,3 +134,18 @@ def test_legacy_degraded_status_still_recognizes_errno_111() -> None:
             "connectivity_detail": "CreateSession(PBAP) failed: Connection refused (111)",
         }
     ) is False
+
+
+def test_connection_summary_appends_optional_phone_battery_and_signal() -> None:
+    status = {
+        "connectivity_state": "ready",
+        "phone_battery_level": 40,
+        "phone_signal_strength": 60,
+        "phone_network_name": "Sunrise",
+        "phone_network_status": "registered",
+    }
+
+    assert connection_subtitle(status, reachable=True) == (
+        "Ready · Battery about 40 % · Signal 60 %"
+    )
+    assert connection_subtitle({"connectivity_state": "ready"}, reachable=True) == "Ready"
