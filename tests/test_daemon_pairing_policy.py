@@ -9,6 +9,7 @@ from blueferry import contact_sync, daemon
 
 class _Bearer:
     le_state = False
+    le_bond_suspect = False
 
     def __init__(self, calls):
         self.calls = calls
@@ -258,6 +259,9 @@ def test_recovery_observation_excludes_permissions_and_missing_profiles(make_dae
     value.profiles.ready = False
     assert not value._recovery_observation().eligible
     value.profiles.ready = True
+    value.bearers.le_bond_suspect = True
+    assert not value._recovery_observation().eligible
+    value.bearers.le_bond_suspect = False
     monkeypatch.setattr(daemon.config, "ANCS_ENABLED", False)
     assert not value._recovery_observation().eligible
 
@@ -692,3 +696,19 @@ def test_automatic_contacts_wait_for_map_but_manual_sync_still_works(make_daemon
     value._post_available_sessions_setup()
     assert not jobs
     assert listeners == [True]
+
+
+def test_authorized_ancs_disproves_a_suspect_le_bond(make_daemon, monkeypatch):
+    calls = []
+    value = make_daemon()
+    value.solicitation = _Solicitation(calls)
+    proofs = []
+    monkeypatch.setattr(value.bearers, "note_le_usable", proofs.append)
+
+    value.ancs = SimpleNamespace(connected=False)
+    value._on_ancs_status()
+    assert proofs == []
+
+    value.ancs = SimpleNamespace(connected=True)
+    value._on_ancs_status()
+    assert proofs == ["ANCS authorized"]

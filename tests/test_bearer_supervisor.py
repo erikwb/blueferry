@@ -44,6 +44,9 @@ def test_connects_classic_before_le(caplog) -> None:
         "le": True,
         "last_le_error": "",
         "last_le_error_message": "",
+        "le_bond_suspect": False,
+        "le_flap_count": 0,
+        "last_le_disconnect_reason": "",
     }
     assert "probing iPhone BR/EDR and LE bearer state" in caplog.text
     assert "iPhone BREDR bearer state: disconnected" in caplog.text
@@ -82,6 +85,9 @@ def test_snapshot_includes_the_last_le_connect_error() -> None:
         "le": False,
         "last_le_error": "org.bluez.Error.Failed",
         "last_le_error_message": "connection-aborted",
+        "le_bond_suspect": False,
+        "le_flap_count": 0,
+        "last_le_disconnect_reason": "",
     }
 
 
