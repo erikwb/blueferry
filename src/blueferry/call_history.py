@@ -15,7 +15,7 @@ nothing here performs I/O.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone, tzinfo
 from typing import Any
@@ -82,13 +82,35 @@ class CallRecord:
         The raw timestamp is used rather than its UTC conversion so a change
         of the desktop's timezone cannot make an old call look new.
         """
-        return f"{self.direction}|{self.raw_time}|{self.phone or self.address}"
+        return f"{self.direction}|{self.raw_time}|{self.number_identity}"
+
+    @property
+    def number_identity(self) -> str:
+        """The number with ``+41…``/``0041…`` spellings folded together."""
+        return canonical_phone_digits(self.phone) or self.address
 
     @property
     def merge_key(self) -> tuple[str, str, bool]:
         # iOS may list a missed call in both mch and ich. Keep incoming and
         # missed in one class so the pair collapses; outgoing stays separate.
-        return (self.raw_time, self.phone or self.address, self.direction == OUTGOING)
+        return (self.raw_time, self.number_identity, self.direction == OUTGOING)
+
+    def resolution_candidates(self) -> list[str]:
+        """Addresses to try, in order, against the contact cache.
+
+        ``ContactsResolver`` normalizes to digits and bridges only the NANP
+        country code, so an international ``00`` spelling is retried in its
+        ``+`` form (and vice versa) here rather than weakening the resolver.
+        """
+        candidates: list[str] = []
+        primary = self.phone or self.address
+        if primary:
+            candidates.append(primary)
+        if self.phone and self.phone.startswith("00") and len(self.phone) > 9:
+            candidates.append("+" + self.phone[2:])
+        elif self.phone and self.address.lstrip().startswith("+"):
+            candidates.append("00" + self.phone)
+        return candidates
 
     def to_storage(self) -> dict[str, Any]:
         return {
@@ -181,6 +203,19 @@ def parse_call_timestamp(
         return None
 
 
+def canonical_phone_digits(phone: str | None) -> str | None:
+    """Fold the ``00`` international prefix into the ``+`` form's digits.
+
+    ``normalize_phone`` keeps digits only, so ``+41 79…`` becomes ``4179…``
+    while ``0041 79…`` becomes ``004179…``. Both dial the same number.
+    """
+    if not phone:
+        return None
+    if phone.startswith("00") and len(phone) > 9:
+        return phone[2:]
+    return phone
+
+
 def _clean(value: object, limit: int) -> str:
     """Bound one remote string and make it safe to render on one line."""
     if not isinstance(value, str):
@@ -199,9 +234,60 @@ def _unfold(body: str) -> list[str]:
     return ["".join(parts) for parts in lines]
 
 
+def _value_separator(line: str) -> int:
+    """Index of the first ``:`` outside double-quoted parameter values."""
+    quoted = False
+    for index, character in enumerate(line):
+        if character == '"':
+            quoted = not quoted
+        elif character == ":" and not quoted:
+            return index
+    return -1
+
+
+def _split_escaped(value: str, separator: str = ";") -> list[str]:
+    """Split at unescaped separators, keeping escapes for ``_unescape``."""
+    parts: list[str] = []
+    current: list[str] = []
+    escaped = False
+    for character in value:
+        if escaped:
+            current.append("\\" + character)
+            escaped = False
+        elif character == "\\":
+            escaped = True
+        elif character == separator:
+            parts.append("".join(current))
+            current = []
+        else:
+            current.append(character)
+    if escaped:
+        current.append("\\")
+    parts.append("".join(current))
+    return parts
+
+
+def _unescape(value: str) -> str:
+    """Resolve RFC 2426 text escapes: ``\\\\``, ``\\;``, ``\\,``, ``\\n``."""
+    output: list[str] = []
+    escaped = False
+    for character in value:
+        if escaped:
+            output.append("\n" if character in "nN" else character)
+            escaped = False
+        elif character == "\\":
+            escaped = True
+        else:
+            output.append(character)
+    if escaped:
+        output.append("\\")
+    return "".join(output)
+
+
 def _split_property(line: str) -> tuple[str, list[str], str]:
     """Return ``(NAME, [PARAMS...], value)`` for one unfolded content line."""
-    head, _, value = line.partition(":")
+    separator = _value_separator(line)
+    head, value = (line, "") if separator < 0 else (line[:separator], line[separator + 1:])
     parts = head.split(";")
     name = parts[0].strip().upper()
     # vCard 3.0 allows a group prefix ("item1.TEL"); drop it.
@@ -222,7 +308,7 @@ def _direction_from_params(params: Iterable[str]) -> str | None:
 
 def _structured_name(value: str) -> str:
     """Render ``N:Family;Given;Middle;Prefix;Suffix`` as "Given Middle Family"."""
-    parts = [part.strip() for part in value.split(";")]
+    parts = [_unescape(part).strip() for part in _split_escaped(value)]
     family = parts[0] if parts else ""
     given = parts[1] if len(parts) > 1 else ""
     middle = parts[2] if len(parts) > 2 else ""
@@ -258,7 +344,7 @@ def parse_call_history(
                 timestamp = value.strip()
                 direction = _direction_from_params(params)
             elif name == "FN" and formatted is None:
-                formatted = value
+                formatted = _unescape(value)
             elif name == "N" and structured is None:
                 structured = _structured_name(value)
             elif name == "TEL" and telephone is None:
@@ -271,15 +357,22 @@ def parse_call_history(
             _clean(formatted, MAX_CONTACT_NAME_CHARS)
             or _clean(structured, MAX_CONTACT_NAME_CHARS)
         )
+        phone = normalize_phone(address)
+        # iOS labels unknown callers with their own number, possibly spelled
+        # differently from TEL; that is not a name and must not hide a later
+        # contact-cache resolution.
+        echoes_number = display_name == address or (
+            phone is not None
+            and canonical_phone_digits(normalize_phone(display_name))
+            == canonical_phone_digits(phone)
+        )
         records.append(CallRecord(
             direction=direction or folder_direction,
             occurred_at=occurred,
             raw_time=timestamp[:_MAX_TIMESTAMP_CHARS],
             address=address,
-            phone=normalize_phone(address),
-            # iOS labels unknown callers with their own number; that is not a
-            # name and must not hide a later contact-cache resolution.
-            name=display_name if display_name and display_name != address else None,
+            phone=phone,
+            name=display_name if display_name and not echoes_number else None,
         ))
     return records
 
@@ -338,3 +431,14 @@ class MissedCallNotice:
 def display_caller(record: CallRecord, resolved: str | None) -> str | None:
     """Contact-cache name first, then the phone's card name, then the number."""
     return resolved or record.name or record.address or None
+
+
+def resolve_contact_name(
+    record: CallRecord, resolve: Callable[[str], str | None],
+) -> str | None:
+    """Look a caller up in the contact cache, trying each number spelling."""
+    for candidate in record.resolution_candidates():
+        name = resolve(candidate)
+        if name:
+            return name
+    return None

@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
-from blueferry.call_history import CallRecord
+from blueferry.call_history import CallRecord, resolve_contact_name
 from blueferry.call_history_repository import clear_call_history
 from blueferry.contacts import clear_contact_cache
 from blueferry.errors import (
@@ -1115,9 +1115,8 @@ class BackendOperations:
         result: list[dict[str, object]] = []
         for record in history.records()[:bounded]:
             resolved = (
-                contacts.resolve(record.phone or record.address)
-                if contacts is not None and (record.phone or record.address)
-                else None
+                resolve_contact_name(record, contacts.resolve)
+                if contacts is not None else None
             )
             result.append({
                 "direction": record.direction,

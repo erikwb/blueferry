@@ -13,10 +13,12 @@ from blueferry.call_history import (
     MISSED,
     OUTGOING,
     CallRecord,
+    canonical_phone_digits,
     display_caller,
     merge_call_history,
     parse_call_history,
     parse_call_timestamp,
+    resolve_contact_name,
 )
 from blueferry.limits import MAX_CONTACT_NAME_CHARS
 
@@ -342,3 +344,94 @@ def test_timestamp_text_is_left_intact_for_identity() -> None:
     [record] = parse_call_history(blob, folder_direction=MISSED)
 
     assert record.raw_time == "20260928T120000Z"
+
+
+# ---- review follow-ups: escapes, quoting, echoed numbers, number spellings ----
+
+def test_vcard_text_escapes_are_resolved_in_n_and_fn() -> None:
+    structured = _card(
+        r"N:M\;ller;Anna\, Jr.;;;",
+        "TEL:+41795550123",
+        "X-IRMC-CALL-DATETIME;MISSED:20260928T120000Z",
+    )
+    formatted = _card(
+        r"FN:Doe\, John\\Admin\nSecond",
+        "TEL:+41795550124",
+        "X-IRMC-CALL-DATETIME;MISSED:20260928T120100Z",
+    )
+
+    [from_n] = parse_call_history(structured, folder_direction=MISSED)
+    [from_fn] = parse_call_history(formatted, folder_direction=MISSED)
+
+    assert from_n.name == "Anna, Jr. M;ller"
+    # The escaped newline is flattened to one line at the parse boundary.
+    assert from_fn.name == "Doe, John\\Admin Second"
+
+
+def test_colon_inside_a_quoted_parameter_does_not_split_the_value() -> None:
+    blob = _card(
+        'TEL;X-FOO="a:b";TYPE=CELL:+41 79 555 01 23',
+        'X-IRMC-CALL-DATETIME;X-NOTE="x:y";MISSED:20260928T120000Z',
+    )
+
+    [record] = parse_call_history(blob, folder_direction=INCOMING)
+
+    assert record.address == "+41 79 555 01 23"
+    assert record.phone == "41795550123"
+    assert record.direction == MISSED
+    assert record.raw_time == "20260928T120000Z"
+
+
+def test_number_echoed_as_name_in_another_spelling_is_not_a_name() -> None:
+    blob = _card(
+        "FN:+41 79 123 45 67",
+        "TEL:+41791234567",
+        "X-IRMC-CALL-DATETIME;MISSED:20260928T120000Z",
+    ) + _card(
+        "FN:0041 79 123 45 68",
+        "TEL:+41791234568",
+        "X-IRMC-CALL-DATETIME;MISSED:20260928T120100Z",
+    )
+
+    records = parse_call_history(blob, folder_direction=MISSED)
+
+    assert [record.name for record in records] == [None, None]
+
+
+def test_plus_and_double_zero_spellings_are_one_caller() -> None:
+    plus = CallRecord(
+        direction=MISSED, occurred_at=parse_call_timestamp("20260928T120000Z"),
+        raw_time="20260928T120000Z", address="+41 79 555 01 23",
+        phone="41795550123", name=None,
+    )
+    zeros = CallRecord(
+        direction=INCOMING, occurred_at=plus.occurred_at,
+        raw_time=plus.raw_time, address="0041 79 555 01 23",
+        phone="0041795550123", name="Anna",
+    )
+
+    [merged] = merge_call_history([[zeros], [plus]])
+
+    assert merged.direction == MISSED and merged.name == "Anna"
+    assert plus.number_identity == zeros.number_identity == "41795550123"
+    # Contact lookup tries the other international spelling as a fallback.
+    assert zeros.resolution_candidates() == ["0041795550123", "+41795550123"]
+    assert plus.resolution_candidates() == ["41795550123", "0041795550123"]
+    # Short numbers starting with 00 are left alone.
+    assert canonical_phone_digits("0012345") == "0012345"
+
+
+def test_contact_resolution_uses_the_first_spelling_that_matches() -> None:
+    record = CallRecord(
+        direction=MISSED, occurred_at=parse_call_timestamp("20260928T120000Z"),
+        raw_time="20260928T120000Z", address="0041 79 555 01 23",
+        phone="0041795550123", name=None,
+    )
+    asked = []
+
+    def resolve(address):
+        asked.append(address)
+        return "Anna" if address == "+41795550123" else None
+
+    assert resolve_contact_name(record, resolve) == "Anna"
+    assert asked == ["0041795550123", "+41795550123"]
