@@ -437,6 +437,8 @@ def _outcome_title(outcome: Any) -> str:
             parts.append(f"PBAP {pbap_state}")
     if ancs_state:
         parts.append(f"ANCS {ancs_state}")
+    if outcome.get("le_bond_suspect") is True:
+        parts.append("stale LE bond suspected")
     if parts:
         return ", ".join(parts)
     if outcome.get("bonded") is True and outcome.get("setup_complete") is False:

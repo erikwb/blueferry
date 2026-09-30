@@ -843,3 +843,58 @@ def test_unexpected_pairing_exception_still_writes_a_report(
     events = [item["event"] for item in parsed["timeline"]]
     assert "advert_removed" not in events
     assert "agent_released" not in events
+
+
+def test_remember_daemon_status_records_a_suspect_le_bond_once() -> None:
+    from blueferry import pairing_diagnostics
+
+    attempt = {"phone": {"le_bearer": {}}, "timeline": []}
+    suspect = SimpleNamespace(
+        extra={
+            "le": False,
+            "le_bond_suspect": True,
+            "le_flap_count": 12,
+            "last_le_disconnect_reason": "timeout",
+        }
+    )
+    pair_setup._remember_daemon_status(attempt, suspect)
+    pair_setup._remember_daemon_status(attempt, suspect)
+    # A later poll that no longer reports the fields keeps the finding.
+    pair_setup._remember_daemon_status(attempt, SimpleNamespace(extra={"le": False}))
+
+    assert attempt["daemon"]["le_bond_suspect"] is True
+    assert attempt["daemon"]["le_flap_count"] == 12
+    assert attempt["daemon"]["last_le_disconnect_reason"] == "timeout"
+    events = [item for item in attempt["timeline"] if item["event"] == "le_bond_suspect"]
+    assert len(events) == 1
+    assert events[0]["flaps"] == 12
+    assert events[0]["reason"] == "timeout"
+
+    outcome = pairing_diagnostics.pairing_outcome(attempt, None, None)
+    assert outcome["le_bond_suspect"] is True
+    assert outcome["le_flap_count"] == 12
+    assert quirks_report.issue_title(
+        {"controller": {"name": "hci0"}, "outcome": {**outcome, "map": True, "pbap": True}}
+    ) == "Pairing issue: unknown adapter — MAP/PBAP success, stale LE bond suspected"
+
+
+def test_le_bond_findings_reject_untrusted_values() -> None:
+    from blueferry.pairing_diagnostics import le_bond_findings
+
+    assert le_bond_findings({}) == {
+        "le_bond_suspect": False,
+        "le_flap_count": 0,
+        "last_le_disconnect_reason": "",
+    }
+    assert le_bond_findings(
+        {
+            "le_bond_suspect": 1,
+            "le_flap_count": True,
+            "last_le_disconnect_reason": "org.bluez.Reason.Timeout /dev_02",
+        }
+    ) == {
+        "le_bond_suspect": False,
+        "le_flap_count": 0,
+        "last_le_disconnect_reason": "",
+    }
+    assert le_bond_findings({"le_flap_count": -5})["le_flap_count"] == 0
