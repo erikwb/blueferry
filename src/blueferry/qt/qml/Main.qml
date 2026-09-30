@@ -74,6 +74,11 @@ Kirigami.ApplicationWindow {
         return status.map_connection_refused === true
     }
 
+    function leBondSuspect() {
+        const status = bridge.status || ({})
+        return status.le_bond_suspect === true
+    }
+
     function retainedStorageUnavailable() {
         const status = bridge.status || ({})
         return status.daemon === true
@@ -415,6 +420,21 @@ Kirigami.ApplicationWindow {
                     Layout.fillWidth: true
                     visible: root.mapConnectionRefused()
                     text: qsTr("iPhone is refusing message connections; is it connected to another computer?")
+                    type: Kirigami.MessageType.Warning
+                    position: Kirigami.InlineMessage.Position.Header
+                    actions: [
+                        Kirigami.Action {
+                            text: qsTr("Open iPhone Settings")
+                            onTriggered: root.openPhoneSettings()
+                        }
+                    ]
+                }
+
+                Kirigami.InlineMessage {
+                    objectName: "leBondSuspectMessage"
+                    Layout.fillWidth: true
+                    visible: root.leBondSuspect()
+                    text: qsTr("iPhone notifications can't connect because the Bluetooth pairing looks outdated. On the iPhone, open Settings > Bluetooth and forget this computer; then forget the iPhone here and pair again.")
                     type: Kirigami.MessageType.Warning
                     position: Kirigami.InlineMessage.Position.Header
                     actions: [

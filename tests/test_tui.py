@@ -452,6 +452,37 @@ def test_textual_treats_realtek_ancs_gap_as_expected(monkeypatch) -> None:
     _run_headless(scenario())
 
 
+def test_textual_explains_a_suspect_le_bond(monkeypatch) -> None:
+    class SuspectBondBackend(_Backend):
+        @staticmethod
+        def status() -> BackendStatus:
+            return BackendStatus.from_dict(
+                {
+                    "daemon": True,
+                    "map": True,
+                    "pbap": True,
+                    "ancs": False,
+                    "le_bond_suspect": True,
+                }
+            )
+
+    async def scenario() -> None:
+        app = BlueFerryApp(TuiState(SuspectBondBackend()), monitor_factory=lambda: None)
+
+        async with app.run_test(size=(70, 36)) as pilot:
+            notice = await _wait_for_static_text_containing(
+                app,
+                pilot,
+                "#notice-bar",
+                "pairing looks outdated",
+            )
+            assert notice.has_class("warn")
+            assert "sudo systemctl restart bluetooth.service" not in notice.render().plain
+
+    monkeypatch.setattr(tui_module.config, "ANCS_ENABLED", True)
+    _run_headless(scenario())
+
+
 def test_textual_warns_about_bluez_restart_when_only_ancs_is_missing(
     monkeypatch,
 ) -> None:
