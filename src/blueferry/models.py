@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from blueferry.connectivity import is_map_connection_refused
+from blueferry.i18n import _
 from blueferry.message_links import linkify_message
 from blueferry.recipients import group_confirmation_token
 from blueferry.time_display import format_message_timestamp
@@ -218,9 +219,16 @@ def phone_status_fields(
     """
     fields: list[tuple[str, str]] = []
     if status.phone_battery_level is not None:
-        fields.append(("Battery", f"about {status.phone_battery_level} %"))
+        # HFP reports the battery in 20 % steps, hence "about".
+        fields.append((
+            _("Battery"),
+            _("about {percent} %").format(percent=status.phone_battery_level),
+        ))
     if status.phone_signal_strength is not None:
-        fields.append(("Signal", f"{status.phone_signal_strength} %"))
+        fields.append((
+            _("Signal"),
+            _("{percent} %").format(percent=status.phone_signal_strength),
+        ))
     if not include_network:
         return fields
     network = status.phone_network_name or ""
@@ -230,7 +238,7 @@ def phone_status_fields(
     if registration not in (None, "registered", "unknown"):
         network = f"{network} ({registration})" if network else registration
     if network:
-        fields.append(("Network", network))
+        fields.append((_("Network"), network))
     return fields
 
 

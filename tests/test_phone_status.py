@@ -392,6 +392,30 @@ def test_phone_status_fields_skip_unknown_registration_and_optional_network() ->
     ]
 
 
+def test_phone_status_labels_and_values_are_translatable(monkeypatch) -> None:
+    from blueferry import models
+    from blueferry.ui import status_presenter
+
+    translations = {
+        "Battery": "Akku", "Signal": "Signal", "Network": "Netz",
+        "about {percent} %": "etwa {percent} %", "{percent} %": "{percent} %",
+        "{label} {value}": "{label}: {value}",
+    }
+    monkeypatch.setattr(models, "_", lambda text: translations.get(text, text))
+    monkeypatch.setattr(status_presenter, "_", lambda text: translations.get(text, text))
+    status = BackendStatus.from_dict({
+        "phone_battery_level": 60, "phone_signal_strength": 80,
+        "phone_network_name": "Sunrise", "phone_network_status": "registered",
+    })
+
+    assert phone_status_fields(status) == [
+        ("Akku", "etwa 60 %"), ("Signal", "80 %"), ("Netz", "Sunrise"),
+    ]
+    assert status_presenter.connection_subtitle(
+        {"connectivity_state": "ready", "phone_battery_level": 60}, reachable=True,
+    ) == "Ready · Akku: etwa 60 %"
+
+
 class _StatusClient:
     def __init__(self, **status) -> None:
         self._status = BackendStatus.from_dict(status)

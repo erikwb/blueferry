@@ -46,7 +46,7 @@ def connection_subtitle(status: Mapping, *, reachable: bool) -> str:
     # Optional HFP phone status (calls integration); the operator name is
     # left out of this one-line summary.
     phone = [
-        f"{label} {value}"
+        _("{label} {value}").format(label=label, value=value)
         for label, value in phone_status_fields(
             BackendStatus.from_dict(status), include_network=False,
         )
