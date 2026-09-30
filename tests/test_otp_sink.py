@@ -187,6 +187,21 @@ def test_failed_wl_copy_falls_back_to_x11_once(caplog) -> None:
     assert CODE not in caplog.text
 
 
+def test_fallback_warning_is_logged_once(caplog) -> None:
+    caplog.set_level(logging.DEBUG)
+    writer = _Writer(outcomes=["failed", "running", "failed", "running"])
+    sink, notifier, timers = _sink(writer)
+
+    sink.handle(_received(handle="message1"))
+    timers.settle()
+    sink.handle(_received(handle="message2"))
+    timers.settle()
+
+    assert len(writer.copied) == 4
+    assert len(notifier.shown) == 2
+    assert caplog.text.count("trying X11 helpers") == 1
+
+
 def test_failed_fallback_does_not_claim_success(caplog) -> None:
     caplog.set_level(logging.DEBUG)
     writer = _Writer(outcomes=["failed", "failed"])
@@ -283,8 +298,18 @@ class _NotificationBus:
         self.callback = callback
         return self.match
 
-    def name_has_owner(self, _name) -> bool:
-        return self.owner
+    def call_async(self, bus_name, path, interface, method, signature, args,
+                   reply_handler, error_handler):
+        assert (bus_name, method, signature) == ("org.freedesktop.DBus", "NameHasOwner", "s")
+        assert args == ("org.freedesktop.Notifications",)
+        self.pending_reply = (reply_handler, error_handler)
+
+    def reply(self) -> None:
+        reply_handler, _error_handler = self.pending_reply
+        reply_handler(self.owner)
+
+    def name_has_owner(self, _name):
+        raise AssertionError("the owner query must be asynchronous")
 
     def get_object(self, _name, _path):
         self.lookups += 1
@@ -302,6 +327,7 @@ class _NotificationBus:
 def test_notifier_follows_the_notification_owner() -> None:
     bus = _NotificationBus(owner=False)
     notifier = DesktopNotifier(bus)
+    bus.reply()
 
     notifier.notify("Verification code copied", "Paste it with Ctrl+V.")
     assert bus.lookups == 0
@@ -448,3 +474,25 @@ def test_default_config_leaves_autocopy_disabled(make_daemon, monkeypatch) -> No
     daemon.events.setup()
 
     assert "otp-clipboard" not in daemon.events.names
+
+
+def test_notifier_learns_an_existing_server_asynchronously() -> None:
+    bus = _NotificationBus(owner=True)
+    notifier = DesktopNotifier(bus)
+
+    notifier.notify("Verification code copied", "Paste it with Ctrl+V.")
+    assert bus.lookups == 0  # reply not in yet: no popup, no blocking call
+
+    bus.reply()
+    notifier.notify("Verification code copied", "Paste it with Ctrl+V.")
+    assert bus.lookups == 1
+
+
+def test_a_late_owner_reply_does_not_override_a_newer_owner_change() -> None:
+    bus = _NotificationBus(owner=True)
+    notifier = DesktopNotifier(bus)
+    bus.callback("org.freedesktop.Notifications", ":1.7", "")
+    bus.reply()  # stale "has owner" answer
+
+    notifier.notify("Verification code copied", "Paste it with Ctrl+V.")
+    assert bus.lookups == 0

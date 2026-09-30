@@ -57,6 +57,7 @@ class DesktopNotifier:
         self._interface: Any = None
         self._match: Any = None
         self._available = False
+        self._owner_seen = False
         try:
             if self._bus is None:
                 from blueferry.bus import get_session_bus
@@ -69,11 +70,29 @@ class DesktopNotifier:
                 bus_name="org.freedesktop.DBus",
                 arg0=_NOTIFICATIONS_NAME,
             )
-            self._available = bool(self._bus.name_has_owner(_NOTIFICATIONS_NAME))
+            # Ask asynchronously; a NameOwnerChanged seen meanwhile is newer.
+            self._bus.call_async(
+                "org.freedesktop.DBus",
+                "/org/freedesktop/DBus",
+                "org.freedesktop.DBus",
+                "NameHasOwner",
+                "s",
+                (_NOTIFICATIONS_NAME,),
+                self._initial_owner,
+                self._initial_owner_failed,
+            )
         except Exception:
             log.debug("desktop notifications unavailable for one-time codes", exc_info=True)
 
+    def _initial_owner(self, has_owner) -> None:
+        if not self._owner_seen:
+            self._available = bool(has_owner)
+
+    def _initial_owner_failed(self, error) -> None:
+        log.debug("could not query the notification service: %s", type(error).__name__)
+
     def _owner_changed(self, _name, _old_owner, new_owner) -> None:
+        self._owner_seen = True
         self._interface = None
         self._available = bool(new_owner)
 
@@ -154,7 +173,15 @@ class OtpClipboardSink:
         if schedule_ms is None or cancel is None:
             from gi.repository import GLib
 
-            schedule_ms = schedule_ms or GLib.timeout_add
+            def idle_timeout(delay_ms: int, callback: Callable[[], bool]) -> int:
+                # Idle priority lets the helper's child watch (default
+                # priority) dispatch first, so a helper that already died is
+                # seen as failed rather than running.
+                return GLib.timeout_add(
+                    delay_ms, callback, priority=GLib.PRIORITY_DEFAULT_IDLE
+                )
+
+            schedule_ms = schedule_ms or idle_timeout
             cancel = cancel or GLib.source_remove
         self._writer = writer
         self._notification_policy = notification_policy
@@ -164,6 +191,7 @@ class OtpClipboardSink:
         self._now = now
         self._seen: OrderedDict[str, None] = OrderedDict()
         self._pending_confirms: set[int] = set()
+        self._warned_fallback = False
         self._writer.start_probe()
         log.info("one-time code clipboard sink ready")
 
@@ -237,7 +265,9 @@ class OtpClipboardSink:
             return
         if state == "failed":
             if ticket.tool == "wl-copy" and not retried:
-                log.warning("wl-copy could not take the clipboard; trying X11 helpers")
+                if not self._warned_fallback:
+                    log.warning("wl-copy could not take the clipboard; trying X11 helpers")
+                    self._warned_fallback = True
                 fallback = self._writer.copy(code, exclude=_X11_FALLBACK_EXCLUDE)
                 if fallback is not None:
                     self._schedule_confirm(code, sender, fallback, retried=True)
