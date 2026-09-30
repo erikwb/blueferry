@@ -54,6 +54,8 @@ style dependencies fail this check even when CLI/TUI startup still succeeds.
   Never assemble one with `Daemon.__new__` and hand-set private fields.
   Behavior that has its own class, such as `ContactSync`, is tested directly.
 - Packaging tests keep runtime identifiers and installed metadata consistent.
+  `test_potfiles.py` requires every module importing `blueferry.i18n` and
+  every QML file calling `qsTr()` to be listed in `po/POTFILES.in`.
 - A test should remain valid if the implementation is rewritten without
   changing the behavior it protects.
 
