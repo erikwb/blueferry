@@ -464,9 +464,12 @@ class ScriptedBus:
     def __init__(self, script: dict) -> None:
         self.script = script
         self.calls: list[tuple] = []
+        self.timeouts: list[float] = []
 
-    def __call__(self, bus, service, path, interface, method, signature, args, reply, error):
+    def __call__(self, bus, service, path, interface, method, signature, args, reply, error,
+                 *, timeout):
         self.calls.append((bus, service, path, interface, method, signature, args))
+        self.timeouts.append(timeout)
         outcome = self.script.get((bus, path, method), FakeDBusError(
             "org.freedesktop.DBus.Error.ServiceUnknown"
         ))
@@ -499,6 +502,26 @@ def test_screensaver_lock_is_preferred_and_logind_untouched() -> None:
         "org.freedesktop.ScreenSaver",
         "Lock",
     )
+
+
+def test_screensaver_gets_a_long_timeout_and_logind_a_short_one() -> None:
+    session = "/org/freedesktop/login1/session/c2"
+    bus = ScriptedBus({BY_PID: session, ("system", session, "Lock"): None})
+    _lock(bus)
+    assert bus.timeouts[0] == pl.SCREENSAVER_LOCK_TIMEOUT_SEC >= 30
+    assert all(value == pl.LOCK_CALL_TIMEOUT_SEC for value in bus.timeouts[1:])
+
+
+@pytest.mark.parametrize("name", [
+    "org.freedesktop.DBus.Error.NoReply",
+    "org.freedesktop.DBus.Error.Timeout",
+])
+def test_slow_screensaver_reply_counts_as_requested_without_fallback(name) -> None:
+    # kscreenlocker replies only once its greeter is up, which can exceed
+    # the call timeout under load. The request is already being handled.
+    bus = ScriptedBus({SCREENSAVER: FakeDBusError(name)})
+    assert _lock(bus) == [pl.RESULT_SCREENSAVER_REQUESTED]
+    assert [call[0] for call in bus.calls] == ["session"]
 
 
 def test_falls_back_to_the_own_logind_session_by_pid() -> None:
@@ -555,7 +578,7 @@ def test_unexpected_session_path_is_not_called() -> None:
 def test_synchronous_connection_failure_falls_through() -> None:
     calls = []
 
-    def broken(bus, *args):
+    def broken(bus, *args, timeout):
         calls.append(bus)
         if bus == "session":
             raise RuntimeError("no session bus")

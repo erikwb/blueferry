@@ -60,10 +60,20 @@ INHIBIT_FORGOTTEN = "forgotten"
 INHIBIT_STOPPED = "stopped"
 
 RESULT_SCREENSAVER = "screensaver"
+# kscreenlocker delays its Lock() reply until the greeter is up. A reply that
+# does not arrive in time means the request was delivered and is still being
+# handled, so it is reported as requested rather than retried through logind.
+RESULT_SCREENSAVER_REQUESTED = "screensaver-requested"
 RESULT_LOGIN1 = "login1"
 RESULT_FAILED = "failed"
 
 LOCK_CALL_TIMEOUT_SEC = 5.0
+SCREENSAVER_LOCK_TIMEOUT_SEC = 30.0
+_NO_REPLY_ERRORS = frozenset({
+    "org.freedesktop.DBus.Error.NoReply",
+    "org.freedesktop.DBus.Error.Timeout",
+    "org.freedesktop.DBus.Error.TimedOut",
+})
 _SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 Schedule = Callable[[int, Callable[[], bool]], int]
@@ -71,11 +81,9 @@ Cancel = Callable[[int], object]
 Clock = Callable[[], float]
 ReadPresence = Callable[[], bool | None]
 LockDone = Callable[[str], None]
-# (bus, service, path, interface, method, signature, args, reply, error)
-AsyncCall = Callable[
-    [str, str, str, str, str, str, tuple, Callable[..., None], Callable[[Exception], None]],
-    None,
-]
+# (bus, service, path, interface, method, signature, args, reply, error,
+#  *, timeout)
+AsyncCall = Callable[..., None]
 
 
 def clamp_grace(value: object, default: int = DEFAULT_GRACE_SEC) -> int:
@@ -175,6 +183,8 @@ def _dbus_async_call(
     args: tuple,
     reply_handler: Callable[..., None],
     error_handler: Callable[[Exception], None],
+    *,
+    timeout: float = LOCK_CALL_TIMEOUT_SEC,
 ) -> None:
     from blueferry.bus import get_session_bus, get_system_bus
 
@@ -188,7 +198,7 @@ def _dbus_async_call(
         args,
         reply_handler,
         error_handler,
-        timeout=LOCK_CALL_TIMEOUT_SEC,
+        timeout=timeout,
     )
 
 
@@ -246,6 +256,13 @@ class DesktopLocker:
 
     def lock(self, done: LockDone) -> None:
         def failed(error: Exception) -> None:
+            if _error_name(error) in _NO_REPLY_ERRORS:
+                log.info(
+                    "ScreenSaver accepted the lock request but has not "
+                    "replied yet; not falling back to logind"
+                )
+                done(RESULT_SCREENSAVER_REQUESTED)
+                return
             log.info(
                 "ScreenSaver lock unavailable (%s); trying logind",
                 _error_name(error),
@@ -262,6 +279,7 @@ class DesktopLocker:
             (),
             lambda *_reply: done(RESULT_SCREENSAVER),
             failed,
+            timeout=SCREENSAVER_LOCK_TIMEOUT_SEC,
         )
 
     def _lock_login1_by_pid(self, done: LockDone) -> None:
@@ -350,10 +368,13 @@ class DesktopLocker:
         args: tuple,
         reply: Callable[..., None],
         error: Callable[[Exception], None],
+        *,
+        timeout: float = LOCK_CALL_TIMEOUT_SEC,
     ) -> None:
         try:
             self._call(
                 bus, service, path, interface, method, signature, args, reply, error,
+                timeout=timeout,
             )
         except Exception as failure:  # connection setup can fail synchronously
             error(failure)

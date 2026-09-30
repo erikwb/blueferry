@@ -73,6 +73,8 @@ def _describe(status: Mapping[str, Any]) -> list[str]:
     result = str(status.get("proximity_lock_last_result") or "")
     if result == pl.RESULT_FAILED:
         lines.append("Last lock attempt: failed (see the daemon log)")
+    elif result == pl.RESULT_SCREENSAVER_REQUESTED:
+        lines.append("Last lock: requested from the screen locker (no reply yet)")
     elif result:
         lines.append(f"Last lock: via {result}")
     return lines
