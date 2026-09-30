@@ -25,6 +25,8 @@ from blueferry.protocol import (
     CONTACT_CALL_TIMEOUT_SEC,
     DELETE_CALL_TIMEOUT_SEC,
     GROUP_ROUTE_CALL_TIMEOUT_SEC,
+    MEDIA_CALL_TIMEOUT_SEC,
+    MEDIA_IFACE,
     MESSAGES_IFACE,
     OBEX_CALL_TIMEOUT_SEC,
     OBJECT_PATH,
@@ -99,6 +101,39 @@ class BackendClient:
         if owner is not None:
             self._compatibility.add(owner)
         return interface
+
+    def _media_iface(self) -> dbus.Interface:
+        """Media1 on the same owner-bound proxy that passed the API check."""
+        messages = self._iface(MESSAGES_IFACE)
+        proxy = getattr(messages, "proxy_object", None)
+        if proxy is None:
+            return self._raw_iface(MEDIA_IFACE)
+        return dbus.Interface(proxy, MEDIA_IFACE)
+
+    @staticmethod
+    def _media_error(error: dbus.exceptions.DBusException) -> BackendError:
+        if (error.get_dbus_name() or "").startswith("org.freedesktop.DBus.Error.Unknown"):
+            return BackendError(
+                "The running BlueFerry backend has no media control; update BlueFerry."
+            )
+        return BackendError(error.get_dbus_message() or str(error))
+
+    def now_playing(self) -> dict:
+        """iPhone now-playing snapshot (``enabled`` is false unless opted in)."""
+        try:
+            return decode_mapping(
+                self._media_iface().GetNowPlaying(timeout=STATUS_CALL_TIMEOUT_SEC)
+            )
+        except dbus.exceptions.DBusException as error:
+            raise self._media_error(error) from error
+        except ValueError as error:
+            raise BackendError(str(error)) from error
+
+    def send_media_command(self, command: str) -> None:
+        try:
+            self._media_iface().SendMediaCommand(command, timeout=MEDIA_CALL_TIMEOUT_SEC)
+        except dbus.exceptions.DBusException as error:
+            raise self._media_error(error) from error
 
     def is_healthy(self) -> bool:
         try:
