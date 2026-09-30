@@ -380,3 +380,226 @@ def test_tokens_are_scoped_to_notification_and_consumed_once(monkeypatch):
     sink._on_activation_token(1, "unused")
     sink._on_closed(1, 1)
     assert sink._activation_tokens == {}
+
+
+# ---- opt-in ANCS notification actions ------------------------------------
+
+class _NotificationObject:
+    """Stands in for org.freedesktop.Notifications behind dbus.Interface."""
+
+    def __init__(self) -> None:
+        self.calls = []
+        self.signals = {}
+        self.next_id = 100
+
+    def get_dbus_method(self, member, _interface=None):
+        return getattr(self, f"_{member}")
+
+    def connect_to_signal(self, name, handler, *_args, **_kwargs):
+        self.signals[name] = handler
+        return _Match()
+
+    def _Notify(self, *args):
+        self.next_id += 1
+        self.calls.append(("notify", self.next_id, args))
+        return self.next_id
+
+    def _CloseNotification(self, notification_id):
+        self.calls.append(("close", int(notification_id)))
+
+
+def _action_sink(monkeypatch, *, enabled: bool, callback=None, policy="all"):
+    server = _NotificationObject()
+    bus = SimpleNamespace(
+        get_object=lambda _name, _path: server,
+        list_names=lambda: [],
+    )
+    monkeypatch.setattr(libnotify_mod, "get_session_bus", lambda: bus)
+    monkeypatch.setattr(libnotify_mod.config, "ANCS_ACTIONS", enabled)
+    monkeypatch.setattr(libnotify_mod.config, "SHOW_NOTIFICATION_CONTENT", True)
+    sink = LibnotifySink(
+        defer_mark_read=lambda _path: None,
+        notification_policy=lambda: policy,
+        on_ancs_action=callback,
+    )
+    return sink, server
+
+
+def _call_event(**overrides):
+    from blueferry.ancs.events import AncsEvent
+
+    values = dict(
+        notification_id=42,
+        app_id="com.apple.mobilephone",
+        app_name="Phone",
+        title="Alice",
+        subtitle="",
+        body="Incoming call",
+        positive_action_label="Accept",
+        negative_action_label="Decline",
+    )
+    values.update(overrides)
+    return AncsEvent(**values)
+
+
+def _notify_calls(server):
+    return [call for call in server.calls if call[0] == "notify"]
+
+
+def test_disabled_actions_leave_ancs_popup_unchanged(monkeypatch) -> None:
+    invoked = []
+    disabled, disabled_server = _action_sink(
+        monkeypatch, enabled=False, callback=lambda *args: invoked.append(args)
+    )
+    disabled.handle_ancs(_call_event())
+    baseline, baseline_server = _action_sink(monkeypatch, enabled=False)
+    baseline.handle_ancs(_call_event(
+        positive_action_label="", negative_action_label=""
+    ))
+
+    (_, nid, args), = _notify_calls(disabled_server)
+    (_, _, expected), = _notify_calls(baseline_server)
+    assert list(args[5]) == []
+    assert args == expected
+    disabled_server.signals["ActionInvoked"](nid, "ancs-positive")
+    assert invoked == []
+
+
+def test_enabled_actions_add_labelled_buttons_without_default(monkeypatch) -> None:
+    sink, server = _action_sink(monkeypatch, enabled=True, callback=lambda *a: True)
+
+    sink.handle_ancs(_call_event())
+
+    (_, _nid, args), = _notify_calls(server)
+    assert list(args[5]) == [
+        "ancs-positive", "Accept", "ancs-negative", "Decline",
+    ]
+    assert "default" not in list(args[5])
+    assert bool(args[6]["transient"]) is True
+
+
+def test_only_offered_actions_become_buttons(monkeypatch) -> None:
+    sink, server = _action_sink(monkeypatch, enabled=True, callback=lambda *a: True)
+
+    sink.handle_ancs(_call_event(positive_action_label=""))
+    sink.handle_ancs(_call_event(
+        notification_id=43, positive_action_label="", negative_action_label="",
+    ))
+
+    first, second = _notify_calls(server)
+    assert list(first[2][5]) == ["ancs-negative", "Decline"]
+    assert list(second[2][5]) == []
+    assert sink._ancs_actions == {first[1]: 42}
+
+
+def test_action_labels_are_sanitized_for_display(monkeypatch) -> None:
+    sink, server = _action_sink(monkeypatch, enabled=True, callback=lambda *a: True)
+
+    sink.handle_ancs(_call_event(positive_action_label="Ac‮cept"))
+
+    (_, _nid, args), = _notify_calls(server)
+    assert "‮" not in args[5][1]
+
+
+def test_click_invokes_the_matching_action_exactly_once(monkeypatch) -> None:
+    invoked = []
+    sink, server = _action_sink(
+        monkeypatch, enabled=True,
+        callback=lambda uid, positive, _done: invoked.append((uid, positive)),
+    )
+    sink.handle_ancs(_call_event())
+    sink.handle_ancs(_call_event(notification_id=77))
+    (_, first, _), (_, second, _) = _notify_calls(server)
+
+    server.signals["ActionInvoked"](first, "ancs-negative")
+    server.signals["ActionInvoked"](first, "ancs-negative")
+    server.signals["ActionInvoked"](first, "ancs-positive")
+    server.signals["ActionInvoked"](second, "ancs-positive")
+    server.signals["ActionInvoked"](9999, "ancs-positive")
+
+    assert invoked == [(42, False), (77, True)]
+
+
+def test_dismiss_expiry_and_body_click_never_invoke_actions(monkeypatch) -> None:
+    invoked = []
+    sink, server = _action_sink(
+        monkeypatch, enabled=True, callback=lambda *args: invoked.append(args),
+    )
+    for uid in (1, 2, 3):
+        sink.handle_ancs(_call_event(notification_id=uid))
+    nids = [call[1] for call in _notify_calls(server)]
+
+    server.signals["NotificationClosed"](nids[0], 2)   # dismissed
+    server.signals["NotificationClosed"](nids[1], 1)   # expired
+    server.signals["ActionInvoked"](nids[2], "default")
+    server.signals["ActionInvoked"](nids[0], "ancs-positive")
+    server.signals["ActionInvoked"](nids[1], "ancs-positive")
+
+    assert invoked == []
+    assert list(sink._ancs_actions.values()) == [3]
+
+
+def test_failed_action_shows_content_free_feedback(monkeypatch) -> None:
+    def perform(_uid, _positive, done):
+        done("unavailable")
+
+    sink, server = _action_sink(monkeypatch, enabled=True, callback=perform)
+    sink.handle_ancs(_call_event(title="Private caller"))
+    nid = _notify_calls(server)[0][1]
+
+    server.signals["ActionInvoked"](nid, "ancs-positive")
+
+    feedback = _notify_calls(server)[1][2]
+    assert "no longer available" in feedback[4]
+    assert "Private caller" not in feedback[3] + feedback[4]
+    assert list(feedback[5]) == []
+
+
+def test_successful_action_needs_no_feedback(monkeypatch) -> None:
+    sink, server = _action_sink(
+        monkeypatch, enabled=True,
+        callback=lambda _uid, _positive, done: done("sent"),
+    )
+    sink.handle_ancs(_call_event())
+    server.signals["ActionInvoked"](_notify_calls(server)[0][1], "ancs-positive")
+
+    assert len(_notify_calls(server)) == 1
+
+
+def test_phone_removal_closes_the_actionable_popup(monkeypatch) -> None:
+    sink, server = _action_sink(monkeypatch, enabled=True, callback=lambda *a: True)
+    sink.handle_ancs(_call_event())
+    nid = _notify_calls(server)[0][1]
+
+    sink.close_ancs_notification(999)
+    sink.close_ancs_notification(42)
+
+    assert ("close", nid) in server.calls
+    assert sink._ancs_actions == {}
+
+
+def test_messages_ancs_stays_suppressed_with_actions(monkeypatch) -> None:
+    sink, server = _action_sink(monkeypatch, enabled=True, callback=lambda *a: True)
+
+    sink.handle_ancs(_call_event(app_id="com.apple.MobileSMS"))
+
+    assert _notify_calls(server) == []
+
+
+def test_messages_policy_shows_no_ancs_actions(monkeypatch) -> None:
+    sink, server = _action_sink(
+        monkeypatch, enabled=True, callback=lambda *a: True, policy="messages",
+    )
+
+    sink.handle_ancs(_call_event())
+
+    assert _notify_calls(server) == []
+
+
+def test_close_forgets_actionable_popups(monkeypatch) -> None:
+    sink, _server = _action_sink(monkeypatch, enabled=True, callback=lambda *a: True)
+    sink.handle_ancs(_call_event())
+
+    sink.close()
+
+    assert sink._ancs_actions == {}

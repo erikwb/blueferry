@@ -57,6 +57,7 @@ class EventDispatcher:
         contacts_only_notifications=None,
         storage=None,
         on_incoming_message=None,
+        perform_ancs_action=None,
         notification_sink_factory: Callable[..., Sink] = LibnotifySink,
         session_bus=None,
         schedule: Callable[[int, Callable[[], bool]], int] = GLib.timeout_add_seconds,
@@ -70,6 +71,7 @@ class EventDispatcher:
         self.contacts_only_notifications = contacts_only_notifications
         self.storage = storage
         self.on_incoming_message = on_incoming_message
+        self.perform_ancs_action = perform_ancs_action
         self._notification_sink_factory = notification_sink_factory
         self._session_bus = session_bus
         self._schedule = schedule
@@ -150,6 +152,7 @@ class EventDispatcher:
                 notification_policy=self.notification_policy,
                 contacts_only_notifications=self.contacts_only_notifications,
                 on_open_message=self._open_message,
+                on_ancs_action=self.perform_ancs_action,
             )
         except Exception:
             log.exception("libnotify sink failed to init — continuing")
@@ -216,6 +219,17 @@ class EventDispatcher:
 
     def set_dbus_service(self, service) -> None:
         self.dbus_service = service
+
+    def ancs_removed(self, notification_id: int) -> None:
+        """Retire desktop popups whose iPhone notification was removed."""
+        for sink in self.sinks:
+            close = getattr(sink, "close_ancs_notification", None)
+            if close is None:
+                continue
+            try:
+                close(notification_id)
+            except Exception:
+                log.exception("sink %s failed to close ANCS popup", sink.name)
 
     def _open_message(self, handle: str, token: str) -> None:
         request_message_activation(handle, token)

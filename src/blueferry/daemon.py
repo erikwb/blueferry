@@ -15,7 +15,7 @@ from gi.repository import GLib
 
 from blueferry import __version__, bluez_setup, config
 from blueferry.adapter_class_supervisor import AdapterClassSupervisor
-from blueferry.ancs.client import AncsClient
+from blueferry.ancs.client import ACTION_DISCONNECTED, AncsClient
 from blueferry.backend_lifecycle import installed_release
 from blueferry.backend_operations import BackendDependencies
 from blueferry.bearer_supervisor import BearerSupervisor
@@ -131,6 +131,9 @@ class Daemon:
             ),
             storage=self.storage,
             on_incoming_message=lambda: self._verify_setup_task(MESSAGE_NOTIFICATIONS),
+            perform_ancs_action=(
+                self._perform_ancs_action if config.ANCS_ACTIONS else None
+            ),
         )
         self.listener: MapEventListener | None = None
         self.mns_watch: MnsWatch | None = None
@@ -491,6 +494,8 @@ class Daemon:
                 previously_authorized=(
                     NOTIFICATION_ACCESS in self.setup_verification.verified
                 ),
+                notification_actions=config.ANCS_ACTIONS,
+                on_notification_removed=self._ancs_notification_removed,
             )
             # Publish before start(): its initial D-Bus sweep can dispatch
             # an owner change that must invalidate the in-progress scan.
@@ -756,6 +761,23 @@ class Daemon:
             self.events.names,
         )
 
+    def _perform_ancs_action(self, notification_id, positive, on_result=None) -> bool:
+        """Forward one clicked desktop action to the current ANCS session."""
+        ancs = self.ancs
+        if ancs is None:
+            if on_result is not None:
+                on_result(ACTION_DISCONNECTED)
+            return False
+        return ancs.perform_notification_action(
+            notification_id, bool(positive), on_result
+        )
+
+    def _ancs_notification_removed(self, notification_id: int) -> None:
+        """Close a desktop popup whose actionable iPhone notification is gone."""
+        removed = getattr(self.events, "ancs_removed", None)
+        if removed is not None:
+            removed(notification_id)
+
     def _contacts_refreshed(self) -> None:
         """GLib-side follow-up after a pull replaced the contact cache."""
         # Completing PullAll proves that the iPhone granted Sync Contacts,
@@ -779,6 +801,7 @@ class Daemon:
             "ancs": bool(ancs and ancs.connected),
             "ancs_subscribed": bool(ancs and ancs.subscribed),
             "ancs_authorized": bool(ancs and ancs.authorized),
+            "ancs_actions": config.ANCS_ACTIONS,
             **self.bearers.snapshot(),
             **self.proximity.snapshot(),
             "contacts": self.contacts.count(),

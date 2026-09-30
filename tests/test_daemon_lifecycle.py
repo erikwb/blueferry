@@ -559,3 +559,46 @@ def test_mns_loss_reconnects_map_once_per_outage():
     instance._mns_present()
     instance._mns_missing("the iPhone closed MAP notifications")
     assert reconnects == ["the iPhone closed MAP notifications"] * 2
+
+
+def test_ancs_actions_are_off_by_default(make_daemon, monkeypatch):
+    monkeypatch.setattr(daemon_mod.config, "ANCS_ACTIONS", False)
+    instance = make_daemon()
+    instance.contacts = SimpleNamespace(count=lambda: 0)
+    instance.setup_verification = SimpleNamespace(verified=())
+    monkeypatch.setattr(daemon_mod, "history_count", lambda **_kwargs: 0)
+
+    assert instance.events.perform_ancs_action is None
+    assert instance._status()["ancs_actions"] is False
+
+
+def test_enabled_ancs_actions_forward_clicks_to_the_live_client(
+    make_daemon, monkeypatch,
+):
+    monkeypatch.setattr(daemon_mod.config, "ANCS_ACTIONS", True)
+    instance = make_daemon()
+    results = []
+    perform = instance.events.perform_ancs_action
+
+    assert perform is not None
+    assert perform(42, True, results.append) is False
+    assert results == ["disconnected"]
+
+    calls = []
+    instance.ancs = SimpleNamespace(
+        perform_notification_action=lambda *args: calls.append(args) or True,
+    )
+    assert perform(42, False, results.append) is True
+    assert calls == [(42, False, results.append)]
+
+
+def test_ancs_removal_reaches_the_current_dispatcher(make_daemon):
+    instance = make_daemon()
+    removed = []
+    instance.events = SimpleNamespace(ancs_removed=removed.append)
+
+    instance._ancs_notification_removed(42)
+    instance.events = SimpleNamespace()  # dispatchers without the hook are skipped
+    instance._ancs_notification_removed(43)
+
+    assert removed == [42]

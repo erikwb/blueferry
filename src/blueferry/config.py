@@ -15,6 +15,7 @@ LOCAL_ENV_KEYS = frozenset({
     "BLUEFERRY_ANCS_ENABLED",
     "BLUEFERRY_ANCS_APP_ALLOWLIST",
     "BLUEFERRY_ANCS_APP_BLOCKLIST",
+    "BLUEFERRY_ANCS_ACTIONS",
     "BLUEFERRY_SHOW_NOTIFICATION_CONTENT",
     "BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE",
     "BLUEFERRY_NOTIFICATION_TIMEOUT_MS",
@@ -186,6 +187,15 @@ ANCS_APP_BLOCKLIST: frozenset[str] = (
     _env_ancs_app_ids("BLUEFERRY_ANCS_APP_BLOCKLIST") or frozenset()
 )
 """Exact bundle IDs denied after the allowlist; block rules take precedence."""
+
+
+ANCS_ACTIONS: bool = _env_bool("BLUEFERRY_ANCS_ACTIONS", False)
+"""Offer iPhone notification actions (Accept/Decline/Clear/...) as buttons.
+
+Off by default because it changes the desktop notification UI and lets a
+click act on the phone. It applies only to non-Messages popups shown by the
+"All iPhone Notifications" policy; nothing is invoked without a click.
+"""
 
 
 def include_ancs_app(app_id: str) -> bool:
