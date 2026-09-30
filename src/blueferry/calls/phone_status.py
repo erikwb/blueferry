@@ -114,7 +114,13 @@ class PhoneStatus:
         if key == "Name":
             return replace(self, network_name=parse_network_name(value))
         if key == "Status":
-            return replace(self, network_status=parse_network_status(value))
+            status = parse_network_status(value)
+            if status in _REGISTERED:
+                return replace(self, network_status=status)
+            # oFono resets its strength to "none" here without a signal and
+            # only reports a new one after re-registering; keeping ours would
+            # briefly show the pre-outage value after registration returns.
+            return replace(self, network_status=status, signal_strength=None)
         return self
 
     def without_handsfree(self) -> PhoneStatus:

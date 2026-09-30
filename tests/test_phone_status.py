@@ -110,6 +110,21 @@ def test_get_properties_replaces_only_its_interface() -> None:
     assert apply_properties(status, HANDSFREE_IFACE, [1, 2]) == status
 
 
+def test_losing_registration_forgets_the_signal_strength() -> None:
+    status = PhoneStatus(signal_strength=80, network_name="Sunrise", network_status="registered")
+
+    status = status.with_network("Status", "searching")
+    assert status.signal_strength is None
+    # Registration returns before oFono has sent a fresh Strength.
+    status = status.with_network("Status", "registered")
+    assert status.to_status()["phone_signal_strength"] is None
+    assert status.with_network("Strength", 40).to_status()["phone_signal_strength"] == 40
+    # Moving between registered states keeps the known strength.
+    assert status.with_network("Strength", 40).with_network(
+        "Status", "roaming",
+    ).signal_strength == 40
+
+
 # ---- low-battery warning -------------------------------------------------------
 
 
