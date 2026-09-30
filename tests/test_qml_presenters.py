@@ -611,6 +611,7 @@ def settings_window(qml_engine):
             property var threads: []
             property var devices: []
             property var contactResults: []
+            property var nowPlaying: ({})
             property var compatibility: ({})
             property var onboardingCompatibility: compatibility
             property bool compatibilityLoaded: false
@@ -645,6 +646,7 @@ def settings_window(qml_engine):
             function forgetDevice(mac) { record("forgetDevice", [mac]); }
             function activateBluetooth() { record("activateBluetooth", []); }
             function filePairingIssue() { record("filePairingIssue", []); }
+            function sendMediaCommand(command) { record("sendMediaCommand", [command]); }
         }
     ''', QUrl())
     assert not component.isError(), [error.toString() for error in component.errors()]
@@ -1909,3 +1911,50 @@ Item {
     log = result.stdout + result.stderr
     assert result.returncode == 0 and "BLUEFERRY_GROUP_REPLY_OK" in log, log
     assert "WARN scene:" not in log and "ReferenceError" not in log and "TypeError" not in log, log
+
+
+def test_now_playing_bar_is_absent_until_media_is_available(
+    qml_engine, settings_window,
+) -> None:
+    window, _bridge = settings_window
+    assert window.findChild(QObject, "nowPlayingBar") is None
+
+    _evaluate(qml_engine, """testBridge.nowPlaying = {
+        enabled: true, available: true, player: {state: "playing"},
+        track: {title: "<b>Title</b>", artist: "Artist"},
+        supported_commands: ["next", "toggle"]
+    }""")
+    QGuiApplication.processEvents()
+    assert window.findChild(QObject, "nowPlayingBar") is not None
+    label = window.findChild(QObject, "nowPlayingSummary")
+    # Remote text is shown verbatim, never as markup.
+    assert label.property("text") == "<b>Title</b> — Artist"
+    qml_engine.globalObject().setProperty("nowPlayingLabel", qml_engine.newQObject(label))
+    assert _evaluate(qml_engine, "nowPlayingLabel.textFormat") == 0  # Text.PlainText
+    assert not window.findChild(QObject, "nowPlayingPrevious").property("enabled")
+    assert window.findChild(QObject, "nowPlayingBar").property("stateIcon") == (
+        "media-playback-start"
+    )
+    _evaluate(qml_engine, """testBridge.nowPlaying = Object.assign(
+        {}, testBridge.nowPlaying, {player: {state: "paused"}})""")
+    QGuiApplication.processEvents()
+    assert window.findChild(QObject, "nowPlayingBar").property("stateIcon") == (
+        "media-playback-pause"
+    )
+    _evaluate(qml_engine, """testBridge.nowPlaying = Object.assign(
+        {}, testBridge.nowPlaying, {player: {state: "playing"}})""")
+    QGuiApplication.processEvents()
+
+    _click_control(window, window.findChild(QObject, "nowPlayingNext"))
+    _click_control(window, window.findChild(QObject, "nowPlayingToggle"))
+    assert _evaluate(
+        qml_engine,
+        "testBridge.calls.filter(c => c.method === 'sendMediaCommand').map(c => c.args[0])",
+    ) == ["next", "toggle"]
+
+    _evaluate(qml_engine, "testBridge.nowPlaying = {enabled: true, available: false}")
+    from PySide6.QtCore import QCoreApplication, QEvent
+
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+    QGuiApplication.processEvents()
+    assert window.findChild(QObject, "nowPlayingBar") is None
