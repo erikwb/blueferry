@@ -68,6 +68,9 @@ RESULT_LOGIN1 = "login1"
 RESULT_FAILED = "failed"
 
 LOCK_CALL_TIMEOUT_SEC = 5.0
+# One BearerSupervisor poll (5 s) plus margin: a cache read this long after an
+# inhibitor ended was taken after it ended.
+PRESENCE_SETTLE_SEC = 6
 SCREENSAVER_LOCK_TIMEOUT_SEC = 30.0
 _NO_REPLY_ERRORS = frozenset({
     "org.freedesktop.DBus.Error.NoReply",
@@ -130,10 +133,7 @@ class ProximityLockSettings:
         default_grace: int | None = None,
     ) -> None:
         self._settings = SettingsStore(path or config.SETTINGS_JSON)
-        try:
-            payload = self._settings.read()
-        except OSError:
-            payload = {}
+        payload = self._settings.read()  # never raises; {} when unreadable
         fallback_enabled = (
             config.PROXIMITY_LOCK if default_enabled is None else default_enabled
         )
@@ -385,9 +385,12 @@ class ProximityLock:
 
     Rules:
 
-    * Only a link that was observed *present* since the last start, resume,
-      lock, or inhibitor can arm the lock. Starting the daemon without the
-      phone nearby therefore never locks.
+    * Only a *fresh* observation of the phone as present can arm the lock:
+      a bearer transition reported by the supervisor, or a cache read taken
+      at least one bearer poll after the lock was enabled, an inhibitor
+      ended, or the system resumed. Starting the daemon without the phone
+      nearby therefore never locks, and a bearer cache that predates a
+      suspend cannot arm it.
     * A return inside the grace period cancels it; the next loss starts a
       full new grace period.
     * After one lock the state stays ``locked`` until the phone is seen
@@ -396,6 +399,8 @@ class ProximityLock:
       daemon's own adapter recovery, a forgotten phone, shutdown) cancel any
       pending grace and require fresh presence afterwards.
     * Unknown bearer reads neither arm nor start a grace period.
+    * ``on_status`` is called once per public operation, and only when the
+      published snapshot (apart from the countdown) actually changed.
     """
 
     def __init__(
@@ -408,7 +413,8 @@ class ProximityLock:
         on_status: Callable[[], None] | None = None,
         schedule: Schedule | None = None,
         cancel: Cancel | None = None,
-        clock: Clock = time.monotonic,
+        clock: Clock | None = None,
+        settle_sec: int = PRESENCE_SETTLE_SEC,
     ) -> None:
         if schedule is None or cancel is None:
             from gi.repository import GLib
@@ -422,14 +428,17 @@ class ProximityLock:
         self._on_status = on_status
         self._schedule = schedule
         self._cancel = cancel
-        self._clock = clock
+        self._clock = clock or time.monotonic
+        self._settle_sec = max(1, int(settle_sec))
         self._state = STATE_IDLE if self._enabled else STATE_DISABLED
         self._inhibitors: set[str] = set()
         self._absent_since: float | None = None
         self._timer_id: int | None = None
+        self._settle_id: int | None = None
         self._last_result = ""
         self._dispatching = False
         self._generation = 0
+        self._published = self._public()
 
     # ---- inspection ------------------------------------------------------
 
@@ -460,93 +469,129 @@ class ProximityLock:
             "proximity_lock_last_result": self._last_result,
         }
 
+    def _public(self) -> tuple:
+        # The countdown changes every second and is read on demand; it is
+        # not a reason to broadcast StatusChanged.
+        return (
+            self._state,
+            self._enabled,
+            self._grace,
+            tuple(sorted(self._inhibitors)),
+            self._last_result,
+        )
+
     # ---- configuration ---------------------------------------------------
 
     def configure(self, enabled: bool, grace_sec: int) -> None:
         grace = clamp_grace(grace_sec)
-        if not enabled:
-            self._enabled = False
-            self._grace = grace
-            self._cancel_timer()
-            self._absent_since = None
-            self._set_state(STATE_DISABLED, force_emit=True)
-            return
         was_enabled = self._enabled
-        self._enabled = True
+        self._enabled = bool(enabled)
         self._grace = grace
-        if not was_enabled:
+        if not self._enabled:
+            self._forget_presence()
+            self._state = STATE_DISABLED
+        elif not was_enabled:
             # Enabling never locks immediately; it needs the phone first.
-            self._set_state(STATE_IDLE, force_emit=True)
+            self._state = STATE_IDLE
+            self._schedule_settle()
         elif self._state == STATE_GRACE:
             self._arm_timer()
-        self.refresh()
+        self._emit_if_changed()
 
     # ---- observations ----------------------------------------------------
 
-    def refresh(self) -> None:
-        """Re-evaluate current bearer presence (call after bearer changes)."""
-        if not self._enabled or self._inhibitors:
-            return
+    def bearer_changed(self) -> None:
+        """A bearer transition was just observed; its cached state is fresh."""
+        if self._enabled and not self._inhibitors:
+            self._observe(self._read())
+        self._emit_if_changed()
+
+    def _read(self) -> bool | None:
         try:
-            present = self._read_presence()
+            return self._read_presence()
         except Exception:
             log.debug("proximity presence read failed", exc_info=True)
-            return
-        self._observe(present)
+            return None
 
     def _observe(self, present: bool | None) -> None:
         if present is True:
             self._cancel_timer()
+            self._cancel_settle()
             self._absent_since = None
-            if self._state != STATE_ARMED:
-                self._set_state(STATE_ARMED)
+            self._state = STATE_ARMED
             return
         if present is None:
             return
         if self._state == STATE_ARMED:
             self._absent_since = self._clock()
-            self._set_state(STATE_GRACE)
+            self._state = STATE_GRACE
             self._arm_timer()
 
     def inhibit(self, reason: str, active: bool = True) -> None:
         """Start or end one inhibitor; any change requires fresh presence."""
-        if active:
-            if reason in self._inhibitors:
-                return
+        if active and reason not in self._inhibitors:
             self._inhibitors.add(reason)
-            self._cancel_timer()
-            self._absent_since = None
+            self._forget_presence()
             if self._enabled:
-                self._set_state(STATE_IDLE, force_emit=True)
-            return
-        if reason not in self._inhibitors:
-            return
-        self._inhibitors.discard(reason)
-        if self._enabled:
-            self._emit()
-            self.refresh()
+                self._state = STATE_IDLE
+        elif not active and reason in self._inhibitors:
+            self._inhibitors.discard(reason)
+            if self._enabled and not self._inhibitors:
+                self._schedule_settle()
+        self._emit_if_changed()
 
     def suspending(self) -> None:
         self.inhibit(INHIBIT_SLEEP, True)
 
     def resumed(self) -> None:
-        """Call after the bearer state has been re-read following resume."""
         self.inhibit(INHIBIT_SLEEP, False)
 
     def reset(self) -> None:
         """Forget presence, e.g. when bluetoothd was replaced."""
-        self._cancel_timer()
-        self._absent_since = None
-        if self._enabled and self._state != STATE_IDLE:
-            self._set_state(STATE_IDLE)
+        self._forget_presence()
+        if self._enabled:
+            self._state = STATE_IDLE
+        self._emit_if_changed()
 
     def stop(self) -> None:
         self._inhibitors.add(INHIBIT_STOPPED)
-        self._cancel_timer()
-        self._absent_since = None
+        self._forget_presence()
         self._generation += 1
 
-    # ---- timer and dispatch ---------------------------------------------
+    def _forget_presence(self) -> None:
+        self._cancel_timer()
+        self._cancel_settle()
+        self._absent_since = None
+
+    # ---- timers and dispatch --------------------------------------------
+
+    def _schedule_settle(self) -> None:
+        """Re-check presence once the bearer cache has been polled again.
+
+        The supervisor reports transitions only. A phone that stayed
+        connected across an inhibitor produces none, so read the cache once
+        more after a full poll interval instead of trusting what it held
+        when the inhibitor ended.
+        """
+        self._cancel_settle()
+        self._settle_id = self._schedule(self._settle_sec, self._settled)
+
+    def _cancel_settle(self) -> None:
+        if self._settle_id is None:
+            return
+        timer, self._settle_id = self._settle_id, None
+        try:
+            self._cancel(timer)
+        except Exception:
+            log.debug("could not remove proximity settle timer", exc_info=True)
+
+    def _settled(self) -> bool:
+        self._settle_id = None
+        if self._enabled and not self._inhibitors and self._state == STATE_IDLE:
+            if self._read() is True:
+                self._observe(True)
+        self._emit_if_changed()
+        return False
 
     def _arm_timer(self) -> None:
         self._cancel_timer()
@@ -575,30 +620,26 @@ class ProximityLock:
             or self._absent_since is None
         ):
             return False
-        # Re-read instead of trusting the last transition: a return may not
-        # have produced a status callback yet.
-        try:
-            present = self._read_presence()
-        except Exception:
-            present = None
-        if present is not False:
-            if present is True:
-                self._observe(True)
-            else:
-                # Unknown at the deadline: do not guess. Wait for a real
-                # observation before arming again.
-                self._absent_since = None
-                self._set_state(STATE_IDLE)
-            return False
-        if self._clock() < self._absent_since + self._grace:
+        # The cached state is at most one bearer poll old and every change
+        # already arrived through bearer_changed(). This check only refuses
+        # to lock on a cache that has since become unknown; it does not
+        # detect a return the supervisor has not polled yet.
+        present = self._read()
+        if present is True:
+            self._observe(True)
+        elif present is None:
+            self._absent_since = None
+            self._state = STATE_IDLE
+        elif self._clock() < self._absent_since + self._grace:
             self._arm_timer()
-            return False
-        self._dispatch()
+        else:
+            self._dispatch()
+        self._emit_if_changed()
         return False
 
     def _dispatch(self) -> None:
         self._absent_since = None
-        self._set_state(STATE_LOCKED)
+        self._state = STATE_LOCKED
         if self._dispatching:
             return
         self._dispatching = True
@@ -616,7 +657,7 @@ class ProximityLock:
                 log.warning("proximity lock could not lock the desktop session")
             else:
                 log.info("proximity lock locked the desktop via %s", result)
-            self._emit()
+            self._emit_if_changed()
 
         try:
             self._locker.lock(done)
@@ -624,15 +665,13 @@ class ProximityLock:
             log.exception("proximity lock dispatch failed")
             done(RESULT_FAILED)
 
-    def _set_state(self, state: str, *, force_emit: bool = False) -> None:
-        changed = state != self._state
-        self._state = state
-        if changed:
-            log.debug("proximity lock state: %s", state)
-        if changed or force_emit:
-            self._emit()
-
-    def _emit(self) -> None:
+    def _emit_if_changed(self) -> None:
+        current = self._public()
+        if current == self._published:
+            return
+        if current[0] != self._published[0]:
+            log.debug("proximity lock state: %s", current[0])
+        self._published = current
         if self._on_status is not None:
             try:
                 self._on_status()

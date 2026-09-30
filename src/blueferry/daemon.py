@@ -275,7 +275,7 @@ class Daemon:
             emit()
 
     def _bearer_status_changed(self) -> None:
-        self.proximity.refresh()
+        self.proximity.bearer_changed()
         self._emit_status()
 
     def _proximity_presence(self) -> bool | None:
@@ -631,8 +631,8 @@ class Daemon:
             return
         log.info("system resumed — refreshing Bluetooth profile sessions")
         self.bearers.poke()
-        # After the fresh bearer read: a link that has not come back yet
-        # after resume must not count as the phone leaving.
+        # Ending the sleep inhibitor never arms on the pre-suspend cache; the
+        # lock waits for a bearer transition or a post-resume poll.
         self.proximity.resumed()
         self.profiles.reconnect("system resumed")
 

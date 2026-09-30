@@ -91,7 +91,7 @@ class Harness:
 
     def see(self, presence: bool | None) -> None:
         self.presence = presence
-        self.lock.refresh()
+        self.lock.bearer_changed()
 
 
 # ---- state machine ------------------------------------------------------
@@ -244,12 +244,40 @@ def test_inhibitors_cancel_grace_and_require_fresh_presence(reason) -> None:
     assert harness.lock.state == pl.STATE_ARMED
 
 
-def test_inhibitor_end_rearms_immediately_when_the_phone_is_present() -> None:
+def test_inhibitor_end_rearms_after_one_poll_when_the_phone_stayed() -> None:
     harness = Harness(grace=30)
     harness.see(True)
     harness.lock.inhibit(pl.INHIBIT_DISCOVERING)
     harness.lock.inhibit(pl.INHIBIT_DISCOVERING, False)
+    # The cache may predate the inhibitor's end; do not trust it yet.
+    assert harness.lock.state == pl.STATE_IDLE
+    harness.timers.advance(pl.PRESENCE_SETTLE_SEC)
     assert harness.lock.state == pl.STATE_ARMED
+
+
+def test_a_fresh_transition_arms_before_the_settle_poll() -> None:
+    harness = Harness(grace=30)
+    harness.see(False)
+    harness.lock.inhibit(pl.INHIBIT_DISCOVERING)
+    harness.lock.inhibit(pl.INHIBIT_DISCOVERING, False)
+    harness.see(True)
+    assert harness.lock.state == pl.STATE_ARMED
+    assert harness.timers.pending == {}
+
+
+def test_stale_present_cache_at_resume_cannot_arm() -> None:
+    harness = Harness(grace=10)
+    harness.see(True)
+    harness.lock.suspending()
+    harness.presence = True  # cache still says connected from before suspend
+    harness.lock.resumed()
+    assert harness.lock.state == pl.STATE_IDLE
+    # The first post-resume poll finds the link gone; the supervisor reports
+    # that transition while the lock is still unarmed.
+    harness.see(False)
+    harness.timers.advance(3600)
+    assert harness.lock.state == pl.STATE_IDLE
+    assert harness.locker.calls == 0
 
 
 def test_overlapping_inhibitors_hold_until_all_end() -> None:
@@ -261,6 +289,7 @@ def test_overlapping_inhibitors_hold_until_all_end() -> None:
     harness.see(True)
     assert harness.lock.state == pl.STATE_IDLE
     harness.lock.inhibit(pl.INHIBIT_RECOVERY, False)
+    harness.timers.advance(pl.PRESENCE_SETTLE_SEC)
     assert harness.lock.state == pl.STATE_ARMED
 
 
@@ -294,6 +323,7 @@ def test_suspend_while_armed_and_resume_with_phone_present_rearms() -> None:
     harness.lock.suspending()
     harness.presence = True
     harness.lock.resumed()
+    harness.timers.advance(pl.PRESENCE_SETTLE_SEC)
     assert harness.lock.state == pl.STATE_ARMED
 
 
@@ -314,6 +344,15 @@ def test_disabling_during_grace_cancels_and_enabling_needs_the_phone() -> None:
     assert harness.lock.state == pl.STATE_IDLE
 
     harness.see(True)
+    assert harness.lock.state == pl.STATE_ARMED
+
+
+def test_enabling_while_connected_arms_after_one_poll() -> None:
+    harness = Harness(enabled=False)
+    harness.presence = True
+    harness.lock.configure(True, 60)
+    assert harness.lock.state == pl.STATE_IDLE
+    harness.timers.advance(pl.PRESENCE_SETTLE_SEC)
     assert harness.lock.state == pl.STATE_ARMED
 
 
@@ -439,11 +478,60 @@ def test_settings_reject_invalid_values(isolated_state, enabled, grace) -> None:
     assert settings.enabled is False
 
 
-def test_config_default_is_off() -> None:
+def test_config_keys_are_accepted_from_local_env() -> None:
     from blueferry import config
 
     assert "BLUEFERRY_PROXIMITY_LOCK" in config.LOCAL_ENV_KEYS
     assert "BLUEFERRY_PROXIMITY_LOCK_GRACE_SEC" in config.LOCAL_ENV_KEYS
+
+
+def test_config_default_is_off_without_environment(tmp_path) -> None:
+    """Import config in a clean process: no env, no local.env."""
+    import os
+    import subprocess  # nosec B404 - fixed argv, inert child
+    import sys
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parents[1] / "src"
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "PYTHONPATH": str(source),
+        "HOME": str(tmp_path),
+        "XDG_CONFIG_HOME": str(tmp_path / "config"),
+        "XDG_STATE_HOME": str(tmp_path / "state"),
+    }
+    output = subprocess.run(  # nosec B603
+        [sys.executable, "-c",
+         "from blueferry import config;"
+         "print(config.PROXIMITY_LOCK, config.PROXIMITY_LOCK_GRACE_SEC)"],
+        env=env, capture_output=True, text=True, check=True, timeout=60,
+    ).stdout.split()
+    assert output == ["False", "60"]
+
+
+def test_status_is_emitted_only_when_the_snapshot_changes() -> None:
+    harness = Harness(grace=30)
+    assert harness.status_events == 0
+    harness.see(None)
+    harness.see(False)  # not armed yet: nothing changes
+    assert harness.status_events == 0
+    harness.see(True)
+    assert harness.status_events == 1
+    harness.see(True)
+    harness.lock.configure(True, 30)
+    harness.lock.inhibit(pl.INHIBIT_ADAPTER_OFF, False)  # not active
+    assert harness.status_events == 1
+    harness.lock.inhibit(pl.INHIBIT_ADAPTER_OFF)
+    assert harness.status_events == 2
+    harness.lock.inhibit(pl.INHIBIT_ADAPTER_OFF)
+    assert harness.status_events == 2
+    harness.lock.inhibit(pl.INHIBIT_ADAPTER_OFF, False)
+    assert harness.status_events == 3
+    harness.timers.advance(pl.PRESENCE_SETTLE_SEC)  # re-armed: one event
+    assert harness.status_events == 4
+    harness.see(False)
+    harness.timers.advance(10)  # countdown alone is not a change
+    assert harness.status_events == 5
 
 
 # ---- lock dispatch --------------------------------------------------------
