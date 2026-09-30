@@ -410,6 +410,17 @@ Kirigami.ScrollablePage {
             }
         }
 
+        // Only daemons that report the proximity keys support the setting.
+        Loader {
+            objectName: "proximityLockLoader"
+            Layout.fillWidth: true
+            active: iphonePage.bridge.status.proximity_lock !== undefined
+            visible: active
+            sourceComponent: ProximityLockSettings {
+                bridge: iphonePage.bridge
+            }
+        }
+
         Kirigami.Heading { text: qsTr("Local Data"); level: 2 }
         Kirigami.FormLayout {
             Layout.fillWidth: true
