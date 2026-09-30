@@ -406,6 +406,23 @@ write keeps solicitation on. A previously authorized Control Point failure or
 timeout escalates to one serialized `Bearer.LE1.Disconnect`; MAP/PBAP stay
 available and LE rebuilds behind the profile-ordering gate.
 
+A stale LE bond looks different from an absent phone. Observed with
+btmon on an Intel AX200, BlueZ 5.87, Linux 7.2.8 and iOS 27: after the bond
+had been removed on only one side, the iPhone still connected over LE about
+every two seconds and offered ANCS during GATT discovery. Every `LE Start
+Encryption` with the stored LTK then failed (`Encryption Change`, status
+0x08), followed by `Disconnect Complete` with reason 0x08 (supervision
+timeout). BlueZ reports that as `org.bluez.Reason.Timeout` in
+`Bearer.LE1.Disconnected(name, message)` (the signal exists since BlueZ
+5.84). Its own auto-connect backoff applies only to
+`org.bluez.Reason.Authentication`, so the loop never stops. `Paired` and
+`Bonded` do not change. The only remedy is to forget the pairing on both
+sides and pair again. BlueFerry treats five LE drops within a minute as a
+suspect bond when each link was younger than 15 s and none became usable
+in between. Suspend and BlueFerry's own Local disconnects are not counted.
+The detection itself is tested only against fakes and a fake `org.bluez` on
+a private bus.
+
 This works on the MediaTek MT7922 and the Intel AX210 while MAP and PBAP stay
 connected over BR/EDR; on the AX210 the LE half of the bond exists only when
 the iPhone initiated the authentication (see "Pairing and iPhone
