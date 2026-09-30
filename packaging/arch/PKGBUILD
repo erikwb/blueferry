@@ -121,6 +121,7 @@ package_blueferry-backend() {
   optdepends=(
     'wl-clipboard: copy one-time codes on Wayland (BLUEFERRY_OTP_AUTOCOPY)'
     'xclip: copy one-time codes on X11 (BLUEFERRY_OTP_AUTOCOPY)'
+    'xsel: copy one-time codes on X11 (BLUEFERRY_OTP_AUTOCOPY)'
   )
   cd "$pkgbase-$pkgver"
   install -d "$pkgdir/$_site"

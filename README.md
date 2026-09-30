@@ -344,7 +344,23 @@ The backend copies with `wl-copy` from wl-clipboard on Wayland, or `xclip` or
 wl-clipboard 2.3 or newer the code is marked as sensitive, so Klipper and other
 clipboard managers keep it out of their history; older versions and the X11
 tools cannot do that. The clear timer only clears a code that is still on the
-clipboard, and stopping the backend clears a code it still holds.
+clipboard, and stopping the backend clears a code it still holds. Clearing
+cannot remove an entry a clipboard manager already saved, so without the
+sensitive hint the code stays in Klipper's history.
+
+The helpers need the graphical session in the backend service's
+environment. On Wayland, `WAYLAND_DISPLAY` is used, or else the only
+`wayland-N` socket in `$XDG_RUNTIME_DIR`; if `wl-copy` cannot reach that
+display, BlueFerry tries `xclip`/`xsel` once. X11 needs `DISPLAY` and
+`XAUTHORITY` in the service environment (for example through
+`systemctl --user import-environment DISPLAY XAUTHORITY`). Copying relies on
+the Wayland data-control protocol, which KWin and wlroots compositors provide;
+GNOME/Mutter without it is untested.
+
+The iPhone often sends message times without a time zone, and they are read
+in this computer's zone. If the phone and the computer use different zones,
+codes can look older than ten minutes and are skipped; the debug log then
+shows "ignoring a message N seconds old".
 
 Restart the user service after editing `local.env` settings.
 

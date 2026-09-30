@@ -96,7 +96,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `sinks/libnotify.py` | Desktop notifications via `org.freedesktop.Notifications`, including open and dismiss actions. |
 | `sinks/otp_clipboard.py` | Opt-in: copies one-time codes from new incoming MAP messages to the clipboard and shows a transient confirmation. |
 | `otp.py` | Pure, keyword-anchored one-time code detection with false-positive filters. |
-| `otp_clipboard.py` | Chooses wl-copy/xclip/xsel and owns one foreground clipboard helper; clearing stops a helper that still owns the code. |
+| `otp_clipboard.py` | Chooses wl-copy/xclip/xsel and owns one foreground clipboard helper; probes `--sensitive` on a worker, reaps through a GLib child watch, and clearing stops a helper that still owns the code. |
 
 ### Storage and privacy
 
