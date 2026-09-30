@@ -40,8 +40,8 @@ class _Backend:
         self.connects: list = []
         self.disconnects: list = []
 
-    def connect(self, on_connected, on_error) -> None:
-        self.connects.append((on_connected, on_error))
+    def connect(self, on_connected, on_error, on_lost) -> None:
+        self.connects.append((on_connected, on_error, on_lost))
 
     def disconnect(self, on_done, on_error) -> None:
         self.disconnects.append((on_done, on_error))

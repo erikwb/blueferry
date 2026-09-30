@@ -41,7 +41,6 @@ def test_current_target_keeps_explicit_environment_override(tmp_path, monkeypatc
     assert config.current_target() == ("02:00:00:00:00:03", "hci2")
 
 
-
 def test_tether_settings_are_opt_in_and_validated(monkeypatch) -> None:
     assert {"BLUEFERRY_TETHER_AUTOCONNECT", "BLUEFERRY_TETHER_BACKEND"} <= config.LOCAL_ENV_KEYS
     monkeypatch.delenv("BLUEFERRY_TETHER_AUTOCONNECT", raising=False)

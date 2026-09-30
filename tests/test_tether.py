@@ -52,8 +52,8 @@ class Backend:
         self.disconnects: list[tuple] = []
         self.cancelled = 0
 
-    def connect(self, on_connected, on_error) -> None:
-        self.connects.append((on_connected, on_error))
+    def connect(self, on_connected, on_error, on_lost) -> None:
+        self.connects.append((on_connected, on_error, on_lost))
 
     def disconnect(self, on_done, on_error) -> None:
         self.disconnects.append((on_done, on_error))
@@ -76,7 +76,32 @@ class Chooser:
             on_backend(self.backend)
 
 
-def controller(chooser=None, *, classic=True, ready=True, autoconnect=False, link=None):
+class Link:
+    """Recording stand-in for NetworkLinkWatch."""
+
+    def __init__(self) -> None:
+        self.probes = 0
+
+    def start(self) -> None:
+        pass
+
+    def stop(self) -> None:
+        pass
+
+    def probe(self) -> None:
+        self.probes += 1
+
+
+class Clock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def controller(chooser=None, *, classic=True, ready=True, autoconnect=False, link=None,
+               clock=None, interfaces=frozenset({"bnep0"})):
     timers = Timers()
     changes: list[None] = []
     flags = {"classic": classic, "ready": ready}
@@ -89,6 +114,8 @@ def controller(chooser=None, *, classic=True, ready=True, autoconnect=False, lin
         autoconnect=autoconnect,
         schedule=timers.schedule,
         cancel=timers.cancel,
+        clock=clock or Clock(),
+        interface_exists=lambda name: name in interfaces,
     )
     return value, timers, changes, flags
 
@@ -116,7 +143,7 @@ def test_connect_success_reports_interface_and_backend() -> None:
     assert started["state"] == CONNECTING
     assert timers.delays() == [tether.CONNECT_DEADLINE_SECONDS]
 
-    on_connected, _ = chooser.backend.connects[0]
+    on_connected, *_ = chooser.backend.connects[0]
     on_connected("bnep0")
 
     assert value.snapshot()["state"] == CONNECTED
@@ -205,7 +232,7 @@ def test_disconnect_while_connecting_supersedes_the_attempt() -> None:
     value.connect()
 
     assert value.disconnect()["state"] == DISCONNECTING
-    late_success, _ = chooser.backend.connects[0]
+    late_success, *_ = chooser.backend.connects[0]
     late_success("bnep0")
     assert value.state == DISCONNECTING
 
@@ -298,7 +325,7 @@ def test_bluez_restart_drops_the_tether_and_ignores_old_replies() -> None:
     chooser = Chooser()
     value, *_ = controller(chooser)
     value.connect()
-    old_success, _ = chooser.backend.connects[0]
+    old_success, *_ = chooser.backend.connects[0]
 
     value.reset_after_bluez_restart()
     old_success("bnep0")
@@ -508,3 +535,148 @@ def test_link_watch_treats_a_missing_network1_as_down() -> None:
     seen = []
     NetworkLinkWatch(lambda: bus, "/dev", lambda *a: seen.append(a)).start()
     assert seen == [(False, "")]
+
+
+# ---- adopted links, deliberate deactivation, recovery gating ----------------
+
+
+def test_stopping_an_adopted_link_waits_for_bluez_to_confirm() -> None:
+    link = Link()
+    chooser = Chooser()
+    value, *_ = controller(chooser, link=link)
+    value.start()
+    value.observe_link(True, "bnep0")
+
+    value.disconnect()
+    chooser.backend.disconnects[0][0]()  # the backend reports "done"
+
+    assert value.state == DISCONNECTING
+    assert link.probes == 1
+    value.observe_link(False, "")
+    assert value.snapshot()["state"] == OFF
+    assert value.snapshot()["error"] == ""
+
+
+def test_adopted_link_that_stays_up_is_reported_not_hidden() -> None:
+    link = Link()
+    chooser = Chooser()
+    value, timers, *_ = controller(chooser, link=link)
+    value.start()
+    value.observe_link(True, "bnep0")
+    value.disconnect()
+    chooser.backend.disconnects[0][0]()
+
+    value.observe_link(True, "bnep0")  # still up right after the reply
+    assert value.state == DISCONNECTING
+    assert timers.delays() == [tether.LINK_DOWN_GRACE_SECONDS]
+    timers.fire()
+    assert link.probes == 2
+    value.observe_link(True, "bnep0")  # still up after the grace period
+
+    snapshot = value.snapshot()
+    assert snapshot["state"] == CONNECTED
+    assert snapshot["error"] == tether.GENERIC_ERROR
+    assert snapshot["external"] is True
+
+
+def test_external_links_are_never_chased_by_autoconnect() -> None:
+    chooser = Chooser()
+    value, timers, *_ = controller(chooser, autoconnect=True)
+    value.start()
+    value.observe_link(True, "bnep0")
+
+    value.observe_link(False, "")
+
+    assert value.snapshot()["error"] == tether.LINK_LOST
+    assert timers.pending == {}
+    assert chooser.calls == 0
+
+
+def test_user_deactivation_elsewhere_is_respected_like_disconnect() -> None:
+    chooser = Chooser()
+    value, timers, *_ = controller(chooser, autoconnect=True)
+    value.start()
+    value.maybe_autoconnect()
+    chooser.backend.connects[0][0]("bnep0")
+    lost = chooser.backend.connects[0][2]
+
+    # BlueZ often reports the link drop before NetworkManager's reason.
+    value.observe_link(False, "")
+    assert timers.pending  # a retry was provisionally scheduled
+    lost(tether.LINK_LOST, True)
+
+    assert value.snapshot()["state"] == OFF
+    assert value.snapshot()["error"] == ""
+    assert timers.pending == {}
+    value.maybe_autoconnect()
+    assert len(chooser.backend.connects) == 1
+
+
+def test_backend_reported_loss_turns_off_and_retries_when_opted_in() -> None:
+    chooser = Chooser()
+    value, timers, *_ = controller(chooser, autoconnect=True)
+    value.start()
+    value.maybe_autoconnect()
+    chooser.backend.connects[0][0]("bnep0")
+
+    chooser.backend.connects[0][2](tether.IP_CONFIG_FAILED, False)
+
+    assert value.snapshot()["state"] == OFF
+    assert value.snapshot()["error"] == tether.IP_CONFIG_FAILED
+    assert timers.delays() == [tether.AUTOCONNECT_RETRY_SECONDS]
+
+
+def test_link_alive_requires_an_existing_interface() -> None:
+    chooser = Chooser()
+    value, *_ = controller(chooser, interfaces=frozenset())
+    assert value.link_alive() is False
+    value.connect()
+    assert value.active is True
+    assert value.link_alive() is False  # connecting never blocks recovery
+    chooser.backend.connects[0][0]("bnep0")
+    assert value.link_alive() is False  # bnep0 is gone from the kernel
+
+
+def test_link_alive_with_a_present_interface() -> None:
+    chooser = Chooser()
+    value, *_ = controller(chooser)
+    value.connect()
+    chooser.backend.connects[0][0]("bnep0")
+    assert value.link_alive() is True
+
+
+def test_unknown_interface_holds_recovery_for_a_bounded_time() -> None:
+    clock = Clock()
+    chooser = Chooser()
+    value, *_ = controller(chooser, clock=clock)
+    value.connect()
+    chooser.backend.connects[0][0]("")
+
+    assert value.link_alive() is True
+    clock.now += tether.UNKNOWN_INTERFACE_TRUST_SECONDS
+    assert value.link_alive() is False
+
+
+def test_probe_link_only_while_connected() -> None:
+    link = Link()
+    chooser = Chooser()
+    value, *_ = controller(chooser, link=link)
+    value.start()
+    value.probe_link()
+    assert link.probes == 0
+    value.connect()
+    chooser.backend.connects[0][0]("bnep0")
+    value.probe_link()
+    assert link.probes == 1
+
+
+def test_bluez_restart_clears_a_stale_failure() -> None:
+    chooser = Chooser()
+    value, *_ = controller(chooser)
+    value.connect()
+    chooser.backend.connects[0][1](tether.HOTSPOT_REFUSED)
+
+    value.reset_after_bluez_restart()
+
+    assert value.snapshot()["state"] == OFF
+    assert value.snapshot()["error"] == ""

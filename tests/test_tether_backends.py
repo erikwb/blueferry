@@ -1,6 +1,8 @@
 """NetworkManager and BlueZ tethering strategies against scripted fake buses."""
 from __future__ import annotations
 
+from pathlib import Path
+
 import dbus
 import dbus.exceptions
 import pytest
@@ -45,6 +47,13 @@ class FakeBus:
 
     def call_async(self, bus_name, path, interface, method, signature, args,
                    reply_handler, error_handler, timeout=-1.0):
+        # Tethering must never touch the ACL link the bearer supervisor owns.
+        if (
+            interface == "org.bluez.Device1"
+            or interface.startswith("org.bluez.Bearer.")
+            or method in {"ConnectProfile", "DisconnectProfile"}
+        ):
+            raise AssertionError(f"forbidden call {interface}.{method}")
         key = (interface, method) if interface != "org.freedesktop.DBus.Properties" \
             else (interface, method, args[0], args[1] if len(args) > 1 else None)
         self.calls.append((bus_name, path, interface, method, signature, args))
@@ -103,6 +112,8 @@ def nm_bus(*, existing: bool = True, state: int = 1, handlers=None) -> FakeBus:
             lambda _p, _a: (dbus.ObjectPath(PROFILE),),
         (NM, "ActivateConnection"): lambda _p, _a: (dbus.ObjectPath(ACTIVE),),
         (NM, "DeactivateConnection"): lambda _p, _a: (),
+        # No Bluetooth device known: profile resolution falls back.
+        (NM, "GetAllDevices"): lambda _p, _a: (dbus.Array([], signature="o"),),
     }
     for (interface, prop), _value in properties.items():
         table[("org.freedesktop.DBus.Properties", "Get", interface, prop)] = _props(properties)
@@ -121,6 +132,7 @@ def _run_connect(backend):
     backend.connect(
         lambda interface: outcome.setdefault("connected", interface),
         lambda token: outcome.setdefault("error", token),
+        lambda token, user: outcome.setdefault("lost", (token, user)),
     )
     return outcome
 
@@ -163,7 +175,8 @@ def test_existing_profile_is_activated_and_reports_the_interface_when_active() -
     bus.emit("StateChanged", ACTIVE, dbus.UInt32(2), dbus.UInt32(1))
 
     assert outcome == {"connected": "bnep0"}
-    assert bus.live_receivers() == 0  # the activation watch is released
+    # The watch stays to tell a deliberate deactivation from a lost link.
+    assert bus.live_receivers() == 1
 
 
 def test_missing_profile_is_created_once_then_activated() -> None:
@@ -172,7 +185,9 @@ def test_missing_profile_is_created_once_then_activated() -> None:
 
     outcome = _run_connect(backend)
 
-    assert bus.methods()[:3] == ["GetConnectionByUuid", "AddConnection", "ActivateConnection"]
+    assert bus.methods()[:4] == [
+        "GetAllDevices", "GetConnectionByUuid", "AddConnection", "ActivateConnection",
+    ]
     added = next(call for call in bus.calls if call[3] == "AddConnection")
     assert added[4] == "a{sa{sv}}"
     assert list(added[5][0]["connection"]["permissions"]) == ["user:alice"]
@@ -250,12 +265,15 @@ def test_disconnect_of_an_inactive_profile_succeeds() -> None:
 
 def test_disconnect_after_restart_finds_blueferrys_activation_by_uuid() -> None:
     other = "/org/freedesktop/NetworkManager/ActiveConnection/1"
-    uuids = {other: "wired-uuid", ACTIVE: connection_uuid(MAC)}
+    active = {
+        other: {"Uuid": "wired-uuid", "Type": "802-3-ethernet", "Devices": ["/Devices/1"]},
+        ACTIVE: {"Uuid": connection_uuid(MAC), "Type": "bluetooth", "Devices": []},
+    }
     bus = nm_bus(handlers={
         ("org.freedesktop.DBus.Properties", "Get", NM, "ActiveConnections"):
             lambda _p, _a: (dbus.Array([other, ACTIVE], signature="o"),),
-        ("org.freedesktop.DBus.Properties", "Get", NM_ACTIVE_IFACE, "Uuid"):
-            lambda path, _a: (uuids[path],),
+        ("org.freedesktop.DBus.Properties", "GetAll", NM_ACTIVE_IFACE, None):
+            lambda path, _a: (active[path],),
     })
     backend = NetworkManagerTether(lambda: bus, MAC, user=lambda: "alice")
     done = []
@@ -301,6 +319,238 @@ def test_cancelled_attempt_ignores_late_state_signals() -> None:
     backend.cancel()
     bus.emit("StateChanged", ACTIVE, dbus.UInt32(2), dbus.UInt32(1))
     assert outcome == {}
+
+
+# ---- established tether ending -----------------------------------------------
+
+
+@pytest.mark.parametrize(("reason", "expected"), [
+    (2, (tether.LINK_LOST, True)),       # USER_DISCONNECTED, e.g. the applet
+    (3, (tether.LINK_LOST, False)),      # DEVICE_DISCONNECTED
+    (5, (tether.IP_CONFIG_FAILED, False)),
+])
+def test_end_of_an_established_tether_is_reported_with_its_cause(reason, expected) -> None:
+    bus = nm_bus(state=2)
+    backend = NetworkManagerTether(lambda: bus, MAC, user=lambda: "alice")
+    outcome = _run_connect(backend)
+    assert outcome == {"connected": "bnep0"}
+
+    bus.emit("StateChanged", ACTIVE, dbus.UInt32(4), dbus.UInt32(reason))
+
+    assert outcome["lost"] == expected
+    assert "error" not in outcome
+    assert bus.live_receivers() == 0
+
+
+# ---- reusing an existing PAN profile ------------------------------------------
+
+BT_DEVICE = "/org/freedesktop/NetworkManager/Devices/6"
+FOREIGN = "/org/freedesktop/NetworkManager/Settings/2"
+DUN = "/org/freedesktop/NetworkManager/Settings/3"
+OWN = "/org/freedesktop/NetworkManager/Settings/4"
+NEWER = "/org/freedesktop/NetworkManager/Settings/5"
+
+
+def _profile(uuid_: str, kind: str = "panu", *, stamp: int = 0, bdaddr=None, name="x"):
+    bluetooth = {"type": kind}
+    if bdaddr is not None:
+        bluetooth["bdaddr"] = bdaddr
+    return {
+        "connection": {"id": name, "uuid": uuid_, "type": "bluetooth", "timestamp": stamp},
+        "bluetooth": bluetooth,
+    }
+
+
+def world(profiles: dict, *, hwaddr: str = MAC.lower(), device_type: int = 5,
+          devices=(BT_DEVICE,), handlers=None) -> FakeBus:
+    table = {
+        (NM, "GetAllDevices"): lambda _p, _a: (dbus.Array(list(devices), signature="o"),),
+        ("org.freedesktop.DBus.Properties", "GetAll", "org.freedesktop.NetworkManager.Device",
+         None): lambda _p, _a: ({
+            "DeviceType": dbus.UInt32(device_type),
+            "AvailableConnections": dbus.Array(list(profiles), signature="o"),
+        },),
+        ("org.freedesktop.DBus.Properties", "Get",
+         "org.freedesktop.NetworkManager.Device.Bluetooth", "HwAddress"):
+            lambda _p, _a: (hwaddr,),
+        ("org.freedesktop.NetworkManager.Settings.Connection", "GetSettings"):
+            lambda path, _a: (profiles[path],),
+    }
+    table.update(handlers or {})
+    return nm_bus(existing=False, state=2, handlers=table)
+
+
+def _activated(bus: FakeBus) -> list:
+    return [call[5][0] for call in bus.calls if call[3] == "ActivateConnection"]
+
+
+def test_foreign_panu_profile_is_reused_without_creating_one() -> None:
+    bus = world({FOREIGN: _profile("foreign-uuid", bdaddr=MAC, name="Joshua's iPhone Network")})
+    outcome = _run_connect(NetworkManagerTether(lambda: bus, MAC, user=lambda: "alice"))
+
+    assert outcome == {"connected": "bnep0"}
+    assert _activated(bus) == [FOREIGN]
+    assert "AddConnection" not in bus.methods()
+    assert "GetConnectionByUuid" not in bus.methods()
+    # A foreign profile is never modified or removed.
+    assert not {"Update", "Update2", "Delete"} & set(bus.methods())
+
+
+def test_dun_only_profile_is_not_reused() -> None:
+    bus = world({DUN: _profile("dun-uuid", "dun")})
+    _run_connect(NetworkManagerTether(lambda: bus, MAC, user=lambda: "alice"))
+
+    assert "AddConnection" in bus.methods()
+    assert _activated(bus) == [PROFILE]
+
+
+def test_own_profile_is_preferred_over_a_newer_foreign_one() -> None:
+    bus = world({
+        FOREIGN: _profile("foreign-uuid", stamp=2_000_000_000),
+        OWN: _profile(connection_uuid(MAC), stamp=1),
+    })
+    _run_connect(NetworkManagerTether(lambda: bus, MAC, user=lambda: "alice"))
+    assert _activated(bus) == [OWN]
+
+
+def test_most_recently_used_foreign_profile_wins() -> None:
+    bus = world({
+        FOREIGN: _profile("old-uuid", stamp=10),
+        NEWER: _profile("new-uuid", stamp=20, bdaddr=dbus.Array(
+            [dbus.Byte(b) for b in bytes.fromhex("AABBCCDDEE01")], signature="y")),
+    })
+    _run_connect(NetworkManagerTether(lambda: bus, MAC, user=lambda: "alice"))
+    assert _activated(bus) == [NEWER]
+
+
+def test_profile_for_another_phone_is_ignored() -> None:
+    bus = world({FOREIGN: _profile("other-uuid", bdaddr="AA:BB:CC:DD:EE:99")})
+    _run_connect(NetworkManagerTether(lambda: bus, MAC, user=lambda: "alice"))
+    assert "AddConnection" in bus.methods()
+
+
+@pytest.mark.parametrize("variant", ["no-device", "other-address", "not-bluetooth"])
+def test_without_a_matching_device_the_own_profile_is_created(variant) -> None:
+    kwargs = {
+        "no-device": {"devices": ()},
+        "other-address": {"hwaddr": "11:22:33:44:55:66"},
+        "not-bluetooth": {"device_type": 1},
+    }[variant]
+    bus = world({FOREIGN: _profile("foreign-uuid")}, **kwargs)
+    _run_connect(NetworkManagerTether(lambda: bus, MAC, user=lambda: "alice"))
+    assert "AddConnection" in bus.methods()
+
+
+def test_failed_resolution_falls_back_to_the_own_profile() -> None:
+    bus = world({}, handlers={(NM, "GetAllDevices"): _raise(f"{NM}.PermissionDenied")})
+    outcome = _run_connect(NetworkManagerTether(lambda: bus, MAC, user=lambda: "alice"))
+    assert outcome == {"connected": "bnep0"}
+    assert "AddConnection" in bus.methods()
+
+
+def test_profile_names_are_never_logged(caplog) -> None:
+    bus = world({FOREIGN: _profile("foreign-uuid", name="Joshua's iPhone Network")})
+    with caplog.at_level("DEBUG"):
+        _run_connect(NetworkManagerTether(lambda: bus, MAC, user=lambda: "alice"))
+    assert "Joshua" not in caplog.text
+    assert MAC not in caplog.text.upper()
+
+
+# ---- stopping a tether BlueFerry did not start -----------------------------------
+
+FOREIGN_ACTIVE = "/org/freedesktop/NetworkManager/ActiveConnection/8"
+WIRED_ACTIVE = "/org/freedesktop/NetworkManager/ActiveConnection/1"
+
+
+def _active_world(active: dict, hwaddrs: dict) -> FakeBus:
+    return nm_bus(handlers={
+        ("org.freedesktop.DBus.Properties", "Get", NM, "ActiveConnections"):
+            lambda _p, _a: (dbus.Array(list(active), signature="o"),),
+        ("org.freedesktop.DBus.Properties", "GetAll", NM_ACTIVE_IFACE, None):
+            lambda path, _a: (active[path],),
+        ("org.freedesktop.DBus.Properties", "Get",
+         "org.freedesktop.NetworkManager.Device.Bluetooth", "HwAddress"):
+            lambda path, _a: (hwaddrs[path],),
+    })
+
+
+def _deactivated(bus: FakeBus) -> list:
+    return [call[5] for call in bus.calls if call[3] == "DeactivateConnection"]
+
+
+def test_adopted_applet_tether_is_found_by_the_phone_address() -> None:
+    bus = _active_world({
+        WIRED_ACTIVE: {"Uuid": "wired", "Type": "802-3-ethernet", "Devices": ["/Devices/1"]},
+        FOREIGN_ACTIVE: {"Uuid": "foreign-panu", "Type": "bluetooth", "Devices": [BT_DEVICE]},
+    }, {BT_DEVICE: MAC.lower()})
+    done = []
+
+    NetworkManagerTether(lambda: bus, MAC, user=lambda: "alice").disconnect(
+        lambda: done.append(True), done.append,
+    )
+
+    assert _deactivated(bus) == [(FOREIGN_ACTIVE,)]
+    assert done == [True]
+
+
+def test_controller_stops_an_adopted_applet_tether_end_to_end() -> None:
+    from blueferry.tether import TetherController
+
+    bus = _active_world({
+        FOREIGN_ACTIVE: {"Uuid": "foreign-panu", "Type": "bluetooth", "Devices": [BT_DEVICE]},
+    }, {BT_DEVICE: MAC})
+    probes = []
+    link = type("Link", (), {
+        "start": lambda self: None, "stop": lambda self: None,
+        "probe": lambda self: probes.append(True),
+    })()
+    controller = TetherController(
+        lambda on_backend, _on_error: on_backend(
+            NetworkManagerTether(lambda: bus, MAC, user=lambda: "alice")
+        ),
+        link_watch=link,
+        schedule=lambda _seconds, _callback: 1,
+        cancel=lambda _source: None,
+    )
+    controller.start()
+    controller.observe_link(True, "bnep0")
+
+    controller.disconnect()
+    assert _deactivated(bus) == [(FOREIGN_ACTIVE,)]
+    assert controller.state == "disconnecting"  # until BlueZ confirms
+    controller.observe_link(False, "")
+    assert controller.snapshot()["state"] == "off"
+    assert controller.snapshot()["error"] == ""
+
+
+def test_bluetooth_tether_of_another_phone_is_left_alone() -> None:
+    bus = _active_world({
+        FOREIGN_ACTIVE: {"Uuid": "foreign-panu", "Type": "bluetooth", "Devices": [BT_DEVICE]},
+    }, {BT_DEVICE: "11:22:33:44:55:66"})
+    done = []
+    NetworkManagerTether(lambda: bus, MAC, user=lambda: "alice").disconnect(
+        lambda: done.append(True), done.append,
+    )
+    assert _deactivated(bus) == []
+    assert done == [True]
+
+
+def test_reused_profile_uuid_is_recognised_when_stopping() -> None:
+    bus = world({FOREIGN: _profile("foreign-uuid")})
+    backend = NetworkManagerTether(lambda: bus, MAC, user=lambda: "alice")
+    _run_connect(backend)
+    backend.cancel()
+    backend._active_path = None  # as after losing track of the activation
+    bus.handlers[("org.freedesktop.DBus.Properties", "Get", NM, "ActiveConnections")] = (
+        lambda _p, _a: (dbus.Array([FOREIGN_ACTIVE], signature="o"),)
+    )
+    bus.handlers[("org.freedesktop.DBus.Properties", "GetAll", NM_ACTIVE_IFACE, None)] = (
+        lambda _p, _a: ({"Uuid": "foreign-uuid", "Type": "bluetooth", "Devices": []},)
+    )
+
+    backend.disconnect(lambda: None, lambda _token: None)
+
+    assert _deactivated(bus) == [(FOREIGN_ACTIVE,)]
 
 
 # ---- BlueZ fallback -------------------------------------------------------------
@@ -365,24 +615,26 @@ def test_bluez_cancel_drops_a_late_reply() -> None:
     assert outcome == {}
 
 
-def test_backends_never_touch_the_shared_acl_link() -> None:
-    bus = nm_bus(state=2)
-    backend = NetworkManagerTether(lambda: bus, MAC, user=lambda: "alice")
-    _run_connect(backend)
-    backend.disconnect(lambda: None, lambda _token: None)
-    bluez = bluez_bus({
-        ("org.bluez.Network1", "Connect"): lambda _p, _a: ("bnep0",),
-        ("org.bluez.Network1", "Disconnect"): lambda _p, _a: (),
-    })
-    fallback = BluezTether(lambda: bluez, DEVICE)
-    _run_connect(fallback)
-    fallback.disconnect(lambda: None, lambda _token: None)
+def test_forbidden_calls_fail_the_fake_bus() -> None:
+    bus = FakeBus()
+    for interface, method in (
+        ("org.bluez.Device1", "Connect"),
+        ("org.bluez.Bearer.BREDR1", "Disconnect"),
+        ("org.bluez.Device1", "ConnectProfile"),
+        ("org.bluez.Device1", "DisconnectProfile"),
+    ):
+        with pytest.raises(AssertionError, match="forbidden"):
+            bus.call_async("org.bluez", DEVICE, interface, method, "", (),
+                           lambda *_a: None, lambda _e: None)
 
-    for call in bus.calls + bluez.calls:
-        assert call[2] not in {
-            "org.bluez.Device1", "org.bluez.Bearer.BREDR1", "org.bluez.Bearer.LE1",
-        }
-        assert call[3] not in {"ConnectProfile", "DisconnectProfile"}
+
+def test_tether_sources_never_name_link_level_methods() -> None:
+    sources = sorted((Path(__file__).resolve().parents[1] / "src/blueferry").glob("tether*.py"))
+    assert len(sources) >= 3
+    for source in sources:
+        text = source.read_text(encoding="utf-8")
+        for forbidden in ("org.bluez.Device1", "org.bluez.Bearer", "ConnectProfile"):
+            assert forbidden not in text, (source.name, forbidden)
 
 
 # ---- backend selection ---------------------------------------------------------

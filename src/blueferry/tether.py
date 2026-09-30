@@ -8,9 +8,10 @@ without it BlueFerry brings up the link only and leaves DHCP to the user.
 
 Tethering is never started implicitly unless the user sets
 ``BLUEFERRY_TETHER_AUTOCONNECT``. It is layered on the Classic link that the
-bearer supervisor already maintains; this module never calls
-``Device1.Connect``/``Disconnect`` or ``ConnectProfile``, so it cannot fight
-the supervisor over the ACL link or disturb MAP, PBAP, or ANCS.
+bearer supervisor already maintains. It only ever talks to ``Network1`` or
+NetworkManager, never to the device- or bearer-level connect/disconnect
+methods or per-profile connects, so it cannot fight the supervisor over the
+ACL link or disturb MAP, PBAP, or ANCS. The test suite enforces this.
 
 Nothing here logs or publishes addresses, device names, IP configuration, or
 D-Bus error messages (which can embed a device name). Only D-Bus error names
@@ -20,6 +21,7 @@ and stable tokens leave this module.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from collections.abc import Callable, Mapping
 from typing import Any, Protocol
@@ -53,8 +55,9 @@ BACKEND_MODES = frozenset({"auto", BACKEND_NETWORKMANAGER, BACKEND_BLUEZ})
 # Clients translate these into user guidance; they never carry device data.
 
 HOTSPOT_REFUSED = "hotspot-refused"
-"""The phone refused the PAN connection, normally because Personal Hotspot
-is off (BlueZ reports org.bluez.Error.Failed)."""
+"""The PAN connection failed with BlueZ's generic ``org.bluez.Error.Failed``.
+That usually means Personal Hotspot is off, but ``Failed`` is not specific
+enough to be sure."""
 NOT_SUPPORTED = "not-supported"
 """No usable PAN service: the phone offers no NAP record, or BlueZ lacks its
 network plugin (kernel BT_BNEP)."""
@@ -82,6 +85,15 @@ CONNECT_DEADLINE_SECONDS = 90
 AUTOCONNECT_RETRY_SECONDS = 30
 AUTOCONNECT_RETRY_CAP_SECONDS = 600
 _MAX_INTERFACE_CHARS = 15  # IFNAMSIZ - 1
+# How long a connected tether without a known interface may hold back the
+# adapter power-cycle recovery.
+UNKNOWN_INTERFACE_TRUST_SECONDS = 600
+# BNEP teardown can trail the stop request's reply by a moment.
+LINK_DOWN_GRACE_SECONDS = 3
+
+
+def _interface_exists(name: str) -> bool:
+    return bool(name) and os.path.exists(os.path.join("/sys/class/net", name))
 
 
 def dbus_error_name(error: object) -> str:
@@ -123,7 +135,8 @@ def bluez_error_token(error: object) -> str:
             return PHONE_UNREACHABLE
         if "timed out" in detail or "(110)" in detail:
             return TIMEOUT
-        # iOS rejects the BNEP setup when Personal Hotspot is off.
+        # Most likely iOS rejected BNEP because Personal Hotspot is off; the
+        # generic Failed name cannot prove it, so clients word this cautiously.
         return HOTSPOT_REFUSED
     if name in {"org.bluez.Error.NotSupported", *_DBUS_MISSING_API_NAMES}:
         return NOT_SUPPORTED
@@ -162,6 +175,8 @@ class AsyncBus(Protocol):
 
 Connected = Callable[[str], None]
 Failed = Callable[[str], None]
+Lost = Callable[[str, bool], None]
+"""An established tether ended: ``(token, user_requested)``."""
 Done = Callable[[], None]
 
 
@@ -170,7 +185,7 @@ class TetherBackend(Protocol):
 
     name: str
 
-    def connect(self, on_connected: Connected, on_error: Failed) -> None: ...
+    def connect(self, on_connected: Connected, on_error: Failed, on_lost: Lost) -> None: ...
 
     def disconnect(self, on_done: Done, on_error: Failed) -> None: ...
 
@@ -258,8 +273,8 @@ class NetworkLinkWatch:
         if match is not None:
             try:
                 match.remove()
-            except Exception:
-                log.debug("could not remove PAN link watch", exc_info=True)
+            except Exception as error:
+                log.debug("could not remove PAN link watch: %s", dbus_error_name(error))
 
 
 class TetherController:
@@ -283,6 +298,7 @@ class TetherController:
         schedule: Schedule | None = None,
         cancel: Cancel | None = None,
         clock: Callable[[], float] = time.monotonic,
+        interface_exists: Callable[[str], bool] = _interface_exists,
     ) -> None:
         if schedule is None or cancel is None:
             from gi.repository import GLib
@@ -298,6 +314,7 @@ class TetherController:
         self._schedule = schedule
         self._cancel = cancel
         self._clock = clock
+        self._interface_exists = interface_exists
         self._state = OFF
         self._error = ""
         self._interface = ""
@@ -306,7 +323,13 @@ class TetherController:
         self._generation = 0
         self._deadline_id: int | None = None
         self._retry_id: int | None = None
+        self._confirm_id: int | None = None
         self._auto_failures = 0
+        self._connected_at: float | None = None
+        # Stopping an adopted link cannot tell from NetworkManager's reply
+        # whether the link really went down; BlueZ decides (see _disconnected).
+        self._awaiting_link_down = False
+        self._link_down_grace_spent = False
         # An explicit Disconnect() is a user decision; automatic attempts wait
         # for the next explicit Connect() or a new daemon generation.
         self._auto_suppressed = False
@@ -321,6 +344,25 @@ class TetherController:
     @property
     def active(self) -> bool:
         return self._state in ACTIVE_STATES
+
+    def link_alive(self) -> bool:
+        """True only while a tether is demonstrably carrying the user's traffic.
+
+        Recovery must not be blocked forever by a stale state: a known
+        interface has to exist in the kernel, and an unknown one is trusted
+        for a bounded time only.
+        """
+        if self._state != CONNECTED:
+            return False
+        if self._interface:
+            return self._interface_exists(self._interface)
+        since = self._connected_at
+        return since is not None and self._clock() - since < UNKNOWN_INTERFACE_TRUST_SECONDS
+
+    def probe_link(self) -> None:
+        """Ask BlueZ for the current link, e.g. before recovery trusts it."""
+        if self._state == CONNECTED and self._running and self._link_watch is not None:
+            self._link_watch.probe()
 
     def snapshot(self) -> dict[str, object]:
         backend = self._backend.name if self._backend is not None else ""
@@ -353,6 +395,7 @@ class TetherController:
         self._generation += 1
         self._cancel_deadline()
         self._cancel_retry()
+        self._cancel_confirm()
         if self._backend is not None:
             self._backend.cancel()
         if self._link_watch is not None:
@@ -362,15 +405,18 @@ class TetherController:
         """BlueZ restarts drop every BNEP link and every pending reply."""
         self._generation += 1
         self._cancel_deadline()
+        self._cancel_confirm()
+        self._awaiting_link_down = False
         if self._backend is not None:
             self._backend.cancel()
         self._backend = None
-        self._external = False
         was_active = self.active
-        self._set(OFF, error=LINK_LOST if was_active else self._error, interface="")
+        was_external = self._external
+        self._external = False
+        self._set(OFF, error=LINK_LOST if was_active else "", interface="")
         if self._running and self._link_watch is not None:
             self._link_watch.probe()
-        if was_active:
+        if was_active and not was_external:
             self._schedule_auto_retry()
 
     # ---- commands ----------------------------------------------------------
@@ -409,6 +455,9 @@ class TetherController:
                 backend.connect(
                     lambda interface: self._connected(generation, interface),
                     lambda token: self._failed(generation, token),
+                    lambda token, user_requested: self._lost(
+                        generation, token, user_requested
+                    ),
                 )
             except Exception as error:
                 log.warning("tethering backend failed to start: %s", dbus_error_name(error))
@@ -433,7 +482,9 @@ class TetherController:
         self._generation += 1
         generation = self._generation
         self._cancel_deadline()
+        self._cancel_confirm()
         backend = self._backend
+        external = self._external
         self._set(DISCONNECTING)
         log.info("stopping Bluetooth tethering")
 
@@ -443,14 +494,14 @@ class TetherController:
             self._backend = selected
             try:
                 selected.disconnect(
-                    lambda: self._disconnected(generation),
+                    lambda: self._disconnected(generation, external),
                     lambda token: self._disconnect_failed(generation, token),
                 )
             except Exception as error:
                 log.warning("tethering disconnect failed to start: %s", dbus_error_name(error))
                 self._disconnect_failed(generation, GENERIC_ERROR)
 
-        if backend is not None and not self._external:
+        if backend is not None and not external:
             run(backend)
         else:
             # Adopted after a daemon restart or started by another tool.
@@ -480,10 +531,11 @@ class TetherController:
     # ---- backend callbacks -------------------------------------------------
 
     def _connected(self, generation: int, interface: str) -> None:
-        if generation != self._generation:
+        if generation != self._generation or self._state != CONNECTING:
             return
         self._cancel_deadline()
         self._auto_failures = 0
+        self._connected_at = self._clock()
         self._set(CONNECTED, error="", interface=_safe_interface(interface))
         log.info("Bluetooth tethering connected")
 
@@ -500,6 +552,27 @@ class TetherController:
         self._set(FAILED, error=token, interface="")
         self._schedule_auto_retry()
 
+    def _lost(self, generation: int, token: str, user_requested: bool) -> None:
+        """The backend saw an established tether end."""
+        if generation != self._generation:
+            return
+        self._generation += 1
+        self._cancel_confirm()
+        if user_requested:
+            # Someone deliberately turned it off (e.g. in the network applet).
+            # Respect that exactly like an explicit Disconnect().
+            log.info("Bluetooth tethering was turned off outside BlueFerry")
+            self._auto_suppressed = True
+            self._cancel_retry()
+            self._set(OFF, error="", interface="")
+            return
+        if self._state != CONNECTED:
+            return  # the link watch already reported the loss
+        token = token if token in ERROR_TOKENS else LINK_LOST
+        log.warning("Bluetooth tethering ended: %s", token)
+        self._set(OFF, error=token, interface="")
+        self._schedule_auto_retry()
+
     def _deadline(self, generation: int) -> bool:
         self._deadline_id = None
         if generation == self._generation and self._state == CONNECTING:
@@ -509,13 +582,27 @@ class TetherController:
             if backend is not None:
                 try:
                     backend.disconnect(lambda: None, lambda _token: None)
-                except Exception:
-                    log.debug("could not withdraw a timed-out tether", exc_info=True)
+                except Exception as error:
+                    log.debug(
+                        "could not withdraw a timed-out tether: %s", dbus_error_name(error)
+                    )
         return False
 
-    def _disconnected(self, generation: int) -> None:
+    def _disconnected(self, generation: int, external: bool) -> None:
         if generation != self._generation:
             return
+        if external and self._link_watch is not None and self._running:
+            # The backend may have found nothing it recognised to stop. Only
+            # BlueZ can say whether the adopted link is really gone.
+            self._awaiting_link_down = True
+            self._link_down_grace_spent = False
+            self._link_watch.probe()
+            return
+        self._finish_disconnect()
+
+    def _finish_disconnect(self) -> None:
+        self._awaiting_link_down = False
+        self._cancel_confirm()
         self._external = False
         self._set(OFF, error="", interface="")
         log.info("Bluetooth tethering stopped")
@@ -532,27 +619,60 @@ class TetherController:
 
     def observe_link(self, connected: bool, interface: str) -> None:
         """Reconcile with BlueZ's Network1 state (ground truth for the link)."""
+        if self._awaiting_link_down and self._state == DISCONNECTING:
+            self._link_after_disconnect(connected, interface)
+            return
         if connected:
             if self._state in (OFF, FAILED):
                 # A tether that survived a daemon restart or that another tool
                 # started. Report it honestly instead of claiming it is off.
                 self._external = True
+                self._connected_at = self._clock()
                 self._set(CONNECTED, error="", interface=_safe_interface(interface))
             elif self._state == CONNECTED and interface and not self._interface:
                 self._set(CONNECTED, interface=_safe_interface(interface))
             return
         if self._state == CONNECTED:
-            self._generation += 1
+            # Keep the generation: a NetworkManager "user disconnected" report
+            # for this same session may still arrive and must win.
+            external = self._external
             self._external = False
             log.warning("Bluetooth tethering link was lost")
             self._set(OFF, error=LINK_LOST, interface="")
-            self._schedule_auto_retry()
+            if not external:
+                # Never chase a link another tool owned and ended.
+                self._schedule_auto_retry()
+
+    def _link_after_disconnect(self, connected: bool, interface: str) -> None:
+        if not connected:
+            self._finish_disconnect()
+            return
+        if not self._link_down_grace_spent:
+            # BNEP teardown trails NetworkManager's reply; look once more.
+            self._link_down_grace_spent = True
+            self._cancel_confirm()
+
+            def recheck() -> bool:
+                self._confirm_id = None
+                if self._awaiting_link_down and self._link_watch is not None:
+                    self._link_watch.probe()
+                return False
+
+            self._confirm_id = self._schedule(LINK_DOWN_GRACE_SECONDS, recheck)
+            return
+        # Still up: nothing we could identify was stopped. Say so.
+        self._awaiting_link_down = False
+        self._external = True
+        log.warning("Bluetooth tethering is still up after the stop request")
+        self._set(CONNECTED, error=GENERIC_ERROR, interface=_safe_interface(interface))
 
     # ---- helpers -----------------------------------------------------------
 
     def _set(self, state: str, *, error: str | None = None, interface: str | None = None) -> None:
         changed = state != self._state
         self._state = state
+        if state != CONNECTED:
+            self._connected_at = None
         if error is not None and error != self._error:
             self._error = error
             changed = True
@@ -569,21 +689,25 @@ class TetherController:
             except Exception:
                 log.exception("tethering change notification failed")
 
+    def _cancel_source(self, source_id: int | None, what: str) -> None:
+        if source_id is None:
+            return
+        try:
+            self._cancel(source_id)
+        except Exception as error:
+            log.debug("could not remove tethering %s: %s", what, dbus_error_name(error))
+
     def _cancel_deadline(self) -> None:
-        if self._deadline_id is not None:
-            try:
-                self._cancel(self._deadline_id)
-            except Exception:
-                log.debug("could not remove tethering deadline", exc_info=True)
-            self._deadline_id = None
+        self._cancel_source(self._deadline_id, "deadline")
+        self._deadline_id = None
 
     def _cancel_retry(self) -> None:
-        if self._retry_id is not None:
-            try:
-                self._cancel(self._retry_id)
-            except Exception:
-                log.debug("could not remove tethering retry", exc_info=True)
-            self._retry_id = None
+        self._cancel_source(self._retry_id, "retry")
+        self._retry_id = None
+
+    def _cancel_confirm(self) -> None:
+        self._cancel_source(self._confirm_id, "link check")
+        self._confirm_id = None
 
     def _schedule_auto_retry(self) -> None:
         if not self._autoconnect or self._auto_suppressed or not self._running:

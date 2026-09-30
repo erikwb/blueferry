@@ -120,6 +120,7 @@ def _daemon(make_daemon, calls):
     value.tether = SimpleNamespace(
         active=False, start=lambda: None, stop=lambda: None,
         reset_after_bluez_restart=lambda: None, maybe_autoconnect=lambda: None,
+        link_alive=lambda: False, probe_link=lambda: None,
     )
     return value
 
