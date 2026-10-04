@@ -89,10 +89,49 @@ def test_system_bus_connection_is_not_shared_with_worker_thread(monkeypatch) -> 
     assert mainloops == [None, bus.dbus.mainloop.NULL_MAIN_LOOP]
 
 
+def test_obex_worker_connections_are_never_attached_to_glib(monkeypatch):
+    connections = []
+    closed = []
+    errors = []
+
+    def connect(*, private, mainloop):
+        assert private is True
+        assert mainloop is bus.dbus.mainloop.NULL_MAIN_LOOP
+        owner = threading.get_ident()
+        connection = SimpleNamespace(
+            close=lambda: closed.append(threading.get_ident()),
+            set_exit_on_disconnect=lambda value: None,
+        )
+        connections.append((connection, owner))
+        return connection
+
+    monkeypatch.setattr(bus.dbus, 'SessionBus', connect)
+
+    def run():
+        try:
+            bus.initialize_obex_worker_bus()
+            bus.new_obex_profile_bus('MAP')
+            bus.new_obex_profile_bus('PBAP')
+            bus.new_obex_profile_bus('MAP')
+            bus.close_obex_worker_bus()
+        except Exception as error:
+            errors.append(error)
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    worker.join(5)
+    assert not worker.is_alive()
+    assert not errors
+    assert len(connections) == 4
+    assert closed == [worker.ident] * 4
+    assert all(owner == worker.ident for _, owner in connections)
+
+
 def test_profile_owner_replacement_keeps_sibling_and_routes_child_objects(monkeypatch):
     connections = []
-    def connect(*, private):
+    def connect(*, private, mainloop):
         assert private
+        assert mainloop is None
         connection = SimpleNamespace(closed=False)
         connection.set_exit_on_disconnect = lambda value: None
         connection.close = lambda: setattr(connection, 'closed', True)

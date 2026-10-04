@@ -24,9 +24,9 @@ def transfer_signals(monkeypatch):
     from unittest.mock import Mock
 
     callbacks = []
-    bus = Mock()
-    bus.add_signal_receiver.side_effect = lambda callback, **kwargs: callbacks.append(callback) or Mock()
-    monkeypatch.setattr(transfer, "get_obex_bus", lambda _path: bus)
+    monkeypatch.setattr(
+        transfer, "_add_transfer_receiver", lambda callback: callbacks.append(callback) or Mock(),
+    )
     return callbacks
 
 

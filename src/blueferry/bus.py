@@ -60,8 +60,9 @@ def initialize_obex_worker_bus() -> None:
     synchronous call made on the GLib connection can still hold up the code
     dispatching the daemon's public API.  The OBEX worker therefore owns a
     private connection and is the only thread that performs slow profile I/O.
+    GLib must not dispatch it while the worker is using or closing it.
     """
-    _thread_state.obex_bus = dbus.SessionBus(private=True)
+    _thread_state.obex_bus = dbus.SessionBus(private=True, mainloop=_worker_mainloop())
     _thread_state.obex_bus.set_exit_on_disconnect(False)
 
 
@@ -97,9 +98,10 @@ def new_obex_profile_bus(target: str):
     profiles = getattr(_thread_state, "obex_profiles", None)
     if profiles is None:
         profiles = _thread_state.obex_profiles = {}
-    connection = dbus.SessionBus(private=True)
-    # These connections are deliberately closed during recovery while GLib
-    # continues dispatching. libdbus must not exit the daemon on disconnect.
+    connection = dbus.SessionBus(private=True, mainloop=_worker_mainloop())
+    # The worker closes these during recovery. Worker connections must never
+    # be dispatched by the main thread, or teardown can race libdbus dispatch.
+    # Signal watches use the main thread's session bus instead.
     connection.set_exit_on_disconnect(False)
     profiles[target] = (connection, None)
     return connection
@@ -113,7 +115,7 @@ def bind_obex_profile_session(target: str, path: str) -> None:
 
 
 def get_obex_bus(path: str | None = None):
-    """Use the worker-owned connection for operations and transfer watches."""
+    """Use the worker-owned connection for synchronous OBEX operations."""
     if path is not None:
         for connection, session in getattr(_thread_state, "obex_profiles", {}).values():
             if session and (path == session or path.startswith(session + "/")):

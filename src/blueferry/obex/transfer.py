@@ -8,13 +8,16 @@ from collections import OrderedDict
 from collections.abc import Callable
 
 import dbus
+from dbus.connection import Connection
+from gi.repository import GLib
 
-from blueferry.bus import get_obex_bus, obex
+from blueferry.bus import get_session_bus, obex
 from blueferry.errors import SendOutcomeUnknownError
 
 log = logging.getLogger(__name__)
 
 _TRANSFER_IFACE = "org.bluez.obex.Transfer1"
+_WATCH_SETUP_TIMEOUT_S = 5.0
 _DISAPPEARED_ERRORS = frozenset({
     "org.freedesktop.DBus.Error.UnknownObject",
     "org.bluez.obex.Error.NotFound",
@@ -25,10 +28,36 @@ class TransferFailed(RuntimeError):
     """BlueZ reported an explicit transfer failure."""
 
 
+def _add_transfer_receiver(callback: Callable[..., None]):
+    """Install one sender-bound receiver, rolling back a failed AddMatch."""
+    connection = get_session_bus()
+    owner = str(connection.get_name_owner("org.bluez.obex"))
+    # BusConnection.add_signal_receiver also creates a NameOwnerWatch, which
+    # can itself leak when setup fails before returning its match. A transfer
+    # belongs to one obexd instance: bind its unique sender directly and keep
+    # the local match handle before asking the bus to route its signals.
+    match = Connection.add_signal_receiver(
+        connection, callback, signal_name="PropertiesChanged",
+        dbus_interface="org.freedesktop.DBus.Properties",
+        bus_name=owner, arg0=_TRANSFER_IFACE, path_keyword="path",
+    )
+    try:
+        connection.add_match_string(str(match))
+    except Exception:
+        try:
+            match.remove()
+        except Exception:
+            log.debug("could not roll back transfer status watch", exc_info=True)
+        raise
+    return match
+
+
 class TransferStatusWatch:
     """Capture terminal signals before PushMessage creates its transfer.
 
-    The daemon's GLib loop receives signals while the OBEX worker polls. Keep
+    The main thread's session bus receives signals while the OBEX worker polls.
+    Subscribe on that thread and wait for acknowledgement before allowing a
+    push; worker-owned connections deliberately have no GLib dispatcher. Keep
     only bounded terminal evidence for this session, including signals that
     arrive before PushMessage returns the new transfer's path.
     """
@@ -37,11 +66,40 @@ class TransferStatusWatch:
         self._prefix = f"{session_path}/"
         self._condition = threading.Condition()
         self._terminal: OrderedDict[str, str] = OrderedDict()
-        self._match = get_obex_bus(session_path).add_signal_receiver(
-            self._changed, signal_name="PropertiesChanged",
-            dbus_interface="org.freedesktop.DBus.Properties",
-            bus_name="org.bluez.obex", arg0=_TRANSFER_IFACE, path_keyword="path",
-        )
+        self._match = None
+        self._closed = False
+        self._ready = threading.Event()
+        self._error: Exception | None = None
+        if threading.current_thread() is threading.main_thread():
+            self._subscribe()
+        else:
+            GLib.idle_add(self._subscribe)
+        # Shutdown waits for the worker after GLib has stopped. Never wait
+        # indefinitely for a subscription that can no longer be dispatched.
+        if not self._ready.wait(_WATCH_SETUP_TIMEOUT_S):
+            self.close()
+            raise TimeoutError("GLib did not install the OBEX transfer watch")
+        if self._error is not None:
+            raise self._error
+
+    def _subscribe(self) -> bool:
+        with self._condition:
+            if self._closed:
+                self._ready.set()
+                return False
+        try:
+            match = _add_transfer_receiver(self._changed)
+            with self._condition:
+                closed = self._closed
+                if not closed:
+                    self._match = match
+            if closed:
+                match.remove()
+        except Exception as error:
+            self._error = error
+        finally:
+            self._ready.set()
+        return False
 
     def _changed(self, interface, changed, _invalidated, *, path) -> None:
         status = str(changed.get("Status") or "").casefold()
@@ -49,6 +107,8 @@ class TransferStatusWatch:
                 or status not in {"complete", "error"}):
             return
         with self._condition:
+            if self._closed:
+                return
             self._terminal[str(path)] = status
             self._terminal.move_to_end(str(path))
             if len(self._terminal) > 256:
@@ -62,7 +122,22 @@ class TransferStatusWatch:
             return self._terminal.get(path)
 
     def close(self) -> None:
-        self._match.remove()
+        with self._condition:
+            self._closed = True
+        if threading.current_thread() is threading.main_thread():
+            self._unsubscribe()
+        else:
+            GLib.idle_add(self._unsubscribe)
+
+    def _unsubscribe(self) -> bool:
+        with self._condition:
+            match, self._match = self._match, None
+        if match is not None:
+            try:
+                match.remove()
+            except Exception:
+                log.debug("could not remove transfer status watch", exc_info=True)
+        return False
 
 
 def _dbus_error_name(error: dbus.exceptions.DBusException) -> str:
