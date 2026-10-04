@@ -128,6 +128,9 @@ class ContactRepository:
                             "(email, contact_id) VALUES (?, ?)",
                             (email, contact_id),
                         )
+                if self.storage is not None:
+                    # Last chance to roll back before the cache is replaced.
+                    self.storage.ensure_current()
             if self.storage is not None:
                 connection.execute("VACUUM")
         return len(records)

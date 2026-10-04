@@ -11,7 +11,8 @@ from blueferry.backend_operations import BackendDependencies, BackendOperations
 from blueferry.confirmed_groups import ConfirmedGroupsStore
 from blueferry.group_routes import GroupRoutesStore
 from blueferry.history import append_event, prune_events, read_events
-from blueferry.named_groups import named_group_key
+from blueferry.limits import MAX_GROUP_ROUTES
+from blueferry.named_groups import legacy_named_group_key, named_group_key
 from blueferry.settings_store import SettingsStore
 from blueferry.starred_threads import StarredThreadsStore
 from blueferry.storage_preparation import prepare_storage
@@ -26,14 +27,16 @@ def _stamp(days_ago: float = 0, minute: int = 0) -> str:
     return moment.replace(minute=minute % 60, second=0, microsecond=0).isoformat()
 
 
-def _group_message(index: int, sender: str = ALICE, *, days_ago: float = 0) -> list[dict]:
-    stamp, body = _stamp(days_ago, index), f"golf {index}"
+def _group_message(
+    index: int, sender: str = ALICE, *, days_ago: float = 0, group: str = "Golf",
+) -> list[dict]:
+    stamp, body = _stamp(days_ago, index), f"{group} {index}"
     return [{
-        "kind": "sms_received", "handle": f"golf-{index}", "body": body,
+        "kind": "sms_received", "handle": f"{group}-{index}", "body": body,
         "sender_address": sender, "contact_name": "Alice", "seen_at": stamp,
     }, {
         "kind": "ancs_notification", "app_id": "com.apple.MobileSMS",
-        "title": "Alice", "subtitle": "Golf", "body": body, "seen_at": stamp,
+        "title": "Alice", "subtitle": group, "body": body, "seen_at": stamp,
     }]
 
 
@@ -184,3 +187,81 @@ def test_store_keeps_one_roster_per_thread_and_orders_by_save_time(isolated_stat
     assert [route["group_key"] for route in store.routes()] == ["other", new]
     with pytest.raises(ValueError):
         store.save({"group_key": new, "group_name": "Golf", "group_recipients": []})
+
+
+def test_deleting_a_thread_erases_a_roster_adopted_under_its_legacy_key(encrypted):
+    # Two spellings share the legacy key, so neither thread lists it as an
+    # alias; the adopted roster is reachable only through its recorded name.
+    legacy = {
+        "kind": "group_route", "group_key": legacy_named_group_key("Golf"),
+        "group_name": "Golf", "group_recipients": [ALICE, BOB],
+        "seen_at": _stamp(days_ago=3),
+    }
+    _retain(
+        [legacy, *_group_message(1), *_group_message(2, group="golf")],
+        storage=encrypted,
+    )
+    prepare_storage(encrypted)
+    backend = _backend(encrypted)
+    assert len(backend.dependencies.group_routes.routes()) == 1
+
+    assert backend.delete_threads([KEY, named_group_key("golf")], True) == 2
+
+    assert backend.dependencies.group_routes.routes() == []
+    _retain(_group_message(3), storage=encrypted)
+    backend.invalidate_conversations()
+    thread = _golf(backend)
+    assert thread["reply_ready"] is False
+    assert thread["recipients"] == [ALICE]
+
+
+def test_deleting_one_spelling_keeps_the_other_spellings_roster(isolated_state):
+    backend = _backend()
+    _retain([*_group_message(1), *_group_message(2, group="golf")])
+    backend.set_group_participants(KEY, [ALICE, BOB])
+
+    assert backend.delete_threads([named_group_key("golf")], True) == 1
+
+    [kept] = backend.dependencies.group_routes.routes()
+    assert kept["group_key"] == KEY
+
+
+def _fill(store: GroupRoutesStore, count: int) -> None:
+    """Save rosters with no conversation; the last one saved is the oldest."""
+    for index in range(count):
+        store.save({
+            "group_key": named_group_key(f"gone {index}"), "group_name": f"gone {index}",
+            "group_recipients": [ALICE, BOB], "seen_at": _stamp(days_ago=40 + index),
+        })
+
+
+def test_a_full_store_evicts_the_oldest_roster_whose_conversation_is_gone(isolated_state):
+    backend = _backend()
+    store = backend.dependencies.group_routes
+    _retain(_group_message(1))
+    backend.set_group_participants(KEY, [ALICE, BOB])
+    _fill(store, MAX_GROUP_ROUTES - 1)
+    _retain(_group_message(2, group="New"))
+    backend.invalidate_conversations()
+
+    backend.set_group_participants(named_group_key("New"), [ALICE, CAROL])
+
+    keys = store.keys()
+    assert len(keys) == MAX_GROUP_ROUTES
+    assert {KEY, named_group_key("New")} <= keys
+    oldest = MAX_GROUP_ROUTES - 2
+    assert named_group_key(f"gone {oldest}") not in keys
+    assert {named_group_key("gone 0"), named_group_key(f"gone {oldest - 1}")} <= keys
+
+
+def test_a_full_store_never_evicts_a_roster_still_in_use(isolated_state):
+    store = GroupRoutesStore()
+    _fill(store, MAX_GROUP_ROUTES)
+    route = {"group_key": KEY, "group_name": "Golf", "group_recipients": [ALICE, BOB],
+             "seen_at": _stamp()}
+
+    with pytest.raises(ValueError):
+        store.save(route, in_use=store.keys() | {KEY})
+    with pytest.raises(ValueError):
+        store.save(route)
+    assert KEY not in store.keys() and len(store.keys()) == MAX_GROUP_ROUTES

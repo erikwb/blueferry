@@ -137,7 +137,10 @@ class StarredThreads(Protocol):
 class GroupRoutes(Protocol):
     def routes(self) -> list[dict]: ...
 
-    def save(self, route: dict, *, replacing: Iterable[str] = ()) -> None: ...
+    def save(
+        self, route: dict, *, replacing: Iterable[str] = (),
+        in_use: Iterable[str] | None = None,
+    ) -> None: ...
 
     def discard(self, thread_keys: Iterable[str]) -> None: ...
 
@@ -638,7 +641,14 @@ class BackendOperations:
             "seen_at": datetime.now(timezone.utc).isoformat(),
         }
         try:
-            routes.save(route, replacing=conversation_keys(thread))
+            routes.save(
+                route,
+                replacing=conversation_keys(thread),
+                in_use={
+                    key for existing in self._conversations.threads()
+                    for key in conversation_keys(existing)
+                },
+            )
         except (OSError, RuntimeError, ValueError) as error:
             log.error("could not retain named group participants: %s", error)
             raise NotReadyError(

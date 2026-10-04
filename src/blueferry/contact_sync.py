@@ -16,7 +16,7 @@ from gi.repository import GLib
 from blueferry import contacts as contacts_module
 from blueferry.contacts import ContactsResolver, clear_contact_cache
 from blueferry.limits import MAX_OBEX_PENDING_OPERATIONS
-from blueferry.storage_security import StorageSecurity
+from blueferry.storage_security import StorageSecurity, StorageSupersededError
 
 if TYPE_CHECKING:
     from blueferry.obex.sessions import SessionManager
@@ -148,9 +148,11 @@ class ContactSync:
         generation = self._generation
         # The download can take minutes. Give it a private key buffer: the
         # live one is zeroed in place whenever storage relocks, changes
-        # policy, or fails closed.
+        # policy, or fails closed. The copy follows the live revision, so a
+        # pull that outlives such a change is rolled back instead of
+        # committing the phonebook under the old policy or key.
         revision = self._storage.revision
-        storage = self._storage.snapshot()
+        storage = self._storage.snapshot(follow=True)
         pull = self._pull or contacts_module.pull_phonebook
 
         def download() -> int:
@@ -168,6 +170,14 @@ class ContactSync:
                 self._finished(generation, count=count)
 
         def failed(error: Exception) -> None:
+            if isinstance(error, StorageSupersededError):
+                # Nothing was written; this is not a transport failure. The
+                # previous cache is kept, so the replacement download is owed
+                # explicitly and starts as soon as storage is usable.
+                self._deferred = True
+                error = StorageChangedDuringSync(
+                    "local storage changed during contact sync; downloading again"
+                )
             self._finished(generation, error=error)
 
         try:

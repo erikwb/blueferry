@@ -575,7 +575,11 @@ def test_initial_subscription_waits_for_a_settled_le_bearer(monkeypatch) -> None
         "timeout_add_seconds",
         lambda _delay, _callback: 9,
     )
-    client = AncsClient("/device", lambda _event: None)
+    client = AncsClient(
+        "/device",
+        lambda _event: None,
+        schedule=lambda _delay, _callback: 7,
+    )
     client._started = True
     client._bearer_connected = False
     client._bearer_ready = False
@@ -953,6 +957,12 @@ def test_le_reconnect_starts_notify_only_when_bluez_dropped_ccc(
     )
     monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
     monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
+    monkeypatch.setattr(
+        client_module.GLib,
+        "timeout_add_seconds",
+        lambda _delay, _callback: 9,
+    )
+    monkeypatch.setattr(client_module.GLib, "source_remove", lambda _timer: None)
     client = AncsClient(
         "/device",
         lambda _event: None,
