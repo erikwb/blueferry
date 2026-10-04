@@ -2,7 +2,8 @@
 
 A roster is user configuration, not message history. Keeping it out of the
 history archive means retention pruning and the bounded conversation window
-can never silently discard it while the group is still in use.
+do not discard it. Only a full store makes room, by evicting the oldest
+roster whose conversation is no longer visible.
 """
 from __future__ import annotations
 
@@ -104,9 +105,11 @@ class GroupRoutesStore:
     ) -> None:
         """Store ``route``, dropping records saved under the thread's other keys.
 
-        ``in_use`` names every conversation that still exists. At the limit,
-        the oldest roster whose conversation is gone makes room; a roster
-        that is still in use is never evicted.
+        ``in_use`` names the conversations the caller can currently see. At
+        the limit, the oldest roster for none of them makes room; a roster
+        for one of them is never evicted. A group whose messages have only
+        left the conversation window is not visible, so its roster can be
+        evicted here, but only when the save would otherwise fail.
         """
         selected = _route(route)
         if selected is None:

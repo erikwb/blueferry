@@ -227,10 +227,11 @@ def test_deleting_one_spelling_keeps_the_other_spellings_roster(isolated_state):
 
 
 def _fill(store: GroupRoutesStore, count: int) -> None:
+    """Save rosters with no conversation; the last one saved is the oldest."""
     for index in range(count):
         store.save({
             "group_key": named_group_key(f"gone {index}"), "group_name": f"gone {index}",
-            "group_recipients": [ALICE, BOB], "seen_at": _stamp(days_ago=40, minute=index),
+            "group_recipients": [ALICE, BOB], "seen_at": _stamp(days_ago=40 + index),
         })
 
 
@@ -248,8 +249,9 @@ def test_a_full_store_evicts_the_oldest_roster_whose_conversation_is_gone(isolat
     keys = store.keys()
     assert len(keys) == MAX_GROUP_ROUTES
     assert {KEY, named_group_key("New")} <= keys
-    assert named_group_key("gone 0") not in keys
-    assert named_group_key("gone 1") in keys
+    oldest = MAX_GROUP_ROUTES - 2
+    assert named_group_key(f"gone {oldest}") not in keys
+    assert {named_group_key("gone 0"), named_group_key(f"gone {oldest - 1}")} <= keys
 
 
 def test_a_full_store_never_evicts_a_roster_still_in_use(isolated_state):

@@ -122,6 +122,28 @@ def test_a_pull_that_outlives_a_policy_change_commits_nothing(harness, policy):
     assert _stored_contact_rows() == 0
 
 
+def test_a_superseded_pull_keeps_the_previous_cache_and_is_retried(harness):
+    harness.sync.sync()
+    _run(harness.jobs.pop(0))
+    assert harness.sync.initial_sync_done and _stored_contact_rows() == 1
+
+    failed = []
+    harness.sync.sync(lambda _count: pytest.fail("stale pull reported success"), failed.append)
+    job = harness.jobs.pop(0)
+    # The wallet relocks and unlocks with the same key during the download.
+    harness.storage._forget_key()
+    harness.storage.refresh(allow_prompt=False)
+    _run(job)
+
+    assert isinstance(failed[0], StorageChangedDuringSync)
+    assert _stored_contact_rows() == 1
+    assert harness.contacts.resolve("+15551111111") == "Alice"
+    # "Downloading again" is true even though the cache was never emptied.
+    assert len(harness.jobs) == 1
+    _run(harness.jobs.pop(0))
+    assert not harness.jobs and not harness.sync.deferred
+
+
 def test_policy_change_after_the_commit_erases_what_the_pull_wrote(harness):
     failed = []
     harness.sync.sync(lambda _count: pytest.fail("stale pull reported success"), failed.append)

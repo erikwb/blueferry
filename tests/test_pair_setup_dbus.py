@@ -16,11 +16,13 @@ def test_bond_check_timeout_bounds_a_wedged_bluetoothd(monkeypatch):
     # Owns org.bluez but is never dispatched, like a wedged bluetoothd.
     wedged = dbus.SystemBus(private=True, mainloop=dbus.mainloop.NULL_MAIN_LOOP)
     wedged.set_exit_on_disconnect(False)
-    wedged.request_name("org.bluez", dbus.bus.NAME_FLAG_DO_NOT_QUEUE)
     client = dbus.SystemBus(private=True, mainloop=dbus.mainloop.NULL_MAIN_LOOP)
     client.set_exit_on_disconnect(False)
     monkeypatch.setattr(pair_setup, "get_system_bus", lambda: client)
     try:
+        assert wedged.request_name(
+            "org.bluez", dbus.bus.NAME_FLAG_DO_NOT_QUEUE,
+        ) == dbus.bus.REQUEST_NAME_REPLY_PRIMARY_OWNER
         started = time.monotonic()
         status = pair_setup.bond_status("AA:BB:CC:DD:EE:FF", "hci0", timeout=0.5)
         elapsed = time.monotonic() - started

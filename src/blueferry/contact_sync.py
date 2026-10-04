@@ -171,7 +171,10 @@ class ContactSync:
 
         def failed(error: Exception) -> None:
             if isinstance(error, StorageSupersededError):
-                # Nothing was written; this is not a transport failure.
+                # Nothing was written; this is not a transport failure. The
+                # previous cache is kept, so the replacement download is owed
+                # explicitly and starts as soon as storage is usable.
+                self._deferred = True
                 error = StorageChangedDuringSync(
                     "local storage changed during contact sync; downloading again"
                 )
