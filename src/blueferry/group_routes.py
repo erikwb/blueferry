@@ -11,6 +11,7 @@ from pathlib import Path
 
 from blueferry import config
 from blueferry.limits import MAX_GROUP_ROUTES, MAX_THREAD_KEY_CHARS
+from blueferry.named_groups import stored_named_group_key
 from blueferry.private_preferences import PrivatePreference
 from blueferry.storage_security import StorageSecurity
 
@@ -51,6 +52,18 @@ def _route(value: object) -> dict | None:
     }
 
 
+def _belongs(route: dict, thread_keys: set[str]) -> bool:
+    """Whether a roster is one of these threads', under its key or its name.
+
+    A roster adopted from history keeps its legacy key, while the thread it
+    belongs to is addressed by the current key for the same recorded name.
+    """
+    return (
+        route["group_key"] in thread_keys
+        or stored_named_group_key(route) in thread_keys
+    )
+
+
 class GroupRoutesStore:
     """Keep one saved reply roster per named-group key."""
 
@@ -85,14 +98,30 @@ class GroupRoutesStore:
     def keys(self) -> set[str]:
         return set(self._mapping())
 
-    def save(self, route: dict, *, replacing: Iterable[str] = ()) -> None:
-        """Store ``route``, dropping records saved under the thread's other keys."""
+    def save(
+        self, route: dict, *, replacing: Iterable[str] = (),
+        in_use: Iterable[str] | None = None,
+    ) -> None:
+        """Store ``route``, dropping records saved under the thread's other keys.
+
+        ``in_use`` names every conversation that still exists. At the limit,
+        the oldest roster whose conversation is gone makes room; a roster
+        that is still in use is never evicted.
+        """
         selected = _route(route)
         if selected is None:
             raise ValueError("invalid group route")
         current = self._mapping()
         for key in (*replacing, selected["group_key"]):
             current.pop(str(key), None)
+        if len(current) >= MAX_GROUP_ROUTES and in_use is not None:
+            kept = {str(key) for key in in_use}
+            orphans = sorted(
+                (stored for stored in current.values() if not _belongs(stored, kept)),
+                key=lambda stored: stored["seen_at"],
+            )
+            for orphan in orphans[:len(current) - MAX_GROUP_ROUTES + 1]:
+                del current[orphan["group_key"]]
         if len(current) >= MAX_GROUP_ROUTES:
             raise ValueError(f"at most {MAX_GROUP_ROUTES} group rosters can be saved")
         current[selected["group_key"]] = selected
@@ -124,7 +153,9 @@ class GroupRoutesStore:
     def discard(self, thread_keys: Iterable[str]) -> None:
         remove = {str(key) for key in thread_keys}
         current = self._mapping()
-        updated = {key: route for key, route in current.items() if key not in remove}
+        updated = {
+            key: route for key, route in current.items() if not _belongs(route, remove)
+        }
         if len(updated) != len(current):
             self._preference.write(updated)
 
