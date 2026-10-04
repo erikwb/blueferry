@@ -154,8 +154,11 @@ def activate_bluez_support() -> dict:
 
 
 def _object_manager():
+    # GetManagedObjects takes no arguments, so introspection adds nothing.
+    # dbus-python would otherwise block on its own Introspect call, with the
+    # default 25 s timeout, before a caller's shorter timeout can apply.
     return dbus.Interface(
-        get_system_bus().get_object("org.bluez", "/"),
+        get_system_bus().get_object("org.bluez", "/", introspect=False),
         "org.freedesktop.DBus.ObjectManager",
     )
 
