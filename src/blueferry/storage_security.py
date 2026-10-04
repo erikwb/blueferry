@@ -35,6 +35,10 @@ class StorageUnavailableError(RuntimeError):
     """Encrypted storage cannot currently be opened."""
 
 
+class StorageSupersededError(StorageUnavailableError):
+    """The storage a background writer was started for has since changed."""
+
+
 class CorruptStorageError(ValueError):
     """A retained ciphertext failed authenticated decryption."""
 
@@ -271,6 +275,7 @@ class StorageSecurity:
         self._preparation_waiters: list[Callable[[StorageStatus], None]] = []
         self._failure_generation = 0
         self._revision = 0
+        self._followed: tuple[StorageSecurity, int] | None = None
         if self._policy == NO_STORAGE:
             self._state = "disabled"
             self._detail = "Local data is not retained"
@@ -308,9 +313,15 @@ class StorageSecurity:
             self._state = "locked"
             self._detail = "Preparing local storage"
 
-    def snapshot(self) -> StorageSecurity:
-        """Own a separate key buffer while a background read is in progress."""
+    def snapshot(self, *, follow: bool = False) -> StorageSecurity:
+        """Own a separate key buffer while a background read is in progress.
+
+        A long-running writer passes ``follow`` so the copy stops sealing new
+        records as soon as this object's policy or key changes, instead of
+        committing output under a policy that is no longer current.
+        """
         reader = copy(self)
+        reader._followed = (self, self._revision) if follow else None
         reader._key = bytearray(self._key) if self._key is not None else None
         reader._cancel_request = None
         reader._request_lock = RLock()
@@ -599,7 +610,13 @@ class StorageSecurity:
             self._revision += 1
         self._key = None
 
+    def ensure_current(self) -> None:
+        """Raise if this is a following snapshot whose source has changed."""
+        if self._followed is not None and self._followed[0].revision != self._followed[1]:
+            raise StorageSupersededError("local storage changed during a background write")
+
     def encrypt(self, plaintext: str, *, purpose: str) -> str:
+        self.ensure_current()
         if not self.status.can_write:
             raise StorageUnavailableError(self._detail)
         if self._policy == PLAINTEXT_STORAGE:

@@ -14,6 +14,7 @@ from blueferry.contacts import ContactsResolver
 from blueferry.settings_store import SettingsStore
 from blueferry.storage_security import (
     StorageSecurity,
+    StorageSupersededError,
     StorageUnavailableError,
     is_encrypted_value,
 )
@@ -57,6 +58,17 @@ def harness(isolated_state):
     storage.close()
 
 
+def _run(job) -> None:
+    """Complete a queued job the way the OBEX worker reports it."""
+    operation, handlers = job
+    try:
+        result = operation()
+    except Exception as error:
+        handlers["on_error"](error)
+    else:
+        handlers["on_success"](result)
+
+
 def _stored_contact_rows() -> int:
     with closing(sqlite3.connect(config.CONTACTS_DB)) as database:
         return sum(
@@ -82,13 +94,12 @@ def test_pull_uses_a_private_key_that_is_released_afterwards(harness):
 def test_live_key_zeroed_mid_pull_cannot_corrupt_the_cache(harness):
     completed, failed = [], []
     harness.sync.sync(completed.append, failed.append)
-    operation, handlers = harness.jobs.pop(0)
+    job = harness.jobs.pop(0)
 
     # An authentication failure elsewhere zeroes the live key in place while
     # the worker is still downloading.
     harness.storage.fail_closed("simulated authentication failure")
-    pulled = operation()
-    handlers["on_success"](pulled)
+    _run(job)
 
     assert not completed
     assert len(failed) == 1 and isinstance(failed[0], StorageChangedDuringSync)
@@ -97,15 +108,49 @@ def test_live_key_zeroed_mid_pull_cannot_corrupt_the_cache(harness):
     assert not harness.jobs  # Storage is unusable, so nothing is re-queued.
 
 
-def test_policy_change_mid_pull_discards_the_result_and_downloads_again(harness):
+@pytest.mark.parametrize("policy", ["plaintext", "none"])
+def test_a_pull_that_outlives_a_policy_change_commits_nothing(harness, policy):
+    harness.sync.sync()
+    operation, _handlers = harness.jobs.pop(0)
+
+    harness.storage.set_policy(policy)
+    # No completion callback runs here, as when the daemon stops mid-pull:
+    # the worker itself must refuse to write under the abandoned policy.
+    with pytest.raises(StorageSupersededError):
+        operation()
+
+    assert _stored_contact_rows() == 0
+
+
+def test_policy_change_after_the_commit_erases_what_the_pull_wrote(harness):
     failed = []
     harness.sync.sync(lambda _count: pytest.fail("stale pull reported success"), failed.append)
     operation, handlers = harness.jobs.pop(0)
 
+    # The worker has committed, but its completion has not reached GLib yet.
+    pulled = operation()
+    assert _stored_contact_rows() == 1
     harness.storage.set_policy("plaintext")
-    handlers["on_success"](operation())
+    handlers["on_success"](pulled)
 
     assert isinstance(failed[0], StorageChangedDuringSync)
+    assert _stored_contact_rows() == 0
+    assert len(harness.jobs) == 1
+
+
+def test_policy_change_mid_pull_discards_the_result_and_downloads_again(harness):
+    failed = []
+    harness.sync.sync(lambda _count: pytest.fail("stale pull reported success"), failed.append)
+    job = harness.jobs.pop(0)
+
+    harness.storage.set_policy("plaintext")
+    _run(job)
+
+    assert isinstance(failed[0], StorageChangedDuringSync)
+    assert harness.errors == []  # Not a Bluetooth transport failure.
+    # The stale pull was rolled back rather than committed and cleaned up
+    # later: a daemon stopped at this point leaves nothing under the old key.
+    assert _stored_contact_rows() == 0
     assert harness.refreshed == []
     assert len(harness.jobs) == 1
     operation, handlers = harness.jobs.pop(0)

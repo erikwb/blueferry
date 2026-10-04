@@ -22,7 +22,7 @@ class _Storage:
     def __init__(self):
         self.status = SimpleNamespace(can_write=True)
 
-    def snapshot(self):
+    def snapshot(self, *, follow=False):
         return SimpleNamespace(close=lambda: None)
 
 
