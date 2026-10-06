@@ -100,6 +100,19 @@ def bearer_connected_unavailable(error: Exception) -> bool:
     return "no such property" in detail and "connected" in detail
 
 
+def bearer_interface_missing(error: Exception) -> bool:
+    """True when this BlueZ has no bearer interfaces at all (before 5.84).
+
+    Later builds without ``-E`` register the interface with no properties and
+    answer "No such property" instead; they are not treated as legacy.
+    """
+    if not isinstance(error, dbus.exceptions.DBusException):
+        return False
+    if error.get_dbus_name() == "org.freedesktop.DBus.Error.UnknownInterface":
+        return True
+    return "no such interface" in (error.get_dbus_message() or "").casefold()
+
+
 ReadConnected = Callable[[str], bool | None]
 Connect = Callable[[str, Callable[[], None], Callable[[Exception], None]], None]
 Disconnect = Callable[[str, Callable[[], None], Callable[[Exception], None]], None]
@@ -152,6 +165,11 @@ class BearerSupervisor:
         self._cancel = cancel
         self._clock = clock
         self._le_enabled = le_enabled
+        # A missing LE bearer API is different from a transient failed read:
+        # BlueZ can then report only the aggregate Device1 state. Recheck it,
+        # because a replacement bluetoothd may expose the API.
+        self._le_api_available: bool | None = None
+        self._legacy_observation: tuple[bool, bool] | None = None
         self._timer_id: int | None = None
         self._le_settle_id: int | None = None
         self._running = False
@@ -198,6 +216,18 @@ class BearerSupervisor:
     def le_state(self) -> bool | None:
         """Return the latest observed LE bearer state."""
         return self._states["le"]
+
+    @property
+    def legacy_connected(self) -> bool:
+        """The device is connected and BlueZ cannot say over which bearer.
+
+        This permits a GATT probe; it is not evidence of an LE connection.
+        """
+        return (
+            self._le_api_available is False
+            and self._legacy_observation is not None
+            and self._legacy_observation[0]
+        )
 
     def start(self) -> None:
         if self._running:
@@ -258,6 +288,8 @@ class BearerSupervisor:
         """Forget callbacks and observations owned by the previous daemon."""
         previous = dict(self._states)
         self._generation += 1
+        self._le_api_available = None
+        self._legacy_observation = None
         self._connecting.clear()
         self._connect_request_ids.clear()
         self._connect_targeted.clear()
@@ -290,7 +322,8 @@ class BearerSupervisor:
 
     def recover_le_transport(self, *, allow_disconnected: bool = False) -> None:
         """Request one serialized LE reset after GATT and bearer state diverge."""
-        if not self._running:
+        if not self._running or self._le_api_available is False:
+            # Without Bearer.LE1 the only disconnect drops Classic as well.
             return
         # A successful reset is published locally as disconnected before the
         # polling source can see a replacement inbound link. Ignore duplicate
@@ -313,6 +346,7 @@ class BearerSupervisor:
 
     def stop(self) -> None:
         self._running = False
+        self._legacy_observation = None
         self._generation += 1
         self._connecting.clear()
         self._connect_request_ids.clear()
@@ -350,13 +384,10 @@ class BearerSupervisor:
             return False
 
         log.debug("probing iPhone BR/EDR and LE bearer state")
-        bredr = self._read("bredr")
-        le = self._read("le")
-        self._update_state("bredr", bredr)
         # The profile gate controls BlueFerry's outbound LE requests, not links
         # initiated by the phone. Publishing an inbound link lets ANCS perform
         # its authorization handshake while Classic recovers independently.
-        self._update_state("le", le)
+        bredr, le = self._refresh_states()
 
         if self._le_reset_pending and self._le_enabled:
             if le is False:
@@ -383,7 +414,11 @@ class BearerSupervisor:
         return True
 
     def _schedule_le_connect(self) -> None:
-        if self._le_settle_id is not None or self._le_dial_exhausted():
+        if (
+            self._le_api_available is False
+            or self._le_settle_id is not None
+            or self._le_dial_exhausted()
+        ):
             return
         log.info(
             "iPhone BR/EDR connected; allowing %ds to settle before LE",
@@ -398,11 +433,13 @@ class BearerSupervisor:
         self._le_settle_id = None
         if not self._running:
             return False
-        bredr = self._read("bredr")
-        le = self._read("le")
-        self._update_state("bredr", bredr)
-        self._update_state("le", le)
-        if bredr is True and le is False and self._le_enabled:
+        bredr, le = self._refresh_states()
+        if (
+            bredr is True
+            and le is False
+            and self._le_enabled
+            and self._le_api_available is not False
+        ):
             # The handoff may have failed when LE was enabled or when this
             # timer was armed. Retry at the last safe point before the
             # targeted dial; a transient Set failure must not suppress the
@@ -413,6 +450,27 @@ class BearerSupervisor:
         elif bredr is False:
             self._request_connect("bredr")
         return False
+
+    def _refresh_states(self) -> tuple[bool | None, bool | None]:
+        bredr = self._read("bredr")
+        self._update_state("bredr", bredr)
+        return bredr, self._refresh_le_state()
+
+    def _refresh_le_state(self) -> bool | None:
+        previous_le = self._states["le"]
+        previous_observation = self._legacy_observation
+        le = self._read("le")
+        self._update_state("le", le)
+        # The aggregate device state can change while LE stays unknown, for
+        # example when the API is first found missing or a bearer comes or
+        # goes. Consumers that probe GATT themselves need that observation.
+        if (
+            previous_le == le
+            and previous_observation != self._legacy_observation
+            and self._on_le_state is not None
+        ):
+            self._on_le_state(le)
+        return le
 
     def _cancel_le_settle(self) -> None:
         if self._le_settle_id is None:
@@ -621,7 +679,7 @@ class BearerSupervisor:
                     # state so an inbound link supersedes this untyped request
                     # with Bearer.BREDR1.Connect instead of creating a false
                     # Classic success and quiet window.
-                    self._update_state("le", self._read("le"))
+                    self._refresh_le_state()
                     if not self._connect_request_is_current(
                         kind,
                         generation,
@@ -773,6 +831,8 @@ class BearerSupervisor:
         return BACKOFF_CAP_SECONDS
 
     def _request_le_disconnect(self, *, force: bool = False) -> None:
+        if self._le_api_available is False:
+            return
         if "le" in self._disconnecting:
             return
         if not force and self._clock() < self._next_le_reset_attempt:
@@ -859,7 +919,37 @@ class BearerSupervisor:
                         timeout=5.0,
                     )
                 )
-        return bool(properties.Get(_INTERFACES[kind], "Connected", timeout=5.0))
+        try:
+            connected = bool(
+                properties.Get(_INTERFACES[kind], "Connected", timeout=5.0)
+            )
+        except dbus.exceptions.DBusException as error:
+            if not bearer_interface_missing(error):
+                raise
+        else:
+            self._le_api_available = True
+            return connected
+        if self._le_api_available is not False:
+            log.info(
+                "BlueZ exposes no LE bearer state; using the aggregate "
+                "device connection"
+            )
+        self._le_api_available = False
+        device_connected = bool(
+            properties.Get("org.bluez.Device1", "Connected", timeout=5.0)
+        )
+        # BlueZ clears ServicesResolved when either bearer disconnects and
+        # sets it again once one resolves, so a change in it marks a bearer
+        # coming or going while the aggregate Connected stays true.
+        try:
+            resolved = bool(
+                properties.Get("org.bluez.Device1", "ServicesResolved", timeout=5.0)
+            )
+        except dbus.exceptions.DBusException:
+            resolved = False
+        self._legacy_observation = (device_connected, resolved)
+        # Aggregate false rules LE out; aggregate true may be Classic alone.
+        return None if device_connected else False
 
     def _connect_bluez(
         self,
