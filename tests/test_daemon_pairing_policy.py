@@ -9,6 +9,7 @@ from blueferry import contact_sync, daemon
 
 class _Bearer:
     le_state = False
+    legacy_connected = False
 
     def __init__(self, calls):
         self.calls = calls
@@ -174,7 +175,7 @@ def test_full_daemon_starts_ancs_client(make_daemon, monkeypatch):
             calls.append(("previously-authorized", kwargs["previously_authorized"]))
             calls.append(("app-filter", kwargs["include_app_notification"]))
 
-        def observe_bearer_state(self, connected):
+        def observe_bearer_state(self, connected, *, legacy_connected=False):
             calls.append(("ancs-bearer", connected))
 
         def start(self):
@@ -207,7 +208,7 @@ def test_full_daemon_preserves_known_ancs_reconnect_protection(make_daemon, monk
             calls.append(("previously-authorized", kwargs["previously_authorized"]))
 
         @staticmethod
-        def observe_bearer_state(_connected):
+        def observe_bearer_state(_connected, **_legacy):
             return None
 
         @staticmethod
@@ -343,7 +344,9 @@ def test_recovery_pause_and_resume_keep_map_first_order(make_daemon, monkeypatch
         stop=lambda: calls.append("advert-stop"), start=lambda: calls.append("advert-start"),
     )
     value.sessions = SimpleNamespace(close_all=lambda **kw: calls.append(("forget", kw)))
-    value.ancs = SimpleNamespace(observe_bearer_state=lambda state: calls.append(("ancs", state)))
+    value.ancs = SimpleNamespace(
+        observe_bearer_state=lambda state, **_legacy: calls.append(("ancs", state)),
+    )
     value._pause_for_recovery()
     value._resume_after_recovery()
     assert calls == [
@@ -363,7 +366,7 @@ def test_bluez_owner_watch_recovers_once_in_both_pairing_modes(make_daemon, monk
     monkeypatch.setattr(daemon.config, 'ANCS_ENABLED', ancs_enabled)
     monkeypatch.setattr(daemon.bluez_setup, 'forget_advert_registration', lambda: calls.append('forget-advert'))
     monkeypatch.setattr(daemon, 'AncsClient', lambda *_args, **_kwargs: SimpleNamespace(
-        observe_bearer_state=lambda _state: None,
+        observe_bearer_state=lambda _state, **_legacy: None,
         start=lambda: None,
         observe_bluez_owner=lambda old, new: calls.append(('ancs-owner', old, new)),
     ))
@@ -424,7 +427,7 @@ def test_owner_change_during_initial_ancs_scan_is_forwarded(make_daemon, monkeyp
         watches[0][0]('org.bluez', ':1.1', ':1.2')
 
     candidate = SimpleNamespace(
-        observe_bearer_state=lambda _state: None,
+        observe_bearer_state=lambda _state, **_legacy: None,
         start=start,
         observe_bluez_owner=lambda old, new: observed.append((old, new)),
     )
@@ -447,7 +450,7 @@ def test_failed_ancs_start_can_retry_without_leaking_an_owner_watch(make_daemon,
             raise RuntimeError('ObjectManager unavailable')
 
     monkeypatch.setattr(daemon, 'AncsClient', lambda *_args, **_kwargs: SimpleNamespace(
-        observe_bearer_state=lambda _state: None,
+        observe_bearer_state=lambda _state, **_legacy: None,
         start=start,
         stop=lambda: stopped.append(True),
     ))
@@ -688,3 +691,35 @@ def test_automatic_contacts_wait_for_map_but_manual_sync_still_works(make_daemon
     value._post_available_sessions_setup()
     assert not jobs
     assert listeners == [True]
+
+
+def test_unobservable_le_leaves_solicitation_to_ancs_proof(make_daemon, monkeypatch):
+    calls = []
+    value = _daemon(make_daemon, calls)
+    monkeypatch.setattr(daemon.config, "ANCS_ENABLED", True)
+    value.profiles.ready = True
+    value.bearers.legacy_connected = True
+    observed = []
+    value.ancs = SimpleNamespace(
+        connected=True,
+        observe_bearer_state=lambda state, **legacy: observed.append((state, legacy)),
+    )
+
+    # BlueZ never reports LE as connected here. A proven ANCS transport must
+    # still be allowed to withdraw the advertisement.
+    value._observe_le_state(None)
+    value.ancs.connected = False
+    value._observe_le_state(None)
+    value.bearers.legacy_connected = False
+    value._observe_le_state(False)
+
+    assert observed == [
+        (None, {"legacy_connected": True}),
+        (None, {"legacy_connected": True}),
+        (False, {"legacy_connected": False}),
+    ]
+    assert calls == [
+        ("solicitation-needed", False),
+        ("solicitation-needed", True),
+        ("solicitation-needed", True),
+    ]

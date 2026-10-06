@@ -191,7 +191,8 @@ def test_status_exposes_split_ancs_and_last_le_error(make_daemon, monkeypatch):
             "le": False,
             "last_le_error": "org.bluez.Error.Failed",
             "last_le_error_message": "le-connection-abort-by-local",
-        }
+        },
+        legacy_connected=False,
     )
     instance.setup_verification = SimpleNamespace(verified=())
     monkeypatch.setattr(daemon_mod, "history_count", lambda **_kwargs: 0)
@@ -207,6 +208,30 @@ def test_status_exposes_split_ancs_and_last_le_error(make_daemon, monkeypatch):
     assert status["last_le_error"] == "org.bluez.Error.Failed"
     assert status["last_le_error_message"] == "le-connection-abort-by-local"
     assert status["_build_id"] == "0.6.0-6"
+
+
+@pytest.mark.parametrize("ancs_connected", [False, True])
+def test_status_takes_le_from_ancs_when_bluez_cannot_report_it(
+    make_daemon, monkeypatch, ancs_connected,
+):
+    instance = make_daemon()
+    instance.contacts = SimpleNamespace(count=lambda: 0)
+    instance.ancs = SimpleNamespace(
+        connected=ancs_connected, subscribed=True, authorized=ancs_connected,
+    )
+    instance.bearers = SimpleNamespace(
+        snapshot=lambda: {
+            "bredr": True, "le": False,
+            "last_le_error": "", "last_le_error_message": "",
+        },
+        legacy_connected=True,
+    )
+    instance.setup_verification = SimpleNamespace(
+        verified=(), mark=lambda _task: False,
+    )
+    monkeypatch.setattr(daemon_mod, "history_count", lambda **_kwargs: 0)
+
+    assert instance._status()["le"] is ancs_connected
 
 
 def test_failed_hardware_initialization_leaves_control_service_alive(make_daemon, monkeypatch):

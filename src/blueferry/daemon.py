@@ -249,10 +249,17 @@ class Daemon:
             emit()
 
     def _observe_le_state(self, connected: bool | None) -> None:
-        if connected is not True:
+        legacy_connected = self.bearers.legacy_connected
+        if connected is not True and not legacy_connected:
             self.solicitation.set_needed(True)
         if self.ancs is not None:
-            self.ancs.observe_bearer_state(connected)
+            self.ancs.observe_bearer_state(
+                connected, legacy_connected=legacy_connected,
+            )
+        if legacy_connected:
+            # BlueZ cannot report LE here, so the bearer never reads as
+            # connected. Only ANCS's own proof may withdraw the solicitation.
+            self._sync_solicitation()
 
     def _on_ancs_status(self) -> None:
         # StartNotify is not the success boundary.  Keep solicitation on air
@@ -441,7 +448,10 @@ class Daemon:
             # an owner change that must invalidate the in-progress scan.
             self.ancs = candidate
             try:
-                candidate.observe_bearer_state(self.bearers.le_state)
+                candidate.observe_bearer_state(
+                    self.bearers.le_state,
+                    legacy_connected=self.bearers.legacy_connected,
+                )
                 candidate.start()
             except Exception:
                 self.ancs = None
@@ -638,6 +648,7 @@ class Daemon:
         if self.ancs and self.ancs.connected:
             self._mark_setup_task(NOTIFICATION_ACCESS)
         ancs = self.ancs
+        bearers = self.bearers.snapshot()
         return {
             "backend_release": self._running_release,
             "_build_id": self._running_build_id,
@@ -645,7 +656,12 @@ class Daemon:
             "ancs": bool(ancs and ancs.connected),
             "ancs_subscribed": bool(ancs and ancs.subscribed),
             "ancs_authorized": bool(ancs and ancs.authorized),
-            **self.bearers.snapshot(),
+            **bearers,
+            # Without an LE bearer state, an ANCS round trip is the only
+            # proof that LE is up.
+            "le": bool(bearers.get("le")) or bool(
+                self.bearers.legacy_connected and ancs and ancs.connected
+            ),
             "contacts": self.contacts.count(),
             "events": history_count(storage=self.storage),
             "verified_iphone_setup": list(self.setup_verification.verified),
