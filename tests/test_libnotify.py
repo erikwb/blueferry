@@ -380,3 +380,49 @@ def test_tokens_are_scoped_to_notification_and_consumed_once(monkeypatch):
     sink._on_activation_token(1, "unused")
     sink._on_closed(1, 1)
     assert sink._activation_tokens == {}
+
+
+def test_ancs_popup_mirrors_the_iphone_title_subtitle_and_message(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "blueferry.sinks.libnotify.config.SHOW_NOTIFICATION_CONTENT", True
+    )
+    sink = LibnotifySink.__new__(LibnotifySink)
+    sink._notification_policy = lambda: "all"
+    sink._notif = _FakeNotifications()
+    event = SimpleNamespace(
+        app_name="GitHub",
+        app_id="com.github.stormbreaker.prod",
+        title="Run succeeded",
+        subtitle="octo-org/octo-repo",
+        body="CI - v0.1.0 (bd753fb)",
+    )
+
+    sink.handle_ancs(event)
+
+    [(_app, _replaces, _icon, title, body, *_rest)] = sink._notif.calls
+    assert title == "\U0001f4f1 GitHub \u00b7 Run succeeded"
+    assert body == "octo-org/octo-repo\nCI - v0.1.0 (bd753fb)"
+
+
+def test_ancs_popup_hides_title_and_subtitle_without_content(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "blueferry.sinks.libnotify.config.SHOW_NOTIFICATION_CONTENT", False
+    )
+    sink = LibnotifySink.__new__(LibnotifySink)
+    sink._notification_policy = lambda: "all"
+    sink._notif = _FakeNotifications()
+    event = SimpleNamespace(
+        app_name="GitHub",
+        app_id="com.github.stormbreaker.prod",
+        title="Run succeeded",
+        subtitle="octo-org/octo-repo",
+        body="CI - v0.1.0 (bd753fb)",
+    )
+
+    sink.handle_ancs(event)
+
+    [(_app, _replaces, _icon, title, body, *_rest)] = sink._notif.calls
+    assert title == "\U0001f4f1 GitHub"
+    assert body == "New iPhone notification"

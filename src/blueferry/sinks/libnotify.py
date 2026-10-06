@@ -47,7 +47,8 @@ class _SignalMatch(Protocol):
 log = logging.getLogger(__name__)
 
 _APP_NAME = "BlueFerry"
-_BODY_LIMIT = 280
+# Long bodies stay readable: Plasma shows a few lines and expands on click.
+_BODY_LIMIT = 1000
 _MESSAGE_EXPIRE_MS = config.NOTIFICATION_TIMEOUT_MS
 # ANCS mirrors ordinary iPhone app/system notifications. Unlike MAP messages,
 # they have no desktop-to-phone read-state path, so keeping every popup around
@@ -253,11 +254,15 @@ class LibnotifySink:
             return
         # Title: "📱 AppName" or "📱 com.bundle.id" if no name yet
         app = event.app_name or event.app_id or "Notification"
+        # Mirror the iPhone's layout: the notification's own title next to the
+        # app name, then subtitle and message on separate lines.
         title = f"\U0001f4f1 {app}"
-        # Body: prefer Title field for headline, then Message
-        body_parts = [p for p in (event.title, event.body) if p]
-        body = " — ".join(body_parts) if body_parts else ""
-        if not config.SHOW_NOTIFICATION_CONTENT:
+        if config.SHOW_NOTIFICATION_CONTENT:
+            if event.title and event.title != app:
+                title = f"{title} \u00b7 {event.title}"
+            body_parts = [p for p in (getattr(event, "subtitle", ""), event.body) if p]
+            body = "\n".join(body_parts)
+        else:
             body = "New iPhone notification"
         if len(body) > _BODY_LIMIT:
             body = body[:_BODY_LIMIT - 1] + "…"
