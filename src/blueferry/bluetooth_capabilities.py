@@ -363,15 +363,34 @@ _BLUEZ_DAEMONS = (
 )
 _BLUEZ_VERSION = re.compile(r"(\d+\.\d+(?:\.\d+)?)")
 _MIN_BLUEZ_BEARER_API = (5, 86)
+# The bearer interfaces first appeared here, without working methods.
+_MIN_BLUEZ_BEARER_INTERFACES = (5, 84)
+
+
+def _bluez_version(version: object) -> tuple[int, ...] | None:
+    match = _BLUEZ_VERSION.fullmatch(str(version).strip())
+    if match is None:
+        return None
+    parts = tuple(int(part) for part in match.group(1).split("."))
+    return (parts + (0, 0))[:2]
 
 
 def bluez_bearer_api_supported(version: object) -> bool:
     """Return whether BlueZ has working per-bearer Connect/Disconnect methods."""
-    match = _BLUEZ_VERSION.fullmatch(str(version).strip())
-    if match is None:
-        return False
-    parts = tuple(int(part) for part in match.group(1).split("."))
-    return (parts + (0, 0))[:2] >= _MIN_BLUEZ_BEARER_API
+    parsed = _bluez_version(version)
+    return parsed is not None and parsed >= _MIN_BLUEZ_BEARER_API
+
+
+def bluez_lacks_bearer_interfaces(version: object) -> bool:
+    """Return whether this BlueZ predates the bearer interfaces altogether.
+
+    Such a daemon behaves the same with or without ``-E``: the backend reads
+    the aggregate device state and proves ANCS with a GATT round trip. BlueZ
+    5.84 and 5.85 expose bearer state but cannot disconnect a bearer, so they
+    are neither.
+    """
+    parsed = _bluez_version(version)
+    return parsed is not None and parsed < _MIN_BLUEZ_BEARER_INTERFACES
 
 
 def bluez_stack(
@@ -444,6 +463,7 @@ def _profile_fields(
     command_error: str,
     bearer_active: bool,
     bearer_supported: bool,
+    legacy_notifications: bool = False,
 ) -> dict[str, object]:
     classic = bool({"br/edr", "bredr"} & supported)
     low_energy = "le" in supported
@@ -452,7 +472,13 @@ def _profile_fields(
     # MAP/PBAP carry data over Classic, but iOS exposes their permissions only
     # after LE solicitation. Compatibility mode still needs that advertisement.
     messages_supported = available and classic and secure_pairing and low_energy and advertising
-    notifications_supported = messages_supported and bearer_supported
+    notifications_supported = messages_supported and (
+        bearer_supported or legacy_notifications
+    )
+    # Nothing has to be activated when BlueZ has no bearer API to expose.
+    notifications_active = notifications_supported and (
+        bearer_active or legacy_notifications
+    )
     missing = [
         label for present, label in (
             (classic, "Bluetooth Classic (BR/EDR)"),
@@ -470,7 +496,7 @@ def _profile_fields(
             "with LE advertising to enable iPhone messages and contacts. "
             "Use a compatible adapter."
         )
-    elif notifications_supported and not bearer_active:
+    elif notifications_supported and not notifications_active:
         issue = "Bluetooth support must be activated before pairing"
     elif not notifications_supported:
         issue = "Messages and contacts are supported; per-app notifications are not"
@@ -487,6 +513,7 @@ def _profile_fields(
         "hardware_supported": messages_supported,
         "messages_supported": messages_supported,
         "notifications_supported": notifications_supported,
+        "notifications_active": notifications_active,
         "bearer_api_supported": bearer_supported,
         "bearer_api_active": bearer_active,
         # A failed probe is inconclusive (#28); only confirmed missing
@@ -540,6 +567,7 @@ def compatibility(
         bluez_bearer_api_supported(stack.get("bluez_version"))
         and bearer_configurable
     )
+    legacy_notifications = bluez_lacks_bearer_interfaces(stack.get("bluez_version"))
     options: list[dict[str, object]] = []
     inspected: dict[str, tuple] = {}
     hardware_by_name: dict[str, dict[str, object]] = {}
@@ -563,6 +591,7 @@ def compatibility(
             error,
             bearer_active and bearer_supported,
             bearer_supported,
+            legacy_notifications,
         )
         options.append(
             {

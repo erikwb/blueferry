@@ -6,8 +6,8 @@ maintainers. These are empirical observations, not promises made by Apple.
 
 Unless stated otherwise, the behavior was observed with an iPhone 16 Pro Max
 running iOS 26.5 and Linux controllers supporting both BR/EDR and LE. MAP/PBAP
-behavior spans BlueZ 5.72 or newer; the dual-bearer ANCS flow requires BlueZ
-5.86 or newer with its bearer API exposed. The complete MAP, PBAP, and ANCS
+behavior spans BlueZ 5.72 or newer; the dual-bearer ANCS flow described here
+requires BlueZ 5.86 or newer with its bearer API exposed. The complete MAP, PBAP, and ANCS
 combination has been exercised with a MediaTek MT7922. A later first-attempt
 clean test also completed all three on a previously tested Intel controller
 with an iPhone 17 Pro Max running an iOS 27 beta. Other iPhone, iOS, BlueZ, and
@@ -113,9 +113,10 @@ Bluetooth 3-only controller. The Broadcom MAP/PBAP success in
 ANCS connection failures on those adapters do not imply missing LE hardware.
 
 BlueFerry therefore resolves two delivery modes. Full mode additionally
-requires BlueZ 5.86 or newer. Its bearer API must already be active or be
-activatable through the package's
-systemd drop-in before pairing proceeds. Compatibility mode is selected
+requires a BlueZ on which ANCS can be supervised. On BlueZ 5.86 or newer its
+bearer API must already be active or be activatable through the package's
+systemd drop-in before pairing proceeds. BlueZ before 5.84 has no bearer API
+and needs no activation (see "ANCS without bearer state"). Compatibility mode is selected
 automatically when ANCS is unavailable or explicitly for iOS 18 and earlier.
 It still broadcasts ANCS solicitation when the controller can advertise,
 because that signal exposes the MAP/PBAP permissions, but persists
@@ -380,6 +381,34 @@ bootstrap. If BlueZ cannot keep the solicitation registered, bounded outbound
 LE retries remain enabled rather than treating an unavailable inbound path as
 primed.
 
+### ANCS without bearer state
+
+BlueZ before 5.84 has no `org.bluez.Bearer` interfaces. `Device1.Connected` is
+true while either bearer is up, there is no LE-only `Connect` or `Disconnect`,
+and `Device1.PreferredBearer` does not exist. This section follows BlueZ's
+`src/device.c` and `src/gatt-client.c`; it has not been validated on hardware.
+
+The supervisor distinguishes a missing bearer interface (`InvalidArgs`, "No
+such interface") from a failed read. An aggregate `Connected=false` rules LE
+out. An aggregate `true` leaves LE unknown and only permits a GATT probe. No
+outbound LE dial and no LE reset is attempted; the solicitation advertisement
+is the only way the LE link arrives. The supervisor does not dial Classic
+there either, since an untyped `Device1.Connect` may select LE on such a
+BlueZ; the OBEX profiles open Classic, as they do in compatibility mode.
+
+The GATT side needs no bearer state. `StartNotify` on a retained
+characteristic with no ATT link succeeds, and bluetoothd completes the
+registration itself when LE connects and repeats it on every reconnect; a
+second `StartNotify` in the meantime returns `InProgress`. A Control Point
+write with no ATT link fails locally as "Not connected". BlueFerry therefore
+registers once, then uses the content-free authorization request as the
+liveness test: a local failure is retried with backoff up to one minute, and a
+Data Source reply proves the transport. A proven transport is rechecked every
+minute. `Device1.ServicesResolved` is cleared whenever either bearer drops and
+set again once one resolves, so a change in it triggers a probe at once.
+Registrations are never stopped from a failure path. Guarded Bluetooth power
+cycling stays disabled here because it requires an observed LE state.
+
 Solicitation remains registered until both MAP/PBAP and end-to-end ANCS are
 healthy, subject to a three-minute minimum permission window. It is restored
 when LE or either protocol becomes unhealthy, when BlueZ releases it, and when
@@ -413,8 +442,9 @@ permissions").
 BlueFerry's Arch and RPM packages enable the necessary bluetoothd experimental
 API and require BlueZ 5.86 or newer. DEB packages target several distributions
 with older or divergent BlueZ releases and deliberately do not modify the
-system Bluetooth unit; full ANCS is offered there only when the installed
-daemon already exposes the 5.86+ bearer API. Otherwise pairing falls back to
+system Bluetooth unit; full ANCS is offered there when the installed daemon
+already exposes the 5.86+ bearer API, or predates the bearer interfaces
+(before 5.84) and is supervised without them. Otherwise pairing falls back to
 MAP/PBAP compatibility mode instead of blocking. The requirement is based on
 observed capabilities and the live API, not a controller-vendor check.
 

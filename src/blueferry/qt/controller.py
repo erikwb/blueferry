@@ -153,6 +153,7 @@ class BridgeController(QObject):
             "hardware_supported": False,
             "messages_supported": False,
             "notifications_supported": False,
+            "notifications_active": False,
             "bearer_api_active": False,
             "pairing_ready": True,
             "issue": message,
@@ -359,7 +360,7 @@ class BridgeController(QObject):
             self._compatibility = compatibility.to_dict()
             self._configuration = configuration
             self._setup_loaded = True
-            self._bluetooth_active = compatibility.bearer_api_active
+            self._bluetooth_active = compatibility.notifications_active
             self.compatibilityChanged.emit()
             self.configuredChanged.emit()
             self.setupLoadedChanged.emit()
@@ -392,7 +393,9 @@ class BridgeController(QObject):
         def completed(value: object) -> None:
             compatibility = value
             self._compatibility = compatibility.to_dict()
-            self._bluetooth_active = bool(getattr(compatibility, "bearer_api_active", False))
+            self._bluetooth_active = bool(
+                getattr(compatibility, "notifications_active", False)
+            )
             self.compatibilityChanged.emit()
             self.bluetoothChanged.emit()
             self._update_onboarding_stage()

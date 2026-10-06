@@ -8,6 +8,17 @@ from enum import Enum
 from typing import Any
 
 
+def notifications_active(compatibility: Mapping[str, Any]) -> bool:
+    """Whether notifications need no Bluetooth activation step.
+
+    Backends that predate ``notifications_active`` report only the bearer
+    API, which was then the sole notification transport.
+    """
+    return bool(compatibility.get(
+        "notifications_active", compatibility.get("bearer_api_active", False),
+    ))
+
+
 class PairingMode(str, Enum):
     """End-to-end behavior selected for one iPhone bond."""
 
