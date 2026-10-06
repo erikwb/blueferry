@@ -31,6 +31,11 @@ during pairing. The reliable setup has these properties:
 - The working advertisement also contains inert private/test manufacturer and
   service identifiers `0xffff` and `0x9999`, following the behavior established
   by ancs4linux. They do not claim an Apple or hardware-vendor identity.
+  With tx-power they need 40 bytes, which fits only extended advertising. When
+  BlueZ rejects that payload, the next registration omits the service
+  identifier and tx-power and keeps the manufacturer identifier, which fits
+  the 31 bytes of a legacy advertising packet. This fallback follows BlueZ's
+  size accounting and has not been exercised on such a controller.
 - Linux discovers the iPhone and initiates the connection to that selected
   device; the user does not start pairing by tapping the computer under iOS
   **Other Devices**. The pre-bond Linux identity does not need a globally
