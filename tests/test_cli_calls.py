@@ -99,7 +99,7 @@ def test_ambiguous_default_requires_an_explicit_call_id(monkeypatch) -> None:
 def test_dial_dtmf_and_multi_call_commands(monkeypatch) -> None:
     client = FakeClient([_call(state="active")])
 
-    assert _invoke(monkeypatch, client, "dial", "+41 79 123 45 67").exit_code == 0
+    assert _invoke(monkeypatch, client, "dial", "--yes", "+41 79 123 45 67").exit_code == 0
     assert _invoke(monkeypatch, client, "dtmf", "12#").exit_code == 0
     assert _invoke(monkeypatch, client, "hangup", "--all").exit_code == 0
     assert _invoke(monkeypatch, client, "swap").exit_code == 0
@@ -127,3 +127,27 @@ def test_hangup_rejects_a_call_id_together_with_all(monkeypatch) -> None:
 
     assert result.exit_code == 2
     assert client.requests == []
+
+
+def test_dial_asks_first_and_refuses_without_a_terminal(monkeypatch) -> None:
+    client = FakeClient()
+    monkeypatch.setattr(cli_calls, "_interactive", lambda: False)
+
+    result = _invoke(monkeypatch, client, "dial", "0441234567")
+
+    assert result.exit_code == 2 and "--yes" in result.output
+    assert client.requests == []
+
+
+def test_dial_confirmation_can_be_declined_or_accepted(monkeypatch) -> None:
+    client = FakeClient()
+    monkeypatch.setattr(cli_calls, "_client", lambda: client)
+    monkeypatch.setattr(cli_calls, "_interactive", lambda: True)
+
+    declined = CliRunner().invoke(app, ["calls", "dial", "0441234567"], input="n\n")
+    assert declined.exit_code == 1 and client.requests == []
+    assert "Call 0441234567 through the iPhone?" in declined.output
+
+    accepted = CliRunner().invoke(app, ["calls", "dial", "0441234567"], input="y\n")
+    assert accepted.exit_code == 0
+    assert client.requests == [("dial", "0441234567")]

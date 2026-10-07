@@ -28,7 +28,12 @@ Kirigami.Dialog {
             text: qsTr("Dial")
             icon.name: "call-start"
             enabled: dialog.callsReady && dialNumber.text.trim() !== "" && !dialog.bridge.busy
-            onTriggered: dialog.bridge.dialCall(dialNumber.text)
+            // Ask first: a stray Enter in the number field must not place a
+            // call (emergency numbers are refused by the backend).
+            onTriggered: {
+                dialConfirm.number = dialNumber.text.trim()
+                dialConfirm.open()
+            }
         }
     ]
 
@@ -50,6 +55,23 @@ Kirigami.Dialog {
 
     ColumnLayout {
         spacing: Kirigami.Units.smallSpacing
+
+        Kirigami.PromptDialog {
+            id: dialConfirm
+            objectName: "callsDialConfirm"
+            property string number: ""
+            title: qsTr("Place Call?")
+            subtitle: qsTr("Call %1 through the iPhone?").arg(dialConfirm.number)
+            standardButtons: Kirigami.Dialog.Cancel
+            customFooterActions: [Kirigami.Action {
+                text: qsTr("Call")
+                icon.name: "call-start"
+                onTriggered: {
+                    dialog.bridge.dialCall(dialConfirm.number)
+                    dialConfirm.close()
+                }
+            }]
+        }
 
         Controls.Label {
             Layout.fillWidth: true

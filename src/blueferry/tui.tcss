@@ -516,6 +516,10 @@ ModalScreen {
     width: 76;
 }
 
+#calls-confirm-dialog {
+    width: 60;
+}
+
 #calls-number {
     height: 3;
 }

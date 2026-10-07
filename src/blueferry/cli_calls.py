@@ -1,6 +1,7 @@
 """Optional phone-call CLI (`blueferry calls ...`) over the Calls1 interface."""
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable
 from typing import TypeVar
 
@@ -18,6 +19,10 @@ calls_app = typer.Typer(
     no_args_is_help=False,
 )
 
+
+
+def _interactive() -> bool:
+    return sys.stdin.isatty()
 
 
 def _client() -> BackendClient:
@@ -75,8 +80,20 @@ def calls_list(ctx: typer.Context) -> None:
 @calls_app.command("dial")
 def calls_dial(
     number: str = typer.Argument(..., help="Number: optional leading +, digits"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Dial without asking first"),
 ) -> None:
-    """Place a call through the iPhone."""
+    """Place a call through the iPhone (asks first; emergency numbers are refused)."""
+    if not yes:
+        if not _interactive():
+            typer.echo(
+                typer.style("Pass --yes to dial without a terminal.", fg=typer.colors.RED),
+                err=True,
+            )
+            raise typer.Exit(code=2)
+        shown = terminal_text(number).replace("\n", " ")
+        if not typer.confirm(f"Call {shown} through the iPhone?", default=False):
+            typer.echo("Not dialed.")
+            raise typer.Exit(code=1)
     call_id = _run(lambda: _client().dial(number))
     typer.echo(typer.style(f"Dialing ({call_id or 'pending'}).", fg=typer.colors.GREEN))
 

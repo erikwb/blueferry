@@ -75,6 +75,41 @@ def hangup_target(snapshot: CallsSnapshot) -> CallInfo | None:
     return None
 
 
+class DialConfirmScreen(ModalScreen[bool]):
+    """Ask before a number is dialed; a stray Enter must not place a call."""
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("escape", "cancel", "Cancel", show=False),
+    ]
+
+    def __init__(self, number: str) -> None:
+        super().__init__()
+        self.number = number
+
+    def compose(self) -> ComposeResult:
+        shown = terminal_text(self.number).replace("\n", " ")
+        with Vertical(id="calls-confirm-dialog", classes="dialog"):
+            yield Static("Place call?", classes="dialog-title")
+            yield Static(Text(f"Call {shown} through the iPhone?"), classes="dialog-copy")
+            with Horizontal(classes="dialog-actions"):
+                yield Button("Cancel", id="calls-confirm-cancel")
+                yield Button("Call", variant="primary", id="calls-confirm-call")
+
+    def on_mount(self) -> None:
+        self.query_one("#calls-confirm-cancel", Button).focus()
+
+    @on(Button.Pressed, "#calls-confirm-cancel")
+    def cancel_button(self) -> None:
+        self.dismiss(False)
+
+    @on(Button.Pressed, "#calls-confirm-call")
+    def call_button(self) -> None:
+        self.dismiss(True)
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+
 class CallsScreen(ModalScreen[None]):
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "close", "Close", show=False),
@@ -154,7 +189,12 @@ class CallsScreen(ModalScreen[None]):
         if not number:
             self.notify("Enter a number to dial", severity="warning")
             return
-        self._run(lambda: self._client.dial(number), "Dialing…")
+
+        def confirmed(accepted: bool | None) -> None:
+            if accepted:
+                self._run(lambda: self._client.dial(number), "Dialing…")
+
+        self.app.push_screen(DialConfirmScreen(number), confirmed)
 
     @on(Button.Pressed, "#calls-answer")
     def answer(self) -> None:

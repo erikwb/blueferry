@@ -9,7 +9,13 @@ from textual.widgets import Button, Input, Static
 from blueferry.client import BackendError
 from blueferry.models import BackendStatus, CallsSnapshot
 from blueferry.tui import BlueFerryApp, TuiState
-from blueferry.tui_calls import CallsScreen, describe, hangup_target, ringing_call
+from blueferry.tui_calls import (
+    CallsScreen,
+    DialConfirmScreen,
+    describe,
+    hangup_target,
+    ringing_call,
+)
 
 
 def _snapshot(*calls, state="ready"):
@@ -90,6 +96,11 @@ async def _until(pilot, predicate, timeout: float = 5.0) -> None:
     assert predicate()
 
 
+def _confirm_shown(app) -> bool:
+    screen = app.screen
+    return isinstance(screen, DialConfirmScreen) and bool(screen.query("#calls-confirm-call"))
+
+
 def test_calls_panel_answers_dials_and_hangs_up() -> None:
     async def scenario() -> None:
         backend = _Backend()
@@ -107,12 +118,22 @@ def test_calls_panel_answers_dials_and_hangs_up() -> None:
             await _until(pilot, lambda: ("answer", "voicecall01") in backend.requests)
             screen.query_one("#calls-number", Input).value = "+41 79 000 00 00"
             screen.dial()
+            await _until(pilot, lambda: _confirm_shown(app))
+            assert "+41 79 000 00 00" in str(app.screen.query_one(".dialog-copy", Static).render())
+            app.screen.action_cancel()
+            await _until(pilot, lambda: app.screen is screen)
+            assert not any(request[0] == "dial" for request in backend.requests)
+            screen.dial()
+            await _until(pilot, lambda: _confirm_shown(app))
+            app.screen.call_button()
             await _until(pilot, lambda: ("dial", "+41 79 000 00 00") in backend.requests)
             screen.hangup()
             await _until(pilot, lambda: ("hangup", "voicecall01") in backend.requests)
 
             screen.query_one("#calls-number", Input).value = "bad"
             screen.dial()
+            await _until(pilot, lambda: _confirm_shown(app))
+            app.screen.call_button()
             await pilot.pause(0.2)
             assert ("dial", "bad") not in backend.requests
             screen.action_close()
@@ -218,6 +239,8 @@ def test_backend_error_toast_is_not_parsed_as_markup() -> None:
             screen.notify = lambda message, **kwargs: seen.append((message, kwargs))
             screen.query_one("#calls-number", Input).value = "123"
             screen.dial()
+            await _until(pilot, lambda: _confirm_shown(app))
+            app.screen.call_button()
             await _until(pilot, lambda: bool(seen))
             assert seen[0][1].get("markup") is False
 

@@ -817,6 +817,13 @@ def test_optional_calls_dialog_lists_calls_and_dials_through_the_bridge(
     # "Hang Up All" needs more than one call; "Dial" needs a number.
     assert _evaluate(qml_engine, "callsDialog.customFooterActions[0].enabled") is False
     _evaluate(qml_engine, "callsDialog.customFooterActions[1].trigger()")
+    # Dial only asks; the call is placed from the confirmation.
+    assert _evaluate(qml_engine, "testBridge.calls.length") == 1
+    confirm = _settings_object(window, "callsDialConfirm")
+    assert confirm.property("number") == "+41 79 123 45 67"
+    assert "+41 79 123 45 67" in confirm.property("subtitle")
+    qml_engine.globalObject().setProperty("callsDialConfirm", qml_engine.newQObject(confirm))
+    _evaluate(qml_engine, "callsDialConfirm.customFooterActions[0].trigger()")
     assert _evaluate(qml_engine, "testBridge.calls[1]") == {
         "method": "dialCall", "args": ["+41 79 123 45 67"],
     }
