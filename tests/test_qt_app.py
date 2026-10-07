@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import os
 import signal
+import subprocess
 import sys
+import textwrap
 import types
 
 import pytest
@@ -118,6 +120,130 @@ def test_user_quick_controls_style_survives_release(
     style.release_environment()
 
     assert os.environ["QT_QUICK_CONTROLS_STYLE"] == "Fusion"
+
+
+@pytest.mark.parametrize(("qt_args", "remaining", "style"), [
+    (["-style", "fusion", "-reverse"], ["-reverse"], "fusion"),
+    (["-style=fusion"], [], "fusion"),
+    (["--style=fusion"], [], "fusion"),
+    (["-style", "a", "-style=b"], [], "b"),
+    (["--style", "fusion"], ["--style", "fusion"], None),
+    (["-style"], ["-style"], None),
+])
+def test_style_argument_forms_qt_honours_are_split_off(qt_args, remaining, style):
+    assert app_module._split_style_argument(qt_args) == (remaining, style)
+
+
+def _fake_main_collaborators(monkeypatch, events):
+    """Replace Qt objects in main() so it runs without a display."""
+
+    class Application:
+        def __init__(self, argv) -> None:
+            events.append(("application", argv, os.environ.get("QT_STYLE_OVERRIDE")))
+
+        def setStyle(self, name) -> None:
+            events.append(("widget style", name))
+
+        def __getattr__(self, _name):
+            return lambda *_args: None
+
+    class Activation:
+        primary = True
+
+        def __init__(self, _application) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    class Engine:
+        def setInitialProperties(self, _properties) -> None:
+            pass
+
+        def load(self, _url) -> None:
+            events.append(("load", os.environ.get("QT_QUICK_CONTROLS_STYLE")))
+
+        def rootObjects(self):
+            return []
+
+    monkeypatch.setattr(app_module, "QApplication", Application)
+    monkeypatch.setattr(
+        app_module, "QIcon", types.SimpleNamespace(fromTheme=lambda _name: None),
+    )
+    monkeypatch.setattr(app_module, "_install_translation", lambda _application: None)
+    monkeypatch.setattr(app_module, "ClientActivation", Activation)
+    monkeypatch.setattr(app_module, "BridgeController", lambda *, parent: object())
+    monkeypatch.setattr(app_module, "QQmlApplicationEngine", Engine)
+
+
+def test_fallback_keeps_widget_style_choices_from_overriding_controls(
+        monkeypatch, no_quick_style_binding,
+        ):
+    events = []
+    _fake_main_collaborators(monkeypatch, events)
+    monkeypatch.setattr(sys, "argv", ["blueferry-qt", "-style", "fusion"])
+    monkeypatch.setenv("QT_STYLE_OVERRIDE", "kvantum")
+    monkeypatch.setenv("DESKTOP_STARTUP_ID", "startup")
+
+    assert app_module.main() == 1
+
+    assert events == [
+        ("application", ["blueferry-qt"], None),
+        ("widget style", "fusion"),
+        ("load", "org.kde.desktop"),
+    ]
+    assert os.environ["QT_STYLE_OVERRIDE"] == "kvantum"
+    assert "QT_QUICK_CONTROLS_STYLE" not in os.environ
+
+
+def test_binding_path_leaves_widget_style_choices_to_qt(
+        monkeypatch, quick_style_binding,
+        ):
+    events = []
+    _fake_main_collaborators(monkeypatch, events)
+    monkeypatch.setattr(sys, "argv", ["blueferry-qt", "-style", "fusion"])
+    monkeypatch.setenv("QT_STYLE_OVERRIDE", "kvantum")
+
+    assert app_module.main() == 1
+
+    assert quick_style_binding == ["org.kde.desktop"]
+    assert events == [
+        ("application", ["blueferry-qt", "-style", "fusion"], "kvantum"),
+        ("load", None),
+    ]
+
+
+def test_fallback_style_loads_controls_despite_widget_style_override(tmp_path):
+    """Run real Qt: -style and QT_STYLE_OVERRIDE must not break Main.qml."""
+    pytest.importorskip("PySide6.QtQml")
+    qml = tmp_path / "Probe.qml"
+    qml.write_text("import QtQuick\nimport QtQuick.Controls\nButton {}\n")
+    script = textwrap.dedent(f"""
+        import os, sys
+        sys.modules["PySide6.QtQuickControls2"] = None
+        from PySide6.QtCore import QUrl
+        from PySide6.QtQml import QQmlApplicationEngine
+        from PySide6.QtWidgets import QApplication
+        from blueferry.qt import app
+        app.DEFAULT_QUICK_CONTROLS_STYLE = "Basic"
+        style = app._select_quick_controls_style(["-style", "fusion"])
+        application = QApplication(["probe", *style.qt_args])
+        style.application_created(application)
+        engine = QQmlApplicationEngine()
+        engine.load(QUrl.fromLocalFile({str(qml)!r}))
+        style.release_environment()
+        print(bool(engine.rootObjects()), application.style().name())
+    """)
+    environment = {
+        key: value for key, value in os.environ.items()
+        if key not in ("QT_QUICK_CONTROLS_STYLE", "QT_QPA_PLATFORMTHEME")
+    }
+    environment.update(QT_QPA_PLATFORM="offscreen", QT_STYLE_OVERRIDE="fusion")
+    result = subprocess.run(
+        [sys.executable, "-c", script], env=environment,
+        capture_output=True, text=True, timeout=60, check=False,
+    )
+    assert result.stdout.split() == ["True", "fusion"], result.stderr
 
 
 def test_missing_binding_falls_back_quietly(caplog, no_quick_style_binding):

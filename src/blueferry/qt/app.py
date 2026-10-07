@@ -50,19 +50,55 @@ def _quick_style_binding():
     return QQuickStyle
 
 
+def _split_style_argument(qt_args: list[str]) -> tuple[list[str], str | None]:
+    """Remove the forms of -style that QApplication honours.
+
+    Qt 6 accepts "-style NAME", "-style=NAME" and "--style=NAME"; the last
+    one given wins.
+    """
+    remaining: list[str] = []
+    style = None
+    index = 0
+    while index < len(qt_args):
+        argument = qt_args[index]
+        if argument == "-style" and index + 1 < len(qt_args):
+            style = qt_args[index + 1]
+            index += 2
+            continue
+        for prefix in ("-style=", "--style="):
+            if argument.startswith(prefix):
+                style = argument[len(prefix):]
+                break
+        else:
+            remaining.append(argument)
+        index += 1
+    return remaining, style
+
+
 class _QuickControlsStyle:
     """Default the Qt Quick Controls style to KDE's unless the user chose one.
 
-    This must be created before the QML engine loads Qt Quick Controls.
-    Where the PySide6.QtQuickControls2 binding exists, QQuickStyle.setStyle()
-    is used. Some distributions omit that binding; there
-    QT_QUICK_CONTROLS_STYLE is set instead and removed again by
-    release_environment(), so processes started from the app (links, file managers)
-    do not inherit it.
+    This must be created before QApplication and before the QML engine
+    loads Qt Quick Controls. Where the PySide6.QtQuickControls2 binding
+    exists, QQuickStyle.setStyle() is used; it outranks every other way of
+    choosing a style.
+
+    Some distributions omit that binding; there QT_QUICK_CONTROLS_STYLE is
+    set instead. Qt Quick Controls ranks that variable below the widget
+    style QApplication takes from -style or QT_STYLE_OVERRIDE, and a widget
+    style name such as "fusion" or "kvantum" is no Controls style, so
+    Main.qml would fail to load. On this path the widget style is therefore
+    kept away from QApplication's constructor and applied afterwards with
+    QApplication.setStyle(), which changes the widget style only.
+    release_environment() removes the fallback variable again, so
+    processes started from the app (links, file managers) do not inherit it.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, qt_args: list[str]) -> None:
+        self.qt_args = list(qt_args)
         self._fallback = False
+        self._widget_style: str | None = None
+        self._hidden_override: str | None = None
         if os.environ.get("QT_QUICK_CONTROLS_STYLE"):
             return
         binding = _quick_style_binding()
@@ -71,6 +107,17 @@ class _QuickControlsStyle:
             return
         os.environ["QT_QUICK_CONTROLS_STYLE"] = DEFAULT_QUICK_CONTROLS_STYLE
         self._fallback = True
+        self.qt_args, argument_style = _split_style_argument(self.qt_args)
+        self._hidden_override = os.environ.pop("QT_STYLE_OVERRIDE", None)
+        self._widget_style = argument_style or self._hidden_override or None
+
+    def application_created(self, application: QApplication) -> None:
+        """Restore QT_STYLE_OVERRIDE and apply the user's widget style."""
+        if self._hidden_override is not None:
+            os.environ["QT_STYLE_OVERRIDE"] = self._hidden_override
+            self._hidden_override = None
+        if self._widget_style:
+            application.setStyle(self._widget_style)
 
     def release_environment(self) -> None:
         """Forget the fallback variable once Qt has resolved the style."""
@@ -79,8 +126,10 @@ class _QuickControlsStyle:
             self._fallback = False
 
 
-def _select_quick_controls_style() -> _QuickControlsStyle:
-    return _QuickControlsStyle()
+def _select_quick_controls_style(
+        qt_args: list[str] | None = None,
+        ) -> _QuickControlsStyle:
+    return _QuickControlsStyle(qt_args or [])
 
 
 def _install_translation(application: QGuiApplication) -> None:
@@ -174,9 +223,10 @@ def main() -> int:
     args, qt_args = parser.parse_known_args(sys.argv[1:])
     wayland_token = os.environ.pop("XDG_ACTIVATION_TOKEN", "")
     token = wayland_token or os.environ.get("DESKTOP_STARTUP_ID", "")
-    quick_style = _select_quick_controls_style()
+    quick_style = _select_quick_controls_style(qt_args)
 
-    application = QApplication([sys.argv[0], *qt_args])
+    application = QApplication([sys.argv[0], *quick_style.qt_args])
+    quick_style.application_created(application)
     # The X11 platform reads its startup ID while constructing QApplication.
     os.environ.pop("DESKTOP_STARTUP_ID", None)
     application.setApplicationName("blueferry")
