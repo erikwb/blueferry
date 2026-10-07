@@ -22,7 +22,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from blueferry import config
-from blueferry.call_history import MISSED, CallRecord
+from blueferry.call_history import (
+    DIRECTIONS,
+    MISSED,
+    CallRecord,
+    merge_call_history,
+    split_key,
+    wall_clock,
+)
 from blueferry.limits import MAX_CALL_HISTORY_RECORDS, MAX_CALL_HISTORY_SEEN_KEYS
 from blueferry.storage_security import CorruptStorageError, StorageSecurity
 
@@ -174,13 +181,24 @@ class CallHistoryRepository:
         *,
         now: datetime | None = None,
         retention_days: int | None = None,
+        phone: str | None = None,
+        directions: frozenset[str] | None = None,
     ) -> ReplaceResult:
         """Mirror the phone's lists and report missed calls not seen before.
 
         The first sync (no announcement state yet, including after the user
-        cleared history or changed the storage policy) seeds the state
-        silently, so enabling the feature never floods the desktop with the
-        phone's whole missed-call backlog.
+        cleared history, changed the storage policy, forgot the phone, or
+        paired a different one) seeds the state silently, so enabling the
+        feature never floods the desktop with the phone's whole missed-call
+        backlog. Seeding stays armed while the phone reports no calls at
+        all: an empty first answer must not turn the real backlog into "new"
+        calls on the next sync.
+
+        ``phone`` identifies the paired iPhone; a different value than the
+        one stored discards the mirror and re-arms silent seeding.
+        ``directions`` names the call directions ``records`` covers when only
+        some phonebooks were pulled (e.g. the periodic missed-calls poll);
+        retained calls of the other directions are kept.
         """
         if self.storage is None or not self.storage.status.can_write:
             raise RuntimeError(
@@ -189,42 +207,62 @@ class CallHistoryRepository:
             )
         current = now or datetime.now(timezone.utc)
         cutoff = _cutoff(current, retention_days)
-        kept = sorted(
-            (record for record in records if record.occurred_at >= cutoff),
-            key=lambda record: (record.occurred_at, record.key),
-            reverse=True,
-        )[:MAX_CALL_HISTORY_RECORDS]
         with closing(self._open()) as connection:
             try:
                 previous = self._read_records(connection)
                 seen = self._read_seen(connection)
+                stored_phone = self._read_phone(connection)
             except CorruptStorageError:
                 self._fail_closed()
                 raise
             if previous is None:
                 raise CorruptStorageError("retained call history failed authentication")
+            normalized_phone = _normalize_phone_id(phone)
+            if (
+                normalized_phone is not None
+                and stored_phone is not None
+                and stored_phone != normalized_phone
+            ):
+                log.info("paired iPhone changed; call history mirror reset")
+                previous, seen = [], None
+            incoming = list(records)
+            if directions is not None and not directions >= DIRECTIONS:
+                # A partial pull: keep the retained calls it did not cover.
+                incoming = merge_call_history([
+                    [record for record in previous if record.direction not in directions],
+                    incoming,
+                ])
+            kept = sorted(
+                (record for record in incoming if record.occurred_at >= cutoff),
+                key=lambda record: (record.occurred_at, record.key),
+                reverse=True,
+            )[:MAX_CALL_HISTORY_RECORDS]
             seeded = seen is None
             known = dict(seen or {})
             missed = [record for record in kept if record.direction == MISSED]
-            new_missed = [] if seeded else [
-                record for record in missed if record.key not in known
-            ]
+            new_missed = [] if seeded else _unseen(missed, known, kept)
             for record in missed:
                 known[record.key] = record.occurred_at.timestamp()
             floor = cutoff.timestamp()
-            retained_seen = dict(sorted(
+            retained_seen: dict[str, float] | None = dict(sorted(
                 ((key, stamp) for key, stamp in known.items() if stamp >= floor),
                 key=lambda item: item[1],
                 reverse=True,
             )[:MAX_CALL_HISTORY_SEEN_KEYS])
+            if seeded and not kept:
+                # Nothing to seed from yet; stay armed (see docstring).
+                retained_seen = None
             # Rows are stored oldest-first; ``kept`` is newest-first.
             changed = [record.to_storage() for record in previous] != [
                 record.to_storage() for record in reversed(kept)
             ]
             seen_changed = retained_seen != seen
+            phone_changed = (
+                normalized_phone is not None and stored_phone != normalized_phone
+            )
             # An unchanged poll (the common case every few minutes) must not
             # rewrite and re-encrypt the whole mirror.
-            if changed or seen_changed:
+            if changed or seen_changed or phone_changed:
                 with connection:
                     if changed:
                         connection.execute("DELETE FROM calls")
@@ -235,14 +273,46 @@ class CallHistoryRepository:
                                 (self._seal(record.to_storage(), _RECORD_PURPOSE),),
                             )
                     if seen_changed:
-                        connection.execute(
-                            "INSERT INTO state(name, payload) VALUES ('seen', ?) "
-                            "ON CONFLICT(name) DO UPDATE SET payload = excluded.payload",
-                            (self._seal(retained_seen, _STATE_PURPOSE),),
-                        )
+                        if retained_seen is None:
+                            connection.execute("DELETE FROM state WHERE name = 'seen'")
+                        else:
+                            self._write_state(connection, "seen", retained_seen)
+                    if phone_changed:
+                        self._write_state(connection, "phone", normalized_phone)
         return ReplaceResult(
             records=kept, new_missed=new_missed, seeded=seeded, changed=changed,
         )
+
+    def _write_state(
+        self, connection: sqlite3.Connection, name: str, value: object,
+    ) -> None:
+        connection.execute(
+            "INSERT INTO state(name, payload) VALUES (?, ?) "
+            "ON CONFLICT(name) DO UPDATE SET payload = excluded.payload",
+            (name, self._seal(value, _STATE_PURPOSE)),
+        )
+
+    def _read_phone(self, connection: sqlite3.Connection) -> str | None:
+        row = connection.execute(
+            "SELECT payload FROM state WHERE name = 'phone'"
+        ).fetchone()
+        if row is None:
+            return None
+        value = self._open_value(row[0], _STATE_PURPOSE)
+        return value if isinstance(value, str) else None
+
+    def forget_announcements(self) -> None:
+        """Re-arm silent seeding, e.g. after the phone's bond was removed.
+
+        The retained list stays (it is still the user's data under the same
+        policy); only the record of announced missed calls is dropped, so a
+        re-paired or reset phone's first sync announces nothing.
+        """
+        if not self.path.exists():
+            return
+        with closing(self._open()) as connection:
+            with connection:
+                connection.execute("DELETE FROM state WHERE name = 'seen'")
 
     def prune(
         self, *, now: datetime | None = None, retention_days: int | None = None,
@@ -287,6 +357,62 @@ class CallHistoryRepository:
                 connection.execute("DELETE FROM calls")
                 connection.execute("DELETE FROM state")
             connection.execute("VACUUM")
+
+
+def _normalize_phone_id(value: str | None) -> str | None:
+    text = (value or "").strip().upper()
+    return text or None
+
+
+# A phone that moves timezone (or crosses a DST boundary) re-renders the
+# floating local timestamps of every call. Real UTC offsets are whole quarter
+# hours within this range.
+_RERENDER_STEP = timedelta(minutes=15)
+_RERENDER_MAX = timedelta(hours=26)
+
+
+def _unseen(
+    missed: Sequence[CallRecord], known: dict[str, float], current: Sequence[CallRecord],
+) -> list[CallRecord]:
+    """Missed calls not announced before, tolerating a phone-side re-render.
+
+    A missed call counts as already announced when an announced key for the
+    same number differs from it only by a whole number of quarter hours of
+    wall-clock time (at most 26 h) and that earlier rendering is gone from
+    the current list. A genuinely new call from the same number leaves the
+    earlier one in the list, so it is still announced.
+    """
+    present = {record.key for record in current}
+    candidates: dict[tuple[str, str], list[tuple[str, datetime]]] = {}
+    for key in known:
+        if key in present:
+            continue
+        parts = split_key(key)
+        if parts is None:
+            continue
+        direction, raw_time, number = parts
+        clock = wall_clock(raw_time)
+        if clock is not None:
+            candidates.setdefault((direction, number), []).append((key, clock))
+    fresh: list[CallRecord] = []
+    for record in missed:
+        if record.key in known:
+            continue
+        clock = wall_clock(record.raw_time)
+        options = candidates.get((record.direction, record.number_identity), [])
+        match = None
+        if clock is not None:
+            for index, (_key, earlier) in enumerate(options):
+                shift = abs(clock - earlier)
+                if shift <= _RERENDER_MAX and shift % _RERENDER_STEP == timedelta(0):
+                    match = index
+                    break
+        if match is None:
+            fresh.append(record)
+        else:
+            # Each earlier rendering explains at most one current call.
+            options.pop(match)
+    return fresh
 
 
 def clear_call_history(path: Path | None = None) -> None:

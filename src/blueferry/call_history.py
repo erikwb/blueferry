@@ -80,7 +80,9 @@ class CallRecord:
         """Stable identity across syncs, independent of the local timezone.
 
         The raw timestamp is used rather than its UTC conversion so a change
-        of the desktop's timezone cannot make an old call look new.
+        of the desktop's timezone cannot make an old call look new. A change
+        of the *phone's* timezone re-renders the text; the repository
+        recognises that case separately (see ``split_key``).
         """
         return f"{self.direction}|{self.raw_time}|{self.number_identity}"
 
@@ -158,6 +160,15 @@ class CallRecord:
         )
 
 
+def split_key(key: str) -> tuple[str, str, str] | None:
+    """Inverse of ``CallRecord.key``: ``(direction, raw_time, number)``."""
+    direction, separator, rest = key.partition("|")
+    raw_time, separator2, number = rest.partition("|")
+    if not separator or not separator2 or direction not in DIRECTIONS:
+        return None
+    return direction, raw_time, number
+
+
 def parse_call_timestamp(
     value: str | None, *, local_zone: tzinfo | None = None,
 ) -> datetime | None:
@@ -200,6 +211,28 @@ def parse_call_timestamp(
             local = naive.replace(tzinfo=timezone(sign * offset))
         return local.astimezone(timezone.utc)
     except (ValueError, OverflowError, OSError):
+        return None
+
+
+def wall_clock(value: str | None) -> datetime | None:
+    """The timestamp's date and time of day as written, ignoring any zone.
+
+    Used to recognise a call the phone re-rendered after its own timezone or
+    DST changed: the same instant then differs from the earlier text by a
+    whole number of quarter hours.
+    """
+    text = (value or "").strip()
+    if not text or len(text) > _MAX_TIMESTAMP_CHARS:
+        return None
+    match = _TIMESTAMP_RE.fullmatch(text)
+    if match is None:
+        return None
+    try:
+        return datetime(
+            int(match["year"]), int(match["month"]), int(match["day"]),
+            int(match["hour"]), int(match["minute"]), int(match["second"]),
+        )
+    except ValueError:
         return None
 
 

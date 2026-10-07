@@ -197,6 +197,108 @@ def test_wrong_key_fails_closed_instead_of_discarding(storage) -> None:
     assert CallHistoryRepository(storage).load(now=NOW) == [_call(MISSED, 1)]
 
 
+def test_empty_first_answer_keeps_silent_seeding_armed(storage) -> None:
+    """An empty first listing must not turn the real backlog into new calls."""
+    repository = CallHistoryRepository(storage)
+    backlog = [_call(MISSED, 30), _call(MISSED, 20, "15551230002")]
+
+    empty = repository.replace([], now=NOW)
+    first_real = repository.replace(backlog, now=NOW)
+    later = repository.replace([_call(MISSED, 1, "15551230003"), *backlog], now=NOW)
+
+    assert empty.seeded and empty.new_missed == []
+    assert first_real.seeded and first_real.new_missed == []
+    assert [record.phone for record in later.new_missed] == ["15551230003"]
+
+
+def _floating(direction: str, wall: str, number: str = "15551230001") -> CallRecord:
+    """A call as the phone renders it: floating local time, no zone."""
+    moment = datetime.strptime(wall, "%Y%m%dT%H%M%S").replace(tzinfo=timezone.utc)
+    return CallRecord(
+        direction=direction, occurred_at=moment, raw_time=wall,
+        address=f"+{number}", phone=number, name=None,
+    )
+
+
+def test_phone_timezone_change_does_not_reannounce_missed_calls(storage) -> None:
+    repository = CallHistoryRepository(storage)
+    repository.replace([_floating(INCOMING, "20260928T080000")], now=NOW)
+    before = [
+        _floating(MISSED, "20260928T113010"),
+        _floating(MISSED, "20260928T114500", "15551230002"),
+    ]
+    announced = repository.replace(before, now=NOW).new_missed
+    assert {record.raw_time for record in announced} == {
+        "20260928T113010", "20260928T114500",
+    }
+    # The phone travelled to UTC-05:30 (or crossed DST): same calls, new text.
+    after = [
+        _floating(MISSED, "20260928T060010"),
+        _floating(MISSED, "20260928T061500", "15551230002"),
+    ]
+
+    result = repository.replace(after, now=NOW)
+
+    assert result.new_missed == []
+
+
+def test_new_call_from_the_same_number_is_still_announced(storage) -> None:
+    repository = CallHistoryRepository(storage)
+    first = _floating(MISSED, "20260928T100000")
+    repository.replace([first], now=NOW)
+    # Exactly two hours later, same number, same minute and second: the
+    # earlier call is still listed, so this is not a re-rendering.
+    second = _floating(MISSED, "20260928T120000")
+
+    result = repository.replace([second, first], now=NOW)
+
+    assert result.new_missed == [second]
+
+
+def test_a_different_phone_resets_the_mirror_and_seeds_silently(storage) -> None:
+    repository = CallHistoryRepository(storage)
+    repository.replace([_call(MISSED, 30)], now=NOW, phone="AA:BB:CC:DD:EE:01")
+    repository.replace([_call(MISSED, 30)], now=NOW, phone="aa:bb:cc:dd:ee:01")
+    other = [_call(MISSED, 5, "15551239999"), _call(OUTGOING, 3, "15551239998")]
+
+    result = repository.replace(other, now=NOW, phone="AA:BB:CC:DD:EE:02")
+
+    assert result.seeded and result.new_missed == []
+    assert repository.load(now=NOW) == sorted(
+        other, key=lambda record: record.occurred_at, reverse=True,
+    )
+    newer = repository.replace(
+        [_call(MISSED, 1, "15551230005"), *other], now=NOW, phone="AA:BB:CC:DD:EE:02",
+    )
+    assert [record.phone for record in newer.new_missed] == ["15551230005"]
+
+
+def test_forgetting_the_phone_rearms_silent_seeding(storage) -> None:
+    repository = CallHistoryRepository(storage)
+    repository.replace([_call(MISSED, 30)], now=NOW)
+
+    repository.forget_announcements()
+    result = repository.replace([_call(MISSED, 2, "15551230002"), _call(MISSED, 30)], now=NOW)
+
+    assert result.seeded and result.new_missed == []
+    assert len(repository.load(now=NOW)) == 2
+
+
+def test_partial_missed_pull_keeps_incoming_and_outgoing_calls(storage) -> None:
+    repository = CallHistoryRepository(storage)
+    incoming, outgoing = _call(INCOMING, 50), _call(OUTGOING, 40, "15551230002")
+    old_missed = _call(MISSED, 30, "15551230003")
+    repository.replace([incoming, outgoing, old_missed], now=NOW)
+    new_missed = _call(MISSED, 2, "15551230004")
+
+    result = repository.replace(
+        [new_missed], now=NOW, directions=frozenset({MISSED}),
+    )
+
+    assert result.records == [new_missed, outgoing, incoming]
+    assert result.new_missed == [new_missed]
+
+
 # ---- scheduling and notification ------------------------------------------
 
 def test_sync_runs_on_the_worker_and_seeds_without_notifications(harness) -> None:
