@@ -341,8 +341,10 @@ PipeWire's native HFP backend race for the same BlueZ profile (see
 integration leaves that choice and its setup to you, adds no package
 dependency, and keeps working normally when oFono is missing.
 
-The integration was developed against oFono 2.18 and is **not yet verified
-end-to-end on hardware**; treat it as a preview.
+The integration was developed against oFono 2.18 and BlueZ 5.87 and has been
+used with an iPhone on one Gentoo/OpenRC desktop: the modem comes up, an
+incoming call rings with a popup, and calls can be answered and hung up.
+Call waiting, DTMF, and other setups are untested; treat it as a preview.
 
 Requirements:
 
@@ -441,8 +443,13 @@ Troubleshooting: if `blueferry calls` stays at **searching** although the
 iPhone is connected, the likely cause is the startup-order race between oFono
 and WirePlumber for the HFP profile. Restart oFono after WirePlumber
 (`sudo rc-service ofono restart` on OpenRC, `sudo systemctl restart ofono` on
-systemd), then check the backend log for the modem. Audio routing itself is
-PipeWire's job; BlueFerry only controls the call.
+systemd), then check the backend log for the modem. With BlueZ 5.87 or newer, BlueZ's
+own HFP hands-free plugin can also claim the RFCOMM channel before oFono
+(oFono's `Powered=true` then times out). Disable that plugin by starting
+`bluetoothd` with `-P hfp` (for example `BLUETOOTH_OPTS="-E -P hfp"` in
+`/etc/conf.d/bluetooth` on Gentoo, or a `bluetooth.service` drop-in on
+systemd). Audio routing itself is PipeWire's job; BlueFerry only controls the
+call.
 
 ## Lock when the iPhone goes away
 

@@ -462,9 +462,11 @@ README "Phone calls") relies on the user's own oFono/WirePlumber setup and
 adds no dependency. It works around one part of the fragility: with iOS the
 oFono HFP modem stays unpowered until `Modem.Powered=true` is set, and oFono
 rejects `Online=true` until it has reported `Powered=true`. This sequence was
-taken from tincan's oFono controller; it has not yet been re-verified by
-BlueFerry against the device list above. The profile registration race itself
-is unchanged.
+taken from tincan's oFono controller and has since worked with one iPhone
+(iOS 27, oFono 2.18, BlueZ 5.87); it has not been re-verified against the
+device list above. BlueZ 5.87's own HFP hands-free plugin adds a second
+contender for the RFCOMM channel; `bluetoothd -P hfp` avoids it. The profile
+registration race itself is unchanged.
 
 ## Pairing diagnostics
 
