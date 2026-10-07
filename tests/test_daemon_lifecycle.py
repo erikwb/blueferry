@@ -458,6 +458,40 @@ def test_stop_does_not_remove_a_timer_that_stopped_itself(
     assert getattr(instance, timer_attr) is None
 
 
+@pytest.mark.parametrize(
+    ("timer_attr", "callback", "target"),
+    [
+        ("_release_check_id", "_check_package_release", "installed_release"),
+        ("_target_config_check_id", "_check_target_config", "bond_status"),
+    ],
+)
+def test_stop_does_not_remove_a_timer_whose_callback_raised(
+    make_daemon, monkeypatch, timer_attr, callback, target,
+):
+    # PyGObject logs the exception and destroys the source, as for False.
+    instance = make_daemon()
+    monkeypatch.setattr(
+        daemon_mod.config, "current_target", lambda: ("02:00:00:00:00:01", "hci0"),
+    )
+    monkeypatch.setattr(daemon_mod.config, "IPHONE_MAC", "02:00:00:00:00:01")
+    monkeypatch.setattr(daemon_mod.config, "ADAPTER", "hci0")
+
+    def fail(*_args, **_kwargs):
+        raise ValueError("half-written marker")
+
+    monkeypatch.setattr(daemon_mod, target, fail)
+    removed = []
+    monkeypatch.setattr(daemon_mod.GLib, "source_remove", removed.append)
+    tick = _schedule_with_id_42(instance, monkeypatch, timer_attr, callback)
+
+    with pytest.raises(ValueError, match="half-written marker"):
+        tick()
+    assert getattr(instance, timer_attr) is None
+    instance.stop()
+
+    assert 42 not in removed
+
+
 def test_stop_removes_a_target_check_that_keeps_running(make_daemon, monkeypatch):
     instance = make_daemon()
     monkeypatch.setattr(
