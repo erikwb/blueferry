@@ -448,6 +448,18 @@ def test_cli_le_on_needs_no_prompt(monkeypatch):
     assert prompts == []
 
 
+def test_btmgmt_info_probe_gets_an_empty_stdin_pipe():
+    seen = []
+
+    def run(command, **kwargs):
+        seen.append(kwargs)
+        return _Result("")
+
+    capabilities.controller_settings("hci0", run_command=run)
+
+    assert seen[0]["input_text"] == ""
+
+
 def test_le_off_advice_depends_on_the_configured_controller_mode():
     bredr = capabilities.le_disabled_issue("bredr")
     default = capabilities.le_disabled_issue("")

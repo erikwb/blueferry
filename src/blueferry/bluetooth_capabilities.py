@@ -136,6 +136,8 @@ def _parse_btmgmt_info(stdout: str) -> tuple[set[str], set[str], dict[str, int]]
     return supported, current, identity
 
 
+# Same workaround as the packaged blueferry-set-cod helper (``: | btmgmt``).
+BTMGMT_STDIN = ""
 BLUEZ_MAIN_CONF = Path("/etc/bluetooth/main.conf")
 _CONTROLLER_MODES = frozenset({"dual", "bredr", "le"})
 
@@ -214,6 +216,9 @@ def controller_settings(
     try:
         result = run_command(
             ["/usr/bin/btmgmt", "--index", index, "info"], timeout=timeout, check=False,
+            # BlueZ 5.72's btmgmt needs a pollable stdin even for one-shot
+            # commands; services and desktop launchers often give /dev/null.
+            input_text=BTMGMT_STDIN,
         )
     except CommandError as error:
         return False, set(), set(), str(error), {}
