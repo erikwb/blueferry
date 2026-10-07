@@ -51,6 +51,7 @@ def test_start_publishes_dbus_before_scheduling_bluetooth(make_daemon, monkeypat
         lambda: order.append("bluetooth"),
     )
     monkeypatch.setattr(instance, "_initialize_storage", lambda: order.append("storage"))
+    monkeypatch.setattr(instance, "_retry_storage", lambda: order.append("retry") or True)
     instance.phone_audio = SimpleNamespace(
         reconcile=lambda **_kwargs: order.append("audio")
     )
@@ -59,7 +60,11 @@ def test_start_publishes_dbus_before_scheduling_bluetooth(make_daemon, monkeypat
 
     assert order == ["dirs", "claim", "recovery", "service", "storage"]
     assert len(scheduled) == 1
-    assert (daemon_mod.STORAGE_RETRY_SEC, instance._retry_storage) in periodic
+    storage_ticks = [tick for delay, tick in periodic if delay == daemon_mod.STORAGE_RETRY_SEC]
+    assert len(storage_ticks) == 1
+    assert storage_ticks[0]() is True
+    assert order[-1] == "retry"
+    del order[-1]
     assert instance._initializing is True
 
     scheduled[0]()
@@ -373,6 +378,21 @@ def test_changing_saved_target_requests_restart(make_daemon, monkeypatch):
     assert stopped == [True]
 
 
+def _schedule_with_id_42(instance, monkeypatch, timer_attr, callback):
+    """Register ``callback`` like start() does and return GLib's tick."""
+    scheduled = []
+
+    def timeout_add_seconds(_seconds, tick):
+        scheduled.append(tick)
+        return 42
+
+    monkeypatch.setattr(daemon_mod.GLib, "timeout_add_seconds", timeout_add_seconds)
+    instance._schedule_periodic(timer_attr, 1, getattr(instance, callback))
+    assert getattr(instance, timer_attr) == 42
+    (tick,) = scheduled
+    return tick
+
+
 def _stop_saved_target_by_clearing(_instance, monkeypatch):
     monkeypatch.setattr(daemon_mod.config, "current_target", lambda: ("", "hci0"))
 
@@ -423,11 +443,11 @@ def test_stop_does_not_remove_a_timer_that_stopped_itself(
     arrange(instance, monkeypatch)
     removed = []
     monkeypatch.setattr(daemon_mod.GLib, "source_remove", removed.append)
-    setattr(instance, timer_attr, 42)
+    tick = _schedule_with_id_42(instance, monkeypatch, timer_attr, callback)
 
     # A missing release marker needs consecutive misses before it stops.
     for _ in range(3):
-        if not getattr(instance, callback)():
+        if not tick():
             break
     else:
         pytest.fail(f"{callback} never stopped itself")
@@ -449,9 +469,11 @@ def test_stop_removes_a_target_check_that_keeps_running(make_daemon, monkeypatch
     monkeypatch.setattr(daemon_mod.main_loop, "quit", lambda: None)
     removed = []
     monkeypatch.setattr(daemon_mod.GLib, "source_remove", removed.append)
-    instance._target_config_check_id = 42
+    tick = _schedule_with_id_42(
+        instance, monkeypatch, "_target_config_check_id", "_check_target_config",
+    )
 
-    assert instance._check_target_config() is True
+    assert tick() is True
     instance.stop()
 
     assert removed.count(42) == 1

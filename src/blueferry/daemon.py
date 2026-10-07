@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import signal
+from collections.abc import Callable
 
 import dbus
 from gi.repository import GLib
@@ -321,15 +322,13 @@ class Daemon:
         self._emit_status()
 
         if self._packaged:
-            self._release_check_id = GLib.timeout_add_seconds(
-                PACKAGE_RELEASE_CHECK_SEC, self._check_package_release
+            self._schedule_periodic(
+                "_release_check_id", PACKAGE_RELEASE_CHECK_SEC, self._check_package_release
             )
-        self._target_config_check_id = GLib.timeout_add_seconds(
-            TARGET_CONFIG_CHECK_SEC, self._check_target_config
+        self._schedule_periodic(
+            "_target_config_check_id", TARGET_CONFIG_CHECK_SEC, self._check_target_config
         )
-        self._storage_retry_id = GLib.timeout_add_seconds(
-            STORAGE_RETRY_SEC, self._retry_storage
-        )
+        self._schedule_periodic("_storage_retry_id", STORAGE_RETRY_SEC, self._retry_storage)
 
         for sig in (signal.SIGINT, signal.SIGTERM):
             signal.signal(sig, self._signal)
@@ -337,6 +336,28 @@ class Daemon:
         # Let the GLib loop begin dispatching D-Bus before potentially slow
         # profile setup. This makes activation and GetStatus deterministic.
         self._startup_id = GLib.timeout_add(250, self._initialize)
+
+    def _schedule_periodic(
+        self, attr: str, seconds: int, callback: Callable[[], bool]
+    ) -> None:
+        """Run ``callback`` every ``seconds`` and keep its source id in ``attr``.
+
+        GLib destroys a timeout source once its callback returns a false
+        value or raises. Forget the stored id on both paths so ``stop()``
+        never removes a source that is already gone, which GLib reports as
+        "Source ID ... was not found".
+        """
+
+        def tick() -> bool:
+            keep = False
+            try:
+                keep = bool(callback())
+            finally:
+                if not keep:
+                    setattr(self, attr, None)
+            return keep
+
+        setattr(self, attr, GLib.timeout_add_seconds(seconds, tick))
 
     def _retry_storage(self) -> bool:
         # A daemon activated before the desktop keyring opens must recover
@@ -691,7 +712,6 @@ class Daemon:
             if self._release_missing_checks < 3:
                 return True
             log.info("package release marker remains absent; stopping daemon")
-            self._release_check_id = None  # GLib removes it after False.
             main_loop.quit()
             return False
         self._release_missing_checks = 0
@@ -701,7 +721,6 @@ class Daemon:
             current_build,
         )
         self._restart_after_upgrade = True
-        self._release_check_id = None  # GLib removes it after False.
         main_loop.quit()
         return False
 
@@ -719,7 +738,6 @@ class Daemon:
             # unavailable adapter or transient BlueZ inspection failure.
             log.info("saved iPhone bond was removed; stopping daemon")
             self.recovery.forget_phone()
-            self._target_config_check_id = None  # GLib removes it after False.
             main_loop.quit()
             return False
         if not mac:
@@ -731,7 +749,6 @@ class Daemon:
                 adapter,
             )
             self._restart_after_upgrade = True
-        self._target_config_check_id = None  # GLib removes it after False.
         main_loop.quit()
         return False
 
