@@ -9,8 +9,11 @@ BlueZ and NetworkManager services, not yet with a real iPhone.
 
 ## What it does
 
-- You turn sharing on and off yourself. BlueFerry never starts it unless you
-  ask, or unless you enable automatic tethering (see below).
+- The feature is **off until you enable it**. While it is off, BlueFerry
+  ignores Bluetooth network connections completely, including ones you start
+  from the Plasma network applet (see [While it is off](#while-it-is-off)).
+- Once enabled, you turn sharing on and off yourself. BlueFerry never starts
+  it unless you ask, or unless you also enable automatic tethering.
 - It reuses the Bluetooth link BlueFerry already keeps to your iPhone. It
   never connects or disconnects the phone itself, so messages, contacts and
   notifications keep working while you share.
@@ -28,20 +31,32 @@ flowchart LR
 
 ## How to use it
 
-1. On the iPhone, open **Settings → Personal Hotspot** and turn on **Allow
+1. Enable the feature once:
+   - KDE, GTK or Quickshell client: **iPhone Settings → Internet Sharing →
+     Enable Bluetooth tethering** (Quickshell: **Internet sharing**).
+   - Terminal client: press `t` and tick **Enable Bluetooth tethering**.
+   - Command line: `blueferry tether enable` (add `--autoconnect` to also
+     tether automatically).
+
+   The **Share iPhone Internet** switch and **Connect automatically when the
+   iPhone is connected** only appear after this.
+2. On the iPhone, open **Settings → Personal Hotspot** and turn on **Allow
    Others to Join**. If it is off, the connection usually fails and BlueFerry
    tells you to turn it on.
-2. Make sure BlueFerry is connected to the iPhone as usual.
-3. Turn sharing on:
-   - KDE client: **iPhone Settings → Internet Sharing → Share iPhone
-     Internet**.
-   - Command line: `blueferry tether on`.
-4. Turn it off the same way, or with `blueferry tether off`.
+3. Make sure BlueFerry is connected to the iPhone as usual.
+4. Turn sharing on with **Share iPhone Internet** or `blueferry tether on`.
+5. Turn it off the same way, or with `blueferry tether off`.
 
 `blueferry tether` (or `blueferry tether status`) shows the current state.
-`--json` prints it as JSON, and `--wait SECONDS` sets how long `on` and `off`
-wait for the result (default 60, `0` returns at once). Exit status: `0`
-reached (or accepted with `--wait 0`), `1` not reached, `2` rejected.
+`--json` prints it as JSON, and `--wait SECONDS` sets how long `on`, `off`
+and `disable` wait for the result (default 60, `0` returns at once). Exit
+status: `0` reached (or accepted with `--wait 0`), `1` not reached, `2`
+rejected, for example because tethering is not enabled (the message says
+how to enable it).
+
+`blueferry tether disable` turns the feature off again. It stops sharing that
+BlueFerry started; sharing another tool started keeps running, BlueFerry just
+stops tracking it.
 
 ### With NetworkManager
 
@@ -65,11 +80,19 @@ restarts.
 
 ## Settings
 
-Both settings are optional and go into `~/.config/blueferry/local.env`:
+**Enable Bluetooth tethering** and **Connect automatically** are saved in
+BlueFerry's `settings.json` when you change them in a client or with
+`blueferry tether enable`/`disable`, and take effect at once. Automatic
+tethering only works while tethering is enabled; `blueferry tether off`, or
+turning sharing off in the network applet, pauses it until the next explicit
+`on`.
+
+Optional variables in `~/.config/blueferry/local.env`:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `BLUEFERRY_TETHER_AUTOCONNECT` | `false` | Tether automatically once messages are connected. `blueferry tether off`, or turning it off in the network applet, pauses this until the next explicit `on`. |
+| `BLUEFERRY_TETHER_ENABLED` | `false` | First value of **Enable Bluetooth tethering**. A choice saved later wins; the daemon logs when it ignores this. |
+| `BLUEFERRY_TETHER_AUTOCONNECT` | `false` | First value of **Connect automatically**. A choice saved later wins. |
 | `BLUEFERRY_TETHER_BACKEND` | `auto` | `auto` prefers NetworkManager, `networkmanager` forces it, `bluez` forces the link-only mode. |
 
 Restart the daemon after changing `local.env`.
@@ -92,24 +115,37 @@ Restart the daemon after changing `local.env`.
   profiles it did not create.
 - "Personal Hotspot is off" is a best guess: BlueZ reports a generic failure,
   so the message is worded carefully.
-- Only the command line and the KDE client have controls. The GTK, Quickshell
-  and terminal clients do not.
+- A sharing link that was already up when you disable the feature, and that
+  BlueFerry did not start in this session (for example after a daemon
+  restart), is left running. Turn it off in the network applet if needed.
 
-## Changes even if you never use it
+## While it is off
 
-- The daemon offers a `Tether1` D-Bus interface and watches the phone's
-  Bluetooth network state (read-only).
+This is the default.
+
+- The daemon still offers the `Tether1` D-Bus interface, but it does not
+  watch the phone's Bluetooth network state.
+- Sharing you start elsewhere, for example from the Plasma network applet,
+  is not picked up and does not affect BlueFerry.
+- BlueFerry's last-resort Bluetooth adapter recovery (which restores iPhone
+  notifications) works exactly as without this feature.
+- `blueferry tether on` and the D-Bus `Connect` call are refused.
+
+## While it is on
+
+- BlueFerry watches the phone's Bluetooth network state (read-only).
 - Sharing started elsewhere, for example from the Plasma network applet, is
   shown as active in BlueFerry and can be turned off there.
 - While a sharing link exists, BlueFerry skips its last-resort Bluetooth
   adapter power cycle so it does not cut your connection. With an unknown
-  interface this waits at most 10 minutes.
+  interface this waits at most 10 minutes. Disabling the feature lifts this
+  at once.
 
 ## Privacy
 
 - The change signal carries no data. Clients ask for the state, which holds
   only the state, interface name, backend name, whether it was started
-  elsewhere, an error code and two flags.
+  elsewhere, an error code and four flags (including your two choices).
 - No IP address, MAC address or device name is shown, broadcast or logged.
   Logs contain only error names, error codes and NetworkManager reason
   numbers.

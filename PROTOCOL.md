@@ -686,7 +686,9 @@ version, and controller noted as the maintenance rule below requires:
   iOS keeps MAP/PBAP/ANCS undisturbed while BNEP is up.
 - BlueZ ties a `Network1` connection to the D-Bus caller that created it, so
   the link-only fallback ends with the daemon. NetworkManager-owned links
-  survive a daemon restart and are re-adopted through the `Network1` watch.
+  survive a daemon restart and are re-adopted through the `Network1` watch,
+  but only while the user has tethering enabled; with it off BlueFerry does
+  not watch `Network1` at all.
 
 ## Historical HFP result
 

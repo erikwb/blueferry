@@ -10,8 +10,13 @@ iPhone.
 
 ## Was die Funktion macht
 
-- Du schaltest die Freigabe selbst ein und aus. BlueFerry startet sie nie von
-  sich aus, außer du aktivierst das automatische Tethering (siehe unten).
+- Die Funktion ist **aus, bis du sie aktivierst**. Solange sie aus ist,
+  ignoriert BlueFerry Bluetooth-Netzwerkverbindungen vollständig, auch
+  solche, die du im Plasma-Netzwerk-Applet startest (siehe
+  [Solange sie aus ist](#solange-sie-aus-ist)).
+- Ist sie aktiviert, schaltest du die Freigabe selbst ein und aus. BlueFerry
+  startet sie nie von sich aus, außer du aktivierst zusätzlich das
+  automatische Tethering.
 - Sie nutzt die Bluetooth-Verbindung, die BlueFerry ohnehin zum iPhone hält.
   BlueFerry verbindet oder trennt das Telefon dafür nie selbst. Nachrichten,
   Kontakte und Mitteilungen funktionieren während der Freigabe weiter.
@@ -30,21 +35,34 @@ flowchart LR
 
 ## So benutzt du sie
 
-1. Öffne auf dem iPhone **Einstellungen → Persönlicher Hotspot** und
+1. Aktiviere die Funktion einmalig:
+   - KDE-, GTK- oder Quickshell-Client: **iPhone Settings → Internet
+     Sharing → Enable Bluetooth tethering** (Quickshell: **Internet sharing**).
+   - Terminal-Client: `t` drücken und **Enable Bluetooth tethering**
+     ankreuzen.
+   - Kommandozeile: `blueferry tether enable` (mit `--autoconnect` auch
+     automatisch freigeben).
+
+   Erst danach erscheinen der Schalter **Share iPhone Internet** und **Connect
+   automatically when the iPhone is connected**.
+2. Öffne auf dem iPhone **Einstellungen → Persönlicher Hotspot** und
    aktiviere **Zugriff für andere erlauben**. Ist das aus, scheitert die
    Verbindung meist, und BlueFerry weist dich darauf hin.
-2. Stelle sicher, dass BlueFerry wie gewohnt mit dem iPhone verbunden ist.
-3. Schalte die Freigabe ein:
-   - KDE-Client: **iPhone Settings → Internet Sharing → Share iPhone
-     Internet**.
-   - Kommandozeile: `blueferry tether on`.
-4. Ausschalten geht genauso, oder mit `blueferry tether off`.
+3. Stelle sicher, dass BlueFerry wie gewohnt mit dem iPhone verbunden ist.
+4. Schalte die Freigabe mit **Share iPhone Internet** oder `blueferry tether
+   on` ein.
+5. Ausschalten geht genauso, oder mit `blueferry tether off`.
 
 `blueferry tether` (oder `blueferry tether status`) zeigt den aktuellen
 Zustand. `--json` gibt ihn als JSON aus, und `--wait SEKUNDEN` legt fest, wie
-lange `on` und `off` auf das Ergebnis warten (Standard 60, `0` kehrt sofort
-zurück). Exit-Status: `0` erreicht (oder mit `--wait 0` angenommen), `1`
-nicht erreicht, `2` abgelehnt.
+lange `on`, `off` und `disable` auf das Ergebnis warten (Standard 60, `0`
+kehrt sofort zurück). Exit-Status: `0` erreicht (oder mit `--wait 0`
+angenommen), `1` nicht erreicht, `2` abgelehnt, zum Beispiel weil Tethering
+nicht aktiviert ist (die Meldung sagt, wie du es aktivierst).
+
+`blueferry tether disable` schaltet die Funktion wieder aus. Eine von
+BlueFerry gestartete Freigabe wird dabei beendet; eine von einem anderen
+Werkzeug gestartete läuft weiter, BlueFerry verfolgt sie nur nicht mehr.
 
 ### Mit NetworkManager
 
@@ -68,12 +86,19 @@ Daemons und endet deshalb, wenn der Daemon stoppt oder neu startet.
 
 ## Einstellungen
 
-Beide Einstellungen sind optional und gehören in
-`~/.config/blueferry/local.env`:
+**Enable Bluetooth tethering** und **Connect automatically** werden in
+BlueFerrys `settings.json` gespeichert, sobald du sie in einem Client oder
+mit `blueferry tether enable`/`disable` änderst, und wirken sofort.
+Automatisches Tethering funktioniert nur, solange Tethering aktiviert ist;
+`blueferry tether off` oder Ausschalten im Netzwerk-Applet pausiert es bis
+zum nächsten ausdrücklichen `on`.
+
+Optionale Variablen in `~/.config/blueferry/local.env`:
 
 | Variable | Standard | Bedeutung |
 | --- | --- | --- |
-| `BLUEFERRY_TETHER_AUTOCONNECT` | `false` | Automatisch freigeben, sobald Nachrichten verbunden sind. `blueferry tether off` oder Ausschalten im Netzwerk-Applet pausiert das bis zum nächsten ausdrücklichen `on`. |
+| `BLUEFERRY_TETHER_ENABLED` | `false` | Anfangswert für **Enable Bluetooth tethering**. Eine später gespeicherte Wahl hat Vorrang; der Daemon protokolliert, wenn er den Wert deshalb ignoriert. |
+| `BLUEFERRY_TETHER_AUTOCONNECT` | `false` | Anfangswert für **Connect automatically**. Eine später gespeicherte Wahl hat Vorrang. |
 | `BLUEFERRY_TETHER_BACKEND` | `auto` | `auto` bevorzugt NetworkManager, `networkmanager` erzwingt ihn, `bluez` erzwingt den reinen Verbindungsmodus. |
 
 Starte den Daemon nach einer Änderung an `local.env` neu.
@@ -97,25 +122,39 @@ Starte den Daemon nach einer Änderung an `local.env` neu.
   BlueFerry ändert keine Profile, die es nicht angelegt hat.
 - „Persönlicher Hotspot ist aus“ ist eine Vermutung: BlueZ meldet nur einen
   allgemeinen Fehler, deshalb ist die Meldung vorsichtig formuliert.
-- Bedienelemente gibt es nur in der Kommandozeile und im KDE-Client. GTK,
-  Quickshell und der Terminal-Client haben keine.
+- Eine Freigabe, die beim Deaktivieren bereits besteht und die BlueFerry nicht
+  in dieser Sitzung gestartet hat (etwa nach einem Daemon-Neustart), läuft
+  weiter. Beende sie bei Bedarf im Netzwerk-Applet.
 
-## Änderungen auch ohne Nutzung
+## Solange sie aus ist
 
-- Der Daemon bietet die D-Bus-Schnittstelle `Tether1` an und beobachtet den
-  Bluetooth-Netzwerkzustand des Telefons (nur lesend).
+Das ist der Standard.
+
+- Der Daemon bietet die D-Bus-Schnittstelle `Tether1` weiter an, beobachtet
+  aber den Bluetooth-Netzwerkzustand des Telefons nicht.
+- Eine anderswo gestartete Freigabe, etwa aus dem Plasma-Netzwerk-Applet,
+  wird nicht übernommen und beeinflusst BlueFerry nicht.
+- BlueFerrys letztes Mittel, das Aus- und Einschalten des Bluetooth-Adapters
+  (stellt die iPhone-Mitteilungen wieder her), funktioniert genau wie ohne
+  diese Funktion.
+- `blueferry tether on` und der D-Bus-Aufruf `Connect` werden abgelehnt.
+
+## Solange sie an ist
+
+- BlueFerry beobachtet den Bluetooth-Netzwerkzustand des Telefons (nur
+  lesend).
 - Eine anderswo gestartete Freigabe, etwa aus dem Plasma-Netzwerk-Applet,
   erscheint in BlueFerry als aktiv und lässt sich dort ausschalten.
 - Solange eine Freigabe-Verbindung besteht, lässt BlueFerry sein letztes
   Mittel, das Aus- und Einschalten des Bluetooth-Adapters, aus, damit deine
   Verbindung nicht abreißt. Bei unbekannter Schnittstelle wartet es höchstens
-  10 Minuten.
+  10 Minuten. Deaktivieren hebt das sofort auf.
 
 ## Datenschutz
 
 - Das Änderungssignal enthält keine Daten. Clients fragen den Zustand ab; er
   enthält nur Zustand, Schnittstellenname, Backend-Name, ob die Freigabe
-  anderswo gestartet wurde, einen Fehlercode und zwei Schalter.
+  anderswo gestartet wurde, einen Fehlercode und vier Schalter (darunter deine beiden Einstellungen).
 - Keine IP-Adresse, MAC-Adresse und kein Gerätename wird angezeigt,
   gesendet oder protokolliert. Logs enthalten nur Fehlernamen, Fehlercodes
   und NetworkManager-Reason-Nummern.
