@@ -38,6 +38,7 @@ from gi.repository import GLib  # noqa: E402
 if any(name == "blueferry" or name.startswith("blueferry.") for name in sys.modules):
     raise RuntimeError("GLib source guard must be installed before blueferry is imported")
 _glib_sources_armed: list[tuple[int, str, object]] | None = None
+_glib_foreign_removals: list[int] | None = None
 
 
 def _record_glib_source(name: str):
@@ -58,6 +59,30 @@ def _record_glib_source(name: str):
 
 for _glib_name in ("timeout_add", "timeout_add_seconds", "idle_add"):
     _record_glib_source(_glib_name)
+
+
+def _check_glib_source_remove():
+    # A test that injects a fake ``schedule`` but keeps the default ``cancel``
+    # hands the real GLib.source_remove a made-up id. That id can belong to
+    # an unrelated live source on the default context. Record removals of ids
+    # this test never armed so the guard can fail them too. Supervisors bind
+    # GLib.source_remove as a default argument, so this must also be in place
+    # before blueferry is imported.
+    original = GLib.source_remove
+
+    @functools.wraps(original)
+    def remove(source_id, *args, **kwargs):
+        armed, foreign = _glib_sources_armed, _glib_foreign_removals
+        if armed is not None and foreign is not None and not any(
+            source_id == armed_id for armed_id, _name, _callback in armed
+        ):
+            foreign.append(source_id)
+        return original(source_id, *args, **kwargs)
+
+    GLib.source_remove = remove
+
+
+_check_glib_source_remove()
 
 import dbus.bus  # noqa: E402
 
@@ -135,6 +160,7 @@ class GlibSourceGuard:
 
     def __init__(self) -> None:
         self.armed: list[tuple[int, str, object]] = []
+        self.foreign_removals: list[int] = []
 
     def live(self) -> list[tuple[int, str, object]]:
         context = GLib.MainContext.default()
@@ -156,13 +182,15 @@ def glib_source_guard():
     fixture is defined first so its teardown runs after every other
     function-scoped fixture has cleaned up.
     """
-    global _glib_sources_armed
+    global _glib_sources_armed, _glib_foreign_removals
     guard = GlibSourceGuard()
     _glib_sources_armed = guard.armed
+    _glib_foreign_removals = guard.foreign_removals
     try:
         yield guard
     finally:
         _glib_sources_armed = None
+        _glib_foreign_removals = None
     leaked = guard.live()
     for source_id, _name, _callback in leaked:
         # Do not let the orphan fire inside a later, unrelated test.
@@ -173,6 +201,10 @@ def glib_source_guard():
             f"GLib.{name}({getattr(callback, '__qualname__', None) or repr(callback)})"
             for _id, name, callback in leaked
         )
+    )
+    assert not guard.foreign_removals, (
+        "test passed GLib.source_remove ids it never armed through GLib; "
+        f"inject a cancel fake next to the schedule fake: {guard.foreign_removals}"
     )
 
 
