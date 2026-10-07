@@ -24,7 +24,6 @@ def test_failed_transfer_subscription_releases_watches_and_preserves_other_recei
     monkeypatch, cleanup_fails,
 ):
     observer = dbus.SessionBus(private=True)
-    observer.set_exit_on_disconnect(False)
     observer.request_name('org.bluez.obex', dbus.bus.NAME_FLAG_DO_NOT_QUEUE)
     monkeypatch.setattr(transfer, 'get_session_bus', lambda: observer)
     original_add_match = observer.add_match_string
@@ -100,7 +99,6 @@ def test_failed_transfer_subscription_releases_watches_and_preserves_other_recei
 @pytest.mark.parametrize('status', ['complete', 'error', None])
 def test_worker_retries_keep_transfer_evidence_on_main_thread(monkeypatch, status):
     service_bus = dbus.SessionBus(private=True)
-    service_bus.set_exit_on_disconnect(False)
     service_bus.request_name('org.bluez.obex', dbus.bus.NAME_FLAG_DO_NOT_QUEUE)
     objects = []
     creations = []

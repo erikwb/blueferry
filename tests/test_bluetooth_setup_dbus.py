@@ -30,10 +30,8 @@ def dispatch_until(done):
 @pytest.fixture
 def advertising_manager(monkeypatch):
     service_bus = dbus.SessionBus(private=True)
-    service_bus.set_exit_on_disconnect(False)
     service_bus.request_name('org.bluez', dbus.bus.NAME_FLAG_DO_NOT_QUEUE)
     client_bus = dbus.SessionBus(private=True)
-    client_bus.set_exit_on_disconnect(False)
 
     class Manager(dbus.service.Object):
         def __init__(self, connection=service_bus):
@@ -156,7 +154,6 @@ def test_bluez_owner_loss_recreates_advert_only_after_power_restoration(
         'hci7', schedule=lambda *_args: 1, cancel=lambda _timer: None,
     )
     replacement_bus = dbus.SessionBus(private=True)
-    replacement_bus.set_exit_on_disconnect(False)
     replacement = type(manager)(replacement_bus)
     try:
         value._watch_bluez_owner()
@@ -211,7 +208,6 @@ def test_bluez_owner_loss_recreates_advert_only_after_power_restoration(
 
 def test_real_obex_retry_releases_only_its_profile_owner():
     service_bus = dbus.SessionBus(private=True)
-    service_bus.set_exit_on_disconnect(False)
     service_bus.request_name('org.bluez.obex', dbus.bus.NAME_FLAG_DO_NOT_QUEUE)
     lost, calls = set(), []
 

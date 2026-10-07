@@ -268,6 +268,7 @@ def test_owned_but_not_ready_notification_server_is_retried(monkeypatch):
         notification_sink_factory=create_sink,
         session_bus=bus,
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or len(scheduled),
+        cancel=lambda _timer: None,
     )
 
     dispatcher.setup()

@@ -659,6 +659,7 @@ def test_automatic_contacts_wait_for_map_but_manual_sync_still_works(make_daemon
         on_ready=lambda: None, on_lost=lambda _: None, on_status=lambda: None,
         on_partial_ready=value._post_available_sessions_setup,
         schedule=lambda delay, callback: timers.append(callback) or 1,
+        cancel=lambda _timer: None,
     )
     profiles._open_failed(0, SessionError('CreateSession(MAP) failed: Forbidden'))
     value._on_storage_changed()  # Wallet unlock must not bypass the same gate.
