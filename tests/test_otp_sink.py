@@ -99,7 +99,7 @@ def _received(body=BODY, *, handle="message1", path="/org/bluez/obex/client/sess
     )
 
 
-def _sink(writer=None, *, policy="messages"):
+def _sink(writer=None, *, policy="messages", amend=None):
     notifier = _Notifier()
     timers = _Timers()
     sink = OtpClipboardSink(
@@ -109,6 +109,7 @@ def _sink(writer=None, *, policy="messages"):
         schedule_ms=timers.schedule,
         cancel=timers.cancel,
         now=lambda: NOW,
+        amend_message_popup=amend,
     )
     return sink, notifier, timers
 
@@ -562,3 +563,82 @@ def test_a_late_owner_reply_does_not_override_a_newer_owner_change() -> None:
 
     notifier.notify("Verification code copied", "Paste it with Ctrl+V.")
     assert bus.lookups == 0
+
+
+def test_the_message_popup_is_extended_instead_of_a_second_popup(monkeypatch) -> None:
+    monkeypatch.setattr(sink_module.config, "SHOW_NOTIFICATION_CONTENT", True)
+    amended = []
+    writer = _Writer(clear_after_s=45)
+    sink, notifier, timers = _sink(
+        writer, amend=lambda handle, line: amended.append((handle, line)) or True
+    )
+
+    sink.handle(_received())
+    timers.settle()
+
+    assert notifier.shown == []
+    assert amended == [
+        ("message1", "Verification code copied to the clipboard. It is cleared in 45 seconds.")
+    ]
+    # The line never repeats the code, whatever the content setting.
+    assert CODE not in amended[0][1]
+
+
+@pytest.mark.parametrize("amend", [lambda _h, _l: False, None])
+def test_without_an_open_message_popup_the_sink_shows_its_own(amend) -> None:
+    sink, notifier, timers = _sink(amend=amend)
+
+    sink.handle(_received())
+    timers.settle()
+
+    assert len(notifier.shown) == 1
+
+
+def test_a_failing_popup_update_falls_back_to_an_own_popup() -> None:
+    def amend(_handle, _line):
+        raise RuntimeError("bus gone")
+
+    sink, notifier, timers = _sink(amend=amend)
+
+    sink.handle(_received())
+    timers.settle()
+
+    assert len(notifier.shown) == 1
+
+
+def test_a_failed_copy_does_not_touch_the_message_popup() -> None:
+    amended = []
+    sink, notifier, timers = _sink(
+        _Writer(outcomes=["failed", "failed"]),
+        amend=lambda handle, line: amended.append(handle) or True,
+    )
+
+    sink.handle(_received())
+    timers.settle()
+
+    assert amended == []
+    assert notifier.shown == []
+
+
+def test_dispatcher_routes_popup_updates_to_the_libnotify_sink(monkeypatch) -> None:
+    built = []
+
+    def factory(**kwargs):
+        built.append(kwargs)
+        return SimpleNamespace(name="otp-clipboard", handle=lambda _event: None)
+
+    dispatcher = _dispatcher(monkeypatch, enabled=True, factory=factory)
+    dispatcher.setup()
+    amend = built[0]["amend_message_popup"]
+    assert amend("message1", "line") is False
+
+    calls = []
+    dispatcher.sinks.append(
+        SimpleNamespace(
+            name="libnotify",
+            handle=lambda _event: None,
+            amend_message_popup=lambda handle, line: calls.append((handle, line)) or True,
+        )
+    )
+    assert amend("message1", "line") is True
+    assert calls == [("message1", "line")]

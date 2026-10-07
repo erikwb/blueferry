@@ -170,6 +170,18 @@ def notification_text(
     return summary, body
 
 
+def amendment_text(*, clear_after_s: int) -> str:
+    """Return the plain line appended to the message's own popup.
+
+    It never repeats the code: the message popup already shows the text
+    when content is allowed, and must not reveal it otherwise.
+    """
+    line = "Verification code copied to the clipboard."
+    if clear_after_s:
+        line += f" It is cleared in {clear_after_s} seconds."
+    return line
+
+
 class OtpClipboardSink:
     name = "otp-clipboard"
 
@@ -182,6 +194,7 @@ class OtpClipboardSink:
         schedule_ms: Callable[[int, Callable[[], bool]], int] | None = None,
         cancel: Callable[[int], object] | None = None,
         now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        amend_message_popup: Callable[[str, str], bool] | None = None,
     ) -> None:
         if schedule_ms is None or cancel is None:
             from gi.repository import GLib
@@ -202,6 +215,7 @@ class OtpClipboardSink:
         self._schedule_ms = schedule_ms
         self._cancel = cancel
         self._now = now
+        self._amend_message_popup = amend_message_popup
         self._started = now()
         self._recent_copies: deque[datetime] = deque()
         self._seen: OrderedDict[str, None] = OrderedDict()
@@ -267,6 +281,17 @@ class OtpClipboardSink:
             return False
         return True
 
+    def _amended(self, handle: str) -> bool:
+        """Extend the message's own popup rather than show a second one."""
+        amend = self._amend_message_popup
+        if amend is None or not handle:
+            return False
+        try:
+            return bool(amend(handle, amendment_text(clear_after_s=self._writer.clear_after_s)))
+        except Exception as error:
+            log.debug("could not extend the message popup: %s", type(error).__name__)
+            return False
+
     def _within_rate_limit(self) -> bool:
         now = self._now()
         while self._recent_copies and now - self._recent_copies[0] > COPY_WINDOW:
@@ -287,23 +312,26 @@ class OtpClipboardSink:
         if ticket is None:
             return
         sender = str(getattr(event, "display_sender", "") or "")
-        self._schedule_confirm(code, sender, ticket, retried=False)
+        handle = str(getattr(event, "handle", "") or "")
+        self._schedule_confirm(code, sender, handle, ticket, retried=False)
 
     def _schedule_confirm(
-        self, code: str, sender: str, ticket: ClipboardTicket, *, retried: bool
+        self, code: str, sender: str, handle: str, ticket: ClipboardTicket, *, retried: bool
     ) -> None:
         source: int | None = None
 
         def fire() -> bool:
             if source is not None:
                 self._pending_confirms.discard(source)
-            self._confirm(code, sender, ticket, retried=retried)
+            self._confirm(code, sender, handle, ticket, retried=retried)
             return False
 
         source = self._schedule_ms(_CONFIRM_DELAY_MS, fire)
         self._pending_confirms.add(source)
 
-    def _confirm(self, code: str, sender: str, ticket: ClipboardTicket, *, retried: bool) -> None:
+    def _confirm(
+        self, code: str, sender: str, handle: str, ticket: ClipboardTicket, *, retried: bool
+    ) -> None:
         state = self._writer.state(ticket)
         if state == "superseded":
             # A newer code (or shutdown) replaced this helper; the newer
@@ -316,13 +344,15 @@ class OtpClipboardSink:
                     self._warned_fallback = True
                 fallback = self._writer.copy(code, exclude=_X11_FALLBACK_EXCLUDE)
                 if fallback is not None:
-                    self._schedule_confirm(code, sender, fallback, retried=True)
+                    self._schedule_confirm(code, sender, handle, fallback, retried=True)
                 return
             log.warning("clipboard helper %s could not take the clipboard", ticket.tool)
             return
         log.info("copied a one-time code to the clipboard via %s", ticket.tool)
         policy = self._notification_policy
         if policy is not None and str(policy()) == NO_NOTIFICATIONS:
+            return
+        if self._amended(handle):
             return
         summary, body = notification_text(
             code,

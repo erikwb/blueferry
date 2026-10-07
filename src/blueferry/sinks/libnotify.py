@@ -111,6 +111,10 @@ class LibnotifySink:
         # phone number or message body on the session bus.
         self._open_messages: dict[int, str] = {}
         self._activation_tokens: dict[int, str] = {}
+        # notification_id -> what was shown, so another sink can append a
+        # line to a message popup (replaces_id) instead of opening a second
+        # popup for the same message.
+        self._message_popups: dict[int, tuple[str, str, list[str], dict[str, object]]] = {}
         # notification_id -> SignalMatch for the per-Message1 PropertiesChanged sub
         self._msg_subs: dict[int, _SignalMatch] = {}
 
@@ -145,6 +149,7 @@ class LibnotifySink:
         self._msg_subs.clear()
         self._pending.clear()
         self._open_messages.clear()
+        getattr(self, "_message_popups", {}).clear()
         getattr(self, "_activation_tokens", {}).clear()
 
     def _policy(self) -> str:
@@ -182,6 +187,7 @@ class LibnotifySink:
             # is reason=1 and therefore leaves the iPhone's read state alone.
             handle = str(getattr(event, "handle", "") or "")
             actions = ["default", "Open conversation"] if handle else []
+            hints = _notification_hints(handle)
             nid = int(self._notif.Notify(
                 _APP_NAME,
                 dbus.UInt32(0),
@@ -189,7 +195,7 @@ class LibnotifySink:
                 title,
                 body,
                 dbus.Array(actions, signature="s"),
-                dbus.Dictionary(_notification_hints(handle), signature="sv"),
+                dbus.Dictionary(hints, signature="sv"),
                 dbus.Int32(_MESSAGE_EXPIRE_MS),
             ))
         except dbus.exceptions.DBusException as e:
@@ -200,6 +206,9 @@ class LibnotifySink:
             if not hasattr(self, "_open_messages"):
                 self._open_messages = {}
             self._open_messages[nid] = handle
+            if not hasattr(self, "_message_popups"):
+                self._message_popups = {}
+            self._message_popups[nid] = (title, body, actions, hints)
 
         if event.message_path:
             self._pending[nid] = event.message_path
@@ -230,6 +239,7 @@ class LibnotifySink:
             oldest = next(iter(tracked))
             self._pending.pop(oldest, None)
             open_messages.pop(oldest, None)
+            getattr(self, "_message_popups", {}).pop(oldest, None)
             getattr(self, "_activation_tokens", {}).pop(oldest, None)
             subscription = self._msg_subs.pop(oldest, None)
             if subscription is not None:
@@ -241,6 +251,45 @@ class LibnotifySink:
                 self._notif.CloseNotification(dbus.UInt32(oldest))
             except dbus.exceptions.DBusException:
                 log.debug("could not close stale desktop notification", exc_info=True)
+
+    def amend_message_popup(self, handle: str, line: str) -> bool:
+        """Append ``line`` to the open popup for message ``handle``.
+
+        Returns False when no popup for that message is open, so the caller
+        can show its own. The popup keeps its id, actions and read-state
+        tracking; the update is sent asynchronously.
+        """
+        if not handle:
+            return False
+        popups = getattr(self, "_message_popups", {})
+        nid = next(
+            (
+                popup_id
+                for popup_id, popup_handle in getattr(self, "_open_messages", {}).items()
+                if popup_handle == handle and popup_id in popups
+            ),
+            None,
+        )
+        if nid is None:
+            return False
+        title, body, actions, hints = popups[nid]
+        body = f"{body}\n{escape(terminal_text(line))}"
+        popups[nid] = (title, body, actions, hints)
+        self._notif.Notify(
+            _APP_NAME,
+            dbus.UInt32(nid),
+            "phone-symbolic",
+            title,
+            body,
+            dbus.Array(actions, signature="s"),
+            dbus.Dictionary(hints, signature="sv"),
+            dbus.Int32(_MESSAGE_EXPIRE_MS),
+            reply_handler=lambda _nid: None,
+            error_handler=lambda error: log.debug(
+                "could not update a message popup: %s", type(error).__name__
+            ),
+        )
+        return True
 
     # ---- ANCS events (per-app notifications) ----------------------------
 
@@ -339,6 +388,7 @@ class LibnotifySink:
             return
 
         getattr(self, "_open_messages", {}).pop(nid_i, None)
+        getattr(self, "_message_popups", {}).pop(nid_i, None)
         getattr(self, "_activation_tokens", {}).pop(nid_i, None)
         message_path = self._pending.pop(nid_i, None)
 

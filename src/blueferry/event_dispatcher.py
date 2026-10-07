@@ -23,7 +23,9 @@ from blueferry.sinks.sqlite import SqliteSink
 _OTP_SINK_NAME = "otp-clipboard"
 
 
-def _default_otp_sink(*, notification_policy, session_bus=None) -> Sink:
+def _default_otp_sink(
+    *, notification_policy, session_bus=None, amend_message_popup=None
+) -> Sink:
     from blueferry.otp_clipboard import ClipboardWriter
     from blueferry.sinks.otp_clipboard import DesktopNotifier, OtpClipboardSink
 
@@ -31,6 +33,7 @@ def _default_otp_sink(*, notification_policy, session_bus=None) -> Sink:
         writer=ClipboardWriter(clear_after_s=config.OTP_CLEAR_SECONDS),
         notification_policy=notification_policy,
         notifier=DesktopNotifier(session_bus),
+        amend_message_popup=amend_message_popup,
     )
 
 
@@ -144,10 +147,19 @@ class EventDispatcher:
                 self._otp_sink_factory(
                     notification_policy=self.notification_policy,
                     session_bus=self._session_bus,
+                    amend_message_popup=self._amend_message_popup,
                 )
             )
         except Exception:
             log.exception("one-time code clipboard sink failed to init — continuing")
+
+    def _amend_message_popup(self, handle: str, line: str) -> bool:
+        """Let the code sink extend the message popup instead of adding one."""
+        for sink in self.sinks:
+            amend = getattr(sink, "amend_message_popup", None)
+            if sink.name == "libnotify" and amend is not None:
+                return bool(amend(handle, line))
+        return False
 
     def _remove_sinks(self, name: str) -> None:
         removed = [sink for sink in self.sinks if sink.name == name]
