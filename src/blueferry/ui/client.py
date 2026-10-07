@@ -377,6 +377,18 @@ class DaemonClient(GObject.Object):
             mutation=True,
         )
 
+    def set_ancs_notification_actions_async(
+        self, enabled: bool, on_ok, on_err
+    ) -> None:
+        self._submit(
+            lambda: self._call_backend(
+                lambda backend: backend.set_ancs_notification_actions(enabled)
+            ),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
     def set_storage_policy_async(self, policy: str, on_ok, on_err) -> None:
         self._submit(
             lambda: self._call_backend(

@@ -45,6 +45,7 @@ class IPhonePage(Gtk.Box):
         self._onboarding = OnboardingState()
         self._applying_notification_policy = False
         self._applying_contacts_only_notifications = False
+        self._applying_ancs_actions = False
         self._applying_storage_policy = False
         self._storage_unlock_attempted = False
         self._pairing_issue_report = ""
@@ -333,6 +334,18 @@ class IPhonePage(Gtk.Box):
             self._contacts_only_switch
         )
         notification_group.add(self._contacts_only_row)
+        # Opt-in; shown only when the daemon reports the saved preference.
+        self._ancs_actions_row = Adw.ActionRow(
+            title=_("Show iPhone Action Buttons"),
+        )
+        self._ancs_actions_row.set_visible(False)
+        self._ancs_actions_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
+        self._ancs_actions_switch.connect(
+            "notify::active", self._ancs_actions_changed
+        )
+        self._ancs_actions_row.add_suffix(self._ancs_actions_switch)
+        self._ancs_actions_row.set_activatable_widget(self._ancs_actions_switch)
+        notification_group.add(self._ancs_actions_row)
         page.add(notification_group)
 
         data_group = Adw.PreferencesGroup(title=_("Local Data"))
@@ -990,6 +1003,7 @@ class IPhonePage(Gtk.Box):
             reachable and policy != "none"
         )
         self._applying_contacts_only_notifications = False
+        self._apply_ancs_actions(status, reachable)
         self._applying_storage_policy = True
         selected_storage = {
             "encrypted": 0,
@@ -1048,6 +1062,51 @@ class IPhonePage(Gtk.Box):
             self._apply_status(self._last_status)
 
         self._client.set_contacts_only_notifications_async(
+            enabled, saved, failed
+        )
+
+    def _apply_ancs_actions(self, status: BackendStatus, reachable: bool) -> None:
+        preference = status.extra.get("ancs_actions_preference")
+        self._ancs_actions_row.set_visible(isinstance(preference, bool))
+        content_hidden = status.extra.get("notification_content_shown") is False
+        if content_hidden:
+            subtitle = _("Unavailable while notification content is hidden")
+        elif status.notification_policy != "all":
+            subtitle = _("Applies only to All iPhone Notifications")
+        else:
+            subtitle = _(
+                "A click runs the action on the iPhone, for example answering "
+                "or declining a call"
+            )
+        self._ancs_actions_row.set_subtitle(subtitle)
+        self._applying_ancs_actions = True
+        self._ancs_actions_switch.set_active(preference is True)
+        self._ancs_actions_row.set_sensitive(
+            reachable
+            and status.notification_policy == "all"
+            and not content_hidden
+        )
+        self._applying_ancs_actions = False
+
+    def _ancs_actions_changed(self, _switch, _property) -> None:
+        if self._applying_ancs_actions:
+            return
+        enabled = self._ancs_actions_switch.get_active()
+        self._ancs_actions_row.set_sensitive(False)
+
+        def saved(_value: bool) -> None:
+            self._toast(_("Action button preference saved"))
+            self._refresh()
+
+        def failed(error: str) -> None:
+            self._toast(
+                _("Could not save action button preference: {error}").format(
+                    error=error
+                )
+            )
+            self._apply_status(self._last_status)
+
+        self._client.set_ancs_notification_actions_async(
             enabled, saved, failed
         )
 
