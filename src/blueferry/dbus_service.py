@@ -360,6 +360,19 @@ class MessagesService(dbus.service.Object):
         ))
 
     @dbus.service.method(
+        IFACE, in_signature="ss", out_signature="b", sender_keyword="sender"
+    )
+    def OpenNotificationClick(
+        self, click_id: str, activation_token: str, sender=None,
+    ) -> bool:
+        return self._sync(lambda: self._authorized(
+            sender, "settings",
+            lambda: self.operations.open_notification_click(
+                str(click_id), str(activation_token)
+            ),
+        ))
+
+    @dbus.service.method(
         IFACE, in_signature="s", out_signature="b", sender_keyword="sender"
     )
     def RemoveNotificationOpenTarget(self, bundle_id: str, sender=None) -> bool:

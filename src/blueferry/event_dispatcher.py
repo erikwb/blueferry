@@ -228,6 +228,14 @@ class EventDispatcher:
     def _open_target(self, target, token: str) -> None:
         request_open_target(target, token)
 
+    def open_notification_click(self, click_id: str, token: str) -> bool:
+        """A notification shell ran a mapped popup's argv (see notification_open)."""
+        for sink in self.sinks:
+            open_click = getattr(sink, "open_click", None)
+            if sink.name == "libnotify" and open_click is not None:
+                return bool(open_click(click_id, token))
+        return False
+
     def message(self, event) -> None:
         if getattr(event, "kind", "") == "sms_received" and self.on_incoming_message is not None:
             self.on_incoming_message()

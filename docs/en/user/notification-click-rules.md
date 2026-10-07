@@ -35,7 +35,15 @@ sequenceDiagram
 ```
 
 The rule is looked up again at click time, so removing a rule also disables
-popups that are already on screen. A popup opens its target once.
+popups that are already on screen. A popup opens its target once. Clicks on
+popups for the same target within one second open it only once; the other
+popup stays clickable.
+
+Some notification shells, such as Omarchy's, run a command stored in the
+popup instead of reporting the click. BlueFerry gives those popups a command
+that contains only a random ID for that popup. The command hands the ID back
+to the daemon, which then follows exactly the same steps as above. After the
+popup is gone or the service restarted, the ID is unknown and opens nothing.
 
 ## Turn it on
 
@@ -106,7 +114,9 @@ Rules take effect immediately; no service restart is needed.
   calendar URL) into a rule if that matters to you.
 - Logs never contain bundle IDs, URLs or desktop IDs.
 - Rules are readable over D-Bus only through an authenticated, rate-limited
-  method. No signal carries them.
+  method. No signal carries them, and neither do the popups: the
+  notification server only sees the fixed "Open" action and, for shells that
+  run a command, a random per-popup ID.
 - While a target is being opened, its URL or desktop ID is briefly visible in
   the process list and in the transient unit, which reveals that a
   notification from that app was clicked.

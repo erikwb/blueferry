@@ -447,7 +447,11 @@ A change to these rules has to be made in both places.
   `app-blueferry-open-*.service` so the app runs outside the backend's
   cgroup and restrictions, then launches through Gio with the notification
   server's activation token. Removing a rule takes effect even for popups
-  that are already visible.
+  that are already visible. Shells that run a stored argv instead of sending
+  `ActionInvoked` (Omarchy's `omarchy-exec-argv` hint) get only a random
+  per-popup click ID; the helper hands it back through `OpenNotificationClick`,
+  so the current rule, the per-target throttle, and the one-shot tracker
+  apply there too. Neither the target nor the bundle ID is put in a hint.
 - **Logs** exclude message bodies, notification text, and recipient
   identities at every level. Markup and terminal output are escaped at their
   display boundaries.

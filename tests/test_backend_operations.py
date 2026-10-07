@@ -417,6 +417,22 @@ def test_notification_click_rules_need_policy_storage() -> None:
         operations.remove_notification_open_target("com.slack")
 
 
+def test_shell_notification_clicks_are_bounded_and_forwarded() -> None:
+    calls = []
+    operations = _operations(
+        open_notification_click=lambda click_id, token: calls.append((click_id, token)) or True,
+    )
+
+    assert operations.open_notification_click("abc", "tok") is True
+    for click_id, token in (("", ""), ("x" * 65, ""), ("abc", "t" * 4097), (None, "")):
+        with pytest.raises(InvalidArgumentsError):
+            operations.open_notification_click(click_id, token)  # type: ignore[arg-type]
+    assert calls == [("abc", "tok")]
+
+    with pytest.raises(NotReadyError):
+        _operations().open_notification_click("abc", "")
+
+
 def test_invalid_notification_policy_has_public_invalid_args_error() -> None:
     class Policy:
         value = "messages"

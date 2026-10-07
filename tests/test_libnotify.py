@@ -409,6 +409,7 @@ def _clickable_sink(rules, opened, monkeypatch):
     sink._msg_subs = {}
     sink._open_messages = {}
     sink._open_apps = {}
+    sink._click_ids = {}
     sink._activation_tokens = {}
     sink._recent_open_targets = {}
     sink._open_target = lambda app_id: resolve_open_target(rules, app_id)
@@ -430,10 +431,9 @@ def test_mapped_app_popup_opens_only_the_configured_target(monkeypatch) -> None:
     [call] = sink._notif.calls
     assert list(call[5]) == ["default", "Open"]
     assert bool(call[6]["transient"]) is True
-    assert json.loads(call[6]["omarchy-exec-argv"]) == [
-        sys.executable, "-m", "blueferry.notification_open",
-        "--desktop-id=org.mozilla.Thunderbird.desktop",
-    ]
+    argv = json.loads(call[6]["omarchy-exec-argv"])
+    assert argv[:3] == [sys.executable, "-m", "blueferry.notification_open"]
+    assert len(argv) == 4 and argv[3].startswith("--click=")
     nid = sink._notif.next_id
 
     sink._on_activation_token(nid, "wayland-token")
@@ -659,3 +659,81 @@ def test_message_popups_never_evict_a_clickable_app_popup(monkeypatch) -> None:
 
     assert sink._open_messages == {2: "message-2"}
     assert app_popup in sink._open_apps
+
+
+def _shell_click_id(call) -> str:
+    argv = json.loads(call[6]["omarchy-exec-argv"])
+    return argv[-1].removeprefix("--click=")
+
+
+def test_shell_argv_carries_neither_the_target_nor_the_app(monkeypatch) -> None:
+    rules = {"com.example.Calendar": "https://cal.example.com/feed?token=s3cret"}
+    sink = _clickable_sink(rules, [], monkeypatch)
+    sink.handle_ancs(_ancs("com.example.Calendar"))
+    sink.handle_ancs(_ancs("com.example.Calendar"))
+
+    first, second = sink._notif.calls
+    hints = repr(dict(first[6]))
+    for fragment in ("s3cret", "cal.example.com", "com.example.Calendar", "--url", "--desktop-id"):
+        assert fragment not in hints
+    # Every popup gets its own unguessable ID.
+    assert _shell_click_id(first) != _shell_click_id(second)
+    assert len(_shell_click_id(first)) >= 22
+
+
+def test_shell_clicks_take_the_same_path_as_live_clicks(monkeypatch) -> None:
+    opened = []
+    now = [100.0]
+    monkeypatch.setattr(libnotify_mod.time, "monotonic", lambda: now[0])
+    rules = {"com.slack": "slack.desktop"}
+    sink = _clickable_sink(rules, opened, monkeypatch)
+    sink.handle_ancs(_ancs("com.slack"))
+    sink.handle_ancs(_ancs("com.slack"))
+    first, second = (_shell_click_id(call) for call in sink._notif.calls)
+
+    assert sink.open_click(first, "shell-token") is True
+    # One-shot: the same popup's argv run again opens nothing.
+    now[0] += 5.0
+    assert sink.open_click(first, "shell-token") is False
+    # Throttle: a second popup for the same target within a second waits.
+    sink.handle_ancs(_ancs("com.slack"))
+    third = _shell_click_id(sink._notif.calls[-1])
+    assert sink.open_click(second, "") is True
+    assert sink.open_click(third, "") is False
+    # The throttled popup stays clickable.
+    now[0] += 1.5
+    assert sink.open_click(third, "") is True
+
+    assert [token for _target, token in opened] == ["shell-token", "", ""]
+    assert sink._click_ids == {}
+
+
+def test_shell_click_after_rule_removal_or_close_opens_nothing(monkeypatch) -> None:
+    opened = []
+    rules = {"com.slack": "slack.desktop"}
+    sink = _clickable_sink(rules, opened, monkeypatch)
+    sink.handle_ancs(_ancs("com.slack"))
+    sink.handle_ancs(_ancs("com.slack"))
+    first, second = (_shell_click_id(call) for call in sink._notif.calls)
+
+    sink._on_closed(sink._notif.next_id, 1)
+    assert sink.open_click(second, "") is False
+    rules.clear()
+    assert sink.open_click(first, "") is False
+    assert sink.open_click("unknown", "") is False
+    assert sink.open_click("x" * 65, "") is False
+
+    assert opened == []
+    assert list(sink._click_ids.values()) == [sink._notif.next_id - 1]
+
+
+def test_evicted_and_closed_sinks_forget_click_ids(monkeypatch) -> None:
+    sink = _clickable_sink({"com.slack": "slack.desktop"}, [], monkeypatch)
+    monkeypatch.setattr(libnotify_mod, "MAX_NOTIFICATION_CLICK_TRACKERS", 1)
+    sink.handle_ancs(_ancs("com.slack"))
+    sink.handle_ancs(_ancs("com.slack"))
+
+    assert list(sink._click_ids.values()) == [sink._notif.next_id]
+    sink._match = sink._action_match = sink._token_match = None
+    sink.close()
+    assert sink._click_ids == {}

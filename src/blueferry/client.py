@@ -326,6 +326,14 @@ class BackendClient:
         except (dbus.exceptions.DBusException, ValueError) as error:
             raise BackendError(_dbus_message(error)) from error
 
+    def open_notification_click(self, click_id: str, token: str) -> bool:
+        try:
+            return bool(self._iface(MESSAGES_IFACE).OpenNotificationClick(
+                click_id, token, timeout=POLICY_CALL_TIMEOUT_SEC
+            ))
+        except dbus.exceptions.DBusException as error:
+            raise BackendError(error.get_dbus_message() or str(error)) from error
+
     def remove_notification_open_target(self, bundle_id: str) -> bool:
         try:
             return bool(self._iface(MESSAGES_IFACE).RemoveNotificationOpenTarget(

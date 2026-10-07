@@ -250,6 +250,28 @@ def test_notification_click_rule_is_handed_to_the_launcher_helper(monkeypatch):
     assert launched == [(OpenTarget("url", "https://web.whatsapp.com"), "focus-token")]
 
 
+def test_shell_notification_clicks_reach_only_the_libnotify_sink(monkeypatch):
+    monkeypatch.setattr(event_dispatcher, "SqliteSink", _SqliteSink)
+    clicks = []
+
+    class _ClickableSink(_NotificationSink):
+        def open_click(self, click_id, token):
+            clicks.append((click_id, token))
+            return True
+
+    dispatcher = EventDispatcher(
+        object(),
+        defer_mark_read=lambda _path: None,
+        notification_sink_factory=lambda **_kwargs: _ClickableSink(),
+        session_bus=_Bus(owner=True),
+    )
+    assert dispatcher.open_notification_click("abc", "tok") is False
+    dispatcher.setup()
+
+    assert dispatcher.open_notification_click("abc", "tok") is True
+    assert clicks == [("abc", "tok")]
+
+
 def test_libnotify_is_added_when_notification_server_appears(monkeypatch):
     monkeypatch.setattr(event_dispatcher, "SqliteSink", _SqliteSink)
     bus = _Bus()

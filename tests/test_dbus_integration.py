@@ -722,9 +722,13 @@ def test_notification_click_rules_round_trip_through_the_shared_client(tmp_path)
             },
             notification_policy=store,
             on_notification_policy_changed=lambda: changes.append(True),
+            open_notification_click=lambda click_id, token: (
+                clicks.append((click_id, token)) or click_id == "known"
+            ),
         ),
     )
     outcome = {}
+    clicks = []
 
     def edit_rules() -> None:
         connection = dbus.SessionBus(private=True, mainloop=dbus.mainloop.NULL_MAIN_LOOP)
@@ -742,6 +746,12 @@ def test_notification_click_rules_round_trip_through_the_shared_client(tmp_path)
                 outcome["rejected"] = type(error).__name__
             outcome["removed"] = client.remove_notification_open_target("net.whatsapp.WhatsApp")
             outcome["after"] = client.notification_open_map()
+            outcome["click"] = client.open_notification_click("known", "tok")
+            outcome["stale_click"] = client.open_notification_click("gone", "")
+            try:
+                client.open_notification_click("x" * 65, "")
+            except Exception as error:
+                outcome["bad_click"] = type(error).__name__
         except Exception as error:
             outcome["error"] = error
         finally:
@@ -767,7 +777,11 @@ def test_notification_click_rules_round_trip_through_the_shared_client(tmp_path)
         "rejected": "BackendError",
         "removed": True,
         "after": [],
+        "click": True,
+        "stale_click": False,
+        "bad_click": "BackendError",
     }
+    assert clicks == [("known", "tok"), ("gone", "")]
     assert store.open_map == {}
     assert changes == [True, True]
 

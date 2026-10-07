@@ -37,7 +37,15 @@ sequenceDiagram
 
 Die Regel wird erst beim Klick nachgeschlagen. Wer eine Regel entfernt,
 deaktiviert damit auch Popups, die schon sichtbar sind. Ein Popup öffnet sein
-Ziel genau einmal.
+Ziel genau einmal. Klicks auf Popups mit demselben Ziel innerhalb einer
+Sekunde öffnen es nur einmal; das andere Popup bleibt anklickbar.
+
+Manche Benachrichtigungs-Shells, etwa die von Omarchy, führen einen im Popup
+hinterlegten Befehl aus, statt den Klick zu melden. BlueFerry gibt solchen
+Popups einen Befehl mit, der nur eine zufällige ID für dieses Popup enthält.
+Der Befehl reicht die ID an den Daemon zurück, der dann genau dieselben
+Schritte wie oben ausführt. Ist das Popup weg oder wurde der Dienst neu
+gestartet, ist die ID unbekannt und öffnet nichts.
 
 ## Einschalten
 
@@ -112,7 +120,9 @@ Regeln wirken sofort, ein Neustart des Dienstes ist nicht nötig.
   Kalender-URL) gehören also besser nicht in eine Regel.
 - Logs enthalten nie Bundle-IDs, URLs oder Desktop-IDs.
 - Über D-Bus sind die Regeln nur über eine authentifizierte Methode mit
-  Ratenbegrenzung lesbar. Kein Signal überträgt sie.
+  Ratenbegrenzung lesbar. Kein Signal überträgt sie, und auch die Popups
+  nicht: Der Benachrichtigungsserver sieht nur die feste Aktion „Öffnen“ und,
+  bei Shells, die einen Befehl ausführen, eine zufällige ID pro Popup.
 - Während ein Ziel geöffnet wird, sind dessen URL oder Desktop-ID kurz in der
   Prozessliste und in der kurzlebigen Unit sichtbar. Daran lässt sich
   erkennen, dass eine Mitteilung dieser App angeklickt wurde.

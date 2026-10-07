@@ -54,6 +54,7 @@ from blueferry.limits import (
     MAX_THREAD_QUERY_LIMIT,
 )
 from blueferry.named_groups import stored_named_group_key
+from blueferry.notification_open import MAX_ACTIVATION_TOKEN_CHARS, MAX_CLICK_ID_CHARS
 from blueferry.notification_open_map import open_map_entries
 from blueferry.obex.map_query import list_recent_messages
 from blueferry.obex.map_send import send_group_message, send_message
@@ -188,6 +189,7 @@ class BackendDependencies:
     on_storage_prepared: Callable[[Any], None] | None = None
     on_storage_changed: Callable[[], None] | None = None
     set_proximity_lock: Callable[[bool, int], dict[str, Any]] | None = None
+    open_notification_click: Callable[[str, str], bool] | None = None
 
 
 class BackendOperations:
@@ -1050,6 +1052,19 @@ class BackendOperations:
         if self.dependencies.on_notification_policy_changed is not None:
             self.dependencies.on_notification_policy_changed()
         return open_map_entries(mapping)
+
+    def open_notification_click(self, click_id: str, token: str) -> bool:
+        """Treat a shell-run popup argv like a live click on that popup."""
+        handler = self.dependencies.open_notification_click
+        if handler is None:
+            raise NotReadyError("desktop notifications are unavailable")
+        if (
+            not isinstance(click_id, str) or not isinstance(token, str)
+            or not click_id or len(click_id) > MAX_CLICK_ID_CHARS
+            or len(token) > MAX_ACTIVATION_TOKEN_CHARS
+        ):
+            raise InvalidArgumentsError("invalid notification click")
+        return bool(handler(click_id, token))
 
     def remove_notification_open_target(self, bundle_id: str) -> bool:
         policy = self.dependencies.notification_policy

@@ -359,6 +359,7 @@ class Daemon:
                 on_storage_prepared=self._apply_storage_preparation,
                 on_storage_changed=self._on_storage_changed,
                 set_proximity_lock=self._set_proximity_lock,
+                open_notification_click=self.events.open_notification_click,
             ),
         )
         self.events.set_dbus_service(self._dbus_service)

@@ -321,6 +321,58 @@ def test_helper_command_line_revalidates_and_dispatches(monkeypatch) -> None:
     assert calls == [("open", URL, "tok"), ("direct", DESKTOP, "tok")]
 
 
+def test_shell_click_argv_carries_only_the_opaque_id() -> None:
+    assert notification_open.click_argv("abc_DEF-123") == [
+        sys.executable, "-m", "blueferry.notification_open", "--click=abc_DEF-123",
+    ]
+
+
+def test_click_helper_hands_the_id_and_token_back_to_the_daemon(monkeypatch) -> None:
+    calls = []
+
+    class _Backend:
+        def open_notification_click(self, click_id, token):
+            calls.append((click_id, token))
+            return click_id == "known"
+
+    monkeypatch.setattr(notification_open, "open_target", pytest.fail)
+    monkeypatch.setattr(notification_open, "launch_target", pytest.fail)
+    real = notification_open.forward_click
+    monkeypatch.setattr(
+        notification_open, "forward_click",
+        lambda click_id, token: real(click_id, token, backend_factory=_Backend),
+    )
+    monkeypatch.setenv("XDG_ACTIVATION_TOKEN", "tok")
+
+    assert notification_open.main(["--click=known"]) == 0
+    assert notification_open.main(["--click=gone"]) == 1
+    assert calls == [("known", "tok"), ("gone", "tok")]
+
+
+def test_click_helper_reports_an_unreachable_daemon(monkeypatch, caplog) -> None:
+    def fail(_click_id, _token):
+        raise RuntimeError("backend is not running")
+
+    monkeypatch.setattr(notification_open, "forward_click", fail)
+
+    assert notification_open.main(["--click=abc"]) == 1
+    assert "RuntimeError" in caplog.text
+
+
+@pytest.mark.parametrize("argv", [
+    ["--click="],
+    ["--click=" + "x" * 65],
+    ["--direct", "--click=abc"],
+    ["--click=abc", "--url=https://example.com"],
+])
+def test_click_helper_rejects_malformed_ids(monkeypatch, argv) -> None:
+    monkeypatch.setattr(notification_open, "forward_click", pytest.fail)
+
+    with pytest.raises(SystemExit) as raised:
+        notification_open.main(argv)
+    assert raised.value.code == 2
+
+
 @pytest.mark.parametrize("argv", [
     ["--url=file:///etc/passwd"],
     ["--url=javascript:alert(1)"],

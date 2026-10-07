@@ -120,6 +120,13 @@
       <annotation name="io.weirdware.BlueFerry.Errors"
                   value="InvalidArgs,NotReady"/>
     </method>
+    <method name="OpenNotificationClick">
+      <arg name="click_id" type="s" direction="in"/>
+      <arg name="activation_token" type="s" direction="in"/>
+      <arg name="opened" type="b" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady"/>
+    </method>
     <method name="RemoveNotificationOpenTarget">
       <arg name="bundle_id" type="s" direction="in"/>
       <arg name="removed" type="b" direction="out"/>
