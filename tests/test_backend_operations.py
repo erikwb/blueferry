@@ -379,6 +379,7 @@ def test_notification_click_rules_are_validated_by_the_backend(tmp_path) -> None
     )
 
     assert operations.get_notification_open_map() == []
+    revisions = [operations.status()["notification_open_map_revision"]]
     assert operations.set_notification_open_target(
         "com.apple.mobilemail", "org.mozilla.Thunderbird.desktop"
     ) == [{
@@ -400,17 +401,23 @@ def test_notification_click_rules_are_validated_by_the_backend(tmp_path) -> None
     with pytest.raises(InvalidArgumentsError):
         operations.remove_notification_open_target("x" * 2000)
 
+    revisions.append(operations.status()["notification_open_map_revision"])
     assert operations.remove_notification_open_target("com.example.Unknown") is False
+    revisions.append(operations.status()["notification_open_map_revision"])
     assert operations.remove_notification_open_target("com.apple.mobilemail") is True
+    revisions.append(operations.status()["notification_open_map_revision"])
     assert operations.get_notification_open_map() == []
-    # Only real changes invalidate client status.
+    # Only real changes invalidate client status and bump the revision.
     assert changes == [True, True]
+    first = revisions[0]
+    assert revisions == [first, first + 1, first + 1, first + 2]
 
 
 def test_notification_click_rules_need_policy_storage() -> None:
     operations = _operations()
 
     assert operations.get_notification_open_map() == []
+    assert "notification_open_map_revision" not in operations.status()
     with pytest.raises(NotReadyError):
         operations.set_notification_open_target("com.slack", "slack.desktop")
     with pytest.raises(NotReadyError):

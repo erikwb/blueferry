@@ -410,12 +410,15 @@ Kirigami.ScrollablePage {
             }
         }
         // Click rules only apply to non-Messages popups, which exist only in
-        // the "all" policy. Load the editor (and its backend read) on demand.
+        // the "all" policy. Load the editor (and its backend read) on demand,
+        // and only for daemons that report the rules' revision: an older,
+        // not yet restarted backend lacks the methods.
         Loader {
             objectName: "notificationOpenMapLoader"
             Layout.fillWidth: true
             active: iphonePage.bridge.status.daemon === true
                 && iphonePage.bridge.status.notification_policy === "all"
+                && iphonePage.bridge.status.notification_open_map_revision !== undefined
             visible: active
             sourceComponent: Component {
                 NotificationOpenMapEditor {

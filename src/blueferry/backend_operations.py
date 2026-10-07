@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import re
+import secrets
 import sqlite3
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -203,6 +204,10 @@ class BackendOperations:
         self.sessions = sessions
         self.dependencies = dependencies or BackendDependencies()
         self._confirmed_groups: dict[str, str] = {}
+        # Content-free GetStatus marker for click-rule edits. Clients reread
+        # the rules only when it changes; a random start makes a restarted
+        # daemon's value differ from what a client last saw.
+        self._open_map_revision = secrets.randbelow(1 << 31)
         self._conversations = ConversationIndex(
             lambda: read_events(
                 limit=None if self._starred_keys() else MAX_CONVERSATION_EVENTS,
@@ -685,6 +690,9 @@ class BackendOperations:
                 self.get_contacts_only_notifications()
             ),
         }
+        if self.dependencies.notification_policy is not None:
+            # Also the capability marker: daemons without click rules lack it.
+            status["notification_open_map_revision"] = self._open_map_revision
         if self.dependencies.status_provider is not None:
             status.update(self.dependencies.status_provider())
         status["api_version"] = MESSAGES_API_VERSION
@@ -1049,6 +1057,7 @@ class BackendOperations:
             mapping = policy.set_open_target(bundle_id, target)
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
+        self._open_map_revision += 1
         if self.dependencies.on_notification_policy_changed is not None:
             self.dependencies.on_notification_policy_changed()
         return open_map_entries(mapping)
@@ -1076,8 +1085,10 @@ class BackendOperations:
             removed = policy.remove_open_target(bundle_id)
         except ValueError as error:
             raise InvalidArgumentsError(str(error)) from error
-        if removed and self.dependencies.on_notification_policy_changed is not None:
-            self.dependencies.on_notification_policy_changed()
+        if removed:
+            self._open_map_revision += 1
+            if self.dependencies.on_notification_policy_changed is not None:
+                self.dependencies.on_notification_policy_changed()
         return removed
 
     def list_recent(

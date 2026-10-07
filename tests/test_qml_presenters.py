@@ -652,6 +652,10 @@ def settings_window(qml_engine):
             function answerPairingConfirmation(approved) { record("answerPairingConfirmation", [approved]); }
             function setStoragePolicy(policy) { record("setStoragePolicy", [policy]); }
             function setProximityLock(enabled, grace) { record("setProximityLock", [enabled, grace]); }
+            property var notificationOpenMap: []
+            function loadNotificationOpenMap() { record("loadNotificationOpenMap", []); }
+            function setNotificationOpenTarget(bundle, target) { record("setNotificationOpenTarget", [bundle, target]); }
+            function removeNotificationOpenTarget(bundle) { record("removeNotificationOpenTarget", [bundle]); }
             function forgetDevice(mac) { record("forgetDevice", [mac]); }
             function activateBluetooth() { record("activateBluetooth", []); }
             function filePairingIssue() { record("filePairingIssue", []); }
@@ -841,6 +845,31 @@ def test_proximity_lock_settings_appear_only_for_supporting_daemons(qml_engine, 
     assert _evaluate(
         qml_engine, "testBridge.calls.filter(c => c.method === 'setProximityLock')"
     ) == [{"method": "setProximityLock", "args": [True, 90]}]
+
+
+def test_click_rule_editor_appears_only_for_supporting_daemons(qml_engine, settings_window):
+    window, bridge = settings_window
+    bridge.setProperty("setupLoaded", True)
+    QGuiApplication.processEvents()
+    loader = _settings_object(window, "notificationOpenMapLoader")
+    # A backend from before click rules: no revision key, no method calls.
+    bridge.setProperty("status", {"daemon": True, "notification_policy": "all"})
+    QGuiApplication.processEvents()
+    assert loader.property("active") is False
+    bridge.setProperty("status", {
+        "daemon": True, "notification_policy": "messages", "notification_open_map_revision": 3,
+    })
+    QGuiApplication.processEvents()
+    assert loader.property("active") is False
+    loads = "testBridge.calls.filter(c => c.method === 'loadNotificationOpenMap').length"
+    assert _evaluate(qml_engine, loads) == 0
+
+    bridge.setProperty("status", {
+        "daemon": True, "notification_policy": "all", "notification_open_map_revision": 3,
+    })
+    QGuiApplication.processEvents()
+    assert loader.property("active") is True
+    assert _evaluate(qml_engine, loads) == 1
 
 
 def test_proximity_grace_edit_survives_a_status_refresh_before_saving(qml_engine):
@@ -1931,6 +1960,7 @@ class _OpenRuleBridge(QObject):
     def __init__(self) -> None:
         super().__init__()
         self._rules: list[dict] = []
+        self._revision = 7
         self.calls: list[tuple] = []
 
     @Property("QVariantList", notify=notificationOpenMapChanged)
@@ -1939,7 +1969,15 @@ class _OpenRuleBridge(QObject):
 
     @Property("QVariantMap", notify=statusChanged)
     def status(self):
-        return {"daemon": True, "notification_policy": "all"}
+        return {
+            "daemon": True,
+            "notification_policy": "all",
+            "notification_open_map_revision": self._revision,
+        }
+
+    def bump(self, revision: int) -> None:
+        self._revision = revision
+        self.statusChanged.emit()
 
     @Property(bool, notify=busyChanged)
     def busy(self):
@@ -1969,8 +2007,11 @@ def test_qt_click_rule_editor_adds_lists_and_removes_rules(qml_engine) -> None:
     assert editor is not None, "\n".join(error.toString() for error in component.errors())
     try:
         assert bridge.calls == [("load",)]
-        # Rule edits made elsewhere (CLI) arrive as a status refresh.
+        # Unrelated status refreshes don't reread the rules.
         bridge.statusChanged.emit()
+        assert bridge.calls == [("load",)]
+        # Rule edits made elsewhere (CLI) bump the revision.
+        bridge.bump(8)
         assert bridge.calls == [("load",), ("load",)]
         bundle = editor.findChild(QObject, "openRuleBundleField")
         target = editor.findChild(QObject, "openRuleTargetField")

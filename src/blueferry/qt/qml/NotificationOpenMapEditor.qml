@@ -30,14 +30,23 @@ ColumnLayout {
         editor.bridge.setNotificationOpenTarget(editor.bundleDraft, editor.targetDraft)
     }
 
-    Component.onCompleted: editor.bridge.loadNotificationOpenMap()
+    // The backend's content-free revision of the rules last read.
+    property var loadedRevision: undefined
+
+    function reload() {
+        editor.loadedRevision = editor.bridge.status.notification_open_map_revision
+        editor.bridge.loadNotificationOpenMap()
+    }
+
+    Component.onCompleted: editor.reload()
 
     Connections {
         target: editor.bridge
-        // Rule edits from the CLI or another client emit the backend's
-        // content-free StatusChanged; reread the rules when status refreshes.
+        // Rule edits from the CLI or another client bump the revision in
+        // GetStatus. Reread only then, not on every status refresh.
         function onStatusChanged() {
-            editor.bridge.loadNotificationOpenMap()
+            if (editor.bridge.status.notification_open_map_revision !== editor.loadedRevision)
+                editor.reload()
         }
         function onNotificationOpenMapChanged() {
             // Clear the form only once the backend has accepted this rule.
