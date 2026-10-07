@@ -329,3 +329,23 @@ def test_backend_without_the_setter_reports_not_ready() -> None:
 
     assert outcome["error"].get_dbus_name() == f"{ERROR_PREFIX}.NotReady"
 
+
+def test_python_client_saves_the_opt_in(tether_service) -> None:
+    name, controller, _backend, _classic, _service = tether_service
+
+    def run(_proxy):
+        connection = dbus.SessionBus(private=True, mainloop=dbus.mainloop.NULL_MAIN_LOOP)
+        try:
+            client = BackendClient(
+                interface_factory=lambda iface: dbus.Interface(
+                    connection.get_object(name, OBJECT_PATH), iface,
+                )
+            )
+            return client.tether_configure(False, True)
+        finally:
+            connection.close()
+
+    outcome = _in_thread(name, run)
+    status = outcome["value"]
+    assert (status.enabled, status.autoconnect) == (False, True)
+    assert controller.enabled is False

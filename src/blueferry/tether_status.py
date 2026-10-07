@@ -23,6 +23,7 @@ class TetherStatus:
     external: bool = False
     error: str = ""
     needs_dhcp: bool = False
+    enabled: bool = False
     autoconnect: bool = False
 
     @classmethod
@@ -35,6 +36,7 @@ class TetherStatus:
             external=value.get("external") is True,
             error=_text(value.get("error")),
             needs_dhcp=value.get("needs_dhcp") is True,
+            enabled=value.get("enabled") is True,
             autoconnect=value.get("autoconnect") is True,
         )
 

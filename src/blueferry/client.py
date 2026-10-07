@@ -587,10 +587,10 @@ class BackendClient:
         self._calls_call("HoldAndAnswer", timeout=CALL_CONTROL_TIMEOUT_SEC)
     # ---- Tether1 (independent of the messaging API generation) -----------
 
-    def _tether_call(self, method: str) -> TetherStatus:
+    def _tether_call(self, method: str, *args: object) -> TetherStatus:
         try:
             value = getattr(self._raw_iface(TETHER_IFACE), method)(
-                timeout=TETHER_CALL_TIMEOUT_SEC
+                *args, timeout=TETHER_CALL_TIMEOUT_SEC
             )
             return TetherStatus.from_dict(decode_mapping(value))
         except dbus.exceptions.DBusException as error:
@@ -611,3 +611,9 @@ class BackendClient:
 
     def tether_disconnect(self) -> TetherStatus:
         return self._tether_call("Disconnect")
+
+    def tether_configure(self, enabled: bool, autoconnect: bool) -> TetherStatus:
+        """Save the tethering opt-in and automatic tethering preference."""
+        return self._tether_call(
+            "SetTethering", dbus.Boolean(enabled), dbus.Boolean(autoconnect)
+        )
