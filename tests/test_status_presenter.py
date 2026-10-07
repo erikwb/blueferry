@@ -707,3 +707,161 @@ def test_gtk_call_history_switches_save_both_values_together():
     assert page.toasts[-1] == (
         "Could not save missed call notification preference: storage is locked"
     )
+
+
+# ---- opt-in tethering (parity with the Qt TetherSection) ---------------------
+
+
+def _tether(**values):
+    from blueferry.tether_status import TetherStatus
+
+    return TetherStatus.from_dict(values)
+
+
+def test_tether_group_is_hidden_without_tether1():
+    from blueferry.ui.status_presenter import tether_controls
+
+    assert tether_controls(None, reachable=True, pending=False).group_visible is False
+
+
+def test_disabled_tethering_shows_only_the_enable_switch():
+    from blueferry.ui.status_presenter import tether_controls
+
+    controls = tether_controls(
+        _tether(state="off", enabled=False, autoconnect=True), reachable=True, pending=False,
+    )
+    assert controls.group_visible is True
+    assert controls.enable_active is False
+    assert controls.enable_sensitive is True
+    assert controls.connect_visible is False
+    assert controls.auto_visible is False
+    assert "network applet" in controls.summary
+    assert controls.warning is False
+
+
+def test_enabled_tethering_shows_the_connect_and_automatic_switches():
+    from blueferry.ui.status_presenter import tether_controls
+
+    controls = tether_controls(
+        _tether(state="connected", enabled=True, autoconnect=True),
+        reachable=True, pending=False,
+    )
+    assert (controls.connect_visible, controls.connect_active) == (True, True)
+    assert controls.connect_sensitive is True
+    assert (controls.auto_visible, controls.auto_active) == (True, True)
+    assert "Personal Hotspot" in controls.summary
+
+
+@pytest.mark.parametrize(("state", "pending", "reachable"), [
+    ("connecting", False, True), ("disconnecting", False, True),
+    ("off", True, True), ("off", False, False),
+])
+def test_tether_connect_switch_is_insensitive_while_busy(state, pending, reachable):
+    from blueferry.ui.status_presenter import tether_controls
+
+    controls = tether_controls(
+        _tether(state=state, enabled=True), reachable=reachable, pending=pending,
+    )
+    assert controls.connect_sensitive is False
+    if pending or not reachable:
+        assert controls.enable_sensitive is False
+        assert controls.auto_sensitive is False
+
+
+def test_tether_failure_is_a_warning_only_while_enabled():
+    from blueferry.ui.status_presenter import tether_controls
+
+    failed = _tether(state="failed", error="hotspot-refused", enabled=True)
+    controls = tether_controls(failed, reachable=True, pending=False)
+    assert controls.warning is True
+    assert "Personal Hotspot" in controls.summary
+
+
+class _TetherPage:
+    """Borrows IPhonePage's tethering handlers without building widgets."""
+
+    def __init__(self, tether) -> None:
+        from types import SimpleNamespace
+
+        self.calls: list[tuple] = []
+        self.toasts: list[str] = []
+        self.applied: list = []
+        self.refreshes = 0
+        self._tether = tether
+        self._tether_pending = False
+        self._applying_tether = False
+        self._toast = self.toasts.append
+        self._tether_enable_switch = SimpleNamespace(get_active=lambda: True)
+        self._tether_connect_switch = SimpleNamespace(get_active=lambda: True)
+        self._tether_auto_switch = SimpleNamespace(get_active=lambda: False)
+        page = self
+
+        class Client:
+            def configure_tether_async(self, enabled, autoconnect, on_ok, on_err):
+                page.calls.append(("configure", enabled, autoconnect, on_ok, on_err))
+
+            def set_tether_connected_async(self, connected, on_ok, on_err):
+                page.calls.append(("connect", connected, on_ok, on_err))
+
+        self._client = Client()
+
+    def _apply_tether(self, tether):
+        self._tether = tether
+        self.applied.append((tether, self._tether_pending))
+
+    def _refresh_tether(self):
+        self.refreshes += 1
+
+
+def _borrow():
+    from blueferry.ui.status import IPhonePage
+
+    for name in (
+        "_tether_request", "_tether_enable_changed",
+        "_tether_connect_changed", "_tether_auto_changed",
+    ):
+        setattr(_TetherPage, name, getattr(IPhonePage, name))
+
+
+def test_gtk_enable_switch_saves_the_opt_in_and_keeps_automatic_choice():
+    _borrow()
+    page = _TetherPage(_tether(state="off", enabled=False, autoconnect=True))
+
+    page._tether_enable_changed(None, None)
+    page._tether_connect_changed(None, None)  # ignored while pending
+
+    assert [call[:3] for call in page.calls] == [("configure", True, True)]
+    assert page.applied[-1][1] is True  # rendered as pending
+    page.calls[0][3](_tether(state="off", enabled=True, autoconnect=True))
+    assert page._tether_pending is False
+    assert page._tether.enabled is True
+
+
+def test_gtk_programmatic_updates_do_not_send_requests():
+    _borrow()
+    page = _TetherPage(_tether(state="off", enabled=True))
+    page._applying_tether = True
+    page._tether_enable_changed(None, None)
+    page._tether_connect_changed(None, None)
+    page._tether_auto_changed(None, None)
+    assert page.calls == []
+
+
+def test_gtk_connect_and_automatic_switches_send_explicit_requests():
+    _borrow()
+    page = _TetherPage(_tether(state="off", enabled=True))
+    page._tether_connect_changed(None, None)
+    assert page.calls[0][:2] == ("connect", True)
+    page.calls[0][2](_tether(state="connecting", enabled=True))
+    page._tether_auto_changed(None, None)
+    assert page.calls[1][:3] == ("configure", True, False)
+
+
+def test_gtk_refused_tether_request_toasts_and_refetches():
+    _borrow()
+    page = _TetherPage(_tether(state="off", enabled=False))
+    page._tether_connect_changed(None, None)
+    page.calls[0][3]("Bluetooth tethering is turned off")
+    assert page._tether_pending is False
+    assert "turned off" in page.toasts[0]
+    assert page.refreshes == 1
