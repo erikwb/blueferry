@@ -514,6 +514,23 @@ def test_stop_removes_a_target_check_that_keeps_running(make_daemon, monkeypatch
     assert instance._target_config_check_id is None
 
 
+def test_stop_removes_a_release_check_that_keeps_running(make_daemon, monkeypatch):
+    instance = make_daemon()
+    removed = []
+    monkeypatch.setattr(daemon_mod.GLib, "source_remove", removed.append)
+    tick = _schedule_with_id_42(
+        instance, monkeypatch, "_release_check_id", "_check_package_release",
+    )
+
+    # make_daemon reports the release the daemon is running.
+    assert tick() is True
+    assert instance._release_check_id == 42
+    instance.stop()
+
+    assert removed.count(42) == 1
+    assert instance._release_check_id is None
+
+
 def test_classic_reachable_accepts_an_open_obex_session() -> None:
     bearers = SimpleNamespace(bredr_connected=False)
     sessions = SimpleNamespace(map=object(), pbap=None)
