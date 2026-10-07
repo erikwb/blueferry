@@ -379,11 +379,13 @@ A change to these rules has to be made in both places.
   permitted by a narrow Polkit rule. No general `btmgmt` or systemd access is
   exposed.
 - **Bluetooth LE switched off:** when the controller supports LE but runs
-  without it, setup clients can start a second fixed unit,
-  `blueferry-btmgmt-le-on@.service`, after the user confirms. It only runs
-  `btmgmt le on` for the validated index; no Polkit rule ships for it, so
-  systemd's administrator authentication applies. The change lasts until
-  bluetoothd restarts; BlueFerry never edits `/etc/bluetooth/main.conf`.
+  without it, setup detects it, stops full-mode pairing early (after two
+  re-probes, since bluetoothd switches LE on asynchronously) and explains the
+  fix. BlueFerry does not switch LE on itself: under `ControllerMode = bredr`
+  bluetoothd creates no GATT database or LE advertising manager for the
+  adapter, so `btmgmt le on` would not help until bluetoothd restarts in
+  another mode. BlueFerry never edits `/etc/bluetooth/main.conf`; it only
+  reads `ControllerMode` with the same rules as bluetoothd's GKeyFile parser.
 - **Recovery:** `bluetooth_recovery` performs a last-resort power cycle of the
   selected controller only. It runs after a sustained ANCS outage on a setup
   that previously worked, tries an LE-only reset first, and allows one cycle

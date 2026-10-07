@@ -425,11 +425,12 @@ grep -i ControllerMode /etc/bluetooth/main.conf
 sudo systemctl restart bluetooth   # OpenRC: sudo rc-service bluetooth restart
 ```
 
-For a quick test, `sudo btmgmt --index 0 le on` (use your adapter's index)
-switches LE on until bluetoothd restarts. The pairing wizard and the KDE client
-can do the same after you confirm; it asks for administrator authentication
-and never edits `main.conf`. `blueferry doctor` reports the LE state and the
-configured `ControllerMode`. Compatibility mode still pairs Messages and
+`sudo btmgmt le on` is not enough under `ControllerMode = bredr`: bluetoothd
+then provides no LE advertising for the adapter until it restarts in dual mode.
+If `ControllerMode` is not `bredr`, restarting bluetoothd switches LE back on.
+The pairing wizard and the KDE client let you check again after the restart;
+BlueFerry never edits `main.conf`. `blueferry doctor` reports the LE state and
+the configured `ControllerMode`. Compatibility mode still pairs Messages and
 Contacts without switching LE on, although iOS may not show their permission
 toggles until LE is available.
 

@@ -121,9 +121,13 @@ advertisement then never activates. In
 `br/edr powered secure-conn ssp` as current, bonded over Classic, and failed at
 `advert_unavailable` two milliseconds after registering the advertisement.
 The capability probe therefore reports `le_disabled` (with the configured
-`ControllerMode` as a hint); full-mode pairing stops before any pairing
-transaction with outcome reason `le_disabled`, and compatibility mode skips
-the advertisement. This is distinct from controllers whose advertisement
+`ControllerMode` as a hint); full-mode pairing probes twice more and then stops
+before any pairing transaction with outcome reason `le_disabled`, and
+compatibility mode skips the advertisement. Switching LE on with
+`btmgmt le on` is not a fix under `ControllerMode = bredr`: BlueZ's
+`adapter_register()` skips the GATT database and `LEAdvertisingManager1` in
+that mode, so no advertisement can register until bluetoothd restarts in dual
+or LE mode. In dual mode bluetoothd re-enables LE itself when it starts. This is distinct from controllers whose advertisement
 BlueZ rejects for its size. `le_disabled` was verified with recorded settings
 only, not on that controller.
 
