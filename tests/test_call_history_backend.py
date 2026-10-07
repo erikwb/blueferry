@@ -339,6 +339,74 @@ def test_popup_policy_is_respected(monkeypatch, policy, contacts_only, expected)
     assert len(sink._notif.calls) == expected
 
 
+def test_missed_call_popup_is_transient(monkeypatch) -> None:
+    monkeypatch.setattr("blueferry.sinks.libnotify.config.SHOW_NOTIFICATION_CONTENT", True)
+    sink = _sink()
+
+    sink.handle_missed_calls([_notice()])
+
+    [call] = sink._notif.calls
+    assert bool(call[6]["transient"]) is True
+
+
+def _ancs_missed_call(seen_at, category=None):
+    from blueferry.ancs.constants import CategoryID
+    from blueferry.ancs.events import AncsEvent
+
+    return AncsEvent(
+        notification_id=1, app_id="com.apple.mobilephone", app_name="Phone",
+        title="Anna", subtitle="", body="Missed Call", seen_at=seen_at,
+        category=CategoryID.MissedCall if category is None else category,
+    )
+
+
+def test_ancs_missed_call_popup_is_not_repeated_by_call_history(monkeypatch) -> None:
+    monkeypatch.setattr("blueferry.sinks.libnotify.config.SHOW_NOTIFICATION_CONTENT", True)
+    sink = _sink("all")
+    call_time = NOW - timedelta(minutes=10)
+    sink.handle_ancs(_ancs_missed_call(call_time + timedelta(seconds=30)))
+    assert len(sink._notif.calls) == 1
+
+    sink.handle_missed_calls([
+        MissedCallNotice(caller="Anna", known_contact=True, occurred_at=call_time),
+        MissedCallNotice(caller="Bob", known_contact=True, occurred_at=NOW - timedelta(hours=2)),
+    ])
+
+    # Only Bob's call, which ANCS did not show, pops a second time.
+    assert len(sink._notif.calls) == 2
+    assert "Bob" in sink._notif.calls[1][3]
+
+
+def test_each_ancs_popup_covers_only_one_call(monkeypatch) -> None:
+    monkeypatch.setattr("blueferry.sinks.libnotify.config.SHOW_NOTIFICATION_CONTENT", True)
+    sink = _sink("all")
+    call_time = NOW - timedelta(minutes=10)
+    sink.handle_ancs(_ancs_missed_call(call_time))
+
+    sink.handle_missed_calls([
+        MissedCallNotice(caller="Anna", known_contact=True, occurred_at=call_time),
+        MissedCallNotice(caller="Anna", known_contact=True,
+                         occurred_at=call_time + timedelta(minutes=1)),
+    ])
+
+    assert len(sink._notif.calls) == 2
+
+
+def test_other_ancs_categories_do_not_suppress_missed_call_popups(monkeypatch) -> None:
+    from blueferry.ancs.constants import CategoryID
+
+    monkeypatch.setattr("blueferry.sinks.libnotify.config.SHOW_NOTIFICATION_CONTENT", True)
+    sink = _sink("all")
+    call_time = NOW - timedelta(minutes=10)
+    sink.handle_ancs(_ancs_missed_call(call_time, category=CategoryID.IncomingCall))
+
+    sink.handle_missed_calls([
+        MissedCallNotice(caller="Anna", known_contact=True, occurred_at=call_time),
+    ])
+
+    assert len(sink._notif.calls) == 2
+
+
 def test_dispatcher_fans_missed_calls_only_to_capable_sinks() -> None:
     received = []
     dispatcher = EventDispatcher(SimpleNamespace(), defer_mark_read=lambda _path: None)
