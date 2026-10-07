@@ -50,12 +50,22 @@ flowchart TD
    Danach `sudo rc-service bluetooth restart`. Das trennt kurz alle
    Bluetooth-Geräte. Bis dahin koppelt BlueFerry für Nachrichten und Kontakte
    und zeigt diese Schritte statt eines Aktivieren-Knopfs.
-3. Setze vor dem Koppeln die Geräteklasse des Adapters, und nach jedem
-   Bluetooth-Neustart erneut (die Einstellung überlebt keinen Neustart):
+3. Erlaube BlueFerry, die Geräteklasse des Adapters zu setzen. Zum Koppeln
+   muss sie auf A/V Hands-Free stehen, und der Daemon repariert sie, wenn sie
+   sich ändert, etwa nach einem Bluetooth-Neustart. Ohne systemd ruft
+   BlueFerry das argumentgeprüfte Hilfsskript als
+   `sudo -n -- /usr/lib/blueferry/blueferry-set-cod N` auf (`N` ist der
+   Adapterindex; `-n` fragt nie nach einem Passwort). Ein Administrator
+   erlaubt das einmalig mit `visudo -f /etc/sudoers.d/blueferry` (Gruppe
+   anpassen; braucht sudo 1.9.10 oder neuer):
 
-   ```sh
-   sudo /usr/lib/blueferry/blueferry-set-cod 0   # Adapter hci0
    ```
+   %wheel ALL=(root) NOPASSWD: /usr/lib/blueferry/blueferry-set-cod ^[0-9]+$
+   ```
+
+   Fehlt die Regel, erklärt die Einrichtung, wie du sie anlegst oder das
+   Skript einmal von Hand startest, etwa
+   `sudo /usr/lib/blueferry/blueferry-set-cod 0` für `hci0`.
 
 4. Koppeln wie gewohnt mit `blueferry-qt`, `blueferry-gtk`,
    `blueferry-quickshell` oder `blueferry pair`.
@@ -104,6 +114,20 @@ Der Daemon schreibt sein Log dann nach `~/.local/state/blueferry/daemon.log`.
 - Den Experimental-Modus erkennt BlueFerry über `/proc`. Eine gebündelte
   Option wie `-nE` wird nicht erkannt, und bei `/proc` mit `hidepid=1` oder
   `2` gilt er als inaktiv.
+- Die sudoers-Regel führt ein kurzes Shell-Skript mit vollen Root-Rechten
+  aus, ohne die Sandbox der systemd-Unit, und gilt für alle Sitzungen der
+  genannten Benutzer, nicht nur für lokale. Sie kann trotzdem nur die Klasse
+  eines vorhandenen Adapters setzen.
+- `sudo -n` gelingt auch ohne Regel, solange ein frischer `sudo`-Zeitstempel
+  aus einem Terminal zwischengespeichert ist.
+- Lehnt sudo ab, versucht es der Daemon erst nach einem Neustart von
+  bluetoothd wieder. Eine fehlende Regel füllt also nicht das
+  Authentifizierungslog.
+- Der optionale User-Service setzt `no_new_privs`, damit kann sein Daemon
+  kein sudo nutzen. BlueFerry erkennt das und ruft sudo gar nicht erst auf;
+  starte das Skript nach Bluetooth-Neustarts selbst oder setze
+  `no_new_privs=""` in `~/.config/rc/conf.d/blueferry`. `doas` wird nicht
+  unterstützt.
 - WirePlumber wird nach einer Richtlinienänderung nur neu gestartet, wenn er
   als OpenRC-User-Service läuft. Mit einem Sitzungsstarter wie
   `gentoo-pipewire-launcher` startest du WirePlumber selbst neu oder meldest
