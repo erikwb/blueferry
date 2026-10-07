@@ -476,13 +476,28 @@ def test_streamed_lines_are_bounded_and_media_chunks_are_still_skipped() -> None
     ]
 
 
-def test_unicode_line_separators_stay_inside_values() -> None:
-    blob = "BEGIN:VCARD\nFN:Ann\u2028Lee\nTEL:+15550003333\nEND:VCARD\n"
+@pytest.mark.parametrize("separator", ["\u2028", "\u2029", "\x0c", "\x0b", "\x85", "\x1e"])
+def test_unicode_line_separators_split_names_the_same_on_every_path(separator) -> None:
     import io
 
-    assert _parse_vcard_records(io.StringIO(blob)) == [
-        ("Ann\u2028Lee", ["15550003333"], []),
-    ]
+    from blueferry.obex.bmessage import parse as parse_bmessage
+    from blueferry.vcard import iter_bounded_lines
+
+    card = f"BEGIN:VCARD\r\nVERSION:2.1\r\nFN:Ann{separator}Lee\r\nTEL:+15550003333\r\nEND:VCARD\r\n"
+    expected = [("Ann", ["15550003333"], [])]
+    # Whole text, a universal-newline file, and the bounded production reader
+    # cut the name at the separator exactly as splitlines() did before.
+    assert _parse_vcard_records(card) == expected
+    assert _parse_vcard_records(io.StringIO(card, newline=None)) == expected
+    assert _parse_vcard_records(iter_bounded_lines(io.StringIO(card, newline=None))) == expected
+    # A MAP sender card yields the same name, so it still matches the
+    # stored contact.
+    message = (
+        "BEGIN:BMSG\r\nVERSION:1.0\r\n" + card
+        + "BEGIN:BENV\r\nBEGIN:BBODY\r\nBEGIN:MSG\r\nhi\r\nEND:MSG\r\n"
+        "END:BBODY\r\nEND:BENV\r\nEND:BMSG\r\n"
+    )
+    assert parse_bmessage(message).sender_name == "Ann"
 
 
 def test_phonebook_is_streamed_from_the_transfer_file(tmp_path, monkeypatch) -> None:

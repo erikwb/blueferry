@@ -126,7 +126,9 @@ def iter_vcard_bodies(
     Oversized cards are discarded through their matching terminator.
 
     ``blob`` is either the whole text or an iterable of lines, such as a text
-    file opened with universal newlines. Iterating a file keeps only the
+    file opened with universal newlines. Lines are split further at the
+    other ``str.splitlines()`` boundaries (U+2028, form feed, and so on), so
+    both forms see the same lines. Iterating a file keeps only the
     current line and card in memory instead of the whole phonebook plus its
     split copy.
 
@@ -149,10 +151,13 @@ def iter_vcard_bodies(
     kept_quoted_printable = False
     previous = ""
 
+    # Both forms split at every str.splitlines() boundary, not only at
+    # "\n" and "\r": the name a card yields must not depend on whether it
+    # came from a MAP bMessage string or from a streamed phonebook.
     source = (
         blob.splitlines()
         if isinstance(blob, str)
-        else (line.rstrip("\r\n") for line in blob)
+        else (line for chunk in blob for line in chunk.splitlines())
     )
     for line in source:
         marker = line.strip().casefold()

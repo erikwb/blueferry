@@ -62,9 +62,7 @@ def _parse_vcard_records(
         fn: str | None = None
         phones: list[str] = []
         emails: list[str] = []
-        # Bodies are joined with "\n"; split only there so other Unicode
-        # line separators stay inside a value, as in the streamed path.
-        for line in body.split("\n"):
+        for line in body.splitlines():
             line = line.strip()
             if not line:
                 continue
