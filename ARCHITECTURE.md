@@ -143,7 +143,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | --- | --- |
 | `cli.py`, `__main__.py` | Typer CLI (`run`, `doctor`, sync, setup, and hidden `pairing-*` JSON helpers). |
 | `cli_messages.py` | CLI message listing, recipient selection, and send. |
-| `cli_calls.py` | Opt-in `calls-history` listing. |
+| `cli_call_history.py` | Opt-in `call-history` listing. |
 | `cli_common.py` | Small CLI presentation helpers. |
 | `cli_proximity.py` | `proximity-lock` status, dry run, enable, and disable. |
 | `tui.py` | Textual terminal client. |

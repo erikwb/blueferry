@@ -427,7 +427,7 @@ BLUEFERRY_CALL_HISTORY_INTERVAL_SEC=300
   notifications**: a missed call is person-to-person communication like a
   message, and enabling the option is your consent.
 
-View the list with `blueferry calls-history` (`--missed`, `--limit N`,
+View the list with `blueferry call-history` (`--missed`, `--limit N`,
 `--sync` to refresh from the iPhone first) or **Recent Calls** in the KDE
 client's menu. The GTK, terminal, and Quickshell clients do not show it yet.
 
@@ -442,7 +442,7 @@ blueferry sms-send '+15551234567' 'on my way'
 blueferry sms-send person@icloud.com 'hello from Linux'
 blueferry sms-send Alice 'running late'
 blueferry contacts-sync
-blueferry calls-history --missed   # only with BLUEFERRY_CALL_HISTORY_ENABLED
+blueferry call-history --missed   # only with BLUEFERRY_CALL_HISTORY_ENABLED
 blueferry history-clear
 blueferry doctor
 ```

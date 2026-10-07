@@ -31,7 +31,7 @@ sequenceDiagram
 - Meldet jeden neuen verpassten Anruf einmal per Desktop-Mitteilung. Mehr als
   drei auf einmal werden zusammengefasst; Anrufe, die älter als 12 Stunden
   sind, werden nie gemeldet.
-- Zeigt die Liste mit `blueferry calls-history` und unter **Recent Calls** im
+- Zeigt die Liste mit `blueferry call-history` und unter **Recent Calls** im
   Menü des KDE-Clients.
 
 ## Einschalten
@@ -49,9 +49,9 @@ BLUEFERRY_CALL_HISTORY_INTERVAL_SEC=300
 Danach:
 
 ```bash
-blueferry calls-history             # letzte Anrufe
-blueferry calls-history --missed    # nur verpasste
-blueferry calls-history --sync      # vorher vom iPhone aktualisieren
+blueferry call-history             # letzte Anrufe
+blueferry call-history --missed    # nur verpasste
+blueferry call-history --sync      # vorher vom iPhone aktualisieren
 ```
 
 Der erste Abgleich merkt sich nur die vorhandene Liste, damit du nicht mit

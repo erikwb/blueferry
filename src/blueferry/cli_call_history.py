@@ -31,7 +31,7 @@ def _render(entry: CallHistoryEntry) -> None:
     )
 
 
-def calls_history(
+def call_history_list(
     missed: bool = typer.Option(False, "--missed", help="Only show missed calls"),
     limit: int = typer.Option(20, "-n", "--limit", min=1, help="Max calls to show"),
     sync: bool = typer.Option(

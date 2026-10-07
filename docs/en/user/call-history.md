@@ -29,7 +29,7 @@ sequenceDiagram
 - Announces each new missed call once in a desktop popup. More than three at
   once are summarized in one popup; calls older than 12 hours are never
   announced.
-- Shows the list with `blueferry calls-history` and in **Recent Calls** in
+- Shows the list with `blueferry call-history` and in **Recent Calls** in
   the KDE client's menu.
 
 ## How to enable it
@@ -47,9 +47,9 @@ BLUEFERRY_CALL_HISTORY_INTERVAL_SEC=300
 Then:
 
 ```bash
-blueferry calls-history             # recent calls
-blueferry calls-history --missed    # missed calls only
-blueferry calls-history --sync      # refresh from the iPhone first
+blueferry call-history             # recent calls
+blueferry call-history --missed    # missed calls only
+blueferry call-history --sync      # refresh from the iPhone first
 ```
 
 The first refresh only records the existing list, so you are not flooded with

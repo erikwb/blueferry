@@ -1,4 +1,4 @@
-"""The calls-history command talks only to the backend client."""
+"""The call-history command talks only to the backend client."""
 from __future__ import annotations
 
 from typing import ClassVar
@@ -7,7 +7,7 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
-from blueferry import cli, cli_calls
+from blueferry import cli, cli_call_history
 from blueferry.client import BackendError
 from blueferry.limits import MAX_CALL_HISTORY_QUERY_LIMIT
 from blueferry.models import CallHistoryEntry
@@ -43,12 +43,12 @@ class _Backend:
 def backend(monkeypatch):
     _Backend.requested = []
     _Backend.synced = 0
-    monkeypatch.setattr(cli_calls, "BackendClient", _Backend)
+    monkeypatch.setattr(cli_call_history, "BackendClient", _Backend)
     return _Backend
 
 
 def test_missed_filter_fetches_the_full_window_and_neutralizes_controls(backend) -> None:
-    result = CliRunner().invoke(cli.app, ["calls-history", "--missed", "--limit", "1"])
+    result = CliRunner().invoke(cli.app, ["call-history", "--missed", "--limit", "1"])
 
     assert result.exit_code == 0, result.output
     assert backend.requested == [MAX_CALL_HISTORY_QUERY_LIMIT]
@@ -60,7 +60,7 @@ def test_missed_filter_fetches_the_full_window_and_neutralizes_controls(backend)
 
 
 def test_default_listing_and_optional_sync(backend) -> None:
-    result = CliRunner().invoke(cli.app, ["calls-history", "--sync", "-n", "5"])
+    result = CliRunner().invoke(cli.app, ["call-history", "--sync", "-n", "5"])
 
     assert result.exit_code == 0, result.output
     assert backend.synced == 1
@@ -75,10 +75,10 @@ def test_backend_errors_exit_with_a_message(monkeypatch) -> None:
         def call_history(self, _limit):
             raise BackendError("call history is disabled")
 
-    monkeypatch.setattr(cli_calls, "BackendClient", _Disabled)
+    monkeypatch.setattr(cli_call_history, "BackendClient", _Disabled)
 
     with pytest.raises(typer.Exit) as raised:
-        cli_calls.calls_history(missed=False, limit=5, sync=False)
+        cli_call_history.call_history_list(missed=False, limit=5, sync=False)
 
     assert raised.value.exit_code == 3
 
