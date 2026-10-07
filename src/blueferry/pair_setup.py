@@ -95,6 +95,11 @@ _TEARDOWN_TRACE_MAX_AGE_SECONDS = 60 * 60
 
 
 LE_DISABLED_REASON = "le_disabled"
+# bluetoothd switches LE on asynchronously once a controller index appears
+# (read_info_complete), so a single probe can race a bluetoothd restart or an
+# adapter replug. Probe again before stopping a pairing for LE.
+_LE_REPROBE_DELAYS_SECONDS = (1.0, 2.0)
+_sleep = time.sleep
 
 
 def configuration_status() -> dict:
@@ -1158,6 +1163,30 @@ def _pairing_outcome(
     return pairing_diagnostics.pairing_outcome(attempt, transports, error)
 
 
+def _reprobe_disabled_le(
+    adapter: str, compatibility: dict, attempt: PairingAttempt,
+) -> dict:
+    """Re-read the controller a few times while LE looks switched off.
+
+    Pairing setup runs in the setup client's worker, never on the daemon's
+    GLib main loop, so the short sleeps block nobody else.
+    """
+    if not compatibility.get("le_disabled"):
+        return compatibility
+    probes = 1
+    for delay in _LE_REPROBE_DELAYS_SECONDS:
+        _sleep(delay)
+        compatibility = bluetooth_compatibility(adapter)
+        probes += 1
+        if not compatibility.get("le_disabled"):
+            break
+    recovered = not compatibility.get("le_disabled")
+    quirks_report.mark(attempt, "le_reprobe", probes=probes, recovered=recovered)
+    if recovered:
+        log.info("Bluetooth LE on %s came up after %d probes", adapter, probes)
+    return compatibility
+
+
 def _prepare_pairing(
     mac: str,
     *,
@@ -1190,7 +1219,9 @@ def _prepare_pairing(
     _snapshot_phone(attempt, device)
     _record_bluez_state(attempt, device.device_path, "device_loaded", force=True)
 
-    compatibility = bluetooth_compatibility(selected_adapter)
+    compatibility = _reprobe_disabled_le(
+        selected_adapter, bluetooth_compatibility(selected_adapter), attempt,
+    )
     attempt["controller"] = _controller_snapshot(selected_adapter, compatibility)
     quirks_report.mark(attempt, "compatibility_ready")
     if compatibility.get("pairing_ready") is False:

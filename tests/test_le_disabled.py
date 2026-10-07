@@ -147,8 +147,13 @@ def test_setup_client_model_carries_the_le_state():
     assert legacy.le_disabled is False
 
 
-def _le_off_compatibility(monkeypatch, *, bearer_api_active: bool = True) -> list:
-    """Run _prepare_pairing against fake capabilities with LE switched off."""
+def _le_off_compatibility(
+    monkeypatch, *, bearer_api_active: bool = True, le_probes=(True, True, True),
+) -> list:
+    """Run _prepare_pairing against fake capabilities with LE switched off.
+
+    ``le_probes`` gives ``le_disabled`` for each controller probe in turn.
+    """
     monkeypatch.setattr(config, "STATE_DIR", config.STATE_DIR / "le-disabled-tests")
     device = pair_setup.PairedDevice(
         mac="02:00:00:00:00:01",
@@ -163,34 +168,38 @@ def _le_off_compatibility(monkeypatch, *, bearer_api_active: bool = True) -> lis
         services_resolved=False,
     )
     monkeypatch.setattr(pair_setup, "_device", lambda _mac, **_kwargs: device)
-    monkeypatch.setattr(
-        pair_setup,
-        "bluetooth_compatibility",
-        lambda _adapter: {
+    probes = iter(le_probes)
+    sleeps: list[float] = []
+
+    def compatibility(_adapter):
+        le_disabled = next(probes)
+        return {
             "pairing_ready": True,
             "hardware_supported": True,
             "notifications_supported": True,
             "bearer_api_active": bearer_api_active,
             "low_energy": True,
-            "le_enabled": False,
-            "le_disabled": True,
-            "controller_mode": "bredr",
+            "le_enabled": not le_disabled,
+            "le_disabled": le_disabled,
+            "controller_mode": "bredr" if le_disabled else "",
             "advertising": True,
-            "issue": capabilities.le_disabled_issue("bredr"),
-        },
-    )
+            "issue": capabilities.le_disabled_issue("bredr") if le_disabled else "",
+        }
+
+    monkeypatch.setattr(pair_setup, "bluetooth_compatibility", compatibility)
+    monkeypatch.setattr(pair_setup, "_sleep", sleeps.append)
     monkeypatch.setattr(pair_setup, "_controller_snapshot", lambda _adapter, value: dict(value))
     monkeypatch.setattr(pair_setup, "_bluetooth_session_owners", lambda: [])
     monkeypatch.setattr(pair_setup, "_take_pending_teardown", lambda _adapter: None)
     monkeypatch.setattr(pair_setup, "_snapshot_phone", lambda *_args: None)
     monkeypatch.setattr(pair_setup, "_record_bluez_state", lambda *_args, **_kwargs: None)
-    return [device]
+    return [device, sleeps]
 
 
 def test_full_mode_pairing_stops_before_the_advertisement_when_le_is_off(monkeypatch):
     from blueferry import bluez_setup
 
-    (device,) = _le_off_compatibility(monkeypatch)
+    device, _sleeps = _le_off_compatibility(monkeypatch)
     monkeypatch.setattr(
         bluez_setup,
         "register_advert",
@@ -218,6 +227,9 @@ def test_full_mode_pairing_stops_before_the_advertisement_when_le_is_off(monkeyp
     events = [entry["event"] for entry in report["timeline"]]
     assert "le_disabled" in events
     assert "advert_register_sent" not in events
+    reprobe = next(entry for entry in report["timeline"] if entry["event"] == "le_reprobe")
+    assert reprobe["probes"] == 3
+    assert reprobe["recovered"] is False
     from blueferry import quirks_report
 
     assert quirks_report.issue_title(report).endswith(
@@ -228,7 +240,7 @@ def test_full_mode_pairing_stops_before_the_advertisement_when_le_is_off(monkeyp
 def test_compatibility_mode_pairing_continues_without_solicitation_when_le_is_off(
     monkeypatch, caplog,
 ):
-    (device,) = _le_off_compatibility(monkeypatch)
+    device, _sleeps = _le_off_compatibility(monkeypatch)
     attempt = pair_setup.quirks_report.start_attempt(interactive=False)
 
     preparation = pair_setup._prepare_pairing(
@@ -244,6 +256,47 @@ def test_compatibility_mode_pairing_continues_without_solicitation_when_le_is_of
     assert preparation.policy.solicitation_enabled is False
     assert "continuing with MAP/PBAP only" in caplog.text
     assert "le_disabled" in [entry["event"] for entry in attempt["timeline"]]
+
+
+def test_full_mode_pairing_probes_again_before_stopping_for_le(monkeypatch):
+    """A probe racing bluetoothd's own LE switch-on must not abort pairing."""
+    device, sleeps = _le_off_compatibility(monkeypatch, le_probes=(True, False))
+    attempt = pair_setup.quirks_report.start_attempt(interactive=False)
+
+    preparation = pair_setup._prepare_pairing(
+        device.mac,
+        adapter=None,
+        compatibility_mode=False,
+        explicit_pairing=False,
+        interactive=False,
+        attempt=attempt,
+    )
+
+    assert preparation.policy.ancs_enabled is True
+    assert preparation.policy.solicitation_enabled is True
+    assert sleeps == [pair_setup._LE_REPROBE_DELAYS_SECONDS[0]]
+    assert attempt["controller"]["le_disabled"] is False
+    events = [entry["event"] for entry in attempt["timeline"]]
+    assert "le_disabled" not in events
+    reprobe = next(entry for entry in attempt["timeline"] if entry["event"] == "le_reprobe")
+    assert reprobe["recovered"] is True
+
+
+def test_le_on_at_the_first_probe_is_not_probed_again(monkeypatch):
+    device, sleeps = _le_off_compatibility(monkeypatch, le_probes=(False,))
+    attempt = pair_setup.quirks_report.start_attempt(interactive=False)
+
+    pair_setup._prepare_pairing(
+        device.mac,
+        adapter=None,
+        compatibility_mode=False,
+        explicit_pairing=False,
+        interactive=False,
+        attempt=attempt,
+    )
+
+    assert sleeps == []
+    assert "le_reprobe" not in [entry["event"] for entry in attempt["timeline"]]
 
 
 def test_solicitation_stays_enabled_when_le_is_on():
