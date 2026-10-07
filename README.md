@@ -413,6 +413,26 @@ If `blueferry-qt` does not open a window or looks unstyled,
 `blueferry-qt --diagnose-style` prints the Qt Quick Controls style it would
 use, how it sets it, and where it looked for the style.
 
+If setup reports that **Bluetooth Low Energy is switched off on this adapter**,
+the controller supports LE but BlueZ runs it in Classic-only mode, usually
+because `/etc/bluetooth/main.conf` sets `ControllerMode = bredr`. iPhone
+notifications need LE, so full-mode pairing stops before it changes anything.
+Check the setting and switch it back to dual mode:
+
+```bash
+grep -i ControllerMode /etc/bluetooth/main.conf
+# set ControllerMode = dual (or comment the line out), then:
+sudo systemctl restart bluetooth   # OpenRC: sudo rc-service bluetooth restart
+```
+
+For a quick test, `sudo btmgmt --index 0 le on` (use your adapter's index)
+switches LE on until bluetoothd restarts. The pairing wizard and the KDE client
+can do the same after you confirm; it asks for administrator authentication
+and never edits `main.conf`. `blueferry doctor` reports the LE state and the
+configured `ControllerMode`. Compatibility mode still pairs Messages and
+Contacts without switching LE on, although iOS may not show their permission
+toggles until LE is available.
+
 If notifications previously worked with the same phone and adapter but stay
 unavailable for five minutes, BlueFerry can attempt one adapter power cycle.
 It first tries an LE-only reset and checks that the phone still answers a
