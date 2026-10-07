@@ -14,7 +14,7 @@ from blueferry.text_safety import terminal_text
 T = TypeVar("T")
 
 calls_app = typer.Typer(
-    help="Experimental iPhone calls through oFono (BLUEFERRY_CALLS_ENABLED=true).",
+    help="Experimental iPhone calls through oFono (opt-in: 'blueferry calls enable').",
     invoke_without_command=True,
     no_args_is_help=False,
 )
@@ -75,6 +75,31 @@ def calls_list(ctx: typer.Context) -> None:
         return
     for call in snapshot.calls:
         typer.echo(_describe(call))
+
+
+def _set_enabled(enabled: bool) -> None:
+    status = _run(lambda: _client().set_calls_enabled(enabled))
+    state = str(status.get("calls_state") or ("disabled" if not enabled else "unavailable"))
+    word = "enabled" if enabled else "disabled"
+    typer.echo(typer.style(f"Phone calls {word}.", fg=typer.colors.GREEN))
+    if enabled:
+        typer.echo(f"Calls: {state} — {CALLS_STATE_TEXT.get(state, '')}".rstrip())
+
+
+@calls_app.command("enable")
+def calls_enable() -> None:
+    """Switch phone calls on (keeps the hands-free roles; needs oFono).
+
+    Calls ringing on the iPhone can then be answered here, and their audio
+    is routed to this computer while the call runs here.
+    """
+    _set_enabled(True)
+
+
+@calls_app.command("disable")
+def calls_disable() -> None:
+    """Switch phone calls off and release the iPhone's hands-free link."""
+    _set_enabled(False)
 
 
 @calls_app.command("dial")

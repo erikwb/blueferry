@@ -20,6 +20,10 @@ class FakeClient:
             raise BackendError(self.error)
         self.requests.append(request)
 
+    def set_calls_enabled(self, enabled):
+        self._record("set_enabled", enabled)
+        return {"calls_enabled": enabled, "calls_state": "unavailable" if enabled else "disabled"}
+
     def calls(self):
         if self.error is not None:
             raise BackendError(self.error)
@@ -151,3 +155,15 @@ def test_dial_confirmation_can_be_declined_or_accepted(monkeypatch) -> None:
     accepted = CliRunner().invoke(app, ["calls", "dial", "0441234567"], input="y\n")
     assert accepted.exit_code == 0
     assert client.requests == [("dial", "0441234567")]
+
+
+def test_enable_and_disable_save_the_opt_in(monkeypatch) -> None:
+    client = FakeClient()
+
+    enabled = _invoke(monkeypatch, client, "enable")
+    disabled = _invoke(monkeypatch, client, "disable")
+
+    assert enabled.exit_code == 0 and "Phone calls enabled." in enabled.output
+    assert "Calls: unavailable" in enabled.output
+    assert disabled.exit_code == 0 and "Phone calls disabled." in disabled.output
+    assert client.requests == [("set_enabled", True), ("set_enabled", False)]
