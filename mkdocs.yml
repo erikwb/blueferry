@@ -79,3 +79,38 @@ validation:
   nav:
     absolute_links: info
 
+
+nav:
+  - Home: README.md
+  - English:
+      - en/index.md
+      - User guide:
+          - Overview: en/user/overview.md
+          - Install: en/user/install.md
+          - Pair an iPhone: en/user/pairing.md
+          - Clients: en/user/clients.md
+          - Privacy and storage: en/user/privacy.md
+          - Troubleshooting: en/user/troubleshooting.md
+          - FAQ: en/user/faq.md
+      - Developer guide:
+          - Overview: en/developer/index.md
+          - Architecture: en/developer/architecture.md
+          - D-Bus API: en/developer/dbus-api.md
+          - Testing: en/developer/testing.md
+          - Contributing: en/developer/contributing.md
+  - Deutsch:
+      - de/index.md
+      - Anleitung:
+          - Überblick: de/user/overview.md
+          - Installation: de/user/install.md
+          - iPhone koppeln: de/user/pairing.md
+          - Clients: de/user/clients.md
+          - Datenschutz und Speicher: de/user/privacy.md
+          - Fehlerbehebung: de/user/troubleshooting.md
+          - FAQ: de/user/faq.md
+      - Entwicklung:
+          - Überblick: de/developer/index.md
+          - Architektur: de/developer/architecture.md
+          - D-Bus-API (English): /docs/en/developer/dbus-api/
+          - Tests (English): /docs/en/developer/testing/
+          - Beitragen (English): /docs/en/developer/contributing/
