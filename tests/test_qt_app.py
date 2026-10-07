@@ -98,6 +98,28 @@ def test_user_quick_controls_style_is_preserved(monkeypatch, quick_style_binding
     assert quick_style_binding == []
 
 
+def test_fallback_variable_is_not_inherited_after_qml_loaded(
+        no_quick_style_binding,
+        ):
+    style = app_module._select_quick_controls_style()
+    assert os.environ["QT_QUICK_CONTROLS_STYLE"] == "org.kde.desktop"
+
+    style.release_environment()
+
+    assert "QT_QUICK_CONTROLS_STYLE" not in os.environ
+
+
+def test_user_quick_controls_style_survives_release(
+        monkeypatch, no_quick_style_binding,
+        ):
+    monkeypatch.setenv("QT_QUICK_CONTROLS_STYLE", "Fusion")
+    style = app_module._select_quick_controls_style()
+
+    style.release_environment()
+
+    assert os.environ["QT_QUICK_CONTROLS_STYLE"] == "Fusion"
+
+
 def test_missing_binding_falls_back_quietly(caplog, no_quick_style_binding):
     with caplog.at_level("DEBUG", logger=app_module.__name__):
         assert app_module._quick_style_binding() is None

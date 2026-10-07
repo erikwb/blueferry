@@ -50,24 +50,37 @@ def _quick_style_binding():
     return QQuickStyle
 
 
-def _select_quick_controls_style() -> None:
-    """Default to the KDE style unless the user chose another one.
+class _QuickControlsStyle:
+    """Default the Qt Quick Controls style to KDE's unless the user chose one.
 
-    This must run before the QML engine loads Qt Quick Controls. Where the
-    PySide6.QtQuickControls2 binding exists, QQuickStyle.setStyle() is used.
-    Some distributions omit that binding; there QT_QUICK_CONTROLS_STYLE is
-    set instead. That fallback ranks below the -style argument and
-    QT_STYLE_OVERRIDE, so a widget style name given there (e.g. "breeze")
-    selects a Controls style that does not exist. The fallback variable is
-    also inherited by child processes, which is harmless.
+    This must be created before the QML engine loads Qt Quick Controls.
+    Where the PySide6.QtQuickControls2 binding exists, QQuickStyle.setStyle()
+    is used. Some distributions omit that binding; there
+    QT_QUICK_CONTROLS_STYLE is set instead and removed again by
+    release_environment(), so processes started from the app (links, file managers)
+    do not inherit it.
     """
-    if os.environ.get("QT_QUICK_CONTROLS_STYLE"):
-        return
-    binding = _quick_style_binding()
-    if binding is None:
+
+    def __init__(self) -> None:
+        self._fallback = False
+        if os.environ.get("QT_QUICK_CONTROLS_STYLE"):
+            return
+        binding = _quick_style_binding()
+        if binding is not None:
+            binding.setStyle(DEFAULT_QUICK_CONTROLS_STYLE)
+            return
         os.environ["QT_QUICK_CONTROLS_STYLE"] = DEFAULT_QUICK_CONTROLS_STYLE
-    else:
-        binding.setStyle(DEFAULT_QUICK_CONTROLS_STYLE)
+        self._fallback = True
+
+    def release_environment(self) -> None:
+        """Forget the fallback variable once Qt has resolved the style."""
+        if self._fallback:
+            os.environ.pop("QT_QUICK_CONTROLS_STYLE", None)
+            self._fallback = False
+
+
+def _select_quick_controls_style() -> _QuickControlsStyle:
+    return _QuickControlsStyle()
 
 
 def _install_translation(application: QGuiApplication) -> None:
@@ -161,7 +174,7 @@ def main() -> int:
     args, qt_args = parser.parse_known_args(sys.argv[1:])
     wayland_token = os.environ.pop("XDG_ACTIVATION_TOKEN", "")
     token = wayland_token or os.environ.get("DESKTOP_STARTUP_ID", "")
-    _select_quick_controls_style()
+    quick_style = _select_quick_controls_style()
 
     application = QApplication([sys.argv[0], *qt_args])
     # The X11 platform reads its startup ID while constructing QApplication.
@@ -174,6 +187,7 @@ def main() -> int:
     _install_translation(application)
     activation = ClientActivation(application)
     if not activation.primary:
+        quick_style.release_environment()
         return 0 if activation.forward(args.message, token) else 1
 
     controller = BridgeController(parent=application)
@@ -181,6 +195,7 @@ def main() -> int:
     engine.setInitialProperties({"bridge": controller})
     qml = files("blueferry.qt").joinpath("qml/Main.qml")
     engine.load(QUrl.fromLocalFile(str(qml)))
+    quick_style.release_environment()
     if not engine.rootObjects():
         activation.close()
         return 1
