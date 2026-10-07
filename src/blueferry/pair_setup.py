@@ -20,6 +20,7 @@ from blueferry import config, pairing_diagnostics, quirks_report
 from blueferry.bearer_supervisor import preferred_bearer_unavailable
 from blueferry.bluetooth_devices import PairedDevice
 from blueferry.bus import get_session_bus, get_system_bus
+from blueferry.calls.settings import calls_enabled
 from blueferry.commands import run_command
 from blueferry.errors import CommandError, PairingError
 from blueferry.pairing_policy import PairingPolicy, resolve_pairing_policy
@@ -746,9 +747,11 @@ def _apply_phone_audio_policy(attempt: PairingAttempt) -> bool:
     if not config.KEEP_PHONE_AUDIO_ON_PHONE:
         quirks_report.mark(attempt, "phone_audio_policy_skipped")
         return False
-    changed = WirePlumberPhoneAudioPolicy(wait_for_restart=True).reconcile(
-        enabled=True
-    )
+    # Follow the saved calls opt-in, not just its local.env seed, so pairing
+    # writes the same fragment the daemon will keep.
+    changed = WirePlumberPhoneAudioPolicy(
+        wait_for_restart=True, allow_calls=calls_enabled(),
+    ).reconcile(enabled=True)
     quirks_report.mark(attempt, "phone_audio_policy_ready", changed=changed)
     return changed
 

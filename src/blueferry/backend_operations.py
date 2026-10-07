@@ -15,6 +15,7 @@ from typing import Any, Protocol
 
 from blueferry.contacts import clear_contact_cache
 from blueferry.errors import (
+    CALLS_DISABLED_HINT,
     CallsDisabledError,
     ConfirmationRequiredError,
     InvalidArgumentsError,
@@ -216,6 +217,7 @@ class BackendDependencies:
     on_storage_changed: Callable[[], None] | None = None
     set_proximity_lock: Callable[[bool, int], dict[str, Any]] | None = None
     calls: CallControl | None = None
+    set_calls_enabled: Callable[[bool], dict[str, Any]] | None = None
 
 
 class BackendOperations:
@@ -1123,10 +1125,21 @@ class BackendOperations:
     def _call_control(self) -> CallControl:
         calls = self.dependencies.calls
         if calls is None or not calls.enabled:
-            raise CallsDisabledError(
-                "phone calls are disabled; set BLUEFERRY_CALLS_ENABLED=true"
-            )
+            raise CallsDisabledError(CALLS_DISABLED_HINT)
         return calls
+
+    def set_calls_enabled(self, enabled: bool) -> dict[str, Any]:
+        """Save the phone-calls opt-in and apply it without a restart."""
+        configure = self.dependencies.set_calls_enabled
+        if configure is None:
+            raise NotReadyError("phone-call settings are unavailable")
+        try:
+            return dict(configure(bool(enabled)))
+        except ValueError as error:
+            raise InvalidArgumentsError(str(error)) from error
+        except OSError as error:
+            log.error("could not save the phone-calls preference: %s", error)
+            raise NotReadyError("could not save the phone-calls preference") from error
 
     def list_calls(self) -> dict[str, object]:
         return self._call_control().list_calls()

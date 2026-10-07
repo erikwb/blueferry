@@ -86,6 +86,7 @@ from blueferry.calls.ofono import (
     service_missing,
 )
 from blueferry.errors import (
+    CALLS_DISABLED_HINT,
     CallsDisabledError,
     CallsUnavailableError,
     InvalidArgumentsError,
@@ -214,9 +215,7 @@ class CallController:
     def list_calls(self) -> dict[str, object]:
         """Unicast ListCalls payload. Contains caller numbers and names."""
         if not self.enabled:
-            raise CallsDisabledError(
-                "phone calls are disabled; set BLUEFERRY_CALLS_ENABLED=true"
-            )
+            raise CallsDisabledError(CALLS_DISABLED_HINT)
         return {
             "state": self._state,
             "calls": [record.to_wire() for record in self._calls.values()],
@@ -247,6 +246,7 @@ class CallController:
 
     def stop(self) -> None:
         self._running = False
+        self._blocked = False
         self._generation += 1
         self._discovering = False
         self._cancel_timer("_retry_id")
@@ -255,6 +255,25 @@ class CallController:
         self._power_down()
         self._release_modem()
         self._remove_watches()
+
+    def set_enabled(self, enabled: bool) -> None:
+        """Switch the feature on or off at runtime (the saved opt-in changed)."""
+        enabled = bool(enabled)
+        if enabled == self.enabled:
+            return
+        if enabled:
+            self.enabled = True
+            self._last_discovery_error = ""
+            self._set_state(CALLS_UNAVAILABLE)
+            self.start()
+            return
+        # Switching off ends the desktop's view of any call (popups close)
+        # and releases the hands-free link; the call itself stays on the
+        # phone.
+        self._unbind(emit=True)
+        self.stop()
+        self.enabled = False
+        self._set_state(CALLS_DISABLED)
 
     def poke(self) -> None:
         """Retry bring-up promptly when the phone's Classic link returns."""
@@ -883,9 +902,7 @@ class CallController:
 
     def _require_ready(self) -> str:
         if not self.enabled:
-            raise CallsDisabledError(
-                "phone calls are disabled; set BLUEFERRY_CALLS_ENABLED=true"
-            )
+            raise CallsDisabledError(CALLS_DISABLED_HINT)
         if self._state != CALLS_READY or self._bound_path is None:
             detail = {
                 CALLS_UNAVAILABLE: "oFono is not running",

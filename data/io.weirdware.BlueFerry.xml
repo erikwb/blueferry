@@ -164,6 +164,14 @@
                 value="Optional, default-off iPhone call control through oFono HFP; see README"/>
     <annotation name="io.weirdware.BlueFerry.Errors"
                 value="AuthorizationRequired,RateLimited,CallsDisabled"/>
+    <method name="SetCallsEnabled">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Save the opt-in and apply it without a restart; returns the calls_* GetStatus keys as JSON"/>
+      <arg name="enabled" type="b" direction="in"/>
+      <arg name="status_json" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady"/>
+    </method>
     <method name="ListCalls">
       <arg name="json" type="s" direction="out"/>
       <annotation name="io.weirdware.BlueFerry.Errors"

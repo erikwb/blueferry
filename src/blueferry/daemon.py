@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import signal
+import threading
 from collections.abc import Callable
 
 import dbus
@@ -34,6 +35,7 @@ from blueferry.bluetooth_recovery import (
 from blueferry.build_info import build_id, installed_build_sha, running_build_sha
 from blueferry.bus import get_system_bus, main_loop
 from blueferry.calls.controller import CallController
+from blueferry.calls.settings import CallsSettings
 from blueferry.confirmed_groups import ConfirmedGroupsStore
 from blueferry.connectivity import Connectivity
 from blueferry.contact_sync import ContactSync
@@ -107,6 +109,10 @@ class PairingRequiredError(RuntimeError):
     """Saved configuration exists, but BlueZ has no corresponding bond."""
 
 
+def _in_background(target: Callable[[], None], name: str) -> None:
+    threading.Thread(target=target, name=name, daemon=True).start()
+
+
 class Daemon:
     def __init__(self) -> None:
         self.sessions = SessionManager()
@@ -147,7 +153,13 @@ class Daemon:
         self.ancs: AncsClient | None = None
         self.adapter_class = AdapterClassSupervisor(config.ADAPTER)
         self.solicitation = SolicitationSupervisor(config.ADAPTER)
-        self.phone_audio = WirePlumberPhoneAudioPolicy()
+        # The saved phone-calls opt-in decides both the call controller and
+        # whether the WirePlumber fragment keeps the hands-free roles.
+        self.calls_settings = CallsSettings()
+        self.phone_audio = WirePlumberPhoneAudioPolicy(
+            allow_calls=self.calls_settings.enabled,
+        )
+        self._phone_audio_lock = threading.Lock()
         # Opt-in convenience lock. It only reads bearer state the supervisor
         # below already polls and never unlocks anything.
         self.proximity_settings = ProximityLockSettings()
@@ -178,7 +190,7 @@ class Daemon:
         # construction performs no I/O. oFono is only asked to page the phone
         # (Modem.Powered) while the Classic bearer is up.
         self.calls = CallController(
-            enabled=config.CALLS_ENABLED,
+            enabled=self.calls_settings.enabled,
             mac=config.IPHONE_MAC,
             adapter=config.ADAPTER,
             resolve_contact=self.contacts.resolve,
@@ -317,6 +329,30 @@ class Daemon:
         )
         return self.proximity.snapshot()
 
+    def _set_calls_enabled(self, enabled: bool) -> dict:
+        selected = self.calls_settings.set(enabled)
+        self.calls.set_enabled(selected)
+        log.info("phone calls %s", "enabled" if selected else "disabled")
+        self._apply_phone_audio_roles(selected)
+        self._emit_status()
+        return self.calls.snapshot()
+
+    def _apply_phone_audio_roles(self, allow_calls: bool) -> None:
+        """Rewrite the WirePlumber fragment off the main loop.
+
+        Reconciling may run ``wireplumber --version`` and restart WirePlumber
+        (bounded, but seconds), which must not stall D-Bus replies.
+        """
+        if not config.KEEP_PHONE_AUDIO_ON_PHONE:
+            return
+
+        def apply() -> None:
+            with self._phone_audio_lock:
+                self.phone_audio = WirePlumberPhoneAudioPolicy(allow_calls=allow_calls)
+                self.phone_audio.reconcile(enabled=True)
+
+        _in_background(apply, "blueferry-phone-audio")
+
     def _emit_calls_changed(self) -> None:
         emit = getattr(self._dbus_service, "emit_calls_changed", None)
         if emit is not None:
@@ -406,6 +442,7 @@ class Daemon:
                 on_storage_changed=self._on_storage_changed,
                 set_proximity_lock=self._set_proximity_lock,
                 calls=self.calls,
+                set_calls_enabled=self._set_calls_enabled,
             ),
         )
         self.events.set_dbus_service(self._dbus_service)
@@ -501,7 +538,8 @@ class Daemon:
                 "the saved iPhone is not currently paired; open a client to pair it"
             )
 
-        self.phone_audio.reconcile(enabled=config.KEEP_PHONE_AUDIO_ON_PHONE)
+        with self._phone_audio_lock:
+            self.phone_audio.reconcile(enabled=config.KEEP_PHONE_AUDIO_ON_PHONE)
 
         # Class-of-Device is controller state, not durable configuration.
         # Repair it before opening either bearer and continue supervising it

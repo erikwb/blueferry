@@ -499,6 +499,16 @@ class MessagesService(dbus.service.Object):
         )
 
     @dbus.service.method(
+        CALLS_IFACE, in_signature="b", out_signature="s", sender_keyword="sender"
+    )
+    def SetCallsEnabled(self, enabled: bool, sender=None) -> str:
+        """Save the opt-in and apply it now; returns the calls_* status keys."""
+        return self._sync(lambda: self._authorized(
+            sender, "settings",
+            lambda: self._json_response(self.operations.set_calls_enabled(bool(enabled))),
+        ))
+
+    @dbus.service.method(
         CALLS_IFACE, in_signature="", out_signature="s", sender_keyword="sender"
     )
     def ListCalls(self, sender=None) -> str:

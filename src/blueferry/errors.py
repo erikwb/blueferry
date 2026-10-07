@@ -56,8 +56,14 @@ class ConfirmationRequiredError(BlueFerryError):
     dbus_suffix = "ConfirmationRequired"
 
 
+CALLS_DISABLED_HINT = (
+    "phone calls are disabled; enable them in the iPhone settings or with "
+    "'blueferry calls enable'"
+)
+
+
 class CallsDisabledError(BlueFerryError):
-    """The optional phone-call feature is switched off in configuration."""
+    """The optional phone-call feature is switched off."""
 
     dbus_suffix = "CallsDisabled"
 

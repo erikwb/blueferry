@@ -347,6 +347,14 @@ class BackendClient:
         except dbus.exceptions.DBusException as error:
             raise BackendError(error.get_dbus_message() or str(error)) from error
 
+    def set_calls_enabled(self, enabled: bool) -> dict:
+        try:
+            return decode_mapping(self._calls_call(
+                "SetCallsEnabled", bool(enabled), timeout=STATUS_CALL_TIMEOUT_SEC,
+            ))
+        except ValueError as error:
+            raise BackendError(str(error)) from error
+
     def calls(self) -> CallsSnapshot:
         try:
             return decode_calls(self._calls_call("ListCalls", timeout=STATUS_CALL_TIMEOUT_SEC))

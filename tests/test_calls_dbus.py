@@ -288,3 +288,41 @@ def test_dial_quota_is_enforced_over_the_bus_without_blocking_answer(rate_limite
     assert calls.requests.count(("dial", "0441234567")) == 6
     now[0] += 61
     assert "error" not in _call(name, CALLS_IFACE, "Dial", "0441234567")
+
+
+def test_set_calls_enabled_saves_through_the_daemon_hook() -> None:
+    toggles = []
+
+    def configure(enabled):
+        toggles.append(enabled)
+        return {"calls_enabled": enabled, "calls_state": "unavailable" if enabled else "disabled"}
+
+    bus = dbus.SessionBus()
+    name = f"{BUS_NAME}.Callsp{os.getpid()}n{next(_service_ids)}"
+    bus_name = dbus.service.BusName(name, bus=bus, do_not_queue=True)
+    service = MessagesService(
+        bus_name, _Sessions(),
+        BackendDependencies(
+            status_provider=lambda: {"initializing": False},
+            set_calls_enabled=configure,
+        ),
+    )
+    try:
+        enabled = json.loads(_call(name, CALLS_IFACE, "SetCallsEnabled", True)["value"])
+        disabled = json.loads(_call(name, CALLS_IFACE, "SetCallsEnabled", False)["value"])
+    finally:
+        service.close()
+        service.remove_from_connection()
+        bus.release_name(name)
+
+    assert toggles == [True, False]
+    assert enabled["calls_enabled"] is True and enabled["calls_state"] == "unavailable"
+    assert disabled == {"calls_enabled": False, "calls_state": "disabled"}
+
+
+def test_set_calls_enabled_without_a_daemon_hook_is_not_ready(disabled_service) -> None:
+    name, _service = disabled_service
+
+    outcome = _call(name, CALLS_IFACE, "SetCallsEnabled", True)
+
+    assert outcome["error"].get_dbus_name() == "io.weirdware.BlueFerry.Error.NotReady"

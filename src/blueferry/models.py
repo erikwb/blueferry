@@ -164,8 +164,8 @@ class BackendStatus:
 
 
 CALLS_STATE_TEXT: Mapping[str, str] = {
-    "disabled": "Phone calls are disabled. Set BLUEFERRY_CALLS_ENABLED=true in "
-                "~/.config/blueferry/local.env and restart BlueFerry.",
+    "disabled": "Phone calls are disabled. Enable them in the iPhone settings or "
+                "with 'blueferry calls enable'.",
     "unavailable": "oFono is not running or denies access.",
     "searching": "Waiting for the iPhone's hands-free modem in oFono.",
     "connecting": "Bringing the iPhone's hands-free modem online.",

@@ -1040,7 +1040,7 @@ class BlueFerryApp(App[None]):
             return
         if not self.state.status.calls_enabled:
             self.notify(
-                "Phone calls are disabled; set BLUEFERRY_CALLS_ENABLED=true",
+                "Phone calls are disabled; enable them with 'blueferry calls enable'",
                 severity="warning",
             )
             return

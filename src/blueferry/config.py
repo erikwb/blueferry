@@ -211,7 +211,10 @@ KEEP_PHONE_AUDIO_ON_PHONE: bool = _env_bool(
     "BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE", True
 )
 CALLS_ENABLED: bool = _env_opt_in("BLUEFERRY_CALLS_ENABLED")
-"""Experimental, default-off HFP call control through an optional oFono.
+"""Initial value of the experimental, default-off HFP call control.
+
+A preference saved in settings.json (Qt settings, ``blueferry calls
+enable``/``disable``) wins; see ``blueferry.calls.settings``.
 
 When enabled the daemon watches oFono for the iPhone's hands-free modem and
 exposes the private ``Calls1`` interface. The WirePlumber phone-audio policy

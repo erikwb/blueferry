@@ -5,7 +5,7 @@ import QtQuick.Controls as Controls
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
 
-// Optional, experimental phone calls (BLUEFERRY_CALLS_ENABLED=true). All
+// Optional, experimental phone calls (opt-in in the iPhone settings). All
 // actions go through the bridge; this component performs no I/O itself.
 Kirigami.Dialog {
     id: dialog

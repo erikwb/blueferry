@@ -20,7 +20,7 @@ LEGACY_FRAGMENT_NAME = "90-blueferry-keep-phone-audio.conf"
 #
 # Without calls, this computer offers only source/gateway roles to the phone:
 # no a2dp_sink (music stays on the phone) and no hfp_hf/hsp_hs (calls stay on
-# the phone). With BLUEFERRY_CALLS_ENABLED the hands-free roles are kept so
+# the phone). With phone calls enabled the hands-free roles are kept so
 # oFono's HFP modem can carry call audio here, while a2dp_sink is still
 # stripped: music stays on the phone, calls can come to the PC. Auto-connect
 # stays empty in both cases; BlueFerry's call controller asks oFono to bring
@@ -32,7 +32,7 @@ CALL_ROLES = ("hfp_hf", "hsp_hs")
 def fragment_text(*, allow_calls: bool = False) -> str:
     roles = BASE_ROLES + (CALL_ROLES if allow_calls else ())
     calls_note = (
-        "# BLUEFERRY_CALLS_ENABLED=true keeps the hands-free roles (hfp_hf,\n"
+        "# BlueFerry phone calls are enabled: keep the hands-free roles (hfp_hf,\n"
         "# hsp_hs) so calls can reach this computer; a2dp_sink stays off.\n"
         if allow_calls
         else ""
