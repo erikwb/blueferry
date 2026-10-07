@@ -375,6 +375,38 @@ def test_quoted_printable_photo_continues_through_soft_line_breaks() -> None:
     assert card == "VERSION:2.1\nFN:Printable\nTEL;CELL:+15551112222\nNOTE:after="
 
 
+def test_colon_less_lines_never_start_a_skipped_property() -> None:
+    # A vCard 2.1 quoted-printable ADR continues unindented after its soft
+    # line break. Its next line reads like a KEY parameter list but has no
+    # ":", so it is not a property and must not swallow the lines after it.
+    blob = (
+        "BEGIN:VCARD\nVERSION:2.1\nFN:Postbox\n"
+        "ADR;ENCODING=QUOTED-PRINTABLE:;;Main St 1=\nKey;box 12\n"
+        "TEL;CELL:+15553334444\nEND:VCARD\n"
+    )
+
+    assert _parse_vcard_records(blob) == [("Postbox", ["15553334444"], [])]
+    [card] = list(iter_vcard_bodies(blob, maximum=1))
+    assert "Key;box 12" in card.split("\n")
+
+
+def test_soft_break_continuations_of_kept_values_are_not_properties() -> None:
+    # Even with a ":" the soft-break continuation of a kept quoted-printable
+    # value belongs to that value and cannot start a PHOTO or KEY.
+    blob = (
+        "BEGIN:VCARD\nVERSION:2.1\nFN:Noted\n"
+        "NOTE;ENCODING=QUOTED-PRINTABLE:first=\nKey;note: second=\nphoto: third\n"
+        "EMAIL:n@example.com\nEND:VCARD\n"
+    )
+
+    [card] = list(iter_vcard_bodies(blob, maximum=1))
+    assert card.split("\n") == [
+        "VERSION:2.1", "FN:Noted",
+        "NOTE;ENCODING=QUOTED-PRINTABLE:first=", "Key;note: second=", "photo: third",
+        "EMAIL:n@example.com",
+    ]
+
+
 def test_skipped_photo_lines_with_crlf_line_endings() -> None:
     photo = "/9j/" + "A" * 1_100_000
     blob = (

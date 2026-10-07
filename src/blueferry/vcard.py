@@ -25,12 +25,20 @@ def _skipped_property(line: str) -> bool | None:
     """
     if line[:1] in (" ", "\t"):
         return None  # a folded continuation never starts a property
-    head = line.split(":", 1)[0]
+    head, separator, _value = line.partition(":")
+    if not separator:
+        return None  # every property has a value after ":"
     name = head.split(";", 1)[0].strip().rsplit(".", 1)[-1].casefold()
     if name not in _SKIPPED_PROPERTIES:
         return None
     parameters = {part.strip().upper() for part in head.split(";")[1:]}
     return bool(parameters & {"ENCODING=QUOTED-PRINTABLE", "QUOTED-PRINTABLE"})
+
+
+def _is_quoted_printable(line: str) -> bool:
+    """Whether a property line declares a vCard 2.1 quoted-printable value."""
+    head, separator, _value = line.partition(":")
+    return bool(separator) and "QUOTED-PRINTABLE" in head.upper()
 
 
 def _continues_skipped(line: str, previous: str, quoted_printable: bool) -> bool:
@@ -94,6 +102,9 @@ def iter_vcard_bodies(
     size = 0
     lines: list[str] = []
     skipping: bool | None = None
+    # A kept quoted-printable value continues on the next line after a soft
+    # line break, and that line must not be mistaken for a new property.
+    kept_quoted_printable = False
     previous = ""
 
     source = (
@@ -107,6 +118,7 @@ def iter_vcard_bodies(
             active = True
             overflowed = False
             skipping = None
+            kept_quoted_printable = False
             size = 0
             lines = []
             continue
@@ -119,6 +131,7 @@ def iter_vcard_bodies(
             active = False
             overflowed = False
             skipping = None
+            kept_quoted_printable = False
             size = 0
             lines = []
             continue
@@ -127,7 +140,10 @@ def iter_vcard_bodies(
         if skipping is not None and _continues_skipped(line, previous, skipping):
             previous = line
             continue
-        skipping = _skipped_property(line)
+        if not (kept_quoted_printable and previous.rstrip().endswith("=")):
+            # Not a soft-break continuation of a kept quoted-printable value.
+            skipping = _skipped_property(line)
+            kept_quoted_printable = skipping is None and _is_quoted_printable(line)
         previous = line
         if skipping is not None:
             continue
