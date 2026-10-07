@@ -1484,7 +1484,7 @@ class _TetherBackend(_Backend):
             raise TetherUnsupportedError("the running backend does not support tethering")
         if self.fail:
             raise BackendError(self.fail)
-        return TetherStatus.from_dict(state)
+        return TetherStatus.from_dict({"enabled": True, **state})
 
     def tether_state(self):
         return self._tether("state", {"state": "off"})

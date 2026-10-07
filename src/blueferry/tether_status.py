@@ -63,6 +63,11 @@ class TetherStatus:
             if self.external:
                 return _("Using the iPhone's Personal Hotspot (started outside BlueFerry).")
             return _("Using the iPhone's Personal Hotspot over Bluetooth.")
+        if not self.enabled:
+            return _(
+                "Bluetooth tethering is turned off. BlueFerry leaves Bluetooth "
+                "network connections alone until you enable it."
+            )
         if self.state == "failed" or self.error:
             return tether_error_hint(self.error)
         return _("Not sharing the iPhone's internet connection.")

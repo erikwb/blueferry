@@ -15,16 +15,29 @@ runner = CliRunner()
 
 
 class _Client:
-    def __init__(self, states, *, error=None) -> None:
+    def __init__(self, states, *, error=None, enabled=True) -> None:
         self.states = list(states)
         self.error = error
+        self.enabled = enabled
         self.calls: list[str] = []
 
     def _next(self, name):
         self.calls.append(name)
         if self.error is not None:
             raise self.error
-        return TetherStatus.from_dict(self.states.pop(0) if len(self.states) > 1 else self.states[0])
+        state = self.states.pop(0) if len(self.states) > 1 else self.states[0]
+        return TetherStatus.from_dict({"enabled": self.enabled, **state})
+
+    def tether_configure(self, enabled, autoconnect):
+        self.calls.append(f"configure:{enabled}:{autoconnect}")
+        self.enabled = enabled
+        return self._next_after_configure(autoconnect)
+
+    def _next_after_configure(self, autoconnect):
+        state = self.states.pop(0) if len(self.states) > 1 else self.states[0]
+        return TetherStatus.from_dict(
+            {"enabled": self.enabled, "autoconnect": autoconnect, **state}
+        )
 
     def tether_state(self):
         return self._next("state")
@@ -150,3 +163,86 @@ def test_every_backend_token_has_specific_guidance() -> None:
     generic = tether_error_hint("unknown")
     for token in tether.ERROR_TOKENS - {tether.GENERIC_ERROR}:
         assert tether_error_hint(token) != generic, token
+
+
+class _DisabledClient(_Client):
+    """A daemon with tethering off: Connect is refused with NotReady."""
+
+    def tether_connect(self):
+        self.calls.append("connect")
+        raise BackendError(
+            "Bluetooth tethering is turned off; enable it in BlueFerry's "
+            "iPhone settings or with 'blueferry tether enable'"
+        )
+
+
+def test_on_while_disabled_is_refused_with_a_clear_message(fake) -> None:
+    client = fake(_DisabledClient([{"state": "off"}], enabled=False))
+    result = runner.invoke(cli.app, ["tether", "on"])
+    assert result.exit_code == 2
+    assert client.calls == ["connect", "state"]
+    assert "turned off" in result.output
+    assert "blueferry tether enable" in result.output
+
+
+def test_other_refusals_keep_the_daemon_message(fake) -> None:
+    class _NotConnected(_Client):
+        def tether_connect(self):
+            self.calls.append("connect")
+            raise BackendError("the iPhone is not connected over Bluetooth yet")
+
+    fake(_NotConnected([{"state": "off"}], enabled=True))
+    result = runner.invoke(cli.app, ["tether", "on"])
+    assert result.exit_code == 2
+    assert "not connected over Bluetooth" in result.output
+    assert "blueferry tether enable" not in result.output
+
+
+def test_status_while_disabled_says_so(fake) -> None:
+    fake(_Client([{"state": "off"}], enabled=False))
+    result = runner.invoke(cli.app, ["tether"])
+    assert result.exit_code == 0
+    assert "turned off" in result.output
+
+
+def test_enable_keeps_the_saved_automatic_choice(fake) -> None:
+    client = fake(_Client([{"state": "off", "autoconnect": True}], enabled=False))
+    result = runner.invoke(cli.app, ["tether", "enable"])
+    assert result.exit_code == 0, result.output
+    assert client.calls == ["state", "configure:True:True"]
+    assert "Not sharing" in result.output
+
+
+@pytest.mark.parametrize(("flag", "expected"), [
+    ("--autoconnect", True), ("--no-autoconnect", False),
+])
+def test_enable_can_set_automatic_tethering(fake, flag, expected) -> None:
+    client = fake(_Client([{"state": "off"}], enabled=False))
+    result = runner.invoke(cli.app, ["tether", "enable", flag, "--json"])
+    assert result.exit_code == 0, result.output
+    assert client.calls == [f"configure:True:{expected}"]
+    payload = json.loads(result.output)
+    assert (payload["enabled"], payload["autoconnect"]) == (True, expected)
+
+
+def test_disable_waits_for_our_own_link_to_stop(fake) -> None:
+    client = fake(_Client([{"state": "off"}, {"state": "disconnecting"}, {"state": "off"}]))
+    result = runner.invoke(cli.app, ["tether", "disable"])
+    assert result.exit_code == 0, result.output
+    assert client.calls == ["state", "configure:False:False", "state"]
+    assert "turned off" in result.output
+
+
+def test_autoconnect_flag_is_only_for_enable(fake) -> None:
+    client = fake(_Client([{"state": "off"}]))
+    result = runner.invoke(cli.app, ["tether", "on", "--autoconnect"])
+    assert result.exit_code == 2
+    assert client.calls == []
+
+
+def test_disabled_summary_is_shared_by_every_client() -> None:
+    off = TetherStatus.from_dict({"state": "off", "enabled": False})
+    assert "turned off" in off.summary()
+    # A stop that is still in flight after disabling is still described.
+    stopping = TetherStatus.from_dict({"state": "disconnecting", "enabled": False})
+    assert "Disconnecting" in stopping.summary()
