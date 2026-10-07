@@ -254,7 +254,9 @@ class Daemon:
                 and self.bearers.bredr_connected and self.bearers.le_state is not None
                 and self.solicitation.active()
             ),
-            busy=self.bearers.busy,
+            # A recovery power cycle drops Classic, and with it the audio of a
+            # call routed to this computer. An LE hiccup is not worth that.
+            busy=self.bearers.busy or self.calls.in_call,
         )
 
     def _pause_for_recovery(self) -> None:

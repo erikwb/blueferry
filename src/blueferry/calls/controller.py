@@ -188,6 +188,11 @@ class CallController:
     def calls(self) -> list[CallRecord]:
         return list(self._calls.values())
 
+    @property
+    def in_call(self) -> bool:
+        """Whether the phone reports any call (ringing, dialing, active, held)."""
+        return bool(self._calls)
+
     def snapshot(self) -> dict[str, object]:
         """Non-sensitive status fields merged into GetStatus."""
         return {

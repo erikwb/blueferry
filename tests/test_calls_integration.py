@@ -128,3 +128,15 @@ def test_controller_changes_reach_the_bus_signals(make_daemon) -> None:
     instance.calls._on_state_changed()
 
     assert emitted == ["calls", "status"]
+
+
+def test_bluetooth_recovery_is_held_back_during_a_call(make_daemon) -> None:
+    instance = make_daemon()
+
+    assert instance.bearers.busy is False
+    assert instance._recovery_observation().busy is False
+    instance.calls._calls["voicecall01"] = object()
+    assert instance.calls.in_call is True
+    assert instance._recovery_observation().busy is True
+    instance.calls._calls.clear()
+    assert instance._recovery_observation().busy is False
