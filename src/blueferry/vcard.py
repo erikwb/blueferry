@@ -105,11 +105,41 @@ def _continues_skipped(line: str, previous: str, mode: str) -> bool:
 def iter_bounded_lines(stream: TextIO, *, limit: int = MAX_VCARD_CHARS) -> Iterator[str]:
     """Read a text stream line by line, splitting any line longer than ``limit``.
 
-    A phonebook without line breaks must not become one enormous string. A
-    split piece of an over-long property is either skipped media data (base64
-    only) or text that overflows the card budget anyway.
+    A phonebook without line breaks must not become one enormous string. Only
+    the last piece of a split line keeps its line break, which is how
+    ``iter_vcard_bodies`` tells the pieces of one over-long line apart from
+    separate lines.
     """
     return iter(lambda: stream.readline(max(1, int(limit))), "")
+
+
+def _line_pieces(blob: str | Iterable[str]) -> Iterator[tuple[str, bool, bool]]:
+    """Yield ``(text, continued, complete)`` for every piece of every line.
+
+    Lines are split at every ``str.splitlines()`` boundary, not only at
+    ``"\n"`` and ``"\r"``: the name a card yields must not depend on whether
+    it came from a MAP bMessage string or from a streamed phonebook.
+    ``continued`` marks a piece of a line whose start was already yielded,
+    because a bounded reader cut the line. ``complete`` marks the piece that
+    ends its line. A ``"\r\n"`` cut between two pieces is one line break.
+    """
+    chunks: Iterable[str] = (blob,) if isinstance(blob, str) else blob
+    pending: tuple[str, bool, bool] | None = None
+    continued = False
+    after_carriage_return = False
+    for chunk in chunks:
+        if after_carriage_return and chunk[:1] == "\n":
+            chunk = chunk[1:]
+        after_carriage_return = chunk[-1:] == "\r"
+        for piece in chunk.splitlines(keepends=True):
+            text = piece.splitlines()[0]
+            terminated = len(text) < len(piece)
+            if pending is not None:
+                yield pending
+            pending = (text, continued, terminated)
+            continued = not terminated
+    if pending is not None:
+        yield pending[0], pending[1], True
 
 
 def iter_vcard_bodies(
@@ -126,17 +156,19 @@ def iter_vcard_bodies(
     Oversized cards are discarded through their matching terminator.
 
     ``blob`` is either the whole text or an iterable of lines, such as a text
-    file opened with universal newlines. Lines are split further at the
-    other ``str.splitlines()`` boundaries (U+2028, form feed, and so on), so
-    both forms see the same lines. Iterating a file keeps only the
-    current line and card in memory instead of the whole phonebook plus its
-    split copy.
+    file opened with universal newlines or ``iter_bounded_lines``. Lines are
+    split further at the other ``str.splitlines()`` boundaries (U+2028, form
+    feed, and so on), so both forms see the same lines. Iterating a file
+    keeps only the current line and card in memory instead of the whole
+    phonebook plus its split copy.
 
     PHOTO, LOGO, SOUND, and KEY properties (with their continuation lines)
     are skipped and do not count against ``max_card_chars``: nothing here
     reads them, and a large contact picture must not discard the card's name
-    and addresses. Skipped lines are never retained, so memory stays bounded
-    by the card budget.
+    and addresses. Every piece of an over-long line that a bounded reader
+    cut belongs to that line, so an unfolded media value of any encoding is
+    skipped whole and a kept line is rejoined. Skipped lines are never
+    retained, so memory stays bounded by the card budget.
     """
     selected_maximum = max(0, int(maximum))
     selected_card_limit = max(0, int(max_card_chars))
@@ -149,18 +181,26 @@ def iter_vcard_bodies(
     # A kept quoted-printable value continues on the next line after a soft
     # line break, and that line must not be mistaken for a new property.
     kept_quoted_printable = False
+    # Whether the line the current piece belongs to is being dropped.
+    dropping = True
     previous = ""
 
-    # Both forms split at every str.splitlines() boundary, not only at
-    # "\n" and "\r": the name a card yields must not depend on whether it
-    # came from a MAP bMessage string or from a streamed phonebook.
-    source = (
-        blob.splitlines()
-        if isinstance(blob, str)
-        else (line for chunk in blob for line in chunk.splitlines())
-    )
-    for line in source:
-        marker = line.strip().casefold()
+    for line, continued, complete in _line_pieces(blob):
+        if continued:
+            previous = line
+            if dropping:
+                continue
+            size += len(line)
+            if size > selected_card_limit:
+                overflowed = True
+                dropping = True
+                lines = []
+                continue
+            lines[-1] += line
+            continue
+        dropping = True
+        # A cut piece is never a whole marker line.
+        marker = line.strip().casefold() if complete else ""
         if marker == "begin:vcard":
             active = True
             overflowed = False
@@ -200,3 +240,4 @@ def iter_vcard_bodies(
             lines = []
             continue
         lines.append(line)
+        dropping = False

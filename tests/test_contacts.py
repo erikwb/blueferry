@@ -476,6 +476,45 @@ def test_streamed_lines_are_bounded_and_media_chunks_are_still_skipped() -> None
     ]
 
 
+@pytest.mark.parametrize(
+    "media",
+    [
+        "PHOTO;ENCODING=QUOTED-PRINTABLE;TYPE=JPEG:" + "=FF=D8:x" * 2_000,
+        "PHOTO:data:image/jpeg;base64," + "QUJD:" * 3_000,
+        "LOGO;VALUE=uri:https://example.invalid/" + "a" * 15_000,
+    ],
+    ids=["quoted-printable", "data-uri", "uri"],
+)
+def test_every_piece_of_an_over_long_media_line_is_skipped(media) -> None:
+    import io
+
+    from blueferry.vcard import iter_bounded_lines
+
+    # Any encoding of an unfolded media line longer than the reader limit is
+    # skipped whole; none of its pieces counts against the card budget.
+    blob = f"BEGIN:VCARD\r\nFN:Long\r\n{media}\r\nTEL:+15550004444\r\nEND:VCARD\r\n"
+    pieces = iter_bounded_lines(io.StringIO(blob, newline=None), limit=1_000)
+    assert list(iter_vcard_bodies(pieces, maximum=1, max_card_chars=2_000)) == [
+        "FN:Long\nTEL:+15550004444",
+    ]
+
+
+def test_pieces_of_a_kept_over_long_line_are_rejoined() -> None:
+    import io
+
+    from blueferry.vcard import iter_bounded_lines
+
+    note = "NOTE:" + "n" * 2_500
+    blob = f"BEGIN:VCARD\nFN:Noted\n{note}\nEND:VCARD\nBEGIN:VCARD\nFN:{'y' * 5_000}\nEND:VCARD\n"
+    # A "\r\n" cut between two pieces is still one line break.
+    crlf = ["BEGIN:VCARD\r", "\nFN:Split\r", "\n", "END:VCARD\r\n"]
+
+    assert list(iter_vcard_bodies(
+        iter_bounded_lines(io.StringIO(blob), limit=1_000), maximum=5, max_card_chars=4_000,
+    )) == [f"FN:Noted\n{note}"]
+    assert list(iter_vcard_bodies(crlf, maximum=1)) == ["FN:Split"]
+
+
 @pytest.mark.parametrize("separator", ["\u2028", "\u2029", "\x0c", "\x0b", "\x85", "\x1e"])
 def test_unicode_line_separators_split_names_the_same_on_every_path(separator) -> None:
     import io
