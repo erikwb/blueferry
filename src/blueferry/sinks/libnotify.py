@@ -33,7 +33,10 @@ from blueferry.ancs.events import AncsEvent
 from blueferry.bus import get_session_bus
 from blueferry.client_activation import activation_argv, select_client
 from blueferry.events import SmsEvent
-from blueferry.limits import MAX_DESKTOP_MESSAGE_TRACKERS
+from blueferry.limits import (
+    MAX_DESKTOP_MESSAGE_TRACKERS,
+    MAX_NOTIFICATION_CLICK_TRACKERS,
+)
 from blueferry.notification_open import helper_argv
 from blueferry.notification_policy import (
     ALL_NOTIFICATIONS,
@@ -237,29 +240,34 @@ class LibnotifySink:
         self._prune_trackers()
 
     def _prune_trackers(self) -> None:
-        """Bound read-state subscriptions if close signals never arrive."""
+        """Bound read-state and click trackers if close signals never arrive.
+
+        Message popups and mapped app popups have separate budgets: a burst
+        of iPhone app notifications must never evict a message popup and
+        with it the dismiss-to-read sync, as it could not before click rules.
+        """
         open_messages = getattr(self, "_open_messages", {})
+        while len(set(self._pending) | set(open_messages)) > MAX_DESKTOP_MESSAGE_TRACKERS:
+            self._evict(next(iter(open_messages or self._pending)))
         open_apps = getattr(self, "_open_apps", {})
-        while (
-            len(set(self._pending) | set(open_messages) | set(open_apps))
-            > MAX_DESKTOP_MESSAGE_TRACKERS
-        ):
-            tracked = open_messages or open_apps or self._pending
-            oldest = next(iter(tracked))
-            self._pending.pop(oldest, None)
-            open_messages.pop(oldest, None)
-            open_apps.pop(oldest, None)
-            getattr(self, "_activation_tokens", {}).pop(oldest, None)
-            subscription = self._msg_subs.pop(oldest, None)
-            if subscription is not None:
-                try:
-                    subscription.remove()
-                except Exception:
-                    log.debug("could not remove stale message watch", exc_info=True)
+        while len(open_apps) > MAX_NOTIFICATION_CLICK_TRACKERS:
+            self._evict(next(iter(open_apps)))
+
+    def _evict(self, oldest: int) -> None:
+        self._pending.pop(oldest, None)
+        getattr(self, "_open_messages", {}).pop(oldest, None)
+        getattr(self, "_open_apps", {}).pop(oldest, None)
+        getattr(self, "_activation_tokens", {}).pop(oldest, None)
+        subscription = self._msg_subs.pop(oldest, None)
+        if subscription is not None:
             try:
-                self._notif.CloseNotification(dbus.UInt32(oldest))
-            except dbus.exceptions.DBusException:
-                log.debug("could not close stale desktop notification", exc_info=True)
+                subscription.remove()
+            except Exception:
+                log.debug("could not remove stale message watch", exc_info=True)
+        try:
+            self._notif.CloseNotification(dbus.UInt32(oldest))
+        except dbus.exceptions.DBusException:
+            log.debug("could not close stale desktop notification", exc_info=True)
 
     # ---- ANCS events (per-app notifications) ----------------------------
 

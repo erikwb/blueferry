@@ -584,7 +584,7 @@ def test_messages_popups_and_legacy_sinks_are_unaffected(monkeypatch) -> None:
 
 def test_click_trackers_are_bounded_and_released_on_close(monkeypatch) -> None:
     sink = _clickable_sink({"com.slack": "slack.desktop"}, [], monkeypatch)
-    monkeypatch.setattr(libnotify_mod, "MAX_DESKTOP_MESSAGE_TRACKERS", 2)
+    monkeypatch.setattr(libnotify_mod, "MAX_NOTIFICATION_CLICK_TRACKERS", 2)
     for _ in range(4):
         sink.handle_ancs(_ancs("com.slack"))
 
@@ -594,3 +594,32 @@ def test_click_trackers_are_bounded_and_released_on_close(monkeypatch) -> None:
     sink._match = sink._action_match = sink._token_match = None
     sink.close()
     assert sink._open_apps == {}
+
+
+def test_app_popups_never_evict_a_message_popup(monkeypatch) -> None:
+    sink = _clickable_sink({"com.slack": "slack.desktop"}, [], monkeypatch)
+    monkeypatch.setattr(libnotify_mod, "MAX_DESKTOP_MESSAGE_TRACKERS", 2)
+    monkeypatch.setattr(libnotify_mod, "MAX_NOTIFICATION_CLICK_TRACKERS", 2)
+    sink._open_messages = {7: "message-7"}
+    sink._pending = {7: "/org/bluez/obex/message7"}
+
+    for _ in range(5):
+        sink.handle_ancs(_ancs("com.slack"))
+
+    assert sink._open_messages == {7: "message-7"}
+    assert sink._pending == {7: "/org/bluez/obex/message7"}
+    assert ("close", 7) not in sink._notif.calls
+    assert len(sink._open_apps) == 2
+
+
+def test_message_popups_never_evict_a_clickable_app_popup(monkeypatch) -> None:
+    sink = _clickable_sink({"com.slack": "slack.desktop"}, [], monkeypatch)
+    monkeypatch.setattr(libnotify_mod, "MAX_DESKTOP_MESSAGE_TRACKERS", 1)
+    sink.handle_ancs(_ancs("com.slack"))
+    app_popup = sink._notif.next_id
+    sink._open_messages = {1: "message-1", 2: "message-2"}
+
+    sink._prune_trackers()
+
+    assert sink._open_messages == {2: "message-2"}
+    assert app_popup in sink._open_apps
