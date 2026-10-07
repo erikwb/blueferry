@@ -5,13 +5,27 @@ Bluetooth connection to the iPhone and all stored state. The GTK, Qt/Kirigami,
 Quickshell, and terminal clients, as well as the CLI, are thin clients of a
 private session D-Bus API.
 
-```text
-GTK client ───────┐
-Qt client ────────┤
-TUI client ───────┼── session D-Bus ── backend daemon ── BlueZ system D-Bus
-Quickshell client ┘                         │
-                                           ├── BlueZ OBEX session D-Bus
-                                           └── private state and notifications
+```mermaid
+flowchart LR
+    subgraph clients["Clients"]
+        gtk["GTK"]
+        qt["Qt/Kirigami"]
+        tui["Terminal (TUI)"]
+        cli["CLI"]
+        bridge["quickshell_bridge"]
+    end
+    qs["Quickshell"] -- "stdin" --> bridge
+    daemon["Backend daemon<br>blueferry-backend"]
+    bluez["BlueZ<br>(system D-Bus)"]
+    obex["BlueZ OBEX<br>(session D-Bus)"]
+    state["Private state<br>and notifications"]
+    iphone(["iPhone"])
+    clients -- "session D-Bus" --> daemon
+    daemon --> bluez
+    daemon --> obex
+    daemon --> state
+    bluez -- "ANCS over LE" --> iphone
+    obex -- "MAP and PBAP over Classic" --> iphone
 ```
 
 ## Where to read next

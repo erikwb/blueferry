@@ -5,13 +5,27 @@ Benutzer besitzt jede Bluetooth-Verbindung zum iPhone und alle gespeicherten
 Daten. Die Clients für GTK, Qt/Kirigami, Quickshell und das Terminal sowie die
 CLI sind schlanke Clients einer privaten D-Bus-API auf dem Session-Bus.
 
-```text
-GTK client ───────┐
-Qt client ────────┤
-TUI client ───────┼── session D-Bus ── backend daemon ── BlueZ system D-Bus
-Quickshell client ┘                         │
-                                           ├── BlueZ OBEX session D-Bus
-                                           └── private state and notifications
+```mermaid
+flowchart LR
+    subgraph clients["Clients"]
+        gtk["GTK"]
+        qt["Qt/Kirigami"]
+        tui["Terminal (TUI)"]
+        cli["CLI"]
+        bridge["quickshell_bridge"]
+    end
+    qs["Quickshell"] -- "stdin" --> bridge
+    daemon["Backend-Daemon<br>blueferry-backend"]
+    bluez["BlueZ<br>(System-D-Bus)"]
+    obex["BlueZ OBEX<br>(Session-D-Bus)"]
+    state["Private Daten<br>und Mitteilungen"]
+    iphone(["iPhone"])
+    clients -- "Session-D-Bus" --> daemon
+    daemon --> bluez
+    daemon --> obex
+    daemon --> state
+    bluez -- "ANCS über LE" --> iphone
+    obex -- "MAP und PBAP über Classic" --> iphone
 ```
 
 ## Weiterlesen

@@ -51,6 +51,37 @@ independent axes instead of a table of device quirks:
 Confirmation in the initiating client is mandatory; no caller falls through to
 a desktop Bluetooth agent.
 
+### Pairing sequence (full mode, Connect-first)
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant Client as BlueFerry client
+    participant BlueZ
+    participant iPhone
+    participant Daemon as Backend daemon
+    Client->>BlueZ: Register device-scoped pairing agent
+    Client->>BlueZ: Device1.Connect() on the unpaired iPhone
+    BlueZ->>iPhone: Classic connection
+    iPhone->>BlueZ: Starts authentication itself
+    BlueZ->>Client: Numeric comparison
+    Client->>User: Confirm the code
+    User->>iPhone: Confirm the same code
+    Note over BlueZ,iPhone: One bond covers Classic and LE<br>(LE keys derived over BR/EDR)
+    Client->>BlueZ: Trust bond, prefer BR/EDR, let Classic settle
+    Client->>BlueZ: Register ANCS solicitation advertisement
+    Client->>Daemon: Start backend
+    Daemon->>iPhone: MAP and PBAP over Classic
+    iPhone-->>User: Shows the Messages and Contacts switches
+    Daemon->>iPhone: LE connection, subscribe to ANCS
+    Daemon->>iPhone: Control Point probe (Messages app name)
+    iPhone-->>Daemon: Data Source response, ANCS ready
+```
+
+Success means MAP/PBAP work end to end, not only that a bond exists. The
+behavior behind each step is documented in
+[PROTOCOL.md](https://github.com/erikwb/blueferry/blob/main/PROTOCOL.md#pairing-and-iphone-permissions).
+
 ## Storage and privacy
 
 - Everything from the iPhone is untrusted input. Parsers, transfers, and

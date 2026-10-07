@@ -53,6 +53,38 @@ unabhängige Achsen auf, statt eine Tabelle mit Geräteeigenheiten zu pflegen:
 Die Bestätigung im auslösenden Client ist Pflicht; kein Aufrufer fällt auf
 einen Bluetooth-Agenten des Desktops zurück.
 
+### Ablauf der Kopplung (voller Modus, Connect-first)
+
+```mermaid
+sequenceDiagram
+    actor Nutzer
+    participant Client as BlueFerry-Client
+    participant BlueZ
+    participant iPhone
+    participant Daemon as Backend-Daemon
+    Client->>BlueZ: Gerätebezogenen Kopplungsagenten registrieren
+    Client->>BlueZ: Device1.Connect() auf das ungekoppelte iPhone
+    BlueZ->>iPhone: Classic-Verbindung
+    iPhone->>BlueZ: Startet die Authentifizierung selbst
+    BlueZ->>Client: Zahlenvergleich
+    Client->>Nutzer: Code bestätigen
+    Nutzer->>iPhone: Denselben Code bestätigen
+    Note over BlueZ,iPhone: Eine Kopplung für Classic und LE<br>(LE-Schlüssel über BR/EDR abgeleitet)
+    Client->>BlueZ: Kopplung vertrauen, BR/EDR bevorzugen, Classic stabilisieren lassen
+    Client->>BlueZ: ANCS-Solicitation-Advertisement registrieren
+    Client->>Daemon: Backend starten
+    Daemon->>iPhone: MAP und PBAP über Classic
+    iPhone-->>Nutzer: Zeigt die Schalter für Nachrichten und Kontakte
+    Daemon->>iPhone: LE-Verbindung, ANCS abonnieren
+    Daemon->>iPhone: Control-Point-Probe (Name der Nachrichten-App)
+    iPhone-->>Daemon: Antwort auf der Data Source, ANCS bereit
+```
+
+Erfolg heißt, dass MAP/PBAP durchgehend funktionieren, nicht nur, dass eine
+Kopplung existiert. Das Verhalten hinter jedem Schritt beschreibt
+[PROTOCOL.md](https://github.com/erikwb/blueferry/blob/main/PROTOCOL.md#pairing-and-iphone-permissions)
+(Englisch).
+
 ## Speicher und Datenschutz
 
 - Alles vom iPhone ist nicht vertrauenswürdige Eingabe. Parser, Übertragungen
