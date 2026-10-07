@@ -311,6 +311,25 @@ def test_avatar_cache_evicts_the_least_recently_used(application, monkeypatch) -
     assert backend.requests.count("+2") == 2
 
 
+def test_avatar_cache_is_bounded_in_bytes(application, monkeypatch) -> None:
+    from blueferry.qt import controller as controller_module
+
+    png = _encoded(8, 8, "PNG")
+    monkeypatch.setattr(controller_module, "MAX_CACHED_AVATAR_BYTES", 2 * len(png))
+    controller, _backend, worker = _queued_controller({"+1": png, "+2": png, "+3": png})
+    for address in ("+1", "+2", "+3"):
+        controller.avatarSource(address)
+        worker.drain()
+    assert controller.avatar_bytes("+1") is None
+    assert controller.avatar_bytes("+2") == png and controller.avatar_bytes("+3") == png
+    # A single avatar above the byte bound is still kept (the newest one).
+    monkeypatch.setattr(controller_module, "MAX_CACHED_AVATAR_BYTES", 1)
+    controller.avatarSource("+1")
+    worker.drain()
+    assert controller.avatar_bytes("+1") == png
+    assert controller.avatar_bytes("+2") is None and controller.avatar_bytes("+3") is None
+
+
 def test_pending_fetches_are_bounded(application, monkeypatch) -> None:
     from blueferry.qt import controller as controller_module
 

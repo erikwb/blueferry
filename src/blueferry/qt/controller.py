@@ -41,9 +41,11 @@ from blueferry.setup_client import (
 )
 
 # Bounds on the per-window avatar cache (least recently used entries are
-# dropped). Photos are small (limits.py), so the cache stays well under the
-# phonebook's own size while covering a long list.
+# dropped). The count covers a long list of small photos; the byte bound
+# keeps large ones (up to limits.MAX_CONTACT_PHOTO_BYTES each) from holding
+# hundreds of MiB of encoded images.
 MAX_CACHED_AVATARS = 512
+MAX_CACHED_AVATAR_BYTES = 32 * 1024 * 1024
 MAX_PENDING_AVATARS = 32
 AVATAR_RETRY_SECONDS = 30
 AVATAR_RETRY_MAX_SECONDS = 600
@@ -189,8 +191,14 @@ class BridgeController(QObject):
                 return
             with self._avatar_lock:
                 self._avatars[key] = data
-                while len(self._avatars) > MAX_CACHED_AVATARS:
-                    self._avatars.popitem(last=False)
+                cached = sum(len(item) for item in self._avatars.values())
+                # The newest avatar always stays, even above the byte bound.
+                while len(self._avatars) > 1 and (
+                    len(self._avatars) > MAX_CACHED_AVATARS
+                    or cached > MAX_CACHED_AVATAR_BYTES
+                ):
+                    _old, dropped = self._avatars.popitem(last=False)
+                    cached -= len(dropped)
             self._avatar_revision += 1
             self.avatarsChanged.emit()
 
