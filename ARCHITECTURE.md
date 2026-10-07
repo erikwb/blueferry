@@ -458,7 +458,10 @@ A change to these rules has to be made in both places.
 - Without systemd, `service_manager` treats the session bus as the service
   manager: start is D-Bus activation, and stop signals the same-user process
   the bus daemon reports as the name owner (SIGTERM, SIGKILL after 180
-  seconds), then waits for the name to disappear. Only a running or enabled
+  seconds), then waits for the name to disappear. The caller's timeout bounds
+  the whole request; when it ends first the request fails with SIGTERM still
+  in effect, like a timed-out `systemctl stop`. A host booted with systemd
+  but without `/usr/bin/systemctl` (NixOS) takes this path too. Only a running or enabled
   OpenRC user service (`packaging/openrc/blueferry`) on the desktop's own bus
   is driven through `rc-service --user`. Neither path has the unit's
   sandboxing.

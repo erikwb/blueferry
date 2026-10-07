@@ -22,10 +22,18 @@ through the session bus:
   upgrade): BlueFerry asks the bus daemon which process owns
   `io.weirdware.BlueFerry` and checks that it runs as the same user. It
   sends that process `SIGTERM` through a pidfd, re-checking the owner first,
-  and waits up to 180 seconds for the name to be released. If needed it then
-  sends `SIGKILL` and waits 5 more seconds, like the systemd unit and the
-  OpenRC script. A restart then activates a new daemon. It does not scan
+  and waits for the name to be released, but never longer than the caller's
+  timeout (30 to 45 seconds for every caller today). Only a caller that
+  allows the full 180-second grace period of the systemd unit and the OpenRC
+  script gets the `SIGKILL` escalation with 5 more seconds; otherwise the
+  request fails like a timed-out `systemctl stop`, with `SIGTERM` still in
+  effect so an in-flight Bluetooth operation can finish. A restart then
+  activates a new daemon within the remaining time. It does not scan
   processes and does not use root.
+- **systemd without `/usr/bin/systemctl`** (NixOS): detection needs both the
+  `/run/systemd/system` marker and the fixed `systemctl` path, so such a
+  host takes the session-bus path above instead of failing on the missing
+  command as it did before.
 
 Unlike the systemd unit's `ConditionPathExists=`, D-Bus activation also starts
 the daemon before a phone is paired.

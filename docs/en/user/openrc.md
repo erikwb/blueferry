@@ -7,7 +7,7 @@ its backend. systemd hosts behave exactly as before.
 
 OpenRC is not part of the CI package matrix and has no package recipe. The
 packaging details are in
-[packaging/openrc/README.md](../../../packaging/openrc/README.md).
+[packaging/openrc/README.md](https://github.com/erikwb/blueferry/blob/main/packaging/openrc/README.md).
 
 ## What it does
 
@@ -26,9 +26,12 @@ flowchart TD
   starts `blueferry run` from the installed activation file.
 - **Stop and restart** (after pairing, forgetting a phone, or an upgrade):
   BlueFerry asks the bus daemon which process owns `io.weirdware.BlueFerry`,
-  checks that it runs as your user, and sends it `SIGTERM`. If it has not
-  exited after 180 seconds, it gets `SIGKILL`. A restart then activates a new
-  daemon. No root and no process scanning are involved.
+  checks that it runs as your user, and sends it `SIGTERM`. A restart then
+  activates a new daemon. BlueFerry waits only as long as the request allows
+  (30 to 45 seconds). A daemon still finishing a Bluetooth transfer by then
+  keeps shutting down on its own, and the request reports that it is still
+  shutting down; try again a moment later. No root and no process scanning
+  are involved.
 - **Repair hints** name `sudo rc-service bluetooth restart` on OpenRC and a
   generic "restart the Bluetooth service" when the init system is unknown.
 
@@ -87,8 +90,12 @@ The daemon then logs to `~/.local/state/blueferry/daemon.log`.
   with your normal user rights. The user service keeps `umask 077` and
   `no_new_privs`.
 - D-Bus activation also starts the daemon before a phone is paired.
-- `blueferry pair` stops the old daemon synchronously and can wait up to
-  about three minutes if that daemon hangs.
+- `blueferry pair` waits at most 30 seconds for the old daemon to exit. A hung
+  daemon is not killed; end it yourself or log out and back in.
+- A system booted with systemd whose `systemctl` is not at
+  `/usr/bin/systemctl` (NixOS, for example) is treated like a host without
+  systemd: BlueFerry uses D-Bus activation and signals instead of failing on
+  the missing command.
 - Experimental mode is found through `/proc`. A bundled option such as `-nE`
   is not recognized, and with `/proc` mounted `hidepid=1` or `2` it reads as
   inactive.

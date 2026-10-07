@@ -7,7 +7,7 @@ sein Backend über den Session-Bus. Auf systemd-Systemen ändert sich nichts.
 
 OpenRC ist nicht Teil der CI-Paketmatrix und hat kein Paketrezept. Die
 Paketierungsdetails stehen in
-[packaging/openrc/README.md](../../../packaging/openrc/README.md).
+[packaging/openrc/README.md](https://github.com/erikwb/blueferry/blob/main/packaging/openrc/README.md).
 
 ## Was es tut
 
@@ -28,9 +28,12 @@ flowchart TD
 - **Stopp und Neustart** (nach dem Koppeln, dem Entfernen eines Telefons oder
   einem Update): BlueFerry fragt den Bus-Daemon, welcher Prozess
   `io.weirdware.BlueFerry` besitzt, prüft, dass er unter deinem Benutzer
-  läuft, und schickt ihm `SIGTERM`. Ist er nach 180 Sekunden nicht beendet,
-  folgt `SIGKILL`. Ein Neustart aktiviert danach einen neuen Daemon. Dafür
-  braucht es weder Root noch das Durchsuchen der Prozessliste.
+  läuft, und schickt ihm `SIGTERM`. Ein Neustart aktiviert danach einen
+  neuen Daemon. BlueFerry wartet nur so lange, wie die Anfrage erlaubt (30
+  bis 45 Sekunden). Ein Daemon, der dann noch eine Bluetooth-Übertragung
+  abschliesst, beendet sich danach von selbst, und die Anfrage meldet, dass
+  er noch herunterfährt; versuche es kurz darauf erneut. Dafür braucht es
+  weder Root noch das Durchsuchen der Prozessliste.
 - **Reparaturhinweise** nennen unter OpenRC `sudo rc-service bluetooth
   restart` und bei unbekanntem Init-System allgemein „den Bluetooth-Dienst
   neu starten“.
@@ -91,8 +94,13 @@ Der Daemon schreibt sein Log dann nach `~/.local/state/blueferry/daemon.log`.
   läuft also mit deinen normalen Benutzerrechten. Der User-Service behält
   `umask 077` und `no_new_privs`.
 - D-Bus-Aktivierung startet den Daemon auch, bevor ein Telefon gekoppelt ist.
-- `blueferry pair` beendet den alten Daemon synchron und kann bis zu etwa drei
-  Minuten warten, wenn dieser hängt.
+- `blueferry pair` wartet höchstens 30 Sekunden, bis der alte Daemon beendet
+  ist. Ein hängender Daemon wird nicht abgeschossen; beende ihn selbst oder
+  melde dich ab und wieder an.
+- Ein mit systemd gestartetes System, dessen `systemctl` nicht unter
+  `/usr/bin/systemctl` liegt (zum Beispiel NixOS), wird wie ein System ohne
+  systemd behandelt: BlueFerry nutzt D-Bus-Aktivierung und Signale, statt am
+  fehlenden Befehl zu scheitern.
 - Den Experimental-Modus erkennt BlueFerry über `/proc`. Eine gebündelte
   Option wie `-nE` wird nicht erkannt, und bei `/proc` mit `hidepid=1` oder
   `2` gilt er als inaktiv.
