@@ -72,12 +72,31 @@ SUDO_NO_NEW_PRIVILEGES_MESSAGE = (
     "no_new_privs set, such as the default OpenRC BlueFerry service. See "
     f"BlueFerry's OpenRC notes, or run: sudo {SET_COD_HELPER} {{index}}"
 )
+# Matched case-insensitively against output produced under LC_ALL=C. Covers
+# sudo 1.9 and sudo-rs (src/common/error.rs). Wording missing here is still
+# safe: the adapter-class supervisor backs off every failed repair.
 _SUDO_REFUSAL_MARKERS = (
+    # sudo: -n with a rule that needs a password.
     "a password is required",
+    # sudo-rs: -n with a rule that needs a password.
+    "interactive authentication is required",
+    # Both: no rule for this command ("Sorry, user U is not allowed to
+    # execute 'CMD' as root on HOST." / "Sorry, user U may not run CMD on
+    # HOST.").
     "is not allowed to execute",
+    "may not run",
+    # sudo: user in no rule at all.
     "is not in the sudoers file",
-    "may not run sudo",
+    # sudo-rs: user in no rule at all.
+    "i'm afraid i can't do that",
+    # sudo: Defaults requiretty, or a password prompt without a terminal.
+    "must have a tty",
     "a terminal is required",
+    # Both: repeated wrong passwords (a cached prompt answered elsewhere).
+    "incorrect password attempt",
+    "incorrect authentication attempts",
+    # Both: a broken sudo installation cannot authorize anything.
+    "must be owned by uid 0 and have the setuid bit set",
 )
 
 

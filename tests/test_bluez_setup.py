@@ -212,6 +212,19 @@ def test_without_systemd_the_helper_runs_through_noninteractive_sudo(monkeypatch
         "alice is not in the sudoers file.\n",
         "Sorry, user alice is not allowed to execute "
         "'/usr/lib/blueferry/blueferry-set-cod 2' as root on host.\n",
+        "Sorry, user alice may not run sudo on host.\n",
+        # Defaults requiretty
+        "sudo: sorry, you must have a tty to run sudo\n",
+        "sudo: a terminal is required to read the password; either use the -S "
+        "option to read from standard input or configure an askpass helper\n",
+        "sudo: 3 incorrect password attempts\n",
+        "sudo: /usr/bin/sudo must be owned by uid 0 and have the setuid bit set\n",
+        # sudo-rs, wording from src/common/error.rs
+        "sudo: interactive authentication is required\n",
+        "sudo: I'm sorry alice. I'm afraid I can't do that\n",
+        "sudo-rs: Sorry, user alice may not run "
+        "/usr/lib/blueferry/blueferry-set-cod 2 on host.\n",
+        "sudo: maximum 3 incorrect authentication attempts\n",
     ],
 )
 def test_unauthorized_sudo_explains_the_sudoers_rule(monkeypatch, stderr):
