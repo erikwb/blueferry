@@ -15,3 +15,4 @@ src/blueferry/qt/qml/GroupConfirmationDialog.qml
 src/blueferry/qt/qml/NewMessageDialog.qml
 src/blueferry/qt/qml/ProximityLockSettings.qml
 src/blueferry/qt/qml/RecentCallsPage.qml
+src/blueferry/qt/qml/CallHistorySettings.qml

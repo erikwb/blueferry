@@ -645,6 +645,7 @@ def settings_window(qml_engine):
             function answerPairingConfirmation(approved) { record("answerPairingConfirmation", [approved]); }
             function setStoragePolicy(policy) { record("setStoragePolicy", [policy]); }
             function setProximityLock(enabled, grace) { record("setProximityLock", [enabled, grace]); }
+            function setCallHistory(enabled, popups) { record("setCallHistory", [enabled, popups]); }
             function forgetDevice(mac) { record("forgetDevice", [mac]); }
             function activateBluetooth() { record("activateBluetooth", []); }
             function filePairingIssue() { record("filePairingIssue", []); }
@@ -837,6 +838,50 @@ def test_proximity_lock_settings_appear_only_for_supporting_daemons(qml_engine, 
     assert _evaluate(
         qml_engine, "testBridge.calls.filter(c => c.method === 'setProximityLock')"
     ) == [{"method": "setProximityLock", "args": [True, 90]}]
+
+
+def test_call_history_opt_in_checkbox_appears_only_for_supporting_daemons(
+    qml_engine, settings_window,
+):
+    window, bridge = settings_window
+    bridge.setProperty("setupLoaded", True)
+    QGuiApplication.processEvents()
+    loader = _settings_object(window, "callHistoryLoader")
+    bridge.setProperty("status", {"daemon": True})
+    assert loader.property("active") is False
+
+    bridge.setProperty("status", {
+        "daemon": True,
+        "call_history_enabled": False,
+        "missed_call_notifications": True,
+    })
+    QGuiApplication.processEvents()
+    assert loader.property("active") is True
+    note = _settings_object(window, "callHistoryPrivacyNote")
+    assert "erases" in note.property("text")
+    checkbox = _settings_object(window, "callHistoryCheckBox")
+    popups = _settings_object(window, "missedCallPopupsCheckBox")
+    assert checkbox.property("checked") is False
+    assert popups.property("enabled") is False, "popups need the opt-in first"
+
+    assert QMetaObject.invokeMethod(checkbox, "toggle")
+    assert QMetaObject.invokeMethod(checkbox, "clicked")
+    assert _evaluate(
+        qml_engine, "testBridge.calls.filter(c => c.method === 'setCallHistory')"
+    ) == [{"method": "setCallHistory", "args": [True, True]}]
+
+    bridge.setProperty("status", {
+        "daemon": True,
+        "call_history_enabled": True,
+        "missed_call_notifications": True,
+    })
+    QGuiApplication.processEvents()
+    assert popups.property("enabled") is True
+    assert QMetaObject.invokeMethod(popups, "toggle")
+    assert QMetaObject.invokeMethod(popups, "clicked")
+    assert _evaluate(
+        qml_engine, "testBridge.calls.filter(c => c.method === 'setCallHistory')"
+    )[-1] == {"method": "setCallHistory", "args": [True, False]}
 
 
 def test_proximity_grace_edit_survives_a_status_refresh_before_saving(qml_engine):

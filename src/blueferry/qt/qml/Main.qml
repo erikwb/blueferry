@@ -203,7 +203,7 @@ Kirigami.ApplicationWindow {
             Kirigami.Action {
                 text: qsTr("Recent Calls")
                 icon.name: "call-start"
-                // Opt-in backend feature (BLUEFERRY_CALL_HISTORY_ENABLED).
+                // Opt-in backend feature (iPhone settings → Call History).
                 visible: root.bridge.callHistoryEnabled === true
                 onTriggered: root.openRecentCalls()
             },

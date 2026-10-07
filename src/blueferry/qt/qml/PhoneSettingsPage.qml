@@ -421,6 +421,17 @@ Kirigami.ScrollablePage {
             }
         }
 
+        // Only daemons that report the call-history keys support the setting.
+        Loader {
+            objectName: "callHistoryLoader"
+            Layout.fillWidth: true
+            active: iphonePage.bridge.status.call_history_enabled !== undefined
+            visible: active
+            sourceComponent: CallHistorySettings {
+                bridge: iphonePage.bridge
+            }
+        }
+
         Kirigami.Heading { text: qsTr("Local Data"); level: 2 }
         Kirigami.FormLayout {
             Layout.fillWidth: true

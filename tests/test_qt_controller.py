@@ -1015,3 +1015,33 @@ def test_late_reply_after_close_is_discarded(monkeypatch):
     captured["done"]([{"caller": "late"}])
 
     assert controller.callHistory == []
+
+
+def test_call_history_opt_in_is_forwarded_and_merged_into_status(monkeypatch):
+    backend = _Backend()
+    calls = []
+
+    def set_call_history(enabled, popups):
+        calls.append((enabled, popups))
+        return {"call_history_enabled": enabled, "missed_call_notifications": popups}
+
+    backend.set_call_history = set_call_history
+    controller = BridgeController(
+        backend=backend, setup=object(), subscribe=False, autostart=False,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_run",
+        lambda operation, on_done=None, *_args, **_kwargs: (
+            on_done(operation()) if on_done is not None else operation()
+        ),
+    )
+    changes = []
+    controller.statusChanged.connect(lambda: changes.append(True))
+
+    controller.setCallHistory(True, False)
+
+    assert calls == [(True, False)]
+    assert controller.callHistoryEnabled is True
+    assert controller.status["missed_call_notifications"] is False
+    assert changes == [True]
