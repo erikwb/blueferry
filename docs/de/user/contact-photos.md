@@ -1,8 +1,8 @@
 # Kontaktfotos
 
 BlueFerry kann die Bilder aus den Kontakten deines iPhones als Avatare in der
-Gesprächsliste des Qt-Clients (KDE) und als Symbol von Desktop-Mitteilungen
-anzeigen. Die Funktion ist **standardmäßig aus**.
+Gesprächsliste und im Gesprächskopf des Qt-Clients (KDE) und als Symbol von
+Desktop-Mitteilungen anzeigen. Die Funktion ist **standardmäßig aus**.
 
 ## So funktioniert es
 
@@ -20,7 +20,7 @@ flowchart LR
 ```
 
 Das Backend dekodiert selbst nie ein Bild. Es prüft nur, ob ein Foto ein JPEG
-oder PNG mit höchstens 256 KiB und 2048×2048 Pixeln ist. Dekodiert wird im
+oder PNG mit höchstens 1 MiB und 2048×2048 Pixeln ist. Dekodiert wird im
 Qt-Client und in deinem Mitteilungsdienst.
 
 ## Einschalten
@@ -52,22 +52,42 @@ Die Zeile entfernen (oder auf `false` setzen) und das Backend neu starten. Bei
 diesem Start löscht BlueFerry alle gespeicherten Fotos.
 
 **Bevor du zu einer älteren BlueFerry-Version zurückgehst**, die Option
-ausschalten und das Backend einmal starten. Ältere Versionen kennen die
-gespeicherten Fotos nicht und würden sie behalten.
+ausschalten und das Backend einmal starten, damit die Fotos sofort gelöscht
+werden. Wenn du das vergisst, löscht die ältere Version sie zusammen mit den
+Kontakten bei ihrer nächsten Kontakt-Synchronisierung oder wenn sich der
+Speichermodus ändert.
 
 ## Grenzen
 
 - Nur JPEG- und PNG-Fotos werden behalten. Fotos, die nur als Link angegeben
   sind, werden nie heruntergeladen.
-- Ein Foto pro Kontakt, höchstens 256 KiB pro Foto und 16 MiB pro
-  Synchronisierung.
+- Ein Foto pro Kontakt, höchstens 1 MiB pro Foto und 32 MiB pro
+  Synchronisierung. Ist das Budget einer Synchronisierung aufgebraucht,
+  werden spätere Fotos übersprungen, und das Log nennt ihre Anzahl.
 - Ein Foto erscheint nur, wenn die Adresse genau einem Kontakt gehört. Eine
-  Nummer, die zwei Kontakte teilen, zeigt keines der beiden Fotos.
+  Nummer, die zwei Kontakte teilen, zeigt keines der beiden Fotos, und von
+  einem Kontakt, dessen Nummern alle geteilt sind, wird das Foto gar nicht
+  gespeichert.
 - Bisher zeigt nur der Qt-Client Avatare. GTK-, Terminal- und
   Quickshell-Client behalten ihre Symbole.
 - Popup-Symbole setzen voraus, dass der Mitteilungsdienst `image-path`
   beachtet. Bei Plasma ist das zu erwarten, aber noch nicht getestet. Ein
   Dienst, der es ignoriert, zeigt das übliche Symbol.
+
+## Prüfen, was dein iPhone sendet
+
+Nach jeder Synchronisierung schreibt das Backend eine Log-Zeile, die nur
+Zahlen enthält, nie einen Namen, eine Nummer oder ein Bild:
+
+```bash
+journalctl --user -u blueferry | grep "with photos"
+```
+
+Sie zeigt, wie viele Fotos in welchen Größenbereich fielen und warum Fotos
+nicht behalten wurden (`too-large`, `dimensions`, `format`, `not-inline`,
+`shared`, `budget`, `time`). Wenn viele Fotos `too-large` oder `dimensions`
+sind, melde die Zeile bitte; die Grenzen sind Schätzungen, die noch nicht mit
+einem echten iPhone geprüft wurden.
 
 ## Datenschutz
 
@@ -79,7 +99,10 @@ gespeicherten Fotos nicht und würden sie behalten.
 - Fotos stehen nie in Logs oder D-Bus-Signalen. Clients holen sie über eine
   Methode mit Ratenbegrenzung.
 - Für Popups schreibt das Backend eine temporäre Kopie mit Zufallsnamen, die
-  nur dir gehört, nach `$XDG_RUNTIME_DIR/blueferry`. Diese Kopien werden
-  gelöscht, wenn sich die Kontakte ändern und wenn das Backend stoppt.
+  nur dir gehört, nach `$XDG_RUNTIME_DIR/blueferry`. Ändern sich die
+  Kontakte, werden die Kopien für neue Popups nicht mehr verwendet, bleiben
+  aber für bereits gezeigte Popups lesbar, bis neuere Kopien sie ersetzen
+  (höchstens 64 Dateien). Alle Kopien werden gelöscht, wenn sich der
+  Speichermodus ändert und wenn das Backend stoppt.
 - Dein Mitteilungsdienst erhält das Foto, so wie er heute schon den Namen des
   Absenders erhält.

@@ -68,6 +68,12 @@ Unterhaltungen einen Neustart überstehen. Du entscheidest, wie:
   Gruppenbestätigungen folgen demselben Speichermodus.
 - `blueferry history-clear` löscht den lokalen Nachrichtenverlauf.
 
+Mit den optionalen [Kontaktfotos](contact-photos.md) enthält der
+Kontakt-Cache auch die Bilder deiner Kontakte, im selben Speichermodus. Für
+Popup-Symbole legt das Backend kurzlebige Kopien, die nur dir gehören, in
+`$XDG_RUNTIME_DIR/blueferry` ab. Schaltest du die Option aus, löscht der
+nächste Backend-Start die gespeicherten Fotos.
+
 Die Verschlüsselung schützt gespeicherte Daten. Andere Programme, die unter
 deinem Benutzer laufen, können trotzdem die D-Bus-API von BlueFerry nutzen
 und bei entsperrtem Schlüsselbund unter Umständen dessen Geheimnisse lesen.
@@ -97,6 +103,7 @@ Bearbeite `~/.config/blueferry/local.env` und starte den Dienst danach mit
 | `BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE` | `true` | Anrufe und Musik auf dem iPhone lassen |
 | `BLUEFERRY_ANCS_APP_ALLOWLIST` | nicht gesetzt | Siehe [Apps filtern](#apps-filtern) |
 | `BLUEFERRY_ANCS_APP_BLOCKLIST` | nicht gesetzt | Siehe [Apps filtern](#apps-filtern) |
+| `BLUEFERRY_CONTACT_PHOTOS` | `false` | Kontaktfotos für Avatare und Popup-Symbole behalten; siehe [Kontaktfotos](contact-photos.md) |
 
 Die Kopplung schreibt Telefon- und Adapter-Einstellungen in dieselbe Datei.
 Ändere diese durch eine neue Kopplung statt von Hand.

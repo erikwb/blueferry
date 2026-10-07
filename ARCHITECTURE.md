@@ -439,8 +439,9 @@ A change to these rules has to be made in both places.
   transaction, and erases them at startup when the option is off. The photo
   table is created only when a sync stores a photo, and the off-path check is
   read-only, so a profile that never opted in keeps the upstream schema.
-  Releases without this feature don't clear the table, so the README asks
-  users to disable the option and start the backend once before downgrading.
+  A trigger created with the table deletes all photos whenever
+  `secure_contacts` rows are deleted, so a release without this feature
+  removes them with its own contact clear or next sync after a downgrade.
   Photo reads open the database read-only with a short lock timeout. While a
   sync holds the database, or a hot journal from a crash awaits rollback, they
   return `NotReady`, which clients retry. Clients get them through
@@ -449,7 +450,11 @@ A change to these rules has to be made in both places.
   returns a photo only for an unambiguous address. Clients drop cached photos
   when the content-free `contact_photo_revision` status key changes.
   Presentation processes decode the images with toolkit loaders. Notification
-  icons are temporary `image-path` files in the runtime directory.
+  icons are temporary `image-path` files in the runtime directory; a contact
+  refresh retires them (no reuse, still readable for popups already shown,
+  bounded to 64 files) and storage changes or daemon stop delete them. The
+  pull logs one content-free summary per sync (size buckets, rejection
+  reasons) so the caps can be checked against a real phone.
 - **ANCS content:** the app is identified before any content is requested.
   The default policy never fetches content from other apps. The opt-in `all`
   policy applies exact bundle-ID allow/block rules first and delivers content

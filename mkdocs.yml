@@ -99,6 +99,7 @@ nav:
           - Pair an iPhone: en/user/pairing.md
           - Clients: en/user/clients.md
           - Privacy and storage: en/user/privacy.md
+          - Contact photos: en/user/contact-photos.md
           - Troubleshooting: en/user/troubleshooting.md
           - FAQ: en/user/faq.md
       - Developer guide:
@@ -114,6 +115,7 @@ nav:
           - iPhone koppeln: de/user/pairing.md
           - Clients: de/user/clients.md
           - Datenschutz und Speicher: de/user/privacy.md
+          - Kontaktfotos: de/user/contact-photos.md
           - Fehlerbehebung: de/user/troubleshooting.md
           - FAQ: de/user/faq.md
       - Entwicklung:
