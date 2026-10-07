@@ -326,34 +326,49 @@ BLUEFERRY_OTP_AUTOCOPY=true
 BLUEFERRY_OTP_CLEAR_SECONDS=60
 ```
 
-Only a message that has just arrived counts: sent messages, history, and
-messages older than ten minutes are ignored. A number is treated as a code only
-when a word like "code", "verification", "Bestätigungscode", "code de
-vérification", or "codice" is next to it; amounts, dates, times, phone numbers,
+Only an unread message that has just arrived from a sender who is not a
+saved contact counts: sent messages, history, group conversations, messages
+from contacts, and messages without a recent timestamp are ignored, and at
+most three codes per minute are copied. A number is treated as a code only
+when it is tied to a code word: "verification code", "Bestätigungscode",
+"mTAN" or "OTP" near it, "code: 123456" or "code is 123456", "123456 is your
+… code", or "enter 123456" in a message about verifying or logging in. Words
+like "verify" or "one-time" alone never pick a number, promotions and
+bookings need a specific code word, and amounts, dates, times, phone numbers,
 and order or tracking numbers are skipped. `G-123456` and `123-456` are copied
 as `123456`. Check what a message would copy with
 `echo 'Your code is 123456' | blueferry otp-check`.
 
-A short popup confirms the copy. It shows the code and sender only when
-`BLUEFERRY_SHOW_NOTIFICATION_CONTENT` is on; with the notification setting
-**None** the code is copied silently. The code is never logged, stored, or
-published on BlueFerry's D-Bus API, so there is no command to show it again.
+The message popup gets one extra line saying the code was copied; when there
+is no message popup (for example with notifications limited to contacts), a
+short popup of its own confirms the copy. The code and sender show only when
+`BLUEFERRY_SHOW_NOTIFICATION_CONTENT` is on, and then the desktop's
+notification server receives them, as it does for any message popup; with the
+notification setting **None** the code is copied silently. The code is never
+logged, stored, or published on BlueFerry's D-Bus API, so there is no command
+to show it again.
 
 The backend copies with `wl-copy` from wl-clipboard on Wayland, or `xclip` or
 `xsel` on X11; `blueferry otp-status` shows which one it finds. With
 wl-clipboard 2.3 or newer the code is marked as sensitive, so Klipper and other
 clipboard managers keep it out of their history; older versions and the X11
 tools cannot do that. The clear timer only clears a code that is still on the
-clipboard, and stopping the backend clears a code it still holds. Clearing
-cannot remove an entry a clipboard manager already saved, so without the
-sensitive hint the code stays in Klipper's history.
+clipboard, and stopping the backend clears a code it still holds. If a
+persistence tool such as wl-clip-persist took the code over, BlueFerry reads
+the clipboard back (with `wl-paste`, `xclip -o` or `xsel --output`) and
+clears it only if it still holds exactly the code. Clearing cannot remove an
+entry a clipboard manager already saved, so without the sensitive hint the
+code stays in Klipper's history.
 
 The helpers need the graphical session in the backend service's
 environment. On Wayland, `WAYLAND_DISPLAY` is used, or else the only
 `wayland-N` socket in `$XDG_RUNTIME_DIR`; if `wl-copy` cannot reach that
 display, BlueFerry tries `xclip`/`xsel` once. X11 needs `DISPLAY` and
 `XAUTHORITY` in the service environment (for example through
-`systemctl --user import-environment DISPLAY XAUTHORITY`). Copying relies on
+`systemctl --user import-environment DISPLAY XAUTHORITY`). The systemd unit's
+`PrivateTmp=true` hides `/tmp`: X clients still reach the server through its
+abstract socket, but an `XAUTHORITY` file under `/tmp` is not visible, and the
+log says so when that is why `xclip`/`xsel` failed. Copying relies on
 the Wayland data-control protocol, which KWin and wlroots compositors provide;
 GNOME/Mutter without it is untested.
 

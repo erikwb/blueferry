@@ -76,6 +76,16 @@ able to read its secrets.
 
 Uninstalling the packages doesn't remove either folder.
 
+## One-time codes
+
+[One-time code auto-copy](otp-autocopy.md) is off by default. When you turn
+it on, the backend puts verification codes from new messages on the desktop
+clipboard, where every application that reads the clipboard can see them.
+The code is never logged, stored, or published on BlueFerry's D-Bus API.
+With `BLUEFERRY_OTP_CLEAR_SECONDS`, the backend reads the clipboard back
+when the timer fires (only a few bytes, only compared) to check that it
+still holds the code before clearing it.
+
 ## Settings in local.env
 
 Edit `~/.config/blueferry/local.env`, then restart the service with
@@ -92,6 +102,8 @@ Edit `~/.config/blueferry/local.env`, then restart the service with
 | `BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE` | `true` | Keep calls and music on the iPhone |
 | `BLUEFERRY_ANCS_APP_ALLOWLIST` | unset | See [Filter apps](#filter-apps) |
 | `BLUEFERRY_ANCS_APP_BLOCKLIST` | unset | See [Filter apps](#filter-apps) |
+| `BLUEFERRY_OTP_AUTOCOPY` | `false` | Copy one-time codes to the clipboard, see [One-time codes](#one-time-codes) |
+| `BLUEFERRY_OTP_CLEAR_SECONDS` | `0` | Clear a copied code after this many seconds (0 = keep, max 600) |
 
 Pairing writes the phone and adapter settings to the same file; change those
 by pairing again rather than by hand.
