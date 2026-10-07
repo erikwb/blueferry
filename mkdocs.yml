@@ -1,12 +1,17 @@
 # Optional documentation site. Every page under docs/ is plain Markdown that
 # reads fine on GitHub; this file only adds navigation, search and a theme.
 #
+# Build with Zensical (primary):
 #   pip install -r docs/requirements.txt
-#   mkdocs build --strict      # writes website/public/docs/
-#   mkdocs serve               # preview at http://127.0.0.1:8000/docs/
+#   zensical build --strict    # writes website/public/docs/
+#   zensical serve             # preview at http://localhost:8000/docs/
 #
-# Kept to core MkDocs and Material options (no third-party plugins) so the
-# same file also builds with Zensical, Material's successor.
+# The same file also builds with MkDocs and Material (fallback):
+#   pip install -r docs/requirements-mkdocs.txt
+#   mkdocs build --strict
+#
+# Keep it to options both tools understand: no third-party plugins, and
+# languages as plain folders (docs/en, docs/de) instead of an i18n plugin.
 
 site_name: BlueFerry
 site_description: iPhone messages on Linux over Bluetooth
@@ -20,7 +25,7 @@ docs_dir: docs
 site_dir: website/public/docs
 
 exclude_docs: |
-  requirements.txt
+  requirements*.txt
 
 theme:
   name: material

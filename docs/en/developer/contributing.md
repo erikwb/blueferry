@@ -45,5 +45,5 @@ locally; see [Testing](testing.md).
   links to English where a translation is missing.
 - Pages are plain Markdown and must read well on GitHub. Use relative links
   between pages and full GitHub links to files outside `docs/`.
-- Check the site with `mkdocs build --strict`; see
+- Check the site with `zensical build --strict`; see
   [docs/README.md](../../README.md).
