@@ -193,6 +193,19 @@ def test_potfiles_entries_are_canonical_and_unique() -> None:
     assert len(normalised) == len(set(normalised)), "po/POTFILES.in has duplicate entries"
 
 
+def test_quickshell_shell_is_not_marked_for_translation_yet() -> None:
+    # po/README.md says the Quickshell shell is untranslated and loads no
+    # catalog. Marking its strings without that runtime support would do
+    # nothing, so this fails until both the support and the docs are added.
+    marked = sorted(
+        path.relative_to(ROOT).as_posix()
+        for path in (ROOT / "data" / "quickshell").rglob("*.qml")
+        if _qml_translatable(path)
+    )
+
+    assert marked == [], f"load a catalog for Quickshell and update po/README.md: {marked}"
+
+
 def test_translation_helpers_exist_in_i18n() -> None:
     from blueferry import i18n
 
