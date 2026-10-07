@@ -695,6 +695,16 @@ class BridgeController(QObject):
             completed,
         )
 
+    @Slot(bool)
+    def setCallsEnabled(self, enabled: bool) -> None:
+        def completed(value: object) -> None:
+            if isinstance(value, dict):
+                self._status.update(value)
+                self.statusChanged.emit()
+                self.refreshCalls()
+
+        self._run(lambda: self._backend.set_calls_enabled(bool(enabled)), completed)
+
     @Slot(str)
     def setStoragePolicy(self, policy: str) -> None:
         if policy == "encrypted":

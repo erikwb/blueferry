@@ -644,6 +644,7 @@ def settings_window(qml_engine):
             function answerPairingConfirmation(approved) { record("answerPairingConfirmation", [approved]); }
             function setStoragePolicy(policy) { record("setStoragePolicy", [policy]); }
             function setProximityLock(enabled, grace) { record("setProximityLock", [enabled, grace]); }
+            function setCallsEnabled(enabled) { record("setCallsEnabled", [enabled]); }
             function forgetDevice(mac) { record("forgetDevice", [mac]); }
             function activateBluetooth() { record("activateBluetooth", []); }
             function filePairingIssue() { record("filePairingIssue", []); }
@@ -1958,3 +1959,30 @@ Item {
     log = result.stdout + result.stderr
     assert result.returncode == 0 and "BLUEFERRY_GROUP_REPLY_OK" in log, log
     assert "WARN scene:" not in log and "ReferenceError" not in log and "TypeError" not in log, log
+
+
+def test_phone_calls_opt_in_appears_only_for_supporting_daemons(qml_engine, settings_window):
+    window, bridge = settings_window
+    bridge.setProperty("setupLoaded", True)
+    QGuiApplication.processEvents()
+    loader = _settings_object(window, "phoneCallsLoader")
+    bridge.setProperty("status", {"daemon": True})
+    assert loader.property("active") is False
+
+    bridge.setProperty("status", {"daemon": True, "calls_enabled": False})
+    QGuiApplication.processEvents()
+    assert loader.property("active") is True
+    notice = _settings_object(window, "phoneCallsNotice").property("text")
+    assert "oFono" in notice and "audio plays here" in notice
+    checkbox = _settings_object(window, "phoneCallsCheckBox")
+    assert checkbox.property("checked") is False
+
+    assert QMetaObject.invokeMethod(checkbox, "toggle")
+    assert QMetaObject.invokeMethod(checkbox, "clicked")
+    assert _evaluate(
+        qml_engine, "testBridge.calls.filter(c => c.method === 'setCallsEnabled')"
+    ) == [{"method": "setCallsEnabled", "args": [True]}]
+
+    bridge.setProperty("status", {"daemon": True, "calls_enabled": True})
+    QGuiApplication.processEvents()
+    assert checkbox.property("checked") is True

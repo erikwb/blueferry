@@ -421,6 +421,17 @@ Kirigami.ScrollablePage {
             }
         }
 
+        // Only daemons that report calls_enabled support the setting.
+        Loader {
+            objectName: "phoneCallsLoader"
+            Layout.fillWidth: true
+            active: iphonePage.bridge.status.calls_enabled !== undefined
+            visible: active
+            sourceComponent: PhoneCallsSettings {
+                bridge: iphonePage.bridge
+            }
+        }
+
         Kirigami.Heading { text: qsTr("Local Data"); level: 2 }
         Kirigami.FormLayout {
             Layout.fillWidth: true

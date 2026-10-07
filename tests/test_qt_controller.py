@@ -932,3 +932,30 @@ def test_failed_or_disabled_calls_refresh_follows_the_status_state():
     assert controller.callsState == "disabled"
     assert changes == ["ready", "unavailable", "disabled"]
     assert not hasattr(controller, "sendCallTones")
+
+
+def test_calls_opt_in_is_forwarded_and_merged_into_status(monkeypatch):
+    backend = _Backend()
+    toggles = []
+
+    def set_calls_enabled(enabled):
+        toggles.append(enabled)
+        return {"calls_enabled": enabled, "calls_state": "unavailable"}
+
+    backend.set_calls_enabled = set_calls_enabled
+    controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+    monkeypatch.setattr(
+        controller,
+        "_run",
+        lambda operation, on_done=None, *_args, **_kwargs: (
+            on_done(operation()) if on_done is not None else operation()
+        ),
+    )
+    refreshed = []
+    monkeypatch.setattr(controller, "refreshCalls", lambda: refreshed.append(True))
+
+    controller.setCallsEnabled(True)
+
+    assert toggles == [True]
+    assert controller.status["calls_enabled"] is True
+    assert refreshed == [True]
