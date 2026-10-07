@@ -605,6 +605,20 @@ class BridgeController(QObject):
             completed,
         )
 
+    @Slot(bool)
+    def setAncsNotificationActions(self, enabled: bool) -> None:
+        def completed(value: object) -> None:
+            self._status["ancs_actions_preference"] = bool(value)
+            self._status["ancs_actions"] = bool(value) and (
+                self._status.get("notification_content_shown") is not False
+            )
+            self.statusChanged.emit()
+
+        self._run(
+            lambda: self._backend.set_ancs_notification_actions(enabled),
+            completed,
+        )
+
     @Slot(bool, int)
     def setProximityLock(self, enabled: bool, grace_seconds: int) -> None:
         def completed(value: object) -> None:

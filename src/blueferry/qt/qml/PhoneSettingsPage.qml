@@ -408,6 +408,22 @@ Kirigami.ScrollablePage {
                 onClicked: iphonePage.bridge.setContactsOnlyNotifications(checked)
                 Accessible.description: qsTr("Unknown senders remain available in message history.")
             }
+            // Opt-in; only daemons that report the preference support it.
+            Controls.CheckBox {
+                objectName: "ancsActionsCheckBox"
+                Layout.fillWidth: true
+                visible: iphonePage.bridge.status.ancs_actions_preference !== undefined
+                text: qsTr("Show iPhone action buttons (Accept, Decline, Clear…)")
+                checked: iphonePage.bridge.status.ancs_actions_preference === true
+                enabled: iphonePage.bridge.status.daemon === true
+                    && iphonePage.bridge.status.notification_policy === "all"
+                    && iphonePage.bridge.status.notification_content_shown !== false
+                    && !iphonePage.bridge.busy
+                onClicked: iphonePage.bridge.setAncsNotificationActions(checked)
+                Accessible.description: iphonePage.bridge.status.notification_content_shown === false
+                    ? qsTr("Unavailable while notification content is hidden.")
+                    : qsTr("Clicking a button runs that action on the iPhone, for example answering or declining a call. Applies to All iPhone Notifications.")
+            }
         }
 
         // Only daemons that report the proximity keys support the setting.

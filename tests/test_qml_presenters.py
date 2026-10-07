@@ -642,6 +642,7 @@ def settings_window(qml_engine):
             function answerPairingConfirmation(approved) { record("answerPairingConfirmation", [approved]); }
             function setStoragePolicy(policy) { record("setStoragePolicy", [policy]); }
             function setProximityLock(enabled, grace) { record("setProximityLock", [enabled, grace]); }
+            function setAncsNotificationActions(enabled) { record("setAncsNotificationActions", [enabled]); }
             function forgetDevice(mac) { record("forgetDevice", [mac]); }
             function activateBluetooth() { record("activateBluetooth", []); }
             function filePairingIssue() { record("filePairingIssue", []); }
@@ -831,6 +832,43 @@ def test_proximity_lock_settings_appear_only_for_supporting_daemons(qml_engine, 
     assert _evaluate(
         qml_engine, "testBridge.calls.filter(c => c.method === 'setProximityLock')"
     ) == [{"method": "setProximityLock", "args": [True, 90]}]
+
+
+def test_ancs_actions_checkbox_is_opt_in_and_gated(qml_engine, settings_window):
+    window, bridge = settings_window
+    bridge.setProperty("setupLoaded", True)
+    bridge.setProperty("status", {"daemon": True, "notification_policy": "all"})
+    QGuiApplication.processEvents()
+    checkbox = _settings_object(window, "ancsActionsCheckBox")
+    # Daemons without the preference key do not support the setting.
+    assert checkbox.property("visible") is False
+
+    status = {
+        "daemon": True,
+        "notification_policy": "messages",
+        "ancs_actions_preference": False,
+        "notification_content_shown": True,
+    }
+    bridge.setProperty("status", status)
+    QGuiApplication.processEvents()
+    assert checkbox.property("visible") is True
+    assert checkbox.property("checked") is False
+    # Actions only apply to "All iPhone Notifications".
+    assert checkbox.property("enabled") is False
+
+    bridge.setProperty("status", {**status, "notification_policy": "all",
+                                  "notification_content_shown": False})
+    QGuiApplication.processEvents()
+    assert checkbox.property("enabled") is False
+
+    bridge.setProperty("status", {**status, "notification_policy": "all"})
+    QGuiApplication.processEvents()
+    assert checkbox.property("enabled") is True
+    assert QMetaObject.invokeMethod(checkbox, "toggle")
+    assert QMetaObject.invokeMethod(checkbox, "clicked")
+    assert _evaluate(
+        qml_engine, "testBridge.calls.filter(c => c.method === 'setAncsNotificationActions')"
+    ) == [{"method": "setAncsNotificationActions", "args": [True]}]
 
 
 def test_proximity_grace_edit_survives_a_status_refresh_before_saving(qml_engine):

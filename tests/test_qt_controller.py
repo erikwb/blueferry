@@ -867,3 +867,28 @@ def test_proximity_lock_setting_is_forwarded_and_merged_into_status(monkeypatch)
     assert controller.status["proximity_lock_enabled"] is True
     assert controller.status["proximity_lock_grace_sec"] == 120
     assert changes == [True]
+
+
+def test_ancs_actions_setting_is_forwarded_and_merged_into_status(monkeypatch):
+    backend = _Backend()
+    calls = []
+    backend.set_ancs_notification_actions = lambda enabled: calls.append(enabled) or enabled
+    controller = BridgeController(
+        backend=backend,
+        setup=object(),
+        subscribe=False,
+        autostart=False,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_run",
+        lambda operation, on_done=None, *_args, **_kwargs: (
+            on_done(operation()) if on_done is not None else operation()
+        ),
+    )
+
+    controller.setAncsNotificationActions(True)
+
+    assert calls == [True]
+    assert controller.status["ancs_actions_preference"] is True
+    assert controller.status["ancs_actions"] is True
