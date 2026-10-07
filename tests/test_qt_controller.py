@@ -869,18 +869,15 @@ def test_proximity_lock_setting_is_forwarded_and_merged_into_status(monkeypatch)
     assert changes == [True]
 
 
-def test_enabling_bluetooth_le_targets_the_selected_adapter_and_reloads(
+def test_checking_bluetooth_le_again_reprobes_the_selected_adapter(
     monkeypatch,
 ) -> None:
+    """The LE stage offers only a re-check: BlueFerry cannot switch LE on."""
     from types import SimpleNamespace
 
     calls = []
 
     class Setup:
-        def enable_le(self, adapter):
-            calls.append(("enable_le", adapter))
-            return SimpleNamespace(to_dict=lambda: {"adapter": adapter})
-
         def compatibility(self, adapter=None):
             calls.append(("compatibility", adapter))
             return SimpleNamespace(
@@ -909,22 +906,8 @@ def test_enabling_bluetooth_le_targets_the_selected_adapter_and_reloads(
         ),
     )
 
-    controller.enableLowEnergy()
+    controller.loadSetupState()
 
-    assert calls == [("enable_le", "hci1"), ("compatibility", "hci1")]
+    assert calls == [("compatibility", "hci1")]
     assert controller.compatibility["le_disabled"] is False
-
-
-def test_enabling_bluetooth_le_without_an_adapter_reports_an_error() -> None:
-    class Setup:
-        def enable_le(self, adapter):  # pragma: no cover - must not run
-            raise AssertionError("no adapter selected")
-
-    controller = BridgeController(
-        backend=_Backend(), setup=Setup(), subscribe=False, autostart=False,
-    )
-    controller._compatibility = {}
-
-    controller.enableLowEnergy()
-
-    assert "No Bluetooth adapter" in controller.errorText
+    assert not hasattr(controller, "enableLowEnergy")

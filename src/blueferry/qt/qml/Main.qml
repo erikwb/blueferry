@@ -816,7 +816,6 @@ Kirigami.ApplicationWindow {
             onCloseRequested: root.closePhoneSettings()
             onClearHistoryRequested: clearDialog.open()
             onBluetoothRestartRequested: phoneSettingsDialogs.requestBluetoothRestart()
-            onLowEnergyRequested: phoneSettingsDialogs.requestLowEnergy()
             onPairingIssueRequested: phoneSettingsDialogs.showPairingIssue()
             onForgetRequested: mac => phoneSettingsDialogs.requestForget(mac)
             onStoragePolicyRequested: policy => phoneSettingsDialogs.requestStoragePolicy(policy)

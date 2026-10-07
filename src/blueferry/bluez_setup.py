@@ -142,67 +142,6 @@ def set_cod(
     return True
 
 
-LE_SERVICE_MISSING_MESSAGE = (
-    "The BlueFerry Bluetooth LE service is not installed; set "
-    "ControllerMode = dual in /etc/bluetooth/main.conf and restart bluetoothd "
-    "instead."
-)
-
-
-def le_on_manual_command(adapter: str) -> str:
-    """Return the equivalent command for users without the packaged unit."""
-    index = adapter.removeprefix("hci") if config.is_valid_adapter(adapter) else "0"
-    return f"sudo btmgmt --index {index} le on"
-
-
-def enable_le(adapter: str) -> None:
-    """Switch on LE on one controller through the packaged system unit.
-
-    Only called after the user explicitly confirmed it. The change lasts until
-    bluetoothd restarts and re-applies ControllerMode from
-    /etc/bluetooth/main.conf; BlueFerry never edits that file. Unlike the
-    Class-of-Device unit, no Polkit rule ships for this unit, so systemd's
-    default administrator authentication applies.
-    """
-    if not config.is_valid_adapter(adapter):
-        raise PairingError("invalid Bluetooth adapter name")
-    index = adapter.removeprefix("hci")
-    if os.geteuid() == 0:
-        cmd = ["/usr/bin/btmgmt", "--index", index, "le", "on"]
-    else:
-        systemctl = "/usr/bin/systemctl"
-        if not os.path.isfile(systemctl) or not os.access(systemctl, os.X_OK):
-            raise PairingError(
-                "systemctl is unavailable; run "
-                f"{le_on_manual_command(adapter)} in a terminal instead"
-            )
-        cmd = [systemctl, "start", f"blueferry-btmgmt-le-on@{index}.service"]
-    log.info("switching on Bluetooth LE via: %s", " ".join(cmd))
-    try:
-        result = run_command(
-            cmd, timeout=120, check=False, env={**os.environ, "LC_ALL": "C"},
-        )
-    except CommandError as error:
-        raise PairingError(str(error)) from error
-    if result.returncode == 0:
-        return
-    output = result.stderr.strip() or result.stdout.strip()
-    normalized = output.casefold()
-    if cmd[0] == "/usr/bin/systemctl":
-        if _polkit_authentication_unavailable(output):
-            raise PairingError(
-                "No Polkit authentication is available to switch on Bluetooth LE; "
-                f"run {le_on_manual_command(adapter)} in a terminal instead"
-            )
-        if "blueferry-btmgmt-le-on@" in normalized and "not found" in normalized:
-            raise PairingError(LE_SERVICE_MISSING_MESSAGE)
-    log.error("btmgmt le on failed (rc=%d): %s", result.returncode, output)
-    raise PairingError(
-        "Bluetooth LE could not be switched on; set ControllerMode = dual in "
-        "/etc/bluetooth/main.conf and restart bluetoothd"
-    )
-
-
 # ---- BLE advertisement (SolicitUUIDs = ANCS) ----------------------------
 
 class _AncsAdvert(dbus.service.Object):

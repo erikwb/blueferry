@@ -71,8 +71,10 @@ def test_compatibility_distinguishes_le_off_from_le_missing(
         # The hardware is fine; only the controller setting is wrong.
         assert status["pairing_ready"] is True
         assert "Bluetooth Low Energy is switched off" in status["issue"]
-        assert "ControllerMode = dual" in status["issue"]
-        assert "btmgmt --index 0 le on" in status["issue"]
+        # BlueFerry no longer suggests `btmgmt le on`: it cannot help under
+        # ControllerMode = bredr (no LEAdvertisingManager1).
+        assert "btmgmt" not in status["issue"]
+        assert "Restart bluetoothd" in status["issue"]
         assert status["adapters"][0]["issue"] == status["issue"]
     else:
         assert "switched off" not in status["issue"]
@@ -162,7 +164,7 @@ def _le_off_compatibility(monkeypatch, *, bearer_api_active: bool = True) -> lis
             "le_disabled": True,
             "controller_mode": "bredr",
             "advertising": True,
-            "issue": capabilities.le_disabled_issue("hci0", "bredr"),
+            "issue": capabilities.le_disabled_issue("bredr"),
         },
     )
     monkeypatch.setattr(pair_setup, "_controller_snapshot", lambda _adapter, value: dict(value))
@@ -258,87 +260,6 @@ def test_pairing_outcome_omits_reason_for_unclassified_errors():
     assert "reason" not in outcome
 
 
-def _fake_systemctl(monkeypatch, *, returncode: int = 0, stderr: str = "") -> list:
-    from blueferry import bluez_setup
-
-    calls: list = []
-    monkeypatch.setattr(bluez_setup.os, "geteuid", lambda: 1000)
-    monkeypatch.setattr(bluez_setup.os.path, "isfile", lambda _path: True)
-    monkeypatch.setattr(bluez_setup.os, "access", lambda _path, _mode: True)
-
-    def run(args, **kwargs):
-        calls.append((args, kwargs))
-        result = _Result("", returncode)
-        result.stderr = stderr
-        return result
-
-    monkeypatch.setattr(bluez_setup, "run_command", run)
-    return calls
-
-
-def test_enable_le_starts_only_the_packaged_unit(monkeypatch):
-    from blueferry import bluez_setup
-
-    calls = _fake_systemctl(monkeypatch)
-
-    bluez_setup.enable_le("hci7")
-
-    assert calls[0][0] == [
-        "/usr/bin/systemctl", "start", "blueferry-btmgmt-le-on@7.service",
-    ]
-    assert calls[0][1]["timeout"] == 120
-
-
-@pytest.mark.parametrize(
-    ("stderr", "expected"),
-    [
-        ("Interactive authentication required.", "sudo btmgmt --index 7 le on"),
-        (
-            "Unit blueferry-btmgmt-le-on@7.service not found.",
-            "Bluetooth LE service is not installed",
-        ),
-        ("Failed to start unit.", "ControllerMode = dual"),
-    ],
-)
-def test_enable_le_failures_point_at_a_manual_fix(monkeypatch, stderr, expected):
-    from blueferry import bluez_setup
-
-    _fake_systemctl(monkeypatch, returncode=1, stderr=stderr)
-
-    with pytest.raises(pair_setup.PairingError, match=expected.replace(".", r"\.")):
-        bluez_setup.enable_le("hci7")
-
-
-def test_enable_le_rejects_an_invalid_adapter_without_running_anything(monkeypatch):
-    from blueferry import bluez_setup
-
-    calls = _fake_systemctl(monkeypatch)
-
-    with pytest.raises(pair_setup.PairingError):
-        bluez_setup.enable_le("hci0; reboot")
-    assert calls == []
-
-
-@pytest.mark.parametrize("le_after", [True, False])
-def test_enable_controller_le_verifies_current_settings(monkeypatch, le_after):
-    from blueferry import bluez_setup
-
-    enabled: list[str] = []
-    monkeypatch.setattr(bluez_setup, "enable_le", enabled.append)
-    current = "powered ssp br/edr secure-conn" + (" le" if le_after else "")
-    _fake_controller(monkeypatch, supported=_SUPPORTED_WITH_LE, current=current)
-
-    if le_after:
-        status = pair_setup.enable_controller_le("hci0")
-        assert status["le_enabled"] is True
-        assert status["le_disabled"] is False
-    else:
-        with pytest.raises(pair_setup.PairingError, match="still switched off") as caught:
-            pair_setup.enable_controller_le("hci0")
-        assert caught.value.reason == "le_disabled"
-    assert enabled == ["hci0"]
-
-
 def _le_off_model(**overrides):
     from blueferry.setup_client import BluetoothCompatibility
 
@@ -350,23 +271,23 @@ def _le_off_model(**overrides):
         "le_disabled": True,
         "notifications_supported": True,
         "pairing_ready": True,
-        "issue": capabilities.le_disabled_issue("hci0"),
+        "issue": capabilities.le_disabled_issue(),
     }
     value.update(overrides)
     return BluetoothCompatibility.from_dict(value)
 
 
 class _FakeSetup:
-    def __init__(self, *, result=None, error=None) -> None:
-        self.enabled: list[str] = []
-        self._result = result
-        self._error = error
+    def __init__(self, *results) -> None:
+        self.checked: list[str] = []
+        self._results = list(results)
 
-    def enable_le(self, adapter):
-        self.enabled.append(adapter)
-        if self._error is not None:
-            raise self._error
-        return self._result
+    def compatibility(self, adapter=None):
+        self.checked.append(adapter)
+        result = self._results.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
 
 
 def _answers(monkeypatch, *answers: bool) -> list[str]:
@@ -382,27 +303,29 @@ def _answers(monkeypatch, *answers: bool) -> list[str]:
     return prompts
 
 
-def test_cli_switches_on_le_only_after_explicit_confirmation(monkeypatch, capsys):
+def test_cli_rechecks_le_after_the_user_restarted_bluetoothd(monkeypatch, capsys):
     from blueferry import pairing_cli
 
-    prompts = _answers(monkeypatch, True)
+    prompts = _answers(monkeypatch, True, True)
     enabled = _le_off_model(le_enabled=True, le_disabled=False, issue="")
-    setup = _FakeSetup(result=enabled)
+    setup = _FakeSetup(_le_off_model(), enabled)
 
     resolved = pairing_cli._resolve_disabled_le(
         setup, _le_off_model(), compatibility_mode=False,
     )
 
     assert resolved == (enabled, False)
-    assert setup.enabled == ["hci0"]
-    assert prompts[0].startswith("Switch on Bluetooth LE on hci0 now?")
+    assert setup.checked == ["hci0", "hci0"]
+    assert prompts[0].startswith("Check Bluetooth LE again")
     output = capsys.readouterr().out
     assert "Bluetooth Low Energy is switched off" in output
-    assert "lasts until bluetoothd restarts" in output
-    assert "BlueFerry does not edit that file" in output
+    assert "still switched off" in output
+    assert "✓ Bluetooth LE is on" in output
+    # Nothing is switched on behind the user's back.
+    assert "btmgmt" not in output
 
 
-def test_cli_declining_le_offers_compatibility_mode(monkeypatch):
+def test_cli_not_rechecking_offers_compatibility_mode(monkeypatch):
     from blueferry import pairing_cli
 
     prompts = _answers(monkeypatch, False, True)
@@ -414,22 +337,22 @@ def test_cli_declining_le_offers_compatibility_mode(monkeypatch):
     )
 
     assert resolved == (compatibility, True)
-    assert setup.enabled == []
+    assert setup.checked == []
     assert "compatibility mode" in prompts[1]
 
 
-def test_cli_failed_le_switch_falls_back_or_stops(monkeypatch, capsys):
+def test_cli_failed_recheck_falls_back_or_stops(monkeypatch, capsys):
     from blueferry import pairing_cli
 
     _answers(monkeypatch, True, False)
-    setup = _FakeSetup(error=pair_setup.PairingError("Bluetooth LE is still switched off"))
+    setup = _FakeSetup(pair_setup.PairingError("btmgmt info timed out"))
 
     resolved = pairing_cli._resolve_disabled_le(
         setup, _le_off_model(), compatibility_mode=False,
     )
 
     assert resolved is None
-    assert "still switched off" in capsys.readouterr().out
+    assert "timed out" in capsys.readouterr().out
 
 
 def test_cli_compatibility_mode_keeps_messaging_without_prompting(monkeypatch):
@@ -445,7 +368,7 @@ def test_cli_compatibility_mode_keeps_messaging_without_prompting(monkeypatch):
 
     assert resolved == (compatibility, True)
     assert prompts == []
-    assert setup.enabled == []
+    assert setup.checked == []
 
 
 def test_cli_le_on_needs_no_prompt(monkeypatch):
@@ -458,3 +381,13 @@ def test_cli_le_on_needs_no_prompt(monkeypatch):
         _FakeSetup(), compatibility, compatibility_mode=False,
     ) == (compatibility, False)
     assert prompts == []
+
+
+def test_le_off_advice_depends_on_the_configured_controller_mode():
+    bredr = capabilities.le_disabled_issue("bredr")
+    default = capabilities.le_disabled_issue("")
+
+    assert "ControllerMode = bredr" in bredr
+    assert "ControllerMode = dual" in bredr
+    assert "Restart bluetoothd" in default
+    assert "btmgmt" not in bredr + default

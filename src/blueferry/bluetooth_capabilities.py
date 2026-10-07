@@ -168,18 +168,30 @@ def bluez_controller_mode(path: Path | None = None) -> str:
     return mode if mode in _CONTROLLER_MODES else "other"
 
 
-def le_disabled_issue(adapter: str, controller_mode: str = "") -> str:
-    """Explain a controller that supports LE but runs with LE switched off."""
-    index = adapter.removeprefix("hci") if is_valid_adapter(adapter) else "0"
-    cause = ""
-    if controller_mode == "bredr":
-        cause = "BlueZ is configured with ControllerMode = bredr. "
-    return (
+def le_disabled_issue(controller_mode: str = "") -> str:
+    """Explain a controller that supports LE but runs with LE switched off.
+
+    BlueFerry cannot fix this by itself. With ``ControllerMode = bredr``,
+    bluetoothd registers neither its GATT database nor LEAdvertisingManager1
+    for the adapter (BlueZ ``src/adapter.c``, ``adapter_register``), so
+    switching LE on in the kernel (``btmgmt le on``) changes nothing until
+    bluetoothd restarts in another mode. In the default dual mode bluetoothd
+    switches LE back on itself when it starts (``read_info_complete``).
+    """
+    head = (
         "Bluetooth Low Energy is switched off on this adapter, so iPhone "
-        "notifications cannot be set up. " + cause
-        + "Set ControllerMode = dual in /etc/bluetooth/main.conf and restart "
-        f"bluetoothd (or run `sudo btmgmt --index {index} le on`, which lasts "
-        "until bluetoothd restarts)."
+        "notifications cannot be set up. "
+    )
+    if controller_mode == "bredr":
+        return head + (
+            "BlueZ is configured with ControllerMode = bredr. Set "
+            "ControllerMode = dual in /etc/bluetooth/main.conf (or remove the "
+            "line), restart bluetoothd, then check again."
+        )
+    return head + (
+        "Restart bluetoothd, which switches LE back on in its default dual "
+        "mode, then check again. If LE stays off, make sure "
+        "/etc/bluetooth/main.conf does not set ControllerMode = bredr."
     )
 
 
@@ -525,7 +537,7 @@ def _profile_fields(
             "Use a compatible adapter."
         )
     elif le_disabled:
-        issue = le_disabled_issue(adapter, controller_mode)
+        issue = le_disabled_issue(controller_mode)
     elif notifications_supported and not bearer_active:
         issue = "Bluetooth support must be activated before pairing"
     elif not notifications_supported:

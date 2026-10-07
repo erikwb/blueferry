@@ -58,7 +58,7 @@ Kirigami.InlineMessage {
         const titles = {
             "checking": qsTr("Checking Bluetooth Support"),
             "incompatible": qsTr("Incompatible Bluetooth Adapter"),
-            "enable-le": qsTr("Turn On Bluetooth LE"),
+            "enable-le": qsTr("Bluetooth LE Is Switched Off"),
             "activate-bluetooth": qsTr("Activate Bluetooth Support"),
             "select-device": qsTr("Pair an iPhone"),
             "starting": qsTr("Starting the Background Service"),

@@ -33,10 +33,6 @@ override_dh_auto_install:
 		debian/tmp/usr/lib/systemd/system/blueferry-btmgmt-set-class@.service
 	install -Dm755 systemd/blueferry-set-cod \
 		debian/tmp/usr/lib/blueferry/blueferry-set-cod
-	install -Dm644 systemd/blueferry-btmgmt-le-on@.service \
-		debian/tmp/usr/lib/systemd/system/blueferry-btmgmt-le-on@.service
-	install -Dm755 systemd/blueferry-le-on \
-		debian/tmp/usr/lib/blueferry/blueferry-le-on
 	install -Dm644 systemd/49-blueferry-cod.rules \
 		debian/tmp/usr/share/polkit-1/rules.d/49-blueferry-cod.rules
 	install -d debian/tmp/usr/lib/systemd/user/default.target.wants

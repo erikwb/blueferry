@@ -704,19 +704,6 @@ class BridgeController(QObject):
 
         self._run(self._setup.activate_bluez, completed)
 
-    @Slot()
-    def enableLowEnergy(self) -> None:
-        """Switch on LE; QML calls this only from its confirmation dialog."""
-        adapter = str(self._compatibility.get("adapter", "")).strip()
-        if not adapter:
-            self._set_error(_("No Bluetooth adapter is selected"))
-            return
-
-        def completed(_value: object) -> None:
-            self._reload_setup_state()
-
-        self._run(lambda: self._setup.enable_le(adapter), completed)
-
     @Slot(str, bool, bool)
     def completePairing(
         self,

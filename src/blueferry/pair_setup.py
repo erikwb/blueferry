@@ -156,27 +156,6 @@ def activate_bluez_support() -> dict:
     )
 
 
-def enable_controller_le(adapter: str) -> dict:
-    """Switch on LE after explicit user confirmation and verify the result."""
-    from blueferry import bluez_setup
-
-    if not config.is_valid_adapter(adapter):
-        raise PairingError("invalid Bluetooth adapter name")
-    bluez_setup.enable_le(adapter)
-    compatibility = bluetooth_compatibility(adapter)
-    if not compatibility.get("le_enabled"):
-        raise PairingError(
-            "Bluetooth LE is still switched off on this adapter; set "
-            "ControllerMode = dual in /etc/bluetooth/main.conf and restart "
-            "bluetoothd",
-            reason=LE_DISABLED_REASON,
-        )
-    log.info(
-        "Bluetooth LE switched on for %s until bluetoothd restarts", adapter,
-    )
-    return compatibility
-
-
 def _object_manager():
     # GetManagedObjects takes no arguments, so introspection adds nothing.
     # dbus-python would otherwise block on its own Introspect call, with the
@@ -1241,7 +1220,7 @@ def _prepare_pairing(
     if compatibility.get("le_disabled"):
         quirks_report.mark(attempt, "le_disabled")
         issue = str(compatibility.get("issue") or "") or capabilities.le_disabled_issue(
-            selected_adapter, str(compatibility.get("controller_mode") or ""),
+            str(compatibility.get("controller_mode") or ""),
         )
         if policy.ancs_enabled:
             # Stop before any bond or advertisement: the ANCS advertisement

@@ -60,23 +60,19 @@ def _print_ancs_repair_hint(*, limited: bool = False, vendor: str = "") -> None:
     typer.echo("This briefly disconnects all Bluetooth devices.")
 
 
-LE_TEMPORARY_NOTE = (
-    "Switching LE on lasts until bluetoothd restarts. For a permanent fix, set "
-    "ControllerMode = dual in /etc/bluetooth/main.conf; BlueFerry does not "
-    "edit that file."
-)
-
-
 def _resolve_disabled_le(
     setup: SetupClient,
     compatibility: BluetoothCompatibility,
     *,
     compatibility_mode: bool,
 ) -> tuple[BluetoothCompatibility, bool] | None:
-    """Offer to switch on LE, or fall back to compatibility mode.
+    """Wait for the user to switch LE on, or fall back to compatibility mode.
 
-    Returns the possibly refreshed compatibility and the compatibility-mode
-    choice, or ``None`` when the user declined both.
+    BlueFerry does not switch LE on itself: under ControllerMode = bredr,
+    bluetoothd offers no LE advertising until it restarts in another mode
+    (#192). The user fixes the configuration, restarts bluetoothd and checks
+    again here. Returns the possibly refreshed compatibility and the
+    compatibility-mode choice, or ``None`` when the user stopped.
     """
     # Older helpers and test doubles may not report the LE state yet.
     if not getattr(compatibility, "le_disabled", False):
@@ -88,19 +84,20 @@ def _resolve_disabled_le(
             "not show their permission toggles until Bluetooth LE is on."
         )
         return compatibility, compatibility_mode
-    typer.echo(LE_TEMPORARY_NOTE)
-    if typer.confirm(
-        f"Switch on Bluetooth LE on {compatibility.adapter} now? "
-        "This asks for administrator authentication.",
-        default=False,
+    while typer.confirm(
+        "Check Bluetooth LE again (after restarting bluetoothd)?", default=False,
     ):
         try:
-            compatibility = setup.enable_le(compatibility.adapter)
+            compatibility = setup.compatibility(compatibility.adapter)
         except PairingError as error:
             typer.echo(typer.style(str(error), fg=typer.colors.RED))
-        else:
+            break
+        if not compatibility.le_disabled:
             typer.echo(typer.style("✓ Bluetooth LE is on", fg=typer.colors.GREEN))
             return compatibility, compatibility_mode
+        typer.echo(
+            typer.style("Bluetooth LE is still switched off.", fg=typer.colors.YELLOW)
+        )
     if typer.confirm(
         "Continue with Messages and Contacts only (compatibility mode)?",
         default=False,

@@ -345,12 +345,6 @@ class SetupClient:
     def activate_bluez(self) -> BluezSupport:
         return BluezSupport.from_dict(pair_setup.activate_bluez_support())
 
-    def enable_le(self, adapter: str) -> BluetoothCompatibility:
-        """Switch on Bluetooth LE; callers must have asked the user first."""
-        return BluetoothCompatibility.from_dict(
-            pair_setup.enable_controller_le(adapter)
-        )
-
     def devices(
         self, *, scan_seconds: int = 0, adapter: str | None = None,
     ) -> list[PairedDevice]:

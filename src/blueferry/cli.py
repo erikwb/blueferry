@@ -62,7 +62,7 @@ def _check_controller_le(log: logging.Logger, adapter: str) -> bool:
     if "le" in current:
         log.info("Bluetooth LE enabled on %s  OK", adapter)
         return False
-    log.warning("%s", bluetooth_capabilities.le_disabled_issue(adapter, mode))
+    log.warning("%s", bluetooth_capabilities.le_disabled_issue(mode))
     if mode:
         log.warning("    /etc/bluetooth/main.conf: ControllerMode = %s", mode)
     else:

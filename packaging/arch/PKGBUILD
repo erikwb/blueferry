@@ -135,10 +135,6 @@ package_blueferry-backend() {
     "$pkgdir/usr/lib/systemd/system/blueferry-btmgmt-set-class@.service"
   install -Dm755 systemd/blueferry-set-cod \
     "$pkgdir/usr/lib/blueferry/blueferry-set-cod"
-  install -Dm644 systemd/blueferry-btmgmt-le-on@.service \
-    "$pkgdir/usr/lib/systemd/system/blueferry-btmgmt-le-on@.service"
-  install -Dm755 systemd/blueferry-le-on \
-    "$pkgdir/usr/lib/blueferry/blueferry-le-on"
   install -Dm644 systemd/49-blueferry-cod.rules \
     "$pkgdir/usr/share/polkit-1/rules.d/49-blueferry-cod.rules"
   install -d "$pkgdir/usr/lib/systemd/user/default.target.wants"
