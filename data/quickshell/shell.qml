@@ -35,6 +35,7 @@ ShellRoot {
   property bool deleteThreadsBusy: false
   property bool notificationPolicyBusy: false
   property bool contactsOnlyNotificationsBusy: false
+  property bool ancsActionsBusy: false
   property bool storagePolicyBusy: false
   property bool storageUnlockBusy: false
 
@@ -277,6 +278,9 @@ ShellRoot {
         root.contactsOnlyNotificationsBusy = false
         root.contactsOnlyNotifications = result === true
         root.reload()
+      } else if (method === "set_ancs_notification_actions") {
+        root.ancsActionsBusy = false
+        root.reload()
       } else if (method === "set_storage_policy") {
         root.storagePolicyBusy = false
         if (typeof result === "object" && result !== null) {
@@ -329,6 +333,10 @@ ShellRoot {
         root.contactsOnlyNotificationsBusy = false
         root.errorText = message || "Could not save notification preference"
         root.reload()
+      } else if (method === "set_ancs_notification_actions") {
+        root.ancsActionsBusy = false
+        root.errorText = message || "Could not save action button preference"
+        root.reload()
       } else if (method === "set_storage_policy") {
         root.storagePolicyBusy = false
         root.errorText = message
@@ -345,6 +353,7 @@ ShellRoot {
         root.deleteThreadsBusy = false
         root.notificationPolicyBusy = false
         root.contactsOnlyNotificationsBusy = false
+        root.ancsActionsBusy = false
         root.storagePolicyBusy = false
         root.storageUnlockBusy = false
         root.errorText = message
@@ -944,6 +953,7 @@ ShellRoot {
           })
           busy: ({notifications: root.notificationPolicyBusy,
                   contactsOnly: root.contactsOnlyNotificationsBusy,
+                  ancsActions: root.ancsActionsBusy,
                   storage: root.storagePolicyBusy})
           visible: root.phoneSettingsVisible
           Layout.fillWidth: true
@@ -958,6 +968,7 @@ ShellRoot {
               root.contactsOnlyNotifications = args.enabled
               root.contactsOnlyNotificationsBusy = true
             }
+            if (method === "set_ancs_notification_actions") root.ancsActionsBusy = true
             if (method === "set_storage_policy") {
               if (args.policy === "encrypted") root.storageUnlockAttempted = true
               root.storagePolicyBusy = true

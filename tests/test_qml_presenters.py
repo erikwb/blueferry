@@ -1763,6 +1763,67 @@ def test_quickshell_storage_cancel_keeps_the_status_binding(qml_engine, quickshe
     theme.deleteLater()
 
 
+def test_quickshell_ancs_actions_checkbox_is_opt_in_and_gated(
+    qml_engine, quickshell_setup,
+):
+    from PySide6.QtQuick import QQuickWindow
+
+    theme_component = _component(qml_engine, "data/quickshell/ThemePalette.qml")
+    theme = theme_component.create()
+    component = _component(qml_engine, "data/quickshell/PhoneSettingsPage.qml")
+    page = component.createWithInitialProperties({
+        "ferryTheme": theme, "setup": quickshell_setup, "status": {
+            "notification_policy": "all", "contacts_only_notifications": False,
+        }, "width": 640, "height": 1400,
+    })
+    assert page is not None
+    quickshell_setup.setProperty("configured", True)
+    window = QQuickWindow()
+    window.resize(640, 1400)
+    page.setParentItem(window.contentItem())
+    window.show()
+    QGuiApplication.processEvents()
+    checkbox = page.findChild(QObject, "ancsActionsCheckBox")
+    assert checkbox is not None
+    # Daemons without the preference key do not support the setting.
+    assert checkbox.property("visible") is False
+
+    status = {
+        "notification_policy": "messages",
+        "contacts_only_notifications": False,
+        "ancs_actions_preference": False,
+        "notification_content_shown": True,
+    }
+    page.setProperty("status", status)
+    QGuiApplication.processEvents()
+    assert checkbox.property("visible") is True
+    assert checkbox.property("checked") is False
+    # Actions only apply to "All iPhone notifications".
+    assert checkbox.property("enabled") is False
+    page.setProperty("status", {**status, "notification_policy": "all",
+                                "notification_content_shown": False})
+    QGuiApplication.processEvents()
+    assert checkbox.property("enabled") is False
+    page.setProperty("busy", {"ancsActions": True})
+    page.setProperty("status", {**status, "notification_policy": "all"})
+    QGuiApplication.processEvents()
+    assert checkbox.property("enabled") is False
+    page.setProperty("busy", {})
+    QGuiApplication.processEvents()
+    assert checkbox.property("enabled") is True
+
+    calls = []
+    page.operationRequested.connect(
+        lambda method, args: calls.append((method, args.toVariant()))
+    )
+    assert QMetaObject.invokeMethod(checkbox, "toggle")
+    assert QMetaObject.invokeMethod(checkbox, "clicked")
+    assert calls == [("set_ancs_notification_actions", {"enabled": True})]
+    window.close()
+    page.deleteLater()
+    theme.deleteLater()
+
+
 @pytest.mark.private_dbus
 @pytest.mark.parametrize("late_read", ["success", "failure"])
 @pytest.mark.parametrize("late_after_refresh", [False, True])

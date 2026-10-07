@@ -125,6 +125,10 @@ class QuickshellBridge:
             return self.client.set_contacts_only_notifications(
                 _boolean(args, "enabled")
             )
+        if method == "set_ancs_notification_actions":
+            return self.client.set_ancs_notification_actions(
+                _boolean(args, "enabled")
+            )
         if method == "set_storage_policy":
             return self.client.set_storage_policy(_text(args, "policy"))
         if method == "unlock_storage":
