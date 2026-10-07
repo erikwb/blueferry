@@ -145,8 +145,9 @@ class MprisPlayer(dbus.service.Object):
         self._exported = False
         self._name_call_pending = False
         self._last_properties: dict[str, object] = {}
-        self._track_identity: tuple | None = None
-        self._track_serial = 0
+        self._track_serial: int | None = None
+        # Last non-zero rate the phone reported; MPRIS forbids Rate 0.
+        self._rate = 1.0
         self._last_position: tuple[float, float, float] | None = None
         self._closed = False
         media.add_listener(self.refresh)
@@ -281,11 +282,11 @@ class MprisPlayer(dbus.service.Object):
         self._unexport()
 
     def _update_track_identity(self) -> None:
-        state = self._media.state
-        identity = (state.title, state.artist, state.album, state.duration)
-        if identity != self._track_identity:
-            self._track_identity = identity
-            self._track_serial += 1
+        # NowPlaying decides what a new track is: completing a truncated
+        # title keeps the serial, and with it mpris:trackid, stable.
+        serial = self._media.state.track_serial
+        if serial != self._track_serial:
+            self._track_serial = serial
             self._last_position = None
 
     def _remember_position(self) -> None:
@@ -317,7 +318,7 @@ class MprisPlayer(dbus.service.Object):
         state = self._media.state
         metadata: dict[str, object] = {
             "mpris:trackid": dbus.ObjectPath(
-                f"{TRACK_PATH_PREFIX}/{self._track_serial}"
+                f"{TRACK_PATH_PREFIX}/{state.track_serial}"
                 if state.title or state.artist or state.album else NO_TRACK
             ),
         }
@@ -335,6 +336,17 @@ class MprisPlayer(dbus.service.Object):
         supported = self._media.state.supported_commands
         return self._media.available and any(command in supported for command in commands)
 
+    def _current_rate(self) -> float:
+        """The phone's playback rate (podcasts at 1.5x), never 0 or negative.
+
+        MPRIS clients extrapolate Position with Rate, and the specification
+        forbids 0; while paused or rewinding the last forward rate is kept.
+        """
+        rate = self._media.state.playback_rate
+        if self._media.state.playing and rate is not None and rate > 0:
+            self._rate = rate
+        return self._rate
+
     def _player_properties(self) -> dict[str, object]:
         state = self._media.state
         if not self._media.available or state.playback_state is None:
@@ -344,13 +356,14 @@ class MprisPlayer(dbus.service.Object):
         else:
             status = "Playing"
         toggle = RemoteCommandID.TogglePlayPause
-        return {
+        rate = self._current_rate()
+        values: dict[str, object] = {
             "PlaybackStatus": dbus.String(status),
-            "Rate": dbus.Double(1.0),
+            "Rate": dbus.Double(rate),
             "Metadata": self._metadata(),
-            "Volume": dbus.Double(state.volume if state.volume is not None else 0.0),
-            "MinimumRate": dbus.Double(1.0),
-            "MaximumRate": dbus.Double(1.0),
+            # Rate is read-only here; the bounds only have to contain it.
+            "MinimumRate": dbus.Double(min(1.0, rate)),
+            "MaximumRate": dbus.Double(max(1.0, rate)),
             "CanGoNext": dbus.Boolean(self._supports(RemoteCommandID.NextTrack)),
             "CanGoPrevious": dbus.Boolean(self._supports(RemoteCommandID.PreviousTrack)),
             "CanPlay": dbus.Boolean(self._supports(RemoteCommandID.Play, toggle)),
@@ -358,6 +371,11 @@ class MprisPlayer(dbus.service.Object):
             "CanSeek": dbus.Boolean(False),
             "CanControl": dbus.Boolean(True),
         }
+        # Until the phone reports its volume, leave Volume out rather than
+        # claim 0.0 (muted); MPRIS clients then hide their volume control.
+        if state.volume is not None:
+            values["Volume"] = dbus.Double(state.volume)
+        return values
 
     def _root_properties(self) -> dict[str, object]:
         return {

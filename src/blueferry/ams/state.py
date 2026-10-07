@@ -58,6 +58,11 @@ class NowPlaying:
     title: str | None = None
     duration: float | None = None
     supported_commands: frozenset[RemoteCommandID] = field(default_factory=frozenset)
+    # Increases whenever the track changes; completing a truncated value is
+    # not a change. Never reset, so an identifier is never reused.
+    track_serial: int = 0
+    # Track attributes whose current value is a truncated prefix.
+    truncated_track: frozenset[int] = field(default_factory=frozenset)
 
     def reset(self) -> None:
         self.clear_playback()
@@ -71,8 +76,9 @@ class NowPlaying:
         list is not necessarily sent again after a reconnect.
         """
         for name in self.__slots__:
-            if name != "supported_commands":
+            if name not in ("supported_commands", "track_serial", "truncated_track"):
                 setattr(self, name, None)
+        self.truncated_track = frozenset()
 
     def set_supported_commands(self, commands: frozenset[RemoteCommandID]) -> bool:
         if commands == self.supported_commands:
@@ -121,13 +127,34 @@ class NowPlaying:
                 self.repeat = parse_mode(value)
         elif update.entity == EntityID.Track:
             if update.attribute == TrackAttributeID.Artist:
-                self.artist = clean_text(value) or None
+                self._set_track("artist", update, clean_text(value) or None)
             elif update.attribute == TrackAttributeID.Album:
-                self.album = clean_text(value) or None
+                self._set_track("album", update, clean_text(value) or None)
             elif update.attribute == TrackAttributeID.Title:
-                self.title = clean_text(value) or None
+                self._set_track("title", update, clean_text(value) or None)
             elif update.attribute == TrackAttributeID.Duration:
-                self.duration = parse_duration(value)
+                self._set_track("duration", update, parse_duration(value))
+
+    def _set_track(self, name: str, update: EntityUpdate, value: object) -> None:
+        """Store one track attribute and decide whether the track changed.
+
+        A full value that extends the truncated prefix shown before is the
+        same track, so its identifier stays stable.
+        """
+        previous = getattr(self, name)
+        completion = (
+            update.attribute in self.truncated_track
+            and isinstance(previous, str)
+            and isinstance(value, str)
+            and value.startswith(previous)
+        )
+        if value != previous and not completion:
+            self.track_serial += 1
+        setattr(self, name, value)
+        if update.truncated:
+            self.truncated_track |= {update.attribute}
+        else:
+            self.truncated_track -= {update.attribute}
 
     def _fingerprint(self) -> tuple:
         return (

@@ -270,3 +270,36 @@ def test_snapshot_shape() -> None:
     }
     state.reset()
     assert state.title is None and state.supported_commands == frozenset()
+
+
+def _track(state: NowPlaying, attribute: int, value: str, truncated: bool = False) -> None:
+    state.apply(EntityUpdate(EntityID.Track, attribute, truncated, value), 0.0)
+
+
+def test_completing_a_truncated_title_keeps_the_track_serial() -> None:
+    """Review #208: mpris:trackid must not change when a title completes."""
+    state = NowPlaying()
+    _track(state, TrackAttributeID.Artist, "Orchestra")
+    _track(state, TrackAttributeID.Title, "Symphony No", truncated=True)
+    serial = state.track_serial
+    _track(state, TrackAttributeID.Title, "Symphony No. 9 in D minor")
+    assert state.title == "Symphony No. 9 in D minor"
+    assert state.track_serial == serial
+    assert state.truncated_track == frozenset()
+
+    # A different title, or a non-truncated one that only shares a prefix,
+    # is a new track.
+    _track(state, TrackAttributeID.Title, "Symphony No. 9 in D minor (Live)")
+    assert state.track_serial == serial + 1
+
+
+def test_track_serial_survives_a_reset_and_is_never_reused() -> None:
+    state = NowPlaying()
+    _track(state, TrackAttributeID.Title, "One")
+    serial = state.track_serial
+    state.clear_playback()
+    assert state.title is None and state.track_serial == serial
+    _track(state, TrackAttributeID.Title, "One")
+    assert state.track_serial == serial + 1
+    state.reset()
+    assert state.track_serial == serial + 1

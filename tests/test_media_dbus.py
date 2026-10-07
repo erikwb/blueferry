@@ -394,3 +394,66 @@ def test_mpris_close_releases_the_name(mpris_factory) -> None:
     player.close()
     _dispatch_until(lambda: not observer.name_has_owner(name))
     player.close()  # idempotent
+
+
+def _player_props(name):
+    return _call(name, MPRIS_PATH, dbus.PROPERTIES_IFACE, "GetAll", PLAYER_IFACE)["value"]
+
+
+def test_mpris_reports_the_phones_playback_rate(mpris_factory) -> None:
+    """Review #208: a podcast at 1.5x must not drift in MPRIS clients."""
+    media, _writer = _media()
+    _bus, name, player = mpris_factory(media)
+    _play(media)
+    media.handle_update(EntityUpdate(EntityID.Player, 1, False, "1,1.5,30"))
+    _dispatch_until(lambda: player.owned)
+    props = _player_props(name)
+    assert props["Rate"] == pytest.approx(1.5)
+    assert props["MinimumRate"] <= 1.0 <= props["MaximumRate"]
+    assert props["MaximumRate"] >= props["Rate"]
+
+    # Paused (rate 0) keeps the last forward rate: MPRIS forbids Rate 0.
+    media.handle_update(EntityUpdate(EntityID.Player, 1, False, "0,0.0,31"))
+    player.refresh()
+    props = _player_props(name)
+    assert props["PlaybackStatus"] == "Paused"
+    assert props["Rate"] == pytest.approx(1.5)
+
+
+def test_mpris_omits_an_unknown_volume(mpris_factory) -> None:
+    """Review #208: unknown volume was reported as 0.0 (muted)."""
+    media, writer = _media()
+    _bus, name, player = mpris_factory(media)
+    media.handle_update(EntityUpdate(EntityID.Player, 1, False, "1,1.0,30"))
+    media.handle_update(EntityUpdate(EntityID.Track, 2, False, "Title"))
+    _dispatch_until(lambda: player.owned)
+    assert "Volume" not in _player_props(name)
+    # Setting a volume without a known level sends nothing.
+    assert "error" not in _call(
+        name, MPRIS_PATH, dbus.PROPERTIES_IFACE, "Set",
+        PLAYER_IFACE, "Volume", dbus.Double(0.9, variant_level=1),
+    )
+    assert writer.sent == []
+    media.handle_update(EntityUpdate(EntityID.Player, 2, False, "0.25"))
+    player.refresh()
+    assert _player_props(name)["Volume"] == pytest.approx(0.25)
+
+
+def test_mpris_trackid_is_stable_when_a_truncated_title_completes(mpris_factory) -> None:
+    """Review #208: completing a long title is not a new track."""
+    media, _writer = _media()
+    _bus, name, player = mpris_factory(media)
+    _play(media, title="A very long")
+    media.handle_update(EntityUpdate(EntityID.Track, 2, True, "A very long"))
+    _dispatch_until(lambda: player.owned)
+    before = _player_props(name)["Metadata"]["mpris:trackid"]
+
+    media.handle_update(EntityUpdate(EntityID.Track, 2, False, "A very long title indeed"))
+    player.refresh()
+    metadata = _player_props(name)["Metadata"]
+    assert metadata["xesam:title"] == "A very long title indeed"
+    assert metadata["mpris:trackid"] == before
+
+    _play(media, title="Next song")
+    player.refresh()
+    assert _player_props(name)["Metadata"]["mpris:trackid"] != before
