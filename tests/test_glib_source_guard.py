@@ -109,6 +109,7 @@ def test_tests_that_fake_one_scheduler_seam_fake_all_of_them() -> None:
     assert partial == []
 
 
+@pytest.mark.real_glib_sources
 def test_guard_reports_a_live_timer_until_it_is_removed(glib_source_guard) -> None:
     source_id = GLib.timeout_add_seconds(3600, lambda: False)
     assert [armed[0] for armed in glib_source_guard.live()] == [source_id]
@@ -116,6 +117,7 @@ def test_guard_reports_a_live_timer_until_it_is_removed(glib_source_guard) -> No
     assert glib_source_guard.live() == []
 
 
+@pytest.mark.real_glib_sources
 def test_guard_forgets_an_idle_source_that_already_ran(glib_source_guard) -> None:
     ran = []
     GLib.idle_add(lambda: ran.append(True) or False)
@@ -125,6 +127,7 @@ def test_guard_forgets_an_idle_source_that_already_ran(glib_source_guard) -> Non
     assert glib_source_guard.live() == []
 
 
+@pytest.mark.real_glib_sources
 def test_guard_ignores_sources_armed_from_worker_threads(glib_source_guard) -> None:
     # Workers post idle callbacks back to the main loop whenever they finish,
     # which may be during a later test. Only the test's own thread counts.
@@ -157,6 +160,8 @@ _INNER_TESTS = '''
 import pytest
 from gi.repository import GLib
 
+pytestmark = pytest.mark.real_glib_sources
+
 
 def test_leak():
     GLib.timeout_add_seconds(3600, lambda: False)
@@ -179,12 +184,30 @@ def test_clean():
     GLib.source_remove(GLib.timeout_add_seconds(3600, lambda: False))
 '''
 
+_INNER_UNIT_TESTS = '''
+from gi.repository import GLib
+
+
+def test_unit_arms_real_timer():
+    GLib.timeout_add_seconds(3600, lambda: False)
+
+
+def test_unit_swallows_the_refusal():
+    try:
+        GLib.idle_add(lambda: False)
+    except AssertionError:
+        pass
+'''
+
 
 def test_guard_enforces_at_teardown_without_double_reports(tmp_path) -> None:
     conftest = Path(__file__).with_name("conftest.py").read_text()
     (tmp_path / "conftest.py").write_text(conftest + _LATE_CLEANUP)
     (tmp_path / "test_inner.py").write_text(_INNER_TESTS)
-    (tmp_path / "pytest.ini").write_text("[pytest]\n")
+    (tmp_path / "test_inner_unit.py").write_text(_INNER_UNIT_TESTS)
+    (tmp_path / "pytest.ini").write_text(
+        "[pytest]\nmarkers =\n    real_glib_sources: real GLib sources allowed\n"
+    )
     result = subprocess.run(
         [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "-rA",
          "-W", "ignore", str(tmp_path)],
@@ -192,11 +215,11 @@ def test_guard_enforces_at_teardown_without_double_reports(tmp_path) -> None:
     )
     lines = result.stdout.splitlines()
 
-    def outcome(name):
+    def outcome(name, module="test_inner"):
         return sorted(
             line.split()[0] for line in lines
-            if line.endswith(f"test_inner.py::{name}")
-            or f"test_inner.py::{name} - " in line
+            if line.endswith(f"{module}.py::{name}")
+            or f"{module}.py::{name} - " in line
         )
 
     assert outcome("test_leak") == ["ERROR", "PASSED"], result.stdout
@@ -208,3 +231,11 @@ def test_guard_enforces_at_teardown_without_double_reports(tmp_path) -> None:
     assert outcome("test_fake_id_removed") == ["ERROR", "PASSED"], result.stdout
     assert "[987654]" in result.stdout
     assert outcome("test_clean") == ["PASSED"], result.stdout
+    # Without the marker a unit test may not arm a real source at all: the
+    # call fails where it happens, and swallowing that still fails teardown.
+    assert outcome("test_unit_arms_real_timer", "test_inner_unit") == ["FAILED"], result.stdout
+    assert "unit test armed a real GLib.timeout_add_seconds" in result.stdout
+    assert outcome("test_unit_swallows_the_refusal", "test_inner_unit") == [
+        "ERROR", "PASSED",
+    ], result.stdout
+    assert "tried to arm real GLib sources" in result.stdout

@@ -44,6 +44,12 @@ _glib_foreign_removals: list[int] | None = None
 # the main loop at any time, including between tests or during the next one;
 # attributing those to whichever test happens to be running would flake.
 _glib_guard_thread: int | None = None
+# Unit tests never need a real timer: everything that schedules takes a
+# schedule/idle seam. Outside private D-Bus tests (and tests marked
+# real_glib_sources) arming one is refused at the call site, so a forgotten
+# injection fails with a traceback pointing at it instead of leaking a timer
+# that may or may not be cleaned up before teardown.
+_glib_arming_refused: list[str] | None = None
 
 
 def _guarding_this_thread() -> bool:
@@ -56,10 +62,20 @@ def _record_glib_source(name: str):
 
     @functools.wraps(original)
     def armed(*args, **kwargs):
+        callback = next((arg for arg in args if callable(arg)), None)
+        refused = _glib_arming_refused
+        if refused is not None and _guarding_this_thread():
+            refused.append(
+                f"GLib.{name}({getattr(callback, '__qualname__', None) or repr(callback)})"
+            )
+            # Also reported at teardown, in case the code under test swallows it.
+            raise AssertionError(
+                f"unit test armed a real GLib.{name}; inject schedule/cancel/idle "
+                "fakes, or mark the test private_dbus or real_glib_sources"
+            )
         source_id = original(*args, **kwargs)
         record = _glib_sources_armed
         if record is not None and _guarding_this_thread():
-            callback = next((arg for arg in args if callable(arg)), None)
             record.append((source_id, name, callback))
         return source_id
 
@@ -170,6 +186,7 @@ class GlibSourceGuard:
     def __init__(self) -> None:
         self.armed: list[tuple[int, str, object]] = []
         self.foreign_removals: list[int] = []
+        self.refused: list[str] = []
 
     def live(self) -> list[tuple[int, str, object]]:
         context = GLib.MainContext.default()
@@ -197,6 +214,12 @@ class GlibSourceGuard:
                     for _id, name, callback in leaked
                 )
             )
+        if self.refused:
+            problems.append(
+                "unit test tried to arm real GLib sources; inject schedule/cancel/idle "
+                "fakes or mark it private_dbus or real_glib_sources: "
+                + ", ".join(self.refused)
+            )
         if self.foreign_removals:
             problems.append(
                 "test passed GLib.source_remove ids it never armed through GLib; "
@@ -208,7 +231,9 @@ class GlibSourceGuard:
 
 def _stop_recording() -> None:
     global _glib_sources_armed, _glib_foreign_removals, _glib_guard_thread
+    global _glib_arming_refused
     _glib_sources_armed = None
+    _glib_arming_refused = None
     _glib_foreign_removals = None
     _glib_guard_thread = None
 
@@ -225,13 +250,22 @@ def glib_source_guard(request):
     arming real sources. Private D-Bus tests may use real GLib dispatch, but
     everything they arm must have fired or been removed by teardown.
 
+    Unit tests may not arm real sources at all; only tests marked
+    ``private_dbus`` or ``real_glib_sources`` may, and they must clean up.
+
     Recording starts when this fixture is set up, so sources that
     higher-scoped fixtures arm are not attributed to the test. The check
     itself does not depend on fixture order: pytest_runtest_teardown below
     runs it after every fixture finalizer of the test has run.
     """
     global _glib_sources_armed, _glib_foreign_removals, _glib_guard_thread
+    global _glib_arming_refused
     guard = GlibSourceGuard()
+    real_sources_allowed = any(
+        request.node.get_closest_marker(marker) is not None
+        for marker in ("private_dbus", "real_glib_sources")
+    )
+    _glib_arming_refused = None if real_sources_allowed else guard.refused
     _glib_sources_armed = guard.armed
     _glib_foreign_removals = guard.foreign_removals
     _glib_guard_thread = threading.get_ident()
