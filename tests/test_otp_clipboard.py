@@ -97,8 +97,26 @@ def test_excluding_wl_copy_falls_back_to_x11() -> None:
 
 
 def test_defaults_resolve_at_call_time(monkeypatch) -> None:
-    monkeypatch.setattr("blueferry.otp_clipboard.shutil.which", lambda _tool: None)
-    assert find_target({"WAYLAND_DISPLAY": "wayland-0", "DISPLAY": ":0"}) is None
+    monkeypatch.setattr("blueferry.otp_clipboard.shutil.which", lambda _tool, path=None: None)
+    environ = {"PATH": "/usr/bin", "WAYLAND_DISPLAY": "wayland-0", "DISPLAY": ":0"}
+    assert find_target(environ) is None
+
+
+def test_helpers_are_found_through_the_passed_path_only(tmp_path, monkeypatch) -> None:
+    helper_dir = tmp_path / "bin"
+    helper_dir.mkdir()
+    helper = helper_dir / "wl-copy"
+    helper.write_text("#!/bin/sh\n")
+    helper.chmod(0o700)
+    # The process PATH must not matter, only the session environment's.
+    monkeypatch.setenv("PATH", str(helper_dir))
+    display = {"WAYLAND_DISPLAY": "wayland-0"}
+
+    assert find_target(display) is None
+    assert find_target({**display, "PATH": "/nonexistent"}) is None
+    target = find_target({**display, "PATH": str(helper_dir)})
+    assert target is not None
+    assert target.executable == str(helper)
 
 
 def test_helper_environment_is_allowlisted() -> None:

@@ -59,7 +59,7 @@ def test_doctor_warns_when_autocopy_has_no_clipboard_helper(monkeypatch) -> None
     monkeypatch.setattr(cli.bluez_setup, "desired_cod_matches", lambda _cod: True)
     monkeypatch.setattr(config, "OTP_AUTOCOPY", True)
     monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
-    monkeypatch.setattr(otp_clipboard.shutil, "which", lambda _tool: None)
+    monkeypatch.setattr(otp_clipboard.shutil, "which", lambda _tool, path=None: None)
 
     result = CliRunner().invoke(cli.app, ["doctor"])
 

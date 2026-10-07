@@ -122,8 +122,18 @@ def find_target(
     owner-only runtime directory identifies the session unambiguously.
     Helpers named in ``exclude`` are skipped (used to fall back to X11 when
     wl-copy could not reach the guessed display).
+
+    Helpers are searched in ``environ``'s ``PATH``, the same environment
+    the helper is started with, never in the process's own; without a
+    ``PATH`` there is no helper.
     """
-    lookup = which or shutil.which
+    search_path = environ.get("PATH", "")
+
+    def lookup(tool: str) -> str | None:
+        if which is not None:
+            return which(tool)
+        return shutil.which(tool, path=search_path) if search_path else None
+
     sockets_in = list_sockets or _wayland_sockets
 
     def resolve(tool: str) -> str | None:
