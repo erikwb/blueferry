@@ -527,7 +527,7 @@ class MessagesService(dbus.service.Object):
     )
     def Answer(self, call_id: str, reply_handler, error_handler, sender=None) -> None:
         self._call_control(
-            sender, "calls-control",
+            sender, "calls-answer",
             lambda success, failure: self.operations.answer_call(
                 str(call_id), lambda _result: success(), failure,
             ),
@@ -594,7 +594,7 @@ class MessagesService(dbus.service.Object):
     )
     def HoldAndAnswer(self, reply_handler, error_handler, sender=None) -> None:
         self._call_control(
-            sender, "calls-control",
+            sender, "calls-answer",
             lambda success, failure: self.operations.hold_and_answer_call(
                 lambda _result: success(), failure,
             ),

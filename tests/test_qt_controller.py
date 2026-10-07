@@ -903,11 +903,11 @@ def test_optional_calls_are_exposed_without_touching_a_disabled_backend():
     assert controller.phoneCalls[0]["ringing"] is True
     assert controller.callsState == "ready"
 
-    controller.dialCall("  112 ")
+    controller.dialCall("  0441234567 ")
     controller.answerCall("voicecall01")
     controller.dialCall("   ")
     controller._pool.waitForDone(1000)
-    assert ("dial", "112") in backend.requests
+    assert ("dial", "0441234567") in backend.requests
     assert ("answer", "voicecall01") in backend.requests
     assert ("dial", "") not in backend.requests
 

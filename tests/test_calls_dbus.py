@@ -184,7 +184,7 @@ def _call(name, interface_name, method, *args):
 def test_disabled_calls_fail_with_a_typed_error(disabled_service) -> None:
     name, _service = disabled_service
 
-    for method, args in (("ListCalls", ()), ("Dial", ("112",)), ("HangupAll", ())):
+    for method, args in (("ListCalls", ()), ("Dial", ("0441234567",)), ("HangupAll", ())):
         outcome = _call(name, CALLS_IFACE, method, *args)
         assert outcome["error"].get_dbus_name() == "io.weirdware.BlueFerry.Error.CallsDisabled"
 
@@ -199,7 +199,7 @@ def test_calls_round_trip_through_the_public_interface(calls_service) -> None:
 
     listed = json.loads(_call(name, CALLS_IFACE, "ListCalls")["value"])
     assert listed["calls"][0]["contact_name"] == "Alice"
-    assert str(_call(name, CALLS_IFACE, "Dial", "112")["value"]) == "voicecall07"
+    assert str(_call(name, CALLS_IFACE, "Dial", "0441234567")["value"]) == "voicecall07"
     assert "error" not in _call(name, CALLS_IFACE, "Answer", "voicecall01")
     assert "error" not in _call(name, CALLS_IFACE, "SendTones", "voicecall01", "1#")
     assert "error" not in _call(name, CALLS_IFACE, "Hangup", "voicecall01")
@@ -208,7 +208,7 @@ def test_calls_round_trip_through_the_public_interface(calls_service) -> None:
     assert "error" not in _call(name, CALLS_IFACE, "HangupAll")
 
     assert calls.requests == [
-        ("dial", "112"), ("answer", "voicecall01"), ("tones", "voicecall01", "1#"),
+        ("dial", "0441234567"), ("answer", "voicecall01"), ("tones", "voicecall01", "1#"),
         ("hangup", "voicecall01"), ("swap",), ("hold_and_answer",), ("hangup_all",),
     ]
     status = json.loads(_call(name, MESSAGES_IFACE, "GetStatus")["value"])
@@ -260,7 +260,7 @@ def test_shared_client_checks_compatibility_through_messages1(calls_service) -> 
                 ),
             )
             outcome["snapshot"] = client.calls()
-            outcome["dial"] = client.dial("112")
+            outcome["dial"] = client.dial("0441234567")
         except Exception as error:
             outcome["error"] = error
         finally:
@@ -280,11 +280,11 @@ def test_shared_client_checks_compatibility_through_messages1(calls_service) -> 
 def test_dial_quota_is_enforced_over_the_bus_without_blocking_answer(rate_limited_service) -> None:
     name, calls, now = rate_limited_service
 
-    outcomes = [_call(name, CALLS_IFACE, "Dial", "112") for _ in range(7)]
+    outcomes = [_call(name, CALLS_IFACE, "Dial", "0441234567") for _ in range(7)]
 
     assert all("error" not in outcome for outcome in outcomes[:6])
     assert outcomes[6]["error"].get_dbus_name() == "io.weirdware.BlueFerry.Error.RateLimited"
     assert "error" not in _call(name, CALLS_IFACE, "Answer", "voicecall01")
-    assert calls.requests.count(("dial", "112")) == 6
+    assert calls.requests.count(("dial", "0441234567")) == 6
     now[0] += 61
-    assert "error" not in _call(name, CALLS_IFACE, "Dial", "112")
+    assert "error" not in _call(name, CALLS_IFACE, "Dial", "0441234567")

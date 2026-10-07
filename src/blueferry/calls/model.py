@@ -112,6 +112,19 @@ def validate_call_id(value: object) -> str:
     return selected
 
 
+# Widely used emergency numbers (not exhaustive). Emergency calls belong on
+# the phone itself: a desktop HFP bridge can lose its audio when the Classic
+# link, PipeWire, or the adapter hiccups, the computer may not be where the
+# phone is, and iOS ties Emergency SOS and location sharing to its own
+# dialer. Refusing them here also stops a script or a stray TUI keystroke
+# from reaching emergency services through BlueFerry.
+EMERGENCY_NUMBERS = frozenset({
+    "000", "08", "100", "101", "102", "108", "110", "111", "112", "117", "118",
+    "119", "120", "122", "133", "144", "15", "17", "18", "190", "192", "193",
+    "911", "995", "997", "998", "999",
+})
+
+
 def normalize_dial_number(value: object) -> str:
     """Validate and normalize a dial string for VoiceCallManager.Dial.
 
@@ -121,7 +134,8 @@ def normalize_dial_number(value: object) -> str:
     (MMI) codes such as ``**21*…#`` (unconditional call forwarding), which
     change the phone's configuration rather than place a call. Keypad tones
     remain available on an active call through ``validate_dtmf``. Letters,
-    pauses, and every other character are rejected as well.
+    pauses, and every other character are rejected as well, and so are the
+    well-known emergency numbers in ``EMERGENCY_NUMBERS``.
     """
     if not isinstance(value, str) or len(value) > MAX_DIAL_DIGITS * 3:
         raise InvalidArgumentsError("phone number is invalid")
@@ -131,6 +145,10 @@ def normalize_dial_number(value: object) -> str:
     if not _DIAL_RE.fullmatch(compact):
         raise InvalidArgumentsError(
             "phone number may contain only an optional leading + and digits"
+        )
+    if compact.lstrip("+") in EMERGENCY_NUMBERS:
+        raise InvalidArgumentsError(
+            "emergency numbers are not dialed through BlueFerry; call them on the iPhone"
         )
     return compact
 

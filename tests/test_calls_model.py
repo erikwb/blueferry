@@ -46,7 +46,8 @@ _PROPERTY_NAMES = st.sampled_from([
 @pytest.mark.parametrize("raw,expected", [
     ("+41 79 123 45 67", "+41791234567"),
     ("(555) 123-4567", "5551234567"),
-    ("112", "112"),
+    ("1234", "1234"),
+    ("1122", "1122"),
 ])
 def test_dial_numbers_are_normalized(raw, expected) -> None:
     assert normalize_dial_number(raw) == expected
@@ -58,6 +59,12 @@ def test_dial_numbers_are_normalized(raw, expected) -> None:
 ])
 def test_dial_numbers_reject_anything_else(raw) -> None:
     with pytest.raises(InvalidArgumentsError):
+        normalize_dial_number(raw)
+
+
+@pytest.mark.parametrize("raw", ["112", "911", "+112", "1 1 2", "999", "000", "117", "144"])
+def test_emergency_numbers_are_left_to_the_phone(raw) -> None:
+    with pytest.raises(InvalidArgumentsError, match="emergency numbers"):
         normalize_dial_number(raw)
 
 

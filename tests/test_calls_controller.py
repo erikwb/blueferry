@@ -201,7 +201,7 @@ def test_disabled_feature_never_touches_ofono() -> None:
     with pytest.raises(CallsDisabledError):
         controller.list_calls()
     with pytest.raises(CallsDisabledError):
-        controller.dial("112", _noop, _noop)
+        controller.dial("0441234567", _noop, _noop)
     with pytest.raises(CallsDisabledError):
         controller.hangup_all(_noop, _noop)
 
@@ -216,7 +216,7 @@ def test_missing_ofono_reports_unavailable_and_retries_slowly() -> None:
     assert timers.delays() == [60]
     assert controller.list_calls() == {"state": "unavailable", "calls": []}
     with pytest.raises(CallsUnavailableError, match="oFono is not running"):
-        controller.dial("112", _noop, _noop)
+        controller.dial("0441234567", _noop, _noop)
 
     # oFono starting is noticed immediately through its owner watch.
     transport.owner_handler(True)
@@ -444,7 +444,7 @@ def test_ofono_failure_becomes_a_generic_call_error() -> None:
     controller, transport, _timers, _changes, _events = _ready()
     failures = []
 
-    controller.dial("112", _noop, failures.append)
+    controller.dial("0441234567", _noop, failures.append)
     transport.take("Dial").on_error(
         dbus.exceptions.DBusException("+41 private detail", name="org.ofono.Error.Failed")
     )
@@ -489,7 +489,7 @@ def test_modem_going_offline_drops_calls_and_repowers() -> None:
 def test_ofono_restart_discards_stale_replies_and_signals() -> None:
     controller, transport, _timers, _changes, events = _ready()
     stale_replies: list = []
-    controller.dial("112", stale_replies.append, stale_replies.append)
+    controller.dial("0441234567", stale_replies.append, stale_replies.append)
     stale_dial = transport.take("Dial")
     stale_signals = [match for match in transport.matches if match.signal == "CallAdded"]
 
