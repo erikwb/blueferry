@@ -49,6 +49,28 @@ style dependencies fail this check even when CLI/TUI startup still succeeds.
   unlock prompt, or inspect the user's encrypted BlueFerry databases.
 - Lifecycle and concurrency tests assert externally meaningful outcomes, not
   private call order unless the order itself prevents a leak or race.
+- Classes that take GLib defaults for `schedule`, `cancel` or `idle` get
+  fakes for all of those seams in tests, never just one: a fake `schedule`
+  next to the real `GLib.source_remove` cancels made-up ids on the default
+  context. The defaults are bound at import time, so patching `GLib` does
+  not replace them. `tests/test_glib_source_guard.py` finds these classes by
+  scanning the source and checks every test construction.
+- Unit tests never arm real GLib timer or idle sources. The autouse
+  `glib_source_guard` in `tests/conftest.py` refuses such a call on the
+  test's thread with an `AssertionError` at the call site, and also fails
+  the test at teardown in case the code under test swallowed it. So a
+  forgotten `schedule`/`idle` injection cannot slip through, whether or not
+  the source would have been cleaned up in time. Tests that need real GLib
+  dispatch are marked `private_dbus` or `real_glib_sources`.
+- In those tests the guard fails a test that leaves a source armed on its
+  own thread, because it would fire later on an orphaned object inside an
+  unrelated test, or that removes a source id it never armed. Callbacks that
+  worker threads post back to the main loop are not attributed to a test.
+- `tests/conftest.py` disables libdbus's exit-on-disconnect on every D-Bus
+  connection the test process opens, from test code or from the code under
+  test. Otherwise a closed private connection that a failing test keeps alive
+  makes the next GLib iteration exit pytest with status 1 and no report.
+  Child processes that open their own connections must disable it themselves.
 - Daemon tests build a real `Daemon` with the `make_daemon` fixture, which
   isolates every state path, and replace only hardware-facing collaborators.
   Never assemble one with `Daemon.__new__` and hand-set private fields.

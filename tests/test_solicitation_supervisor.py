@@ -189,6 +189,7 @@ def test_pending_registration_gets_full_hold_after_it_completes():
         unregister=lambda _adapter: removed.append(now[0]),
         is_registered=lambda: state['registered'], is_pending=lambda: state['pending'],
         clock=lambda: now[0], schedule=lambda _, callback: timers.append(callback) or 1,
+        cancel=lambda _timer: None,
     )
     supervisor.start()
     timers[0]()

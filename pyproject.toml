@@ -71,6 +71,7 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 markers = [
   "private_dbus: requires an explicitly isolated dbus-run-session",
+  "real_glib_sources: unit test that may arm real GLib timer and idle sources",
 ]
 filterwarnings = [
   # PyGObject 3.56 warns while importing its own deprecated GLib alias.

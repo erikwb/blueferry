@@ -15,9 +15,7 @@ pytestmark = pytest.mark.private_dbus
 def test_bond_check_timeout_bounds_a_wedged_bluetoothd(monkeypatch):
     # Owns org.bluez but is never dispatched, like a wedged bluetoothd.
     wedged = dbus.SystemBus(private=True, mainloop=dbus.mainloop.NULL_MAIN_LOOP)
-    wedged.set_exit_on_disconnect(False)
     client = dbus.SystemBus(private=True, mainloop=dbus.mainloop.NULL_MAIN_LOOP)
-    client.set_exit_on_disconnect(False)
     monkeypatch.setattr(pair_setup, "get_system_bus", lambda: client)
     try:
         assert wedged.request_name(
