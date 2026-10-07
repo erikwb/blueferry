@@ -5,6 +5,7 @@ forbids access to the real session and system buses.
 """
 from __future__ import annotations
 
+import io
 import struct
 from datetime import datetime, timezone
 
@@ -24,6 +25,7 @@ from blueferry.grouping import correlate_group_events
 from blueferry.obex.bmessage import parse as parse_bmessage
 from blueferry.obex.map_send import build_bmessage
 from blueferry.recipients import InvalidRecipient, validate_recipient
+from blueferry.vcard import iter_bounded_lines, iter_vcard_bodies
 
 PROPERTY_SETTINGS = settings(max_examples=150, derandomize=True, deadline=None)
 _WIRE_TEXT = st.text(
@@ -48,6 +50,43 @@ def test_arbitrary_text_cannot_crash_bmessage_or_vcard_parsers(blob: str) -> Non
     cards = _parse_vcard_records(blob)
     assert parsed.body is None or isinstance(parsed.body, str)
     assert all(len(record) == 3 for record in cards)
+
+
+_VCARD_LINES = st.lists(
+    st.one_of(
+        st.sampled_from([
+            "BEGIN:VCARD", "END:VCARD", "FN:Ann Lee", "TEL;CELL:+15551234567",
+            "EMAIL:a@example.com", "PHOTO;ENCODING=b:QUJD", "QUJDREVG", " QUJD",
+            "PHOTO;ENCODING=QUOTED-PRINTABLE:=FF=D8=", "=00:=", "",
+            "NOTE;QUOTED-PRINTABLE:a=", "Key;box 12", "KEY:data:x;base64,QUJD",
+            "LOGO;VALUE=uri:https://example.invalid/a",
+            "NOTE:" + "n" * 400, "PHOTO;QUOTED-PRINTABLE:" + "=FF" * 150 + "=",
+            "PHOTO:data:image/png;base64," + "QUJD:" * 80, "QUJD" * 100,
+        ]),
+        st.text(max_size=48),
+    ),
+    max_size=24,
+)
+
+
+@PROPERTY_SETTINGS
+@given(
+    lines=_VCARD_LINES,
+    separator=st.sampled_from(["\n", "\r\n", "\r", "\u2028"]),
+    limit=st.integers(min_value=1, max_value=64),
+    card_limit=st.integers(min_value=0, max_value=256),
+)
+def test_streamed_vcards_stay_bounded_and_parse_like_the_whole_text(
+    lines: list[str], separator: str, limit: int, card_limit: int,
+) -> None:
+    blob = separator.join(lines)
+    streamed = list(iter_vcard_bodies(
+        iter_bounded_lines(io.StringIO(blob), limit=limit),
+        maximum=100, max_card_chars=card_limit,
+    ))
+    assert all(len(body) <= card_limit for body in streamed)
+    # However the reader cuts lines, the cards match the whole-text parse.
+    assert streamed == list(iter_vcard_bodies(blob, maximum=100, max_card_chars=card_limit))
 
 
 @PROPERTY_SETTINGS
