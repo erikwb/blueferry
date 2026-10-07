@@ -59,6 +59,13 @@ style dependencies fail this check even when CLI/TUI startup still succeeds.
   `xgettext` and `lupdate` over the list and requires every entry to yield a
   message; those two tests skip where the tools are missing, and the quality
   workflow sets `BLUEFERRY_REQUIRE_TRANSLATION_TOOLS=1` so that skip fails CI.
+- Locale-dependent tests do not rely on the host's installed locales. The
+  timestamp test compiles its own non-English `LC_TIME` locale with
+  `localedef` into a temporary `LOCPATH`; it skips where `localedef` is
+  missing, and the quality workflow sets `BLUEFERRY_REQUIRE_LOCALE_TEST=1` so
+  that skip fails CI instead. `tests/test_locale_independent_formats.py`
+  additionally rejects strftime name directives (`%a`, `%b`, `%p`, `%c`, ...)
+  and QML locale formatters anywhere under `src/blueferry`.
 - A test should remain valid if the implementation is rewritten without
   changing the behavior it protects.
 

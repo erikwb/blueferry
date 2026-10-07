@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import signal
+from collections.abc import Callable
 
 import dbus
 from gi.repository import GLib
@@ -33,6 +34,7 @@ from blueferry.contact_sync import ContactSync
 from blueferry.contacts import ContactsResolver
 from blueferry.dbus_service import MessagesService, claim_bus_name
 from blueferry.event_dispatcher import EventDispatcher
+from blueferry.glib_timers import schedule_periodic
 from blueferry.group_routes import GroupRoutesStore
 from blueferry.history import (
     history_count,
@@ -321,15 +323,13 @@ class Daemon:
         self._emit_status()
 
         if self._packaged:
-            self._release_check_id = GLib.timeout_add_seconds(
-                PACKAGE_RELEASE_CHECK_SEC, self._check_package_release
+            self._schedule_periodic(
+                "_release_check_id", PACKAGE_RELEASE_CHECK_SEC, self._check_package_release
             )
-        self._target_config_check_id = GLib.timeout_add_seconds(
-            TARGET_CONFIG_CHECK_SEC, self._check_target_config
+        self._schedule_periodic(
+            "_target_config_check_id", TARGET_CONFIG_CHECK_SEC, self._check_target_config
         )
-        self._storage_retry_id = GLib.timeout_add_seconds(
-            STORAGE_RETRY_SEC, self._retry_storage
-        )
+        self._schedule_periodic("_storage_retry_id", STORAGE_RETRY_SEC, self._retry_storage)
 
         for sig in (signal.SIGINT, signal.SIGTERM):
             signal.signal(sig, self._signal)
@@ -337,6 +337,18 @@ class Daemon:
         # Let the GLib loop begin dispatching D-Bus before potentially slow
         # profile setup. This makes activation and GetStatus deterministic.
         self._startup_id = GLib.timeout_add(250, self._initialize)
+
+    def _schedule_periodic(
+        self, attr: str, seconds: int, callback: Callable[[], bool]
+    ) -> None:
+        """Run ``callback`` every ``seconds`` and keep its source id in ``attr``.
+
+        The id is forgotten as soon as GLib destroys the source, so ``stop()``
+        only removes timers that are still live.
+        """
+        setattr(self, attr, schedule_periodic(
+            GLib.timeout_add_seconds, seconds, callback, lambda: setattr(self, attr, None),
+        ))
 
     def _retry_storage(self) -> bool:
         # A daemon activated before the desktop keyring opens must recover

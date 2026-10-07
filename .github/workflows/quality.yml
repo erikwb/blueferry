@@ -33,6 +33,7 @@ jobs:
             export BLUEFERRY_TEST_DBUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS"
             export PYTHONPATH="$PWD/src"
             export BLUEFERRY_REQUIRE_TRANSLATION_TOOLS=1
+            export BLUEFERRY_REQUIRE_LOCALE_TEST=1
             python -m coverage run -m pytest -q
             python -m coverage report
           '
