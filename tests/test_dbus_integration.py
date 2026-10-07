@@ -32,7 +32,6 @@ from blueferry.protocol import (
 from blueferry.recipients import group_confirmation_token
 from blueferry.settings_store import SettingsStore
 from blueferry.storage_security import StorageSecurity, StorageUnavailableError
-from tests.private_bus import open_private_bus
 
 pytestmark = pytest.mark.private_dbus
 _service_ids = itertools.count()
@@ -97,7 +96,10 @@ def _client(name: str):
     # the test's main thread dispatches the service's GLib context. Keeping
     # their private connections off that context avoids concurrent libdbus
     # dispatch of the same connection.
-    connection = open_private_bus(mainloop=dbus.mainloop.NULL_MAIN_LOOP)
+    connection = dbus.SessionBus(
+        private=True,
+        mainloop=dbus.mainloop.NULL_MAIN_LOOP,
+    )
     interface = dbus.Interface(
         connection.get_object(name, OBJECT_PATH), MESSAGES_IFACE
     )
@@ -146,7 +148,7 @@ def test_legacy_activation_does_not_route_to_a_replaced_owner(public_service):
     from blueferry.client_activation import GTK_CLIENT
 
     name, *_ = public_service
-    gtk_bus = open_private_bus()
+    gtk_bus = dbus.SessionBus(private=True)
     gtk_name = dbus.service.BusName(GTK_CLIENT.desktop_id, bus=gtk_bus, do_not_queue=True)
     try:
         thread, outcome = _request_in_thread(name, "OpenLegacyGtkMessage", "handle", ":999.999")
@@ -258,7 +260,7 @@ def test_passive_wallet_retry_keeps_status_available_and_announces_history(
         on_storage_changed=service.emit_status,
         status_provider=lambda: {"initializing": False, "storage_state": storage.status.state},
     )
-    connection = open_private_bus()
+    connection = dbus.SessionBus(private=True)
     received = []
     match = connection.add_signal_receiver(
         lambda change: received.append(dict(change)), dbus_interface=EVENTS_IFACE,
@@ -657,7 +659,7 @@ def test_notification_policy_round_trips_without_profile_io(public_service) -> N
 
 def test_live_signal_contains_only_an_opaque_revision(public_service) -> None:
     name, _pending, _policy, _policy_changes, service = public_service
-    connection = open_private_bus()
+    connection = dbus.SessionBus(private=True)
     received = []
     match = connection.add_signal_receiver(
         lambda change: received.append(dict(change)),

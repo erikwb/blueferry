@@ -279,8 +279,8 @@ def _serve_activation_backend():
     # A second process listening for the same backend signal must not be
     # activated by the legacy relay. The GTK process has two bus connections.
     observer = dbus.SessionBus(private=True)
-    # This runs as a script in a child process, so it cannot import
-    # tests.private_bus; disable libdbus's exit-on-disconnect by hand.
+    # This runs as a script in a child process, outside conftest's
+    # connection wrapper; disable libdbus's exit-on-disconnect by hand.
     observer.set_exit_on_disconnect(False)
     match = observer.add_signal_receiver(
         lambda handle: print("unexpected-broadcast:" + str(handle), flush=True),

@@ -12,14 +12,13 @@ from gi.repository import GLib
 
 from blueferry import bluetooth_recovery as mod
 from blueferry.settings_store import SettingsStore
-from tests.private_bus import open_private_bus
 
 pytestmark = pytest.mark.private_dbus
 
 
 def test_real_dbus_power_cycle_uses_variants_and_clears_its_journal(tmp_path, monkeypatch):
-    server = open_private_bus("system")
-    monitor = open_private_bus("system")
+    server = dbus.SystemBus(private=True)
+    monitor = dbus.SystemBus(private=True)
     server.request_name("org.bluez", dbus.bus.NAME_FLAG_DO_NOT_QUEUE)
     local = threading.local()
     local.bus = monitor
@@ -78,7 +77,7 @@ def test_real_dbus_power_cycle_uses_variants_and_clears_its_journal(tmp_path, mo
     adapter.start_monitoring()
 
     def run():
-        local.bus = open_private_bus("system", mainloop=dbus.mainloop.NULL_MAIN_LOOP)
+        local.bus = dbus.SystemBus(private=True, mainloop=dbus.mainloop.NULL_MAIN_LOOP)
         try:
             try:
                 adapter.cycle(adapter.read(), threading.Event())

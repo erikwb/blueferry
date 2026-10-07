@@ -15,7 +15,6 @@ from blueferry import bus
 from blueferry.errors import SendOutcomeUnknownError
 from blueferry.obex import map_send, transfer
 from blueferry.obex.sessions import SessionManager
-from tests.private_bus import open_private_bus
 
 pytestmark = pytest.mark.private_dbus
 
@@ -24,7 +23,7 @@ pytestmark = pytest.mark.private_dbus
 def test_failed_transfer_subscription_releases_watches_and_preserves_other_receivers(
     monkeypatch, cleanup_fails,
 ):
-    observer = open_private_bus()
+    observer = dbus.SessionBus(private=True)
     observer.request_name('org.bluez.obex', dbus.bus.NAME_FLAG_DO_NOT_QUEUE)
     monkeypatch.setattr(transfer, 'get_session_bus', lambda: observer)
     original_add_match = observer.add_match_string
@@ -99,21 +98,17 @@ def test_failed_transfer_subscription_releases_watches_and_preserves_other_recei
 
 @pytest.mark.parametrize('status', ['complete', 'error', None])
 def test_worker_retries_keep_transfer_evidence_on_main_thread(monkeypatch, status):
-    service_bus = open_private_bus()
+    service_bus = dbus.SessionBus(private=True)
     service_bus.request_name('org.bluez.obex', dbus.bus.NAME_FLAG_DO_NOT_QUEUE)
     objects = []
     creations = []
     subscriptions = []
     calls = []
-
-    # Production opens this connection; conftest's guard wraps SessionBus.
-    session_bus = getattr(dbus.SessionBus, '__wrapped__', dbus.SessionBus)
+    session_bus = dbus.SessionBus
 
     def connect(*, private, mainloop):
         creations.append((threading.get_ident(), mainloop))
-        connection = session_bus(private=private, mainloop=mainloop)
-        connection.set_exit_on_disconnect(False)
-        return connection
+        return session_bus(private=private, mainloop=mainloop)
 
     def observer_bus():
         subscriptions.append(threading.get_ident())

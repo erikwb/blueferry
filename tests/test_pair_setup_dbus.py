@@ -8,15 +8,14 @@ import dbus.mainloop
 import pytest
 
 from blueferry import pair_setup
-from tests.private_bus import open_private_bus
 
 pytestmark = pytest.mark.private_dbus
 
 
 def test_bond_check_timeout_bounds_a_wedged_bluetoothd(monkeypatch):
     # Owns org.bluez but is never dispatched, like a wedged bluetoothd.
-    wedged = open_private_bus("system", mainloop=dbus.mainloop.NULL_MAIN_LOOP)
-    client = open_private_bus("system", mainloop=dbus.mainloop.NULL_MAIN_LOOP)
+    wedged = dbus.SystemBus(private=True, mainloop=dbus.mainloop.NULL_MAIN_LOOP)
+    client = dbus.SystemBus(private=True, mainloop=dbus.mainloop.NULL_MAIN_LOOP)
     monkeypatch.setattr(pair_setup, "get_system_bus", lambda: client)
     try:
         assert wedged.request_name(
