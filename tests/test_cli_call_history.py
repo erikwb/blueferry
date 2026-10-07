@@ -96,3 +96,35 @@ def test_wire_decoder_keeps_valid_entries_and_unknown_fields() -> None:
     assert decoded[0].extra == {"future": 1}
     assert decoded[0].display_caller == "+1555"
     assert decoded[0].to_dict()["missed"] is True
+
+
+def test_enable_and_disable_change_the_saved_preference(monkeypatch) -> None:
+    changes = []
+
+    class _Settable:
+        def set_call_history(self, enabled, popups):
+            changes.append((enabled, popups))
+            return {"call_history_enabled": enabled, "missed_call_notifications": popups}
+
+    monkeypatch.setattr(cli_call_history, "BackendClient", _Settable)
+    runner = CliRunner()
+
+    enabled = runner.invoke(cli.app, ["call-history", "enable", "--no-popups"])
+    disabled = runner.invoke(cli.app, ["call-history", "disable"])
+
+    assert enabled.exit_code == 0 and disabled.exit_code == 0
+    assert changes == [(True, False), (False, True)]
+    assert "popups are off" in enabled.output
+    assert "erased" in disabled.output
+
+
+def test_enable_reports_a_backend_error(monkeypatch) -> None:
+    class _Old:
+        def set_call_history(self, _enabled, _popups):
+            raise BackendError("UnknownMethod")
+
+    monkeypatch.setattr(cli_call_history, "BackendClient", _Old)
+
+    result = CliRunner().invoke(cli.app, ["call-history", "enable"])
+
+    assert result.exit_code == 2

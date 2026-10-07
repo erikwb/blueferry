@@ -31,14 +31,37 @@ def _render(entry: CallHistoryEntry) -> None:
     )
 
 
-def call_history_list(
+PRIVACY_NOTE = (
+    "Call history keeps who called you and when, under your local storage "
+    "policy. It uses the iPhone's Sync Contacts permission and never places, "
+    "answers, or listens to calls."
+)
+
+call_history_app = typer.Typer(
+    help=(
+        "Recent iPhone calls (opt-in). Without a subcommand, list them; "
+        "`enable` and `disable` change the saved preference."
+    ),
+    no_args_is_help=False,
+    invoke_without_command=True,
+)
+
+
+@call_history_app.callback()
+def call_history_default(
+    ctx: typer.Context,
     missed: bool = typer.Option(False, "--missed", help="Only show missed calls"),
     limit: int = typer.Option(20, "-n", "--limit", min=1, help="Max calls to show"),
     sync: bool = typer.Option(
         False, "--sync", help="Pull the latest call lists from the iPhone first",
     ),
 ) -> None:
-    """Show recent iPhone calls (requires BLUEFERRY_CALL_HISTORY_ENABLED=true)."""
+    if ctx.invoked_subcommand is None:
+        call_history_list(missed=missed, limit=limit, sync=sync)
+
+
+def call_history_list(missed: bool, limit: int, sync: bool) -> None:
+    """Show recent iPhone calls (requires the call-history opt-in)."""
     client = BackendClient()
     try:
         if sync:
@@ -58,3 +81,33 @@ def call_history_list(
         return
     for entry in entries:
         _render(entry)
+
+
+def _set(enabled: bool, popups: bool) -> None:
+    try:
+        status = BackendClient().set_call_history(enabled, popups)
+    except BackendError as error:
+        typer.echo(f"Could not change call history: {error}", err=True)
+        raise typer.Exit(code=2) from None
+    if status.get("call_history_enabled") is True:
+        state = "on" if status.get("missed_call_notifications") is True else "off"
+        typer.echo(f"Call history is on; missed-call popups are {state}.")
+    else:
+        typer.echo("Call history is off; retained calls were erased.")
+
+
+@call_history_app.command("enable")
+def call_history_enable(
+    popups: bool = typer.Option(
+        True, "--popups/--no-popups", help="Desktop popups for new missed calls",
+    ),
+) -> None:
+    """Opt in to mirroring the iPhone's recent calls."""
+    typer.echo(PRIVACY_NOTE)
+    _set(True, popups)
+
+
+@call_history_app.command("disable")
+def call_history_disable() -> None:
+    """Turn call history off and erase the retained calls."""
+    _set(False, True)
