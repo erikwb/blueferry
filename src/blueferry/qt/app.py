@@ -81,15 +81,15 @@ def _quick_controls_style_installed(name: str) -> bool:
 def _split_style_argument(qt_args: list[str]) -> tuple[list[str], str | None]:
     """Remove the forms of -style that QApplication honours.
 
-    Qt 6 accepts "-style NAME", "-style=NAME" and "--style=NAME"; the last
-    one given wins.
+    Qt 6 accepts "-style NAME", "-style=NAME" and both again with two
+    dashes; the last one given wins.
     """
     remaining: list[str] = []
     style = None
     index = 0
     while index < len(qt_args):
         argument = qt_args[index]
-        if argument == "-style" and index + 1 < len(qt_args):
+        if argument in ("-style", "--style") and index + 1 < len(qt_args):
             style = qt_args[index + 1]
             index += 2
             continue

@@ -178,8 +178,9 @@ def test_user_quick_controls_style_survives_release(
     (["-style=fusion"], [], "fusion"),
     (["--style=fusion"], [], "fusion"),
     (["-style", "a", "-style=b"], [], "b"),
-    (["--style", "fusion"], ["--style", "fusion"], None),
+    (["--style", "fusion", "-reverse"], ["-reverse"], "fusion"),
     (["-style"], ["-style"], None),
+    (["--style"], ["--style"], None),
 ])
 def test_style_argument_forms_qt_honours_are_split_off(qt_args, remaining, style):
     assert app_module._split_style_argument(qt_args) == (remaining, style)
