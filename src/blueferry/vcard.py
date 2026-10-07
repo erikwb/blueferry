@@ -101,8 +101,8 @@ class _Card:
     Lines are unfolded before anything is decided about them: a leading space
     or tab continues the previous line (RFC 6350/2426 remove it, vCard 2.1
     keeps it), a vCard 2.1 QUOTED-PRINTABLE value continues after a line
-    ending in the soft line break ``=``, and a vCard 2.1 BASE64 value
-    continues on unindented base64 lines up to a blank line. Each logical
+    ending in the soft line break ``=``, and in a ``VERSION:2.1`` card a
+    BASE64 value continues on unindented base64 lines up to a blank line. Each logical
     property is then split into ``group.NAME;params`` and its value at the
     first ``:`` outside quotes. PHOTO, LOGO, SOUND and KEY are dropped whole;
     every other property counts against the card budget unfolded.
@@ -136,14 +136,16 @@ class _Card:
         if self.overflowed:
             return
         start = text[:_WHOLE_LINE_START]
-        if self.present and text[:1] in (" ", "\t"):
-            self.property_size += 1
-            self._add(text if self.version21 else text[1:])
-        elif self.soft_break and self.encoding & _QUOTED_PRINTABLE_PARAMETERS:
+        if self.soft_break and self.encoding & _QUOTED_PRINTABLE_PARAMETERS:
+            # Checked first: a soft-break continuation is taken verbatim,
+            # even when it starts with a blank.
             self._drop_soft_break()
             self.property_size += 1
             self._add(text)
-        elif self.base64_open and self.encoding & _BASE64_PARAMETERS and (
+        elif self.present and text[:1] in (" ", "\t"):
+            self.property_size += 1
+            self._add(text if self.version21 else text[1:])
+        elif self.version21 and self.base64_open and (
             not start.strip() or _BASE64_LINE.fullmatch(start)
         ):
             # A blank line ends a vCard 2.1 BASE64 value.

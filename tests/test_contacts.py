@@ -449,6 +449,22 @@ def test_a_trailing_equals_sign_is_always_a_soft_line_break() -> None:
     ]
 
 
+def test_folding_follows_the_card_version() -> None:
+    # RFC 2426/6350 unfolding removes the line break and one blank; vCard
+    # 2.1 unfolding keeps the blank. A folded property head and a ":" inside
+    # a quoted parameter are still read as one property.
+    blob = (
+        "BEGIN:VCARD\nVERSION:3.0\nFN:Ann\n  Lee\nTE\n L:+15550001111\n"
+        'PHO\n TO;X-NOTE="a:b";ENCODING=b:QUJD\n REVG\nEND:VCARD\n'
+        "BEGIN:VCARD\nVERSION:2.1\nFN:Ann\n Lee\nEND:VCARD\n"
+    )
+
+    assert _parse_vcard_records(blob) == [
+        ("Ann Lee", ["15550001111"], []),
+        ("Ann Lee", [], []),
+    ]
+
+
 def test_skipped_photo_lines_with_crlf_line_endings() -> None:
     photo = "/9j/" + "A" * 1_100_000
     blob = (
