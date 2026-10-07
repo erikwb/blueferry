@@ -642,3 +642,15 @@ def test_dispatcher_routes_popup_updates_to_the_libnotify_sink(monkeypatch) -> N
     )
     assert amend("message1", "line") is True
     assert calls == [("message1", "line")]
+
+
+def test_failed_x11_helper_logs_a_content_free_hint(caplog) -> None:
+    writer = _Writer(outcomes=["failed", "failed"])
+    writer.failure_hint = lambda ticket: "XAUTHORITY points into /tmp" if ticket.tool == "xclip" else None
+    sink, _notifier, timers = _sink(writer)
+
+    sink.handle(_received())
+    timers.settle()
+
+    assert "xclip could not take the clipboard: XAUTHORITY points into /tmp" in caplog.text
+    assert CODE not in caplog.text

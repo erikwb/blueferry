@@ -172,6 +172,25 @@ def find_target(
     return None
 
 
+def x11_failure_hint(environ: Mapping[str, str]) -> str | None:
+    """Explain an X11 helper failure the shipped systemd unit can cause.
+
+    ``PrivateTmp=true`` hides the host's ``/tmp``. X clients still reach the
+    server through its abstract socket (Xorg, and Xwayland under KWin,
+    Mutter and wlroots, listen on one), but an ``XAUTHORITY`` file under
+    ``/tmp`` becomes invisible. Content-free: only says which case applies.
+    """
+    xauthority = environ.get("XAUTHORITY", "")
+    # Only names the location; nothing is created or written there.
+    in_tmp = Path(xauthority).parts[:2] == ("/", "tmp") and len(Path(xauthority).parts) > 2
+    if in_tmp and not os.path.exists(xauthority):
+        return (
+            "XAUTHORITY points into /tmp, which the service's PrivateTmp hides; "
+            "a display manager that keeps it under $XDG_RUNTIME_DIR avoids this"
+        )
+    return None
+
+
 def helper_environment(environ: Mapping[str, str], target: ClipboardTarget) -> dict[str, str]:
     """Return the allowlisted environment for a clipboard helper."""
     env = {
@@ -478,6 +497,12 @@ class ClipboardWriter:
                 self.clear_after_s * 1000, lambda: self._expire(ticket)
             )
         return ticket
+
+    def failure_hint(self, ticket: ClipboardTicket) -> str | None:
+        """A content-free reason why ``ticket``'s helper may have failed."""
+        if ticket.tool in ("xclip", "xsel"):
+            return x11_failure_hint(self._current_environ())
+        return None
 
     def state(self, ticket: ClipboardTicket) -> TicketState:
         """Describe a ticket; a newer copy or a release supersedes it."""

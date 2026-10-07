@@ -346,7 +346,14 @@ class OtpClipboardSink:
                 if fallback is not None:
                     self._schedule_confirm(code, sender, handle, fallback, retried=True)
                 return
-            log.warning("clipboard helper %s could not take the clipboard", ticket.tool)
+            hint_for = getattr(self._writer, "failure_hint", None)
+            hint = hint_for(ticket) if hint_for is not None else None
+            if hint:
+                log.warning(
+                    "clipboard helper %s could not take the clipboard: %s", ticket.tool, hint
+                )
+            else:
+                log.warning("clipboard helper %s could not take the clipboard", ticket.tool)
             return
         log.info("copied a one-time code to the clipboard via %s", ticket.tool)
         policy = self._notification_policy

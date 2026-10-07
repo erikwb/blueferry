@@ -712,3 +712,33 @@ def test_polling_stops_once_the_ticket_no_longer_matters() -> None:
     assert stray.running
     assert writer._poll(stray, 500) is False
     assert loop.timers == {}
+
+
+def test_x11_failure_hint_names_a_hidden_xauthority(tmp_path) -> None:
+    from blueferry.otp_clipboard import x11_failure_hint
+
+    assert "PrivateTmp" in x11_failure_hint({"XAUTHORITY": "/tmp/nonexistent-xauth-file"})
+    present = tmp_path / "xauth"
+    present.write_text("")
+    assert x11_failure_hint({"XAUTHORITY": str(present)}) is None
+    assert x11_failure_hint({"XAUTHORITY": "/run/user/1000/xauth_x"}) is None
+    assert x11_failure_hint({}) is None
+
+
+def test_writer_offers_the_hint_only_for_x11_helpers() -> None:
+    xclip = ClipboardTarget("x11", "xclip", "/usr/bin/xclip")
+    writer = ClipboardWriter(
+        environ={"DISPLAY": ":0", "XAUTHORITY": "/tmp/nonexistent-xauth-file"},
+        find=lambda _environ, **_kwargs: xclip,
+        spawn=lambda argv, *, stdin_text, env: SimpleNamespace(pid=1, returncode=None),
+        submit_probe=lambda *_args, **_kwargs: None,
+        schedule_ms=lambda _delay, _callback: 1,
+        cancel=lambda _source: None,
+        watch_child=lambda _pid, _callback: 1,
+        signal_helper=lambda _ticket, _signum: None,
+        open_pidfd=lambda _pid: None,
+    )
+    ticket = writer.copy(CODE)
+    assert ticket is not None
+    assert "PrivateTmp" in (writer.failure_hint(ticket) or "")
+    assert writer.failure_hint(ClipboardTicket("wl-copy", ticket.process)) is None
