@@ -42,6 +42,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `notification_policy.py` | Persistent desktop notification preferences. |
 | `private_preferences.py` | Encrypts a whole preference collection under the storage policy. |
 | `settings_store.py` | Small atomic store shared by daemon-owned preferences. |
+| `glib_timers.py` | `schedule_periodic`: a repeating GLib timer whose owner forgets the source id once GLib destroys the source (false return or exception). |
 | `read_receipts.py` | Delays MAP read acknowledgements so ANCS can still deliver group metadata. |
 | `recipients.py` | Recipient validation, participant-line parsing, and group confirmation tokens (shared by backend and Python clients). |
 | `connectivity.py` | MAP/PBAP connectivity state machine and retry policy, independent of GLib and BlueZ. |

@@ -34,6 +34,7 @@ from blueferry.contact_sync import ContactSync
 from blueferry.contacts import ContactsResolver
 from blueferry.dbus_service import MessagesService, claim_bus_name
 from blueferry.event_dispatcher import EventDispatcher
+from blueferry.glib_timers import schedule_periodic
 from blueferry.group_routes import GroupRoutesStore
 from blueferry.history import (
     history_count,
@@ -342,22 +343,12 @@ class Daemon:
     ) -> None:
         """Run ``callback`` every ``seconds`` and keep its source id in ``attr``.
 
-        GLib destroys a timeout source once its callback returns a false
-        value or raises. Forget the stored id on both paths so ``stop()``
-        never removes a source that is already gone, which GLib reports as
-        "Source ID ... was not found".
+        The id is forgotten as soon as GLib destroys the source, so ``stop()``
+        only removes timers that are still live.
         """
-
-        def tick() -> bool:
-            keep = False
-            try:
-                keep = bool(callback())
-            finally:
-                if not keep:
-                    setattr(self, attr, None)
-            return keep
-
-        setattr(self, attr, GLib.timeout_add_seconds(seconds, tick))
+        setattr(self, attr, schedule_periodic(
+            GLib.timeout_add_seconds, seconds, callback, lambda: setattr(self, attr, None),
+        ))
 
     def _retry_storage(self) -> bool:
         # A daemon activated before the desktop keyring opens must recover
