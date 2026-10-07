@@ -1,16 +1,19 @@
 """Copy one-time codes from newly received messages to the clipboard.
 
 Opt-in through ``BLUEFERRY_OTP_AUTOCOPY``. Only a live MAP push of an
-incoming message qualifies: sent messages, listed or replayed history, and
-messages older than a few minutes are ignored. The code is never logged,
-stored, or published on BlueFerry's D-Bus API; only the transient desktop
-popup may show it, and only when ``BLUEFERRY_SHOW_NOTIFICATION_CONTENT``
-allows message content.
+unread incoming message from a sender that is not a saved contact
+qualifies: sent messages, listed or replayed history, group conversations,
+messages from contacts, and messages without a recent, plausible timestamp
+are ignored, and at most a few codes per minute are copied. The code is
+never logged, stored, or published on BlueFerry's own D-Bus API. When
+``BLUEFERRY_SHOW_NOTIFICATION_CONTENT`` allows message content, the popup
+text (and so the desktop notification server) shows it, just as the
+message popup shows the message itself.
 """
 from __future__ import annotations
 
 import logging
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from html import escape
@@ -31,6 +34,16 @@ _NOTIFICATIONS_PATH = "/org/freedesktop/Notifications"
 # A code this old has probably expired or been used; copying it would
 # surprise the user by replacing whatever they copied since.
 MAX_CODE_AGE = timedelta(minutes=10)
+# Phone and computer clocks differ slightly; a message stamped further in
+# the future than this is not trusted to be new.
+MAX_CLOCK_SKEW = timedelta(minutes=2)
+# Messages stamped this long before the sink started are not copied, so a
+# backend restart never replays an earlier code onto the clipboard.
+STARTUP_GRACE = timedelta(seconds=30)
+# At most this many codes per window; a burst is far more likely spam or a
+# bug than a series of logins.
+MAX_COPIES_PER_WINDOW = 3
+COPY_WINDOW = timedelta(minutes=1)
 # Wait briefly before announcing success so a helper that cannot reach the
 # display (and exits at once) does not produce a false "copied" popup.
 _CONFIRM_DELAY_MS = 400
@@ -189,6 +202,8 @@ class OtpClipboardSink:
         self._schedule_ms = schedule_ms
         self._cancel = cancel
         self._now = now
+        self._started = now()
+        self._recent_copies: deque[datetime] = deque()
         self._seen: OrderedDict[str, None] = OrderedDict()
         self._pending_confirms: set[int] = set()
         self._warned_fallback = False
@@ -212,30 +227,61 @@ class OtpClipboardSink:
         # reconstructed or listed record.
         if not getattr(event, "message_path", None):
             return False
+        if getattr(event, "is_read", False):
+            # Read on the phone already, or a replay of an old message.
+            return False
+        if getattr(event, "contact_name", None) or getattr(event, "group_key", None):
+            # Codes come from services, not from people the user saved or
+            # group conversations; there a number next to "code" is chat.
+            return False
         handle = str(getattr(event, "handle", "") or "")
         if not handle or handle in self._seen:
             return False
-        timestamp = getattr(event, "timestamp", None)
-        if isinstance(timestamp, datetime) and timestamp.tzinfo is not None:
-            age = self._now() - timestamp
-            if age > MAX_CODE_AGE:
-                # Content-free: offset-less iPhone timestamps are read in the
-                # local zone, so a zone mismatch shows up here.
-                log.debug(
-                    "ignoring a message %d seconds old for one-time code copy",
-                    int(age.total_seconds()),
-                )
-                return False
+        if not self._is_recent(getattr(event, "timestamp", None)):
+            return False
         self._seen[handle] = None
         while len(self._seen) > _MAX_SEEN_HANDLES:
             self._seen.popitem(last=False)
+        return True
+
+    def _is_recent(self, timestamp: object) -> bool:
+        """Fail closed: only a parsed, zone-aware, plausible time counts."""
+        if not isinstance(timestamp, datetime) or timestamp.tzinfo is None:
+            log.debug("ignoring a message without a usable time for one-time code copy")
+            return False
+        now = self._now()
+        age = now - timestamp
+        if age > MAX_CODE_AGE or timestamp < self._started - STARTUP_GRACE:
+            # Content-free: offset-less iPhone timestamps are read in the
+            # local zone, so a zone mismatch shows up here.
+            log.debug(
+                "ignoring a message %d seconds old for one-time code copy",
+                int(age.total_seconds()),
+            )
+            return False
+        if -age > MAX_CLOCK_SKEW:
+            log.debug(
+                "ignoring a message %d seconds in the future for one-time code copy",
+                int(-age.total_seconds()),
+            )
+            return False
+        return True
+
+    def _within_rate_limit(self) -> bool:
+        now = self._now()
+        while self._recent_copies and now - self._recent_copies[0] > COPY_WINDOW:
+            self._recent_copies.popleft()
+        if len(self._recent_copies) >= MAX_COPIES_PER_WINDOW:
+            log.warning("not copying a one-time code: too many codes in the last minute")
+            return False
+        self._recent_copies.append(now)
         return True
 
     def handle(self, event: SmsEvent) -> None:
         if not self._is_new_incoming(event):
             return
         code = extract_otp(getattr(event, "body", None))
-        if code is None:
+        if code is None or not self._within_rate_limit():
             return
         ticket = self._writer.copy(code)
         if ticket is None:

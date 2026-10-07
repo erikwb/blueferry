@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -139,6 +140,15 @@ def test_new_incoming_code_is_copied_and_announced(monkeypatch) -> None:
         # A stale message replayed after a reconnect.
         _received(age=timedelta(minutes=30)),
         _received(body="See you at 18:30"),
+        # Fail closed on missing, zone-less, or implausible times.
+        replace(_received(), timestamp=None),
+        replace(_received(), timestamp=NOW.replace(tzinfo=None)),
+        _received(age=-timedelta(minutes=5)),
+        # Already read on the phone.
+        replace(_received(), is_read=True),
+        # Saved contacts and group conversations are chat, not services.
+        replace(_received(), contact_name="Anna"),
+        replace(_received(), group_key="group:abc", group_name="Family"),
     ],
 )
 def test_only_new_incoming_messages_with_a_code_are_copied(event) -> None:
@@ -160,6 +170,62 @@ def test_stale_message_is_logged_without_content(caplog) -> None:
 
     assert "ignoring a message 1800 seconds old" in caplog.text
     assert CODE not in caplog.text
+
+
+def test_small_clock_skew_into_the_future_is_accepted() -> None:
+    writer = _Writer()
+    sink, _notifier, timers = _sink(writer)
+
+    sink.handle(_received(age=-timedelta(seconds=60)))
+    timers.settle()
+
+    assert _codes(writer) == [CODE]
+
+
+def test_messages_from_before_the_backend_started_are_not_replayed() -> None:
+    writer = _Writer()
+    notifier = _Notifier()
+    timers = _Timers()
+    clock = [NOW]
+    sink = OtpClipboardSink(
+        writer=writer,
+        notification_policy=lambda: "messages",
+        notifier=notifier,
+        schedule_ms=timers.schedule,
+        cancel=timers.cancel,
+        now=lambda: clock[0],
+    )
+
+    # Younger than ten minutes, but stamped well before the sink started.
+    sink.handle(_received(handle="old", age=timedelta(minutes=2)))
+    sink.handle(_received(handle="new", age=timedelta(seconds=10)))
+    timers.settle()
+
+    assert _codes(writer) == [CODE]
+
+
+def test_bursts_of_codes_are_rate_limited(caplog) -> None:
+    writer = _Writer()
+    notifier = _Notifier()
+    timers = _Timers()
+    clock = [NOW]
+    sink = OtpClipboardSink(
+        writer=writer,
+        notification_policy=lambda: "messages",
+        notifier=notifier,
+        schedule_ms=timers.schedule,
+        cancel=timers.cancel,
+        now=lambda: clock[0],
+    )
+
+    for index in range(5):
+        sink.handle(_received(handle=f"m{index}", age=timedelta(0)))
+    assert len(writer.copied) == sink_module.MAX_COPIES_PER_WINDOW
+    assert "too many codes" in caplog.text
+
+    clock[0] = NOW + sink_module.COPY_WINDOW + timedelta(seconds=1)
+    sink.handle(_received(handle="later", age=timedelta(0)))
+    assert len(writer.copied) == sink_module.MAX_COPIES_PER_WINDOW + 1
 
 
 def test_the_same_message_is_copied_only_once() -> None:
