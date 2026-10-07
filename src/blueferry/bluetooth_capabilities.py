@@ -136,6 +136,53 @@ def _parse_btmgmt_info(stdout: str) -> tuple[set[str], set[str], dict[str, int]]
     return supported, current, identity
 
 
+BLUEZ_MAIN_CONF = Path("/etc/bluetooth/main.conf")
+_CONTROLLER_MODES = frozenset({"dual", "bredr", "le"})
+
+
+def bluez_controller_mode(path: Path | None = None) -> str:
+    """Return BlueZ's configured ``[General] ControllerMode``, or ``""``.
+
+    The file is world-readable on every distribution BlueFerry packages for.
+    Only the three documented values are reported; anything else becomes
+    ``"other"`` so the report never carries arbitrary configuration text.
+    """
+    try:
+        text = (path or BLUEZ_MAIN_CONF).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    section = ""
+    mode = ""
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith(("#", ";")):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1].strip().casefold()
+            continue
+        key, separator, value = line.partition("=")
+        if section == "general" and separator and key.strip().casefold() == "controllermode":
+            mode = value.split("#", 1)[0].strip().casefold()
+    if not mode:
+        return ""
+    return mode if mode in _CONTROLLER_MODES else "other"
+
+
+def le_disabled_issue(adapter: str, controller_mode: str = "") -> str:
+    """Explain a controller that supports LE but runs with LE switched off."""
+    index = adapter.removeprefix("hci") if is_valid_adapter(adapter) else "0"
+    cause = ""
+    if controller_mode == "bredr":
+        cause = "BlueZ is configured with ControllerMode = bredr. "
+    return (
+        "Bluetooth Low Energy is switched off on this adapter, so iPhone "
+        "notifications cannot be set up. " + cause
+        + "Set ControllerMode = dual in /etc/bluetooth/main.conf and restart "
+        f"bluetoothd (or run `sudo btmgmt --index {index} le on`, which lasts "
+        "until bluetoothd restarts)."
+    )
+
+
 def controller_settings(
     adapter: str, *, run_command: RunCommand, timeout: float = 15,
 ) -> tuple[bool, set[str], set[str], str, dict[str, int]]:
@@ -444,9 +491,16 @@ def _profile_fields(
     command_error: str,
     bearer_active: bool,
     bearer_supported: bool,
+    *,
+    controller_mode: str = "",
 ) -> dict[str, object]:
     classic = bool({"br/edr", "bredr"} & supported)
     low_energy = "le" in supported
+    # btmgmt reports supported and current settings separately. ``le`` can be
+    # supported but switched off, e.g. by ControllerMode = bredr (#192); the
+    # ANCS advertisement then never activates.
+    le_enabled = "le" in current
+    le_disabled = available and low_energy and not le_enabled
     advertising = "advertising" in supported
     secure_pairing = bool({"ssp", "secure-conn"} & supported)
     # MAP/PBAP carry data over Classic, but iOS exposes their permissions only
@@ -470,6 +524,8 @@ def _profile_fields(
             "with LE advertising to enable iPhone messages and contacts. "
             "Use a compatible adapter."
         )
+    elif le_disabled:
+        issue = le_disabled_issue(adapter, controller_mode)
     elif notifications_supported and not bearer_active:
         issue = "Bluetooth support must be activated before pairing"
     elif not notifications_supported:
@@ -481,6 +537,8 @@ def _profile_fields(
         "powered": "powered" in current,
         "classic": classic,
         "low_energy": low_energy,
+        "le_enabled": le_enabled,
+        "le_disabled": le_disabled,
         "advertising": advertising,
         "secure_pairing": secure_pairing,
         "secure_conn": "secure-conn" in current,
@@ -540,6 +598,7 @@ def compatibility(
         bluez_bearer_api_supported(stack.get("bluez_version"))
         and bearer_configurable
     )
+    controller_mode = bluez_controller_mode()
     options: list[dict[str, object]] = []
     inspected: dict[str, tuple] = {}
     hardware_by_name: dict[str, dict[str, object]] = {}
@@ -563,6 +622,7 @@ def compatibility(
             error,
             bearer_active and bearer_supported,
             bearer_supported,
+            controller_mode=controller_mode,
         )
         options.append(
             {
@@ -599,6 +659,7 @@ def compatibility(
         **fields,
         **stack,
         "adapters": options,
+        "controller_mode": controller_mode,
         "controller_vendor": vendor,
         "ancs_limited_controller": ancs_limited_vendor(vendor),
         "explicit_pairing_default": (

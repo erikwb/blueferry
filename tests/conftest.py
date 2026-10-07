@@ -322,6 +322,15 @@ def isolate_dbus(monkeypatch, request):
     monkeypatch.setattr(dbus, "SystemBus", _forbid_live_bus("system"))
 
 
+@pytest.fixture(autouse=True)
+def isolate_bluez_main_conf(tmp_path_factory, monkeypatch):
+    """Never let capability probes read the operator's /etc/bluetooth/main.conf."""
+    from blueferry import bluetooth_capabilities
+
+    missing = tmp_path_factory.mktemp("bluez") / "main.conf"
+    monkeypatch.setattr(bluetooth_capabilities, "BLUEZ_MAIN_CONF", missing)
+
+
 @pytest.fixture
 def isolated_state(tmp_path, monkeypatch):
     """Point every BlueFerry configuration and state path at ``tmp_path``."""
