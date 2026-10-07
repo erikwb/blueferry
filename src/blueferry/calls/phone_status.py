@@ -41,8 +41,13 @@ NETWORK_STATUSES = frozenset({
 # it silently (without PropertyChanged) when registration is lost.
 _REGISTERED = frozenset({"registered", "roaming"})
 
+# Where phone_battery_level came from: oFono's HFP battchg indicator
+# (20 % steps). The LE sources are named in ``blueferry.phone_battery``.
+SOURCE_HFP = "hfp"
+
 PHONE_STATUS_KEYS = (
     "phone_battery_level",
+    "phone_battery_source",
     "phone_signal_strength",
     "phone_network_name",
     "phone_network_status",
@@ -136,6 +141,7 @@ class PhoneStatus:
         registered = self.registered
         return {
             "phone_battery_level": self.battery_percent,
+            "phone_battery_source": SOURCE_HFP if self.battery_percent is not None else None,
             "phone_signal_strength": self.signal_strength if registered else None,
             "phone_network_name": self.network_name if registered else None,
             "phone_network_status": self.network_status,

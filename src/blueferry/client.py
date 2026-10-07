@@ -281,6 +281,16 @@ class BackendClient:
         except dbus.exceptions.DBusException as error:
             raise BackendError(error.get_dbus_message() or str(error)) from error
 
+    def set_phone_battery_warning(self, enabled: bool) -> bool:
+        try:
+            return bool(
+                self._iface(MESSAGES_IFACE).SetPhoneBatteryWarning(
+                    dbus.Boolean(enabled), timeout=POLICY_CALL_TIMEOUT_SEC
+                )
+            )
+        except dbus.exceptions.DBusException as error:
+            raise BackendError(error.get_dbus_message() or str(error)) from error
+
     def _presence_iface(self) -> dbus.Interface:
         # Presence1 has no GetStatus; check compatibility through Messages1
         # and address Presence1 on that same owner-bound object.

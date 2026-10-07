@@ -1207,8 +1207,12 @@ def _netreg_props(status="registered", name="Sunrise", strength=80):
 
 
 def _phone_keys(controller):
-    snapshot = controller.snapshot()
-    return {key: snapshot[key] for key in snapshot if key.startswith("phone_")}
+    # The daemon merges these into GetStatus (with the LE battery, if any).
+    snapshot = controller.phone_status.to_status()
+    return {
+        key: snapshot[key] for key in snapshot
+        if key.startswith("phone_") and key != "phone_battery_source"
+    }
 
 
 def test_online_modem_reads_battery_signal_and_operator() -> None:

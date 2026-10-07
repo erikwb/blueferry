@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import sys
 from collections.abc import Callable
-from typing import TypeVar
+from typing import Optional, TypeVar
 
 import typer
 
@@ -186,26 +186,32 @@ def calls_hold_answer() -> None:
 
 def phone_status(
     as_json: bool = typer.Option(False, "--json", help="Print the raw status keys as JSON"),
+    warn: Optional[bool] = typer.Option(  # noqa: UP045 - typer needs Optional here
+        None, "--warn/--no-warn",
+        help="Turn the low-battery desktop warning on or off (saved)",
+    ),
 ) -> None:
-    """Show the iPhone's battery, signal, and network (needs calls enabled)."""
+    """Show the iPhone's battery (over Bluetooth LE) and, with calls on, signal and network."""
+    if warn is not None:
+        selected = _run(
+            lambda: _client().set_phone_battery_warning(warn), "Could not save the setting",
+        )
+        typer.echo(f"Low-battery warning {'on' if selected else 'off'}.")
+        return
     status = _run(lambda: _client().status(), "Could not read status")
     if as_json:
         typer.echo(json.dumps({key: status.to_dict()[key] for key in PHONE_STATUS_KEYS}))
         return
-    if not status.calls_enabled:
-        typer.echo(
-            "Phone status comes from the optional HFP calls integration; "
-            "set BLUEFERRY_CALLS_ENABLED=true."
-        )
-        return
     fields = phone_status_fields(status)
     if not fields:
         typer.echo(
-            f"Phone status unknown — calls: {status.calls_state} "
-            f"({CALLS_STATE_TEXT.get(status.calls_state, '')})".rstrip()
+            "Phone status unknown: the iPhone is not connected or does not report "
+            "its battery yet."
         )
-        return
     for label, value in fields:
         typer.echo(f"{label + ':':<9}{terminal_text(value)}")
-    if status.phone_battery_level is not None:
-        typer.echo("(The iPhone reports its battery to hands-free devices in 20 % steps.)")
+    if status.phone_battery_source == "hfp":
+        typer.echo("(Over the hands-free link the iPhone reports its battery in 20 % steps.)")
+    if not status.calls_enabled:
+        typer.echo("Signal and network need phone calls ('blueferry calls enable').")
+    typer.echo(f"Low-battery warning: {'on' if status.phone_battery_warning else 'off'}.")

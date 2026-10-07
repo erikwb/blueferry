@@ -256,7 +256,6 @@ class CallController:
             "calls_enabled": self.enabled,
             "calls_state": self._state,
             "calls_available": self.available,
-            **self._phone.to_status(),
         }
 
     def list_calls(self) -> dict[str, object]:

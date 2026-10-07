@@ -15,7 +15,6 @@ from hypothesis import strategies as st
 from typer.testing import CliRunner
 
 from blueferry import cli_calls, config
-from blueferry.backend_operations import BackendDependencies, BackendOperations
 from blueferry.calls.phone_status import (
     HANDSFREE_IFACE,
     NETWORK_REGISTRATION_IFACE,
@@ -181,106 +180,130 @@ def test_battery_keys_are_read_from_local_env(tmp_path) -> None:
 # ---- daemon wiring -------------------------------------------------------------
 
 
-def _daemon_with_recorders(make_daemon):
+class _Timers:
+    def __init__(self) -> None:
+        self.entries: list[tuple[int, object]] = []
+
+    def schedule(self, delay, callback) -> int:
+        self.entries.append((delay, callback))
+        return len(self.entries)
+
+    def fire(self) -> None:
+        entries, self.entries = self.entries, []
+        for _delay, callback in entries:
+            callback()
+
+
+def _daemon_with_recorders(make_daemon, *, warning=False):
     instance = make_daemon()
     seen: list[object] = []
+    now = [1000.0]
+    timers = _Timers()
     instance._emit_status = lambda: seen.append("status")
-    # Run deferred StatusChanged emissions immediately.
     instance._idle_add = lambda callback, **_options: callback()
-    instance.events.phone_battery_low = lambda percent: seen.append(("low", percent))
-    return instance, seen
+    instance._clock = lambda: now[0]
+    instance._schedule_seconds = timers.schedule
+    instance.battery_warning._enabled = warning
+    instance.events.phone_battery_low = (
+        lambda percent, exact=False: seen.append(("low", percent, exact))
+    )
+    return instance, seen, now, timers
 
 
-def test_phone_status_changes_emit_status_but_warn_only_when_opted_in(
-    make_daemon, monkeypatch,
-) -> None:
-    monkeypatch.setattr(config, "PHONE_BATTERY_NOTIFY", False)
-    instance, seen = _daemon_with_recorders(make_daemon)
+def _hfp(instance, steps):
+    instance.calls.enabled = True
+    instance.calls._phone = PhoneStatus(battery_steps=steps)
+    instance._phone_status_changed()
 
-    instance._on_phone_status(PhoneStatus(battery_steps=0))
+
+def test_phone_status_changes_emit_status_but_warn_only_when_opted_in(make_daemon) -> None:
+    instance, seen, now, _timers = _daemon_with_recorders(make_daemon)
+    _hfp(instance, 0)
     assert seen == ["status"]
 
-    monkeypatch.setattr(config, "PHONE_BATTERY_NOTIFY", True)
-    instance, seen = _daemon_with_recorders(make_daemon)
+    instance, seen, now, _timers = _daemon_with_recorders(make_daemon, warning=True)
     for steps in (3, 1, 1, None, 1, 0, 3, 1):
-        instance._on_phone_status(PhoneStatus(battery_steps=steps))
+        now[0] += 60
+        _hfp(instance, steps)
 
-    assert seen.count("status") == 8
-    assert [item for item in seen if item != "status"] == [("low", 20), ("low", 20)]
+    # Unchanged values publish nothing.
+    assert seen.count("status") == 7
+    assert [item for item in seen if item != "status"] == [("low", 20, False), ("low", 20, False)]
 
 
-def test_calls_and_phone_status_changes_share_one_deferred_status_changed(make_daemon) -> None:
-    instance = make_daemon()
-    seen: list[str] = []
-    queued: list = []
-    instance._emit_status = lambda: seen.append("status")
-    instance._idle_add = lambda callback, **_options: queued.append(callback) or 1
+def test_phone_status_is_published_at_most_every_few_seconds(make_daemon) -> None:
+    from blueferry import daemon as daemon_mod
 
-    # A modem losing power: calls state and phone values change together.
-    instance.calls._on_state_changed()
-    instance._on_phone_status(PhoneStatus())
-    instance._on_phone_status(PhoneStatus(battery_steps=2))
-    assert seen == [] and len(queued) == 1
-
-    assert queued.pop()() is False
+    instance, seen, now, timers = _daemon_with_recorders(make_daemon)
+    _hfp(instance, 3)
+    _hfp(instance, 2)
+    _hfp(instance, 1)
     assert seen == ["status"]
-    # The next burst schedules a new emission.
-    instance._on_phone_status(PhoneStatus())
-    assert len(queued) == 1
+    assert [delay for delay, _ in timers.entries] == [daemon_mod.PHONE_STATUS_MIN_INTERVAL_SEC]
 
+    now[0] += daemon_mod.PHONE_STATUS_MIN_INTERVAL_SEC
+    timers.fire()
+    assert seen == ["status", "status"]
+    assert instance._published_phone["phone_battery_level"] == 20
 
-def test_deferred_status_uses_default_priority(make_daemon) -> None:
-    from gi.repository import GLib
-
-    instance = make_daemon()
-    calls: list[dict] = []
-    instance._idle_add = lambda _callback, **options: calls.append(options) or 1
-
-    instance._emit_status_soon()
-
-    assert calls == [{"priority": GLib.PRIORITY_DEFAULT}]
-
-
-def test_status_is_still_emitted_when_deferring_fails(make_daemon) -> None:
-    instance = make_daemon()
-    seen: list[str] = []
-    instance._emit_status = lambda: seen.append("status")
-
-    def broken(_callback, **_options):
-        raise RuntimeError("no main loop")
-
-    instance._idle_add = broken
-    instance._emit_status_soon()
-    instance._emit_status_soon()
-
+    # A burst that ends where it started publishes nothing.
+    _hfp(instance, 2)
+    _hfp(instance, 1)
+    now[0] += daemon_mod.PHONE_STATUS_MIN_INTERVAL_SEC
+    timers.fire()
     assert seen == ["status", "status"]
 
 
-def test_failed_deferred_status_emission_is_logged_and_rearmed(make_daemon, caplog) -> None:
-    import logging
+def test_le_battery_wins_over_hfp_and_needs_a_connected_phone(make_daemon) -> None:
+    from types import SimpleNamespace
 
-    instance = make_daemon()
-    queued: list = []
-    instance._idle_add = lambda callback, **_options: queued.append(callback) or 1
+    instance, _seen, _now, _timers = _daemon_with_recorders(make_daemon)
+    instance.phone_battery._gatt = 87
+    instance.calls.enabled = True
+    instance.calls._phone = PhoneStatus(battery_steps=4, network_status="registered",
+                                        signal_strength=60)
 
-    def broken():
-        raise RuntimeError("bus gone")
+    instance.bearers = SimpleNamespace(bredr_connected=False, le_connected=False)
+    away = instance._phone_status()
+    assert away["phone_battery_level"] == 80 and away["phone_battery_source"] == "hfp"
 
-    instance._emit_status = broken
-    instance._emit_status_soon()
-    with caplog.at_level(logging.ERROR, logger="blueferry.daemon"):
-        assert queued.pop()() is False
-    assert "StatusChanged emission failed" in caplog.text
-    # The pending flag was cleared: the next change schedules again.
-    instance._emit_status_soon()
-    assert len(queued) == 1
+    instance.bearers = SimpleNamespace(bredr_connected=False, le_connected=True)
+    here = instance._phone_status()
+    assert here["phone_battery_level"] == 87 and here["phone_battery_source"] == "gatt"
+    assert here["phone_signal_strength"] == 60
+
+    instance.calls.enabled = False
+    off = instance._phone_status()
+    assert off["phone_battery_level"] == 87 and off["phone_signal_strength"] is None
 
 
-def test_daemon_wires_the_controller_to_its_phone_status_handler(make_daemon) -> None:
-    instance = make_daemon()
+def test_exact_le_battery_warns_without_the_step_note(make_daemon) -> None:
+    from types import SimpleNamespace
 
-    assert instance.calls._on_phone_status == instance._on_phone_status
+    instance, seen, _now, _timers = _daemon_with_recorders(make_daemon, warning=True)
+    instance.bearers = SimpleNamespace(bredr_connected=True, le_connected=True)
+    instance.phone_battery._gatt = 12
+    instance._phone_status_changed()
+
+    assert ("low", 12, True) in seen
+
+
+def test_battery_warning_setting_is_saved(make_daemon) -> None:
+    from blueferry.phone_battery import BatteryWarningSettings
+
+    instance, seen, _now, _timers = _daemon_with_recorders(make_daemon)
+    assert instance._set_battery_warning(True)["phone_battery_warning"] is True
+    assert BatteryWarningSettings().enabled is True
+    assert "status" in seen
+
+
+def test_daemon_wires_the_controller_and_battery_to_its_handler(make_daemon) -> None:
+    instance, _seen, _now, _timers = _daemon_with_recorders(make_daemon)
+    instance.calls._on_phone_status(PhoneStatus(battery_steps=1))
+    instance.phone_battery._on_change()
+
     assert instance.low_battery.threshold == config.PHONE_BATTERY_LOW_PERCENT
+    assert instance.phone_battery.device_path.endswith(config.IPHONE_MAC.replace(":", "_"))
 
 
 # ---- desktop warning -------------------------------------------------------------
@@ -311,6 +334,10 @@ def test_libnotify_battery_warning_respects_the_notification_policy() -> None:
     assert "About 20 %" in notify[4]
     assert list(notify[5]) == []
 
+    exact = _sink()
+    exact.handle_phone_battery_low(12, exact=True)
+    assert exact._notif.calls[0][4] == "12 % left."
+
     silent = _sink("none")
     silent.handle_phone_battery_low(0)
     assert silent._notif.calls == []
@@ -323,34 +350,36 @@ def test_dispatcher_routes_the_warning_to_sinks_that_opt_in() -> None:
     class Broken:
         name = "broken"
 
-        def handle_phone_battery_low(self, _percent):
+        def handle_phone_battery_low(self, _percent, exact=False):
             raise RuntimeError("sink bug")
 
     dispatcher.sinks = [
         SimpleNamespace(name="plain"),
         Broken(),
-        SimpleNamespace(name="ok", handle_phone_battery_low=received.append),
+        SimpleNamespace(
+            name="ok", handle_phone_battery_low=lambda p, exact: received.append((p, exact)),
+        ),
     ]
 
     dispatcher.phone_battery_low(20)
+    dispatcher.phone_battery_low(12, exact=True)
 
-    assert received == [20]
+    assert received == [(20, False), (12, True)]
 
 
 # ---- backend and client model ------------------------------------------------
 
 
-def test_disabled_backend_status_reports_unknown_phone_values() -> None:
-    sessions = SimpleNamespace(map=None, pbap=None, map_path="", report_error=lambda _e: None)
-
-    status = BackendOperations(sessions, BackendDependencies()).status()
+def test_daemon_status_reports_unknown_phone_values_by_default(make_daemon) -> None:
+    status = make_daemon()._status()
 
     assert {key: status[key] for key in PHONE_STATUS_KEYS} == dict.fromkeys(PHONE_STATUS_KEYS)
+    assert status["phone_battery_warning"] is False
 
 
 def test_status_model_decodes_phone_fields_defensively() -> None:
     status = BackendStatus.from_dict({
-        "phone_battery_level": 60, "phone_signal_strength": 80,
+        "phone_battery_level": 60, "phone_battery_source": "hfp", "phone_signal_strength": 80,
         "phone_network_name": "Sunrise", "phone_network_status": "roaming",
     })
     assert (status.phone_battery_level, status.phone_signal_strength) == (60, 80)
@@ -384,12 +413,14 @@ def test_phone_status_fields_skip_unknown_registration_and_optional_network() ->
     assert phone_status_fields(searching) == [("Network", "searching")]
 
     full = BackendStatus.from_dict({
-        "phone_battery_level": 20, "phone_signal_strength": 40,
+        "phone_battery_level": 20, "phone_battery_source": "hfp", "phone_signal_strength": 40,
         "phone_network_name": "Sunrise", "phone_network_status": "registered",
     })
     assert phone_status_fields(full, include_network=False) == [
         ("Battery", "about 20 %"), ("Signal", "40 %"),
     ]
+    exact = BackendStatus.from_dict({"phone_battery_level": 87, "phone_battery_source": "gatt"})
+    assert phone_status_fields(exact) == [("Battery", "87 %")]
 
 
 def test_phone_status_labels_and_values_are_translatable(monkeypatch) -> None:
@@ -404,7 +435,7 @@ def test_phone_status_labels_and_values_are_translatable(monkeypatch) -> None:
     monkeypatch.setattr(models, "_", lambda text: translations.get(text, text))
     monkeypatch.setattr(status_presenter, "_", lambda text: translations.get(text, text))
     status = BackendStatus.from_dict({
-        "phone_battery_level": 60, "phone_signal_strength": 80,
+        "phone_battery_level": 60, "phone_battery_source": "hfp", "phone_signal_strength": 80,
         "phone_network_name": "Sunrise", "phone_network_status": "registered",
     })
 
@@ -412,7 +443,8 @@ def test_phone_status_labels_and_values_are_translatable(monkeypatch) -> None:
         ("Akku", "etwa 60 %"), ("Signal", "80 %"), ("Netz", "Sunrise"),
     ]
     assert status_presenter.connection_subtitle(
-        {"connectivity_state": "ready", "phone_battery_level": 60}, reachable=True,
+        {"connectivity_state": "ready", "phone_battery_level": 60, "phone_battery_source": "hfp"},
+        reachable=True,
     ) == "Ready · Akku: etwa 60 %"
 
 
@@ -432,7 +464,7 @@ def _invoke(monkeypatch, client, *args):
 def test_cli_phone_status_prints_known_values(monkeypatch) -> None:
     result = _invoke(monkeypatch, _StatusClient(
         calls_enabled=True, calls_state="ready",
-        phone_battery_level=40, phone_signal_strength=60,
+        phone_battery_level=40, phone_battery_source="hfp", phone_signal_strength=60,
         phone_network_name="Sun\x1b[2Jrise", phone_network_status="registered",
     ))
 
@@ -443,23 +475,42 @@ def test_cli_phone_status_prints_known_values(monkeypatch) -> None:
     assert "20 % steps" in result.output
 
 
-def test_cli_phone_status_explains_disabled_and_unknown(monkeypatch) -> None:
-    disabled = _invoke(monkeypatch, _StatusClient())
-    assert disabled.exit_code == 0
-    assert "BLUEFERRY_CALLS_ENABLED=true" in disabled.output
-
-    unknown = _invoke(monkeypatch, _StatusClient(calls_enabled=True, calls_state="searching"))
+def test_cli_phone_status_explains_unknown_values_and_calls(monkeypatch) -> None:
+    unknown = _invoke(monkeypatch, _StatusClient())
     assert unknown.exit_code == 0
-    assert "Phone status unknown" in unknown.output and "searching" in unknown.output
+    assert "Phone status unknown" in unknown.output
+    assert "blueferry calls enable" in unknown.output
+
+    le_only = _invoke(monkeypatch, _StatusClient(
+        phone_battery_level=87, phone_battery_source="gatt", phone_battery_warning=True,
+    ))
+    assert "Battery: 87 %" in le_only.output and "20 % steps" not in le_only.output
+    assert "Low-battery warning: on." in le_only.output
 
 
 def test_cli_phone_status_json_has_exactly_the_phone_keys(monkeypatch) -> None:
-    result = _invoke(monkeypatch, _StatusClient(calls_enabled=True, phone_battery_level=100), "--json")
+    result = _invoke(monkeypatch, _StatusClient(phone_battery_level=100), "--json")
 
     assert json.loads(result.output) == {
-        "phone_battery_level": 100, "phone_signal_strength": None,
-        "phone_network_name": None, "phone_network_status": None,
+        "phone_battery_level": 100, "phone_battery_source": None,
+        "phone_signal_strength": None, "phone_network_name": None,
+        "phone_network_status": None,
     }
+
+
+def test_cli_phone_status_saves_the_warning(monkeypatch) -> None:
+    saved = []
+
+    class Client(_StatusClient):
+        def set_phone_battery_warning(self, enabled):
+            saved.append(enabled)
+            return enabled
+
+    on = _invoke(monkeypatch, Client(), "--warn")
+    off = _invoke(monkeypatch, Client(), "--no-warn")
+
+    assert saved == [True, False]
+    assert "Low-battery warning on." in on.output and "off." in off.output
 
 
 def test_cli_phone_status_reports_backend_errors(monkeypatch) -> None:

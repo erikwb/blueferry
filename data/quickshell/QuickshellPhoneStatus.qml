@@ -2,9 +2,11 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 
-// Optional iPhone battery and signal from the HFP calls integration
-// (BLUEFERRY_CALLS_ENABLED=true with oFono). Hidden unless the backend
-// status carries a value; the operator name stays out of the compact header.
+// Optional iPhone battery (over Bluetooth LE, or in 20 % steps from HFP) and
+// signal (HFP, only with calls on). Hidden unless the backend status carries
+// a value; the operator name stays out of the compact header. English and
+// upper case like the rest of this shell, which loads no translation catalog
+// (po/README.md).
 FerryLabel {
   id: root
 
@@ -20,7 +22,10 @@ FerryLabel {
 
   function summaryText(): string {
     const parts = []
-    if (root.batteryLevel !== null) parts.push("BATTERY " + root.batteryLevel + " %")
+    if (root.batteryLevel !== null) {
+      const about = root.status.phone_battery_source === "hfp" ? "ABOUT " : ""
+      parts.push("BATTERY " + about + root.batteryLevel + " %")
+    }
     if (root.signalStrength !== null) parts.push("SIGNAL " + root.signalStrength + " %")
     return parts.join(" · ")
   }

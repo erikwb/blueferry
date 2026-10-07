@@ -372,13 +372,29 @@ def test_phone_status_is_unicast_in_get_status_and_signalled_without_content() -
     assert MessagesService.StatusChanged._dbus_signature == ""
 
 
-def test_disabled_calls_report_unknown_phone_status(disabled_service) -> None:
-    name, _service = disabled_service
+def test_set_phone_battery_warning_round_trips_on_messages1() -> None:
+    saved = []
 
-    status = json.loads(_call(name, MESSAGES_IFACE, "GetStatus")["value"])
+    def configure(enabled):
+        saved.append(enabled)
+        return {"phone_battery_warning": enabled}
 
-    for key in (
-        "phone_battery_level", "phone_signal_strength",
-        "phone_network_name", "phone_network_status",
-    ):
-        assert key in status and status[key] is None
+    bus = dbus.SessionBus()
+    name = f"{BUS_NAME}.Callsp{os.getpid()}n{next(_service_ids)}"
+    bus_name = dbus.service.BusName(name, bus=bus, do_not_queue=True)
+    service = MessagesService(
+        bus_name, _Sessions(),
+        BackendDependencies(
+            status_provider=lambda: {"initializing": False},
+            set_phone_battery_warning=configure,
+        ),
+    )
+    try:
+        on = _call(name, MESSAGES_IFACE, "SetPhoneBatteryWarning", True)["value"]
+        off = _call(name, MESSAGES_IFACE, "SetPhoneBatteryWarning", False)["value"]
+    finally:
+        service.close()
+        service.remove_from_connection()
+        bus.release_name(name)
+
+    assert (bool(on), bool(off), saved) == (True, False, [True, False])

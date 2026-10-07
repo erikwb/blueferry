@@ -69,8 +69,11 @@ class BackendStatus:
     calls_enabled: bool | None = None
     calls_state: str = "disabled"
     calls_available: bool = False
-    # Optional, from the HFP calls integration; None means unknown.
+    # None means unknown. The battery comes over LE ("bluez"/"gatt", exact)
+    # or from HFP ("hfp", 20 % steps); signal and network only from HFP.
     phone_battery_level: int | None = None
+    phone_battery_source: str | None = None
+    phone_battery_warning: bool = False
     phone_signal_strength: int | None = None
     phone_network_name: str | None = None
     phone_network_status: str | None = None
@@ -114,6 +117,8 @@ class BackendStatus:
             "calls_state",
             "calls_available",
             "phone_battery_level",
+            "phone_battery_source",
+            "phone_battery_warning",
             "phone_signal_strength",
             "phone_network_name",
             "phone_network_status",
@@ -151,6 +156,8 @@ class BackendStatus:
             calls_state=_str(value.get("calls_state"), "disabled"),
             calls_available=_bool(value.get("calls_available")),
             phone_battery_level=_percent(value.get("phone_battery_level")),
+            phone_battery_source=_optional_str(value.get("phone_battery_source")),
+            phone_battery_warning=_bool(value.get("phone_battery_warning")),
             phone_signal_strength=_percent(value.get("phone_signal_strength")),
             phone_network_name=_optional_str(value.get("phone_network_name")),
             phone_network_status=_optional_str(value.get("phone_network_status")),
@@ -189,6 +196,8 @@ class BackendStatus:
             "calls_state": self.calls_state,
             "calls_available": self.calls_available,
             "phone_battery_level": self.phone_battery_level,
+            "phone_battery_source": self.phone_battery_source,
+            "phone_battery_warning": self.phone_battery_warning,
             "phone_signal_strength": self.phone_signal_strength,
             "phone_network_name": self.phone_network_name,
             "phone_network_status": self.phone_network_status,
@@ -213,17 +222,16 @@ def phone_status_fields(
 ) -> list[tuple[str, str]]:
     """Label/value pairs for the phone's battery, signal, and network.
 
-    Empty when nothing is known (calls disabled, oFono absent, modem
-    unpowered). ``include_network=False`` leaves out the operator line,
+    Empty when nothing is known (phone away; signal and network also need
+    calls to be on). ``include_network=False`` leaves out the operator line,
     e.g. for a compact header. Shared by the CLI and the TUI.
     """
     fields: list[tuple[str, str]] = []
     if status.phone_battery_level is not None:
-        # HFP reports the battery in 20 % steps, hence "about".
-        fields.append((
-            _("Battery"),
-            _("about {percent} %").format(percent=status.phone_battery_level),
-        ))
+        # HFP reports the battery in 20 % steps, hence "about"; LE is exact.
+        stepped = status.phone_battery_source == "hfp"
+        template = _("about {percent} %") if stepped else _("{percent} %")
+        fields.append((_("Battery"), template.format(percent=status.phone_battery_level)))
     if status.phone_signal_strength is not None:
         fields.append((
             _("Signal"),
@@ -235,7 +243,7 @@ def phone_status_fields(
     registration = status.phone_network_status
     # "registered" is the normal case and "unknown" adds nothing a reader
     # could act on; every other state is worth showing.
-    if registration not in (None, "registered", "unknown"):
+    if registration is not None and registration not in ("registered", "unknown"):
         network = f"{network} ({registration})" if network else registration
     if network:
         fields.append((_("Network"), network))

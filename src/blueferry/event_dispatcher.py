@@ -250,17 +250,18 @@ class EventDispatcher:
             except Exception:
                 log.exception("sink %s failed on a call event", sink.name)
 
-    def phone_battery_low(self, percent: int) -> None:
+    def phone_battery_low(self, percent: int, *, exact: bool = False) -> None:
         """Warn local desktop sinks that the phone's battery is low.
 
-        Not persisted and not broadcast; GetStatus carries the level.
+        ``exact`` is false for HFP's 20 % steps. Not persisted and not
+        broadcast; GetStatus carries the level.
         """
         for sink in self.sinks:
             handler = getattr(sink, "handle_phone_battery_low", None)
             if handler is None:
                 continue
             try:
-                handler(percent)
+                handler(percent, exact=exact)
             except Exception:
                 log.exception("sink %s failed on a phone battery warning", sink.name)
 

@@ -374,18 +374,22 @@ class LibnotifySink:
         notifications[nid] = record.call_id
         popups[record.call_id] = nid
 
-    def handle_phone_battery_low(self, percent: int) -> None:
+    def handle_phone_battery_low(self, percent: int, *, exact: bool = False) -> None:
         """One desktop warning per discharge cycle (the daemon decides when)."""
         if self._policy() == NO_NOTIFICATIONS:
             return
         level = max(0, min(100, int(percent)))
+        body = (
+            f"{level} % left." if exact
+            else f"About {level} % left (the phone reports 20 % steps)."
+        )
         try:
             self._notif.Notify(
                 _APP_NAME,
                 dbus.UInt32(0),
                 "battery-caution",
                 "\U0001f50b iPhone battery low",
-                f"About {level} % left (the phone reports 20 % steps).",
+                body,
                 dbus.Array([], signature="s"),
                 dbus.Dictionary({"urgency": dbus.Byte(1)}, signature="sv"),
                 dbus.Int32(config.NOTIFICATION_TIMEOUT_MS),
