@@ -54,10 +54,13 @@ build loads Mermaid in the browser.
 
 ### Publishing
 
-Nothing builds or publishes these pages yet: no workflow runs the build, and
-the landing page does not link to `/docs/`. The configuration assumes the site
-is served at `https://blueferry.weirdware.io/docs/`; the language switcher and
-some German navigation entries use absolute `/docs/...` paths.
+The Docs workflow (`.github/workflows/docs.yml`) runs both builds with
+`--strict` whenever `docs/` or `mkdocs.yml` change, so a broken link fails the
+pull request that introduces it. It only checks the build and publishes
+nothing, and the landing page does not link to `/docs/` yet. The configuration
+assumes the site is served at `https://blueferry.weirdware.io/docs/`; the
+language switcher and some German navigation entries use absolute `/docs/...`
+paths.
 
 Publishing it there needs two changes outside this folder. The host has to run
 the build command above before it serves `website/public/`, and

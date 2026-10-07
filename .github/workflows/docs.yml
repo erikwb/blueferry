@@ -1,0 +1,40 @@
+name: Docs
+
+# Optional check for the documentation site. It runs only when the docs
+# change and is independent of the quality and package workflows.
+on:
+  push:
+    paths:
+      - "docs/**"
+      - "mkdocs.yml"
+      - ".github/workflows/docs.yml"
+  pull_request:
+    paths:
+      - "docs/**"
+      - "mkdocs.yml"
+      - ".github/workflows/docs.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build with ${{ matrix.tool }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - tool: zensical
+            requirements: docs/requirements.txt
+          - tool: mkdocs
+            requirements: docs/requirements-mkdocs.txt
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Install pinned documentation tools
+        run: python -m pip install -r ${{ matrix.requirements }}
+      - name: Build and check links
+        run: ${{ matrix.tool }} build --strict
