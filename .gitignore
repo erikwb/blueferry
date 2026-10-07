@@ -68,3 +68,6 @@ credentials.*
 
 # uv
 uv.lock
+
+# Documentation build output (built by Cloudflare Pages or `mkdocs build`)
+/website/public/docs/
