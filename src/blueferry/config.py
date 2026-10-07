@@ -249,9 +249,13 @@ existing PBAP session (the iPhone's **Sync Contacts** permission) and the same
 local storage policy and retention window as message history.
 """
 CALL_HISTORY_INTERVAL_SEC: int = _env_int(
-    "BLUEFERRY_CALL_HISTORY_INTERVAL_SEC", 300, 60, 24 * 60 * 60
+    "BLUEFERRY_CALL_HISTORY_INTERVAL_SEC", 900, 60, 24 * 60 * 60
 )
-"""Seconds between automatic call-history pulls. PBAP has no change events."""
+"""Seconds between fallback polls of the missed-calls list.
+
+PBAP has no change events. ANCS call notifications trigger prompt pulls, so
+this poll only covers calls ANCS did not report (e.g. notifications off).
+"""
 MISSED_CALL_NOTIFICATIONS: bool = _env_bool(
     "BLUEFERRY_MISSED_CALL_NOTIFICATIONS", True
 )

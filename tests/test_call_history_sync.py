@@ -78,12 +78,14 @@ def _stored_rows() -> int:
 
 @pytest.fixture
 def harness(storage):
-    phone = SimpleNamespace(calls=[], pulls=0)
+    phone = SimpleNamespace(calls=[], pulls=0, listings=[])
     jobs, errors, changed, missed = [], [], [], []
 
-    def pull(_sessions):
-        phone.pulls += 1
-        return list(phone.calls)
+    def pull(_sessions, phonebook, direction):
+        phone.listings.append(phonebook)
+        if phonebook == "mch":  # the last listing of every sync
+            phone.pulls += 1
+        return [call for call in phone.calls if call.direction == direction]
 
     sessions = SimpleNamespace(map=object(), pbap=object(), report_error=errors.append)
     sync = CallHistorySync(
@@ -358,14 +360,16 @@ def test_pull_failure_keeps_the_previous_list_and_reports_the_transport(harness)
     harness.run()
     failures = []
 
-    def broken(_sessions):
-        raise RuntimeError("transfer failed")
+    def broken(_sessions, _phonebook, _direction):
+        raise RuntimeError("org.freedesktop.DBus.Error.UnknownObject: transfer gone")
 
     harness.sync._pull = broken
     harness.sync.sync(failures.append, failures.append)
     harness.run()
 
-    assert [str(error) for error in failures] == ["transfer failed"]
+    assert [str(error) for error in failures] == [
+        "org.freedesktop.DBus.Error.UnknownObject: transfer gone"
+    ]
     assert len(harness.errors) == 1
     assert harness.sync.records() == [_call(OUTGOING, 1)]
 
@@ -375,8 +379,12 @@ def test_storage_change_during_sync_discards_the_result(harness, wallet) -> None
     harness.run()  # seed
     harness.phone.calls = [_call(MISSED, 1)]
     harness.sync.sync()
-    operation, handlers = harness.jobs.pop()
-    result = operation()
+    while True:  # run the listings; stop at the final store job
+        operation, handlers = harness.jobs.pop(0)
+        result = operation()
+        if not isinstance(result, list):
+            break
+        handlers["on_success"](result)
     assert _stored_rows() == 1
     wallet.key = b"R" * 32  # the keyring key was replaced mid-sync
     harness.storage.refresh(allow_prompt=False)
@@ -450,6 +458,7 @@ def test_timers_start_once_pbap_is_live_and_stop_cleanly(storage) -> None:
     assert len(scheduled) == 2
 
 
+@pytest.mark.real_glib_sources
 def test_blocking_pull_runs_on_the_obex_worker_thread(storage, monkeypatch) -> None:
     from blueferry.obex import worker as worker_mod
 
@@ -460,9 +469,9 @@ def test_blocking_pull_runs_on_the_obex_worker_thread(storage, monkeypatch) -> N
     pulled_on = []
     done = []
 
-    def pull(_sessions):
+    def pull(_sessions, _phonebook, direction):
         pulled_on.append(threading.get_ident())
-        return [_call(OUTGOING, 1)]
+        return [_call(OUTGOING, 1)] if direction == OUTGOING else []
 
     sync = CallHistorySync(
         sessions=SimpleNamespace(map=None, pbap=object(), report_error=lambda _e: None),
@@ -486,7 +495,7 @@ def test_blocking_pull_runs_on_the_obex_worker_thread(storage, monkeypatch) -> N
     finally:
         worker.shutdown()
 
-    assert pulled_on and pulled_on[0] != main
+    assert len(pulled_on) == 3 and main not in pulled_on
     # Completion (and anything touching daemon state) is back on the loop.
     assert done == [main]
 
@@ -546,13 +555,15 @@ class _Timers:
 @pytest.fixture
 def gated(storage):
     timers = _Timers()
-    phone = SimpleNamespace(calls=[_call(OUTGOING, 1)], pulls=0)
+    phone = SimpleNamespace(calls=[_call(OUTGOING, 1)], pulls=0, listings=[])
     jobs, errors = [], []
     sessions = SimpleNamespace(map=None, pbap=object(), report_error=errors.append)
 
-    def pull(_sessions):
-        phone.pulls += 1
-        return list(phone.calls)
+    def pull(_sessions, phonebook, direction):
+        phone.listings.append(phonebook)
+        if phonebook == "mch":
+            phone.pulls += 1
+        return [call for call in phone.calls if call.direction == direction]
 
     sync = CallHistorySync(
         sessions=sessions, storage=storage,
@@ -567,8 +578,19 @@ def gated(storage):
             operation, handlers = jobs.pop(0)
             handlers["on_success"](operation())
 
+    def run_failing():
+        while jobs:
+            operation, handlers = jobs.pop(0)
+            try:
+                result = operation()
+            except Exception as error:
+                handlers["on_error"](error)
+            else:
+                handlers["on_success"](result)
+
     yield SimpleNamespace(
         sync=sync, sessions=sessions, timers=timers, jobs=jobs, run=run,
+        run_failing=run_failing,
         phone=phone, errors=errors,
     )
     sync.stop()
@@ -738,6 +760,181 @@ def test_a_failing_folder_aborts_the_whole_pull(monkeypatch) -> None:
     assert calls == ["ich", "och"]
 
 
+# ---- one listing per worker job, missed-only polling, error handling --------
+
+def test_each_listing_is_its_own_worker_job(harness) -> None:
+    """A MAP job queued meanwhile waits for one listing, not a whole sync."""
+    harness.phone.calls = [_call(OUTGOING, 1)]
+    harness.sync.sync()
+    order = []
+
+    for expected in ("ich", "och", "mch"):
+        assert len(harness.jobs) == 1
+        operation, handlers = harness.jobs.pop(0)
+        handlers["on_success"](operation())
+        order.append(harness.phone.listings[-1])
+        assert order[-1] == expected
+    assert len(harness.jobs) == 1, "then one short store job"
+    harness.run()
+
+    assert harness.sync.records() == [_call(OUTGOING, 1)]
+
+
+def test_one_job_stays_below_the_client_obex_timeout() -> None:
+    from blueferry.protocol import OBEX_CALL_TIMEOUT_SEC
+
+    # PBAP Select (10 s) + PullAll (30 s) + transfer + 2 s file grace.
+    worst = 10 + 30 + call_history_sync.CALL_HISTORY_TRANSFER_MAX_SECONDS + 2
+    assert worst < OBEX_CALL_TIMEOUT_SEC / 2
+
+
+def test_periodic_poll_lists_only_missed_calls_after_the_first_full_sync(gated) -> None:
+    gated.sessions.map = object()
+    gated.phone.calls = [_call(OUTGOING, 10), _call(INCOMING, 20)]
+    gated.sync.profiles_available()
+    gated.timers.fire(300)  # first automatic pull: full
+    gated.run()
+    assert gated.phone.listings == ["ich", "och", "mch"]
+
+    gated.phone.calls.append(_call(MISSED, 1))
+    gated.timers.fire(300)
+    gated.run()
+
+    assert gated.phone.listings[3:] == ["mch"]
+    assert gated.sync.records() == [_call(MISSED, 1), _call(OUTGOING, 10), _call(INCOMING, 20)]
+
+
+def test_explicit_sync_during_a_missed_only_poll_gets_a_full_pull(gated) -> None:
+    gated.sessions.map = object()
+    gated.sync.sync()
+    gated.run()
+    gated.phone.listings.clear()
+    gated.sync.profiles_available()
+    gated.timers.fire(300)  # mch-only poll is now running
+    results = []
+
+    gated.sync.sync(results.append, results.append)
+    gated.run()
+
+    assert gated.phone.listings == ["mch", "ich", "och", "mch"]
+    assert results == [1]
+
+
+def test_requests_coalesce_to_a_full_pull_if_any_asked_for_one(gated) -> None:
+    gated.sessions.map = object()
+    gated.sync.sync()
+    gated.run()
+    gated.phone.listings.clear()
+
+    gated.sync.request_sync("ancs missed call", full=False)
+    gated.sync.request_sync("ancs call ended", full=True)
+    gated.timers.fire(REQUEST)
+    gated.run()
+    gated.sync.request_sync("ancs missed call", full=False)
+    gated.timers.fire(REQUEST)
+    gated.run()
+
+    assert gated.phone.listings == ["ich", "och", "mch", "mch"]
+
+
+@pytest.mark.parametrize(("message", "reported"), [
+    ("org.freedesktop.DBus.Error.NoReply: Did not receive a reply", False),
+    ("transfer timed out", False),
+    ("org.freedesktop.DBus.Error.UnknownObject: no such session", True),
+    ("org.freedesktop.DBus.Error.ServiceUnknown: obexd is gone", True),
+])
+def test_only_a_vanished_session_is_reported_never_a_timeout(
+    harness, message, reported,
+) -> None:
+    def broken(_sessions, _phonebook, _direction):
+        raise RuntimeError(message)
+
+    harness.sync._pull = broken
+    harness.sync.sync()
+    harness.run()
+
+    assert bool(harness.errors) is reported
+    assert not harness.sync.pending
+
+
+def test_failed_automatic_pulls_back_off_exponentially(gated) -> None:
+    gated.sessions.map = object()
+    gated.sync.sync()
+    gated.run()
+    gated.sync.profiles_available()
+    attempts = []
+
+    def broken(_sessions, phonebook, _direction):
+        attempts.append(phonebook)
+        raise RuntimeError("transfer timed out")
+
+    gated.sync._pull = broken
+    ticks = []
+    for tick in range(1, 12):
+        before = len(attempts)
+        gated.timers.fire(300)
+        gated.run_failing()
+        if len(attempts) > before:
+            ticks.append(tick)
+
+    # Failure n skips 2**n - 1 ticks (capped).
+    assert ticks == [1, 3, 7]
+    gated.sync._pull = None
+
+
+def test_sync_seals_through_a_following_snapshot(harness, monkeypatch) -> None:
+    calls = []
+    original = harness.storage.snapshot
+
+    def snapshot(**kwargs):
+        calls.append(kwargs)
+        return original(**kwargs)
+
+    monkeypatch.setattr(harness.storage, "snapshot", snapshot)
+    harness.sync.sync()
+    harness.run()
+
+    assert calls == [{"follow": True}]
+
+
+def test_a_different_paired_phone_seeds_silently(storage) -> None:
+    def make(phone, calls, missed):
+        jobs = []
+        sync = CallHistorySync(
+            sessions=SimpleNamespace(map=object(), pbap=object(), report_error=lambda _e: None),
+            storage=storage,
+            submit=lambda operation, **handlers: jobs.append((operation, handlers)),
+            on_changed=lambda: None,
+            on_missed=missed.append,
+            pull=lambda _s, _p, direction: [c for c in calls if c.direction == direction],
+            schedule=lambda *_args: 1, cancel=lambda _source: None,
+            clock=lambda: NOW, phone=phone,
+        )
+        sync.sync()
+        while jobs:
+            operation, handlers = jobs.pop(0)
+            handlers["on_success"](operation())
+        sync.stop()
+
+    missed = []
+    make("AA:BB:CC:DD:EE:01", [_call(MISSED, 30)], missed)
+    make("AA:BB:CC:DD:EE:02", [_call(MISSED, 2, "15551230002")], missed)
+
+    assert missed == []
+
+
+def test_stopping_mid_sync_abandons_the_chain_and_keeps_nothing(harness) -> None:
+    harness.phone.calls = [_call(OUTGOING, 1)]
+    harness.sync.sync()
+    operation, handlers = harness.jobs.pop(0)
+    harness.sync.stop()
+    handlers["on_success"](operation())
+
+    assert harness.jobs == []
+    assert not harness.sync.pending
+    assert _stored_rows() == 0
+
+
 # ---- repository write minimization -----------------------------------------
 
 def _row_state():
@@ -774,7 +971,7 @@ def test_new_missed_call_rewrites_rows_and_state(storage) -> None:
 
 def test_unusable_announcement_state_seeds_again_silently(storage) -> None:
     repository = CallHistoryRepository(storage)
-    repository.replace([], now=NOW)
+    repository.replace([_call(INCOMING, 10)], now=NOW)
     with closing(sqlite3.connect(config.CALLS_DB)) as connection, connection:
         connection.execute(
             "UPDATE state SET payload = ? WHERE name = 'seen'",

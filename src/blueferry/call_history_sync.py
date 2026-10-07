@@ -1,10 +1,19 @@
 """Schedule PBAP call-history pulls and announce newly missed calls.
 
-The blocking part of a sync, three small PBAP transfers plus the encrypted
-replacement write, runs on the shared OBEX worker. Everything else, including
-the in-memory snapshot served to D-Bus clients and the missed-call callback,
-runs on the GLib loop. PBAP has no change notification, so the phone is polled
-at ``BLUEFERRY_CALL_HISTORY_INTERVAL_SEC`` and on explicit client request.
+The blocking part of a sync runs on the shared OBEX worker, one PBAP listing
+per job: the next phonebook is submitted only after the previous one
+finished, so a MAP send queued meanwhile waits for at most one small
+listing, never for a whole three-phonebook sync. The encrypted replacement
+write is a final short job. Everything else, including the in-memory snapshot
+served to D-Bus clients and the missed-call callback, runs on the GLib loop.
+
+PBAP has no change notification. Pulls are therefore driven by events where
+possible: the daemon requests one when ANCS reports a missed call or the end
+of an incoming call (content-free category only). The periodic fallback poll
+(``BLUEFERRY_CALL_HISTORY_INTERVAL_SEC``) lists only ``mch``, the one
+phonebook that missed-call detection needs; ``ich`` and ``och`` are pulled on
+the first sync, on request, and when a client asks. Failed automatic pulls
+back off exponentially.
 
 Automatic pulls yield to MAP, which shares the single worker (see #165 and
 ``ContactSync``): while a MAP session that was connected is being
@@ -13,19 +22,25 @@ availability again. When MAP has never connected in this daemon, automatic
 pulls wait for the same three-minute grace period as contact sync and the
 periodic tick stays off; only prompt, grace-expiry, and requested pulls run.
 Explicit client syncs are never gated.
+
+A call-history failure never tears down the OBEX sessions on a timeout
+(``NoReply``): these pulls are optional and frequent, and dropping MAP for
+them would cost message delivery. Only definitive "the session object is
+gone" errors are reported to the session manager.
 """
 from __future__ import annotations
 
 import logging
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from gi.repository import GLib
 
 from blueferry import config
 from blueferry import contacts as contacts_module
 from blueferry.call_history import (
+    MISSED,
     PHONEBOOKS,
     CallRecord,
     merge_call_history,
@@ -58,15 +73,27 @@ CALL_HISTORY_MAP_GRACE_SECONDS = CONTACTS_MAP_GRACE_SECONDS
 # a call ends, and bursts of requests should produce a single pull.
 CALL_HISTORY_REQUEST_DELAY_SEC = 5
 # Upper bound for one call-history listing transfer. These listings are small;
-# a stuck transfer must not hold the shared worker for the phonebook's 30 min.
-CALL_HISTORY_TRANSFER_MAX_SECONDS = 120
+# a stuck transfer must not hold the shared worker for long. With PBAP's 10 s
+# Select and 30 s PullAll call timeouts one job stays well below the clients'
+# OBEX_CALL_TIMEOUT_SEC (240 s), so a send queued behind it does not time out.
+CALL_HISTORY_TRANSFER_MAX_SECONDS = 45
 # Never announce a call that is older than this, even if it was never seen:
 # after a long time offline the list is useful, a burst of stale popups is not.
 MISSED_CALL_NOTIFY_MAX_AGE = timedelta(hours=12)
+# Exponential back-off for failed automatic pulls, in polling intervals.
+CALL_HISTORY_MAX_BACKOFF_TICKS = 8
+
+# What one sync pulls: every directional list, or only the missed calls.
+FULL_PULL: tuple[tuple[str, str], ...] = PHONEBOOKS
+MISSED_PULL: tuple[tuple[str, str], ...] = tuple(
+    entry for entry in PHONEBOOKS if entry[1] == MISSED
+)
+# Only these mean the PBAP session object is gone; see the module docstring.
+_SESSION_GONE_MARKERS = ("UnknownObject", "ServiceUnknown", "NameHasNoOwner")
 
 Success = Callable[[int], None]
 Failure = Callable[[Exception], None]
-Pull = Callable[..., list[CallRecord]]
+Pull = Callable[[Any, str, str], list[CallRecord]]
 
 
 class StorageChangedDuringCallSync(RuntimeError):
@@ -77,31 +104,43 @@ class CallHistoryStorageError(RuntimeError):
     """The pull worked but the local mirror could not be written."""
 
 
+class CallHistoryStopped(RuntimeError):
+    """The feature was turned off or the daemon is stopping."""
+
+
+def pull_call_list(
+    sessions: SessionManager, phonebook: str, direction: str,
+) -> list[CallRecord]:
+    """Pull and parse one call-history phonebook. Worker thread only."""
+    blob = contacts_module.pull_vcard_listing(
+        sessions,
+        phonebook,
+        max_entries=MAX_CALL_HISTORY_PER_FOLDER,
+        max_bytes=MAX_CALL_HISTORY_BYTES,
+        # An empty missed-calls list is an ordinary answer.
+        allow_empty=True,
+        overall_timeout_s=CALL_HISTORY_TRANSFER_MAX_SECONDS,
+    )
+    parsed = parse_call_history(blob, folder_direction=direction)
+    log.info("PBAP %s: %d calls", phonebook, len(parsed))
+    return parsed
+
+
 def pull_call_history(sessions: SessionManager) -> list[CallRecord]:
     """Pull ich/och/mch individually and merge them. Worker thread only.
 
     The combined ``cch`` phonebook is deliberately not used: it is reported
     to be incomplete on iOS, and the directional lists carry the same calls.
+    The daemon itself submits one job per phonebook (see ``CallHistorySync``).
     """
-    lists: list[list[CallRecord]] = []
-    for phonebook, direction in PHONEBOOKS:
-        blob = contacts_module.pull_vcard_listing(
-            sessions,
-            phonebook,
-            max_entries=MAX_CALL_HISTORY_PER_FOLDER,
-            max_bytes=MAX_CALL_HISTORY_BYTES,
-            # An empty missed-calls list is an ordinary answer.
-            allow_empty=True,
-            overall_timeout_s=CALL_HISTORY_TRANSFER_MAX_SECONDS,
-        )
-        parsed = parse_call_history(blob, folder_direction=direction)
-        log.info("PBAP %s: %d calls", phonebook, len(parsed))
-        lists.append(parsed)
-    return merge_call_history(lists)
+    return merge_call_history(
+        pull_call_list(sessions, phonebook, direction)
+        for phonebook, direction in PHONEBOOKS
+    )
 
 
 class CallHistorySync:
-    """Own the call-history snapshot, its timer, and the joined manual sync."""
+    """Own the call-history snapshot, its timers, and the joined manual sync."""
 
     def __init__(
         self,
@@ -116,6 +155,7 @@ class CallHistorySync:
         cancel: Callable[[int], object] | None = None,
         interval: int | None = None,
         clock: Callable[[], datetime] | None = None,
+        phone: str | None = None,
     ) -> None:
         self._sessions = sessions
         self._storage = storage
@@ -129,9 +169,14 @@ class CallHistorySync:
         self._cancel = cancel or (lambda source: GLib.source_remove(source))
         self._interval = interval or config.CALL_HISTORY_INTERVAL_SEC
         self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._phone = config.IPHONE_MAC if phone is None else phone
         self._records: list[CallRecord] = []
         self._pending = False
+        self._pending_full = False
         self._waiters: list[tuple[Success, Failure]] = []
+        # Explicit callers that arrived while a missed-calls-only pull ran:
+        # they are owed a full pull, which starts right after it.
+        self._queued: list[tuple[Success, Failure]] = []
         self._periodic_id: int | None = None
         self._initial_id: int | None = None
         self._stopped = False
@@ -144,7 +189,12 @@ class CallHistorySync:
         # request_sync(): one coalescing timer, and one follow-up pull when a
         # request arrives while a pull (possibly started too early) runs.
         self._request_id: int | None = None
+        self._request_full = False
         self._resync = False
+        self._resync_full = False
+        # Back-off for failed automatic pulls, counted in periodic ticks.
+        self._failures = 0
+        self._skip_ticks = 0
 
     @property
     def pending(self) -> bool:
@@ -173,6 +223,13 @@ class CallHistorySync:
             self._records = []
             self._on_changed()
 
+    def forget_phone(self) -> None:
+        """The bond was removed: the next sync seeds silently again."""
+        try:
+            CallHistoryRepository(None).forget_announcements()
+        except Exception:
+            log.exception("could not reset missed-call announcements")
+
     def storage_changed(self) -> None:
         if not self._storage.status.can_read:
             self.discard_cache()
@@ -200,30 +257,33 @@ class CallHistorySync:
         if self._deferred and self._sessions.map is not None:
             self.refresh("deferred")
 
-    def request_sync(self, reason: str) -> None:
-        """Ask for a prompt pull, e.g. after the phone reports a call ended.
+    def request_sync(self, reason: str, *, full: bool = True) -> None:
+        """Ask for a prompt pull, e.g. after ANCS reports a missed call.
 
         Requests within ``CALL_HISTORY_REQUEST_DELAY_SEC`` coalesce into one
-        pull, a request during a running pull schedules exactly one follow-up,
-        and the MAP gating of automatic pulls applies. ``reason`` is logged
-        and must not contain personal data.
+        pull (a full pull if any of them asked for one), a request during a
+        running pull schedules exactly one follow-up, and the MAP gating of
+        automatic pulls applies. ``reason`` is logged and must not contain
+        personal data.
         """
         if self._stopped:
             return
         log.info("call history sync requested (%s)", reason)
+        self._request_full = self._request_full or full
         if self._request_id is not None:
             return
         self._request_id = self._schedule(
             CALL_HISTORY_REQUEST_DELAY_SEC, self._requested,
         )
 
-    def refresh(self, reason: str = "automatic") -> None:
+    def refresh(self, reason: str = "automatic", *, full: bool = True) -> None:
         """Best-effort automatic sync, gated so MAP keeps the worker first."""
         if self._stopped:
             return
         if self._pending:
             if reason == "request":
                 self._resync = True
+                self._resync_full = self._resync_full or full
             return
         if self._sessions.pbap is None or not self._storage.status.can_write:
             # PBAP recovery calls profiles_available(), storage recovery
@@ -250,7 +310,9 @@ class CallHistorySync:
             # requested, and explicit pulls.
             return
         self._deferred = False
-        self.sync()
+        # Until one full sync succeeded there is no incoming/outgoing list to
+        # keep, so the first automatic pull is always a full one.
+        self._start(full=full or not self._synced)
 
     def _defer(self, reason: str) -> None:
         if not self._deferred:
@@ -258,13 +320,24 @@ class CallHistorySync:
         self._deferred = True
 
     def sync(self, success: Success | None = None, failure: Failure | None = None) -> None:
-        """Join or start one call-history sync; called and completed on GLib."""
+        """Join or start one full call-history sync (explicit client request)."""
         if success is not None and failure is not None:
-            if len(self._waiters) >= MAX_OBEX_PENDING_OPERATIONS:
+            if len(self._waiters) + len(self._queued) >= MAX_OBEX_PENDING_OPERATIONS:
                 failure(RuntimeError("too many pending call history requests"))
+                return
+            if self._pending and not self._pending_full:
+                # A missed-calls-only poll is running; the caller asked for
+                # the whole list, so it gets the full pull that follows.
+                self._queued.append((success, failure))
                 return
             self._waiters.append((success, failure))
         if self._pending:
+            return
+        self._start(full=True)
+
+    def _start(self, *, full: bool) -> None:
+        if self._stopped:
+            self._finished(error=CallHistoryStopped("call history is off"), transport=False)
             return
         if not self._storage.status.can_write:
             # Not a transport problem: do not mark PBAP unhealthy.
@@ -273,59 +346,82 @@ class CallHistorySync:
             )
             return
         self._pending = True
+        self._pending_full = full
+        plan = FULL_PULL if full else MISSED_PULL
         revision = self._storage.revision
         # The worker gets its own key buffer; the live one is zeroed in place
-        # whenever storage relocks or changes policy.
-        storage = self._storage.snapshot()
-        pull = self._pull or pull_call_history
+        # whenever storage relocks or changes policy. ``follow`` makes the
+        # copy refuse to seal once the policy or key changed mid-sync.
+        storage = self._storage.snapshot(follow=True)
+        pull = self._pull or pull_call_list
         now = self._clock()
+        collected: list[list[CallRecord]] = []
 
-        def download() -> ReplaceResult:
+        def abort(error: Exception, *, transport: bool) -> None:
+            storage.close()
+            self._finished(error=error, transport=transport)
+
+        def submit(operation: Callable[[], Any], done: Callable[[Any], None]) -> None:
             try:
-                records = pull(self._sessions)
-                try:
-                    return CallHistoryRepository(storage).replace(records, now=now)
-                except CorruptStorageError:
-                    raise
-                except Exception as error:
-                    raise CallHistoryStorageError(
-                        "could not store call history"
-                    ) from error
-            finally:
-                storage.close()
+                self._submit(operation, on_success=done, on_error=failed)
+            except Exception as error:
+                # The worker refused the job (recovery in progress, queue
+                # full, shutting down). No PBAP transfer happened, so it is
+                # no evidence of a broken PBAP session.
+                abort(error, transport=False)
 
         def failed(error: Exception) -> None:
             if isinstance(error, CorruptStorageError):
                 self._storage.fail_closed(str(error))
-            self._finished(
-                error=error,
-                transport=not isinstance(
-                    error, CorruptStorageError | CallHistoryStorageError
-                ),
-            )
+            abort(error, transport=not isinstance(
+                error, CorruptStorageError | CallHistoryStorageError,
+            ))
 
-        def succeeded(result: ReplaceResult) -> None:
+        def pull_next() -> None:
+            if self._stopped:
+                abort(CallHistoryStopped("call history is off"), transport=False)
+                return
+            phonebook, direction = plan[len(collected)]
+            submit(lambda: pull(self._sessions, phonebook, direction), pulled)
+
+        def pulled(records: list[CallRecord]) -> None:
+            collected.append(list(records))
+            if len(collected) < len(plan):
+                pull_next()
+                return
+            if self._stopped:
+                abort(CallHistoryStopped("call history is off"), transport=False)
+                return
+            submit(store, stored)
+
+        def store() -> ReplaceResult:
             try:
-                count = self._stored(result, revision, now)
+                return CallHistoryRepository(storage).replace(
+                    merge_call_history(collected),
+                    now=now,
+                    phone=self._phone or None,
+                    directions=frozenset(direction for _phonebook, direction in plan),
+                )
+            except CorruptStorageError:
+                raise
+            except Exception as error:
+                raise CallHistoryStorageError("could not store call history") from error
+            finally:
+                storage.close()
+
+        def stored(result: ReplaceResult) -> None:
+            try:
+                count = self._stored(result, revision, now, full=full)
             except Exception as error:
                 self._finished(error=error, transport=False)
             else:
                 self._finished(count=count)
 
-        try:
-            self._submit(
-                download,
-                on_success=succeeded,
-                on_error=failed,
-            )
-        except Exception as error:
-            # The worker refused the job (recovery in progress, queue full,
-            # shutting down). No PBAP transfer happened, so it is no evidence
-            # of a broken PBAP session.
-            storage.close()
-            self._finished(error=error, transport=False)
+        pull_next()
 
-    def _stored(self, result: ReplaceResult, revision: int, now: datetime) -> int:
+    def _stored(
+        self, result: ReplaceResult, revision: int, now: datetime, *, full: bool,
+    ) -> int:
         if self._storage.revision != revision:
             # Sealed under a key or policy that is no longer current. The phone
             # still has the list, so erase and let the next poll pull again.
@@ -334,8 +430,14 @@ class CallHistorySync:
             raise StorageChangedDuringCallSync(
                 "local storage changed during call history sync"
             )
+        if self._stopped:
+            # Turned off while the write ran: do not keep what it wrote.
+            clear_call_history()
+            self.discard_cache()
+            raise CallHistoryStopped("call history is off")
         self._records = list(result.records)
-        self._synced = True
+        if full:
+            self._synced = True
         if result.changed:
             self._on_changed()
         if result.seeded:
@@ -353,20 +455,35 @@ class CallHistorySync:
                 log.exception("missed-call notification failed")
         return len(result.records)
 
+    def _report_transport(self, error: Exception) -> None:
+        text = str(error)
+        if not any(marker in text for marker in _SESSION_GONE_MARKERS):
+            # Includes NoReply: a slow listing is no reason to drop MAP.
+            return
+        try:
+            self._sessions.report_error(error)
+        except Exception:
+            log.exception("could not report call history transport failure")
+
     def _finished(
         self, *, count: int = 0, error: Exception | None = None,
         transport: bool = True,
     ) -> None:
         waiters, self._waiters = self._waiters, []
         self._pending = False
-        if isinstance(error, StorageChangedDuringCallSync) or not transport:
+        self._pending_full = False
+        if error is None:
+            self._failures = 0
+            self._skip_ticks = 0
+        elif isinstance(error, StorageChangedDuringCallSync | CallHistoryStopped) or not transport:
             log.info("call history sync did not run: %s", error)
-        elif error is not None:
+        else:
+            self._failures += 1
+            self._skip_ticks = min(
+                2 ** self._failures - 1, CALL_HISTORY_MAX_BACKOFF_TICKS,
+            )
             log.error("call history sync failed; keeping previous list: %s", error)
-            try:
-                self._sessions.report_error(error)
-            except Exception:
-                log.exception("could not report call history transport failure")
+            self._report_transport(error)
         for success, failure in waiters:
             try:
                 if error is None:
@@ -375,9 +492,14 @@ class CallHistorySync:
                     failure(error)
             except Exception:
                 log.exception("call history completion callback failed")
-        if self._resync:
+        if self._queued:
+            queued, self._queued = self._queued, []
+            self._waiters.extend(queued)
             self._resync = False
-            self.refresh("request")
+            self._start(full=True)
+        elif self._resync:
+            full, self._resync, self._resync_full = self._resync_full, False, False
+            self.refresh("request", full=full)
 
     def stop(self) -> None:
         self._stopped = True
@@ -407,9 +529,14 @@ class CallHistorySync:
 
     def _requested(self) -> bool:
         self._request_id = None
-        self.refresh("request")
+        full, self._request_full = self._request_full, False
+        self.refresh("request", full=full)
         return False
 
     def _periodic(self) -> bool:
-        self.refresh("periodic")
+        if self._skip_ticks > 0:
+            # Back-off after a failed pull; event-driven requests still run.
+            self._skip_ticks -= 1
+            return True
+        self.refresh("periodic", full=False)
         return True
