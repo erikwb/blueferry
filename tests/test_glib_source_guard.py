@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import inspect
+import threading
 
 import pytest
 from gi.repository import GLib
@@ -51,3 +52,19 @@ def test_guard_forgets_an_idle_source_that_already_ran(glib_source_guard) -> Non
     while not ran:
         context.iteration(True)
     assert glib_source_guard.live() == []
+
+
+def test_guard_ignores_sources_armed_from_worker_threads(glib_source_guard) -> None:
+    # Workers post idle callbacks back to the main loop whenever they finish,
+    # which may be during a later test. Only the test's own thread counts.
+    armed = []
+    worker = threading.Thread(target=lambda: armed.append(GLib.idle_add(lambda: False)))
+    worker.start()
+    worker.join()
+    try:
+        assert glib_source_guard.armed == []
+        assert glib_source_guard.live() == []
+    finally:
+        GLib.source_remove(armed[0])
+    assert glib_source_guard.foreign_removals == [armed[0]]
+    glib_source_guard.foreign_removals.clear()

@@ -39,6 +39,15 @@ if any(name == "blueferry" or name.startswith("blueferry.") for name in sys.modu
     raise RuntimeError("GLib source guard must be installed before blueferry is imported")
 _glib_sources_armed: list[tuple[int, str, object]] | None = None
 _glib_foreign_removals: list[int] | None = None
+# Only the thread that runs the test is watched. Worker threads such as
+# BackgroundWorker.submit and TransferStatusWatch post idle callbacks back to
+# the main loop at any time, including between tests or during the next one;
+# attributing those to whichever test happens to be running would flake.
+_glib_guard_thread: int | None = None
+
+
+def _guarding_this_thread() -> bool:
+    return _glib_guard_thread == threading.get_ident()
 
 
 def _record_glib_source(name: str):
@@ -49,7 +58,7 @@ def _record_glib_source(name: str):
     def armed(*args, **kwargs):
         source_id = original(*args, **kwargs)
         record = _glib_sources_armed
-        if record is not None:
+        if record is not None and _guarding_this_thread():
             callback = next((arg for arg in args if callable(arg)), None)
             record.append((source_id, name, callback))
         return source_id
@@ -73,7 +82,7 @@ def _check_glib_source_remove():
     @functools.wraps(original)
     def remove(source_id, *args, **kwargs):
         armed, foreign = _glib_sources_armed, _glib_foreign_removals
-        if armed is not None and foreign is not None and not any(
+        if armed is not None and foreign is not None and _guarding_this_thread() and not any(
             source_id == armed_id for armed_id, _name, _callback in armed
         ):
             foreign.append(source_id)
@@ -182,15 +191,17 @@ def glib_source_guard():
     fixture is defined first so its teardown runs after every other
     function-scoped fixture has cleaned up.
     """
-    global _glib_sources_armed, _glib_foreign_removals
+    global _glib_sources_armed, _glib_foreign_removals, _glib_guard_thread
     guard = GlibSourceGuard()
     _glib_sources_armed = guard.armed
     _glib_foreign_removals = guard.foreign_removals
+    _glib_guard_thread = threading.get_ident()
     try:
         yield guard
     finally:
         _glib_sources_armed = None
         _glib_foreign_removals = None
+        _glib_guard_thread = None
     leaked = guard.live()
     for source_id, _name, _callback in leaked:
         # Do not let the orphan fire inside a later, unrelated test.
