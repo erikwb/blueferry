@@ -61,6 +61,12 @@ SUBSCRIBE_RETRY_MAX_SECONDS = 60
 # Silence after a successful registration means the notifications are not
 # reaching BlueFerry (for example a stale CCC registration).
 FIRST_UPDATE_TIMEOUT_SECONDS = 10
+# How often per LE link the silence watchdog may resubscribe. If iOS simply
+# has nothing to report (no player has ever run), more attempts would only
+# flap availability; a new link starts a new budget.
+SILENT_RESUBSCRIBES_PER_LINK = 1
+MANAGER_RETRY_INITIAL_SECONDS = 2
+MANAGER_RETRY_MAX_SECONDS = 60
 
 _BLUEZ = "org.bluez"
 _GATT_CHAR = "org.bluez.GattCharacteristic1"
@@ -143,14 +149,21 @@ class AmsClient:
         self._available = False
         self._owned_notify_paths: set[str] = set()
         self._manager_matches: list = []
-        self._characteristic_matches: list = []
+        # Value receivers live as long as the characteristic object, not as
+        # long as one subscription: BlueZ re-enables surviving CCCs itself at
+        # LE link-up, and the phone's command list can arrive before
+        # BlueFerry subscribes again.
+        self._characteristic_matches: dict[str, Any] = {}
         self._operations: deque[_Operation] = deque()
         self._active: _Operation | None = None
         self._pending_reads: set[tuple[int, int]] = set()
         self._settle_id: int | None = None
         self._retry_id: int | None = None
         self._first_update_id: int | None = None
+        self._manager_retry_id: int | None = None
         self._retry_delay = SUBSCRIBE_RETRY_INITIAL_SECONDS
+        self._manager_retry_delay = MANAGER_RETRY_INITIAL_SECONDS
+        self._silent_resubscribes_left = SILENT_RESUBSCRIBES_PER_LINK
 
     # ---- public state ---------------------------------------------------
 
@@ -170,7 +183,7 @@ class AmsClient:
             return
         self._started = True
         log.info("AMS client starting")
-        self._bind_manager()
+        self._bind_manager_guarded()
         if self._bearer_connected is True:
             self._schedule_settle()
 
@@ -181,11 +194,11 @@ class AmsClient:
         self._started = False
         self._bearer_ready = False
         self._cancel_settle()
+        self._cancel_manager_retry()
         self._reset_subscription()
+        self._forget_characteristics()
         self._remove_matches(self._manager_matches)
         self._manager_generation += 1
-        self._paths.clear()
-        self._owned_notify_paths.clear()
 
     def observe_bearer_state(self, connected: bool | None) -> None:
         previous = self._bearer_connected
@@ -199,6 +212,7 @@ class AmsClient:
             return
         if previous is True:
             return
+        self._silent_resubscribes_left = SILENT_RESUBSCRIBES_PER_LINK
         if self._started:
             self._schedule_settle()
 
@@ -209,47 +223,90 @@ class AmsClient:
             log.info("BlueZ owner disappeared; resetting AMS discovery")
             self._bearer_ready = False
             self._cancel_settle()
+            self._cancel_manager_retry()
             self._reset_subscription()
             self._bearer_connected = None
+            self._forget_characteristics()
             self._remove_matches(self._manager_matches)
             self._manager_generation += 1
-            self._paths.clear()
-            self._owned_notify_paths.clear()
         if new_owner:
-            self._bind_manager()
+            # Media control is optional: a failure here must never escape
+            # into the daemon's bluetoothd-restart recovery.
+            self._bind_manager_guarded()
+
+    def _forget_characteristics(self) -> None:
+        """Drop everything tied to the characteristic objects themselves."""
+        had_commands = REMOTE_COMMAND_CHAR in self._paths
+        for path in tuple(self._characteristic_matches):
+            self._remove_characteristic_match(path)
+        self._paths.clear()
+        self._owned_notify_paths.clear()
+        if had_commands:
+            self._report_supported_commands(frozenset())
 
     # ---- discovery ------------------------------------------------------
+
+    def _bind_manager_guarded(self) -> None:
+        try:
+            self._bind_manager()
+        except Exception as error:
+            log.warning("AMS discovery could not start: %s", _error_name(error))
+            self._schedule_manager_retry()
+
+    def _schedule_manager_retry(self) -> None:
+        if not self._started or self._manager_retry_id is not None:
+            return
+        delay = self._manager_retry_delay
+        self._manager_retry_delay = min(delay * 2, MANAGER_RETRY_MAX_SECONDS)
+        log.info("retrying AMS discovery in %ds", delay)
+        self._manager_retry_id = self._schedule(delay, self._retry_manager)
+
+    def _retry_manager(self) -> bool:
+        self._manager_retry_id = None
+        if self._started:
+            self._bind_manager_guarded()
+        return False
+
+    def _cancel_manager_retry(self) -> None:
+        if self._manager_retry_id is None:
+            return
+        try:
+            self._cancel(self._manager_retry_id)
+        except Exception:
+            log.debug("could not remove AMS discovery retry", exc_info=True)
+        self._manager_retry_id = None
 
     def _bind_manager(self) -> None:
         self._remove_matches(self._manager_matches)
         bus = self._bus_factory()
         self._manager_generation += 1
         generation = self._manager_generation
-        self._manager_matches = [
-            bus.add_signal_receiver(
-                self._on_iface_added,
+        # Appended one by one so a failure halfway leaves nothing untracked.
+        for handler, signal_name in (
+            (self._on_iface_added, "InterfacesAdded"),
+            (self._on_iface_removed, "InterfacesRemoved"),
+        ):
+            self._manager_matches.append(bus.add_signal_receiver(
+                handler,
                 dbus_interface=_OBJECT_MANAGER,
-                signal_name="InterfacesAdded",
+                signal_name=signal_name,
                 bus_name=_BLUEZ,
                 path="/",
-            ),
-            bus.add_signal_receiver(
-                self._on_iface_removed,
-                dbus_interface=_OBJECT_MANAGER,
-                signal_name="InterfacesRemoved",
-                bus_name=_BLUEZ,
-                path="/",
-            ),
-        ]
+            ))
 
         def swept(managed) -> None:
             if not self._started or generation != self._manager_generation:
                 return
+            self._manager_retry_delay = MANAGER_RETRY_INITIAL_SECONDS
             for path, interfaces in managed.items():
                 self._on_iface_added(path, interfaces)
 
         def failed(error) -> None:
+            if not self._started or generation != self._manager_generation:
+                return
             log.warning("AMS object sweep failed: %s", _error_name(error))
+            # The signal watches stay; only the initial sweep is repeated.
+            self._schedule_manager_retry()
 
         bus.get_object(_BLUEZ, "/", introspect=False).GetManagedObjects(
             dbus_interface=_OBJECT_MANAGER,
@@ -270,9 +327,45 @@ class AmsClient:
             return
         if self._paths.get(uuid) == path_s:
             return
+        previous = self._paths.get(uuid)
+        if previous is not None:
+            self._remove_characteristic_match(previous)
+            self._owned_notify_paths.discard(previous)
         self._paths[uuid] = path_s
         log.info("AMS characteristic found: %s", uuid)
+        self._watch_characteristic(uuid, path_s)
         self._try_subscribe()
+
+    def _watch_characteristic(self, uuid: str, path: str) -> None:
+        """Install the value receiver before any StartNotify can complete."""
+        handler = {
+            REMOTE_COMMAND_CHAR: self._on_remote_command_changed,
+            ENTITY_UPDATE_CHAR: self._on_entity_update_changed,
+        }.get(uuid)
+        if handler is None or path in self._characteristic_matches:
+            return
+        try:
+            self._characteristic_matches[path] = self._bus_factory().add_signal_receiver(
+                handler,
+                dbus_interface=_PROPERTIES,
+                signal_name="PropertiesChanged",
+                bus_name=_BLUEZ,
+                path=path,
+            )
+        except Exception as error:
+            # Without the receiver, subscribing would only lose values.
+            log.warning("could not watch AMS characteristic: %s", _error_name(error))
+            del self._paths[uuid]
+            self._schedule_manager_retry()
+
+    def _remove_characteristic_match(self, path: str) -> None:
+        match = self._characteristic_matches.pop(path, None)
+        if match is None:
+            return
+        try:
+            match.remove()
+        except Exception:
+            log.debug("could not remove AMS signal watch", exc_info=True)
 
     def _on_iface_removed(self, path, _interfaces) -> None:
         path_s = str(path)
@@ -281,7 +374,11 @@ class AmsClient:
                 log.info("AMS characteristic removed: %s", uuid)
                 del self._paths[uuid]
                 self._owned_notify_paths.discard(path_s)
+                self._remove_characteristic_match(path_s)
                 self._reset_subscription()
+                if uuid == REMOTE_COMMAND_CHAR:
+                    # A new characteristic object starts a new command list.
+                    self._report_supported_commands(frozenset())
                 return
 
     # ---- subscription ---------------------------------------------------
@@ -320,28 +417,21 @@ class AmsClient:
         ):
             return
         self._subscribing = True
+        try:
+            self._run_subscription()
+        except Exception as error:
+            # Never leave _subscribing stuck: that would block every later
+            # attempt until the next bearer transition.
+            log.warning("AMS subscription could not start: %s", _error_name(error))
+            self._reset_subscription()
+            self._schedule_retry()
+
+    def _run_subscription(self) -> None:
         generation = self._generation
-        bus = self._bus_factory()
         rc_path = self._paths[REMOTE_COMMAND_CHAR]
         eu_path = self._paths[ENTITY_UPDATE_CHAR]
-        # Install receivers before StartNotify so the first value cannot be
-        # lost between CCC activation and signal registration.
-        self._characteristic_matches = [
-            bus.add_signal_receiver(
-                self._on_remote_command_changed,
-                dbus_interface=_PROPERTIES,
-                signal_name="PropertiesChanged",
-                bus_name=_BLUEZ,
-                path=rc_path,
-            ),
-            bus.add_signal_receiver(
-                self._on_entity_update_changed,
-                dbus_interface=_PROPERTIES,
-                signal_name="PropertiesChanged",
-                bus_name=_BLUEZ,
-                path=eu_path,
-            ),
-        ]
+        # The value receivers were installed when the characteristics were
+        # found (see _watch_characteristic), before any StartNotify.
         steps: list[tuple[str, Callable[[Success, Failure], None]]] = [
             ("start-notify remote-command", lambda ok, fail: self._start_notify(rc_path, ok, fail)),
             ("start-notify entity-update", lambda ok, fail: self._start_notify(eu_path, ok, fail)),
@@ -432,6 +522,12 @@ class AmsClient:
         self._first_update_id = None
         if not self._available:
             return False
+        if self._silent_resubscribes_left <= 0:
+            # A fresh subscription stayed silent too. Treat it as an idle
+            # Media Source instead of flapping availability.
+            log.info("no AMS entity update yet; assuming no active player")
+            return False
+        self._silent_resubscribes_left -= 1
         log.warning(
             "no AMS entity update within %ds of registering; resubscribing",
             FIRST_UPDATE_TIMEOUT_SECONDS,
@@ -472,7 +568,6 @@ class AmsClient:
                 except Exception:
                     log.debug("could not remove AMS timer", exc_info=True)
                 setattr(self, attribute, None)
-        self._remove_matches(self._characteristic_matches)
         failed = list(self._operations)
         if self._active is not None:
             failed.insert(0, self._active)
@@ -563,10 +658,33 @@ class AmsClient:
             log.warning("AMS supported-command list rejected: %s", error)
             return
         log.debug("AMS supported commands: %d", len(commands))
-        self._on_supported_commands(commands)
+        # Accepted even during the bearer settle window: BlueZ re-enables the
+        # CCC at link-up and iOS answers with its list before BlueFerry
+        # subscribes again. It is metadata, not track content.
+        self._notifications_flow()
+        self._report_supported_commands(commands)
+
+    def _report_supported_commands(self, commands: frozenset[RemoteCommandID]) -> None:
+        try:
+            self._on_supported_commands(commands)
+        except Exception:
+            log.exception("AMS supported-command callback failed")
+
+    def _notifications_flow(self) -> None:
+        """Any notification proves the CCC path; disarm the silence watchdog."""
+        if self._first_update_id is not None:
+            try:
+                self._cancel(self._first_update_id)
+            except Exception:
+                log.debug("could not remove AMS first-update timer", exc_info=True)
+            self._first_update_id = None
+        # Backoff resets only once notifications are proven to flow.
+        self._retry_delay = SUBSCRIBE_RETRY_INITIAL_SECONDS
 
     def _on_entity_update_changed(self, interface, changed, _invalidated) -> None:
-        if interface != _GATT_CHAR or not self._started:
+        # Track values belong to a live link; the projection was cleared when
+        # the bearer dropped, so a stray value must not repopulate it.
+        if interface != _GATT_CHAR or not self._started or self._bearer_connected is not True:
             return
         value = changed.get("Value")
         if value is None:
@@ -576,14 +694,7 @@ class AmsClient:
         except ValueError as error:
             log.warning("AMS entity update rejected: %s", error)
             return
-        if self._first_update_id is not None:
-            try:
-                self._cancel(self._first_update_id)
-            except Exception:
-                log.debug("could not remove AMS first-update timer", exc_info=True)
-            self._first_update_id = None
-        # Backoff resets only once notifications are proven to flow.
-        self._retry_delay = SUBSCRIBE_RETRY_INITIAL_SECONDS
+        self._notifications_flow()
         self._deliver(update)
         if update.truncated:
             self._fetch_full_value(update.entity, update.attribute)

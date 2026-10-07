@@ -304,7 +304,9 @@ def test_bearer_loss_resets_and_discards_late_replies(harness) -> None:
     assert not client.available
     assert availability == [True, False]
     assert len(failures) == 1 and isinstance(failures[0], AmsUnavailableError)
-    assert all(match.removed for match in bus.matches if match.path in (RC, EU))
+    # The value receivers belong to the characteristic objects, which BlueZ
+    # keeps across an LE drop; see the reconnect tests below.
+    assert not any(match.removed for match in bus.matches if match.path in (RC, EU))
     # No StopNotify on a dropped link (bluetoothd 5.87 crash, see PROTOCOL.md).
     assert "StopNotify" not in [call.method for call in bus.calls]
     stale_selector.succeed()
@@ -446,8 +448,45 @@ def test_missing_first_update_resubscribes_with_backoff(harness) -> None:
     bus.take("StartNotify", EU).succeed()
     for _entity in EntityID:
         bus.take("WriteValue", EU).succeed()
+    assert availability == [True, False, True]
     timers.run_all()
-    assert list(timers.delays.values())[-1] == 4  # silence keeps backing off
+    # One resubscribe per link: a second silent registration means an idle
+    # Media Source, so availability does not flap and nothing is retried.
+    assert client.available
+    assert availability == [True, False, True]
+    assert timers.pending == {}
+    assert bus.pending() == []
+
+
+def test_a_new_link_restores_the_silence_budget(harness) -> None:
+    client, bus, timers, *_ = harness
+    _subscribe(client, bus, timers)
+    timers.run_all()  # silent: resubscribe once
+    timers.run_all()
+    bus.take("StartNotify", RC).succeed()
+    bus.take("StartNotify", EU).succeed()
+    for _entity in EntityID:
+        bus.take("WriteValue", EU).succeed()
+    timers.run_all()  # silent again: budget spent
+    assert client.available
+
+    client.observe_bearer_state(False)
+    client.observe_bearer_state(True)
+    timers.run_all()
+    bus.take("Get", RC).succeed(True)
+    bus.take("Get", EU).succeed(True)
+    for _entity in EntityID:
+        bus.take("WriteValue", EU).succeed()
+    timers.run_all()  # the new link gets one resubscribe again
+    assert not client.available
+
+
+def test_supported_command_list_also_disarms_the_watchdog(harness) -> None:
+    client, bus, timers, *_ = harness
+    _subscribe(client, bus, timers)
+    bus.notify(RC, bytes([0, 1]))
+    assert timers.pending == {}
+    assert client.available
 
 
 def test_first_update_disarms_the_watchdog(harness) -> None:
@@ -495,3 +534,172 @@ def test_subscription_failure_names_the_ams_code(harness, caplog) -> None:
     bus.take("StartNotify", EU).succeed()
     bus.take("WriteValue", EU).fail(message="ATT error: 0xa1")
     assert "AMS InvalidCommand 0xA1" in caplog.text
+
+
+def test_commands_survive_a_reconnect_when_bluez_rewrites_the_ccc(harness) -> None:
+    """Review #207: iOS sends its command list while the link settles."""
+    client, bus, timers, _updates, commands, _availability = harness
+    _subscribe(client, bus, timers)
+    bus.notify(RC, bytes([0, 1, 3]))
+    client.observe_bearer_state(False)
+    assert not client.available
+
+    client.observe_bearer_state(True)
+    # BlueZ re-enabled the surviving CCC at link-up; iOS answers at once,
+    # before BlueFerry's settle timer has fired.
+    bus.notify(RC, bytes([0, 1]))
+    assert commands[-1] == frozenset({RemoteCommandID.Play, RemoteCommandID.Pause})
+    timers.run_all()
+    bus.take("Get", RC).succeed(True)
+    bus.take("Get", EU).succeed(True)
+    assert "StartNotify" not in [call.method for call in bus.calls]
+    for _entity in EntityID:
+        bus.take("WriteValue", EU).succeed()
+    assert client.available
+
+    done = []
+    client.send_command(RemoteCommandID.Play, lambda: done.append("ok"), done.append)
+    bus.take("WriteValue", RC).succeed()
+    assert done == ["ok"]
+    # A soft reset never reported an empty list.
+    assert frozenset() not in commands
+
+
+def test_entity_updates_without_a_live_link_are_ignored(harness) -> None:
+    client, bus, timers, updates, *_ = harness
+    _subscribe(client, bus, timers)
+    client.observe_bearer_state(False)
+    bus.notify(EU, bytes([2, 2, 0]) + b"Ghost")
+    assert updates == []
+
+
+def test_removing_the_command_characteristic_clears_the_list(harness) -> None:
+    client, bus, timers, _updates, commands, _ = harness
+    _subscribe(client, bus, timers)
+    bus.notify(RC, bytes([0]))
+    removed = [m for m in bus.matches if m.path == "/"][1]
+    removed.handler(RC, [GATT])
+    assert commands[-1] == frozenset()
+    assert all(m.removed for m in bus.matches if m.path == RC)
+
+
+def test_owner_change_clears_the_list_and_receivers(harness) -> None:
+    client, bus, timers, _updates, commands, _ = harness
+    _subscribe(client, bus, timers)
+    bus.notify(RC, bytes([0]))
+    client.observe_bluez_owner(":1.1", "")
+    assert commands[-1] == frozenset()
+    assert all(m.removed for m in bus.matches)
+
+
+class _FlakyBus(_Bus):
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail_receivers = 0
+
+    def add_signal_receiver(self, handler, **kwargs):
+        if self.fail_receivers:
+            self.fail_receivers -= 1
+            raise dbus.exceptions.DBusException(
+                "gone", name="org.freedesktop.DBus.Error.NameHasNoOwner",
+            )
+        return super().add_signal_receiver(handler, **kwargs)
+
+
+@pytest.fixture
+def flaky():
+    bus = _FlakyBus()
+    timers = _Timers()
+    client = AmsClient(
+        DEVICE,
+        on_update=lambda _update: None,
+        on_supported_commands=lambda _commands: None,
+        bus_factory=lambda: bus,
+        schedule=timers.schedule,
+        cancel=timers.cancel,
+    )
+    return client, bus, timers
+
+
+def test_owner_change_failure_is_contained_and_retried(flaky) -> None:
+    """Review #207: an AMS error must not abort bluetoothd-restart recovery."""
+    client, bus, timers = flaky
+    client.observe_bearer_state(True)
+    client.start()
+    bus.take("GetManagedObjects").succeed({})
+
+    bus.fail_receivers = 1
+    client.observe_bluez_owner(":1.1", ":1.2")  # must not raise
+    assert list(timers.delays.values())[-1] == 2
+    assert bus.pending() == []
+
+    timers.run_all()
+    bus.take("GetManagedObjects").succeed(_objects())
+    assert client.characteristics_found
+
+
+def test_start_failure_is_contained_and_retried(flaky) -> None:
+    client, bus, timers = flaky
+    bus.fail_receivers = 1
+    client.start()
+    assert bus.pending() == []
+    timers.run_all()
+    assert bus.pending() == [("GetManagedObjects", "/")]
+
+
+def test_failed_object_sweep_is_retried_with_backoff(harness) -> None:
+    client, bus, timers, *_ = harness
+    client.observe_bearer_state(True)
+    client.start()
+    bus.take("GetManagedObjects").fail(name="org.freedesktop.DBus.Error.NoReply")
+    assert list(timers.delays.values())[-1] == 2
+    timers.run_all()
+    bus.take("GetManagedObjects").fail(name="org.freedesktop.DBus.Error.NoReply")
+    assert list(timers.delays.values())[-1] == 4
+    timers.run_all()
+    bus.take("GetManagedObjects").succeed(_objects())
+    assert client.characteristics_found
+
+
+def test_a_raising_subscription_step_does_not_stick(harness, monkeypatch) -> None:
+    """Review #207: _subscribing must not stay set when a bus call raises."""
+    client, bus, timers, *_ = harness
+    client.observe_bearer_state(True)
+    client.start()
+    bus.take("GetManagedObjects").succeed(_objects())
+
+    def broken(_path):
+        raise dbus.exceptions.DBusException("no bus", name="org.freedesktop.DBus.Error.Disconnected")
+
+    original = client._characteristic
+    monkeypatch.setattr(client, "_characteristic", broken)
+    timers.run_all()  # settle -> subscription attempt fails inside StartNotify
+    assert not client.available
+    assert list(timers.delays.values())[-1] == 2
+
+    monkeypatch.setattr(client, "_characteristic", original)
+    timers.run_all()
+    bus.take("StartNotify", RC).succeed()
+    bus.take("StartNotify", EU).succeed()
+    for _entity in EntityID:
+        bus.take("WriteValue", EU).succeed()
+    assert client.available
+
+
+def test_a_raising_subscription_setup_does_not_stick(harness, monkeypatch) -> None:
+    client, bus, timers, *_ = harness
+    client.observe_bearer_state(True)
+    client.start()
+    bus.take("GetManagedObjects").succeed(_objects())
+
+    def broken():
+        raise RuntimeError("boom")
+
+    original = client._run_subscription
+    monkeypatch.setattr(client, "_run_subscription", broken)
+    timers.run_all()
+    assert client._subscribing is False
+    assert list(timers.delays.values())[-1] == 2
+    monkeypatch.setattr(client, "_run_subscription", original)
+    timers.run_all()
+    assert bus.pending() == [("StartNotify", RC)]
