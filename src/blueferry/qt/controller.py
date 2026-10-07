@@ -673,6 +673,16 @@ class BridgeController(QObject):
             completed,
         )
 
+    @Slot(bool)
+    def setMediaControl(self, enabled: bool) -> None:
+        def completed(value: object) -> None:
+            if isinstance(value, dict):
+                self._status.update(value)
+                self.statusChanged.emit()
+            self.refreshNowPlaying()
+
+        self._run(lambda: self._backend.set_media_control(bool(enabled)), completed)
+
     @Slot(str)
     def setStoragePolicy(self, policy: str) -> None:
         if policy == "encrypted":

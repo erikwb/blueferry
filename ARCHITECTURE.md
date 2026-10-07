@@ -57,7 +57,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `build_info.py` | Package release + source-SHA build identity. |
 | `wireplumber_policy.py` | Manages one WirePlumber fragment that keeps iPhone audio on the phone. |
 | `proximity_lock.py` | Opt-in lock-only desktop lock after the iPhone's bearers stay down for a grace period; lock dispatch via ScreenSaver, then logind. |
-| `media.py` | Opt-in now-playing projection, media command policy, and coalesced change listeners. |
+| `media.py` | Opt-in now-playing projection, media command policy, coalesced change listeners, and the persisted opt-in (`MediaControlSettings`). |
 
 ### Bluetooth transports and supervision
 
@@ -147,7 +147,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `cli_messages.py` | CLI message listing, recipient selection, and send. |
 | `cli_common.py` | Small CLI presentation helpers. |
 | `cli_proximity.py` | `proximity-lock` status, dry run, enable, and disable. |
-| `cli_media.py` | `blueferry media` now-playing status and commands. |
+| `cli_media.py` | `blueferry media` now-playing status, commands, and `enable`/`disable`. |
 | `tui.py` | Textual terminal client. |
 | `tui_launcher.py` | Launches the TUI with the package-private Textual bundle when present. |
 | `ui/app.py` | GTK4/libadwaita application entry point. |
@@ -173,6 +173,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `qt/qml/ExpandingMessageComposer.qml` | Growing message editor. |
 | `qt/qml/MessageBubble.qml` | Message bubble. |
 | `qt/qml/NowPlayingBar.qml` | Opt-in iPhone now-playing bar with transport buttons. |
+| `qt/qml/MediaControlSettings.qml` | Media-control opt-in checkbox and state; loaded only for daemons that report it. |
 | `quickshell_bridge.py` | Persistent stdin/stdout JSON bridge from Quickshell to the session D-Bus API. |
 
 ### Quickshell client (`data/quickshell/`)

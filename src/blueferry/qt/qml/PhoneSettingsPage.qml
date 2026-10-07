@@ -421,6 +421,17 @@ Kirigami.ScrollablePage {
             }
         }
 
+        // Only daemons that report the media-control keys support the setting.
+        Loader {
+            objectName: "mediaControlLoader"
+            Layout.fillWidth: true
+            active: iphonePage.bridge.status.media_control_enabled !== undefined
+            visible: active
+            sourceComponent: MediaControlSettings {
+                bridge: iphonePage.bridge
+            }
+        }
+
         Kirigami.Heading { text: qsTr("Local Data"); level: 2 }
         Kirigami.FormLayout {
             Layout.fillWidth: true

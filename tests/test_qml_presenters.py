@@ -643,6 +643,7 @@ def settings_window(qml_engine):
             function answerPairingConfirmation(approved) { record("answerPairingConfirmation", [approved]); }
             function setStoragePolicy(policy) { record("setStoragePolicy", [policy]); }
             function setProximityLock(enabled, grace) { record("setProximityLock", [enabled, grace]); }
+            function setMediaControl(enabled) { record("setMediaControl", [enabled]); }
             function forgetDevice(mac) { record("forgetDevice", [mac]); }
             function activateBluetooth() { record("activateBluetooth", []); }
             function filePairingIssue() { record("filePairingIssue", []); }
@@ -833,6 +834,35 @@ def test_proximity_lock_settings_appear_only_for_supporting_daemons(qml_engine, 
     assert _evaluate(
         qml_engine, "testBridge.calls.filter(c => c.method === 'setProximityLock')"
     ) == [{"method": "setProximityLock", "args": [True, 90]}]
+
+
+def test_media_control_setting_appears_only_for_supporting_daemons(qml_engine, settings_window):
+    window, bridge = settings_window
+    bridge.setProperty("setupLoaded", True)
+    QGuiApplication.processEvents()
+    loader = _settings_object(window, "mediaControlLoader")
+    bridge.setProperty("status", {"daemon": True})
+    assert loader.property("active") is False
+
+    bridge.setProperty("status", {
+        "daemon": True, "media_control_enabled": False, "media_control_available": False,
+    })
+    QGuiApplication.processEvents()
+    assert loader.property("active") is True
+    checkbox = _settings_object(window, "mediaControlCheckBox")
+    assert checkbox.property("checked") is False
+    assert _settings_object(window, "mediaControlStateLabel").property("text") == "Off"
+
+    assert QMetaObject.invokeMethod(checkbox, "toggle")
+    assert QMetaObject.invokeMethod(checkbox, "clicked")
+    assert _evaluate(
+        qml_engine, "testBridge.calls.filter(c => c.method === 'setMediaControl')"
+    ) == [{"method": "setMediaControl", "args": [True]}]
+
+    bridge.setProperty("status", {
+        "daemon": True, "media_control_enabled": True, "media_control_available": True,
+    })
+    assert "Connected" in _settings_object(window, "mediaControlStateLabel").property("text")
 
 
 def test_proximity_grace_edit_survives_a_status_refresh_before_saving(qml_engine):

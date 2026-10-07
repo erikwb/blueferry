@@ -924,3 +924,32 @@ def test_media_command_runs_off_the_ui_thread_without_busy_state():
     assert controller.busy is False
     controller._pool.waitForDone(1000)
     assert backend.media_commands == ["next"]
+
+
+def test_media_control_setting_is_forwarded_and_merged_into_status(monkeypatch):
+    backend = _MediaBackend()
+    calls = []
+
+    def set_media_control(enabled):
+        calls.append(enabled)
+        return {"media_control_enabled": enabled, "media_control_available": False}
+
+    backend.set_media_control = set_media_control
+    controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+    monkeypatch.setattr(
+        controller,
+        "_run",
+        lambda operation, on_done=None, *_args, **_kwargs: (
+            on_done(operation()) if on_done is not None else operation()
+        ),
+    )
+    changes = []
+    controller.statusChanged.connect(lambda: changes.append(True))
+
+    controller.setMediaControl(True)
+
+    assert calls == [True]
+    assert controller.status["media_control_enabled"] is True
+    assert changes == [True]
+    # The bar follows at once instead of waiting for the next signal.
+    assert backend.now_playing_calls == 1
