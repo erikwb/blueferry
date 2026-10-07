@@ -457,3 +457,16 @@ def test_mpris_trackid_is_stable_when_a_truncated_title_completes(mpris_factory)
     _play(media, title="Next song")
     player.refresh()
     assert _player_props(name)["Metadata"]["mpris:trackid"] != before
+
+
+def test_set_mpris_player_round_trip(service_factory) -> None:
+    calls = []
+
+    def configure(enabled):
+        calls.append(enabled)
+        return {"media_mpris_enabled": enabled}
+
+    name, _ = service_factory(None, set_media_mpris=configure)
+    result = _call(name, OBJECT_PATH, MEDIA_IFACE, "SetMprisPlayer", dbus.Boolean(True))
+    assert json.loads(result["value"]) == {"media_mpris_enabled": True}
+    assert calls == [True]

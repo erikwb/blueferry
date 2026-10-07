@@ -1198,3 +1198,18 @@ def test_battery_warning_is_forwarded_and_merged_into_status(monkeypatch):
     controller.setPhoneBatteryWarning(True)
 
     assert controller.status["phone_battery_warning"] is True
+
+
+def test_mpris_setting_is_forwarded_and_merged_into_status(monkeypatch):
+    backend = _MediaBackend()
+    backend.set_mpris_player = lambda enabled: {"media_mpris_enabled": enabled}
+    controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+    monkeypatch.setattr(
+        controller,
+        "_run",
+        lambda operation, on_done=None, *_args, **_kwargs: (
+            on_done(operation()) if on_done is not None else operation()
+        ),
+    )
+    controller.setMprisPlayer(True)
+    assert controller.status["media_mpris_enabled"] is True

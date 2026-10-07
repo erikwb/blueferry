@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import functools
 from types import SimpleNamespace
+from typing import ClassVar
 
 import pytest
 
@@ -270,6 +271,7 @@ def test_default_status_reports_media_disabled(make_daemon, monkeypatch) -> None
     assert status["media_control_enabled"] is False
     assert status["media_control_available"] is False
     assert status["media_mpris_enabled"] is False
+    assert status["media_mpris_active"] is False
 
 
 def test_compatibility_mode_never_starts_ams(make_daemon, monkeypatch) -> None:
@@ -355,7 +357,8 @@ def test_media_can_be_enabled_and_disabled_at_runtime(make_daemon, monkeypatch) 
     assert instance.ams is None
 
     result = instance._set_media_control(True)
-    assert result == {"media_control_enabled": True, "media_control_available": False}
+    assert result["media_control_enabled"] is True
+    assert result["media_control_available"] is False
     ams = instance.ams
     assert isinstance(ams, _FakeAms) and ams.started and ams.device_path == "/device"
     assert instance.media is not None
@@ -363,7 +366,7 @@ def test_media_can_be_enabled_and_disabled_at_runtime(make_daemon, monkeypatch) 
     assert MediaControlSettings().enabled is True
 
     result = instance._set_media_control(False)
-    assert result == {"media_control_enabled": False, "media_control_available": False}
+    assert result["media_control_enabled"] is False
     assert ams.stopped
     assert instance.ams is None and instance.media is None
     assert MediaControlSettings().enabled is False
@@ -673,3 +676,72 @@ def test_mpris_set_authorizes_before_revealing_property_details() -> None:
         assert raised.value.get_dbus_name() == "io.weirdware.BlueFerry.Error.RateLimited"
     finally:
         player.close()
+
+
+class _FakeMpris:
+    instances: ClassVar[list] = []
+
+    def __init__(self, connection, media, guard) -> None:
+        self.connection = connection
+        self.media = media
+        self.guard = guard
+        self.closed = False
+        _FakeMpris.instances.append(self)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+@pytest.fixture
+def mpris_daemon(make_daemon, monkeypatch):
+    import blueferry.mpris as mpris_mod
+
+    _FakeMpris.instances = []
+    monkeypatch.setattr(daemon_mod.config, "ANCS_ENABLED", True)
+    monkeypatch.setattr(daemon_mod, "AmsClient", _FakeAms)
+    monkeypatch.setattr(mpris_mod, "MprisPlayer", _FakeMpris)
+    private = object()
+    monkeypatch.setattr(mpris_mod, "private_session_bus", lambda: private)
+    instance = make_daemon()
+    instance._dbus_service = SimpleNamespace(
+        connection=object(), caller_guard=object(),
+        emit_now_playing_changed=lambda: None, emit_status=lambda: None,
+    )
+    return instance, private
+
+
+def test_mpris_uses_its_own_connection_and_follows_both_opt_ins(mpris_daemon) -> None:
+    """Review #208: MPRIS never shares the daemon's main connection."""
+    instance, private = mpris_daemon
+    status = instance._set_media_mpris(True)
+    # Preference saved, but no player without media control.
+    assert status["media_mpris_enabled"] is True and status["media_mpris_active"] is False
+    assert _FakeMpris.instances == []
+
+    instance._set_media_control(True)
+    player = _FakeMpris.instances[-1]
+    assert player.connection is private
+    assert player.connection is not instance._dbus_service.connection
+    assert player.media is instance.media
+    assert instance._media_status()["media_mpris_active"] is True
+
+    # Turning media control off closes the player with it.
+    instance._set_media_control(False)
+    assert player.closed and instance.mpris is None
+
+    instance._set_media_control(True)
+    second = _FakeMpris.instances[-1]
+    assert second is not player and second.connection is private
+    instance._set_media_mpris(False)
+    assert second.closed and instance.mpris is None
+    assert MediaControlSettings().mpris is False
+
+
+def test_mpris_preference_is_seeded_and_saved(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "settings.json"
+    monkeypatch.setattr(daemon_mod.config, "MEDIA_MPRIS_ENABLED", True)
+    assert MediaControlSettings(path).mpris is True
+    MediaControlSettings(path).set_mpris(False)
+    assert MediaControlSettings(path).mpris is False
+    with pytest.raises(ValueError):
+        MediaControlSettings(path).set_mpris("yes")  # type: ignore[arg-type]

@@ -670,6 +670,7 @@ class Daemon:
                 calls=self.calls,
                 set_calls_enabled=self._set_calls_enabled,
                 set_phone_battery_warning=self._set_battery_warning,
+                set_media_mpris=self._set_media_mpris,
             ),
         )
         self.events.set_dbus_service(self._dbus_service)
@@ -711,7 +712,11 @@ class Daemon:
         if self.media is None or self._dbus_service is None:
             return
         self.media.add_listener(self._dbus_service.emit_now_playing_changed)
-        if not config.MEDIA_MPRIS_ENABLED or self.mpris is not None:
+        if self.media_settings.mpris:
+            self._start_mpris()
+
+    def _start_mpris(self) -> None:
+        if self.media is None or self._dbus_service is None or self.mpris is not None:
             return
         from blueferry.mpris import MprisPlayer, private_session_bus
 
@@ -726,6 +731,21 @@ class Daemon:
         except Exception:
             log.warning("could not export the MPRIS player", exc_info=True)
 
+    def _stop_mpris(self) -> None:
+        mpris, self.mpris = self.mpris, None
+        if mpris is not None:
+            mpris.close()
+
+    def _set_media_mpris(self, enabled: bool) -> dict:
+        selected = self.media_settings.set_mpris(enabled)
+        if selected:
+            self._start_mpris()
+        else:
+            self._stop_mpris()
+        log.info("iPhone MPRIS player %s", "enabled" if selected else "disabled")
+        self._emit_status()
+        return self._media_status()
+
     def _new_media(self) -> MediaController:
         return MediaController(
             le_enabled=config.ANCS_ENABLED,
@@ -736,6 +756,9 @@ class Daemon:
         return {
             "media_control_enabled": self.media is not None,
             "media_control_available": bool(self.media and self.media.available),
+            # The saved preference, and whether the player object exists.
+            "media_mpris_enabled": self.media_settings.mpris,
+            "media_mpris_active": self.mpris is not None,
         }
 
     def _set_media_control(self, enabled: bool) -> dict:
@@ -746,8 +769,9 @@ class Daemon:
             if self._media_device_path is not None:
                 self._start_media(self._media_device_path)
         elif not selected and self.media is not None:
-            # Stop the GATT client first: its availability callback still
-            # needs the controller.
+            # The MPRIS player and the GATT client go first: both still use
+            # the controller while they shut down.
+            self._stop_mpris()
             ams, self.ams = self.ams, None
             # Disable the phone's CCCs so a later opt-in gets the command
             # list again; a new client waits until that is done.
@@ -1286,7 +1310,6 @@ class Daemon:
             "storage_state": self.storage.status.state,
             "storage_detail": self.storage.status.detail,
             **self._media_status(),
-            "media_mpris_enabled": self.mpris is not None,
             **self._controller_identity(),
             **self.connectivity.snapshot(),
         }
@@ -1416,9 +1439,7 @@ class Daemon:
             self.ams.stop()
         # No StopNotify on shutdown: the closing bus connection ends them.
         self.media_sessions.close()
-        if self.mpris is not None:
-            self.mpris.close()
-            self.mpris = None
+        self._stop_mpris()
         if self.media is not None:
             self.media.close()
         self.solicitation.stop()

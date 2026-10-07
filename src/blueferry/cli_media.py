@@ -9,7 +9,7 @@ from blueferry.ams.constants import COMMAND_NAMES
 from blueferry.client import BackendClient, BackendError
 from blueferry.text_safety import terminal_text
 
-_SETTINGS = ("enable", "disable")
+_SETTINGS = ("enable", "disable", "enable-mpris", "disable-mpris")
 _ACTIONS = ("status", *_SETTINGS, *sorted(COMMAND_NAMES))
 
 _DETAILS = {
@@ -86,11 +86,23 @@ def render_now_playing(snapshot: dict) -> list[str]:
     return lines
 
 
+def _mpris_message(result: dict) -> str:
+    if not result.get("media_mpris_enabled"):
+        return "The iPhone is not published as an MPRIS player."
+    lines = [
+        "The iPhone is published as an MPRIS player while it plays. Every "
+        "application in your login session can read the track details."
+    ]
+    if not result.get("media_control_enabled"):
+        lines.append("It takes effect once media control is on (blueferry media enable).")
+    return "\n".join(lines)
+
+
 def media(
     action: str = typer.Argument(
         "status",
         help=(
-            "status, enable, disable, or one of: "
+            "status, enable, disable, enable-mpris, disable-mpris, or one of: "
             + ", ".join(sorted(COMMAND_NAMES))
         ),
         show_default=True,
@@ -107,14 +119,20 @@ def media(
     client = BackendClient()
     try:
         if selected in _SETTINGS:
-            result = client.set_media_control(selected == "enable")
-            if as_json:
-                typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
-                return
+            enable = selected.startswith("enable")
+            if selected.endswith("-mpris"):
+                result = client.set_mpris_player(enable)
+                message = _mpris_message(result)
+            else:
+                result = client.set_media_control(enable)
+                message = (
+                    "iPhone media control is on; it starts when the iPhone's "
+                    "LE link is up."
+                    if result.get("media_control_enabled")
+                    else "iPhone media control is off."
+                )
             typer.echo(
-                "iPhone media control is on; it starts when the iPhone's LE link is up."
-                if result.get("media_control_enabled")
-                else "iPhone media control is off."
+                json.dumps(result, ensure_ascii=False, indent=2) if as_json else message
             )
             return
         if selected == "status":

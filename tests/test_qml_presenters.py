@@ -776,6 +776,7 @@ def settings_window(qml_engine):
             function setAncsNotificationActions(enabled) { record("setAncsNotificationActions", [enabled]); }
             function setCallsEnabled(enabled) { record("setCallsEnabled", [enabled]); }
             function setPhoneBatteryWarning(enabled) { record("setPhoneBatteryWarning", [enabled]); }
+            function setMprisPlayer(enabled) { record("setMprisPlayer", [enabled]); }
             function forgetDevice(mac) { record("forgetDevice", [mac]); }
             function activateBluetooth() { record("activateBluetooth", []); }
             function filePairingIssue() { record("filePairingIssue", []); }
@@ -1185,6 +1186,32 @@ def test_ancs_actions_checkbox_is_opt_in_and_gated(qml_engine, settings_window):
     assert _evaluate(
         qml_engine, "testBridge.calls.filter(c => c.method === 'setAncsNotificationActions')"
     ) == [{"method": "setAncsNotificationActions", "args": [True]}]
+
+
+def test_mpris_checkbox_needs_media_control_and_a_supporting_daemon(qml_engine, settings_window):
+    window, bridge = settings_window
+    bridge.setProperty("setupLoaded", True)
+    bridge.setProperty("status", {"daemon": True, "media_control_enabled": False})
+    QGuiApplication.processEvents()
+    mpris = _settings_object(window, "mprisPlayerCheckBox")
+    assert mpris.property("visible") is False
+
+    bridge.setProperty("status", {
+        "daemon": True, "media_control_enabled": False, "media_mpris_enabled": False,
+    })
+    assert mpris.property("visible") is True
+    assert mpris.property("enabled") is False
+    assert "every application" in _settings_object(window, "mprisPlayerWarning").property("text")
+
+    bridge.setProperty("status", {
+        "daemon": True, "media_control_enabled": True, "media_mpris_enabled": False,
+    })
+    assert mpris.property("enabled") is True
+    assert QMetaObject.invokeMethod(mpris, "toggle")
+    assert QMetaObject.invokeMethod(mpris, "clicked")
+    assert _evaluate(
+        qml_engine, "testBridge.calls.filter(c => c.method === 'setMprisPlayer')"
+    ) == [{"method": "setMprisPlayer", "args": [True]}]
 
 
 def test_proximity_grace_edit_survives_a_status_refresh_before_saving(qml_engine):

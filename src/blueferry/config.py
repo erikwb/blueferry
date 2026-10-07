@@ -231,15 +231,14 @@ ANCS, and this is outside BlueFerry's messaging core. Requires the full
 (ANCS/LE) delivery mode; compatibility mode never connects LE.
 """
 
-MEDIA_MPRIS_ENABLED: bool = MEDIA_CONTROL_ENABLED and _env_bool(
-    "BLUEFERRY_MEDIA_MPRIS_ENABLED", False
-)
-"""Additionally publish the iPhone as an MPRIS2 player on the session bus.
+MEDIA_MPRIS_ENABLED: bool = _env_bool("BLUEFERRY_MEDIA_MPRIS_ENABLED", False)
+"""Initial value for also publishing the iPhone as an MPRIS2 player.
 
-MPRIS metadata (title, artist, album) is by design readable by every
-application in the login session, like any desktop music player. It is a
-separate opt-in so enabling media control alone keeps track details behind
-BlueFerry's authenticated Media1 API.
+Effective only while media control is on. MPRIS metadata (title, artist,
+album) is by design readable by every application in the login session, like
+any desktop music player. It is a separate opt-in so enabling media control
+alone keeps track details behind BlueFerry's authenticated Media1 API. A
+choice saved through a client or the CLI takes precedence.
 """
 
 SHOW_NOTIFICATION_CONTENT: bool = _env_bool(
