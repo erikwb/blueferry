@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import ClassVar, Protocol
 
+from rich.text import Text
 from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
@@ -115,8 +116,11 @@ class CallsScreen(ModalScreen[None]):
     def _show(self, snapshot: CallsSnapshot) -> None:
         self.snapshot = snapshot
         state, calls = describe(snapshot)
-        self.query_one("#calls-state", Static).update(state)
-        self.query_one("#calls-list", Static).update(calls)
+        # Caller names and numbers come from the phone and contacts. Render
+        # them as plain Text: a str would be parsed as Textual markup, so a
+        # contact named "[@click=app.quit]x[/]" would become an action link.
+        self.query_one("#calls-state", Static).update(Text(state))
+        self.query_one("#calls-list", Static).update(Text(calls))
         ready = snapshot.available
         self.query_one("#calls-dial", Button).disabled = not ready
         self.query_one("#calls-answer", Button).disabled = ringing_call(snapshot) is None
@@ -126,7 +130,7 @@ class CallsScreen(ModalScreen[None]):
         hangup.label = "Decline" if target is not None and target.ringing else "Hang up"
 
     def _show_error(self, message: str) -> None:
-        self.query_one("#calls-state", Static).update(terminal_text(message))
+        self.query_one("#calls-state", Static).update(Text(terminal_text(message)))
         for selector in ("#calls-dial", "#calls-answer", "#calls-hangup"):
             self.query_one(selector, Button).disabled = True
 
@@ -136,7 +140,9 @@ class CallsScreen(ModalScreen[None]):
             action()
         except BackendError as error:
             message = terminal_text(str(error))
-            self.app.call_from_thread(self.notify, message, severity="error")
+            self.app.call_from_thread(
+                lambda: self.notify(message, severity="error", markup=False)
+            )
         else:
             self.app.call_from_thread(self.notify, done)
         self.app.call_from_thread(self.refresh_calls)

@@ -167,3 +167,58 @@ def test_calls_key_explains_the_opt_in_when_disabled() -> None:
             assert backend.requests == []
 
     _run(scenario())
+
+
+def test_caller_text_is_never_parsed_as_markup() -> None:
+    """A hostile contact name must neither link an action nor hide calls."""
+
+    async def scenario() -> None:
+        backend = _Backend()
+        backend.snapshot = _snapshot(
+            ("voicecall01", "incoming", "[@click=app.quit]x[/]"),
+            ("voicecall02", "held", "Bob [/nope]"),
+        )
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
+        async with app.run_test(size=(120, 36)) as pilot:
+            await _until(pilot, lambda: app.state.status.calls_enabled)
+            app.set_focus(None)
+            await pilot.press("c")
+            await _until(pilot, lambda: isinstance(app.screen, CallsScreen))
+            screen = app.screen
+            await _until(pilot, lambda: not screen.query_one("#calls-answer", Button).disabled)
+            rendered = screen.query_one("#calls-list", Static).render()
+            text = rendered.plain if hasattr(rendered, "plain") else str(rendered)
+            assert "[@click=app.quit]x[/]" in text
+            assert "Bob [/nope]" in text
+            assert all(
+                "@click" not in str(getattr(span.style, "meta", "") or "")
+                for span in getattr(rendered, "spans", [])
+            )
+            assert app.is_running
+
+    _run(scenario())
+
+
+def test_backend_error_toast_is_not_parsed_as_markup() -> None:
+    async def scenario() -> None:
+        backend = _Backend()
+
+        def failing_dial(_number: str) -> str:
+            raise BackendError("[@click=app.quit]boom[/]")
+
+        backend.dial = failing_dial
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
+        async with app.run_test(size=(120, 36)) as pilot:
+            await _until(pilot, lambda: app.state.status.calls_enabled)
+            app.set_focus(None)
+            await pilot.press("c")
+            await _until(pilot, lambda: isinstance(app.screen, CallsScreen))
+            screen = app.screen
+            seen = []
+            screen.notify = lambda message, **kwargs: seen.append((message, kwargs))
+            screen.query_one("#calls-number", Input).value = "123"
+            screen.dial()
+            await _until(pilot, lambda: bool(seen))
+            assert seen[0][1].get("markup") is False
+
+    _run(scenario())
