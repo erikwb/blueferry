@@ -593,7 +593,10 @@ specification-based expectation, not a captured result.
 - AMS offers relative volume steps and fixed skips only, so an MPRIS volume
   write becomes one step, MPRIS `CanSeek` is false and `Seek`/`SetPosition`
   have no effect, and MPRIS `Stop` pauses. The skips remain available through
-  `Media1`.
+  `Media1`. MPRIS `Rate` follows the PlaybackInfo rate (the last positive one
+  while paused, since MPRIS forbids 0), `Volume` is omitted until the phone
+  reports it, and `mpris:trackid` stays the same when a truncated title is
+  completed.
 - AMS ATT application errors 0xA0 (InvalidState), 0xA1 (InvalidCommand) and
   0xA2 (AbsentAttribute) appear only in BlueZ's error message text; BlueFerry
   logs them by name.

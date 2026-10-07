@@ -105,7 +105,9 @@ The optional [media control](media-control.md) is off by default. When you
 turn it on, track, artist, album and player name stay inside BlueFerry and
 are fetched by clients through its authenticated D-Bus interface; nothing
 about your music is written to disk or the log. Only the on/off choice is
-saved, in `settings.json`.
+saved, in `settings.json`. The separate MPRIS option deliberately makes the
+current track readable by every application in your login session, like any
+desktop music player.
 
 ## Calls and music stay on the iPhone
 

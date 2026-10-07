@@ -72,12 +72,16 @@ flowchart LR
 
 A second, separate option publishes the iPhone as an MPRIS media player. The
 Plasma media controller, keyboard media keys and `playerctl` then show and
-control iPhone playback like any desktop player:
+control iPhone playback like any desktop player. Tick **Also show it in the
+desktop media controls (MPRIS)** under **Media Control** in the Kirigami
+iPhone settings, or run:
 
 ```bash
-BLUEFERRY_MEDIA_CONTROL_ENABLED=true
-BLUEFERRY_MEDIA_MPRIS_ENABLED=true
+blueferry media enable-mpris    # blueferry media disable-mpris turns it off
 ```
+
+It applies at once and only while media control itself is on.
+`BLUEFERRY_MEDIA_MPRIS_ENABLED=true` in `local.env` sets the initial value.
 
 ```bash
 playerctl -p blueferry_iphone status
@@ -87,7 +91,14 @@ playerctl -p blueferry_iphone next
 The player is called "iPhone (BlueFerry)" and appears only while the iPhone
 reports an active player, so no stopped entry lingers. Because AMS has no
 stop or seek, `Stop` pauses and seeking does nothing; use
-`blueferry media skip-forward` instead. A volume change moves one iPhone step.
+`blueferry media skip-forward` instead. A volume change moves one iPhone step,
+and until the iPhone has reported its volume the player shows no volume
+control. Progress follows the iPhone's playback speed (for example a podcast
+at 1.5×).
+
+The player uses a D-Bus connection of its own, so an application that is only
+allowed to talk to media players (for example a Flatpak app) cannot reach
+BlueFerry's message interface through it.
 
 **Read the privacy note below before turning MPRIS on.**
 
