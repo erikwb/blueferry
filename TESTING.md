@@ -54,6 +54,11 @@ style dependencies fail this check even when CLI/TUI startup still succeeds.
   Never assemble one with `Daemon.__new__` and hand-set private fields.
   Behavior that has its own class, such as `ContactSync`, is tested directly.
 - Packaging tests keep runtime identifiers and installed metadata consistent.
+- Locale-dependent tests do not rely on the host's installed locales. The
+  timestamp test compiles its own non-English `LC_TIME` locale with
+  `localedef` into a temporary `LOCPATH`; it skips where `localedef` is
+  missing, and the quality workflow sets `BLUEFERRY_REQUIRE_LOCALE_TEST=1` so
+  that skip fails CI instead.
 - A test should remain valid if the implementation is rewritten without
   changing the behavior it protects.
 
