@@ -69,7 +69,7 @@ _ANCS_EXPIRE_MS = config.NOTIFICATION_TIMEOUT_MS
 # because the iPhone marked it read (so we'd be in a write-self-write loop).
 # Reason 1 is the normal finite-timeout path and must not mark the phone read.
 _REASON_DISMISSED = 2
-# Minimum spacing between two launches of configured notification targets.
+# Minimum spacing between two launches of the same notification target.
 _OPEN_TARGET_INTERVAL_S = 1.0
 
 
@@ -126,7 +126,8 @@ class LibnotifySink:
         # notification_id -> ANCS bundle ID with a configured click rule. The
         # rule itself is looked up again on click so a removed rule is final.
         self._open_apps: dict[int, str] = {}
-        self._last_open_target = float("-inf")
+        # target -> monotonic time of its last launch (per-target throttle)
+        self._recent_open_targets: dict[object, float] = {}
         # notification_id -> SignalMatch for the per-Message1 PropertiesChanged sub
         self._msg_subs: dict[int, _SignalMatch] = {}
 
@@ -386,27 +387,39 @@ class LibnotifySink:
         if handle and callback is not None:
             callback(handle, token)
             return
-        # A click rule fires once per popup: the tracker is consumed here,
-        # so a click that _open_app_target throttles leaves this popup
-        # permanently unclickable rather than re-arming it.
-        app_id = getattr(self, "_open_apps", {}).pop(nid_i, None)
-        if app_id:
-            self._open_app_target(app_id, token)
+        # A click rule fires once per popup. The tracker is consumed only
+        # when a launch was requested, so a throttled click leaves the popup
+        # clickable instead of dead.
+        open_apps = getattr(self, "_open_apps", {})
+        app_id = open_apps.get(nid_i)
+        if app_id and self._open_app_target(app_id, token):
+            open_apps.pop(nid_i, None)
 
-    def _open_app_target(self, app_id: str, token: str) -> None:
+    def _open_app_target(self, app_id: str, token: str) -> bool:
         """Open the rule configured for this app; never the notification text."""
         target = self._resolve_open_target(app_id)
         callback = getattr(self, "_on_open_target", None)
         if target is None or callback is None:
-            return
+            return False
         # A misbehaving notification server must not turn repeated action
-        # signals into a stream of application launches.
+        # signals into a stream of launches of the same target. Different
+        # targets are independent, so two mapped popups clicked in quick
+        # succession both open.
         now = time.monotonic()
-        if now - getattr(self, "_last_open_target", float("-inf")) < _OPEN_TARGET_INTERVAL_S:
+        recent = getattr(self, "_recent_open_targets", None)
+        if recent is None:
+            recent = self._recent_open_targets = {}
+        for stale in [
+            key for key, opened in recent.items()
+            if now - opened >= _OPEN_TARGET_INTERVAL_S
+        ]:
+            del recent[stale]
+        if target in recent:
             log.info("ignoring a repeated notification click")
-            return
-        self._last_open_target = now
+            return False
+        recent[target] = now
         callback(target, token)
+        return True
 
     def _on_closed(self, nid, reason) -> None:
         try:

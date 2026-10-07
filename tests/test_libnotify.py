@@ -410,7 +410,7 @@ def _clickable_sink(rules, opened, monkeypatch):
     sink._open_messages = {}
     sink._open_apps = {}
     sink._activation_tokens = {}
-    sink._last_open_target = float("-inf")
+    sink._recent_open_targets = {}
     sink._open_target = lambda app_id: resolve_open_target(rules, app_id)
     sink._on_open_target = lambda target, token: opened.append((target, token))
     sink._on_open_message = lambda *_args: pytest.fail("not a message popup")
@@ -537,7 +537,7 @@ def test_click_rules_never_apply_to_other_actions_or_closed_popups(monkeypatch) 
     assert sink._open_apps == {}
 
 
-def test_repeated_action_signals_launch_at_most_once_per_interval(monkeypatch) -> None:
+def test_repeated_clicks_on_one_target_launch_at_most_once_per_interval(monkeypatch) -> None:
     opened = []
     now = [100.0]
     monkeypatch.setattr(libnotify_mod.time, "monotonic", lambda: now[0])
@@ -552,6 +552,42 @@ def test_repeated_action_signals_launch_at_most_once_per_interval(monkeypatch) -
     sink._on_action(first + 2, "default")
 
     assert len(opened) == 2
+
+
+def test_a_throttled_click_leaves_the_popup_clickable(monkeypatch) -> None:
+    opened = []
+    now = [100.0]
+    monkeypatch.setattr(libnotify_mod.time, "monotonic", lambda: now[0])
+    sink = _clickable_sink({"com.slack": "slack.desktop"}, opened, monkeypatch)
+    sink.handle_ancs(_ancs("com.slack"))
+    sink.handle_ancs(_ancs("com.slack"))
+    second = sink._notif.next_id
+
+    sink._on_action(second - 1, "default")
+    sink._on_action(second, "default")
+    assert second in sink._open_apps
+    now[0] += 1.5
+    sink._on_action(second, "default")
+
+    assert len(opened) == 2
+    assert sink._open_apps == {}
+
+
+def test_clicks_on_different_targets_are_not_throttled_together(monkeypatch) -> None:
+    opened = []
+    monkeypatch.setattr(libnotify_mod.time, "monotonic", lambda: 100.0)
+    rules = {"com.slack": "slack.desktop", "net.whatsapp.WhatsApp": "https://web.whatsapp.com"}
+    sink = _clickable_sink(rules, opened, monkeypatch)
+    sink.handle_ancs(_ancs("com.slack"))
+    sink.handle_ancs(_ancs("net.whatsapp.WhatsApp"))
+    last = sink._notif.next_id
+
+    sink._on_action(last - 1, "default")
+    sink._on_action(last, "default")
+
+    assert [target.value for target, _token in opened] == [
+        "slack.desktop", "https://web.whatsapp.com",
+    ]
 
 
 def test_a_failing_rule_lookup_leaves_the_popup_unclickable(monkeypatch) -> None:
