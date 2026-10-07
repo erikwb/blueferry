@@ -179,6 +179,7 @@ class BackendDependencies:
     prepare_storage: Callable[[StorageSecurity], Any] | None = None
     on_storage_prepared: Callable[[Any], None] | None = None
     on_storage_changed: Callable[[], None] | None = None
+    set_proximity_lock: Callable[[bool, int], dict[str, Any]] | None = None
 
 
 class BackendOperations:
@@ -1004,6 +1005,21 @@ class BackendOperations:
         if self.dependencies.on_notification_policy_changed is not None:
             self.dependencies.on_notification_policy_changed()
         return selected
+
+    def set_proximity_lock(self, enabled: bool, grace_sec: int) -> dict[str, Any]:
+        """Opt in or out of locking the desktop when the iPhone goes away."""
+        configure = self.dependencies.set_proximity_lock
+        if configure is None:
+            raise NotReadyError("proximity lock is unavailable")
+        try:
+            return dict(configure(enabled, grace_sec))
+        except ValueError as error:
+            raise InvalidArgumentsError(str(error)) from error
+        except OSError as error:
+            log.error("could not save proximity lock preference: %s", error)
+            raise NotReadyError(
+                "could not save the proximity lock preference"
+            ) from error
 
     def list_recent(
         self, folder: str, limit: int, success: Success, failure: Failure

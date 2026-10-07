@@ -13,3 +13,4 @@ src/blueferry/qt/qml/MessageBubble.qml
 src/blueferry/qt/qml/OnboardingSummary.qml
 src/blueferry/qt/qml/GroupConfirmationDialog.qml
 src/blueferry/qt/qml/NewMessageDialog.qml
+src/blueferry/qt/qml/ProximityLockSettings.qml

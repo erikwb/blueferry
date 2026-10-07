@@ -6,6 +6,9 @@ BUS_NAME = "io.weirdware.BlueFerry"
 OBJECT_PATH = "/io/weirdware/BlueFerry"
 MESSAGES_IFACE = f"{BUS_NAME}.Messages1"
 EVENTS_IFACE = f"{BUS_NAME}.Events1"
+# Desktop-presence features that are not part of messaging (the opt-in away
+# lock). Its state is reported through Messages1.GetStatus.
+PRESENCE_IFACE = f"{BUS_NAME}.Presence1"
 ERROR_PREFIX = f"{BUS_NAME}.Error"
 
 # Compatibility generation, independent of package versions. Generation 2

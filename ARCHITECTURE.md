@@ -28,7 +28,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | --- | --- |
 | `daemon.py` | Orchestrates lifecycle: publishes D-Bus, then starts Bluetooth, supervisors, state, and sinks; builds `BackendDependencies`. |
 | `backend_operations.py` | Toolkit- and transport-neutral application operations: validation, thread routing, and policy. |
-| `dbus_service.py` | Session D-Bus adapter (`Messages1`/`Events1`) that maps operations to wire types; claims the bus name. |
+| `dbus_service.py` | Session D-Bus adapter (`Messages1`/`Events1`/`Presence1`) that maps operations to wire types; claims the bus name. |
 | `dbus_security.py` | Caller UID validation and per-connection/daemon-wide rate limits. |
 | `protocol.py` | Stable D-Bus identifiers and the API-generation compatibility check. |
 | `event_dispatcher.py` | Builds messages from MAP/ANCS events and fans them out to persistence, desktop, and D-Bus sinks. |
@@ -56,6 +56,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `private_files.py` | Race-resistant owner-only reads and atomic writes for small files. |
 | `build_info.py` | Package release + source-SHA build identity. |
 | `wireplumber_policy.py` | Manages one WirePlumber fragment that keeps iPhone audio on the phone. |
+| `proximity_lock.py` | Opt-in lock-only desktop lock after the iPhone's bearers stay down for a grace period; lock dispatch via ScreenSaver, then logind. |
 
 ### Bluetooth transports and supervision
 
@@ -140,6 +141,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `cli.py`, `__main__.py` | Typer CLI (`run`, `doctor`, sync, setup, and hidden `pairing-*` JSON helpers). |
 | `cli_messages.py` | CLI message listing, recipient selection, and send. |
 | `cli_common.py` | Small CLI presentation helpers. |
+| `cli_proximity.py` | `proximity-lock` status, dry run, enable, and disable. |
 | `tui.py` | Textual terminal client. |
 | `tui_launcher.py` | Launches the TUI with the package-private Textual bundle when present. |
 | `ui/app.py` | GTK4/libadwaita application entry point. |
@@ -159,6 +161,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `qt/qml/PhoneSettingsPage.qml` | Qt setup and preferences page. |
 | `qt/qml/PhoneSettingsDialogs.qml` | Window-owned settings/pairing dialogs that outlive the page. |
 | `qt/qml/OnboardingSummary.qml` | Renders the onboarding stage message. |
+| `qt/qml/ProximityLockSettings.qml` | Away-lock toggle, grace period, and warning; loaded only for daemons that report it. |
 | `qt/qml/GroupConfirmationDialog.qml` | Group recipient confirmation before sending. |
 | `qt/qml/NewMessageDialog.qml` | New message composition. |
 | `qt/qml/ExpandingMessageComposer.qml` | Growing message editor. |
@@ -204,7 +207,10 @@ contract.
 ## D-Bus API and compatibility
 
 - `Messages1` carries commands and unicast snapshots; `Events1` carries
-  content-free live coordination. Identifiers live in `protocol.py`.
+  content-free live coordination. `Presence1` holds desktop-presence
+  controls that are not messaging (the opt-in away lock); their state is
+  reported through `Messages1.GetStatus`, and the compatibility check runs
+  through `Messages1` on the same owner. Identifiers live in `protocol.py`.
 - `data/io.weirdware.BlueFerry.xml` is canonical, installed under
   `dbus-1/interfaces`, and checked against the service's dbus-python
   decorators.
@@ -379,6 +385,14 @@ A change to these rules has to be made in both places.
   at least an hour apart. Limits and pending restoration survive restarts.
   It skips adapters in use by other devices, discovery, or transfers. User
   details are in `README.md`.
+- **Proximity lock** (opt-in) reads only the bearer supervisor's cached
+  BR/EDR and LE state. It arms after an observed connection, locks once after
+  a continuous grace period, and is inhibited by suspend, adapter power-off,
+  discovery, recovery, and a forgotten phone. It never unlocks: Bluetooth
+  presence is not an authentication factor. Locking is asynchronous
+  (`org.freedesktop.ScreenSaver.Lock`, then logind `Session.Lock`). It is
+  configured through `Presence1.SetProximityLock`, and `GetStatus` reports
+  only its state keys through the existing argument-free `StatusChanged`.
 - **Read receipts** go through `read_receipts`, which delays MAP write-back so
   ANCS can still fetch group metadata. Local reads take effect immediately.
 

@@ -605,6 +605,20 @@ class BridgeController(QObject):
             completed,
         )
 
+    @Slot(bool, int)
+    def setProximityLock(self, enabled: bool, grace_seconds: int) -> None:
+        def completed(value: object) -> None:
+            if isinstance(value, dict):
+                self._status.update(value)
+                self.statusChanged.emit()
+
+        self._run(
+            lambda: self._backend.set_proximity_lock(
+                bool(enabled), int(grace_seconds)
+            ),
+            completed,
+        )
+
     @Slot(str)
     def setStoragePolicy(self, policy: str) -> None:
         if policy == "encrypted":

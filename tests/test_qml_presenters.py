@@ -641,6 +641,7 @@ def settings_window(qml_engine):
             }
             function answerPairingConfirmation(approved) { record("answerPairingConfirmation", [approved]); }
             function setStoragePolicy(policy) { record("setStoragePolicy", [policy]); }
+            function setProximityLock(enabled, grace) { record("setProximityLock", [enabled, grace]); }
             function forgetDevice(mac) { record("forgetDevice", [mac]); }
             function activateBluetooth() { record("activateBluetooth", []); }
             function filePairingIssue() { record("filePairingIssue", []); }
@@ -799,6 +800,117 @@ def test_phone_settings_first_run_and_reopening_keep_the_page_alive(qml_engine, 
         QGuiApplication.processEvents()
         assert window.property("iphoneSettingsPage") == page
     assert _evaluate(qml_engine, "testBridge.calls") == []
+
+
+def test_proximity_lock_settings_appear_only_for_supporting_daemons(qml_engine, settings_window):
+    window, bridge = settings_window
+    bridge.setProperty("setupLoaded", True)
+    QGuiApplication.processEvents()
+    loader = _settings_object(window, "proximityLockLoader")
+    bridge.setProperty("status", {"daemon": True})
+    assert loader.property("active") is False
+
+    bridge.setProperty("status", {
+        "daemon": True,
+        "proximity_lock": "disabled",
+        "proximity_lock_enabled": False,
+        "proximity_lock_grace_sec": 90,
+    })
+    QGuiApplication.processEvents()
+    assert loader.property("active") is True
+    warning = _settings_object(window, "proximityLockWarning")
+    assert "never unlocks" in warning.property("text")
+    assert "not a security feature" in warning.property("text")
+    assert _settings_object(window, "proximityLockGraceSpinBox").property("value") == 90
+    checkbox = _settings_object(window, "proximityLockCheckBox")
+    assert checkbox.property("checked") is False
+    assert _evaluate(qml_engine, "testBridge.calls.filter(c => c.method === 'setProximityLock')") == []
+
+    assert QMetaObject.invokeMethod(checkbox, "toggle")
+    assert QMetaObject.invokeMethod(checkbox, "clicked")
+    assert _evaluate(
+        qml_engine, "testBridge.calls.filter(c => c.method === 'setProximityLock')"
+    ) == [{"method": "setProximityLock", "args": [True, 90]}]
+
+
+def test_proximity_grace_edit_survives_a_status_refresh_before_saving(qml_engine):
+    component = QQmlComponent(qml_engine)
+    component.setData(b'''
+        import QtQuick
+        QtObject {
+            property var status: ({})
+            property bool busy: false
+            property var calls: []
+            function setProximityLock(enabled, grace) {
+                calls = calls.concat([[enabled, grace]]);
+            }
+        }
+    ''', QUrl())
+    bridge = component.create()
+    bridge.setProperty("status", {
+        "daemon": True, "proximity_lock": "armed",
+        "proximity_lock_enabled": True, "proximity_lock_grace_sec": 60,
+    })
+    settings_component = _component(
+        qml_engine, "src/blueferry/qt/qml/ProximityLockSettings.qml"
+    )
+    settings = settings_component.createWithInitialProperties({"bridge": bridge})
+    spin = settings.findChild(QObject, "proximityLockGraceSpinBox")
+    assert spin.property("value") == 60
+
+    assert QMetaObject.invokeMethod(spin, "increase")
+    assert QMetaObject.invokeMethod(spin, "valueModified")
+    # An unrelated StatusChanged refresh arrives inside the coalescing window.
+    bridge.setProperty("status", {
+        "daemon": True, "proximity_lock": "armed",
+        "proximity_lock_enabled": True, "proximity_lock_grace_sec": 60,
+    })
+    assert spin.property("value") == 70
+    QTest.qWait(1000)
+    calls = bridge.property("calls")
+    if hasattr(calls, "toVariant"):
+        calls = calls.toVariant()
+    assert calls == [[True, 70]]
+
+    # After saving, the daemon's value is followed again.
+    bridge.setProperty("status", {
+        "daemon": True, "proximity_lock": "armed",
+        "proximity_lock_enabled": True, "proximity_lock_grace_sec": 120,
+    })
+    assert spin.property("value") == 120
+    settings.deleteLater()
+    bridge.deleteLater()
+
+
+@pytest.mark.parametrize("status,expected", [
+    ({"proximity_lock": "armed"}, "Armed"),
+    ({"proximity_lock": "grace", "proximity_lock_remaining_sec": 12}, "locking in 12 s"),
+    ({"proximity_lock": "locked"}, "Locked the desktop"),
+    ({"proximity_lock": "idle", "proximity_lock_inhibited": "sleep"}, "Paused"),
+    ({"proximity_lock": "idle", "proximity_lock_inhibited": ""}, "Waiting"),
+    ({"proximity_lock": "disabled"}, "Off"),
+])
+def test_proximity_lock_state_text(qml_engine, status, expected):
+    component = QQmlComponent(qml_engine)
+    component.setData(b'''
+        import QtQuick
+        QtObject {
+            property var status: ({})
+            property bool busy: false
+            function setProximityLock(enabled, grace) {}
+        }
+    ''', QUrl())
+    bridge = component.create()
+    bridge.setProperty("status", {"daemon": True, **status})
+    settings_component = _component(
+        qml_engine, "src/blueferry/qt/qml/ProximityLockSettings.qml"
+    )
+    settings = settings_component.createWithInitialProperties({"bridge": bridge})
+    assert settings is not None
+    label = settings.findChild(QObject, "proximityLockStateLabel")
+    assert expected in label.property("text")
+    settings.deleteLater()
+    bridge.deleteLater()
 
 
 def test_phone_settings_pairing_uses_loaded_selection_and_busy_state(qml_engine, settings_window):

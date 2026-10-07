@@ -327,6 +327,54 @@ installed. After a successful bond the daemon keeps reconciling the same
 file. Set `BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE=false` to remove BlueFerry's
 fragment only.
 
+## Lock when the iPhone goes away
+
+BlueFerry can lock your desktop session after the paired iPhone has been
+disconnected for a while. It is off by default. Turn it on in the Qt client's
+iPhone settings (**Away Lock**) or from a terminal:
+
+```bash
+blueferry proximity-lock enable --grace 60   # opt in, lock after 60 s away
+blueferry proximity-lock status
+blueferry proximity-lock test                # dry run, never locks
+blueferry proximity-lock disable
+```
+
+`BLUEFERRY_PROXIMITY_LOCK=true` and `BLUEFERRY_PROXIMITY_LOCK_GRACE_SEC=60`
+(10–3600) in `local.env` set the initial values; a choice saved through a
+client or the CLI takes precedence, and the daemon logs once at startup when
+it ignores a differing `local.env` or environment value for that reason.
+
+**This is a lock trigger, not a security feature.** Bluetooth presence can be
+relayed or spoofed, and the phone turning off Bluetooth looks the same as the
+phone leaving. BlueFerry therefore only ever *locks*; it never unlocks the
+desktop when the iPhone returns, and you should keep your normal password or
+PIN. Use it as a "forgot to lock" safety net.
+
+How it decides:
+
+- Presence is the Bluetooth link state BlueFerry already maintains (Classic
+  or LE connected). There is no extra scanning and no signal-strength check.
+- It arms only after it has seen the iPhone connected since the service
+  started, the system resumed, or the last lock.
+- A disconnect starts the grace period; reconnecting within it cancels the
+  lock. After locking once it waits until the iPhone is seen again.
+- It never locks while the system is suspending, while desktop Bluetooth is
+  off, during Bluetooth discovery or pairing, while BlueFerry itself is
+  recovering the adapter, or after the iPhone is forgotten.
+- When BlueZ reports that this computer ended the connection (for example
+  "Disconnect" in a desktop Bluetooth applet), the lock pauses until the
+  iPhone is connected again. Older BlueZ versions without this report
+  simply do not pause.
+
+Locking uses `org.freedesktop.ScreenSaver.Lock` on the session bus (KDE
+Plasma and others) and falls back to `org.freedesktop.login1.Session.Lock`
+for your own logind or elogind session. KDE answers only once its lock
+screen is up; a slow answer is reported as `screensaver-requested` and does
+not fall back to logind. If screen locking is disabled by policy (for
+example a KDE Kiosk `lock_screen=false` restriction), Plasma reports the
+request as successful without locking, and BlueFerry cannot tell.
+
 ## Command line
 
 The graphical clients cover normal use, but the CLI is useful for diagnostics
