@@ -225,3 +225,12 @@ def test_hostile_email_like_input_stays_linear() -> None:
 def test_non_ascii_script_digits_are_not_codes() -> None:
     # Arabic-Indic digits: verification fields expect ASCII digits.
     assert extract_otp("Your code: \u0664\u0668\u0662\u0669\u0661\u0663") is None
+
+
+@pytest.mark.parametrize("unit", ["mTAN 4821 ", "code 4821 ", "Einmal-PIN 4821 "])
+def test_many_keyword_and_number_pairs_stay_fast(unit: str) -> None:
+    body = (unit * (MAX_OTP_MESSAGE_CHARS // len(unit)))[:MAX_OTP_MESSAGE_CHARS]
+    started = time.perf_counter()
+    extract_otp(body)
+    # About 20 ms here; the budget leaves room for a loaded machine.
+    assert time.perf_counter() - started < 0.5
