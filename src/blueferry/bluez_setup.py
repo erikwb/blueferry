@@ -22,6 +22,7 @@ import itertools
 import logging
 import os
 import time
+from collections.abc import Callable
 from typing import Any
 
 import dbus
@@ -75,6 +76,13 @@ SUDO_NO_NEW_PRIVILEGES_MESSAGE = (
 # Matched case-insensitively against output produced under LC_ALL=C. Covers
 # sudo 1.9 and sudo-rs (src/common/error.rs). Wording missing here is still
 # safe: the adapter-class supervisor backs off every failed repair.
+SET_COD_HELPER_INSECURE_MESSAGE = (
+    f"{SET_COD_HELPER} or one of its directories is not owned by root or is "
+    "writable by other users. A sudoers rule for it would give passwordless "
+    "root to anyone who can replace it, so BlueFerry does not use it. "
+    "Reinstall it with: sudo install -D -o root -g root -m 755 "
+    f"systemd/blueferry-set-cod {SET_COD_HELPER}"
+)
 _SUDO_REFUSAL_MARKERS = (
     # sudo: -n with a rule that needs a password.
     "a password is required",
@@ -147,12 +155,35 @@ def _no_new_privs(status_path: str = "/proc/self/status") -> bool:
         return False
 
 
+def _root_controlled(path: str, stat: Callable[[str], os.stat_result] = os.stat) -> bool:
+    """Return whether only root can replace ``path`` or any directory above it.
+
+    A sudoers rule is only as safe as the file it names: if the helper, or a
+    directory on its resolved path, belongs to or is writable by someone
+    other than root, that user can swap in any script and run it as root.
+    """
+    current = os.path.realpath(path)
+    while True:
+        try:
+            info = stat(current)
+        except OSError:
+            return False
+        if info.st_uid != 0 or info.st_mode & 0o022:
+            return False
+        parent = os.path.dirname(current)
+        if parent == current:
+            return True
+        current = parent
+
+
 def _sudo_cod_command(index: str) -> list[str]:
     """Return the only non-systemd authorization path, or raise with guidance."""
     if not _executable(SET_COD_HELPER) or not _executable(SUDO):
         raise CodAuthorizationRefused(
             COD_AUTHORIZATION_UNAVAILABLE_MESSAGE.format(index=index)
         )
+    if not _root_controlled(SET_COD_HELPER):
+        raise CodAuthorizationRefused(SET_COD_HELPER_INSECURE_MESSAGE)
     if _no_new_privs():
         # sudo would fail and log an authentication error on every attempt.
         raise CodAuthorizationRefused(

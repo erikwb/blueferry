@@ -173,7 +173,9 @@ def test_cod_change_rejects_an_invalid_adapter(monkeypatch):
     assert calls == []
 
 
-def _without_systemd(monkeypatch, *, executables, no_new_privs=False, result=None):
+def _without_systemd(
+    monkeypatch, *, executables, no_new_privs=False, result=None, root_controlled=True,
+):
     from blueferry import service_manager
 
     calls = []
@@ -183,6 +185,7 @@ def _without_systemd(monkeypatch, *, executables, no_new_privs=False, result=Non
     )
     monkeypatch.setattr(bluez_setup, "_executable", lambda path: path in executables)
     monkeypatch.setattr(bluez_setup, "_no_new_privs", lambda: no_new_privs)
+    monkeypatch.setattr(bluez_setup, "_root_controlled", lambda path: root_controlled)
     monkeypatch.setattr(
         bluez_setup,
         "run_command",
@@ -437,3 +440,81 @@ def test_pairing_registration_deadline_cleans_up_an_unanswered_request(adverts):
     assert adverts.removed == [adverts.requests[0].path]
     adverts.requests[0].reply_handler()
     assert not bluez_setup.advert_registered()
+
+
+def test_a_helper_others_can_replace_is_never_run_through_sudo(monkeypatch):
+    calls = _without_systemd(
+        monkeypatch,
+        executables={bluez_setup.SET_COD_HELPER, bluez_setup.SUDO},
+        root_controlled=False,
+    )
+
+    with pytest.raises(bluez_setup.CodAuthorizationRefused) as failure:
+        bluez_setup.set_cod(adapter="hci0", authorize=True)
+
+    assert calls == []
+    assert str(failure.value) == bluez_setup.SET_COD_HELPER_INSECURE_MESSAGE
+    assert "install -D -o root -g root -m 755" in str(failure.value)
+
+
+def _fake_stat(entries):
+    def stat(path):
+        if path not in entries:
+            raise FileNotFoundError(path)
+        uid, mode = entries[path]
+        return SimpleNamespace(st_uid=uid, st_mode=mode)
+
+    return stat
+
+
+_SAFE_TREE = {
+    "/": (0, 0o40755),
+    "/usr": (0, 0o40755),
+    "/usr/lib": (0, 0o40755),
+    "/usr/lib/blueferry": (0, 0o40755),
+    "/usr/lib/blueferry/blueferry-set-cod": (0, 0o100755),
+}
+
+
+@pytest.mark.parametrize(
+    ("change", "expected"),
+    [
+        ({}, True),
+        # The helper itself belongs to the user, or is group/world writable.
+        ({"/usr/lib/blueferry/blueferry-set-cod": (1000, 0o100755)}, False),
+        ({"/usr/lib/blueferry/blueferry-set-cod": (0, 0o100775)}, False),
+        ({"/usr/lib/blueferry/blueferry-set-cod": (0, 0o100757)}, False),
+        # A user-owned or writable directory lets the user swap the file.
+        ({"/usr/lib/blueferry": (1000, 0o40755)}, False),
+        ({"/usr/lib/blueferry": (0, 0o40777)}, False),
+        ({"/usr": (0, 0o41777)}, False),
+        # Unreadable metadata fails closed.
+        ({"/usr/lib": None}, False),
+    ],
+)
+def test_helper_must_be_replaceable_only_by_root(monkeypatch, change, expected):
+    tree = {**_SAFE_TREE, **change}
+    tree = {path: entry for path, entry in tree.items() if entry is not None}
+    monkeypatch.setattr(bluez_setup.os.path, "realpath", lambda path: path)
+
+    assert bluez_setup._root_controlled(
+        bluez_setup.SET_COD_HELPER, stat=_fake_stat(tree),
+    ) is expected
+
+
+def test_helper_ownership_is_checked_on_the_resolved_path(monkeypatch):
+    # /usr/lib/blueferry may be a symlink into a user's home; the target
+    # tree is what sudo would execute.
+    tree = {
+        "/": (0, 0o40755),
+        "/home": (0, 0o40755),
+        "/home/alice": (1000, 0o40700),
+        "/home/alice/set-cod": (1000, 0o100755),
+    }
+    monkeypatch.setattr(
+        bluez_setup.os.path, "realpath", lambda _path: "/home/alice/set-cod",
+    )
+
+    assert bluez_setup._root_controlled(
+        bluez_setup.SET_COD_HELPER, stat=_fake_stat(tree),
+    ) is False
