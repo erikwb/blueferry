@@ -492,8 +492,10 @@ lost. The first `Handsfree.GetProperties` makes oFono query the phone's own
 number with `AT+CNUM` (returned as `SubscriberNumbers`, cached afterwards);
 until the phone answers, concurrent callers get `org.ofono.Error.InProgress`.
 iOS additionally reports a 0-9 battery level through `AT+IPHONEACCEV`, which
-oFono does not decode, so the opt-in phone-status display is limited to 20 %
-steps.
+oFono does not decode, so the HFP battery is limited to 20 % steps. The
+battery does not need HFP, though: iOS exposes the standard GATT Battery
+Service (0x180F, Battery Level 0x2A19, read and notify) to its LE peer;
+BlueFerry prefers that value (or BlueZ's `Battery1` built from it).
 
 ## Pairing diagnostics
 

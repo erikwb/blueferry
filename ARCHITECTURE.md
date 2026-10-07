@@ -91,6 +91,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `calls/model.py` | Optional HFP calls: pure oFono property parsing, modem selection, dial/DTMF/call-id validation. |
 | `calls/ofono.py` | Asynchronous oFono system-bus transport (hand-built calls with NO_AUTO_START, no synchronous owner lookup). |
 | `calls/controller.py` | Optional HFP calls: oFono modem discovery, Powered→Online bring-up, call tracking and control, backoff; watches the phone's battery/signal interfaces while online. |
+| `phone_battery.py` | The phone's battery over LE (BlueZ `Battery1` or GATT Battery Level), asynchronous, no HFP; saved low-battery warning opt-in. |
 | `calls/phone_status.py` | Optional phone status: pure parsing of oFono's Handsfree/NetworkRegistration properties and the once-per-cycle low-battery decision. |
 
 ### Sinks
@@ -463,11 +464,19 @@ A change to these rules has to be made in both places.
   than a vanished interface (typically `InProgress` while oFono queries
   `AT+CNUM`) is retried once after 30 s. Values are cleared on
   `Powered=false`, interface or modem removal, an oFono owner change, and
-  stop. They are additive `GetStatus` keys (`null` when unknown); calls-state
-  and phone-status changes emit one coalesced, argument-free `StatusChanged`
-  per main-loop iteration. The opt-in low-battery warning goes to sinks
-  through `handle_phone_battery_low` and fires once per discharge cycle (and
-  again after a daemon restart).
+  stop.
+- The battery does not need HFP: `phone_battery.py` reads it over LE from
+  BlueZ's `Battery1` or the GATT Battery Level characteristic (async
+  `GetManagedObjects`, `ReadValue`, `StartNotify`; `PropertiesChanged`
+  afterwards) and restarts with bluetoothd. The daemon merges both sources
+  into additive `GetStatus` keys (`null` when unknown; LE wins, only while
+  the phone is connected; signal and network only with calls on) and
+  publishes them with the argument-free `StatusChanged` only when a shown
+  value changed, at most every 10 s. Calls-state changes are coalesced per
+  main-loop iteration. The opt-in low-battery warning (saved in
+  `settings.json`, `Messages1.SetPhoneBatteryWarning`) goes to sinks through
+  `handle_phone_battery_low` and fires once per discharge cycle (and again
+  after a daemon restart).
 
 ## Storage and privacy
 
