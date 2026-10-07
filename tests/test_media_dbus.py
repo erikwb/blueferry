@@ -23,8 +23,14 @@ from blueferry.ams.parsers import EntityUpdate
 from blueferry.backend_operations import BackendDependencies
 from blueferry.dbus_service import MessagesService
 from blueferry.media import MediaController
-from blueferry.mpris import MPRIS_PATH, PLAYER_IFACE, ROOT_IFACE, MprisPlayer
-from blueferry.protocol import BUS_NAME, EVENTS_IFACE, MEDIA_IFACE, OBJECT_PATH
+from blueferry.mpris import (
+    MPRIS_PATH,
+    PLAYER_IFACE,
+    ROOT_IFACE,
+    MprisPlayer,
+    private_session_bus,
+)
+from blueferry.protocol import BUS_NAME, EVENTS_IFACE, MEDIA_IFACE, MESSAGES_IFACE, OBJECT_PATH
 
 pytestmark = pytest.mark.private_dbus
 _ids = itertools.count()
@@ -208,6 +214,16 @@ def test_set_media_control_without_backend_support_is_not_ready(service_factory)
 # ---- MPRIS ------------------------------------------------------------------
 
 
+_MPRIS_CONNECTIONS: list = []
+
+
+def _mpris_connection():
+    """One private connection for all MPRIS tests, like the daemon's."""
+    if not _MPRIS_CONNECTIONS:
+        _MPRIS_CONNECTIONS.append(private_session_bus())
+    return _MPRIS_CONNECTIONS[0]
+
+
 @pytest.fixture
 def mpris_factory():
     created = []
@@ -216,12 +232,14 @@ def mpris_factory():
         bus = dbus.SessionBus()
         guard_name = f"{BUS_NAME}.Mprisp{os.getpid()}n{next(_ids)}"
         bus_name = dbus.service.BusName(guard_name, bus=bus, do_not_queue=True)
-        service = MessagesService(bus_name, _Sessions(), BackendDependencies(media=media))
+        service = MessagesService(
+            bus_name, _Sessions(), BackendDependencies(media=lambda: media),
+        )
         player_name = f"org.mpris.MediaPlayer2.blueferry_test_{os.getpid()}_{next(_ids)}"
-        player = MprisPlayer(bus, media, service.caller_guard, clock=lambda: 10.0,
-                             bus_name=player_name)
+        player = MprisPlayer(_mpris_connection(), media, service.caller_guard,
+                             clock=lambda: 10.0, bus_name=player_name)
         created.append((bus, guard_name, service, player))
-        return bus, player_name, player
+        return player.connection, player_name, player
 
     yield make
     for bus, guard_name, service, player in created:
@@ -341,3 +359,38 @@ def test_mpris_emits_property_changes_for_a_new_track(mpris_factory) -> None:
         assert "Position" not in changed  # MPRIS forbids signalling Position
     finally:
         listener.close()
+
+
+def test_mpris_name_does_not_reach_the_blueferry_object(mpris_factory) -> None:
+    """Review #208: a sandbox allowed org.mpris.MediaPlayer2.* must not get Messages1.
+
+    The player has its own connection, so its well-known name addresses only
+    the MPRIS object, never /io/weirdware/BlueFerry on the daemon's connection.
+    """
+    media, _writer = _media()
+    bus, name, player = mpris_factory(media)
+    _play(media)
+    _dispatch_until(lambda: player.owned)
+    assert bus is not dbus.SessionBus()
+
+    status = _call(name, OBJECT_PATH, MESSAGES_IFACE, "GetStatus")
+    assert status["error"].get_dbus_name() in {
+        "org.freedesktop.DBus.Error.UnknownObject",
+        "org.freedesktop.DBus.Error.UnknownMethod",
+    }
+    now_playing = _call(name, OBJECT_PATH, MEDIA_IFACE, "GetNowPlaying")
+    assert "error" in now_playing
+    # The MPRIS object itself answers through the same name.
+    assert "error" not in _call(name, MPRIS_PATH, dbus.PROPERTIES_IFACE, "GetAll", ROOT_IFACE)
+
+
+def test_mpris_close_releases_the_name(mpris_factory) -> None:
+    media, _writer = _media()
+    _bus, name, player = mpris_factory(media)
+    _play(media)
+    _dispatch_until(lambda: player.owned)
+    observer = dbus.SessionBus()
+    assert observer.name_has_owner(name)
+    player.close()
+    _dispatch_until(lambda: not observer.name_has_owner(name))
+    player.close()  # idempotent

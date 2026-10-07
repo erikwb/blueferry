@@ -184,6 +184,7 @@ class Daemon:
         self.media_sessions = AmsNotifySessions()
         self.ams: AmsClient | None = None
         self.mpris: MprisPlayer | None = None
+        self._mpris_connection: dbus.connection.Connection | None = None
         self.adapter_class = AdapterClassSupervisor(config.ADAPTER)
         self.solicitation = SolicitationSupervisor(config.ADAPTER)
         # The saved phone-calls opt-in decides both the call controller and
@@ -712,13 +713,15 @@ class Daemon:
         self.media.add_listener(self._dbus_service.emit_now_playing_changed)
         if not config.MEDIA_MPRIS_ENABLED or self.mpris is not None:
             return
-        from blueferry.mpris import MprisPlayer
+        from blueferry.mpris import MprisPlayer, private_session_bus
 
         try:
+            if self._mpris_connection is None:
+                # Own connection: the MPRIS name must not address the
+                # BlueFerry object (sandbox proxies filter by name).
+                self._mpris_connection = private_session_bus()
             self.mpris = MprisPlayer(
-                self._dbus_service.connection,
-                self.media,
-                self._dbus_service.caller_guard,
+                self._mpris_connection, self.media, self._dbus_service.caller_guard,
             )
         except Exception:
             log.warning("could not export the MPRIS player", exc_info=True)

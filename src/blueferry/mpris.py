@@ -13,6 +13,13 @@ That is why it is a separate opt-in (``BLUEFERRY_MEDIA_MPRIS_ENABLED``) on top
 of media control, whose own Media1 API keeps details behind BlueFerry's
 authenticated, rate-limited calls and a content-free signal. Method and
 property calls still pass the same caller UID check and media rate buckets.
+
+Isolation: the player lives on its own private session-bus connection. A
+well-known name addresses a connection, not an object, so exporting it on the
+daemon's main connection would let any client allowed to talk to
+``org.mpris.MediaPlayer2.*`` (for example a Flatpak app behind
+xdg-dbus-proxy) reach ``/io/weirdware/BlueFerry`` and its Messages1 methods
+through that name. Only the MPRIS object is exported on this connection.
 """
 from __future__ import annotations
 
@@ -23,6 +30,7 @@ from collections.abc import Callable
 import dbus
 import dbus.bus
 import dbus.exceptions
+import dbus.mainloop.glib
 import dbus.service
 
 from blueferry.ams.constants import PlaybackState, RemoteCommandID
@@ -100,6 +108,18 @@ def _property_xml(properties: dict[str, str], writable: set[str]) -> str:
     )
 
 
+def private_session_bus() -> dbus.connection.Connection:
+    """A session-bus connection of its own, dispatched on the GLib loop.
+
+    The caller keeps it for the process lifetime: closing a dbus-python
+    connection while replies are still queued for it trips an assertion in
+    the dispatcher, and the bus drops its names when the process exits.
+    """
+    return dbus.SessionBus(
+        private=True, mainloop=dbus.mainloop.glib.DBusGMainLoop(),
+    )
+
+
 class MprisPlayer(dbus.service.Object):
     """Map MPRIS2 to :class:`MediaController`, and own the name while active."""
 
@@ -114,6 +134,8 @@ class MprisPlayer(dbus.service.Object):
     ) -> None:
         # Exported only while the player name is owned or being requested.
         super().__init__()
+        # Must be a private connection (private_session_bus), never the
+        # daemon's main one; see the module docstring.
         self._connection = connection
         self._media = media
         self._guard = caller_guard
@@ -246,7 +268,13 @@ class MprisPlayer(dbus.service.Object):
         )
         log.info("withdrew iPhone MPRIS player")
 
+    @property
+    def connection(self) -> dbus.connection.Connection:
+        return self._connection
+
     def close(self) -> None:
+        if self._closed:
+            return
         self._closed = True
         self._media.remove_listener(self.refresh)
         self._release()
