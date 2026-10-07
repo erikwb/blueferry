@@ -1477,6 +1477,8 @@ class _TetherBackend(_Backend):
         self.fail = fail
         self.unsupported = unsupported
         self.tether_calls: list[str] = []
+        self.enabled = True
+        self.autoconnect = False
 
     def _tether(self, name, state):
         self.tether_calls.append(name)
@@ -1484,10 +1486,16 @@ class _TetherBackend(_Backend):
             raise TetherUnsupportedError("the running backend does not support tethering")
         if self.fail:
             raise BackendError(self.fail)
-        return TetherStatus.from_dict({"enabled": True, **state})
+        return TetherStatus.from_dict(
+            {"enabled": self.enabled, "autoconnect": self.autoconnect, **state}
+        )
 
     def tether_state(self):
         return self._tether("state", {"state": "off"})
+
+    def tether_configure(self, enabled, autoconnect):
+        self.enabled, self.autoconnect = enabled, autoconnect
+        return self._tether(f"configure:{enabled}:{autoconnect}", {"state": "off"})
 
     def tether_connect(self):
         return self._tether("connect", {"state": "connecting", "backend": "networkmanager"})
@@ -1532,15 +1540,15 @@ def test_tether_toggle_sends_exactly_one_explicit_request():
     backend = _TetherBackend()
     controller = _tether_controller(backend)
 
-    controller.setTetherEnabled(True)
-    controller.setTetherEnabled(True)  # ignored while the first is pending
+    controller.setTetherConnected(True)
+    controller.setTetherConnected(True)  # ignored while the first is pending
     _settle(controller)
 
     assert backend.tether_calls == ["connect"]
     assert controller.tether["state"] == "connecting"
     assert controller.tether["pending"] is False
 
-    controller.setTetherEnabled(False)
+    controller.setTetherConnected(False)
     _settle(controller)
     assert backend.tether_calls == ["connect", "disconnect"]
 
@@ -1575,8 +1583,31 @@ def test_failed_tether_request_reports_and_clears_pending():
     controller = _tether_controller(backend)
     controller._tether = {"available": True, "state": "off"}
 
-    controller.setTetherEnabled(True)
+    controller.setTetherConnected(True)
     _settle(controller)
 
     assert controller.tether["pending"] is False
     assert "not connected over Bluetooth" in controller.errorText
+
+
+def test_tethering_opt_in_is_saved_and_reflected():
+    backend = _TetherBackend()
+    backend.enabled = False
+    controller = _tether_controller(backend)
+    controller.refreshTether()
+    _settle(controller)
+    assert controller.tether["enabled"] is False
+    assert "turned off" in controller.tether["summary"]
+
+    controller.setTethering(True, False)
+    controller.setTethering(False, False)  # ignored while the first is pending
+    _settle(controller)
+
+    assert backend.tether_calls == ["state", "configure:True:False"]
+    assert controller.tether["enabled"] is True
+    assert controller.tether["autoconnect"] is False
+    assert controller.tether["pending"] is False
+
+    controller.setTethering(True, True)
+    _settle(controller)
+    assert controller.tether["autoconnect"] is True

@@ -1158,6 +1158,7 @@ class BridgeController(QObject):
             "external": value.external,
             "error": value.error,
             "needs_dhcp": value.needs_dhcp,
+            "enabled": value.enabled,
             "autoconnect": value.autoconnect,
             "active": value.active,
             "summary": value.summary(),
@@ -1196,23 +1197,34 @@ class BridgeController(QObject):
             busy=False,
         )
 
-    @Slot(bool)
-    def setTetherEnabled(self, enabled: bool) -> None:
-        """Explicit user action; the daemon never tethers without one."""
+    def _tether_command(self, request: Callable[[], object]) -> None:
         if self._tether.get("pending") is True:
             return
         self._tether = {**self._tether, "pending": True}
         self.tetherChanged.emit()
-        def request() -> object:
-            if enabled:
-                return self._backend.tether_connect()
-            return self._backend.tether_disconnect()
 
         def failed(message: str) -> None:
             self._tether_failed(message)
             self._tether_timer.start()
 
         self._run(self._tether_request(request), self._tether_result, failed, busy=False)
+
+    @Slot(bool)
+    def setTetherConnected(self, connected: bool) -> None:
+        """Explicit user action; the daemon never tethers without one."""
+        def request() -> object:
+            if connected:
+                return self._backend.tether_connect()
+            return self._backend.tether_disconnect()
+
+        self._tether_command(request)
+
+    @Slot(bool, bool)
+    def setTethering(self, enabled: bool, autoconnect: bool) -> None:
+        """Save the opt-in; off makes the daemon ignore PAN links entirely."""
+        self._tether_command(
+            lambda: self._backend.tether_configure(bool(enabled), bool(autoconnect))
+        )
 
     @Slot(str)
     def setStoragePolicy(self, policy: str) -> None:

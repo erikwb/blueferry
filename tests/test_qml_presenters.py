@@ -3351,6 +3351,7 @@ class _TetherBridge(QObject):
         super().__init__()
         self._tether = tether
         self.requests: list[bool] = []
+        self.settings: list[tuple[bool, bool]] = []
 
     @Property("QVariantMap", notify=tetherChanged)
     def tether(self):
@@ -3361,8 +3362,12 @@ class _TetherBridge(QObject):
         return {"daemon": True}
 
     @Slot(bool)
-    def setTetherEnabled(self, enabled: bool) -> None:
-        self.requests.append(bool(enabled))
+    def setTetherConnected(self, connected: bool) -> None:
+        self.requests.append(bool(connected))
+
+    @Slot(bool, bool)
+    def setTethering(self, enabled: bool, autoconnect: bool) -> None:
+        self.settings.append((bool(enabled), bool(autoconnect)))
 
     def update(self, tether: dict) -> None:
         self._tether = tether
@@ -3373,7 +3378,7 @@ _tether_components: list = []
 
 
 def _tether_section(qml_engine, tether: dict):
-    bridge = _TetherBridge(tether)
+    bridge = _TetherBridge({"enabled": True, **tether})
     component = _component(qml_engine, "src/blueferry/qt/qml/TetherSection.qml")
     section = component.createWithInitialProperties({"bridge": bridge})
     assert section is not None, "\n".join(error.toString() for error in component.errors())
@@ -3399,7 +3404,9 @@ def test_tether_switch_is_an_explicit_request_that_follows_daemon_state(qml_engi
     # Until the daemon reports back, the switch shows the daemon's state.
     assert switch.property("checked") is False
 
-    bridge.update({"available": True, "state": "connected", "summary": "Using hotspot"})
+    bridge.update({
+        "available": True, "enabled": True, "state": "connected", "summary": "Using hotspot",
+    })
     QGuiApplication.processEvents()
     assert switch.property("checked") is True
     summary = section.findChild(QObject, "tetherSummary")
@@ -3423,4 +3430,52 @@ def test_tether_failure_is_shown_as_a_warning(qml_engine) -> None:
     warning = section.findChild(QObject, "tetherError")
     assert warning.property("visible") is True
     assert warning.property("text") == "Turn on Personal Hotspot"
+    section.deleteLater()
+
+
+def _click(item) -> None:
+    item.setProperty("checked", not item.property("checked"))
+    QMetaObject.invokeMethod(item, "clicked")
+    QGuiApplication.processEvents()
+
+
+def test_tether_controls_appear_only_once_tethering_is_enabled(qml_engine) -> None:
+    bridge, section, switch = _tether_section(qml_engine, {
+        "available": True, "enabled": False, "state": "off", "summary": "turned off",
+    })
+    checkbox = section.findChild(QObject, "tetherEnableCheckBox")
+    automatic = section.findChild(QObject, "tetherAutoconnectCheckBox")
+    assert checkbox.property("visible") is True
+    assert checkbox.property("checked") is False
+    assert switch.property("visible") is False
+    assert automatic.property("visible") is False
+    assert section.findChild(QObject, "tetherError").property("visible") is False
+
+    _click(checkbox)
+
+    assert bridge.settings == [(True, False)]
+    assert bridge.requests == []  # enabling never connects by itself
+    # The box follows the daemon's saved value, not the click.
+    assert checkbox.property("checked") is False
+
+    bridge.update({"available": True, "enabled": True, "state": "off", "summary": "Not sharing"})
+    QGuiApplication.processEvents()
+    assert checkbox.property("checked") is True
+    assert switch.property("visible") is True
+    assert automatic.property("visible") is True
+    section.deleteLater()
+
+
+def test_tether_automatic_choice_and_disable_keep_each_other(qml_engine) -> None:
+    bridge, section, _switch = _tether_section(qml_engine, {
+        "available": True, "state": "off", "autoconnect": False, "summary": "",
+    })
+    automatic = section.findChild(QObject, "tetherAutoconnectCheckBox")
+    _click(automatic)
+    assert bridge.settings == [(True, True)]
+
+    bridge.update({"available": True, "enabled": True, "autoconnect": True, "state": "off"})
+    QGuiApplication.processEvents()
+    _click(section.findChild(QObject, "tetherEnableCheckBox"))
+    assert bridge.settings[-1] == (False, True)
     section.deleteLater()
