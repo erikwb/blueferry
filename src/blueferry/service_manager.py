@@ -268,6 +268,12 @@ class BusActivatedServices:
     BlueFerry's bus name, identified only by the bus daemon and only if it
     runs as this user: SIGTERM, then SIGKILL after the same grace period as
     the systemd unit and the OpenRC script.
+
+    The caller's ``timeout`` bounds the whole request, as it bounds
+    ``systemctl`` or ``rc-service`` on the other managers. When it ends
+    before the grace period, the request fails like a timed-out
+    ``systemctl stop`` would: SIGTERM has been sent and the daemon keeps
+    shutting down, but nothing escalates to SIGKILL behind the caller's back.
     """
 
     name = BUS_ACTIVATED
@@ -372,12 +378,13 @@ class BusActivatedServices:
     def _released(self, driver: Any, owner: str, timeout: float) -> bool:
         deadline = self._clock() + timeout
         while self._owner(driver) == owner:
-            if self._clock() >= deadline:
+            remaining = deadline - self._clock()
+            if remaining <= 0:
                 return False
-            self._sleep(0.25)
+            self._sleep(min(0.25, remaining))
         return True
 
-    def _stop(self) -> None:
+    def _stop(self, deadline: float, timeout: float) -> None:
         import dbus
 
         bus = self._session_bus()
@@ -391,14 +398,21 @@ class BusActivatedServices:
         try:
             pid = self._owner_pid(driver, owner)
             self._signal(driver, owner, pid, signal.SIGTERM)
-            if self._released(driver, owner, self._stop_timeout):
+            grace = min(self._stop_timeout, deadline - self._clock())
+            if self._released(driver, owner, grace):
                 return
+            if grace < self._stop_timeout:
+                raise ServiceManagerUnavailableError(
+                    f"owner of {self._bus_name} (pid {pid}) is still shutting "
+                    f"down {timeout:g} seconds after SIGTERM; try again later"
+                )
             log.warning(
                 "owner of %s (pid %d) ignored SIGTERM for %g seconds; sending SIGKILL",
                 self._bus_name, pid, self._stop_timeout,
             )
             self._signal(driver, owner, pid, signal.SIGKILL)
-            if self._released(driver, owner, self._kill_wait):
+            kill_wait = max(0.0, min(self._kill_wait, deadline - self._clock()))
+            if self._released(driver, owner, kill_wait):
                 return
         except _AlreadyGone:
             return
@@ -421,11 +435,18 @@ class BusActivatedServices:
             raise self._unavailable(action, service)
         import dbus.exceptions
 
+        deadline = self._clock() + timeout
         try:
             if action in {"stop", "restart"}:
-                self._stop()
+                self._stop(deadline, timeout)
             if action in {"start", "restart"}:
-                self._start(timeout)
+                remaining = deadline - self._clock()
+                if remaining <= 0:
+                    raise ServiceManagerUnavailableError(
+                        f"Cannot {action} {service}: no time left within "
+                        f"{timeout:g} seconds"
+                    )
+                self._start(remaining)
         except dbus.exceptions.DBusException as error:
             raise ServiceManagerUnavailableError(
                 error.get_dbus_message() or error.get_dbus_name() or str(error)

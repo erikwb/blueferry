@@ -350,6 +350,7 @@ class _SessionBus:
         self.pid = pid
         self.owner = ":1.42" if running else None
         self.status_calls = 0
+        self.status_timeouts = []
         self.lookups = []
 
     def get_object(self, name, _path):
@@ -374,6 +375,7 @@ class _SessionBus:
 
     def GetStatus(self, timeout):
         self.status_calls += 1
+        self.status_timeouts.append(timeout)
         self.owner = ":1.43"
         return "{}"
 
@@ -459,11 +461,77 @@ def test_bus_activated_stop_escalates_to_sigkill_after_the_grace_period(caplog):
     )
 
     with caplog.at_level("WARNING", logger="blueferry.service_manager"):
-        services.control("stop", "blueferry", timeout=30)
+        services.control("stop", "blueferry", timeout=200)
 
     assert kills == [(4242, signal.SIGTERM), (4242, signal.SIGKILL)]
     assert 180 <= now[0] < 181
     assert "sending SIGKILL" in caplog.text
+
+
+@pytest.mark.parametrize("action", ["stop", "restart"])
+def test_bus_activated_stop_never_outlives_the_callers_timeout(action):
+    import os
+
+    bus = _SessionBus(uid=os.getuid())
+    kills = []
+    now, sleep = _fake_clock()
+    services = _bus_services(
+        bus, kills, exits_on=(),
+        clock=lambda: now[0], sleep=sleep, stop_timeout=180,
+    )
+
+    with pytest.raises(
+        service_manager.ServiceManagerUnavailableError,
+        match="still shutting down 30 seconds after SIGTERM",
+    ):
+        services.control(action, "blueferry", timeout=30)
+
+    # Like a timed-out systemctl: SIGTERM stays in effect so an in-flight
+    # Bluetooth operation can finish, but nothing escalates to SIGKILL
+    # before the unit's grace period and nothing reactivates the old owner.
+    assert kills == [(4242, signal.SIGTERM)]
+    assert now[0] == pytest.approx(30)
+    assert bus.status_calls == 0
+
+
+def test_bus_activated_restart_activates_within_the_remaining_time():
+    import os
+
+    bus = _SessionBus(uid=os.getuid())
+    kills = []
+    now, sleep = _fake_clock()
+
+    def kill(pid, sig):
+        kills.append((pid, sig))
+        now[0] += 12  # The old daemon takes 12 seconds to release the name.
+        bus.owner = None
+
+    services = _REAL_BUS_ACTIVATED(
+        bus=lambda: bus, kill=kill, pidfd_open=None,
+        clock=lambda: now[0], sleep=sleep,
+    )
+
+    services.control("restart", "blueferry", timeout=30)
+
+    assert bus.status_timeouts == [pytest.approx(18)]
+
+
+def test_bus_activated_kill_wait_is_capped_by_the_callers_timeout():
+    import os
+
+    bus = _SessionBus(uid=os.getuid())
+    kills = []
+    now, sleep = _fake_clock()
+    services = _bus_services(
+        bus, kills, exits_on=(),
+        clock=lambda: now[0], sleep=sleep, stop_timeout=2, kill_wait=5,
+    )
+
+    with pytest.raises(service_manager.ServiceManagerUnavailableError, match="did not exit"):
+        services.control("stop", "blueferry", timeout=4)
+
+    assert kills == [(4242, signal.SIGTERM), (4242, signal.SIGKILL)]
+    assert now[0] == pytest.approx(4)
 
 
 def test_bus_activated_stop_fails_if_the_owner_survives_sigkill():
