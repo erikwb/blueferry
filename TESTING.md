@@ -55,7 +55,10 @@ style dependencies fail this check even when CLI/TUI startup still succeeds.
   Behavior that has its own class, such as `ContactSync`, is tested directly.
 - Packaging tests keep runtime identifiers and installed metadata consistent.
 - `test_potfiles.py` keeps `po/POTFILES.in` equal to the set of sources that
-  mark strings for translation, as described in `po/README.md`.
+  mark strings for translation, as described in `po/README.md`. It also runs
+  `xgettext` and `lupdate` over the list and requires every entry to yield a
+  message; those two tests skip where the tools are missing, and the quality
+  workflow sets `BLUEFERRY_REQUIRE_TRANSLATION_TOOLS=1` so that skip fails CI.
 - A test should remain valid if the implementation is rewritten without
   changing the behavior it protects.
 

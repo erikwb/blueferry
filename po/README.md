@@ -7,7 +7,9 @@ forms). `POTFILES.in` lists every source that marks strings this way: each
 Python module that uses one of those helpers and each QML file that calls
 one of those functions. `tests/test_potfiles.py` enforces this in both
 directions, so a new file with marked strings fails the test suite until it
-is listed, and a listed file without them fails until it is removed.
+is listed, and a listed file without them fails until it is removed. The
+suite also runs the two extraction commands below and fails if a listed file
+yields no message.
 
 Only the GTK and Qt/QML clients and the shared presentation modules mark
 their strings. The CLI, the TUI and the Quickshell shell (`data/quickshell/`)

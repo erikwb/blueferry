@@ -15,11 +15,11 @@ jobs:
       - name: Install system and test dependencies
         run: >-
           pacman -Syu --noconfirm
-          appstream bandit dbus desktop-file-utils git gtk4 kirigami
+          appstream bandit dbus desktop-file-utils gettext git gtk4 kirigami
           libadwaita libsecret mypy python-build python-coverage
           python-cryptography python-dbus python-gobject python-hypothesis
           python-installer python-pytest python-setuptools python-textual
-          python-typer python-wheel pyside6 qt6-declarative quickshell ruff
+          python-typer python-wheel pyside6 qt6-declarative qt6-tools quickshell ruff
       - uses: actions/checkout@v6
       - name: Static analysis
         run: |
@@ -32,6 +32,7 @@ jobs:
             export DBUS_SYSTEM_BUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS"
             export BLUEFERRY_TEST_DBUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS"
             export PYTHONPATH="$PWD/src"
+            export BLUEFERRY_REQUIRE_TRANSLATION_TOOLS=1
             python -m coverage run -m pytest -q
             python -m coverage report
           '
