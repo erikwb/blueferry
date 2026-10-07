@@ -420,8 +420,8 @@ The LE link then connects about every two seconds and drops right away
 while Classic stays connected, with the log repeating LE reconnects.
 `btmon` shows `LE Start Encryption` failing, followed by a disconnect with
 reason 0x08 (supervision timeout). BlueFerry only reports this pattern; it
-does not change how it connects. The cause is not proven, but re-pairing
-may help:
+does not change how it connects. Re-pairing on both sides cured this on
+the setup it was observed on, so it may help:
 
 1. On the iPhone, open Settings > Bluetooth, tap (i) next to this computer,
    and choose **Forget This Device**.

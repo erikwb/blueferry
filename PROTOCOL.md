@@ -416,11 +416,13 @@ timeout). BlueZ reports that as `org.bluez.Reason.Timeout` in
 `Bearer.LE1.Disconnected(name, message)` (the signal exists since BlueZ
 5.84). Its own auto-connect backoff applies only to
 `org.bluez.Reason.Authentication`, so the loop never stops. `Paired` and
-`Bonded` do not change. The cause is not proven: status 0x08 is a
-connection timeout, while a peer that has lost the key would normally
-answer with 0x06 (PIN or key missing) and BlueZ would report
-`Reason.Authentication`. Re-pairing on both sides is the suspected remedy,
-not a verified one.
+`Bonded` do not change. On that setup, re-pairing on both sides (Forget
+This Device on the iPhone, `bluetoothctl remove`, pairing again) cured it:
+encryption then completed and ANCS was authorized. The status is still
+surprising: 0x08 is a connection timeout, while a peer that has lost the
+key would normally answer with 0x06 (PIN or key missing) and BlueZ would
+report `Reason.Authentication`. One cured case does not prove that every
+such loop is a stale bond, so BlueFerry treats it as a suspicion.
 
 BlueFerry therefore only reports the pattern and never changes its
 connection behaviour because of it. It counts an LE drop only while Classic

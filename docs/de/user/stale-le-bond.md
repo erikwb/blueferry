@@ -10,9 +10,11 @@ sagt dir, was helfen kann.
 ## Das Symptom
 
 Vermutete Ursache ist eine Kopplung, die nur auf einer Seite entfernt wurde,
-zum Beispiel **Dieses Gerät ignorieren** auf dem iPhone, aber nicht auf dem
-Rechner. Das iPhone kennt den Schlüssel, den der Rechner verwendet, dann
-nicht mehr. Bewiesen ist das noch nicht (siehe Grenzen).
+zum Beispiel auf dem Rechner entfernt und neu angelegt, während das iPhone
+seine alte LE-Kopplung behielt. Die beiden Seiten haben dann nicht mehr
+denselben Schlüssel. Genau so war es auf dem Rechner, auf dem das Problem
+zuerst auftrat, und neues Koppeln auf beiden Seiten hat es dort behoben
+(siehe Grenzen).
 
 ```mermaid
 sequenceDiagram
@@ -72,9 +74,11 @@ Telefon ist fort). Der Abbruchzähler fällt nach einer ruhigen Minute auf 0.
 - Die Schwellen stammen aus einer einzigen beobachteten Aufzeichnung. Sie
   zeigte `Encryption Change` mit Status 0x08 (Verbindungs-Timeout); ein
   Telefon ohne Schlüssel würde normalerweise 0x06 (PIN or Key Missing)
-  melden. Die Ursache ist also ein Verdacht, und dass neues Koppeln das
-  Problem auf echter Hardware behebt, ist noch nicht bestätigt. Deshalb
-  sagt die Warnung „kann“.
+  melden. Auf diesem Rechner (Intel AX200, BlueZ 5.87, iOS 27) haben
+  **Dieses Gerät ignorieren** auf dem iPhone, `bluetoothctl remove` und
+  neues Koppeln es behoben: Die Verschlüsselung kam zustande und
+  Mitteilungen kamen an. Ein Fall ist kein Beweis für jedes Telefon und
+  jeden Adapter, deshalb sagt die Warnung „kann“.
 - Unter BlueZ älter als 5.84 (oder ohne LE-Bearer-Schnittstelle) fragt
   BlueFerry ersatzweise alle 5 Sekunden ab. Die Erkennung ist dann langsamer
   (180-s-Fenster, 9 Minuten Dauer) und sieht nur Stichproben der Abbrüche.

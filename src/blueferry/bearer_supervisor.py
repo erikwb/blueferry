@@ -44,9 +44,11 @@ _INTERFACES = {
 # only, makes the kernel/bluetoothd auto-connect loop indefinitely: the link
 # comes up, encryption does not complete, and the link drops about two
 # seconds later. The captured trace showed Encryption Change status 0x08
-# (connection timeout), not 0x06 (PIN or key missing), so the cause is not
-# proven; BlueFerry therefore only reports a suspicion, re-pairing may help,
-# and it never changes its own connection behaviour because of it.
+# (connection timeout), not 0x06 (PIN or key missing). On that setup,
+# forgetting the computer on the iPhone, removing the device in BlueZ and
+# pairing again cured it, but one case does not prove every 0x08 loop is a
+# stale bond; BlueFerry therefore only reports a suspicion, re-pairing may
+# help, and it never changes its own connection behaviour because of it.
 #
 # The pattern is deliberately narrow so ordinary radio flapping does not
 # match: Classic must stay connected across the whole burst (the phone is

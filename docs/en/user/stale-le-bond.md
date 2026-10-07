@@ -9,9 +9,10 @@ recognizes a pattern that suggests this and tells you what may fix it.
 ## The symptom
 
 The suspected cause is a pairing removed on only one side, for example
-**Forget This Device** on the iPhone but not on the computer, so the iPhone
-no longer has the key the computer uses. This is not proven yet (see
-Limits).
+removed and re-created on the computer while the iPhone kept its old LE
+pairing, so the two sides no longer share the same key. This was the case on
+the setup where the problem was first seen, and re-pairing on both sides
+fixed it there (see Limits).
 
 ```mermaid
 sequenceDiagram
@@ -69,9 +70,11 @@ bluetoothd restarts, or when classic Bluetooth has been gone for 2 minutes
 
 - The thresholds come from one observed trace. That trace showed
   `Encryption Change` with status 0x08 (connection timeout); a phone that
-  has lost the key would normally answer 0x06 (PIN or key missing). So the
-  cause is a suspicion, and re-pairing has not yet been confirmed to cure
-  it on hardware. That's why the warning says "may".
+  has lost the key would normally answer 0x06 (PIN or key missing). On
+  that setup (Intel AX200, BlueZ 5.87, iOS 27), forgetting the computer on
+  the iPhone, `bluetoothctl remove` and pairing again cured it: encryption
+  completed and notifications arrived. One case is not proof for every
+  phone and adapter, so the warning says "may".
 - On BlueZ older than 5.84 (or without the LE bearer interface), BlueFerry
   falls back to polling every 5 seconds. Detection is then slower (180 s
   window, 9 minutes of persistence) and only samples the drops.
