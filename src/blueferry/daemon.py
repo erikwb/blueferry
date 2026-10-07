@@ -507,6 +507,7 @@ class Daemon:
                 on_event=self.events.ancs,
                 on_status=self._on_ancs_status,
                 on_transport_failure=self.bearers.recover_le_transport,
+                on_call_activity=self._ancs_call_activity,
                 include_non_message_notifications=lambda: (
                     self.notification_policy.value == ALL_NOTIFICATIONS
                 ),
@@ -791,7 +792,7 @@ class Daemon:
             self._dbus_service.emit_history_changed()
         self._emit_status()
 
-    def request_call_history_sync(self, reason: str) -> None:
+    def request_call_history_sync(self, reason: str, *, full: bool = True) -> None:
         """Integration hook, e.g. for an HFP "call ended" event.
 
         A no-op unless call history is enabled. Requests coalesce and respect
@@ -799,7 +800,18 @@ class Daemon:
         personal data because it is logged.
         """
         if self.call_history is not None:
-            self.call_history.request_sync(reason)
+            self.call_history.request_sync(reason, full=full)
+
+    def _ancs_call_activity(self, activity: str) -> None:
+        """ANCS saw a missed call or the end of an incoming call.
+
+        Only the category is known here, never the caller. A missed call
+        needs only the missed-calls list; an ended call may also have
+        changed the received list.
+        """
+        self.request_call_history_sync(
+            f"ancs {activity}", full=activity != "missed",
+        )
 
     def _call_history_changed(self) -> None:
         if self._dbus_service is not None:
@@ -910,6 +922,9 @@ class Daemon:
             log.info("saved iPhone bond was removed; stopping daemon")
             self.proximity.inhibit(INHIBIT_FORGOTTEN)
             self.recovery.forget_phone()
+            if self.call_history is not None:
+                # A re-paired (possibly reset) phone's first sync is silent.
+                self.call_history.forget_phone()
             main_loop.quit()
             return False
         self.proximity.inhibit(INHIBIT_FORGOTTEN)

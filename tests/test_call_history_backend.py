@@ -373,9 +373,33 @@ def test_daemon_request_hook_is_a_no_op_when_disabled(make_daemon, monkeypatch) 
     monkeypatch.setattr(config, "CALL_HISTORY_ENABLED", True)
     enabled = make_daemon()
     requested = []
-    monkeypatch.setattr(enabled.call_history, "request_sync", requested.append)
+    monkeypatch.setattr(
+        enabled.call_history, "request_sync",
+        lambda reason, *, full: requested.append((reason, full)),
+    )
     enabled.request_call_history_sync("call ended")
-    assert requested == ["call ended"]
+    enabled._ancs_call_activity("missed")
+    enabled._ancs_call_activity("ended")
+    assert requested == [
+        ("call ended", True), ("ancs missed", False), ("ancs ended", True),
+    ]
+
+
+def test_removing_the_bond_rearms_silent_seeding(make_daemon, monkeypatch) -> None:
+    from blueferry import daemon as daemon_mod
+
+    monkeypatch.setattr(config, "CALL_HISTORY_ENABLED", True)
+    instance = make_daemon()
+    forgotten = []
+    monkeypatch.setattr(instance.call_history, "forget_phone", lambda: forgotten.append(1))
+    monkeypatch.setattr(daemon_mod.config, "current_target", lambda: ("02:00:00:00:00:01", "hci0"))
+    monkeypatch.setattr(daemon_mod.config, "IPHONE_MAC", "02:00:00:00:00:01")
+    monkeypatch.setattr(daemon_mod.config, "ADAPTER", "hci0")
+    monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(daemon_mod.main_loop, "quit", lambda: None)
+
+    assert instance._check_target_config() is False
+    assert forgotten == [1]
 
 
 def test_listing_resolves_double_zero_numbers_through_the_plus_form(storage) -> None:

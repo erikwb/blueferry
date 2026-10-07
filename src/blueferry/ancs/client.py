@@ -38,6 +38,7 @@ from blueferry.ancs.constants import (
     DATA_SOURCE_CHAR,
     MESSAGES_APP_ID,
     NOTIFICATION_SOURCE_CHAR,
+    CategoryID,
     CommandID,
     EventID,
 )
@@ -140,6 +141,7 @@ class AncsClient:
         include_app_notification: Callable[[str], bool] | None = None,
         on_transport_failure: Callable[[], None] | None = None,
         *,
+        on_call_activity: Callable[[str], None] | None = None,
         previously_authorized: bool = False,
         schedule: Callable[[int, Callable[[], bool]], int] = GLib.timeout_add_seconds,
         cancel: Callable[[int], object] = GLib.source_remove,
@@ -148,6 +150,9 @@ class AncsClient:
         self.on_event = on_event
         self.on_status = on_status
         self._on_transport_failure = on_transport_failure
+        # Content-free call signals derived from the notification category
+        # only ("missed" / "ended"); see _report_call_activity().
+        self._on_call_activity = on_call_activity
         self._include_non_message_notifications = (
             include_non_message_notifications or (lambda: False)
         )
@@ -180,6 +185,9 @@ class AncsClient:
         self._observed_app_ids: OrderedDict[str, None] = OrderedDict()
         self._pending_app_lookups: dict[str, list[NotificationAttributes]] = {}
         self._app_lookup_requested: set[str] = set()
+        # Category of recently announced notifications, so a sink can tell
+        # the phone's own missed-call popup apart without reading content.
+        self._categories: OrderedDict[int, int] = OrderedDict()
         self._request_queue: RequestBacklog[_PendingRequest] = RequestBacklog(
             MAX_ANCS_REQUESTS
         )
@@ -838,6 +846,7 @@ class AncsClient:
         except ValueError as e:
             log.error("NS parse failed: %s", e)
             return
+        self._report_call_activity(n)
         # Skip pre-existing (notifications that already existed on the
         # iPhone at our connect time — too noisy on initial subscribe).
         if n.is_preexisting:
@@ -848,7 +857,35 @@ class AncsClient:
             log.debug("ANCS removed uid=%d", n.id)
             return
         # Added or Modified → identify the source app without content first.
+        self._categories[n.id] = n.category
+        self._categories.move_to_end(n.id)
+        while len(self._categories) > MAX_ANCS_REQUESTS:
+            self._categories.popitem(last=False)
         self._request_attrs(n)
+
+    def _report_call_activity(self, n: Notification) -> None:
+        """Tell the daemon that the phone's call log probably changed.
+
+        Uses only the Notification Source header (event and category), which
+        the iPhone sends for every notification without any content request,
+        and independently of the desktop notification policy. A new missed
+        call and the end of an incoming call (answered, declined or missed)
+        are reported; nothing about the caller is.
+        """
+        if self._on_call_activity is None:
+            return
+        if n.type == EventID.NotificationAdded and n.category == CategoryID.MissedCall:
+            if n.is_preexisting:
+                return
+            activity = "missed"
+        elif n.type == EventID.NotificationRemoved and n.category == CategoryID.IncomingCall:
+            activity = "ended"
+        else:
+            return
+        try:
+            self._on_call_activity(activity)
+        except Exception:
+            log.exception("call activity callback raised")
 
     def _request_attrs(self, n: Notification) -> None:
         """Probe the source app without reading notification content."""
@@ -1172,6 +1209,7 @@ class AncsClient:
             title=attrs.title,
             subtitle=attrs.subtitle,
             body=attrs.message,
+            category=self._categories.get(attrs.id, CategoryID.Other),
         )
         log.info("ANCS event (%d-char body)", len(event.body or ""))
         log.debug(
