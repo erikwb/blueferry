@@ -30,6 +30,12 @@ class RequestBacklog(Generic[T]):
         _key, request = self._queue.popleft()
         return request
 
+    def push_front(self, key: str, request: T) -> None:
+        """Return a popped, still reserved request to the head for a retry."""
+        if key not in self._reserved:
+            raise ValueError("only a reserved request can be pushed back")
+        self._queue.appendleft((key, request))
+
     def finish(self, key: str) -> None:
         self._reserved.discard(key)
 

@@ -422,7 +422,10 @@ ANCS responses have no outer total-length field and may arrive fragmented.
 Control Point requests must be serialized and reassembled according to the
 requested attribute sequence. BlueFerry writes each request asynchronously and
 sends the next one only after the previous response completed, failed, or
-timed out, so a slow ATT write never stalls the daemon's main loop. The iPhone
+timed out *and* BlueZ answered the previous write, so a slow ATT write never
+stalls the daemon's main loop and two writes never overlap (BlueZ rejects an
+overlapping write with `org.bluez.Error.InProgress`; a rejection caused by
+another D-Bus client is retried a few times). The iPhone
 can replay existing notifications after a reconnect, so startup/reconnect
 delivery needs deduplication without suppressing genuine modifications.
 

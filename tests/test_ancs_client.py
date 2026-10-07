@@ -1481,26 +1481,6 @@ def test_control_point_write_returns_before_bluez_replies(monkeypatch) -> None:
     ]
 
 
-def test_response_before_write_reply_does_not_arm_a_stale_timer(monkeypatch) -> None:
-    cp = _PendingControlPoint()
-    client, timers = _async_write_client(monkeypatch, cp)
-    client._request_attrs(Notification.parse(_notification(1)))
-    client._request_attrs(Notification.parse(_notification(2)))
-    first = cp.writes[0]
-
-    client._on_ds_changed(
-        "org.bluez.GattCharacteristic1",
-        {"Value": _app_probe_response(1, "com.example.Private")},
-        [],
-    )
-    first["reply_handler"]()
-
-    assert timers == []
-    assert len(cp.writes) == 2
-    assert client._active_request is not None
-    assert client._active_request.notification.id == 2
-
-
 def test_async_write_failure_releases_the_queue(monkeypatch) -> None:
     cp = _PendingControlPoint()
     client, _timers = _async_write_client(monkeypatch, cp)
@@ -1570,3 +1550,210 @@ def test_marshalling_failure_before_dispatch_releases_the_request(
     assert client._active_request.notification.id == 2
     assert client.connected is True
     assert timers == []
+
+
+class _BlueZWriteOpControlPoint(_PendingControlPoint):
+    """Models gatt-client.c: a second write while write_op is set is refused."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.write_op = False
+        self.rejected = 0
+
+    def WriteValue(self, value, options, **kwargs) -> None:
+        if self.write_op:
+            self.rejected += 1
+            kwargs["error_handler"](client_module.dbus.exceptions.DBusException(
+                "In Progress", name="org.bluez.Error.InProgress",
+            ))
+            return
+        self.write_op = True
+        super().WriteValue(value, options, **kwargs)
+
+    def reply(self, index: int) -> None:
+        self.write_op = False
+        self.writes[index]["reply_handler"]()
+
+    def fail(self, index: int, error) -> None:
+        self.write_op = False
+        self.writes[index]["error_handler"](error)
+
+
+def _uids(cp) -> list[int]:
+    return [struct.unpack("<I", write["value"][1:5])[0] for write in cp.writes]
+
+
+def test_reassembly_failure_does_not_overlap_an_unacknowledged_write(
+    monkeypatch,
+) -> None:
+    cp = _BlueZWriteOpControlPoint()
+    client, _timers = _async_write_client(monkeypatch, cp)
+    for uid in (1, 2, 3, 4):
+        client._request_attrs(Notification.parse(_notification(uid)))
+    assert _uids(cp) == [1]
+
+    # A late fragment from an earlier, timed-out request breaks reassembly
+    # of request 1 while its write is still unacknowledged.
+    client._on_ds_changed(
+        "org.bluez.GattCharacteristic1", {"Value": b"\x07garbage"}, [],
+    )
+    assert client._active_request is None
+    assert cp.rejected == 0
+    assert _uids(cp) == [1]
+
+    # Request 2 goes out only once BlueZ has answered write 1.
+    cp.reply(0)
+    assert _uids(cp) == [1, 2]
+    for index, uid in ((1, 2), (2, 3)):
+        cp.reply(index)
+        client._on_ds_changed(
+            "org.bluez.GattCharacteristic1",
+            {"Value": _app_probe_response(uid, "com.example.Private")},
+            [],
+        )
+    assert _uids(cp) == [1, 2, 3, 4]
+    assert cp.rejected == 0
+
+
+def test_response_before_write_reply_waits_for_the_reply(monkeypatch) -> None:
+    cp = _BlueZWriteOpControlPoint()
+    client, timers = _async_write_client(monkeypatch, cp)
+    client._request_attrs(Notification.parse(_notification(1)))
+    client._request_attrs(Notification.parse(_notification(2)))
+
+    client._on_ds_changed(
+        "org.bluez.GattCharacteristic1",
+        {"Value": _app_probe_response(1, "com.example.Private")},
+        [],
+    )
+    assert _uids(cp) == [1]
+    cp.reply(0)
+
+    assert timers == []
+    assert _uids(cp) == [1, 2]
+    assert cp.rejected == 0
+    assert client._active_request.notification.id == 2
+
+
+def test_no_reply_after_a_completed_request_releases_the_control_point(
+    monkeypatch,
+) -> None:
+    cp = _BlueZWriteOpControlPoint()
+    client, _timers = _async_write_client(monkeypatch, cp)
+    client._request_attrs(Notification.parse(_notification(1)))
+    client._request_attrs(Notification.parse(_notification(2)))
+    client._on_ds_changed(
+        "org.bluez.GattCharacteristic1",
+        {"Value": _app_probe_response(1, "com.example.Private")},
+        [],
+    )
+
+    cp.fail(0, client_module.dbus.exceptions.DBusException(
+        "Did not receive a reply", name="org.freedesktop.DBus.Error.NoReply",
+    ))
+
+    assert _uids(cp) == [1, 2]
+    assert client.connected is True
+
+
+def test_no_reply_for_the_active_request_abandons_only_that_request(
+    monkeypatch,
+) -> None:
+    cp = _BlueZWriteOpControlPoint()
+    client, timers = _async_write_client(monkeypatch, cp)
+    client._request_attrs(Notification.parse(_notification(1)))
+    client._request_attrs(Notification.parse(_notification(2)))
+
+    cp.fail(0, client_module.dbus.exceptions.DBusException(
+        "Did not receive a reply", name="org.freedesktop.DBus.Error.NoReply",
+    ))
+
+    assert _uids(cp) == [1, 2]
+    assert client._active_request.notification.id == 2
+    assert timers == []
+    assert client.connected is True
+
+
+def test_in_progress_from_another_writer_is_retried(monkeypatch) -> None:
+    cp = _BlueZWriteOpControlPoint()
+    cp.write_op = True  # another D-Bus client is mid-write
+    client, timers = _async_write_client(monkeypatch, cp)
+    client._request_attrs(Notification.parse(_notification(1)))
+
+    assert cp.rejected == 1
+    assert client._active_request is None
+    assert [delay for delay, _callback in timers] == [
+        client_module.CONTROL_POINT_BUSY_RETRY_SECONDS,
+    ]
+    cp.write_op = False
+    timers[0][1]()
+    assert _uids(cp) == [1]
+    assert client._active_request.notification.id == 1
+
+
+def test_in_progress_retries_are_bounded(monkeypatch) -> None:
+    cp = _BlueZWriteOpControlPoint()
+    cp.write_op = True
+    client, timers = _async_write_client(monkeypatch, cp)
+    client._request_attrs(Notification.parse(_notification(1)))
+    for _ in range(client_module.MAX_CONTROL_POINT_BUSY_RETRIES):
+        timers[-1][1]()
+
+    assert cp.rejected == client_module.MAX_CONTROL_POINT_BUSY_RETRIES + 1
+    assert client._active_request is None
+    assert not client._request_queue
+    assert client._cp_busy_retry_id is None
+    # The key was released, so the notification can be requested again.
+    assert client._request_queue.enqueue("notification:1", object())
+
+
+def test_late_callbacks_after_stop_are_ignored(monkeypatch) -> None:
+    cp = _BlueZWriteOpControlPoint()
+    client, timers = _async_write_client(monkeypatch, cp)
+    client._request_attrs(Notification.parse(_notification(1)))
+    client.stop()
+
+    cp.reply(0)
+    cp.writes[0]["error_handler"](client_module.dbus.exceptions.DBusException(
+        "late", name="org.bluez.Error.Failed",
+    ))
+
+    assert timers == []
+    assert client._active_request is None
+    assert client._cp_write_token is None
+    assert len(cp.writes) == 1
+
+
+def test_reset_keeps_the_next_write_behind_an_unacknowledged_one(
+    monkeypatch,
+) -> None:
+    cp = _BlueZWriteOpControlPoint()
+    client, timers = _async_write_client(monkeypatch, cp)
+    client._request_attrs(Notification.parse(_notification(1)))
+    client._reset_requests()
+    client._request_attrs(Notification.parse(_notification(2)))
+    assert _uids(cp) == [1]
+
+    cp.reply(0)  # stale for request 1, but frees the characteristic
+    assert _uids(cp) == [1, 2]
+    assert cp.rejected == 0
+    assert timers == []
+    cp.reply(1)
+    assert [callback for _delay, callback in timers] == [client._request_timed_out]
+
+
+def test_owner_change_drops_the_old_daemons_pending_write(monkeypatch) -> None:
+    cp = _BlueZWriteOpControlPoint()
+    client, _timers = _async_write_client(monkeypatch, cp)
+    client._request_attrs(Notification.parse(_notification(1)))
+    monkeypatch.setattr(client, "_bind_manager_and_rescan", lambda: None)
+    client.observe_bluez_owner(":1.1", ":1.2")
+    client._cp_path = "/device/cp"
+    cp.write_op = False  # the new bluetoothd has no write_op
+    client._request_attrs(Notification.parse(_notification(2)))
+    assert _uids(cp) == [1, 2]
+
+    # The old daemon's late reply neither arms a timer nor frees write 2.
+    cp.writes[0]["reply_handler"]()
+    assert client._cp_write_token is not None
+    assert client._active_request.notification.id == 2
