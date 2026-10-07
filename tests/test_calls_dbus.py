@@ -189,8 +189,8 @@ def test_disabled_calls_fail_with_a_typed_error(disabled_service) -> None:
         assert outcome["error"].get_dbus_name() == "io.weirdware.BlueFerry.Error.CallsDisabled"
 
     status = json.loads(_call(name, MESSAGES_IFACE, "GetStatus")["value"])
-    assert status["calls_enabled"] is False
-    assert status["calls_state"] == "disabled"
+    # A backend without the calls dependency reports no calls keys at all.
+    assert not any(key.startswith("calls_") for key in status)
     assert status["api_version"] == MESSAGES_API_VERSION
 
 

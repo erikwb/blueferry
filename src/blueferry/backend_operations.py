@@ -188,13 +188,6 @@ class CallControl(Protocol):
     def hold_and_answer(self, success: Success, failure: Failure) -> None: ...
 
 
-_CALLS_DISABLED_STATUS: dict[str, object] = {
-    "calls_enabled": False,
-    "calls_state": "disabled",
-    "calls_available": False,
-}
-
-
 @dataclass(frozen=True, slots=True)
 class BackendDependencies:
     """Explicit optional capabilities supplied by the daemon composition root."""
@@ -714,9 +707,9 @@ class BackendOperations:
             ),
         }
         calls = self.dependencies.calls
-        status.update(
-            calls.snapshot() if calls is not None else _CALLS_DISABLED_STATUS
-        )
+        if calls is not None:
+            # A backend without the calls feature reports no calls keys at all.
+            status.update(calls.snapshot())
         if self.dependencies.status_provider is not None:
             status.update(self.dependencies.status_provider())
         status["api_version"] = MESSAGES_API_VERSION

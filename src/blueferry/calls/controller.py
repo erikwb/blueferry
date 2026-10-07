@@ -205,7 +205,14 @@ class CallController:
         return bool(self._calls)
 
     def snapshot(self) -> dict[str, object]:
-        """Non-sensitive status fields merged into GetStatus."""
+        """Non-sensitive status fields merged into GetStatus.
+
+        While calls are off only ``calls_enabled`` is reported: clients use
+        its presence to offer the opt-in, and nothing else about calls is
+        visible.
+        """
+        if not self.enabled:
+            return {"calls_enabled": False}
         return {
             "calls_enabled": self.enabled,
             "calls_state": self._state,

@@ -518,7 +518,13 @@ class HelpScreen(ModalScreen[None]):
         Binding("escape,question_mark", "close", "Close", show=False),
     ]
 
+    def __init__(self, *, calls_enabled: bool = False) -> None:
+        super().__init__()
+        self.calls_enabled = calls_enabled
+
     def compose(self) -> ComposeResult:
+        # The optional calls panel is listed only while calls are switched on.
+        calls_line = "[bold #7dd3fc]Phone calls[/]  c\n" if self.calls_enabled else ""
         help_text = Text.from_markup(
             "[bold #7dd3fc]Move[/]  ↑ ↓ or j k\n"
             "[bold #7dd3fc]Open / reply[/]  Enter\n"
@@ -528,7 +534,7 @@ class HelpScreen(ModalScreen[None]):
             "[bold #7dd3fc]New message[/]  n\n"
             "[bold #7dd3fc]Star conversation[/]  s\n"
             "[bold #7dd3fc]Delete conversation[/]  Delete\n"
-            "[bold #7dd3fc]Phone calls (optional)[/]  c\n"
+            f"{calls_line}"
             "[bold #7dd3fc]Commands[/]  Ctrl+P\n"
             "[bold #7dd3fc]Refresh[/]  r\n"
             "[bold #7dd3fc]Back[/]  Esc\n"
@@ -1029,7 +1035,7 @@ class BlueFerryApp(App[None]):
         self.query_one("#thread-list", ListView).focus()
 
     def action_help(self) -> None:
-        self.push_screen(HelpScreen())
+        self.push_screen(HelpScreen(calls_enabled=self.state.status.calls_enabled))
 
     def action_new_message(self) -> None:
         self.push_screen(NewMessageScreen(), self._new_message_ready)

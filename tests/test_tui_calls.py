@@ -245,3 +245,22 @@ def test_backend_error_toast_is_not_parsed_as_markup() -> None:
             assert seen[0][1].get("markup") is False
 
     _run(scenario())
+
+
+def test_help_lists_the_calls_key_only_when_calls_are_on() -> None:
+    from blueferry.tui import HelpScreen
+
+    for enabled in (False, True):
+        async def scenario(enabled=enabled) -> None:
+            backend = _Backend(enabled=enabled)
+            app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
+            async with app.run_test(size=(120, 36)) as pilot:
+                await _until(pilot, lambda: app.state.status.daemon)
+                app.set_focus(None)
+                app.action_help()
+                await _until(pilot, lambda: isinstance(app.screen, HelpScreen)
+                             and bool(app.screen.query(".dialog-copy")))
+                text = str(app.screen.query_one(".dialog-copy", Static).render())
+                assert ("Phone calls" in text) is enabled
+
+        _run(scenario())

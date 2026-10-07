@@ -194,9 +194,7 @@ def test_disabled_feature_never_touches_ofono() -> None:
     controller.start()
 
     assert controller.state == CALLS_DISABLED
-    assert controller.snapshot() == {
-        "calls_enabled": False, "calls_state": "disabled", "calls_available": False,
-    }
+    assert controller.snapshot() == {"calls_enabled": False}
     assert transport.pending == [] and transport.matches == [] and timers.entries == {}
     with pytest.raises(CallsDisabledError):
         controller.list_calls()

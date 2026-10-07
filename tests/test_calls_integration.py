@@ -45,11 +45,13 @@ def test_default_daemon_keeps_calls_disabled_and_inert(make_daemon) -> None:
 
     assert instance.calls.enabled is False
     instance.calls.start()
-    assert instance.calls.snapshot()["calls_state"] == "disabled"
+    assert instance.calls.state == "disabled"
     status = BackendOperations(
         _Sessions(), BackendDependencies(calls=instance.calls),
     ).status()
+    # Off: only the opt-in itself is visible, no call state.
     assert status["calls_enabled"] is False
+    assert "calls_state" not in status and "calls_available" not in status
     with pytest.raises(CallsDisabledError):
         BackendOperations(_Sessions(), BackendDependencies(calls=instance.calls)).list_calls()
 
