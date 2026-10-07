@@ -123,7 +123,26 @@ narrow Polkit rule lets active local sessions start. Without systemd,
 BlueFerry runs the same helper as
 `sudo -n -- /usr/lib/blueferry/blueferry-set-cod N`, where the adapter index
 is its only argument. `-n` never prompts, so an administrator authorizes it
-with a sudoers rule (edit with `visudo -f /etc/sudoers.d/blueferry` and adjust
+with a sudoers rule.
+
+There is no OpenRC package, so first install the helper from the source tree,
+owned by root and in a directory tree only root can write:
+
+```sh
+sudo install -D -o root -g root -m 755 systemd/blueferry-set-cod \
+  /usr/lib/blueferry/blueferry-set-cod
+stat -c '%U:%G %a %n' /usr/lib/blueferry /usr/lib/blueferry/blueferry-set-cod
+```
+
+Both lines must read `root:root 755`. A NOPASSWD rule for a file that a user
+can replace (a copy in a home directory, a user-owned `/usr/lib/blueferry`,
+or any group- or world-writable directory on the path) is passwordless root
+for that user. BlueFerry resolves the helper path and refuses to call sudo
+unless the file and every directory above it are owned by root and not
+writable by group or others. A package recipe should install it the same
+way as the Arch, Debian and RPM recipes do.
+
+Then add the rule (edit with `visudo -f /etc/sudoers.d/blueferry` and adjust
 the group):
 
 ```
@@ -137,15 +156,22 @@ to add it or how to run the helper once by hand, for example
 
 Notes and trade-offs:
 
-- The rule runs a short shell script as full root. Unlike the systemd unit it
-  has no capability bounding set or sandbox, and it applies to every session
-  of the listed users, not only active local ones. It can still only set the
-  class of an existing adapter to 4/8.
+- Compared with the polkit path: on systemd, polkit lets only an active local
+  session start `blueferry-btmgmt-set-class@N.service`, which runs sandboxed
+  (`ProtectSystem=strict`, `PrivateDevices=`) with only `CAP_NET_ADMIN` and
+  `CAP_NET_RAW`. The sudoers rule runs the
+  helper as full root with no capability bounding set or sandbox, and it
+  applies to every session of the listed users (SSH, inactive, or remote),
+  not only active local ones. It can still only set the class of an existing
+  adapter to 4/8.
 - `sudo -n` also succeeds without a rule while a sudo timestamp from a recent
   `sudo` in the same terminal is cached. Authorization then comes from that
   cache, not from BlueFerry.
-- After sudo refuses, the daemon stops retrying until bluetoothd restarts, so
-  a missing rule does not fill the authentication log every minute.
+- After sudo refuses, the daemon backs off instead of retrying every minute:
+  15 minutes, then doubling up to six hours, and immediately after a BlueZ
+  restart. Other failures back off from one minute. A rule added later takes
+  effect without a restart, and a missing rule does not fill the
+  authentication log.
 - The optional OpenRC user service sets `no_new_privs`, which makes sudo
   impossible for the daemon. BlueFerry detects this and does not call sudo.
   Pairing, which runs from the desktop session, and the D-Bus-activated daemon

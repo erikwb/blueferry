@@ -383,8 +383,9 @@ A change to these rules has to be made in both places.
   permitted by a narrow Polkit rule. No general `btmgmt` or systemd access is
   exposed. Without systemd, the same helper runs only through `sudo -n` and an
   administrator-installed sudoers rule. BlueFerry never prompts for or stores
-  credentials, skips sudo under `no_new_privs`, and pauses repair after a
-  refusal until bluetoothd restarts.
+  credentials, skips sudo under `no_new_privs`, refuses a helper that anyone
+  but root could replace, and backs off failed repairs exponentially (from
+  15 minutes after a refusal, at most six hours; a BlueZ restart resets it).
 - **Recovery:** `bluetooth_recovery` performs a last-resort power cycle of the
   selected controller only. It runs after a sustained ANCS outage on a setup
   that previously worked, tries an LE-only reset first, and allows one cycle

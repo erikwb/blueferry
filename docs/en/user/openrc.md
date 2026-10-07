@@ -52,9 +52,23 @@ flowchart TD
    example after Bluetooth restarts. Without systemd, BlueFerry runs the
    argument-checked helper as
    `sudo -n -- /usr/lib/blueferry/blueferry-set-cod N` (`N` is the adapter
-   index; `-n` never prompts). An administrator allows that once with
-   `visudo -f /etc/sudoers.d/blueferry` (adjust the group; needs sudo 1.9.10
-   or newer):
+   index; `-n` never prompts). No package installs the helper on OpenRC, so
+   an administrator installs it from the source tree, owned by root:
+
+   ```sh
+   sudo install -D -o root -g root -m 755 systemd/blueferry-set-cod \
+     /usr/lib/blueferry/blueferry-set-cod
+   stat -c '%U:%G %a %n' /usr/lib/blueferry /usr/lib/blueferry/blueferry-set-cod
+   ```
+
+   Both lines must show `root:root 755`. Never point the sudoers rule at a
+   copy in your home directory or any other place you can write to: whoever
+   can replace that file gets passwordless root. BlueFerry checks this and
+   refuses to call sudo for a helper that someone other than root can
+   replace.
+
+   Then allow it once with `visudo -f /etc/sudoers.d/blueferry` (adjust the
+   group; needs sudo 1.9.10 or newer):
 
    ```
    %wheel ALL=(root) NOPASSWD: /usr/lib/blueferry/blueferry-set-cod ^[0-9]+$
@@ -109,13 +123,19 @@ The daemon then logs to `~/.local/state/blueferry/daemon.log`.
 - Experimental mode is found through `/proc`. A bundled option such as `-nE`
   is not recognized, and with `/proc` mounted `hidepid=1` or `2` it reads as
   inactive.
-- The sudoers rule runs a short shell script as full root, without the
-  systemd unit's sandbox, and applies to every session of the listed users,
-  not only local ones. It can still only set an existing adapter's class.
+- **Compared with systemd's polkit path**, the sudoers rule grants more.
+  On systemd, polkit lets only an active local session start a sandboxed
+  unit (only the network capabilities `btmgmt` needs, read-only system,
+  no device nodes). The sudoers rule runs the helper as full root with no
+  sandbox, for every session of the listed users, including SSH and
+  inactive sessions. It can still only set an existing adapter's class.
 - `sudo -n` also succeeds without the rule while a recent terminal `sudo`
   timestamp is cached.
-- After sudo refuses, the daemon stops retrying until bluetoothd restarts, so
-  a missing rule does not fill the authentication log.
+- After a refused or failed attempt, the daemon backs off: it retries after
+  15 minutes, then less and less often, at most every six hours, and
+  immediately after bluetoothd restarts. A rule you add later therefore
+  takes effect without a restart, and a missing rule does not fill the
+  authentication log.
 - The optional user service sets `no_new_privs`, which rules out sudo for its
   daemon. BlueFerry notices and does not call sudo; rerun the helper after
   Bluetooth restarts, or set `no_new_privs=""` in

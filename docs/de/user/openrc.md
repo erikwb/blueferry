@@ -55,9 +55,25 @@ flowchart TD
    sich ändert, etwa nach einem Bluetooth-Neustart. Ohne systemd ruft
    BlueFerry das argumentgeprüfte Hilfsskript als
    `sudo -n -- /usr/lib/blueferry/blueferry-set-cod N` auf (`N` ist der
-   Adapterindex; `-n` fragt nie nach einem Passwort). Ein Administrator
-   erlaubt das einmalig mit `visudo -f /etc/sudoers.d/blueferry` (Gruppe
-   anpassen; braucht sudo 1.9.10 oder neuer):
+   Adapterindex; `-n` fragt nie nach einem Passwort). Unter OpenRC
+   installiert kein Paket das Skript, deshalb installiert es ein
+   Administrator aus dem Quellbaum, im Besitz von root:
+
+   ```sh
+   sudo install -D -o root -g root -m 755 systemd/blueferry-set-cod \
+     /usr/lib/blueferry/blueferry-set-cod
+   stat -c '%U:%G %a %n' /usr/lib/blueferry /usr/lib/blueferry/blueferry-set-cod
+   ```
+
+   Beide Zeilen müssen `root:root 755` zeigen. Richte die sudoers-Regel nie
+   auf eine Kopie in deinem Home-Verzeichnis oder an einem anderen Ort, an dem
+   du schreiben kannst: Wer diese Datei ersetzen kann, bekommt Root ohne
+   Passwort. BlueFerry prüft das und ruft sudo für ein Skript, das jemand
+   anderes als root ersetzen kann, gar nicht erst auf.
+
+   Danach erlaubt ein Administrator es einmalig mit
+   `visudo -f /etc/sudoers.d/blueferry` (Gruppe anpassen; braucht sudo 1.9.10
+   oder neuer):
 
    ```
    %wheel ALL=(root) NOPASSWD: /usr/lib/blueferry/blueferry-set-cod ^[0-9]+$
@@ -114,14 +130,19 @@ Der Daemon schreibt sein Log dann nach `~/.local/state/blueferry/daemon.log`.
 - Den Experimental-Modus erkennt BlueFerry über `/proc`. Eine gebündelte
   Option wie `-nE` wird nicht erkannt, und bei `/proc` mit `hidepid=1` oder
   `2` gilt er als inaktiv.
-- Die sudoers-Regel führt ein kurzes Shell-Skript mit vollen Root-Rechten
-  aus, ohne die Sandbox der systemd-Unit, und gilt für alle Sitzungen der
-  genannten Benutzer, nicht nur für lokale. Sie kann trotzdem nur die Klasse
-  eines vorhandenen Adapters setzen.
+- **Im Vergleich zum polkit-Weg unter systemd** erlaubt die sudoers-Regel
+  mehr. Unter systemd lässt polkit nur eine aktive lokale Sitzung eine
+  abgeschottete Unit starten (nur die Netzwerk-Capabilities, die `btmgmt`
+  braucht, schreibgeschütztes System, keine Gerätedateien). Die sudoers-Regel führt
+  das Skript mit vollen Root-Rechten ohne Sandbox aus, und zwar für alle
+  Sitzungen der genannten Benutzer, auch per SSH und inaktive. Sie kann
+  trotzdem nur die Klasse eines vorhandenen Adapters setzen.
 - `sudo -n` gelingt auch ohne Regel, solange ein frischer `sudo`-Zeitstempel
   aus einem Terminal zwischengespeichert ist.
-- Lehnt sudo ab, versucht es der Daemon erst nach einem Neustart von
-  bluetoothd wieder. Eine fehlende Regel füllt also nicht das
+- Nach einem abgelehnten oder fehlgeschlagenen Versuch wartet der Daemon:
+  zuerst 15 Minuten, dann immer länger, höchstens sechs Stunden, und nach
+  einem Neustart von bluetoothd sofort. Eine später angelegte Regel wirkt
+  also ohne Neustart, und eine fehlende Regel füllt nicht das
   Authentifizierungslog.
 - Der optionale User-Service setzt `no_new_privs`, damit kann sein Daemon
   kein sudo nutzen. BlueFerry erkennt das und ruft sudo gar nicht erst auf;
