@@ -335,9 +335,10 @@ def test_photo_skipping_keeps_other_fields_and_the_card_budget() -> None:
         "BEGIN:VCARD\nFN:" + "y" * 300 + "\nPHOTO;ENCODING=b:QUJD\nEND:VCARD\n"
     )
     bodies = list(iter_vcard_bodies(blob, maximum=10, max_card_chars=200))
-    # A folded line that merely starts with "PHOTO" is not a property; a
-    # grouped PHOTO is skipped; a non-photo overflow still discards its card.
-    assert bodies == ["FN:A\nNOTE:x\n PHOTO;folded note text\nTEL:+15550000001"]
+    # A folded line that merely starts with "PHOTO" is unfolded into its
+    # property; a grouped PHOTO is skipped; a non-photo overflow still
+    # discards its card.
+    assert bodies == ["FN:A\nNOTE:xPHOTO;folded note text\nTEL:+15550000001"]
 
 
 def test_large_logo_sound_and_key_values_are_skipped_like_photos() -> None:
@@ -377,8 +378,8 @@ def test_quoted_printable_photo_continues_through_soft_line_breaks() -> None:
 
 def test_colon_less_lines_never_start_a_skipped_property() -> None:
     # A vCard 2.1 quoted-printable ADR continues unindented after its soft
-    # line break. Its next line reads like a KEY parameter list but has no
-    # ":", so it is not a property and must not swallow the lines after it.
+    # line break. Its next line reads like a KEY parameter list, but it is
+    # unfolded into the ADR and must not swallow the lines after it.
     blob = (
         "BEGIN:VCARD\nVERSION:2.1\nFN:Postbox\n"
         "ADR;ENCODING=QUOTED-PRINTABLE:;;Main St 1=\nKey;box 12\n"
@@ -387,7 +388,10 @@ def test_colon_less_lines_never_start_a_skipped_property() -> None:
 
     assert _parse_vcard_records(blob) == [("Postbox", ["15553334444"], [])]
     [card] = list(iter_vcard_bodies(blob, maximum=1))
-    assert "Key;box 12" in card.split("\n")
+    assert card.split("\n") == [
+        "VERSION:2.1", "FN:Postbox",
+        "ADR;ENCODING=QUOTED-PRINTABLE:;;Main St 1Key;box 12", "TEL;CELL:+15553334444",
+    ]
 
 
 def test_soft_break_continuations_of_kept_values_are_not_properties() -> None:
@@ -402,14 +406,15 @@ def test_soft_break_continuations_of_kept_values_are_not_properties() -> None:
     [card] = list(iter_vcard_bodies(blob, maximum=1))
     assert card.split("\n") == [
         "VERSION:2.1", "FN:Noted",
-        "NOTE;ENCODING=QUOTED-PRINTABLE:first=", "Ask a.Key: second=", "see p.photo: third",
+        "NOTE;ENCODING=QUOTED-PRINTABLE:firstAsk a.Key: secondsee p.photo: third",
         "EMAIL:n@example.com",
     ]
 
 
 def test_base64_continuations_only_follow_base64_media_values() -> None:
-    # A PHOTO link or a SOUND without an encoding has no unindented base64
-    # continuation, so colon-less lines after it are not swallowed.
+    # A PHOTO link, a SOUND without an encoding, or a data: URI (which folds
+    # like any vCard 3.0/4.0 value) has no unindented base64 continuation,
+    # so colon-less lines after it are not swallowed.
     blob = (
         "BEGIN:VCARD\nVERSION:2.1\nFN:Linked\n"
         "PHOTO;VALUE=uri:https://example.invalid/a.jpg\nStray1\n"
@@ -420,21 +425,28 @@ def test_base64_continuations_only_follow_base64_media_values() -> None:
     )
 
     [card] = list(iter_vcard_bodies(blob, maximum=1))
-    assert card.split("\n") == ["VERSION:2.1", "FN:Linked", "Stray1", "Stray2"]
+    assert card.split("\n") == ["VERSION:2.1", "FN:Linked", "Stray1", "Stray2", "R0hJ"]
 
 
-def test_unencoded_final_equals_sign_does_not_swallow_the_next_property() -> None:
-    # Strictly a literal "=" is written "=3D", but some encoders leave a final
-    # one unencoded. The next line starts a known property, so it is kept.
+def test_a_trailing_equals_sign_is_always_a_soft_line_break() -> None:
+    # A literal "=" must be written "=3D", so a quoted-printable line ending
+    # in "=" continues on the next line, as in Android's vCard 2.1 parser. An
+    # encoder that leaves a final "=" unencoded loses the following line into
+    # that value, but END:VCARD still ends the card and the next card is
+    # unaffected, whatever the size of the value.
     blob = (
         "BEGIN:VCARD\nVERSION:2.1\nFN:Equals\n"
         "PHOTO;ENCODING=QUOTED-PRINTABLE:=FF=D8=\n=00=\n"
         "TEL;CELL:+15556667777\n"
-        "NOTE;QUOTED-PRINTABLE:a=b=\nEMAIL:e@example.com\n"
+        "NOTE;QUOTED-PRINTABLE:a=b=\nEMAIL:e@example.com=\n"
         "END:VCARD\n"
+        "BEGIN:VCARD\nFN:Next\nTEL:+15550001111\nEND:VCARD\n"
     )
 
-    assert _parse_vcard_records(blob) == [("Equals", ["15556667777"], ["e@example.com"])]
+    assert list(iter_vcard_bodies(blob, maximum=2)) == [
+        "VERSION:2.1\nFN:Equals\nNOTE;QUOTED-PRINTABLE:a=bEMAIL:e@example.com=",
+        "FN:Next\nTEL:+15550001111",
+    ]
 
 
 def test_skipped_photo_lines_with_crlf_line_endings() -> None:

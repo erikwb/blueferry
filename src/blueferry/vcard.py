@@ -7,99 +7,16 @@ from typing import TextIO
 
 from blueferry.limits import MAX_VCARD_CHARS
 
-# An unindented line made only of base64 characters, optionally padded with
-# blanks. Matched in place so a candidate line is not copied.
-_BASE64_LINE = re.compile(r"[ \t]*[A-Za-z0-9+/=]+[ \t]*")
 # Properties whose values are inline binary payloads (pictures, sounds,
 # public keys) that contact parsing never reads.
-_SKIPPED_PROPERTIES = frozenset({"photo", "logo", "sound", "key"})
-
-
-# How a skipped value continues on the lines after its property line.
-_FOLDED = "folded"  # only vCard 3.0/4.0 folding (leading space or tab)
-_BASE64 = "base64"  # folding or unindented vCard 2.1 base64 lines
-_QUOTED_PRINTABLE = "quoted-printable"  # vCard 2.1 soft line breaks
+_SKIPPED_PROPERTIES = frozenset({"PHOTO", "LOGO", "SOUND", "KEY"})
 _BASE64_PARAMETERS = frozenset({"ENCODING=B", "ENCODING=BASE64", "BASE64"})
 _QUOTED_PRINTABLE_PARAMETERS = frozenset({"ENCODING=QUOTED-PRINTABLE", "QUOTED-PRINTABLE"})
-# The start of a registered vCard 2.1/3.0/4.0 property or an X- extension,
-# optionally grouped. Encoders that leave a trailing "=" unencoded make the
-# last line of a quoted-printable value look like a soft line break; a
-# following line that starts like this is taken as the next property.
-_KNOWN_PROPERTY = re.compile(
-    r"(?:[A-Za-z0-9-]+\.)?(?:X-[A-Za-z0-9-]+|"
-    r"ADR|AGENT|ANNIVERSARY|BDAY|BEGIN|CALADRURI|CALURI|CATEGORIES|CLASS|"
-    r"CLIENTPIDMAP|EMAIL|END|FBURL|FN|GENDER|GEO|IMPP|KEY|KIND|LABEL|LANG|"
-    r"LOGO|MAILER|MEMBER|N|NAME|NICKNAME|NOTE|ORG|PHOTO|PRODID|PROFILE|"
-    r"RELATED|REV|ROLE|SORT-STRING|SOUND|SOURCE|TEL|TITLE|TZ|UID|URL|"
-    r"VERSION|XML)[ \t]*[;:]",
-    re.IGNORECASE,
-)
-_DATA_BASE64_URI = re.compile(r"[ \t]*data:[^,]*;base64,", re.IGNORECASE)
-
-
-def _skipped_property(line: str) -> str | None:
-    """How the skipped property starting on this line continues, if it is one.
-
-    ``None`` means the line does not start a skipped property (a grouped name
-    such as ``item1.PHOTO`` counts). Otherwise the result is ``_BASE64`` for
-    ``ENCODING=b``/``BASE64`` values and ``data:...;base64,`` URIs,
-    ``_QUOTED_PRINTABLE`` for vCard 2.1 ``ENCODING=QUOTED-PRINTABLE`` values,
-    and ``_FOLDED`` for anything else, such as a ``VALUE=uri`` link.
-    """
-    if line[:1] in (" ", "\t"):
-        return None  # a folded continuation never starts a property
-    head, separator, value = line.partition(":")
-    if not separator:
-        return None  # every property has a value after ":"
-    name = head.split(";", 1)[0].strip().rsplit(".", 1)[-1].casefold()
-    if name not in _SKIPPED_PROPERTIES:
-        return None
-    parameters = {part.strip().upper() for part in head.split(";")[1:]}
-    if parameters & _QUOTED_PRINTABLE_PARAMETERS:
-        return _QUOTED_PRINTABLE
-    if parameters & _BASE64_PARAMETERS or _DATA_BASE64_URI.match(value):
-        return _BASE64
-    return _FOLDED
-
-
-def _is_quoted_printable(line: str) -> bool:
-    """Whether a property line declares a vCard 2.1 quoted-printable value."""
-    head, separator, _value = line.partition(":")
-    return bool(separator) and "QUOTED-PRINTABLE" in head.upper()
-
-
-def _soft_line_break(previous: str, line: str) -> bool:
-    """Whether ``line`` continues a quoted-printable value after ``previous``.
-
-    A line ending in ``=`` is a soft line break, since a literal ``=`` must
-    be written as ``=3D``. Some encoders still leave a final ``=`` unencoded,
-    so a line that starts a known property ends the value instead of being
-    swallowed with it.
-    """
-    return previous.rstrip().endswith("=") and _KNOWN_PROPERTY.match(line) is None
-
-
-def _continues_skipped(line: str, previous: str, mode: str) -> bool:
-    """Whether a physical line belongs to the skipped value above it.
-
-    vCard 3.0 and 4.0 fold with one leading space or tab, which continues
-    every kind of value. vCard 2.1 BASE64 values are commonly written as
-    unindented base64 lines ending at a blank line, so for a base64 value an
-    unindented line made only of base64 characters (``A-Z a-z 0-9 + / =``) is
-    also value data. A real property line always contains ``:`` and
-    therefore never matches. Other values, such as a ``VALUE=uri`` link, get
-    no such allowance, so a stray colon-less line after them is kept. A
-    vCard 2.1 QUOTED-PRINTABLE value continues on the next line exactly when
-    the previous line ends with the soft line break ``=`` and the line does
-    not start a known property.
-    """
-    if line[:1] in (" ", "\t"):
-        return True
-    if mode == _QUOTED_PRINTABLE:
-        return _soft_line_break(previous, line)
-    if mode == _BASE64:
-        return _BASE64_LINE.fullmatch(line) is not None
-    return False
+# An unindented vCard 2.1 BASE64 continuation line, optionally padded.
+_BASE64_LINE = re.compile(r"[ \t]*[A-Za-z0-9+/=]+[ \t]*")
+# A property head (``group.NAME;params``) longer than this without its ":"
+# is not a property this module skips; the line is kept and budgeted.
+_MAX_HEAD_CHARS = 1024
 
 
 def iter_bounded_lines(stream: TextIO, *, limit: int = MAX_VCARD_CHARS) -> Iterator[str]:
@@ -162,6 +79,165 @@ def _line_pieces(blob: str | Iterable[str]) -> Iterator[tuple[str, bool, bool]]:
         yield pending[0], pending[1], True
 
 
+
+def _split_unquoted(head: str, separator: str) -> list[str]:
+    """Split a property head at ``separator`` outside double quotes."""
+    parts: list[str] = []
+    start = 0
+    quoted = False
+    for index, char in enumerate(head):
+        if char == '"':
+            quoted = not quoted
+        elif char == separator and not quoted:
+            parts.append(head[start:index])
+            start = index + 1
+    parts.append(head[start:])
+    return parts
+
+
+class _Card:
+    """One vCard, assembled from physical lines into logical properties.
+
+    Lines are unfolded before anything is decided about them: a leading space
+    or tab continues the previous line (RFC 6350/2426 remove it, vCard 2.1
+    keeps it), a vCard 2.1 QUOTED-PRINTABLE value continues after a line
+    ending in the soft line break ``=``, and a vCard 2.1 BASE64 value
+    continues on unindented base64 lines up to a blank line. Each logical
+    property is then split into ``group.NAME;params`` and its value at the
+    first ``:`` outside quotes. PHOTO, LOGO, SOUND and KEY are dropped whole;
+    every other property counts against the card budget unfolded.
+
+    Only kept properties are retained, so memory stays bounded by the card
+    budget plus one property head, however large a skipped value is.
+    """
+
+    def __init__(self, limit: int) -> None:
+        self.limit = limit
+        self.lines: list[str] = []
+        self.size = 0  # kept lines plus one line break each
+        self.overflowed = False
+        self.version21 = False
+        self._reset_property()
+
+    def _reset_property(self, *, present: bool = False) -> None:
+        self.present = present  # whether a property is open
+        self.decided = False  # whether its head has been read
+        self.skipped = False
+        self.head = ""
+        self.quoted = False
+        self.encoding: frozenset[str] = frozenset()
+        self.base64_open = False
+        self.soft_break = False
+        self.parts: list[str] = []
+        self.property_size = 1  # its line break in the card body
+
+    def start_line(self, text: str) -> None:
+        """Add the start of a physical line (or the whole line)."""
+        if self.overflowed:
+            return
+        start = text[:_WHOLE_LINE_START]
+        if self.present and text[:1] in (" ", "\t"):
+            self.property_size += 1
+            self._add(text if self.version21 else text[1:])
+        elif self.soft_break and self.encoding & _QUOTED_PRINTABLE_PARAMETERS:
+            self._drop_soft_break()
+            self.property_size += 1
+            self._add(text)
+        elif self.base64_open and self.encoding & _BASE64_PARAMETERS and (
+            not start.strip() or _BASE64_LINE.fullmatch(start)
+        ):
+            # A blank line ends a vCard 2.1 BASE64 value.
+            self.base64_open = bool(start.strip())
+            self.property_size += 1
+            self._add(text)
+        else:
+            self._close_property()
+            self._reset_property(present=True)
+            self._add(text)
+        self.soft_break = False
+        self._note_line_end(text)
+
+    def add_piece(self, text: str) -> None:
+        """Add a further piece of a physical line a bounded reader cut."""
+        if not self.overflowed:
+            self._add(text)
+            self._note_line_end(text)
+
+    def finish(self) -> str | None:
+        """Return the card body, or ``None`` if it exceeded the budget."""
+        self._close_property()
+        return None if self.overflowed else "\n".join(self.lines)
+
+    def _note_line_end(self, text: str) -> None:
+        stripped = text.rstrip()
+        if stripped:
+            self.soft_break = stripped.endswith("=")
+
+    def _drop_soft_break(self) -> None:
+        while self.parts and not self.parts[-1].rstrip():
+            self.property_size -= len(self.parts.pop())
+        if self.parts:
+            last = self.parts[-1].rstrip()
+            last = last[:-1] if last.endswith("=") else last
+            self.property_size -= len(self.parts[-1]) - len(last)
+            self.parts[-1] = last
+
+    def _add(self, text: str) -> None:
+        if self.skipped:
+            return
+        if text:
+            self.parts.append(text)
+            self.property_size += len(text)
+        if not self.decided:
+            self._read_head(text)
+        if self.decided and not self.skipped:
+            self._check_budget()
+
+    def _read_head(self, text: str) -> None:
+        room = _MAX_HEAD_CHARS - len(self.head)
+        scanned = text[:room]
+        for index, char in enumerate(scanned):
+            if char == '"':
+                self.quoted = not self.quoted
+            elif char == ":" and not self.quoted:
+                self._decide(self.head + scanned[:index])
+                return
+        self.head += scanned
+        if len(self.head) >= _MAX_HEAD_CHARS or self.property_size > _MAX_HEAD_CHARS:
+            self.decided = True  # no property head: kept as text
+
+    def _decide(self, head: str) -> None:
+        self.decided = True
+        self.head = ""
+        name, *parameters = _split_unquoted(head, ";")
+        self.encoding = frozenset(part.strip().upper() for part in parameters)
+        self.base64_open = bool(self.encoding & _BASE64_PARAMETERS)
+        if name.strip().rsplit(".", 1)[-1].upper() in _SKIPPED_PROPERTIES:
+            self.skipped = True
+            self.parts = []
+
+    def _check_budget(self) -> None:
+        if self.size + self.property_size > self.limit:
+            self.overflowed = True
+            self.lines = []
+            self.parts = []
+
+    def _close_property(self) -> None:
+        if not self.present or self.overflowed or self.skipped:
+            return
+        self.decided = True
+        self._check_budget()
+        if self.overflowed:
+            return
+        line = "".join(self.parts)
+        self.lines.append(line)
+        self.size += self.property_size
+        name, _, value = line.partition(":")
+        if name.strip().upper() == "VERSION":
+            self.version21 = value.strip() == "2.1"
+        self.parts = []
+
+
 def iter_vcard_bodies(
     blob: str | Iterable[str],
     *,
@@ -182,82 +258,38 @@ def iter_vcard_bodies(
     keeps only the current line and card in memory instead of the whole
     phonebook plus its split copy.
 
-    PHOTO, LOGO, SOUND, and KEY properties (with their continuation lines)
-    are skipped and do not count against ``max_card_chars``: nothing here
-    reads them, and a large contact picture must not discard the card's name
-    and addresses. Every piece of an over-long line that a bounded reader
-    cut belongs to that line, so an unfolded media value of any encoding is
-    skipped whole and a kept line is rejoined. Skipped lines are never
-    retained, so memory stays bounded by the card budget.
+    Each body holds the card's unfolded properties, one per line (see
+    ``_Card``). PHOTO, LOGO, SOUND, and KEY properties are skipped whole and
+    do not count against ``max_card_chars``: nothing here reads them, and a
+    large contact picture must not discard the card's name and addresses.
+    ``BEGIN:VCARD`` and ``END:VCARD`` always delimit cards, even inside a
+    malformed value, so a broken property never reaches another card.
     """
     selected_maximum = max(0, int(maximum))
     selected_card_limit = max(0, int(max_card_chars))
     yielded = 0
-    active = False
-    overflowed = False
-    size = 0
-    lines: list[str] = []
-    skipping: str | None = None
-    # A kept quoted-printable value continues on the next line after a soft
-    # line break, and that line must not be mistaken for a new property.
-    kept_quoted_printable = False
-    # Whether the line the current piece belongs to is being dropped.
-    dropping = True
-    previous = ""
+    card: _Card | None = None
 
     for line, continued, complete in _line_pieces(blob):
         if continued:
-            previous = line
-            if dropping:
-                continue
-            size += len(line)
-            if size > selected_card_limit:
-                overflowed = True
-                dropping = True
-                lines = []
-                continue
-            lines[-1] += line
+            if card is not None:
+                card.add_piece(line)
             continue
-        dropping = True
         # A cut piece is never a whole marker line.
         marker = line.strip().casefold() if complete else ""
+        if card is not None and line[:1] in (" ", "\t") and card.present:
+            marker = ""  # a folded continuation is never a marker
         if marker == "begin:vcard":
-            active = True
-            overflowed = False
-            skipping = None
-            kept_quoted_printable = False
-            size = 0
-            lines = []
+            card = _Card(selected_card_limit)
             continue
         if marker == "end:vcard":
-            if active and not overflowed:
-                yield "\n".join(lines)
+            body = card.finish() if card is not None else None
+            card = None
+            if body is not None:
+                yield body
                 yielded += 1
                 if yielded >= selected_maximum:
                     return
-            active = False
-            overflowed = False
-            skipping = None
-            kept_quoted_printable = False
-            size = 0
-            lines = []
             continue
-        if not active or overflowed:
-            continue
-        if skipping is not None and _continues_skipped(line, previous, skipping):
-            previous = line
-            continue
-        if not (kept_quoted_printable and _soft_line_break(previous, line)):
-            # Not a soft-break continuation of a kept quoted-printable value.
-            skipping = _skipped_property(line)
-            kept_quoted_printable = skipping is None and _is_quoted_printable(line)
-        previous = line
-        if skipping is not None:
-            continue
-        size += len(line) + 1
-        if size > selected_card_limit:
-            overflowed = True
-            lines = []
-            continue
-        lines.append(line)
-        dropping = False
+        if card is not None:
+            card.start_line(line)
