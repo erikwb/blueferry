@@ -7,6 +7,29 @@ import pytest
 
 from blueferry import daemon as daemon_mod
 from blueferry.errors import NotReadyError
+from blueferry.settings_store import SettingsStore
+
+
+class _Link:
+    """Stands in for the daemon's NetworkLinkWatch (no system bus)."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def start(self) -> None:
+        self.calls.append("start")
+
+    def stop(self) -> None:
+        self.calls.append("stop")
+
+    def probe(self) -> None:
+        self.calls.append("probe")
+
+
+@pytest.fixture
+def enabled(monkeypatch) -> None:
+    """Seed the opt-in as if BLUEFERRY_TETHER_ENABLED=true were set."""
+    monkeypatch.setattr(daemon_mod.config, "TETHER_ENABLED", True)
 
 
 class _Tether:
@@ -35,10 +58,74 @@ def test_tethering_is_off_and_not_automatic_by_default(make_daemon) -> None:
     instance = make_daemon()
 
     assert instance.tether.snapshot()["state"] == "off"
+    assert instance.tether.snapshot()["enabled"] is False
     assert instance.tether.snapshot()["autoconnect"] is False
 
 
-def test_connect_needs_the_classic_link_the_bearer_supervisor_owns(make_daemon) -> None:
+def test_disabled_tethering_leaves_foreign_pan_links_and_recovery_alone(make_daemon) -> None:
+    """The maintainer's case: tethering through plasma-nm, BlueFerry's off."""
+    instance = make_daemon()
+    link = _Link()
+    instance.tether._link_watch = link
+    instance.tether._interface_exists = lambda _name: True
+    instance.tether.start()
+
+    assert link.calls == []  # no Network1 watch at all
+    instance.tether.observe_link(True, "bnep0")  # plasma-nm brought PAN up
+    assert instance.tether.state == "off"
+    assert instance._recovery_observation().busy is False
+    assert link.calls == []  # not even a probe before recovery
+    with pytest.raises(NotReadyError, match="turned off"):
+        instance.tether.connect()
+
+
+def test_disabled_tethering_does_not_autoconnect(make_daemon, monkeypatch) -> None:
+    monkeypatch.setattr(daemon_mod.config, "TETHER_AUTOCONNECT", True)
+    instance = make_daemon()
+    chosen = []
+    instance.tether._choose_backend = lambda *_a: chosen.append(True)
+    instance.tether._running = True
+    instance.bearers = SimpleNamespace(bredr_connected=True)
+    instance.tether._classic_ready = lambda: True
+    instance.tether._autoconnect_ready = lambda: True
+
+    instance.tether.maybe_autoconnect()
+
+    assert chosen == []
+
+
+def test_saved_opt_in_wins_and_is_applied_at_runtime(make_daemon, monkeypatch) -> None:
+    from blueferry import config
+
+    SettingsStore().update(tether_enabled=True, tether_autoconnect=False)
+    instance = make_daemon()
+    assert instance.tether.enabled is True
+
+    link = _Link()
+    instance.tether._link_watch = link
+    instance.tether._interface_exists = lambda _name: True
+    instance.tether.start()
+    assert link.calls == ["start"]
+    instance.tether.observe_link(True, "bnep0")
+    assert instance._recovery_observation().busy is True
+
+    snapshot = instance._set_tethering(False, False)
+
+    assert snapshot["enabled"] is False
+    assert snapshot["state"] == "off"
+    assert "stop" in link.calls
+    # Recovery is released at once, and the choice survives a restart.
+    assert instance._recovery_observation().busy is False
+    import json
+
+    saved = json.loads(config.SETTINGS_JSON.read_text())
+    assert (saved["tether_enabled"], saved["tether_autoconnect"]) == (False, False)
+    assert make_daemon().tether.enabled is False
+
+
+def test_connect_needs_the_classic_link_the_bearer_supervisor_owns(
+    make_daemon, enabled,
+) -> None:
     instance = make_daemon()
     instance.bearers = SimpleNamespace(bredr_connected=False)
 
@@ -63,7 +150,7 @@ def test_only_a_live_tether_link_holds_back_the_power_cycle(make_daemon) -> None
     assert tether.calls == ["probe"]
 
 
-def test_recovery_is_not_blocked_by_a_vanished_interface(make_daemon) -> None:
+def test_recovery_is_not_blocked_by_a_vanished_interface(make_daemon, enabled) -> None:
     instance = make_daemon()
     instance.tether._interface_exists = lambda _name: False
     instance.tether.observe_link(True, "bnep0")
@@ -129,3 +216,4 @@ def test_autoconnect_flag_reaches_the_controller(make_daemon, monkeypatch) -> No
     monkeypatch.setattr(daemon_mod.config, "TETHER_AUTOCONNECT", True)
     instance = make_daemon()
     assert instance.tether.snapshot()["autoconnect"] is True
+    assert instance.tether.snapshot()["enabled"] is False

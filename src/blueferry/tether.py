@@ -6,8 +6,12 @@ BlueZ exposes that as ``org.bluez.Network1`` on the paired device, and
 configuration is a separate step: NetworkManager can own both steps, and
 without it BlueFerry brings up the link only and leaves DHCP to the user.
 
-Tethering is never started implicitly unless the user sets
-``BLUEFERRY_TETHER_AUTOCONNECT``. It is layered on the Classic link that the
+The whole feature is off until the user enables it (``SetTethering`` on
+``Tether1``, saved in ``settings.json``; ``BLUEFERRY_TETHER_ENABLED`` seeds the
+first value). While it is off the controller does not watch or adopt PAN
+links, does not hold back adapter recovery, and refuses ``Connect``. Even
+when enabled, tethering is never started implicitly unless the user also
+turns on automatic tethering. It is layered on the Classic link that the
 bearer supervisor already maintains. It only ever talks to ``Network1`` or
 NetworkManager, never to the device- or bearer-level connect/disconnect
 methods or per-profile connects, so it cannot fight the supervisor over the
@@ -24,14 +28,21 @@ import logging
 import os
 import time
 from collections.abc import Callable, Mapping
+from pathlib import Path
 from typing import Any, Protocol
 
 import dbus
 import dbus.exceptions
 
+from blueferry import config
 from blueferry.errors import NotReadyError
+from blueferry.settings_store import SettingsStore
 
 log = logging.getLogger(__name__)
+
+
+class TetherDisabledError(NotReadyError):
+    """``Connect`` while the user has not enabled Bluetooth tethering."""
 
 BLUEZ = "org.bluez"
 NETWORK_IFACE = "org.bluez.Network1"
@@ -277,6 +288,75 @@ class NetworkLinkWatch:
                 log.debug("could not remove PAN link watch: %s", dbus_error_name(error))
 
 
+class TetherSettings:
+    """Persist the tethering opt-in in the owner-only settings document.
+
+    ``BLUEFERRY_TETHER_ENABLED`` and ``BLUEFERRY_TETHER_AUTOCONNECT`` provide
+    the initial values. A value saved through the D-Bus API (Qt or GTK
+    settings, the TUI, ``blueferry tether enable``) takes precedence.
+    """
+
+    ENABLED_KEY = "tether_enabled"
+    AUTOCONNECT_KEY = "tether_autoconnect"
+
+    def __init__(
+        self,
+        path: Path | None = None,
+        *,
+        default_enabled: bool | None = None,
+        default_autoconnect: bool | None = None,
+    ) -> None:
+        self._settings = SettingsStore(path or config.SETTINGS_JSON)
+        payload = self._settings.read()  # never raises; {} when unreadable
+        seeds = (
+            (self.ENABLED_KEY, "BLUEFERRY_TETHER_ENABLED",
+             config.TETHER_ENABLED if default_enabled is None else default_enabled,
+             default_enabled is None),
+            (self.AUTOCONNECT_KEY, "BLUEFERRY_TETHER_AUTOCONNECT",
+             config.TETHER_AUTOCONNECT if default_autoconnect is None
+             else default_autoconnect,
+             default_autoconnect is None),
+        )
+        values: list[bool] = []
+        for key, name, seeded, from_environment in seeds:
+            stored = payload.get(key)
+            value = stored if isinstance(stored, bool) else bool(seeded)
+            if from_environment and isinstance(stored, bool):
+                self._note_overridden(name, bool(seeded), value)
+            values.append(value)
+        self._enabled, self._autoconnect = values
+
+    @staticmethod
+    def _note_overridden(name: str, seeded: bool, effective: bool) -> None:
+        """Say once, at startup, that a set seed value is not in effect."""
+        if name in os.environ and seeded != effective:
+            log.info(
+                "%s is ignored because a tethering preference was saved in "
+                "settings.json (using %s)",
+                name,
+                effective,
+            )
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
+    @property
+    def autoconnect(self) -> bool:
+        return self._autoconnect
+
+    def set(self, enabled: bool, autoconnect: bool) -> tuple[bool, bool]:
+        if not isinstance(enabled, bool) or not isinstance(autoconnect, bool):
+            raise ValueError("tethering settings must be booleans")
+        self._settings.update(**{
+            self.ENABLED_KEY: enabled,
+            self.AUTOCONNECT_KEY: autoconnect,
+        })
+        self._enabled = enabled
+        self._autoconnect = autoconnect
+        return enabled, autoconnect
+
+
 class TetherController:
     """Explicit, content-free tethering state machine owned by the daemon.
 
@@ -294,6 +374,7 @@ class TetherController:
         classic_ready: Callable[[], bool] = lambda: True,
         autoconnect_ready: Callable[[], bool] = lambda: True,
         on_changed: Callable[[], None] | None = None,
+        enabled: bool = False,
         autoconnect: bool = False,
         schedule: Schedule | None = None,
         cancel: Cancel | None = None,
@@ -310,6 +391,7 @@ class TetherController:
         self._classic_ready = classic_ready
         self._autoconnect_ready = autoconnect_ready
         self._on_changed = on_changed
+        self._enabled = bool(enabled)
         self._autoconnect = autoconnect
         self._schedule = schedule
         self._cancel = cancel
@@ -333,7 +415,11 @@ class TetherController:
         # An explicit Disconnect() is a user decision; automatic attempts wait
         # for the next explicit Connect() or a new daemon generation.
         self._auto_suppressed = False
+        # Enabling with autoconnect waits for the watch's first report, so a
+        # link another tool already holds is adopted, never claimed as ours.
+        self._autoconnect_after_probe = False
         self._running = False
+        self._watching = False
 
     # ---- read side -------------------------------------------------------
 
@@ -345,6 +431,10 @@ class TetherController:
     def active(self) -> bool:
         return self._state in ACTIVE_STATES
 
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
     def link_alive(self) -> bool:
         """True only while a tether is demonstrably carrying the user's traffic.
 
@@ -352,7 +442,7 @@ class TetherController:
         interface has to exist in the kernel, and an unknown one is trusted
         for a bounded time only.
         """
-        if self._state != CONNECTED:
+        if not self._enabled or self._state != CONNECTED:
             return False
         if self._interface:
             return self._interface_exists(self._interface)
@@ -361,7 +451,7 @@ class TetherController:
 
     def probe_link(self) -> None:
         """Ask BlueZ for the current link, e.g. before recovery trusts it."""
-        if self._state == CONNECTED and self._running and self._link_watch is not None:
+        if self._state == CONNECTED and self._watching and self._link_watch is not None:
             self._link_watch.probe()
 
     def snapshot(self) -> dict[str, object]:
@@ -377,6 +467,7 @@ class TetherController:
             "needs_dhcp": bool(
                 connected and not self._external and backend == BACKEND_BLUEZ
             ),
+            "enabled": self._enabled,
             "autoconnect": self._autoconnect,
         }
 
@@ -386,8 +477,8 @@ class TetherController:
         if self._running:
             return
         self._running = True
-        if self._link_watch is not None:
-            self._link_watch.start()
+        if self._enabled:
+            self._start_watch()
 
     def stop(self) -> None:
         """Forget local state; a NetworkManager tether outlives the daemon."""
@@ -398,8 +489,73 @@ class TetherController:
         self._cancel_confirm()
         if self._backend is not None:
             self._backend.cancel()
-        if self._link_watch is not None:
-            self._link_watch.stop()
+        self._stop_watch()
+
+    def _start_watch(self) -> None:
+        if self._watching or not self._running or self._link_watch is None:
+            return
+        self._watching = True
+        self._link_watch.start()
+
+    def _stop_watch(self) -> None:
+        if not self._watching or self._link_watch is None:
+            self._watching = False
+            return
+        self._watching = False
+        self._link_watch.stop()
+
+    def configure(self, enabled: bool, autoconnect: bool) -> dict[str, object]:
+        """Apply the saved opt-in at runtime and return the new snapshot.
+
+        Turning the feature off ends a tether this daemon started, stops
+        watching (and so forgets any adopted) PAN link, and releases the
+        recovery hold. A link another tool started is left alone.
+        """
+        enabled = bool(enabled)
+        autoconnect = bool(autoconnect)
+        was_enabled = self._enabled
+        was_auto = self._autoconnect
+        self._enabled = enabled
+        self._autoconnect = autoconnect
+        if not enabled:
+            self._disable()
+        elif not was_enabled:
+            log.info("Bluetooth tethering enabled")
+            self._start_watch()
+        if enabled and autoconnect and not (was_enabled and was_auto):
+            # Turning automatic tethering on is an explicit user decision.
+            self._auto_suppressed = False
+            self._auto_failures = 0
+            if not was_enabled and self._link_watch is not None:
+                self._autoconnect_after_probe = True
+            else:
+                self.maybe_autoconnect()
+        elif not autoconnect:
+            self._autoconnect_after_probe = False
+            self._cancel_retry()
+        if (enabled, autoconnect) != (was_enabled, was_auto):
+            self._publish()
+        return self.snapshot()
+
+    def _disable(self) -> None:
+        self._cancel_retry()
+        self._autoconnect_after_probe = False
+        awaiting_link_down = self._awaiting_link_down
+        if self._state in (CONNECTING, CONNECTED) and not self._external:
+            log.info("Bluetooth tethering disabled; stopping its link")
+            self.disconnect()
+        elif self._state != DISCONNECTING or awaiting_link_down:
+            # An adopted link belongs to whoever started it: forget it, never
+            # stop it. A stop already waiting for BlueZ is settled as done.
+            self._generation += 1
+            self._cancel_deadline()
+            self._external = False
+            self._set(OFF, error="", interface="")
+            log.info("Bluetooth tethering disabled")
+        # Otherwise a stop is in flight; its backend reply finishes it.
+        self._awaiting_link_down = False
+        self._cancel_confirm()
+        self._stop_watch()
 
     def reset_after_bluez_restart(self) -> None:
         """BlueZ restarts drop every BNEP link and every pending reply."""
@@ -414,7 +570,7 @@ class TetherController:
         was_external = self._external
         self._external = False
         self._set(OFF, error=LINK_LOST if was_active else "", interface="")
-        if self._running and self._link_watch is not None:
+        if self._watching and self._link_watch is not None:
             self._link_watch.probe()
         if was_active and not was_external:
             self._schedule_auto_retry()
@@ -422,6 +578,11 @@ class TetherController:
     # ---- commands ----------------------------------------------------------
 
     def connect(self, *, automatic: bool = False) -> dict[str, object]:
+        if not self._enabled:
+            raise TetherDisabledError(
+                "Bluetooth tethering is turned off; enable it in BlueFerry's "
+                "iPhone settings or with 'blueferry tether enable'"
+            )
         if not automatic:
             self._auto_suppressed = False
             self._auto_failures = 0
@@ -517,7 +678,8 @@ class TetherController:
     def maybe_autoconnect(self) -> None:
         """Start one automatic attempt when the user opted in and it is safe."""
         if (
-            not self._autoconnect or self._auto_suppressed or not self._running
+            not self._enabled or not self._autoconnect or self._auto_suppressed
+            or not self._running
             or self._state not in (OFF, FAILED) or self._retry_id is not None
         ):
             return
@@ -591,7 +753,7 @@ class TetherController:
     def _disconnected(self, generation: int, external: bool) -> None:
         if generation != self._generation:
             return
-        if external and self._link_watch is not None and self._running:
+        if external and self._link_watch is not None and self._watching:
             # The backend may have found nothing it recognised to stop. Only
             # BlueZ can say whether the adopted link is really gone.
             self._awaiting_link_down = True
@@ -610,15 +772,30 @@ class TetherController:
     def _disconnect_failed(self, generation: int, token: str) -> None:
         if generation != self._generation:
             return
+        if not self._enabled:
+            # Disabled mid-stop: nothing is tracked any more, so do not leave
+            # a stale failure behind for the next enable.
+            log.warning("could not stop Bluetooth tethering after disabling it")
+            self._set(OFF, error="", interface="")
+            return
         token = token if token in ERROR_TOKENS else GENERIC_ERROR
         log.warning("could not stop Bluetooth tethering: %s", token)
         self._set(FAILED, error=token, interface="")
         # The link watch corrects the state if the link is actually still up.
-        if self._link_watch is not None and self._running:
+        if self._link_watch is not None and self._watching:
             self._link_watch.probe()
 
     def observe_link(self, connected: bool, interface: str) -> None:
         """Reconcile with BlueZ's Network1 state (ground truth for the link)."""
+        if not self._enabled:
+            # Off means off: never adopt or track a PAN link.
+            return
+        self._observe_link(connected, interface)
+        if self._autoconnect_after_probe:
+            self._autoconnect_after_probe = False
+            self.maybe_autoconnect()
+
+    def _observe_link(self, connected: bool, interface: str) -> None:
         if self._awaiting_link_down and self._state == DISCONNECTING:
             self._link_after_disconnect(connected, interface)
             return
@@ -710,7 +887,10 @@ class TetherController:
         self._confirm_id = None
 
     def _schedule_auto_retry(self) -> None:
-        if not self._autoconnect or self._auto_suppressed or not self._running:
+        if (
+            not self._enabled or not self._autoconnect or self._auto_suppressed
+            or not self._running
+        ):
             return
         if self._retry_id is not None:
             return

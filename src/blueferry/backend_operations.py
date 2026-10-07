@@ -266,6 +266,7 @@ class BackendDependencies:
     set_phone_battery_warning: Callable[[bool], dict[str, Any]] | None = None
     set_media_mpris: Callable[[bool], dict[str, Any]] | None = None
     tether: TetherControl | None = None
+    set_tethering: Callable[[bool, bool], dict[str, Any]] | None = None
 
 
 class BackendOperations:
@@ -1404,6 +1405,19 @@ class BackendOperations:
 
     def tether_disconnect(self) -> dict[str, object]:
         return self._tether().disconnect()
+
+    def set_tethering(self, enabled: bool, autoconnect: bool) -> dict[str, object]:
+        """Opt in or out of Bluetooth tethering and automatic tethering."""
+        configure = self.dependencies.set_tethering
+        if configure is None:
+            raise NotReadyError("Bluetooth tethering is unavailable in this backend")
+        try:
+            return dict(configure(enabled, autoconnect))
+        except ValueError as error:
+            raise InvalidArgumentsError(str(error)) from error
+        except OSError as error:
+            log.error("could not save tethering preference: %s", error)
+            raise NotReadyError("could not save the tethering preference") from error
 
     def is_healthy(self) -> bool:
         return self.sessions.map is not None

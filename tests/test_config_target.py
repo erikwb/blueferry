@@ -42,9 +42,12 @@ def test_current_target_keeps_explicit_environment_override(tmp_path, monkeypatc
 
 
 def test_tether_settings_are_opt_in_and_validated(monkeypatch) -> None:
-    assert {"BLUEFERRY_TETHER_AUTOCONNECT", "BLUEFERRY_TETHER_BACKEND"} <= config.LOCAL_ENV_KEYS
-    monkeypatch.delenv("BLUEFERRY_TETHER_AUTOCONNECT", raising=False)
-    assert config._env_bool("BLUEFERRY_TETHER_AUTOCONNECT", False) is False
+    assert {
+        "BLUEFERRY_TETHER_ENABLED", "BLUEFERRY_TETHER_AUTOCONNECT", "BLUEFERRY_TETHER_BACKEND",
+    } <= config.LOCAL_ENV_KEYS
+    for name in ("BLUEFERRY_TETHER_ENABLED", "BLUEFERRY_TETHER_AUTOCONNECT"):
+        monkeypatch.delenv(name, raising=False)
+        assert config._env_bool(name, False) is False
 
     for raw, expected in (
         ("", "auto"), ("wicd", "auto"), ("NetworkManager", "networkmanager"),

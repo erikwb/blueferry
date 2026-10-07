@@ -39,6 +39,7 @@ LOCAL_ENV_KEYS = frozenset({
     "BLUEFERRY_MEDIA_MPRIS_ENABLED",
     "BLUEFERRY_TETHER_AUTOCONNECT",
     "BLUEFERRY_TETHER_BACKEND",
+    "BLUEFERRY_TETHER_ENABLED",
 })
 CONFIG_DIR: Path = Path(
     os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config")
@@ -354,12 +355,20 @@ MISSED_CALL_NOTIFICATIONS: bool = _env_bool(
     "BLUEFERRY_MISSED_CALL_NOTIFICATIONS", True
 )
 """Desktop popups for newly seen missed calls; only with call history enabled."""
-TETHER_AUTOCONNECT: bool = _env_bool("BLUEFERRY_TETHER_AUTOCONNECT", False)
-"""Start Bluetooth tethering automatically once MAP/PBAP are up.
+TETHER_ENABLED: bool = _env_bool("BLUEFERRY_TETHER_ENABLED", False)
+"""Initial opt-in for Bluetooth tethering as a whole.
 
-Off by default: tethering is otherwise only started by an explicit client
-action. An explicit disconnect pauses automatic attempts until the next
-explicit connect.
+Off by default. While off, the daemon neither watches nor adopts PAN links,
+does not hold back adapter recovery for them, and refuses ``Tether1.Connect``.
+A value saved through the D-Bus API (settings.json) takes precedence; see
+``tether.TetherSettings``.
+"""
+TETHER_AUTOCONNECT: bool = _env_bool("BLUEFERRY_TETHER_AUTOCONNECT", False)
+"""Initial value for starting tethering automatically once MAP/PBAP are up.
+
+Off by default and effective only while tethering is enabled. An explicit
+disconnect pauses automatic attempts until the next explicit connect. A value
+saved through the D-Bus API takes precedence.
 """
 
 

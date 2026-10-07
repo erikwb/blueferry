@@ -509,6 +509,7 @@ def test_controller_stops_an_adopted_applet_tether_end_to_end() -> None:
             NetworkManagerTether(lambda: bus, MAC, user=lambda: "alice")
         ),
         link_watch=link,
+        enabled=True,
         schedule=lambda _seconds, _callback: 1,
         cancel=lambda _source: None,
     )

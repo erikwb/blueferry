@@ -81,12 +81,14 @@ class Link:
 
     def __init__(self) -> None:
         self.probes = 0
+        self.starts = 0
+        self.stops = 0
 
     def start(self) -> None:
-        pass
+        self.starts += 1
 
     def stop(self) -> None:
-        pass
+        self.stops += 1
 
     def probe(self) -> None:
         self.probes += 1
@@ -101,7 +103,7 @@ class Clock:
 
 
 def controller(chooser=None, *, classic=True, ready=True, autoconnect=False, link=None,
-               clock=None, interfaces=frozenset({"bnep0"})):
+               clock=None, interfaces=frozenset({"bnep0"}), enabled=True):
     timers = Timers()
     changes: list[None] = []
     flags = {"classic": classic, "ready": ready}
@@ -111,6 +113,7 @@ def controller(chooser=None, *, classic=True, ready=True, autoconnect=False, lin
         classic_ready=lambda: flags["classic"],
         autoconnect_ready=lambda: flags["ready"],
         on_changed=lambda: changes.append(None),
+        enabled=enabled,
         autoconnect=autoconnect,
         schedule=timers.schedule,
         cancel=timers.cancel,
@@ -128,7 +131,7 @@ def test_default_state_is_off_and_never_connects_by_itself() -> None:
 
     assert value.snapshot() == {
         "state": OFF, "interface": "", "backend": "", "external": False,
-        "error": "", "needs_dhcp": False, "autoconnect": False,
+        "error": "", "needs_dhcp": False, "enabled": True, "autoconnect": False,
     }
     assert chooser.calls == 0
     assert timers.pending == {}
@@ -364,7 +367,8 @@ def test_snapshot_never_carries_addresses_or_ip_configuration() -> None:
 
     snapshot = value.snapshot()
     assert set(snapshot) == {
-        "state", "interface", "backend", "external", "error", "needs_dhcp", "autoconnect",
+        "state", "interface", "backend", "external", "error", "needs_dhcp", "enabled",
+        "autoconnect",
     }
     assert json.loads(json.dumps(snapshot)) == snapshot
 
@@ -680,3 +684,326 @@ def test_bluez_restart_clears_a_stale_failure() -> None:
 
     assert value.snapshot()["state"] == OFF
     assert value.snapshot()["error"] == ""
+
+
+# ---- the user's opt-in (off by default) -------------------------------------
+
+
+def test_controller_is_disabled_unless_told_otherwise() -> None:
+    value = TetherController(
+        Chooser(), schedule=lambda *_a: 1, cancel=lambda _s: None,
+    )
+    assert value.enabled is False
+    assert value.snapshot()["enabled"] is False
+
+
+def test_disabled_controller_neither_watches_nor_adopts_nor_holds_recovery() -> None:
+    link = Link()
+    chooser = Chooser()
+    value, _timers, changes, _flags = controller(chooser, link=link, enabled=False)
+    value.start()
+
+    assert link.starts == 0
+    # A PAN link another tool (e.g. plasma-nm) brought up is not adopted.
+    value.observe_link(True, "bnep0")
+    assert value.state == OFF
+    assert value.snapshot()["external"] is False
+    assert value.link_alive() is False
+    value.probe_link()
+    assert link.probes == 0
+    assert changes == []
+    assert chooser.calls == 0
+
+
+def test_disabled_controller_refuses_connect_with_a_clear_error() -> None:
+    chooser = Chooser()
+    value, *_ = controller(chooser, enabled=False)
+    value.start()
+
+    with pytest.raises(tether.TetherDisabledError, match="turned off") as caught:
+        value.connect()
+    # It travels as the stable NotReady D-Bus error.
+    assert isinstance(caught.value, NotReadyError)
+    assert chooser.calls == 0
+    assert value.state == OFF
+
+
+def test_disabled_controller_never_autoconnects() -> None:
+    chooser = Chooser()
+    value, timers, *_ = controller(chooser, enabled=False, autoconnect=True)
+    value.start()
+    value.maybe_autoconnect()
+    assert chooser.calls == 0
+    assert timers.pending == {}
+
+
+def test_disconnect_while_disabled_is_a_harmless_no_op() -> None:
+    chooser = Chooser()
+    value, *_ = controller(chooser, enabled=False)
+    value.start()
+    assert value.disconnect()["state"] == OFF
+    assert chooser.calls == 0
+
+
+def test_enabling_at_runtime_starts_the_watch_and_allows_connect() -> None:
+    link = Link()
+    value, _timers, changes, _flags = controller(link=link, enabled=False)
+    value.start()
+
+    snapshot = value.configure(True, False)
+
+    assert snapshot["enabled"] is True
+    assert link.starts == 1
+    assert changes  # clients are told to refetch
+    value.observe_link(True, "bnep0")
+    assert value.state == CONNECTED  # adoption works once enabled
+    value.configure(True, False)
+    assert link.starts == 1  # idempotent
+
+
+def test_enabling_before_start_waits_for_start() -> None:
+    link = Link()
+    value, *_ = controller(link=link, enabled=False)
+    value.configure(True, False)
+    assert link.starts == 0
+    value.start()
+    assert link.starts == 1
+
+
+def test_disabling_stops_our_own_link_and_releases_recovery() -> None:
+    link = Link()
+    backend = Backend()
+    value, *_ = controller(Chooser(backend), link=link)
+    value.start()
+    value.connect()
+    backend.connects[0][0]("bnep0")
+    assert value.link_alive() is True
+
+    snapshot = value.configure(False, False)
+
+    assert snapshot["state"] == DISCONNECTING
+    assert snapshot["enabled"] is False
+    assert len(backend.disconnects) == 1
+    assert link.stops == 1
+    assert value.link_alive() is False
+    backend.disconnects[0][0]()
+    assert value.state == OFF
+    with pytest.raises(tether.TetherDisabledError):
+        value.connect()
+
+
+def test_disabling_while_connecting_withdraws_the_attempt() -> None:
+    backend = Backend()
+    value, timers, *_ = controller(Chooser(backend), link=Link())
+    value.start()
+    value.connect()
+    assert value.state == CONNECTING
+
+    value.configure(False, False)
+
+    assert value.state == DISCONNECTING
+    assert len(backend.disconnects) == 1
+    # A late success of the withdrawn attempt cannot resurrect it.
+    backend.connects[0][0]("bnep0")
+    assert value.state == DISCONNECTING
+    backend.disconnects[0][0]()
+    assert value.state == OFF
+    assert all(seconds != tether.CONNECT_DEADLINE_SECONDS for seconds in timers.delays())
+
+
+def test_disabling_forgets_an_adopted_link_without_stopping_it() -> None:
+    link = Link()
+    chooser = Chooser()
+    value, *_ = controller(chooser, link=link)
+    value.start()
+    value.observe_link(True, "bnep0")
+    assert value.snapshot()["external"] is True
+
+    snapshot = value.configure(False, False)
+
+    # plasma-nm (or whoever) owns that link; BlueFerry only lets go of it.
+    assert chooser.calls == 0
+    assert chooser.backend.disconnects == []
+    assert snapshot["state"] == OFF
+    assert snapshot["external"] is False
+    assert link.stops == 1
+    assert value.link_alive() is False
+    # Later reports from BlueZ are ignored while disabled.
+    value.observe_link(True, "bnep0")
+    assert value.state == OFF
+
+
+def test_disabling_settles_a_stop_that_waits_for_bluez() -> None:
+    link = Link()
+    chooser = Chooser()
+    value, *_ = controller(chooser, link=link)
+    value.start()
+    value.observe_link(True, "bnep0")
+    value.disconnect()
+    chooser.backend.disconnects[0][0]()  # NetworkManager answered; BlueZ pending
+    assert value.state == DISCONNECTING
+
+    value.configure(False, False)
+
+    assert value.state == OFF
+    assert link.stops == 1
+
+
+def test_disabling_cancels_a_pending_automatic_retry() -> None:
+    chooser = Chooser(fail=tether.HOTSPOT_REFUSED)
+    value, timers, *_ = controller(chooser, autoconnect=True, link=Link())
+    value.start()
+    value.maybe_autoconnect()
+    assert value.state == FAILED
+    assert timers.pending
+
+    value.configure(False, True)
+
+    assert timers.pending == {}
+    assert value.state == OFF
+    value.maybe_autoconnect()
+    assert chooser.calls == 1
+
+
+def test_turning_on_automatic_tethering_tries_once_when_ready() -> None:
+    backend = Backend()
+    value, *_ = controller(Chooser(backend), link=Link())
+    value.start()
+    value.disconnect()  # an earlier explicit "off" pauses automatic attempts
+
+    snapshot = value.configure(True, True)
+
+    assert snapshot["autoconnect"] is True
+    assert len(backend.connects) == 1
+
+
+def test_enabling_with_automatic_tethering_waits_for_readiness() -> None:
+    backend = Backend()
+    value, _timers, _changes, flags = controller(
+        Chooser(backend), link=Link(), enabled=False, ready=False,
+    )
+    value.start()
+    value.configure(True, True)
+    assert backend.connects == []
+    flags["ready"] = True
+    value.maybe_autoconnect()
+    assert len(backend.connects) == 1
+
+
+def test_bluez_restart_while_disabled_does_not_probe() -> None:
+    link = Link()
+    value, *_ = controller(link=link, enabled=False)
+    value.start()
+    value.reset_after_bluez_restart()
+    assert link.probes == 0
+    assert value.state == OFF
+
+
+# ---- persisted opt-in --------------------------------------------------------
+
+
+def test_settings_default_off_and_persist(isolated_state) -> None:
+    from blueferry import config
+
+    settings = tether.TetherSettings(default_enabled=False, default_autoconnect=False)
+    assert (settings.enabled, settings.autoconnect) == (False, False)
+
+    assert settings.set(True, True) == (True, True)
+    reloaded = tether.TetherSettings(default_enabled=False, default_autoconnect=False)
+    assert (reloaded.enabled, reloaded.autoconnect) == (True, True)
+    assert json.loads(config.SETTINGS_JSON.read_text())["tether_enabled"] is True
+    assert config.SETTINGS_JSON.stat().st_mode & 0o777 == 0o600
+
+
+def test_settings_keep_unrelated_preferences(isolated_state) -> None:
+    from blueferry import config
+    from blueferry.settings_store import SettingsStore
+
+    SettingsStore().update(proximity_lock_enabled=True)
+    tether.TetherSettings(default_enabled=False).set(True, False)
+    payload = json.loads(config.SETTINGS_JSON.read_text())
+    assert payload["proximity_lock_enabled"] is True
+    assert payload["tether_enabled"] is True
+
+
+def test_settings_environment_seeds_until_a_value_is_saved(isolated_state) -> None:
+    settings = tether.TetherSettings(default_enabled=True, default_autoconnect=True)
+    assert (settings.enabled, settings.autoconnect) == (True, True)
+
+    settings.set(False, False)
+    reloaded = tether.TetherSettings(default_enabled=True, default_autoconnect=True)
+    assert (reloaded.enabled, reloaded.autoconnect) == (False, False)
+
+
+def test_saved_preference_overriding_the_environment_is_logged(
+    isolated_state, monkeypatch, caplog,
+) -> None:
+    from blueferry import config
+
+    tether.TetherSettings(default_enabled=False).set(False, False)
+    monkeypatch.setenv("BLUEFERRY_TETHER_ENABLED", "true")
+    monkeypatch.setenv("BLUEFERRY_TETHER_AUTOCONNECT", "false")
+    monkeypatch.setattr(config, "TETHER_ENABLED", True)
+    monkeypatch.setattr(config, "TETHER_AUTOCONNECT", False)
+    with caplog.at_level("INFO", logger="blueferry.tether"):
+        settings = tether.TetherSettings()
+    assert (settings.enabled, settings.autoconnect) == (False, False)
+    messages = [record.getMessage() for record in caplog.records]
+    assert len(messages) == 1
+    assert "BLUEFERRY_TETHER_ENABLED is ignored" in messages[0]
+
+
+@pytest.mark.parametrize(("enabled", "autoconnect"), [
+    ("yes", False), (True, 1), (None, False),
+])
+def test_settings_reject_non_booleans(isolated_state, enabled, autoconnect) -> None:
+    settings = tether.TetherSettings(default_enabled=False)
+    with pytest.raises(ValueError):
+        settings.set(enabled, autoconnect)
+    assert settings.enabled is False
+
+
+def test_enabling_with_autoconnect_waits_for_the_first_link_report() -> None:
+    """A link the applet already holds must be adopted, not claimed as ours."""
+    link = Link()
+    backend = Backend()
+    value, *_ = controller(Chooser(backend), link=link, enabled=False)
+    value.start()
+
+    value.configure(True, True)
+    assert backend.connects == []  # the watch's probe has not answered yet
+
+    value.observe_link(True, "bnep0")
+    assert backend.connects == []
+    assert value.snapshot()["external"] is True
+    # Disabling now leaves that link alone.
+    value.configure(False, True)
+    assert backend.disconnects == []
+
+
+def test_enabling_with_autoconnect_connects_once_the_link_is_known_down() -> None:
+    backend = Backend()
+    value, *_ = controller(Chooser(backend), link=Link(), enabled=False)
+    value.start()
+    value.configure(True, True)
+
+    value.observe_link(False, "")
+    value.observe_link(False, "")
+
+    assert len(backend.connects) == 1
+
+
+def test_a_failed_stop_after_disabling_leaves_no_stale_failure() -> None:
+    backend = Backend()
+    value, *_ = controller(Chooser(backend), link=Link())
+    value.start()
+    value.connect()
+    backend.connects[0][0]("bnep0")
+    value.configure(False, False)
+
+    backend.disconnects[0][1](tether.GENERIC_ERROR)
+
+    assert value.snapshot()["state"] == OFF
+    assert value.snapshot()["error"] == ""
+    value.configure(True, False)
+    assert value.snapshot()["state"] == OFF

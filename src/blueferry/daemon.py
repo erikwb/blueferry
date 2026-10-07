@@ -104,7 +104,7 @@ from blueferry.solicitation_supervisor import SolicitationSupervisor
 from blueferry.starred_threads import StarredThreadsStore
 from blueferry.storage_preparation import PreparedStorage, prepare_storage
 from blueferry.storage_security import StorageSecurity
-from blueferry.tether import NetworkLinkWatch, TetherController
+from blueferry.tether import NetworkLinkWatch, TetherController, TetherSettings
 from blueferry.tether_backends import choose_backend
 from blueferry.wireplumber_policy import WirePlumberPhoneAudioPolicy
 
@@ -300,6 +300,9 @@ class Daemon:
         self._battery_link_seen = False
         # Tethering is an explicit user action layered on the Classic link the
         # bearer supervisor keeps; it never connects or drops that link itself.
+        # Until the user enables it, the controller does nothing at all: no
+        # PAN watch, no adoption, no recovery hold, and Connect is refused.
+        self.tether_settings = TetherSettings()
         self.tether = TetherController(
             choose_backend(
                 get_system_bus, device_path, config.IPHONE_MAC, config.TETHER_BACKEND,
@@ -314,7 +317,8 @@ class Daemon:
                 self.profiles.ready and not self.recovery.active
             ),
             on_changed=self._emit_tether_changed,
-            autoconnect=config.TETHER_AUTOCONNECT,
+            enabled=self.tether_settings.enabled,
+            autoconnect=self.tether_settings.autoconnect,
             schedule=GLib.timeout_add_seconds,
             cancel=GLib.source_remove,
         )
@@ -644,6 +648,14 @@ class Daemon:
         self._observe_low_battery(self._phone_status())
         self._emit_status()
         return self._phone_status()
+    def _set_tethering(self, enabled: bool, autoconnect: bool) -> dict:
+        selected, automatic = self.tether_settings.set(enabled, autoconnect)
+        log.info(
+            "Bluetooth tethering %s (automatic %s)",
+            "enabled" if selected else "disabled",
+            "on" if automatic else "off",
+        )
+        return self.tether.configure(selected, automatic)
 
     def _emit_tether_changed(self) -> None:
         emit = getattr(self._dbus_service, "emit_tether_changed", None)
@@ -746,6 +758,7 @@ class Daemon:
                 set_phone_battery_warning=self._set_battery_warning,
                 set_media_mpris=self._set_media_mpris,
                 tether=self.tether,
+                set_tethering=self._set_tethering,
             ),
         )
         self.events.set_dbus_service(self._dbus_service)
@@ -1387,8 +1400,8 @@ class Daemon:
         self._post_available_sessions_setup()
 
         self._sync_solicitation()
-        # Only when BLUEFERRY_TETHER_AUTOCONNECT is set, and never ahead of
-        # MAP/PBAP: the phone's first host-initiated transactions stay theirs.
+        # Only when tethering and automatic tethering are both enabled, and
+        # never ahead of MAP/PBAP: the phone's first host-initiated transactions stay theirs.
         self.tether.maybe_autoconnect()
 
         log.info(

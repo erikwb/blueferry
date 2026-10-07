@@ -830,6 +830,18 @@ class MessagesService(dbus.service.Object):
             lambda: self._json_response(self.operations.tether_disconnect()),
         ))
 
+    @dbus.service.method(
+        TETHER_IFACE, in_signature="bb", out_signature="s", sender_keyword="sender"
+    )
+    def SetTethering(self, enabled: bool, autoconnect: bool, sender=None) -> str:
+        """Save the tethering opt-in; off stops watching and refuses Connect."""
+        return self._sync(lambda: self._authorized(
+            sender, "settings",
+            lambda: self._json_response(self.operations.set_tethering(
+                bool(enabled), bool(autoconnect)
+            )),
+        ))
+
     @dbus.service.signal(TETHER_IFACE, signature="")
     def TetherChanged(self):
         """Tether state changed; clients fetch it with GetState."""

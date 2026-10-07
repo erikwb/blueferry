@@ -50,7 +50,7 @@ class _Backend:
         pass
 
 
-def _service(tether):
+def _service(tether, set_tethering=None):
     bus = dbus.SessionBus()
     name = f"{BUS_NAME}.Tethert{os.getpid()}n{next(_service_ids)}"
     bus_name = dbus.service.BusName(name, bus=bus, do_not_queue=True)
@@ -60,6 +60,7 @@ def _service(tether):
         BackendDependencies(
             status_provider=lambda: {"initializing": False},
             tether=tether,
+            set_tethering=set_tethering,
         ),
     )
     return bus, name, service
@@ -74,10 +75,11 @@ def tether_service():
         lambda on_backend, _on_error: on_backend(backend),
         classic_ready=lambda: classic["up"],
         on_changed=lambda: holder["service"].emit_tether_changed(),
+        enabled=True,
         schedule=lambda _seconds, _callback: 1,
         cancel=lambda _source: None,
     )
-    bus, name, service = _service(controller)
+    bus, name, service = _service(controller, controller.configure)
     holder["service"] = service
     try:
         yield name, controller, backend, classic, service
@@ -131,7 +133,8 @@ def test_connect_get_state_and_disconnect_round_trip(tether_service) -> None:
     state = _in_thread(name, lambda proxy: json.loads(str(_tether(proxy).GetState(timeout=5))))
     assert state["value"] == {
         "state": "connected", "interface": "bnep0", "backend": "networkmanager",
-        "external": False, "error": "", "needs_dhcp": False, "autoconnect": False,
+        "external": False, "error": "", "needs_dhcp": False, "enabled": True,
+        "autoconnect": False,
     }
 
     stopped = _in_thread(name, lambda proxy: json.loads(str(_tether(proxy).Disconnect(timeout=5))))
@@ -247,3 +250,82 @@ def test_python_client_maps_dbus_errors(tether_service) -> None:
     outcome = _in_thread(name, run)
     assert isinstance(outcome["error"], BackendError)
     assert "not connected over Bluetooth" in str(outcome["error"])
+
+
+def test_set_tethering_off_refuses_connect_over_the_bus(tether_service) -> None:
+    name, controller, backend, _classic, _service = tether_service
+
+    def run(proxy):
+        interface = _tether(proxy)
+        saved = json.loads(str(interface.SetTethering(False, False, timeout=5)))
+        try:
+            interface.Connect(timeout=5)
+        except dbus.exceptions.DBusException as error:
+            return saved, error
+        return saved, None
+
+    outcome = _in_thread(name, run)
+    saved, error = outcome["value"]
+    assert saved["enabled"] is False
+    assert controller.enabled is False
+    assert error is not None
+    assert error.get_dbus_name() == f"{ERROR_PREFIX}.NotReady"
+    assert "turned off" in error.get_dbus_message()
+    assert backend.connects == []
+
+
+def test_set_tethering_disable_stops_our_link_and_emits_only_the_signal(
+    tether_service,
+) -> None:
+    name, controller, backend, _classic, _service = tether_service
+    controller.connect()
+    backend.connects[0][0]("bnep0")
+    connection = dbus.SessionBus(private=True)
+    received: list[tuple] = []
+    match = connection.add_signal_receiver(
+        lambda *args: received.append(args),
+        dbus_interface=TETHER_IFACE,
+        signal_name="TetherChanged",
+        bus_name=name,
+        path=OBJECT_PATH,
+    )
+    try:
+        outcome = _in_thread(
+            name, lambda proxy: json.loads(str(_tether(proxy).SetTethering(False, False))),
+        )
+        _dispatch_until(lambda: len(received) >= 1)
+    finally:
+        match.remove()
+        connection.close()
+
+    assert outcome["value"]["state"] == "disconnecting"
+    assert outcome["value"]["enabled"] is False
+    assert len(backend.disconnects) == 1
+    assert all(args == () for args in received)
+
+
+def test_set_tethering_uses_the_settings_rate_bucket(tether_service) -> None:
+    name, *_ = tether_service
+
+    def toggle(proxy):
+        interface = _tether(proxy)
+        for _ in range(10):
+            interface.Disconnect(timeout=5)
+        # The tether bucket is exhausted; settings still work.
+        return json.loads(str(interface.SetTethering(True, True, timeout=5)))
+
+    outcome = _in_thread(name, toggle)
+    assert outcome["value"]["autoconnect"] is True
+
+
+def test_backend_without_the_setter_reports_not_ready() -> None:
+    bus, name, service = _service(None)
+    try:
+        outcome = _in_thread(name, lambda proxy: _tether(proxy).SetTethering(True, False))
+    finally:
+        service.close()
+        service.remove_from_connection()
+        bus.release_name(name)
+
+    assert outcome["error"].get_dbus_name() == f"{ERROR_PREFIX}.NotReady"
+

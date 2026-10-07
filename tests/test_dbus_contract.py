@@ -70,7 +70,7 @@ def test_contract_matches_exported_methods_and_signals() -> None:
 
 def test_tether_interface_is_small_and_its_signal_is_content_free() -> None:
     assert set(_exported(TETHER_IFACE, "_dbus_is_method")) == {
-        "Connect", "Disconnect", "GetState",
+        "Connect", "Disconnect", "GetState", "SetTethering",
     }
     signals = _exported(TETHER_IFACE, "_dbus_is_signal")
     assert set(signals) == {"TetherChanged"}
