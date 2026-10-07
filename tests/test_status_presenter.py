@@ -140,6 +140,7 @@ def test_connection_summary_appends_optional_phone_battery_and_signal() -> None:
     status = {
         "connectivity_state": "ready",
         "phone_battery_level": 40,
+        "phone_battery_source": "hfp",
         "phone_signal_strength": 60,
         "phone_network_name": "Sunrise",
         "phone_network_status": "registered",

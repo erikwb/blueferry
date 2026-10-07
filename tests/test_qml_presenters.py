@@ -521,6 +521,12 @@ def test_quickshell_phone_status_shows_only_known_battery_and_signal(qml_engine)
     assert shown.property("visible") is True
     # The operator name is deliberately not part of the compact header.
     assert shown.property("text") == "BATTERY 60 % · SIGNAL 80 %"
+    stepped = component.createWithInitialProperties({
+        "ferryTheme": theme,
+        "status": {"phone_battery_level": 40, "phone_battery_source": "hfp"},
+    })
+    assert stepped.property("text") == "BATTERY ABOUT 40 %"
+    stepped.deleteLater()
 
     malformed = component.createWithInitialProperties({
         "ferryTheme": theme,
@@ -709,6 +715,7 @@ def settings_window(qml_engine):
             function setStoragePolicy(policy) { record("setStoragePolicy", [policy]); }
             function setProximityLock(enabled, grace) { record("setProximityLock", [enabled, grace]); }
             function setCallsEnabled(enabled) { record("setCallsEnabled", [enabled]); }
+            function setPhoneBatteryWarning(enabled) { record("setPhoneBatteryWarning", [enabled]); }
             function forgetDevice(mac) { record("forgetDevice", [mac]); }
             function activateBluetooth() { record("activateBluetooth", []); }
             function filePairingIssue() { record("filePairingIssue", []); }
@@ -912,7 +919,7 @@ def test_optional_phone_status_indicator_appears_only_with_known_values(
 
     bridge.setProperty("status", {
         "calls_enabled": True,
-        "phone_battery_level": 40,
+        "phone_battery_level": 40, "phone_battery_source": "hfp",
         "phone_signal_strength": 80,
         "phone_network_name": "Sunrise",
         "phone_network_status": "roaming",
@@ -929,7 +936,7 @@ def test_optional_phone_status_indicator_appears_only_with_known_values(
     # The operator name is remote text: the tooltip must not render HTML.
     bridge.setProperty("status", {
         "calls_enabled": True,
-        "phone_battery_level": 40,
+        "phone_battery_level": 40, "phone_battery_source": "hfp",
         "phone_network_name": "<b>Sun</b>",
         "phone_network_status": "registered",
     })
@@ -949,7 +956,7 @@ def test_optional_phone_status_indicator_appears_only_with_known_values(
     # A long name wraps inside the style's 14-grid-unit width cap.
     bridge.setProperty("status", {
         "calls_enabled": True,
-        "phone_battery_level": 40,
+        "phone_battery_level": 40, "phone_battery_source": "hfp",
         "phone_network_name": "Very Long Operator Name " * 3,
         "phone_network_status": "registered",
     })
@@ -2248,3 +2255,22 @@ def test_phone_calls_opt_in_appears_only_for_supporting_daemons(qml_engine, sett
     bridge.setProperty("status", {"daemon": True, "calls_enabled": True})
     QGuiApplication.processEvents()
     assert checkbox.property("checked") is True
+
+
+def test_battery_warning_checkbox_follows_the_daemon(qml_engine, settings_window):
+    window, bridge = settings_window
+    bridge.setProperty("setupLoaded", True)
+    QGuiApplication.processEvents()
+    checkbox = _settings_object(window, "phoneBatteryWarningCheckBox")
+    bridge.setProperty("status", {"daemon": True})
+    QGuiApplication.processEvents()
+    assert checkbox.property("visible") is False
+
+    bridge.setProperty("status", {"daemon": True, "phone_battery_warning": False})
+    QGuiApplication.processEvents()
+    assert checkbox.property("checked") is False
+    assert QMetaObject.invokeMethod(checkbox, "toggle")
+    assert QMetaObject.invokeMethod(checkbox, "clicked")
+    assert _evaluate(
+        qml_engine, "testBridge.calls.filter(c => c.method === 'setPhoneBatteryWarning')"
+    ) == [{"method": "setPhoneBatteryWarning", "args": [True]}]

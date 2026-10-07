@@ -43,7 +43,7 @@ def connection_subtitle(status: Mapping, *, reachable: bool) -> str:
             state=subtitle,
             seconds=retry,
         )
-    # Optional HFP phone status (calls integration); the operator name is
+    # Phone battery (LE or HFP) and, with calls on, signal; the operator name is
     # left out of this one-line summary.
     phone = [
         _("{label} {value}").format(label=label, value=value)

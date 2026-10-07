@@ -3,8 +3,8 @@ import QtQuick.Controls as Controls
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
 
-// Optional iPhone battery and signal from the HFP calls integration
-// (BLUEFERRY_CALLS_ENABLED=true with oFono). Main.qml only loads this when
+// iPhone battery (over LE, or HFP steps) and, with calls on, signal and
+// network. Main.qml only loads this when
 // GetStatus reports at least one value; it performs no I/O itself.
 RowLayout {
     id: indicator
@@ -29,7 +29,7 @@ RowLayout {
     }
 
     // Breeze ships battery-000 … battery-100 and network-mobile-0 … -100 in
-    // 10/20 % steps; HFP only reports 20 % steps, so these always exist.
+    // 10/20 % steps; values are rounded to those, so the names always exist.
     function batteryIcon(level: int): string {
         const step = Math.max(0, Math.min(100, Math.round(level / 10) * 10))
         return "battery-" + String(step).padStart(3, "0")
@@ -43,7 +43,9 @@ RowLayout {
     function summaryText(): string {
         const parts = []
         if (indicator.batteryLevel !== null)
-            parts.push(qsTr("iPhone battery about %1 %").arg(indicator.batteryLevel))
+            parts.push(indicator.status.phone_battery_source === "hfp"
+                ? qsTr("iPhone battery about %1 %").arg(indicator.batteryLevel)
+                : qsTr("iPhone battery %1 %").arg(indicator.batteryLevel))
         if (indicator.signalStrength !== null)
             parts.push(qsTr("Signal %1 %").arg(indicator.signalStrength))
         if (indicator.networkName !== "")

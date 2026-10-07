@@ -426,7 +426,7 @@ def test_textual_masthead_shows_optional_phone_battery_and_signal() -> None:
         def status() -> BackendStatus:
             return BackendStatus(
                 daemon=True, map=True, pbap=True, ancs=True, calls_enabled=True,
-                phone_battery_level=60, phone_signal_strength=80,
+                phone_battery_level=60, phone_battery_source="hfp", phone_signal_strength=80,
                 phone_network_name="Sunrise", phone_network_status="registered",
             )
 

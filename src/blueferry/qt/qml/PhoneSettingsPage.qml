@@ -401,6 +401,18 @@ Kirigami.ScrollablePage {
                 onActivated: iphonePage.bridge.setNotificationPolicy(currentValue)
             }
             Controls.CheckBox {
+                objectName: "phoneBatteryWarningCheckBox"
+                Layout.fillWidth: true
+                // Only daemons that report the key support the setting.
+                visible: iphonePage.bridge.status.phone_battery_warning !== undefined
+                text: qsTr("Warn when the iPhone's battery runs low")
+                checked: iphonePage.bridge.status.phone_battery_warning === true
+                enabled: iphonePage.bridge.status.daemon === true && !iphonePage.bridge.busy
+                onClicked: iphonePage.bridge.setPhoneBatteryWarning(checked)
+                Accessible.description: qsTr("One desktop notification per discharge, at %1 % or less.")
+                    .arg(iphonePage.bridge.status.phone_battery_warning_percent || 20)
+            }
+            Controls.CheckBox {
                 Layout.fillWidth: true
                 text: qsTr("Only notify for contacts")
                 checked: iphonePage.bridge.status.contacts_only_notifications === true
