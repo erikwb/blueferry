@@ -222,3 +222,110 @@ def test_notification_actions_preference_uses_mutation_worker(monkeypatch) -> No
     assert observed == [True]
     assert completed == [True]
     assert submitted == {"mutation": True}
+
+
+class _RecordingBus:
+    def __init__(self) -> None:
+        self.receivers: list[dict] = []
+
+    def add_signal_receiver(self, handler, **keywords):
+        self.receivers.append({"handler": handler, **keywords})
+        return _SignalMatch()
+
+
+def _tether_client(monkeypatch, backend):
+    monkeypatch.setattr(client_module, "SetupClient", _UnconfiguredSetup)
+    client = client_module.DaemonClient()
+    monkeypatch.setattr(client, "_call_backend", lambda operation: operation(backend))
+    submitted: list[bool] = []
+
+    def submit(operation, on_ok, on_err=None, *, mutation=False):
+        submitted.append(mutation)
+        try:
+            value = operation()
+        except Exception as error:
+            on_err(str(error))
+            return
+        on_ok(value)
+
+    monkeypatch.setattr(client, "_submit", submit)
+    return client, submitted
+
+
+def test_tether_changed_signal_becomes_a_content_free_invalidation(monkeypatch) -> None:
+    from blueferry.protocol import TETHER_IFACE
+
+    bus = _RecordingBus()
+    monkeypatch.setattr(client_module, "get_session_bus", lambda: bus)
+    monkeypatch.setattr(client_module, "SetupClient", _UnconfiguredSetup)
+    client = client_module.DaemonClient()
+    seen = []
+    client.connect("tether-invalidated", lambda _client: seen.append(True))
+    try:
+        receiver = next(
+            item for item in bus.receivers if item["signal_name"] == "TetherChanged"
+        )
+        assert receiver["dbus_interface"] == TETHER_IFACE
+        receiver["handler"]()
+    finally:
+        client.stop()
+    assert seen == [True]
+
+
+def test_tether_calls_run_through_the_worker_and_map_missing_tether1(monkeypatch) -> None:
+    from blueferry.client import TetherUnsupportedError
+    from blueferry.tether_status import TetherStatus
+
+    monkeypatch.setattr(client_module, "get_session_bus", _Bus)
+    calls = []
+
+    class Backend:
+        def tether_state(self):
+            raise TetherUnsupportedError("no Tether1")
+
+        def tether_connect(self):
+            calls.append("connect")
+            return TetherStatus(state="connecting", enabled=True)
+
+        def tether_disconnect(self):
+            calls.append("disconnect")
+            return TetherStatus(state="disconnecting", enabled=True)
+
+        def tether_configure(self, enabled, autoconnect):
+            calls.append(("configure", enabled, autoconnect))
+            return TetherStatus(enabled=enabled, autoconnect=autoconnect)
+
+    client, submitted = _tether_client(monkeypatch, Backend())
+    received = []
+    try:
+        client.get_tether_async(received.append)
+        client.set_tether_connected_async(True, received.append, None)
+        client.set_tether_connected_async(False, received.append, None)
+        client.configure_tether_async(True, False, received.append, None)
+    finally:
+        client.stop()
+
+    assert received[0] is None  # an older daemon: hide the section
+    assert [value.state for value in received[1:3]] == ["connecting", "disconnecting"]
+    assert received[3].enabled is True
+    assert calls == ["connect", "disconnect", ("configure", True, False)]
+    # Reads use the read worker, changes the mutation worker.
+    assert submitted == [False, True, True, True]
+
+
+def test_tether_refusal_reaches_the_error_callback(monkeypatch) -> None:
+    from blueferry.client import BackendError
+
+    monkeypatch.setattr(client_module, "get_session_bus", _Bus)
+
+    class Backend:
+        def tether_connect(self):
+            raise BackendError("Bluetooth tethering is turned off")
+
+    client, _submitted = _tether_client(monkeypatch, Backend())
+    errors = []
+    try:
+        client.set_tether_connected_async(True, lambda _value: None, errors.append)
+    finally:
+        client.stop()
+    assert errors == ["Bluetooth tethering is turned off"]
