@@ -25,6 +25,10 @@ def _tool(tmp_path, name: str) -> str:
         (True, False, True, False, service_manager.SYSTEMD),
         # A marker without its tool is not a usable service manager.
         (True, False, False, True, service_manager.NO_SERVICE_MANAGER),
+        # systemd booted, but systemctl lives elsewhere (NixOS keeps it under
+        # /run/current-system/sw/bin). Main failed on /usr/bin/systemctl
+        # here; this deliberately takes the session-bus path instead.
+        (True, False, False, False, service_manager.NO_SERVICE_MANAGER),
         (False, True, False, True, service_manager.OPENRC),
         (False, True, False, False, service_manager.NO_SERVICE_MANAGER),
         # Containers and chroots keep issuing the systemctl commands they
