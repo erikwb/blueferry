@@ -7,7 +7,7 @@ including the CLI, uses it.
 | --- | --- |
 | Bus name | `io.weirdware.BlueFerry` |
 | Object path | `/io/weirdware/BlueFerry` |
-| Interfaces | `io.weirdware.BlueFerry.Messages1`, `io.weirdware.BlueFerry.Events1` |
+| Interfaces | `io.weirdware.BlueFerry.Messages1`, `io.weirdware.BlueFerry.Events1`, `io.weirdware.BlueFerry.Presence1`, `io.weirdware.BlueFerry.CallHistory1` |
 | Errors | `io.weirdware.BlueFerry.Error.*` |
 
 > **Note:** The canonical contract is
@@ -92,6 +92,19 @@ package to restart an outdated backend after upgrades.
 | `UnlockStorage` | → `s status_json` |
 | `OpenLegacyGtkMessage` | `s handle, s application_owner` → `b delivered` (upgrade compatibility) |
 
+## CallHistory1 methods
+
+The opt-in mirror of the iPhone's recent calls. Whether it is on is reported
+by `Messages1.GetStatus` (`call_history_enabled`,
+`missed_call_notifications`); while it is off, `ListCallHistory` and
+`SyncCallHistory` return `NotReady`.
+
+| Method | Arguments → result | Notes |
+| --- | --- | --- |
+| `ListCallHistory` | `u limit` → `s json` | Newest first; each entry has `direction` (`missed`, `incoming`, `outgoing`), `timestamp`, `address`, `name`, `contact_name`. Private: callers and times |
+| `SyncCallHistory` | → `u retained_count` | Pulls all three call lists from the iPhone now; `CallHistorySyncFailed` on a PBAP failure |
+| `SetCallHistory` | `b enabled, b missed_call_notifications` → `s status_json` | Saves the opt-in; `enabled=false` erases the retained calls at once |
+
 ## Events1 signals
 
 | Signal | Arguments | Meaning |
@@ -99,6 +112,7 @@ package to restart an outdated backend after upgrades.
 | `HistoryChanged` | `a{sv} revision` | History changed; only a daemon-local revision is sent |
 | `StatusChanged` | none | Fetch `GetStatus` again |
 | `OpenMessageRequested` | `s handle` | A notification was clicked; the handle is a bounded, opaque MAP handle |
+| `CallHistoryChanged` | none | Retained call history changed; call `ListCallHistory` again |
 
 ## Errors
 
@@ -107,7 +121,7 @@ bounded messages:
 
 `AuthorizationRequired`, `RateLimited`, `InvalidArgs`, `NotFound`,
 `NotReady`, `ConfirmationRequired`, `SendFailed`, `SendOutcomeUnknown`,
-`ResponseTooLarge`, `QueryFailed`, `ContactSyncFailed`
+`ResponseTooLarge`, `QueryFailed`, `ContactSyncFailed`, `CallHistorySyncFailed`
 
 The XML lists which errors each method can return. Unexpected exceptions and
 OBEX details stay in the backend log.

@@ -28,7 +28,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | --- | --- |
 | `daemon.py` | Orchestrates lifecycle: publishes D-Bus, then starts Bluetooth, supervisors, state, and sinks; builds `BackendDependencies`. |
 | `backend_operations.py` | Toolkit- and transport-neutral application operations: validation, thread routing, and policy. |
-| `dbus_service.py` | Session D-Bus adapter (`Messages1`/`Events1`/`Presence1`) that maps operations to wire types; claims the bus name. |
+| `dbus_service.py` | Session D-Bus adapter (`Messages1`/`Events1`/`Presence1`/`CallHistory1`) that maps operations to wire types; claims the bus name. |
 | `dbus_security.py` | Caller UID validation and per-connection/daemon-wide rate limits. |
 | `protocol.py` | Stable D-Bus identifiers and the API-generation compatibility check. |
 | `event_dispatcher.py` | Builds messages from MAP/ANCS events and fans them out to persistence, desktop, and D-Bus sinks. |
@@ -75,7 +75,8 @@ All paths are relative to `src/blueferry/` unless noted.
 | `contact_repository.py` | Contact-cache SQLite schema, replacement transaction, encryption, legacy cleanup. |
 | `call_history.py` | Opt-in: pure parsing of PBAP call-history vCards (`ich`/`och`/`mch`) and their merge. |
 | `call_history_repository.py` | Encrypted call-history mirror, retention, and the already-announced missed-call set. |
-| `call_history_sync.py` | Polls call history on the OBEX worker and reports newly seen missed calls. |
+| `call_history_sync.py` | Schedules call-history pulls (ANCS-triggered, missed-calls-only fallback poll, one OBEX worker job per listing) and reports newly seen missed calls. |
+| `call_history_settings.py` | The saved call-history opt-in (`settings.json`, seeded from `local.env`). |
 | `vcard.py` | Linear, resource-bounded vCard block extraction. |
 | `ancs/client.py` | ANCS GATT client: subscribes to characteristics, requests attributes, emits `AncsEvent`s. |
 | `ancs/parsers.py` | Pure ANCS wire-format parsers and command builders. |
@@ -143,7 +144,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | --- | --- |
 | `cli.py`, `__main__.py` | Typer CLI (`run`, `doctor`, sync, setup, and hidden `pairing-*` JSON helpers). |
 | `cli_messages.py` | CLI message listing, recipient selection, and send. |
-| `cli_call_history.py` | Opt-in `call-history` listing. |
+| `cli_call_history.py` | Opt-in `call-history` listing, enable, and disable. |
 | `cli_common.py` | Small CLI presentation helpers. |
 | `cli_proximity.py` | `proximity-lock` status, dry run, enable, and disable. |
 | `tui.py` | Textual terminal client. |
@@ -171,6 +172,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `qt/qml/ExpandingMessageComposer.qml` | Growing message editor. |
 | `qt/qml/MessageBubble.qml` | Message bubble. |
 | `qt/qml/RecentCallsPage.qml` | Opt-in recent-calls list, created through a `Loader`. |
+| `qt/qml/CallHistorySettings.qml` | Call-history opt-in checkboxes in the iPhone settings. |
 | `quickshell_bridge.py` | Persistent stdin/stdout JSON bridge from Quickshell to the session D-Bus API. |
 
 ### Quickshell client (`data/quickshell/`)
@@ -209,15 +211,17 @@ contract.
 - PBAP transport and parsing (`contacts`) stay separate from persistence
   (`contact_repository`). The opt-in call history follows the same split
   (`call_history`, `call_history_repository`, `call_history_sync`) and exists
-  in the daemon only when `BLUEFERRY_CALL_HISTORY_ENABLED` is set.
+  in the daemon only while the user has opted in (`CallHistory1.SetCallHistory`,
+  seeded from `BLUEFERRY_CALL_HISTORY_ENABLED`).
 
 ## D-Bus API and compatibility
 
 - `Messages1` carries commands and unicast snapshots; `Events1` carries
   content-free live coordination. `Presence1` holds desktop-presence
-  controls that are not messaging (the opt-in away lock); their state is
-  reported through `Messages1.GetStatus`, and the compatibility check runs
-  through `Messages1` on the same owner. Identifiers live in `protocol.py`.
+  controls that are not messaging (the opt-in away lock), and `CallHistory1`
+  the opt-in mirror of the iPhone's recent calls. Their state is reported
+  through `Messages1.GetStatus`, and the compatibility check runs through
+  `Messages1` on the same owner. Identifiers live in `protocol.py`.
 - `data/io.weirdware.BlueFerry.xml` is canonical, installed under
   `dbus-1/interfaces`, and checked against the service's dbus-python
   decorators.

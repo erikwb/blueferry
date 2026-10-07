@@ -300,10 +300,23 @@ specification and third-party reports, not captured observations:
   listing is unreliable, so BlueFerry pulls the three lists and merges them.
   A call present in both `ich` and `mch` is treated as missed.
 - An empty listing is a valid answer (for example, no missed calls).
-- PBAP offers no change notification; BlueFerry polls. Automatic pulls share
-  the single OBEX worker, so they follow the contact-sync MAP gating (defer
-  while MAP reconnects, three-minute grace when MAP never connected) and each
-  listing transfer is bounded to two minutes, far below the phonebook's 30.
+- PBAP offers no change notification. BlueFerry pulls when the ANCS
+  Notification Source reports a new `MissedCall` notification (only `mch`) or
+  the removal of an `IncomingCall` one (all three lists), and otherwise polls
+  only `mch`. That iOS removes the `IncomingCall` notification when a call is
+  answered, declined or missed, and writes its call log within the
+  five-second coalescing delay, is assumed, not observed.
+- Automatic pulls share the single OBEX worker, so they follow the
+  contact-sync MAP gating (defer while MAP reconnects, three-minute grace when
+  MAP never connected). Each listing is a separate worker job bounded to
+  45 seconds of transfer, so a queued MAP send never waits behind a whole
+  sync. A `NoReply` or transfer timeout from these optional pulls is not
+  reported to the session manager (which would drop MAP and PBAP); only
+  "object gone" errors are.
+- When the phone's own time zone or DST changes, iOS is expected to re-render
+  offset-free timestamps of existing calls. A missed call whose text differs
+  from an announced one for the same number by whole quarter hours (at most
+  26 h), while the earlier text is gone from the list, is not announced again.
 - BlueFerry requests `vcard30`. vCard 3.0 text escapes (`\;`, `\,`, `\\`,
   `\n`) are resolved; vCard 2.1 `QUOTED-PRINTABLE`/`CHARSET` encodings are
   **not** decoded, on the assumption that iOS honors the requested format.

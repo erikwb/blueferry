@@ -385,47 +385,62 @@ off by default because it retains who called you and when. It reuses the
 existing PBAP connection, so the iPhone's **Sync Contacts** permission is all
 it needs; BlueFerry never places, answers, or listens to calls.
 
+Turn it on in the Qt client's iPhone settings (**Call History**) or from a
+terminal; it applies at once:
+
 ```bash
-BLUEFERRY_CALL_HISTORY_ENABLED=true
-# Popups for new missed calls (default true when call history is enabled):
-BLUEFERRY_MISSED_CALL_NOTIFICATIONS=true
-# How often to ask the iPhone for its call lists, in seconds (60–86400):
-BLUEFERRY_CALL_HISTORY_INTERVAL_SEC=300
+blueferry call-history enable              # opt in, with missed-call popups
+blueferry call-history enable --no-popups  # list only
+blueferry call-history disable             # opt out and erase the list
 ```
+
+`BLUEFERRY_CALL_HISTORY_ENABLED` and `BLUEFERRY_MISSED_CALL_NOTIFICATIONS` in
+`local.env` set the initial values; a choice saved through a client or the CLI
+takes precedence. `BLUEFERRY_CALL_HISTORY_INTERVAL_SEC` (60–86400, default
+900) sets the fallback check described below.
 
 - The list follows the same storage mode as message history: encrypted with
   the wallet key by default, unencrypted if you chose that, and not kept at all
   with **Do not retain local data**. Calls older than
-  `BLUEFERRY_HISTORY_RETENTION_DAYS` are removed. **Clear history** and
-  changing the storage mode erase it immediately; after turning the option off
-  again, it is erased the next time the daemon starts (restarting the service
-  to apply the setting does that). Because the
-  missed-call check compares against that stored list, neither the list nor
-  missed-call popups work while the wallet is locked or with **Do not retain
-  local data**.
+  `BLUEFERRY_HISTORY_RETENTION_DAYS` are removed. **Clear history**, changing
+  the storage mode, and turning the option off erase it immediately. Because
+  the missed-call check compares against that stored list, neither the list
+  nor missed-call popups work while the wallet is locked or with **Do not
+  retain local data**.
 - BlueFerry mirrors the phone's current lists; it is not a separate archive.
-  Calls you delete on the iPhone disappear on the next refresh.
-- Bluetooth has no "new call" event for this, so the list is refreshed every
-  `BLUEFERRY_CALL_HISTORY_INTERVAL_SEC` seconds (and on demand). A missed-call
-  popup can therefore arrive up to that long after the call.
+  Calls you delete on the iPhone disappear on the next full refresh.
+- PBAP has no "new call" event. BlueFerry therefore refreshes a few seconds
+  after the iPhone's notification service (ANCS) reports a missed call or the
+  end of an incoming call; only the notification's category is used, under
+  every notification setting. As a fallback it checks the missed-calls list
+  every `BLUEFERRY_CALL_HISTORY_INTERVAL_SEC` seconds, so without ANCS a
+  popup can arrive up to that long after the call. Dialled calls appear after
+  the next full refresh (an incoming call, `--sync`, or **Refresh from
+  iPhone**).
 - Messages come first. Contacts and call history share one Bluetooth transfer
   queue with messages, so automatic refreshes pause while the message
   connection is reconnecting and resume once it is back. If messages have
   never connected, the list is fetched once after a three-minute grace period
-  and then only on demand. Each of the three call lists must finish within
-  two minutes. `--sync` and **Refresh from iPhone** are never held back.
-- The first refresh after enabling the option (or after clearing history)
-  only records the existing list; you are not flooded with old missed calls.
-  Each missed call is announced once, calls older than 12 hours are never
-  announced (for iPhone timestamps without a time zone, "12 hours" is measured
-  in this computer's time zone), and more than three at once are summarized in
-  one popup.
+  and then only on demand. Each call list is its own transfer of at most
+  45 seconds, so a message send never waits behind a whole refresh, and a
+  failed refresh backs off instead of reconnecting Bluetooth. `--sync` and
+  **Refresh from iPhone** are never held back.
+- The first refresh after enabling the option, after clearing history, or
+  after pairing another iPhone (or re-pairing this one) only records the
+  existing list; you are not flooded with old missed calls. Each missed call
+  is announced once, also when the iPhone moves to another time zone, calls
+  older than 12 hours are never announced (for iPhone timestamps without a
+  time zone, "12 hours" is measured in this computer's time zone), and more
+  than three at once are summarized in one popup.
 - Popups follow the same rules as message popups: **No notifications**
   silences them, **Only from contacts** skips unknown callers, and
   `BLUEFERRY_SHOW_NOTIFICATION_CONTENT=false` hides the caller and time. They
   appear with the default **Messages** setting, not only with **All iPhone
   notifications**: a missed call is person-to-person communication like a
-  message, and enabling the option is your consent.
+  message, and enabling the option is your consent. With **All iPhone
+  notifications**, a call the iPhone's own popup already announced is not
+  announced again. Popups are transient and do not stay in the desktop's
+  notification history.
 
 View the list with `blueferry call-history` (`--missed`, `--limit N`,
 `--sync` to refresh from the iPhone first) or **Recent Calls** in the KDE
@@ -442,7 +457,7 @@ blueferry sms-send '+15551234567' 'on my way'
 blueferry sms-send person@icloud.com 'hello from Linux'
 blueferry sms-send Alice 'running late'
 blueferry contacts-sync
-blueferry call-history --missed   # only with BLUEFERRY_CALL_HISTORY_ENABLED
+blueferry call-history --missed   # after `blueferry call-history enable`
 blueferry history-clear
 blueferry doctor
 ```
