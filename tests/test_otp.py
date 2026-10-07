@@ -30,7 +30,13 @@ PROPERTY_SETTINGS = settings(max_examples=300, derandomize=True, deadline=None)
         ("PIN: 8844", "8844"),
         ("Your verification code is K7X2PQ", "K7X2PQ"),
         ("Code 2024 is your login code", "2024"),
-        ("Your Amazon order code is 551234", "551234"),
+        ("Your Amazon OTP is 551234", "551234"),
+        ("Steam Guard code: K7X2P", "K7X2P"),
+        ("Your Telegram code: 12345. Do not give this code to anyone", "12345"),
+        ("Enter 482915 to sign in", "482915"),
+        # Invisible format characters do not split a code.
+        ("code: 12\u200b3456", "123456"),
+        ("Your code is 48\u206029\u00ad15", "482915"),
         # German
         ("Ihr Bestätigungscode lautet: 482913", "482913"),
         ("Dein Sicherheitscode: 7391. Gib ihn niemandem weiter.", "7391"),
@@ -39,6 +45,14 @@ PROPERTY_SETTINGS = settings(max_examples=300, derandomize=True, deadline=None)
         ("mTAN: 12345678 für Überweisung von CHF 250.00", "12345678"),
         ("Ihre SMS-TAN lautet 443355", "443355"),
         ("Your codes: 998877 (valid 5 minutes)", "998877"),
+        (
+            "Ihre mTAN für die Überweisung über 1.250,00 EUR auf Konto "
+            "DE89370400440532013000 lautet: 482915",
+            "482915",
+        ),
+        ("Ihre Bestätigungsnummer lautet 482915", "482915"),
+        ("Zur Bestätigung geben Sie bitte 482915 ein.", "482915"),
+        ("Ihr Einmal-PIN: 4711", "4711"),
         ("Ihr Bestätigungscode für Bestellung 12345678 lautet 654321", "654321"),
         # French
         ("Votre code de vérification est 834211.", "834211"),
@@ -98,6 +112,26 @@ def test_detects_codes(body: str, expected: str) -> None:
         "Your booking reference is ABC123, flight code LX1234",
         "Use code SUMMER2026 at checkout",
         "Our code is on page 1234 of the book",
+        # Context words alone never bind a number (review of #196).
+        "Verify your email to get 5000 bonus points",
+        "one-time offer: iPhone 15 for 1299",
+        "Einmalzahlung von 1500 erhalten",
+        # A plain "code" without a connector, OTP context, or "is your".
+        "Use code 482915 at checkout for 10% off your next order",
+        "I'll send the code at 1830",
+        "Kannst du mir 2500 leihen? Code schick ich dir spaeter",
+        "password changed on 20261007",
+        "Your order number is 482915. Use code SAVE20 for 20% off",
+        # Promotions and bookings need an OTP-specific noun.
+        "Verify your account and use code 4821 for 10% off",
+        "Your Amazon order code is 551234",
+        "Your booking confirmation code: 482915",
+        "Your confirmation code is ABC123 for flight LX1234",
+        "Ihre Bestätigungsnummer für die Reservierung lautet 482915",
+        # Long-range binding stops at the end of a sentence.
+        "Ihre mTAN wurde gesendet. Die Überweisung über 1500 EUR an Konto 4711 lautet: 8899",
+        # A separator other than a letter glues digit runs together.
+        "Code: 12\u00b73456",
         # "tan" as an ordinary word, not a bank TAN.
         "Es tan barato: 1500 pesos",
         "I got a tan, 2024",
@@ -112,6 +146,11 @@ def test_detects_codes(body: str, expected: str) -> None:
 )
 def test_rejects_false_positives(body: str) -> None:
     assert extract_otp(body) is None
+
+
+def test_dates_need_the_keyword_right_before_them() -> None:
+    assert extract_otp("Your code: 20261007") == "20261007"
+    assert extract_otp("Your verification code was reset on 20261007") is None
 
 
 def test_none_body_is_ignored() -> None:
