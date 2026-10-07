@@ -25,6 +25,5 @@ service, or subscription.
 - [Architecture](developer/architecture.md)
 - [D-Bus API](developer/dbus-api.md)
 - [Testing](developer/testing.md)
-- [Contributing](developer/contributing.md)
 
 [Deutsche Version](../de/index.md)

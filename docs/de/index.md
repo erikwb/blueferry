@@ -25,7 +25,6 @@ Apple-Anmeldung, keine iPhone-App, keinen Cloud-Dienst und kein Abo.
 - [Überblick](developer/index.md)
 - [Architektur](developer/architecture.md)
 - Auf Englisch: [D-Bus-API](../en/developer/dbus-api.md),
-  [Tests](../en/developer/testing.md),
-  [Beitragen](../en/developer/contributing.md)
+  [Tests](../en/developer/testing.md)
 
 [English version](../en/index.md)

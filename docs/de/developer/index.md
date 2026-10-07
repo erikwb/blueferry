@@ -38,7 +38,6 @@ Die Entwicklerdokumentation ist auf Englisch. Auf Deutsch gibt es diesen
 | [Architektur](architecture.md) | [ARCHITECTURE.md](https://github.com/erikwb/blueferry/blob/main/ARCHITECTURE.md): Modulübersicht, Prozessgrenzen, Datenschutzregeln |
 | [D-Bus API](../../en/developer/dbus-api.md) (Englisch) | [`data/io.weirdware.BlueFerry.xml`](https://github.com/erikwb/blueferry/blob/main/data/io.weirdware.BlueFerry.xml) und `src/blueferry/protocol.py` |
 | [Testing](../../en/developer/testing.md) (Englisch) | [TESTING.md](https://github.com/erikwb/blueferry/blob/main/TESTING.md) |
-| [Contributing](../../en/developer/contributing.md) (Englisch) | Qualitätsprüfungen und Konventionen |
 | Bluetooth-Verhalten | [PROTOCOL.md](https://github.com/erikwb/blueferry/blob/main/PROTOCOL.md): beobachtetes Verhalten von iPhone und BlueZ |
 
 Die Dokumente im Wurzelverzeichnis des Repositorys sind maßgeblich. Diese

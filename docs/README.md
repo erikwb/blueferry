@@ -36,10 +36,9 @@ python -m venv /tmp/blueferry-docs
 /tmp/blueferry-docs/bin/zensical build --strict
 ```
 
-The build writes to `website/public/docs/`, which Git ignores, so the landing
-page links to `/docs/` on the published site. `zensical serve` previews it at
-`http://localhost:8000/docs/`. `--strict` fails the build on broken links,
-anchors, or images.
+The build writes to `website/public/docs/`, which Git ignores. `zensical serve`
+previews it at `http://localhost:8000/docs/`. `--strict` fails the build on
+broken links, anchors, or images.
 
 The configuration uses no third-party plugins, so it also builds with
 [MkDocs](https://www.mkdocs.org/) and the
@@ -53,20 +52,16 @@ The configuration uses no third-party plugins, so it also builds with
 Diagrams are Mermaid code blocks. GitHub renders them natively, and the site
 build loads Mermaid in the browser.
 
-### Cloudflare Pages
+### Publishing
 
-| Setting | Value |
-| --- | --- |
-| Build command | `pip install -r docs/requirements.txt && zensical build --strict` |
-| Build output directory | `website/public` |
-| Root directory | *(repository root)* |
-| Environment variable | `PYTHON_VERSION` = `3.13` |
+Nothing builds or publishes these pages yet: no workflow runs the build, and
+the landing page does not link to `/docs/`. The configuration assumes the site
+is served at `https://blueferry.weirdware.io/docs/`; the language switcher and
+some German navigation entries use absolute `/docs/...` paths.
 
-Without a build command, Cloudflare Pages keeps serving the landing page
-alone; only the `Docs` link would then return 404. `website/public/_headers`
-gives `/docs/*` its own Content-Security-Policy, because the documentation
-theme needs inline scripts and loads Mermaid from `unpkg.com`.
-
-The `Docs` GitHub workflow builds the site with Zensical and with MkDocs when
-files under `docs/` or `mkdocs.yml` change. It is separate from the quality
-and package workflows.
+Publishing it there needs two changes outside this folder. The host has to run
+the build command above before it serves `website/public/`, and
+`website/public/_headers` needs a separate Content-Security-Policy for
+`/docs/*`. The current policy allows scripts and styles from the site itself
+only, while the documentation theme uses inline scripts and loads Mermaid from
+`unpkg.com`.

@@ -106,7 +106,6 @@ nav:
           - Architecture: en/developer/architecture.md
           - D-Bus API: en/developer/dbus-api.md
           - Testing: en/developer/testing.md
-          - Contributing: en/developer/contributing.md
   - Deutsch:
       - de/index.md
       - Anleitung:
@@ -122,4 +121,3 @@ nav:
           - Architektur: de/developer/architecture.md
           - D-Bus-API (English): /docs/en/developer/dbus-api/
           - Tests (English): /docs/en/developer/testing/
-          - Beitragen (English): /docs/en/developer/contributing/

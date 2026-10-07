@@ -35,7 +35,6 @@ flowchart LR
 | [Architecture](architecture.md) | [ARCHITECTURE.md](https://github.com/erikwb/blueferry/blob/main/ARCHITECTURE.md): module map, process boundaries, privacy rules |
 | [D-Bus API](dbus-api.md) | [`data/io.weirdware.BlueFerry.xml`](https://github.com/erikwb/blueferry/blob/main/data/io.weirdware.BlueFerry.xml) and `src/blueferry/protocol.py` |
 | [Testing](testing.md) | [TESTING.md](https://github.com/erikwb/blueferry/blob/main/TESTING.md) |
-| [Contributing](contributing.md) | Quality gates and conventions |
 | Bluetooth behavior | [PROTOCOL.md](https://github.com/erikwb/blueferry/blob/main/PROTOCOL.md): empirical iPhone and BlueZ findings |
 
 The documents in the repository root are authoritative. These pages give an
