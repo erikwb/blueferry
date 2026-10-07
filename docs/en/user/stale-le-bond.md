@@ -4,13 +4,14 @@ An iPhone pairs with your computer twice: once over classic Bluetooth
 (messages, contacts, calls) and once over Bluetooth Low Energy (LE), which
 iPhone notifications (ANCS) use. If the LE half of the pairing goes stale,
 notifications can never work, while messages may keep working. BlueFerry
-detects this pattern and tells you how to fix it.
+recognizes a pattern that suggests this and tells you what may fix it.
 
 ## The symptom
 
-This usually happens when the pairing was removed on only one side, for
-example **Forget This Device** on the iPhone but not on the computer. The
-iPhone no longer has the key the computer uses.
+The suspected cause is a pairing removed on only one side, for example
+**Forget This Device** on the iPhone but not on the computer, so the iPhone
+no longer has the key the computer uses. This is not proven yet (see
+Limits).
 
 ```mermaid
 sequenceDiagram
@@ -19,7 +20,7 @@ sequenceDiagram
     loop about every 2 seconds
         iPhone->>PC: LE connection
         PC->>iPhone: Start encryption with the stored key
-        iPhone-->>PC: Encryption fails (key unknown)
+        iPhone-->>PC: Encryption does not complete
         PC-->>iPhone: Link dropped (supervision timeout)
     end
 ```
@@ -30,26 +31,32 @@ followed by `Disconnect Complete` with reason 0x08.
 
 ## What BlueFerry does
 
-There is nothing to switch on; the detection is always active.
+There is nothing to switch on; the detection is active whenever iPhone
+notifications are enabled and the controller is not one known to fail ANCS.
+It only reports. BlueFerry connects, reconnects and recovers exactly as it
+would without it.
 
-- After **5 short LE drops within 60 seconds** (each link younger than
-  15 seconds, nothing proving the link usable in between), BlueFerry marks the
-  LE pairing as **suspect**.
-- It logs **one** warning with the remedy, without address or name.
-- It stops its own LE connection attempts and doesn't power-cycle the
-  adapter, because neither can restore a key the phone discarded. Links the
-  iPhone starts itself are still watched.
-- The Qt client shows a banner with the remedy and **Open iPhone Settings**;
-  the terminal client shows a notice. `blueferry doctor` prints the remedy
-  including the `bluetoothctl remove` command, and pairing reports mention it.
+- An LE drop counts only when **classic Bluetooth stays connected** across
+  the whole burst (the phone is demonstrably nearby), the LE link lived
+  **at most 5 seconds**, and BlueZ names the reason as timeout, remote or
+  authentication. Drops caused by this computer (rfkill, adapter power,
+  BlueFerry itself), unknown reasons and suspend never count.
+- At least **5 such drops within any 60 seconds**, sustained for
+  **3 minutes**, mark the LE pairing as **suspect**.
+- BlueFerry logs **one** warning with the possible remedy, without address
+  or name.
+- The Qt, GTK and Quickshell clients show a banner, the terminal client a
+  notice. `blueferry doctor` prints the remedy including the `bluetoothctl
+  remove` command, and pairing reports mention it.
 - Repeated "rebuilding ANCS subscription" log lines are limited to one per
   minute.
 
 The warning clears by itself when an LE link stays up for 15 seconds, when
-the iPhone authorizes notifications, when a new pairing appears, or when
-bluetoothd restarts.
+the iPhone authorizes notifications, when a new pairing appears, when
+bluetoothd restarts, or when classic Bluetooth has been gone for 2 minutes
+(the phone is away). The drop count falls back to 0 after a quiet minute.
 
-## How to fix it
+## What may fix it
 
 1. On the iPhone, open **Settings > Bluetooth**, tap (i) next to this
    computer, and choose **Forget This Device**.
@@ -60,15 +67,14 @@ bluetoothd restarts.
 
 ## Limits
 
-- The thresholds (5 drops, 60 s, 15 s) come from one observed trace. At the
-  edge of radio range, links may also come up and drop before encrypting,
-  which can trigger the warning. That's why it says "probably". A usable link
-  clears it automatically.
+- The thresholds come from one observed trace. That trace showed
+  `Encryption Change` with status 0x08 (connection timeout); a phone that
+  has lost the key would normally answer 0x06 (PIN or key missing). So the
+  cause is a suspicion, and re-pairing has not yet been confirmed to cure
+  it on hardware. That's why the warning says "may".
 - On BlueZ older than 5.84 (or without the LE bearer interface), BlueFerry
   falls back to polling every 5 seconds. Detection is then slower (180 s
-  window) and only samples the drops.
-- The GTK and Quickshell clients show no banner yet; `blueferry doctor`
-  works everywhere.
+  window, 9 minutes of persistence) and only samples the drops.
 
 ## Privacy
 

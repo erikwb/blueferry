@@ -4,15 +4,15 @@ Ein iPhone ist mit deinem Rechner zweimal gekoppelt: einmal über klassisches
 Bluetooth (Nachrichten, Kontakte, Anrufe) und einmal über Bluetooth Low
 Energy (LE), das die iPhone-Mitteilungen (ANCS) nutzen. Veraltet die
 LE-Hälfte der Kopplung, funktionieren Mitteilungen nie, während Nachrichten
-weiterlaufen können. BlueFerry erkennt dieses Muster und sagt dir, wie du es
-behebst.
+weiterlaufen können. BlueFerry erkennt ein Muster, das darauf hindeutet, und
+sagt dir, was helfen kann.
 
 ## Das Symptom
 
-Meist passiert das, wenn die Kopplung nur auf einer Seite entfernt wurde,
+Vermutete Ursache ist eine Kopplung, die nur auf einer Seite entfernt wurde,
 zum Beispiel **Dieses Gerät ignorieren** auf dem iPhone, aber nicht auf dem
 Rechner. Das iPhone kennt den Schlüssel, den der Rechner verwendet, dann
-nicht mehr.
+nicht mehr. Bewiesen ist das noch nicht (siehe Grenzen).
 
 ```mermaid
 sequenceDiagram
@@ -21,7 +21,7 @@ sequenceDiagram
     loop etwa alle 2 Sekunden
         iPhone->>PC: LE-Verbindung
         PC->>iPhone: Verschlüsselung mit gespeichertem Schlüssel starten
-        iPhone-->>PC: Verschlüsselung scheitert (Schlüssel unbekannt)
+        iPhone-->>PC: Verschlüsselung kommt nicht zustande
         PC-->>iPhone: Verbindung bricht ab (Supervision Timeout)
     end
 ```
@@ -32,29 +32,33 @@ gefolgt von `Disconnect Complete` mit Grund 0x08.
 
 ## Was BlueFerry tut
 
-Einzuschalten gibt es nichts; die Erkennung ist immer aktiv.
+Einzuschalten gibt es nichts; die Erkennung ist aktiv, sobald
+iPhone-Mitteilungen eingeschaltet sind und der Controller nicht als
+ANCS-untauglich bekannt ist. Sie meldet nur. BlueFerry verbindet, verbindet
+neu und repariert genau so, wie es das ohne sie täte.
 
-- Nach **5 kurzen LE-Abbrüchen innerhalb von 60 Sekunden** (jede Verbindung
-  jünger als 15 Sekunden, und dazwischen nichts, was eine brauchbare
-  Verbindung belegt) stuft BlueFerry die LE-Kopplung als **verdächtig** ein.
-- Es schreibt **eine** Warnung mit der Abhilfe ins Log, ohne Adresse oder
-  Namen.
-- Es stellt seine eigenen LE-Verbindungsversuche ein und schaltet den Adapter
-  nicht aus und wieder ein, weil beides einen Schlüssel, den das Telefon
-  verworfen hat, nicht zurückbringt. Verbindungen, die das iPhone selbst
-  aufbaut, werden weiter beobachtet.
-- Der Qt-Client zeigt ein Banner mit der Abhilfe und **Open iPhone
-  Settings**; der Terminal-Client zeigt einen Hinweis. `blueferry doctor`
-  gibt die Abhilfe samt `bluetoothctl remove`-Befehl aus, und
-  Kopplungsberichte erwähnen sie.
+- Ein LE-Abbruch zählt nur, wenn **klassisches Bluetooth über den ganzen
+  Zeitraum verbunden bleibt** (das Telefon ist nachweislich in der Nähe),
+  die LE-Verbindung **höchstens 5 Sekunden** bestand und BlueZ als Grund
+  Timeout, Remote oder Authentication nennt. Abbrüche durch diesen Rechner
+  (rfkill, Adapter aus, BlueFerry selbst), unbekannte Gründe und Suspend
+  zählen nie.
+- Mindestens **5 solche Abbrüche innerhalb von 60 Sekunden**, über
+  **3 Minuten** anhaltend, stufen die LE-Kopplung als **verdächtig** ein.
+- BlueFerry schreibt **eine** Warnung mit der möglichen Abhilfe ins Log,
+  ohne Adresse oder Namen.
+- Qt-, GTK- und Quickshell-Client zeigen ein Banner, der Terminal-Client
+  einen Hinweis. `blueferry doctor` gibt die Abhilfe samt
+  `bluetoothctl remove`-Befehl aus, und Kopplungsberichte erwähnen sie.
 - Wiederholte Log-Zeilen „rebuilding ANCS subscription“ erscheinen höchstens
   einmal pro Minute.
 
 Die Warnung verschwindet von selbst, sobald eine LE-Verbindung 15 Sekunden
-hält, das iPhone Mitteilungen freigibt, eine neue Kopplung entsteht oder
-bluetoothd neu startet.
+hält, das iPhone Mitteilungen freigibt, eine neue Kopplung entsteht,
+bluetoothd neu startet oder klassisches Bluetooth 2 Minuten weg ist (das
+Telefon ist fort). Der Abbruchzähler fällt nach einer ruhigen Minute auf 0.
 
-## So behebst du es
+## Was helfen kann
 
 1. Auf dem iPhone **Einstellungen > Bluetooth** öffnen, neben diesem Rechner
    auf (i) tippen und **Dieses Gerät ignorieren** wählen.
@@ -65,16 +69,15 @@ bluetoothd neu startet.
 
 ## Grenzen
 
-- Die Schwellen (5 Abbrüche, 60 s, 15 s) stammen aus einer einzigen
-  beobachteten Aufzeichnung. Am Rand der Funkreichweite können Verbindungen
-  ebenfalls aufkommen und vor der Verschlüsselung abbrechen, was die Warnung
-  auslösen kann. Deshalb sagt sie „wahrscheinlich“. Eine brauchbare
-  Verbindung hebt sie automatisch auf.
+- Die Schwellen stammen aus einer einzigen beobachteten Aufzeichnung. Sie
+  zeigte `Encryption Change` mit Status 0x08 (Verbindungs-Timeout); ein
+  Telefon ohne Schlüssel würde normalerweise 0x06 (PIN or Key Missing)
+  melden. Die Ursache ist also ein Verdacht, und dass neues Koppeln das
+  Problem auf echter Hardware behebt, ist noch nicht bestätigt. Deshalb
+  sagt die Warnung „kann“.
 - Unter BlueZ älter als 5.84 (oder ohne LE-Bearer-Schnittstelle) fragt
   BlueFerry ersatzweise alle 5 Sekunden ab. Die Erkennung ist dann langsamer
-  (180-s-Fenster) und sieht nur Stichproben der Abbrüche.
-- GTK- und Quickshell-Client zeigen noch kein Banner; `blueferry doctor`
-  funktioniert überall.
+  (180-s-Fenster, 9 Minuten Dauer) und sieht nur Stichproben der Abbrüche.
 
 ## Datenschutz
 

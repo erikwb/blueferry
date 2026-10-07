@@ -414,13 +414,14 @@ If `blueferry-qt` does not open a window or looks unstyled,
 use, how it sets it, and where it looked for the style.
 
 If iPhone notifications never connect and the app or `blueferry doctor`
-says the Bluetooth pairing looks outdated, the LE half of the pairing is
-stale. This usually happens when the pairing was removed on only one side,
-so the iPhone no longer has the key this computer uses. The LE link then
-connects about every two seconds and drops right away, with the log
-repeating LE reconnects. `btmon` shows `LE Start Encryption` failing,
-followed by a disconnect with reason 0x08 (supervision timeout). BlueFerry
-stops its own LE connection attempts and warns once. To fix it:
+says the Bluetooth pairing may be outdated, the LE half of the pairing is
+possibly stale, for example after the pairing was removed on only one side.
+The LE link then connects about every two seconds and drops right away
+while Classic stays connected, with the log repeating LE reconnects.
+`btmon` shows `LE Start Encryption` failing, followed by a disconnect with
+reason 0x08 (supervision timeout). BlueFerry only reports this pattern; it
+does not change how it connects. The cause is not proven, but re-pairing
+may help:
 
 1. On the iPhone, open Settings > Bluetooth, tap (i) next to this computer,
    and choose **Forget This Device**.

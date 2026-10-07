@@ -416,12 +416,29 @@ timeout). BlueZ reports that as `org.bluez.Reason.Timeout` in
 `Bearer.LE1.Disconnected(name, message)` (the signal exists since BlueZ
 5.84). Its own auto-connect backoff applies only to
 `org.bluez.Reason.Authentication`, so the loop never stops. `Paired` and
-`Bonded` do not change. The only remedy is to forget the pairing on both
-sides and pair again. BlueFerry treats five LE drops within a minute as a
-suspect bond when each link was younger than 15 s and none became usable
-in between. Suspend and BlueFerry's own Local disconnects are not counted.
-The detection itself is tested only against fakes and a fake `org.bluez` on
-a private bus.
+`Bonded` do not change. The cause is not proven: status 0x08 is a
+connection timeout, while a peer that has lost the key would normally
+answer with 0x06 (PIN or key missing) and BlueZ would report
+`Reason.Authentication`. Re-pairing on both sides is the suspected remedy,
+not a verified one.
+
+BlueFerry therefore only reports the pattern and never changes its
+connection behaviour because of it. It counts an LE drop only while Classic
+stays connected across the burst, only for links of at most 5 s, and only
+for `Timeout`, `Remote` or `Authentication`; `Local` (this host: BlueFerry,
+rfkill, adapter power), `Unknown` and `Suspend` never count. At least five
+such drops within any 60 s must persist for 180 s (540 s and a 180 s window
+when only polling sees them). The report clears on an authorized ANCS round
+trip, a link that holds for 15 s, a new bond, a new bluetoothd generation,
+or after Classic has been gone for 120 s. Detection is off without ANCS and
+on controllers flagged as ANCS-limited. The detection is tested only
+against fakes and a fake `org.bluez` on a private bus.
+
+`GetStatus` carries three additive keys for it: `le_bond_suspect`
+(boolean), `le_flap_count` (non-negative integer, short drops in the current
+burst, decays to 0 after a quiet window) and `last_le_disconnect_reason`
+(one of `""`, `unknown`, `timeout`, `local`, `remote`, `authentication`,
+`suspend`). No signal carries them; clients refetch on `StatusChanged()`.
 
 This works on the MediaTek MT7922 and the Intel AX210 while MAP and PBAP stay
 connected over BR/EDR; on the AX210 the LE half of the bond exists only when
