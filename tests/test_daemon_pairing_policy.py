@@ -259,8 +259,9 @@ def test_recovery_observation_excludes_permissions_and_missing_profiles(make_dae
     value.profiles.ready = False
     assert not value._recovery_observation().eligible
     value.profiles.ready = True
+    # A suspect LE bond is reported only; it must not block recovery.
     value.bearers.le_bond_suspect = True
-    assert not value._recovery_observation().eligible
+    assert value._recovery_observation().eligible
     value.bearers.le_bond_suspect = False
     monkeypatch.setattr(daemon.config, "ANCS_ENABLED", False)
     assert not value._recovery_observation().eligible
@@ -712,3 +713,18 @@ def test_authorized_ancs_disproves_a_suspect_le_bond(make_daemon, monkeypatch):
     value.ancs = SimpleNamespace(connected=True)
     value._on_ancs_status()
     assert proofs == ["ANCS authorized"]
+
+
+def test_le_bond_detection_applies_only_where_ancs_is_expected(make_daemon, monkeypatch):
+    value = make_daemon()
+    identity = {"controller_vendor": "", "ancs_limited_controller": False}
+    monkeypatch.setattr(value, "_controller_identity", lambda: identity)
+    monkeypatch.setattr(daemon.config, "ANCS_ENABLED", True)
+    assert value._le_bond_detection_applies()
+
+    identity["ancs_limited_controller"] = True
+    assert not value._le_bond_detection_applies()
+
+    identity["ancs_limited_controller"] = False
+    monkeypatch.setattr(daemon.config, "ANCS_ENABLED", False)
+    assert not value._le_bond_detection_applies()

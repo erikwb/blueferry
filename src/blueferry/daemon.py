@@ -165,6 +165,7 @@ class Daemon:
             on_le_state=self._observe_le_state,
             on_le_dial=self.solicitation.set_dialing,
             inbound_le_primed=self.solicitation.active,
+            le_bond_detection=self._le_bond_detection_applies,
         )
         self.contact_sync = ContactSync(
             sessions=self.sessions,
@@ -237,8 +238,6 @@ class Daemon:
                 and not self._initializing and self.profiles.ready
                 and self.bearers.bredr_connected and self.bearers.le_state is not None
                 and self.solicitation.active()
-                # A power cycle cannot repair keys the iPhone has discarded.
-                and not self.bearers.le_bond_suspect
             ),
             busy=self.bearers.busy,
         )
@@ -802,6 +801,13 @@ class Daemon:
             **self._controller_identity(),
             **self.connectivity.snapshot(),
         }
+
+    def _le_bond_detection_applies(self) -> bool:
+        """Report stale LE bonds only where ANCS is expected to work."""
+        return bool(
+            config.ANCS_ENABLED
+            and not self._controller_identity()["ancs_limited_controller"]
+        )
 
     def _controller_identity(self) -> dict[str, object]:
         cached = getattr(self, "_controller_identity_cache", None)

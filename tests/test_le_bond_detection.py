@@ -12,9 +12,13 @@ from gi.repository import GLib
 
 from blueferry import bearer_supervisor
 from blueferry.bearer_supervisor import (
+    LE_FLAP_MAX_LINK_SECONDS,
+    LE_FLAP_PERSIST_SECONDS,
     LE_FLAP_THRESHOLD,
     LE_FLAP_WINDOW_SECONDS,
+    LE_SUSPECT_ABSENT_EXPIRY_SECONDS,
     POLL_SECONDS,
+    POLLED_LE_FLAP_PERSIST_SECONDS,
     STABLE_CONNECTION_SECONDS,
     BearerSupervisor,
 )
@@ -104,73 +108,235 @@ class _Harness:
         self.clock.now += down_for
 
 
-def test_burst_of_short_le_links_marks_the_bond_suspect_once(caplog) -> None:
+def _burst(h, seconds, **flap):
+    """Flap for ``seconds`` of fake time at the btmon trace's rate."""
+    until = h.clock.now + seconds
+    while h.clock.now < until:
+        h.flap(**flap)
+
+
+def _poll_for(h, seconds):
+    until = h.clock.now + seconds
+    while h.clock.now < until:
+        h.clock.now += POLL_SECONDS
+        h.poll()
+
+
+def test_persistent_burst_of_short_le_links_marks_the_bond_suspect_once(caplog) -> None:
     caplog.set_level(logging.INFO, logger="blueferry.bearer_supervisor")
     h = _Harness()
     h.supervisor.start()
 
-    for _ in range(LE_FLAP_THRESHOLD - 1):
+    # The rate threshold alone is not enough any more.
+    for _ in range(LE_FLAP_THRESHOLD):
         h.flap()
+    assert not h.supervisor.le_bond_suspect
+    _burst(h, LE_FLAP_PERSIST_SECONDS - 20)
     assert not h.supervisor.le_bond_suspect
     statuses = h.statuses
 
-    h.flap()
+    _burst(h, 30)
 
     assert h.supervisor.le_bond_suspect
     assert h.statuses == statuses + 1
     snapshot = h.supervisor.snapshot()
     assert snapshot["le_bond_suspect"] is True
-    assert snapshot["le_flap_count"] == LE_FLAP_THRESHOLD
+    assert snapshot["le_flap_count"] > LE_FLAP_THRESHOLD
     assert snapshot["last_le_disconnect_reason"] == "timeout"
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert len(warnings) == 1
-    assert "bluetoothctl remove" in warnings[0].getMessage()
-    assert "02:00" not in warnings[0].getMessage()
-    assert "dev_02" not in warnings[0].getMessage()
+    message = warnings[0].getMessage()
+    assert "bluetoothctl remove" in message
+    assert "may help" in message
+    assert "02:00" not in message
+    assert "dev_02" not in message
 
+    count = snapshot["le_flap_count"]
     for _ in range(20):
         h.flap()
 
-    assert h.supervisor.snapshot()["le_flap_count"] == LE_FLAP_THRESHOLD + 20
+    assert h.supervisor.snapshot()["le_flap_count"] == count + 20
     assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 1
     assert h.statuses == statuses + 1
 
 
-def test_suspect_bond_stops_outbound_le_dials() -> None:
+@pytest.mark.parametrize("reason", [TIMEOUT, "org.bluez.Reason.Remote",
+                                    "org.bluez.Reason.Authentication"])
+def test_counted_reasons(reason) -> None:
     h = _Harness()
     h.supervisor.start()
-    # Classic up and LE down: the supervisor arms its one LE bootstrap.
+
+    _burst(h, LE_FLAP_PERSIST_SECONDS + 10, reason=reason)
+
+    assert h.supervisor.le_bond_suspect
+
+
+@pytest.mark.parametrize("reason", ["org.bluez.Reason.Unknown",
+                                    "org.bluez.Reason.Local",
+                                    "org.bluez.Reason.Suspend"])
+def test_local_unknown_and_suspend_drops_never_count(reason) -> None:
+    # Local covers rfkill, adapter power and BlueFerry's own resets alike.
+    h = _Harness()
+    h.supervisor.start()
+
+    _burst(h, 3 * LE_FLAP_PERSIST_SECONDS, reason=reason)
+
+    assert not h.supervisor.le_bond_suspect
+    assert h.supervisor.snapshot()["le_flap_count"] == 0
+
+
+@pytest.mark.parametrize("up_for", [LE_FLAP_MAX_LINK_SECONDS + 1, 11, 14])
+def test_moderately_short_links_are_benign_flapping(up_for) -> None:
+    h = _Harness()
+    h.supervisor.start()
+
+    _burst(h, 3 * LE_FLAP_PERSIST_SECONDS, up_for=up_for, down_for=1)
+
+    assert not h.supervisor.le_bond_suspect
+
+
+def test_links_of_unknown_age_do_not_count_with_the_signal() -> None:
+    h = _Harness()
+    h.supervisor.start()
+    until = h.clock.now + 3 * LE_FLAP_PERSIST_SECONDS
+    while h.clock.now < until:
+        h.on_disconnected(TIMEOUT, "Connection timeout")
+        h.clock.now += 2
+
+    assert not h.supervisor.le_bond_suspect
+
+
+def test_benign_flapping_without_classic_is_not_a_broken_bond() -> None:
+    # Five 2 s links 12 s apart with Classic down: a phone at the edge of
+    # range, not demonstrably nearby.
+    h = _Harness(bredr=False)
+    h.supervisor.start()
+
+    _burst(h, 3 * LE_FLAP_PERSIST_SECONDS, up_for=2, down_for=10)
+
+    assert not h.supervisor.le_bond_suspect
+    assert h.supervisor.snapshot()["le_flap_count"] == 0
+
+
+def test_classic_dropping_during_the_burst_starts_it_over() -> None:
+    h = _Harness()
+    h.supervisor.start()
+    _burst(h, LE_FLAP_PERSIST_SECONDS - 10)
+
+    h.state["bredr"] = False
+    h.poll()
+    h.state["bredr"] = True
+    h.poll()
+    _burst(h, 30)
+
+    assert not h.supervisor.le_bond_suspect
+    _burst(h, LE_FLAP_PERSIST_SECONDS)
+    assert h.supervisor.le_bond_suspect
+
+
+def test_a_quiet_gap_ends_the_burst() -> None:
+    h = _Harness()
+    h.supervisor.start()
+    for _ in range(4):
+        _burst(h, LE_FLAP_PERSIST_SECONDS / 2)
+        h.clock.now += LE_FLAP_WINDOW_SECONDS + 1
+
+    assert not h.supervisor.le_bond_suspect
+
+
+def test_flap_count_decays_when_drops_stop() -> None:
+    h = _Harness()
+    h.supervisor.start()
+    _burst(h, 30)
+    assert h.supervisor.snapshot()["le_flap_count"] > 0
+
+    _poll_for(h, LE_FLAP_WINDOW_SECONDS + POLL_SECONDS)
+
+    assert h.supervisor.snapshot()["le_flap_count"] == 0
+
+
+def test_suspicion_expires_while_the_phone_is_away() -> None:
+    h = _Harness()
+    h.supervisor.start()
+    _burst(h, LE_FLAP_PERSIST_SECONDS + 10)
+    assert h.supervisor.le_bond_suspect
+    statuses = h.statuses
+
+    h.state["bredr"] = False
+    _poll_for(h, LE_SUSPECT_ABSENT_EXPIRY_SECONDS - POLL_SECONDS)
+    assert h.supervisor.le_bond_suspect
+    _poll_for(h, 2 * POLL_SECONDS)
+
+    assert not h.supervisor.le_bond_suspect
+    assert h.supervisor.snapshot()["le_flap_count"] == 0
+    assert h.statuses > statuses
+    # Eight hours away keep it cleared.
+    _poll_for(h, 8 * 3600)
+    assert not h.supervisor.le_bond_suspect
+
+
+def test_a_short_classic_hiccup_keeps_the_report() -> None:
+    h = _Harness()
+    h.supervisor.start()
+    _burst(h, LE_FLAP_PERSIST_SECONDS + 10)
+
+    h.state["bredr"] = False
+    _poll_for(h, 2 * POLL_SECONDS)
+    h.state["bredr"] = True
+    _poll_for(h, LE_SUSPECT_ABSENT_EXPIRY_SECONDS)
+
+    assert h.supervisor.le_bond_suspect
+
+
+def test_detection_is_off_when_it_does_not_apply() -> None:
+    applies = {"value": False}
+    h = _Harness()
+    h.supervisor._le_bond_detection = lambda: applies["value"]
+    h.supervisor.start()
+
+    _burst(h, 3 * LE_FLAP_PERSIST_SECONDS)
+    assert not h.supervisor.le_bond_suspect
+
+    applies["value"] = True
+    _burst(h, LE_FLAP_PERSIST_SECONDS + 10)
+    assert h.supervisor.le_bond_suspect
+
+    applies["value"] = False
+    h.poll()
+    assert not h.supervisor.le_bond_suspect
+
+
+def test_detection_is_off_while_le_is_held() -> None:
+    h = _Harness(le_enabled=False)
+    h.supervisor.start()
+
+    _burst(h, 3 * LE_FLAP_PERSIST_SECONDS)
+
+    assert not h.supervisor.le_bond_suspect
+
+
+def test_suspect_bond_does_not_change_connection_behaviour() -> None:
+    """Report only: dials, the settle timer and LE resets stay as they were."""
+    h = _Harness()
+    h.supervisor.start()
     settle_id, connect_le = h.settle()
+    _burst(h, LE_FLAP_PERSIST_SECONDS + 10)
+    assert h.supervisor.le_bond_suspect
 
-    for _ in range(LE_FLAP_THRESHOLD):
-        h.flap()
+    assert settle_id not in h.cancelled
+    connect_le()
+    assert "le" in h.connections
 
-    assert h.cancelled == [settle_id]
-    connect_le()  # A timer that raced the cancellation still must not dial.
-    for _ in range(3):
-        h.clock.now += POLL_SECONDS
-        h.poll()
-
-    assert "le" not in h.connections
-    assert len(h.scheduled) == 2
-
-
-def test_suspect_bond_does_not_reset_the_le_transport() -> None:
-    h = _Harness(le=True)
-    h.supervisor.start()
-    for _ in range(LE_FLAP_THRESHOLD):
-        h.flap()
-
+    h.state["le"] = True
+    h.poll()
     h.supervisor.recover_le_transport(allow_disconnected=True)
+    assert h.disconnections == ["le"]
 
-    assert h.disconnections == []
 
-
-def test_ancs_authorization_clears_the_suspicion_and_rearms_le() -> None:
+def test_ancs_authorization_clears_the_suspicion() -> None:
     h = _Harness()
     h.supervisor.start()
-    for _ in range(LE_FLAP_THRESHOLD):
-        h.flap()
+    _burst(h, LE_FLAP_PERSIST_SECONDS + 10)
     statuses = h.statuses
 
     h.supervisor.note_le_usable("ANCS authorized")
@@ -178,17 +344,12 @@ def test_ancs_authorization_clears_the_suspicion_and_rearms_le() -> None:
     assert not h.supervisor.le_bond_suspect
     assert h.supervisor.snapshot()["le_flap_count"] == 0
     assert h.statuses == statuses + 1
-    h.clock.now += 600
-    h.poll()
-    h.scheduled[-1][1]()
-    assert "le" in h.connections
 
 
 def test_a_new_bond_clears_the_suspicion_but_a_removed_key_does_not() -> None:
     h = _Harness()
     h.supervisor.start()
-    for _ in range(LE_FLAP_THRESHOLD):
-        h.flap()
+    _burst(h, LE_FLAP_PERSIST_SECONDS + 10)
 
     h.on_properties(LE, {"Paired": False}, [])
     assert h.supervisor.le_bond_suspect
@@ -201,22 +362,19 @@ def test_walking_away_and_back_is_not_a_broken_bond() -> None:
     h = _Harness()
     h.supervisor.start()
 
-    for _ in range(3 * LE_FLAP_THRESHOLD):
-        # A healthy link that holds, then a supervision timeout when the
-        # user walks out of range, and a return a few seconds later.
-        h.flap(up_for=STABLE_CONNECTION_SECONDS + 1, down_for=5)
+    _burst(h, 3 * LE_FLAP_PERSIST_SECONDS, up_for=STABLE_CONNECTION_SECONDS + 1,
+           down_for=5)
 
     assert not h.supervisor.le_bond_suspect
     assert h.supervisor.snapshot()["le_flap_count"] == 0
 
 
-def test_a_held_link_between_short_drops_resets_the_count() -> None:
+def test_a_held_link_between_short_drops_resets_the_burst() -> None:
     h = _Harness()
     h.supervisor.start()
 
-    for _ in range(3):
-        for _ in range(LE_FLAP_THRESHOLD - 1):
-            h.flap()
+    for _ in range(6):
+        _burst(h, LE_FLAP_PERSIST_SECONDS / 2)
         h.flap(up_for=STABLE_CONNECTION_SECONDS + 1)
 
     assert not h.supervisor.le_bond_suspect
@@ -226,25 +384,20 @@ def test_sparse_drops_outside_the_window_are_not_a_burst() -> None:
     h = _Harness()
     h.supervisor.start()
 
-    for _ in range(3 * LE_FLAP_THRESHOLD):
-        h.flap(down_for=LE_FLAP_WINDOW_SECONDS / (LE_FLAP_THRESHOLD - 1))
+    _burst(h, 3 * LE_FLAP_PERSIST_SECONDS,
+           down_for=LE_FLAP_WINDOW_SECONDS / (LE_FLAP_THRESHOLD - 1))
 
     assert not h.supervisor.le_bond_suspect
 
 
-def test_suspend_and_own_disconnects_are_not_counted() -> None:
+def test_own_disconnects_are_not_reported_as_last_reason() -> None:
     h = _Harness(le=True)
     h.supervisor.start()
 
-    for _ in range(LE_FLAP_THRESHOLD):
-        h.flap(reason="org.bluez.Reason.Suspend")
-    assert h.supervisor.snapshot()["le_flap_count"] == 0
-    assert h.supervisor.snapshot()["last_le_disconnect_reason"] == "suspend"
-
     h.supervisor.recover_le_transport()
-    for _ in range(LE_FLAP_THRESHOLD):
-        h.flap(reason="org.bluez.Reason.Local", up_for=0.5, down_for=0.5)
-    assert not h.supervisor.le_bond_suspect
+    h.flap(reason="org.bluez.Reason.Local", up_for=0.5, down_for=0.5)
+
+    assert h.supervisor.snapshot()["last_le_disconnect_reason"] == ""
 
 
 def test_unrecognized_reason_names_are_not_published() -> None:
@@ -256,17 +409,25 @@ def test_unrecognized_reason_names_are_not_published() -> None:
     assert h.supervisor.snapshot()["last_le_disconnect_reason"] == "unknown"
 
 
-def test_polling_fallback_detects_flaps_without_the_signal() -> None:
-    h = _Harness(watch=False)
-    h.supervisor.start()
-
-    for _ in range(LE_FLAP_THRESHOLD):
+def _polled_flaps(h, seconds, *, up_polls=1):
+    until = h.clock.now + seconds
+    while h.clock.now < until:
         h.state["le"] = True
-        h.clock.now += POLL_SECONDS
-        h.poll()
+        for _ in range(up_polls):
+            h.clock.now += POLL_SECONDS
+            h.poll()
         h.state["le"] = False
         h.clock.now += POLL_SECONDS
         h.poll()
+
+
+def test_polling_fallback_detects_persistent_flaps_without_the_signal() -> None:
+    h = _Harness(watch=False)
+    h.supervisor.start()
+
+    _polled_flaps(h, POLLED_LE_FLAP_PERSIST_SECONDS - 30)
+    assert not h.supervisor.le_bond_suspect
+    _polled_flaps(h, 60)
 
     assert h.supervisor.le_bond_suspect
     assert h.supervisor.snapshot()["last_le_disconnect_reason"] == ""
@@ -276,14 +437,8 @@ def test_polling_fallback_ignores_a_link_that_stays_up() -> None:
     h = _Harness(watch=False)
     h.supervisor.start()
 
-    for _ in range(LE_FLAP_THRESHOLD):
-        h.state["le"] = True
-        for _ in range(STABLE_CONNECTION_SECONDS // POLL_SECONDS + 1):
-            h.clock.now += POLL_SECONDS
-            h.poll()
-        h.state["le"] = False
-        h.clock.now += POLL_SECONDS
-        h.poll()
+    _polled_flaps(h, 2 * POLLED_LE_FLAP_PERSIST_SECONDS,
+                  up_polls=STABLE_CONNECTION_SECONDS // POLL_SECONDS + 1)
 
     assert not h.supervisor.le_bond_suspect
 
@@ -294,7 +449,8 @@ def test_polling_that_samples_only_up_states_does_not_hide_flaps() -> None:
     h = _Harness(le=True)
     h.supervisor.start()
 
-    for _ in range(4 * LE_FLAP_THRESHOLD):
+    until = h.clock.now + LE_FLAP_PERSIST_SECONDS + 10
+    while h.clock.now < until:
         h.flap(up_for=1.5, down_for=1.0)
         h.poll()
 
@@ -304,8 +460,7 @@ def test_polling_that_samples_only_up_states_does_not_hide_flaps() -> None:
 def test_bluez_restart_and_stop_manage_detection_state() -> None:
     h = _Harness()
     h.supervisor.start()
-    for _ in range(LE_FLAP_THRESHOLD):
-        h.flap()
+    _burst(h, LE_FLAP_PERSIST_SECONDS + 10)
 
     h.supervisor.reset_after_bluez_restart()
 
@@ -387,9 +542,10 @@ def test_real_bearer_disconnected_signals_reach_the_supervisor(monkeypatch) -> N
                 "sa{sv}as", LE, {"Connected": True}, [],
             )
             emit(device, LE, "Disconnected", "ss", TIMEOUT, "Connection timeout")
-        pump(lambda: supervisor.le_bond_suspect)
+        pump(lambda: supervisor.snapshot()["le_flap_count"] == LE_FLAP_THRESHOLD)
 
-        assert supervisor.le_bond_suspect
+        # The fake clock stands still, so the burst has not persisted yet.
+        assert not supervisor.le_bond_suspect
         assert supervisor.snapshot()["le_flap_count"] == LE_FLAP_THRESHOLD
         assert supervisor.snapshot()["last_le_disconnect_reason"] == "timeout"
 
@@ -397,8 +553,8 @@ def test_real_bearer_disconnected_signals_reach_the_supervisor(monkeypatch) -> N
             device, "org.freedesktop.DBus.Properties", "PropertiesChanged",
             "sa{sv}as", LE, {"Bonded": True}, [],
         )
-        pump(lambda: not supervisor.le_bond_suspect)
-        assert not supervisor.le_bond_suspect
+        pump(lambda: supervisor.snapshot()["le_flap_count"] == 0)
+        assert supervisor.snapshot()["le_flap_count"] == 0
     finally:
         supervisor.stop()
         server.release_name("org.bluez")
