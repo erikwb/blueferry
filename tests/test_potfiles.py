@@ -9,11 +9,27 @@ import ast
 import re
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 POTFILES = ROOT / "po" / "POTFILES.in"
 # Defines the gettext helpers; it contains no messages of its own.
 I18N_MODULE = Path("src/blueferry/i18n.py")
-_QSTR_RE = re.compile(r"\bqsTr(?:NoOp)?\s*\(")
+# The translation functions QML provides globally. lupdate extracts exactly
+# these; anything else, such as a made-up qsTrNoOp, is not a marker.
+_QML_MARKER_RE = re.compile(
+    r"\b(?:qsTr|qsTranslate|qsTrId|QT_TR_NOOP|QT_TRANSLATE_NOOP|QT_TRID_NOOP)\s*\("
+)
+# A string literal or a comment, whichever starts first. Matching both in one
+# pass keeps "//" inside a URL string from being taken for a comment, and a
+# marker mentioned inside a string from counting as a call.
+_QML_STRING_OR_COMMENT_RE = re.compile(
+    r"""
+    (?P<string>"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|`(?:\\.|[^`\\])*`)
+    | (?P<comment>//[^\n]*|/\*.*?\*/)
+    """,
+    re.DOTALL | re.VERBOSE,
+)
 
 
 def _listed() -> list[str]:
@@ -39,6 +55,19 @@ def _uses_gettext(path: Path) -> bool:
     return False
 
 
+def _qml_code(text: str) -> str:
+    """Return QML source with comments and string contents blanked out."""
+    return _QML_STRING_OR_COMMENT_RE.sub(
+        lambda match: '""' if match.group("string") else " ",
+        text,
+    )
+
+
+def _qml_translatable(path: Path) -> bool:
+    """True when a QML file calls one of Qt's translation functions."""
+    return bool(_QML_MARKER_RE.search(_qml_code(path.read_text(encoding="utf-8"))))
+
+
 def _translatable_sources() -> set[str]:
     python = {
         path.relative_to(ROOT).as_posix()
@@ -49,7 +78,7 @@ def _translatable_sources() -> set[str]:
         path.relative_to(ROOT).as_posix()
         for base in (ROOT / "src", ROOT / "data")
         for path in base.rglob("*.qml")
-        if _QSTR_RE.search(path.read_text(encoding="utf-8"))
+        if _qml_translatable(path)
     }
     return python | qml
 
@@ -80,3 +109,27 @@ def test_gettext_detection_covers_import_forms(tmp_path) -> None:
         path = tmp_path / "sample.py"
         path.write_text(source, encoding="utf-8")
         assert _uses_gettext(path) is expected, source
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ('text: qsTr("Send")\n', True),
+        ('text: qsTranslate("Main", "Send")\n', True),
+        ('text: qsTrId("send-button")\n', True),
+        ('property var labels: [QT_TR_NOOP("Send")]\n', True),
+        ('property var labels: [QT_TRANSLATE_NOOP("Main", "Send")]\n', True),
+        ('property var labels: [QT_TRID_NOOP("send-button")]\n', True),
+        ('text: qsTrNoOp("Send")\n', False),
+        ('text: "Send"\n', False),
+        ('// text: qsTr("Send")\ntext: "Send"\n', False),
+        ('/* text: qsTr("Send")\n */\ntext: "Send"\n', False),
+        ('text: "see qsTr(docs)"\n', False),
+        ('source: "https://example.invalid"; text: qsTr("Open")\n', True),
+    ],
+)
+def test_qml_marker_detection(tmp_path, source: str, expected: bool) -> None:
+    path = tmp_path / "Sample.qml"
+    path.write_text(source, encoding="utf-8")
+
+    assert _qml_translatable(path) is expected
