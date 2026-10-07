@@ -312,7 +312,11 @@ class Daemon:
         if self.ancs is not None:
             self.ancs.observe_bearer_state(connected)
         if self.ams is not None:
-            self.ams.observe_bearer_state(connected)
+            try:
+                self.ams.observe_bearer_state(connected)
+            except Exception:
+                log.warning("iPhone media control could not follow the LE link",
+                            exc_info=True)
 
     def _on_ancs_status(self) -> None:
         # StartNotify is not the success boundary.  Keep solicitation on air
@@ -654,7 +658,13 @@ class Daemon:
         if self.ancs is not None:
             self.ancs.observe_bluez_owner(old_owner, new_owner)
         if self.ams is not None:
-            self.ams.observe_bluez_owner(old_owner, new_owner)
+            # Optional media control must never cost messaging its
+            # bluetoothd-restart recovery below.
+            try:
+                self.ams.observe_bluez_owner(old_owner, new_owner)
+            except Exception:
+                log.warning("iPhone media control could not follow the BlueZ restart",
+                            exc_info=True)
         if (
             new_owner
             and not self.recovery.active

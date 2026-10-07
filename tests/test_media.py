@@ -372,3 +372,40 @@ def test_runtime_opt_in_before_bluetooth_init_waits_for_it(make_daemon, monkeypa
     assert instance.ams is None
     instance._start_media("/device")
     assert isinstance(instance.ams, _FakeAms)
+
+
+def test_media_failure_cannot_abort_bluetoothd_restart_recovery(make_daemon, monkeypatch) -> None:
+    """Review #207: an AMS exception skipped _on_bluez_restart()."""
+    instance = make_daemon()
+
+    class _Broken:
+        def observe_bluez_owner(self, _old, _new):
+            raise RuntimeError("NameHasNoOwner")
+
+    instance.ams = _Broken()  # type: ignore[assignment]
+    instance._bluez_owner_match = object()
+    instance.ancs = None
+    instance.recovery = SimpleNamespace(active=False, invalidate=lambda: None)
+    instance.solicitation = SimpleNamespace(reset_after_bluez_restart=lambda: None)
+    monkeypatch.setattr(daemon_mod.bluez_setup, "forget_advert_registration", lambda: None)
+    restarted = []
+    monkeypatch.setattr(instance, "_on_bluez_restart", lambda: restarted.append(True))
+
+    instance._on_bluez_owner_changed("org.bluez", ":1.1", ":1.2")
+
+    assert restarted == [True]
+
+
+def test_media_failure_cannot_break_le_state_propagation(make_daemon) -> None:
+    instance = make_daemon()
+    seen = []
+
+    class _Broken:
+        def observe_bearer_state(self, _connected):
+            raise RuntimeError("boom")
+
+    instance.ams = _Broken()  # type: ignore[assignment]
+    instance.ancs = SimpleNamespace(observe_bearer_state=seen.append)
+    instance.solicitation = SimpleNamespace(set_needed=lambda _needed: None)
+    instance._observe_le_state(True)  # must not raise into the supervisor
+    assert seen == [True]
