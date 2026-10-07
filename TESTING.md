@@ -49,14 +49,17 @@ style dependencies fail this check even when CLI/TUI startup still succeeds.
   unlock prompt, or inspect the user's encrypted BlueFerry databases.
 - Lifecycle and concurrency tests assert externally meaningful outcomes, not
   private call order unless the order itself prevents a leak or race.
-- The eight classes with a `schedule`/`cancel` seam (`AdapterClassSupervisor`,
-  `AncsClient`, `BearerSupervisor`, `BluetoothRecovery`, `EventDispatcher`,
-  `MnsWatch`, `ProfileSupervisor`, `SolicitationSupervisor`) get both fakes
-  injected in tests, and `BluetoothRecovery` also its `idle` fake. Their GLib
-  defaults are bound at import time, so patching `GLib` does not replace them.
-  The autouse `glib_source_guard` in `tests/conftest.py` fails any test that
-  leaves a GLib timer or idle source armed, because it would fire later on an
-  orphaned object inside an unrelated test.
+- Classes that take GLib defaults for `schedule`, `cancel` or `idle` get
+  fakes for all of those seams in tests, never just one: a fake `schedule`
+  next to the real `GLib.source_remove` cancels made-up ids on the default
+  context. The defaults are bound at import time, so patching `GLib` does
+  not replace them. `tests/test_glib_source_guard.py` finds these classes by
+  scanning the source and checks every test construction.
+- The autouse `glib_source_guard` in `tests/conftest.py` fails a test that
+  leaves a GLib timer or idle source armed on its own thread, because it
+  would fire later on an orphaned object inside an unrelated test, or that
+  removes a source id it never armed. Callbacks that worker threads post
+  back to the main loop are not attributed to a test.
 - `tests/conftest.py` disables libdbus's exit-on-disconnect on every D-Bus
   connection the test process opens, from test code or from the code under
   test. Otherwise a closed private connection that a failing test keeps alive

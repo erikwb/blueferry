@@ -1,6 +1,8 @@
 """The conftest GLib source guard sees every real timer a test can arm."""
 from __future__ import annotations
 
+import ast
+import importlib
 import inspect
 import subprocess
 import sys
@@ -10,35 +12,101 @@ from pathlib import Path
 import pytest
 from gi.repository import GLib
 
-from blueferry.adapter_class_supervisor import AdapterClassSupervisor
-from blueferry.ancs.client import AncsClient
-from blueferry.bearer_supervisor import BearerSupervisor
-from blueferry.bluetooth_recovery import BluetoothRecovery
-from blueferry.event_dispatcher import EventDispatcher
-from blueferry.obex.mns_watch import MnsWatch
-from blueferry.profile_supervisor import ProfileSupervisor
-from blueferry.solicitation_supervisor import SolicitationSupervisor
+_ROOT = Path(__file__).resolve().parent.parent
+_GLIB_SCHEDULERS = {"timeout_add", "timeout_add_seconds", "idle_add", "source_remove"}
 
 
-@pytest.mark.parametrize(("owner", "parameter", "wrapped_name"), [
-    (AdapterClassSupervisor, "schedule", "timeout_add_seconds"),
-    (AncsClient, "schedule", "timeout_add_seconds"),
-    (BearerSupervisor, "schedule", "timeout_add_seconds"),
-    (BluetoothRecovery, "schedule", "timeout_add_seconds"),
-    (BluetoothRecovery, "idle", "idle_add"),
-    (EventDispatcher, "schedule", "timeout_add_seconds"),
-    (MnsWatch, "schedule", "timeout_add_seconds"),
-    (ProfileSupervisor, "schedule", "timeout_add_seconds"),
-    (SolicitationSupervisor, "schedule", "timeout_add_seconds"),
-])
+def _glib_default_seams() -> list[tuple[str, str, str, str]]:
+    """(module, qualified callable, parameter, GLib name) for every default.
+
+    Found by scanning the source instead of listing classes by hand, so a new
+    supervisor with a GLib default is covered without touching this file.
+    """
+    seams = []
+    for path in sorted((_ROOT / "src" / "blueferry").rglob("*.py")):
+        module = ".".join(path.relative_to(_ROOT / "src").with_suffix("").parts)
+        module = module.removesuffix(".__init__")
+
+        def visit(node, prefix, module=module):
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, ast.ClassDef):
+                    visit(child, [*prefix, child.name])
+                elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    args = child.args
+                    positional = args.posonlyargs + args.args
+                    pairs = list(zip(
+                        positional[len(positional) - len(args.defaults):], args.defaults,
+                        strict=True,
+                    )) + [
+                        (arg, default)
+                        for arg, default in zip(args.kwonlyargs, args.kw_defaults, strict=True)
+                        if default is not None
+                    ]
+                    for arg, default in pairs:
+                        if (
+                            isinstance(default, ast.Attribute)
+                            and isinstance(default.value, ast.Name)
+                            and default.value.id == "GLib"
+                            and default.attr in _GLIB_SCHEDULERS
+                        ):
+                            seams.append((
+                                module, ".".join([*prefix, child.name]),
+                                arg.arg, default.attr,
+                            ))
+
+        visit(ast.parse(path.read_text()), [])
+    return seams
+
+
+_SEAMS = _glib_default_seams()
+
+
+def test_the_source_scan_finds_the_scheduler_seams() -> None:
+    assert any(seam[1] == "AncsClient.__init__" for seam in _SEAMS)
+
+
+@pytest.mark.parametrize(
+    ("module", "qualname", "parameter", "wrapped_name"), _SEAMS,
+    ids=[f"{seam[1]}-{seam[2]}" for seam in _SEAMS],
+)
 def test_import_time_scheduler_defaults_are_recorded(
-    owner, parameter, wrapped_name,
+    module, qualname, parameter, wrapped_name,
 ) -> None:
     # These defaults are bound when the module is imported. The guard only
     # covers them because conftest wraps GLib before blueferry is imported.
+    owner = importlib.import_module(module)
+    for part in qualname.split("."):
+        owner = getattr(owner, part)
     default = inspect.signature(owner).parameters[parameter].default
     assert default is getattr(GLib, wrapped_name)
     assert inspect.unwrap(default) is not default
+
+
+def test_tests_that_fake_one_scheduler_seam_fake_all_of_them() -> None:
+    # A fake schedule next to the real GLib.source_remove cancels made-up ids
+    # on the default context; a fake cancel next to a real schedule leaks.
+    seams: dict[str, set[str]] = {}
+    for _module, qualname, parameter, _name in _SEAMS:
+        owner, _, method = qualname.rpartition(".")
+        if method == "__init__" and owner:
+            seams.setdefault(owner.rpartition(".")[2], set()).add(parameter)
+    partial = []
+    for path in sorted((_ROOT / "tests").rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+            if name not in seams:
+                continue
+            passed = {keyword.arg for keyword in node.keywords}
+            if None in passed:
+                continue  # **kwargs: cannot tell statically
+            injected = passed & seams[name]
+            if injected and injected != seams[name]:
+                missing = sorted(seams[name] - injected)
+                partial.append(f"{path.name}:{node.lineno} {name} lacks {missing}")
+    assert partial == []
 
 
 def test_guard_reports_a_live_timer_until_it_is_removed(glib_source_guard) -> None:
