@@ -407,6 +407,22 @@ def test_soft_break_continuations_of_kept_values_are_not_properties() -> None:
     ]
 
 
+def test_base64_continuations_only_follow_base64_media_values() -> None:
+    # A PHOTO link or a SOUND without an encoding has no unindented base64
+    # continuation, so colon-less lines after it are not swallowed.
+    blob = (
+        "BEGIN:VCARD\nVERSION:2.1\nFN:Linked\n"
+        "PHOTO;VALUE=uri:https://example.invalid/a.jpg\nStray1\n"
+        "SOUND;X-IRMC-N:Lee;Ann\nStray2\n"
+        "LOGO;BASE64:QUJD\nREVG\n"
+        "KEY:data:application/pgp-keys;base64,QUJD\nR0hJ\n"
+        "END:VCARD\n"
+    )
+
+    [card] = list(iter_vcard_bodies(blob, maximum=1))
+    assert card.split("\n") == ["VERSION:2.1", "FN:Linked", "Stray1", "Stray2"]
+
+
 def test_skipped_photo_lines_with_crlf_line_endings() -> None:
     photo = "/9j/" + "A" * 1_100_000
     blob = (

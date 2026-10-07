@@ -15,24 +15,38 @@ _BASE64_LINE = re.compile(r"[ \t]*[A-Za-z0-9+/=]+[ \t]*")
 _SKIPPED_PROPERTIES = frozenset({"photo", "logo", "sound", "key"})
 
 
-def _skipped_property(line: str) -> bool | None:
-    """Whether a skipped property starts here and is quoted-printable.
+# How a skipped value continues on the lines after its property line.
+_FOLDED = "folded"  # only vCard 3.0/4.0 folding (leading space or tab)
+_BASE64 = "base64"  # folding or unindented vCard 2.1 base64 lines
+_QUOTED_PRINTABLE = "quoted-printable"  # vCard 2.1 soft line breaks
+_BASE64_PARAMETERS = frozenset({"ENCODING=B", "ENCODING=BASE64", "BASE64"})
+_QUOTED_PRINTABLE_PARAMETERS = frozenset({"ENCODING=QUOTED-PRINTABLE", "QUOTED-PRINTABLE"})
+_DATA_BASE64_URI = re.compile(r"[ \t]*data:[^,]*;base64,", re.IGNORECASE)
+
+
+def _skipped_property(line: str) -> str | None:
+    """How the skipped property starting on this line continues, if it is one.
 
     ``None`` means the line does not start a skipped property (a grouped name
-    such as ``item1.PHOTO`` counts). ``True`` reports a vCard 2.1
-    ``ENCODING=QUOTED-PRINTABLE`` value, which continues with soft line breaks
-    instead of folding.
+    such as ``item1.PHOTO`` counts). Otherwise the result is ``_BASE64`` for
+    ``ENCODING=b``/``BASE64`` values and ``data:...;base64,`` URIs,
+    ``_QUOTED_PRINTABLE`` for vCard 2.1 ``ENCODING=QUOTED-PRINTABLE`` values,
+    and ``_FOLDED`` for anything else, such as a ``VALUE=uri`` link.
     """
     if line[:1] in (" ", "\t"):
         return None  # a folded continuation never starts a property
-    head, separator, _value = line.partition(":")
+    head, separator, value = line.partition(":")
     if not separator:
         return None  # every property has a value after ":"
     name = head.split(";", 1)[0].strip().rsplit(".", 1)[-1].casefold()
     if name not in _SKIPPED_PROPERTIES:
         return None
     parameters = {part.strip().upper() for part in head.split(";")[1:]}
-    return bool(parameters & {"ENCODING=QUOTED-PRINTABLE", "QUOTED-PRINTABLE"})
+    if parameters & _QUOTED_PRINTABLE_PARAMETERS:
+        return _QUOTED_PRINTABLE
+    if parameters & _BASE64_PARAMETERS or _DATA_BASE64_URI.match(value):
+        return _BASE64
+    return _FOLDED
 
 
 def _is_quoted_printable(line: str) -> bool:
@@ -41,23 +55,26 @@ def _is_quoted_printable(line: str) -> bool:
     return bool(separator) and "QUOTED-PRINTABLE" in head.upper()
 
 
-def _continues_skipped(line: str, previous: str, quoted_printable: bool) -> bool:
+def _continues_skipped(line: str, previous: str, mode: str) -> bool:
     """Whether a physical line belongs to the skipped value above it.
 
-    vCard 3.0 folds with one leading space or tab. vCard 2.1 BASE64 values are
-    commonly written as unindented base64 lines ending at a blank line, so an
+    vCard 3.0 and 4.0 fold with one leading space or tab, which continues
+    every kind of value. vCard 2.1 BASE64 values are commonly written as
+    unindented base64 lines ending at a blank line, so for a base64 value an
     unindented line made only of base64 characters (``A-Z a-z 0-9 + / =``) is
-    also treated as value data. A real property line always contains ``:``
-    and therefore never matches; a stray base64-only line after the value is
-    consumed with it, which can only drop text no property owns. A vCard 2.1
-    QUOTED-PRINTABLE value continues on the next line exactly when the
-    previous line ends with the soft line break ``=``.
+    also value data. A real property line always contains ``:`` and
+    therefore never matches. Other values, such as a ``VALUE=uri`` link, get
+    no such allowance, so a stray colon-less line after them is kept. A
+    vCard 2.1 QUOTED-PRINTABLE value continues on the next line exactly when
+    the previous line ends with the soft line break ``=``.
     """
     if line[:1] in (" ", "\t"):
         return True
-    if quoted_printable:
+    if mode == _QUOTED_PRINTABLE:
         return previous.rstrip().endswith("=")
-    return _BASE64_LINE.fullmatch(line) is not None
+    if mode == _BASE64:
+        return _BASE64_LINE.fullmatch(line) is not None
+    return False
 
 
 def iter_bounded_lines(stream: TextIO, *, limit: int = MAX_VCARD_CHARS) -> Iterator[str]:
@@ -101,7 +118,7 @@ def iter_vcard_bodies(
     overflowed = False
     size = 0
     lines: list[str] = []
-    skipping: bool | None = None
+    skipping: str | None = None
     # A kept quoted-printable value continues on the next line after a soft
     # line break, and that line must not be mistaken for a new property.
     kept_quoted_printable = False
