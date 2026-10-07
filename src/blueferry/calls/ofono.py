@@ -80,6 +80,10 @@ class OfonoTransport(Protocol):
         path: str | None = None,
     ) -> SignalMatch: ...
 
+    def send(
+        self, path: str, interface: str, method: str, signature: str, args: Sequence[Any],
+    ) -> None: ...
+
     def watch_owner(self, handler: Callable[[bool], None]) -> SignalMatch: ...
 
 
@@ -147,6 +151,21 @@ class DBusOfonoTransport:
         self._bus_factory().send_message_with_reply(
             message, replied, OFONO_CALL_TIMEOUT_SEC, require_main_loop=True,
         )
+
+    def send(
+        self, path: str, interface: str, method: str, signature: str, args: Sequence[Any],
+    ) -> None:
+        """Fire and forget, flushed now: the main loop may be about to quit."""
+        message = dbus.lowlevel.MethodCallMessage(
+            destination=OFONO_SERVICE, path=path, interface=interface, method=method,
+        )
+        if args:
+            message.append(*args, signature=signature)
+        message.set_auto_start(False)
+        message.set_no_reply(True)
+        bus = self._bus_factory()
+        bus.send_message(message)
+        bus.flush()
 
     def watch(
         self,

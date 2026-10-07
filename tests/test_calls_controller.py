@@ -70,9 +70,13 @@ class FakeTransport:
     owner_handler: object = None
     owner_match: Match | None = None
     fail_watch: bool = False
+    sent: list = field(default_factory=list)
 
     def call(self, path, interface, method, signature, args, on_reply, on_error) -> None:
         self.pending.append(Pending(path, interface, method, signature, tuple(args), on_reply, on_error))
+
+    def send(self, path, interface, method, signature, args) -> None:
+        self.sent.append((path, interface, method, tuple(args)))
 
     def watch(self, handler, *, interface, signal, path=None):
         if self.fail_watch:
@@ -853,3 +857,77 @@ def test_acting_on_a_vanished_call_is_not_found() -> None:
     assert isinstance(failures[0], NotFoundError)
     # Modem-level methods keep the generic call failure.
     assert isinstance(failures[1], OperationFailedError)
+
+
+def test_stop_powers_down_the_modem_blueferry_powered() -> None:
+    controller, transport, _timers, _changes, _events = _build()
+    controller.start()
+    transport.take("GetModems").on_reply([_modem()])
+    transport.take("SetProperty").on_reply()
+
+    controller.stop()
+
+    assert transport.sent == [(MODEM, MODEM_IFACE, "SetProperty", ("Powered", False))]
+    assert isinstance(transport.sent[0][3][1], dbus.Boolean)
+    controller.stop()
+    assert len(transport.sent) == 1
+
+
+def test_stop_leaves_a_modem_powered_by_someone_else_alone() -> None:
+    controller, transport, *_ = _ready()
+
+    controller.stop()
+
+    assert transport.sent == []
+
+
+def test_ofono_restart_forgets_the_modem_it_powered() -> None:
+    controller, transport, _timers, _changes, _events = _build()
+    controller.start()
+    transport.take("GetModems").on_reply([_modem()])
+    transport.take("SetProperty").on_reply()
+    transport.owner_handler(True)
+
+    controller.stop()
+
+    assert transport.sent == []
+
+
+def test_power_down_failure_does_not_break_stop() -> None:
+    controller, transport, _timers, _changes, _events = _build()
+    controller.start()
+    transport.take("GetModems").on_reply([_modem()])
+    transport.take("SetProperty").on_reply()
+
+    def broken(*_args):
+        raise dbus.exceptions.DBusException("gone", name="org.freedesktop.DBus.Error.Disconnected")
+
+    transport.send = broken
+    controller.stop()
+
+    assert all(match.removed for match in transport.matches)
+
+
+def test_dbus_transport_send_is_fire_and_forget_and_flushed() -> None:
+    from blueferry.calls.ofono import DBusOfonoTransport
+
+    class Bus:
+        def __init__(self) -> None:
+            self.log = []
+
+        def send_message(self, message):
+            self.log.append(("send", message))
+
+        def flush(self):
+            self.log.append(("flush", None))
+
+    bus = Bus()
+    DBusOfonoTransport(lambda: bus).send(
+        MODEM, MODEM_IFACE, "SetProperty", "sv", ("Powered", dbus.Boolean(False)),
+    )
+
+    assert [entry[0] for entry in bus.log] == ["send", "flush"]
+    message = bus.log[0][1]
+    assert message.get_auto_start() is False and message.get_no_reply() is True
+    assert message.get_member() == "SetProperty"
+    assert message.get_args_list() == ["Powered", False]

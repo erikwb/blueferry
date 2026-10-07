@@ -50,6 +50,7 @@ from gi.repository import GLib
 
 from blueferry.calls.model import (
     CALL_VOLUME_IFACE,
+    CALLS_BLUEZ_CONFLICT,
     CALLS_CONNECTING,
     CALLS_DISABLED,
     CALLS_READY,
@@ -137,6 +138,7 @@ class CallController:
         on_state_changed: Callable[[], None] | None = None,
         on_event: Callable[[CallEvent], None] | None = None,
         phone_reachable: Callable[[], bool] | None = None,
+        hfp_conflict: Callable[[], bool] | None = None,
         schedule: Schedule = GLib.timeout_add_seconds,
         cancel: Cancel = GLib.source_remove,
     ) -> None:
@@ -149,6 +151,7 @@ class CallController:
         self._on_state_changed = on_state_changed or (lambda: None)
         self._on_event = on_event or (lambda _event: None)
         self._phone_reachable = phone_reachable or (lambda: True)
+        self._hfp_conflict = hfp_conflict or (lambda: False)
         self._schedule = schedule
         self._cancel = cancel
 
@@ -170,7 +173,14 @@ class CallController:
         # Modem properties oFono accepted for the current bring-up attempt.
         # Its PropertyChanged confirmation may lag the method reply.
         self._requested: set[str] = set()
+        # The modem BlueFerry powered up itself. Only that one is powered down
+        # again on stop, so a modem another oFono client brought up is left
+        # alone.
+        self._powered_path: str | None = None
         self._discovering = False
+        # Paging stopped because bluetoothd's own HFP plugin most likely owns
+        # the channel; cleared when Classic returns or oFono makes progress.
+        self._blocked = False
         self._last_reachable = False
         # Log each distinct discovery failure once, not on every retry.
         self._last_discovery_error = ""
@@ -242,6 +252,7 @@ class CallController:
         self._cancel_timer("_retry_id")
         self._cancel_timer("_bringup_id")
         self._unbind(emit=False)
+        self._power_down()
         self._release_modem()
         self._remove_watches()
 
@@ -252,8 +263,12 @@ class CallController:
         self._last_reachable = reachable
         if (
             returned and self._running and self._modem is not None
-            and self._state == CALLS_CONNECTING and not self._request_in_flight
+            and self._state in (CALLS_CONNECTING, CALLS_BLUEZ_CONFLICT)
+            and not self._request_in_flight
         ):
+            # A fresh Classic link is worth one more attempt, also after a
+            # BlueZ HFP conflict (the user may have restarted bluetoothd).
+            self._blocked = False
             self._retry_index = 0
             self._cancel_timer("_retry_id")
             self._advance()
@@ -416,8 +431,11 @@ class CallController:
     def _on_owner_changed(self, present: bool) -> None:
         if not self._running:
             return
-        # Everything bound to the previous oFono process is gone.
+        # Everything bound to the previous oFono process is gone, including
+        # the modem it powered for us.
         self._generation += 1
+        self._powered_path = None
+        self._blocked = False
         self._cancel_timer("_retry_id")
         self._cancel_timer("_bringup_id")
         self._unbind(emit=True)
@@ -521,6 +539,7 @@ class CallController:
         if self._modem is None or str(path) != self._modem.path:
             return
         log.info("iPhone HFP modem was removed from oFono")
+        self._powered_path = None
         self._unbind(emit=True)
         self._release_modem()
         self._set_state(CALLS_SEARCHING)
@@ -546,12 +565,31 @@ class CallController:
         self._modem = modem
         self._advance()
 
+    def _power_down(self) -> None:
+        """Let oFono drop the hands-free link BlueFerry asked it to open.
+
+        Without this oFono keeps the HFP service-level connection after calls
+        are disabled or the daemon quits, so call audio would keep coming to
+        this computer with no BlueFerry call UI.
+        """
+        path, self._powered_path = self._powered_path, None
+        if path is None or self._transport is None:
+            return
+        log.info("releasing the iPhone HFP modem (Powered=false)")
+        try:
+            self._transport.send(
+                path, MODEM_IFACE, "SetProperty", "sv", ("Powered", boolean(False)),
+            )
+        except Exception:
+            log.debug("could not power down the iPhone HFP modem", exc_info=True)
+
     def _release_modem(self) -> None:
         self._remove(self._modem_match)
         self._modem_match = None
         self._modem = None
         self._request_in_flight = False
         self._requested.clear()
+        self._blocked = False
         self._cancel_timer("_bringup_id")
 
     def _on_modem_property(self, name: object, value: object) -> None:
@@ -573,6 +611,7 @@ class CallController:
             # delay the next bring-up step.
             self._cancel_timer("_retry_id")
             self._retry_index = 0
+            self._blocked = False
         if str(name) in {"Powered", "Online", "Interfaces"}:
             self._advance()
 
@@ -590,6 +629,8 @@ class CallController:
             # Online dropped or the phone disconnected: its calls are gone.
             log.info("iPhone HFP modem went offline")
             self._unbind(emit=True)
+        if self._blocked:
+            return
         self._set_state(CALLS_CONNECTING)
         if self._request_in_flight or self._retry_id is not None:
             return
@@ -624,6 +665,8 @@ class CallController:
         def done(*_values: Any) -> None:
             self._request_in_flight = False
             self._requested.add(name)
+            if name == "Powered":
+                self._powered_path = path
             # oFono confirms through PropertyChanged; re-evaluate in case the
             # signal was delivered before this reply.
             self._advance()
@@ -635,6 +678,8 @@ class CallController:
             )
             if self._modem is not None and self._modem.path == path:
                 self._cancel_timer("_bringup_id")
+                if name == "Powered" and self._bluez_conflict():
+                    return
                 self._schedule_retry()
 
         self._call(
@@ -651,8 +696,44 @@ class CallController:
         if self._bringup_id is None:
             self._bringup_id = self._schedule(BRINGUP_TIMEOUT_SEC, self._bringup_timeout)
 
+    def _bluez_conflict(self) -> bool:
+        """Stop paging when bluetoothd's own HFP plugin is the likely cause.
+
+        oFono's Powered=true waits for the HFP service-level connection. When
+        bluetoothd runs its experimental hands-free plugin it can take the
+        iPhone's HFP channel first, and every retry would page the phone
+        again without a chance of success. Report it once and wait for the
+        Classic link to come back instead.
+        """
+        try:
+            conflict = bool(self._hfp_conflict())
+        except Exception:
+            log.debug("BlueZ HFP plugin check failed", exc_info=True)
+            conflict = False
+        if not conflict:
+            return False
+        if not self._blocked:
+            log.warning(
+                "iPhone HFP modem did not power up and bluetoothd runs its own HFP "
+                "hands-free plugin (-E without -P hfp), which competes with oFono "
+                "for the call channel; start bluetoothd with -P hfp. Not retrying "
+                "until the iPhone reconnects."
+            )
+        self._blocked = True
+        self._request_in_flight = False
+        self._requested.clear()
+        self._cancel_timer("_retry_id")
+        self._cancel_timer("_bringup_id")
+        self._set_state(CALLS_BLUEZ_CONFLICT)
+        return True
+
     def _bringup_timeout(self) -> bool:
         self._bringup_id = None
+        if (
+            self._running and self._modem is not None and not self._modem.powered
+            and self._bluez_conflict()
+        ):
+            return False
         if self._running and self._state != CALLS_READY:
             log.log(
                 self._bringup_level(),
@@ -810,6 +891,7 @@ class CallController:
                 CALLS_UNAVAILABLE: "oFono is not running",
                 CALLS_SEARCHING: "oFono has no hands-free modem for the iPhone",
                 CALLS_CONNECTING: "the iPhone's hands-free modem is not online yet",
+                CALLS_BLUEZ_CONFLICT: "bluetoothd's own HFP plugin holds the call channel",
             }.get(self._state, "call control is not ready")
             raise CallsUnavailableError(f"phone calls are unavailable: {detail}")
         return self._bound_path
