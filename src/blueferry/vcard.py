@@ -113,6 +113,11 @@ def iter_bounded_lines(stream: TextIO, *, limit: int = MAX_VCARD_CHARS) -> Itera
     return iter(lambda: stream.readline(max(1, int(limit))), "")
 
 
+# A cut line is only yielded in pieces once its first piece has this many
+# characters, so a marker or a property name and its parameters are never cut.
+_WHOLE_LINE_START = 256
+
+
 def _line_pieces(blob: str | Iterable[str]) -> Iterator[tuple[str, bool, bool]]:
     """Yield ``(text, continued, complete)`` for every piece of every line.
 
@@ -127,10 +132,13 @@ def _line_pieces(blob: str | Iterable[str]) -> Iterator[tuple[str, bool, bool]]:
     pending: tuple[str, bool, bool] | None = None
     continued = False
     after_carriage_return = False
+    carry = ""
     for chunk in chunks:
         if after_carriage_return and chunk[:1] == "\n":
             chunk = chunk[1:]
         after_carriage_return = chunk[-1:] == "\r"
+        if carry:
+            chunk, carry = carry + chunk, ""
         for piece in chunk.splitlines(keepends=True):
             text = piece.splitlines()[0]
             terminated = len(text) < len(piece)
@@ -138,7 +146,19 @@ def _line_pieces(blob: str | Iterable[str]) -> Iterator[tuple[str, bool, bool]]:
                 yield pending
             pending = (text, continued, terminated)
             continued = not terminated
-    if pending is not None:
+        if (
+            pending is not None
+            and not pending[1]
+            and not pending[2]
+            and len(pending[0]) < _WHOLE_LINE_START
+        ):
+            # A reader cut a line shortly after its start, for example at a
+            # "\r" or U+2028 it does not split at. Keep the start for the next
+            # chunk so markers and property names are always seen whole.
+            carry, pending, continued = pending[0], None, False
+    if carry:
+        yield carry, False, True
+    elif pending is not None:
         yield pending[0], pending[1], True
 
 

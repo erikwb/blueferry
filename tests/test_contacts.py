@@ -515,6 +515,15 @@ def test_pieces_of_a_kept_over_long_line_are_rejoined() -> None:
     assert list(iter_vcard_bodies(crlf, maximum=1)) == ["FN:Split"]
 
 
+def test_a_reader_cut_never_splits_a_marker_or_property_name() -> None:
+    # Pieces as a bounded reader yields them for "\r"-only line endings,
+    # which it does not split at: lines are cut wherever the limit falls.
+    blob = "BEGIN:VCARD\rFN:Cut\rPHOTO;ENCODING=QUOTED-PRINTABLE:=FF=\r=D8\rEND:VCARD\r"
+    pieces = [blob[index:index + 7] for index in range(0, len(blob), 7)]
+
+    assert list(iter_vcard_bodies(pieces, maximum=1)) == ["FN:Cut"]
+
+
 @pytest.mark.parametrize("separator", ["\u2028", "\u2029", "\x0c", "\x0b", "\x85", "\x1e"])
 def test_unicode_line_separators_split_names_the_same_on_every_path(separator) -> None:
     import io
