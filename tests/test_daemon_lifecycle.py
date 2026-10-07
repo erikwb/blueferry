@@ -568,8 +568,30 @@ def test_ancs_actions_are_off_by_default(make_daemon, monkeypatch):
     instance.setup_verification = SimpleNamespace(verified=())
     monkeypatch.setattr(daemon_mod, "history_count", lambda **_kwargs: 0)
 
-    assert instance.events.perform_ancs_action is None
-    assert instance._status()["ancs_actions"] is False
+    assert instance.events.ancs_actions_enabled() is False
+    status = instance._status()
+    assert status["ancs_actions"] is False
+    assert status["ancs_actions_preference"] is False
+
+
+def test_saved_ancs_actions_choice_applies_live(make_daemon, monkeypatch):
+    monkeypatch.setattr(daemon_mod.config, "ANCS_ACTIONS", False)
+    monkeypatch.setattr(daemon_mod.config, "SHOW_NOTIFICATION_CONTENT", True)
+    instance = make_daemon()
+    changed = []
+    instance.ancs = SimpleNamespace(
+        notification_actions_changed=lambda: changed.append(True),
+    )
+    monkeypatch.setattr(instance, "_emit_status", lambda: None)
+
+    instance.notification_policy.set_ancs_actions(True)
+    instance._notification_policy_changed()
+    assert instance.events.ancs_actions_enabled() is True
+    assert changed == [True]
+
+    instance.notification_policy.set_ancs_actions(False)
+    instance._notification_policy_changed()
+    assert instance.events.ancs_actions_enabled() is False
 
 
 def test_enabled_ancs_actions_forward_clicks_to_the_live_client(
@@ -582,15 +604,15 @@ def test_enabled_ancs_actions_forward_clicks_to_the_live_client(
     perform = instance.events.perform_ancs_action
 
     assert perform is not None
-    assert perform(42, True, results.append) is False
+    assert perform(42, True, 5, results.append) is False
     assert results == ["disconnected"]
 
     calls = []
     instance.ancs = SimpleNamespace(
         perform_notification_action=lambda *args: calls.append(args) or True,
     )
-    assert perform(42, False, results.append) is True
-    assert calls == [(42, False, results.append)]
+    assert perform(42, False, 5, results.append) is True
+    assert calls == [(42, False, 5, results.append)]
 
 
 def test_ancs_removal_reaches_the_current_dispatcher(make_daemon):
@@ -613,8 +635,12 @@ def test_hidden_content_keeps_ancs_actions_off(make_daemon, monkeypatch):
     instance.setup_verification = SimpleNamespace(verified=())
     monkeypatch.setattr(daemon_mod, "history_count", lambda **_kwargs: 0)
 
-    assert instance.events.perform_ancs_action is None
-    assert instance._status()["ancs_actions"] is False
+    instance.notification_policy.set_ancs_actions(True)
+    assert instance.events.ancs_actions_enabled() is False
+    status = instance._status()
+    assert status["ancs_actions"] is False
+    assert status["ancs_actions_preference"] is True
+    assert status["notification_content_shown"] is False
 
 
 def test_ancs_session_reset_reaches_the_current_dispatcher(make_daemon):

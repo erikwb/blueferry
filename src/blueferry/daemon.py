@@ -131,9 +131,8 @@ class Daemon:
             ),
             storage=self.storage,
             on_incoming_message=lambda: self._verify_setup_task(MESSAGE_NOTIFICATIONS),
-            perform_ancs_action=(
-                self._perform_ancs_action if config.ancs_actions_active() else None
-            ),
+            perform_ancs_action=self._perform_ancs_action,
+            ancs_actions_enabled=self._ancs_actions_active,
         )
         self.listener: MapEventListener | None = None
         self.mns_watch: MnsWatch | None = None
@@ -352,7 +351,7 @@ class Daemon:
                 contacts=self.contacts,
                 status_provider=self._status,
                 notification_policy=self.notification_policy,
-                on_notification_policy_changed=self._emit_status,
+                on_notification_policy_changed=self._notification_policy_changed,
                 starred_threads=self.starred_threads,
                 confirmed_groups=self.confirmed_groups,
                 group_routes=self.group_routes,
@@ -496,7 +495,7 @@ class Daemon:
                 ),
                 # Labels are app-defined content: never request them while
                 # notification content is hidden.
-                notification_actions=config.ancs_actions_active(),
+                notification_actions=self._ancs_actions_active,
                 on_notification_removed=self._ancs_notification_removed,
                 on_actions_reset=self._ancs_actions_reset,
             )
@@ -764,7 +763,23 @@ class Daemon:
             self.events.names,
         )
 
-    def _perform_ancs_action(self, notification_id, positive, on_result=None) -> bool:
+    def _ancs_actions_active(self) -> bool:
+        """Whether ANCS action labels may be requested and shown at all."""
+        # Labels are app-defined content: never request them while
+        # notification content is hidden.
+        return bool(
+            self.notification_policy.ancs_actions and config.SHOW_NOTIFICATION_CONTENT
+        )
+
+    def _notification_policy_changed(self) -> None:
+        ancs = self.ancs
+        if ancs is not None:
+            ancs.notification_actions_changed()
+        self._emit_status()
+
+    def _perform_ancs_action(
+        self, notification_id, positive, token, on_result=None
+    ) -> bool:
         """Forward one clicked desktop action to the current ANCS session."""
         ancs = self.ancs
         if ancs is None:
@@ -772,7 +787,7 @@ class Daemon:
                 on_result(ACTION_DISCONNECTED)
             return False
         return ancs.perform_notification_action(
-            notification_id, bool(positive), on_result
+            notification_id, bool(positive), token, on_result
         )
 
     def _ancs_notification_removed(self, notification_id: int) -> None:
@@ -810,7 +825,9 @@ class Daemon:
             "ancs": bool(ancs and ancs.connected),
             "ancs_subscribed": bool(ancs and ancs.subscribed),
             "ancs_authorized": bool(ancs and ancs.authorized),
-            "ancs_actions": config.ancs_actions_active(),
+            "ancs_actions": self._ancs_actions_active(),
+            "ancs_actions_preference": self.notification_policy.ancs_actions,
+            "notification_content_shown": config.SHOW_NOTIFICATION_CONTENT,
             **self.bearers.snapshot(),
             **self.proximity.snapshot(),
             "contacts": self.contacts.count(),

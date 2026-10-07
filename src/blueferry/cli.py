@@ -13,6 +13,7 @@ from blueferry import bluez_setup, config
 from blueferry.cli_common import setup_logging as _setup_logging
 from blueferry.cli_messages import sms_list, sms_send
 from blueferry.cli_proximity import proximity_app
+from blueferry.notification_policy import NotificationPolicyStore
 
 app = typer.Typer(
     add_completion=False,
@@ -92,13 +93,14 @@ def doctor(verbose: bool = typer.Option(False, "-v", "--verbose")):
             )
             warnings = True
 
-    if config.ancs_actions_active():
+    actions_preference = NotificationPolicyStore().ancs_actions
+    if actions_preference and config.SHOW_NOTIFICATION_CONTENT:
         actions_state = "enabled"
-    elif config.ANCS_ACTIONS:
+    elif actions_preference:
         actions_state = "disabled while BLUEFERRY_SHOW_NOTIFICATION_CONTENT=false"
     else:
         actions_state = "disabled"
-    log.info("ANCS notification actions: %s (BLUEFERRY_ANCS_ACTIONS)", actions_state)
+    log.info("ANCS notification actions: %s", actions_state)
 
     # State dir writable
     try:

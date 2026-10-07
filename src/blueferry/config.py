@@ -191,7 +191,9 @@ ANCS_APP_BLOCKLIST: frozenset[str] = (
 
 
 ANCS_ACTIONS: bool = _env_bool("BLUEFERRY_ANCS_ACTIONS", False)
-"""Offer iPhone notification actions (Accept/Decline/Clear/...) as buttons.
+"""Initial value for offering iPhone notification actions as buttons.
+
+A choice saved from a client (settings.json) wins over this value.
 
 Off by default because it changes the desktop notification UI and lets a
 click act on the phone. It applies only to non-Messages popups shown by the
@@ -219,11 +221,6 @@ KEEP_PHONE_AUDIO_ON_PHONE: bool = _env_bool(
 NOTIFICATION_TIMEOUT_MS: int = _env_int(
     "BLUEFERRY_NOTIFICATION_TIMEOUT_MS", 8_000, 1_000, 60_000
 )
-
-
-def ancs_actions_active() -> bool:
-    """Whether ANCS action labels may be requested and shown at all."""
-    return ANCS_ACTIONS and SHOW_NOTIFICATION_CONTENT
 
 
 ANCS_ACTION_TIMEOUT_MS: int = _env_int(

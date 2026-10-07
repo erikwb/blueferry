@@ -325,6 +325,24 @@ class MessagesService(dbus.service.Object):
         ))
 
     @dbus.service.method(
+        IFACE, in_signature="", out_signature="b", sender_keyword="sender"
+    )
+    def GetAncsNotificationActions(self, sender=None) -> bool:
+        return self._sync(lambda: self._authorized(
+            sender, "status",
+            self.operations.get_ancs_notification_actions,
+        ))
+
+    @dbus.service.method(
+        IFACE, in_signature="b", out_signature="b", sender_keyword="sender"
+    )
+    def SetAncsNotificationActions(self, enabled: bool, sender=None) -> bool:
+        return self._sync(lambda: self._authorized(
+            sender, "settings",
+            lambda: self.operations.set_ancs_notification_actions(bool(enabled)),
+        ))
+
+    @dbus.service.method(
         PRESENCE_IFACE, in_signature="bu", out_signature="s", sender_keyword="sender"
     )
     def SetProximityLock(self, enabled: bool, grace_seconds: int, sender=None) -> str:

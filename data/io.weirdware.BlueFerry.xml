@@ -110,6 +110,15 @@
       <annotation name="io.weirdware.BlueFerry.Errors"
                   value="InvalidArgs,NotReady"/>
     </method>
+    <method name="GetAncsNotificationActions">
+      <arg name="enabled" type="b" direction="out"/>
+    </method>
+    <method name="SetAncsNotificationActions">
+      <arg name="enabled" type="b" direction="in"/>
+      <arg name="selected" type="b" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady"/>
+    </method>
     <method name="GetStoragePolicy">
       <arg name="policy" type="s" direction="out"/>
     </method>
