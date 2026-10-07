@@ -6,6 +6,7 @@ future translation template, so this is enforced instead of remembered.
 from __future__ import annotations
 
 import ast
+import posixpath
 import re
 from pathlib import Path
 
@@ -169,11 +170,27 @@ def test_every_translatable_source_is_listed_in_potfiles() -> None:
     assert missing == [], f"add to po/POTFILES.in: {missing}"
 
 
-def test_potfiles_entries_exist_and_are_unique() -> None:
-    listed = _listed()
+def test_every_potfiles_entry_has_translatable_strings() -> None:
+    stale = sorted(set(_listed()) - _translatable_sources())
 
-    assert len(listed) == len(set(listed)), "po/POTFILES.in has duplicate entries"
-    assert [entry for entry in listed if not (ROOT / entry).is_file()] == []
+    assert stale == [], f"remove from po/POTFILES.in (no translatable strings): {stale}"
+
+
+def test_potfiles_entries_are_canonical_and_unique() -> None:
+    listed = _listed()
+    # Normalising first means ./x and x count as the same entry.
+    not_canonical = [
+        entry
+        for entry in listed
+        if entry != posixpath.normpath(entry)
+        or "\\" in entry
+        or posixpath.isabs(entry)
+        or entry.startswith("../")
+    ]
+    normalised = [posixpath.normpath(entry) for entry in listed]
+
+    assert not_canonical == [], f"use repository-relative paths like src/x.py: {not_canonical}"
+    assert len(normalised) == len(set(normalised)), "po/POTFILES.in has duplicate entries"
 
 
 def test_translation_helpers_exist_in_i18n() -> None:
