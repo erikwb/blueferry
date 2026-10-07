@@ -12,7 +12,7 @@ from blueferry.client import BackendClient, BackendError
 from blueferry.errors import PairingError
 from blueferry.onboarding import ANCS_REPAIR_HINT_CLI, ancs_unavailable_detail
 from blueferry.quirks_report import cli_issue_hint, latest_report
-from blueferry.setup_client import DISCOVERY_SECONDS, SetupClient
+from blueferry.setup_client import DISCOVERY_SECONDS, BluetoothCompatibility, SetupClient
 from blueferry.setup_verification import (
     NOTIFICATION_ACCESS,
     remaining_iphone_setup_tasks,
@@ -58,6 +58,55 @@ def _print_ancs_repair_hint(*, limited: bool = False, vendor: str = "") -> None:
     typer.echo("Run: sudo systemctl restart bluetooth.service")
     typer.echo("Then wait for BlueFerry to reconnect.")
     typer.echo("This briefly disconnects all Bluetooth devices.")
+
+
+LE_TEMPORARY_NOTE = (
+    "Switching LE on lasts until bluetoothd restarts. For a permanent fix, set "
+    "ControllerMode = dual in /etc/bluetooth/main.conf; BlueFerry does not "
+    "edit that file."
+)
+
+
+def _resolve_disabled_le(
+    setup: SetupClient,
+    compatibility: BluetoothCompatibility,
+    *,
+    compatibility_mode: bool,
+) -> tuple[BluetoothCompatibility, bool] | None:
+    """Offer to switch on LE, or fall back to compatibility mode.
+
+    Returns the possibly refreshed compatibility and the compatibility-mode
+    choice, or ``None`` when the user declined both.
+    """
+    # Older helpers and test doubles may not report the LE state yet.
+    if not getattr(compatibility, "le_disabled", False):
+        return compatibility, compatibility_mode
+    typer.echo(typer.style("⚠ " + compatibility.issue, fg=typer.colors.YELLOW))
+    if compatibility_mode:
+        typer.echo(
+            "Compatibility mode: continuing with Messages and Contacts; iOS may "
+            "not show their permission toggles until Bluetooth LE is on."
+        )
+        return compatibility, compatibility_mode
+    typer.echo(LE_TEMPORARY_NOTE)
+    if typer.confirm(
+        f"Switch on Bluetooth LE on {compatibility.adapter} now? "
+        "This asks for administrator authentication.",
+        default=False,
+    ):
+        try:
+            compatibility = setup.enable_le(compatibility.adapter)
+        except PairingError as error:
+            typer.echo(typer.style(str(error), fg=typer.colors.RED))
+        else:
+            typer.echo(typer.style("✓ Bluetooth LE is on", fg=typer.colors.GREEN))
+            return compatibility, compatibility_mode
+    if typer.confirm(
+        "Continue with Messages and Contacts only (compatibility mode)?",
+        default=False,
+    ):
+        return compatibility, True
+    return None
 
 
 def run_wizard(
@@ -109,6 +158,12 @@ def run_wizard(
         return 1
     if explicit_pairing is None:
         explicit_pairing = compatibility.explicit_pairing_default
+    resolved = _resolve_disabled_le(
+        setup, compatibility, compatibility_mode=compatibility_mode,
+    )
+    if resolved is None:
+        return 1
+    compatibility, compatibility_mode = resolved
     # Validate the selected adapter before removing the saved phone's bond.
     if configuration.saved:
         typer.echo(

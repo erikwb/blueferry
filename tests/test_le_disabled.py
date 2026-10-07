@@ -337,3 +337,124 @@ def test_enable_controller_le_verifies_current_settings(monkeypatch, le_after):
             pair_setup.enable_controller_le("hci0")
         assert caught.value.reason == "le_disabled"
     assert enabled == ["hci0"]
+
+
+def _le_off_model(**overrides):
+    from blueferry.setup_client import BluetoothCompatibility
+
+    value = {
+        "adapter": "hci0",
+        "available": True,
+        "low_energy": True,
+        "le_enabled": False,
+        "le_disabled": True,
+        "notifications_supported": True,
+        "pairing_ready": True,
+        "issue": capabilities.le_disabled_issue("hci0"),
+    }
+    value.update(overrides)
+    return BluetoothCompatibility.from_dict(value)
+
+
+class _FakeSetup:
+    def __init__(self, *, result=None, error=None) -> None:
+        self.enabled: list[str] = []
+        self._result = result
+        self._error = error
+
+    def enable_le(self, adapter):
+        self.enabled.append(adapter)
+        if self._error is not None:
+            raise self._error
+        return self._result
+
+
+def _answers(monkeypatch, *answers: bool) -> list[str]:
+    from blueferry import pairing_cli
+
+    prompts: list[str] = []
+    replies = iter(answers)
+    monkeypatch.setattr(
+        pairing_cli.typer,
+        "confirm",
+        lambda prompt, **_kwargs: prompts.append(prompt) or next(replies),
+    )
+    return prompts
+
+
+def test_cli_switches_on_le_only_after_explicit_confirmation(monkeypatch, capsys):
+    from blueferry import pairing_cli
+
+    prompts = _answers(monkeypatch, True)
+    enabled = _le_off_model(le_enabled=True, le_disabled=False, issue="")
+    setup = _FakeSetup(result=enabled)
+
+    resolved = pairing_cli._resolve_disabled_le(
+        setup, _le_off_model(), compatibility_mode=False,
+    )
+
+    assert resolved == (enabled, False)
+    assert setup.enabled == ["hci0"]
+    assert prompts[0].startswith("Switch on Bluetooth LE on hci0 now?")
+    output = capsys.readouterr().out
+    assert "Bluetooth Low Energy is switched off" in output
+    assert "lasts until bluetoothd restarts" in output
+    assert "BlueFerry does not edit that file" in output
+
+
+def test_cli_declining_le_offers_compatibility_mode(monkeypatch):
+    from blueferry import pairing_cli
+
+    prompts = _answers(monkeypatch, False, True)
+    setup = _FakeSetup()
+    compatibility = _le_off_model()
+
+    resolved = pairing_cli._resolve_disabled_le(
+        setup, compatibility, compatibility_mode=False,
+    )
+
+    assert resolved == (compatibility, True)
+    assert setup.enabled == []
+    assert "compatibility mode" in prompts[1]
+
+
+def test_cli_failed_le_switch_falls_back_or_stops(monkeypatch, capsys):
+    from blueferry import pairing_cli
+
+    _answers(monkeypatch, True, False)
+    setup = _FakeSetup(error=pair_setup.PairingError("Bluetooth LE is still switched off"))
+
+    resolved = pairing_cli._resolve_disabled_le(
+        setup, _le_off_model(), compatibility_mode=False,
+    )
+
+    assert resolved is None
+    assert "still switched off" in capsys.readouterr().out
+
+
+def test_cli_compatibility_mode_keeps_messaging_without_prompting(monkeypatch):
+    from blueferry import pairing_cli
+
+    prompts = _answers(monkeypatch)
+    setup = _FakeSetup()
+    compatibility = _le_off_model()
+
+    resolved = pairing_cli._resolve_disabled_le(
+        setup, compatibility, compatibility_mode=True,
+    )
+
+    assert resolved == (compatibility, True)
+    assert prompts == []
+    assert setup.enabled == []
+
+
+def test_cli_le_on_needs_no_prompt(monkeypatch):
+    from blueferry import pairing_cli
+
+    prompts = _answers(monkeypatch)
+    compatibility = _le_off_model(le_enabled=True, le_disabled=False, issue="")
+
+    assert pairing_cli._resolve_disabled_le(
+        _FakeSetup(), compatibility, compatibility_mode=False,
+    ) == (compatibility, False)
+    assert prompts == []
