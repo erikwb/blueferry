@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import tempfile
 import time
+from collections.abc import Iterable
 from copy import copy
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -28,7 +29,7 @@ from blueferry.limits import (
 from blueferry.obex.sessions import SessionManager
 from blueferry.obex.transfer import wait_for_transfer
 from blueferry.private_files import runtime_private_directory
-from blueferry.vcard import iter_vcard_bodies
+from blueferry.vcard import iter_bounded_lines, iter_vcard_bodies
 
 if TYPE_CHECKING:
     from blueferry.storage_security import StorageSecurity
@@ -53,7 +54,7 @@ def _pbap_pull_filters(max_contacts: int) -> dict:
     }
 
 def _parse_vcard_records(
-    blob: str, *, maximum: int = MAX_PHONEBOOK_CONTACTS,
+    blob: str | Iterable[str], *, maximum: int = MAX_PHONEBOOK_CONTACTS,
 ) -> list[tuple[str | None, list[str], list[str]]]:
     """Return names with every safe phone and email messaging address."""
     out: list[tuple[str | None, list[str], list[str]]] = []
@@ -177,8 +178,13 @@ def pull_phonebook(
             )
         phonebook_size()
 
-        blob = out.read_text(errors="replace")
-        parsed = _parse_vcard_records(blob, maximum=max_contacts)
+        # Stream lines rather than read_text() plus splitlines(): the
+        # phonebook may be up to MAX_PHONEBOOK_BYTES, and two whole copies of
+        # it are not needed to extract bounded cards.
+        with out.open(errors="replace") as stream:
+            parsed = _parse_vcard_records(
+                iter_bounded_lines(stream), maximum=max_contacts,
+            )
         log.info("parsed %d contacts from %d bytes", len(parsed), size)
 
         return ContactRepository(storage).replace(parsed)
