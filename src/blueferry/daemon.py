@@ -41,7 +41,7 @@ from blueferry.history import (
     history_count,
     mark_event_handles_read,
 )
-from blueferry.media import MediaController
+from blueferry.media import MediaController, MediaControlSettings
 from blueferry.notification_policy import (
     ALL_NOTIFICATIONS,
     NotificationPolicyStore,
@@ -142,13 +142,12 @@ class Daemon:
         # Opt-in Apple Media Service. The controller exists whenever the user
         # opted in so clients can see why media is unavailable; the GATT
         # client exists only where LE is allowed (full delivery mode).
+        # The opt-in can change at runtime (SetMediaControl).
+        self.media_settings = MediaControlSettings()
         self.media: MediaController | None = (
-            MediaController(
-                le_enabled=config.ANCS_ENABLED,
-                le_state=lambda: self.bearers.le_state,
-            )
-            if config.MEDIA_CONTROL_ENABLED else None
+            self._new_media() if self.media_settings.enabled else None
         )
+        self._media_device_path: str | None = None
         self.ams: AmsClient | None = None
         self.adapter_class = AdapterClassSupervisor(config.ADAPTER)
         self.solicitation = SolicitationSupervisor(config.ADAPTER)
@@ -375,7 +374,8 @@ class Daemon:
                 on_storage_prepared=self._apply_storage_preparation,
                 on_storage_changed=self._on_storage_changed,
                 set_proximity_lock=self._set_proximity_lock,
-                media=self.media,
+                media=lambda: self.media,
+                set_media_control=self._set_media_control,
             ),
         )
         self.events.set_dbus_service(self._dbus_service)
@@ -418,12 +418,47 @@ class Daemon:
             return
         self.media.add_listener(self._dbus_service.emit_now_playing_changed)
 
+    def _new_media(self) -> MediaController:
+        return MediaController(
+            le_enabled=config.ANCS_ENABLED,
+            le_state=lambda: self.bearers.le_state,
+        )
+
+    def _media_status(self) -> dict[str, bool]:
+        return {
+            "media_control_enabled": self.media is not None,
+            "media_control_available": bool(self.media and self.media.available),
+        }
+
+    def _set_media_control(self, enabled: bool) -> dict:
+        selected = self.media_settings.set(enabled)
+        if selected and self.media is None:
+            self.media = self._new_media()
+            self._publish_media()
+            if self._media_device_path is not None:
+                self._start_media(self._media_device_path)
+        elif not selected and self.media is not None:
+            # Stop the GATT client first: its availability callback still
+            # needs the controller.
+            ams, self.ams = self.ams, None
+            if ams is not None:
+                ams.stop()
+            media, self.media = self.media, None
+            media.close()
+        log.info("iPhone media control %s", "enabled" if selected else "disabled")
+        self._emit_status()
+        if self._dbus_service is not None:
+            self._dbus_service.emit_now_playing_changed()
+        return self._media_status()
+
     def _on_media_availability(self, available: bool) -> None:
         if self.media is not None:
             self.media.handle_availability(available)
         self._emit_status()
 
     def _start_media(self, device_path: str) -> None:
+        # Remembered so a later runtime opt-in can start on the same device.
+        self._media_device_path = device_path
         if self.media is None or self.ams is not None:
             return
         if not config.ANCS_ENABLED:
@@ -851,8 +886,7 @@ class Daemon:
             "storage_policy": self.storage.status.policy,
             "storage_state": self.storage.status.state,
             "storage_detail": self.storage.status.detail,
-            "media_control_enabled": self.media is not None,
-            "media_control_available": bool(self.media and self.media.available),
+            **self._media_status(),
             **self._controller_identity(),
             **self.connectivity.snapshot(),
         }

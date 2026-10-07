@@ -16,6 +16,7 @@ from blueferry.media import (
     DETAIL_REQUIRES_LE,
     DETAIL_WAITING,
     MediaController,
+    MediaControlSettings,
 )
 
 
@@ -186,8 +187,48 @@ def test_backend_operations_are_inert_when_media_is_disabled() -> None:
     assert operations.now_playing() == {
         "enabled": False, "available": False, "detail": "disabled",
     }
-    with pytest.raises(NotReadyError, match="BLUEFERRY_MEDIA_CONTROL_ENABLED"):
+    with pytest.raises(NotReadyError, match="blueferry media enable"):
         operations.send_media_command("play", lambda: None, lambda _error: None)
+    with pytest.raises(NotReadyError):
+        operations.set_media_control(True)
+
+
+def test_backend_operations_follow_the_current_media_controller() -> None:
+    current: list = [None]
+    operations = BackendOperations(
+        SimpleNamespace(map=None, pbap=None),
+        BackendDependencies(media=lambda: current[0]),
+    )
+    assert operations.now_playing()["enabled"] is False
+    current[0] = MediaController()
+    assert operations.now_playing()["enabled"] is True
+
+
+def test_set_media_control_maps_errors() -> None:
+    def failing(_enabled):
+        raise OSError("disk full")
+
+    operations = BackendOperations(
+        SimpleNamespace(map=None, pbap=None),
+        BackendDependencies(set_media_control=failing),
+    )
+    with pytest.raises(NotReadyError, match="could not save"):
+        operations.set_media_control(True)
+
+
+def test_media_settings_seed_from_local_env_and_saved_choice_wins(
+    tmp_path, monkeypatch,
+) -> None:
+    path = tmp_path / "settings.json"
+    monkeypatch.setattr(daemon_mod.config, "MEDIA_CONTROL_ENABLED", True)
+    assert MediaControlSettings(path).enabled is True
+    MediaControlSettings(path).set(False)
+    assert MediaControlSettings(path).enabled is False
+    MediaControlSettings(path).set(True)
+    monkeypatch.setattr(daemon_mod.config, "MEDIA_CONTROL_ENABLED", False)
+    assert MediaControlSettings(path).enabled is True
+    with pytest.raises(ValueError):
+        MediaControlSettings(path).set(1)  # type: ignore[arg-type]
 
 
 def test_close_cancels_pending_invalidation() -> None:
@@ -291,3 +332,43 @@ def test_enabled_media_follows_the_shared_le_bearer(make_daemon, monkeypatch) ->
     assert statuses == [True]
     assert instance.media is not None and instance.media.available
     assert len(timers) == 1  # one coalesced invalidation is pending
+
+
+def test_media_can_be_enabled_and_disabled_at_runtime(make_daemon, monkeypatch) -> None:
+    """Review #207: a GUI/CLI opt-in instead of local.env plus restart."""
+    monkeypatch.setattr(daemon_mod.config, "ANCS_ENABLED", True)
+    monkeypatch.setattr(daemon_mod, "AmsClient", _FakeAms)
+    instance = make_daemon()
+    assert instance.media is None
+    statuses = []
+    monkeypatch.setattr(instance, "_emit_status", lambda: statuses.append(True))
+    instance._start_media("/device")  # bluetooth init while opted out
+    assert instance.ams is None
+
+    result = instance._set_media_control(True)
+    assert result == {"media_control_enabled": True, "media_control_available": False}
+    ams = instance.ams
+    assert isinstance(ams, _FakeAms) and ams.started and ams.device_path == "/device"
+    assert instance.media is not None
+    assert statuses == [True]
+    assert MediaControlSettings().enabled is True
+
+    result = instance._set_media_control(False)
+    assert result == {"media_control_enabled": False, "media_control_available": False}
+    assert ams.stopped
+    assert instance.ams is None and instance.media is None
+    assert MediaControlSettings().enabled is False
+    # A restarted daemon keeps the saved choice.
+    instance._set_media_control(True)
+    assert make_daemon().media is not None
+
+
+def test_runtime_opt_in_before_bluetooth_init_waits_for_it(make_daemon, monkeypatch) -> None:
+    monkeypatch.setattr(daemon_mod.config, "ANCS_ENABLED", True)
+    monkeypatch.setattr(daemon_mod, "AmsClient", _FakeAms)
+    instance = make_daemon()
+    monkeypatch.setattr(instance, "_emit_status", lambda: None)
+    instance._set_media_control(True)
+    assert instance.ams is None
+    instance._start_media("/device")
+    assert isinstance(instance.ams, _FakeAms)

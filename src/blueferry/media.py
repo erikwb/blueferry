@@ -10,16 +10,20 @@ track change as several separate attribute notifications.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Protocol
 
 from gi.repository import GLib
 
+from blueferry import config
 from blueferry.ams.constants import COMMAND_NAMES, RemoteCommandID
 from blueferry.ams.parsers import EntityUpdate
 from blueferry.ams.state import NowPlaying
 from blueferry.errors import InvalidArgumentsError, NotReadyError, OperationFailedError
+from blueferry.settings_store import SettingsStore
 
 log = logging.getLogger(__name__)
 
@@ -48,6 +52,45 @@ class CommandWriter(Protocol):
     def send_command(
         self, command: RemoteCommandID, on_success: Success, on_failure: Failure,
     ) -> None: ...
+
+
+class MediaControlSettings:
+    """Persist the media-control opt-in in the owner-only settings document.
+
+    ``BLUEFERRY_MEDIA_CONTROL_ENABLED`` provides the initial value. A choice
+    saved through the D-Bus API (Qt settings, ``blueferry media enable``)
+    takes precedence, like the proximity lock.
+    """
+
+    ENABLED_KEY = "media_control_enabled"
+
+    def __init__(self, path: Path | None = None, *, default: bool | None = None) -> None:
+        self._settings = SettingsStore(path or config.SETTINGS_JSON)
+        seeded = config.MEDIA_CONTROL_ENABLED if default is None else default
+        stored = self._settings.read().get(self.ENABLED_KEY)  # {} when unreadable
+        self._enabled = stored if isinstance(stored, bool) else bool(seeded)
+        if (
+            default is None
+            and isinstance(stored, bool)
+            and "BLUEFERRY_MEDIA_CONTROL_ENABLED" in os.environ
+            and stored != bool(seeded)
+        ):
+            log.info(
+                "BLUEFERRY_MEDIA_CONTROL_ENABLED is ignored because a media "
+                "control preference was saved in settings.json (using %s)",
+                stored,
+            )
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
+    def set(self, enabled: bool) -> bool:
+        if not isinstance(enabled, bool):
+            raise ValueError("media control enabled must be a boolean")
+        self._settings.update(**{self.ENABLED_KEY: enabled})
+        self._enabled = enabled
+        return enabled
 
 
 def disabled_snapshot(detail: str = DETAIL_DISABLED) -> dict[str, object]:

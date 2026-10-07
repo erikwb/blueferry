@@ -503,6 +503,17 @@ class MessagesService(dbus.service.Object):
         ))
 
     @dbus.service.method(
+        MEDIA_IFACE, in_signature="b", out_signature="s", sender_keyword="sender"
+    )
+    def SetMediaControl(self, enabled: bool, sender=None) -> str:
+        return self._sync(lambda: self._authorized(
+            sender, "settings",
+            lambda: self._json_response(
+                self.operations.set_media_control(bool(enabled))
+            ),
+        ))
+
+    @dbus.service.method(
         MEDIA_IFACE, in_signature="s", out_signature="",
         async_callbacks=("reply_handler", "error_handler"),
         sender_keyword="sender",

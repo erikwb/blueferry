@@ -166,10 +166,18 @@
                 value="AuthorizationRequired,RateLimited"/>
     <method name="GetNowPlaying">
       <annotation name="org.freedesktop.DBus.Description"
-                  value="JSON snapshot; enabled is false unless BLUEFERRY_MEDIA_CONTROL_ENABLED is set"/>
+                  value="JSON snapshot; enabled is false unless the user opted in"/>
       <arg name="json" type="s" direction="out"/>
       <annotation name="io.weirdware.BlueFerry.Errors"
                   value="ResponseTooLarge"/>
+    </method>
+    <method name="SetMediaControl">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Persist the opt-in and start or stop media control at once; returns the media_control_* status keys"/>
+      <arg name="enabled" type="b" direction="in"/>
+      <arg name="status_json" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady"/>
     </method>
     <method name="SendMediaCommand">
       <annotation name="org.freedesktop.DBus.Description"

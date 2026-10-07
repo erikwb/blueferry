@@ -122,11 +122,14 @@ def _play(media, title="Title") -> None:
 def service_factory():
     created = []
 
-    def make(media):
+    def make(media, **dependencies):
         bus = dbus.SessionBus()
         name = f"{BUS_NAME}.Mediap{os.getpid()}n{next(_ids)}"
         bus_name = dbus.service.BusName(name, bus=bus, do_not_queue=True)
-        service = MessagesService(bus_name, _Sessions(), BackendDependencies(media=media))
+        service = MessagesService(
+            bus_name, _Sessions(),
+            BackendDependencies(media=lambda: media, **dependencies),
+        )
         if media is not None:
             media.add_listener(service.emit_now_playing_changed)
         created.append((bus, name, service))
@@ -178,3 +181,24 @@ def test_media1_snapshot_command_and_content_free_signal(service_factory) -> Non
         assert writer.sent == [RemoteCommandID.NextTrack]
     finally:
         listener.close()
+
+
+def test_set_media_control_round_trip(service_factory) -> None:
+    calls = []
+
+    def configure(enabled):
+        calls.append(enabled)
+        return {"media_control_enabled": enabled, "media_control_available": False}
+
+    name, _ = service_factory(None, set_media_control=configure)
+    result = _call(name, OBJECT_PATH, MEDIA_IFACE, "SetMediaControl", dbus.Boolean(True))
+    assert json.loads(result["value"]) == {
+        "media_control_enabled": True, "media_control_available": False,
+    }
+    assert calls == [True]
+
+
+def test_set_media_control_without_backend_support_is_not_ready(service_factory) -> None:
+    name, _ = service_factory(None)
+    result = _call(name, OBJECT_PATH, MEDIA_IFACE, "SetMediaControl", dbus.Boolean(True))
+    assert result["error"].get_dbus_name() == "io.weirdware.BlueFerry.Error.NotReady"
