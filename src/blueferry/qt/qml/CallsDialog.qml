@@ -38,6 +38,7 @@ Kirigami.Dialog {
         case "connecting": return qsTr("Bringing the iPhone's hands-free connection online…")
         case "searching": return qsTr("Waiting for the iPhone's hands-free modem in oFono…")
         case "unavailable": return qsTr("oFono is not running.")
+        case "bluez_conflict": return qsTr("BlueZ's own HFP plugin holds the iPhone's call channel. Start bluetoothd with -P hfp (keep -E), then reconnect the iPhone.")
         default: return qsTr("Phone calls are disabled.")
         }
     }

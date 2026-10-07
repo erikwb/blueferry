@@ -931,3 +931,89 @@ def test_dbus_transport_send_is_fire_and_forget_and_flushed() -> None:
     assert message.get_auto_start() is False and message.get_no_reply() is True
     assert message.get_member() == "SetProperty"
     assert message.get_args_list() == ["Powered", False]
+
+
+def _conflicted(conflict=lambda: True, reachable=lambda: True):
+    transport = FakeTransport()
+    timers = Timers()
+    controller = CallController(
+        enabled=True, mac=MAC, adapter="hci0", transport=transport,
+        phone_reachable=reachable, hfp_conflict=conflict,
+        schedule=timers.schedule, cancel=timers.cancel,
+    )
+    return controller, transport, timers
+
+
+def test_bluez_hfp_conflict_stops_paging_until_classic_returns() -> None:
+    reachable = [True]
+    controller, transport, timers = _conflicted(reachable=lambda: reachable[0])
+    controller.poke()
+    controller.start()
+    transport.take("GetModems").on_reply([_modem()])
+    transport.take("SetProperty").on_reply()
+
+    timers.fire_all()  # bring-up watchdog: Powered never arrived
+
+    assert controller.state == "bluez_conflict"
+    assert timers.entries == {} and transport.pending == []
+    with pytest.raises(CallsUnavailableError, match="HFP plugin"):
+        controller.dial("0441234567", _noop, _noop)
+
+    # Classic drops and returns: exactly one new attempt.
+    reachable[0] = False
+    controller.poke()
+    reachable[0] = True
+    controller.poke()
+    assert transport.take("SetProperty").args == ("Powered", True)
+    assert controller.state == CALLS_CONNECTING
+
+
+def test_bluez_hfp_conflict_also_applies_to_a_rejected_power_request() -> None:
+    controller, transport, timers = _conflicted()
+    controller.start()
+    transport.take("GetModems").on_reply([_modem()])
+    transport.take("SetProperty").on_error(
+        dbus.exceptions.DBusException("x", name="org.ofono.Error.Failed")
+    )
+
+    assert controller.state == "bluez_conflict"
+    assert timers.entries == {}
+
+
+def test_progress_after_a_conflict_resumes_bring_up() -> None:
+    controller, transport, timers = _conflicted()
+    controller.start()
+    transport.take("GetModems").on_reply([_modem()])
+    transport.take("SetProperty").on_reply()
+    timers.fire_all()
+    assert controller.state == "bluez_conflict"
+
+    transport.emit(MODEM_IFACE, "PropertyChanged", MODEM, "Powered", dbus.Boolean(True))
+
+    assert transport.take("SetProperty").args == ("Online", True)
+    assert controller.state == CALLS_CONNECTING
+
+
+def test_without_a_conflict_the_watchdog_keeps_retrying() -> None:
+    controller, transport, timers = _conflicted(conflict=lambda: False)
+    controller.start()
+    transport.take("GetModems").on_reply([_modem()])
+    transport.take("SetProperty").on_reply()
+
+    timers.fire_all()
+
+    assert controller.state == CALLS_CONNECTING
+    assert timers.delays() == [1]
+
+
+def test_a_failing_conflict_check_is_treated_as_no_conflict() -> None:
+    def broken() -> bool:
+        raise OSError("proc gone")
+
+    controller, transport, timers = _conflicted(conflict=broken)
+    controller.start()
+    transport.take("GetModems").on_reply([_modem()])
+    transport.take("SetProperty").on_reply()
+    timers.fire_all()
+
+    assert controller.state == CALLS_CONNECTING

@@ -170,6 +170,8 @@ CALLS_STATE_TEXT: Mapping[str, str] = {
     "searching": "Waiting for the iPhone's hands-free modem in oFono.",
     "connecting": "Bringing the iPhone's hands-free modem online.",
     "ready": "Ready.",
+    "bluez_conflict": "BlueZ's own HFP plugin holds the iPhone's call channel. Start "
+                      "bluetoothd with -P hfp (keep -E), then reconnect the iPhone.",
 }
 """Plain-text call-state explanations shared by the CLI and TUI."""
 

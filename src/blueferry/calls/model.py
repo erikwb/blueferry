@@ -46,12 +46,16 @@ CALLS_UNAVAILABLE = "unavailable"  # oFono is not running or not installed
 CALLS_SEARCHING = "searching"  # oFono runs, but has no modem for the iPhone
 CALLS_CONNECTING = "connecting"  # modem found; Powered/Online bring-up
 CALLS_READY = "ready"  # VoiceCallManager bound
+# bluetoothd's own HFP plugin most likely holds the RFCOMM channel; paging
+# stops until the Classic link returns.
+CALLS_BLUEZ_CONFLICT = "bluez_conflict"
 CALLS_STATES = (
     CALLS_DISABLED,
     CALLS_UNAVAILABLE,
     CALLS_SEARCHING,
     CALLS_CONNECTING,
     CALLS_READY,
+    CALLS_BLUEZ_CONFLICT,
 )
 
 MAX_DIAL_DIGITS = 32

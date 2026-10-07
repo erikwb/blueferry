@@ -19,7 +19,12 @@ from blueferry.ancs.client import AncsClient
 from blueferry.backend_lifecycle import installed_release
 from blueferry.backend_operations import BackendDependencies
 from blueferry.bearer_supervisor import BearerSupervisor
-from blueferry.bluetooth_capabilities import ancs_limited_vendor, controller_hardware
+from blueferry.bluetooth_capabilities import (
+    ancs_limited_vendor,
+    bluetoothd_argv,
+    bluez_hfp_plugin_active,
+    controller_hardware,
+)
 from blueferry.bluetooth_recovery import (
     BluetoothRecovery,
     BluezRecoveryAdapter,
@@ -181,6 +186,7 @@ class Daemon:
             on_state_changed=self._emit_status,
             on_event=self.events.call,
             phone_reachable=lambda: self.bearers.bredr_connected,
+            hfp_conflict=lambda: bluez_hfp_plugin_active(bluetoothd_argv()),
         )
         self.contact_sync = ContactSync(
             sessions=self.sessions,

@@ -1,6 +1,7 @@
 """Bluetooth controller capability probing and packaged BlueZ activation."""
 from __future__ import annotations
 
+import fnmatch
 import re
 import time
 from collections.abc import Callable
@@ -354,6 +355,73 @@ def bluez_support_status(
         "packaged_drop_in": drop_in.exists(),
         "exec_start": command,
     }
+
+
+def bluetoothd_argv(proc_root: Path = Path("/proc")) -> list[str] | None:
+    """Return the running bluetoothd's argv, found by process name.
+
+    Works without systemd (OpenRC, runit). Returns ``None`` when no
+    bluetoothd is visible, e.g. with ``hidepid`` or in a container.
+    """
+    try:
+        entries = list(proc_root.iterdir())
+    except OSError:
+        return None
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            name = (entry / "comm").read_text(encoding="utf-8", errors="replace").strip()
+            if name != "bluetoothd":
+                continue
+            raw = (entry / "cmdline").read_bytes()
+        except OSError:
+            continue
+        return [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part]
+    return None
+
+
+def _plugin_patterns(argv: list[str], short: str, long: str) -> list[str]:
+    patterns: list[str] = []
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        value: str | None = None
+        if token in (short, long):
+            value = argv[index + 1] if index + 1 < len(argv) else ""
+            index += 1
+        elif token.startswith(long + "="):
+            value = token[len(long) + 1:]
+        elif token.startswith(short) and not token.startswith("--") and len(token) > 2:
+            value = token[2:]
+        if value is not None:
+            patterns.extend(part.strip() for part in value.split(",") if part.strip())
+        index += 1
+    return patterns
+
+
+def bluez_hfp_plugin_active(argv: list[str] | None) -> bool:
+    """Whether bluetoothd's own HFP hands-free profile is registered.
+
+    BlueZ 5.87's ``profiles/audio/hfp-hf.c`` (plugin ``hfp``) is an
+    experimental, auto-connecting hands-free profile: it is live exactly
+    when bluetoothd runs with ``-E``, which BlueFerry's bearer API needs, and
+    it then competes with oFono for the iPhone's HFP RFCOMM channel.
+    ``-P hfp`` (``--noplugin``) or a ``-p`` list without it turns it off.
+    Plugin patterns are shell globs, as in bluetoothd. Older BlueZ without
+    the plugin is reported as active too when ``-E`` is set; callers only
+    use this to explain a bring-up that keeps timing out.
+    """
+    if not argv:
+        return False
+    options = argv[1:]
+    if "-E" not in options and "--experimental" not in options:
+        return False
+    included = _plugin_patterns(options, "-p", "--plugin")
+    if included and not any(fnmatch.fnmatchcase("hfp", pattern) for pattern in included):
+        return False
+    excluded = _plugin_patterns(options, "-P", "--noplugin")
+    return not any(fnmatch.fnmatchcase("hfp", pattern) for pattern in excluded)
 
 
 _BLUEZ_DAEMONS = (
