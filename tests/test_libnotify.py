@@ -387,10 +387,11 @@ def test_tokens_are_scoped_to_notification_and_consumed_once(monkeypatch):
 class _NotificationObject:
     """Stands in for org.freedesktop.Notifications behind dbus.Interface."""
 
-    def __init__(self) -> None:
+    def __init__(self, capabilities=("actions", "body")) -> None:
         self.calls = []
         self.signals = {}
         self.next_id = 100
+        self.capabilities = list(capabilities)
 
     def get_dbus_method(self, member, _interface=None):
         return getattr(self, f"_{member}")
@@ -404,6 +405,10 @@ class _NotificationObject:
         self.calls.append(("notify", self.next_id, args))
         return self.next_id
 
+    def _GetCapabilities(self, **kwargs):
+        # Queried asynchronously; never a blocking call at sink start.
+        kwargs["reply_handler"](self.capabilities)
+
     def _CloseNotification(self, notification_id, **kwargs):
         # The action-popup path must close asynchronously.
         assert "reply_handler" in kwargs and "error_handler" in kwargs
@@ -411,19 +416,25 @@ class _NotificationObject:
         kwargs["reply_handler"]()
 
 
-def _action_sink(monkeypatch, *, enabled: bool, callback=None, policy="all"):
-    server = _NotificationObject()
+def _action_sink(
+    monkeypatch, *, enabled: bool, callback=None, policy="all",
+    capabilities=("actions", "body"),
+):
+    server = _NotificationObject(capabilities)
     bus = SimpleNamespace(
         get_object=lambda _name, _path: server,
         list_names=lambda: [],
     )
     monkeypatch.setattr(libnotify_mod, "get_session_bus", lambda: bus)
-    monkeypatch.setattr(libnotify_mod.config, "ANCS_ACTIONS", enabled)
     monkeypatch.setattr(libnotify_mod.config, "SHOW_NOTIFICATION_CONTENT", True)
     sink = LibnotifySink(
         defer_mark_read=lambda _path: None,
         notification_policy=lambda: policy,
         on_ancs_action=callback,
+        # Mirrors the daemon: the saved opt-in and visible content.
+        ancs_actions_enabled=lambda: (
+            enabled and libnotify_mod.config.SHOW_NOTIFICATION_CONTENT
+        ),
     )
     return sink, server
 
@@ -440,6 +451,7 @@ def _call_event(**overrides):
         body="Incoming call",
         positive_action_label="Accept",
         negative_action_label="Decline",
+        action_token=5,
     )
     values.update(overrides)
     return AncsEvent(**values)
@@ -468,17 +480,46 @@ def test_disabled_actions_leave_ancs_popup_unchanged(monkeypatch) -> None:
     assert invoked == []
 
 
-def test_enabled_actions_add_labelled_buttons_without_default(monkeypatch) -> None:
-    sink, server = _action_sink(monkeypatch, enabled=True, callback=lambda *a: True)
+def test_enabled_actions_add_labelled_buttons_and_a_no_op_default(monkeypatch) -> None:
+    invoked = []
+    sink, server = _action_sink(
+        monkeypatch, enabled=True, callback=lambda *args: invoked.append(args),
+    )
+
+    sink.handle_ancs(_call_event())
+
+    (_, nid, args), = _notify_calls(server)
+    # The explicit default keeps servers from mapping a body click onto the
+    # only (or first) action; for ANCS popups it does nothing.
+    assert list(args[5]) == [
+        "default", "", "ancs-positive", "Accept", "ancs-negative", "Decline",
+    ]
+    assert bool(args[6]["transient"]) is True
+    server.signals["ActionInvoked"](nid, "default")
+    assert invoked == []
+
+
+def test_server_without_action_support_gets_no_buttons(monkeypatch) -> None:
+    sink, server = _action_sink(
+        monkeypatch, enabled=True, callback=lambda *a: True, capabilities=("body",),
+    )
 
     sink.handle_ancs(_call_event())
 
     (_, _nid, args), = _notify_calls(server)
-    assert list(args[5]) == [
-        "ancs-positive", "Accept", "ancs-negative", "Decline",
-    ]
-    assert "default" not in list(args[5])
-    assert bool(args[6]["transient"]) is True
+    assert list(args[5]) == []
+    assert int(args[7]) == libnotify_mod._ANCS_EXPIRE_MS
+    assert sink._ancs_actions == {}
+
+
+def test_lone_negative_action_is_never_the_body_click(monkeypatch) -> None:
+    sink, server = _action_sink(monkeypatch, enabled=True, callback=lambda *a: True)
+
+    sink.handle_ancs(_call_event(positive_action_label="", negative_action_label="Clear"))
+
+    (_, _nid, args), = _notify_calls(server)
+    assert list(args[5])[:2] == ["default", ""]
+    assert list(args[5])[2:] == ["ancs-negative", "Clear"]
 
 
 def test_only_offered_actions_become_buttons(monkeypatch) -> None:
@@ -490,9 +531,9 @@ def test_only_offered_actions_become_buttons(monkeypatch) -> None:
     ))
 
     first, second = _notify_calls(server)
-    assert list(first[2][5]) == ["ancs-negative", "Decline"]
+    assert list(first[2][5]) == ["default", "", "ancs-negative", "Decline"]
     assert list(second[2][5]) == []
-    assert sink._ancs_actions == {first[1]: 42}
+    assert sink._ancs_actions == {first[1]: (42, 5)}
 
 
 def test_action_labels_are_sanitized_for_display(monkeypatch) -> None:
@@ -501,17 +542,19 @@ def test_action_labels_are_sanitized_for_display(monkeypatch) -> None:
     sink.handle_ancs(_call_event(positive_action_label="Ac‮cept"))
 
     (_, _nid, args), = _notify_calls(server)
-    assert "‮" not in args[5][1]
+    assert "‮" not in args[5][3]
 
 
 def test_click_invokes_the_matching_action_exactly_once(monkeypatch) -> None:
     invoked = []
     sink, server = _action_sink(
         monkeypatch, enabled=True,
-        callback=lambda uid, positive, _done: invoked.append((uid, positive)),
+        callback=lambda uid, positive, token, _done: invoked.append(
+            (uid, positive, token)
+        ),
     )
     sink.handle_ancs(_call_event())
-    sink.handle_ancs(_call_event(notification_id=77))
+    sink.handle_ancs(_call_event(notification_id=77, action_token=6))
     (_, first, _), (_, second, _) = _notify_calls(server)
 
     server.signals["ActionInvoked"](first, "ancs-negative")
@@ -520,7 +563,7 @@ def test_click_invokes_the_matching_action_exactly_once(monkeypatch) -> None:
     server.signals["ActionInvoked"](second, "ancs-positive")
     server.signals["ActionInvoked"](9999, "ancs-positive")
 
-    assert invoked == [(42, False), (77, True)]
+    assert invoked == [(42, False, 5), (77, True, 6)]
 
 
 def test_dismiss_expiry_and_body_click_never_invoke_actions(monkeypatch) -> None:
@@ -539,11 +582,11 @@ def test_dismiss_expiry_and_body_click_never_invoke_actions(monkeypatch) -> None
     server.signals["ActionInvoked"](nids[1], "ancs-positive")
 
     assert invoked == []
-    assert list(sink._ancs_actions.values()) == [3]
+    assert list(sink._ancs_actions.values()) == [(3, 5)]
 
 
 def test_failed_action_shows_content_free_feedback(monkeypatch) -> None:
-    def perform(_uid, _positive, done):
+    def perform(_uid, _positive, _token, done):
         done("unavailable")
 
     sink, server = _action_sink(monkeypatch, enabled=True, callback=perform)
@@ -561,7 +604,7 @@ def test_failed_action_shows_content_free_feedback(monkeypatch) -> None:
 def test_successful_action_needs_no_feedback(monkeypatch) -> None:
     sink, server = _action_sink(
         monkeypatch, enabled=True,
-        callback=lambda _uid, _positive, done: done("sent"),
+        callback=lambda _uid, _positive, _token, done: done("sent"),
     )
     sink.handle_ancs(_call_event())
     server.signals["ActionInvoked"](_notify_calls(server)[0][1], "ancs-positive")
@@ -599,13 +642,16 @@ def test_messages_policy_shows_no_ancs_actions(monkeypatch) -> None:
     assert _notify_calls(server) == []
 
 
-def test_close_forgets_actionable_popups(monkeypatch) -> None:
-    sink, _server = _action_sink(monkeypatch, enabled=True, callback=lambda *a: True)
+def test_close_forgets_actionable_popups_without_closing_foreign_ids(monkeypatch) -> None:
+    # close() runs when the notification server's owner changed: the old
+    # popups died with it and their ids may now belong to another app.
+    sink, server = _action_sink(monkeypatch, enabled=True, callback=lambda *a: True)
     sink.handle_ancs(_call_event())
 
     sink.close()
 
     assert sink._ancs_actions == {}
+    assert [call for call in server.calls if call[0] == "close"] == []
 
 
 def test_hidden_notification_content_also_hides_action_labels(monkeypatch) -> None:
@@ -634,8 +680,26 @@ def test_markup_is_removed_from_action_labels(monkeypatch) -> None:
 
     (_, _nid, args), = _notify_calls(server)
     assert list(args[5]) == [
-        "ancs-positive", "Accept", "ancs-negative", "Tom Jerry",
+        "default", "", "ancs-positive", "Accept", "ancs-negative", "Tom Jerry",
     ]
+
+
+@pytest.mark.parametrize(
+    "label,shown",
+    [
+        ("Reply <3 > now", "Reply 3 now"),
+        ("<i>Mark</i> read", "Mark read"),
+        ('<a href="x">Open</a>', "Open"),
+        ("a < b > c", "a b c"),
+    ],
+)
+def test_only_real_tags_are_removed_from_labels(monkeypatch, label, shown) -> None:
+    sink, server = _action_sink(monkeypatch, enabled=True, callback=lambda *a: True)
+
+    sink.handle_ancs(_call_event(positive_action_label=label, negative_action_label=""))
+
+    (_, _nid, args), = _notify_calls(server)
+    assert list(args[5])[2:] == ["ancs-positive", shown]
 
 
 def test_markup_only_label_offers_no_button(monkeypatch) -> None:
@@ -666,7 +730,7 @@ def test_session_reset_retires_every_action_popup(monkeypatch) -> None:
     invoked = []
     sink, server = _action_sink(
         monkeypatch, enabled=True,
-        callback=lambda uid, positive, _done: invoked.append((uid, positive)),
+        callback=lambda uid, positive, _token, _done: invoked.append((uid, positive)),
     )
     sink.handle_ancs(_call_event())
     sink.handle_ancs(_call_event(notification_id=43))
@@ -682,4 +746,41 @@ def test_session_reset_retires_every_action_popup(monkeypatch) -> None:
         call for call in server.calls if call[0] == "close"
     ]
     assert invoked == []
-    assert list(sink._ancs_actions.values()) == [42]
+    assert list(sink._ancs_actions.values()) == [(42, 5)]
+
+
+@pytest.mark.parametrize("result", ["busy", "failed"])
+def test_retryable_failure_offers_a_retry_button(monkeypatch, result) -> None:
+    calls = []
+
+    def perform(uid, positive, token, done):
+        calls.append((uid, positive, token))
+        done(result if len(calls) == 1 else "sent")
+
+    sink, server = _action_sink(monkeypatch, enabled=True, callback=perform)
+    sink.handle_ancs(_call_event(title="Private caller"))
+    server.signals["ActionInvoked"](_notify_calls(server)[0][1], "ancs-negative")
+
+    (_, feedback_nid, feedback), = _notify_calls(server)[1:]
+    assert list(feedback[5]) == ["default", "", "ancs-retry", "Retry"]
+    assert "Private caller" not in repr(feedback)
+
+    server.signals["ActionInvoked"](feedback_nid, "ancs-retry")
+    server.signals["ActionInvoked"](feedback_nid, "ancs-retry")
+    assert calls == [(42, False, 5), (42, False, 5)]
+    assert sink._ancs_retries == {}
+
+
+def test_phone_removal_also_closes_its_retry_popup(monkeypatch) -> None:
+    sink, server = _action_sink(
+        monkeypatch, enabled=True,
+        callback=lambda _uid, _positive, _token, done: done("busy"),
+    )
+    sink.handle_ancs(_call_event())
+    server.signals["ActionInvoked"](_notify_calls(server)[0][1], "ancs-positive")
+    retry_nid = _notify_calls(server)[1][1]
+
+    sink.close_ancs_notification(42)
+
+    assert ("close", retry_nid) in server.calls
+    assert sink._ancs_retries == {}

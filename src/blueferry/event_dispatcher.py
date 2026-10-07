@@ -58,6 +58,7 @@ class EventDispatcher:
         storage=None,
         on_incoming_message=None,
         perform_ancs_action=None,
+        ancs_actions_enabled: Callable[[], bool] | None = None,
         notification_sink_factory: Callable[..., Sink] = LibnotifySink,
         session_bus=None,
         schedule: Callable[[int, Callable[[], bool]], int] = GLib.timeout_add_seconds,
@@ -72,6 +73,7 @@ class EventDispatcher:
         self.storage = storage
         self.on_incoming_message = on_incoming_message
         self.perform_ancs_action = perform_ancs_action
+        self.ancs_actions_enabled = ancs_actions_enabled
         self._notification_sink_factory = notification_sink_factory
         self._session_bus = session_bus
         self._schedule = schedule
@@ -111,6 +113,9 @@ class EventDispatcher:
             except Exception:
                 log.debug("could not remove notification owner watch", exc_info=True)
             self._notification_owner_match = None
+        # Shutdown: the server is still ours, so retire live iPhone action
+        # buttons instead of leaving them wired to a daemon that is gone.
+        self.ancs_actions_reset()
         self._remove_libnotify_sink(log_change=False)
 
     def _watch_notification_owner(self) -> None:
@@ -153,6 +158,7 @@ class EventDispatcher:
                 contacts_only_notifications=self.contacts_only_notifications,
                 on_open_message=self._open_message,
                 on_ancs_action=self.perform_ancs_action,
+                ancs_actions_enabled=self.ancs_actions_enabled,
             )
         except Exception:
             log.exception("libnotify sink failed to init — continuing")
