@@ -63,9 +63,9 @@ def _parse_card(body: str) -> tuple[str | None, list[str], list[str]] | None:
     fn: str | None = None
     phones: list[str] = []
     emails: list[str] = []
-    # Bodies are joined with "\n"; split only there so other Unicode
-    # line separators stay inside a value, as in the streamed path.
-    for line in body.split("\n"):
+    # iter_vcard_bodies already split lines at every str.splitlines()
+    # boundary, so this is the same split main has always used.
+    for line in body.splitlines():
         line = line.strip()
         if not line:
             continue
