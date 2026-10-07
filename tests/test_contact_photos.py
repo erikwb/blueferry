@@ -423,6 +423,41 @@ def test_replace_clear_and_clear_photos_erase_photos(storage) -> None:
     assert _photo_rows() == []
 
 
+def test_a_version_without_photos_erases_them_with_its_contact_clear(isolated_state) -> None:
+    # Plaintext policy: photo bytes are not sealed, so a leftover row would
+    # be readable. Run the statements of a contact cache clear from a
+    # version that does not know about photos.
+    storage = StorageSecurity(
+        settings=SettingsStore(config.SETTINGS_JSON), key_provider=_Wallet(),
+    )
+    try:
+        storage.set_policy("plaintext")
+        ContactRepository(storage).replace(
+            [("Alice", ["15551112222"], []), ("Bob", ["15553334444"], [])],
+            photos=[JPEG, PNG],
+        )
+    finally:
+        storage.close()
+    assert len(_photo_rows()) == 2
+    with closing(sqlite3.connect(config.CONTACTS_DB)) as connection:
+        connection.execute("PRAGMA secure_delete = ON")
+        with connection:
+            for table in ("phones", "emails", "contacts", "secure_contacts"):
+                connection.execute(f"DELETE FROM {table}")
+        connection.execute("VACUUM")
+    assert _photo_rows() == []
+    assert PNG not in config.CONTACTS_DB.read_bytes()
+
+
+def test_our_own_replacement_keeps_the_new_photos(storage) -> None:
+    repository = ContactRepository(storage)
+    repository.replace([("Alice", ["15551112222"], [])], photos=[JPEG])
+    repository.replace([("Bob", ["15553334444"], [])], photos=[PNG])
+    assert len(_photo_rows()) == 1
+    [(_record, ref)] = repository.load_entries()
+    assert ref is not None and repository.load_photo(ref) == PNG
+
+
 def test_clear_photos_does_not_create_a_missing_database(isolated_state) -> None:
     assert not config.CONTACTS_DB.exists()
     assert ContactRepository().clear_photos() is False

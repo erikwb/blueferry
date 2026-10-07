@@ -65,6 +65,16 @@ _PHOTO_TABLE = (
     "id INTEGER PRIMARY KEY AUTOINCREMENT, payload BLOB NOT NULL)"
 )
 
+# Versions without contact photos only know the contact tables. Their cache
+# clear (and their own replacement) deletes every secure_contacts row; this
+# trigger makes SQLite delete the photos with them, so a downgrade cannot
+# leave photo bytes behind. Photos never outlive their contact rows: they are
+# only written in the same transaction as the contacts that reference them.
+_PHOTO_TRIGGER = (
+    "CREATE TRIGGER IF NOT EXISTS contact_photos_follow_contacts "
+    "AFTER DELETE ON secure_contacts BEGIN DELETE FROM contact_photos; END"
+)
+
 _PHOTO_PURPOSE = "contact-photo-v1"
 # GetContactPhoto reads on the GLib loop. Never wait there for a sync that
 # holds the database; report "busy" and let the client retry instead.
@@ -196,6 +206,7 @@ class ContactRepository:
                     photo is not None for photo in photos
                 ):
                     connection.execute(_PHOTO_TABLE)
+                    connection.execute(_PHOTO_TRIGGER)
                 for index, (name, phones, emails) in enumerate(records):
                     if not name and not phones and not emails:
                         continue
