@@ -21,6 +21,11 @@ _DETAILS = {
         "iPhone media control needs the Bluetooth LE link, which the "
         "compatibility pairing mode does not use."
     ),
+    "le-link-state-unknown": (
+        "BlueZ does not report the iPhone's Bluetooth LE link state, which "
+        "media control waits for. It needs BlueZ 5.86 or newer with the "
+        "bearer API; older BlueZ is not supported for media control yet."
+    ),
     "waiting-for-iphone": (
         "Waiting for the iPhone's media service on the Bluetooth LE link."
     ),

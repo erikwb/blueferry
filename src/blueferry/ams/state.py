@@ -60,9 +60,19 @@ class NowPlaying:
     supported_commands: frozenset[RemoteCommandID] = field(default_factory=frozenset)
 
     def reset(self) -> None:
-        for name in self.__slots__:
-            setattr(self, name, None)
+        self.clear_playback()
         self.supported_commands = frozenset()
+
+    def clear_playback(self) -> None:
+        """Forget what is playing but keep the phone's command list.
+
+        iOS sends its supported commands once per CCC enable, and BlueZ
+        re-enables a surviving registration by itself at LE link-up, so the
+        list is not necessarily sent again after a reconnect.
+        """
+        for name in self.__slots__:
+            if name != "supported_commands":
+                setattr(self, name, None)
 
     def set_supported_commands(self, commands: frozenset[RemoteCommandID]) -> bool:
         if commands == self.supported_commands:

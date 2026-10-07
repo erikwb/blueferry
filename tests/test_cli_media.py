@@ -71,6 +71,7 @@ def test_status_json_is_the_backend_snapshot(backend) -> None:
     ("disabled", "BLUEFERRY_MEDIA_CONTROL_ENABLED=true"),
     ("requires-notification-access-mode", "compatibility pairing mode"),
     ("waiting-for-iphone", "Waiting for the iPhone"),
+    ("le-link-state-unknown", "does not report the iPhone's Bluetooth LE link"),
 ])
 def test_unavailable_status_explains_why(backend, detail, expected) -> None:
     backend.snapshot = {"enabled": detail != "disabled", "available": False, "detail": detail}

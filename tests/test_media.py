@@ -11,6 +11,7 @@ from blueferry.ams.parsers import EntityUpdate
 from blueferry.backend_operations import BackendDependencies, BackendOperations
 from blueferry.errors import InvalidArgumentsError, NotReadyError, OperationFailedError
 from blueferry.media import (
+    DETAIL_LE_UNKNOWN,
     DETAIL_READY,
     DETAIL_REQUIRES_LE,
     DETAIL_WAITING,
@@ -156,6 +157,21 @@ def test_snapshot_exposes_details_only_while_connected() -> None:
     timers.flush()
     assert media.snapshot() == {"enabled": True, "available": False, "detail": DETAIL_WAITING}
     assert media.state.title is None
+    # Review #207: iOS may not resend its command list after a reconnect, so
+    # a soft reset keeps it; the AMS client clears it when it is really gone.
+    assert media.state.supported_commands == frozenset({RemoteCommandID.Play})
+    writer.available = True
+    media.handle_availability(True)
+    assert media.resolve_command("play") == RemoteCommandID.Play
+
+
+def test_unknown_le_link_state_is_reported_instead_of_waiting() -> None:
+    """Review #207: BlueZ without Bearer.LE1 never reports an LE link."""
+    state: list[bool | None] = [None]
+    media = MediaController(le_state=lambda: state[0])
+    assert media.snapshot()["detail"] == DETAIL_LE_UNKNOWN
+    state[0] = False
+    assert media.snapshot()["detail"] == DETAIL_WAITING
 
 
 def test_compatibility_mode_reports_why_media_is_unavailable() -> None:

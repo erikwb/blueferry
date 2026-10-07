@@ -32,6 +32,9 @@ MAX_COMMAND_NAME_CHARS = 32
 DETAIL_DISABLED = "disabled"
 DETAIL_REQUIRES_LE = "requires-notification-access-mode"
 DETAIL_WAITING = "waiting-for-iphone"
+# BlueZ does not report the LE bearer (no Bearer.LE1, for example BlueZ
+# without the bearer API). AMS subscribes only on an observed LE link.
+DETAIL_LE_UNKNOWN = "le-link-state-unknown"
 DETAIL_READY = "ready"
 
 Success = Callable[[], None]
@@ -59,12 +62,14 @@ class MediaController:
         schedule: Callable[[int, Callable[[], bool]], int] = GLib.timeout_add,
         cancel: Callable[[int], object] = GLib.source_remove,
         le_enabled: bool = True,
+        le_state: Callable[[], bool | None] | None = None,
     ) -> None:
         self.state = NowPlaying()
         self._clock = clock
         self._schedule = schedule
         self._cancel = cancel
         self._le_enabled = le_enabled
+        self._le_state = le_state
         self._writer: CommandWriter | None = None
         self._listeners: list[Callable[[], None]] = []
         self._pending_change: int | None = None
@@ -110,8 +115,9 @@ class MediaController:
     def handle_availability(self, available: bool) -> None:
         if not available:
             # Nothing is known about playback once the link is gone; never
-            # present a stale track as current.
-            self.state.reset()
+            # present a stale track as current. The command list survives:
+            # the AMS client reports an empty one when it is really gone.
+            self.state.clear_playback()
         log.info("iPhone media control %s", "available" if available else "unavailable")
         self._changed()
 
@@ -134,7 +140,11 @@ class MediaController:
     def detail(self) -> str:
         if not self._le_enabled:
             return DETAIL_REQUIRES_LE
-        return DETAIL_READY if self.available else DETAIL_WAITING
+        if self.available:
+            return DETAIL_READY
+        if self._le_state is not None and self._le_state() is None:
+            return DETAIL_LE_UNKNOWN
+        return DETAIL_WAITING
 
     def snapshot(self) -> dict[str, object]:
         available = self.available

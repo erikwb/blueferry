@@ -143,7 +143,10 @@ class Daemon:
         # opted in so clients can see why media is unavailable; the GATT
         # client exists only where LE is allowed (full delivery mode).
         self.media: MediaController | None = (
-            MediaController(le_enabled=config.ANCS_ENABLED)
+            MediaController(
+                le_enabled=config.ANCS_ENABLED,
+                le_state=lambda: self.bearers.le_state,
+            )
             if config.MEDIA_CONTROL_ENABLED else None
         )
         self.ams: AmsClient | None = None
