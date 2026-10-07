@@ -18,9 +18,12 @@ from blueferry.otp_clipboard import (
     ClipboardTicket,
     ClipboardWriter,
     _wayland_sockets,
+    clear_argv,
+    clear_if_unchanged,
     copy_argv,
     find_target,
     helper_environment,
+    paste_argv,
     send_signal,
     supports_sensitive_hint,
 )
@@ -251,10 +254,15 @@ _EXIT_ERROR = 1 << 8  # waitpid status for exit(1)
 _KILLED_BY_TERM = signal.SIGTERM
 
 
-def _writer(*, clear_after_s=0, sensitive=True, find=None):
+def _writer(*, clear_after_s=0, sensitive=True, find=None, clipboard_unchanged=True):
     spawned = []
     loop = _Loop()
     probes = []
+    loop.read_backs = []
+
+    def clear_unchanged(target, env, code, *, timeout=2.0):
+        loop.read_backs.append((target.tool, env, code, timeout))
+        return clipboard_unchanged
 
     def spawn(argv, *, stdin_text, env):
         process = SimpleNamespace(pid=1000 + len(spawned), returncode=None)
@@ -277,6 +285,7 @@ def _writer(*, clear_after_s=0, sensitive=True, find=None):
         watch_child=loop.watch,
         signal_helper=loop.signal,
         open_pidfd=lambda _pid: None,
+        clear_unchanged=clear_unchanged,
     )
     return writer, spawned, loop, probes
 
@@ -364,14 +373,141 @@ def test_auto_clear_stops_a_helper_that_still_owns_the_code() -> None:
 
 
 def test_auto_clear_leaves_a_replaced_clipboard_alone() -> None:
-    writer, spawned, loop, _probes = _writer(clear_after_s=30)
+    writer, spawned, loop, _probes = _writer(clear_after_s=30, clipboard_unchanged=False)
     writer.copy(CODE)
     # Something else was copied: wl-copy exits on its own.
     loop.exit(spawned[0].process.pid, _EXIT_OK)
 
     loop.fire_timers()
+    assert loop.read_backs == []  # queued on the worker, not run on the loop
+    loop.run_jobs()
 
     assert loop.signals == []
+    # Only a read-back that compares; the fake reports a different content.
+    assert [(tool, code) for tool, _env, code, _timeout in loop.read_backs] == [
+        ("wl-copy", CODE)
+    ]
+
+
+def test_auto_clear_reaches_a_code_handed_to_a_persistence_tool(caplog) -> None:
+    caplog.set_level(logging.INFO)
+    writer, spawned, loop, _probes = _writer(clear_after_s=30)
+    writer.copy(CODE)
+    # wl-clip-persist took the selection over at once: wl-copy exits cleanly
+    # while the code stays on the clipboard.
+    loop.exit(spawned[0].process.pid, _EXIT_OK)
+
+    loop.fire_timers()
+    loop.run_jobs()
+
+    [(tool, env, code, _timeout)] = loop.read_backs
+    assert (tool, code) == ("wl-copy", CODE)
+    assert env == {"XDG_RUNTIME_DIR": "/run/user/1000", "WAYLAND_DISPLAY": "wayland-0"}
+    assert "another clipboard owner" in caplog.text
+    assert CODE not in caplog.text
+
+
+def test_a_failed_helper_needs_no_read_back() -> None:
+    writer, spawned, loop, _probes = _writer(clear_after_s=30)
+    writer.copy(CODE)
+    loop.exit(spawned[0].process.pid, _EXIT_ERROR)
+
+    loop.fire_timers()
+    loop.run_jobs()
+
+    assert loop.read_backs == []
+
+
+def test_a_newer_copy_drops_the_older_code_from_the_clear_state() -> None:
+    writer, spawned, loop, _probes = _writer(clear_after_s=30)
+    writer.copy(CODE)
+    writer.copy("135790")
+    loop.exit(spawned[1].process.pid, _EXIT_OK)
+
+    loop.fire_timers()
+    loop.run_jobs()
+
+    assert [code for _tool, _env, code, _timeout in loop.read_backs] == ["135790"]
+
+
+def test_shutdown_clears_a_handed_off_code_synchronously() -> None:
+    writer, spawned, loop, _probes = _writer(clear_after_s=30)
+    writer.copy(CODE)
+    loop.exit(spawned[0].process.pid, _EXIT_OK)
+
+    writer.close()
+
+    [(tool, _env, code, timeout)] = loop.read_backs
+    assert (tool, code) == ("wl-copy", CODE)
+    assert timeout <= 0.5
+
+
+def test_shutdown_stops_a_helper_that_still_owns_the_code() -> None:
+    writer, spawned, loop, _probes = _writer(clear_after_s=30)
+    writer.copy(CODE)
+
+    writer.close()
+
+    assert loop.signals == [(spawned[0].process.pid, signal.SIGTERM)]
+    assert loop.read_backs == []
+
+
+def test_shutdown_without_a_clear_timer_leaves_the_clipboard_alone() -> None:
+    writer, spawned, loop, _probes = _writer(clear_after_s=0)
+    writer.copy(CODE)
+    loop.exit(spawned[0].process.pid, _EXIT_OK)
+
+    writer.close()
+
+    assert loop.read_backs == []
+
+
+def test_paste_and_clear_argv_per_tool(tmp_path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    wl_copy = ClipboardTarget("wayland", "wl-copy", str(bin_dir / "wl-copy"))
+    # wl-paste is looked up next to wl-copy and must exist.
+    assert paste_argv(wl_copy) is None
+    wl_paste = bin_dir / "wl-paste"
+    wl_paste.write_text("#!/bin/sh\n")
+    wl_paste.chmod(0o700)
+    assert paste_argv(wl_copy) == (str(wl_paste), "--no-newline", "--type", "text/plain")
+    assert clear_argv(wl_copy) == (str(bin_dir / "wl-copy"), "--clear")
+
+    xclip = ClipboardTarget("x11", "xclip", "/usr/bin/xclip")
+    assert paste_argv(xclip) == ("/usr/bin/xclip", "-selection", "clipboard", "-o")
+    assert clear_argv(xclip) == ("/usr/bin/xclip", "-selection", "clipboard")
+    xsel = ClipboardTarget("x11", "xsel", "/usr/bin/xsel")
+    assert paste_argv(xsel) == ("/usr/bin/xsel", "--clipboard", "--output")
+    assert clear_argv(xsel) == ("/usr/bin/xsel", "--clipboard", "--clear")
+
+
+@pytest.mark.parametrize(
+    ("content", "cleared"),
+    [
+        (CODE.encode(), True),
+        (CODE.encode() + b"\n", True),
+        (b"something else", False),
+        (CODE.encode() + b"9", False),
+        (None, False),
+    ],
+)
+def test_clear_if_unchanged_clears_only_the_exact_code(content, cleared) -> None:
+    xsel = ClipboardTarget("x11", "xsel", "/usr/bin/xsel")
+    reads, runs = [], []
+
+    def read(argv, *, timeout, limit, env):
+        reads.append((argv, limit))
+        return content
+
+    def run(argv, *, timeout, env):
+        runs.append(argv)
+        return True
+
+    assert clear_if_unchanged(xsel, {"DISPLAY": ":0"}, CODE, read=read, run=run) is cleared
+    # Only a prefix slightly longer than the code is read.
+    assert reads == [(("/usr/bin/xsel", "--clipboard", "--output"), len(CODE) + 2)]
+    assert runs == ([("/usr/bin/xsel", "--clipboard", "--clear")] if cleared else [])
 
 
 def test_release_escalates_to_sigkill_without_blocking() -> None:

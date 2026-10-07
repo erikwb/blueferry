@@ -20,9 +20,18 @@ With wl-clipboard 2.3 or newer ``--sensitive`` also offers
 ``x-kde-passwordManagerHint: secret`` so Klipper and other clipboard
 managers keep the code out of their history.
 
-Nothing here blocks the GLib main loop: the ``--sensitive`` probe runs on a
-background worker, helpers are reaped by a GLib child watch, and stopping a
-helper escalates to SIGKILL from a timer instead of waiting.
+A helper also exits when a clipboard persistence tool (wl-clip-persist,
+clipboard managers that keep the selection alive) takes the selection over
+right away. The code is then still on the clipboard although the helper is
+gone, so the clear timer and backend shutdown read the clipboard back and
+clear it only if it still holds exactly the code.
+
+Nothing here blocks the GLib main loop while it runs: the ``--sensitive``
+probe and the read-back run on a background worker, helpers are reaped by
+a GLib child watch, and stopping a helper escalates to SIGKILL from a timer
+instead of waiting. Only backend shutdown reads the clipboard back
+synchronously, bounded by a short timeout, because no worker callback is
+delivered after the main loop stopped.
 """
 from __future__ import annotations
 
@@ -47,6 +56,9 @@ log = logging.getLogger(__name__)
 
 _WAYLAND_SOCKET = re.compile(r"^wayland-[0-9]+$")
 _PROBE_TIMEOUT_S = 2.0
+# Reading the clipboard back and clearing it; shorter at shutdown.
+_READ_BACK_TIMEOUT_S = 2.0
+_SHUTDOWN_READ_BACK_TIMEOUT_S = 0.5
 _KILL_AFTER_MS = 1000
 _POLL_INTERVAL_MS = 500
 _MAX_POLL_INTERVAL_MS = 10_000
@@ -212,6 +224,65 @@ def supports_sensitive_hint(
     return "--sensitive" in f"{result.stdout}\n{result.stderr}"
 
 
+def paste_argv(target: ClipboardTarget) -> tuple[str, ...] | None:
+    """Argv that prints the clipboard's text, or ``None`` if unavailable.
+
+    ``wl-paste`` ships with ``wl-copy`` and is looked up next to it.
+    """
+    if target.tool == "wl-copy":
+        wl_paste = os.path.join(os.path.dirname(target.executable), "wl-paste")
+        if not os.access(wl_paste, os.X_OK):
+            return None
+        return (wl_paste, "--no-newline", "--type", "text/plain")
+    if target.tool == "xclip":
+        return (target.executable, "-selection", "clipboard", "-o")
+    if target.tool == "xsel":
+        return (target.executable, "--clipboard", "--output")
+    return None
+
+
+def clear_argv(target: ClipboardTarget) -> tuple[str, ...]:
+    """Argv that empties the clipboard."""
+    if target.tool == "wl-copy":
+        return (target.executable, "--clear")
+    if target.tool == "xsel":
+        return (target.executable, "--clipboard", "--clear")
+    if target.tool == "xclip":
+        # xclip has no clear option: it takes the selection with empty input
+        # (stdin is /dev/null) and serves it from a background child.
+        return (target.executable, "-selection", "clipboard")
+    raise ValueError(f"unsupported clipboard tool {target.tool!r}")
+
+
+def clear_if_unchanged(
+    target: ClipboardTarget,
+    env: Mapping[str, str],
+    code: str,
+    *,
+    timeout: float = _READ_BACK_TIMEOUT_S,
+    read: Callable[..., bytes | None] | None = None,
+    run: Callable[..., bool] | None = None,
+) -> bool:
+    """Clear the clipboard if it still holds exactly ``code``.
+
+    Blocking: runs a paste helper and possibly a clear helper. Only a short
+    prefix of the clipboard is read and it is only compared, never kept.
+    """
+    reader = read or commands.read_command_output
+    runner = run or commands.run_quiet
+    argv = paste_argv(target)
+    if argv is None:
+        return False
+    data = reader(argv, timeout=timeout, limit=len(code) + 2, env=env)
+    if data is None:
+        return False
+    if data.endswith(b"\n"):
+        data = data[:-1]
+    if data != code.encode("utf-8"):
+        return False
+    return bool(runner(clear_argv(target), timeout=timeout, env=env))
+
+
 def _exit_code(status: int) -> int:
     try:
         return os.waitstatus_to_exitcode(status)
@@ -268,6 +339,7 @@ class ClipboardWriter:
         watch_child: Callable[[int, Callable[[int, int], None]], object] | None = None,
         signal_helper: Callable[[ClipboardTicket, int], None] | None = None,
         open_pidfd: Callable[[int], int | None] = _open_pidfd,
+        clear_unchanged: Callable[..., bool] = clear_if_unchanged,
     ) -> None:
         self._worker = None
         if schedule_ms is None or cancel is None:
@@ -291,6 +363,13 @@ class ClipboardWriter:
         self._watch_child = watch_child or _glib_watch_child
         self._signal = signal_helper or send_signal
         self._open_pidfd = open_pidfd
+        self._clear_unchanged = clear_unchanged
+        # What the clear timer needs if the helper hands the code to another
+        # clipboard owner: (ticket, target, helper env, code). Held only
+        # while a clear timer is pending.
+        self._clear_state: tuple[ClipboardTicket, ClipboardTarget, dict[str, str], str] | None = (
+            None
+        )
         # executable -> True/False once probed; missing while unknown.
         self._sensitive: dict[str, bool] = {}
         self._probing: set[str] = set()
@@ -374,11 +453,12 @@ class ClipboardWriter:
         else:
             self._warn_insensitive(target.tool)
         self.release()
+        env = helper_environment(environ, target)
         try:
             process = self._spawn(
                 copy_argv(target, sensitive=sensitive),
                 stdin_text=code,
-                env=helper_environment(environ, target),
+                env=env,
             )
         except (CommandError, ValueError) as error:
             log.warning("clipboard helper %s failed: %s", target.tool, error)
@@ -393,6 +473,7 @@ class ClipboardWriter:
             log.debug("could not watch the clipboard helper; polling it", exc_info=True)
             self._schedule_poll(ticket, _POLL_INTERVAL_MS)
         if self.clear_after_s:
+            self._clear_state = (ticket, target, env, code)
             self._clear_id = self._schedule_ms(
                 self.clear_after_s * 1000, lambda: self._expire(ticket)
             )
@@ -445,11 +526,47 @@ class ClipboardWriter:
 
     def _expire(self, ticket: ClipboardTicket) -> bool:
         self._clear_id = None
-        if ticket is self._owner:
-            if ticket.running:
-                log.info("cleared the one-time code from the clipboard")
+        if ticket is not self._owner:
+            return False
+        if ticket.running:
+            log.info("cleared the one-time code from the clipboard")
             self.release()
+            return False
+        handed_off = self._take_handed_off(ticket)
+        self.release()
+        if handed_off is None:
+            return False
+        target, env, code = handed_off
+        try:
+            self._submit_probe(
+                lambda: self._clear_unchanged(target, env, code),
+                on_success=self._cleared_after_handoff,
+                on_error=lambda error: log.debug(
+                    "could not read the clipboard back: %s", type(error).__name__
+                ),
+            )
+        except RuntimeError:
+            log.debug("could not queue the clipboard read-back")
         return False
+
+    def _take_handed_off(
+        self, ticket: ClipboardTicket
+    ) -> tuple[ClipboardTarget, dict[str, str], str] | None:
+        """Return what a read-back needs when the helper exited cleanly.
+
+        A clean exit means another program took the selection: either the
+        user copied something else, or a persistence tool now holds the
+        code. Only reading the clipboard back tells the two apart.
+        """
+        state, self._clear_state = self._clear_state, None
+        if state is None or state[0] is not ticket or ticket.returncode != 0:
+            return None
+        return state[1], state[2], state[3]
+
+    @staticmethod
+    def _cleared_after_handoff(cleared: object) -> None:
+        if cleared:
+            log.info("cleared the one-time code that another clipboard owner held")
 
     def release(self) -> None:
         """Stop the current helper; a helper still running clears the code.
@@ -465,6 +582,7 @@ class ClipboardWriter:
             except Exception:
                 log.debug("could not cancel the clipboard clear timer", exc_info=True)
             self._clear_id = None
+        self._clear_state = None
         ticket, self._owner = self._owner, None
         if ticket is None or not ticket.running:
             return
@@ -478,8 +596,30 @@ class ClipboardWriter:
         return False
 
     def close(self) -> None:
-        """Release the clipboard and stop the probe worker."""
+        """Release the clipboard and stop the probe worker.
+
+        A code still waiting for its clear timer is removed now: a helper
+        that still owns it is stopped, and a code handed to another
+        clipboard owner is read back and cleared synchronously (bounded by
+        a short timeout), since no worker reply arrives after shutdown.
+        """
+        owner = self._owner
+        handed_off = (
+            self._take_handed_off(owner)
+            if owner is not None and self._clear_id is not None
+            else None
+        )
         self.release()
+        if handed_off is not None:
+            target, env, code = handed_off
+            try:
+                self._cleared_after_handoff(
+                    self._clear_unchanged(
+                        target, env, code, timeout=_SHUTDOWN_READ_BACK_TIMEOUT_S
+                    )
+                )
+            except Exception as error:
+                log.debug("could not read the clipboard back: %s", type(error).__name__)
         if self._worker is not None:
             self._worker.close()
             self._worker = None
