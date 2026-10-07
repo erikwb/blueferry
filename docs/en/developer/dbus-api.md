@@ -90,6 +90,10 @@ package to restart an outdated backend after upgrades.
 | `GetContactsOnlyNotifications` / `SetContactsOnlyNotifications` | `b enabled` |
 | `GetStoragePolicy` / `SetStoragePolicy` | `s policy`: `encrypted`, `plaintext`, or `none`; `Set` returns `s status_json` |
 | `UnlockStorage` | → `s status_json` |
+| `GetNotificationOpenMap` | → `s rules_json` (list of `bundle_id`, `target`, `kind`) |
+| `SetNotificationOpenTarget` | `s bundle_id, s target` → `s rules_json` |
+| `RemoveNotificationOpenTarget` | `s bundle_id` → `b removed` |
+| `OpenNotificationClick` | `s click_id, s activation_token` → `b opened` (a notification shell ran a mapped popup's stored argv; the ID is random per popup) |
 | `OpenLegacyGtkMessage` | `s handle, s application_owner` → `b delivered` (upgrade compatibility) |
 
 ## Events1 signals
