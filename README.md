@@ -252,7 +252,9 @@ across themes. Outside Omarchy, it uses the desktop palette.
 BlueFerry can show message notifications only—the default—all iPhone
 notifications, or none. Other app notifications are displayed and discarded;
 they are not added to message history. Messages seen through both MAP and ANCS
-are deduplicated.
+are deduplicated. The ANCS copy of an Apple Messages notification (title,
+subtitle and up to the first 1024 bytes of the text) is kept in local history,
+because it carries the group details that MAP lacks.
 
 Message history and contacts are encrypted by default with a random key stored
 in GNOME Keyring or KDE Wallet. If the wallet is locked, live messages continue
