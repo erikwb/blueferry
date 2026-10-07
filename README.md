@@ -338,8 +338,8 @@ Profile support. This is **off by default** and not needed for messaging.
 An earlier HFP experiment was removed from BlueFerry because oFono and
 PipeWire's native HFP backend race for the same BlueZ profile (see
 [Historical HFP result](PROTOCOL.md#historical-hfp-result)); this opt-in
-integration leaves that choice and its setup to you, adds no package
-dependency, and keeps working normally when oFono is missing.
+integration leaves that choice and its setup to you, only suggests oFono as
+an optional package, and keeps working normally when oFono is missing.
 
 The integration was developed against oFono 2.18 and BlueZ 5.87 and has been
 used with an iPhone on one Gentoo/OpenRC desktop: the modem comes up, an
@@ -388,13 +388,19 @@ Requirements:
   `BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE=false`, BlueFerry manages no roles and
   your own `bluez5.roles` must include `hfp_hf`.
 
-Enable it in `~/.config/blueferry/local.env` and restart the user service:
+Switch it on with **Enable phone calls through this computer** in the Qt
+client's iPhone settings, or with `blueferry calls enable` (`disable` turns it
+off again). The choice is saved in `settings.json` and applied without a
+restart. `BLUEFERRY_CALLS_ENABLED=true` in `~/.config/blueferry/local.env`
+still works as the initial value; a saved choice wins.
 
-```bash
-BLUEFERRY_CALLS_ENABLED=true
-```
+What turning it on means: while the iPhone is connected, its hands-free link
+stays up with this computer, so calls ring here and, once answered here,
+their audio plays here. Turning it off (or quitting the backend) powers the
+hands-free modem down again (`Powered=false`) if BlueFerry powered it, so
+call audio goes back to the phone; a call in progress continues there.
 
-Toggling the flag rewrites the phone-audio fragment. BlueFerry restarts
+Toggling rewrites the phone-audio fragment. BlueFerry restarts
 `wireplumber.service` only through systemd; on hosts where WirePlumber is not
 a systemd user service (for example OpenRC with a session launcher), restart
 WirePlumber yourself, e.g. `gentoo-pipewire-launcher restart`. The backend
@@ -418,7 +424,8 @@ What happens then:
 
   ```bash
   blueferry calls                 # state and current calls
-  blueferry calls dial '+41 79 123 45 67'
+  blueferry calls enable          # or: disable
+  blueferry calls dial '+41 79 123 45 67'   # asks first; --yes in scripts
   blueferry calls answer          # the ringing call
   blueferry calls dtmf 1234#      # tones on the active call
   blueferry calls hangup          # or: hangup --all
@@ -429,6 +436,13 @@ What happens then:
   are refused: dialed, they form service codes such as `**21*…#` that
   reconfigure the phone (call forwarding) rather than place a call. Use
   `dtmf` for keypad symbols during a call.
+- Emergency numbers (112, 911, 999, 000, 110, 117, 118, 119, 144 and other
+  widely used ones) are refused: call them on the iPhone, where the call does
+  not depend on this computer's Bluetooth link or audio, and iOS's Emergency
+  SOS and location sharing apply. Every client asks before it dials, because
+  premium-rate prefixes differ by country and cannot be listed reliably.
+- Bluetooth recovery (the adapter power cycle after a long ANCS outage) is
+  held back while a call is in progress.
 - With a second call, answering holds the active call (HoldAndAnswer);
   `swap` and `hold-answer` are available, but "release and answer" is not
   exposed. Hanging up the held call of two relies on the phone supporting
@@ -445,8 +459,11 @@ and WirePlumber for the HFP profile. Restart oFono after WirePlumber
 (`sudo rc-service ofono restart` on OpenRC, `sudo systemctl restart ofono` on
 systemd), then check the backend log for the modem. With BlueZ 5.87 or newer, BlueZ's
 own HFP hands-free plugin can also claim the RFCOMM channel before oFono
-(oFono's `Powered=true` then times out). Disable that plugin by starting
-`bluetoothd` with `-P hfp` (for example `BLUETOOTH_OPTS="-E -P hfp"` in
+(oFono's `Powered=true` then times out). When that happens while
+`bluetoothd` runs with `-E` and without `-P hfp`, BlueFerry reports the call
+state **bluez_conflict**, logs the remedy once, and stops paging the phone
+until it reconnects. Disable that plugin by starting `bluetoothd` with
+`-P hfp` (for example `BLUETOOTH_OPTS="-E -P hfp"` in
 `/etc/conf.d/bluetooth` on Gentoo, or a `bluetooth.service` drop-in on
 systemd). Audio routing itself is PipeWire's job; BlueFerry only controls the
 call.

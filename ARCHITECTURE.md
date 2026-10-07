@@ -86,6 +86,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `bluez_setup.py` | Adapter preparation: Class-of-Device and the ANCS solicitation advertisement. |
 | `bluetooth_capabilities.py` | Controller capability probing and packaged BlueZ activation. |
 | `bluetooth_devices.py` | Typed BlueZ device projection for setup and clients. |
+| `calls/settings.py` | Saved phone-calls opt-in (`settings.json`, seeded by `BLUEFERRY_CALLS_ENABLED`). |
 | `calls/model.py` | Optional HFP calls: pure oFono property parsing, modem selection, dial/DTMF/call-id validation. |
 | `calls/ofono.py` | Asynchronous oFono system-bus transport (hand-built calls with NO_AUTO_START, no synchronous owner lookup). |
 | `calls/controller.py` | Optional HFP calls: oFono modem discovery, Powered→Online bring-up, call tracking and control, backoff. |
@@ -169,7 +170,8 @@ All paths are relative to `src/blueferry/` unless noted.
 | `qt/qml/ProximityLockSettings.qml` | Away-lock toggle, grace period, and warning; loaded only for daemons that report it. |
 | `qt/qml/GroupConfirmationDialog.qml` | Group recipient confirmation before sending. |
 | `qt/qml/NewMessageDialog.qml` | New message composition. |
-| `qt/qml/CallsDialog.qml` | Optional phone-calls dialog (list, dial, answer, hang up). |
+| `qt/qml/CallsDialog.qml` | Optional phone-calls dialog (list, dial with confirmation, answer, hang up). |
+| `qt/qml/PhoneCallsSettings.qml` | Phone-calls opt-in checkbox; loaded only for daemons that report `calls_enabled`. |
 | `qt/qml/ExpandingMessageComposer.qml` | Growing message editor. |
 | `qt/qml/MessageBubble.qml` | Message bubble. |
 | `quickshell_bridge.py` | Persistent stdin/stdout JSON bridge from Quickshell to the session D-Bus API. |
@@ -218,8 +220,11 @@ contract.
   reported through `Messages1.GetStatus`, and the compatibility check runs
   through `Messages1` on the same owner. Identifiers live in `protocol.py`.
 - `Calls1` is the optional, default-off HFP call interface. It is always
-  exported; with `BLUEFERRY_CALLS_ENABLED` unset its methods fail with
-  `CallsDisabled`, and a missing oFono or modem yields `CallsUnavailable`.
+  exported because it also carries the opt-in itself, `SetCallsEnabled`
+  (saved in `settings.json`, `BLUEFERRY_CALLS_ENABLED` only seeds it); while
+  calls are off its other methods fail with `CallsDisabled`, `GetStatus`
+  reports only `calls_enabled=false`, and a missing oFono or modem yields
+  `CallsUnavailable`.
   Its `CallsChanged` invalidation on `Events1` has no arguments; caller
   numbers and names are only returned by the rate-limited `ListCalls`.
   Dialing has its own strict quota. Adding it did not change the API
@@ -421,6 +426,9 @@ A change to these rules has to be made in both places.
 - `Dial` accepts plain numbers only (`+` and digits); `*`/`#` service codes
   are rejected so a caller cannot reconfigure the phone (for example call
   forwarding). Keypad symbols remain available as DTMF on an active call.
+  Well-known emergency numbers are refused (they belong on the phone), and
+  every client confirms a number before dialing. `Answer`/`HoldAndAnswer`
+  have their own quota; hanging up is never blocked by it.
 - The modem must end in the configured iPhone's `dev_…` path and be of type
   `hfp`; the configured adapter wins, then Online, then Powered. iOS needs
   `Powered=true`, a confirming `PropertyChanged`, then `Online=true`.
@@ -430,6 +438,15 @@ A change to these rules has to be made in both places.
   30 s watchdog retries a modem that never confirms. Replies and signals
   carry a generation, so an oFono restart or modem removal drops stale
   state; control replies still reach their D-Bus caller.
+- If a `Powered=true` bring-up times out or is rejected while bluetoothd's
+  own experimental HFP plugin is active (`-E` without `-P hfp`, read from
+  bluetoothd's argv by process name), the state becomes `bluez_conflict`
+  and paging stops until the Classic link returns or oFono makes progress.
+- `stop()` (daemon exit or switching calls off) sends `Powered=false`,
+  flushed and without awaiting a reply, for the modem BlueFerry powered
+  itself; a modem another oFono client powered is left alone.
+- While the phone reports any call, Bluetooth recovery treats the link as
+  busy and does not power-cycle the adapter.
 - Call events go to local desktop sinks only (`handle_call`); they are not
   persisted and nothing about them is broadcast except `CallsChanged`.
 

@@ -8,8 +8,8 @@ behaves exactly as before.
 
 An earlier HFP experiment was removed from BlueFerry because oFono and
 PipeWire's native HFP backend compete for the same Bluetooth profile. This
-integration leaves that setup to you, adds no package dependency, and keeps
-the daemon running normally when oFono is missing.
+integration leaves that setup to you, only suggests oFono as an optional
+package, and keeps the daemon running normally when oFono is missing.
 
 ## What it does
 
@@ -31,7 +31,8 @@ flowchart LR
 
   ```bash
   blueferry calls                 # state and current calls
-  blueferry calls dial '+41 79 123 45 67'
+  blueferry calls enable          # or: disable
+  blueferry calls dial '+41 79 123 45 67'   # asks first; --yes in scripts
   blueferry calls answer
   blueferry calls dtmf 1234#      # tones on the active call
   blueferry calls hangup          # or: hangup --all
@@ -73,13 +74,20 @@ Audio itself is routed by PipeWire. BlueFerry only controls the call.
    Don't set `bluez5.roles` there; BlueFerry's phone-audio fragment keeps the
    hands-free roles while calls are on.
 4. With BlueZ 5.87 or newer, disable BlueZ's own HFP plugin so it doesn't
-   take the channel before oFono: start `bluetoothd` with `-P hfp`.
-5. Add to `~/.config/blueferry/local.env`, then restart the backend and
-   WirePlumber:
+   take the channel before oFono: start `bluetoothd` with `-P hfp`. If you
+   forget, BlueFerry shows the state `bluez_conflict` and stops paging the
+   phone until it reconnects.
+5. Tick **Enable phone calls through this computer** in the Qt client's
+   iPhone settings, or run `blueferry calls enable`. The choice is saved and
+   applies at once. `BLUEFERRY_CALLS_ENABLED=true` in
+   `~/.config/blueferry/local.env` still works as the initial value; a saved
+   choice wins. If WirePlumber is not a systemd user service, restart it
+   yourself afterwards so it picks up the hands-free roles.
 
-   ```bash
-   BLUEFERRY_CALLS_ENABLED=true
-   ```
+While calls are on and the iPhone is connected, its hands-free link stays
+up with this computer: calls ring here and, once answered here, their audio
+plays here. Turning calls off (or quitting the backend) releases that link
+again, so call audio goes back to the phone.
 
 `blueferry calls` should then show `ready` while the iPhone is connected.
 
@@ -94,7 +102,15 @@ Audio itself is routed by PipeWire. BlueFerry only controls the call.
   would form service codes (for example call forwarding) instead of placing a
   call. Use `dtmf` for keypad symbols during a call.
 - Dual-SIM phones expose only the default voice line over HFP.
-- Dialing is rate-limited (6 per minute, 60 per hour).
+- Emergency numbers (112, 911, 999, 000, 110, 117, 118, 119, 144 and other
+  widely used ones) are refused. Call them on the iPhone, where the call
+  doesn't depend on this computer's Bluetooth link or audio.
+- Every client asks before it dials. Premium-rate prefixes differ by country,
+  so BlueFerry doesn't try to block them.
+- Dialing is rate-limited (6 per minute, 60 per hour), answering too (10 per
+  minute). Hanging up is never blocked.
+- Bluetooth recovery doesn't power-cycle the adapter while a call is in
+  progress.
 
 ## Privacy
 

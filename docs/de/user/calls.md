@@ -9,9 +9,9 @@ nicht mit oFono und verhält sich genau wie bisher.
 
 Ein früherer HFP-Versuch wurde aus BlueFerry entfernt, weil oFono und das
 eingebaute HFP-Backend von PipeWire um dasselbe Bluetooth-Profil
-konkurrieren. Diese Integration überlässt dir diese Einrichtung, bringt keine
-neue Paketabhängigkeit mit und lässt den Daemon normal weiterlaufen, wenn
-oFono fehlt.
+konkurrieren. Diese Integration überlässt dir diese Einrichtung, schlägt
+oFono nur als optionales Paket vor und lässt den Daemon normal weiterlaufen,
+wenn oFono fehlt.
 
 ## Was es tut
 
@@ -34,7 +34,8 @@ flowchart LR
 
   ```bash
   blueferry calls                 # Zustand und laufende Anrufe
-  blueferry calls dial '+41 79 123 45 67'
+  blueferry calls enable          # oder: disable
+  blueferry calls dial '+41 79 123 45 67'   # fragt nach; --yes in Skripten
   blueferry calls answer
   blueferry calls dtmf 1234#      # Töne im aktiven Anruf
   blueferry calls hangup          # oder: hangup --all
@@ -77,13 +78,22 @@ Das Audio selbst leitet PipeWire. BlueFerry steuert nur den Anruf.
    Setze dort keine `bluez5.roles`; BlueFerrys Telefon-Audio-Fragment behält
    die Freisprech-Rollen, solange Anrufe an sind.
 4. Ab BlueZ 5.87 das eigene HFP-Plugin von BlueZ abschalten, damit es oFono
-   den Kanal nicht wegnimmt: `bluetoothd` mit `-P hfp` starten.
-5. In `~/.config/blueferry/local.env` eintragen, danach Backend und
-   WirePlumber neu starten:
+   den Kanal nicht wegnimmt: `bluetoothd` mit `-P hfp` starten. Fehlt das,
+   zeigt BlueFerry den Zustand `bluez_conflict` und ruft das Telefon erst
+   nach einer neuen Verbindung wieder an.
+5. In den iPhone-Einstellungen des Qt-Clients **Enable phone calls through
+   this computer** ankreuzen oder `blueferry calls enable` ausführen. Die
+   Wahl wird gespeichert und gilt sofort. `BLUEFERRY_CALLS_ENABLED=true` in
+   `~/.config/blueferry/local.env` funktioniert weiter als Anfangswert; eine
+   gespeicherte Wahl hat Vorrang. Läuft WirePlumber nicht als
+   systemd-Benutzerdienst, starte es danach selbst neu, damit es die
+   Freisprech-Rollen übernimmt.
 
-   ```bash
-   BLUEFERRY_CALLS_ENABLED=true
-   ```
+Solange Anrufe an sind und das iPhone verbunden ist, bleibt seine
+Freisprech-Verbindung zu diesem Computer bestehen: Anrufe klingeln hier und
+laufen, wenn du sie hier annimmst, auch hier über Lautsprecher und Mikrofon.
+Schaltest du Anrufe aus (oder beendest das Backend), gibt BlueFerry diese
+Verbindung wieder frei, und das Gesprächsaudio geht zurück aufs Telefon.
 
 `blueferry calls` sollte dann `ready` zeigen, solange das iPhone verbunden
 ist.
@@ -100,7 +110,15 @@ ist.
   Servicecodes bilden würden (etwa Rufumleitung), statt anzurufen. Für
   Tastentöne im Gespräch gibt es `dtmf`.
 - Dual-SIM-Telefone zeigen über HFP nur die Standard-Sprachleitung.
-- Wählen ist begrenzt (6 pro Minute, 60 pro Stunde).
+- Notrufnummern (112, 911, 999, 000, 110, 117, 118, 119, 144 und weitere
+  verbreitete) werden abgelehnt. Wähle sie am iPhone, dort hängt der Anruf
+  nicht an der Bluetooth-Verbindung oder dem Audio dieses Computers.
+- Jeder Client fragt vor dem Wählen nach. Mehrwertnummern unterscheiden sich
+  je nach Land, deshalb versucht BlueFerry nicht, sie zu sperren.
+- Wählen ist begrenzt (6 pro Minute, 60 pro Stunde), Annehmen ebenfalls
+  (10 pro Minute). Auflegen wird nie blockiert.
+- Die Bluetooth-Wiederherstellung schaltet den Adapter nicht aus und wieder
+  ein, solange ein Anruf läuft.
 
 ## Datenschutz
 
