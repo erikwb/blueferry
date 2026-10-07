@@ -1,24 +1,25 @@
 """Linear, resource-bounded extraction of vCard blocks."""
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Iterator
 from typing import TextIO
 
 from blueferry.limits import MAX_VCARD_CHARS
 
-_BASE64_CHARACTERS = frozenset(
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="
-)
+# An unindented line made only of base64 characters, optionally padded with
+# blanks. Matched in place so a candidate line is not copied.
+_BASE64_LINE = re.compile(r"[ \t]*[A-Za-z0-9+/=]+[ \t]*")
 # Properties whose values are inline binary payloads (pictures, sounds,
 # public keys) that contact parsing never reads.
 _SKIPPED_PROPERTIES = frozenset({"photo", "logo", "sound", "key"})
 
 
-def _skipped_property(line: str) -> tuple[str, bool] | None:
-    """``(name, quoted_printable)`` when a physical line starts a skipped property.
+def _skipped_property(line: str) -> bool | None:
+    """Whether a skipped property starts here and is quoted-printable.
 
-    The name is lower-case without a group prefix (``item1.PHOTO`` is
-    ``photo``). ``quoted_printable`` reports a vCard 2.1
+    ``None`` means the line does not start a skipped property (a grouped name
+    such as ``item1.PHOTO`` counts). ``True`` reports a vCard 2.1
     ``ENCODING=QUOTED-PRINTABLE`` value, which continues with soft line breaks
     instead of folding.
     """
@@ -29,10 +30,7 @@ def _skipped_property(line: str) -> tuple[str, bool] | None:
     if name not in _SKIPPED_PROPERTIES:
         return None
     parameters = {part.strip().upper() for part in head.split(";")[1:]}
-    quoted_printable = bool(
-        parameters & {"ENCODING=QUOTED-PRINTABLE", "QUOTED-PRINTABLE"}
-    )
-    return name, quoted_printable
+    return bool(parameters & {"ENCODING=QUOTED-PRINTABLE", "QUOTED-PRINTABLE"})
 
 
 def _continues_skipped(line: str, previous: str, quoted_printable: bool) -> bool:
@@ -51,8 +49,7 @@ def _continues_skipped(line: str, previous: str, quoted_printable: bool) -> bool
         return True
     if quoted_printable:
         return previous.rstrip().endswith("=")
-    stripped = line.strip()
-    return bool(stripped) and set(stripped) <= _BASE64_CHARACTERS
+    return _BASE64_LINE.fullmatch(line) is not None
 
 
 def iter_bounded_lines(stream: TextIO, *, limit: int = MAX_VCARD_CHARS) -> Iterator[str]:
@@ -96,7 +93,7 @@ def iter_vcard_bodies(
     overflowed = False
     size = 0
     lines: list[str] = []
-    skipping: tuple[str, bool] | None = None
+    skipping: bool | None = None
     previous = ""
 
     source = (
@@ -127,7 +124,7 @@ def iter_vcard_bodies(
             continue
         if not active or overflowed:
             continue
-        if skipping is not None and _continues_skipped(line, previous, skipping[1]):
+        if skipping is not None and _continues_skipped(line, previous, skipping):
             previous = line
             continue
         skipping = _skipped_property(line)
