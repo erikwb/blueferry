@@ -21,6 +21,19 @@ _BASE64 = "base64"  # folding or unindented vCard 2.1 base64 lines
 _QUOTED_PRINTABLE = "quoted-printable"  # vCard 2.1 soft line breaks
 _BASE64_PARAMETERS = frozenset({"ENCODING=B", "ENCODING=BASE64", "BASE64"})
 _QUOTED_PRINTABLE_PARAMETERS = frozenset({"ENCODING=QUOTED-PRINTABLE", "QUOTED-PRINTABLE"})
+# The start of a registered vCard 2.1/3.0/4.0 property or an X- extension,
+# optionally grouped. Encoders that leave a trailing "=" unencoded make the
+# last line of a quoted-printable value look like a soft line break; a
+# following line that starts like this is taken as the next property.
+_KNOWN_PROPERTY = re.compile(
+    r"(?:[A-Za-z0-9-]+\.)?(?:X-[A-Za-z0-9-]+|"
+    r"ADR|AGENT|ANNIVERSARY|BDAY|BEGIN|CALADRURI|CALURI|CATEGORIES|CLASS|"
+    r"CLIENTPIDMAP|EMAIL|END|FBURL|FN|GENDER|GEO|IMPP|KEY|KIND|LABEL|LANG|"
+    r"LOGO|MAILER|MEMBER|N|NAME|NICKNAME|NOTE|ORG|PHOTO|PRODID|PROFILE|"
+    r"RELATED|REV|ROLE|SORT-STRING|SOUND|SOURCE|TEL|TITLE|TZ|UID|URL|"
+    r"VERSION|XML)[ \t]*[;:]",
+    re.IGNORECASE,
+)
 _DATA_BASE64_URI = re.compile(r"[ \t]*data:[^,]*;base64,", re.IGNORECASE)
 
 
@@ -55,6 +68,17 @@ def _is_quoted_printable(line: str) -> bool:
     return bool(separator) and "QUOTED-PRINTABLE" in head.upper()
 
 
+def _soft_line_break(previous: str, line: str) -> bool:
+    """Whether ``line`` continues a quoted-printable value after ``previous``.
+
+    A line ending in ``=`` is a soft line break, since a literal ``=`` must
+    be written as ``=3D``. Some encoders still leave a final ``=`` unencoded,
+    so a line that starts a known property ends the value instead of being
+    swallowed with it.
+    """
+    return previous.rstrip().endswith("=") and _KNOWN_PROPERTY.match(line) is None
+
+
 def _continues_skipped(line: str, previous: str, mode: str) -> bool:
     """Whether a physical line belongs to the skipped value above it.
 
@@ -66,12 +90,13 @@ def _continues_skipped(line: str, previous: str, mode: str) -> bool:
     therefore never matches. Other values, such as a ``VALUE=uri`` link, get
     no such allowance, so a stray colon-less line after them is kept. A
     vCard 2.1 QUOTED-PRINTABLE value continues on the next line exactly when
-    the previous line ends with the soft line break ``=``.
+    the previous line ends with the soft line break ``=`` and the line does
+    not start a known property.
     """
     if line[:1] in (" ", "\t"):
         return True
     if mode == _QUOTED_PRINTABLE:
-        return previous.rstrip().endswith("=")
+        return _soft_line_break(previous, line)
     if mode == _BASE64:
         return _BASE64_LINE.fullmatch(line) is not None
     return False
@@ -157,7 +182,7 @@ def iter_vcard_bodies(
         if skipping is not None and _continues_skipped(line, previous, skipping):
             previous = line
             continue
-        if not (kept_quoted_printable and previous.rstrip().endswith("=")):
+        if not (kept_quoted_printable and _soft_line_break(previous, line)):
             # Not a soft-break continuation of a kept quoted-printable value.
             skipping = _skipped_property(line)
             kept_quoted_printable = skipping is None and _is_quoted_printable(line)

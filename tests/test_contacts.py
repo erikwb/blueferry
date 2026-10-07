@@ -392,17 +392,17 @@ def test_colon_less_lines_never_start_a_skipped_property() -> None:
 
 def test_soft_break_continuations_of_kept_values_are_not_properties() -> None:
     # Even with a ":" the soft-break continuation of a kept quoted-printable
-    # value belongs to that value and cannot start a PHOTO or KEY.
+    # value belongs to that value and cannot start a (grouped) PHOTO or KEY.
     blob = (
         "BEGIN:VCARD\nVERSION:2.1\nFN:Noted\n"
-        "NOTE;ENCODING=QUOTED-PRINTABLE:first=\nKey;note: second=\nphoto: third\n"
+        "NOTE;ENCODING=QUOTED-PRINTABLE:first=\nAsk a.Key: second=\nsee p.photo: third\n"
         "EMAIL:n@example.com\nEND:VCARD\n"
     )
 
     [card] = list(iter_vcard_bodies(blob, maximum=1))
     assert card.split("\n") == [
         "VERSION:2.1", "FN:Noted",
-        "NOTE;ENCODING=QUOTED-PRINTABLE:first=", "Key;note: second=", "photo: third",
+        "NOTE;ENCODING=QUOTED-PRINTABLE:first=", "Ask a.Key: second=", "see p.photo: third",
         "EMAIL:n@example.com",
     ]
 
@@ -421,6 +421,20 @@ def test_base64_continuations_only_follow_base64_media_values() -> None:
 
     [card] = list(iter_vcard_bodies(blob, maximum=1))
     assert card.split("\n") == ["VERSION:2.1", "FN:Linked", "Stray1", "Stray2"]
+
+
+def test_unencoded_final_equals_sign_does_not_swallow_the_next_property() -> None:
+    # Strictly a literal "=" is written "=3D", but some encoders leave a final
+    # one unencoded. The next line starts a known property, so it is kept.
+    blob = (
+        "BEGIN:VCARD\nVERSION:2.1\nFN:Equals\n"
+        "PHOTO;ENCODING=QUOTED-PRINTABLE:=FF=D8=\n=00=\n"
+        "TEL;CELL:+15556667777\n"
+        "NOTE;QUOTED-PRINTABLE:a=b=\nEMAIL:e@example.com\n"
+        "END:VCARD\n"
+    )
+
+    assert _parse_vcard_records(blob) == [("Equals", ["15556667777"], ["e@example.com"])]
 
 
 def test_skipped_photo_lines_with_crlf_line_endings() -> None:
