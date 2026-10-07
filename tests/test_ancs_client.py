@@ -1530,7 +1530,7 @@ def test_write_that_fails_before_dispatch_is_handled_like_a_reply(monkeypatch) -
 
 
 @pytest.mark.parametrize("failure", [ValueError, TypeError])
-def test_marshalling_failure_before_dispatch_releases_the_request(
+def test_programming_error_before_dispatch_surfaces_and_releases_the_request(
     monkeypatch, failure,
 ) -> None:
     class _Unmarshallable:
@@ -1543,9 +1543,14 @@ def test_marshalling_failure_before_dispatch_releases_the_request(
 
     cp = _Unmarshallable()
     client, timers = _async_write_client(monkeypatch, cp)
-    client._request_attrs(Notification.parse(_notification(1)))
-    client._request_attrs(Notification.parse(_notification(2)))
+    # Not disguised as a BlueZ InvalidArgs warning: the bug propagates.
+    with pytest.raises(failure):
+        client._request_attrs(Notification.parse(_notification(1)))
+    assert client._active_request is None
+    assert client._cp_write_token is None
 
+    # ...but the queue is not wedged by it.
+    client._request_attrs(Notification.parse(_notification(2)))
     assert cp.writes == 2
     assert client._active_request.notification.id == 2
     assert client.connected is True

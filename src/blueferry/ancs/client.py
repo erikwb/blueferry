@@ -1000,16 +1000,19 @@ class AncsClient:
                 error_handler=failed,
                 timeout=DBUS_CALL_TIMEOUT_SECONDS,
             )
-        except Exception as error:
-            # dbus-python can still fail before dispatch, e.g. on a closed bus
-            # (DBusException) or while marshalling (ValueError/TypeError). The
-            # request must always be released, or the queue stalls forever.
-            if not isinstance(error, dbus.exceptions.DBusException):
-                error = dbus.exceptions.DBusException(
-                    f"{type(error).__name__}: {error}",
-                    name="org.freedesktop.DBus.Error.InvalidArgs",
-                )
+        except dbus.exceptions.DBusException as error:
+            # dbus-python can fail before dispatch, e.g. on a closed bus.
             failed(error)
+        except Exception:
+            # Anything else is a programming error (marshalling, a broken
+            # fake). Release the request so the queue cannot stall, then let
+            # the error surface with its traceback instead of disguising it
+            # as a BlueZ failure.
+            release_write()
+            if self._active_request is request:
+                self._active_request = None
+                self._abandon_request(request)
+            raise
 
     def _retry_busy_control_point(self) -> bool:
         self._cp_busy_retry_id = None
