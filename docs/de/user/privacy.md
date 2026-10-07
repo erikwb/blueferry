@@ -48,6 +48,14 @@ ohne Inhalt:
 journalctl --user -u blueferry -f | grep "ANCS app observed"
 ```
 
+### Klickregeln
+
+[Klickregeln](notification-click-rules.md) öffnen beim Klick auf das Popup
+einer App eine feste Adresse oder App. Nichts aus der Mitteilung wird
+weitergegeben. Die Regeln liegen unverschlüsselt in `settings.json`; der
+Benachrichtigungsserver sieht sie nie, nur eine feste Aktion „Öffnen“ und
+eine zufällige ID pro Popup.
+
 ## Lokale Daten
 
 BlueFerry speichert Nachrichtenverlauf und einen Kontakt-Cache, damit
