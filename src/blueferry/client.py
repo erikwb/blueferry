@@ -129,6 +129,17 @@ class BackendClient:
         except ValueError as error:
             raise BackendError(str(error)) from error
 
+    def set_media_control(self, enabled: bool) -> dict:
+        """Opt in or out; returns the media_control_* status keys."""
+        try:
+            return decode_mapping(self._media_iface().SetMediaControl(
+                dbus.Boolean(enabled), timeout=POLICY_CALL_TIMEOUT_SEC,
+            ))
+        except dbus.exceptions.DBusException as error:
+            raise self._media_error(error) from error
+        except ValueError as error:
+            raise BackendError(str(error)) from error
+
     def send_media_command(self, command: str) -> None:
         try:
             self._media_iface().SendMediaCommand(command, timeout=MEDIA_CALL_TIMEOUT_SEC)

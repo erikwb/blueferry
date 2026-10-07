@@ -9,13 +9,13 @@ from blueferry.ams.constants import COMMAND_NAMES
 from blueferry.client import BackendClient, BackendError
 from blueferry.text_safety import terminal_text
 
-_ACTIONS = ("status", *sorted(COMMAND_NAMES))
+_SETTINGS = ("enable", "disable")
+_ACTIONS = ("status", *_SETTINGS, *sorted(COMMAND_NAMES))
 
 _DETAILS = {
     "disabled": (
-        "iPhone media control is off. Opt in with "
-        "BLUEFERRY_MEDIA_CONTROL_ENABLED=true in ~/.config/blueferry/local.env "
-        "and restart the backend."
+        "iPhone media control is off. Turn it on with 'blueferry media enable' "
+        "or in the Qt client's iPhone settings."
     ),
     "requires-notification-access-mode": (
         "iPhone media control needs the Bluetooth LE link, which the "
@@ -89,12 +89,15 @@ def render_now_playing(snapshot: dict) -> list[str]:
 def media(
     action: str = typer.Argument(
         "status",
-        help="status, or one of: " + ", ".join(sorted(COMMAND_NAMES)),
+        help=(
+            "status, enable, disable, or one of: "
+            + ", ".join(sorted(COMMAND_NAMES))
+        ),
         show_default=True,
     ),
     as_json: bool = typer.Option(False, "--json", help="Print the raw status JSON"),
 ) -> None:
-    """Show the iPhone's now-playing track or send a media command."""
+    """Show the iPhone's now-playing track, send a media command, or opt in/out."""
     selected = action.strip().casefold()
     if selected not in _ACTIONS:
         typer.echo(
@@ -103,6 +106,17 @@ def media(
         raise typer.Exit(code=2)
     client = BackendClient()
     try:
+        if selected in _SETTINGS:
+            result = client.set_media_control(selected == "enable")
+            if as_json:
+                typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
+                return
+            typer.echo(
+                "iPhone media control is on; it starts when the iPhone's LE link is up."
+                if result.get("media_control_enabled")
+                else "iPhone media control is off."
+            )
+            return
         if selected == "status":
             snapshot = client.now_playing()
             if as_json:

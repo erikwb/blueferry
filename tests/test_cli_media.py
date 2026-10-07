@@ -40,6 +40,12 @@ class _Backend:
             raise BackendError(self.fail)
         self.sent.append(command)
 
+    def set_media_control(self, enabled: bool) -> dict:
+        if self.fail:
+            raise BackendError(self.fail)
+        self.sent.append("enable" if enabled else "disable")
+        return {"media_control_enabled": enabled, "media_control_available": False}
+
 
 @pytest.fixture
 def backend(monkeypatch):
@@ -68,7 +74,7 @@ def test_status_json_is_the_backend_snapshot(backend) -> None:
 
 
 @pytest.mark.parametrize("detail,expected", [
-    ("disabled", "BLUEFERRY_MEDIA_CONTROL_ENABLED=true"),
+    ("disabled", "blueferry media enable"),
     ("requires-notification-access-mode", "compatibility pairing mode"),
     ("waiting-for-iphone", "Waiting for the iPhone"),
     ("le-link-state-unknown", "does not report the iPhone's Bluetooth LE link"),
@@ -132,6 +138,10 @@ class _Interface:
     def SendMediaCommand(self, command, **_kwargs):
         self.calls.append((self.name, f"SendMediaCommand:{command}"))
 
+    def SetMediaControl(self, enabled, **_kwargs):
+        self.calls.append((self.name, f"SetMediaControl:{bool(enabled)}"))
+        return json.dumps({"media_control_enabled": bool(enabled)})
+
 
 def test_client_checks_api_generation_before_media_calls() -> None:
     from blueferry.client import BackendClient
@@ -155,3 +165,24 @@ def test_client_explains_a_backend_without_media_support() -> None:
     )
     with pytest.raises(BackendError, match="update BlueFerry"):
         client.now_playing()
+
+
+@pytest.mark.parametrize("action,expected", [
+    ("enable", "iPhone media control is on"),
+    ("disable", "iPhone media control is off."),
+])
+def test_enable_and_disable_switch_the_opt_in(backend, action, expected) -> None:
+    result = CliRunner().invoke(app, ["media", action])
+    assert result.exit_code == 0
+    assert expected in result.output
+    assert backend.sent == [action]
+
+
+def test_client_sets_media_control_on_the_checked_owner() -> None:
+    from blueferry.client import BackendClient
+    from blueferry.protocol import MEDIA_IFACE, MESSAGES_IFACE
+
+    calls: list = []
+    client = BackendClient(interface_factory=lambda name: _Interface(name, calls))
+    assert client.set_media_control(True) == {"media_control_enabled": True}
+    assert calls == [(MESSAGES_IFACE, "GetStatus"), (MEDIA_IFACE, "SetMediaControl:True")]
