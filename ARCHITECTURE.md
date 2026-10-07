@@ -142,6 +142,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `cli_messages.py` | CLI message listing, recipient selection, and send. |
 | `cli_common.py` | Small CLI presentation helpers. |
 | `cli_proximity.py` | `proximity-lock` status, dry run, enable, and disable. |
+| `cli_notification_actions.py` | `notification-actions` status, enable, and disable for the opt-in iPhone action buttons. |
 | `tui.py` | Textual terminal client. |
 | `tui_launcher.py` | Launches the TUI with the package-private Textual bundle when present. |
 | `ui/app.py` | GTK4/libadwaita application entry point. |
@@ -433,15 +434,18 @@ A change to these rules has to be made in both places.
   policy applies exact bundle-ID allow/block rules first and delivers content
   only to an ephemeral popup sink, never retained or broadcast. Apple Messages
   keeps only the fields needed for group correlation.
-- **ANCS actions** (`BLUEFERRY_ANCS_ACTIONS`, off by default): action labels
+- **ANCS actions** (off by default; saved in `settings.json`,
+  `BLUEFERRY_ANCS_ACTIONS` is the initial value): action labels
   are app-defined content, so they are requested only while notification
   content is shown, only for non-Messages notifications that announce an
   action, shown only as popup buttons (markup characters removed), and never
   retained, logged, or broadcast. A phone action runs only after a click on its
-  button, once per notification, and only for a UID announced in the current
-  ANCS session; a session reset closes every popup that still carries buttons.
-  There is no D-Bus method for it because clients never see ANCS notifications
-  or UIDs.
+  button, once per notification, and only with the content-free token of the
+  event that offered it: any later event for the UID, a PreExisting replay, or
+  a session reset retires the offer and closes its popup. Actions go through
+  the serialized Control Point queue. Clients only toggle the preference
+  (`SetAncsNotificationActions`); no D-Bus method performs an action, because
+  clients never see ANCS notifications or UIDs.
 - **Logs** exclude message bodies, notification text, and recipient
   identities at every level. Markup and terminal output are escaped at their
   display boundaries.

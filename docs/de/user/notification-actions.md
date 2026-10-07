@@ -27,25 +27,40 @@ sequenceDiagram
 1. Im Client **All iPhone Notifications** auswählen.
 2. Mitteilungsinhalte angezeigt lassen
    (`BLUEFERRY_SHOW_NOTIFICATION_CONTENT` ist standardmäßig `true`).
-3. In `~/.config/blueferry/local.env` eintragen:
+3. In den iPhone-Einstellungen des Qt-Clients unter *Desktop Notifications*
+   **Show iPhone action buttons** ankreuzen, oder:
 
    ```bash
-   BLUEFERRY_ANCS_ACTIONS=true
-   # Optional: wie lange Popups mit Knöpfen bleiben, 1000-120000 ms (Standard 30000)
-   BLUEFERRY_ANCS_ACTION_TIMEOUT_MS=30000
+   blueferry notification-actions enable
    ```
 
-4. Den BlueFerry-User-Dienst neu starten.
+   Die Änderung gilt sofort; beim Ausschalten schließen sich Popups, die noch
+   Knöpfe zeigen. `BLUEFERRY_ANCS_ACTIONS=true` in `local.env` setzt nur den
+   Anfangswert; eine in einem Client gespeicherte Wahl hat Vorrang.
 
-`blueferry doctor` zeigt, ob Aktionen aktiv sind, und wenn nicht, warum.
-`GetStatus` enthält `ancs_actions`.
+Optional in `~/.config/blueferry/local.env` (danach den Dienst neu starten):
+
+```bash
+# Wie lange Popups mit Knöpfen bleiben, 1000-120000 ms (Standard 30000)
+BLUEFERRY_ANCS_ACTION_TIMEOUT_MS=30000
+```
+
+`blueferry notification-actions` und `blueferry doctor` zeigen, ob Aktionen
+an sind und warum sie gegebenenfalls nicht greifen. `GetStatus` enthält
+`ancs_actions`, `ancs_actions_preference` und `notification_content_shown`.
 
 ## Was die Funktion tut und was nicht
 
 - An das iPhone geht nur etwas, wenn du auf einen beschrifteten Knopf
   klickst. Popup schließen, ablaufen lassen, auf den Text klicken oder die
-  Mitteilung am Telefon erledigen löst nie eine Aktion aus.
-- Jedes Popup führt höchstens eine Aktion aus.
+  Mitteilung am Telefon erledigen löst nie eine Aktion aus. Popups mit
+  Knöpfen tragen eine ausdrückliche „nichts tun“-Standardaktion, weil manche
+  Benachrichtigungsdienste sonst bei einem Klick auf den Text den einzigen
+  Knopf auslösen.
+- Knöpfe erscheinen nur, wenn dein Benachrichtigungsdienst sie zeichnen kann
+  (er meldet die Fähigkeit `actions`). Sonst kommt das normale Popup.
+- Jede Mitteilung nimmt eine erfolgreiche Aktion an. Ging ein Klick nicht
+  durch, kannst du es erneut versuchen.
 - *Annehmen* bei einem Anruf nimmt ihn **auf dem iPhone** an. Das ist
   unabhängig von der Freisprech-Funktion: Der Ton bleibt dort, wohin iOS ihn
   leitet.
@@ -55,26 +70,31 @@ sequenceDiagram
   ignorieren die gewünschte Dauer.
 - Wird die Mitteilung am iPhone erledigt oder entfernt, schließt sich ihr
   Popup.
-- Baut sich die Bluetooth-Verbindung zum iPhone neu auf, werden Popups mit
-  Knöpfen aus der vorherigen Verbindung geschlossen, weil iOS deren
-  Mitteilungsnummern wiederverwenden kann.
+- iOS verwendet Mitteilungsnummern wieder. Ein Knopf gehört genau zu der
+  Mitteilung, die ihn angeboten hat: Schickt das iPhone etwas Neues zu dieser
+  Nummer, spielt es seine vorhandenen Mitteilungen erneut ein oder baut sich
+  die Bluetooth-Verbindung neu auf, verfallen die alten Knöpfe und ihre
+  Popups schließen sich.
 - Lässt sich die Aktion nicht ausführen (am Telefon schon erledigt, Telefon
   getrennt, Aktion abgelehnt), erscheint ein kurzer Hinweis „iPhone action
-  not completed“. Er enthält keinen Mitteilungsinhalt.
+  not completed“. Er enthält keinen Mitteilungsinhalt. War das Telefon nur
+  beschäftigt oder schlug das Senden fehl, hat der Hinweis einen Knopf
+  **Retry**.
 - Popups von Nachrichten kommen über MAP und verhalten sich wie bisher (Klick
   öffnet die Unterhaltung, Schließen markiert als gelesen).
 
 ## Grenzen
 
-- Standardmäßig aus. Ohne `BLUEFERRY_ANCS_ACTIONS=true` bleiben Popups und
-  die beim iPhone angefragten Daten unverändert.
+- Standardmäßig aus. Solange die Funktion aus ist, bleiben Popups und die
+  beim iPhone angefragten Daten unverändert.
 - Keine Knöpfe, solange `BLUEFERRY_SHOW_NOTIFICATION_CONTENT=false` gilt. Eine
   allgemeine Beschriftung wie „Positiv“/„Negativ“ könnte eine zerstörerische
   Aktion falsch beschriften, deshalb gibt es keinen Ersatz.
 - Knöpfe bekommen nur Mitteilungen von Apps, die die Einstellung **All iPhone
   Notifications** und die Allow-/Blocklisten passieren.
-- Es gibt keine D-Bus-Methode und keine Client-Oberfläche für Aktionen; das
-  Popup ist die einzige Stelle. Die Einstellung liegt in `local.env`.
+- Clients schalten die Funktion nur ein oder aus; ausgelöst wird eine Aktion
+  ausschließlich im Popup. GTK- und Quickshell-Client haben noch keinen
+  Schalter; dafür den Qt-Client oder die CLI nehmen.
 - Ob jede iOS-Version für jede Art von Mitteilung Beschriftungen schickt,
   entscheiden iOS und die jeweilige App.
 

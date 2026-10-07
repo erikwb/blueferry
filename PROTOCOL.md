@@ -441,22 +441,28 @@ or app display-name attributes are requested. Even when mirroring is enabled,
 included non-Messages content is never written to history or placed on
 BlueFerry's D-Bus event feed.
 
-With the opt-in `BLUEFERRY_ANCS_ACTIONS`, BlueFerry reads the Notification
+With the opt-in notification actions (a saved setting; `BLUEFERRY_ANCS_ACTIONS`
+is its initial value), BlueFerry reads the Notification
 Source `PositiveAction`/`NegativeAction` event flags. For an included
 non-Messages notification it appends `PositiveActionLabel` (6) and/or
 `NegativeActionLabel` (7) to the attribute request; unlike title, subtitle and
 message, these take no maximum-length parameter. A clicked popup button is
 sent as `PerformNotificationAction` (command 2, the 32-bit notification UID,
 action 0 for positive or 1 for negative). That command produces no Data
-Source response, so it is written asynchronously outside the serialized
-attribute backlog and cannot disturb response reassembly. iOS reports failure
+Source response; it goes through the same serialized Control Point queue as
+attribute requests (at its head) and completes with the write reply, so it
+never overlaps another write and BlueZ never answers it with
+`org.bluez.Error.InProgress`. iOS reports failure
 as an ATT error on the write, which BlueZ surfaces as
 `org.bluez.Error.Failed: Operation failed with ATT error: 0xNN`: `0xA2`
 (invalid parameter) means the UID no longer exists, typically because the
 notification was handled on the phone first; `0xA3` means the action failed;
 `0xA0`/`0xA1` mean the command was not understood. UIDs are valid only within
-one ANCS session, so a subscription reset discards every pending action and
-closes the desktop popups still wired to the old UIDs. Labels are app-defined
+one ANCS session and iOS reuses them, so every offer carries a content-free
+token that the click must present. Any Added, Modified, or Removed event for
+the UID retires the offer, and a PreExisting replay or a subscription reset
+discards every offer and queued action and closes the desktop popups still
+wired to them. Labels are app-defined
 strings and are requested only while notification content is shown. This path
 is verified only against simulated responses, not a physical iPhone.
 
