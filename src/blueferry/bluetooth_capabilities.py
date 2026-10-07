@@ -141,28 +141,40 @@ _CONTROLLER_MODES = frozenset({"dual", "bredr", "le"})
 
 
 def bluez_controller_mode(path: Path | None = None) -> str:
-    """Return BlueZ's configured ``[General] ControllerMode``, or ``""``.
+    """Return the ``[General] ControllerMode`` bluetoothd will use, or ``""``.
 
-    The file is world-readable on every distribution BlueFerry packages for.
-    Only the three documented values are reported; anything else becomes
-    ``"other"`` so the report never carries arbitrary configuration text.
+    bluetoothd reads main.conf with GKeyFile and compares the value with
+    ``strcmp`` (BlueZ ``src/main.c``, ``get_mode``), so this parser follows
+    the same rules: group and key names are case-sensitive, only whole lines
+    starting with ``#`` are comments, the value keeps trailing text and
+    whitespace, and a line GKeyFile rejects makes bluetoothd ignore the whole
+    file. Anything bluetoothd would not recognize runs as dual mode and is
+    reported as ``"other"``; ``""`` means unset, unreadable or ignored. Only
+    these fixed words are returned, never configuration text. The file is
+    world-readable on every distribution BlueFerry packages for.
     """
     try:
         text = (path or BLUEZ_MAIN_CONF).read_text(encoding="utf-8", errors="replace")
     except OSError:
         return ""
-    section = ""
+    group: str | None = None
     mode = ""
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith(("#", ";")):
+    for raw in text.split("\n"):
+        line = raw.lstrip(" \t\r\v\f")
+        if not line or line.startswith("#"):
             continue
-        if line.startswith("[") and line.endswith("]"):
-            section = line[1:-1].strip().casefold()
+        if line.startswith("["):
+            closing = line.rfind("]")
+            if closing < 0 or line[closing + 1:].strip(" \t"):
+                return ""
+            group = line[1:closing]
             continue
         key, separator, value = line.partition("=")
-        if section == "general" and separator and key.strip().casefold() == "controllermode":
-            mode = value.split("#", 1)[0].strip().casefold()
+        if not separator or group is None:
+            # GKeyFile fails to load the file; bluetoothd uses its defaults.
+            return ""
+        if group == "General" and key.rstrip() == "ControllerMode":
+            mode = value.lstrip(" \t\r\v\f") or "other"
     if not mode:
         return ""
     return mode if mode in _CONTROLLER_MODES else "other"

@@ -100,12 +100,24 @@ def test_le_off_issue_names_a_bredr_controller_mode(monkeypatch, tmp_path):
     ("text", "expected"),
     [
         ("[General]\nControllerMode = bredr\n", "bredr"),
-        ("[General]\nControllerMode=Dual # comment\n", "dual"),
+        ("[General]\n  ControllerMode=le\n", "le"),
+        ("[General]\nControllerMode = dual\n", "dual"),
         ("[General]\n#ControllerMode = bredr\n", ""),
         ("[Policy]\nControllerMode = bredr\n", ""),
-        ("[General]\nControllerMode = le\n", "le"),
         ("[General]\nControllerMode = something/else\n", "other"),
         ("", ""),
+        # bluetoothd compares with strcmp: these all run as dual mode.
+        ("[General]\nControllerMode = BREDR\n", "other"),
+        ("[General]\nControllerMode = bredr # comment\n", "other"),
+        ("[General]\nControllerMode = bredr \n", "other"),
+        # GKeyFile names are case-sensitive: bluetoothd ignores these.
+        ("[general]\nControllerMode = bredr\n", ""),
+        ("[General]\ncontrollermode = bredr\n", ""),
+        # Lines GKeyFile rejects make bluetoothd ignore the whole file.
+        ("; comment\n[General]\nControllerMode = bredr\n", ""),
+        ("ControllerMode = bredr\n[General]\n", ""),
+        # The last assignment wins, also across repeated groups.
+        ("[General]\nControllerMode = dual\n[Policy]\n[General]\nControllerMode = bredr\n", "bredr"),
     ],
 )
 def test_bluez_controller_mode_reads_only_the_general_section(tmp_path, text, expected):
