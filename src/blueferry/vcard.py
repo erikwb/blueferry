@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from typing import TextIO
 
 from blueferry.limits import MAX_VCARD_CHARS
@@ -121,6 +121,8 @@ class _Card:
         self.photo_limit = photo_limit
         self.photo: str | None = None
         self.photo_seen = False
+        # The first PHOTO existed but exceeded ``photo_limit`` (diagnostics).
+        self.photo_oversized = False
         self.lines: list[str] = []
         self.size = 0  # kept lines plus one line break each
         self.overflowed = False
@@ -205,6 +207,7 @@ class _Card:
             if self.property_size > self.photo_limit:
                 # Too large to keep: consume the rest like any skipped value.
                 self.retaining = False
+                self.photo_oversized = True
                 self.parts = []
         elif self.decided and not self.skipped:
             self._check_budget()
@@ -302,6 +305,7 @@ def iter_vcard_cards(
     maximum: int,
     max_card_chars: int = MAX_VCARD_CHARS,
     max_photo_chars: int,
+    on_oversized_photo: Callable[[], None] | None = None,
 ) -> Iterator[tuple[str, str | None]]:
     """Yield ``(body, photo)``: :func:`iter_vcard_bodies` plus each card's photo.
 
@@ -311,12 +315,17 @@ def iter_vcard_cards(
     ``None`` when there is none or it exceeds ``max_photo_chars``. Photo text
     has its own budget and never counts against the card budget. LOGO, SOUND,
     KEY and any further PHOTO are still dropped unread.
+
+    ``on_oversized_photo`` is called once for each yielded card whose first
+    PHOTO was dropped for exceeding ``max_photo_chars``, so callers can count
+    such photos without retaining them.
     """
     return _iter_cards(
         blob,
         maximum=maximum,
         max_card_chars=max_card_chars,
         max_photo_chars=max(1, int(max_photo_chars)),
+        on_oversized_photo=on_oversized_photo,
     )
 
 
@@ -326,6 +335,7 @@ def _iter_cards(
     maximum: int,
     max_card_chars: int,
     max_photo_chars: int,
+    on_oversized_photo: Callable[[], None] | None = None,
 ) -> Iterator[tuple[str, str | None]]:
     selected_maximum = max(0, int(maximum))
     selected_card_limit = max(0, int(max_card_chars))
@@ -348,8 +358,11 @@ def _iter_cards(
         if marker == "end:vcard":
             body = card.finish() if card is not None else None
             photo = card.photo if card is not None else None
+            oversized = card is not None and card.photo_oversized
             card = None
             if body is not None:
+                if oversized and on_oversized_photo is not None:
+                    on_oversized_photo()
                 yield body, photo
                 yielded += 1
                 if yielded >= selected_maximum:

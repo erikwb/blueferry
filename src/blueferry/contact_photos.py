@@ -168,19 +168,32 @@ def _parameters(raw: str) -> tuple[str, list[str]]:
     return parts[0].strip(), [part.strip().upper() for part in parts[1:]]
 
 
-def decode_vcard_photo(prop: str | None) -> bytes | None:
-    """Decode one unfolded PHOTO property line (``params:value``) safely.
+# Why a PHOTO value was not kept. Content-free labels for the per-sync
+# summary log line; they never describe a particular contact.
+REJECT_TOO_LARGE = "too-large"
+REJECT_NOT_INLINE = "not-inline"
+REJECT_MALFORMED = "malformed"
+REJECT_FORMAT = "format"
+REJECT_DIMENSIONS = "dimensions"
 
-    Returns ``None`` for URIs, unknown encodings, malformed base64, oversized
-    data, or anything that is not a JPEG/PNG signature.
+
+def inspect_vcard_photo(prop: str | None) -> tuple[bytes | None, str | None, int]:
+    """Decode one PHOTO line like :func:`decode_vcard_photo`, with diagnostics.
+
+    Returns ``(data, reason, size)``: the accepted bytes or ``None``, the
+    rejection reason (one of the ``REJECT_*`` labels, ``None`` when accepted),
+    and the decoded size in bytes (estimated from the base64 length when the
+    value was not decoded, ``0`` when there is no value to measure).
     """
-    if not prop or len(prop) > MAX_CONTACT_PHOTO_CHARS:
-        return None
+    if not prop:
+        return None, REJECT_NOT_INLINE, 0
+    if len(prop) > MAX_CONTACT_PHOTO_CHARS:
+        return None, REJECT_TOO_LARGE, len(prop) * 3 // 4
     # Parameter values may be quoted and contain ":" (vCard 3.0/4.0), so the
     # value starts at the first colon outside quotes.
     split = _split_unquoted(prop, ":", first_only=True)
     if len(split) != 2:
-        return None
+        return None, REJECT_MALFORMED, 0
     head, value = split
     _name, params = _parameters(head)
     encoded: str | None = None
@@ -194,17 +207,35 @@ def decode_vcard_photo(prop: str | None) -> bytes | None:
             encoded = payload
     if encoded is None:
         # VALUE=URI or an unrecognized encoding: never fetch remote content.
-        return None
+        return None, REJECT_NOT_INLINE, 0
     compact = encoded.translate(_WHITESPACE)
-    if not compact or len(compact) > MAX_CONTACT_PHOTO_CHARS:
-        return None
+    if not compact:
+        return None, REJECT_MALFORMED, 0
+    if len(compact) > MAX_CONTACT_PHOTO_CHARS:
+        return None, REJECT_TOO_LARGE, len(compact) * 3 // 4
     # Some writers omit padding; restore it rather than reject the photo.
     compact += "=" * (-len(compact) % 4)
     try:
         data = base64.b64decode(compact, validate=True)
     except (binascii.Error, ValueError):
-        return None
-    return valid_photo(data)
+        return None, REJECT_MALFORMED, len(compact) * 3 // 4
+    if valid_photo(data) is not None:
+        return data, None, len(data)
+    if len(data) > MAX_CONTACT_PHOTO_BYTES:
+        return None, REJECT_TOO_LARGE, len(data)
+    dimensions = image_dimensions(data)
+    if dimensions is not None:
+        return None, REJECT_DIMENSIONS, len(data)
+    return None, REJECT_FORMAT, len(data)
+
+
+def decode_vcard_photo(prop: str | None) -> bytes | None:
+    """Decode one unfolded PHOTO property line (``params:value``) safely.
+
+    Returns ``None`` for URIs, unknown encodings, malformed base64, oversized
+    data, or anything that is not a JPEG/PNG signature.
+    """
+    return inspect_vcard_photo(prop)[0]
 
 
 class PhotoFiles:

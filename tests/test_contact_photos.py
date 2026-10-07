@@ -729,10 +729,109 @@ def test_photo_decoding_stops_at_the_time_budget() -> None:
         _card(f"FN:P{index}", _fold("PHOTO;ENCODING=b:" + _b64(JPEG)), f"TEL:+1555000{index:04d}")
         for index in range(4)
     )
-    ticks = iter([0.0, 0.0, 1.0, 999.0, 999.0])
-    entries = _parse_vcard_entries(blob, clock=lambda: next(ticks))
+    # The clock is read around each decode only: the second takes 6 s.
+    ticks = iter([0.0, 0.0, 0.0, 6.0])
+    stats = contacts.PhotoStats()
+    entries = _parse_vcard_entries(blob, clock=lambda: next(ticks), stats=stats)
     assert [photo for _record, photo in entries] == [JPEG, JPEG, None, None]
     assert len(entries) == 4  # contacts are kept even when photos are skipped
+    assert stats.dropped == {"time": 2}
+
+
+def test_card_parsing_time_does_not_count_against_the_decode_budget() -> None:
+    blob = "".join(
+        _card(f"FN:P{index}", _fold("PHOTO;ENCODING=b:" + _b64(JPEG)), f"TEL:+1555000{index:04d}")
+        for index in range(4)
+    )
+    # 100 s pass between cards, but every decode itself is instantaneous.
+    ticks = iter([0.0, 0.0, 100.0, 100.0, 200.0, 200.0, 300.0, 300.0])
+    entries = _parse_vcard_entries(blob, clock=lambda: next(ticks))
+    assert [photo for _record, photo in entries] == [JPEG] * 4
+
+
+def test_photo_summary_counts_sizes_and_reasons_without_contact_data() -> None:
+    blob = (
+        _card("FN:Alice Secret", _fold("PHOTO;ENCODING=b:" + _b64(JPEG)), "TEL:+15551112222")
+        + _card("FN:Uri", "PHOTO;VALUE=URI:https://example.com/a.jpg", "TEL:+15551113333")
+        + _card("FN:Gif", "PHOTO;ENCODING=b:" + _b64(b"GIF89a" + bytes(32)), "TEL:+15551114444")
+        + _card("FN:Bomb", "PHOTO;ENCODING=b:" + _b64(png_header(4096, 4096)), "TEL:+15551115555")
+        + _card("FN:Huge", _fold("PHOTO;ENCODING=b:" + "A" * (limits.MAX_CONTACT_PHOTO_CHARS + 10)),
+                "TEL:+15551116666")
+    )
+    stats = contacts.PhotoStats()
+    entries = _parse_vcard_entries(blob, stats=stats)
+    assert [photo for _record, photo in entries] == [JPEG, None, None, None, None]
+    assert stats.dropped == {
+        "not-inline": 1, "format": 1, "dimensions": 1, "too-large": 1,
+    }
+    summary = stats.summary()
+    assert "<=64KiB:3" in summary and ">4MiB:0" in summary
+    assert "dimensions:1" in summary and "too-large:1" in summary
+    assert "Alice" not in summary and "1555" not in summary
+
+
+@pytest.mark.parametrize("prop,reason", [
+    ("PHOTO;VALUE=URI:https://example.com/a.jpg", "not-inline"),
+    ("PHOTO;ENCODING=b:!!!!", "malformed"),
+    ("PHOTO;ENCODING=b:" + _b64(b"GIF89a" + bytes(32)), "format"),
+    ("PHOTO;ENCODING=b:" + _b64(png_header(4096, 16)), "dimensions"),
+])
+def test_inspect_reports_why_a_photo_was_rejected(prop, reason) -> None:
+    data, rejected, _size = contact_photos.inspect_vcard_photo(prop)
+    assert data is None and rejected == reason
+
+
+def test_decoded_photo_over_the_cap_is_reported_too_large(monkeypatch) -> None:
+    monkeypatch.setattr(contact_photos, "MAX_CONTACT_PHOTO_BYTES", len(JPEG) - 1)
+    data, reason, size = contact_photos.inspect_vcard_photo("PHOTO;ENCODING=b:" + _b64(JPEG))
+    assert (data, reason, size) == (None, "too-large", len(JPEG))
+
+
+def test_photos_that_can_never_be_shown_are_not_decoded_or_budgeted(monkeypatch) -> None:
+    # Two cards share their only number, so neither photo could be served;
+    # their bytes must not use the budget a later contact needs.
+    monkeypatch.setattr(contacts, "MAX_CONTACT_PHOTOS_TOTAL_BYTES", len(PNG))
+    blob = (
+        _card("FN:Twin A", "PHOTO;ENCODING=b:" + _b64(PNG), "TEL:+15550001111")
+        + _card("FN:Twin B", "PHOTO;ENCODING=b:" + _b64(PNG), "TEL:+15550001111")
+        + _card("FN:Carol", "PHOTO;ENCODING=b:" + _b64(PNG), "TEL:+15550003333")
+    )
+    servable = contacts._servable_photo_indices(_parse_vcard_records(blob))
+    assert servable == {2}
+    stats = contacts.PhotoStats()
+    entries = _parse_vcard_entries(blob, servable=servable, stats=stats)
+    assert [photo for _record, photo in entries] == [None, None, PNG]
+    assert stats.dropped == {"shared": 2}
+
+
+def test_budget_exhaustion_is_logged_with_a_count(monkeypatch, caplog) -> None:
+    monkeypatch.setattr(contacts, "MAX_CONTACT_PHOTOS_TOTAL_BYTES", len(JPEG))
+    blob = "".join(
+        _card(f"FN:P{index}", "PHOTO;ENCODING=b:" + _b64(JPEG), f"TEL:+1555000{index:04d}")
+        for index in range(3)
+    )
+    with caplog.at_level("WARNING", logger="blueferry.contacts"):
+        entries = _parse_vcard_entries(blob)
+    assert [photo for _record, photo in entries] == [JPEG, None, None]
+    assert "2 later photos were not kept" in caplog.text
+
+
+def test_pull_logs_a_content_free_photo_summary(storage, monkeypatch, tmp_path, caplog) -> None:
+    blob = (
+        _card("FN:Alice", _fold("PHOTO;ENCODING=b:" + _b64(JPEG)), "TEL:+15551112222")
+        + _card("FN:Twin A", "PHOTO;ENCODING=b:" + _b64(PNG), "TEL:+15550001111")
+        + _card("FN:Twin B", "PHOTO;ENCODING=b:" + _b64(PNG), "TEL:+15550001111")
+    )
+    _fake_pull(monkeypatch, tmp_path, blob)
+    monkeypatch.setattr(config, "CONTACT_PHOTOS", True)
+    with caplog.at_level("INFO", logger="blueferry.contacts"):
+        assert contacts.pull_phonebook(SimpleNamespace(pbap_path="/pbap"), storage=storage) == 3
+    [line] = [record.getMessage() for record in caplog.records if "with photos" in record.getMessage()]
+    assert "parsed 3 contacts (1 with photos)" in line
+    assert "<=64KiB:1" in line and "shared:2" in line
+    assert "Alice" not in line and "Twin" not in line and "1555" not in line
+    resolver = ContactsResolver(storage=storage)
+    assert resolver.photo("+15551112222") == JPEG and resolver.photo_count() == 1
 
 
 def test_hostile_jpeg_headers_are_rejected_quickly() -> None:

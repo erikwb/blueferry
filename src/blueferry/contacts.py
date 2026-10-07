@@ -9,7 +9,8 @@ from __future__ import annotations
 import logging
 import tempfile
 import time
-from collections.abc import Callable, Iterable
+from collections import Counter
+from collections.abc import Callable, Collection, Iterable, Sequence
 from copy import copy
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -18,7 +19,7 @@ import dbus
 
 from blueferry import config
 from blueferry.bus import obex
-from blueferry.contact_photos import decode_vcard_photo
+from blueferry.contact_photos import REJECT_TOO_LARGE, inspect_vcard_photo
 from blueferry.contact_repository import ContactRecord, ContactRepository
 from blueferry.events import canonical_address, is_email_shaped, normalize_phone
 from blueferry.limits import (
@@ -107,51 +108,169 @@ def _parse_vcard_records(
     return out
 
 
+# Content-free size buckets for the per-sync photo summary (decoded bytes).
+_PHOTO_SIZE_BUCKETS = (
+    (64 * 1024, "<=64KiB"),
+    (256 * 1024, "<=256KiB"),
+    (1024 * 1024, "<=1MiB"),
+    (4 * 1024 * 1024, "<=4MiB"),
+)
+PHOTO_DROPPED_SHARED = "shared"
+PHOTO_DROPPED_BUDGET = "budget"
+PHOTO_DROPPED_TIME = "time"
+
+
+class PhotoStats:
+    """Per-sync photo counters for one summary log line.
+
+    Only counts, size buckets and rejection reasons: nothing that identifies
+    a contact. Meant to show, from a real phone's journal, whether the caps
+    in ``limits.py`` fit the photos iOS actually sends.
+    """
+
+    def __init__(self) -> None:
+        self.sizes: Counter[str] = Counter()
+        self.dropped: Counter[str] = Counter()
+
+    def observe_size(self, size: int) -> None:
+        if size <= 0:
+            return
+        label = next(
+            (name for limit, name in _PHOTO_SIZE_BUCKETS if size <= limit),
+            f">{_PHOTO_SIZE_BUCKETS[-1][1].removeprefix('<=')}",
+        )
+        self.sizes[label] += 1
+
+    def drop(self, reason: str) -> None:
+        self.dropped[reason] += 1
+
+    def summary(self) -> str:
+        labels = [name for _limit, name in _PHOTO_SIZE_BUCKETS]
+        labels.append(f">{labels[-1].removeprefix('<=')}")
+        sizes = " ".join(f"{label}:{self.sizes[label]}" for label in labels)
+        dropped = " ".join(
+            f"{reason}:{count}" for reason, count in sorted(self.dropped.items())
+        ) or "none"
+        return f"sizes {sizes}; not kept {dropped}"
+
+
+def _unique_addresses(records: Sequence[ContactRecord]) -> dict[int, list[str]]:
+    """Map record index to the address identities only that record owns.
+
+    Count record ownership, not names: two people can share a name or
+    number. A 10-digit and an 11-digit NANP form of one number are the same
+    identity. Reply routing and photos both rely on this rule.
+    """
+    owners: dict[str, set[int]] = {}
+    for index, (_name, phones, emails) in enumerate(records):
+        for address in (*phones, *emails):
+            identity = canonical_address(address)
+            if identity is None:
+                continue
+            identities = [identity]
+            if identity.startswith("phone:"):
+                number = identity.removeprefix("phone:")
+                if len(number) == 10:
+                    identities.append(f"phone:1{number}")
+                elif len(number) == 11 and number.startswith("1"):
+                    identities.append(f"phone:{number[1:]}")
+            for value in identities:
+                owners.setdefault(value, set()).add(index)
+    unique: dict[int, list[str]] = {}
+    for identity, owning in owners.items():
+        if len(owning) == 1:
+            unique.setdefault(next(iter(owning)), []).append(identity)
+    return unique
+
+
+def _servable_photo_indices(records: Sequence[ContactRecord]) -> set[int]:
+    """Indices of records whose photo could ever be shown.
+
+    A record without an address of its own (every number and email is shared
+    with another record) never gets its photo served, so storing it would
+    only cost budget and disk.
+    """
+    return set(_unique_addresses([_sanitized(record) for record in records]))
+
+
 def _parse_vcard_entries(
     blob: str | Iterable[str],
     *,
     maximum: int = MAX_PHONEBOOK_CONTACTS,
     clock: Callable[[], float] = time.monotonic,
+    servable: Collection[int] | None = None,
+    stats: PhotoStats | None = None,
 ) -> list[tuple[ContactRecord, bytes | None]]:
     """Return each contact record paired with its validated photo bytes.
 
     Used only when contact photos are enabled. Records match
     :func:`_parse_vcard_records` for the same cards; photos are decoded
     without interpreting pixels and are dropped once the per-sync photo
-    budget is spent.
+    budget is spent. With ``servable`` (record indices from
+    :func:`_servable_photo_indices`), photos of other records are not even
+    decoded and do not use budget.
 
     Cost on the OBEX worker: ``decode_vcard_photo`` rejects an oversized
     encoded value before any base64 work, and its JPEG header walk is capped
-    in segments and fill bytes. A hostile maximum-size value measured about
-    1.2 ms (base64 plus header walk), and the transfer cap (64 MiB) admits
-    fewer than 200 such values, so a sync spends well under a second here.
-    The byte budget only applies after decoding, so a wall-clock budget
-    additionally stops photo decoding if that estimate is ever wrong.
+    in segments and fill bytes. A hostile maximum-size value measured a few
+    milliseconds (base64 plus header walk), and the transfer cap (64 MiB)
+    admits fewer than 50 such values, so a sync spends well under a second
+    here. The byte budget only applies after decoding, so a time budget
+    (spent inside photo decoding only, not in card parsing) additionally
+    stops photo decoding if that estimate is ever wrong.
     """
+    selected_stats = stats if stats is not None else PhotoStats()
     out: list[tuple[ContactRecord, bytes | None]] = []
     budget = MAX_CONTACT_PHOTOS_TOTAL_BYTES
-    deadline = clock() + MAX_CONTACT_PHOTO_DECODE_SECONDS
-    skipped = 0
+    spent = 0.0
+
+    def oversized() -> None:
+        selected_stats.observe_size(MAX_CONTACT_PHOTO_CHARS * 3 // 4 + 1)
+        selected_stats.drop(REJECT_TOO_LARGE)
+
     for body, prop in iter_vcard_cards(
-        blob, maximum=maximum, max_photo_chars=MAX_CONTACT_PHOTO_CHARS,
+        blob,
+        maximum=maximum,
+        max_photo_chars=MAX_CONTACT_PHOTO_CHARS,
+        on_oversized_photo=oversized,
     ):
         record = _parse_card(body)
         if record is None:
             continue
+        index = len(out)
         photo = None
-        if prop is not None and budget > 0:
-            if clock() < deadline:
-                photo = decode_vcard_photo(prop)
+        if prop is not None:
+            if servable is not None and index not in servable:
+                selected_stats.drop(PHOTO_DROPPED_SHARED)
+            elif budget <= 0:
+                selected_stats.drop(PHOTO_DROPPED_BUDGET)
+            elif spent >= MAX_CONTACT_PHOTO_DECODE_SECONDS:
+                selected_stats.drop(PHOTO_DROPPED_TIME)
             else:
-                skipped += 1
+                started = clock()
+                photo, reason, size = inspect_vcard_photo(prop)
+                spent += max(0.0, clock() - started)
+                selected_stats.observe_size(size)
+                if reason is not None:
+                    selected_stats.drop(reason)
         if photo is not None:
             if len(photo) > budget:
+                selected_stats.drop(PHOTO_DROPPED_BUDGET)
                 photo = None
             else:
                 budget -= len(photo)
         out.append((record, photo))
-    if skipped:
-        log.warning("contact photo decoding took too long; skipped %d photos", skipped)
+    if selected_stats.dropped[PHOTO_DROPPED_TIME]:
+        log.warning(
+            "contact photo decoding took too long; skipped %d photos",
+            selected_stats.dropped[PHOTO_DROPPED_TIME],
+        )
+    if selected_stats.dropped[PHOTO_DROPPED_BUDGET]:
+        log.warning(
+            "contact photo budget of %d MiB reached; %d later photos were not kept",
+            MAX_CONTACT_PHOTOS_TOTAL_BYTES // (1024 * 1024),
+            selected_stats.dropped[PHOTO_DROPPED_BUDGET],
+        )
     return out
 
 
@@ -246,15 +365,29 @@ def pull_phonebook(
         phonebook_size()
 
         if (config.CONTACT_PHOTOS if photos is None else photos) and storage is not None:
-            # Same streamed read as below; the photo-aware iterator yields
-            # the identical card bodies plus each card's first PHOTO.
+            # Two streamed reads of the same file. The first, photo-blind,
+            # finds which records own an address of their own; only their
+            # photos can ever be shown, so only those are decoded and counted
+            # against the budget. The second yields the identical card bodies
+            # plus each card's first PHOTO.
+            with out.open(errors="replace") as stream:
+                servable = _servable_photo_indices(_parse_vcard_records(
+                    iter_bounded_lines(stream), maximum=max_contacts,
+                ))
+            stats = PhotoStats()
             with out.open(errors="replace") as stream:
                 entries = _parse_vcard_entries(
-                    iter_bounded_lines(stream), maximum=max_contacts,
+                    iter_bounded_lines(stream),
+                    maximum=max_contacts,
+                    servable=servable,
+                    stats=stats,
                 )
             log.info(
-                "parsed %d contacts (%d with photos) from %d bytes",
-                len(entries), sum(photo is not None for _record, photo in entries), size,
+                "parsed %d contacts (%d with photos) from %d bytes; photo %s",
+                len(entries),
+                sum(photo is not None for _record, photo in entries),
+                size,
+                stats.summary(),
             )
             return ContactRepository(storage).replace(
                 [record for record, _photo in entries],
@@ -333,26 +466,7 @@ class ContactsResolver:
                     self._mem.setdefault(address, set()).add(name)
 
         self._thread_addresses: dict[str, tuple[str, ...]] = {}
-        # Count record ownership, not names: two people can share a name or number.
-        owners: dict[str, set[int]] = {}
-        for index, (_name, phones, emails) in enumerate(self._records):
-            for address in (*phones, *emails):
-                identity = canonical_address(address)
-                if identity is None:
-                    continue
-                identities = [identity]
-                if identity.startswith("phone:"):
-                    number = identity.removeprefix("phone:")
-                    if len(number) == 10:
-                        identities.append(f"phone:1{number}")
-                    elif len(number) == 11 and number.startswith("1"):
-                        identities.append(f"phone:{number[1:]}")
-                for value in identities:
-                    owners.setdefault(value, set()).add(index)
-        unique: dict[int, list[str]] = {}
-        for identity, records in owners.items():
-            if len(records) == 1:
-                unique.setdefault(next(iter(records)), []).append(identity)
+        unique = _unique_addresses(self._records)
         # Photos follow the same rule as reply routing: an address shared by
         # two records never shows either person's picture.
         self._photo_refs: dict[str, int] = {}
