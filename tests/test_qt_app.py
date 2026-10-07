@@ -264,6 +264,44 @@ def test_binding_path_leaves_widget_style_choices_to_qt(
     ]
 
 
+@pytest.mark.parametrize(("binding", "how"), [
+    ("quick_style_binding", "QQuickStyle.setStyle()"),
+    ("no_quick_style_binding", "QT_QUICK_CONTROLS_STYLE (no "),
+])
+def test_diagnose_style_reports_the_decision_without_a_window(
+        monkeypatch, capsys, request, binding, how,
+        ):
+    request.getfixturevalue(binding)
+    events = []
+    _fake_main_collaborators(monkeypatch, events)
+    monkeypatch.setattr(
+        sys, "argv", ["blueferry-qt", "--diagnose-style", "-style", "fusion"],
+    )
+
+    assert app_module.main() == 0
+
+    report = capsys.readouterr().out
+    assert events == []
+    assert "Controls style: org.kde.desktop" in report
+    assert f"Chosen through: {how}" in report
+    assert "QML import paths searched:" in report
+
+
+def test_diagnose_style_names_a_user_style_and_a_missing_one(
+        monkeypatch, kde_style_installed, no_quick_style_binding,
+        ):
+    monkeypatch.setenv("QT_QUICK_CONTROLS_STYLE", "Material")
+    assert "Controls style: Material" in (
+        app_module._select_quick_controls_style().describe()
+    )
+
+    monkeypatch.delenv("QT_QUICK_CONTROLS_STYLE")
+    kde_style_installed.clear()
+    report = app_module._select_quick_controls_style().describe()
+    assert "Controls style: Qt default" in report
+    assert "Chosen through: left to Qt: none of" in report
+
+
 def test_fallback_style_loads_controls_despite_widget_style_override(tmp_path):
     """Run real Qt: -style and QT_STYLE_OVERRIDE must not break Main.qml."""
     pytest.importorskip("PySide6.QtQml")

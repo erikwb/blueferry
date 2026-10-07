@@ -361,6 +361,10 @@ journalctl --user -u blueferry -f
 If messages work but names do not, use **Sync Contacts** or run
 `blueferry contacts-sync`.
 
+If `blueferry-qt` does not open a window or looks unstyled,
+`blueferry-qt --diagnose-style` prints the Qt Quick Controls style it would
+use, how it sets it, and where it looked for the style.
+
 If notifications previously worked with the same phone and adapter but stay
 unavailable for five minutes, BlueFerry can attempt one adapter power cycle.
 It first tries an LE-only reset and checks that the phone still answers a

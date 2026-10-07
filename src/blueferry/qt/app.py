@@ -133,7 +133,10 @@ class _QuickControlsStyle:
         self._fallback = False
         self._widget_style: str | None = None
         self._hidden_override: str | None = None
-        if os.environ.get("QT_QUICK_CONTROLS_STYLE"):
+        user_style = os.environ.get("QT_QUICK_CONTROLS_STYLE")
+        self.controls_style: str | None = user_style or None
+        self.how = "QT_QUICK_CONTROLS_STYLE set by the user"
+        if user_style:
             return
         style = next(
             (name for name in QUICK_CONTROLS_STYLES
@@ -141,22 +144,40 @@ class _QuickControlsStyle:
             None,
         )
         if style is None:
-            log.warning(
-                "none of %s is installed; leaving the Controls style to Qt",
-                ", ".join(QUICK_CONTROLS_STYLES),
-            )
+            names = ", ".join(QUICK_CONTROLS_STYLES)
+            self.how = f"left to Qt: none of {names} is installed"
+            log.warning("Controls style %s", self.how)
             return
         if style != QUICK_CONTROLS_STYLES[0]:
             log.info("%s is not installed; using %s", QUICK_CONTROLS_STYLES[0], style)
+        self.controls_style = style
         binding = _quick_style_binding()
         if binding is not None:
             binding.setStyle(style)
+            self.how = "QQuickStyle.setStyle()"
             return
         os.environ["QT_QUICK_CONTROLS_STYLE"] = style
+        self.how = f"QT_QUICK_CONTROLS_STYLE (no {QUICK_CONTROLS_BINDING} binding)"
         self._fallback = True
         self.qt_args, argument_style = _split_style_argument(self.qt_args)
         self._hidden_override = os.environ.pop("QT_STYLE_OVERRIDE", None)
         self._widget_style = argument_style or self._hidden_override or None
+
+    def describe(self) -> str:
+        """Explain the style decision for blueferry-qt --diagnose-style."""
+        widget = (
+            f"{self._widget_style} (applied after QApplication)"
+            if self._widget_style
+            else "left to Qt (-style, QT_STYLE_OVERRIDE, platform theme)"
+        )
+        lines = [
+            f"Controls style: {self.controls_style or 'Qt default'}",
+            f"Chosen through: {self.how}",
+            f"Widget style:   {widget}",
+            "QML import paths searched:",
+            *(f"  {path}" for path in _qml_import_paths()),
+        ]
+        return "\n".join(lines)
 
     def application_created(self, application: QApplication) -> None:
         """Restore QT_STYLE_OVERRIDE and apply the user's widget style."""
@@ -267,7 +288,11 @@ def _create_system_tray(
 def main() -> int:
     parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     parser.add_argument("--message", default="")
+    parser.add_argument("--diagnose-style", action="store_true")
     args, qt_args = parser.parse_known_args(sys.argv[1:])
+    if args.diagnose_style:
+        print(_select_quick_controls_style(qt_args).describe())
+        return 0
     wayland_token = os.environ.pop("XDG_ACTIVATION_TOKEN", "")
     token = wayland_token or os.environ.get("DESKTOP_STARTUP_ID", "")
     quick_style = _select_quick_controls_style(qt_args)
