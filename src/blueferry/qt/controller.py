@@ -97,6 +97,9 @@ class BridgeController(QObject):
         # Optional HFP calls (Calls1); empty unless the backend enables them.
         self._phone_calls: list[dict] = []
         self._calls_state = "disabled"
+        # (calls_enabled, calls_state) of the last status that refreshed the
+        # call list. Calls themselves are announced by CallsChanged.
+        self._calls_status_key: tuple[object, object] | None = None
         self._storage_unlock_attempted = False
         self._pairing_confirmation_lock = threading.Lock()
         self._pairing_confirmation: tuple[threading.Event, list[bool]] | None = None
@@ -447,8 +450,14 @@ class BridgeController(QObject):
             self._status = self._state.status.to_dict()
             self.statusChanged.emit()
             self._maybe_unlock_storage()
-            if self._status.get("calls_enabled") or self._phone_calls:
-                self.refreshCalls()
+            # StatusChanged also fires for unrelated changes (bearers,
+            # storage, phone status); only a call-state change needs a new
+            # ListCalls. Call list changes arrive through CallsChanged.
+            calls_key = (self._status.get("calls_enabled"), self._status.get("calls_state"))
+            if calls_key != self._calls_status_key:
+                self._calls_status_key = calls_key
+                if self._status.get("calls_enabled") or self._phone_calls:
+                    self.refreshCalls()
         self._update_onboarding_stage()
         self._refresh_pairing_issue_report()
         self._set_error(self._state.error)

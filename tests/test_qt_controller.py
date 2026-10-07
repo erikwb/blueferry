@@ -959,3 +959,25 @@ def test_calls_opt_in_is_forwarded_and_merged_into_status(monkeypatch):
     assert toggles == [True]
     assert controller.status["calls_enabled"] is True
     assert refreshed == [True]
+
+
+def test_status_refreshes_the_call_list_only_when_the_call_state_changes(monkeypatch):
+    controller = BridgeController(
+        backend=_Backend(), setup=object(), subscribe=False, autostart=False,
+    )
+    refreshed = []
+    monkeypatch.setattr(controller, "refreshCalls", lambda: refreshed.append(True))
+
+    def apply(**fields):
+        controller._apply_snapshot((
+            ConversationSnapshot(status=BackendStatus(daemon=True, storage_state="ready", **fields)),
+            None,
+        ))
+
+    apply(calls_enabled=True, calls_state="connecting")
+    apply(calls_enabled=True, calls_state="connecting", map=True)
+    assert refreshed == [True]
+    apply(calls_enabled=True, calls_state="ready")
+    assert refreshed == [True, True]
+    apply(calls_enabled=False)
+    assert len(refreshed) == 2  # nothing listed, nothing to clear
