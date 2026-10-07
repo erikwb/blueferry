@@ -3479,3 +3479,93 @@ def test_tether_automatic_choice_and_disable_keep_each_other(qml_engine) -> None
     _click(section.findChild(QObject, "tetherEnableCheckBox"))
     assert bridge.settings[-1] == (False, True)
     section.deleteLater()
+
+
+def _quickshell_tether_page(qml_engine, quickshell_setup, tether: dict, *, daemon=True):
+    theme_component = _component(qml_engine, "data/quickshell/ThemePalette.qml")
+    theme = theme_component.create()
+    component = _component(qml_engine, "data/quickshell/PhoneSettingsPage.qml")
+    page = component.createWithInitialProperties({
+        "ferryTheme": theme, "setup": quickshell_setup,
+        "status": {"storage_policy": "encrypted", "contacts_only_notifications": False,
+                   **({"map": True} if daemon else {})},
+        "tether": tether, "width": 640, "height": 1400,
+    })
+    assert page is not None, "\n".join(error.toString() for error in component.errors())
+    quickshell_setup.setProperty("configured", True)
+    calls: list = []
+    page.operationRequested.connect(
+        lambda method, args: calls.append((method, args.toVariant()))
+    )
+    _tether_components.extend([theme_component, component])
+    return page, theme, calls
+
+
+def _qs_click(item) -> None:
+    item.setProperty("checked", not item.property("checked"))
+    QMetaObject.invokeMethod(item, "clicked")
+    QGuiApplication.processEvents()
+
+
+def test_quickshell_tether_section_is_hidden_without_tether1(qml_engine, quickshell_setup):
+    page, theme, _calls = _quickshell_tether_page(
+        qml_engine, quickshell_setup, {"available": False},
+    )
+    assert page.findChild(QObject, "tetherSection").property("visible") is False
+    page.deleteLater()
+    theme.deleteLater()
+
+
+def test_quickshell_tether_controls_appear_only_once_enabled(qml_engine, quickshell_setup):
+    page, theme, calls = _quickshell_tether_page(qml_engine, quickshell_setup, {
+        "available": True, "enabled": False, "autoconnect": True, "state": "off",
+        "summary": "turned off",
+    })
+    enable = page.findChild(QObject, "tetherEnableCheckBox")
+    switch = page.findChild(QObject, "tetherSwitch")
+    automatic = page.findChild(QObject, "tetherAutoconnectCheckBox")
+    assert enable.property("checked") is False
+    assert switch.property("visible") is False
+    assert automatic.property("visible") is False
+
+    _qs_click(enable)
+    assert calls == [("tether_configure", {"enabled": True, "autoconnect": True})]
+    assert enable.property("checked") is False  # follows the daemon, not the click
+
+    page.setProperty("tether", {
+        "available": True, "enabled": True, "autoconnect": False, "state": "off",
+        "summary": "Not sharing",
+    })
+    QGuiApplication.processEvents()
+    assert enable.property("checked") is True
+    assert switch.property("visible") is True
+    assert automatic.property("visible") is True
+    assert page.findChild(QObject, "tetherSummary").property("text") == "Not sharing"
+
+    _qs_click(switch)
+    _qs_click(automatic)
+    assert calls[1:] == [
+        ("tether_connect", {}),
+        ("tether_configure", {"enabled": True, "autoconnect": True}),
+    ]
+    assert switch.property("checked") is False
+
+    page.setProperty("tether", {
+        "available": True, "enabled": True, "state": "connecting", "summary": "",
+    })
+    QGuiApplication.processEvents()
+    assert switch.property("enabled") is False
+    page.deleteLater()
+    theme.deleteLater()
+
+
+def test_quickshell_tether_controls_need_a_reachable_daemon(qml_engine, quickshell_setup):
+    page, theme, _calls = _quickshell_tether_page(
+        qml_engine, quickshell_setup,
+        {"available": True, "enabled": True, "state": "off", "summary": ""},
+        daemon=False,
+    )
+    for name in ("tetherEnableCheckBox", "tetherSwitch", "tetherAutoconnectCheckBox"):
+        assert page.findChild(QObject, name).property("enabled") is False, name
+    page.deleteLater()
+    theme.deleteLater()

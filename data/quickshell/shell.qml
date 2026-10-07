@@ -45,6 +45,9 @@ ShellRoot {
   readonly property SavedChoice callsChoice: SavedChoice {}
   readonly property SavedChoice callHistory: SavedChoice {}
   readonly property SavedChoice missedCallPopups: SavedChoice {}
+  property var tether: ({available: false})
+  property bool tetherBusy: false
+  property bool tetherUnsupported: false
   property bool storagePolicyBusy: false
   property bool storageUnlockBusy: false
 
@@ -75,6 +78,9 @@ ShellRoot {
       statusBusy = true
       backendBridge.request("status", {})
     }
+    // A daemon that answered without Tether1 is not asked again on every
+    // reload; TetherChanged covers updates from one that has it.
+    if (!tetherUnsupported) backendBridge.requestLatest("tether_state", {})
   }
 
   function searchContacts(query) {
@@ -343,6 +349,12 @@ ShellRoot {
             ? result.calls_enabled === true : root.callsChoice.value,
           root.statusBusy)
         root.reload()
+      } else if (method.indexOf("tether_") === 0) {
+        if (method !== "tether_state") root.tetherBusy = false
+        if (typeof result === "object" && result !== null) {
+          root.tether = result
+          root.tetherUnsupported = result.available === false
+        }
       } else if (method === "set_storage_policy") {
         root.storagePolicyBusy = false
         if (typeof result === "object" && result !== null) {
@@ -422,6 +434,14 @@ ShellRoot {
         root.callsChoice.failed(root.backendStatus.calls_enabled === true)
         root.errorText = message || "Could not save phone calls preference"
         root.reload()
+      } else if (method.indexOf("tether_") === 0) {
+        // A failed read keeps the last known state; a refused command
+        // reports why and refetches the daemon's view.
+        if (method !== "tether_state") {
+          root.tetherBusy = false
+          root.errorText = message || "Bluetooth tethering request failed"
+          backendBridge.requestLatest("tether_state", {})
+        }
       } else if (method === "set_storage_policy") {
         root.storagePolicyBusy = false
         root.errorText = message
@@ -464,6 +484,7 @@ ShellRoot {
       else if (name === "history-changed" || name === "status-changed") root.reload()
       else if (name === "host" && data && typeof data.bluetooth_restart_command === "string")
         root.bluetoothRestartCommand = data.bluetooth_restart_command
+      else if (name === "tether-changed") backendBridge.requestLatest("tether_state", {})
     }
   }
 
@@ -1088,6 +1109,7 @@ ShellRoot {
             call_history_enabled: root.callHistory.value,
             missed_call_notifications: root.missedCallPopups.value
           })
+          tether: root.tether
           busy: ({notifications: root.notificationPolicyBusy,
                   contactsOnly: root.contactsOnlyNotificationsBusy,
                   ancsActions: root.ancsActionsBusy,
@@ -1096,6 +1118,7 @@ ShellRoot {
                   proximityLock: root.proximityLock.busy,
                   calls: root.callsChoice.busy,
                   callHistory: root.callHistory.busy || root.missedCallPopups.busy,
+                  tether: root.tetherBusy,
                   storage: root.storagePolicyBusy})
           visible: root.phoneSettingsVisible
           Layout.fillWidth: true
@@ -1118,6 +1141,10 @@ ShellRoot {
             if (method === "set_call_history") {
               root.callHistory.request(args.enabled)
               root.missedCallPopups.request(args.missed_call_notifications)
+            }
+            if (method.indexOf("tether_") === 0) {
+              if (root.tetherBusy) return
+              root.tetherBusy = true
             }
             if (method === "set_storage_policy") {
               if (args.policy === "encrypted") root.storageUnlockAttempted = true
