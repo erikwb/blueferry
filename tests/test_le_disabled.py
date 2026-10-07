@@ -256,3 +256,84 @@ def test_pairing_outcome_omits_reason_for_unclassified_errors():
     )
 
     assert "reason" not in outcome
+
+
+def _fake_systemctl(monkeypatch, *, returncode: int = 0, stderr: str = "") -> list:
+    from blueferry import bluez_setup
+
+    calls: list = []
+    monkeypatch.setattr(bluez_setup.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(bluez_setup.os.path, "isfile", lambda _path: True)
+    monkeypatch.setattr(bluez_setup.os, "access", lambda _path, _mode: True)
+
+    def run(args, **kwargs):
+        calls.append((args, kwargs))
+        result = _Result("", returncode)
+        result.stderr = stderr
+        return result
+
+    monkeypatch.setattr(bluez_setup, "run_command", run)
+    return calls
+
+
+def test_enable_le_starts_only_the_packaged_unit(monkeypatch):
+    from blueferry import bluez_setup
+
+    calls = _fake_systemctl(monkeypatch)
+
+    bluez_setup.enable_le("hci7")
+
+    assert calls[0][0] == [
+        "/usr/bin/systemctl", "start", "blueferry-btmgmt-le-on@7.service",
+    ]
+    assert calls[0][1]["timeout"] == 120
+
+
+@pytest.mark.parametrize(
+    ("stderr", "expected"),
+    [
+        ("Interactive authentication required.", "sudo btmgmt --index 7 le on"),
+        (
+            "Unit blueferry-btmgmt-le-on@7.service not found.",
+            "Bluetooth LE service is not installed",
+        ),
+        ("Failed to start unit.", "ControllerMode = dual"),
+    ],
+)
+def test_enable_le_failures_point_at_a_manual_fix(monkeypatch, stderr, expected):
+    from blueferry import bluez_setup
+
+    _fake_systemctl(monkeypatch, returncode=1, stderr=stderr)
+
+    with pytest.raises(pair_setup.PairingError, match=expected.replace(".", r"\.")):
+        bluez_setup.enable_le("hci7")
+
+
+def test_enable_le_rejects_an_invalid_adapter_without_running_anything(monkeypatch):
+    from blueferry import bluez_setup
+
+    calls = _fake_systemctl(monkeypatch)
+
+    with pytest.raises(pair_setup.PairingError):
+        bluez_setup.enable_le("hci0; reboot")
+    assert calls == []
+
+
+@pytest.mark.parametrize("le_after", [True, False])
+def test_enable_controller_le_verifies_current_settings(monkeypatch, le_after):
+    from blueferry import bluez_setup
+
+    enabled: list[str] = []
+    monkeypatch.setattr(bluez_setup, "enable_le", enabled.append)
+    current = "powered ssp br/edr secure-conn" + (" le" if le_after else "")
+    _fake_controller(monkeypatch, supported=_SUPPORTED_WITH_LE, current=current)
+
+    if le_after:
+        status = pair_setup.enable_controller_le("hci0")
+        assert status["le_enabled"] is True
+        assert status["le_disabled"] is False
+    else:
+        with pytest.raises(pair_setup.PairingError, match="still switched off") as caught:
+            pair_setup.enable_controller_le("hci0")
+        assert caught.value.reason == "le_disabled"
+    assert enabled == ["hci0"]
