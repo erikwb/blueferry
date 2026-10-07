@@ -935,6 +935,21 @@ def test_stopping_mid_sync_abandons_the_chain_and_keeps_nothing(harness) -> None
     assert _stored_rows() == 0
 
 
+def test_a_store_that_lands_after_opt_out_is_erased(harness) -> None:
+    harness.phone.calls = [_call(OUTGOING, 1)]
+    harness.sync.sync()
+    while len(harness.phone.listings) < 3:
+        operation, handlers = harness.jobs.pop(0)
+        handlers["on_success"](operation())
+    store, handlers = harness.jobs.pop(0)  # already handed to the worker
+
+    harness.sync.disable()
+    handlers["on_success"](store())
+
+    assert _stored_rows() == 0
+    assert harness.sync.records() == []
+
+
 # ---- repository write minimization -----------------------------------------
 
 def _row_state():

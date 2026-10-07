@@ -5,7 +5,13 @@ from pathlib import Path
 from xml.etree import ElementTree
 
 from blueferry.dbus_service import MessagesService
-from blueferry.protocol import EVENTS_IFACE, MESSAGES_IFACE, OBJECT_PATH, PRESENCE_IFACE
+from blueferry.protocol import (
+    CALL_HISTORY_IFACE,
+    EVENTS_IFACE,
+    MESSAGES_IFACE,
+    OBJECT_PATH,
+    PRESENCE_IFACE,
+)
 
 CONTRACT = Path(__file__).resolve().parents[1] / "data/io.weirdware.BlueFerry.xml"
 
@@ -39,10 +45,11 @@ def test_contract_matches_exported_methods_and_signals() -> None:
     assert node.attrib["name"] == OBJECT_PATH
     assert {
         interface.attrib["name"] for interface in node.findall("interface")
-    } == {MESSAGES_IFACE, EVENTS_IFACE, PRESENCE_IFACE}
+    } == {MESSAGES_IFACE, EVENTS_IFACE, PRESENCE_IFACE, CALL_HISTORY_IFACE}
 
     _check_methods(node, MESSAGES_IFACE)
     _check_methods(node, PRESENCE_IFACE)
+    _check_methods(node, CALL_HISTORY_IFACE)
 
     events = node.find(f"interface[@name='{EVENTS_IFACE}']")
     assert events is not None

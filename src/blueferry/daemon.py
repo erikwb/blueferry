@@ -34,6 +34,8 @@ from blueferry.call_history import (
     display_caller,
     resolve_contact_name,
 )
+from blueferry.call_history_repository import clear_call_history
+from blueferry.call_history_settings import CallHistorySettings
 from blueferry.call_history_sync import CallHistorySync
 from blueferry.confirmed_groups import ConfirmedGroupsStore
 from blueferry.connectivity import Connectivity
@@ -180,16 +182,11 @@ class Daemon:
             submit=lambda *args, **kwargs: self.obex_worker.submit(*args, **kwargs),
             on_refreshed=self._contacts_refreshed,
         )
-        # Opt-in: without the flag nothing is pulled, stored, or scheduled.
+        # Opt-in: until the user turns it on nothing is pulled, stored, or
+        # scheduled, and no CallHistorySync exists.
+        self.call_history_settings = CallHistorySettings(log_overrides=True)
         self.call_history: CallHistorySync | None = (
-            CallHistorySync(
-                sessions=self.sessions,
-                storage=self.storage,
-                submit=lambda *args, **kwargs: self.obex_worker.submit(*args, **kwargs),
-                on_changed=self._call_history_changed,
-                on_missed=self._missed_calls,
-            )
-            if config.CALL_HISTORY_ENABLED else None
+            self._new_call_history() if self.call_history_settings.enabled else None
         )
         self._bus_name = None
         self._dbus_service: MessagesService | None = None
@@ -376,7 +373,8 @@ class Daemon:
                 on_storage_prepared=self._apply_storage_preparation,
                 on_storage_changed=self._on_storage_changed,
                 set_proximity_lock=self._set_proximity_lock,
-                call_history=self.call_history,
+                call_history=lambda: self.call_history,
+                set_call_history=self._set_call_history,
             ),
         )
         self.events.set_dbus_service(self._dbus_service)
@@ -813,13 +811,48 @@ class Daemon:
             f"ancs {activity}", full=activity != "missed",
         )
 
+    def _new_call_history(self) -> CallHistorySync:
+        return CallHistorySync(
+            sessions=self.sessions,
+            storage=self.storage,
+            submit=lambda *args, **kwargs: self.obex_worker.submit(*args, **kwargs),
+            on_changed=self._call_history_changed,
+            on_missed=self._missed_calls,
+        )
+
+    def _set_call_history(self, enabled: bool, missed_call_notifications: bool) -> dict:
+        """Apply the user's opt-in at once; opting out erases retained calls."""
+        self.call_history_settings.set(enabled, missed_call_notifications)
+        if enabled and self.call_history is None:
+            self.call_history = self._new_call_history()
+            log.info("call history enabled")
+            # Starts the poll and a prompt first (silent, seeding) sync when
+            # PBAP is already connected; otherwise PBAP's arrival does.
+            self.call_history.profiles_available()
+        elif not enabled and self.call_history is not None:
+            history, self.call_history = self.call_history, None
+            history.disable()
+            clear_call_history()
+            log.info("call history disabled; retained calls erased")
+            self._call_history_changed()
+        self._emit_status()
+        return self._call_history_status()
+
+    def _call_history_status(self) -> dict:
+        return {
+            "call_history_enabled": self.call_history is not None,
+            "missed_call_notifications": (
+                self.call_history_settings.missed_call_notifications
+            ),
+        }
+
     def _call_history_changed(self) -> None:
         if self._dbus_service is not None:
             self._dbus_service.emit_call_history_changed()
 
     def _missed_calls(self, records: list[CallRecord]) -> None:
         """GLib-side: resolve callers against the contact cache and notify."""
-        if not config.MISSED_CALL_NOTIFICATIONS:
+        if not self.call_history_settings.missed_call_notifications:
             return
         notices = []
         for record in records:
@@ -850,10 +883,8 @@ class Daemon:
             "events": history_count(storage=self.storage),
             "verified_iphone_setup": list(self.setup_verification.verified),
             "history_retention_days": config.HISTORY_RETENTION_DAYS,
-            "call_history_enabled": self.call_history is not None,
-            "missed_call_notifications": bool(
-                self.call_history is not None and config.MISSED_CALL_NOTIFICATIONS
-            ),
+            # Always present: clients show the opt-in checkbox from these.
+            **self._call_history_status(),
             "notification_timeout_ms": config.NOTIFICATION_TIMEOUT_MS,
             "notification_policy": self.notification_policy.value,
             "contacts_only_notifications": (

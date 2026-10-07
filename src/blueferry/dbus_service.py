@@ -23,6 +23,7 @@ from blueferry.errors import (
 from blueferry.limits import MAX_DBUS_JSON_BYTES
 from blueferry.protocol import (
     BUS_NAME,
+    CALL_HISTORY_IFACE,
     ERROR_PREFIX,
     EVENTS_IFACE,
     OBJECT_PATH,
@@ -437,7 +438,7 @@ class MessagesService(dbus.service.Object):
         )
 
     @dbus.service.method(
-        IFACE, in_signature="u", out_signature="s", sender_keyword="sender"
+        CALL_HISTORY_IFACE, in_signature="u", out_signature="s", sender_keyword="sender"
     )
     def ListCallHistory(self, limit: int, sender=None) -> str:
         """Retained iPhone call history, newest first (opt-in feature)."""
@@ -447,7 +448,7 @@ class MessagesService(dbus.service.Object):
         ))
 
     @dbus.service.method(
-        IFACE, in_signature="", out_signature="u",
+        CALL_HISTORY_IFACE, in_signature="", out_signature="u",
         async_callbacks=("reply_handler", "error_handler"),
         sender_keyword="sender",
     )
@@ -466,6 +467,20 @@ class MessagesService(dbus.service.Object):
             ),
             error_handler,
         )
+
+    @dbus.service.method(
+        CALL_HISTORY_IFACE, in_signature="bb", out_signature="s", sender_keyword="sender"
+    )
+    def SetCallHistory(
+        self, enabled: bool, missed_call_notifications: bool, sender=None,
+    ) -> str:
+        """Opt in or out of call history; off erases the retained calls."""
+        return self._sync(lambda: self._authorized(
+            sender, "settings",
+            lambda: self._json_response(self.operations.set_call_history(
+                bool(enabled), bool(missed_call_notifications),
+            )),
+        ))
 
     @dbus.service.method(
         IFACE, in_signature="", out_signature="b", sender_keyword="sender"

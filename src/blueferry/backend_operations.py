@@ -191,8 +191,10 @@ class BackendDependencies:
     on_storage_prepared: Callable[[Any], None] | None = None
     on_storage_changed: Callable[[], None] | None = None
     set_proximity_lock: Callable[[bool, int], dict[str, Any]] | None = None
-    # Present only when BLUEFERRY_CALL_HISTORY_ENABLED is set.
-    call_history: CallHistory | None = None
+    # Returns the live call-history component, or None while the user has not
+    # opted in. A callable because the opt-in can change at runtime.
+    call_history: Callable[[], CallHistory | None] | None = None
+    set_call_history: Callable[[bool, bool], dict[str, Any]] | None = None
 
 
 class BackendOperations:
@@ -711,8 +713,13 @@ class BackendOperations:
         # Erase the file even when the feature is off: it may hold calls from
         # a time when it was enabled. The next sync seeds silently again.
         clear_call_history()
-        if self.dependencies.call_history is not None:
-            self.dependencies.call_history.discard_cache()
+        history = self._current_call_history()
+        if history is not None:
+            history.discard_cache()
+
+    def _current_call_history(self) -> CallHistory | None:
+        provider = self.dependencies.call_history
+        return provider() if provider is not None else None
 
     def delete_threads(
         self, thread_keys: Sequence[object], confirmed: bool
@@ -1098,11 +1105,30 @@ class BackendOperations:
         sync(succeeded, failed)
 
     def _call_history(self) -> CallHistory:
-        if self.dependencies.call_history is None:
+        history = self._current_call_history()
+        if history is None:
             raise NotReadyError(
-                "call history is disabled; set BLUEFERRY_CALL_HISTORY_ENABLED=true"
+                "call history is off; turn it on in the iPhone settings or with "
+                "`blueferry call-history enable`"
             )
-        return self.dependencies.call_history
+        return history
+
+    def set_call_history(
+        self, enabled: bool, missed_call_notifications: bool,
+    ) -> dict[str, Any]:
+        """Opt in or out of call history; opting out erases retained calls."""
+        configure = self.dependencies.set_call_history
+        if configure is None:
+            raise NotReadyError("call history is unavailable")
+        try:
+            return dict(configure(enabled, missed_call_notifications))
+        except ValueError as error:
+            raise InvalidArgumentsError(str(error)) from error
+        except OSError as error:
+            log.error("could not save call history preference: %s", error)
+            raise NotReadyError(
+                "could not save the call history preference"
+            ) from error
 
     def list_call_history(self, limit: int) -> list[dict[str, object]]:
         """Newest-first retained calls with contact-cache names applied."""

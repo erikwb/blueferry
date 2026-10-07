@@ -180,6 +180,7 @@ class CallHistorySync:
         self._periodic_id: int | None = None
         self._initial_id: int | None = None
         self._stopped = False
+        self._erase_when_stopped = False
         self._synced = False
         # MAP gating (mirrors ContactSync; see module docstring).
         self._deferred = False
@@ -431,8 +432,9 @@ class CallHistorySync:
                 "local storage changed during call history sync"
             )
         if self._stopped:
-            # Turned off while the write ran: do not keep what it wrote.
-            clear_call_history()
+            if self._erase_when_stopped:
+                # Turned off while the write ran: do not keep what it wrote.
+                clear_call_history()
             self.discard_cache()
             raise CallHistoryStopped("call history is off")
         self._records = list(result.records)
@@ -500,6 +502,15 @@ class CallHistorySync:
         elif self._resync:
             full, self._resync, self._resync_full = self._resync_full, False, False
             self.refresh("request", full=full)
+
+    def disable(self) -> None:
+        """The user turned the feature off: stop, and erase a late write.
+
+        The caller erases the mirror itself; this only makes sure a listing
+        or store job still in flight cannot leave records behind.
+        """
+        self._erase_when_stopped = True
+        self.stop()
 
     def stop(self) -> None:
         self._stopped = True

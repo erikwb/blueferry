@@ -3,9 +3,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from blueferry import config
 from blueferry.call_history import CallRecord
 from blueferry.call_history_repository import CallHistoryRepository, clear_call_history
+from blueferry.call_history_settings import call_history_enabled
 from blueferry.confirmed_groups import ConfirmedGroupsStore
 from blueferry.contacts import ContactsResolver, clear_contact_cache
 from blueferry.group_routes import GroupRoutesStore
@@ -58,7 +58,7 @@ def prepare_storage(storage: StorageSecurity) -> PreparedStorage:
 
 def _prepare_call_history(storage: StorageSecurity) -> list[CallRecord]:
     """Apply retention to the call mirror, or erase it once the feature is off."""
-    if not config.CALL_HISTORY_ENABLED:
+    if not call_history_enabled():
         # Turning the opt-in off must not leave who-called-whom on disk.
         clear_call_history()
         return []

@@ -101,9 +101,9 @@ class _History:
 def test_disabled_feature_is_inert_and_explains_itself(storage) -> None:
     operations = BackendOperations(_Sessions(), BackendDependencies(storage=storage))
 
-    with pytest.raises(NotReadyError, match="BLUEFERRY_CALL_HISTORY_ENABLED"):
+    with pytest.raises(NotReadyError, match="call-history enable"):
         operations.list_call_history(10)
-    with pytest.raises(NotReadyError, match="disabled"):
+    with pytest.raises(NotReadyError, match="call history is off"):
         operations.sync_call_history(lambda _count: None, lambda _error: None)
     assert not config.CALLS_DB.exists()
 
@@ -118,7 +118,7 @@ def test_list_applies_contact_names_bounds_and_newest_first_order(storage) -> No
     operations = BackendOperations(_Sessions(), BackendDependencies(
         storage=storage,
         contacts=_Contacts({"15551230001": "Anna Muster", "15551230002": "Ben"}),
-        call_history=history,
+        call_history=lambda: history,
     ))
 
     listed = operations.list_call_history(0)  # clamped to at least one
@@ -143,7 +143,7 @@ def test_list_refuses_while_storage_is_locked(isolated_state) -> None:
         initialize=False,
     )
     operations = BackendOperations(_Sessions(), BackendDependencies(
-        storage=locked, call_history=_History([_call(MISSED, 1)]),
+        storage=locked, call_history=lambda: _History([_call(MISSED, 1)]),
     ))
 
     with pytest.raises(NotReadyError):
@@ -155,12 +155,12 @@ def test_manual_sync_requires_pbap_and_wraps_failures(storage) -> None:
     no_pbap = SimpleNamespace(map=object(), pbap=None, map_path="/m", report_error=print)
     with pytest.raises(NotReadyError, match="PBAP"):
         BackendOperations(no_pbap, BackendDependencies(
-            storage=storage, call_history=history,
+            storage=storage, call_history=lambda: history,
         )).sync_call_history(lambda _count: None, lambda _error: None)
 
     failures = []
     BackendOperations(_Sessions(), BackendDependencies(
-        storage=storage, call_history=history,
+        storage=storage, call_history=lambda: history,
     )).sync_call_history(lambda _count: None, failures.append)
     _success, failure = history.sync_calls[-1]
     failure(RuntimeError("transfer failed"))
@@ -173,7 +173,7 @@ def test_clear_history_erases_call_history_and_rearms_seeding(storage) -> None:
     CallHistoryRepository(storage).replace([_call(MISSED, 1)])
     history = _History([_call(MISSED, 1)])
     operations = BackendOperations(_Sessions(), BackendDependencies(
-        storage=storage, call_history=history,
+        storage=storage, call_history=lambda: history,
     ))
 
     operations.clear_history(True)
@@ -222,7 +222,8 @@ def test_daemon_without_opt_in_has_no_call_history(make_daemon, monkeypatch) -> 
     assert daemon.call_history is None
     status = daemon._status()
     assert status["call_history_enabled"] is False
-    assert status["missed_call_notifications"] is False
+    # The saved sub-preference is reported so the GUI can show it.
+    assert status["missed_call_notifications"] is True
     daemon._post_available_sessions_setup()
     assert not config.CALLS_DB.exists()
 
@@ -264,6 +265,54 @@ def test_daemon_missed_call_sub_flag_silences_popups(make_daemon, monkeypatch) -
 
     assert delivered == []
     assert daemon._status()["missed_call_notifications"] is False
+
+
+def test_opting_in_at_runtime_starts_without_a_restart(make_daemon, monkeypatch) -> None:
+    from blueferry.call_history_settings import CallHistorySettings
+
+    monkeypatch.setattr(config, "CALL_HISTORY_ENABLED", False)
+    daemon = make_daemon()
+    monkeypatch.setattr(daemon, "_controller_identity", lambda: {})
+    emitted = []
+    monkeypatch.setattr(daemon, "_emit_status", lambda: emitted.append(True))
+
+    result = daemon._set_call_history(True, False)
+
+    assert result == {"call_history_enabled": True, "missed_call_notifications": False}
+    assert daemon.call_history is not None
+    assert daemon._status()["call_history_enabled"] is True
+    assert emitted == [True]
+    saved = CallHistorySettings()
+    assert (saved.enabled, saved.missed_call_notifications) == (True, False)
+
+
+def test_opting_out_erases_retained_calls_at_once(make_daemon, monkeypatch, storage) -> None:
+    from blueferry.call_history_repository import CallHistoryRepository
+
+    monkeypatch.setattr(config, "CALL_HISTORY_ENABLED", True)
+    daemon = make_daemon()
+    monkeypatch.setattr(daemon, "_emit_status", lambda: None)
+    changed = []
+    monkeypatch.setattr(daemon, "_call_history_changed", lambda: changed.append(True))
+    CallHistoryRepository(storage).replace([_call(MISSED, 5)])
+    assert config.CALLS_DB.exists()
+    history = daemon.call_history
+
+    daemon._set_call_history(False, True)
+
+    assert daemon.call_history is None
+    assert history._stopped and history._erase_when_stopped
+    assert CallHistoryRepository(storage).load() == []
+    assert changed == [True]
+
+
+def test_a_saved_choice_wins_over_local_env(make_daemon, monkeypatch) -> None:
+    from blueferry.call_history_settings import CallHistorySettings
+
+    monkeypatch.setattr(config, "CALL_HISTORY_ENABLED", True)
+    CallHistorySettings().set(False, True)
+
+    assert make_daemon().call_history is None
 
 
 # ---- desktop sink ------------------------------------------------------------
@@ -480,9 +529,36 @@ def test_listing_resolves_double_zero_numbers_through_the_plus_form(storage) -> 
         contacts=SimpleNamespace(
             resolve=lambda raw: "Anna" if raw == "+41795550123" else None,
         ),
-        call_history=_History([record]),
+        call_history=lambda: _History([record]),
     ))
 
     [entry] = operations.list_call_history(5)
 
     assert entry["contact_name"] == "Anna"
+
+
+def test_settings_seed_from_local_env_and_reject_non_booleans(monkeypatch) -> None:
+    from blueferry.call_history_settings import CallHistorySettings, call_history_enabled
+
+    monkeypatch.setattr(config, "CALL_HISTORY_ENABLED", True)
+    monkeypatch.setattr(config, "MISSED_CALL_NOTIFICATIONS", False)
+    seeded = CallHistorySettings()
+    assert (seeded.enabled, seeded.missed_call_notifications) == (True, False)
+    assert call_history_enabled() is True
+
+    with pytest.raises(ValueError):
+        seeded.set(1, True)  # type: ignore[arg-type]
+    seeded.set(False, True)
+    assert call_history_enabled() is False
+
+
+def test_storage_preparation_follows_the_saved_opt_out(storage, monkeypatch) -> None:
+    from blueferry.call_history_repository import CallHistoryRepository
+    from blueferry.call_history_settings import CallHistorySettings
+
+    monkeypatch.setattr(config, "CALL_HISTORY_ENABLED", True)
+    CallHistoryRepository(storage).replace([_call(MISSED, 5)])
+    CallHistorySettings().set(False, True)
+
+    assert prepare_storage(storage).call_history == []
+    assert CallHistoryRepository(storage).load() == []
