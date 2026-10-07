@@ -474,7 +474,7 @@ def test_textual_explains_a_suspect_le_bond(monkeypatch) -> None:
                 app,
                 pilot,
                 "#notice-bar",
-                "pairing looks outdated",
+                "pairing may be outdated",
             )
             assert notice.has_class("warn")
             assert "sudo systemctl restart bluetooth.service" not in notice.render().plain

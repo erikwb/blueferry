@@ -19,6 +19,8 @@ from blueferry.message_links import is_safe_web_url, linkify_message
 from blueferry.models import BackendStatus, Thread, ThreadMessage
 from blueferry.recipients import participant_lines as _participant_lines
 from blueferry.ui.status_presenter import (
+    le_bond_suspect,
+    le_bond_suspect_message,
     map_connection_refused,
     map_connection_refused_message,
 )
@@ -133,6 +135,9 @@ class ConversationsPage(Gtk.Box):
         )
         self._map_refused_banner.set_revealed(False)
         self.append(self._map_refused_banner)
+        self._le_bond_banner = Adw.Banner(title=le_bond_suspect_message())
+        self._le_bond_banner.set_revealed(False)
+        self.append(self._le_bond_banner)
 
         # ---- left: thread list ----------------------------------------
         self._thread_list = Gtk.ListBox(css_classes=["navigation-sidebar"])
@@ -430,15 +435,16 @@ class ConversationsPage(Gtk.Box):
     def _apply_status(self, status: BackendStatus) -> bool:
         self._state.apply_snapshot(ConversationSnapshot(status, None))
         self._update_backend_error_banner()
-        self._map_refused_banner.set_revealed(
-            map_connection_refused(status.to_dict())
-        )
+        values = status.to_dict()
+        self._map_refused_banner.set_revealed(map_connection_refused(values))
+        self._le_bond_banner.set_revealed(le_bond_suspect(values))
         return False
 
     def _status_failed(self, message: str) -> bool:
         self._state.apply_snapshot(ConversationSnapshot(status_error=message))
         self._update_backend_error_banner()
         self._map_refused_banner.set_revealed(False)
+        self._le_bond_banner.set_revealed(False)
         return False
 
     def _on_status_invalidated(self, _client) -> None:

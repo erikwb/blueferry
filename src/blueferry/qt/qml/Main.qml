@@ -434,7 +434,7 @@ Kirigami.ApplicationWindow {
                     objectName: "leBondSuspectMessage"
                     Layout.fillWidth: true
                     visible: root.leBondSuspect()
-                    text: qsTr("iPhone notifications can't connect because the Bluetooth pairing looks outdated. On the iPhone, open Settings > Bluetooth and forget this computer; then forget the iPhone here and pair again.")
+                    text: qsTr("iPhone notifications keep failing to connect; the Bluetooth pairing may be outdated. On the iPhone, open Settings > Bluetooth and forget this computer; then forget the iPhone here and pair again.")
                     type: Kirigami.MessageType.Warning
                     position: Kirigami.InlineMessage.Position.Header
                     actions: [

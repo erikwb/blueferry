@@ -483,6 +483,27 @@ ShellRoot {
           }
         }
 
+        Rectangle {
+          objectName: "leBondSuspectBanner"
+          Layout.fillWidth: true
+          implicitHeight: leBondSuspectLabel.implicitHeight + theme.scaled(16)
+          visible: !root.phoneSettingsVisible && onboarding.leBondSuspect()
+          color: Qt.rgba(theme.warning.r, theme.warning.g, theme.warning.b, 0.14)
+          border.color: theme.warning
+          radius: theme.controlRadius
+
+          FerryLabel {
+            ferryTheme: theme
+            id: leBondSuspectLabel
+            anchors.fill: parent
+            anchors.margins: theme.scaled(8)
+            text: "iPhone notifications keep failing to connect; the Bluetooth pairing may be outdated. Forget this computer on the iPhone, remove the iPhone here, and pair again. Details: blueferry doctor"
+            textFormat: Text.PlainText
+            color: theme.windowText
+            wrapMode: Text.Wrap
+          }
+        }
+
         SplitView {
           visible: !root.phoneSettingsVisible
           Layout.fillWidth: true

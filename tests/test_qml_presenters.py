@@ -124,6 +124,28 @@ def test_quickshell_onboarding_state_derives_ready_stage(qml_engine) -> None:
     presenter.deleteLater()
 
 
+def test_quickshell_reports_a_suspect_le_bond(qml_engine) -> None:
+    component = _component(qml_engine, "data/quickshell/OnboardingState.qml")
+    presenter = component.createWithInitialProperties({
+        "notificationsSupported": True,
+        "bluezActive": True,
+        "configured": True,
+        "backendStatus": {"daemon": True, "le_bond_suspect": True},
+    })
+    assert presenter is not None
+    qml_engine.globalObject().setProperty(
+        "testOnboarding", qml_engine.newQObject(presenter)
+    )
+    assert _evaluate(qml_engine, "testOnboarding.leBondSuspect()") is True
+    presenter.setProperty("backendStatus", {"daemon": True, "le_bond_suspect": "yes"})
+    assert _evaluate(qml_engine, "testOnboarding.leBondSuspect()") is False
+    presenter.setProperty("backendStatus", {"daemon": True})
+    assert _evaluate(qml_engine, "testOnboarding.leBondSuspect()") is False
+    shell = (ROOT / "data/quickshell/shell.qml").read_text()
+    assert "onboarding.leBondSuspect()" in shell
+    presenter.deleteLater()
+
+
 def test_quickshell_unverified_controller_still_reaches_device_selection(
     qml_engine,
 ) -> None:

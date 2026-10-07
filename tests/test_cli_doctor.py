@@ -79,7 +79,7 @@ def test_doctor_reports_a_healthy_le_link_and_sanitizes_status(monkeypatch, capl
 
     assert result.exit_code == 0
     assert "All checks passed." in result.output
-    assert "no stale-bond pattern (2 short drops" in caplog.text
+    assert "no stale-bond pattern (2 recent short drops" in caplog.text
     assert "dev_02" not in caplog.text
 
 

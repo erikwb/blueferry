@@ -448,15 +448,15 @@ def _doctor_le_bond(log: logging.Logger) -> bool:
     if not findings["le_bond_suspect"]:
         log.info(
             "iPhone LE link: no stale-bond pattern "
-            "(%d short drops since it was last usable, last reason: %s)",
+            "(%d recent short drops, last reason: %s)",
             findings["le_flap_count"],
             reason,
         )
         return True
     log.warning(
-        "iPhone LE bond looks stale: the LE link dropped %d times without "
-        "becoming usable (last reason: %s). iPhone notifications (ANCS) "
-        "cannot work until you pair again.",
+        "iPhone LE pairing may be stale: the LE link dropped %d times within "
+        "seconds while Classic stayed connected (last reason: %s). If iPhone "
+        "notifications (ANCS) never connect, pairing again may help.",
         findings["le_flap_count"],
         reason,
     )
