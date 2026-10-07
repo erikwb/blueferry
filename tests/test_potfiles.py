@@ -6,8 +6,12 @@ future translation template, so this is enforced instead of remembered.
 from __future__ import annotations
 
 import ast
+import os
 import posixpath
 import re
+import shutil
+import subprocess
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
@@ -35,6 +39,13 @@ _QML_STRING_OR_COMMENT_RE = re.compile(
     """,
     re.DOTALL | re.VERBOSE,
 )
+
+
+# The quality workflow installs xgettext and lupdate and sets this, so a CI
+# image without them fails instead of skipping the extraction tests.
+REQUIRE_TOOLS = os.environ.get("BLUEFERRY_REQUIRE_TRANSLATION_TOOLS") == "1"
+# lupdate lives outside PATH on most distributions.
+_QT_TOOL_DIRS = ("/usr/lib/qt6/bin", "/usr/lib64/qt6/bin")
 
 
 def _listed() -> list[str]:
@@ -278,3 +289,58 @@ def test_qml_marker_detection(tmp_path, source: str, expected: bool) -> None:
     path.write_text(source, encoding="utf-8")
 
     assert _qml_translatable(path) is expected
+
+
+def _tool(*names: str) -> str:
+    for name in names:
+        found = shutil.which(name) or shutil.which(name, path=os.pathsep.join(_QT_TOOL_DIRS))
+        if found:
+            return found
+    if REQUIRE_TOOLS:
+        pytest.fail(f"{names[0]} is required but not installed")
+    pytest.skip(f"{names[0]} is not installed")
+
+
+def _listed_with_suffix(suffix: str) -> list[str]:
+    return [entry for entry in _listed() if entry.endswith(suffix)]
+
+
+def test_xgettext_extracts_messages_from_every_listed_python_source(tmp_path) -> None:
+    # The same invocation po/README.md documents. Every listed module must
+    # contribute at least one message, which also proves the helpers it uses
+    # are ones xgettext understands as keywords.
+    xgettext = _tool("xgettext")
+    listed = _listed_with_suffix(".py")
+    pot = tmp_path / "blueferry.pot"
+    subprocess.run(
+        [xgettext, "--files-from=-", "--language=Python", "--from-code=UTF-8",
+         "--keyword=_", "--keyword=ngettext:1,2", "--no-wrap", f"--output={pot}"],
+        input="\n".join(listed) + "\n", text=True, cwd=ROOT, check=True,
+        capture_output=True,
+    )
+    extracted = {
+        reference.rsplit(":", 1)[0]
+        for line in pot.read_text(encoding="utf-8").splitlines()
+        if line.startswith("#: ")
+        for reference in line[3:].split()
+    }
+
+    assert sorted(set(listed) - extracted) == [], "listed but xgettext extracts nothing"
+
+
+def test_lupdate_extracts_messages_from_every_listed_qml_source(tmp_path) -> None:
+    lupdate = _tool("lupdate", "lupdate6", "lupdate-qt6")
+    listed = _listed_with_suffix(".qml")
+    ts = tmp_path / "blueferry_xx.ts"
+    subprocess.run(
+        [lupdate, *listed, "-ts", str(ts)],
+        cwd=ROOT, check=True, capture_output=True, text=True,
+    )
+    extracted = {
+        # lupdate records locations relative to the .ts file.
+        (ts.parent.resolve() / location.attrib["filename"]).resolve().relative_to(ROOT).as_posix()
+        for location in ET.parse(ts).iter("location")
+        if "filename" in location.attrib
+    }
+
+    assert sorted(set(listed) - extracted) == [], "listed but lupdate extracts nothing"
