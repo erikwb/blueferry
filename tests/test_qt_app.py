@@ -98,6 +98,33 @@ def test_user_quick_controls_style_is_preserved(monkeypatch, quick_style_binding
     assert quick_style_binding == []
 
 
+def test_missing_binding_falls_back_quietly(caplog, no_quick_style_binding):
+    with caplog.at_level("DEBUG", logger=app_module.__name__):
+        assert app_module._quick_style_binding() is None
+    assert caplog.records == []
+
+
+@pytest.mark.parametrize("error", [
+    ImportError("libQt6QuickControls2.so.6: undefined symbol"),
+    ModuleNotFoundError("No module named 'shiboken6'", name="shiboken6"),
+])
+def test_broken_binding_is_logged_before_falling_back(monkeypatch, caplog, error):
+    import builtins
+
+    real_import = builtins.__import__
+
+    def failing_import(name, *args, **kwargs):
+        if name == "PySide6.QtQuickControls2":
+            raise error
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.delitem(sys.modules, "PySide6.QtQuickControls2", raising=False)
+    monkeypatch.setattr(builtins, "__import__", failing_import)
+    with caplog.at_level("WARNING", logger=app_module.__name__):
+        assert app_module._quick_style_binding() is None
+    assert [record.exc_info[1] for record in caplog.records] == [error]
+
+
 class _Signal:
     def __init__(self) -> None:
         self.callback = None

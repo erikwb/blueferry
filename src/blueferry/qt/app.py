@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import signal
 import sys
@@ -22,6 +23,31 @@ TRANSLATION_DIR = os.environ.get(
         "BLUEFERRY_QT_LOCALE_DIR", "/usr/share/blueferry/translations"
         )
 DEFAULT_QUICK_CONTROLS_STYLE = "org.kde.desktop"
+QUICK_CONTROLS_BINDING = "PySide6.QtQuickControls2"
+
+log = logging.getLogger(__name__)
+
+
+def _quick_style_binding():
+    """Return QQuickStyle, or None where PySide6 lacks the binding.
+
+    Only a missing binding is expected. A binding that is installed but
+    fails to load is logged so the fallback does not hide the breakage.
+    """
+    try:
+        from PySide6.QtQuickControls2 import QQuickStyle
+    except ImportError as error:
+        missing = (
+            isinstance(error, ModuleNotFoundError)
+            and error.name == QUICK_CONTROLS_BINDING
+        )
+        if not missing:
+            log.warning(
+                "%s could not be imported; using the environment fallback",
+                QUICK_CONTROLS_BINDING, exc_info=True,
+            )
+        return None
+    return QQuickStyle
 
 
 def _select_quick_controls_style() -> None:
@@ -37,12 +63,11 @@ def _select_quick_controls_style() -> None:
     """
     if os.environ.get("QT_QUICK_CONTROLS_STYLE"):
         return
-    try:
-        from PySide6.QtQuickControls2 import QQuickStyle
-    except ImportError:
+    binding = _quick_style_binding()
+    if binding is None:
         os.environ["QT_QUICK_CONTROLS_STYLE"] = DEFAULT_QUICK_CONTROLS_STYLE
     else:
-        QQuickStyle.setStyle(DEFAULT_QUICK_CONTROLS_STYLE)
+        binding.setStyle(DEFAULT_QUICK_CONTROLS_STYLE)
 
 
 def _install_translation(application: QGuiApplication) -> None:
