@@ -27,6 +27,9 @@ class AncsEvent:
     # They are presentation strings, never retained or put on D-Bus.
     positive_action_label: str = ""
     negative_action_label: str = ""
+    # Opaque, content-free id of the offer above. A desktop click must hand
+    # it back so a reused UID can never inherit an older popup's buttons.
+    action_token: int = 0
 
     seen_at: datetime = field(
         default_factory=lambda: datetime.now(timezone.utc)
