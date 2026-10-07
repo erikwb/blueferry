@@ -250,6 +250,7 @@ def test_close_cancels_pending_invalidation() -> None:
 
 def test_media_is_off_by_default_and_creates_no_ble_client(make_daemon) -> None:
     assert daemon_mod.config.MEDIA_CONTROL_ENABLED is False
+    assert daemon_mod.config.MEDIA_MPRIS_ENABLED is False
     instance = make_daemon()
     assert instance.media is None
 
@@ -257,6 +258,7 @@ def test_media_is_off_by_default_and_creates_no_ble_client(make_daemon) -> None:
     instance._observe_le_state(True)
 
     assert instance.ams is None
+    assert instance.mpris is None
 
 
 def test_default_status_reports_media_disabled(make_daemon, monkeypatch) -> None:
@@ -267,6 +269,7 @@ def test_default_status_reports_media_disabled(make_daemon, monkeypatch) -> None
     status = instance._status()
     assert status["media_control_enabled"] is False
     assert status["media_control_available"] is False
+    assert status["media_mpris_enabled"] is False
 
 
 def test_compatibility_mode_never_starts_ams(make_daemon, monkeypatch) -> None:
@@ -648,3 +651,25 @@ def test_media_failure_cannot_break_le_state_propagation(make_daemon) -> None:
     instance.solicitation = SimpleNamespace(set_needed=lambda _needed: None)
     instance._observe_le_state(True)  # must not raise into the supervisor
     assert seen == [True]
+
+
+def test_mpris_set_authorizes_before_revealing_property_details() -> None:
+    from blueferry.errors import RateLimitError
+    from blueferry.mpris import MprisPlayer
+
+    class _Guard:
+        def authorize(self, _sender, action):
+            assert action == "media-command"
+            raise RateLimitError("too many requests; wait before trying again")
+
+    media, _writer, _timers = _controller()
+    player = MprisPlayer(object(), media, _Guard())  # never exported: no player yet
+    try:
+        with pytest.raises(Exception) as raised:
+            player.Set("org.mpris.MediaPlayer2.Player", "PlaybackStatus", "x", sender=":1.5")
+        assert raised.value.get_dbus_name() == "io.weirdware.BlueFerry.Error.RateLimited"
+        with pytest.raises(Exception) as raised:
+            player.Seek(1, sender=":1.5")
+        assert raised.value.get_dbus_name() == "io.weirdware.BlueFerry.Error.RateLimited"
+    finally:
+        player.close()

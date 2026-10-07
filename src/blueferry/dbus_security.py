@@ -44,7 +44,7 @@ _RULES: dict[str, tuple[RateRule, ...]] = {
     "destructive": (RateRule(6, 600),),
     "unlock": (RateRule(6, 600),),
     # iPhone media control has its own buckets so a media applet polling
-    # now-playing, or a held volume key, cannot starve message reads or sends.
+    # MPRIS, or a held volume key, cannot starve message reads or sends.
     "media-read": (RateRule(600, 60),),
     "media-command": (RateRule(60, 60), RateRule(1_200, 3_600)),
     # Optional HFP calls. Dialing is consequential (it can cost money), so it

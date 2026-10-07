@@ -12,6 +12,7 @@ import signal
 import threading
 import time
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 import dbus
 from gi.repository import GLib
@@ -90,6 +91,9 @@ from blueferry.starred_threads import StarredThreadsStore
 from blueferry.storage_preparation import PreparedStorage, prepare_storage
 from blueferry.storage_security import StorageSecurity
 from blueferry.wireplumber_policy import WirePlumberPhoneAudioPolicy
+
+if TYPE_CHECKING:
+    from blueferry.mpris import MprisPlayer
 
 log = logging.getLogger(__name__)
 
@@ -179,6 +183,7 @@ class Daemon:
         # remembers them so an opt-out can release them when that is safe.
         self.media_sessions = AmsNotifySessions()
         self.ams: AmsClient | None = None
+        self.mpris: MprisPlayer | None = None
         self.adapter_class = AdapterClassSupervisor(config.ADAPTER)
         self.solicitation = SolicitationSupervisor(config.ADAPTER)
         # The saved phone-calls opt-in decides both the call controller and
@@ -705,6 +710,18 @@ class Daemon:
         if self.media is None or self._dbus_service is None:
             return
         self.media.add_listener(self._dbus_service.emit_now_playing_changed)
+        if not config.MEDIA_MPRIS_ENABLED or self.mpris is not None:
+            return
+        from blueferry.mpris import MprisPlayer
+
+        try:
+            self.mpris = MprisPlayer(
+                self._dbus_service.connection,
+                self.media,
+                self._dbus_service.caller_guard,
+            )
+        except Exception:
+            log.warning("could not export the MPRIS player", exc_info=True)
 
     def _new_media(self) -> MediaController:
         return MediaController(
@@ -1266,6 +1283,7 @@ class Daemon:
             "storage_state": self.storage.status.state,
             "storage_detail": self.storage.status.detail,
             **self._media_status(),
+            "media_mpris_enabled": self.mpris is not None,
             **self._controller_identity(),
             **self.connectivity.snapshot(),
         }
@@ -1395,6 +1413,9 @@ class Daemon:
             self.ams.stop()
         # No StopNotify on shutdown: the closing bus connection ends them.
         self.media_sessions.close()
+        if self.mpris is not None:
+            self.mpris.close()
+            self.mpris = None
         if self.media is not None:
             self.media.close()
         self.solicitation.stop()

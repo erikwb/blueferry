@@ -1,4 +1,4 @@
-"""Media1 round trips on the isolated dbus-run-session test bus.
+"""Media1 and MPRIS round trips on the isolated dbus-run-session test bus.
 
 Nothing here reaches BlueZ: the AMS client is replaced by an inert command
 writer and now-playing updates are injected as parsed AMS values.
@@ -23,6 +23,7 @@ from blueferry.ams.parsers import EntityUpdate
 from blueferry.backend_operations import BackendDependencies
 from blueferry.dbus_service import MessagesService
 from blueferry.media import MediaController
+from blueferry.mpris import MPRIS_PATH, PLAYER_IFACE, ROOT_IFACE, MprisPlayer
 from blueferry.protocol import BUS_NAME, EVENTS_IFACE, MEDIA_IFACE, OBJECT_PATH
 
 pytestmark = pytest.mark.private_dbus
@@ -202,3 +203,141 @@ def test_set_media_control_without_backend_support_is_not_ready(service_factory)
     name, _ = service_factory(None)
     result = _call(name, OBJECT_PATH, MEDIA_IFACE, "SetMediaControl", dbus.Boolean(True))
     assert result["error"].get_dbus_name() == "io.weirdware.BlueFerry.Error.NotReady"
+
+
+# ---- MPRIS ------------------------------------------------------------------
+
+
+@pytest.fixture
+def mpris_factory():
+    created = []
+
+    def make(media):
+        bus = dbus.SessionBus()
+        guard_name = f"{BUS_NAME}.Mprisp{os.getpid()}n{next(_ids)}"
+        bus_name = dbus.service.BusName(guard_name, bus=bus, do_not_queue=True)
+        service = MessagesService(bus_name, _Sessions(), BackendDependencies(media=media))
+        player_name = f"org.mpris.MediaPlayer2.blueferry_test_{os.getpid()}_{next(_ids)}"
+        player = MprisPlayer(bus, media, service.caller_guard, clock=lambda: 10.0,
+                             bus_name=player_name)
+        created.append((bus, guard_name, service, player))
+        return bus, player_name, player
+
+    yield make
+    for bus, guard_name, service, player in created:
+        player.close()
+        service.close()
+        service.remove_from_connection()
+        bus.release_name(guard_name)
+
+
+def _exported(bus) -> bool:
+    parent, child = MPRIS_PATH.rsplit("/", 1)
+    return child in [str(name) for name in bus.list_exported_child_objects(parent)]
+
+
+def _owner(bus, name) -> bool:
+    return bool(bus.name_has_owner(name))
+
+
+def test_mpris_name_is_published_only_while_a_player_is_active(mpris_factory) -> None:
+    media, _writer = _media()
+    bus, name, player = mpris_factory(media)
+    assert not player.owned and not _owner(bus, name)
+
+    assert _exported(bus) is False
+    _play(media)
+    _dispatch_until(lambda: player.owned)
+    assert _owner(bus, name)
+    assert _exported(bus) is True
+
+    media.attach(None)
+    media.handle_availability(False)
+    _dispatch_until(lambda: not player.owned)
+    _dispatch_until(lambda: not _owner(bus, name))
+    # The object is unexported together with the name.
+    assert _exported(bus) is False
+
+
+def test_mpris_properties_and_methods(mpris_factory) -> None:
+    media, writer = _media()
+    _bus, name, player = mpris_factory(media)
+    _play(media)
+    _dispatch_until(lambda: player.owned)
+
+    root = _call(name, "/org/mpris/MediaPlayer2", dbus.PROPERTIES_IFACE, "GetAll", ROOT_IFACE)
+    assert root["value"]["Identity"] == "iPhone (BlueFerry)"
+    assert not root["value"]["CanRaise"]
+    assert root["value"]["DesktopEntry"] == "io.weirdware.BlueFerry.Qt"
+
+    props = _call(
+        name, "/org/mpris/MediaPlayer2", dbus.PROPERTIES_IFACE, "GetAll", PLAYER_IFACE,
+    )["value"]
+    assert props["PlaybackStatus"] == "Playing"
+    assert props["CanGoNext"] and props["CanPlay"] and props["CanPause"]
+    assert not props["CanSeek"]
+    assert props["Volume"] == pytest.approx(0.5)
+    assert props["Position"] == 30_000_000
+    metadata = props["Metadata"]
+    assert metadata["xesam:title"] == "Title"
+    assert list(metadata["xesam:artist"]) == ["Artist"]
+    assert metadata["xesam:album"] == "Album"
+    assert metadata["mpris:length"] == 240_000_000
+    assert str(metadata["mpris:trackid"]).startswith("/io/weirdware/BlueFerry/MediaPlayer/Track/")
+
+    assert "error" not in _call(name, "/org/mpris/MediaPlayer2", PLAYER_IFACE, "PlayPause")
+    assert "error" not in _call(name, "/org/mpris/MediaPlayer2", PLAYER_IFACE, "Next")
+    # Unsupported actions have no effect, as MPRIS requires.
+    assert "error" not in _call(name, "/org/mpris/MediaPlayer2", PLAYER_IFACE, "Play")
+    assert writer.sent == [RemoteCommandID.TogglePlayPause, RemoteCommandID.NextTrack]
+    # CanSeek is false: Seek and SetPosition must have no effect.
+    assert "error" not in _call(
+        name, "/org/mpris/MediaPlayer2", PLAYER_IFACE, "Seek", dbus.Int64(15_000_000),
+    )
+    assert "error" not in _call(
+        name, "/org/mpris/MediaPlayer2", PLAYER_IFACE, "SetPosition",
+        dbus.ObjectPath("/org/mpris/MediaPlayer2/TrackList/NoTrack"), dbus.Int64(0),
+    )
+    assert writer.sent == [RemoteCommandID.TogglePlayPause, RemoteCommandID.NextTrack]
+
+    # Relative volume: one iPhone step toward the requested level.
+    assert "error" not in _call(
+        name, "/org/mpris/MediaPlayer2", dbus.PROPERTIES_IFACE, "Set",
+        PLAYER_IFACE, "Volume", dbus.Double(0.9, variant_level=1),
+    )
+    assert writer.sent[-1] == RemoteCommandID.VolumeUp
+    read_only = _call(
+        name, "/org/mpris/MediaPlayer2", dbus.PROPERTIES_IFACE, "Set",
+        PLAYER_IFACE, "PlaybackStatus", dbus.String("Paused", variant_level=1),
+    )
+    assert read_only["error"].get_dbus_name() == "org.freedesktop.DBus.Error.PropertyReadOnly"
+
+    xml = _call(name, "/org/mpris/MediaPlayer2", dbus.INTROSPECTABLE_IFACE, "Introspect")["value"]
+    assert '<property name="Metadata" type="a{sv}" access="read"/>' in xml
+    assert '<property name="Volume" type="d" access="readwrite"/>' in xml
+    assert '<property name="Identity" type="s" access="read"/>' in xml
+
+
+def test_mpris_emits_property_changes_for_a_new_track(mpris_factory) -> None:
+    media, _writer = _media()
+    _bus, name, player = mpris_factory(media)
+    _play(media)
+    _dispatch_until(lambda: player.owned)
+    listener = dbus.SessionBus(private=True, mainloop=dbus.mainloop.glib.DBusGMainLoop())
+    changes = []
+    listener.add_signal_receiver(
+        lambda interface, changed, _invalidated: changes.append((str(interface), dict(changed))),
+        dbus_interface=dbus.PROPERTIES_IFACE, signal_name="PropertiesChanged",
+        path="/org/mpris/MediaPlayer2",
+    )
+    try:
+        # Let the AddMatch reach the bus before the change.
+        _call(name, "/org/mpris/MediaPlayer2", dbus.PROPERTIES_IFACE, "GetAll", ROOT_IFACE)
+        _play(media, title="Second")
+        _dispatch_until(lambda: changes)
+        interface, changed = changes[0]
+        assert interface == PLAYER_IFACE
+        assert changed["Metadata"]["xesam:title"] == "Second"
+        assert "Position" not in changed  # MPRIS forbids signalling Position
+    finally:
+        listener.close()

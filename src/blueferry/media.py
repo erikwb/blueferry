@@ -3,7 +3,7 @@
 ``MediaController`` owns the now-playing projection and command policy. It is
 independent of D-Bus and BlueZ: the daemon feeds it AMS updates and attaches
 the :class:`~blueferry.ams.client.AmsClient` that writes commands. Listeners
-(such as the content-free ``NowPlayingChanged`` signal)
+(the content-free ``NowPlayingChanged`` signal and the optional MPRIS player)
 receive one coalesced invalidation per burst of updates, because iOS reports a
 track change as several separate attribute notifications.
 """
