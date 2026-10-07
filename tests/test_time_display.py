@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import locale
+import subprocess
 from collections.abc import Iterator
 from datetime import datetime, timezone
 
@@ -25,25 +26,41 @@ def test_human_calendar_labels(value: str, expected: str) -> None:
     assert format_message_timestamp(value, now=NOW) == expected
 
 
-@pytest.fixture
-def german_time_locale() -> Iterator[None]:
-    # GTK and Qt call setlocale(LC_ALL, ""), so a user's LC_TIME reaches strftime.
-    previous = locale.setlocale(locale.LC_TIME)
-    for name in ("de_CH.UTF-8", "de_DE.UTF-8", "de_CH.utf8", "de_DE.utf8"):
-        try:
-            locale.setlocale(locale.LC_TIME, name)
-        except locale.Error:
-            continue
-        break
-    else:
-        pytest.skip("no German locale is installed")
+def _strftime_names_are_english() -> bool:
+    # A Thursday afternoon in March: weekday, month and AM/PM all differ in most locales.
+    return datetime(2026, 3, 19, 13, 0).strftime("%A %b %p") == "Thursday Mar PM"
+
+
+def _installed_locale_names() -> list[str]:
     try:
-        yield
+        listing = subprocess.run(
+            ["locale", "-a"], capture_output=True, text=True, check=True, timeout=30
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return listing.stdout.split()
+
+
+@pytest.fixture
+def installed_foreign_time_locale() -> Iterator[str]:
+    # GTK and Qt call setlocale(LC_ALL, ""), so a user's LC_TIME reaches strftime.
+    # Any installed locale whose strftime names are not English exposes the leak.
+    previous = locale.setlocale(locale.LC_TIME)
+    try:
+        for name in _installed_locale_names():
+            try:
+                locale.setlocale(locale.LC_TIME, name)
+            except locale.Error:
+                continue
+            if not _strftime_names_are_english():
+                yield name
+                return
+        pytest.skip("no installed locale has non-English LC_TIME names")
     finally:
         locale.setlocale(locale.LC_TIME, previous)
 
 
-@pytest.mark.usefixtures("german_time_locale")
+@pytest.mark.usefixtures("installed_foreign_time_locale")
 @pytest.mark.parametrize(
     ("value", "expected"),
     [
