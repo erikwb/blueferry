@@ -1,0 +1,20 @@
+#!/bin/sh
+set -eu
+
+if [ "$#" -ne 1 ]; then
+  echo "usage: blueferry-le-on INDEX" >&2
+  exit 64
+fi
+
+case "$1" in
+  ''|*[!0-9]*)
+    echo "Bluetooth adapter index must contain only decimal digits" >&2
+    exit 64
+    ;;
+esac
+
+# Switch on LE for the running controller only. bluetoothd re-applies
+# ControllerMode from /etc/bluetooth/main.conf when it restarts; this helper
+# deliberately does not edit that file.
+# BlueZ 5.72 requires pollable stdin even for non-interactive commands.
+: | /usr/bin/btmgmt --index "$1" le on

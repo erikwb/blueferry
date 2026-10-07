@@ -217,6 +217,37 @@ def test_native_backends_ship_the_btmgmt_system_unit_template() -> None:
     assert "%{_datadir}/polkit-1/rules.d/49-blueferry-cod.rules" in spec
 
 
+def test_native_backends_ship_the_le_on_unit_without_an_auto_allow_rule() -> None:
+    unit_name = "blueferry-btmgmt-le-on@.service"
+    unit = (ROOT / "systemd" / unit_name).read_text()
+    helper = (ROOT / "systemd/blueferry-le-on").read_text()
+    deb_rules = (ROOT / "packaging/deb/rules").read_text()
+    deb_install = (ROOT / "packaging/deb/blueferry-backend.install").read_text()
+    arch = (ROOT / "packaging/arch/PKGBUILD").read_text()
+    spec = (ROOT / "packaging/rpm/blueferry.spec").read_text()
+    rules = "".join(path.read_text() for path in (ROOT / "systemd").glob("*.rules"))
+
+    assert "Type=oneshot" in unit
+    assert "ExecStart=/usr/lib/blueferry/blueferry-le-on %i" in unit
+    assert "NoNewPrivileges=true" in unit
+    assert "CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW" in unit
+    assert "ProtectSystem=strict" in unit
+    assert "RestrictAddressFamilies=AF_BLUETOOTH" in unit
+    assert "[Install]" not in unit
+    assert "*[!0-9]*" in helper
+    assert ': | /usr/bin/btmgmt --index "$1" le on' in helper
+    assert "main.conf" in helper
+    # Switching on LE keeps systemd's default administrator authentication.
+    assert "le-on" not in rules
+    assert f"systemd/{unit_name}" in deb_rules
+    assert f"usr/lib/systemd/system/{unit_name}" in deb_install
+    assert "usr/lib/blueferry/blueferry-le-on" in deb_install
+    assert f"systemd/{unit_name}" in arch
+    assert "systemd/blueferry-le-on" in arch
+    assert f"%{{_unitdir}}/{unit_name}" in spec
+    assert "%{_prefix}/lib/blueferry/blueferry-le-on" in spec
+
+
 def test_deb_and_rpm_backend_ship_private_textual_runtime() -> None:
     control = (ROOT / "packaging/deb/control").read_text().lower()
     deb_install = (ROOT / "packaging/deb/blueferry-backend.install").read_text()
