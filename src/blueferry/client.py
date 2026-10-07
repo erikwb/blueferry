@@ -48,6 +48,20 @@ def _dbus_message(error: Exception) -> str:
     return str(error)
 
 
+def _open_map_error(error: Exception) -> BackendError:
+    # Messages1 gained click rules additively, so a backend that was not
+    # restarted after an upgrade answers UnknownMethod; say so plainly.
+    if (
+        isinstance(error, dbus.exceptions.DBusException)
+        and error.get_dbus_name() == "org.freedesktop.DBus.Error.UnknownMethod"
+    ):
+        return BackendError(
+            "the running backend does not support notification click rules; "
+            "restart it after upgrading"
+        )
+    return BackendError(_dbus_message(error))
+
+
 class CompatibilityCache:
     """Daemon unique bus names already verified as API-compatible.
 
@@ -314,7 +328,7 @@ class BackendClient:
                 timeout=POLICY_CALL_TIMEOUT_SEC
             ))
         except (dbus.exceptions.DBusException, ValueError) as error:
-            raise BackendError(_dbus_message(error)) from error
+            raise _open_map_error(error) from error
 
     def set_notification_open_target(
         self, bundle_id: str, target: str
@@ -324,7 +338,7 @@ class BackendClient:
                 bundle_id, target, timeout=POLICY_CALL_TIMEOUT_SEC
             ))
         except (dbus.exceptions.DBusException, ValueError) as error:
-            raise BackendError(_dbus_message(error)) from error
+            raise _open_map_error(error) from error
 
     def open_notification_click(self, click_id: str, token: str) -> bool:
         try:
@@ -332,7 +346,7 @@ class BackendClient:
                 click_id, token, timeout=POLICY_CALL_TIMEOUT_SEC
             ))
         except dbus.exceptions.DBusException as error:
-            raise BackendError(error.get_dbus_message() or str(error)) from error
+            raise _open_map_error(error) from error
 
     def remove_notification_open_target(self, bundle_id: str) -> bool:
         try:
@@ -340,7 +354,7 @@ class BackendClient:
                 bundle_id, timeout=POLICY_CALL_TIMEOUT_SEC
             ))
         except dbus.exceptions.DBusException as error:
-            raise BackendError(error.get_dbus_message() or str(error)) from error
+            raise _open_map_error(error) from error
 
     def storage_policy(self) -> str:
         try:

@@ -103,3 +103,34 @@ def test_missing_desktop_entry_is_saved_with_a_warning(backend, monkeypatch) -> 
     assert result.exit_code == 0
     assert "not installed" in result.output
     assert backend.rules == {"com.slack": "com.slack.Slack.desktop"}
+
+
+def test_an_unrestarted_older_backend_gets_a_plain_explanation() -> None:
+    import json
+
+    import dbus.exceptions
+
+    from blueferry.client import BackendClient, BackendError
+    from blueferry.protocol import MESSAGES_API_VERSION
+
+    class _OldBackend:
+        def GetStatus(self, timeout=None):
+            return json.dumps({"daemon": True, "api_version": MESSAGES_API_VERSION})
+
+        def __getattr__(self, name):
+            def missing(*_args, **_kwargs):
+                raise dbus.exceptions.DBusException(
+                    f"Method {name} doesn't exist",
+                    name="org.freedesktop.DBus.Error.UnknownMethod",
+                )
+            return missing
+
+    client = BackendClient(interface_factory=lambda _interface: _OldBackend())
+    for call in (
+        client.notification_open_map,
+        lambda: client.set_notification_open_target("com.slack", "slack.desktop"),
+        lambda: client.remove_notification_open_target("com.slack"),
+        lambda: client.open_notification_click("abc", ""),
+    ):
+        with pytest.raises(BackendError, match="restart it after upgrading"):
+            call()
