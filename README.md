@@ -319,8 +319,8 @@ journalctl --user -u blueferry -f | grep "ANCS app observed"
 iOS attaches actions to some notifications, such as **Accept**/**Decline** on
 an incoming call or calendar invitation, or **Clear**. With
 **All iPhone Notifications** selected, you can show them as buttons on the
-desktop popup. Turn it on with the **Show iPhone action buttons** checkbox in
-the Qt client's iPhone settings, or with
+desktop popup. Turn it on with the **Show iPhone action buttons** switch in
+the iPhone settings of the Qt, GTK or Quickshell client, or with
 `blueferry notification-actions enable`. `BLUEFERRY_ANCS_ACTIONS=true` in
 `local.env` only sets the initial value; a choice saved from a client wins.
 

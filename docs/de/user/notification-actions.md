@@ -27,8 +27,8 @@ sequenceDiagram
 1. Im Client **All iPhone Notifications** auswählen.
 2. Mitteilungsinhalte angezeigt lassen
    (`BLUEFERRY_SHOW_NOTIFICATION_CONTENT` ist standardmäßig `true`).
-3. In den iPhone-Einstellungen des Qt-Clients unter *Desktop Notifications*
-   **Show iPhone action buttons** ankreuzen, oder:
+3. In den iPhone-Einstellungen des Qt-, GTK- oder Quickshell-Clients unter
+   *Desktop Notifications* **Show iPhone action buttons** einschalten, oder:
 
    ```bash
    blueferry notification-actions enable
@@ -93,8 +93,8 @@ an sind und warum sie gegebenenfalls nicht greifen. `GetStatus` enthält
 - Knöpfe bekommen nur Mitteilungen von Apps, die die Einstellung **All iPhone
   Notifications** und die Allow-/Blocklisten passieren.
 - Clients schalten die Funktion nur ein oder aus; ausgelöst wird eine Aktion
-  ausschließlich im Popup. GTK- und Quickshell-Client haben noch keinen
-  Schalter; dafür den Qt-Client oder die CLI nehmen.
+  ausschließlich im Popup. Der Terminal-Client (TUI) hat keine
+  Einstellungen; dort die CLI nehmen.
 - Ob jede iOS-Version für jede Art von Mitteilung Beschriftungen schickt,
   entscheiden iOS und die jeweilige App.
 

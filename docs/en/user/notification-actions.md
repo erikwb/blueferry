@@ -26,8 +26,8 @@ sequenceDiagram
 1. Select **All iPhone Notifications** in the client.
 2. Keep notification content shown (`BLUEFERRY_SHOW_NOTIFICATION_CONTENT`
    is true by default).
-3. Tick **Show iPhone action buttons** under *Desktop Notifications* in the
-   Qt client's iPhone settings, or run:
+3. Turn on **Show iPhone action buttons** under *Desktop Notifications* in
+   the iPhone settings of the Qt, GTK or Quickshell client, or run:
 
    ```bash
    blueferry notification-actions enable
@@ -87,8 +87,8 @@ are on, and why they are inactive if they are. `GetStatus` contains
 - Only notifications whose app passes the **All iPhone Notifications** policy
   and the allow/block lists get buttons.
 - Clients only switch the feature on or off; the popup is the only place
-  where an action can be triggered. The GTK and Quickshell clients have no
-  switch yet; use the Qt client or the CLI.
+  where an action can be triggered. The terminal client (TUI) has no
+  settings; use the CLI there.
 - Whether every iOS version sends labels for every kind of notification is up
   to iOS and the app.
 
