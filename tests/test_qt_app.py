@@ -14,6 +14,8 @@ pytest.importorskip("PySide6")
 
 from blueferry.qt import app as app_module
 
+style_installed = app_module._quick_controls_style_installed
+
 
 def test_focus_token_is_available_before_show_and_does_not_leak(monkeypatch):
     calls = []
@@ -55,6 +57,17 @@ def isolated_style_environment(monkeypatch):
         monkeypatch.delenv(name)
 
 
+@pytest.fixture(autouse=True)
+def kde_style_installed(monkeypatch):
+    """Pretend qqc2-desktop-style is installed unless a test says otherwise."""
+    installed = set(app_module.QUICK_CONTROLS_STYLES)
+    monkeypatch.setattr(
+        app_module, "_quick_controls_style_installed",
+        lambda name: name in installed,
+    )
+    return installed
+
+
 @pytest.fixture
 def quick_style_binding(monkeypatch):
     """Install a stub PySide6.QtQuickControls2 and return the styles set."""
@@ -89,6 +102,44 @@ def test_kde_quick_controls_style_uses_the_binding_when_available(
 
     assert quick_style_binding == ["org.kde.desktop"]
     assert "QT_QUICK_CONTROLS_STYLE" not in os.environ
+
+
+def test_missing_kde_style_falls_back_to_fusion(
+        kde_style_installed, quick_style_binding,
+        ):
+    kde_style_installed.discard("org.kde.desktop")
+
+    app_module._select_quick_controls_style()
+
+    assert quick_style_binding == ["Fusion"]
+
+
+def test_no_installed_style_leaves_the_choice_to_qt(
+        caplog, kde_style_installed, no_quick_style_binding,
+        ):
+    kde_style_installed.clear()
+
+    with caplog.at_level("WARNING", logger=app_module.__name__):
+        style = app_module._select_quick_controls_style(["-style", "fusion"])
+
+    assert "QT_QUICK_CONTROLS_STYLE" not in os.environ
+    assert style.qt_args == ["-style", "fusion"]
+    assert len(caplog.records) == 1
+
+
+def test_style_lookup_follows_qml_import_paths(monkeypatch, tmp_path):
+    for name in ("QML_IMPORT_PATH", "QML2_IMPORT_PATH"):
+        monkeypatch.delenv(name, raising=False)
+    (tmp_path / "org" / "example" / "style").mkdir(parents=True)
+    (tmp_path / "org" / "example" / "style" / "qmldir").write_text("")
+    (tmp_path / "QtQuick" / "Controls" / "Plain").mkdir(parents=True)
+    (tmp_path / "QtQuick" / "Controls" / "Plain" / "qmldir").write_text("")
+
+    assert not style_installed("org.example.style")
+    monkeypatch.setenv("QML2_IMPORT_PATH", os.pathsep.join(["", str(tmp_path)]))
+    assert style_installed("org.example.style")
+    assert style_installed("Plain")
+    assert not style_installed("org.example.missing")
 
 
 def test_user_quick_controls_style_is_preserved(monkeypatch, quick_style_binding):
@@ -225,7 +276,7 @@ def test_fallback_style_loads_controls_despite_widget_style_override(tmp_path):
         from PySide6.QtQml import QQmlApplicationEngine
         from PySide6.QtWidgets import QApplication
         from blueferry.qt import app
-        app.DEFAULT_QUICK_CONTROLS_STYLE = "Basic"
+        app.QUICK_CONTROLS_STYLES = ("org.example.missing", "Basic")
         style = app._select_quick_controls_style(["-style", "fusion"])
         application = QApplication(["probe", *style.qt_args])
         style.application_created(application)
