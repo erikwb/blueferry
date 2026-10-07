@@ -59,6 +59,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `wireplumber_policy.py` | Manages one WirePlumber fragment that keeps iPhone audio on the phone (keeps the hands-free roles when calls are enabled). |
 | `proximity_lock.py` | Opt-in lock-only desktop lock after the iPhone's bearers stay down for a grace period; lock dispatch via ScreenSaver, then logind. |
 | `media.py` | Opt-in now-playing projection, media command policy, coalesced change listeners, and the persisted opt-in (`MediaControlSettings`). |
+| `mpris.py` | Optional MPRIS2 player (`org.mpris.MediaPlayer2.blueferry_iphone`) over `media.py`. |
 
 ### Bluetooth transports and supervision
 
@@ -411,7 +412,9 @@ A change to these rules has to be made in both places.
 - **Media (opt-in):** `ams/client` never dials. It follows the bearer
   supervisor's LE observations and BlueZ owner changes, subscribes after the
   link settles, and resets without `StopNotify` on loss. `media` owns the
-  command policy.
+  command policy; the optional `mpris` adapter owns its bus name only while a
+  player is active. MPRIS broadcasts metadata session-wide by design, which
+  is why it is a separate opt-in from `Media1`.
 - **Stale LE bond (report only):** the same supervisor watches
   `Bearer.LE1.Disconnected` (polled transitions as a fallback). It sets
   `le_bond_suspect` only when Classic stays connected across the whole burst,

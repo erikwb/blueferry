@@ -70,6 +70,30 @@ flowchart LR
     Backend -- "authentifiziertes D-Bus (Media1)" --> Kirigami["Kirigami-Leiste"]
 ```
 
+## Medientasten, Plasma und playerctl (MPRIS, optional)
+
+Eine zweite, getrennte Option veröffentlicht das iPhone als MPRIS-Mediaplayer.
+Plasmas Medienwiedergabe, die Medientasten der Tastatur und `playerctl`
+zeigen und steuern die iPhone-Wiedergabe dann wie jeden Desktop-Player:
+
+```bash
+BLUEFERRY_MEDIA_CONTROL_ENABLED=true
+BLUEFERRY_MEDIA_MPRIS_ENABLED=true
+```
+
+```bash
+playerctl -p blueferry_iphone status
+playerctl -p blueferry_iphone next
+```
+
+Der Player heißt „iPhone (BlueFerry)“ und erscheint nur, solange das iPhone
+einen aktiven Player meldet; ein gestoppter Eintrag bleibt also nicht stehen.
+Da AMS weder Stopp noch Spulen kennt, pausiert `Stop`, und Spulen bewirkt
+nichts; dafür gibt es `blueferry media skip-forward`. Eine Lautstärkeänderung
+bewegt die iPhone-Lautstärke um eine Stufe.
+
+**Vor dem Einschalten von MPRIS bitte den Abschnitt Datenschutz lesen.**
+
 ## Grenzen
 
 - AMS kennt keine absolute Lautstärke, kein Spulen und kein Stopp. Die
@@ -93,6 +117,12 @@ flowchart LR
   holen sie über BlueFerrys authentifizierte D-Bus-Schnittstelle mit
   Ratenbegrenzung. Das Signal, das Clients zum Aktualisieren auffordert,
   enthält keine Inhalte.
+- **Mit der MPRIS-Option ändert sich das bewusst.** MPRIS ist innerhalb deiner
+  Anmeldesitzung öffentlich: Jedes Programm, das du startest, kann Titel,
+  Interpret und Album lesen und wird über Änderungen informiert, genau wie bei
+  Spotify, VLC oder jedem anderen Desktop-Player. Deshalb ist MPRIS eine
+  eigene Option. Steuerbefehle laufen weiterhin über BlueFerrys
+  Benutzerprüfung und Ratenbegrenzung.
 - Protokolle enthalten Befehlsnamen und Längen, nie Titel, Interpreten oder
   App-Namen.
 - Zu deiner Musik wird nichts auf der Festplatte gespeichert.
