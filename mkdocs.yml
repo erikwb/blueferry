@@ -1,0 +1,123 @@
+# Optional documentation site. Every page under docs/ is plain Markdown that
+# reads fine on GitHub; this file only adds navigation, search and a theme.
+#
+# Build with Zensical (primary):
+#   pip install -r docs/requirements.txt
+#   zensical build --strict    # writes website/public/docs/
+#   zensical serve             # preview at http://localhost:8000/docs/
+#
+# The same file also builds with MkDocs and Material (fallback):
+#   pip install -r docs/requirements-mkdocs.txt
+#   mkdocs build --strict
+#
+# Keep it to options both tools understand: no third-party plugins, and
+# languages as plain folders (docs/en, docs/de) instead of an i18n plugin.
+
+site_name: BlueFerry
+site_description: iPhone messages on Linux over Bluetooth
+site_url: https://blueferry.weirdware.io/docs/
+repo_url: https://github.com/erikwb/blueferry
+repo_name: erikwb/blueferry
+edit_uri: edit/main/docs/
+copyright: BlueFerry is licensed under GPL-2.0-or-later
+
+docs_dir: docs
+site_dir: website/public/docs
+
+exclude_docs: |
+  requirements*.txt
+
+theme:
+  name: material
+  language: en
+  logo: images/blueferry.svg
+  favicon: images/blueferry.svg
+  # The landing page's Content-Security-Policy allows only same-origin
+  # fonts, so use the self-hosted Adwaita Sans from extra.css instead of
+  # Google Fonts.
+  font: false
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - search.highlight
+    - content.code.copy
+
+extra_css:
+  - stylesheets/extra.css
+
+extra:
+  alternate:
+    - name: English
+      link: /docs/en/
+      lang: en
+    - name: Deutsch
+      link: /docs/de/
+      lang: de
+
+markdown_extensions:
+  - toc:
+      permalink: true
+  - tables
+  - pymdownx.highlight
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+validation:
+  links:
+    absolute_links: info
+  nav:
+    absolute_links: info
+
+
+nav:
+  - Home: README.md
+  - English:
+      - en/index.md
+      - User guide:
+          - Overview: en/user/overview.md
+          - Install: en/user/install.md
+          - Pair an iPhone: en/user/pairing.md
+          - Clients: en/user/clients.md
+          - Privacy and storage: en/user/privacy.md
+          - Troubleshooting: en/user/troubleshooting.md
+          - FAQ: en/user/faq.md
+      - Developer guide:
+          - Overview: en/developer/index.md
+          - Architecture: en/developer/architecture.md
+          - D-Bus API: en/developer/dbus-api.md
+          - Testing: en/developer/testing.md
+  - Deutsch:
+      - de/index.md
+      - Anleitung:
+          - Überblick: de/user/overview.md
+          - Installation: de/user/install.md
+          - iPhone koppeln: de/user/pairing.md
+          - Clients: de/user/clients.md
+          - Datenschutz und Speicher: de/user/privacy.md
+          - Fehlerbehebung: de/user/troubleshooting.md
+          - FAQ: de/user/faq.md
+      - Entwicklung:
+          - Überblick: de/developer/index.md
+          - Architektur: de/developer/architecture.md
+          - D-Bus-API (English): /docs/en/developer/dbus-api/
+          - Tests (English): /docs/en/developer/testing/

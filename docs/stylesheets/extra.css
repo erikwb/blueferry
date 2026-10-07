@@ -1,0 +1,43 @@
+/* Match the landing page in website/public/style.css. */
+
+@font-face {
+  font-family: "Adwaita Sans";
+  /* Served by the landing page; falls back to system-ui in `mkdocs serve`. */
+  src: url("/assets/adwaita-sans.ttf") format("truetype");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  --md-text-font: "Adwaita Sans", system-ui, sans-serif;
+  --md-code-font: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color: #175bb4;
+  --md-primary-fg-color--light: #4a83cf;
+  --md-primary-fg-color--dark: #103d79;
+  --md-accent-fg-color: #103d79;
+  --md-typeset-a-color: #175bb4;
+  --md-default-fg-color: #24272c;
+}
+
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: #175bb4;
+  --md-primary-fg-color--light: #4a83cf;
+  --md-primary-fg-color--dark: #103d79;
+  --md-accent-fg-color: #8ab8f0;
+  --md-typeset-a-color: #8ab8f0;
+}
+
+.md-typeset h1,
+.md-typeset h2 {
+  font-weight: 630;
+  letter-spacing: -0.02em;
+}
+
+/* Screenshots carry the same thin frame as on the landing page. */
+.md-typeset img[src*="images/"]:not([src$=".svg"]) {
+  border: 1px solid #d0d4db;
+}
