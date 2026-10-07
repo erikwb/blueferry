@@ -19,6 +19,10 @@ Item {
         restartBluetoothDialog.open()
     }
 
+    function requestLowEnergy() {
+        lowEnergyDialog.open()
+    }
+
     function requestForget(mac) {
         forgetDialog.mac = mac
         forgetDialog.open()
@@ -94,6 +98,23 @@ Item {
             onTriggered: {
                 root.bridge.activateBluetooth()
                 restartBluetoothDialog.close()
+            }
+        }]
+    }
+
+    Kirigami.PromptDialog {
+        id: lowEnergyDialog
+        objectName: "lowEnergyDialog"
+        title: qsTr("Turn On Bluetooth LE?")
+        subtitle: qsTr("BlueFerry will switch on Bluetooth Low Energy on this adapter. Administrator authentication is required. This lasts until bluetoothd restarts; set ControllerMode = dual in /etc/bluetooth/main.conf to make it permanent. BlueFerry does not edit that file.")
+        dialogType: Kirigami.PromptDialog.Warning
+        standardButtons: Kirigami.Dialog.Cancel
+        customFooterActions: [Kirigami.Action {
+            text: qsTr("Turn On Bluetooth LE")
+            icon.name: "network-bluetooth"
+            onTriggered: {
+                root.bridge.enableLowEnergy()
+                lowEnergyDialog.close()
             }
         }]
     }

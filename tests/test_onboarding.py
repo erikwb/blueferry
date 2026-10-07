@@ -241,3 +241,19 @@ def test_saved_ancs_opt_out_derives_ready_without_notifications() -> None:
     )
 
     assert transition.current is OnboardingStage.READY_WITHOUT_ANCS
+
+
+def test_le_switched_off_asks_to_turn_it_on_before_activation() -> None:
+    le_off = {**COMPATIBLE, "le_disabled": True, "bearer_api_active": False}
+    assert derive_stage(
+        setup_loaded=True, configured=False, compatibility=le_off, status={},
+    ) is OnboardingStage.ENABLE_LE
+    # Compatibility mode clears notifications_supported and keeps messaging.
+    compat = {**le_off, "notifications_supported": False}
+    assert derive_stage(
+        setup_loaded=True, configured=False, compatibility=compat, status={},
+    ) is OnboardingStage.SELECT_DEVICE
+    le_on = {**COMPATIBLE, "le_disabled": False}
+    assert derive_stage(
+        setup_loaded=True, configured=False, compatibility=le_on, status={},
+    ) is OnboardingStage.SELECT_DEVICE

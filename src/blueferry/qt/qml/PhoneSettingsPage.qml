@@ -13,6 +13,7 @@ Kirigami.ScrollablePage {
     signal closeRequested()
     signal clearHistoryRequested()
     signal bluetoothRestartRequested()
+    signal lowEnergyRequested()
     signal pairingIssueRequested()
     signal forgetRequested(string mac)
     signal storagePolicyRequested(string policy)
@@ -115,7 +116,8 @@ Kirigami.ScrollablePage {
             id: onboardingSummary
             Layout.fillWidth: true
             stage: compatibilityMode.checked
-                && iphonePage.effectiveStage === "activate-bluetooth"
+                && (iphonePage.effectiveStage === "activate-bluetooth"
+                    || iphonePage.effectiveStage === "enable-le")
                 ? "select-device" : iphonePage.effectiveStage
             compatibility: iphonePage.bridge.onboardingCompatibility
             status: iphonePage.bridge.status
@@ -186,6 +188,15 @@ Kirigami.ScrollablePage {
 
         RowLayout {
             visible: !iphonePage.bridge.configured
+            Controls.Button {
+                objectName: "enableLowEnergyButton"
+                visible: iphonePage.bridge.compatibility.le_disabled === true
+                    && !compatibilityMode.checked
+                text: qsTr("Turn On Bluetooth LE")
+                icon.name: "network-bluetooth"
+                enabled: !iphonePage.bridge.busy
+                onClicked: iphonePage.lowEnergyRequested()
+            }
             Controls.Button {
                 visible: iphonePage.bridge.compatibility.notifications_supported === true
                     && !iphonePage.bridge.bluetoothActive

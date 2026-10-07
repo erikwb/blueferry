@@ -867,3 +867,64 @@ def test_proximity_lock_setting_is_forwarded_and_merged_into_status(monkeypatch)
     assert controller.status["proximity_lock_enabled"] is True
     assert controller.status["proximity_lock_grace_sec"] == 120
     assert changes == [True]
+
+
+def test_enabling_bluetooth_le_targets_the_selected_adapter_and_reloads(
+    monkeypatch,
+) -> None:
+    from types import SimpleNamespace
+
+    calls = []
+
+    class Setup:
+        def enable_le(self, adapter):
+            calls.append(("enable_le", adapter))
+            return SimpleNamespace(to_dict=lambda: {"adapter": adapter})
+
+        def compatibility(self, adapter=None):
+            calls.append(("compatibility", adapter))
+            return SimpleNamespace(
+                to_dict=lambda: {"adapter": adapter, "le_disabled": False},
+                bearer_api_active=True,
+            )
+
+        def configuration(self):
+            return SimpleNamespace(
+                configured=False,
+                saved=False,
+                mac="",
+                adapter="hci0",
+                pairing_issue_report="",
+            )
+
+    controller = BridgeController(
+        backend=_Backend(), setup=Setup(), subscribe=False, autostart=False,
+    )
+    controller._compatibility = {"adapter": "hci1", "le_disabled": True}
+    monkeypatch.setattr(
+        controller,
+        "_run",
+        lambda operation, on_done=None, *_args, **_kwargs: (
+            on_done(operation()) if on_done is not None else operation()
+        ),
+    )
+
+    controller.enableLowEnergy()
+
+    assert calls == [("enable_le", "hci1"), ("compatibility", "hci1")]
+    assert controller.compatibility["le_disabled"] is False
+
+
+def test_enabling_bluetooth_le_without_an_adapter_reports_an_error() -> None:
+    class Setup:
+        def enable_le(self, adapter):  # pragma: no cover - must not run
+            raise AssertionError("no adapter selected")
+
+    controller = BridgeController(
+        backend=_Backend(), setup=Setup(), subscribe=False, autostart=False,
+    )
+    controller._compatibility = {}
+
+    controller.enableLowEnergy()
+
+    assert "No Bluetooth adapter" in controller.errorText
