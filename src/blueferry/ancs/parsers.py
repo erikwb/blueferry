@@ -10,6 +10,9 @@ import struct
 from dataclasses import dataclass
 
 from blueferry.ancs.constants import (
+    ANCS_MESSAGE_MAX_BYTES,
+    ANCS_SUBTITLE_MAX_BYTES,
+    ANCS_TITLE_MAX_BYTES,
     USHORT_MAX,
     AppAttributeID,
     CommandID,
@@ -214,9 +217,9 @@ class DataSourceAssembler:
 def build_get_notification_attributes(
     notification_id: int,
     *,
-    title_max: int = 128,
-    subtitle_max: int = 128,
-    message_max: int = 1024,
+    title_max: int = ANCS_TITLE_MAX_BYTES,
+    subtitle_max: int = ANCS_SUBTITLE_MAX_BYTES,
+    message_max: int = ANCS_MESSAGE_MAX_BYTES,
 ) -> bytes:
     """Construct a Control Point write asking for an incoming notification's
     full attributes. Variable-length attributes need a u16-le maximum size.
