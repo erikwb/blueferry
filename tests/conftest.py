@@ -180,43 +180,90 @@ class GlibSourceGuard:
                 live.append((source_id, name, callback))
         return live
 
+    def finish(self, *, report: bool) -> None:
+        """Remove leaked sources and, if ``report``, fail on any finding."""
+        leaked = self.live()
+        for source_id, _name, _callback in leaked:
+            # Do not let the orphan fire inside a later, unrelated test.
+            GLib.source_remove(source_id)
+        if not report:
+            return
+        problems = []
+        if leaked:
+            problems.append(
+                "test left GLib sources armed; inject schedule/cancel fakes: "
+                + ", ".join(
+                    f"GLib.{name}({getattr(callback, '__qualname__', None) or repr(callback)})"
+                    for _id, name, callback in leaked
+                )
+            )
+        if self.foreign_removals:
+            problems.append(
+                "test passed GLib.source_remove ids it never armed through GLib; "
+                f"inject a cancel fake next to the schedule fake: {self.foreign_removals}"
+            )
+        if problems:
+            raise AssertionError("; ".join(problems))
+
+
+def _stop_recording() -> None:
+    global _glib_sources_armed, _glib_foreign_removals, _glib_guard_thread
+    _glib_sources_armed = None
+    _glib_foreign_removals = None
+    _glib_guard_thread = None
+
+
+_GLIB_GUARD = pytest.StashKey[GlibSourceGuard]()
+_TEST_FAILED = pytest.StashKey[bool]()
+
 
 @pytest.fixture(autouse=True)
-def glib_source_guard():
+def glib_source_guard(request):
     """Fail a test that leaves a GLib timer or idle source armed.
 
     Tests inject ``schedule``/``cancel`` fakes into supervisors instead of
     arming real sources. Private D-Bus tests may use real GLib dispatch, but
-    everything they arm must have fired or been removed by teardown. This
-    fixture is defined first so its teardown runs after every other
-    function-scoped fixture has cleaned up.
+    everything they arm must have fired or been removed by teardown.
+
+    Recording starts when this fixture is set up, so sources that
+    higher-scoped fixtures arm are not attributed to the test. The check
+    itself does not depend on fixture order: pytest_runtest_teardown below
+    runs it after every fixture finalizer of the test has run.
     """
     global _glib_sources_armed, _glib_foreign_removals, _glib_guard_thread
     guard = GlibSourceGuard()
     _glib_sources_armed = guard.armed
     _glib_foreign_removals = guard.foreign_removals
     _glib_guard_thread = threading.get_ident()
+    request.node.stash[_GLIB_GUARD] = guard
+    return guard
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_makereport(item, call):
+    report = yield
+    if report.when in ("setup", "call") and report.failed:
+        item.stash[_TEST_FAILED] = True
+    return report
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_teardown(item, nextitem):
+    guard = item.stash.get(_GLIB_GUARD, None)
     try:
-        yield guard
-    finally:
-        _glib_sources_armed = None
-        _glib_foreign_removals = None
-        _glib_guard_thread = None
-    leaked = guard.live()
-    for source_id, _name, _callback in leaked:
-        # Do not let the orphan fire inside a later, unrelated test.
-        GLib.source_remove(source_id)
-    assert not leaked, (
-        "test left GLib sources armed; inject schedule/cancel fakes: "
-        + ", ".join(
-            f"GLib.{name}({getattr(callback, '__qualname__', None) or repr(callback)})"
-            for _id, name, callback in leaked
-        )
-    )
-    assert not guard.foreign_removals, (
-        "test passed GLib.source_remove ids it never armed through GLib; "
-        f"inject a cancel fake next to the schedule fake: {guard.foreign_removals}"
-    )
+        result = yield
+    except BaseException:
+        if guard is not None:
+            _stop_recording()
+            guard.finish(report=False)
+        raise
+    if guard is not None:
+        _stop_recording()
+        # A test that already failed often aborted before its own cleanup;
+        # the sources it left are a symptom, so remove them without a
+        # second, misleading report.
+        guard.finish(report=not item.stash.get(_TEST_FAILED, False))
+    return result
 
 
 @pytest.fixture(autouse=True)

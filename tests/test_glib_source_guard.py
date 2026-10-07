@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import inspect
+import subprocess
+import sys
 import threading
+from pathlib import Path
 
 import pytest
 from gi.repository import GLib
@@ -68,3 +71,72 @@ def test_guard_ignores_sources_armed_from_worker_threads(glib_source_guard) -> N
         GLib.source_remove(armed[0])
     assert glib_source_guard.foreign_removals == [armed[0]]
     glib_source_guard.foreign_removals.clear()
+
+
+# Appended to a copy of conftest.py: an autouse fixture that is set up before
+# the guard, so its finalizer runs after the guard fixture's would.
+_LATE_CLEANUP = '''
+
+@pytest.fixture(autouse=True)
+def aaa_late_cleanup(request):
+    assert _glib_guard_thread is None, "fixture must be set up before the guard"
+    yield
+    for source_id in getattr(request.node, "late_sources", ()):
+        GLib.source_remove(source_id)
+'''
+
+_INNER_TESTS = '''
+import pytest
+from gi.repository import GLib
+
+
+def test_leak():
+    GLib.timeout_add_seconds(3600, lambda: False)
+
+
+def test_leak_after_failure():
+    GLib.timeout_add_seconds(3600, lambda: False)
+    raise RuntimeError("body failed before its cleanup")
+
+
+def test_late_fixture_cleanup(request):
+    request.node.late_sources = [GLib.timeout_add_seconds(3600, lambda: False)]
+
+
+def test_fake_id_removed():
+    GLib.source_remove(987654)
+
+
+def test_clean():
+    GLib.source_remove(GLib.timeout_add_seconds(3600, lambda: False))
+'''
+
+
+def test_guard_enforces_at_teardown_without_double_reports(tmp_path) -> None:
+    conftest = Path(__file__).with_name("conftest.py").read_text()
+    (tmp_path / "conftest.py").write_text(conftest + _LATE_CLEANUP)
+    (tmp_path / "test_inner.py").write_text(_INNER_TESTS)
+    (tmp_path / "pytest.ini").write_text("[pytest]\n")
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "-rA",
+         "-W", "ignore", str(tmp_path)],
+        cwd=tmp_path, capture_output=True, text=True, timeout=120, check=False,
+    )
+    lines = result.stdout.splitlines()
+
+    def outcome(name):
+        return sorted(
+            line.split()[0] for line in lines
+            if line.endswith(f"test_inner.py::{name}")
+            or f"test_inner.py::{name} - " in line
+        )
+
+    assert outcome("test_leak") == ["ERROR", "PASSED"], result.stdout
+    assert "test left GLib sources armed" in result.stdout
+    # The body failure is the report; the leaked timer is only removed.
+    assert outcome("test_leak_after_failure") == ["FAILED"], result.stdout
+    # A finalizer that runs after the guard fixture still counts as cleanup.
+    assert outcome("test_late_fixture_cleanup") == ["PASSED"], result.stdout
+    assert outcome("test_fake_id_removed") == ["ERROR", "PASSED"], result.stdout
+    assert "[987654]" in result.stdout
+    assert outcome("test_clean") == ["PASSED"], result.stdout
