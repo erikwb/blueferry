@@ -31,9 +31,16 @@ class BluetoothError(BlueFerryError):
 class PairingError(BluetoothError):
     dbus_suffix = "PairingFailed"
 
-    def __init__(self, *args: object, report_path: str | None = None) -> None:
+    def __init__(
+        self,
+        *args: object,
+        report_path: str | None = None,
+        reason: str | None = None,
+    ) -> None:
         super().__init__(*args)
         self.report_path = report_path
+        # A stable, content-free classification recorded in pairing reports.
+        self.reason = reason
 
 
 class ObexError(BlueFerryError):

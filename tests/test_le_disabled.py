@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from blueferry import bluetooth_capabilities as capabilities
-from blueferry import pair_setup
+from blueferry import config, pair_setup
 
 _SUPPORTED_WITH_LE = (
     "powered connectable bondable ssp br/edr le advertising secure-conn"
@@ -131,3 +131,128 @@ def test_setup_client_model_carries_the_le_state():
     legacy = BluetoothCompatibility.from_dict({})
     assert legacy.le_enabled is True
     assert legacy.le_disabled is False
+
+
+def _le_off_compatibility(monkeypatch, *, bearer_api_active: bool = True) -> list:
+    """Run _prepare_pairing against fake capabilities with LE switched off."""
+    monkeypatch.setattr(config, "STATE_DIR", config.STATE_DIR / "le-disabled-tests")
+    device = pair_setup.PairedDevice(
+        mac="02:00:00:00:00:01",
+        name="Test iPhone",
+        icon="phone",
+        trusted=True,
+        connected=False,
+        paired=True,
+        adapter_path="/org/bluez/hci0",
+        device_path="/org/bluez/hci0/dev_02_00_00_00_00_01",
+        uuids=frozenset(),
+        services_resolved=False,
+    )
+    monkeypatch.setattr(pair_setup, "_device", lambda _mac, **_kwargs: device)
+    monkeypatch.setattr(
+        pair_setup,
+        "bluetooth_compatibility",
+        lambda _adapter: {
+            "pairing_ready": True,
+            "hardware_supported": True,
+            "notifications_supported": True,
+            "bearer_api_active": bearer_api_active,
+            "low_energy": True,
+            "le_enabled": False,
+            "le_disabled": True,
+            "controller_mode": "bredr",
+            "advertising": True,
+            "issue": capabilities.le_disabled_issue("hci0", "bredr"),
+        },
+    )
+    monkeypatch.setattr(pair_setup, "_controller_snapshot", lambda _adapter, value: dict(value))
+    monkeypatch.setattr(pair_setup, "_bluetooth_session_owners", lambda: [])
+    monkeypatch.setattr(pair_setup, "_take_pending_teardown", lambda _adapter: None)
+    monkeypatch.setattr(pair_setup, "_snapshot_phone", lambda *_args: None)
+    monkeypatch.setattr(pair_setup, "_record_bluez_state", lambda *_args, **_kwargs: None)
+    return [device]
+
+
+def test_full_mode_pairing_stops_before_the_advertisement_when_le_is_off(monkeypatch):
+    from blueferry import bluez_setup
+
+    (device,) = _le_off_compatibility(monkeypatch)
+    monkeypatch.setattr(
+        bluez_setup,
+        "register_advert",
+        lambda *_args, **_kwargs: pytest.fail("advertisement must not be attempted"),
+    )
+    monkeypatch.setattr(
+        pair_setup,
+        "_run_pairing_transaction",
+        lambda *_args, **_kwargs: pytest.fail("pairing must not start"),
+    )
+
+    with pytest.raises(pair_setup.PairingError) as caught:
+        pair_setup.complete_pairing(device.mac, _allow_headless=True)
+
+    error = caught.value
+    assert error.reason == "le_disabled"
+    assert "Bluetooth Low Energy is switched off" in str(error)
+    assert "ControllerMode = dual" in str(error)
+    report = pair_setup.json.loads(
+        pair_setup.Path(error.report_path).read_text(encoding="utf-8")
+    )
+    assert report["outcome"]["reason"] == "le_disabled"
+    assert report["controller"]["le_disabled"] is True
+    assert report["controller"]["controller_mode"] == "bredr"
+    events = [entry["event"] for entry in report["timeline"]]
+    assert "le_disabled" in events
+    assert "advert_register_sent" not in events
+    from blueferry import quirks_report
+
+    assert quirks_report.issue_title(report).endswith(
+        "Bluetooth LE is switched off on the adapter"
+    )
+
+
+def test_compatibility_mode_pairing_continues_without_solicitation_when_le_is_off(
+    monkeypatch, caplog,
+):
+    (device,) = _le_off_compatibility(monkeypatch)
+    attempt = pair_setup.quirks_report.start_attempt(interactive=False)
+
+    preparation = pair_setup._prepare_pairing(
+        device.mac,
+        adapter=None,
+        compatibility_mode=True,
+        explicit_pairing=False,
+        interactive=False,
+        attempt=attempt,
+    )
+
+    assert preparation.policy.ancs_enabled is False
+    assert preparation.policy.solicitation_enabled is False
+    assert "continuing with MAP/PBAP only" in caplog.text
+    assert "le_disabled" in [entry["event"] for entry in attempt["timeline"]]
+
+
+def test_solicitation_stays_enabled_when_le_is_on():
+    policy = pair_setup.resolve_pairing_policy(
+        {
+            "notifications_supported": False,
+            "low_energy": True,
+            "le_enabled": True,
+            "advertising": True,
+        },
+        force_compatibility=True,
+    )
+
+    assert policy.solicitation_enabled is True
+
+
+def test_pairing_outcome_omits_reason_for_unclassified_errors():
+    from blueferry import pairing_diagnostics
+
+    attempt = pair_setup.quirks_report.start_attempt(interactive=False)
+
+    outcome = pairing_diagnostics.pairing_outcome(
+        attempt, None, pair_setup.PairingError("The ANCS advertisement did not activate"),
+    )
+
+    assert "reason" not in outcome

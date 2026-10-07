@@ -94,6 +94,9 @@ _TEARDOWN_TRACE_MAX_BYTES = 16 * 1024
 _TEARDOWN_TRACE_MAX_AGE_SECONDS = 60 * 60
 
 
+LE_DISABLED_REASON = "le_disabled"
+
+
 def configuration_status() -> dict:
     """Return first-run state without activating the user daemon."""
     values = config.read_local_env(LOCAL_ENV_PATH)
@@ -951,6 +954,9 @@ _COMPATIBILITY_REPORT_KEYS = (
     "powered",
     "classic",
     "low_energy",
+    "le_enabled",
+    "le_disabled",
+    "controller_mode",
     "advertising",
     "secure_pairing",
     "secure_conn",
@@ -1211,6 +1217,19 @@ def _prepare_pairing(
         "enabled" if policy.solicitation_enabled else "unavailable",
         policy.reason,
     )
+    if compatibility.get("le_disabled"):
+        quirks_report.mark(attempt, "le_disabled")
+        issue = str(compatibility.get("issue") or "") or capabilities.le_disabled_issue(
+            selected_adapter, str(compatibility.get("controller_mode") or ""),
+        )
+        if policy.ancs_enabled:
+            # Stop before any bond or advertisement: the ANCS advertisement
+            # cannot activate while the controller runs without LE.
+            raise PairingError(issue, reason=LE_DISABLED_REASON)
+        log.warning(
+            "Bluetooth LE is switched off on %s; continuing with MAP/PBAP only",
+            selected_adapter,
+        )
     if policy.ancs_enabled and not compatibility["bearer_api_active"]:
         raise PairingError(
             "Activate Bluetooth support before pairing or re-pairing the iPhone"
