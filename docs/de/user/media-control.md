@@ -15,25 +15,33 @@ Bluetooth-Verkehr und liegt außerhalb von BlueFerrys Schwerpunkt Nachrichten.
 - Ein iPhone, das im normalen (vollen) Kopplungsmodus gekoppelt ist. Die
   Kompatibilitätskopplung für iOS 18 und älter verbindet nie Bluetooth LE,
   dort ist die Mediensteuerung nicht verfügbar.
+- Ein BlueZ, das die LE-Verbindung des iPhones meldet (`Bearer.LE1`: BlueZ
+  5.86 oder neuer mit der Bearer-API, wie heute auch für Mitteilungen). Ohne
+  sie meldet `blueferry media`, dass der Zustand der LE-Verbindung unbekannt
+  ist.
 - Die Kommandozeile funktioniert überall. Der KDE/Kirigami-Client zeigt eine
   „Wird gespielt“-Leiste. GTK-, Terminal- und Quickshell-Client haben noch
   keine Medienansicht.
 
 ## Einschalten
 
-Diese Zeile in `~/.config/blueferry/local.env` eintragen:
+Im Kirigami-Client die iPhone-Einstellungen öffnen und **Media Control**
+ankreuzen. Im Terminal:
 
 ```bash
-BLUEFERRY_MEDIA_CONTROL_ENABLED=true
+blueferry media enable    # blueferry media disable schaltet sie wieder aus
 ```
 
-Danach das BlueFerry-Backend neu starten (den Benutzerdienst, oder ab- und
-wieder anmelden). Nach ein paar Sekunden auf dem iPhone Musik starten und
-ausführen:
+Das wirkt sofort, ohne das Backend neu zu starten. Nach ein paar Sekunden auf
+dem iPhone Musik starten und ausführen:
 
 ```bash
 blueferry media
 ```
+
+`BLUEFERRY_MEDIA_CONTROL_ENABLED=true` in `~/.config/blueferry/local.env`
+legt den Anfangswert fest; eine über einen Client oder die CLI gespeicherte
+Wahl hat Vorrang.
 
 ## Benutzung
 

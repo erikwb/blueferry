@@ -96,6 +96,14 @@ Edit `~/.config/blueferry/local.env`, then restart the service with
 Pairing writes the phone and adapter settings to the same file; change those
 by pairing again rather than by hand.
 
+## Media control
+
+The optional [media control](media-control.md) is off by default. When you
+turn it on, track, artist, album and player name stay inside BlueFerry and
+are fetched by clients through its authenticated D-Bus interface; nothing
+about your music is written to disk or the log. Only the on/off choice is
+saved, in `settings.json`.
+
 ## Calls and music stay on the iPhone
 
 With WirePlumber 0.5 or newer, BlueFerry writes

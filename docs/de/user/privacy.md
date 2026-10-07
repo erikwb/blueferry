@@ -101,6 +101,14 @@ Bearbeite `~/.config/blueferry/local.env` und starte den Dienst danach mit
 Die Kopplung schreibt Telefon- und Adapter-Einstellungen in dieselbe Datei.
 Ändere diese durch eine neue Kopplung statt von Hand.
 
+## Mediensteuerung
+
+Die optionale [Mediensteuerung](media-control.md) ist standardmäßig aus.
+Ist sie an, bleiben Titel, Interpret, Album und App-Name in BlueFerry; Clients
+holen sie über die authentifizierte D-Bus-Schnittstelle. Zu deiner Musik
+wird nichts auf die Festplatte oder ins Protokoll geschrieben. Gespeichert
+wird nur die Wahl an/aus, in `settings.json`.
+
 ## Anrufe und Musik bleiben auf dem iPhone
 
 Mit WirePlumber 0.5 oder neuer schreibt BlueFerry vor der Kopplung

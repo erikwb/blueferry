@@ -382,14 +382,11 @@ previous, volume, skip and like/dislike commands through Apple's Media
 Service (AMS). AMS uses the same Bluetooth LE bond as notifications, so it
 needs the full pairing mode; compatibility mode never connects LE. It is off
 by default because it adds Bluetooth traffic and is outside BlueFerry's
-messaging focus. Opt in in `~/.config/blueferry/local.env` and restart the
-user service:
+messaging focus. Turn it on in the Qt client's iPhone settings
+(**Media Control**) or from a terminal; no restart is needed:
 
 ```bash
-BLUEFERRY_MEDIA_CONTROL_ENABLED=true
-```
-
-```bash
+blueferry media enable     # opt in (blueferry media disable to opt out)
 blueferry media            # now playing
 blueferry media toggle     # also: play, pause, next, previous, volume-up,
                            # volume-down, skip-forward, skip-backward, like, ...
@@ -403,6 +400,12 @@ Track details are only available through BlueFerry's own authenticated D-Bus
 API, and its change signal carries no content. AMS has no absolute volume,
 seek or stop: volume moves one iPhone step at a time, and
 `blueferry media skip-forward` or `skip-backward` use the phone's fixed skips.
+
+`BLUEFERRY_MEDIA_CONTROL_ENABLED=true` in `local.env` sets the initial value;
+a choice saved through a client or the CLI takes precedence. Media control
+waits for BlueZ to report the iPhone's LE link (`Bearer.LE1`, BlueZ 5.86 or
+newer with the bearer API); on older BlueZ `blueferry media` says so instead
+of waiting forever.
 
 BlueFerry deliberately does not use AVRCP for this: acting as an AVRCP
 controller could make the iPhone route its audio to this computer.
