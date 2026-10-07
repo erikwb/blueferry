@@ -434,6 +434,12 @@ class Daemon:
         if self.photo_files is not None:
             self.photo_files.clear()
 
+    def _retire_photo_files(self) -> None:
+        # A refreshed cache must not reuse old files, but popups already
+        # shown may still read theirs; see PhotoFiles.retire().
+        if self.photo_files is not None:
+            self.photo_files.retire()
+
     def _apply_storage_preparation(self, prepared: PreparedStorage) -> None:
         self._clear_photo_files()
         self.contacts.adopt_cache(prepared.contacts)
@@ -790,7 +796,7 @@ class Daemon:
         # Completing PullAll proves that the iPhone granted Sync Contacts,
         # even when its phonebook is empty.
         self._mark_setup_task(CONTACTS)
-        self._clear_photo_files()
+        self._retire_photo_files()
         if self._dbus_service is not None:
             self._dbus_service.operations.invalidate_conversations()
             self._dbus_service.emit_history_changed()

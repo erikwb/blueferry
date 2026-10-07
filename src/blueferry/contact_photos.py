@@ -244,8 +244,13 @@ class PhotoFiles:
     Notification servers read an image path themselves, which keeps image
     decoding out of the daemon. Files live below ``$XDG_RUNTIME_DIR/blueferry``
     (tmpfs, mode 0700/0600), carry random names that reveal nothing about the
-    contact, are bounded to ``MAX_CONTACT_PHOTO_FILES``, and are removed when
-    the contact cache changes or the daemon stops.
+    contact, and are bounded to ``MAX_CONTACT_PHOTO_FILES``.
+
+    Notification servers may read ``image-path`` lazily (when the popup is
+    shown, or later from their history), so a contact refresh only *retires*
+    the current files: new popups get new files, while retired ones stay
+    readable until the bound evicts them. Storage changes and daemon stop
+    remove every file at once.
     """
 
     def __init__(
@@ -259,6 +264,9 @@ class PhotoFiles:
         self._load_photo = load_photo
         self._create_file = create_file
         self._files: OrderedDict[int, Path] = OrderedDict()
+        # Files of an earlier contact cache, still possibly referenced by a
+        # shown popup. Evicted first; never handed out again.
+        self._retired: OrderedDict[Path, None] = OrderedDict()
         # References that resolved to no usable photo (dangling or invalid)
         # are not reloaded for every popup until the cache changes.
         self._unavailable: set[int] = set()
@@ -311,19 +319,40 @@ class PhotoFiles:
             return None
 
     def _evict(self) -> None:
-        while len(self._files) > MAX_CONTACT_PHOTO_FILES:
-            _ref, path = self._files.popitem(last=False)
+        while len(self._files) + len(self._retired) > MAX_CONTACT_PHOTO_FILES:
+            if self._retired:
+                path, _ = self._retired.popitem(last=False)
+            else:
+                _ref, path = self._files.popitem(last=False)
+            self._unlink(path)
+
+    @staticmethod
+    def _unlink(path: Path) -> None:
+        try:
             path.unlink(missing_ok=True)
+        except OSError:
+            log.debug("could not remove a volatile avatar file", exc_info=True)
+
+    def retire(self) -> None:
+        """Forget the current contact cache's files without deleting them.
+
+        Photo references change with every contact refresh, so the files are
+        no longer reused, but a popup that is already shown (or kept in a
+        notification history) may not have read its icon yet.
+        """
+        for path in self._files.values():
+            self._retired[path] = None
+        self._files = OrderedDict()
+        self._unavailable.clear()
+        self._evict()
 
     def clear(self) -> None:
-        """Delete every volatile avatar copy."""
+        """Delete every volatile avatar copy, current and retired."""
         files, self._files = self._files, OrderedDict()
+        retired, self._retired = self._retired, OrderedDict()
         self._unavailable.clear()
-        for path in files.values():
-            try:
-                path.unlink(missing_ok=True)
-            except OSError:
-                log.debug("could not remove a volatile avatar file", exc_info=True)
+        for path in (*files.values(), *retired):
+            self._unlink(path)
 
     def __len__(self) -> int:
-        return len(self._files)
+        return len(self._files) + len(self._retired)

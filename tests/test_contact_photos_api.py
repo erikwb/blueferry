@@ -319,15 +319,21 @@ def test_enabled_daemon_keeps_photos_and_reports_content_free_status(
     assert status["contact_photo_count"] == 0  # storage not yet prepared/unlocked
 
 
-def test_contact_refresh_removes_volatile_avatar_files(make_daemon, monkeypatch) -> None:
+def test_contact_refresh_retires_volatile_avatar_files(make_daemon, monkeypatch) -> None:
     monkeypatch.setattr(config, "CONTACT_PHOTOS", True)
     daemon = make_daemon()
-    cleared = []
-    daemon.photo_files = SimpleNamespace(clear=lambda: cleared.append(True))
+    calls = []
+    daemon.photo_files = SimpleNamespace(
+        clear=lambda: calls.append("clear"), retire=lambda: calls.append("retire"),
+    )
     monkeypatch.setattr(daemon, "_emit_status", lambda: None)
     monkeypatch.setattr(daemon, "_mark_setup_task", lambda *_args: None)
     daemon._contacts_refreshed()
-    assert cleared == [True]
+    # Shown popups may still read their icon; storage changes still clear.
+    assert calls == ["retire"]
+    monkeypatch.setattr(daemon.contact_sync, "storage_changed", lambda: None)
+    daemon._on_storage_changed()
+    assert calls == ["retire", "clear"]
 
 
 # ---- CLI -----------------------------------------------------------------------

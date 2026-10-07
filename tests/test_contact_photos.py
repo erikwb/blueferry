@@ -562,6 +562,29 @@ def test_photo_files_are_private_reused_bounded_and_cleared(isolated_state, monk
     assert len(files) == 0 and not any(path.exists() for path in remaining)
 
 
+def test_refresh_retires_files_so_shown_popups_keep_their_icon(isolated_state, monkeypatch) -> None:
+    monkeypatch.setattr(contact_photos, "MAX_CONTACT_PHOTO_FILES", 3)
+    refs = {"a": 1, "b": 2}
+    files = PhotoFiles(photo_ref=refs.get, load_photo={1: JPEG, 2: PNG, 3: JPEG, 4: PNG}.get)
+    shown = Path(files.path_for("a"))
+    files.retire()
+    # The shown popup's file is still there for a lazy notification server...
+    assert shown.read_bytes() == JPEG and len(files) == 1
+    # ...but a refreshed cache never hands it out again.
+    refs.update(a=3, b=4)
+    fresh = Path(files.path_for("a"))
+    assert fresh != shown and fresh.read_bytes() == JPEG
+    # The bound evicts retired files first, then current ones.
+    other = Path(files.path_for("b"))
+    assert len(files) == 3 and shown.exists()
+    refs["c"] = 1
+    files.path_for("c")
+    assert not shown.exists() and fresh.exists() and other.exists()
+    files.retire()
+    files.clear()
+    assert len(files) == 0 and not fresh.exists() and not other.exists()
+
+
 def test_photo_file_failures_degrade_to_no_icon(isolated_state) -> None:
     def broken(_ref):
         raise RuntimeError("storage locked")
