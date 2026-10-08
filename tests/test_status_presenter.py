@@ -423,3 +423,111 @@ def test_gtk_media_control_switch_reverts_and_reports_a_failed_save():
     assert page.applied == [last]
     assert page.toasts == ["Could not save media control preference: no LE link"]
     assert choice.resolve(False) == (False, False)
+
+
+def test_gtk_away_lock_switch_opts_in_and_keeps_the_saved_grace_period():
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from blueferry.ui.saved_choice import SavedChoice
+    from blueferry.ui.status import IPhonePage
+
+    calls = []
+    page = SimpleNamespace(
+        _applying_proximity_lock=False,
+        _proximity_lock_choice=SavedChoice(),
+        _proximity_lock_switch=Mock(get_active=lambda: True),
+        _proximity_lock_row=Mock(),
+        _last_status=BackendStatus.from_dict({
+            "proximity_lock": "off", "proximity_lock_grace_sec": 120,
+        }),
+        _client=SimpleNamespace(
+            set_proximity_lock_async=lambda enabled, grace, _ok, _err: calls.append(
+                (enabled, grace)
+            ),
+        ),
+    )
+
+    IPhonePage._proximity_lock_changed(page, None, None)
+
+    assert calls == [(True, 120)]
+    page._proximity_lock_row.set_sensitive.assert_called_with(False)
+
+
+def test_gtk_away_lock_switch_ignores_updates_from_a_status_refresh():
+    from types import SimpleNamespace
+
+    from blueferry.ui.status import IPhonePage
+
+    # No client or widgets: a refresh must return before touching either.
+    page = SimpleNamespace(_applying_proximity_lock=True)
+
+    IPhonePage._proximity_lock_changed(page, None, None)
+
+
+def test_gtk_away_lock_switch_holds_the_choice_against_a_stale_status():
+    from types import SimpleNamespace
+
+    from blueferry.ui.saved_choice import SavedChoice
+    from blueferry.ui.status import IPhonePage
+
+    refreshes = []
+    saved = {}
+    positions = []
+    switch = SimpleNamespace(get_active=lambda: True, set_active=positions.append)
+    page = SimpleNamespace(
+        _applying_proximity_lock=False,
+        _proximity_lock_choice=SavedChoice(),
+        _proximity_lock_switch=switch,
+        _proximity_lock_row=SimpleNamespace(set_sensitive=lambda _value: None),
+        _last_status=BackendStatus.from_dict({"proximity_lock": "off"}),
+        _client=SimpleNamespace(
+            set_proximity_lock_async=lambda _enabled, _grace, ok, _err: saved.update(ok=ok),
+        ),
+        _toast=lambda _text: None,
+        _refresh=lambda: refreshes.append(True),
+    )
+
+    def status_reports(reported):
+        IPhonePage._show_saved_choice(page, switch, page._proximity_lock_choice, reported)
+        return positions[-1]
+
+    IPhonePage._proximity_lock_changed(page, None, None)
+    assert page._proximity_lock_choice.saving
+    # While the save is running, a status still reporting "off" is not shown.
+    assert status_reports(False) is True
+
+    saved["ok"]({"proximity_lock_enabled": True})
+    assert not page._proximity_lock_choice.saving
+    assert refreshes == [True]
+    # One status read before the save finished is skipped and asked again.
+    assert status_reports(False) is True
+    assert refreshes == [True, True]
+    # After that the daemon's report is shown as it is.
+    assert status_reports(False) is False
+    assert refreshes == [True, True]
+
+
+def test_saved_choice_follows_the_daemon_once_a_status_confirms_the_save():
+    from blueferry.ui.saved_choice import SavedChoice
+
+    choice = SavedChoice()
+    assert choice.resolve(True) == (True, False)
+
+    choice.begin(True)
+    choice.saved(True)
+    # A confirming status needs no second read, and later reports are shown.
+    assert choice.resolve(True) == (True, False)
+    assert choice.resolve(False) == (False, False)
+
+
+def test_saved_choice_returns_to_the_report_after_a_failed_save():
+    from blueferry.ui.saved_choice import SavedChoice
+
+    choice = SavedChoice()
+    choice.begin(True)
+    assert choice.saving and choice.resolve(False) == (True, False)
+
+    choice.failed()
+    assert not choice.saving
+    assert choice.resolve(False) == (False, False)

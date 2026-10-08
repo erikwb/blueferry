@@ -583,8 +583,9 @@ call.
 ## Lock when the iPhone goes away
 
 BlueFerry can lock your desktop session after the paired iPhone has been
-disconnected for a while. It is off by default. Turn it on in the Qt client's
-iPhone settings (**Away Lock**) or from a terminal:
+disconnected for a while. It is off by default. Turn it on in the iPhone
+settings of the Qt, GTK or Quickshell client (**Away Lock**) or from a
+terminal:
 
 ```bash
 blueferry proximity-lock enable --grace 60   # opt in, lock after 60 s away

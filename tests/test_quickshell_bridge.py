@@ -75,6 +75,13 @@ class FakeClient:
         self.calls.append(("set_mpris_player", enabled))
         return {"media_mpris_enabled": enabled}
 
+    def set_proximity_lock(self, enabled, grace_seconds):
+        self.calls.append(("set_proximity_lock", enabled, grace_seconds))
+        return {
+            "proximity_lock_enabled": enabled,
+            "proximity_lock_grace_sec": grace_seconds,
+        }
+
 
 def test_bridge_dispatches_private_values_without_command_arguments() -> None:
     client = FakeClient()
@@ -124,6 +131,31 @@ def test_bridge_dispatches_private_values_without_command_arguments() -> None:
         ("set_thread_starred", "private-thread", True),
         ("set_contacts_only_notifications", True),
     ]
+
+
+def test_bridge_sets_the_away_lock_and_returns_its_status() -> None:
+    client = FakeClient()
+    bridge = QuickshellBridge(client)  # type: ignore[arg-type]
+
+    assert bridge.dispatch("set_proximity_lock", {
+        "enabled": True, "grace_seconds": 90,
+    }) == {"proximity_lock_enabled": True, "proximity_lock_grace_sec": 90}
+    assert client.calls == [("set_proximity_lock", True, 90)]
+
+
+@pytest.mark.parametrize(("args", "message"), [
+    ({"enabled": 1, "grace_seconds": 60}, "enabled must be a boolean"),
+    ({"enabled": True}, "grace_seconds must be an integer"),
+    ({"enabled": True, "grace_seconds": True}, "grace_seconds must be an integer"),
+    ({"enabled": True, "grace_seconds": "60"}, "grace_seconds must be an integer"),
+])
+def test_bridge_rejects_malformed_away_lock_requests(args, message) -> None:
+    client = FakeClient()
+    bridge = QuickshellBridge(client)  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match=message):
+        bridge.dispatch("set_proximity_lock", args)
+    assert client.calls == []
 
 
 def test_bridge_rejects_non_boolean_contacts_only_value() -> None:

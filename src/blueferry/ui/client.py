@@ -409,6 +409,18 @@ class DaemonClient(GObject.Object):
             mutation=True,
         )
 
+    def set_proximity_lock_async(
+        self, enabled: bool, grace_seconds: int, on_ok, on_err
+    ) -> None:
+        self._submit(
+            lambda: self._call_backend(
+                lambda backend: backend.set_proximity_lock(enabled, grace_seconds)
+            ),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
     def set_storage_policy_async(self, policy: str, on_ok, on_err) -> None:
         self._submit(
             lambda: self._call_backend(

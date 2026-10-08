@@ -415,6 +415,35 @@ Rectangle {
           wrapMode: Text.Wrap
           text: "Like any desktop music player, every application in your session can then read the title, artist and album."
         }
+        // Only daemons that report the away-lock keys support the setting.
+        FerrySectionLabel {
+          ferryTheme: root.theme
+          visible: root.status.proximity_lock !== undefined
+          text: "Away lock"
+        }
+        FerryCheckBox {
+          objectName: "proximityLockCheckBox"
+          ferryTheme: root.theme
+          visible: root.status.proximity_lock !== undefined
+          text: "Lock the desktop when my iPhone goes away"
+          checked: root.status.proximity_lock_enabled === true
+          enabled: root.setup.configured && !root.busy.proximityLock
+          Accessible.description: "A convenience, not a security feature. BlueFerry never unlocks the desktop."
+          onClicked: {
+            // The checkbox only opts in or out; the saved grace period is kept.
+            root.operationRequested("set_proximity_lock", {
+              enabled: checked,
+              grace_seconds: root.status.proximity_lock_grace_sec || 60
+            });
+          }
+        }
+        FerryLabel {
+          ferryTheme: root.theme
+          visible: root.status.proximity_lock !== undefined
+          Layout.fillWidth: true
+          wrapMode: Text.Wrap
+          text: "Locks after " + (root.status.proximity_lock_grace_sec || 60) + " seconds away. A convenience, not a security feature: Bluetooth presence can be spoofed, and BlueFerry never unlocks the desktop."
+        }
         FerrySectionLabel {
           ferryTheme: root.theme
           text: "Local data"
