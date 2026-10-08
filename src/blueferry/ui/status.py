@@ -53,6 +53,8 @@ class IPhonePage(Gtk.Box):
         self._mpris_player_choice = SavedChoice()
         self._applying_proximity_lock = False
         self._proximity_lock_choice = SavedChoice()
+        self._applying_calls_enabled = False
+        self._calls_enabled_choice = SavedChoice()
         self._applying_storage_policy = False
         self._storage_unlock_attempted = False
         self._pairing_issue_report = ""
@@ -407,6 +409,34 @@ class IPhonePage(Gtk.Box):
         )
         self._proximity_lock_group.add(self._proximity_lock_row)
         page.add(self._proximity_lock_group)
+
+        # Shown only when the status carries calls_enabled, as in the Qt client.
+        self._calls_group = Adw.PreferencesGroup(
+            title=_("Phone Calls"),
+            description=_(
+                "Experimental. While this is on, the iPhone's hands-free "
+                "link stays connected to this computer, so calls can ring "
+                "and be answered here and their audio plays here. Music "
+                "stays on the iPhone. Working calls also need oFono set as "
+                "the hands-free backend and BlueZ's own HFP plugin disabled; "
+                "see \"Phone calls\" in the BlueFerry documentation. Make "
+                "emergency calls on the iPhone itself."
+            ),
+        )
+        self._calls_group.set_visible(False)
+        self._calls_enabled_row = Adw.ActionRow(
+            title=_("Enable Phone Calls Through This Computer"),
+        )
+        self._calls_enabled_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
+        self._calls_enabled_switch.connect(
+            "notify::active", self._calls_enabled_changed
+        )
+        self._calls_enabled_row.add_suffix(self._calls_enabled_switch)
+        self._calls_enabled_row.set_activatable_widget(
+            self._calls_enabled_switch
+        )
+        self._calls_group.add(self._calls_enabled_row)
+        page.add(self._calls_group)
 
         data_group = Adw.PreferencesGroup(title=_("Local Data"))
         history_model = Gtk.StringList.new(
@@ -1085,6 +1115,17 @@ class IPhonePage(Gtk.Box):
             reachable and not self._proximity_lock_choice.saving
         )
         self._applying_proximity_lock = False
+        self._calls_group.set_visible("calls_enabled" in values)
+        self._applying_calls_enabled = True
+        self._show_saved_choice(
+            self._calls_enabled_switch,
+            self._calls_enabled_choice,
+            status.calls_enabled is True,
+        )
+        self._calls_enabled_row.set_sensitive(
+            reachable and not self._calls_enabled_choice.saving
+        )
+        self._applying_calls_enabled = False
         self._applying_storage_policy = True
         selected_storage = {
             "encrypted": 0,
@@ -1298,6 +1339,29 @@ class IPhonePage(Gtk.Box):
             self._apply_status(self._last_status)
 
         self._client.set_proximity_lock_async(enabled, grace, saved, failed)
+
+    def _calls_enabled_changed(self, _switch, _property) -> None:
+        if self._applying_calls_enabled:
+            return
+        enabled = self._calls_enabled_switch.get_active()
+        self._calls_enabled_choice.begin(enabled)
+        self._calls_enabled_row.set_sensitive(False)
+
+        def saved(status: dict) -> None:
+            self._calls_enabled_choice.saved(status.get("calls_enabled") is True)
+            self._toast(_("Phone calls preference saved"))
+            self._refresh()
+
+        def failed(error: str) -> None:
+            self._calls_enabled_choice.failed()
+            self._toast(
+                _("Could not save phone calls preference: {error}").format(
+                    error=error
+                )
+            )
+            self._apply_status(self._last_status)
+
+        self._client.set_calls_enabled_async(enabled, saved, failed)
 
     def _storage_policy_changed(self, _row, _property) -> None:
         if self._applying_storage_policy:

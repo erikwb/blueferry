@@ -82,6 +82,10 @@ class FakeClient:
             "proximity_lock_grace_sec": grace_seconds,
         }
 
+    def set_calls_enabled(self, enabled):
+        self.calls.append(("set_calls_enabled", enabled))
+        return {"calls_enabled": enabled}
+
 
 def test_bridge_dispatches_private_values_without_command_arguments() -> None:
     client = FakeClient()
@@ -155,6 +159,26 @@ def test_bridge_rejects_malformed_away_lock_requests(args, message) -> None:
 
     with pytest.raises(ValueError, match=message):
         bridge.dispatch("set_proximity_lock", args)
+    assert client.calls == []
+
+
+def test_bridge_sets_the_phone_calls_opt_in_and_returns_its_status() -> None:
+    client = FakeClient()
+    bridge = QuickshellBridge(client)  # type: ignore[arg-type]
+
+    assert bridge.dispatch("set_calls_enabled", {"enabled": True}) == {
+        "calls_enabled": True,
+    }
+    assert client.calls == [("set_calls_enabled", True)]
+
+
+@pytest.mark.parametrize("args", [{}, {"enabled": 1}, {"enabled": "true"}])
+def test_bridge_rejects_malformed_phone_calls_requests(args) -> None:
+    client = FakeClient()
+    bridge = QuickshellBridge(client)  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="enabled must be a boolean"):
+        bridge.dispatch("set_calls_enabled", args)
     assert client.calls == []
 
 

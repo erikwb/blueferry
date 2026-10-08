@@ -83,8 +83,9 @@ Das Audio selbst leitet PipeWire. BlueFerry steuert nur den Anruf.
    das und scheitert die Freisprech-Verbindung dreimal in Folge, zeigt BlueFerry
    den Zustand `bluez_conflict` und versucht es nur noch alle fünf Minuten
    oder nach einer neuen Verbindung des Telefons.
-5. In den iPhone-Einstellungen des Qt-Clients **Enable phone calls through
-   this computer** ankreuzen oder `blueferry calls enable` ausführen. Die
+5. In den iPhone-Einstellungen des Qt-, GTK- oder Quickshell-Clients
+   **Enable phone calls through this computer** einschalten oder
+   `blueferry calls enable` ausführen. Die
    Wahl wird gespeichert und gilt sofort. `BLUEFERRY_CALLS_ENABLED=true` in
    `~/.config/blueferry/local.env` funktioniert weiter als Anfangswert; eine
    gespeicherte Wahl hat Vorrang. Das Häkchen allein reicht nicht: oFono

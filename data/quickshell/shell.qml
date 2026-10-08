@@ -42,6 +42,7 @@ ShellRoot {
   readonly property SavedChoice mediaControl: SavedChoice {}
   readonly property SavedChoice mprisPlayer: SavedChoice {}
   readonly property SavedChoice proximityLock: SavedChoice {}
+  readonly property SavedChoice callsChoice: SavedChoice {}
   property bool storagePolicyBusy: false
   property bool storageUnlockBusy: false
 
@@ -237,6 +238,7 @@ ShellRoot {
         root.mediaControl.reported(result.media_control_enabled === true)
         root.mprisPlayer.reported(result.media_mpris_enabled === true)
         root.proximityLock.reported(result.proximity_lock_enabled === true)
+        root.callsChoice.reported(result.calls_enabled === true)
         var storagePolicy = result.storage_policy || "encrypted"
         root.storagePolicy = ["encrypted", "plaintext", "none"].indexOf(storagePolicy) >= 0
           ? storagePolicy : "encrypted"
@@ -318,6 +320,12 @@ ShellRoot {
             ? result.proximity_lock_enabled === true : root.proximityLock.value,
           root.statusBusy)
         root.reload()
+      } else if (method === "set_calls_enabled") {
+        root.callsChoice.saved(
+          typeof result === "object" && result !== null
+            ? result.calls_enabled === true : root.callsChoice.value,
+          root.statusBusy)
+        root.reload()
       } else if (method === "set_storage_policy") {
         root.storagePolicyBusy = false
         if (typeof result === "object" && result !== null) {
@@ -386,6 +394,10 @@ ShellRoot {
         root.proximityLock.failed(root.backendStatus.proximity_lock_enabled === true)
         root.errorText = message || "Could not save away lock preference"
         root.reload()
+      } else if (method === "set_calls_enabled") {
+        root.callsChoice.failed(root.backendStatus.calls_enabled === true)
+        root.errorText = message || "Could not save phone calls preference"
+        root.reload()
       } else if (method === "set_storage_policy") {
         root.storagePolicyBusy = false
         root.errorText = message
@@ -409,6 +421,8 @@ ShellRoot {
           root.mprisPlayer.failed(root.backendStatus.media_mpris_enabled === true)
         if (root.proximityLock.busy)
           root.proximityLock.failed(root.backendStatus.proximity_lock_enabled === true)
+        if (root.callsChoice.busy)
+          root.callsChoice.failed(root.backendStatus.calls_enabled === true)
         root.storagePolicyBusy = false
         root.storageUnlockBusy = false
         root.errorText = message
@@ -1040,6 +1054,8 @@ ShellRoot {
             media_control_enabled: root.mediaControl.value
           }, root.backendStatus.media_mpris_enabled === undefined ? {} : {
             media_mpris_enabled: root.mprisPlayer.value
+          }, root.backendStatus.calls_enabled === undefined ? {} : {
+            calls_enabled: root.callsChoice.value
           })
           busy: ({notifications: root.notificationPolicyBusy,
                   contactsOnly: root.contactsOnlyNotificationsBusy,
@@ -1047,6 +1063,7 @@ ShellRoot {
                   mediaControl: root.mediaControl.busy,
                   mprisPlayer: root.mprisPlayer.busy,
                   proximityLock: root.proximityLock.busy,
+                  calls: root.callsChoice.busy,
                   storage: root.storagePolicyBusy})
           visible: root.phoneSettingsVisible
           Layout.fillWidth: true
@@ -1065,6 +1082,7 @@ ShellRoot {
             if (method === "set_media_control") root.mediaControl.request(args.enabled)
             if (method === "set_mpris_player") root.mprisPlayer.request(args.enabled)
             if (method === "set_proximity_lock") root.proximityLock.request(args.enabled)
+            if (method === "set_calls_enabled") root.callsChoice.request(args.enabled)
             if (method === "set_storage_policy") {
               if (args.policy === "encrypted") root.storageUnlockAttempted = true
               root.storagePolicyBusy = true

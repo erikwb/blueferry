@@ -121,6 +121,106 @@ def test_map_refusal_has_a_specific_user_facing_explanation() -> None:
     assert "Connection refused (111)" in connection_subtitle(status, reachable=True)
 
 
+def test_gtk_phone_calls_switch_sends_the_choice():
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from blueferry.ui.saved_choice import SavedChoice
+    from blueferry.ui.status import IPhonePage
+
+    calls = []
+    page = SimpleNamespace(
+        _applying_calls_enabled=False,
+        _calls_enabled_choice=SavedChoice(),
+        _calls_enabled_switch=Mock(get_active=lambda: True),
+        _calls_enabled_row=Mock(),
+        _client=SimpleNamespace(
+            set_calls_enabled_async=lambda enabled, _ok, _err: calls.append(enabled),
+        ),
+    )
+
+    IPhonePage._calls_enabled_changed(page, None, None)
+
+    assert calls == [True]
+    page._calls_enabled_row.set_sensitive.assert_called_with(False)
+
+
+def test_gtk_phone_calls_switch_ignores_updates_from_a_status_refresh():
+    from types import SimpleNamespace
+
+    from blueferry.ui.status import IPhonePage
+
+    # No client or widgets: a refresh must return before touching either.
+    page = SimpleNamespace(_applying_calls_enabled=True)
+
+    IPhonePage._calls_enabled_changed(page, None, None)
+
+
+def test_gtk_phone_calls_switch_holds_the_choice_until_the_save_settles():
+    from types import SimpleNamespace
+
+    from blueferry.ui.saved_choice import SavedChoice
+    from blueferry.ui.status import IPhonePage
+
+    refreshes = []
+    saved = {}
+    choice = SavedChoice()
+    page = SimpleNamespace(
+        _applying_calls_enabled=False,
+        _calls_enabled_choice=choice,
+        _calls_enabled_switch=SimpleNamespace(get_active=lambda: True),
+        _calls_enabled_row=SimpleNamespace(set_sensitive=lambda _value: None),
+        _client=SimpleNamespace(
+            set_calls_enabled_async=lambda _enabled, ok, _err: saved.update(ok=ok),
+        ),
+        _toast=lambda _text: None,
+        _refresh=lambda: refreshes.append(True),
+    )
+
+    IPhonePage._calls_enabled_changed(page, None, None)
+    # While the save is running, a status still reporting "off" is not shown.
+    assert choice.saving and choice.resolve(False) == (True, False)
+
+    saved["ok"]({"calls_enabled": True, "calls_state": "searching"})
+    assert not choice.saving and refreshes == [True]
+    # One status read before the save finished is skipped and asked again.
+    assert choice.resolve(False) == (True, True)
+    assert choice.resolve(False) == (False, False)
+
+
+def test_gtk_phone_calls_switch_reverts_and_reports_a_failed_save():
+    from types import SimpleNamespace
+
+    from blueferry.ui.saved_choice import SavedChoice
+    from blueferry.ui.status import IPhonePage
+
+    toasts = []
+    applied = []
+    failed = {}
+    choice = SavedChoice()
+    last = BackendStatus.from_dict({"calls_enabled": False})
+    page = SimpleNamespace(
+        _applying_calls_enabled=False,
+        _calls_enabled_choice=choice,
+        _calls_enabled_switch=SimpleNamespace(get_active=lambda: True),
+        _calls_enabled_row=SimpleNamespace(set_sensitive=lambda _value: None),
+        _last_status=last,
+        _client=SimpleNamespace(
+            set_calls_enabled_async=lambda _enabled, _ok, err: failed.update(err=err),
+        ),
+        _toast=toasts.append,
+        _apply_status=applied.append,
+    )
+
+    IPhonePage._calls_enabled_changed(page, None, None)
+    failed["err"]("oFono is missing")
+
+    assert not choice.saving
+    assert applied == [last]
+    assert toasts == ["Could not save phone calls preference: oFono is missing"]
+    assert choice.resolve(False) == (False, False)
+
+
 def test_legacy_degraded_status_still_recognizes_errno_111() -> None:
     assert map_connection_refused(
         {
