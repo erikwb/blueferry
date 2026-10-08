@@ -18,9 +18,9 @@ flowchart LR
     C -- GetStatus --> B
 ```
 
-- **Battery**: from BlueZ's `Battery1` if BlueZ publishes it for the phone,
-  otherwise from the standard GATT Battery Service (Battery Level
-  characteristic), read once and then followed through notifications. This is
+- **Battery**: from the phone's standard GATT Battery Service (Battery Level
+  characteristic), read once and then followed through notifications;
+  BlueZ's `Battery1` is used only while that reading is missing. This is
   exact to 1 %. With calls on and no LE value, the hands-free value (20 %
   steps, shown as "about") is used instead.
 - **Signal and network**: only with calls on, from oFono.

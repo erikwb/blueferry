@@ -3,8 +3,10 @@
 iOS exposes the standard GATT Battery Service (0x180F) with its Battery Level
 characteristic (0x2A19, one byte, 0-100 %) to the LE peer it is connected to,
 which BlueFerry already is for ANCS. Where BlueZ's battery plugin claims that
-service it also publishes ``org.bluez.Battery1.Percentage`` on the device;
-that value is preferred, the characteristic is the fallback.
+service it also publishes ``org.bluez.Battery1.Percentage`` on the device.
+The characteristic is preferred: bluetoothd 5.87 can fail to register the
+battery again after an LE reconnect ("path exists") and then keeps publishing
+the level from before it. ``Battery1`` is the fallback.
 
 Everything here is asynchronous: GetManagedObjects, ReadValue, StartNotify and
 StopNotify are sent with reply handlers, and updates arrive as
@@ -96,14 +98,14 @@ class PhoneBattery:
 
     @property
     def percent(self) -> int | None:
-        return self._battery1 if self._battery1 is not None else self._gatt
+        return self._gatt if self._gatt is not None else self._battery1
 
     @property
     def source(self) -> str | None:
-        if self._battery1 is not None:
-            return SOURCE_BLUEZ
         if self._gatt is not None:
             return SOURCE_GATT
+        if self._battery1 is not None:
+            return SOURCE_BLUEZ
         return None
 
     # ---- lifecycle --------------------------------------------------------

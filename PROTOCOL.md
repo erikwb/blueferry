@@ -623,7 +623,9 @@ iOS additionally reports a 0-9 battery level through `AT+IPHONEACCEV`, which
 oFono does not decode, so the HFP battery is limited to 20 % steps. The
 battery does not need HFP, though: iOS exposes the standard GATT Battery
 Service (0x180F, Battery Level 0x2A19, read and notify) to its LE peer;
-BlueFerry prefers that value (or BlueZ's `Battery1` built from it).
+BlueFerry prefers that value. BlueZ's `Battery1`, built from the same
+service, is only the fallback: bluetoothd 5.87 was seen to keep an old level
+there after an LE reconnect (`error registering battery: path exists`).
 
 ## Pairing diagnostics
 
