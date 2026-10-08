@@ -192,7 +192,7 @@ class CallHistory(Protocol):
 
     def sync(self, success: Success, failure: Failure) -> None: ...
 
-    def discard_cache(self) -> None: ...
+    def clear(self) -> None: ...
 
 
 class CallControl(Protocol):
@@ -783,10 +783,11 @@ class BackendOperations:
     def _clear_call_history(self) -> None:
         # Erase the file even when the feature is off: it may hold calls from
         # a time when it was enabled. The next sync seeds silently again.
-        clear_call_history()
         history = self._current_call_history()
         if history is not None:
-            history.discard_cache()
+            history.clear()
+        else:
+            clear_call_history()
 
     def _current_call_history(self) -> CallHistory | None:
         provider = self.dependencies.call_history

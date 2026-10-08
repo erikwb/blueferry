@@ -1029,3 +1029,170 @@ def test_unusable_announcement_state_seeds_again_silently(storage) -> None:
     result = repository.replace([_call(MISSED, 1)], now=NOW)
 
     assert result.seeded and result.new_missed == []
+
+
+@pytest.mark.parametrize("phase", ["pull", "queued_store", "stored"])
+def test_clear_history_invalidates_inflight_sync(harness, phase) -> None:
+    h = harness
+    h.phone.calls = [_call(MISSED, 5)]
+    completions = []
+    h.sync.sync(completions.append, completions.append)
+    if phase != "pull":
+        for _ in call_history_sync.FULL_PULL:
+            operation, handlers = h.jobs.pop(0)
+            handlers["on_success"](operation())
+    stored = None
+    if phase == "stored":
+        operation, handlers = h.jobs.pop(0)
+        stored = (operation(), handlers)
+        assert _stored_rows() == 1
+    h.sync.clear()
+    if stored is not None:
+        result, handlers = stored
+        handlers["on_success"](result)
+    h.run()
+    assert h.sync.records() == []
+    assert _stored_rows() == 0
+    assert h.missed == []
+    assert h.errors == []
+    assert len(completions) == 1
+    assert isinstance(completions[0], call_history_sync.StorageChangedDuringCallSync)
+
+    # A new explicit sync remains usable and seeds the fresh mirror silently.
+    h.sync.sync()
+    h.run()
+    assert h.sync.records() == h.phone.calls
+    assert _stored_rows() == 1
+    assert h.missed == []
+
+
+def test_clear_waits_for_active_store_before_erasing(harness, monkeypatch) -> None:
+    h = harness
+    h.phone.calls = [_call(MISSED, 5)]
+    h.sync.sync()
+    for _ in call_history_sync.FULL_PULL:
+        operation, handlers = h.jobs.pop(0)
+        handlers["on_success"](operation())
+    store, handlers = h.jobs.pop(0)
+    entered, clear_waiting, release = (threading.Event() for _ in range(3))
+    original = CallHistoryRepository.replace
+    main_thread = threading.get_ident()
+    lock = h.sync._store_lock
+
+    class ObservedLock:
+        def __enter__(self):
+            if threading.get_ident() == main_thread:
+                clear_waiting.set()
+            lock.acquire()
+
+        def __exit__(self, *_args):
+            lock.release()
+
+    def blocked_replace(repository, *args, **kwargs):
+        entered.set()
+        assert release.wait(5), "the clear operation did not reach the store lock"
+        return original(repository, *args, **kwargs)
+
+    monkeypatch.setattr(h.sync, "_store_lock", ObservedLock())
+    monkeypatch.setattr(CallHistoryRepository, "replace", blocked_replace)
+    results = []
+    writer = threading.Thread(target=lambda: results.append(store()))
+
+    def release_write():
+        if clear_waiting.wait(5):
+            release.set()
+
+    releaser = threading.Thread(target=release_write)
+    writer.start()
+    try:
+        assert entered.wait(5)
+        releaser.start()
+        h.sync.clear()
+    finally:
+        release.set()
+        writer.join(5)
+        if releaser.ident is not None:
+            releaser.join(5)
+    assert not writer.is_alive()
+    assert len(results) == 1
+    handlers["on_success"](results[0])
+    assert _stored_rows() == 0
+    assert h.sync.records() == []
+    assert h.missed == []
+
+
+def test_clear_cancels_followup_syncs_requested_before_clear(harness) -> None:
+    h = harness
+    h.sync.sync()
+    h.run()
+    h.phone.calls = [_call(MISSED, 5)]
+    h.sync.refresh(full=False)
+    completions = []
+    h.sync.sync(completions.append, completions.append)  # queued full pull
+    h.sync.refresh("request", full=True)  # coalesced automatic follow-up
+    cancelled = []
+    h.sync._cancel = cancelled.append
+    h.sync.request_sync("test")  # request waiting for its coalescing timer
+    h.sync.clear()
+    h.run()
+    assert h.sync.records() == []
+    assert _stored_rows() == 0
+    assert h.jobs == []
+    assert cancelled == [1]
+    assert h.sync._request_id is None
+    assert len(completions) == 1
+    assert isinstance(completions[0], call_history_sync.StorageChangedDuringCallSync)
+
+
+
+@pytest.mark.parametrize("replace_key", [False, True])
+def test_cache_invalidation_still_cleans_up_obsolete_storage_write(harness, wallet, replace_key):
+    h = harness
+    h.phone.calls = [_call(MISSED, 5)]
+    h.sync.sync()
+    for _ in call_history_sync.FULL_PULL:
+        operation, handlers = h.jobs.pop(0)
+        handlers["on_success"](operation())
+    operation, handlers = h.jobs.pop(0)
+    result = operation()
+    assert _stored_rows() == 1
+
+    _lock(h.storage, wallet)
+    h.sync.storage_changed()
+    wallet.locked = False
+    if replace_key:
+        wallet.key = b"R" * 32
+    h.storage.refresh(allow_prompt=False)
+    handlers["on_success"](result)
+    assert _stored_rows() == 0
+    assert h.sync.records() == []
+    assert h.missed == []
+
+    finished = []
+    h.sync.sync(finished.append, finished.append)
+    h.run()
+    assert finished == [1]
+    assert h.sync.records() == h.phone.calls
+    assert h.storage.status.can_read
+
+
+def test_clear_then_key_change_does_not_erase_newer_history(harness, wallet):
+    h = harness
+    h.phone.calls = [_call(MISSED, 5)]
+    h.sync.sync()
+    for _ in call_history_sync.FULL_PULL:
+        operation, handlers = h.jobs.pop(0)
+        handlers["on_success"](operation())
+    operation, handlers = h.jobs.pop(0)
+    stale = operation()
+    h.sync.clear()
+    wallet.key = b"R" * 32
+    h.storage.refresh(allow_prompt=False)
+    newer = [_call(INCOMING, 1)]
+    CallHistoryRepository(h.storage).replace(newer, now=NOW)
+    h.sync.adopt(newer)
+
+    handlers["on_success"](stale)
+    assert CallHistoryRepository(h.storage).load(now=NOW) == newer
+    assert h.sync.records() == newer
+    assert h.missed == []

@@ -31,6 +31,7 @@ gone" errors are reported to the session manager.
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
@@ -171,6 +172,9 @@ class CallHistorySync:
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._phone = config.IPHONE_MAC if phone is None else phone
         self._records: list[CallRecord] = []
+        self._cache_generation = 0
+        self._clear_generation = 0
+        self._store_lock = threading.Lock()
         self._pending = False
         self._pending_full = False
         self._waiters: list[tuple[Success, Failure]] = []
@@ -220,6 +224,36 @@ class CallHistorySync:
 
     def discard_cache(self) -> None:
         """Drop the in-memory snapshot after history or policy was cleared."""
+        with self._store_lock:
+            self._cache_generation += 1
+        if self._records:
+            self._records = []
+            self._on_changed()
+
+    def clear(self) -> None:
+        """Erase history and invalidate pulls and writes already in flight."""
+        # A worker may be committing when ClearHistory arrives. Wait for that
+        # commit before erasing, and prevent queued old writes from following.
+        with self._store_lock:
+            self._cache_generation += 1
+            self._clear_generation += 1
+            clear_call_history()
+        self._synced = False
+        self._resync = False
+        self._resync_full = False
+        if self._request_id is not None:
+            try:
+                self._cancel(self._request_id)
+            except Exception:
+                log.debug("could not remove call history request timer", exc_info=True)
+            self._request_id = None
+        self._request_full = False
+        queued, self._queued = self._queued, []
+        for _success, failure in queued:
+            try:
+                failure(StorageChangedDuringCallSync("call history was cleared"))
+            except Exception:
+                log.exception("call history completion callback failed")
         if self._records:
             self._records = []
             self._on_changed()
@@ -350,6 +384,8 @@ class CallHistorySync:
         self._pending_full = full
         plan = FULL_PULL if full else MISSED_PULL
         revision = self._storage.revision
+        cache_generation = self._cache_generation
+        clear_generation = self._clear_generation
         # The worker gets its own key buffer; the live one is zeroed in place
         # whenever storage relocks or changes policy. ``follow`` makes the
         # copy refuse to seal once the policy or key changed mid-sync.
@@ -379,6 +415,9 @@ class CallHistorySync:
             ))
 
         def pull_next() -> None:
+            if cache_generation != self._cache_generation:
+                abort(StorageChangedDuringCallSync("call history was cleared"), transport=False)
+                return
             if self._stopped:
                 abort(CallHistoryStopped("call history is off"), transport=False)
                 return
@@ -397,13 +436,16 @@ class CallHistorySync:
 
         def store() -> ReplaceResult:
             try:
-                return CallHistoryRepository(storage).replace(
-                    merge_call_history(collected),
-                    now=now,
-                    phone=self._phone or None,
-                    directions=frozenset(direction for _phonebook, direction in plan),
-                )
-            except CorruptStorageError:
+                with self._store_lock:
+                    if cache_generation != self._cache_generation:
+                        raise StorageChangedDuringCallSync("call history was cleared")
+                    return CallHistoryRepository(storage).replace(
+                        merge_call_history(collected),
+                        now=now,
+                        phone=self._phone or None,
+                        directions=frozenset(direction for _phonebook, direction in plan),
+                    )
+            except (CorruptStorageError, StorageChangedDuringCallSync):
                 raise
             except Exception as error:
                 raise CallHistoryStorageError("could not store call history") from error
@@ -412,7 +454,13 @@ class CallHistorySync:
 
         def stored(result: ReplaceResult) -> None:
             try:
-                count = self._stored(result, revision, now, full=full)
+                # An explicit clear has already erased this write. A cache
+                # invalidation alone still owes the key/policy cleanup below.
+                if clear_generation != self._clear_generation:
+                    raise StorageChangedDuringCallSync("call history was cleared")
+                count = self._stored(
+                    result, revision, now, full=full, cache_generation=cache_generation,
+                )
             except Exception as error:
                 self._finished(error=error, transport=False)
             else:
@@ -421,7 +469,8 @@ class CallHistorySync:
         pull_next()
 
     def _stored(
-        self, result: ReplaceResult, revision: int, now: datetime, *, full: bool,
+        self, result: ReplaceResult, revision: int, now: datetime, *,
+        full: bool, cache_generation: int,
     ) -> int:
         if self._storage.revision != revision:
             # Sealed under a key or policy that is no longer current. The phone
@@ -437,6 +486,8 @@ class CallHistorySync:
                 clear_call_history()
             self.discard_cache()
             raise CallHistoryStopped("call history is off")
+        if cache_generation != self._cache_generation:
+            raise StorageChangedDuringCallSync("call history cache was discarded")
         self._records = list(result.records)
         if full:
             self._synced = True
