@@ -495,7 +495,8 @@ blueferry notifications open-map remove net.whatsapp.WhatsApp
 ```
 
 The Qt client edits the same rules under **Desktop Notifications** while all
-notifications are shown. Rules are stored with the other popup preferences in
+notifications are shown, and the terminal client in a panel opened with `l`.
+Rules are stored with the other popup preferences in
 `~/.config/blueferry/settings.json` (owner-only, not encrypted) and take
 effect without restarting the service.
 

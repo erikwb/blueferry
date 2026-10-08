@@ -70,6 +70,14 @@ Under **Desktop Notifications**, an editor for click rules appears while
 **All iPhone Notifications** is selected. Add, change and remove rules there.
 Changes made with the CLI show up in the editor and the other way round.
 
+### Terminal client
+
+Press `l` in `blueferry-tui` to open the click-rule panel. It lists the
+rules; Enter on a rule copies it into the form, **Save** adds or changes a
+rule, and **Remove** deletes the highlighted one. If the panel says rules
+don't apply, select **All iPhone Notifications** in the settings of a
+graphical client.
+
 Rules take effect immediately; no service restart is needed.
 
 ### Finding IDs
@@ -100,7 +108,8 @@ Rules take effect immediately; no service restart is needed.
   or commands. The CLI warns if the entry isn't installed; a missing entry
   does nothing when clicked.
 - At most 64 rules.
-- The GTK, Quickshell and terminal clients have no editor; use the CLI.
+- The GTK and Quickshell clients have no editor; use the CLI, the Qt client
+  or the terminal client.
 - With systemd, the target is started in its own transient user unit
   (`app-blueferry-open-*.service`), because the BlueFerry service sandbox
   would break a browser. Without systemd (for example OpenRC), it is launched
