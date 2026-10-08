@@ -397,7 +397,8 @@ still works as the initial value; a saved choice wins.
 What turning it on means: while the iPhone is connected, its hands-free link
 stays up with this computer, so calls ring here and, once answered here,
 their audio plays here. Turning it off (or quitting the backend) powers the
-hands-free modem down again (`Powered=false`) if BlueFerry powered it, so
+hands-free modem down again (`Powered=false`) if BlueFerry powered it or
+found it powered while calls were on, so
 call audio goes back to the phone; a call in progress continues there.
 
 Toggling rewrites the phone-audio fragment. BlueFerry restarts

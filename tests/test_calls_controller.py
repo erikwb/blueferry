@@ -871,12 +871,87 @@ def test_stop_powers_down_the_modem_blueferry_powered() -> None:
     assert len(transport.sent) == 1
 
 
-def test_stop_leaves_a_modem_powered_by_someone_else_alone() -> None:
+def test_stop_powers_down_a_modem_found_already_powered() -> None:
+    # For example after a crash: the previous process powered it.
     controller, transport, *_ = _ready()
+
+    controller.set_enabled(False)
+
+    assert transport.sent == [(MODEM, MODEM_IFACE, "SetProperty", ("Powered", False))]
+
+
+def test_modem_that_powers_up_by_itself_is_powered_down_on_stop() -> None:
+    controller, transport, _timers, _changes, _events = _build(reachable=lambda: False)
+    controller.start()
+    transport.take("GetModems").on_reply([_modem()])
+    transport.emit(MODEM_IFACE, "PropertyChanged", MODEM, "Powered", dbus.Boolean(True))
 
     controller.stop()
 
+    assert transport.sent == [(MODEM, MODEM_IFACE, "SetProperty", ("Powered", False))]
+
+
+def test_disable_while_powering_up_powers_down_once_ofono_replies() -> None:
+    controller, transport, timers, _changes, _events = _build()
+    controller.start()
+    transport.take("GetModems").on_reply([_modem()])
+    powering = transport.take("SetProperty")
+
+    controller.set_enabled(False)
     assert transport.sent == []
+
+    powering.on_reply()
+
+    assert transport.sent == [(MODEM, MODEM_IFACE, "SetProperty", ("Powered", False))]
+    assert controller.state == CALLS_DISABLED
+    assert transport.pending == [] and timers.entries == {}
+
+
+def test_failed_power_up_after_disable_sends_nothing() -> None:
+    controller, transport, _timers, _changes, _events = _build()
+    controller.start()
+    transport.take("GetModems").on_reply([_modem()])
+    powering = transport.take("SetProperty")
+    controller.set_enabled(False)
+
+    powering.on_error(dbus.exceptions.DBusException("x", name="org.ofono.Error.Failed"))
+
+    assert transport.sent == []
+
+
+def test_stale_power_reply_while_calls_are_on_again_is_left_to_discovery() -> None:
+    controller, transport, _timers, _changes, _events = _build()
+    controller.start()
+    transport.take("GetModems").on_reply([_modem()])
+    powering = transport.take("SetProperty")
+    controller.set_enabled(False)
+    controller.set_enabled(True)
+
+    powering.on_reply()
+
+    assert transport.sent == []
+
+
+def test_stale_online_reply_after_disable_sends_nothing_more() -> None:
+    controller, transport, _timers, _changes, _events = _build()
+    controller.start()
+    transport.take("GetModems").on_reply([_modem(powered=True)])
+    going_online = transport.take("SetProperty")
+    controller.set_enabled(False)
+    assert len(transport.sent) == 1
+
+    going_online.on_reply()
+
+    assert len(transport.sent) == 1
+
+
+def test_stop_leaves_a_modem_never_seen_while_enabled_alone() -> None:
+    controller, transport, *_ = _build(enabled=False)
+
+    controller.stop()
+    controller.set_enabled(False)
+
+    assert transport.sent == [] and transport.pending == []
 
 
 def test_ofono_restart_forgets_the_modem_it_powered() -> None:

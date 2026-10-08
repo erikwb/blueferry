@@ -174,9 +174,9 @@ class CallController:
         # Modem properties oFono accepted for the current bring-up attempt.
         # Its PropertyChanged confirmation may lag the method reply.
         self._requested: set[str] = set()
-        # The modem BlueFerry powered up itself. Only that one is powered down
-        # again on stop, so a modem another oFono client brought up is left
-        # alone.
+        # The iPhone modem BlueFerry powered up, or found powered while calls
+        # were on (its own earlier process may have crashed). It is powered
+        # down again on stop; a modem never seen while enabled is left alone.
         self._powered_path: str | None = None
         self._discovering = False
         # Paging stopped because bluetoothd's own HFP plugin most likely owns
@@ -336,12 +336,15 @@ class CallController:
         args: tuple[Any, ...],
         on_reply: Callable[..., None],
         on_error: Failure,
+        on_stale_reply: Callable[[], None] | None = None,
     ) -> None:
         generation = self._generation
 
         def replied(*values: Any) -> None:
             if generation == self._generation:
                 on_reply(*values)
+            elif on_stale_reply is not None:
+                on_stale_reply()
 
         def failed(error: Exception) -> None:
             if generation == self._generation:
@@ -599,7 +602,11 @@ class CallController:
         this computer with no BlueFerry call UI.
         """
         path, self._powered_path = self._powered_path, None
-        if path is None or self._transport is None:
+        if path is not None:
+            self._send_power_down(path)
+
+    def _send_power_down(self, path: str) -> None:
+        if self._transport is None:
             return
         log.info("releasing the iPhone HFP modem (Powered=false)")
         try:
@@ -645,6 +652,8 @@ class CallController:
         modem = self._modem
         if modem is None or not self._running:
             return
+        if modem.powered:
+            self._powered_path = modem.path
         if modem.voice_ready:
             self._cancel_timer("_bringup_id")
             if self._bound_path != modem.path:
@@ -708,8 +717,15 @@ class CallController:
                     return
                 self._schedule_retry()
 
+        def stale() -> None:
+            # oFono refuses Powered=false while this request is pending, so a
+            # stop in between can only release the modem once it has replied.
+            if name == "Powered" and not self._running:
+                self._send_power_down(path)
+
         self._call(
             path, MODEM_IFACE, "SetProperty", "sv", (name, boolean(True)), done, failed,
+            stale,
         )
 
     def _bringup_level(self) -> int:
