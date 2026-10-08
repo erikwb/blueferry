@@ -569,6 +569,7 @@ Kirigami.ApplicationWindow {
 
                         ListView {
                             id: threadList
+                            objectName: "threadList"
                             Layout.fillWidth: true
                             Layout.fillHeight: true
                             clip: true
@@ -603,12 +604,17 @@ Kirigami.ApplicationWindow {
                                             elide: Text.ElideRight
                                         }
                                         Controls.Label {
+                                            objectName: "threadPreview"
                                             Layout.fillWidth: true
+                                            // One line: a line break in the message would
+                                            // switch off eliding and grow the row.
                                             text: threadDelegate.modelData.messages.length
-                                                ? threadDelegate.modelData.messages[threadDelegate.modelData.messages.length - 1].body
+                                                ? String(threadDelegate.modelData.messages[threadDelegate.modelData.messages.length - 1].body || "")
+                                                    .replace(/\s+/g, " ").trim()
                                                 : qsTr("No Messages")
                                             textFormat: Text.PlainText
                                             opacity: 0.7
+                                            maximumLineCount: 1
                                             elide: Text.ElideRight
                                         }
                                     }
