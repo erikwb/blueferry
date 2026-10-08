@@ -87,6 +87,7 @@ class PhoneBattery:
         self._wanted = False
         self._generation = 0
         self._char_generation = 0
+        self._discovery_changes: set[str] | None = None
         self._matches: list[Any] = []
         self._char_match: Any = None
         self._char_path: str | None = None
@@ -117,6 +118,7 @@ class PhoneBattery:
             return
         self._running = True
         self._generation += 1
+        self._discovery_changes = set()
         try:
             bus = self._bus_factory()
             for signal, handler in (
@@ -138,7 +140,7 @@ class PhoneBattery:
             return
         self._call(
             "/", OBJECT_MANAGER_IFACE, "GetManagedObjects", "", (),
-            self._on_managed, self._failed("GetManagedObjects"),
+            self._on_managed, self._on_managed_failed,
         )
 
     def stop(self) -> None:
@@ -148,6 +150,7 @@ class PhoneBattery:
     def _halt(self) -> None:
         self._running = False
         self._generation += 1
+        self._discovery_changes = None
         self._forget_characteristic(stop_notify=True)
         for match in self._matches:
             self._remove(match)
@@ -258,15 +261,32 @@ class PhoneBattery:
             log.debug("could not remove phone battery watch", exc_info=True)
 
     def _on_managed(self, objects: object = None) -> None:
+        changed, self._discovery_changes = self._discovery_changes or set(), None
         if not isinstance(objects, Mapping):
             return
         for path, interfaces in objects.items():
-            self._on_added(path, interfaces)
+            # Object-manager signals and battery notifications are newer than
+            # the initial snapshot. Keep their values and removal tombstones.
+            if str(path) not in changed:
+                self._on_added(path, interfaces)
+
+    def _on_managed_failed(self, error: Exception) -> None:
+        self._discovery_changes = None
+        self._failed("GetManagedObjects")(error)
+
+    def _note_discovery_change(self, path: str) -> None:
+        if self._discovery_changes is not None:
+            self._discovery_changes.add(path)
 
     def _on_added(self, path: object, interfaces: object) -> None:
         path = str(path)
         if not isinstance(interfaces, Mapping):
             return
+        if (
+            (path == self.device_path and BATTERY1_IFACE in interfaces)
+            or (_under(path, self.device_path) and GATT_CHAR_IFACE in interfaces)
+        ):
+            self._note_discovery_change(path)
         battery = interfaces.get(BATTERY1_IFACE)
         if path == self.device_path and isinstance(battery, Mapping):
             self._set_battery1(parse_battery1_percentage(battery.get("Percentage")))
@@ -283,6 +303,11 @@ class PhoneBattery:
         names = (
             {str(name) for name in interfaces} if isinstance(interfaces, list | tuple) else set()
         )
+        if (
+            (path == self.device_path and BATTERY1_IFACE in names)
+            or (_under(path, self.device_path) and GATT_CHAR_IFACE in names)
+        ):
+            self._note_discovery_change(path)
         if path == self.device_path and BATTERY1_IFACE in names:
             self._set_battery1(None)
         if path == self._char_path and GATT_CHAR_IFACE in names:
@@ -291,6 +316,7 @@ class PhoneBattery:
     def _on_battery1_changed(self, interface: object, changed: object, _invalidated=None) -> None:
         if str(interface) == BATTERY1_IFACE and isinstance(changed, Mapping):
             if "Percentage" in changed:
+                self._note_discovery_change(self.device_path)
                 self._set_battery1(parse_battery1_percentage(changed["Percentage"]))
 
     def _set_battery1(self, value: int | None) -> None:
@@ -355,6 +381,8 @@ class PhoneBattery:
     def _on_char_changed(self, interface: object, changed: object, _invalidated=None) -> None:
         if str(interface) == GATT_CHAR_IFACE and isinstance(changed, Mapping):
             if "Value" in changed:
+                if self._char_path is not None:
+                    self._note_discovery_change(self._char_path)
                 self._set_gatt(parse_battery_level(changed["Value"]))
 
     def _forget_characteristic(self, *, stop_notify: bool) -> None:

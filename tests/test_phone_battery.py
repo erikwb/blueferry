@@ -240,3 +240,68 @@ def test_recreated_characteristic_at_same_path_ignores_old_values() -> None:
     assert watcher.percent == 80
     bus.take("ReadValue")[5](dbus.Array([dbus.Byte(79)], signature="y"))
     assert watcher.percent == 79
+
+
+
+@pytest.mark.parametrize("saw_added", [False, True])
+def test_initial_discovery_does_not_restore_removed_characteristic(saw_added) -> None:
+    watcher, bus, *_ = _battery()
+    watcher.start()
+    initial = bus.take("GetManagedObjects")
+    if saw_added:
+        bus.emit("InterfacesAdded", dbus.ObjectPath(CHAR), _char(50))
+    bus.emit("InterfacesRemoved", dbus.ObjectPath(CHAR), [GATT_CHAR_IFACE])
+    initial[5]({dbus.ObjectPath(CHAR): _char(50)})
+    assert watcher.percent is None
+    bus.emit("InterfacesAdded", dbus.ObjectPath(CHAR), _char(80))
+    assert watcher.percent == 80
+
+
+def test_initial_discovery_keeps_recreated_characteristic_and_discovers_battery1() -> None:
+    watcher, bus, *_ = _battery()
+    watcher.start()
+    initial = bus.take("GetManagedObjects")
+    bus.emit("InterfacesAdded", dbus.ObjectPath(CHAR), _char(50))
+    bus.emit("InterfacesRemoved", dbus.ObjectPath(CHAR), [GATT_CHAR_IFACE])
+    bus.emit("InterfacesAdded", dbus.ObjectPath(CHAR), _char(80))
+    bus.emit("PropertiesChanged", GATT_CHAR_IFACE,
+             {"Value": dbus.Array([dbus.Byte(79)])}, [], path=CHAR, arg0=GATT_CHAR_IFACE)
+    initial[5]({
+        dbus.ObjectPath(CHAR): _char(50),
+        dbus.ObjectPath(DEVICE): {BATTERY1_IFACE: {"Percentage": dbus.Byte(70)}},
+    })
+    assert watcher.percent == 79
+    bus.emit("InterfacesRemoved", dbus.ObjectPath(CHAR), [GATT_CHAR_IFACE])
+    assert watcher.percent == 70
+
+
+def test_initial_discovery_keeps_newer_battery1_percentage() -> None:
+    watcher, bus, *_ = _battery()
+    watcher.start()
+    initial = bus.take("GetManagedObjects")
+    bus.emit("PropertiesChanged", BATTERY1_IFACE, {"Percentage": dbus.Byte(67)}, [],
+             path=DEVICE, arg0=BATTERY1_IFACE)
+    initial[5]({dbus.ObjectPath(DEVICE): {BATTERY1_IFACE: {"Percentage": dbus.Byte(50)}}})
+    assert watcher.percent == 67
+
+
+def test_initial_discovery_does_not_restore_removed_battery1() -> None:
+    watcher, bus, *_ = _battery()
+    watcher.start()
+    initial = bus.take("GetManagedObjects")
+    bus.emit("InterfacesRemoved", dbus.ObjectPath(DEVICE), [BATTERY1_IFACE])
+    initial[5]({dbus.ObjectPath(DEVICE): {BATTERY1_IFACE: {"Percentage": dbus.Byte(50)}}})
+    assert watcher.percent is None
+
+
+def test_new_bluez_generation_does_not_keep_old_discovery_removals() -> None:
+    watcher, bus, *_ = _battery()
+    watcher.start()
+    initial = bus.take("GetManagedObjects")
+    bus.emit("InterfacesRemoved", dbus.ObjectPath(CHAR), [GATT_CHAR_IFACE])
+    watcher.bluez_owner_changed(True)
+    fresh = bus.take("GetManagedObjects")
+    initial[5]({dbus.ObjectPath(CHAR): _char(50)})
+    assert watcher.percent is None
+    fresh[5]({dbus.ObjectPath(CHAR): _char(80)})
+    assert watcher.percent == 80
