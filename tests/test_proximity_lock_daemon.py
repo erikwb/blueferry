@@ -458,3 +458,32 @@ def test_a_stale_bond_report_flip_only_publishes_status(make_daemon) -> None:
     h.poll()
     timers.advance(3600)
     assert locker.calls == 0
+
+
+def test_local_disconnect_of_both_bearers_stays_inhibited_until_return(rig) -> None:
+    rig.link(True, True)
+    rig.daemon._on_device_disconnected("org.bluez.Reason.Local")
+    rig.link(False, False)
+    rig.timers.advance(60)
+    assert rig.locker.calls == 0
+    assert pl.INHIBIT_LOCAL_DISCONNECT in rig.daemon.proximity.snapshot()["proximity_lock_inhibited"]
+
+    rig.link(True, True)
+    assert rig.daemon.proximity.state == pl.STATE_ARMED
+    rig.link(False, False)
+    rig.timers.advance(30)
+    assert rig.locker.calls == 1
+
+
+def test_bearer_poll_publishes_complete_presence_snapshot(rig) -> None:
+    rig.link(True, True)
+    observed = []
+    original = rig.daemon.bearers._on_status
+
+    def changed():
+        observed.append((rig.daemon.bearers.bredr_state, rig.daemon.bearers.le_state))
+        original()
+
+    rig.daemon.bearers._on_status = changed
+    rig.link(False, False)
+    assert observed == [(False, False)]

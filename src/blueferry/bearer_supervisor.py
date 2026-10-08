@@ -844,15 +844,22 @@ class BearerSupervisor:
         return False
 
     def _refresh_states(self) -> tuple[bool | None, bool | None]:
+        previous = dict(self._states)
         bredr = self._read("bredr")
-        self._update_state("bredr", bredr)
-        return bredr, self._refresh_le_state()
+        self._update_state("bredr", bredr, notify_status=False)
+        le = self._refresh_le_state(notify_status=False)
+        # Presence consumers need one complete poll. Publishing Classic first
+        # leaves the previous LE value visible and can falsely report a return
+        # while both bearers are disconnecting.
+        if previous != self._states and self._on_status is not None:
+            self._on_status()
+        return bredr, le
 
-    def _refresh_le_state(self) -> bool | None:
+    def _refresh_le_state(self, *, notify_status: bool = True) -> bool | None:
         previous_le = self._states["le"]
         previous_observation = self._legacy_observation
         le = self._read("le")
-        self._update_state("le", le)
+        self._update_state("le", le, notify_status=notify_status)
         # The aggregate device state can change while LE stays unknown, for
         # example when the API is first found missing or a bearer comes or
         # goes. Consumers that probe GATT themselves need that observation.
@@ -890,6 +897,7 @@ class BearerSupervisor:
         value: bool | None,
         *,
         deliberate: bool = False,
+        notify_status: bool = True,
     ) -> None:
         self._settle_in_progress_connect(kind, value)
         previous = self._states[kind]
@@ -956,7 +964,7 @@ class BearerSupervisor:
         # therefore receive only genuine bearer lifecycle transitions.
         if previous != value and kind == "le" and self._on_le_state is not None:
             self._on_le_state(value)
-        if previous != value and self._on_status is not None:
+        if notify_status and previous != value and self._on_status is not None:
             self._on_status()
         if kind == "le" and value is True:
             self._retarget_pending_classic_connect()
