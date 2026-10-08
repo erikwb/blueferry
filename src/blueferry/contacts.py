@@ -20,8 +20,8 @@ from typing import TYPE_CHECKING, TextIO
 
 import dbus
 
+from blueferry import config
 from blueferry.bus import obex
-from blueferry.contact_photo_settings import photos_enabled
 from blueferry.contact_photos import REJECT_TOO_LARGE, inspect_vcard_photo
 from blueferry.contact_repository import ContactRecord, ContactRepository
 from blueferry.events import canonical_address, is_email_shaped, normalize_phone
@@ -409,7 +409,8 @@ def pull_phonebook(
     """Pull the iPhone's main phonebook over PBAP and return contact count.
 
     Replaces the local cache atomically (transaction). ``photos`` defaults to
-    the saved contact-photo setting (see ``contact_photo_settings``). The
+    the ``BLUEFERRY_CONTACT_PHOTOS`` seed; the daemon passes its saved
+    setting (see ``contact_photo_settings``). The
     request is identical either way: without a PBAP ``Fields`` filter the
     iPhone already includes PHOTO in this single pull, so enabling photos
     only stops discarding bytes that were transferred anyway. Photos are
@@ -420,7 +421,7 @@ def pull_phonebook(
         raise RuntimeError(storage.status.detail)
     with open_vcard_listing(sessions, "pb", max_entries=max_contacts) as stream:
         size = os.fstat(stream.fileno()).st_size
-        if (photos_enabled() if photos is None else photos) and storage is not None:
+        if (config.CONTACT_PHOTOS if photos is None else photos) and storage is not None:
             # Find the records that own an address before budgeting photos.
             servable = _servable_photo_indices(_parse_vcard_records(
                 iter_bounded_lines(stream), maximum=max_contacts,
@@ -482,8 +483,17 @@ class ContactsResolver:
     otherwise bound `resolve` methods become stale.
     """
 
-    def __init__(self, *, storage: StorageSecurity | None = None, strict: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        storage: StorageSecurity | None = None,
+        strict: bool = False,
+        photos: Callable[[], bool] | None = None,
+    ) -> None:
         self.storage = storage
+        # Whether to load photo references; the daemon passes its saved
+        # setting, everything else uses the local.env seed.
+        self._photos = photos or (lambda: bool(config.CONTACT_PHOTOS))
         self._repository = ContactRepository(storage)
         self._mem: dict[str, set[str]] = {}
         self._records: list[ContactRecord] = []
@@ -495,7 +505,7 @@ class ContactsResolver:
         # disabled resolver is exactly the photo-blind one.
         entries = (
             self._repository.load_entries(strict=strict)
-            if photos_enabled()
+            if self._photos()
             else [(record, None) for record in self._repository.load(strict=strict)]
         )
         loaded = [(_sanitized(record), photo) for record, photo in entries]
@@ -549,7 +559,7 @@ class ContactsResolver:
 
     def refresh(self) -> int:
         """Replace the cache only after a successful read; propagate failures."""
-        prepared = ContactsResolver(storage=self.storage, strict=True)
+        prepared = ContactsResolver(storage=self.storage, strict=True, photos=self._photos)
         self.adopt_cache(prepared)
         return len(self._mem)
 

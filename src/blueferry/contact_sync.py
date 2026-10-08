@@ -50,8 +50,11 @@ class ContactSync:
         pull: Pull | None = None,
         schedule: Callable[[int, Callable[[], bool]], int] | None = None,
         cancel: Callable[[int], object] | None = None,
+        photos: Callable[[], bool] | None = None,
     ) -> None:
         self._sessions = sessions
+        # The daemon's contact-photo setting, read when a pull is queued.
+        self._photos = photos
         self._storage = storage
         self._contacts = contacts
         self._submit = submit
@@ -154,10 +157,11 @@ class ContactSync:
         revision = self._storage.revision
         storage = self._storage.snapshot(follow=True)
         pull = self._pull or contacts_module.pull_phonebook
+        options = {} if self._photos is None else {"photos": bool(self._photos())}
 
         def download() -> int:
             try:
-                return pull(self._sessions, storage=storage)
+                return pull(self._sessions, storage=storage, **options)
             finally:
                 storage.close()
 

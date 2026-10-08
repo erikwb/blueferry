@@ -57,7 +57,6 @@ from blueferry.commands import run_command
 from blueferry.confirmed_groups import ConfirmedGroupsStore
 from blueferry.connectivity import Connectivity
 from blueferry.contact_photo_settings import ContactPhotoSettings
-from blueferry.contact_photo_settings import set_runtime as set_photo_runtime
 from blueferry.contact_photos import PhotoFiles
 from blueferry.contact_repository import ContactRepository
 from blueferry.contact_sync import ContactSync
@@ -166,11 +165,12 @@ class Daemon:
         self.storage.require_preparation()
         # Opt-in avatars, saved in settings.json (local.env only seeds it).
         # Disabled means inert: nothing is parsed, served, or written, and
-        # photos kept by an earlier opt-in are erased. Publish the choice
-        # before the contact cache loads, since it decides photo references.
+        # photos kept by an earlier opt-in are erased. The cache, the sync
+        # and storage preparation read the live setting through a callable.
         self.photo_settings = ContactPhotoSettings(log_overrides=True)
-        set_photo_runtime(self.photo_settings.enabled)
-        self.contacts = ContactsResolver(storage=self.storage)
+        self.contacts = ContactsResolver(
+            storage=self.storage, photos=self._contact_photos_enabled,
+        )
         self.photo_files: PhotoFiles | None = None
         if self.photo_settings.enabled:
             self.photo_files = self._new_photo_files()
@@ -312,6 +312,7 @@ class Daemon:
             contacts=self.contacts,
             submit=lambda *args, **kwargs: self.obex_worker.submit(*args, **kwargs),
             on_refreshed=self._contacts_refreshed,
+            photos=self._contact_photos_enabled,
         )
         # Opt-in: until the user turns it on nothing is pulled, stored, or
         # scheduled, and no CallHistorySync exists.
@@ -719,7 +720,9 @@ class Daemon:
                 confirmed_groups=self.confirmed_groups,
                 group_routes=self.group_routes,
                 storage=self.storage,
-                prepare_storage=prepare_storage,
+                prepare_storage=lambda storage: prepare_storage(
+                    storage, photos=self._contact_photos_enabled,
+                ),
                 on_storage_prepared=self._apply_storage_preparation,
                 on_storage_changed=self._on_storage_changed,
                 set_proximity_lock=self._set_proximity_lock,
@@ -732,7 +735,7 @@ class Daemon:
                 set_calls_enabled=self._set_calls_enabled,
                 set_phone_battery_warning=self._set_battery_warning,
                 set_media_mpris=self._set_media_mpris,
-                contact_photos=lambda: self.photo_settings.enabled,
+                contact_photos=self._contact_photos_enabled,
                 set_contact_photos=self._set_contact_photos,
             ),
         )
@@ -933,6 +936,9 @@ class Daemon:
         if self._dbus_service is not None:
             self._dbus_service.retry_storage_unlock(initialize=True)
 
+    def _contact_photos_enabled(self) -> bool:
+        return self.photo_settings.enabled
+
     def _new_photo_files(self) -> PhotoFiles:
         return PhotoFiles(
             photo_ref=self.contacts.photo_ref,
@@ -953,7 +959,6 @@ class Daemon:
         """
         was_enabled = self.photo_settings.enabled
         selected = self.photo_settings.set(enabled)
-        set_photo_runtime(selected)
         if selected and not was_enabled:
             self.photo_files = self._new_photo_files()
             log.info("contact photos enabled; they arrive with the next contact sync")

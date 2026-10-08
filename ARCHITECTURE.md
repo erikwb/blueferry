@@ -83,6 +83,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `call_history_settings.py` | The saved call-history opt-in (`settings.json`, seeded from `local.env`). |
 | `vcard.py` | Linear, resource-bounded vCard block extraction; the photo-aware variant splits PHOTO out under its own budget. |
 | `contact_photos.py` | Opt-in contact photos: bounded base64 PHOTO decoding and volatile owner-only copies for notification icons. |
+| `contact_photo_settings.py` | The saved contact-photo opt-in (`settings.json`, seeded by `BLUEFERRY_CONTACT_PHOTOS`); the daemon passes it as a callable to the contact cache, sync and storage preparation. |
 | `ancs/client.py` | ANCS GATT client: subscribes to characteristics, requests attributes, emits `AncsEvent`s, and sends opt-in `PerformNotificationAction` writes. |
 | `ancs/parsers.py` | Pure ANCS wire-format parsers and command builders. |
 | `ancs/constants.py` | ANCS spec constants. |

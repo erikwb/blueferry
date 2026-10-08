@@ -9,9 +9,9 @@ import dbus
 import dbus.service
 import pytest
 
-from blueferry import config, contact_photo_settings
+from blueferry import config
 from blueferry.backend_operations import BackendDependencies
-from blueferry.contact_photo_settings import ContactPhotoSettings, photos_enabled, set_runtime
+from blueferry.contact_photo_settings import ContactPhotoSettings
 from blueferry.dbus_service import MessagesService
 from blueferry.protocol import BUS_NAME, MESSAGES_IFACE
 from tests.test_calls_dbus import _call, _Sessions
@@ -45,13 +45,43 @@ def test_default_is_off_and_garbage_is_ignored(tmp_path, monkeypatch) -> None:
         ContactPhotoSettings(path).set(1)  # type: ignore[arg-type]
 
 
-def test_runtime_value_overrides_the_seed_until_reset(monkeypatch) -> None:
+def test_the_cache_and_sync_follow_the_injected_setting(monkeypatch) -> None:
+    from blueferry.contact_sync import ContactSync
+    from blueferry.contacts import ContactsResolver
+
     monkeypatch.setattr(config, "CONTACT_PHOTOS", False)
-    assert photos_enabled() is False
-    set_runtime(True)
-    assert photos_enabled() is True
-    set_runtime(None)
-    assert photos_enabled() is False
+    enabled = [True]
+    asked = []
+
+    def photos() -> bool:
+        asked.append(True)
+        return enabled[0]
+
+    resolver = ContactsResolver(photos=photos)
+    assert asked  # the cache asked the injected setting, not the seed
+    pulls = []
+
+    class _Storage:
+        revision = 0
+        status = type("S", (), {"can_write": True})()
+
+        def snapshot(self, *, follow):
+            return type("Snap", (), {"close": lambda self: None})()
+
+    sync = ContactSync(
+        sessions=type("Sessions", (), {"pbap": object(), "map": object()})(),
+        storage=_Storage(), contacts=resolver,
+        submit=lambda job, *, on_success, on_error: job(),
+        on_refreshed=lambda: None,
+        pull=lambda _sessions, **kwargs: pulls.append(kwargs) or 0,
+        schedule=lambda *_args: 1, cancel=lambda _source: None,
+        photos=photos,
+    )
+    sync.sync()
+    enabled[0] = False
+    sync._pending = False
+    sync.sync()
+    assert [call["photos"] for call in pulls] == [True, False]
 
 
 def test_daemon_switches_photos_on_and_off_without_a_restart(make_daemon, monkeypatch) -> None:
@@ -74,7 +104,6 @@ def test_daemon_switches_photos_on_and_off_without_a_restart(make_daemon, monkey
 
     assert daemon._set_contact_photos(False) == {"contact_photos": False}
     assert json.loads(config.SETTINGS_JSON.read_text())["contact_photos"] is False
-    assert contact_photo_settings.photos_enabled() is False
     assert daemon.photo_files is None and files == ["clear"]
     assert daemon._status()["contact_photos"] is False
     # Erasing runs on the OBEX worker, after any pull already queued there.
@@ -86,7 +115,6 @@ def test_daemon_switches_photos_on_and_off_without_a_restart(make_daemon, monkey
 
     status = daemon._set_contact_photos(True)
     assert status["contact_photos"] is True
-    assert contact_photo_settings.photos_enabled() is True
     assert daemon.photo_files is not None
     assert syncs == [True]
     assert len(statuses) >= 3

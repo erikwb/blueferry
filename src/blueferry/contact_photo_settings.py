@@ -6,10 +6,9 @@ through the D-Bus API (the clients' "Show contact photos" checkbox,
 ``blueferry contact-photos enable``) takes precedence, like the phone-calls
 and away-lock preferences.
 
-The daemon publishes the effective value with :func:`set_runtime`, so the
-PBAP parser and the contact cache, which run in the daemon process, follow
-a change without a restart. Elsewhere (and before the daemon decided) the
-local.env seed applies.
+The daemon hands ``enabled`` to the contact cache, the contact sync and
+storage preparation as a callable, so they follow a change without a
+restart.
 """
 from __future__ import annotations
 
@@ -24,19 +23,6 @@ log = logging.getLogger(__name__)
 
 ENABLED_KEY = "contact_photos"
 ENV_NAME = "BLUEFERRY_CONTACT_PHOTOS"
-
-_runtime: bool | None = None
-
-
-def photos_enabled() -> bool:
-    """Whether photos are parsed, kept and served right now."""
-    return bool(config.CONTACT_PHOTOS) if _runtime is None else _runtime
-
-
-def set_runtime(enabled: bool | None) -> None:
-    """Publish the daemon's effective setting (``None`` resets to the seed)."""
-    global _runtime
-    _runtime = None if enabled is None else bool(enabled)
 
 
 class ContactPhotoSettings:
