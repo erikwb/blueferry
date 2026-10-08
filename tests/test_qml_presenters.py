@@ -525,7 +525,7 @@ def test_quickshell_phone_status_shows_only_known_battery_and_signal(qml_engine)
         "ferryTheme": theme,
         "status": {"phone_battery_level": 40, "phone_battery_source": "hfp"},
     })
-    assert stepped.property("text") == "BATTERY ABOUT 40 %"
+    assert stepped.property("text") == "BATTERY ~40 %"
     stepped.deleteLater()
 
     malformed = component.createWithInitialProperties({

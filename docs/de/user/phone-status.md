@@ -65,6 +65,10 @@ BLUEFERRY_PHONE_BATTERY_LOW_PERCENT=20      # 0-80, Standard 20
 - Die Warnung kommt erst wieder, wenn das Telefon mindestens 20 % über die
   Schwelle geladen wurde, und nach einem Neustart von BlueFerry einmal mehr,
   falls der Akku noch niedrig ist.
+- Sobald der genaue LE-Wert bekannt ist, lösen die 20-%-Stufen der
+  Freisprechverbindung die Warnung nicht mehr aus, solange das Telefon
+  verbunden bleibt. Ein Akku mit 23 % warnt also nie als „20 %“, wenn der
+  LE-Wert kurz wegfällt.
 - Änderungen erreichen die Clients höchstens alle 10 Sekunden.
 
 ## Datenschutz

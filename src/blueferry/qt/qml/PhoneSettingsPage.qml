@@ -410,7 +410,7 @@ Kirigami.ScrollablePage {
                 enabled: iphonePage.bridge.status.daemon === true && !iphonePage.bridge.busy
                 onClicked: iphonePage.bridge.setPhoneBatteryWarning(checked)
                 Accessible.description: qsTr("One desktop notification per discharge, at %1 % or less.")
-                    .arg(iphonePage.bridge.status.phone_battery_warning_percent || 20)
+                    .arg(iphonePage.bridge.status.phone_battery_warning_percent ?? 20)
             }
             Controls.CheckBox {
                 Layout.fillWidth: true

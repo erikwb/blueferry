@@ -64,6 +64,9 @@ BLUEFERRY_PHONE_BATTERY_LOW_PERCENT=20      # 0-80, default 20
 - The warning fires again only after the phone has charged at least 20 %
   above the threshold, and once more after a restart of BlueFerry if the
   phone is still low.
+- Once the exact LE level was seen, the 20 % hands-free steps no longer
+  trigger the warning while the phone stays connected, so a battery at 23 %
+  never warns as "20 %" when the LE level briefly drops out.
 - Changes reach the clients at most every 10 seconds.
 
 ## Privacy

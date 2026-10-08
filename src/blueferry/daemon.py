@@ -226,6 +226,9 @@ class Daemon:
         # Opt-in: one low-battery warning per discharge cycle.
         self.battery_warning = BatteryWarningSettings()
         self.low_battery = LowBatteryMonitor(config.PHONE_BATTERY_LOW_PERCENT)
+        # Set once the exact LE level was seen while the phone is present;
+        # the 20 % HFP steps then no longer decide the low-battery warning.
+        self._exact_battery_seen = False
         # Battery and signal steps would otherwise make every client refetch
         # its whole status; publish them at most every few seconds.
         self._published_phone: dict[str, object] | None = None
@@ -485,6 +488,10 @@ class Daemon:
             getattr(bearers, "bredr_connected", False) or getattr(bearers, "le_connected", False)
         )
         le_level = self.phone_battery.percent if present else None
+        if not present:
+            self._exact_battery_seen = False
+        elif le_level is not None:
+            self._exact_battery_seen = True
         hfp = self.calls.phone_status if self.calls.enabled else PhoneStatus()
         fields = hfp.to_status()
         if le_level is not None:
@@ -515,6 +522,12 @@ class Daemon:
     def _observe_low_battery(self, fields: dict[str, object]) -> None:
         level = fields.get("phone_battery_level")
         percent = level if isinstance(level, int) else None
+        stepped = fields.get("phone_battery_source") == SOURCE_HFP
+        if stepped and self._exact_battery_seen:
+            # The LE level dropped out while HFP remains: an exact 23 % must
+            # not read as the 20 % step and warn. Treat it as unknown, which
+            # neither fires nor re-arms, until the exact level returns.
+            percent = None
         due = self.low_battery.observe(percent)
         if due and percent is not None and self.battery_warning.enabled:
             log.info("iPhone battery is low; showing a desktop warning")

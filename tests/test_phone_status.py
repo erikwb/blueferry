@@ -288,6 +288,49 @@ def test_exact_le_battery_warns_without_the_step_note(make_daemon) -> None:
     assert ("low", 12, True) in seen
 
 
+def test_a_lost_le_level_does_not_warn_from_the_hfp_step(make_daemon) -> None:
+    from types import SimpleNamespace
+
+    instance, seen, now, _timers = _daemon_with_recorders(make_daemon, warning=True)
+    instance.bearers = SimpleNamespace(bredr_connected=True, le_connected=True)
+    instance.calls.enabled = True
+    instance.calls._phone = PhoneStatus(battery_steps=1)  # 20 %, a step
+    instance.phone_battery._gatt = 23
+    instance._phone_status_changed()
+
+    # LE drops out while Classic and HFP stay: the 20 % step must not warn.
+    instance.bearers = SimpleNamespace(bredr_connected=True, le_connected=False)
+    instance.phone_battery._gatt = None
+    now[0] += 60
+    instance._phone_status_changed()
+    assert not [item for item in seen if item != "status"]
+
+    # The exact level coming back below the threshold still warns.
+    instance.bearers = SimpleNamespace(bredr_connected=True, le_connected=True)
+    instance.phone_battery._gatt = 18
+    now[0] += 60
+    instance._phone_status_changed()
+    assert ("low", 18, True) in seen
+
+
+def test_hfp_steps_warn_again_after_the_phone_was_away(make_daemon) -> None:
+    from types import SimpleNamespace
+
+    instance, seen, now, _timers = _daemon_with_recorders(make_daemon, warning=True)
+    instance.bearers = SimpleNamespace(bredr_connected=True, le_connected=True)
+    instance.phone_battery._gatt = 60
+    instance._phone_status_changed()
+    instance.bearers = SimpleNamespace(bredr_connected=False, le_connected=False)
+    instance._phone_status_changed()
+
+    # A later connection without any LE level falls back to the HFP steps.
+    instance.bearers = SimpleNamespace(bredr_connected=True, le_connected=False)
+    instance.phone_battery._gatt = None
+    now[0] += 60
+    _hfp(instance, 1)
+    assert ("low", 20, False) in seen
+
+
 def test_battery_warning_setting_is_saved(make_daemon) -> None:
     from blueferry.phone_battery import BatteryWarningSettings
 

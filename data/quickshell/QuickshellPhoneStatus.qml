@@ -23,7 +23,8 @@ FerryLabel {
   function summaryText(): string {
     const parts = []
     if (root.batteryLevel !== null) {
-      const about = root.status.phone_battery_source === "hfp" ? "ABOUT " : ""
+      // "~" marks a 20 % hands-free step without adding English text.
+      const about = root.status.phone_battery_source === "hfp" ? "~" : ""
       parts.push("BATTERY " + about + root.batteryLevel + " %")
     }
     if (root.signalStrength !== null) parts.push("SIGNAL " + root.signalStrength + " %")
