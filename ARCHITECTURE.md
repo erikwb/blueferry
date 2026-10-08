@@ -469,8 +469,10 @@ A change to these rules has to be made in both places.
   exposed. Without systemd, the same helper runs through `sudo -n`; an
   administrator can authorize it with a narrow sudoers rule. BlueFerry never prompts for or stores
   credentials, skips sudo under `no_new_privs`, refuses a helper that anyone
-  but root could replace, and backs off failed repairs exponentially (from
-  15 minutes after a refusal, at most six hours; a BlueZ restart resets it).
+  but root could replace, and backs off failed sudo repairs (from 15 minutes
+  after a refusal up to six hours, other failures from one up to five
+  minutes; a BlueZ restart resets it). On systemd a failed repair is retried
+  every minute.
 - **Bluetooth LE switched off:** when the controller supports LE but runs
   without it, setup detects it, stops full-mode pairing early (after two
   re-probes, since bluetoothd switches LE on asynchronously) and explains the

@@ -131,11 +131,12 @@ The daemon then logs to `~/.local/state/blueferry/daemon.log`.
   inactive sessions. It can still only set an existing adapter's class.
 - `sudo -n` also succeeds without the rule while a recent terminal `sudo`
   timestamp is cached.
-- After an authorization refusal, the daemon backs off from 15 minutes,
-  doubling up to six hours. Other failures start at one minute. A bluetoothd
-  restart resets the backoff and triggers an immediate check. A rule you add later therefore
-  takes effect without a restart, and a missing rule does not fill the
-  authentication log.
+- After sudo refuses, the daemon backs off from 15 minutes, doubling up to
+  six hours. Other failures on this path are retried after one minute, then
+  at most every five minutes. A bluetoothd restart resets the backoff and
+  triggers an immediate check. A rule you add later therefore takes effect
+  without a restart, and a missing rule does not fill the authentication
+  log.
 - The optional user service sets `no_new_privs`, which rules out sudo for its
   daemon. BlueFerry notices and does not call sudo; rerun the helper after
   Bluetooth restarts, or set `no_new_privs=""` in

@@ -140,12 +140,12 @@ Der Daemon schreibt sein Log dann nach `~/.local/state/blueferry/daemon.log`.
   trotzdem nur die Klasse eines vorhandenen Adapters setzen.
 - `sudo -n` gelingt auch ohne Regel, solange ein frischer `sudo`-Zeitstempel
   aus einem Terminal zwischengespeichert ist.
-- Nach einer verweigerten Autorisierung wartet der Daemon zuerst 15 Minuten,
-  dann doppelt so lange, höchstens sechs Stunden. Andere Fehler beginnen bei
-  einer Minute. Ein Neustart von bluetoothd setzt die Wartezeit zurück und
-  löst eine sofortige Prüfung aus. Eine später angelegte Regel wirkt
-  also ohne Neustart, und eine fehlende Regel füllt nicht das
-  Authentifizierungslog.
+- Lehnt sudo ab, wartet der Daemon zuerst 15 Minuten, dann doppelt so lange,
+  höchstens sechs Stunden. Andere Fehler auf diesem Weg versucht er nach
+  einer Minute erneut, danach höchstens alle fünf Minuten. Ein Neustart von
+  bluetoothd setzt die Wartezeit zurück und löst eine sofortige Prüfung aus.
+  Eine später angelegte Regel wirkt also ohne Neustart, und eine fehlende
+  Regel füllt nicht das Authentifizierungslog.
 - Der optionale User-Service setzt `no_new_privs`, damit kann sein Daemon
   kein sudo nutzen. BlueFerry erkennt das und ruft sudo gar nicht erst auf;
   starte das Skript nach Bluetooth-Neustarts selbst oder setze
