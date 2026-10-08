@@ -437,6 +437,7 @@ class AmsClient:
         self._operations: deque[_Operation] = deque()
         self._active: _Operation | None = None
         self._pending_reads: set[tuple[int, int]] = set()
+        self._attribute_updates: dict[tuple[int, int], EntityUpdate] = {}
         self._settle_id: int | None = None
         self._retry_id: int | None = None
         self._first_update_id: int | None = None
@@ -886,6 +887,7 @@ class AmsClient:
         self._operations.clear()
         self._active = None
         self._pending_reads.clear()
+        self._attribute_updates.clear()
         for operation in failed:
             if operation.label.startswith("command"):
                 try:
@@ -1007,6 +1009,9 @@ class AmsClient:
             log.warning("AMS entity update rejected: %s", error)
             return
         self._notifications_flow()
+        key = (update.entity, update.attribute)
+        if self._attribute_updates.get(key) != update:
+            self._attribute_updates[key] = update
         self._deliver(update)
         if update.truncated:
             self._fetch_full_value(update.entity, update.attribute)
@@ -1028,6 +1033,10 @@ class AmsClient:
         except ValueError:
             return
         generation = self._generation
+
+        # A full read belongs to the notification that requested it. Other
+        # attributes may change independently while the read is in flight.
+        requested = self._attribute_updates.get(key)
 
         def run(ok: Success, fail: Failure) -> None:
             def read_back() -> None:
@@ -1051,15 +1060,20 @@ class AmsClient:
             except ValueError as error:
                 fail(error)
                 return
-            if generation == self._generation:
+            if generation == self._generation and self._attribute_updates.get(key) is requested:
                 self._deliver(EntityUpdate(entity, attribute, False, text))
             ok()
 
         def finished() -> None:
+            if generation != self._generation:
+                return
             self._pending_reads.discard(key)
+            latest = self._attribute_updates.get(key)
+            if latest is not requested and latest is not None and latest.truncated:
+                self._fetch_full_value(entity, attribute)
 
         def failed(error: Exception) -> None:
-            self._pending_reads.discard(key)
+            finished()
             log.info(
                 "AMS full attribute read failed (entity=%d attribute=%d): %s",
                 entity, attribute, _error_name(error),
