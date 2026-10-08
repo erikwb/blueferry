@@ -640,3 +640,19 @@ def test_storage_preparation_follows_the_saved_opt_out(storage, monkeypatch) -> 
 
     assert prepare_storage(storage).call_history == []
     assert CallHistoryRepository(storage).load() == []
+
+
+def test_contacts_only_with_only_unknown_callers_leaves_ancs_marks_alone(monkeypatch) -> None:
+    """Review case: an empty list after the contacts-only filter raised."""
+    monkeypatch.setattr("blueferry.sinks.libnotify.config.SHOW_NOTIFICATION_CONTENT", True)
+    sink = _sink("all", contacts_only=True)
+    call_time = NOW - timedelta(minutes=10)
+    sink.handle_ancs(_ancs_missed_call(call_time))
+    assert len(sink._notif.calls) == 1
+
+    sink.handle_missed_calls([
+        MissedCallNotice(caller=None, known_contact=False, occurred_at=call_time),
+    ])
+
+    assert len(sink._notif.calls) == 1
+    assert len(sink._ancs_missed_call_marks()) == 1

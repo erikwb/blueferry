@@ -610,7 +610,8 @@ class LibnotifySink:
         popup whose title names nobody must still cover one call.
         """
         marks = self._ancs_missed_call_marks()
-        if not marks:
+        if not marks or not notices:
+            # Contacts-only can filter every notice away; leave the marks be.
             return notices
         newest = max(notice.occurred_at for notice in notices)
         for mark in list(marks):
