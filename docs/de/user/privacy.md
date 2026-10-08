@@ -104,9 +104,13 @@ Schaltest du es ein, legt das Backend Bestätigungscodes aus neuen
 Nachrichten in die Zwischenablage des Desktops, wo jedes Programm, das die
 Zwischenablage liest, sie sehen kann. Der Code wird nie geloggt,
 gespeichert oder über BlueFerrys D-Bus-Schnittstelle veröffentlicht. Mit
-`BLUEFERRY_OTP_CLEAR_SECONDS` liest das Backend die Zwischenablage beim
-Ablauf des Timers zurück (nur wenige Bytes, nur zum Vergleich), um vor dem
-Leeren zu prüfen, ob sie noch den Code enthält.
+`BLUEFERRY_OTP_CLEAR_SECONDS` gibt das Backend beim Ablauf des Timers nur
+seine eigene Zwischenablage-Quelle frei; beim Beenden auch ohne Timer.
+Es liest die Zwischenablage nicht zurück und leert keine Auswahl eines
+anderen Programms. Kopien in Persistenzwerkzeugen oder Zwischenablage-Managern
+bleiben unter deren Kontrolle. Die erste Wayland-Kopie wartet auf die
+Prüfung der Sensitiv-Markierung; Manager müssen diese beachten, um Codes
+aus ihrem Verlauf auszuschließen.
 
 ## Einstellungen in local.env
 

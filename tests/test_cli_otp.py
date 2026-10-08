@@ -58,3 +58,14 @@ def test_disabled_status_never_warns() -> None:
         enabled=False, clear_after_s=0, environ={}, find=lambda _environ: None
     )
     assert warning is False
+
+
+def test_status_distinguishes_failed_probe_from_unsupported_helper() -> None:
+    lines, warning = status_lines(
+        enabled=True, clear_after_s=0, environ={},
+        find=lambda _environ: ClipboardTarget("wayland", "wl-copy", "/usr/bin/wl-copy"),
+        probe_sensitive=lambda _executable: None,
+    )
+    assert warning is True
+    assert any("probe failed" in line for line in lines)
+    assert not any("cannot mark" in line for line in lines)

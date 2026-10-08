@@ -346,9 +346,11 @@ BLUEFERRY_OTP_CLEAR_SECONDS=60
 Only an unread message that has just arrived from a sender who is not a
 saved contact counts: sent messages, history, group conversations, messages
 from contacts, and messages without a phone timestamp from the past five
-minutes are ignored. Missing push timestamps are looked up for the exact
-message in a bounded inbox listing; lookup failures skip the copy. At
-most three codes per minute are copied. A number is treated as a code only
+minutes are ignored. BlueFerry checks the exact message's timestamp and current read flag in a bounded inbox listing; lookup
+failures skip the copy. Candidates wait five seconds for live group metadata
+from Apple Messages notifications, without delaying message delivery. At most
+three eligibility checks and three copies per minute are allowed, bounding
+phone work before it is queued. A number is treated as a code only
 when it is tied to a code word: "verification code", "Bestätigungscode",
 "mTAN" or "OTP" near it, "code: 123456" or "code is 123456", "123456 is your
 … code", or "enter 123456" in a message about verifying or logging in. Words
@@ -369,15 +371,14 @@ to show it again.
 
 The backend copies with `wl-copy` from wl-clipboard on Wayland, or `xclip` or
 `xsel` on X11; `blueferry otp-status` shows which one it finds. With
-wl-clipboard 2.3 or newer the code is marked as sensitive, so Klipper and other
-clipboard managers keep it out of their history; older versions and the X11
-tools cannot do that. The clear timer only clears a code that is still on the
-clipboard, and stopping the backend clears a code it still holds. If a
-persistence tool such as wl-clip-persist took the code over, BlueFerry reads
-the clipboard back (with `wl-paste`, `xclip -o` or `xsel --output`) and
-clears it only if it still holds exactly the code. Clearing cannot remove an
-entry a clipboard manager already saved, so without the sensitive hint the
-code stays in Klipper's history.
+wl-clipboard 2.3 or newer the code is marked as sensitive; clipboard managers
+that honor the hint keep it out of their history. The first copy waits for the
+capability probe. Older versions and the X11 tools cannot set this hint.
+The clear timer and backend shutdown release only BlueFerry's own clipboard
+source. If a persistence tool such as wl-clip-persist takes the selection over,
+its copy remains under that tool's control. BlueFerry never reads and globally
+clears the clipboard, so cleanup cannot erase a later user copy or delete
+entries a clipboard manager already saved.
 
 The helpers need the graphical session in the backend service's
 environment. On Wayland, `WAYLAND_DISPLAY` is used, or else the only

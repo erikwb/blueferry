@@ -16,30 +16,40 @@ flowchart LR
     B -- no --> X[Ignored]
     B -- yes --> C{Number tied to<br/>a code word?}
     C -- no --> X
-    C -- yes --> D[wl-copy / xclip / xsel<br/>code fed on stdin]
+    C -- yes --> M[5 s for group metadata<br/>check phone time and read flag<br/>wait for clipboard capabilities]
+    M --> D[wl-copy / xclip / xsel<br/>code fed on stdin]
     D --> E[Line added to the message popup:<br/>'Verification code copied']
     D --> F{Clear timer set?}
-    F -- yes, code still on clipboard --> G[Clipboard cleared]
+    F -- yes, BlueFerry still owns selection --> G[Own clipboard source released]
 ```
 
 - Only unread messages that have **just arrived** count. Sent messages,
   history, messages that were already read, and messages without a time from
   the last five minutes are ignored. Future timestamps are ignored too.
-  When the push notification has no timestamp, BlueFerry reads a bounded
-  inbox listing and uses the time for that exact message, never another
-  message or the desktop arrival time. Recent messages can qualify even
+  BlueFerry refreshes the time and current read flag for that exact message
+  in a bounded inbox listing, never using another message's time or the
+  desktop arrival time. Read-state changes while copying is pending also
+  cancel the copy. Recent messages can qualify even
   when they were received before the backend started. If the lookup fails
   or the message is absent from the latest 20 entries, nothing is copied.
 - Codes come from services, so messages from **saved contacts** and **group
-  conversations** are ignored. At most three codes per minute are copied.
+  conversations** are ignored when group metadata is available. Candidates
+  wait five seconds for live Apple Messages notifications to supply it.
+  At most three eligibility checks and three copies per minute are allowed;
+  failed checks also consume the budget so bursts cannot flood phone work.
 - A number counts as a code only when it is tied to a code word:
   - an OTP-specific word near it: "verification code",
     "Bestätigungscode", "Sicherheitscode", "mTAN", "OTP", "Steam Guard code",
     "Bestätigungsnummer", "code de vérification", ...;
   - "code" followed by the number: "code: 123456", "Code lautet 123456";
   - "123456 is your ... code";
-  - "code" near the number in a message about verifying or logging in;
-  - "enter 123456" or "geben Sie 123456 ein" in such a message.
+  - "code" immediately followed by the number, as in "Telegram code 58291";
+  - "enter 123456" or "geben Sie 123456 ein" in a sentence about
+    authentication, including resetting a password.
+
+  Plain PINs and passwords require authentication context. Door and Wi-Fi
+  codes are excluded, as are numbers followed by units such as steps or
+  messages. A code noun in another sentence never binds an unrelated number.
 
   Words like "verify", "one-time" or "Einmal" alone never pick a number,
   so "Verify your email to get 5000 points" or "Einmalzahlung von 1500"
@@ -81,36 +91,43 @@ echo 'Your code is 123456' | blueferry otp-check   # dry run, copies nothing
 
 ## Clipboard history (Klipper and others)
 
-With wl-clipboard 2.3 or newer the code is marked as sensitive, so Klipper
-and other clipboard managers keep it out of their history. Older
+With wl-clipboard 2.3 or newer the code is marked as sensitive. Clipboard
+managers that honor the hint keep it out of their history. The first
+copy waits for the capability probe; a failed probe skips pending copies
+and can be retried for the next message. Older
 wl-clipboard versions and the X11 tools can't set that mark, and the code
 then stays in the manager's history even after the clear timer fired.
 `blueferry otp-status` tells you which case applies.
 
 ## Clear timer
 
-With `BLUEFERRY_OTP_CLEAR_SECONDS=N`, BlueFerry removes the code after N
-seconds, but only if it is still on the clipboard. If you copied something
-else in the meantime, your own copy stays. Stopping the BlueFerry backend
-also removes a code it still holds.
+With `BLUEFERRY_OTP_CLEAR_SECONDS=N`, BlueFerry releases its clipboard source
+after N seconds. If you copied something else, your selection stays.
+Stopping the backend releases its source even with the timer disabled.
 
-Clipboard persistence tools such as wl-clip-persist take the selection over
-right away, so BlueFerry's helper no longer holds the code. The timer and
-backend shutdown then read the clipboard back (`wl-paste`, `xclip -o` or
-`xsel --output`) and clear it only if it still holds exactly the code. Only
-a few bytes are read, and they are only compared.
+Clipboard persistence tools such as wl-clip-persist can take the selection
+over immediately. BlueFerry cannot clear those copies safely: a clipboard
+read followed by a global clear could erase text you copy between the two
+operations. Cleanup therefore only stops BlueFerry's own helper, never
+reads the clipboard back and never invokes a global clear. Copies retained
+by another program remain under that program's control, including at
+shutdown. Clearing the selection cannot remove saved clipboard history.
+The [Wayland data-control protocol](https://wayland.app/protocols/ext-data-control-v1)
+provides source ownership, but no atomic check-and-clear of another source.
 
 ## Limits
 
-- **It's a heuristic.** Unusually phrased codes are missed, and "the door
-  code is 4711" from a number that isn't a saved contact is still copied.
+- **It's a heuristic.** Unusually phrased codes can be missed and unrelated
+  text can still resemble an authentication message.
   Use `blueferry otp-check` to test messages from your own providers; it
   checks only the text, not the sender rules.
 - **Group conversations.** The iPhone's message push does not say whether a
-  message belongs to a group. BlueFerry skips it when it already knows the
-  group; group members you saved as contacts are skipped anyway.
+  message belongs to a group. Live Apple Messages notifications supply the
+  evidence, with a five-second grace period and another check immediately
+  before copying. Missing or later metadata can leave a group unrecognized;
+  saved contacts are skipped regardless.
 - **Time zones.** The iPhone often sends message times without a time zone.
-  If phone and computer use different zones, codes can look older than ten
+  If phone and computer use different zones, codes can look older than five
   minutes and are skipped. The debug log then shows "ignoring a message N
   seconds old".
 - **Session detection.** The backend needs the graphical session in its

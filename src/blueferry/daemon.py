@@ -11,8 +11,7 @@ import math
 import signal
 import threading
 import time
-from collections.abc import Callable
-from datetime import datetime
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING
 
 import dbus
@@ -76,10 +75,11 @@ from blueferry.notification_policy import (
     NotificationPolicyStore,
 )
 from blueferry.obex.map_events import MapEventListener
-from blueferry.obex.map_query import lookup_message_timestamp
+from blueferry.obex.map_query import lookup_otp_metadata
 from blueferry.obex.mns_watch import MnsWatch
 from blueferry.obex.sessions import SessionManager
 from blueferry.obex.worker import ObexWorker
+from blueferry.otp_context import OtpMetadata
 from blueferry.pair_setup import bond_status
 from blueferry.phone_battery import BatteryWarningSettings, PhoneBattery
 from blueferry.profile_supervisor import ProfileSessions, ProfileSupervisor
@@ -180,7 +180,7 @@ class Daemon:
         self.setup_verification = SetupVerification(config.IPHONE_MAC)
         self.events = EventDispatcher(
             self.contacts,
-            defer_mark_read=self.read_receipts.defer_path,
+            defer_mark_read=self._defer_message_read_path,
             notification_policy=lambda: self.notification_policy.value,
             contacts_only_notifications=(
                 lambda: self.notification_policy.contacts_only
@@ -194,7 +194,7 @@ class Daemon:
             perform_ancs_action=self._perform_ancs_action,
             ancs_actions_enabled=self._ancs_actions_active,
             on_call_action=self._notification_call_action,
-            resolve_otp_timestamp=self._resolve_otp_timestamp,
+            resolve_otp_metadata=self._resolve_otp_metadata,
         )
         self.listener: MapEventListener | None = None
         self.mns_watch: MnsWatch | None = None
@@ -691,7 +691,7 @@ class Daemon:
                 on_sent=self.events.sent,
                 on_group_sent=self.events.group_sent,
                 submit_obex=self.obex_worker.submit,
-                defer_mark_read=self.read_receipts.defer,
+                defer_mark_read=self._defer_message_reads,
                 sync_contacts=self.contact_sync.sync,
                 contacts=self.contacts,
                 status_provider=self._status,
@@ -1180,10 +1180,10 @@ class Daemon:
         if "Discovering" in properties:
             self.proximity.inhibit(INHIBIT_DISCOVERING, bool(properties["Discovering"]))
 
-    def _resolve_otp_timestamp(
-        self, event: SmsEvent, done: Callable[[datetime | None], None],
+    def _resolve_otp_metadata(
+        self, event: SmsEvent, done: Callable[[OtpMetadata | None], None],
     ) -> None:
-        """Resolve a pushed code's phone timestamp without blocking message dispatch."""
+        """Resolve a pushed code's phone metadata without blocking message dispatch."""
         session = self.sessions.map
         listener = self.listener
         path = event.message_path
@@ -1191,16 +1191,16 @@ class Daemon:
             done(None)
             return
 
-        def operation() -> datetime | None:
+        def operation() -> OtpMetadata | None:
             if self.sessions.map is not session or self.listener is not listener:
                 return None
-            return lookup_message_timestamp(session.path, path)
+            return lookup_otp_metadata(session.path, path)
 
-        def completed(timestamp: datetime | None) -> None:
+        def completed(metadata: OtpMetadata | None) -> None:
             if self.sessions.map is not session or self.listener is not listener:
                 done(None)
                 return
-            done(timestamp)
+            done(metadata)
 
         def failed(error: Exception) -> None:
             log.debug("one-time code timestamp lookup failed: %s", type(error).__name__)
@@ -1330,9 +1330,22 @@ class Daemon:
         self.profiles.reconnect(reason)
 
     def _message_read(self, handle: str) -> None:
+        self.events.message_read(handle)
         if mark_event_handles_read([handle], storage=self.storage):
             if self._dbus_service is not None:
                 self._dbus_service.emit_history_changed()
+
+    def _defer_message_reads(self, session_path: str, handles: Sequence[str]) -> None:
+        session = self.sessions.map
+        if session is None or session_path != session.path:
+            return
+        for handle in handles:
+            self.events.message_read(handle)
+        self.read_receipts.defer(session_path, handles)
+
+    def _defer_message_read_path(self, path: str) -> None:
+        session_path, _, handle = path.rpartition("/")
+        self._defer_message_reads(session_path, [handle])
 
     def _post_sessions_setup(self) -> None:
         """Finish setup once both MAP and PBAP are live."""

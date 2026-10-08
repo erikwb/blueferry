@@ -98,9 +98,13 @@ Uninstalling the packages doesn't remove either folder.
 it on, the backend puts verification codes from new messages on the desktop
 clipboard, where every application that reads the clipboard can see them.
 The code is never logged, stored, or published on BlueFerry's D-Bus API.
-With `BLUEFERRY_OTP_CLEAR_SECONDS`, the backend reads the clipboard back
-when the timer fires (only a few bytes, only compared) to check that it
-still holds the code before clearing it.
+With `BLUEFERRY_OTP_CLEAR_SECONDS`, the backend releases its own clipboard
+source when the timer fires; shutdown does the same even without a timer.
+It never reads the clipboard back or globally clears another program's
+selection. Copies retained by persistence tools or clipboard managers
+remain under those tools' control. The first Wayland copy waits for the
+sensitive-hint capability probe; managers must honor that hint to exclude
+codes from their history.
 
 ## Settings in local.env
 

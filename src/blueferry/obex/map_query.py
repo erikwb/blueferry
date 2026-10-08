@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime
 from typing import Any
 
 import dbus
@@ -17,6 +16,7 @@ import dbus.exceptions
 from blueferry.bus import obex
 from blueferry.events import normalize_phone, parse_map_timestamp
 from blueferry.limits import MAX_REMOTE_PROPERTY_CHARS, MAX_THREAD_BODY_CHARS
+from blueferry.otp_context import OtpMetadata
 
 log = logging.getLogger(__name__)
 
@@ -25,8 +25,8 @@ OTP_QUERY_DEADLINE_SECONDS = 20
 OTP_QUERY_LIMIT = 20
 
 
-def lookup_message_timestamp(session_path: str, message_path: str) -> datetime | None:
-    """Read the phone's time for exactly one pushed message, on the OBEX worker.
+def lookup_otp_metadata(session_path: str, message_path: str) -> OtpMetadata | None:
+    """Read the phone's time and read flag for one push, on the OBEX worker.
 
     MNS notifications often omit Timestamp. Listing the inbox populates it,
     but the newest entry might be another message. Fail closed unless the
@@ -47,7 +47,13 @@ def lookup_message_timestamp(session_path: str, message_path: str) -> datetime |
     props = messages.get(message_path)
     if props is None:
         return None
-    return parse_map_timestamp(props.get("Timestamp"))
+    timestamp = props.get("Timestamp")
+    read = props.get("Read")
+    return OtpMetadata(
+        parse_map_timestamp(timestamp) if isinstance(timestamp, str) else None,
+        # Missing or malformed flags cannot establish that the code is unread.
+        bool(read) if isinstance(read, (bool, dbus.Boolean)) else True,
+    )
 
 
 def _bounded_text(value: object, maximum: int) -> str:

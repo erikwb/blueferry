@@ -27,7 +27,6 @@ PROPERTY_SETTINGS = settings(max_examples=300, derandomize=True, deadline=None)
         ("Microsoft account security code: 1234567", "1234567"),
         ("Your WhatsApp code: 123-456", "123456"),
         ("Your code: 004512", "004512"),
-        ("PIN: 8844", "8844"),
         ("Your verification code is K7X2PQ", "K7X2PQ"),
         ("Code 2024 is your login code", "2024"),
         ("Your Amazon OTP is 551234", "551234"),
@@ -37,6 +36,10 @@ PROPERTY_SETTINGS = settings(max_examples=300, derandomize=True, deadline=None)
         # Invisible format characters do not split a code.
         ("code: 12\u200b3456", "123456"),
         ("Your code is 48\u206029\u00ad15", "482915"),
+        ("Telegram code 58291", "58291"),
+        ("Amazon: Use 583920 to reset your password. Don't give this code to anyone.", "583920"),
+        ("Your Ticketmaster code is 482915. Do not share it.", "482915"),
+        ("Your one-time PIN is 8844", "8844"),
         # German
         ("Ihr Bestätigungscode lautet: 482913", "482913"),
         ("Dein Sicherheitscode: 7391. Gib ihn niemandem weiter.", "7391"),
@@ -77,6 +80,13 @@ def test_detects_codes(body: str, expected: str) -> None:
 @pytest.mark.parametrize(
     "body",
     [
+        "PIN: 8844",
+        "Your wifi password is 48291573",
+        "Your PIN is 4821",
+        "The door code is 4821",
+        "Please confirm you got my message. I paid 4500 for the code review course",
+        "Log in to see your 2500 new messages. Use the code from the email",
+        "Enter 5000 steps to verify your fitness goal",
         # No keyword at all.
         "123456",
         "Meet me at gate 12, it's 4711 steps away",

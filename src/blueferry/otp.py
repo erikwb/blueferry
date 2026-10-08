@@ -8,10 +8,10 @@ when it is bound to a code noun ("code", "Bestätigungscode", "TAN", "OTP",
   close to the number;
 * a plain noun followed by a connector ("code: 123456", "code is 123456",
   "Code lautet 123456") or preceded by "123456 is your ... code";
-* a plain noun near the number when the message also carries OTP context
-  ("verify", "one-time", "do not share", "Anmeldung", ...);
+* a plain noun immediately followed by the number ("Telegram code 58291")
+  or an authentication qualifier ("code de vérification: 123456");
 * an entry instruction ("enter 123456", "geben Sie 123456 ein") in a
-  message with OTP context.
+  sentence with OTP context. Plain PINs and passwords also need OTP context.
 
 Context words alone ("Verify your email to get 5000 points", "one-time
 offer", "Einmalzahlung") never bind a number. Numbers that look like
@@ -86,7 +86,8 @@ _CONTEXT = re.compile(
     r"|one[- ]time|einmal\w*|usage unique|monouso|un solo uso"
     r"|log[- ]?in\w*|sign[- ]?in|anmeld\w*|bestätig\w*|bestaetig\w*|confirm\w*"
     r"|expire\w*|gültig\w*|valid"
-    r"|do not share|don'?t share|never share|do not give|nicht weiter\w*|niemandem"
+    r"|do not share|don'?t (?:share|give)|never share|do not give|nicht weiter\w*|niemandem"
+    r"|reset\s+(?:(?:your|the)\s+)?password"
     r"|ne (?:le |la )?partagez|non condividere|no (?:lo )?compartas"
     r")(?!\w)",
     re.IGNORECASE,
@@ -99,7 +100,7 @@ _PROMO = re.compile(
     r"[0-9]\s?%|(?<!\w)(?:"
     r"checkout|discount|promo\w*|coupon|voucher|sale|offer|bonus|redeem"
     r"|order|bestell\w*|booking|buchung\w*|reservation|reservierung\w*|flight|flug\w*"
-    r"|hotel|ticket\w*|commande|réservation|prenotazione|reserva"
+    r"|hotel|tickets?|commande|réservation|prenotazione|reserva"
     r"|rabatt\w*|gutschein\w*|angebot\w*|aktion\w*|einlösen|kasse"
     r"|réduction|soldes|sconto|offerta|descuento|oferta|korting"
     r")(?!\w)",
@@ -112,6 +113,14 @@ _CONNECTOR = re.compile(
     r"\s*(?:[:=]|(?:is|ist|lautet|lauten|est|è|es|are|sind)(?!\w))(?:\s*[:=])?\s*$",
     re.IGNORECASE,
 )
+_CODE_QUALIFIER = re.compile(
+    r"\s+(?:de|di|for|für|para|voor)\s+"
+    r"(?:(?:die|your|la|le|votre|il|tuo|the)\s+)?"
+    r"(?:v[ée]rification|s[ée]curit[ée]|verifica|verificación|security|login|anmeldung|sign[- ]?in)"
+    r"(?:\s+(?:is|ist|est|è|es))?\s*[:=]?\s*$",
+    re.IGNORECASE,
+)
+_NON_CODE_SUFFIX = re.compile(r"\s+(?:review|course|freeze|room|base|repository)(?!\w)", re.I)
 # "123456 is your Instagram code", "123456 ist Ihr Code".
 _IS_YOUR = re.compile(
     r"^\s*(?:is|ist|est|è|es)\s+(?:your|dein\w*|ihr\w*|votre|ton|il tuo|tu|uw|je)(?!\w)",
@@ -154,6 +163,7 @@ _NEGATIVE_CODE_PREFIXES = frozenset({
     "flight", "flug", "tarif", "rabais", "réduction", "sconto", "promozionale",
     "descuento", "kortings", "cadeau", "regalo", "iban", "bic", "swift",
     "sort", "bank", "bankleit", "zugriffs-promo", "uni", "geo", "html",
+    "door", "tür", "tuer", "garage", "gate", "wifi", "wi-fi", "wlan", "router",
 })
 
 # Labels that turn a following number into an order/tracking/etc. number.
@@ -179,7 +189,7 @@ _UNIT_AFTER = re.compile(
     r"^\s?(?:[€$£¥₹%°]|(?:eur|euro|euros|usd|chf|gbp|fr|franken|francs?|dollars?"
     r"|km|kg|mb|gb|kb|min|mins|minutes?|minuten|minuti|sec|secs|seconds?"
     r"|sek|sekunden|h|hrs|hours?|stunden|std|tage|days?|jours?|giorni|días"
-    r"|punkte|points|pts|x)(?!\w))",
+    r"|punkte|points|pts|steps?|schritte|messages?|nachrichten|calories?|kalorien|x)(?!\w))",
     re.IGNORECASE,
 )
 
@@ -258,7 +268,7 @@ def _keywords(text: str) -> list[_Keyword]:
     found: list[_Keyword] = []
     for match in _CODE_WORD.finditer(text):
         negative, strong = _prefixed(text, match, _STRONG_CODE_PREFIXES)
-        if not negative:
+        if not negative and not _NON_CODE_SUFFIX.match(text[match.end():]):
             found.append(_Keyword(match.start(), match.end(), "strong" if strong else "plain"))
     for match in _PIN_WORD.finditer(text):
         negative, strong = _prefixed(text, match, _STRONG_PIN_PREFIXES)
@@ -377,6 +387,8 @@ def _keyword_gap(message: _Message, candidate: _Candidate, keyword: _Keyword) ->
     text = message.text
     if keyword.kind == "pin" and not candidate.numeric:
         return None
+    if keyword.kind == "pin" and not message.context:
+        return None
     needs_tight = (
         not candidate.numeric
         or _looks_like_year(candidate.value)
@@ -389,6 +401,8 @@ def _keyword_gap(message: _Message, candidate: _Candidate, keyword: _Keyword) ->
             text[keyword.end:candidate.start] if before else text[candidate.end:keyword.start]
         )
         tight = before and gap <= _TIGHT_DISTANCE
+        if _SENTENCE_END.search(between):
+            return None
         if needs_tight and not tight:
             measured = None
         elif keyword.kind == "strong":
@@ -398,11 +412,13 @@ def _keyword_gap(message: _Message, candidate: _Candidate, keyword: _Keyword) ->
             return None
         elif not candidate.numeric and not message.context:
             return None
-        elif before and _CONNECTOR.fullmatch(between):
+        elif before and (
+            _CONNECTOR.fullmatch(between)
+            or not between.strip()
+            or _CODE_QUALIFIER.fullmatch(between)
+        ):
             return gap
         elif not before and _IS_YOUR.match(between):
-            return gap
-        elif message.context:
             return gap
         else:
             return None
@@ -423,7 +439,15 @@ def _instructed(message: _Message, candidate: _Candidate) -> bool:
     """True for "enter 123456" or "geben Sie 123456 ein" in an OTP message."""
     if not message.context or message.promo:
         return False
-    return bool(_INSTRUCTION.search(message.text[max(0, candidate.start - 40):candidate.start]))
+    # A login in another sentence does not turn an unrelated instruction
+    # into an OTP. Bind the instruction to its own authentication sentence.
+    boundaries = list(_SENTENCE_END.finditer(message.text))
+    start = max((m.end() for m in boundaries if m.end() <= candidate.start), default=0)
+    end = min((m.start() for m in boundaries if m.start() >= candidate.end),
+              default=len(message.text))
+    if not _CONTEXT.search(message.text[start:end]):
+        return False
+    return bool(_INSTRUCTION.search(message.text[max(start, candidate.start - 40):candidate.start]))
 
 
 def extract_otp(body: str | None) -> str | None:

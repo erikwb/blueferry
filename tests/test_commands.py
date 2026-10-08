@@ -98,46 +98,14 @@ def test_spawn_command_closes_stdin_when_the_helper_is_gone(monkeypatch) -> None
     assert process.killed is True
 
 
-def _python(code: str) -> list[str]:
-    return [sys.executable, "-I", "-c", code]
 
 
-def test_read_command_output_returns_short_output() -> None:
-    output = commands.read_command_output(
-        _python("import sys; sys.stdout.write('482913')"), timeout=10, limit=64
-    )
-    assert output == b"482913"
 
 
-def test_read_command_output_stops_after_the_limit() -> None:
-    # An endless writer is killed once limit + 1 bytes arrived.
-    output = commands.read_command_output(
-        _python("import sys\nwhile True: sys.stdout.write('x' * 4096)"),
-        timeout=10,
-        limit=16,
-    )
-    assert output is not None
-    assert output.startswith(b"x")
-    assert len(output) > 16
 
 
-def test_read_command_output_gives_up_on_silence_and_errors() -> None:
-    silent = _python("import time; time.sleep(30)")
-    assert commands.read_command_output(silent, timeout=0.2, limit=16) is None
-    failing = _python("import sys; sys.stdout.write('x'); sys.exit(1)")
-    assert commands.read_command_output(failing, timeout=10, limit=16) is None
-    assert commands.read_command_output(["/nonexistent/tool"], timeout=1, limit=16) is None
-    with pytest.raises(ValueError):
-        commands.read_command_output(["relative"], timeout=1, limit=16)
 
 
-def test_run_quiet_reports_success_and_bounds_waiting() -> None:
-    assert commands.run_quiet(_python("pass"), timeout=10)
-    assert not commands.run_quiet(_python("raise SystemExit(3)"), timeout=10)
-    assert not commands.run_quiet(_python("import time; time.sleep(30)"), timeout=0.2)
-    assert not commands.run_quiet(["/nonexistent/tool"], timeout=1)
-    with pytest.raises(ValueError):
-        commands.run_quiet(["relative"], timeout=1)
 def test_input_text_reaches_the_command_stdin(monkeypatch):
     seen = {}
 

@@ -112,9 +112,10 @@ All paths are relative to `src/blueferry/` unless noted.
 | --- | --- |
 | `sinks/__init__.py` | Sink protocol: `handle(event)` plus optional `handle_ancs`, `handle_call`, and `handle_phone_battery_low` (optional HFP calls, desktop UI only). |
 | `sinks/sqlite.py` | Persists events to the private history store. |
-| `sinks/otp_clipboard.py` | Opt-in: copies one-time codes from new, unread MAP messages from non-contacts to the clipboard (fail-closed freshness, rate limit) and adds a line to the message popup or shows a transient confirmation. |
-| `otp.py` | Pure one-time code detection: a number must be bound to a code noun (connector, OTP context, or entry instruction), with false-positive filters. |
-| `otp_clipboard.py` | Chooses wl-copy/xclip/xsel and owns one foreground clipboard helper; probes `--sensitive` on a worker, reaps through a GLib child watch; clearing stops a helper that still owns the code, or reads the clipboard back and clears it when a persistence tool took the code over. |
+| `sinks/otp_clipboard.py` | Opt-in: copies one-time codes from new, unread MAP messages from non-contacts to the clipboard (five-minute freshness and current unread metadata, at most three eligibility checks per minute, five-second group grace) and adds a line to the message popup or shows a transient confirmation. |
+| `otp.py` | Pure one-time code detection: a number must be bound to a code noun or an entry instruction in an authentication sentence, with false-positive filters. |
+| `otp_context.py` | Bounded, transient MAP/ANCS context for live group correlation and read-state changes; works without history storage. |
+| `otp_clipboard.py` | Chooses wl-copy/xclip/xsel and owns one foreground clipboard helper; first copy waits for the worker capability probe; reaps through a GLib child watch. Cleanup only stops its own source, preserving selections owned by other programs. |
 | `sinks/libnotify.py` | Desktop notifications via `org.freedesktop.Notifications`, including open and dismiss actions, optional incoming-call Answer/Decline, opt-in iPhone action buttons, and the optional phone low-battery warning. |
 
 ### Storage and privacy

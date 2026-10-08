@@ -17,33 +17,43 @@ flowchart LR
     B -- nein --> X[Ignoriert]
     B -- ja --> C{Zahl an ein<br/>Code-Wort gebunden?}
     C -- nein --> X
-    C -- ja --> D[wl-copy / xclip / xsel<br/>Code über stdin]
+    C -- ja --> M[5 s für Gruppenmetadaten<br/>Telefonzeit und Gelesen-Status prüfen<br/>Zwischenablage-Fähigkeiten abwarten]
+    M --> D[wl-copy / xclip / xsel<br/>Code über stdin]
     D --> E[Zeile im Nachrichten-Popup:<br/>'Bestätigungscode kopiert']
     D --> F{Lösch-Timer gesetzt?}
-    F -- ja, Code noch in der Ablage --> G[Zwischenablage geleert]
+    F -- ja, BlueFerry besitzt Auswahl --> G[Eigene Zwischenablage-Quelle freigegeben]
 ```
 
 - Nur ungelesene, **gerade angekommene** Nachrichten zählen. Gesendete
   Nachrichten, der Verlauf, bereits gelesene Nachrichten und Nachrichten
   ohne Zeitstempel aus den letzten fünf Minuten werden ignoriert. Auch
   zukünftige Zeitstempel werden ignoriert. Fehlt der Zeitstempel in der
-  Meldung, liest BlueFerry eine begrenzte Posteingangsliste und verwendet
-  die Zeit genau dieser Nachricht, nie die Desktop-Ankunftszeit oder die
-  Zeit einer anderen Nachricht. Aktuelle Nachrichten können auch vor dem
+  Meldung, wird er in einer begrenzten Posteingangsliste nachgeschlagen.
+  BlueFerry prüft immer die Zeit und den aktuellen Gelesen-Status genau
+  dieser Nachricht, nie die Desktop-Ankunftszeit oder die Zeit einer
+  anderen Nachricht. Wird sie während des Wartens gelesen, entfällt die Kopie. Aktuelle Nachrichten können auch vor dem
   Backend-Start empfangen worden sein. Schlägt die Abfrage fehl oder fehlt
   die Nachricht unter den neuesten 20 Einträgen, wird nichts kopiert.
 - Codes kommen von Diensten, darum werden Nachrichten von **gespeicherten
-  Kontakten** und aus **Gruppenunterhaltungen** ignoriert. Pro Minute werden
-  höchstens drei Codes kopiert.
+  Kontakten** und aus erkannten **Gruppenunterhaltungen** ignoriert.
+  Kandidaten warten fünf Sekunden auf Gruppenmetadaten aus Apple-Messages-
+  Mitteilungen. Pro Minute sind höchstens drei Prüfungen und drei Kopien
+  erlaubt; auch fehlgeschlagene Prüfungen zählen, bevor Telefonarbeit
+  eingereiht wird.
 - Eine Zahl gilt nur dann als Code, wenn sie an ein Code-Wort gebunden ist:
   - ein OTP-typisches Wort in der Nähe: „Bestätigungscode",
     „Sicherheitscode", „mTAN", „OTP", „Bestätigungsnummer",
     „verification code", „Steam Guard code", …;
   - „Code" direkt vor der Zahl: „Code: 123456", „Code lautet 123456";
   - „123456 ist Ihr … Code";
-  - „Code" in der Nähe der Zahl in einer Nachricht über Bestätigung oder
-    Anmeldung;
-  - „geben Sie 123456 ein" oder „enter 123456" in einer solchen Nachricht.
+  - „Code" unmittelbar vor der Zahl, etwa „Telegram code 58291";
+  - „geben Sie 123456 ein" oder „enter 123456" in einem Satz über
+    Authentifizierung oder das Zurücksetzen eines Passworts.
+
+  Einfache PINs und Passwörter brauchen Authentifizierungskontext. Tür- und
+  WLAN-Codes sowie Zahlen mit Einheiten wie Schritten oder Nachrichten
+  werden ausgeschlossen. Ein Code-Wort in einem anderen Satz bindet keine
+  unzusammenhängende Zahl.
 
   Wörter wie „Einmal", „verify" oder „one-time" allein binden keine Zahl;
   „Einmalzahlung von 1500" oder „Verify your email to get 5000 points"
@@ -85,8 +95,10 @@ echo 'Dein Code lautet 123456' | blueferry otp-check   # Probelauf, kopiert nich
 
 ## Zwischenablage-Verlauf (Klipper und andere)
 
-Ab wl-clipboard 2.3 wird der Code als sensibel markiert, sodass Klipper und
-andere Zwischenablage-Manager ihn nicht in ihren Verlauf aufnehmen. Ältere
+Ab wl-clipboard 2.3 wird der Code als sensibel markiert. Manager, die diese
+Markierung beachten, nehmen ihn nicht in ihren Verlauf auf. Die erste Kopie
+wartet auf die Fähigkeitsprüfung; schlägt sie fehl, entfallen wartende
+Kopien und die nächste Nachricht kann die Prüfung erneut versuchen. Ältere
 wl-clipboard-Versionen und die X11-Programme können diese Markierung nicht
 setzen; dann bleibt der Code im Verlauf des Managers, auch nachdem der
 Lösch-Timer abgelaufen ist. `blueferry otp-status` zeigt, welcher Fall
@@ -94,28 +106,32 @@ zutrifft.
 
 ## Lösch-Timer
 
-Mit `BLUEFERRY_OTP_CLEAR_SECONDS=N` entfernt BlueFerry den Code nach N
-Sekunden, aber nur, wenn er noch in der Zwischenablage liegt. Hast du
-inzwischen etwas anderes kopiert, bleibt deine Kopie erhalten. Beim Beenden
-des BlueFerry-Backends wird ein Code, den es noch hält, ebenfalls entfernt.
+Mit `BLUEFERRY_OTP_CLEAR_SECONDS=N` gibt BlueFerry nach N Sekunden seine
+eigene Zwischenablage-Quelle frei. Hast du inzwischen etwas anderes
+kopiert, bleibt deine Auswahl erhalten. Beim Beenden wird die eigene
+Quelle auch ohne Timer freigegeben.
 
-Programme wie wl-clip-persist übernehmen die Zwischenablage sofort, sodass
-BlueFerrys Hilfsprogramm den Code nicht mehr hält. Timer und Beenden lesen
-die Zwischenablage dann zurück (`wl-paste`, `xclip -o` oder
-`xsel --output`) und leeren sie nur, wenn sie noch genau den Code enthält.
-Dabei werden nur wenige Bytes gelesen und nur verglichen.
+Programme wie wl-clip-persist können die Auswahl sofort übernehmen.
+BlueFerry kann deren Kopien nicht sicher leeren: Zwischen Lesen und
+Leeren könntest du etwas Neues kopieren, das dann gelöscht würde.
+Darum beendet die Bereinigung nur BlueFerrys eigenes Hilfsprogramm,
+liest die Zwischenablage nie zurück und ruft keinen globalen Löschbefehl
+auf. Kopien und Verlaufseinträge anderer Programme bleiben unter deren
+Kontrolle, auch beim Beenden.
 
 ## Grenzen
 
-- **Es ist eine Heuristik.** Ungewöhnlich formulierte Codes werden verpasst,
-  und „der Türcode ist 4711" von einer Nummer, die kein gespeicherter Kontakt
-  ist, wird trotzdem kopiert. Mit `blueferry otp-check` kannst du
+- **Es ist eine Heuristik.** Ungewöhnlich formulierte Codes können verpasst
+  werden; andere Texte können trotzdem wie Authentifizierungsnachrichten
+  aussehen. Mit `blueferry otp-check` kannst du
   Nachrichten deiner eigenen Anbieter testen; es prüft nur den Text, nicht
   die Absender-Regeln.
 - **Gruppenunterhaltungen.** Die Nachrichten-Meldung des iPhones sagt nicht,
-  ob eine Nachricht zu einer Gruppe gehört. BlueFerry überspringt sie, wenn
-  es die Gruppe schon kennt; als Kontakt gespeicherte Mitglieder werden
-  ohnehin übersprungen.
+  ob eine Nachricht zu einer Gruppe gehört. Live-Mitteilungen von Apple
+  Messages liefern diese Information; BlueFerry wartet fünf Sekunden und
+  prüft erneut unmittelbar vor dem Kopieren. Fehlende oder spätere Metadaten
+  können Gruppen unerkannt lassen. Gespeicherte Kontakte werden immer
+  übersprungen.
 - **Zeitzonen.** Das iPhone sendet Nachrichtenzeiten oft ohne Zeitzone.
   Nutzen Telefon und Computer verschiedene Zonen, wirken Codes älter als
   fünf Minuten und werden übersprungen. Das Debug-Log zeigt dann „ignoring a

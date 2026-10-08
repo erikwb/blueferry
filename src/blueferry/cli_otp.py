@@ -22,7 +22,7 @@ def status_lines(
     clear_after_s: int,
     environ: Mapping[str, str],
     find: Callable[[Mapping[str, str]], ClipboardTarget | None] | None = None,
-    probe_sensitive: Callable[[str], bool] | None = None,
+    probe_sensitive: Callable[[str], bool | None] | None = None,
 ) -> tuple[list[str], bool]:
     """Describe auto-copy for this session; return (lines, has_warning).
 
@@ -43,7 +43,13 @@ def status_lines(
         warning = enabled
     else:
         lines.append(f"Clipboard helper: {target.tool} ({target.kind})")
-        if target.tool == "wl-copy" and probe_sensitive(target.executable):
+        sensitive = probe_sensitive(target.executable) if target.tool == "wl-copy" else False
+        if sensitive is None:
+            lines.append(
+                "Clipboard history: capability probe failed; auto-copy waits for a successful probe"
+            )
+            warning = enabled
+        elif sensitive:
             lines.append(
                 "Clipboard history: codes are marked sensitive (kept out of Klipper history)"
             )
