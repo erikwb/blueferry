@@ -308,6 +308,43 @@ def test_truncated_value_is_fetched_once_through_entity_attribute(harness) -> No
     assert _bytes(bus.take("WriteValue", EA)) == b"\x02\x02"
 
 
+def test_new_notification_supersedes_pending_full_read(harness) -> None:
+    client, bus, timers, updates, *_ = harness
+    _subscribe(client, bus, timers)
+    bus.notify(EU, bytes([2, 2, 1]) + b"Old")
+    bus.take("WriteValue", EA).succeed()
+    reading = bus.take("ReadValue", EA)
+    bus.notify(EU, bytes([2, 2, 0]) + b"New song")
+    reading.succeed(dbus.Array(list(b"Old song")))
+    assert [update.value for update in updates] == ["Old", "New song"]
+    assert bus.pending() == []
+
+
+def test_new_truncated_notification_gets_its_own_full_read(harness) -> None:
+    client, bus, timers, updates, *_ = harness
+    _subscribe(client, bus, timers)
+    bus.notify(EU, bytes([2, 2, 1]) + b"Old")
+    bus.take("WriteValue", EA).succeed()
+    reading = bus.take("ReadValue", EA)
+    bus.notify(EU, bytes([2, 2, 1]) + b"New")
+    reading.succeed(dbus.Array(list(b"Old song")))
+    assert updates[-1].value == "New"
+    bus.take("WriteValue", EA).succeed()
+    bus.take("ReadValue", EA).succeed(dbus.Array(list(b"New song")))
+    assert [update.value for update in updates] == ["Old", "New", "New song"]
+
+
+def test_other_attribute_notification_does_not_cancel_full_read(harness) -> None:
+    client, bus, timers, updates, *_ = harness
+    _subscribe(client, bus, timers)
+    bus.notify(EU, bytes([2, 2, 1]) + b"Tit")
+    bus.take("WriteValue", EA).succeed()
+    reading = bus.take("ReadValue", EA)
+    bus.notify(EU, bytes([2, 0, 0]) + b"Artist")
+    reading.succeed(dbus.Array(list(b"Title")))
+    assert updates[-1].value == "Title"
+
+
 def test_failed_full_read_keeps_the_truncated_value(harness) -> None:
     client, bus, timers, updates, *_ = harness
     _subscribe(client, bus, timers)
