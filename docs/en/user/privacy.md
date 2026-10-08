@@ -15,7 +15,10 @@ Choose one of three notification modes in the client's iPhone page:
 
 Notifications from other apps are shown and then discarded. They're never
 added to message history and never broadcast to other programs. Messages
-that arrive through both MAP and ANCS appear only once.
+that arrive through both MAP and ANCS appear only once. The ANCS copy of an
+Apple Messages notification (title, subtitle and up to the first 1024 bytes of
+the text) is kept in local history under the storage mode below, because it
+carries the group details that MAP lacks.
 
 By default, dismissing a message popup also marks the message read on the
 iPhone. Some do-not-disturb or "block" actions in notification centers
@@ -43,6 +46,13 @@ notification. BlueFerry logs each app once, without content:
 journalctl --user -u blueferry -f | grep "ANCS app observed"
 ```
 
+### Click rules
+
+[Click rules](notification-click-rules.md) open a fixed address or app when
+an app's popup is clicked. Nothing from the notification is passed along.
+Rules are stored unencrypted in `settings.json`, and the notification server
+never sees them, only a fixed "Open" action and a random per-popup ID.
+
 ## Local data
 
 BlueFerry keeps message history and a contact cache so conversations survive
@@ -62,6 +72,12 @@ restarts. You choose how:
 - Starred conversations, saved group members, and group confirmations follow
   the same storage mode.
 - `blueferry history-clear` deletes local message history.
+
+With the optional [contact photos](contact-photos.md), the contact cache
+also holds your contacts' pictures under the same storage mode, and the
+backend keeps short-lived owner-only copies in `$XDG_RUNTIME_DIR/blueferry`
+for popup icons. Turning the option off deletes the stored photos on the next
+backend start.
 
 Encryption protects data at rest. Other programs running as your user can
 still use the BlueFerry D-Bus API and, while the wallet is unlocked, may be
@@ -104,9 +120,20 @@ Edit `~/.config/blueferry/local.env`, then restart the service with
 | `BLUEFERRY_ANCS_APP_BLOCKLIST` | unset | See [Filter apps](#filter-apps) |
 | `BLUEFERRY_OTP_AUTOCOPY` | `false` | Copy one-time codes to the clipboard, see [One-time codes](#one-time-codes) |
 | `BLUEFERRY_OTP_CLEAR_SECONDS` | `0` | Clear a copied code after this many seconds (0 = keep, max 600) |
+| `BLUEFERRY_CONTACT_PHOTOS` | `false` | Keep contact photos for avatars and popup icons; see [Contact photos](contact-photos.md) |
 
 Pairing writes the phone and adapter settings to the same file; change those
 by pairing again rather than by hand.
+
+## Media control
+
+The optional [media control](media-control.md) is off by default. When you
+turn it on, track, artist, album and player name stay inside BlueFerry and
+are fetched by clients through its authenticated D-Bus interface; nothing
+about your music is written to disk or the log. Only the on/off choice is
+saved, in `settings.json`. The separate MPRIS option deliberately makes the
+current track readable by every application in your login session, like any
+desktop music player.
 
 ## Calls and music stay on the iPhone
 

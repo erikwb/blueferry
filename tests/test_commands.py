@@ -138,3 +138,25 @@ def test_run_quiet_reports_success_and_bounds_waiting() -> None:
     assert not commands.run_quiet(["/nonexistent/tool"], timeout=1)
     with pytest.raises(ValueError):
         commands.run_quiet(["relative"], timeout=1)
+def test_input_text_reaches_the_command_stdin(monkeypatch):
+    seen = {}
+
+    def run(*_args, **kwargs):
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(["probe"], 0, "", "")
+
+    monkeypatch.setattr(commands.subprocess, "run", run)
+
+    commands.run_command(["probe"], timeout=2, input_text="")
+    assert seen["input"] == ""
+    commands.run_command(["probe"], timeout=2)
+    assert seen["input"] is None
+
+
+def test_an_empty_input_text_gives_a_real_empty_pipe():
+    """btmgmt (BlueZ 5.72) polls stdin; an empty pipe reads EOF at once."""
+    result = commands.run_command(
+        ["/bin/sh", "-c", "test -p /dev/stdin && cat"], timeout=5, input_text="",
+    )
+    assert result.returncode == 0
+    assert result.stdout == ""

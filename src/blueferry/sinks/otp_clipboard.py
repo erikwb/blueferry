@@ -33,13 +33,8 @@ _NOTIFICATIONS_NAME = "org.freedesktop.Notifications"
 _NOTIFICATIONS_PATH = "/org/freedesktop/Notifications"
 # A code this old has probably expired or been used; copying it would
 # surprise the user by replacing whatever they copied since.
-MAX_CODE_AGE = timedelta(minutes=10)
-# Phone and computer clocks differ slightly; a message stamped further in
-# the future than this is not trusted to be new.
-MAX_CLOCK_SKEW = timedelta(minutes=2)
-# Messages stamped this long before the sink started are not copied, so a
-# backend restart never replays an earlier code onto the clipboard.
-STARTUP_GRACE = timedelta(seconds=30)
+MAX_CODE_AGE = timedelta(minutes=5)
+TimestampResolver = Callable[[SmsEvent, Callable[[datetime | None], None]], None]
 # At most this many codes per window; a burst is far more likely spam or a
 # bug than a series of logins.
 MAX_COPIES_PER_WINDOW = 3
@@ -195,6 +190,7 @@ class OtpClipboardSink:
         cancel: Callable[[int], object] | None = None,
         now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         amend_message_popup: Callable[[str, str], bool] | None = None,
+        resolve_timestamp: TimestampResolver | None = None,
     ) -> None:
         if schedule_ms is None or cancel is None:
             from gi.repository import GLib
@@ -216,7 +212,10 @@ class OtpClipboardSink:
         self._cancel = cancel
         self._now = now
         self._amend_message_popup = amend_message_popup
-        self._started = now()
+        self._resolve_timestamp = resolve_timestamp
+        self._closed = False
+        self._request_sequence = 0
+        self._last_copied_sequence = 0
         self._recent_copies: deque[datetime] = deque()
         self._seen: OrderedDict[str, None] = OrderedDict()
         self._pending_confirms: set[int] = set()
@@ -225,6 +224,7 @@ class OtpClipboardSink:
         log.info("one-time code clipboard sink ready")
 
     def close(self) -> None:
+        self._closed = True
         for source in list(self._pending_confirms):
             try:
                 self._cancel(source)
@@ -251,8 +251,6 @@ class OtpClipboardSink:
         handle = str(getattr(event, "handle", "") or "")
         if not handle or handle in self._seen:
             return False
-        if not self._is_recent(getattr(event, "timestamp", None)):
-            return False
         self._seen[handle] = None
         while len(self._seen) > _MAX_SEEN_HANDLES:
             self._seen.popitem(last=False)
@@ -265,7 +263,7 @@ class OtpClipboardSink:
             return False
         now = self._now()
         age = now - timestamp
-        if age > MAX_CODE_AGE or timestamp < self._started - STARTUP_GRACE:
+        if age > MAX_CODE_AGE:
             # Content-free: offset-less iPhone timestamps are read in the
             # local zone, so a zone mismatch shows up here.
             log.debug(
@@ -273,7 +271,7 @@ class OtpClipboardSink:
                 int(age.total_seconds()),
             )
             return False
-        if -age > MAX_CLOCK_SKEW:
+        if age < timedelta(0):
             log.debug(
                 "ignoring a message %d seconds in the future for one-time code copy",
                 int(-age.total_seconds()),
@@ -303,34 +301,60 @@ class OtpClipboardSink:
         return True
 
     def handle(self, event: SmsEvent) -> None:
-        if not self._is_new_incoming(event):
+        if self._closed or not self._is_new_incoming(event):
             return
         code = extract_otp(getattr(event, "body", None))
-        if code is None or not self._within_rate_limit():
+        if code is None:
+            return
+        self._request_sequence += 1
+        sequence = self._request_sequence
+        if event.timestamp is None and self._resolve_timestamp is not None:
+            try:
+                self._resolve_timestamp(
+                    event,
+                    lambda timestamp: self._copy_recent(event, code, sequence, timestamp),
+                )
+            except Exception as error:
+                log.debug("one-time code timestamp lookup failed: %s", type(error).__name__)
+            return
+        self._copy_recent(event, code, sequence, event.timestamp)
+
+    def _copy_recent(
+        self, event: SmsEvent, code: str, sequence: int, timestamp: datetime | None,
+    ) -> None:
+        if (self._closed or sequence <= self._last_copied_sequence
+                or event.is_read or event.contact_name or event.group_key):
+            return
+        # The worker may have waited in a queue: check age at copy time, not
+        # when the notification arrived. An old lookup cannot replace a newer copy.
+        if not self._is_recent(timestamp) or not self._within_rate_limit():
             return
         ticket = self._writer.copy(code)
         if ticket is None:
             return
+        self._last_copied_sequence = sequence
         sender = str(getattr(event, "display_sender", "") or "")
         handle = str(getattr(event, "handle", "") or "")
-        self._schedule_confirm(code, sender, handle, ticket, retried=False)
+        self._schedule_confirm(code, sender, handle, ticket, timestamp=timestamp, retried=False)
 
     def _schedule_confirm(
-        self, code: str, sender: str, handle: str, ticket: ClipboardTicket, *, retried: bool
+        self, code: str, sender: str, handle: str, ticket: ClipboardTicket,
+        *, timestamp: datetime | None, retried: bool,
     ) -> None:
         source: int | None = None
 
         def fire() -> bool:
             if source is not None:
                 self._pending_confirms.discard(source)
-            self._confirm(code, sender, handle, ticket, retried=retried)
+            self._confirm(code, sender, handle, ticket, timestamp=timestamp, retried=retried)
             return False
 
         source = self._schedule_ms(_CONFIRM_DELAY_MS, fire)
         self._pending_confirms.add(source)
 
     def _confirm(
-        self, code: str, sender: str, handle: str, ticket: ClipboardTicket, *, retried: bool
+        self, code: str, sender: str, handle: str, ticket: ClipboardTicket,
+        *, timestamp: datetime | None, retried: bool,
     ) -> None:
         state = self._writer.state(ticket)
         if state == "superseded":
@@ -339,12 +363,16 @@ class OtpClipboardSink:
             return
         if state == "failed":
             if ticket.tool == "wl-copy" and not retried:
+                if not self._is_recent(timestamp):
+                    return
                 if not self._warned_fallback:
                     log.warning("wl-copy could not take the clipboard; trying X11 helpers")
                     self._warned_fallback = True
                 fallback = self._writer.copy(code, exclude=_X11_FALLBACK_EXCLUDE)
                 if fallback is not None:
-                    self._schedule_confirm(code, sender, handle, fallback, retried=True)
+                    self._schedule_confirm(
+                        code, sender, handle, fallback, timestamp=timestamp, retried=True,
+                    )
                 return
             hint_for = getattr(self._writer, "failure_hint", None)
             hint = hint_for(ticket) if hint_for is not None else None

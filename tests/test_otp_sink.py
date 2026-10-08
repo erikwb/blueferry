@@ -99,7 +99,7 @@ def _received(body=BODY, *, handle="message1", path="/org/bluez/obex/client/sess
     )
 
 
-def _sink(writer=None, *, policy="messages", amend=None):
+def _sink(writer=None, *, policy="messages", amend=None, resolve=None, now=lambda: NOW):
     notifier = _Notifier()
     timers = _Timers()
     sink = OtpClipboardSink(
@@ -108,8 +108,9 @@ def _sink(writer=None, *, policy="messages", amend=None):
         notifier=notifier,
         schedule_ms=timers.schedule,
         cancel=timers.cancel,
-        now=lambda: NOW,
+        now=now,
         amend_message_popup=amend,
+        resolve_timestamp=resolve,
     )
     return sink, notifier, timers
 
@@ -173,17 +174,17 @@ def test_stale_message_is_logged_without_content(caplog) -> None:
     assert CODE not in caplog.text
 
 
-def test_small_clock_skew_into_the_future_is_accepted() -> None:
+def test_future_phone_timestamp_is_not_in_the_past_five_minutes() -> None:
     writer = _Writer()
     sink, _notifier, timers = _sink(writer)
 
     sink.handle(_received(age=-timedelta(seconds=60)))
     timers.settle()
 
-    assert _codes(writer) == [CODE]
+    assert _codes(writer) == []
 
 
-def test_messages_from_before_the_backend_started_are_not_replayed() -> None:
+def test_recent_message_from_before_backend_startup_is_eligible() -> None:
     writer = _Writer()
     notifier = _Notifier()
     timers = _Timers()
@@ -197,12 +198,158 @@ def test_messages_from_before_the_backend_started_are_not_replayed() -> None:
         now=lambda: clock[0],
     )
 
-    # Younger than ten minutes, but stamped well before the sink started.
+    # The phone's five-minute window also applies across backend restarts.
     sink.handle(_received(handle="old", age=timedelta(minutes=2)))
     sink.handle(_received(handle="new", age=timedelta(seconds=10)))
     timers.settle()
 
+    assert _codes(writer) == [CODE, CODE]
+
+
+@pytest.mark.parametrize(
+    "age,copied",
+    [
+        (timedelta(0), True),
+        (timedelta(minutes=5), True),
+        (timedelta(minutes=5, microseconds=1), False),
+        (timedelta(minutes=6), False),
+        (-timedelta(microseconds=1), False),
+    ],
+)
+def test_phone_timestamp_must_be_in_the_past_five_minutes(age, copied) -> None:
+    writer = _Writer()
+    sink, _notifier, timers = _sink(writer)
+
+    sink.handle(_received(age=age))
+    timers.settle()
+
+    assert _codes(writer) == ([CODE] if copied else [])
+
+
+def test_phone_timestamp_compares_instants_across_time_zones() -> None:
+    writer = _Writer()
+    sink, _notifier, timers = _sink(writer)
+    event = _received(age=timedelta(minutes=4))
+    event.timestamp = event.timestamp.astimezone(timezone(timedelta(hours=-4)))
+
+    sink.handle(event)
+    timers.settle()
+
     assert _codes(writer) == [CODE]
+
+
+@pytest.mark.parametrize(
+    "timestamp,copied",
+    [
+        (NOW - timedelta(minutes=4), True),
+        (NOW - timedelta(minutes=6), False),
+        (NOW + timedelta(seconds=1), False),
+        (NOW.replace(tzinfo=None), False),
+        (None, False),
+    ],
+)
+def test_push_without_timestamp_waits_for_phone_metadata(timestamp, copied) -> None:
+    requests = []
+    writer = _Writer()
+    sink, notifier, timers = _sink(
+        writer, resolve=lambda event, done: requests.append((event, done)),
+    )
+    event = replace(_received(), timestamp=None)
+
+    sink.handle(event)
+    sink.handle(event)  # Duplicated push must not queue another query.
+    assert writer.copied == []
+    assert len(requests) == 1
+    assert requests[0][0].message_path == event.message_path
+
+    requests[0][1](timestamp)
+    timers.settle()
+    assert _codes(writer) == ([CODE] if copied else [])
+    assert bool(notifier.shown) is copied
+
+
+def test_delayed_lookup_uses_age_at_copy_time() -> None:
+    requests = []
+    clock = [NOW]
+    writer = _Writer()
+    sink, _notifier, timers = _sink(
+        writer, now=lambda: clock[0], resolve=lambda event, done: requests.append(done),
+    )
+    sink.handle(replace(_received(), timestamp=None))
+    clock[0] += timedelta(seconds=2)
+
+    requests[0](NOW - timedelta(minutes=5))
+    timers.settle()
+
+    assert writer.copied == []
+
+
+def test_old_timestamp_reply_cannot_replace_a_newer_copy() -> None:
+    requests = []
+    writer = _Writer()
+    sink, _notifier, timers = _sink(
+        writer, resolve=lambda event, done: requests.append(done),
+    )
+    sink.handle(replace(_received(handle="older"), timestamp=None))
+    sink.handle(_received(body="Your verification code is 135790", handle="newer"))
+
+    requests[0](NOW)
+    timers.settle()
+
+    assert _codes(writer) == ["135790"]
+
+
+def test_timestamp_reply_after_shutdown_cannot_copy() -> None:
+    requests = []
+    writer = _Writer()
+    sink, notifier, timers = _sink(
+        writer, resolve=lambda event, done: requests.append(done),
+    )
+    sink.handle(replace(_received(), timestamp=None))
+    sink.close()
+
+    requests[0](NOW)
+    timers.settle()
+
+    assert writer.copied == []
+    assert notifier.shown == []
+
+
+@pytest.mark.parametrize(
+    "event",
+    [replace(_received(), contact_name="Alice"), replace(_received(), is_read=True),
+     replace(_received(), group_key="group:family"), _received(body="Hello"),
+     _received(kind="sms_seen"), _received(path=None)],
+)
+def test_ineligible_pushes_never_query_phone_metadata(event) -> None:
+    requests = []
+    writer = _Writer()
+    sink, _notifier, timers = _sink(
+        writer, resolve=lambda event, done: requests.append(done),
+    )
+
+    sink.handle(replace(event, timestamp=None))
+    timers.settle()
+
+    assert requests == []
+    assert writer.copied == []
+
+
+def test_lookup_submission_failure_does_not_copy_or_log_content(caplog) -> None:
+    def resolve(_event, _done):
+        raise RuntimeError(BODY)
+
+    caplog.set_level(logging.DEBUG)
+    writer = _Writer()
+    sink, notifier, timers = _sink(writer, resolve=resolve)
+
+    sink.handle(replace(_received(), timestamp=None))
+    timers.settle()
+
+    assert writer.copied == []
+    assert notifier.shown == []
+    assert "lookup failed: RuntimeError" in caplog.text
+    assert CODE not in caplog.text
 
 
 def test_bursts_of_codes_are_rate_limited(caplog) -> None:
@@ -252,6 +399,19 @@ def test_failed_wl_copy_falls_back_to_x11_once(caplog) -> None:
     assert len(notifier.shown) == 1
     assert "copied a one-time code to the clipboard via xclip" in caplog.text
     assert CODE not in caplog.text
+
+
+def test_expired_code_is_not_copied_during_clipboard_helper_fallback() -> None:
+    clock = [NOW]
+    writer = _Writer(outcomes=["failed", "running"])
+    sink, notifier, timers = _sink(writer, now=lambda: clock[0])
+
+    sink.handle(_received(age=timedelta(minutes=4, seconds=59)))
+    clock[0] += timedelta(seconds=2)
+    timers.settle()
+
+    assert writer.copied == [(CODE, frozenset())]
+    assert notifier.shown == []
 
 
 def test_fallback_warning_is_logged_once(caplog) -> None:
@@ -484,13 +644,15 @@ def test_autocopy_is_off_by_default_and_configurable(tmp_path) -> None:
     import os
     import subprocess
     import sys
+    from pathlib import Path
 
     env = {
         key: value for key, value in os.environ.items()
         if not key.startswith("BLUEFERRY_")
     }
     env.update(HOME=str(tmp_path), XDG_CONFIG_HOME=str(tmp_path / "config"),
-               XDG_STATE_HOME=str(tmp_path / "state"))
+               XDG_STATE_HOME=str(tmp_path / "state"),
+               PYTHONPATH=str(Path(__file__).resolve().parents[1] / "src"))
     script = (
         "from blueferry import config; "
         "print(config.OTP_AUTOCOPY, config.OTP_CLEAR_SECONDS, "
@@ -527,6 +689,117 @@ def test_enabled_autocopy_receives_messages_and_is_released_on_stop(monkeypatch)
     dispatcher.stop()
     assert writer.released is True
     assert "otp-clipboard" not in dispatcher.names
+
+
+@pytest.mark.parametrize("invalidate", [None, "session", "listener"])
+def test_daemon_dispatches_immediately_and_ignores_stale_metadata(
+    make_daemon, monkeypatch, invalidate,
+) -> None:
+    from blueferry import daemon as daemon_module
+    from blueferry.obex.sessions import ObexSession
+
+    daemon = make_daemon()
+    writer = _Writer()
+    timers = _Timers()
+    notifier = _Notifier()
+    pending = []
+    queries = []
+    dispatched = []
+    session_path = "/org/bluez/obex/client/session1"
+    daemon.sessions.map = ObexSession("MAP", session_path)
+    daemon.listener = SimpleNamespace()
+    daemon.obex_worker.submit = lambda operation, **callbacks: pending.append(
+        (operation, callbacks)
+    )
+
+    def lookup(session, path):
+        queries.append((session, path))
+        return NOW - timedelta(minutes=4)
+
+    def factory(**kwargs):
+        return OtpClipboardSink(
+            writer=writer, notifier=notifier, now=lambda: NOW,
+            schedule_ms=timers.schedule, cancel=timers.cancel,
+            resolve_timestamp=kwargs["resolve_timestamp"],
+        )
+
+    monkeypatch.setattr(daemon_module, "lookup_message_timestamp", lookup)
+    monkeypatch.setattr(event_dispatcher, "SqliteSink", _SqliteSink)
+    daemon.events._otp_autocopy = lambda: True
+    daemon.events._otp_sink_factory = factory
+    daemon.events._notification_sink_factory = _failing_notification_sink
+    daemon.events._session_bus = _Bus()
+    daemon.events._schedule = lambda *_args: 1
+    daemon.events._cancel = lambda _source: None
+    daemon.events.on_incoming_message = None
+    daemon.events.setup()
+    daemon.events.sinks.append(SimpleNamespace(name="observer", handle=dispatched.append))
+    event = replace(_received(), timestamp=None)
+
+    daemon.events.message(event)
+    assert dispatched == [event]  # Regular message delivery did not wait.
+    assert writer.copied == []
+    operation, callbacks = pending.pop()
+    result = operation()
+    assert queries == [(session_path, event.message_path)]
+
+    if invalidate == "session":
+        # Even a reused object path belongs to a different connection.
+        daemon.sessions.map = ObexSession("MAP", session_path)
+    elif invalidate == "listener":
+        daemon.listener = SimpleNamespace()
+    callbacks["on_success"](result)
+    timers.settle()
+
+    assert _codes(writer) == ([CODE] if invalidate is None else [])
+    daemon.events.stop()
+
+
+@pytest.mark.parametrize("failure", ["queue", "remote"])
+def test_daemon_timestamp_failure_fails_closed_without_content(
+    make_daemon, monkeypatch, caplog, failure,
+) -> None:
+    from blueferry.obex.sessions import ObexSession
+
+    daemon = make_daemon()
+    daemon.sessions.map = ObexSession("MAP", "/session")
+    daemon.listener = SimpleNamespace()
+    received = []
+
+    def submit(_operation, **callbacks):
+        if failure == "queue":
+            raise RuntimeError(BODY)
+        callbacks["on_error"](RuntimeError(BODY))
+
+    daemon.obex_worker.submit = submit
+    caplog.set_level(logging.DEBUG)
+
+    daemon._resolve_otp_timestamp(_received(path="/session/message1"), received.append)
+
+    assert received == [None]
+    assert CODE not in caplog.text
+
+
+def test_queued_timestamp_query_does_not_access_a_replaced_session(
+    make_daemon, monkeypatch,
+) -> None:
+    from blueferry import daemon as daemon_module
+    from blueferry.obex.sessions import ObexSession
+
+    daemon = make_daemon()
+    daemon.sessions.map = ObexSession("MAP", "/session")
+    daemon.listener = SimpleNamespace()
+    pending = []
+    daemon.obex_worker.submit = lambda operation, **callbacks: pending.append(operation)
+    monkeypatch.setattr(
+        daemon_module, "lookup_message_timestamp",
+        lambda *_args: pytest.fail("old session must not access the phone"),
+    )
+
+    daemon._resolve_otp_timestamp(_received(path="/session/message1"), lambda _result: None)
+    daemon.sessions.map = ObexSession("MAP", "/session")
+
+    assert pending.pop()() is None
 
 
 def test_default_config_leaves_autocopy_disabled(make_daemon, monkeypatch) -> None:

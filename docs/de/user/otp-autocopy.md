@@ -13,7 +13,7 @@ kann.
 
 ```mermaid
 flowchart LR
-    A[Neue Nachricht vom iPhone] --> B{Gerade angekommen?<br/>eingehend, ungelesen,<br/>höchstens 10 Min. alt,<br/>kein Kontakt, keine Gruppe}
+    A[Neue Nachricht vom iPhone] --> B{Gerade angekommen?<br/>eingehend, ungelesen,<br/>höchstens 5 Min. alt,<br/>kein Kontakt, keine Gruppe}
     B -- nein --> X[Ignoriert]
     B -- ja --> C{Zahl an ein<br/>Code-Wort gebunden?}
     C -- nein --> X
@@ -25,7 +25,13 @@ flowchart LR
 
 - Nur ungelesene, **gerade angekommene** Nachrichten zählen. Gesendete
   Nachrichten, der Verlauf, bereits gelesene Nachrichten und Nachrichten
-  ohne Zeitstempel aus den letzten zehn Minuten werden ignoriert.
+  ohne Zeitstempel aus den letzten fünf Minuten werden ignoriert. Auch
+  zukünftige Zeitstempel werden ignoriert. Fehlt der Zeitstempel in der
+  Meldung, liest BlueFerry eine begrenzte Posteingangsliste und verwendet
+  die Zeit genau dieser Nachricht, nie die Desktop-Ankunftszeit oder die
+  Zeit einer anderen Nachricht. Aktuelle Nachrichten können auch vor dem
+  Backend-Start empfangen worden sein. Schlägt die Abfrage fehl oder fehlt
+  die Nachricht unter den neuesten 20 Einträgen, wird nichts kopiert.
 - Codes kommen von Diensten, darum werden Nachrichten von **gespeicherten
   Kontakten** und aus **Gruppenunterhaltungen** ignoriert. Pro Minute werden
   höchstens drei Codes kopiert.
@@ -112,7 +118,7 @@ Dabei werden nur wenige Bytes gelesen und nur verglichen.
   ohnehin übersprungen.
 - **Zeitzonen.** Das iPhone sendet Nachrichtenzeiten oft ohne Zeitzone.
   Nutzen Telefon und Computer verschiedene Zonen, wirken Codes älter als
-  zehn Minuten und werden übersprungen. Das Debug-Log zeigt dann „ignoring a
+  fünf Minuten und werden übersprungen. Das Debug-Log zeigt dann „ignoring a
   message N seconds old".
 - **Sitzungserkennung.** Das Backend braucht die grafische Sitzung in seiner
   Umgebung: `WAYLAND_DISPLAY` (oder genau einen `wayland-N`-Socket in

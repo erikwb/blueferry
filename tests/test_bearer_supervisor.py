@@ -44,6 +44,9 @@ def test_connects_classic_before_le(caplog) -> None:
         "le": True,
         "last_le_error": "",
         "last_le_error_message": "",
+        "le_bond_suspect": False,
+        "le_flap_count": 0,
+        "last_le_disconnect_reason": "",
     }
     assert "probing iPhone BR/EDR and LE bearer state" in caplog.text
     assert "iPhone BREDR bearer state: disconnected" in caplog.text
@@ -82,6 +85,9 @@ def test_snapshot_includes_the_last_le_connect_error() -> None:
         "le": False,
         "last_le_error": "org.bluez.Error.Failed",
         "last_le_error_message": "connection-aborted",
+        "le_bond_suspect": False,
+        "le_flap_count": 0,
+        "last_le_disconnect_reason": "",
     }
 
 
@@ -1861,3 +1867,188 @@ def test_stable_le_clears_classic_backoff_once() -> None:
     now = quiet_until
     scheduled[0][1]()
     assert attempts == [("bredr", 0.0), ("bredr", retry_at), ("bredr", quiet_until)]
+
+
+def _legacy_bluez(monkeypatch, device: dict) -> list:
+    """Fake a bluetoothd without bearer interfaces, as before BlueZ 5.84."""
+    calls = []
+
+    class Properties:
+        @staticmethod
+        def Get(interface, name, *, timeout):
+            calls.append((interface, name))
+            if interface != "org.bluez.Device1":
+                raise bearer_supervisor.dbus.exceptions.DBusException(
+                    f"No such interface '{interface}'",
+                    name="org.freedesktop.DBus.Error.InvalidArgs",
+                )
+            value = device[name]
+            if isinstance(value, Exception):
+                raise value
+            return value
+
+    class Bus:
+        @staticmethod
+        def get_object(_service, _path):
+            return object()
+
+    monkeypatch.setattr(bearer_supervisor, "get_system_bus", Bus)
+    monkeypatch.setattr(
+        bearer_supervisor.dbus, "Interface", lambda _object, _interface: Properties(),
+    )
+    return calls
+
+
+def _legacy_supervisor(**overrides):
+    scheduled, connections, disconnections, observed = [], [], [], []
+    supervisor = BearerSupervisor(
+        "/device",
+        connect=lambda kind, on_success, _on_error: connections.append(kind),
+        disconnect=lambda kind, *_callbacks: disconnections.append(kind),
+        on_le_state=lambda value: observed.append(
+            (value, supervisor.legacy_connected)
+        ),
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        **overrides,
+    )
+    return supervisor, scheduled, connections, disconnections, observed
+
+
+def test_missing_bearer_api_reads_the_aggregate_device_state(monkeypatch) -> None:
+    device = {"Connected": False, "ServicesResolved": False}
+    _legacy_bluez(monkeypatch, device)
+    supervisor, scheduled, connections, _disconnections, observed = _legacy_supervisor()
+
+    supervisor.start()
+
+    # Aggregate false rules LE out.
+    assert supervisor.le_state is False and not supervisor.legacy_connected
+    assert observed == [(False, False)]
+
+    device["Connected"] = True
+    scheduled[0][1]()
+
+    # Aggregate true may be Classic alone: LE is unknown, not connected.
+    assert supervisor.le_state is None and supervisor.legacy_connected
+    assert supervisor.snapshot()["le"] is False
+    assert observed[-1] == (None, True)
+    # Classic is left as before: unknown, and opened by the OBEX profiles.
+    # An untyped Device1.Connect could make this BlueZ dial LE instead.
+    assert not supervisor.bredr_connected and connections == []
+
+
+def test_missing_bearer_api_is_published_when_le_was_already_unknown(
+    monkeypatch,
+) -> None:
+    _legacy_bluez(monkeypatch, {"Connected": True, "ServicesResolved": True})
+    supervisor, _scheduled, connections, _disconnections, observed = _legacy_supervisor()
+
+    supervisor.start()
+
+    # Unknown to unknown is not a bearer transition, but ANCS must still
+    # learn that it may probe GATT over the aggregate connection.
+    assert observed == [(None, True)]
+    assert connections == []
+
+
+def test_missing_bearer_api_never_dials_or_resets_le(monkeypatch) -> None:
+    _legacy_bluez(monkeypatch, {"Connected": True, "ServicesResolved": True})
+    supervisor, scheduled, connections, disconnections, _observed = _legacy_supervisor()
+    supervisor.start()
+    supervisor.enable_le()
+
+    supervisor.recover_le_transport()
+    supervisor.recover_le_transport(allow_disconnected=True)
+    for _delay, callback in list(scheduled):
+        callback()
+
+    assert connections == [] and disconnections == []
+    assert not supervisor.busy
+
+
+def test_aggregate_changes_are_republished_while_le_stays_unknown(
+    monkeypatch,
+) -> None:
+    device = {"Connected": True, "ServicesResolved": True}
+    _legacy_bluez(monkeypatch, device)
+    supervisor, scheduled, _connections, _disconnections, observed = _legacy_supervisor()
+    supervisor.start()
+    assert observed == [(None, True)]
+
+    scheduled[0][1]()
+    assert observed == [(None, True)]  # Nothing changed: no repeat.
+
+    # BlueZ clears ServicesResolved when either bearer drops.
+    device["ServicesResolved"] = False
+    scheduled[0][1]()
+    assert observed == [(None, True), (None, True)]
+
+
+def test_failed_aggregate_read_keeps_the_last_legacy_observation(
+    monkeypatch,
+) -> None:
+    device = {"Connected": True, "ServicesResolved": True}
+    _legacy_bluez(monkeypatch, device)
+    supervisor, scheduled, _connections, _disconnections, observed = _legacy_supervisor()
+    supervisor.start()
+
+    device["Connected"] = bearer_supervisor.dbus.exceptions.DBusException(
+        "timed out", name="org.freedesktop.DBus.Error.NoReply",
+    )
+    scheduled[0][1]()
+
+    # One slow reply must not make ANCS tear down a working subscription.
+    assert supervisor.legacy_connected
+    assert observed == [(None, True)]
+
+
+def test_bluez_restart_rechecks_for_the_le_bearer_api(monkeypatch) -> None:
+    _legacy_bluez(monkeypatch, {"Connected": True, "ServicesResolved": True})
+    supervisor, _scheduled, _connections, _disconnections, observed = _legacy_supervisor()
+    supervisor.start()
+    assert supervisor.legacy_connected
+
+    class Properties:
+        @staticmethod
+        def Get(interface, name, *, timeout):
+            return interface != "org.bluez.Bearer.LE1"
+
+    monkeypatch.setattr(
+        bearer_supervisor.dbus, "Interface", lambda _object, _interface: Properties(),
+    )
+    supervisor.reset_after_bluez_restart()
+
+    assert not supervisor.legacy_connected
+    assert supervisor.le_state is False
+    assert observed[-1] == (False, False)
+
+
+def test_bearer_interface_without_properties_is_not_treated_as_legacy(
+    monkeypatch,
+) -> None:
+    # BlueZ 5.84 and later without -E: the interface exists but is empty.
+    class Properties:
+        @staticmethod
+        def Get(interface, name, *, timeout):
+            if interface == "org.bluez.Device1":
+                return True
+            raise bearer_supervisor.dbus.exceptions.DBusException(
+                f"No such property '{name}'",
+                name="org.freedesktop.DBus.Error.InvalidArgs",
+            )
+
+    class Bus:
+        @staticmethod
+        def get_object(_service, _path):
+            return object()
+
+    monkeypatch.setattr(bearer_supervisor, "get_system_bus", Bus)
+    monkeypatch.setattr(
+        bearer_supervisor.dbus, "Interface", lambda _object, _interface: Properties(),
+    )
+    supervisor, _scheduled, _connections, _disconnections, observed = _legacy_supervisor()
+
+    supervisor.start()
+
+    assert supervisor.le_state is None and not supervisor.legacy_connected
+    assert observed == []

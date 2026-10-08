@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from blueferry.i18n import _
-from blueferry.models import BackendStatus
+from blueferry.models import BackendStatus, phone_status_fields
 
 
 def map_connection_refused(status: Mapping) -> bool:
@@ -16,6 +16,19 @@ def map_connection_refused(status: Mapping) -> bool:
 def map_connection_refused_message() -> str:
     return _(
         "iPhone is refusing message connections; is it connected to another computer?"
+    )
+
+
+def le_bond_suspect(status: Mapping) -> bool:
+    """True when the daemon reports a suspected stale LE pairing."""
+    return status.get("le_bond_suspect") is True
+
+
+def le_bond_suspect_message() -> str:
+    return _(
+        "iPhone notifications keep failing to connect; the Bluetooth pairing "
+        "may be outdated. Forget this computer on the iPhone, remove the "
+        "iPhone here, and pair again. Details: blueferry doctor"
     )
 
 
@@ -43,4 +56,14 @@ def connection_subtitle(status: Mapping, *, reachable: bool) -> str:
             state=subtitle,
             seconds=retry,
         )
+    # Phone battery (LE or HFP) and, with calls on, signal; the operator name is
+    # left out of this one-line summary.
+    phone = [
+        _("{label} {value}").format(label=label, value=value)
+        for label, value in phone_status_fields(
+            BackendStatus.from_dict(status), include_network=False,
+        )
+    ]
+    if phone:
+        subtitle = _("{state} · {phone}").format(state=subtitle, phone=" · ".join(phone))
     return subtitle

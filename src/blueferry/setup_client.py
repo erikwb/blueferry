@@ -17,6 +17,7 @@ from typing import IO, Any, cast
 from blueferry import pair_setup, quirks_report
 from blueferry.bluetooth_devices import PairedDevice
 from blueferry.errors import PairingError
+from blueferry.pairing_policy import notifications_active
 from blueferry.pairing_types import PairingOutcome
 
 DISCOVERY_SECONDS = pair_setup.DISCOVERY_SECONDS
@@ -163,6 +164,7 @@ class BluezSupport:
     active: bool
     packaged_drop_in: bool
     exec_start: str
+    activation_hint: str = ""
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> BluezSupport:
@@ -170,14 +172,18 @@ class BluezSupport:
             active=bool(value.get("active", False)),
             packaged_drop_in=bool(value.get("packaged_drop_in", False)),
             exec_start=str(value.get("exec_start", "")),
+            activation_hint=str(value.get("activation_hint") or ""),
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        value: dict[str, Any] = {
             "active": self.active,
             "packaged_drop_in": self.packaged_drop_in,
             "exec_start": self.exec_start,
         }
+        if self.activation_hint:
+            value["activation_hint"] = self.activation_hint
+        return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -237,6 +243,11 @@ class BluetoothCompatibility:
     controller_vendor: str = ""
     ancs_limited_controller: bool = False
     explicit_pairing_default: bool = False
+    notifications_active: bool = False
+    le_enabled: bool = True
+    le_disabled: bool = False
+    controller_mode: str = ""
+    bluez_activation_hint: str = ""
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> BluetoothCompatibility:
@@ -253,6 +264,7 @@ class BluetoothCompatibility:
             messages_supported=bool(value.get("messages_supported", False)),
             notifications_supported=bool(value.get("notifications_supported", False)),
             bearer_api_active=bool(value.get("bearer_api_active", False)),
+            notifications_active=notifications_active(value),
             pairing_ready=bool(value.get("pairing_ready", False)),
             issue=str(value.get("issue", "")),
             supported_settings=tuple(
@@ -266,6 +278,10 @@ class BluetoothCompatibility:
             controller_vendor=str(value.get("controller_vendor") or ""),
             ancs_limited_controller=bool(value.get("ancs_limited_controller")),
             explicit_pairing_default=bool(value.get("explicit_pairing_default", False)),
+            le_enabled=bool(value.get("le_enabled", True)),
+            le_disabled=bool(value.get("le_disabled", False)),
+            controller_mode=str(value.get("controller_mode") or ""),
+            bluez_activation_hint=str(value.get("bluez_activation_hint") or ""),
         )
 
     def to_dict(self) -> dict[str, Any]:

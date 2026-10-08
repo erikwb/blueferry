@@ -1,6 +1,7 @@
 """Bluetooth controller capability probing and packaged BlueZ activation."""
 from __future__ import annotations
 
+import fnmatch
 import re
 import time
 from collections.abc import Callable
@@ -8,7 +9,9 @@ from pathlib import Path
 from typing import Protocol
 
 import dbus
+from gi.repository import GLib
 
+from blueferry import service_manager
 from blueferry.config import is_valid_adapter
 from blueferry.errors import CommandError, PairingError
 
@@ -136,6 +139,61 @@ def _parse_btmgmt_info(stdout: str) -> tuple[set[str], set[str], dict[str, int]]
     return supported, current, identity
 
 
+# Same workaround as the packaged blueferry-set-cod helper (``: | btmgmt``).
+BTMGMT_STDIN = ""
+BLUEZ_MAIN_CONF = Path("/etc/bluetooth/main.conf")
+_CONTROLLER_MODES = frozenset({"dual", "bredr", "le"})
+
+
+def bluez_controller_mode(path: Path | None = None) -> str:
+    """Return the ``[General] ControllerMode`` bluetoothd will use, or ``""``.
+
+    bluetoothd loads main.conf with GKeyFile and compares the value with
+    ``strcmp`` (BlueZ ``src/main.c``, ``get_mode``), so this reads the file
+    with the same GKeyFile parser: names are case-sensitive, the value keeps
+    trailing text and whitespace, and a file GKeyFile rejects makes
+    bluetoothd use its defaults. Anything bluetoothd would not recognize
+    runs as dual mode and is reported as ``"other"``; ``""`` means unset,
+    unreadable or ignored. Only these fixed words are returned, never
+    configuration text. The file is world-readable on every distribution
+    BlueFerry packages for.
+    """
+    keyfile = GLib.KeyFile()
+    try:
+        keyfile.load_from_file(str(path or BLUEZ_MAIN_CONF), GLib.KeyFileFlags.NONE)
+        mode = keyfile.get_string("General", "ControllerMode")
+    except GLib.Error:
+        return ""
+    return mode if mode in _CONTROLLER_MODES else "other"
+
+
+def le_disabled_issue(controller_mode: str = "") -> str:
+    """Explain a controller that supports LE but runs with LE switched off.
+
+    BlueFerry cannot fix this by itself. With ``ControllerMode = bredr``,
+    bluetoothd registers neither its GATT database nor LEAdvertisingManager1
+    for the adapter (BlueZ ``src/adapter.c``, ``adapter_register``), so
+    switching LE on in the kernel (``btmgmt le on``) changes nothing until
+    bluetoothd restarts in another mode. In the default dual mode bluetoothd
+    switches LE back on itself when it starts (``read_info_complete``).
+    """
+    head = (
+        "Bluetooth Low Energy is switched off on this adapter, so iPhone "
+        "notifications cannot be set up. "
+    )
+    if controller_mode == "bredr":
+        return head + (
+            "BlueZ is configured with ControllerMode = bredr. Set "
+            "ControllerMode = dual in /etc/bluetooth/main.conf (or remove the "
+            "line), restart bluetoothd, then check again."
+        )
+    return head + (
+        "Restart bluetoothd, which switches LE back on in its default dual "
+        "mode, then check again. If LE stays off, make sure "
+        "/etc/bluetooth/main.conf does not set ControllerMode = bredr."
+    )
+
+
 def controller_settings(
     adapter: str, *, run_command: RunCommand, timeout: float = 15,
 ) -> tuple[bool, set[str], set[str], str, dict[str, int]]:
@@ -143,6 +201,9 @@ def controller_settings(
     try:
         result = run_command(
             ["/usr/bin/btmgmt", "--index", index, "info"], timeout=timeout, check=False,
+            # BlueZ 5.72's btmgmt needs a pollable stdin even for one-shot
+            # commands; services and desktop launchers often give /dev/null.
+            input_text=BTMGMT_STDIN,
         )
     except CommandError as error:
         return False, set(), set(), str(error), {}
@@ -318,12 +379,82 @@ def _hardware_summary(identity: dict[str, object]) -> str:
     return chip
 
 
+# Distribution specifics (Gentoo's BLUETOOTH_OPTS, Alpine's command_args)
+# are documented in packaging/openrc/README.md.
+OPENRC_BLUEZ_ACTIVATION_HINT = (
+    "iPhone notifications need BlueZ experimental mode. Start bluetoothd "
+    "with -E (see /etc/conf.d/bluetooth), then run "
+    '"sudo rc-service bluetooth restart". This briefly disconnects all '
+    "Bluetooth devices."
+)
+UNMANAGED_BLUEZ_ACTIVATION_HINT = (
+    "iPhone notifications need BlueZ experimental mode. Start bluetoothd "
+    "with -E and restart the Bluetooth service. This briefly disconnects all "
+    "Bluetooth devices."
+)
+
+
+def _experimental_argv(argv: list[bytes]) -> bool:
+    # Known limit: bundled short options such as "-nE" are not recognized.
+    return b"-E" in argv or b"--experimental" in argv
+
+
+def _running_bluetoothd_argv(proc_root: Path) -> list[bytes] | None:
+    """Return the argv of the running bluetoothd, found by process name.
+
+    Known limit: with /proc mounted ``hidepid=1`` or ``2`` another user's
+    bluetoothd is invisible, so experimental mode reads as inactive.
+    """
+    try:
+        entries = sorted(
+            (entry for entry in proc_root.iterdir() if entry.name.isdigit()),
+            key=lambda entry: int(entry.name),
+        )
+    except OSError:
+        return None
+    for entry in entries:
+        try:
+            if (entry / "comm").read_text(encoding="utf-8").strip() != "bluetoothd":
+                continue
+            argv = (entry / "cmdline").read_bytes().split(b"\0")
+        except (OSError, UnicodeError):
+            continue
+        return [value for value in argv if value]
+    return None
+
+
+def _init_agnostic_support_status(proc_root: Path) -> dict:
+    """Inspect the running bluetoothd directly when systemd is not in charge."""
+    argv = _running_bluetoothd_argv(proc_root) or []
+    active = _experimental_argv(argv)
+    status: dict[str, object] = {
+        "active": active,
+        "packaged_drop_in": False,
+        "exec_start": " ".join(value.decode("utf-8", "replace") for value in argv),
+    }
+    if not active:
+        status["activation_hint"] = (
+            OPENRC_BLUEZ_ACTIVATION_HINT
+            if service_manager.init_system() == service_manager.OPENRC
+            else UNMANAGED_BLUEZ_ACTIVATION_HINT
+        )
+    return status
+
+
 def bluez_support_status(
     *,
     run_command: RunCommand,
     proc_root: Path = Path("/proc"),
 ) -> dict:
-    """Report whether the running daemon has the experimental API enabled."""
+    """Report whether the running daemon has the experimental API enabled.
+
+    Returns ``active``, ``packaged_drop_in``, and ``exec_start``. Without
+    systemd there is no unprivileged activation path, so an inactive result
+    also carries ``activation_hint``: the administrator steps to show instead
+    of offering an automatic Bluetooth restart.
+    """
+    if service_manager.init_system() != service_manager.SYSTEMD:
+        return _init_agnostic_support_status(proc_root)
     try:
         configured = run_command(
             ["/usr/bin/systemctl", "show", "bluetooth.service", "--property=ExecStart", "--value"],
@@ -347,13 +478,81 @@ def bluez_support_status(
                 argv = (proc_root / str(pid) / "cmdline").read_bytes().split(b"\0")
             except OSError:
                 argv = []
-            active = b"-E" in argv or b"--experimental" in argv
+            active = _experimental_argv(argv)
     drop_in = Path("/usr/lib/systemd/system/bluetooth.service.d/blueferry.conf")
     return {
         "active": active,
         "packaged_drop_in": drop_in.exists(),
         "exec_start": command,
     }
+
+
+def bluetoothd_argv(proc_root: Path = Path("/proc")) -> list[str] | None:
+    """Return the running bluetoothd's argv, found by process name.
+
+    Works without systemd (OpenRC, runit). Returns ``None`` when no
+    bluetoothd is visible, e.g. with ``hidepid`` or in a container.
+    """
+    try:
+        entries = list(proc_root.iterdir())
+    except OSError:
+        return None
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            name = (entry / "comm").read_text(encoding="utf-8", errors="replace").strip()
+            if name != "bluetoothd":
+                continue
+            raw = (entry / "cmdline").read_bytes()
+        except OSError:
+            continue
+        return [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part]
+    return None
+
+
+def _plugin_patterns(argv: list[str], short: str, long: str) -> list[str]:
+    patterns: list[str] = []
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        value: str | None = None
+        if token in (short, long):
+            value = argv[index + 1] if index + 1 < len(argv) else ""
+            index += 1
+        elif token.startswith(long + "="):
+            value = token[len(long) + 1:]
+        elif token.startswith(short) and not token.startswith("--") and len(token) > 2:
+            value = token[2:]
+        if value is not None:
+            patterns.extend(part.strip() for part in value.split(",") if part.strip())
+        index += 1
+    return patterns
+
+
+def bluez_hfp_plugin_active(argv: list[str] | None) -> bool:
+    """Whether bluetoothd's own HFP hands-free profile is registered.
+
+    BlueZ 5.87's ``profiles/audio/hfp-hf.c`` (plugin ``hfp``) is an
+    experimental, auto-connecting hands-free profile: it is live exactly
+    when bluetoothd runs with ``-E``, which BlueFerry's bearer API needs, and
+    it then competes with oFono for the iPhone's HFP RFCOMM channel.
+    ``-P hfp`` (``--noplugin``) or a ``-p`` list without it turns it off.
+    Plugin patterns are shell globs, as in bluetoothd. This reads only the
+    options; ``bluez_hfp_plugin_possible`` rules out a BlueZ that predates
+    the plugin. Callers only use both to explain a bring-up that keeps
+    failing.
+    """
+    if not argv:
+        return False
+    options = argv[1:]
+    if "-E" not in options and "--experimental" not in options:
+        return False
+    included = _plugin_patterns(options, "-p", "--plugin")
+    if included and not any(fnmatch.fnmatchcase("hfp", pattern) for pattern in included):
+        return False
+    excluded = _plugin_patterns(options, "-P", "--noplugin")
+    return not any(fnmatch.fnmatchcase("hfp", pattern) for pattern in excluded)
 
 
 _BLUEZ_DAEMONS = (
@@ -363,15 +562,45 @@ _BLUEZ_DAEMONS = (
 )
 _BLUEZ_VERSION = re.compile(r"(\d+\.\d+(?:\.\d+)?)")
 _MIN_BLUEZ_BEARER_API = (5, 86)
+# The bearer interfaces first appeared here, without working methods.
+_MIN_BLUEZ_BEARER_INTERFACES = (5, 84)
+_MIN_BLUEZ_HFP_PLUGIN = (5, 87)
+
+
+def _bluez_version_tuple(version: object) -> tuple[int, ...] | None:
+    match = _BLUEZ_VERSION.fullmatch(str(version).strip())
+    if match is None:
+        return None
+    parts = tuple(int(part) for part in match.group(1).split("."))
+    return (parts + (0, 0))[:2]
 
 
 def bluez_bearer_api_supported(version: object) -> bool:
     """Return whether BlueZ has working per-bearer Connect/Disconnect methods."""
-    match = _BLUEZ_VERSION.fullmatch(str(version).strip())
-    if match is None:
-        return False
-    parts = tuple(int(part) for part in match.group(1).split("."))
-    return (parts + (0, 0))[:2] >= _MIN_BLUEZ_BEARER_API
+    parts = _bluez_version_tuple(version)
+    return parts is not None and parts >= _MIN_BLUEZ_BEARER_API
+
+
+def bluez_hfp_plugin_possible(version: object) -> bool:
+    """Return whether this BlueZ can contain its own HFP hands-free plugin.
+
+    Only a known older version rules the plugin out; an unknown version does
+    not.
+    """
+    parts = _bluez_version_tuple(version)
+    return parts is None or parts >= _MIN_BLUEZ_HFP_PLUGIN
+
+
+def bluez_lacks_bearer_interfaces(version: object) -> bool:
+    """Return whether this BlueZ predates the bearer interfaces altogether.
+
+    Such a daemon behaves the same with or without ``-E``: the backend reads
+    the aggregate device state and proves ANCS with a GATT round trip. BlueZ
+    5.84 and 5.85 expose bearer state but cannot disconnect a bearer, so they
+    are neither.
+    """
+    parsed = _bluez_version_tuple(version)
+    return parsed is not None and parsed < _MIN_BLUEZ_BEARER_INTERFACES
 
 
 def bluez_stack(
@@ -444,15 +673,29 @@ def _profile_fields(
     command_error: str,
     bearer_active: bool,
     bearer_supported: bool,
+    legacy_notifications: bool = False,
+    *,
+    controller_mode: str = "",
 ) -> dict[str, object]:
     classic = bool({"br/edr", "bredr"} & supported)
     low_energy = "le" in supported
+    # btmgmt reports supported and current settings separately. ``le`` can be
+    # supported but switched off, e.g. by ControllerMode = bredr (#192); the
+    # ANCS advertisement then never activates.
+    le_enabled = "le" in current
+    le_disabled = available and low_energy and not le_enabled
     advertising = "advertising" in supported
     secure_pairing = bool({"ssp", "secure-conn"} & supported)
     # MAP/PBAP carry data over Classic, but iOS exposes their permissions only
     # after LE solicitation. Compatibility mode still needs that advertisement.
     messages_supported = available and classic and secure_pairing and low_energy and advertising
-    notifications_supported = messages_supported and bearer_supported
+    notifications_supported = messages_supported and (
+        bearer_supported or legacy_notifications
+    )
+    # Nothing has to be activated when BlueZ has no bearer API to expose.
+    notifications_active = notifications_supported and (
+        bearer_active or legacy_notifications
+    )
     missing = [
         label for present, label in (
             (classic, "Bluetooth Classic (BR/EDR)"),
@@ -470,7 +713,9 @@ def _profile_fields(
             "with LE advertising to enable iPhone messages and contacts. "
             "Use a compatible adapter."
         )
-    elif notifications_supported and not bearer_active:
+    elif le_disabled:
+        issue = le_disabled_issue(controller_mode)
+    elif notifications_supported and not notifications_active:
         issue = "Bluetooth support must be activated before pairing"
     elif not notifications_supported:
         issue = "Messages and contacts are supported; per-app notifications are not"
@@ -481,12 +726,15 @@ def _profile_fields(
         "powered": "powered" in current,
         "classic": classic,
         "low_energy": low_energy,
+        "le_enabled": le_enabled,
+        "le_disabled": le_disabled,
         "advertising": advertising,
         "secure_pairing": secure_pairing,
         "secure_conn": "secure-conn" in current,
         "hardware_supported": messages_supported,
         "messages_supported": messages_supported,
         "notifications_supported": notifications_supported,
+        "notifications_active": notifications_active,
         "bearer_api_supported": bearer_supported,
         "bearer_api_active": bearer_active,
         # A failed probe is inconclusive (#28); only confirmed missing
@@ -535,11 +783,14 @@ def compatibility(
         support = {}
     bearer_active = bool(support.get("active"))
     bearer_configurable = bearer_active or bool(support.get("packaged_drop_in"))
+    activation_hint = str(support.get("activation_hint") or "")
     stack = bluez_stack(run_command=run_command, experimental=bearer_active)
     bearer_supported = (
         bluez_bearer_api_supported(stack.get("bluez_version"))
         and bearer_configurable
     )
+    legacy_notifications = bluez_lacks_bearer_interfaces(stack.get("bluez_version"))
+    controller_mode = bluez_controller_mode()
     options: list[dict[str, object]] = []
     inspected: dict[str, tuple] = {}
     hardware_by_name: dict[str, dict[str, object]] = {}
@@ -563,6 +814,8 @@ def compatibility(
             error,
             bearer_active and bearer_supported,
             bearer_supported,
+            legacy_notifications,
+            controller_mode=controller_mode,
         )
         options.append(
             {
@@ -599,12 +852,19 @@ def compatibility(
         **fields,
         **stack,
         "adapters": options,
+        "controller_mode": controller_mode,
         "controller_vendor": vendor,
         "ancs_limited_controller": ancs_limited_vendor(vendor),
         "explicit_pairing_default": (
             str(hardware.get("usb_id") or "").casefold() in _EXPLICIT_PAIRING_USB_IDS
         ),
     }
+    if activation_hint and bluez_bearer_api_supported(stack.get("bluez_version")):
+        # Clients cannot restart bluetoothd here; explain the manual step
+        # instead of offering an activation that would always fail.
+        result["bluez_activation_hint"] = activation_hint
+        if result["messages_supported"] and not result["notifications_supported"]:
+            result["issue"] = activation_hint
     if "manufacturer_id" in identity:
         result["manufacturer_id"] = identity["manufacturer_id"]
     if "hci_version" in identity:
@@ -619,10 +879,16 @@ def activate_bluez_support(
     systemctl_path: Path = Path("/usr/bin/systemctl"),
     sleep: Callable[[float], None] = time.sleep,
 ) -> dict:
-    """Restart Bluetooth through systemd so the packaged drop-in takes effect."""
+    """Restart Bluetooth through systemd so the packaged drop-in takes effect.
+
+    Other init systems have no unprivileged restart path; their status carries
+    the administrator steps instead.
+    """
     current = status()
     if current["active"]:
         return current
+    if hint := current.get("activation_hint"):
+        raise PairingError(str(hint))
     if not current["packaged_drop_in"]:
         raise PairingError(
             "The blueferry-backend Bluetooth service drop-in is not installed."

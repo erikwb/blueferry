@@ -22,6 +22,10 @@ QtObject {
     return backendStatus.map_connection_refused === true
   }
 
+  function leBondSuspect() {
+    return backendStatus.le_bond_suspect === true
+  }
+
   function pendingIphoneSetupTasks() {
     var verified = backendStatus.verified_iphone_setup || []
     var tasks = []

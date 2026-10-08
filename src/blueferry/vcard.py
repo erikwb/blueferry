@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from typing import TextIO
 
 from blueferry.limits import MAX_VCARD_CHARS
@@ -17,6 +17,7 @@ _BASE64_LINE = re.compile(r"[ \t]*[A-Za-z0-9+/=]+[ \t]*")
 # A property head (``group.NAME;params``) longer than this without its ":"
 # is not a property this module skips; the line is kept and budgeted.
 _MAX_HEAD_CHARS = 1024
+_PHOTO_WHITESPACE = str.maketrans("", "", " \t\r\n\v\f")
 
 
 def iter_bounded_lines(stream: TextIO, *, limit: int = MAX_VCARD_CHARS) -> Iterator[str]:
@@ -109,10 +110,23 @@ class _Card:
 
     Only kept properties are retained, so memory stays bounded by the card
     budget plus one property head, however large a skipped value is.
+
+    With a positive ``photo_limit`` the first PHOTO property is retained
+    unfolded as ``photo`` (``group.PHOTO;params:value``) under that separate
+    budget instead of being dropped; a larger one is dropped as before. The
+    body is the same either way.
     """
 
-    def __init__(self, limit: int) -> None:
+    def __init__(self, limit: int, photo_limit: int = 0) -> None:
         self.limit = limit
+        self.photo_limit = photo_limit
+        self.photo: str | None = None
+        self.photo_seen = False
+        # The first PHOTO existed but exceeded ``photo_limit`` (diagnostics).
+        self.photo_oversized = False
+        self.photo_value_chars = 0
+        self.photo_padding_chars = 0
+        self.photo_prefix: str | None = ""
         self.lines: list[str] = []
         self.size = 0  # kept lines plus one line break each
         self.overflowed = False
@@ -123,6 +137,8 @@ class _Card:
         self.present = present  # whether a property is open
         self.decided = False  # whether its head has been read
         self.skipped = False
+        self.retaining = False  # a skipped PHOTO kept as ``photo``
+        self.measuring_photo = False
         self.head = ""
         self.quoted = False
         self.encoding: frozenset[str] = frozenset()
@@ -185,15 +201,56 @@ class _Card:
             self.parts[-1] = last
 
     def _add(self, text: str) -> None:
-        if self.skipped:
+        if self.skipped and not self.retaining:
+            if self.measuring_photo:
+                self._measure_photo(text)
             return
         if text:
             self.parts.append(text)
             self.property_size += len(text)
         if not self.decided:
             self._read_head(text)
-        if self.decided and not self.skipped:
+        elif self.measuring_photo:
+            self._measure_photo(text)
+        if self.retaining:
+            if self.property_size > self.photo_limit:
+                # Too large to keep: consume the rest like any skipped value.
+                self.retaining = False
+                self.photo_oversized = True
+                self.parts = []
+        elif self.decided and not self.skipped:
             self._check_budget()
+
+    def _measure_photo(self, text: str) -> None:
+        """Count encoded payload even after retention stops, without decoding it.
+
+        Whitespace, the property head and an optional data URI prefix do not
+        contribute to the decoded-size estimate. Only a bounded prefix and
+        counters survive while consuming an oversized photo.
+        """
+        compact = text.translate(_PHOTO_WHITESPACE)
+        if self.photo_prefix is not None:
+            room = _MAX_HEAD_CHARS - len(self.photo_prefix)
+            prefix = self.photo_prefix + compact[:room]
+            rest = compact[room:]
+            if len(prefix) < 5 and "data:".startswith(prefix):
+                self.photo_prefix = prefix
+                return
+            if prefix.startswith("data:"):
+                _header, comma, payload = prefix.partition(",")
+                if not comma and len(prefix) < _MAX_HEAD_CHARS:
+                    self.photo_prefix = prefix
+                    return
+                compact = (payload if comma else prefix) + rest
+            else:
+                compact = prefix + rest
+            self.photo_prefix = None
+        self.photo_value_chars += len(compact)
+        self.photo_padding_chars += compact.count("=")
+
+    def photo_size(self) -> int:
+        """Estimated decoded bytes of the first PHOTO's encoded payload."""
+        return (self.photo_value_chars - self.photo_padding_chars) * 3 // 4
 
     def _read_head(self, text: str) -> None:
         room = _MAX_HEAD_CHARS - len(self.head)
@@ -203,6 +260,8 @@ class _Card:
                 self.quoted = not self.quoted
             elif char == ":" and not self.quoted:
                 self._decide(self.head + scanned[:index])
+                if self.measuring_photo:
+                    self._measure_photo(text[index + 1:])
                 return
         self.head += scanned
         if len(self.head) >= _MAX_HEAD_CHARS or self.property_size > _MAX_HEAD_CHARS:
@@ -214,9 +273,15 @@ class _Card:
         name, *parameters = _split_unquoted(head, ";")
         self.encoding = frozenset(part.strip().upper() for part in parameters)
         self.base64_open = bool(self.encoding & _BASE64_PARAMETERS)
-        if name.strip().rsplit(".", 1)[-1].upper() in _SKIPPED_PROPERTIES:
+        selected = name.strip().rsplit(".", 1)[-1].upper()
+        if selected in _SKIPPED_PROPERTIES:
             self.skipped = True
-            self.parts = []
+            if selected == "PHOTO" and self.photo_limit > 0 and not self.photo_seen:
+                self.photo_seen = True
+                self.retaining = True
+                self.measuring_photo = True
+            else:
+                self.parts = []
 
     def _check_budget(self) -> None:
         if self.size + self.property_size > self.limit:
@@ -225,6 +290,10 @@ class _Card:
             self.parts = []
 
     def _close_property(self) -> None:
+        if self.retaining and not self.overflowed:
+            self.photo = "".join(self.parts)
+            self.retaining = False
+            self.parts = []
         if not self.present or self.overflowed or self.skipped:
             return
         self.decided = True
@@ -267,8 +336,54 @@ def iter_vcard_bodies(
     ``BEGIN:VCARD`` and ``END:VCARD`` always delimit cards, even inside a
     malformed value, so a broken property never reaches another card.
     """
+    for body, _photo in _iter_cards(
+        blob, maximum=maximum, max_card_chars=max_card_chars, max_photo_chars=0,
+    ):
+        yield body
+
+
+def iter_vcard_cards(
+    blob: str | Iterable[str],
+    *,
+    maximum: int,
+    max_card_chars: int = MAX_VCARD_CHARS,
+    max_photo_chars: int,
+    on_oversized_photo: Callable[[int], None] | None = None,
+) -> Iterator[tuple[str, str | None]]:
+    """Yield ``(body, photo)``: :func:`iter_vcard_bodies` plus each card's photo.
+
+    The bodies are exactly the ones :func:`iter_vcard_bodies` yields, so
+    contact parsing is unchanged. ``photo`` is the unfolded
+    ``group.PHOTO;params:value`` text of the card's first PHOTO property, or
+    ``None`` when there is none or it exceeds ``max_photo_chars``. Photo text
+    has its own budget and never counts against the card budget. LOGO, SOUND,
+    KEY and any further PHOTO are still dropped unread.
+
+    ``on_oversized_photo`` is called once for each yielded card whose first
+    PHOTO was dropped for exceeding ``max_photo_chars``, so callers can count
+    such photos without retaining them. It receives the estimated decoded
+    payload size, counted through the end of the property without decoding.
+    """
+    return _iter_cards(
+        blob,
+        maximum=maximum,
+        max_card_chars=max_card_chars,
+        max_photo_chars=max(1, int(max_photo_chars)),
+        on_oversized_photo=on_oversized_photo,
+    )
+
+
+def _iter_cards(
+    blob: str | Iterable[str],
+    *,
+    maximum: int,
+    max_card_chars: int,
+    max_photo_chars: int,
+    on_oversized_photo: Callable[[int], None] | None = None,
+) -> Iterator[tuple[str, str | None]]:
     selected_maximum = max(0, int(maximum))
     selected_card_limit = max(0, int(max_card_chars))
+    selected_photo_limit = max(0, int(max_photo_chars))
     yielded = 0
     card: _Card | None = None
 
@@ -282,13 +397,18 @@ def iter_vcard_bodies(
         if card is not None and line[:1] in (" ", "\t") and card.present:
             marker = ""  # a folded continuation is never a marker
         if marker == "begin:vcard":
-            card = _Card(selected_card_limit)
+            card = _Card(selected_card_limit, selected_photo_limit)
             continue
         if marker == "end:vcard":
             body = card.finish() if card is not None else None
+            photo = card.photo if card is not None else None
+            oversized = card is not None and card.photo_oversized
+            photo_size = card.photo_size() if card is not None else 0
             card = None
             if body is not None:
-                yield body
+                if oversized and on_oversized_photo is not None:
+                    on_oversized_photo(photo_size)
+                yield body, photo
                 yielded += 1
                 if yielded >= selected_maximum:
                     return

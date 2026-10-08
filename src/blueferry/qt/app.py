@@ -15,6 +15,7 @@ from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from blueferry.client_activation import record_client_use
 from blueferry.qt.activation import ClientActivation
+from blueferry.qt.avatars import AVATAR_PROVIDER, AvatarImageProvider
 from blueferry.qt.controller import BridgeController
 
 APP_ID = "io.weirdware.BlueFerry.Qt"
@@ -314,6 +315,8 @@ def main() -> int:
 
     controller = BridgeController(parent=application)
     engine = QQmlApplicationEngine()
+    # The engine owns the provider; it only reads the controller's cache.
+    engine.addImageProvider(AVATAR_PROVIDER, AvatarImageProvider(controller.avatar_bytes))
     engine.setInitialProperties({"bridge": controller})
     qml = files("blueferry.qt").joinpath("qml/Main.qml")
     engine.load(QUrl.fromLocalFile(str(qml)))

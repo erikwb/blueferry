@@ -58,6 +58,7 @@ def advertising_manager(monkeypatch):
     manager = Manager()
     monkeypatch.setattr(bluez_setup, 'get_system_bus', lambda: client_bus)
     monkeypatch.setattr(bluez_setup, '_advert_instance', None)
+    monkeypatch.setattr(bluez_setup, '_compact_advert_adapters', set())
     monkeypatch.setattr(bluez_setup, 'PAIRING_ADVERT_SETTLE_SECONDS', 0)
     try:
         yield manager

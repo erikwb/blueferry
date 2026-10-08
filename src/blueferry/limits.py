@@ -19,6 +19,19 @@ MAX_ANCS_REQUESTS = 512
 MAX_ANCS_APP_CACHE = 256
 MAX_ANCS_PENDING_PER_APP = 128
 MAX_ANCS_FINGERPRINTS = 10_000
+# Opt-in ANCS notification actions: remember only recent actionable UIDs and
+# allow a few concurrent PerformNotificationAction writes.
+MAX_ANCS_ACTIONABLE = 64
+MAX_ANCS_ACTIONS_IN_FLIGHT = 4
+# Desktop popups that still carry live iPhone action buttons.
+MAX_ANCS_ACTION_POPUPS = 64
+
+# AMS values are short display strings (titles, artists). A full Entity
+# Attribute read can exceed one notification, but never needs to be large.
+MAX_AMS_VALUE_BYTES = 8 * 1024
+# Serialized AMS GATT operations: subscription, registrations, truncation
+# reads and user commands. Beyond this the phone is not answering.
+MAX_AMS_PENDING_OPERATIONS = 32
 
 # D-Bus snapshots are presentation data, not an unlimited archive export. Keep
 # pathological messages or very busy threads from producing enormous replies;
@@ -58,3 +71,41 @@ MAX_PENDING_READ_RECEIPTS = 2_000
 MAX_DESKTOP_MESSAGE_TRACKERS = 256
 MAX_PHONEBOOK_CONTACTS = 65_535
 MAX_CONTACT_ADDRESSES_PER_CARD = 64
+
+# Contact photos (opt-in, BLUEFERRY_CONTACT_PHOTOS). What iOS puts into a
+# PBAP PHOTO has not been measured on a real phone yet; the per-sync summary
+# log line (size buckets and reasons) exists to settle that. #187 only used
+# an 800 KiB picture as an illustrative worst case for the card budget. The
+# per-photo cap admits such a picture, the encoded limit adds room for base64
+# expansion and folding whitespace, and larger values are dropped unread.
+# The total budget bounds one sync's retained photos (and the extra memory
+# the pull holds before storing them); the whole transfer is already capped
+# by MAX_PHONEBOOK_BYTES, so 64 MiB of base64 can never decode to more than
+# 48 MiB of photos anyway.
+MAX_CONTACT_PHOTO_BYTES = 1024 * 1024
+MAX_CONTACT_PHOTO_CHARS = (MAX_CONTACT_PHOTO_BYTES * 4 // 3) + 64 * 1024
+MAX_CONTACT_PHOTOS_TOTAL_BYTES = 32 * 1024 * 1024
+# Time spent decoding photos per sync (expected: well under 1 s). Parsing
+# the rest of the cards does not count against it.
+MAX_CONTACT_PHOTO_DECODE_SECONDS = 5.0
+MAX_CONTACT_PHOTO_FILES = 64
+# Header-declared pixel size accepted anywhere (daemon, clients, and the
+# image-path handed to notification servers). A small file can declare an
+# enormous canvas; decoders without their own limit would allocate it.
+MAX_CONTACT_PHOTO_DIMENSION = 2048
+# PBAP call history. iOS keeps a short recent-calls list; these bounds only
+# stop a malformed or hostile peer from forcing unbounded work or storage.
+MAX_CALL_HISTORY_PER_FOLDER = 1_000
+MAX_CALL_HISTORY_BYTES = 8 * 1024 * 1024
+MAX_CALL_HISTORY_RECORDS = 2_000
+MAX_CALL_HISTORY_QUERY_LIMIT = 2_000
+# Missed-call identities already announced (or silently seeded). Bounded, and
+# additionally aged out with the history retention window.
+MAX_CALL_HISTORY_SEEN_KEYS = 5_000
+# Notification-click mappings launch local applications, so both the number
+# of rules and each configured target stay small and explicit.
+MAX_NOTIFICATION_OPEN_MAPPINGS = 64
+MAX_NOTIFICATION_OPEN_URL_CHARS = 2048
+# Clickable app popups are tracked separately from message popups so they
+# can never evict a message popup's read-state sync.
+MAX_NOTIFICATION_CLICK_TRACKERS = 64

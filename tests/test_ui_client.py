@@ -188,3 +188,37 @@ def test_selected_thread_deletion_uses_mutation_worker(monkeypatch) -> None:
     assert observed == [["one", "two"]]
     assert completed == [2]
     assert submitted == {"mutation": True}
+
+
+def test_notification_actions_preference_uses_mutation_worker(monkeypatch) -> None:
+    monkeypatch.setattr(client_module, "get_session_bus", _Bus)
+    monkeypatch.setattr(client_module, "SetupClient", _UnconfiguredSetup)
+    client = client_module.DaemonClient()
+    observed = []
+
+    class Backend:
+        def set_ancs_notification_actions(self, enabled):
+            observed.append(enabled)
+            return enabled
+
+    monkeypatch.setattr(
+        client,
+        "_call_backend",
+        lambda operation: operation(Backend()),
+    )
+    submitted = {}
+
+    def submit(operation, on_ok, _on_err=None, *, mutation=False):
+        submitted["mutation"] = mutation
+        on_ok(operation())
+
+    monkeypatch.setattr(client, "_submit", submit)
+    completed = []
+    try:
+        client.set_ancs_notification_actions_async(True, completed.append, None)
+    finally:
+        client.stop()
+
+    assert observed == [True]
+    assert completed == [True]
+    assert submitted == {"mutation": True}

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime
 from typing import Any
 
 import dbus
@@ -20,6 +21,33 @@ from blueferry.limits import MAX_REMOTE_PROPERTY_CHARS, MAX_THREAD_BODY_CHARS
 log = logging.getLogger(__name__)
 
 QUERY_DEADLINE_SECONDS = 60
+OTP_QUERY_DEADLINE_SECONDS = 20
+OTP_QUERY_LIMIT = 20
+
+
+def lookup_message_timestamp(session_path: str, message_path: str) -> datetime | None:
+    """Read the phone's time for exactly one pushed message, on the OBEX worker.
+
+    MNS notifications often omit Timestamp. Listing the inbox populates it,
+    but the newest entry might be another message. Fail closed unless the
+    exact object path appears in a small, bounded listing of this session.
+    """
+    parent, _, handle = message_path.rpartition("/")
+    if parent != session_path or not handle.startswith("message"):
+        return None
+    deadline = time.monotonic() + OTP_QUERY_DEADLINE_SECONDS
+    map_iface = obex(session_path, "org.bluez.obex.MessageAccess1")
+    _navigate_to_folder(map_iface, "telecom/msg/INBOX", deadline=deadline)
+    messages = map_iface.ListMessages(
+        "", {"MaxListCount": dbus.UInt16(OTP_QUERY_LIMIT)},
+        timeout=_remaining(deadline, 10),
+    )
+    # ListMessages returns a{oa{sv}} with the same Message1 properties that
+    # GetAll exposes. No body download or read-state write is necessary.
+    props = messages.get(message_path)
+    if props is None:
+        return None
+    return parse_map_timestamp(props.get("Timestamp"))
 
 
 def _bounded_text(value: object, maximum: int) -> str:

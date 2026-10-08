@@ -12,7 +12,7 @@ the code.
 
 ```mermaid
 flowchart LR
-    A[New message from the iPhone] --> B{Just arrived?<br/>incoming, unread,<br/>at most 10 min old,<br/>not a contact or group}
+    A[New message from the iPhone] --> B{Just arrived?<br/>incoming, unread,<br/>at most 5 min old,<br/>not a contact or group}
     B -- no --> X[Ignored]
     B -- yes --> C{Number tied to<br/>a code word?}
     C -- no --> X
@@ -24,7 +24,12 @@ flowchart LR
 
 - Only unread messages that have **just arrived** count. Sent messages,
   history, messages that were already read, and messages without a time from
-  the last ten minutes are ignored.
+  the last five minutes are ignored. Future timestamps are ignored too.
+  When the push notification has no timestamp, BlueFerry reads a bounded
+  inbox listing and uses the time for that exact message, never another
+  message or the desktop arrival time. Recent messages can qualify even
+  when they were received before the backend started. If the lookup fails
+  or the message is absent from the latest 20 entries, nothing is copied.
 - Codes come from services, so messages from **saved contacts** and **group
   conversations** are ignored. At most three codes per minute are copied.
 - A number counts as a code only when it is tied to a code word:
