@@ -15,10 +15,11 @@ owner change or ``stop()`` are discarded by generation.
 Like the ANCS client, this client never calls ``StopNotify`` on a dropped or
 flapping link: bluetoothd 5.87 crashes when a CCC enable completes after its
 registration was freed during an LE flap (see PROTOCOL.md). The one exception
-is a deliberate runtime opt-out on a steady link with no subscription in
-flight (``stop(release=True)``): iOS sends its command list only on a CCC
-write, so a later opt-in must find the CCC disabled. Otherwise registrations
-are released when the daemon's D-Bus connection closes.
+is a deliberate runtime opt-out (``stop(release=True)``): iOS sends its command
+list only on a CCC write, so a later opt-in must find the CCC disabled.
+``AmsNotifySessions`` owns that release and defers it until the LE link is up
+and settled with no ``StartNotify`` outstanding. Otherwise registrations are
+released when the daemon's D-Bus connection closes.
 """
 from __future__ import annotations
 
@@ -75,6 +76,11 @@ _BLUEZ = "org.bluez"
 _GATT_CHAR = "org.bluez.GattCharacteristic1"
 _PROPERTIES = "org.freedesktop.DBus.Properties"
 _OBJECT_MANAGER = "org.freedesktop.DBus.ObjectManager"
+_NO_REPLY_ERRORS = frozenset({
+    "org.freedesktop.DBus.Error.NoReply",
+    "org.freedesktop.DBus.Error.Timeout",
+    "org.freedesktop.DBus.Error.TimedOut",
+})
 
 Success = Callable[[], None]
 Failure = Callable[[Exception], None]
@@ -122,6 +128,203 @@ class _Operation:
     generation: int
 
 
+class AmsNotifySessions:
+    """BlueZ notify sessions this process may still hold on AMS characteristics.
+
+    BlueZ keeps one notify session per D-Bus sender and characteristic. It
+    outlives the ``AmsClient`` that started it, BlueZ re-enables its CCC at
+    every LE link-up, and a repeated ``StartNotify`` answers without writing
+    the CCC, so iOS would not send its command list again. A runtime opt-out
+    therefore owes a ``StopNotify`` for every session that was started or is
+    still being started. It is sent only on a settled LE link with no
+    ``StartNotify`` outstanding; until then the release stays owed, and a new
+    client waits for it (``when_released``).
+    """
+
+    def __init__(
+        self,
+        *,
+        bus_factory: Callable[[], Any] = get_system_bus,
+        schedule: Callable[[int, Callable[[], bool]], int] = GLib.timeout_add_seconds,
+        cancel: Callable[[int], object] = GLib.source_remove,
+    ) -> None:
+        self._bus_factory = bus_factory
+        self._schedule = schedule
+        self._cancel = cancel
+        # Started (or possibly started) and not confirmed stopped.
+        self._alive: set[str] = set()
+        # StartNotify calls without a reply yet, by token.
+        self._starting: dict[int, str] = {}
+        self._stopping: set[str] = set()
+        self._next_token = 0
+        self._owed = False
+        self._waiters: list[Callable[[], None]] = []
+        self._link: bool | None = None
+        self._settled = False
+        self._settle_id: int | None = None
+
+    @property
+    def release_owed(self) -> bool:
+        """An opt-out's StopNotify calls are still outstanding."""
+        return self._owed
+
+    def observe_bearer_state(self, connected: bool | None) -> None:
+        previous, self._link = self._link, connected
+        if connected is not True:
+            self._settled = False
+            self._cancel_settle()
+        elif previous is not True:
+            self._advance()
+
+    def observe_bluez_owner(self, old_owner, _new_owner) -> None:
+        if not old_owner:
+            return
+        # Every session belonged to the bluetoothd that just went away.
+        self._alive.clear()
+        self._starting.clear()
+        self._stopping.clear()
+        self._link = None
+        self._settled = False
+        self._cancel_settle()
+        self._advance()
+
+    def forget(self, path: str) -> None:
+        """The characteristic object is gone, and its sessions with it."""
+        self._alive.discard(path)
+        self._stopping.discard(path)
+        for token in [token for token, known in self._starting.items() if known == path]:
+            del self._starting[token]
+        self._advance()
+
+    def starting(self, path: str) -> int:
+        """A StartNotify is about to be sent; returns the token for its reply."""
+        if self._owed:
+            self._finish()  # a client took the sessions over again
+        self._next_token += 1
+        self._starting[self._next_token] = path
+        return self._next_token
+
+    def started(self, token: int) -> None:
+        path = self._starting.pop(token, None)
+        if path is None:
+            return
+        self._alive.add(path)
+        self._advance()
+
+    def start_failed(self, token: int, error: Exception) -> None:
+        path = self._starting.pop(token, None)
+        if path is None:
+            return
+        if (
+            isinstance(error, dbus.exceptions.DBusException)
+            and error.get_dbus_name() in _NO_REPLY_ERRORS
+        ):
+            # Unanswered, not refused: BlueZ may still have created it.
+            self._alive.add(path)
+        self._advance()
+
+    def release(
+        self,
+        *,
+        settled: bool = False,
+        on_released: Callable[[], None] | None = None,
+    ) -> None:
+        """Owe a StopNotify for every session; ``settled`` vouches for the link."""
+        if on_released is not None:
+            self._waiters.append(on_released)
+        if settled and self._link is True:
+            self._settled = True
+        self._owed = True
+        self._advance()
+
+    def when_released(self, callback: Callable[[], None]) -> None:
+        """Run ``callback`` once no release is owed (at once if none is)."""
+        if not self._owed:
+            callback()
+            return
+        if callback not in self._waiters:
+            self._waiters.append(callback)
+        self._advance()
+
+    def close(self) -> None:
+        """Daemon shutdown: the closing bus connection ends the sessions."""
+        self._owed = False
+        self._waiters.clear()
+        self._cancel_settle()
+
+    def _advance(self) -> None:
+        """Send the owed StopNotify calls if, and only if, it is safe now."""
+        if not self._owed or self._starting or self._stopping:
+            return  # the pending replies call back in here
+        if not self._alive:
+            self._finish()
+            return
+        if self._link is not True:
+            return
+        if not self._settled:
+            # BlueZ is still re-registering notifications (see PROTOCOL.md).
+            if self._settle_id is None:
+                self._settle_id = self._schedule(BEARER_SETTLE_SECONDS, self._settle_elapsed)
+            return
+        self._stop_notifications()
+
+    def _finish(self) -> None:
+        self._owed = False
+        self._cancel_settle()
+        waiters, self._waiters = self._waiters, []
+        for waiter in waiters:
+            try:
+                waiter()
+            except Exception:
+                log.exception("AMS release callback failed")
+
+    def _settle_elapsed(self) -> bool:
+        self._settle_id = None
+        if self._link is True:
+            self._settled = True
+            self._advance()
+        return False
+
+    def _cancel_settle(self) -> None:
+        if self._settle_id is None:
+            return
+        try:
+            self._cancel(self._settle_id)
+        except Exception:
+            log.debug("could not remove AMS release timer", exc_info=True)
+        self._settle_id = None
+
+    def _stop_notifications(self) -> None:
+        log.info("AMS opted out; releasing the phone's media notifications")
+        paths = sorted(self._alive)
+        self._stopping.update(paths)
+        for path in paths:
+            try:
+                self._bus_factory().get_object(_BLUEZ, path, introspect=False).StopNotify(
+                    dbus_interface=_GATT_CHAR,
+                    reply_handler=lambda path=path: self._stopped(path),
+                    error_handler=lambda error, path=path: self._stop_failed(path, error),
+                    timeout=DBUS_CALL_TIMEOUT_SECONDS,
+                )
+            except Exception as error:  # a vanished object or bus
+                self._stop_failed(path, error)
+
+    def _stopped(self, path: str) -> None:
+        if path not in self._stopping:
+            return
+        self._stopping.discard(path)
+        self._alive.discard(path)
+        self._advance()
+
+    def _stop_failed(self, path: str, error: Exception) -> None:
+        if path not in self._stopping:
+            return
+        log.debug("AMS StopNotify failed: %s", _error_name(error))
+        self._stopping.discard(path)
+        self._alive.discard(path)
+        self._advance()
+
+
 class AmsClient:
     def __init__(
         self,
@@ -130,11 +333,16 @@ class AmsClient:
         on_update: Callable[[EntityUpdate], None],
         on_supported_commands: Callable[[frozenset[RemoteCommandID]], None],
         on_availability: Callable[[bool], None] | None = None,
+        sessions: AmsNotifySessions | None = None,
         bus_factory: Callable[[], Any] = get_system_bus,
         schedule: Callable[[int, Callable[[], bool]], int] = GLib.timeout_add_seconds,
         cancel: Callable[[int], object] = GLib.source_remove,
     ) -> None:
         self.device_path = device_path
+        # The daemon passes one tracker that outlives every client.
+        self._sessions = sessions or AmsNotifySessions(
+            bus_factory=bus_factory, schedule=schedule, cancel=cancel,
+        )
         self._on_update = on_update
         self._on_supported_commands = on_supported_commands
         self._on_availability = on_availability
@@ -198,61 +406,28 @@ class AmsClient:
     ) -> None:
         """Stop the client; with ``release``, also disable the phone's CCCs.
 
-        ``on_released`` runs once the StopNotify replies are in (or at once
-        when nothing is released), so a new client never overlaps them.
+        The release is owed to ``AmsNotifySessions``, which sends StopNotify
+        as soon as that is safe. ``on_released`` runs once it is done (or at
+        once when nothing is released), so a new client never overlaps it.
         """
-        if not self._started:
-            if on_released is not None:
-                on_released()
-            return
-        log.info("AMS client stopping")
-        released = (
-            tuple(self._owned_notify_paths)
-            if release and self._bearer_connected is True and not self._subscribing
-            else ()
-        )
-        self._release_notifications(released, on_released)
-        self._started = False
-        self._bearer_ready = False
-        self._cancel_settle()
-        self._cancel_manager_retry()
-        self._reset_subscription()
-        self._forget_characteristics()
-        self._remove_matches(self._manager_matches)
-        self._manager_generation += 1
-
-    def _release_notifications(
-        self, paths: tuple[str, ...], on_released: Callable[[], None] | None,
-    ) -> None:
-        """StopNotify ``paths`` on the steady link; report when all replied."""
-        pending = set(paths)
-
-        def done(path: str) -> None:
-            pending.discard(path)
-            if not pending and on_released is not None:
-                on_released()
-
-        if not pending:
-            if on_released is not None:
-                on_released()
-            return
-        log.info("AMS opted out; releasing the phone's media notifications")
-        for path in paths:
-            def failed(error, path=path) -> None:
-                log.debug("AMS StopNotify failed: %s", _error_name(error))
-                done(path)
-
-            try:
-                self._characteristic(path).StopNotify(
-                    dbus_interface=_GATT_CHAR,
-                    reply_handler=lambda path=path: done(path),
-                    error_handler=failed,
-                    timeout=DBUS_CALL_TIMEOUT_SECONDS,
-                )
-            except Exception as error:  # a vanished object or bus
-                failed(error)
+        settled = self._bearer_ready
+        if self._started:
+            log.info("AMS client stopping")
+            self._started = False
+            self._bearer_ready = False
+            self._cancel_settle()
+            self._cancel_manager_retry()
+            self._reset_subscription()
+            self._forget_characteristics()
+            self._remove_matches(self._manager_matches)
+            self._manager_generation += 1
+        if release:
+            self._sessions.release(settled=settled, on_released=on_released)
+        elif on_released is not None:
+            on_released()
 
     def observe_bearer_state(self, connected: bool | None) -> None:
+        self._sessions.observe_bearer_state(connected)
         previous = self._bearer_connected
         self._bearer_connected = connected
         if connected is not True:
@@ -269,6 +444,7 @@ class AmsClient:
             self._schedule_settle()
 
     def observe_bluez_owner(self, old_owner, new_owner) -> None:
+        self._sessions.observe_bluez_owner(old_owner, new_owner)
         if not self._started:
             return
         if old_owner:
@@ -383,6 +559,7 @@ class AmsClient:
         if previous is not None:
             self._remove_characteristic_match(previous)
             self._owned_notify_paths.discard(previous)
+            self._sessions.forget(previous)
         self._paths[uuid] = path_s
         log.info("AMS characteristic found: %s", uuid)
         self._watch_characteristic(uuid, path_s)
@@ -426,6 +603,7 @@ class AmsClient:
                 log.info("AMS characteristic removed: %s", uuid)
                 del self._paths[uuid]
                 self._owned_notify_paths.discard(path_s)
+                self._sessions.forget(path_s)
                 self._remove_characteristic_match(path_s)
                 self._reset_subscription()
                 if uuid == REMOTE_COMMAND_CHAR:
@@ -532,16 +710,29 @@ class AmsClient:
         def start() -> None:
             if generation != self._generation:
                 return  # reset while BlueZ answered the Notifying query
-            characteristic.StartNotify(
-                dbus_interface=_GATT_CHAR,
-                reply_handler=started,
-                error_handler=fail,
-                timeout=DBUS_CALL_TIMEOUT_SECONDS,
-            )
+            # The session outlives this client: the tracker hears every
+            # reply, also one that arrives after stop().
+            token = self._sessions.starting(path)
 
-        def started() -> None:
-            self._owned_notify_paths.add(path)
-            ok()
+            def started() -> None:
+                self._sessions.started(token)
+                self._owned_notify_paths.add(path)
+                ok()
+
+            def failed(error: Exception) -> None:
+                self._sessions.start_failed(token, error)
+                fail(error)
+
+            try:
+                characteristic.StartNotify(
+                    dbus_interface=_GATT_CHAR,
+                    reply_handler=started,
+                    error_handler=failed,
+                    timeout=DBUS_CALL_TIMEOUT_SECONDS,
+                )
+            except Exception as error:
+                self._sessions.start_failed(token, error)
+                raise
 
         if path not in self._owned_notify_paths:
             start()

@@ -18,7 +18,7 @@ from gi.repository import GLib
 
 from blueferry import __version__, bluez_setup, config
 from blueferry.adapter_class_supervisor import AdapterClassSupervisor
-from blueferry.ams.client import AmsClient
+from blueferry.ams.client import AmsClient, AmsNotifySessions
 from blueferry.ancs.client import ACTION_DISCONNECTED, AncsClient
 from blueferry.backend_lifecycle import installed_release
 from blueferry.backend_operations import BackendDependencies
@@ -175,8 +175,9 @@ class Daemon:
             self._new_media() if self.media_settings.enabled else None
         )
         self._media_device_path: str | None = None
-        # True while a runtime opt-out still waits for its StopNotify replies.
-        self._media_releasing = False
+        # BlueZ notify sessions outlive the client that started them; this
+        # remembers them so an opt-out can release them when that is safe.
+        self.media_sessions = AmsNotifySessions()
         self.ams: AmsClient | None = None
         self.adapter_class = AdapterClassSupervisor(config.ADAPTER)
         self.solicitation = SolicitationSupervisor(config.ADAPTER)
@@ -342,6 +343,7 @@ class Daemon:
         self.sessions.close_all(remove_remote=False)
         if self.ancs is not None:
             self.ancs.observe_bearer_state(False)
+        self.media_sessions.observe_bearer_state(False)
         if self.ams is not None:
             self.ams.observe_bearer_state(False)
 
@@ -574,12 +576,14 @@ class Daemon:
             self.solicitation.set_needed(True)
         if self.ancs is not None:
             self.ancs.observe_bearer_state(connected)
-        if self.ams is not None:
-            try:
+        try:
+            # An owed release follows the link without a client, too.
+            self.media_sessions.observe_bearer_state(connected)
+            if self.ams is not None:
                 self.ams.observe_bearer_state(connected)
-            except Exception:
-                log.warning("iPhone media control could not follow the LE link",
-                            exc_info=True)
+        except Exception:
+            log.warning("iPhone media control could not follow the LE link",
+                        exc_info=True)
 
     def _on_ancs_status(self) -> None:
         # StartNotify is not the success boundary.  Keep solicitation on air
@@ -711,11 +715,12 @@ class Daemon:
             # Stop the GATT client first: its availability callback still
             # needs the controller.
             ams, self.ams = self.ams, None
+            # Disable the phone's CCCs so a later opt-in gets the command
+            # list again; a new client waits until that is done.
             if ams is not None:
-                # Disable the phone's CCCs so a later opt-in gets the command
-                # list again; a new client waits until that is done.
-                self._media_releasing = True
-                ams.stop(release=True, on_released=self._media_released)
+                ams.stop(release=True)
+            else:
+                self.media_sessions.release()
             media, self.media = self.media, None
             media.close()
         log.info("iPhone media control %s", "enabled" if selected else "disabled")
@@ -730,9 +735,7 @@ class Daemon:
         self._emit_status()
 
     def _media_released(self) -> None:
-        self._media_releasing = False
-        # Runs synchronously when nothing had to be released, while the
-        # opt-out is still tearing down; only a renewed opt-in starts again.
+        # Only a renewed opt-in that is still wanted starts again.
         if (
             self.media_settings.enabled
             and self.media is not None
@@ -743,10 +746,15 @@ class Daemon:
     def _start_media(self, device_path: str) -> None:
         # Remembered so a later runtime opt-in can start on the same device.
         self._media_device_path = device_path
-        if self.media is None or self.ams is not None or self._media_releasing:
+        if self.media is None or self.ams is not None:
             return
         if not config.ANCS_ENABLED:
             log.info("iPhone media control needs the LE link; compatibility mode disables it")
+            return
+        if self.media_sessions.release_owed:
+            # Reusing the old notify session would write no CCC, and iOS
+            # would not send its command list: finish the opt-out first.
+            self.media_sessions.when_released(self._media_released)
             return
         media = self.media
         candidate = AmsClient(
@@ -754,6 +762,7 @@ class Daemon:
             on_update=media.handle_update,
             on_supported_commands=media.handle_supported_commands,
             on_availability=self._on_media_availability,
+            sessions=self.media_sessions,
         )
         self.ams = candidate
         media.attach(candidate)
@@ -947,14 +956,15 @@ class Daemon:
         # the new observation until the next physical link transition.
         if self.ancs is not None:
             self.ancs.observe_bluez_owner(old_owner, new_owner)
-        if self.ams is not None:
-            # Optional media control must never cost messaging its
-            # bluetoothd-restart recovery below.
-            try:
+        # Optional media control must never cost messaging its
+        # bluetoothd-restart recovery below.
+        try:
+            self.media_sessions.observe_bluez_owner(old_owner, new_owner)
+            if self.ams is not None:
                 self.ams.observe_bluez_owner(old_owner, new_owner)
-            except Exception:
-                log.warning("iPhone media control could not follow the BlueZ restart",
-                            exc_info=True)
+        except Exception:
+            log.warning("iPhone media control could not follow the BlueZ restart",
+                        exc_info=True)
         # Battery objects and notification sessions belonged to the old owner.
         self._battery_link_seen = False
         self.phone_battery.bluez_owner_changed(bool(new_owner))
@@ -1353,6 +1363,8 @@ class Daemon:
             self.ancs.stop()
         if self.ams is not None:
             self.ams.stop()
+        # No StopNotify on shutdown: the closing bus connection ends them.
+        self.media_sessions.close()
         if self.media is not None:
             self.media.close()
         self.solicitation.stop()

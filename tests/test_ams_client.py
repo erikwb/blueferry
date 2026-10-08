@@ -4,7 +4,7 @@ from __future__ import annotations
 import dbus
 import pytest
 
-from blueferry.ams.client import AmsClient, AmsUnavailableError
+from blueferry.ams.client import AmsClient, AmsNotifySessions, AmsUnavailableError
 from blueferry.ams.constants import (
     ENTITY_ATTRIBUTE_CHAR,
     ENTITY_UPDATE_CHAR,
@@ -112,6 +112,81 @@ class _Timers:
         for source, callback in list(self.pending.items()):
             self.pending.pop(source, None)
             callback()
+
+
+class _SessionBus(_Bus):
+    """A BlueZ and iPhone that keep notify sessions the way the real ones do.
+
+    BlueZ holds one session per sender and characteristic: a repeated
+    StartNotify answers without writing the CCC, a session survives an LE
+    drop, and BlueZ re-enables its CCC at link-up. iOS answers a CCC write on
+    Remote Command with its command list and an Entity Update registration
+    with the current value.
+    """
+
+    COMMANDS = bytes([0, 1, 2, 3, 4])
+    TITLE = bytes([2, 2, 0]) + b"Song"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.sessions: set[str] = set()
+        self.log: list[tuple[str, str]] = []  # answered GATT calls, in order
+        self.hold: set[str] = set()  # methods left pending for the test
+        self.failing_stops = 0
+        self.link = True
+
+    def pump(self) -> None:
+        """Answer every pending call that the test does not hold back."""
+        progressed = True
+        while progressed:
+            progressed = False
+            for call in list(self.calls):
+                if call.method not in self.hold:
+                    self.calls.remove(call)
+                    self._answer(call)
+                    progressed = True
+
+    def _answer(self, call: _Call) -> None:
+        method, path = call.method, call.path
+        if method == "GetManagedObjects":
+            call.succeed(_objects())
+            return
+        self.log.append((method, path))
+        if method == "StartNotify":
+            fresh = path not in self.sessions
+            self.sessions.add(path)
+            call.succeed()
+            if fresh:
+                self._ccc_enabled(path)
+        elif method == "StopNotify":
+            if self.failing_stops or path not in self.sessions:
+                self.failing_stops = max(0, self.failing_stops - 1)
+                call.fail(name="org.bluez.Error.Failed")
+            else:
+                self.sessions.discard(path)
+                call.succeed()
+        elif method == "Get":
+            call.succeed(dbus.Boolean(path in self.sessions))
+        else:
+            call.succeed()
+            if method == "WriteValue" and path == EU and path in self.sessions:
+                if _bytes(call)[:1] == bytes([EntityID.Track]):
+                    self.notify(EU, self.TITLE)
+
+    def _ccc_enabled(self, path) -> None:
+        if path == RC and self.link:
+            self.notify(RC, self.COMMANDS)
+
+    def link_down(self) -> None:
+        self.link = False
+
+    def link_up(self) -> None:
+        self.link = True
+        for path in sorted(self.sessions):
+            self._ccc_enabled(path)
+
+    def stops(self) -> list[str]:
+        return [path for method, path in self.log if method == "StopNotify"]
 
 
 def _objects():
@@ -419,29 +494,226 @@ def test_runtime_opt_out_releases_the_notifications_on_a_steady_link(harness) ->
     assert released == [True]
 
 
-def test_opt_out_never_releases_while_the_link_is_down_or_subscribing(harness) -> None:
-    client, bus, timers, *_ = harness
-    _subscribe(client, bus, timers)
+@pytest.fixture
+def session_harness():
+    """One session tracker and bus shared by successive clients, as in the daemon."""
+    bus = _SessionBus()
+    timers = _Timers()
+    sessions = AmsNotifySessions(
+        bus_factory=lambda: bus, schedule=timers.schedule, cancel=timers.cancel,
+    )
+
+    def new_client():
+        commands: list[frozenset] = []
+        client = AmsClient(
+            DEVICE, on_update=lambda _update: None,
+            on_supported_commands=commands.append, sessions=sessions,
+            bus_factory=lambda: bus, schedule=timers.schedule, cancel=timers.cancel,
+        )
+        return client, commands
+
+    return new_client, sessions, bus, timers
+
+
+def _run(bus, timers) -> None:
+    bus.pump()
+    timers.run_all()
+    bus.pump()
+
+
+def _settle_delays(timers) -> list[int]:
+    return [timers.delays[source] for source in timers.pending]
+
+
+def test_opt_out_while_the_link_is_down_releases_after_it_settles_again(session_harness) -> None:
+    """Review #207: BlueZ re-enables a surviving CCC at link-up by itself."""
+    new_client, sessions, bus, timers = session_harness
+    client, _commands = new_client()
+    client.observe_bearer_state(True)
+    client.start()
+    _run(bus, timers)
+    assert client.available
     client.observe_bearer_state(False)
+    bus.link_down()
+    released = []
+
+    client.stop(release=True, on_released=lambda: released.append(True))
+
+    # No StopNotify on a dropped link (bluetoothd 5.87 crash, see PROTOCOL.md).
+    assert bus.pending() == [] and timers.pending == {}
+    assert released == [] and sessions.release_owed
+
+    bus.link_up()
+    sessions.observe_bearer_state(True)
+    # BlueZ is re-registering notifications: wait out the settle window.
+    assert bus.pending() == []
+    assert _settle_delays(timers) == [3]
+    timers.run_all()
+    assert sorted(bus.pending()) == sorted([("StopNotify", RC), ("StopNotify", EU)])
+    bus.pump()
+    assert released == [True] and not sessions.release_owed
+    assert bus.sessions == set() and timers.pending == {}
+
+
+def test_a_link_drop_inside_the_settle_window_restarts_the_wait(session_harness) -> None:
+    new_client, sessions, bus, timers = session_harness
+    client, _commands = new_client()
+    client.observe_bearer_state(True)
+    client.start()
+    _run(bus, timers)
+    client.observe_bearer_state(False)
+    client.stop(release=True)
+
+    sessions.observe_bearer_state(True)
+    sessions.observe_bearer_state(False)
+    assert timers.pending == {}
+    sessions.observe_bearer_state(True)
+    assert _settle_delays(timers) == [3] and bus.pending() == []
+    timers.run_all()
+    assert len(bus.pending()) == 2
+
+
+def test_opt_out_inside_the_settle_window_waits_for_its_end(session_harness) -> None:
+    """Review #207: StopNotify while BlueZ re-registers crashes bluetoothd 5.87."""
+    new_client, sessions, bus, timers = session_harness
+    client, _commands = new_client()
+    client.observe_bearer_state(True)
+    client.start()
+    _run(bus, timers)
+    client.observe_bearer_state(False)
+    bus.link_down()
+    bus.link_up()
+    client.observe_bearer_state(True)
+
+    client.stop(release=True)
+
+    assert bus.pending() == []
+    assert _settle_delays(timers) == [3]
+    timers.run_all()
+    bus.pump()
+    assert sorted(bus.stops()) == sorted([RC, EU])
+    assert not sessions.release_owed
+
+
+@pytest.mark.parametrize("answer", ["succeed", "fail"])
+def test_opt_out_with_start_notify_pending_releases_after_its_reply(
+    session_harness, answer,
+) -> None:
+    """Review #207: a StartNotify answered after stop() still leaves a session."""
+    new_client, sessions, bus, timers = session_harness
+    client, _commands = new_client()
+    client.observe_bearer_state(True)
+    client.start()
+    bus.pump()
+    bus.hold = {"StartNotify"}
+    timers.run_all()
+    assert bus.pending() == [("StartNotify", RC)]
+    released = []
+
+    client.stop(release=True, on_released=lambda: released.append(True))
+
+    assert bus.pending() == [("StartNotify", RC)]
+    assert released == [] and sessions.release_owed
+    if answer == "succeed":
+        bus.hold = set()
+        bus.pump()
+        assert bus.log == [("StartNotify", RC), ("StopNotify", RC)]
+    else:
+        # A refused StartNotify created no session; nothing is left to stop.
+        bus.take("StartNotify", RC).fail()
+        assert bus.pending() == []
+    assert released == [True] and not sessions.release_owed
+    assert bus.sessions == set()
+
+
+def test_an_unanswered_start_notify_is_released_as_possibly_started(session_harness) -> None:
+    new_client, _sessions, bus, timers = session_harness
+    client, _commands = new_client()
+    client.observe_bearer_state(True)
+    client.start()
+    bus.pump()
+    timers.run_all()
+    client.stop(release=True)
+
+    bus.take("StartNotify", RC).fail(name="org.freedesktop.DBus.Error.NoReply")
+
+    assert bus.pending() == [("StopNotify", RC)]
+
+
+def test_opt_out_with_registrations_pending_releases_both_sessions(session_harness) -> None:
+    new_client, sessions, bus, timers = session_harness
+    client, _commands = new_client()
+    client.observe_bearer_state(True)
+    client.start()
+    bus.pump()
+    bus.hold = {"WriteValue"}
+    timers.run_all()
+    bus.pump()
+    assert bus.sessions == {RC, EU} and not client.available
+
+    client.stop(release=True)
+    bus.hold = set()
+    bus.pump()
+
+    assert sorted(bus.stops()) == sorted([RC, EU])
+    assert bus.sessions == set() and not sessions.release_owed
+
+
+def test_a_new_client_after_the_release_gets_the_command_list_again(session_harness) -> None:
+    new_client, _sessions, bus, timers = session_harness
+    first, commands = new_client()
+    first.observe_bearer_state(True)
+    first.start()
+    _run(bus, timers)
+    assert len(commands[-1]) == 5
+    first.stop(release=True)
+    bus.pump()
+
+    second, commands = new_client()
+    second.observe_bearer_state(True)
+    second.start()
+    _run(bus, timers)
+
+    assert second.available and len(commands[-1]) == 5
+
+
+def test_removed_characteristics_and_a_new_bluetoothd_owe_nothing(session_harness) -> None:
+    new_client, sessions, bus, timers = session_harness
+    client, _commands = new_client()
+    client.observe_bearer_state(True)
+    client.start()
+    _run(bus, timers)
+    manager_removed = [match for match in bus.matches if match.path == "/"][1]
+    manager_removed.handler(RC, [GATT])
+    client.observe_bearer_state(False)
+    client.stop(release=True)
+    assert sessions.release_owed
+    released = []
+    sessions.when_released(lambda: released.append(True))
+
+    # The remaining session belonged to the bluetoothd that went away.
+    sessions.observe_bluez_owner(":1.1", "")
+
+    assert released == [True] and not sessions.release_owed
+    sessions.observe_bearer_state(True)
+    assert bus.pending() == [] and timers.pending == {}
+
+
+def test_closing_the_tracker_drops_an_owed_release(session_harness) -> None:
+    new_client, sessions, bus, timers = session_harness
+    client, _commands = new_client()
+    client.observe_bearer_state(True)
+    client.start()
+    _run(bus, timers)
+    bus.hold = {"StopNotify"}
     released = []
     client.stop(release=True, on_released=lambda: released.append(True))
-    assert "StopNotify" not in [call.method for call in bus.calls]
-    assert released == [True]
 
-    bus2, timers2 = _Bus(), _Timers()
-    subscribing = AmsClient(
-        DEVICE, on_update=lambda _u: None, on_supported_commands=lambda _c: None,
-        on_availability=lambda _a: None, bus_factory=lambda: bus2,
-        schedule=timers2.schedule, cancel=timers2.cancel,
-    )
-    subscribing.observe_bearer_state(True)
-    subscribing.start()
-    bus2.take("GetManagedObjects").succeed(_objects())
-    timers2.run_all()
-    bus2.take("StartNotify", RC).succeed()  # EU still in flight
-    subscribing.stop(release=True, on_released=lambda: released.append(True))
-    assert "StopNotify" not in [call.method for call in bus2.calls]
-    assert released == [True, True]
+    sessions.close()
+    bus.hold = set()
+    bus.pump()
+
+    assert released == [] and timers.pending == {}
 
 
 def test_characteristic_removed_and_added_during_settle_resubscribes(harness) -> None:

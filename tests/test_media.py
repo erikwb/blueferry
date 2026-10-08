@@ -1,11 +1,13 @@
 """Opt-in media control policy, disabled paths, and daemon wiring."""
 from __future__ import annotations
 
+import functools
 from types import SimpleNamespace
 
 import pytest
 
 from blueferry import daemon as daemon_mod
+from blueferry.ams.client import AmsClient, AmsNotifySessions
 from blueferry.ams.constants import EntityID, RemoteCommandID, TrackAttributeID
 from blueferry.ams.parsers import EntityUpdate
 from blueferry.backend_operations import BackendDependencies, BackendOperations
@@ -18,6 +20,8 @@ from blueferry.media import (
     MediaController,
     MediaControlSettings,
 )
+from tests.test_ams_client import DEVICE, EU, RC, _SessionBus
+from tests.test_ams_client import _Timers as _GattTimers
 
 
 class _Writer:
@@ -365,62 +369,213 @@ def test_media_can_be_enabled_and_disabled_at_runtime(make_daemon, monkeypatch) 
     assert make_daemon().media is not None
 
 
-def test_opt_in_right_after_an_opt_out_waits_for_the_release(make_daemon, monkeypatch) -> None:
+def _media_daemon(make_daemon, monkeypatch):
+    """A real daemon and AMS client on the session-keeping fake BlueZ."""
+    bus, timers = _SessionBus(), _GattTimers()
+    fakes = {"bus_factory": lambda: bus, "schedule": timers.schedule, "cancel": timers.cancel}
     monkeypatch.setattr(daemon_mod.config, "ANCS_ENABLED", True)
-    monkeypatch.setattr(daemon_mod, "AmsClient", _FakeAms)
+    monkeypatch.setattr(daemon_mod, "AmsClient", functools.partial(AmsClient, **fakes))
     instance = make_daemon()
+    instance.media_sessions = AmsNotifySessions(**fakes)
     monkeypatch.setattr(instance, "_emit_status", lambda: None)
-    instance._start_media("/device")
+    instance.solicitation = SimpleNamespace(set_needed=lambda _needed: None, stop=lambda: None)
+    new_media = instance._new_media
+
+    def inert_media():
+        # Keep the controller's coalescing timer off the real GLib loop.
+        media = new_media()
+        media._schedule = lambda _ms, _callback: 0
+        media._cancel = lambda _source: None
+        return media
+
+    monkeypatch.setattr(instance, "_new_media", inert_media)
+    instance.bearers._states["le"] = True
+    instance._start_media(DEVICE)
+    return instance, bus, timers
+
+
+def _run(bus, timers) -> None:
+    bus.pump()
+    timers.run_all()
+    bus.pump()
+
+
+def _set_le(instance, bus, connected: bool) -> None:
+    if connected:
+        bus.link_up()
+    else:
+        bus.link_down()
+    instance.bearers._states["le"] = connected
+    instance._observe_le_state(connected)
+
+
+def _shown(instance):
+    """(available, title, number of offered commands) as clients see them."""
+    snapshot = instance.media.snapshot()
+    return (
+        snapshot["available"],
+        (snapshot.get("track") or {}).get("title"),
+        len(snapshot.get("supported_commands") or []),
+    )
+
+
+def _inert(instance, bus, timers) -> bool:
+    return (
+        instance.ams is None and bus.pending() == [] and timers.pending == {}
+        and all(match.removed for match in bus.matches)
+    )
+
+
+def test_media_off_is_inert_on_every_link_change(make_daemon, monkeypatch) -> None:
+    instance, bus, timers = _media_daemon(make_daemon, monkeypatch)
+
+    _set_le(instance, bus, False)
+    _set_le(instance, bus, True)
+    _run(bus, timers)
+
+    assert _inert(instance, bus, timers) and bus.log == [] and bus.matches == []
+
+
+def test_opt_in_right_after_an_opt_out_waits_for_the_release(make_daemon, monkeypatch) -> None:
+    instance, bus, timers = _media_daemon(make_daemon, monkeypatch)
     instance._set_media_control(True)
-    first = instance.ams
+    _run(bus, timers)
+    assert _shown(instance) == (True, "Song", 5)
+    bus.hold = {"StopNotify"}
 
     instance._set_media_control(False)
-    assert first.release is True
+    assert sorted(bus.pending()) == sorted([("StopNotify", RC), ("StopNotify", EU)])
+    instance._set_media_control(True)
+    instance._set_media_control(False)
     instance._set_media_control(True)
     # The old client's StopNotify replies are still outstanding.
     assert instance.ams is None
 
-    first.on_released()
-    assert isinstance(instance.ams, _FakeAms) and instance.ams is not first
-    assert instance.ams.started
+    bus.hold = set()
+    bus.pump()
+    assert instance.ams is not None
+    _run(bus, timers)
+    # The new StartNotify wrote the CCC, so iOS sent its command list again.
+    assert _shown(instance) == (True, "Song", 5)
+    assert bus.stops() == [RC, EU]
 
 
 def test_a_release_without_a_new_opt_in_starts_nothing(make_daemon, monkeypatch) -> None:
-    monkeypatch.setattr(daemon_mod.config, "ANCS_ENABLED", True)
-    monkeypatch.setattr(daemon_mod, "AmsClient", _FakeAms)
-    instance = make_daemon()
-    monkeypatch.setattr(instance, "_emit_status", lambda: None)
-    instance._start_media("/device")
+    instance, bus, timers = _media_daemon(make_daemon, monkeypatch)
     instance._set_media_control(True)
-    first = instance.ams
-    instance._set_media_control(False)
-
-    first.on_released()
-
-    assert instance.ams is None and instance.media is None
-
-
-def test_an_immediate_release_during_the_opt_out_starts_nothing(make_daemon, monkeypatch) -> None:
-    # Nothing to release (link down): the real client reports at once,
-    # while the daemon is still tearing the old controller down.
-    class _ImmediateAms(_FakeAms):
-        def stop(self, *, release=False, on_released=None) -> None:
-            super().stop(release=release, on_released=on_released)
-            if on_released is not None:
-                on_released()
-
-    monkeypatch.setattr(daemon_mod.config, "ANCS_ENABLED", True)
-    monkeypatch.setattr(daemon_mod, "AmsClient", _ImmediateAms)
-    instance = make_daemon()
-    monkeypatch.setattr(instance, "_emit_status", lambda: None)
-    instance._start_media("/device")
-    instance._set_media_control(True)
+    _run(bus, timers)
 
     instance._set_media_control(False)
+    bus.pump()
 
-    assert instance.ams is None and instance.media is None
+    assert instance.media is None and bus.sessions == set()
+    assert _inert(instance, bus, timers)
+    _set_le(instance, bus, False)
+    _set_le(instance, bus, True)
+    assert _inert(instance, bus, timers)
+
+
+@pytest.mark.parametrize("held", ["StartNotify", "WriteValue"])
+def test_opt_out_during_a_subscription_does_not_cost_the_command_list(
+    make_daemon, monkeypatch, held,
+) -> None:
+    """Review #207: the session survived and the next StartNotify wrote no CCC."""
+    instance, bus, timers = _media_daemon(make_daemon, monkeypatch)
     instance._set_media_control(True)
-    assert instance.ams is not None and instance.ams.started
+    bus.pump()
+    bus.hold = {held}
+    timers.run_all()
+    bus.pump()
+    assert bus.pending() and not instance.media.available
+
+    instance._set_media_control(False)
+    instance._set_media_control(True)
+    assert instance.ams is None
+    bus.hold = set()
+    bus.pump()
+
+    # Released as soon as the start replies were in: the phone is quiet.
+    assert bus.stops() and bus.sessions == set()
+    _run(bus, timers)
+    assert _shown(instance) == (True, "Song", 5)
+
+
+@pytest.mark.parametrize("opt_in_while_down", [True, False])
+def test_opt_out_while_le_is_down_does_not_cost_the_command_list(
+    make_daemon, monkeypatch, opt_in_while_down,
+) -> None:
+    """Review #207: BlueZ re-enabled the surviving CCCs at link-up."""
+    instance, bus, timers = _media_daemon(make_daemon, monkeypatch)
+    instance._set_media_control(True)
+    _run(bus, timers)
+    _set_le(instance, bus, False)
+
+    instance._set_media_control(False)
+    assert _inert(instance, bus, timers) and bus.sessions == {RC, EU}
+    if opt_in_while_down:
+        instance._set_media_control(True)
+    _set_le(instance, bus, True)
+    if not opt_in_while_down:
+        instance._set_media_control(True)
+
+    # Neither call may run while BlueZ re-registers after the reconnect.
+    assert instance.ams is None and bus.pending() == []
+    assert [timers.delays[source] for source in timers.pending] == [3]
+    timers.run_all()
+    bus.pump()
+    assert bus.stops() == [RC, EU] and instance.ams is not None
+    _run(bus, timers)
+    assert _shown(instance) == (True, "Song", 5)
+
+
+def test_opt_out_right_after_a_reconnect_waits_for_the_link_to_settle(
+    make_daemon, monkeypatch,
+) -> None:
+    """Review #207: StopNotify inside the settle window (bluetoothd 5.87 crash)."""
+    instance, bus, timers = _media_daemon(make_daemon, monkeypatch)
+    instance._set_media_control(True)
+    _run(bus, timers)
+    _set_le(instance, bus, False)
+    _set_le(instance, bus, True)
+    bus.log.clear()
+
+    instance._set_media_control(False)
+    bus.pump()
+
+    assert bus.log == []
+    assert [timers.delays[source] for source in timers.pending] == [3]
+    timers.run_all()
+    bus.pump()
+    assert bus.log == [("StopNotify", RC), ("StopNotify", EU)]
+    assert _inert(instance, bus, timers)
+
+
+def test_shutdown_sends_no_stop_notify(make_daemon, monkeypatch) -> None:
+    instance, bus, timers = _media_daemon(make_daemon, monkeypatch)
+    instance._set_media_control(True)
+    _run(bus, timers)
+
+    instance.stop()
+    bus.pump()
+
+    # The closing bus connection ends the sessions.
+    assert bus.stops() == [] and timers.pending == {}
+    assert all(match.removed for match in bus.matches)
+
+
+def test_a_release_answered_after_shutdown_starts_nothing(make_daemon, monkeypatch) -> None:
+    instance, bus, timers = _media_daemon(make_daemon, monkeypatch)
+    instance._set_media_control(True)
+    _run(bus, timers)
+    bus.hold = {"StopNotify"}
+    instance._set_media_control(False)
+    instance._set_media_control(True)  # waits for the release
+
+    instance.stop()
+    bus.hold = set()
+    bus.pump()
+
+    assert _inert(instance, bus, timers)
 
 
 def test_runtime_opt_in_before_bluetooth_init_waits_for_it(make_daemon, monkeypatch) -> None:
