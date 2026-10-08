@@ -312,9 +312,11 @@ The iPhone phonebook is available through BlueZ's
   bulk pull whether or not BlueFerry keeps them. gutbash/blue reports iOS
   including photos without a filter. The opt-in contact-photo feature
   therefore reuses the same pull rather than adding a second photo-only pull
-  or per-entry `Pull` calls. BlueFerry itself has not captured a photo-bearing
-  iOS phonebook yet, so how iOS encodes PHOTO (vCard 3.0 `ENCODING=b`,
-  folded base64, JPEG) is expected but unverified.
+  or per-entry `Pull` calls. On one iPhone (iOS 27) the unfiltered pull
+  of 3730 contacts was 726487 bytes and carried 42 inline photos that passed
+  the JPEG/PNG check, all small thumbnails (about 2 to 19 KiB). The exact
+  PHOTO spelling iOS uses (vCard 3.0 `ENCODING=b` with folded base64 is
+  expected) was not recorded.
 - Small or fast BlueZ transfers can disappear from D-Bus with status `gone`
   just before the output file becomes visible. Preserve the initial transfer
   properties and allow a short, bounded file-visibility grace period.

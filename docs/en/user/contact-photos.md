@@ -21,7 +21,7 @@ flowchart LR
 ```
 
 The backend never decodes an image itself. It only checks that a photo is a
-JPEG or PNG of at most 1 MiB and 2048×2048 pixels. Decoding happens in the
+JPEG or PNG of at most 256 KiB and 2048×2048 pixels. Decoding happens in the
 desktop clients and in your notification server.
 
 ## Turn it on
@@ -61,9 +61,10 @@ contact sync or when the storage mode changes.
 
 - Only JPEG and PNG photos are kept. Photos given as a link are never
   downloaded.
-- One photo per contact, at most 1 MiB each and 32 MiB per sync. When the
+- One photo per contact, at most 256 KiB each and 16 MiB per sync. When the
   per-sync budget runs out, later photos are skipped and the log says how
-  many.
+  many. For scale: one iPhone on iOS 27 sent 42 photos with 3730 contacts,
+  all small thumbnails (2 to 19 KiB, about 5 KiB on average).
 - A photo shows only when the address belongs to exactly one contact. A number
   shared by two contacts shows neither photo, and a contact whose every
   number is shared doesn't have its photo stored at all.
@@ -86,11 +87,12 @@ number or picture:
 journalctl --user -u blueferry | grep "with photos"
 ```
 
-It shows how many photos fell into each size range and why photos were not
-kept (`too-large`, `dimensions`, `format`, `not-inline`, `shared`, `budget`,
-`time`). If many photos are `too-large` or `dimensions`, please report the
-line; the limits are estimates that haven't been checked against a real
-iPhone yet.
+It shows how many photos fell into each size range (`<=16KiB` up to `>8MiB`,
+so photos over the limit show how far over they are), the largest photo in
+bytes (`max:`), and why photos were not kept (`too-large`, `dimensions`,
+`format`, `not-inline`, `shared`, `budget`, `time`). The limits are based on
+one iPhone; if many photos are `too-large` or `dimensions` on yours, please
+report the line.
 
 ## Privacy
 

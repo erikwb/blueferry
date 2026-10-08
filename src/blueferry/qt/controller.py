@@ -44,9 +44,10 @@ from blueferry.setup_client import (
 # Bounds on the per-window avatar cache (least recently used entries are
 # dropped). The count covers a long list of small photos; the byte bound
 # keeps large ones (up to limits.MAX_CONTACT_PHOTO_BYTES each) from holding
-# hundreds of MiB of encoded images.
+# hundreds of MiB of encoded images. It matches the daemon's per-sync photo
+# budget (limits.MAX_CONTACT_PHOTOS_TOTAL_BYTES), so every stored photo fits.
 MAX_CACHED_AVATARS = 512
-MAX_CACHED_AVATAR_BYTES = 32 * 1024 * 1024
+MAX_CACHED_AVATAR_BYTES = 16 * 1024 * 1024
 MAX_PENDING_AVATARS = 32
 AVATAR_RETRY_SECONDS = 30
 AVATAR_RETRY_MAX_SECONDS = 600
