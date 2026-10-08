@@ -45,6 +45,7 @@ ShellRoot {
   readonly property SavedChoice callsChoice: SavedChoice {}
   readonly property SavedChoice callHistory: SavedChoice {}
   readonly property SavedChoice missedCallPopups: SavedChoice {}
+  property bool otpAutocopyBusy: false
   property bool storagePolicyBusy: false
   property bool storageUnlockBusy: false
 
@@ -343,6 +344,14 @@ ShellRoot {
             ? result.calls_enabled === true : root.callsChoice.value,
           root.statusBusy)
         root.reload()
+      } else if (method === "set_otp_autocopy") {
+        root.otpAutocopyBusy = false
+        // The checkbox follows the daemon's answer, not the click.
+        if (typeof result === "object" && result !== null)
+          root.backendStatus = Object.assign({}, root.backendStatus, {
+            otp_autocopy: result.otp_autocopy === true
+          })
+        root.reload()
       } else if (method === "set_storage_policy") {
         root.storagePolicyBusy = false
         if (typeof result === "object" && result !== null) {
@@ -422,6 +431,10 @@ ShellRoot {
         root.callsChoice.failed(root.backendStatus.calls_enabled === true)
         root.errorText = message || "Could not save phone calls preference"
         root.reload()
+      } else if (method === "set_otp_autocopy") {
+        root.otpAutocopyBusy = false
+        root.errorText = message || "Could not save the one-time code preference"
+        root.reload()
       } else if (method === "set_storage_policy") {
         root.storagePolicyBusy = false
         root.errorText = message
@@ -452,6 +465,7 @@ ShellRoot {
           root.callHistory.failed(root.backendStatus.call_history_enabled === true)
         if (root.missedCallPopups.busy)
           root.missedCallPopups.failed(root.backendStatus.missed_call_notifications !== false)
+        root.otpAutocopyBusy = false
         root.storagePolicyBusy = false
         root.storageUnlockBusy = false
         root.errorText = message
@@ -1096,6 +1110,7 @@ ShellRoot {
                   proximityLock: root.proximityLock.busy,
                   calls: root.callsChoice.busy,
                   callHistory: root.callHistory.busy || root.missedCallPopups.busy,
+                  otp: root.otpAutocopyBusy,
                   storage: root.storagePolicyBusy})
           visible: root.phoneSettingsVisible
           Layout.fillWidth: true
@@ -1106,6 +1121,7 @@ ShellRoot {
           onReloadRequested: root.reload()
           onOperationRequested: (method, args) => {
             if (method === "set_notification_policy") root.notificationPolicyBusy = true
+            if (method === "set_otp_autocopy") root.otpAutocopyBusy = true
             if (method === "set_contacts_only_notifications") {
               root.contactsOnlyNotifications = args.enabled
               root.contactsOnlyNotificationsBusy = true

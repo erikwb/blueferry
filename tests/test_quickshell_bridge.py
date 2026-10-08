@@ -494,3 +494,20 @@ def test_bridge_saves_the_call_history_opt_in_and_returns_its_status() -> None:
         with pytest.raises(ValueError, match=message):
             bridge.dispatch("set_call_history", args)
     assert len(client.calls) == 1
+
+
+def test_bridge_saves_the_one_time_code_opt_in() -> None:
+    client = FakeClient()
+    client.set_otp_autocopy = lambda enabled: (  # type: ignore[attr-defined]
+        client.calls.append(("set_otp_autocopy", enabled)) or {"otp_autocopy": enabled}
+    )
+    bridge = QuickshellBridge(client)  # type: ignore[arg-type]
+
+    assert bridge.dispatch("set_otp_autocopy", {"enabled": True}) == {"otp_autocopy": True}
+    assert client.calls == [("set_otp_autocopy", True)]
+    try:
+        bridge.dispatch("set_otp_autocopy", {"enabled": "yes"})
+    except ValueError as error:
+        assert str(error) == "enabled must be a boolean"
+    else:
+        raise AssertionError("non-boolean preference was accepted")

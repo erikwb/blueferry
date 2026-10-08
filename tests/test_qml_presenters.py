@@ -2447,6 +2447,41 @@ def test_quickshell_saved_choice_is_not_undone_by_a_late_status(qml_engine) -> N
     choice.deleteLater()
 
 
+def test_quickshell_offers_the_one_time_code_opt_in_only_when_reported(
+    qml_engine, quickshell_setup,
+):
+    theme_component = _component(qml_engine, "data/quickshell/ThemePalette.qml")
+    theme = theme_component.create()
+    component = _component(qml_engine, "data/quickshell/PhoneSettingsPage.qml")
+    page = component.createWithInitialProperties({
+        "ferryTheme": theme, "setup": quickshell_setup,
+        "status": {"contacts_only_notifications": False},
+    })
+    assert page is not None
+    quickshell_setup.setProperty("configured", True)
+    checkbox = page.findChild(QObject, "otpAutocopyCheckBox")
+    assert checkbox is not None
+    assert checkbox.property("visible") is False
+
+    page.setProperty("status", {"contacts_only_notifications": False, "otp_autocopy": False})
+    QGuiApplication.processEvents()
+    assert checkbox.property("visible") is True
+    assert checkbox.property("checked") is False
+    calls = []
+    page.operationRequested.connect(
+        lambda method, args: calls.append((method, args.toVariant()))
+    )
+    assert QMetaObject.invokeMethod(checkbox, "toggle")
+    assert QMetaObject.invokeMethod(checkbox, "clicked")
+    assert calls == [("set_otp_autocopy", {"enabled": True})]
+
+    page.setProperty("busy", {"otp": True})
+    QGuiApplication.processEvents()
+    assert checkbox.property("enabled") is False
+    page.deleteLater()
+    theme.deleteLater()
+
+
 @pytest.mark.private_dbus
 def test_quickshell_keeps_the_restart_command_when_the_daemon_is_unavailable(
     tmp_path, quickshell_environment,

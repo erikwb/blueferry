@@ -518,6 +518,26 @@ Rectangle {
           wrapMode: Text.Wrap
           text: "Keeps the iPhone's recent calls (who called and when) under your local storage setting and can notify you about missed calls. It uses the iPhone's Sync Contacts permission and never places, answers, or listens to calls. Turning it off erases the retained calls."
         }
+        // Only daemons that report otp_autocopy offer the setting.
+        FerrySectionLabel {
+          ferryTheme: root.theme
+          text: "One-time codes"
+          visible: root.status.otp_autocopy !== undefined
+        }
+        FerryCheckBox {
+          objectName: "otpAutocopyCheckBox"
+          ferryTheme: root.theme
+          text: "Copy one-time codes to the clipboard"
+          visible: root.status.otp_autocopy !== undefined
+          checked: root.status.otp_autocopy === true
+          enabled: root.setup.configured && !root.busy.otp
+          Accessible.description: "Only new messages from senders not in your contacts, never group chats. Turning this off clears a copied code still on the clipboard."
+          onClicked: {
+            root.operationRequested("set_otp_autocopy", {
+              enabled: checked
+            });
+          }
+        }
         FerrySectionLabel {
           ferryTheme: root.theme
           text: "Local data"
