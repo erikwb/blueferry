@@ -111,50 +111,64 @@ def _parse_vcard_records(
     return out
 
 
-# Content-free size buckets for the per-sync photo summary (decoded bytes).
+# Content-free size buckets for the per-sync photo summary (bytes, decoded or
+# estimated from the base64 length). Each photo lands in the first bucket it
+# fits, so the buckets above the per-photo cap show how far over it photos are.
 _PHOTO_SIZE_BUCKETS = (
+    (16 * 1024, "<=16KiB"),
     (64 * 1024, "<=64KiB"),
     (256 * 1024, "<=256KiB"),
     (1024 * 1024, "<=1MiB"),
+    (2 * 1024 * 1024, "<=2MiB"),
     (4 * 1024 * 1024, "<=4MiB"),
+    (8 * 1024 * 1024, "<=8MiB"),
 )
+_PHOTO_SIZE_OVERFLOW = ">8MiB"
 PHOTO_DROPPED_SHARED = "shared"
 PHOTO_DROPPED_BUDGET = "budget"
 PHOTO_DROPPED_TIME = "time"
 
 
+def _estimated_photo_bytes(prop: str) -> int:
+    """Rough decoded size of a PHOTO property from its base64 length."""
+    return len(prop) * 3 // 4
+
+
 class PhotoStats:
     """Per-sync photo counters for one summary log line.
 
-    Only counts, size buckets and rejection reasons: nothing that identifies
-    a contact. Meant to show, from a real phone's journal, whether the caps
-    in ``limits.py`` fit the photos iOS actually sends.
+    Only counts, size buckets, the largest size and rejection reasons:
+    nothing that identifies a contact. Meant to show, from a real phone's
+    journal, whether the caps in ``limits.py`` fit the photos iOS actually
+    sends, including how far over the cap rejected photos are.
     """
 
     def __init__(self) -> None:
         self.sizes: Counter[str] = Counter()
         self.dropped: Counter[str] = Counter()
+        self.largest = 0
 
     def observe_size(self, size: int) -> None:
         if size <= 0:
             return
         label = next(
             (name for limit, name in _PHOTO_SIZE_BUCKETS if size <= limit),
-            f">{_PHOTO_SIZE_BUCKETS[-1][1].removeprefix('<=')}",
+            _PHOTO_SIZE_OVERFLOW,
         )
         self.sizes[label] += 1
+        self.largest = max(self.largest, size)
 
     def drop(self, reason: str) -> None:
         self.dropped[reason] += 1
 
     def summary(self) -> str:
         labels = [name for _limit, name in _PHOTO_SIZE_BUCKETS]
-        labels.append(f">{labels[-1].removeprefix('<=')}")
+        labels.append(_PHOTO_SIZE_OVERFLOW)
         sizes = " ".join(f"{label}:{self.sizes[label]}" for label in labels)
         dropped = " ".join(
             f"{reason}:{count}" for reason, count in sorted(self.dropped.items())
         ) or "none"
-        return f"sizes {sizes}; not kept {dropped}"
+        return f"sizes {sizes} max:{self.largest}; not kept {dropped}"
 
 
 def _unique_addresses(records: Sequence[ContactRecord]) -> dict[int, list[str]]:
@@ -243,11 +257,16 @@ def _parse_vcard_entries(
         index = len(out)
         photo = None
         if prop is not None:
+            # Photos that are not decoded are still sized (estimated) so the
+            # histogram covers every photo the phone sent.
             if servable is not None and index not in servable:
+                selected_stats.observe_size(_estimated_photo_bytes(prop))
                 selected_stats.drop(PHOTO_DROPPED_SHARED)
             elif budget <= 0:
+                selected_stats.observe_size(_estimated_photo_bytes(prop))
                 selected_stats.drop(PHOTO_DROPPED_BUDGET)
             elif spent >= MAX_CONTACT_PHOTO_DECODE_SECONDS:
+                selected_stats.observe_size(_estimated_photo_bytes(prop))
                 selected_stats.drop(PHOTO_DROPPED_TIME)
             else:
                 started = clock()
