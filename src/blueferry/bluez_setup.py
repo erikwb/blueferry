@@ -169,6 +169,12 @@ def _root_controlled(
     Walk components without collapsing ``..`` until the traversed directory
     has been checked. Symlink permission bits are ignored by Linux; their
     ownership and their parent directories still must be trusted.
+
+    Group- or world-writable directories are refused even with the sticky
+    bit (``/tmp``-style 1777): the sticky bit only stops others from
+    deleting or renaming existing entries, and whether a link there is
+    safe would depend on fs.protected_symlinks and on who created it. A
+    helper belongs in a root-only tree, so this fails closed on purpose.
     """
     if not os.path.isabs(path):
         return False
