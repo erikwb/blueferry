@@ -417,10 +417,13 @@ Kirigami.ScrollablePage {
                 visible: iphonePage.bridge.status.ancs_actions_preference !== undefined
                 text: qsTr("Show iPhone action buttons (Accept, Decline, Clear…)")
                 checked: iphonePage.bridge.status.ancs_actions_preference === true
+                // A saved "on" can always be switched off; switching on
+                // needs All iPhone Notifications with content shown.
                 enabled: iphonePage.bridge.status.daemon === true
-                    && iphonePage.bridge.status.notification_policy === "all"
-                    && iphonePage.bridge.status.notification_content_shown !== false
                     && !iphonePage.bridge.busy
+                    && (checked
+                        || (iphonePage.bridge.status.notification_policy === "all"
+                            && iphonePage.bridge.status.notification_content_shown !== false))
                 onClicked: iphonePage.bridge.setAncsNotificationActions(checked)
                 Accessible.description: iphonePage.bridge.status.notification_content_shown === false
                     ? qsTr("Unavailable while notification content is hidden.")

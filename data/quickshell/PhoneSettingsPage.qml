@@ -368,7 +368,9 @@ Rectangle {
           visible: root.status.ancs_actions_preference !== undefined
           text: "Show iPhone action buttons (Accept, Decline, Clear…)"
           checked: root.status.ancs_actions_preference === true
-          enabled: root.setup.configured && root.status.notification_policy === "all" && root.status.notification_content_shown !== false && !root.busy.ancsActions
+          // A saved "on" can always be switched off; switching on needs All
+          // iPhone Notifications with content shown.
+          enabled: root.setup.configured && !root.busy.ancsActions && (checked || (root.status.notification_policy === "all" && root.status.notification_content_shown !== false))
           Accessible.description: root.status.notification_content_shown === false ? "Unavailable while notification content is hidden." : "Clicking a button runs that action on the iPhone, for example answering or declining a call. Applies to All iPhone notifications."
           onClicked: {
             root.operationRequested("set_ancs_notification_actions", {

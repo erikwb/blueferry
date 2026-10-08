@@ -944,6 +944,11 @@ def test_ancs_actions_checkbox_is_opt_in_and_gated(qml_engine, settings_window):
     QGuiApplication.processEvents()
     assert checkbox.property("enabled") is False
 
+    # A saved "on" can always be switched off, under any policy.
+    bridge.setProperty("status", {**status, "ancs_actions_preference": True})
+    QGuiApplication.processEvents()
+    assert checkbox.property("enabled") is True
+
     bridge.setProperty("status", {**status, "notification_policy": "all"})
     QGuiApplication.processEvents()
     assert checkbox.property("enabled") is True
@@ -1928,10 +1933,18 @@ def test_quickshell_ancs_actions_checkbox_is_opt_in_and_gated(
     page.setProperty("busy", {})
     QGuiApplication.processEvents()
     assert checkbox.property("enabled") is True
+    # A saved "on" can always be switched off, under any policy.
+    page.setProperty("status", {**status, "ancs_actions_preference": True})
+    QGuiApplication.processEvents()
+    assert checkbox.property("enabled") is True
+    page.setProperty("status", {**status, "notification_policy": "all"})
+    QGuiApplication.processEvents()
 
     calls = []
     page.operationRequested.connect(
-        lambda method, args: calls.append((method, args.toVariant()))
+        lambda method, args: calls.append((
+            method, args.toVariant() if hasattr(args, "toVariant") else args,
+        ))
     )
     assert QMetaObject.invokeMethod(checkbox, "toggle")
     assert QMetaObject.invokeMethod(checkbox, "clicked")

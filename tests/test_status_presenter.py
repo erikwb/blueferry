@@ -160,25 +160,29 @@ def test_gtk_action_buttons_switch_is_hidden_for_daemons_without_the_setting():
     assert page._applying_ancs_actions is False
 
 
-@pytest.mark.parametrize(("status", "sensitive"), [
-    ({"notification_policy": "all", "notification_content_shown": True}, True),
-    ({"notification_policy": "messages", "notification_content_shown": True}, False),
-    ({"notification_policy": "all", "notification_content_shown": False}, False),
+@pytest.mark.parametrize(("status", "saved", "sensitive"), [
+    ({"notification_policy": "all", "notification_content_shown": True}, True, True),
+    ({"notification_policy": "all", "notification_content_shown": True}, False, True),
+    ({"notification_policy": "messages", "notification_content_shown": True}, False, False),
+    ({"notification_policy": "all", "notification_content_shown": False}, False, False),
+    # A saved "on" can always be switched off again.
+    ({"notification_policy": "messages", "notification_content_shown": True}, True, True),
+    ({"notification_policy": "all", "notification_content_shown": False}, True, True),
 ])
 def test_gtk_action_buttons_switch_shows_the_saved_choice_and_when_it_applies(
-    status, sensitive
+    status, saved, sensitive
 ):
     from blueferry.ui.status import IPhonePage
 
     page = _gtk_actions_page()
     IPhonePage._apply_ancs_actions(
         page,
-        BackendStatus.from_dict({**status, "ancs_actions_preference": True}),
+        BackendStatus.from_dict({**status, "ancs_actions_preference": saved}),
         True,
     )
 
     page._ancs_actions_row.set_visible.assert_called_with(True)
-    page._ancs_actions_switch.set_active.assert_called_with(True)
+    page._ancs_actions_switch.set_active.assert_called_with(saved)
     page._ancs_actions_row.set_sensitive.assert_called_with(sensitive)
     # The switch is set while _applying is on, so it never echoes a save.
     assert page._applying_ancs_actions is False

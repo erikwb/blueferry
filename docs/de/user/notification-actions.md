@@ -35,7 +35,9 @@ sequenceDiagram
    ```
 
    Die Änderung gilt sofort; beim Ausschalten schließen sich Popups, die noch
-   Knöpfe zeigen. `BLUEFERRY_ANCS_ACTIONS=true` in `local.env` setzt nur den
+   Knöpfe zeigen. Zum Einschalten braucht es die beiden Einstellungen
+   oben; ausschalten lässt sich die Funktion immer, bei jeder
+   Mitteilungseinstellung. `BLUEFERRY_ANCS_ACTIONS=true` in `local.env` setzt nur den
    Anfangswert; eine in einem Client gespeicherte Wahl hat Vorrang.
 
 Optional in `~/.config/blueferry/local.env` (danach den Dienst neu starten):
@@ -92,6 +94,10 @@ an sind und warum sie gegebenenfalls nicht greifen. `GetStatus` enthält
   Aktion falsch beschriften, deshalb gibt es keinen Ersatz.
 - Knöpfe bekommen nur Mitteilungen von Apps, die die Einstellung **All iPhone
   Notifications** und die Allow-/Blocklisten passieren.
+- Ein Klick geht der Reihe nach mit den anderen Anfragen ans iPhone, weil
+  Bluetooth LE nur eine offene Anfrage erlaubt. Das iPhone antwortet meist
+  innerhalb von Millisekunden; lässt es eine frühere Anfrage unbeantwortet,
+  kann ein Klick bis zu 15 s warten, bevor er gesendet wird.
 - Clients schalten die Funktion nur ein oder aus; ausgelöst wird eine Aktion
   ausschließlich im Popup. Der Terminal-Client (TUI) hat keine
   Einstellungen; dort die CLI nehmen.

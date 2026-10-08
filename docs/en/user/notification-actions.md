@@ -34,7 +34,8 @@ sequenceDiagram
    ```
 
    The change applies immediately; turning it off closes popups that still
-   show buttons. `BLUEFERRY_ANCS_ACTIONS=true` in `local.env` only sets the
+   show buttons. Turning it on needs the two settings above; turning it off
+   is always possible, under any notification setting. `BLUEFERRY_ANCS_ACTIONS=true` in `local.env` only sets the
    initial value; a choice saved from a client wins.
 
 Optional, in `~/.config/blueferry/local.env` (restart the service after
@@ -86,6 +87,10 @@ are on, and why they are inactive if they are. `GetStatus` contains
   so there is no fallback.
 - Only notifications whose app passes the **All iPhone Notifications** policy
   and the allow/block lists get buttons.
+- A click is sent one at a time with the other requests to the iPhone,
+  because Bluetooth LE allows one outstanding request. The phone usually
+  answers within milliseconds; if it leaves an earlier request unanswered,
+  a click can wait up to 15 s before it goes out.
 - Clients only switch the feature on or off; the popup is the only place
   where an action can be triggered. The terminal client (TUI) has no
   settings; use the CLI there.

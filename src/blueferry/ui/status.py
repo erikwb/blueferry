@@ -1082,10 +1082,14 @@ class IPhonePage(Gtk.Box):
         self._ancs_actions_row.set_subtitle(subtitle)
         self._applying_ancs_actions = True
         self._ancs_actions_switch.set_active(preference is True)
+        # A saved "on" can always be switched off; switching on needs All
+        # iPhone Notifications with content shown.
         self._ancs_actions_row.set_sensitive(
             reachable
-            and status.notification_policy == "all"
-            and not content_hidden
+            and (
+                preference is True
+                or (status.notification_policy == "all" and not content_hidden)
+            )
         )
         self._applying_ancs_actions = False
 
