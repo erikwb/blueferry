@@ -491,7 +491,8 @@ class IPhonePage(Gtk.Box):
             )
         elif not compatibility.notifications_supported:
             self._bluez_row.set_subtitle(
-                _("Not required; per-app notifications are unsupported")
+                getattr(compatibility, "bluez_activation_hint", "")
+                or _("Not required; per-app notifications are unsupported")
             )
         else:
             self._bluez_row.set_subtitle(

@@ -10,6 +10,7 @@ from typing import Optional
 import typer
 
 from blueferry import bluez_setup, config
+from blueferry.cli_calls import calls_app
 from blueferry.cli_common import setup_logging as _setup_logging
 from blueferry.cli_messages import sms_list, sms_send
 from blueferry.cli_notification_actions import notification_actions_app
@@ -506,6 +507,7 @@ app.command("sms-list")(sms_list)
 app.command("sms-send")(sms_send)
 app.add_typer(proximity_app, name="proximity-lock")
 app.add_typer(notification_actions_app, name="notification-actions")
+app.add_typer(calls_app, name="calls")
 
 
 @app.command()

@@ -8,6 +8,7 @@ import dbus.exceptions
 
 from blueferry.bus import get_session_bus
 from blueferry.client_wire import (
+    decode_calls,
     decode_contact_records,
     decode_contacts,
     decode_events,
@@ -18,9 +19,11 @@ from blueferry.client_wire import (
 )
 from blueferry.errors import BlueFerryError
 from blueferry.limits import MAX_CONTACT_PAGE
-from blueferry.models import BackendStatus, EventRecord, Thread
+from blueferry.models import BackendStatus, CallsSnapshot, EventRecord, Thread
 from blueferry.protocol import (
     BUS_NAME,
+    CALL_CONTROL_TIMEOUT_SEC,
+    CALLS_IFACE,
     CLEAR_CALL_TIMEOUT_SEC,
     CONTACT_CALL_TIMEOUT_SEC,
     DELETE_CALL_TIMEOUT_SEC,
@@ -336,3 +339,55 @@ class BackendClient:
             )
         except (dbus.exceptions.DBusException, ValueError) as error:
             raise BackendError(str(error)) from error
+
+    # ---- optional phone calls (Calls1) -----------------------------------
+
+    def _calls_iface(self) -> dbus.Interface:
+        # Calls1 has no GetStatus; verify compatibility through Messages1 and
+        # reuse its owner-bound proxy so both reach the same daemon.
+        messages = self._iface(MESSAGES_IFACE)
+        proxy = getattr(messages, "proxy_object", None)
+        if self._interface_factory is None and proxy is not None:
+            return dbus.Interface(proxy, CALLS_IFACE)
+        return self._raw_iface(CALLS_IFACE)
+
+    def _calls_call(self, method: str, *args: object, timeout: float) -> object:
+        try:
+            return getattr(self._calls_iface(), method)(*args, timeout=timeout)
+        except dbus.exceptions.DBusException as error:
+            raise BackendError(error.get_dbus_message() or str(error)) from error
+
+    def set_calls_enabled(self, enabled: bool) -> dict:
+        try:
+            return decode_mapping(self._calls_call(
+                "SetCallsEnabled", bool(enabled), timeout=STATUS_CALL_TIMEOUT_SEC,
+            ))
+        except ValueError as error:
+            raise BackendError(str(error)) from error
+
+    def calls(self) -> CallsSnapshot:
+        try:
+            return decode_calls(self._calls_call("ListCalls", timeout=STATUS_CALL_TIMEOUT_SEC))
+        except ValueError as error:
+            raise BackendError(str(error)) from error
+
+    def dial(self, number: str) -> str:
+        return str(self._calls_call("Dial", number, timeout=CALL_CONTROL_TIMEOUT_SEC))
+
+    def answer_call(self, call_id: str) -> None:
+        self._calls_call("Answer", call_id, timeout=CALL_CONTROL_TIMEOUT_SEC)
+
+    def hangup_call(self, call_id: str) -> None:
+        self._calls_call("Hangup", call_id, timeout=CALL_CONTROL_TIMEOUT_SEC)
+
+    def hangup_all_calls(self) -> None:
+        self._calls_call("HangupAll", timeout=CALL_CONTROL_TIMEOUT_SEC)
+
+    def send_call_tones(self, call_id: str, tones: str) -> None:
+        self._calls_call("SendTones", call_id, tones, timeout=CALL_CONTROL_TIMEOUT_SEC)
+
+    def swap_calls(self) -> None:
+        self._calls_call("SwapCalls", timeout=CALL_CONTROL_TIMEOUT_SEC)
+
+    def hold_and_answer_call(self) -> None:
+        self._calls_call("HoldAndAnswer", timeout=CALL_CONTROL_TIMEOUT_SEC)

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import signal
+import threading
 from collections.abc import Callable
 
 import dbus
@@ -19,7 +20,14 @@ from blueferry.ancs.client import ACTION_DISCONNECTED, AncsClient
 from blueferry.backend_lifecycle import installed_release
 from blueferry.backend_operations import BackendDependencies
 from blueferry.bearer_supervisor import BearerSupervisor
-from blueferry.bluetooth_capabilities import ancs_limited_vendor, controller_hardware
+from blueferry.bluetooth_capabilities import (
+    ancs_limited_vendor,
+    bluetoothd_argv,
+    bluez_hfp_plugin_active,
+    bluez_hfp_plugin_possible,
+    bluez_stack,
+    controller_hardware,
+)
 from blueferry.bluetooth_recovery import (
     BluetoothRecovery,
     BluezRecoveryAdapter,
@@ -28,11 +36,15 @@ from blueferry.bluetooth_recovery import (
 )
 from blueferry.build_info import build_id, installed_build_sha, running_build_sha
 from blueferry.bus import get_system_bus, main_loop
+from blueferry.calls.controller import CallController
+from blueferry.calls.settings import CallsSettings
+from blueferry.commands import run_command
 from blueferry.confirmed_groups import ConfirmedGroupsStore
 from blueferry.connectivity import Connectivity
 from blueferry.contact_sync import ContactSync
 from blueferry.contacts import ContactsResolver
 from blueferry.dbus_service import MessagesService, claim_bus_name
+from blueferry.errors import BlueFerryError
 from blueferry.event_dispatcher import EventDispatcher
 from blueferry.glib_timers import schedule_periodic
 from blueferry.group_routes import GroupRoutesStore
@@ -100,6 +112,10 @@ class PairingRequiredError(RuntimeError):
     """Saved configuration exists, but BlueZ has no corresponding bond."""
 
 
+def _in_background(target: Callable[[], None], name: str) -> None:
+    threading.Thread(target=target, name=name, daemon=True).start()
+
+
 class Daemon:
     def __init__(self) -> None:
         self.sessions = SessionManager()
@@ -133,6 +149,7 @@ class Daemon:
             on_incoming_message=lambda: self._verify_setup_task(MESSAGE_NOTIFICATIONS),
             perform_ancs_action=self._perform_ancs_action,
             ancs_actions_enabled=self._ancs_actions_active,
+            on_call_action=self._notification_call_action,
         )
         self.listener: MapEventListener | None = None
         self.mns_watch: MnsWatch | None = None
@@ -141,7 +158,16 @@ class Daemon:
         self.ancs: AncsClient | None = None
         self.adapter_class = AdapterClassSupervisor(config.ADAPTER)
         self.solicitation = SolicitationSupervisor(config.ADAPTER)
-        self.phone_audio = WirePlumberPhoneAudioPolicy()
+        # The saved phone-calls opt-in decides both the call controller and
+        # whether the WirePlumber fragment keeps the hands-free roles.
+        self.calls_settings = CallsSettings()
+        self.phone_audio = WirePlumberPhoneAudioPolicy(
+            allow_calls=self.calls_settings.enabled,
+        )
+        self._phone_audio_lock = threading.Lock()
+        # None until looked up, "" when it could not be determined.
+        self._bluez_version: str | None = None
+        self._bluez_version_requested = False
         # Opt-in convenience lock. It only reads bearer state the supervisor
         # below already polls and never unlocks anything.
         self.proximity_settings = ProximityLockSettings()
@@ -167,6 +193,20 @@ class Daemon:
             on_le_state=self._observe_le_state,
             on_le_dial=self.solicitation.set_dialing,
             inbound_le_primed=self.solicitation.active,
+        )
+        # Optional HFP calls through oFono. Inert unless explicitly enabled;
+        # construction performs no I/O. oFono is only asked to page the phone
+        # (Modem.Powered) while the Classic bearer is up.
+        self.calls = CallController(
+            enabled=self.calls_settings.enabled,
+            mac=config.IPHONE_MAC,
+            adapter=config.ADAPTER,
+            resolve_contact=self.contacts.resolve,
+            on_calls_changed=self._emit_calls_changed,
+            on_state_changed=self._emit_status,
+            on_event=self.events.call,
+            phone_reachable=lambda: self.bearers.bredr_connected,
+            hfp_conflict=self._bluez_hfp_conflict,
         )
         self.contact_sync = ContactSync(
             sessions=self.sessions,
@@ -240,7 +280,9 @@ class Daemon:
                 and self.bearers.bredr_connected and self.bearers.le_state is not None
                 and self.solicitation.active()
             ),
-            busy=self.bearers.busy,
+            # A recovery power cycle drops Classic, and with it the audio of a
+            # call routed to this computer. An LE hiccup is not worth that.
+            busy=self.bearers.busy or self.calls.in_call,
         )
 
     def _pause_for_recovery(self) -> None:
@@ -279,6 +321,7 @@ class Daemon:
 
     def _bearer_status_changed(self) -> None:
         self.proximity.bearer_changed()
+        self.calls.poke()
         self._emit_status()
 
     def _proximity_presence(self) -> bool | None:
@@ -293,6 +336,82 @@ class Daemon:
             grace,
         )
         return self.proximity.snapshot()
+
+    def _set_calls_enabled(self, enabled: bool) -> dict:
+        selected = self.calls_settings.set(enabled)
+        self.calls.set_enabled(selected)
+        log.info("phone calls %s", "enabled" if selected else "disabled")
+        self._apply_phone_audio_roles()
+        self._emit_status()
+        return self.calls.snapshot()
+
+    def _apply_phone_audio_roles(self) -> None:
+        """Rewrite the WirePlumber fragment off the main loop.
+
+        Reconciling may run ``wireplumber --version`` and restart WirePlumber
+        (bounded, but seconds), which must not stall D-Bus replies. Threads
+        of quick successive toggles take the lock in any order, so each
+        writes the setting saved at that moment, not the one it was started
+        for: whichever runs last leaves the fragment matching the setting.
+        """
+        if not config.KEEP_PHONE_AUDIO_ON_PHONE:
+            return
+
+        def apply() -> None:
+            with self._phone_audio_lock:
+                self.phone_audio = WirePlumberPhoneAudioPolicy(
+                    allow_calls=self.calls_settings.enabled,
+                )
+                self.phone_audio.reconcile(enabled=True)
+
+        _in_background(apply, "blueferry-phone-audio")
+
+    def _bluez_hfp_conflict(self) -> bool:
+        """Whether bluetoothd's own HFP plugin can be what blocks oFono.
+
+        Asked by the call controller only after repeated power-up failures.
+        The version lookup runs a command, so it happens off the main loop
+        and the first answer is "no"; the controller asks again after its
+        next failed attempt.
+        """
+        if not bluez_hfp_plugin_active(bluetoothd_argv()):
+            return False
+        if self._bluez_version is None:
+            if not self._bluez_version_requested:
+                self._bluez_version_requested = True
+                _in_background(self._read_bluez_version, "blueferry-bluez-version")
+            return False
+        return bluez_hfp_plugin_possible(self._bluez_version)
+
+    def _read_bluez_version(self) -> None:
+        version = ""
+        try:
+            stack = bluez_stack(run_command=run_command, experimental=False)
+            version = str(stack.get("bluez_version") or "")
+        finally:
+            self._bluez_version = version
+
+    def _emit_calls_changed(self) -> None:
+        emit = getattr(self._dbus_service, "emit_calls_changed", None)
+        if emit is not None:
+            emit()
+
+    def _notification_call_action(self, call_id: str, action: str) -> None:
+        """Answer or decline from an incoming-call desktop notification."""
+        operation = self.calls.answer if action == "answer" else self.calls.hangup
+
+        def failed(error: Exception) -> None:
+            # The controller already logged oFono's error name; never log the
+            # raw oFono text here, it can contain the caller's number.
+            log.debug(
+                "notification %s failed: %s", action,
+                getattr(error, "dbus_suffix", type(error).__name__),
+            )
+
+        try:
+            operation(call_id, lambda _result: None, failed)
+        except BlueFerryError as error:
+            log.info("could not %s the call from its notification (%s)", action, error.dbus_suffix)
 
     def _observe_le_state(self, connected: bool | None) -> None:
         if connected is not True:
@@ -360,6 +479,8 @@ class Daemon:
                 on_storage_prepared=self._apply_storage_preparation,
                 on_storage_changed=self._on_storage_changed,
                 set_proximity_lock=self._set_proximity_lock,
+                calls=self.calls,
+                set_calls_enabled=self._set_calls_enabled,
             ),
         )
         self.events.set_dbus_service(self._dbus_service)
@@ -455,7 +576,8 @@ class Daemon:
                 "the saved iPhone is not currently paired; open a client to pair it"
             )
 
-        self.phone_audio.reconcile(enabled=config.KEEP_PHONE_AUDIO_ON_PHONE)
+        with self._phone_audio_lock:
+            self.phone_audio.reconcile(enabled=config.KEEP_PHONE_AUDIO_ON_PHONE)
 
         # Class-of-Device is controller state, not durable configuration.
         # Repair it before opening either bearer and continue supervising it
@@ -516,6 +638,9 @@ class Daemon:
         # Sinks don't need the OBEX sessions — set them up now so ANCS events
         # still reach the desktop while MAP/PBAP are degraded.
         self.events.setup()
+        # Optional calls only observe oFono; failures there never degrade
+        # messaging, and a missing oFono is retried in the background.
+        self.calls.start()
 
         # Signal subscriptions belong to the GLib thread; the blocking session
         # creation itself belongs to the serialized OBEX worker.
@@ -927,6 +1052,7 @@ class Daemon:
                 log.debug("could not remove BlueZ owner watch", exc_info=True)
         self.proximity.stop()
         self.recovery.stop()
+        self.calls.stop()
         self.read_receipts.close()
         self.adapter_class.stop()
         self.bearers.stop()

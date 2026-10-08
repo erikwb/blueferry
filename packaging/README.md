@@ -21,7 +21,7 @@ do not provide BlueFerry's Qt 6 Python/Kirigami dependencies, so those claims
 cover the backend, TUI, and native GTK client.
 
 Arch and RPM backends require BlueZ 5.86 or newer and install a vendor
-`bluetooth.service` drop-in that runs `bluetoothd -E`. Their package lifecycle
+`bluetooth.service` drop-in that runs `bluetoothd -E -P hfp`. Their package lifecycle
 reloads systemd and restarts Bluetooth only when it is already running. The DEB
 backend instead uses the common BlueZ 5.72 baseline supplied by all listed
 Debian-family targets. It supports MAP messages and PBAP contacts, assumes ANCS
@@ -43,3 +43,8 @@ provide a sufficiently recent Textual, so those backend packages contain a
 pinned private copy of Textual 8 and its pure-Python dependency closure. The
 private bundle is not installed into the system Python package directory. See
 each recipe's README for local commands.
+
+OpenRC systems are not in the CI matrix and have no package recipe. Without
+systemd the backend relies on D-Bus activation. `openrc/` holds installation
+notes and an optional user-service script for desktops whose session bus is
+managed by OpenRC.

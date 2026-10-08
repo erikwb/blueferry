@@ -12,6 +12,9 @@ from dataclasses import dataclass
 
 from blueferry.ancs.constants import (
     UINT_MAX,
+    ANCS_MESSAGE_MAX_BYTES,
+    ANCS_SUBTITLE_MAX_BYTES,
+    ANCS_TITLE_MAX_BYTES,
     USHORT_MAX,
     ActionID,
     AppAttributeID,
@@ -278,9 +281,9 @@ class DataSourceAssembler:
 def build_get_notification_attributes(
     notification_id: int,
     *,
-    title_max: int = 64,
-    subtitle_max: int = 64,
-    message_max: int = 256,
+    title_max: int = ANCS_TITLE_MAX_BYTES,
+    subtitle_max: int = ANCS_SUBTITLE_MAX_BYTES,
+    message_max: int = ANCS_MESSAGE_MAX_BYTES,
     action_label_ids: tuple[int, ...] = (),
 ) -> bytes:
     """Construct a Control Point write asking for an incoming notification's

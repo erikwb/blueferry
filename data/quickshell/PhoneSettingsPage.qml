@@ -48,7 +48,14 @@ Rectangle {
   function ancsUnavailableHint() {
     if (root.ancsLimited())
       return root.ancsExpectedDetail();
-    return "FYI: If ANCS remains unavailable, BlueZ may be retaining stale Bluetooth state. Try running sudo systemctl restart bluetooth.service, then wait for BlueFerry to reconnect. This briefly disconnects all Bluetooth devices.";
+    // shell.qml passes the bridge's bluetooth_restart_command: the init
+    // system's command, or "" when unknown. Older bridges omit it.
+    var command = root.status.bluetooth_restart_command;
+    if (typeof command !== "string")
+      command = "sudo systemctl restart bluetooth.service";
+    return "FYI: If ANCS remains unavailable, BlueZ may be retaining stale Bluetooth state. "
+      + (command === "" ? "Try restarting the Bluetooth service" : "Try running " + command)
+      + ", then wait for BlueFerry to reconnect. This briefly disconnects all Bluetooth devices.";
   }
 
   color: root.theme.windowSurface

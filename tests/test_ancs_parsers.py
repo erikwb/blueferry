@@ -11,6 +11,7 @@ from blueferry.ancs.parsers import (
     DataSourceEvent,
     NotificationAttributes,
     build_get_notification_app_identifier,
+    build_get_notification_attributes,
     parse_notification_app_identifier,
 )
 
@@ -125,7 +126,8 @@ def test_label_request_appends_ids_without_max_length() -> None:
         0x01020304, action_label_ids=(6, 7)
     )
 
-    assert plain == bytes.fromhex("00" "04030201" "00" "014000" "024000" "030001")
+    # Title and subtitle 128 bytes, message 1024 (#195), each u16-le.
+    assert plain == bytes.fromhex("00" "04030201" "00" "018000" "028000" "030004")
     assert with_labels == plain + bytes([6, 7])
 
 
@@ -233,3 +235,10 @@ def test_att_error_code_extraction(detail, code) -> None:
     from blueferry.ancs.parsers import att_error_code
 
     assert att_error_code(detail) == code
+
+
+def test_attribute_request_asks_for_long_title_subtitle_and_message() -> None:
+    # Title and subtitle up to 128 bytes, message up to 1024 bytes (u16-le).
+    assert build_get_notification_attributes(0x01020304) == bytes.fromhex(
+        "00" "04030201" "00" "018000" "028000" "030004"
+    )

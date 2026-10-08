@@ -18,6 +18,9 @@ ShellRoot {
   property string errorText: ""
   property bool phoneSettingsVisible: false
   property var backendStatus: ({})
+  // Host fact from the bridge; kept when backendStatus is reset because the
+  // daemon is unavailable. undefined means an older bridge did not send it.
+  property var bluetoothRestartCommand: undefined
   property string notificationPolicy: "messages"
   property bool contactsOnlyNotifications: false
   property string storagePolicy: "encrypted"
@@ -213,6 +216,8 @@ ShellRoot {
           return
         }
         root.backendStatus = result
+        if (typeof result.bluetooth_restart_command === "string")
+          root.bluetoothRestartCommand = result.bluetooth_restart_command
         var policy = result.notification_policy || "messages"
         root.notificationPolicy = ["all", "messages", "none"].indexOf(policy) >= 0
           ? policy : "messages"
@@ -363,6 +368,8 @@ ShellRoot {
     function onEventReceived(name, data) {
       if (name === "open-message") root.openMessage(String(data || ""))
       else if (name === "history-changed" || name === "status-changed") root.reload()
+      else if (name === "host" && data && typeof data.bluetooth_restart_command === "string")
+        root.bluetoothRestartCommand = data.bluetooth_restart_command
     }
   }
 
@@ -944,12 +951,14 @@ ShellRoot {
         }
 
         PhoneSettingsPage {
+          id: phoneSettingsPage
           ferryTheme: theme
           setup: setupController
           status: Object.assign({}, root.backendStatus, {
             notification_policy: root.notificationPolicy,
             contacts_only_notifications: root.contactsOnlyNotifications,
-            storage_policy: root.storagePolicy
+            storage_policy: root.storagePolicy,
+            bluetooth_restart_command: root.bluetoothRestartCommand
           })
           busy: ({notifications: root.notificationPolicyBusy,
                   contactsOnly: root.contactsOnlyNotificationsBusy,

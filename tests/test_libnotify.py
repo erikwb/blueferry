@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from blueferry.ancs.constants import ANCS_MESSAGE_MAX_BYTES, ANCS_SUBTITLE_MAX_BYTES
 from blueferry.sinks import libnotify as libnotify_mod
 from blueferry.sinks.libnotify import (
     _ANCS_EXPIRE_MS,
@@ -55,6 +56,7 @@ def test_ancs_popup_is_transient_and_expires(
         app_name="Settings",
         app_id="com.apple.Preferences",
         title="System message",
+        subtitle="",
         body="Something happened",
     )
 
@@ -784,3 +786,96 @@ def test_phone_removal_also_closes_its_retry_popup(monkeypatch) -> None:
 
     assert ("close", retry_nid) in server.calls
     assert sink._ancs_retries == {}
+
+
+def test_ancs_popup_mirrors_the_iphone_title_subtitle_and_message(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "blueferry.sinks.libnotify.config.SHOW_NOTIFICATION_CONTENT", True
+    )
+    sink = LibnotifySink.__new__(LibnotifySink)
+    sink._notification_policy = lambda: "all"
+    sink._notif = _FakeNotifications()
+    event = SimpleNamespace(
+        app_name="GitHub",
+        app_id="com.github.stormbreaker.prod",
+        title="Run succeeded",
+        subtitle="octo-org/octo-repo",
+        body="CI - v0.1.0 (bd753fb)",
+    )
+
+    sink.handle_ancs(event)
+
+    [(_app, _replaces, _icon, title, body, *_rest)] = sink._notif.calls
+    assert title == "\U0001f4f1 GitHub \u00b7 Run succeeded"
+    assert body == "octo-org/octo-repo\nCI - v0.1.0 (bd753fb)"
+
+
+def test_ancs_popup_hides_title_and_subtitle_without_content(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "blueferry.sinks.libnotify.config.SHOW_NOTIFICATION_CONTENT", False
+    )
+    sink = LibnotifySink.__new__(LibnotifySink)
+    sink._notification_policy = lambda: "all"
+    sink._notif = _FakeNotifications()
+    event = SimpleNamespace(
+        app_name="GitHub",
+        app_id="com.github.stormbreaker.prod",
+        title="Run succeeded",
+        subtitle="octo-org/octo-repo",
+        body="CI - v0.1.0 (bd753fb)",
+    )
+
+    sink.handle_ancs(event)
+
+    [(_app, _replaces, _icon, title, body, *_rest)] = sink._notif.calls
+    assert title == "\U0001f4f1 GitHub"
+    assert body == "New iPhone notification"
+
+
+def _ancs_popup(monkeypatch, **fields):
+    monkeypatch.setattr(
+        "blueferry.sinks.libnotify.config.SHOW_NOTIFICATION_CONTENT", True
+    )
+    sink = LibnotifySink.__new__(LibnotifySink)
+    sink._notification_policy = lambda: "all"
+    sink._notif = _FakeNotifications()
+    event = SimpleNamespace(**{
+        "app_name": "GitHub",
+        "app_id": "com.github.stormbreaker.prod",
+        "title": "",
+        "subtitle": "",
+        "body": "",
+        **fields,
+    })
+    sink.handle_ancs(event)
+    [(_app, _replaces, _icon, title, body, *_rest)] = sink._notif.calls
+    return title, body
+
+
+@pytest.mark.parametrize("headline", ["github", " GitHub ", "GITHUB", "", "   "])
+def test_ancs_popup_skips_a_title_that_only_repeats_the_app_or_is_blank(
+    monkeypatch, headline,
+) -> None:
+    title, _body = _ancs_popup(monkeypatch, title=headline, body="hello")
+    assert title == "\U0001f4f1 GitHub"
+
+
+def test_ancs_popup_trims_title_and_drops_blank_lines(monkeypatch) -> None:
+    title, body = _ancs_popup(
+        monkeypatch, title="  Run succeeded ", subtitle="  ", body=" CI \n",
+    )
+    assert title == "\U0001f4f1 GitHub · Run succeeded"
+    assert body == "CI"
+
+
+def test_ancs_popup_shows_the_full_requested_subtitle_and_message(
+    monkeypatch,
+) -> None:
+    subtitle = "s" * ANCS_SUBTITLE_MAX_BYTES
+    message = "m" * ANCS_MESSAGE_MAX_BYTES
+    _title, body = _ancs_popup(
+        monkeypatch, title="t", subtitle=subtitle, body=message,
+    )
+    assert body == f"{subtitle}\n{message}"
