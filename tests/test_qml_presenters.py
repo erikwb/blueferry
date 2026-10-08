@@ -602,6 +602,7 @@ def test_qt_thread_preview_stays_inside_one_line(qml_engine, settings_window) ->
     window, bridge = settings_window
     bridge.setProperty("threads", [{
         "key": "one", "name": "Friend", "is_group": False, "starred": False,
+        "recipients": ["+15550001111"],
         "messages": [{
             "outgoing": False,
             "body": (
