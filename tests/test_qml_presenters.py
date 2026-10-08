@@ -2278,6 +2278,33 @@ def test_quickshell_away_lock_checkbox_is_opt_in_and_keeps_the_grace_period(
     close()
 
 
+def test_quickshell_phone_calls_checkbox_is_opt_in(qml_engine, quickshell_setup):
+    base = {"notification_policy": "all", "contacts_only_notifications": False}
+    page, calls, close = _quickshell_settings_page(qml_engine, quickshell_setup, base)
+    checkbox = page.findChild(QObject, "callsEnabledCheckBox")
+    assert checkbox is not None
+    # Daemons that do not report calls_enabled do not support the setting.
+    assert checkbox.property("visible") is False
+
+    page.setProperty("status", {**base, "calls_enabled": False})
+    QGuiApplication.processEvents()
+    assert checkbox.property("visible") is True
+    assert checkbox.property("checked") is False
+    assert checkbox.property("enabled") is True
+    page.setProperty("busy", {"calls": True})
+    QGuiApplication.processEvents()
+    assert checkbox.property("enabled") is False
+    page.setProperty("busy", {})
+    page.setProperty("status", {**base, "calls_enabled": True})
+    QGuiApplication.processEvents()
+    assert checkbox.property("checked") is True
+
+    assert QMetaObject.invokeMethod(checkbox, "toggle")
+    assert QMetaObject.invokeMethod(checkbox, "clicked")
+    assert calls == [("set_calls_enabled", {"enabled": False})]
+    close()
+
+
 def test_quickshell_saved_choice_is_not_undone_by_a_late_status(qml_engine) -> None:
     component = _component(qml_engine, "data/quickshell/SavedChoice.qml")
     choice = component.create()

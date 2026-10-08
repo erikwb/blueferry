@@ -449,9 +449,9 @@ Requirements:
   `BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE=false`, BlueFerry manages no roles and
   your own `bluez5.roles` must include `hfp_hf`.
 
-Switch it on with **Enable phone calls through this computer** in the Qt
-client's iPhone settings, or with `blueferry calls enable` (`disable` turns it
-off again). The choice is saved in `settings.json` and applied without a
+Switch it on with **Enable phone calls through this computer** in the iPhone
+settings of the Qt, GTK or Quickshell client, or with `blueferry calls enable`
+(`disable` turns it off again). The choice is saved in `settings.json` and applied without a
 restart. `BLUEFERRY_CALLS_ENABLED=true` in `~/.config/blueferry/local.env`
 still works as the initial value; a saved choice wins.
 

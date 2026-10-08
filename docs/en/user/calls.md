@@ -79,8 +79,9 @@ Audio itself is routed by PipeWire. BlueFerry only controls the call.
    missing and the hands-free link fails three times in a row, BlueFerry shows
    the state `bluez_conflict` and tries again only every five minutes, or
    when the phone reconnects.
-5. Tick **Enable phone calls through this computer** in the Qt client's
-   iPhone settings, or run `blueferry calls enable`. The choice is saved and
+5. Turn on **Enable phone calls through this computer** in the iPhone
+   settings of the Qt, GTK or Quickshell client, or run
+   `blueferry calls enable`. The choice is saved and
    applies at once. `BLUEFERRY_CALLS_ENABLED=true` in
    `~/.config/blueferry/local.env` still works as the initial value; a saved
    choice wins. The checkbox alone doesn't make calls work: oFono must be

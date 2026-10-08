@@ -444,6 +444,33 @@ Rectangle {
           wrapMode: Text.Wrap
           text: "Locks after " + (root.status.proximity_lock_grace_sec || 60) + " seconds away. A convenience, not a security feature: Bluetooth presence can be spoofed, and BlueFerry never unlocks the desktop."
         }
+        // Shown only when the status carries calls_enabled, as in the Qt client.
+        FerrySectionLabel {
+          ferryTheme: root.theme
+          visible: root.status.calls_enabled !== undefined
+          text: "Phone calls"
+        }
+        FerryCheckBox {
+          objectName: "callsEnabledCheckBox"
+          ferryTheme: root.theme
+          visible: root.status.calls_enabled !== undefined
+          text: "Enable phone calls through this computer"
+          checked: root.status.calls_enabled === true
+          enabled: root.setup.configured && !root.busy.calls
+          Accessible.description: "Experimental. Needs oFono and extra setup."
+          onClicked: {
+            root.operationRequested("set_calls_enabled", {
+              enabled: checked
+            });
+          }
+        }
+        FerryLabel {
+          ferryTheme: root.theme
+          visible: root.status.calls_enabled !== undefined
+          Layout.fillWidth: true
+          wrapMode: Text.Wrap
+          text: "Experimental. While this is on, the iPhone's hands-free link stays connected to this computer, so calls can ring and be answered here and their audio plays here. Music stays on the iPhone. Working calls also need oFono set as the hands-free backend and BlueZ's own HFP plugin disabled; see \"Phone calls\" in the BlueFerry documentation. Make emergency calls on the iPhone itself."
+        }
         FerrySectionLabel {
           ferryTheme: root.theme
           text: "Local data"
