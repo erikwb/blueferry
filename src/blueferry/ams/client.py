@@ -258,6 +258,11 @@ class AmsNotifySessions:
         self._alive.add(path)
         self._advance()
 
+    def stopped(self, path: str) -> None:
+        """A client's own StopNotify succeeded: that session is gone."""
+        self._alive.discard(path)
+        self._advance()
+
     def start_failed(self, token: int, error: Exception) -> None:
         path = self._starting.pop(token, None)
         if path is None:
@@ -1149,6 +1154,9 @@ class AmsClient:
 
             def stopped() -> None:
                 self._owned_notify_paths.discard(path)
+                # Reported even after a reset, so a later opt-out does not
+                # stop a session that is already gone.
+                self._sessions.stopped(path)
                 if generation != self._generation:
                     return  # reset meanwhile; the next subscription starts it
                 # Tracked like every StartNotify, so a runtime opt-out that
@@ -1262,7 +1270,9 @@ class AmsClient:
         if missing:
             log.info("AMS did not resend %d media values; reading them", len(missing))
         for entity, attribute in missing:
-            self._fetch_full_value(entity, attribute)
+            # Up to seven reads per registration; an absent value (0xA2) is
+            # normal (no album for a podcast), so one summary line suffices.
+            self._fetch_full_value(entity, attribute, quiet=True)
         return False
 
     def _deliver(self, update: EntityUpdate) -> None:
@@ -1271,7 +1281,7 @@ class AmsClient:
         except Exception:
             log.exception("AMS update callback failed")
 
-    def _fetch_full_value(self, entity: int, attribute: int) -> None:
+    def _fetch_full_value(self, entity: int, attribute: int, *, quiet: bool = False) -> None:
         """Read the complete value of a truncated attribute exactly once."""
         key = (entity, attribute)
         path = self._paths.get(ENTITY_ATTRIBUTE_CHAR)
@@ -1323,7 +1333,8 @@ class AmsClient:
 
         def failed(error: Exception) -> None:
             finished()
-            log.info(
+            log.log(
+                logging.DEBUG if quiet else logging.INFO,
                 "AMS full attribute read failed (entity=%d attribute=%d): %s",
                 entity, attribute, _error_name(error),
             )

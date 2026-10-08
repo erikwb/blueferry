@@ -1486,3 +1486,98 @@ def test_no_reregistration_while_subscribing_or_without_a_link(harness) -> None:
     client.observe_bearer_state(False)
     timers.run_all()
     assert bus.pending() == []
+
+
+def _start_command_list_toggle(client, bus, timers) -> None:
+    _subscribe(client, bus, timers)
+    bus.notify(EU, bytes([2, 2, 0]) + b"Episode")
+    toggle = [s for s, c in timers.pending.items() if c.__name__ == "_command_list_missing"]
+    timers.pending.pop(toggle[0])()
+
+
+def test_a_runtime_opt_out_waits_for_an_in_flight_ccc_toggle(harness) -> None:
+    """Review: an opt-out between StopNotify and StartNotify of the toggle
+    left the Remote Command CCC enabled with media control off."""
+    client, bus, timers, *_ = harness
+    _start_command_list_toggle(client, bus, timers)
+    bus.take("StopNotify", RC).succeed()
+    start = bus.take("StartNotify", RC)  # in flight
+    released = []
+
+    client.stop(release=True, on_released=lambda: released.append(True))
+    # The session tracker holds the release until the StartNotify answers.
+    assert bus.pending() == []
+    assert released == []
+    start.succeed()
+    # The CCC the toggle just enabled is released with the others.
+    assert sorted(bus.pending()) == sorted([("StopNotify", RC), ("StopNotify", EU)])
+    bus.take("StopNotify", RC).succeed()
+    assert released == []
+    bus.take("StopNotify", EU).succeed()
+    assert released == [True]
+
+
+def test_an_opt_out_during_the_toggles_stopnotify_never_enables(harness) -> None:
+    client, bus, timers, *_ = harness
+    _start_command_list_toggle(client, bus, timers)
+    stop = bus.take("StopNotify", RC)
+    released = []
+    client.stop(release=True, on_released=lambda: released.append(True))
+    for call in [c for c in bus.calls if c.method == "StopNotify"]:
+        bus.take("StopNotify", call.path).succeed()
+    stop.succeed()
+    assert "StartNotify" not in [call.method for call in bus.calls]
+    assert released == [True]
+
+
+def test_a_toggle_ending_after_a_link_reset_stays_owned(harness) -> None:
+    client, bus, timers, *_ = harness
+    _start_command_list_toggle(client, bus, timers)
+    bus.take("StopNotify", RC).succeed()
+    start = bus.take("StartNotify", RC)
+    client.observe_bearer_state(False)
+    start.succeed()
+    # BlueZ restores it at link-up; the next subscription asks Notifying.
+    client.observe_bearer_state(True)
+    timers.run_all()
+    assert ("Get", RC) in bus.pending()
+
+
+def test_refresh_reads_log_absent_values_only_at_debug(harness, caplog) -> None:
+    client, bus, timers, *_ = harness
+    client.observe_bearer_state(True)
+    client.start()
+    bus.take("GetManagedObjects").succeed(_objects())
+    timers.run_all()
+    bus.take("StartNotify", RC).succeed()
+    bus.take("StartNotify", EU).succeed()
+    for _entity in EntityID:
+        bus.take("WriteValue", EU).succeed()
+    refresh = [c for c in timers.pending.values() if c.__name__ == "_refresh_missing_attributes"]
+    caplog.set_level("INFO", logger="blueferry.ams.client")
+    refresh[0]()
+    for _ in range(7):
+        bus.take("WriteValue", EA).succeed()
+        bus.take("ReadValue", EA).fail(message="Application error 0xA2")
+    messages = [r.getMessage() for r in caplog.records]
+    assert messages == ["AMS did not resend 7 media values; reading them"]
+
+
+def test_a_toggle_stopped_before_a_reset_owes_no_release(harness) -> None:
+    """Review: the toggle's StopNotify was not reported to the session
+    tracker, so a reset between its StopNotify and StartNotify left the
+    session marked and a later opt-out stopped it a second time."""
+    client, bus, timers, *_ = harness
+    _start_command_list_toggle(client, bus, timers)
+    stop = bus.take("StopNotify", RC)
+    client.observe_bearer_state(False)
+    stop.succeed()
+    assert bus.pending() == []
+    released = []
+    client.stop(release=True, on_released=lambda: released.append(True))
+    client.observe_bearer_state(True)
+    timers.run_all()  # the release waits for a settled link
+    # Only the Entity Update session is still held.
+    assert bus.pending() == [("StopNotify", EU)]
+    bus.take("StopNotify", EU).succeed()
+    assert released == [True]
