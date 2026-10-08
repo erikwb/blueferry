@@ -16,6 +16,7 @@ pytest.importorskip("PySide6")
 from PySide6.QtCore import (
     Q_ARG,
     Property,
+    QEvent,
     QMetaObject,
     QObject,
     QPointF,
@@ -131,6 +132,28 @@ def test_quickshell_onboarding_state_derives_ready_stage(qml_engine) -> None:
 
     assert presenter is not None
     assert presenter.property("stage") == "ready"
+    presenter.deleteLater()
+
+
+def test_quickshell_reports_a_suspect_le_bond(qml_engine) -> None:
+    component = _component(qml_engine, "data/quickshell/OnboardingState.qml")
+    presenter = component.createWithInitialProperties({
+        "notificationsSupported": True,
+        "bluezActive": True,
+        "configured": True,
+        "backendStatus": {"daemon": True, "le_bond_suspect": True},
+    })
+    assert presenter is not None
+    qml_engine.globalObject().setProperty(
+        "testOnboarding", qml_engine.newQObject(presenter)
+    )
+    assert _evaluate(qml_engine, "testOnboarding.leBondSuspect()") is True
+    presenter.setProperty("backendStatus", {"daemon": True, "le_bond_suspect": "yes"})
+    assert _evaluate(qml_engine, "testOnboarding.leBondSuspect()") is False
+    presenter.setProperty("backendStatus", {"daemon": True})
+    assert _evaluate(qml_engine, "testOnboarding.leBondSuspect()") is False
+    shell = (ROOT / "data/quickshell/shell.qml").read_text()
+    assert "onboarding.leBondSuspect()" in shell
     presenter.deleteLater()
 
 
@@ -510,6 +533,43 @@ def test_message_link_activation_rechecks_the_scheme(qml_engine, client):
         QGuiApplication.processEvents()
 
 
+def test_quickshell_phone_status_shows_only_known_battery_and_signal(qml_engine) -> None:
+    component = _component(qml_engine, "data/quickshell/QuickshellPhoneStatus.qml")
+    theme = _BubbleTheme()
+
+    hidden = component.createWithInitialProperties({
+        "ferryTheme": theme,
+        "status": {"calls_enabled": True, "phone_battery_level": None,
+                   "phone_network_name": "Sunrise"},
+    })
+    assert hidden is not None
+    assert hidden.property("visible") is False
+    assert hidden.property("text") == ""
+
+    shown = component.createWithInitialProperties({
+        "ferryTheme": theme,
+        "status": {"phone_battery_level": 60, "phone_signal_strength": 80,
+                   "phone_network_name": "<b>Sunrise</b>"},
+    })
+    assert shown.property("visible") is True
+    # The operator name is deliberately not part of the compact header.
+    assert shown.property("text") == "BATTERY 60 % · SIGNAL 80 %"
+    stepped = component.createWithInitialProperties({
+        "ferryTheme": theme,
+        "status": {"phone_battery_level": 40, "phone_battery_source": "hfp"},
+    })
+    assert stepped.property("text") == "BATTERY ~40 %"
+    stepped.deleteLater()
+
+    malformed = component.createWithInitialProperties({
+        "ferryTheme": theme,
+        "status": {"phone_battery_level": "60", "phone_signal_strength": 400},
+    })
+    assert malformed.property("visible") is False
+    for item in (hidden, shown, malformed):
+        item.deleteLater()
+
+
 def test_quickshell_thread_preview_stays_inside_one_line(qml_engine) -> None:
     component = _component(
         qml_engine,
@@ -538,6 +598,41 @@ def test_quickshell_thread_preview_stays_inside_one_line(qml_engine) -> None:
     preview.deleteLater()
 
 
+def test_qt_thread_preview_stays_inside_one_line(qml_engine, settings_window) -> None:
+    window, bridge = settings_window
+    bridge.setProperty("threads", [{
+        "key": "one", "name": "Friend", "is_group": False, "starred": False,
+        "messages": [{
+            "outgoing": False,
+            "body": (
+                "A long opening line that cannot fit in the sidebar at all, ever\n\n"
+                "and a second paragraph that must not escape the thread row"
+            ),
+        }],
+    }])
+    QGuiApplication.processEvents()
+
+    # Delegates are not QObject children of the window; look them up in QML.
+    qml_engine.globalObject().setProperty(
+        "threadList", qml_engine.newQObject(_settings_object(window, "threadList"))
+    )
+    preview = _evaluate(qml_engine, """(function() {
+        function find(item) {
+            if (item.objectName === "threadPreview") return item;
+            for (const child of item.children) {
+                const found = find(child);
+                if (found) return found;
+            }
+            return null;
+        }
+        const label = find(threadList.itemAtIndex(0));
+        return [label.text, label.lineCount, label.truncated];
+    })()""")
+
+    assert "\n" not in preview[0]
+    assert preview[1:] == [1, True]
+
+
 def test_qt_onboarding_summary_treats_realtek_as_expected_success(qml_engine) -> None:
     component = _component(
         qml_engine, "src/blueferry/qt/qml/OnboardingSummary.qml"
@@ -558,6 +653,38 @@ def test_qt_onboarding_summary_treats_realtek_as_expected_success(qml_engine) ->
     assert "This Realtek adapter does not support iPhone system notifications" in text
     assert "System notifications are unavailable" not in text
     summary.deleteLater()
+
+
+def test_qt_onboarding_summary_uses_the_supplied_bluetooth_restart_command(
+    qml_engine,
+) -> None:
+    component = _component(
+        qml_engine, "src/blueferry/qt/qml/OnboardingSummary.qml"
+    )
+    status = {"verified_iphone_setup": []}
+    compatibility = {"notifications_supported": False}
+    default = component.createWithInitialProperties({
+        "stage": "ready-without-ancs",
+        "compatibility": compatibility,
+        "status": status,
+    })
+    openrc = component.createWithInitialProperties({
+        "stage": "ready-without-ancs",
+        "compatibility": compatibility,
+        "status": status,
+        "bluetoothRestartCommand": "sudo rc-service bluetooth restart",
+    })
+
+    assert default is not None and openrc is not None
+    qml_engine.globalObject().setProperty("defaultSummary", qml_engine.newQObject(default))
+    qml_engine.globalObject().setProperty("openrcSummary", qml_engine.newQObject(openrc))
+    default_hint = _evaluate(qml_engine, "defaultSummary.ancsUnavailableHint()")
+    openrc_hint = _evaluate(qml_engine, "openrcSummary.ancsUnavailableHint()")
+    assert "sudo systemctl restart bluetooth.service" in default_hint
+    assert "sudo rc-service bluetooth restart" in openrc_hint
+    assert "systemctl" not in openrc_hint
+    default.deleteLater()
+    openrc.deleteLater()
 
 
 def test_qt_onboarding_summary_renders_stage_from_properties(qml_engine) -> None:
@@ -617,10 +744,13 @@ def settings_window(qml_engine):
         import QtQuick
         QtObject {
             property var calls: []
+            property var phoneCalls: []
+            property string callsState: "disabled"
             property var status: ({})
             property var threads: []
             property var devices: []
             property var contactResults: []
+            property var nowPlaying: ({})
             property var compatibility: ({})
             property var onboardingCompatibility: compatibility
             property bool compatibilityLoaded: false
@@ -634,6 +764,7 @@ def settings_window(qml_engine):
             property string errorText: ""
             property string pairingIssueReport: ""
             property string version: "test"
+            property string bluetoothRestartCommand: "sudo rc-service bluetooth restart"
             signal pairingConfirmationRequested(string passkey)
             signal messageOpenRequested(string handle)
             signal messageSendSucceeded(string recipient, string body)
@@ -656,9 +787,20 @@ def settings_window(qml_engine):
             function loadNotificationOpenMap() { record("loadNotificationOpenMap", []); }
             function setNotificationOpenTarget(bundle, target) { record("setNotificationOpenTarget", [bundle, target]); }
             function removeNotificationOpenTarget(bundle) { record("removeNotificationOpenTarget", [bundle]); }
+            function setMediaControl(enabled) { record("setMediaControl", [enabled]); }
+            function setAncsNotificationActions(enabled) { record("setAncsNotificationActions", [enabled]); }
+            function setCallsEnabled(enabled) { record("setCallsEnabled", [enabled]); }
+            function setPhoneBatteryWarning(enabled) { record("setPhoneBatteryWarning", [enabled]); }
+            function setMprisPlayer(enabled) { record("setMprisPlayer", [enabled]); }
             function forgetDevice(mac) { record("forgetDevice", [mac]); }
             function activateBluetooth() { record("activateBluetooth", []); }
             function filePairingIssue() { record("filePairingIssue", []); }
+            function sendMediaCommand(command) { record("sendMediaCommand", [command]); }
+            function refreshCalls() { record("refreshCalls", []); }
+            function dialCall(number) { record("dialCall", [number]); }
+            function answerCall(callId) { record("answerCall", [callId]); }
+            function hangupCall(callId) { record("hangupCall", [callId]); }
+            function hangupAllCalls() { record("hangupAllCalls", []); }
         }
     ''', QUrl())
     assert not component.isError(), [error.toString() for error in component.errors()]
@@ -796,6 +938,149 @@ def test_qt_storage_label_reports_unavailability_after_failed_reads(settings_win
     assert labels == [label, "Unavailable", label]
 
 
+def test_qt_warns_about_a_suspect_le_bond_only_when_the_backend_reports_it(
+    qml_engine, settings_window,
+):
+    from blueferry.models import BackendStatus
+
+    window, bridge = settings_window
+    message = _settings_object(window, "leBondSuspectMessage")
+    assert "forget" in message.property("text")
+    assert _evaluate(qml_engine, "testWindow.leBondSuspect()") is False
+
+    bridge.setProperty(
+        "status",
+        BackendStatus.from_dict({"daemon": True, "le_bond_suspect": True}).to_dict(),
+    )
+    assert _evaluate(qml_engine, "testWindow.leBondSuspect()") is True
+
+    bridge.setProperty(
+        "status",
+        BackendStatus.from_dict({"daemon": True, "le_bond_suspect": "true"}).to_dict(),
+    )
+    assert _evaluate(qml_engine, "testWindow.leBondSuspect()") is False
+
+
+def test_optional_calls_dialog_lists_calls_and_dials_through_the_bridge(
+    qml_engine, settings_window,
+):
+    window, bridge = settings_window
+    # Calls off (the default): the dialog is never instantiated.
+    assert window.findChild(QObject, "callsDialog") is None
+    bridge.setProperty("status", {"calls_enabled": True})
+    QGuiApplication.processEvents()
+    dialog = _settings_object(window, "callsDialog")
+    assert dialog.property("callsReady") is False
+    bridge.setProperty("callsState", "ready")
+    bridge.setProperty("phoneCalls", [
+        {"call_id": "voicecall01", "state": "incoming", "ringing": True, "display_peer": "Alice"},
+    ])
+    assert QMetaObject.invokeMethod(dialog, "open")
+    # onOpened runs after the popup's enter transition.
+    for _ in range(100):
+        if _evaluate(qml_engine, "testBridge.calls.length"):
+            break
+        QTest.qWait(20)
+
+    assert dialog.property("callsReady") is True
+    assert _evaluate(qml_engine, "testBridge.calls.map(call => call.method)") == ["refreshCalls"]
+    _settings_object(window, "callsNumberField").setProperty("text", "+41 79 123 45 67")
+    qml_engine.globalObject().setProperty("callsDialog", qml_engine.newQObject(dialog))
+    # "Hang Up All" needs more than one call; "Dial" needs a number.
+    assert _evaluate(qml_engine, "callsDialog.customFooterActions[0].enabled") is False
+    _evaluate(qml_engine, "callsDialog.customFooterActions[1].trigger()")
+    # Dial only asks; the call is placed from the confirmation.
+    assert _evaluate(qml_engine, "testBridge.calls.length") == 1
+    confirm = _settings_object(window, "callsDialConfirm")
+    assert confirm.property("number") == "+41 79 123 45 67"
+    assert "+41 79 123 45 67" in confirm.property("subtitle")
+    qml_engine.globalObject().setProperty("callsDialConfirm", qml_engine.newQObject(confirm))
+    _evaluate(qml_engine, "callsDialConfirm.customFooterActions[0].trigger()")
+    assert _evaluate(qml_engine, "testBridge.calls[1]") == {
+        "method": "dialCall", "args": ["+41 79 123 45 67"],
+    }
+    assert QMetaObject.invokeMethod(dialog, "close")
+    QGuiApplication.processEvents()
+
+
+def test_optional_phone_status_indicator_appears_only_with_known_values(
+    qml_engine, settings_window,
+):
+    window, bridge = settings_window
+    # Default status (calls off, or oFono without values): nothing is loaded.
+    assert window.findChild(QObject, "phoneStatusIndicator") is None
+    bridge.setProperty("status", {
+        "calls_enabled": True,
+        "phone_battery_level": None,
+        "phone_signal_strength": None,
+    })
+    QGuiApplication.processEvents()
+    assert window.findChild(QObject, "phoneStatusIndicator") is None
+
+    bridge.setProperty("status", {
+        "calls_enabled": True,
+        "phone_battery_level": 40, "phone_battery_source": "hfp",
+        "phone_signal_strength": 80,
+        "phone_network_name": "Sunrise",
+        "phone_network_status": "roaming",
+    })
+    QGuiApplication.processEvents()
+    indicator = _settings_object(window, "phoneStatusIndicator")
+    assert _settings_object(window, "phoneBatteryLabel").property("text") == "40 %"
+    assert indicator.property("batteryIconName") == "battery-040"
+    assert indicator.property("signalIconName") == "network-mobile-80"
+    assert indicator.property("summary") == (
+        "iPhone battery about 40 % · Signal 80 % · Sunrise (roaming)"
+    )
+
+    # The operator name is remote text: the tooltip must not render HTML.
+    bridge.setProperty("status", {
+        "calls_enabled": True,
+        "phone_battery_level": 40, "phone_battery_source": "hfp",
+        "phone_network_name": "<b>Sun</b>",
+        "phone_network_status": "registered",
+    })
+    QGuiApplication.processEvents()
+    tool_tip = indicator.findChild(QObject, "phoneStatusToolTip")
+    assert tool_tip is not None
+    content = tool_tip.property("contentItem")
+    label = content.findChild(QObject, "phoneStatusToolTipLabel")
+    assert label is not None
+    qml_engine.globalObject().setProperty("phoneToolTipLabel", qml_engine.newQObject(label))
+    # Qt::PlainText is 0 (AutoText, the style default, is 2).
+    assert _evaluate(qml_engine, "phoneToolTipLabel.textFormat") == int(Qt.TextFormat.PlainText.value)
+    # Text.Wrap is 4, like the style's own tooltip label.
+    assert _evaluate(qml_engine, "phoneToolTipLabel.wrapMode") == 4
+    assert label.property("text") == "iPhone battery about 40 % · <b>Sun</b>"
+
+    # A long name wraps inside the style's 14-grid-unit width cap.
+    bridge.setProperty("status", {
+        "calls_enabled": True,
+        "phone_battery_level": 40, "phone_battery_source": "hfp",
+        "phone_network_name": "Very Long Operator Name " * 3,
+        "phone_network_status": "registered",
+    })
+    QGuiApplication.processEvents()
+    cap = label.property("maxTextWidth")
+    assert cap > 0
+    assert content.property("implicitWidth") <= cap
+    assert label.property("contentWidth") <= cap
+    assert label.property("lineCount") > 1
+
+    # Signal only: the battery parts hide, the indicator stays.
+    bridge.setProperty("status", {"calls_enabled": True, "phone_signal_strength": 20})
+    QGuiApplication.processEvents()
+    assert _settings_object(window, "phoneBatteryLabel").property("visible") is False
+    assert indicator.property("batteryIconName") == ""
+    assert indicator.property("summary") == "Signal 20 %"
+
+    bridge.setProperty("status", {})
+    QGuiApplication.processEvents()
+    # The Loader releases its item with deleteLater().
+    QGuiApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert window.findChild(QObject, "phoneStatusIndicator") is None
+
+
 def test_phone_settings_first_run_and_reopening_keep_the_page_alive(qml_engine, settings_window):
     window, bridge = settings_window
     assert window.property("iphoneSettingsPage") is None
@@ -870,6 +1155,103 @@ def test_click_rule_editor_appears_only_for_supporting_daemons(qml_engine, setti
     QGuiApplication.processEvents()
     assert loader.property("active") is True
     assert _evaluate(qml_engine, loads) == 1
+
+
+def test_media_control_setting_appears_only_for_supporting_daemons(qml_engine, settings_window):
+    window, bridge = settings_window
+    bridge.setProperty("setupLoaded", True)
+    QGuiApplication.processEvents()
+    loader = _settings_object(window, "mediaControlLoader")
+    bridge.setProperty("status", {"daemon": True})
+    assert loader.property("active") is False
+
+    bridge.setProperty("status", {
+        "daemon": True, "media_control_enabled": False, "media_control_available": False,
+    })
+    QGuiApplication.processEvents()
+    assert loader.property("active") is True
+    checkbox = _settings_object(window, "mediaControlCheckBox")
+    assert checkbox.property("checked") is False
+    assert _settings_object(window, "mediaControlStateLabel").property("text") == "Off"
+
+    assert QMetaObject.invokeMethod(checkbox, "toggle")
+    assert QMetaObject.invokeMethod(checkbox, "clicked")
+    assert _evaluate(
+        qml_engine, "testBridge.calls.filter(c => c.method === 'setMediaControl')"
+    ) == [{"method": "setMediaControl", "args": [True]}]
+
+    bridge.setProperty("status", {
+        "daemon": True, "media_control_enabled": True, "media_control_available": True,
+    })
+    assert "Connected" in _settings_object(window, "mediaControlStateLabel").property("text")
+
+
+def test_ancs_actions_checkbox_is_opt_in_and_gated(qml_engine, settings_window):
+    window, bridge = settings_window
+    bridge.setProperty("setupLoaded", True)
+    bridge.setProperty("status", {"daemon": True, "notification_policy": "all"})
+    QGuiApplication.processEvents()
+    checkbox = _settings_object(window, "ancsActionsCheckBox")
+    # Daemons without the preference key do not support the setting.
+    assert checkbox.property("visible") is False
+
+    status = {
+        "daemon": True,
+        "notification_policy": "messages",
+        "ancs_actions_preference": False,
+        "notification_content_shown": True,
+    }
+    bridge.setProperty("status", status)
+    QGuiApplication.processEvents()
+    assert checkbox.property("visible") is True
+    assert checkbox.property("checked") is False
+    # Actions only apply to "All iPhone Notifications".
+    assert checkbox.property("enabled") is False
+
+    bridge.setProperty("status", {**status, "notification_policy": "all",
+                                  "notification_content_shown": False})
+    QGuiApplication.processEvents()
+    assert checkbox.property("enabled") is False
+
+    # A saved "on" can always be switched off, under any policy.
+    bridge.setProperty("status", {**status, "ancs_actions_preference": True})
+    QGuiApplication.processEvents()
+    assert checkbox.property("enabled") is True
+
+    bridge.setProperty("status", {**status, "notification_policy": "all"})
+    QGuiApplication.processEvents()
+    assert checkbox.property("enabled") is True
+    assert QMetaObject.invokeMethod(checkbox, "toggle")
+    assert QMetaObject.invokeMethod(checkbox, "clicked")
+    assert _evaluate(
+        qml_engine, "testBridge.calls.filter(c => c.method === 'setAncsNotificationActions')"
+    ) == [{"method": "setAncsNotificationActions", "args": [True]}]
+
+
+def test_mpris_checkbox_needs_media_control_and_a_supporting_daemon(qml_engine, settings_window):
+    window, bridge = settings_window
+    bridge.setProperty("setupLoaded", True)
+    bridge.setProperty("status", {"daemon": True, "media_control_enabled": False})
+    QGuiApplication.processEvents()
+    mpris = _settings_object(window, "mprisPlayerCheckBox")
+    assert mpris.property("visible") is False
+
+    bridge.setProperty("status", {
+        "daemon": True, "media_control_enabled": False, "media_mpris_enabled": False,
+    })
+    assert mpris.property("visible") is True
+    assert mpris.property("enabled") is False
+    assert "every application" in _settings_object(window, "mprisPlayerWarning").property("text")
+
+    bridge.setProperty("status", {
+        "daemon": True, "media_control_enabled": True, "media_mpris_enabled": False,
+    })
+    assert mpris.property("enabled") is True
+    assert QMetaObject.invokeMethod(mpris, "toggle")
+    assert QMetaObject.invokeMethod(mpris, "clicked")
+    assert _evaluate(
+        qml_engine, "testBridge.calls.filter(c => c.method === 'setMprisPlayer')"
+    ) == [{"method": "setMprisPlayer", "args": [True]}]
 
 
 def test_proximity_grace_edit_survives_a_status_refresh_before_saving(qml_engine):
@@ -1303,6 +1685,40 @@ def quickshell_setup(qml_engine):
     yield controller
     controller.deleteLater()
     QGuiApplication.processEvents()
+
+
+@pytest.mark.parametrize(
+    ("status", "expected", "absent"),
+    [
+        ({}, "Try running sudo systemctl restart bluetooth.service,", "rc-service"),
+        (
+            {"bluetooth_restart_command": "sudo rc-service bluetooth restart"},
+            "Try running sudo rc-service bluetooth restart,",
+            "systemctl",
+        ),
+        (
+            {"bluetooth_restart_command": ""},
+            "Try restarting the Bluetooth service,",
+            "systemctl",
+        ),
+    ],
+)
+def test_quickshell_ancs_hint_uses_the_bridge_restart_command(
+    qml_engine, quickshell_setup, status, expected, absent,
+):
+    theme = _component(qml_engine, "data/quickshell/ThemePalette.qml").create()
+    component = _component(qml_engine, "data/quickshell/PhoneSettingsPage.qml")
+    page = component.createWithInitialProperties({
+        "ferryTheme": theme, "setup": quickshell_setup, "status": status,
+    })
+    assert page is not None
+    try:
+        qml_engine.globalObject().setProperty("hintPage", qml_engine.newQObject(page))
+        hint = _evaluate(qml_engine, "hintPage.ancsUnavailableHint()")
+        assert expected in hint
+        assert absent not in hint
+    finally:
+        page.deleteLater()
 
 
 @pytest.mark.parametrize("explicit", [False, True])
@@ -1764,9 +2180,279 @@ def test_quickshell_storage_cancel_keeps_the_status_binding(qml_engine, quickshe
     theme.deleteLater()
 
 
+def test_quickshell_ancs_actions_checkbox_is_opt_in_and_gated(
+    qml_engine, quickshell_setup,
+):
+    from PySide6.QtQuick import QQuickWindow
+
+    theme_component = _component(qml_engine, "data/quickshell/ThemePalette.qml")
+    theme = theme_component.create()
+    component = _component(qml_engine, "data/quickshell/PhoneSettingsPage.qml")
+    page = component.createWithInitialProperties({
+        "ferryTheme": theme, "setup": quickshell_setup, "status": {
+            "notification_policy": "all", "contacts_only_notifications": False,
+        }, "width": 640, "height": 1400,
+    })
+    assert page is not None
+    quickshell_setup.setProperty("configured", True)
+    window = QQuickWindow()
+    window.resize(640, 1400)
+    page.setParentItem(window.contentItem())
+    window.show()
+    QGuiApplication.processEvents()
+    checkbox = page.findChild(QObject, "ancsActionsCheckBox")
+    assert checkbox is not None
+    # Daemons without the preference key do not support the setting.
+    assert checkbox.property("visible") is False
+
+    status = {
+        "notification_policy": "messages",
+        "contacts_only_notifications": False,
+        "ancs_actions_preference": False,
+        "notification_content_shown": True,
+    }
+    page.setProperty("status", status)
+    QGuiApplication.processEvents()
+    assert checkbox.property("visible") is True
+    assert checkbox.property("checked") is False
+    # Actions only apply to "All iPhone notifications".
+    assert checkbox.property("enabled") is False
+    page.setProperty("status", {**status, "notification_policy": "all",
+                                "notification_content_shown": False})
+    QGuiApplication.processEvents()
+    assert checkbox.property("enabled") is False
+    page.setProperty("busy", {"ancsActions": True})
+    page.setProperty("status", {**status, "notification_policy": "all"})
+    QGuiApplication.processEvents()
+    assert checkbox.property("enabled") is False
+    page.setProperty("busy", {})
+    QGuiApplication.processEvents()
+    assert checkbox.property("enabled") is True
+    # A saved "on" can always be switched off, under any policy.
+    page.setProperty("status", {**status, "ancs_actions_preference": True})
+    QGuiApplication.processEvents()
+    assert checkbox.property("enabled") is True
+    page.setProperty("status", {**status, "notification_policy": "all"})
+    QGuiApplication.processEvents()
+
+    calls = []
+    page.operationRequested.connect(
+        lambda method, args: calls.append((
+            method, args.toVariant() if hasattr(args, "toVariant") else args,
+        ))
+    )
+    assert QMetaObject.invokeMethod(checkbox, "toggle")
+    assert QMetaObject.invokeMethod(checkbox, "clicked")
+    assert calls == [("set_ancs_notification_actions", {"enabled": True})]
+    window.close()
+    page.deleteLater()
+    theme.deleteLater()
+
+
+def _quickshell_settings_page(qml_engine, quickshell_setup, status):
+    from PySide6.QtQuick import QQuickWindow
+
+    theme_component = _component(qml_engine, "data/quickshell/ThemePalette.qml")
+    theme = theme_component.create()
+    component = _component(qml_engine, "data/quickshell/PhoneSettingsPage.qml")
+    page = component.createWithInitialProperties({
+        "ferryTheme": theme, "setup": quickshell_setup, "status": status,
+        "width": 640, "height": 1400,
+    })
+    assert page is not None
+    quickshell_setup.setProperty("configured", True)
+    window = QQuickWindow()
+    window.resize(640, 1400)
+    page.setParentItem(window.contentItem())
+    window.show()
+    QGuiApplication.processEvents()
+    calls = []
+    page.operationRequested.connect(
+        lambda method, args: calls.append((
+            method, args.toVariant() if hasattr(args, "toVariant") else args,
+        ))
+    )
+
+    def close(_components=(theme_component, component)):
+        # The default argument keeps the components, which own the page
+        # and the theme, alive until the test is done.
+        window.close()
+        page.deleteLater()
+        theme.deleteLater()
+
+    return page, calls, close
+
+
+def test_quickshell_away_lock_checkbox_is_opt_in_and_keeps_the_grace_period(
+    qml_engine, quickshell_setup,
+):
+    base = {"notification_policy": "all", "contacts_only_notifications": False}
+    page, calls, close = _quickshell_settings_page(qml_engine, quickshell_setup, base)
+    checkbox = page.findChild(QObject, "proximityLockCheckBox")
+    assert checkbox is not None
+    # Daemons without the away-lock keys do not support the setting.
+    assert checkbox.property("visible") is False
+
+    status = {
+        **base, "proximity_lock": "disabled",
+        "proximity_lock_enabled": False, "proximity_lock_grace_sec": 120,
+    }
+    page.setProperty("status", status)
+    QGuiApplication.processEvents()
+    assert checkbox.property("visible") is True
+    assert checkbox.property("checked") is False
+    assert checkbox.property("enabled") is True
+    page.setProperty("busy", {"proximityLock": True})
+    QGuiApplication.processEvents()
+    assert checkbox.property("enabled") is False
+    page.setProperty("busy", {})
+    page.setProperty("status", {**status, "proximity_lock_enabled": True})
+    QGuiApplication.processEvents()
+    assert checkbox.property("checked") is True
+    page.setProperty("status", status)
+    QGuiApplication.processEvents()
+
+    assert QMetaObject.invokeMethod(checkbox, "toggle")
+    assert QMetaObject.invokeMethod(checkbox, "clicked")
+    assert calls == [("set_proximity_lock", {"enabled": True, "grace_seconds": 120})]
+    close()
+
+
+def test_quickshell_phone_calls_checkbox_is_opt_in(qml_engine, quickshell_setup):
+    base = {"notification_policy": "all", "contacts_only_notifications": False}
+    page, calls, close = _quickshell_settings_page(qml_engine, quickshell_setup, base)
+    checkbox = page.findChild(QObject, "callsEnabledCheckBox")
+    assert checkbox is not None
+    # Daemons that do not report calls_enabled do not support the setting.
+    assert checkbox.property("visible") is False
+
+    page.setProperty("status", {**base, "calls_enabled": False})
+    QGuiApplication.processEvents()
+    assert checkbox.property("visible") is True
+    assert checkbox.property("checked") is False
+    assert checkbox.property("enabled") is True
+    page.setProperty("busy", {"calls": True})
+    QGuiApplication.processEvents()
+    assert checkbox.property("enabled") is False
+    page.setProperty("busy", {})
+    page.setProperty("status", {**base, "calls_enabled": True})
+    QGuiApplication.processEvents()
+    assert checkbox.property("checked") is True
+
+    assert QMetaObject.invokeMethod(checkbox, "toggle")
+    assert QMetaObject.invokeMethod(checkbox, "clicked")
+    assert calls == [("set_calls_enabled", {"enabled": False})]
+    close()
+
+
+def test_quickshell_saved_choice_is_not_undone_by_a_late_status(qml_engine) -> None:
+    component = _component(qml_engine, "data/quickshell/SavedChoice.qml")
+    choice = component.create()
+    assert choice is not None
+    qml_engine.globalObject().setProperty("choice", qml_engine.newQObject(choice))
+
+    def state(script):
+        return _evaluate(qml_engine, script + "; [choice.value, choice.busy]")
+
+    assert state("choice.reported(true)") == [True, False]
+    # While the save runs, a status still reporting the old value is ignored.
+    assert state("choice.request(false); choice.reported(true)") == [False, True]
+    # A status requested before the save finished is skipped once.
+    assert state("choice.saved(false, true); choice.reported(true)") == [False, False]
+    assert state("choice.reported(true)") == [True, False]
+    # No status in flight: the next report is shown as it is.
+    assert state("choice.request(false); choice.saved(false, false)") == [False, False]
+    assert state("choice.reported(true)") == [True, False]
+    # A failed save returns to what the daemon last reported.
+    assert state("choice.request(false); choice.failed(true)") == [True, False]
+    choice.deleteLater()
+
+
+@pytest.mark.private_dbus
+def test_quickshell_keeps_the_restart_command_when_the_daemon_is_unavailable(
+    tmp_path, quickshell_environment,
+):
+    """The bridge's host fact must outlive status resets in the real shell."""
+    import shutil
+    import subprocess
+
+    executable = shutil.which("quickshell")
+    if executable is None:
+        pytest.skip("Quickshell is not installed")
+    for source in (ROOT / "data/quickshell").glob("*.qml"):
+        shutil.copyfile(source, tmp_path / source.name)
+    shutil.copyfile(
+        ROOT / "src/blueferry/qt/qml/ConversationLogic.qml",
+        tmp_path / "ConversationLogic.qml",
+    )
+    (tmp_path / "Theme.qml").write_text("import QtQuick\nThemePalette {}\n")
+    (tmp_path / "SetupTransport.qml").write_text('''import QtQuick
+Item {
+  signal lineReceived(int id, string kind, string line)
+  signal finished(int id, string kind, int code, string output, string diagnostic)
+  function execute(id, kind, command, interactive) {}
+  function cancel(id) {}
+  function write(id, text) {}
+}
+''')
+    (tmp_path / "BackendBridge.qml").write_text('''import QtQuick
+Item {
+  property bool desktopClient: false
+  property int nextId: 1
+  signal response(string method, int requestId, var result)
+  signal failure(string method, int requestId, string message)
+  signal eventReceived(string name, var data)
+  function request(method, args) { return nextId++; }
+  function requestLatest(method, args) {}
+  function cancelLatest(method) {}
+}
+''')
+    config = tmp_path / "shell.qml"
+    source = config.read_text()
+    probe = r'''
+  Timer {
+    interval: 200; running: true
+    onTriggered: {
+      function check(value, message) { if (!value) throw new Error(message); }
+      function hint() { return phoneSettingsPage.ancsUnavailableHint(); }
+      try {
+        check(hint().indexOf("systemctl") >= 0, "older bridges lost the systemd text");
+        backendBridge.eventReceived("host",
+          {bluetooth_restart_command: "sudo rc-service bluetooth restart"});
+        check(hint().indexOf("sudo rc-service bluetooth restart") >= 0, "host event ignored");
+        root.markStatusUnavailable("BlueFerry backend is unavailable");
+        check(hint().indexOf("sudo rc-service bluetooth restart") >= 0,
+          "unavailable daemon reset the restart command");
+        setupController.historyReset();
+        check(hint().indexOf("sudo rc-service bluetooth restart") >= 0,
+          "history reset cleared the restart command");
+        backendBridge.response("status", 1, {daemon: true, bluetooth_restart_command: ""});
+        check(hint().indexOf("Try restarting the Bluetooth service") >= 0,
+          "status reply did not update the restart command");
+        backendBridge.response("status", 2, {daemon: true});
+        check(hint().indexOf("Try restarting the Bluetooth service") >= 0,
+          "status without the field cleared the restart command");
+        console.log("BLUEFERRY_RESTART_HINT_OK");
+      } catch (error) {
+        console.error(error);
+      }
+      Qt.quit();
+    }
+  }
+'''
+    config.write_text(source[:source.rfind("}")] + probe + "}\n")
+    result = subprocess.run(
+        [executable, "--path", str(config)], env=quickshell_environment,
+        capture_output=True, text=True, timeout=10, check=False,
+    )
+    log = result.stdout + result.stderr
+    assert result.returncode == 0 and "BLUEFERRY_RESTART_HINT_OK" in log, log
+    assert "ReferenceError" not in log and "TypeError" not in log, log
+
+
+@pytest.mark.parametrize("late_after_refresh", [False, True])
 @pytest.mark.private_dbus
 @pytest.mark.parametrize("late_read", ["success", "failure"])
-@pytest.mark.parametrize("late_after_refresh", [False, True])
 def test_quickshell_replies_use_the_saved_members_without_a_checkbox(
     tmp_path, quickshell_environment, late_read, late_after_refresh,
 ):
@@ -2047,3 +2733,152 @@ def test_qt_click_rule_editor_adds_lists_and_removes_rules(qml_engine) -> None:
         assert bridge.calls[-1] == ("remove", "net.whatsapp.WhatsApp")
     finally:
         editor.deleteLater()
+
+
+def test_now_playing_bar_is_absent_until_media_is_available(
+    qml_engine, settings_window,
+) -> None:
+    window, _bridge = settings_window
+    assert window.findChild(QObject, "nowPlayingBar") is None
+
+    _evaluate(qml_engine, """testBridge.nowPlaying = {
+        enabled: true, available: true, player: {state: "playing"},
+        track: {title: "<b>Title</b>", artist: "Artist"},
+        supported_commands: ["next", "toggle"]
+    }""")
+    QGuiApplication.processEvents()
+    assert window.findChild(QObject, "nowPlayingBar") is not None
+    label = window.findChild(QObject, "nowPlayingSummary")
+    # Remote text is shown verbatim, never as markup.
+    assert label.property("text") == "<b>Title</b> — Artist"
+    qml_engine.globalObject().setProperty("nowPlayingLabel", qml_engine.newQObject(label))
+    assert _evaluate(qml_engine, "nowPlayingLabel.textFormat") == 0  # Text.PlainText
+    assert not window.findChild(QObject, "nowPlayingPrevious").property("enabled")
+    assert window.findChild(QObject, "nowPlayingBar").property("stateIcon") == (
+        "media-playback-start"
+    )
+    _evaluate(qml_engine, """testBridge.nowPlaying = Object.assign(
+        {}, testBridge.nowPlaying, {player: {state: "paused"}})""")
+    QGuiApplication.processEvents()
+    assert window.findChild(QObject, "nowPlayingBar").property("stateIcon") == (
+        "media-playback-pause"
+    )
+    _evaluate(qml_engine, """testBridge.nowPlaying = Object.assign(
+        {}, testBridge.nowPlaying, {player: {state: "playing"}})""")
+    QGuiApplication.processEvents()
+
+    _click_control(window, window.findChild(QObject, "nowPlayingNext"))
+    _click_control(window, window.findChild(QObject, "nowPlayingToggle"))
+    assert _evaluate(
+        qml_engine,
+        "testBridge.calls.filter(c => c.method === 'sendMediaCommand').map(c => c.args[0])",
+    ) == ["next", "toggle"]
+
+    _evaluate(qml_engine, "testBridge.nowPlaying = {enabled: true, available: false}")
+    from PySide6.QtCore import QCoreApplication, QEvent
+
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+    QGuiApplication.processEvents()
+    assert window.findChild(QObject, "nowPlayingBar") is None
+
+
+def test_phone_calls_opt_in_appears_only_for_supporting_daemons(qml_engine, settings_window):
+    window, bridge = settings_window
+    bridge.setProperty("setupLoaded", True)
+    QGuiApplication.processEvents()
+    loader = _settings_object(window, "phoneCallsLoader")
+    bridge.setProperty("status", {"daemon": True})
+    assert loader.property("active") is False
+
+    bridge.setProperty("status", {"daemon": True, "calls_enabled": False})
+    QGuiApplication.processEvents()
+    assert loader.property("active") is True
+    notice = _settings_object(window, "phoneCallsNotice").property("text")
+    assert "audio plays here" in notice
+    # Ticking the box is not the whole setup; the caption points at the guide.
+    assert "oFono set as the hands-free backend" in notice
+    assert "BlueZ's own HFP plugin disabled" in notice
+    assert "documentation" in notice
+    checkbox = _settings_object(window, "phoneCallsCheckBox")
+    assert checkbox.property("checked") is False
+
+    assert QMetaObject.invokeMethod(checkbox, "toggle")
+    assert QMetaObject.invokeMethod(checkbox, "clicked")
+    assert _evaluate(
+        qml_engine, "testBridge.calls.filter(c => c.method === 'setCallsEnabled')"
+    ) == [{"method": "setCallsEnabled", "args": [True]}]
+
+    bridge.setProperty("status", {"daemon": True, "calls_enabled": True})
+    QGuiApplication.processEvents()
+    assert checkbox.property("checked") is True
+
+
+def test_battery_warning_checkbox_follows_the_daemon(qml_engine, settings_window):
+    window, bridge = settings_window
+    bridge.setProperty("setupLoaded", True)
+    QGuiApplication.processEvents()
+    checkbox = _settings_object(window, "phoneBatteryWarningCheckBox")
+    bridge.setProperty("status", {"daemon": True})
+    QGuiApplication.processEvents()
+    assert checkbox.property("visible") is False
+
+    bridge.setProperty("status", {"daemon": True, "phone_battery_warning": False})
+    QGuiApplication.processEvents()
+    assert checkbox.property("checked") is False
+    assert QMetaObject.invokeMethod(checkbox, "toggle")
+    assert QMetaObject.invokeMethod(checkbox, "clicked")
+    assert _evaluate(
+        qml_engine, "testBridge.calls.filter(c => c.method === 'setPhoneBatteryWarning')"
+    ) == [{"method": "setPhoneBatteryWarning", "args": [True]}]
+
+
+def test_quickshell_media_checkboxes_are_opt_in_and_the_player_needs_media_control(
+    qml_engine, quickshell_setup,
+):
+    base = {"notification_policy": "all", "contacts_only_notifications": False}
+    page, calls, close = _quickshell_settings_page(qml_engine, quickshell_setup, base)
+    media = page.findChild(QObject, "mediaControlCheckBox")
+    mpris = page.findChild(QObject, "mprisPlayerCheckBox")
+    warning = page.findChild(QObject, "mprisPlayerWarning")
+    assert media is not None and mpris is not None and warning is not None
+    # Daemons that do not report the keys do not support the settings.
+    assert media.property("visible") is False
+    assert mpris.property("visible") is False
+    assert warning.property("visible") is False
+
+    # A daemon with media control but without the MPRIS player.
+    page.setProperty("status", {**base, "media_control_enabled": False})
+    QGuiApplication.processEvents()
+    assert media.property("visible") is True
+    assert media.property("checked") is False
+    assert media.property("enabled") is True
+    assert mpris.property("visible") is False
+
+    status = {**base, "media_control_enabled": False, "media_mpris_enabled": False}
+    page.setProperty("status", status)
+    QGuiApplication.processEvents()
+    assert mpris.property("visible") is True
+    assert mpris.property("enabled") is False
+    assert "every application" in warning.property("text")
+
+    page.setProperty("busy", {"mediaControl": True})
+    QGuiApplication.processEvents()
+    assert media.property("enabled") is False
+    page.setProperty("busy", {})
+    assert QMetaObject.invokeMethod(media, "toggle")
+    assert QMetaObject.invokeMethod(media, "clicked")
+    assert calls == [("set_media_control", {"enabled": True})]
+
+    page.setProperty("status", {**status, "media_control_enabled": True})
+    QGuiApplication.processEvents()
+    assert media.property("checked") is True
+    assert mpris.property("enabled") is True
+    assert mpris.property("checked") is False
+    page.setProperty("busy", {"mprisPlayer": True})
+    QGuiApplication.processEvents()
+    assert mpris.property("enabled") is False
+    page.setProperty("busy", {})
+    assert QMetaObject.invokeMethod(mpris, "toggle")
+    assert QMetaObject.invokeMethod(mpris, "clicked")
+    assert calls[-1] == ("set_mpris_player", {"enabled": True})
+    close()

@@ -15,7 +15,7 @@ from blueferry.limits import (
     MAX_CONTACT_ADDRESSES_PER_CARD,
     MAX_CONTACT_NAME_CHARS,
 )
-from blueferry.models import BackendStatus, EventRecord, Thread
+from blueferry.models import BackendStatus, CallsSnapshot, EventRecord, Thread
 
 T = TypeVar("T")
 
@@ -48,6 +48,10 @@ def decode_open_map(value: object) -> list[dict[str, str]]:
 
 def decode_status(value: object) -> BackendStatus:
     return BackendStatus.from_dict(decode_mapping(value))
+
+
+def decode_calls(value: object) -> CallsSnapshot:
+    return CallsSnapshot.from_dict(decode_mapping(value))
 
 
 def decode_threads(value: object) -> list[Thread]:

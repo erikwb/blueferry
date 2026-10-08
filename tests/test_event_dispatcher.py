@@ -385,3 +385,60 @@ def test_dispatcher_stop_removes_owner_watch_and_retry(monkeypatch):
 
     assert bus.match.removed is True
     assert cancelled == [9]
+
+
+def test_ancs_action_callback_and_removal_reach_the_notification_sink(monkeypatch):
+    monkeypatch.setattr(event_dispatcher, "SqliteSink", _SqliteSink)
+    bus = _Bus(owner=True)
+    received = {}
+    closed = []
+
+    class _ActionSink(_NotificationSink):
+        def close_ancs_notification(self, uid):
+            closed.append(uid)
+
+        def close_all_ancs_notifications(self):
+            closed.append("all")
+
+    def create_sink(**kwargs):
+        received.update(kwargs)
+        return _ActionSink()
+
+    def perform(_uid, _positive, _done):
+        return True
+
+    dispatcher = EventDispatcher(
+        object(),
+        defer_mark_read=lambda _path: None,
+        perform_ancs_action=perform,
+        notification_sink_factory=create_sink,
+        session_bus=bus,
+    )
+    dispatcher.setup()
+
+    dispatcher.ancs_removed(42)
+    dispatcher.ancs_actions_reset()
+
+    assert received["on_ancs_action"] is perform
+    assert closed == [42, "all"]
+
+
+def test_ancs_actions_default_to_disabled_in_the_sink_factory(monkeypatch):
+    monkeypatch.setattr(event_dispatcher, "SqliteSink", _SqliteSink)
+    received = {}
+
+    def create_sink(**kwargs):
+        received.update(kwargs)
+        return _NotificationSink()
+
+    dispatcher = EventDispatcher(
+        object(),
+        defer_mark_read=lambda _path: None,
+        notification_sink_factory=create_sink,
+        session_bus=_Bus(owner=True),
+    )
+    dispatcher.setup()
+    dispatcher.ancs_removed(42)  # sinks without the hooks are skipped
+    dispatcher.ancs_actions_reset()
+
+    assert received["on_ancs_action"] is None

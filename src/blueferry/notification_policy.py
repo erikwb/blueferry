@@ -36,6 +36,12 @@ class NotificationPolicyStore:
         self._value = self._load_policy(payload)
         self._contacts_only = payload.get("contacts_only_notifications") is True
         self._open_map = normalize_open_map(payload.get(OPEN_MAP_SETTINGS_KEY))
+        saved_actions = payload.get("ancs_notification_actions")
+        # BLUEFERRY_ANCS_ACTIONS is only the initial value; a saved choice
+        # from a client wins.
+        self._ancs_actions = (
+            saved_actions if isinstance(saved_actions, bool) else config.ANCS_ACTIONS
+        )
 
     @property
     def value(self) -> str:
@@ -52,6 +58,11 @@ class NotificationPolicyStore:
 
     def open_target(self, bundle_id: str) -> OpenTarget | None:
         return resolve_open_target(self._open_map, bundle_id)
+
+    @property
+    def ancs_actions(self) -> bool:
+        """Saved opt-in for iPhone notification action buttons."""
+        return self._ancs_actions
 
     def _load(self) -> dict:
         try:
@@ -116,3 +127,11 @@ class NotificationPolicyStore:
         self._settings.update(**{OPEN_MAP_SETTINGS_KEY: mapping})
         self._open_map = mapping
         return True
+
+    def set_ancs_actions(self, enabled: bool) -> bool:
+        if not isinstance(enabled, bool):
+            raise ValueError("notification actions must be a boolean")
+
+        self._settings.update(ancs_notification_actions=enabled)
+        self._ancs_actions = enabled
+        return enabled

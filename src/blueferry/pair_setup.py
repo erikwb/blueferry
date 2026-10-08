@@ -20,11 +20,17 @@ from blueferry import config, pairing_diagnostics, quirks_report
 from blueferry.bearer_supervisor import preferred_bearer_unavailable
 from blueferry.bluetooth_devices import PairedDevice
 from blueferry.bus import get_session_bus, get_system_bus
+from blueferry.calls.settings import calls_enabled
 from blueferry.commands import run_command
 from blueferry.errors import CommandError, PairingError
-from blueferry.pairing_policy import PairingPolicy, resolve_pairing_policy
+from blueferry.pairing_policy import (
+    PairingPolicy,
+    notifications_active,
+    resolve_pairing_policy,
+)
 from blueferry.pairing_types import PairingAttempt, PairingOutcome, PairingTransports
 from blueferry.private_files import atomic_write_private_text, read_private_text
+from blueferry.service_manager import backend_service_manager
 from blueferry.setup_verification import clear_setup_verification
 from blueferry.wireplumber_policy import WirePlumberPhoneAudioPolicy
 
@@ -94,6 +100,14 @@ _TEARDOWN_TRACE_MAX_BYTES = 16 * 1024
 _TEARDOWN_TRACE_MAX_AGE_SECONDS = 60 * 60
 
 
+LE_DISABLED_REASON = "le_disabled"
+# bluetoothd switches LE on asynchronously once a controller index appears
+# (read_info_complete), so a single probe can race a bluetoothd restart or an
+# adapter replug. Probe again before stopping a pairing for LE.
+_LE_REPROBE_DELAYS_SECONDS = (1.0, 2.0)
+_sleep = time.sleep
+
+
 def configuration_status() -> dict:
     """Return first-run state without activating the user daemon."""
     values = config.read_local_env(LOCAL_ENV_PATH)
@@ -146,7 +160,7 @@ def bluez_support_status(*, proc_root: Path = Path("/proc")) -> dict:
 
 
 def activate_bluez_support() -> dict:
-    """Restart Bluetooth via systemd so the packaged drop-in takes effect."""
+    """Restart Bluetooth so BlueZ's experimental bearer API becomes active."""
     return capabilities.activate_bluez_support(
         status=bluez_support_status,
         run_command=run_command,
@@ -746,9 +760,11 @@ def _apply_phone_audio_policy(attempt: PairingAttempt) -> bool:
     if not config.KEEP_PHONE_AUDIO_ON_PHONE:
         quirks_report.mark(attempt, "phone_audio_policy_skipped")
         return False
-    changed = WirePlumberPhoneAudioPolicy(wait_for_restart=True).reconcile(
-        enabled=True
-    )
+    # Follow the saved calls opt-in, not just its local.env seed, so pairing
+    # writes the same fragment the daemon will keep.
+    changed = WirePlumberPhoneAudioPolicy(
+        wait_for_restart=True, allow_calls=calls_enabled(),
+    ).reconcile(enabled=True)
     quirks_report.mark(attempt, "phone_audio_policy_ready", changed=changed)
     return changed
 
@@ -840,22 +856,19 @@ def _wait_for_daemon_transports(
 
 
 def _restart_user_service() -> None:
-    for command in (
-        ["/usr/bin/systemctl", "--user", "daemon-reload"],
-        ["/usr/bin/systemctl", "--user", "restart", "blueferry.service"],
-    ):
-        try:
-            run_command(command, timeout=30)
-        except CommandError as error:
-            raise PairingError(f"Could not run {' '.join(command)}: {error}") from error
+    services = backend_service_manager(run_command)
+    try:
+        services.reload(timeout=30)
+        services.control("restart", "blueferry", timeout=30)
+    except CommandError as error:
+        if not error.argv:
+            raise PairingError(f"Could not restart BlueFerry: {error}") from error
+        raise PairingError(f"Could not run {' '.join(error.argv)}: {error}") from error
 
 
 def _stop_user_service() -> None:
     try:
-        run_command(
-            ["/usr/bin/systemctl", "--user", "stop", "blueferry.service"],
-            timeout=30,
-        )
+        backend_service_manager(run_command).control("stop", "blueferry", timeout=30)
     except CommandError as error:
         raise PairingError(f"Could not stop BlueFerry: {error}") from error
 
@@ -951,12 +964,16 @@ _COMPATIBILITY_REPORT_KEYS = (
     "powered",
     "classic",
     "low_energy",
+    "le_enabled",
+    "le_disabled",
+    "controller_mode",
     "advertising",
     "secure_pairing",
     "secure_conn",
     "hardware_supported",
     "messages_supported",
     "notifications_supported",
+    "notifications_active",
     "bearer_api_supported",
     "bearer_api_active",
     "supported_settings",
@@ -1152,6 +1169,30 @@ def _pairing_outcome(
     return pairing_diagnostics.pairing_outcome(attempt, transports, error)
 
 
+def _reprobe_disabled_le(
+    adapter: str, compatibility: dict, attempt: PairingAttempt,
+) -> dict:
+    """Re-read the controller a few times while LE looks switched off.
+
+    Pairing setup runs in the setup client's worker, never on the daemon's
+    GLib main loop, so the short sleeps block nobody else.
+    """
+    if not compatibility.get("le_disabled"):
+        return compatibility
+    probes = 1
+    for delay in _LE_REPROBE_DELAYS_SECONDS:
+        _sleep(delay)
+        compatibility = bluetooth_compatibility(adapter)
+        probes += 1
+        if not compatibility.get("le_disabled"):
+            break
+    recovered = not compatibility.get("le_disabled")
+    quirks_report.mark(attempt, "le_reprobe", probes=probes, recovered=recovered)
+    if recovered:
+        log.info("Bluetooth LE on %s came up after %d probes", adapter, probes)
+    return compatibility
+
+
 def _prepare_pairing(
     mac: str,
     *,
@@ -1185,6 +1226,10 @@ def _prepare_pairing(
     _record_bluez_state(attempt, device.device_path, "device_loaded", force=True)
 
     compatibility = bluetooth_compatibility(selected_adapter)
+    if not compatibility_mode:
+        # Forced compatibility mode continues without LE either way, so only
+        # full mode waits for bluetoothd to switch LE on.
+        compatibility = _reprobe_disabled_le(selected_adapter, compatibility, attempt)
     attempt["controller"] = _controller_snapshot(selected_adapter, compatibility)
     quirks_report.mark(attempt, "compatibility_ready")
     if compatibility.get("pairing_ready") is False:
@@ -1211,7 +1256,20 @@ def _prepare_pairing(
         "enabled" if policy.solicitation_enabled else "unavailable",
         policy.reason,
     )
-    if policy.ancs_enabled and not compatibility["bearer_api_active"]:
+    if compatibility.get("le_disabled"):
+        quirks_report.mark(attempt, "le_disabled")
+        issue = str(compatibility.get("issue") or "") or capabilities.le_disabled_issue(
+            str(compatibility.get("controller_mode") or ""),
+        )
+        if policy.ancs_enabled:
+            # Stop before any bond or advertisement: the ANCS advertisement
+            # cannot activate while the controller runs without LE.
+            raise PairingError(issue, reason=LE_DISABLED_REASON)
+        log.warning(
+            "Bluetooth LE is switched off on %s; continuing with MAP/PBAP only",
+            selected_adapter,
+        )
+    if policy.ancs_enabled and not notifications_active(compatibility):
         raise PairingError(
             "Activate Bluetooth support before pairing or re-pairing the iPhone"
         )

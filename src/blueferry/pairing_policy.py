@@ -8,6 +8,17 @@ from enum import Enum
 from typing import Any
 
 
+def notifications_active(compatibility: Mapping[str, Any]) -> bool:
+    """Whether notifications need no Bluetooth activation step.
+
+    Backends that predate ``notifications_active`` report only the bearer
+    API, which was then the sole notification transport.
+    """
+    return bool(compatibility.get(
+        "notifications_active", compatibility.get("bearer_api_active", False),
+    ))
+
+
 class PairingMode(str, Enum):
     """End-to-end behavior selected for one iPhone bond."""
 
@@ -51,9 +62,14 @@ def resolve_pairing_policy(
     it as the signal that exposes MAP/PBAP permissions.
     """
     ancs_capable = bool(compatibility.get("notifications_supported", False))
-    solicitation_enabled = ancs_capable or bool(
-        compatibility.get("low_energy", False)
-        and compatibility.get("advertising", False)
+    # A controller with LE switched off cannot register the advertisement
+    # at all (#192); do not attempt it in compatibility mode.
+    solicitation_enabled = bool(compatibility.get("le_enabled", True)) and (
+        ancs_capable
+        or bool(
+            compatibility.get("low_energy", False)
+            and compatibility.get("advertising", False)
+        )
     )
     compatibility_mode = force_compatibility or not ancs_capable
     if force_compatibility:

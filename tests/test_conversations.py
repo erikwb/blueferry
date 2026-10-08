@@ -253,6 +253,7 @@ def test_map_refusal_reveals_prominent_message_banner() -> None:
     banner = Banner()
     page = SimpleNamespace(
         _map_refused_banner=banner,
+        _le_bond_banner=SimpleNamespace(set_revealed=lambda _value: None),
         _state=ConversationState(select_first=False),
         _update_backend_error_banner=lambda: None,
     )
@@ -267,6 +268,37 @@ def test_map_refusal_reveals_prominent_message_banner() -> None:
 
     assert result is False
     assert banner.revealed is True
+
+
+def test_suspect_le_bond_reveals_its_banner_and_failures_hide_it() -> None:
+    class Banner:
+        revealed = False
+
+        def set_revealed(self, value):
+            self.revealed = value
+
+    map_banner, bond_banner = Banner(), Banner()
+    page = SimpleNamespace(
+        _map_refused_banner=map_banner,
+        _le_bond_banner=bond_banner,
+        _state=ConversationState(select_first=False),
+        _update_backend_error_banner=lambda: None,
+    )
+
+    conversations.ConversationsPage._apply_status(
+        page, BackendStatus.from_dict({"daemon": True, "le_bond_suspect": True})
+    )
+    assert bond_banner.revealed is True
+    assert map_banner.revealed is False
+
+    conversations.ConversationsPage._apply_status(
+        page, BackendStatus.from_dict({"daemon": True, "le_bond_suspect": "yes"})
+    )
+    assert bond_banner.revealed is False
+
+    bond_banner.revealed = True
+    conversations.ConversationsPage._status_failed(page, "gone")
+    assert bond_banner.revealed is False
 
 
 def test_backend_error_remains_visible_until_both_refreshes_recover():

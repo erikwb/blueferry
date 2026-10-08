@@ -1,0 +1,81 @@
+#!/sbin/openrc-run
+# BlueFerry user service for OpenRC 0.62 or newer.
+#
+# Optional. Use it only if the desktop session's bus is $XDG_RUNTIME_DIR/bus
+# (for example the OpenRC user "dbus" service). On dbus-run-session or
+# dbus-launch desktops, rely on D-Bus activation instead: a user service would
+# run on a second bus while activation starts another daemon on the desktop's.
+#
+# Install as /etc/user/init.d/blueferry (or ~/.config/rc/init.d/blueferry)
+# and enable it per user with: rc-update --user add blueferry default
+#
+# This mirrors systemd/blueferry.service where OpenRC has an equivalent.
+# systemd's filesystem, device, and namespace sandboxing has none, so the
+# daemon runs with the user's ordinary privileges; see packaging/openrc/README.md.
+
+description="BlueFerry iPhone-Linux Bluetooth bridge"
+
+supervisor=supervise-daemon
+command="${BLUEFERRY_BIN:-/usr/bin/blueferry}"
+command_args="run"
+# BlueFerry reads and validates its owner-only local.env itself. Do not source
+# it here: that would let unrelated variables affect the daemon's startup.
+
+# supervise-daemon respawns after any exit that was not requested through
+# rc-service, including status 0 and the daemon's status 75 restart request
+# after a package upgrade. BlueFerry stops the service through rc-service.
+respawn_delay=5
+respawn_max=5
+respawn_period=120
+# One in-flight Bluetooth operation and its cleanup may take up to 180 seconds.
+retry="SIGTERM/180/SIGKILL/5"
+umask=077
+# Like NoNewPrivileges=true in the systemd unit. Unset means yes; a conf.d
+# file that sets it to an empty value (no_new_privs="") disables it.
+no_new_privs="${no_new_privs-yes}"
+
+blueferry_state="${XDG_STATE_HOME:-${HOME}/.local/state}/blueferry"
+output_log="${blueferry_state}/daemon.log"
+error_log="${blueferry_state}/daemon.log"
+
+# rc-service drops the caller's DBUS_SESSION_BUS_ADDRESS, so name the bus of
+# the OpenRC user "dbus" service. See the warning above.
+export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=${XDG_RUNTIME_DIR}/bus}"
+
+depend() {
+	# Order after the user session bus when it is an OpenRC user service,
+	# without failing on desktops that start the bus some other way.
+	use dbus
+}
+
+start_pre() {
+	# Equivalent of ConditionPathExists=%h/.config/blueferry/local.env:
+	# users who have not paired a phone should not run a daemon.
+	if [ ! -e "${XDG_CONFIG_HOME:-${HOME}/.config}/blueferry/local.env" ]; then
+		einfo "BlueFerry is not configured yet; run blueferry pair-setup first"
+		return 1
+	fi
+	if [ -z "${XDG_RUNTIME_DIR}" ]; then
+		eerror "XDG_RUNTIME_DIR is not set"
+		return 1
+	fi
+
+	mkdir -p "${blueferry_state%/*}" &&
+		checkpath --directory --mode 0700 "${blueferry_state}" || return 1
+
+	case "${DBUS_SESSION_BUS_ADDRESS}" in
+	unix:path=*)
+		_bus_socket="${DBUS_SESSION_BUS_ADDRESS#unix:path=}"
+		_bus_socket="${_bus_socket%%,*}"
+		_waited=0
+		while [ ! -S "${_bus_socket}" ] && [ "${_waited}" -lt 10 ]; do
+			sleep 1
+			_waited=$((_waited + 1))
+		done
+		if [ ! -S "${_bus_socket}" ]; then
+			eerror "The D-Bus session bus ${_bus_socket} is not available"
+			return 1
+		fi
+		;;
+	esac
+}

@@ -353,6 +353,14 @@ def test_notification_policy_is_backend_owned_and_notifies_status() -> None:
             self.contacts_only = enabled
             return enabled
 
+        ancs_actions = False
+
+        def set_ancs_actions(self, enabled):
+            if not isinstance(enabled, bool):
+                raise ValueError("notification actions must be a boolean")
+            self.ancs_actions = enabled
+            return enabled
+
     changes = []
     operations = _operations(
         notification_policy=Policy(),
@@ -367,6 +375,12 @@ def test_notification_policy_is_backend_owned_and_notifies_status() -> None:
     assert operations.get_contacts_only_notifications() is True
     assert operations.status()["contacts_only_notifications"] is True
     assert changes == [True, True]
+    assert operations.get_ancs_notification_actions() is False
+    assert operations.set_ancs_notification_actions(True) is True
+    assert operations.get_ancs_notification_actions() is True
+    assert changes == [True, True, True]
+    with pytest.raises(InvalidArgumentsError):
+        operations.set_ancs_notification_actions("on")
 
 
 def test_notification_click_rules_are_validated_by_the_backend(tmp_path) -> None:

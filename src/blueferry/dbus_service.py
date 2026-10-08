@@ -23,8 +23,10 @@ from blueferry.errors import (
 from blueferry.limits import MAX_DBUS_JSON_BYTES
 from blueferry.protocol import (
     BUS_NAME,
+    CALLS_IFACE,
     ERROR_PREFIX,
     EVENTS_IFACE,
+    MEDIA_IFACE,
     OBJECT_PATH,
     PRESENCE_IFACE,
 )
@@ -54,6 +56,11 @@ class MessagesService(dbus.service.Object):
         # One active lookup plus an interactive request queued behind a
         # cancelled passive lookup. The executor still runs one job at a time.
         self._wallet_worker = BackgroundWorker("blueferry-wallet", maximum=2)
+
+    @property
+    def caller_guard(self) -> CallerGuard:
+        """Shared so every media entry point draws from the same buckets."""
+        return self._caller_guard
 
     @staticmethod
     def _dbus_error(error: Exception) -> dbus.exceptions.DBusException:
@@ -325,6 +332,34 @@ class MessagesService(dbus.service.Object):
         ))
 
     @dbus.service.method(
+        IFACE, in_signature="", out_signature="b", sender_keyword="sender"
+    )
+    def GetAncsNotificationActions(self, sender=None) -> bool:
+        return self._sync(lambda: self._authorized(
+            sender, "status",
+            self.operations.get_ancs_notification_actions,
+        ))
+
+    @dbus.service.method(
+        IFACE, in_signature="b", out_signature="b", sender_keyword="sender"
+    )
+    def SetAncsNotificationActions(self, enabled: bool, sender=None) -> bool:
+        return self._sync(lambda: self._authorized(
+            sender, "settings",
+            lambda: self.operations.set_ancs_notification_actions(bool(enabled)),
+        ))
+
+    @dbus.service.method(
+        IFACE, in_signature="b", out_signature="b", sender_keyword="sender"
+    )
+    def SetPhoneBatteryWarning(self, enabled: bool, sender=None) -> bool:
+        """Opt in or out of the low-battery desktop warning for the phone."""
+        return self._sync(lambda: self._authorized(
+            sender, "settings",
+            lambda: self.operations.set_phone_battery_warning(bool(enabled)),
+        ))
+
+    @dbus.service.method(
         PRESENCE_IFACE, in_signature="bu", out_signature="s", sender_keyword="sender"
     )
     def SetProximityLock(self, enabled: bool, grace_seconds: int, sender=None) -> str:
@@ -531,6 +566,183 @@ class MessagesService(dbus.service.Object):
             bus.send_message(message)
         return True
 
+    # ---- Media1: opt-in iPhone now-playing and media control -------------
+
+    @dbus.service.method(
+        MEDIA_IFACE, in_signature="", out_signature="s", sender_keyword="sender"
+    )
+    def GetNowPlaying(self, sender=None) -> str:
+        return self._sync(lambda: self._authorized(
+            sender, "media-read",
+            lambda: self._json_response(self.operations.now_playing()),
+        ))
+
+    @dbus.service.method(
+        MEDIA_IFACE, in_signature="b", out_signature="s", sender_keyword="sender"
+    )
+    def SetMediaControl(self, enabled: bool, sender=None) -> str:
+        return self._sync(lambda: self._authorized(
+            sender, "settings",
+            lambda: self._json_response(
+                self.operations.set_media_control(bool(enabled))
+            ),
+        ))
+
+    @dbus.service.method(
+        MEDIA_IFACE, in_signature="b", out_signature="s", sender_keyword="sender"
+    )
+    def SetMprisPlayer(self, enabled: bool, sender=None) -> str:
+        return self._sync(lambda: self._authorized(
+            sender, "settings",
+            lambda: self._json_response(
+                self.operations.set_media_mpris(bool(enabled))
+            ),
+        ))
+
+    @dbus.service.method(
+        MEDIA_IFACE, in_signature="s", out_signature="",
+        async_callbacks=("reply_handler", "error_handler"),
+        sender_keyword="sender",
+    )
+    def SendMediaCommand(
+        self, command: str, reply_handler, error_handler, sender=None,
+    ) -> None:
+        self._async(
+            lambda: self._authorized(
+                sender, "media-command",
+                lambda: self.operations.send_media_command(
+                    str(command), reply_handler,
+                    lambda error: error_handler(self._dbus_error(error)),
+                ),
+            ),
+            error_handler,
+        )
+
+    # ---- Calls1: optional HFP call control --------------------------------
+
+    def _call_control(self, sender, action, invoke, reply_handler, error_handler) -> None:
+        """Authorize, then run one asynchronous call-control operation."""
+        self._async(
+            lambda: self._authorized(sender, action, lambda: invoke(
+                reply_handler,
+                lambda error: error_handler(self._dbus_error(error)),
+            )),
+            error_handler,
+        )
+
+    @dbus.service.method(
+        CALLS_IFACE, in_signature="b", out_signature="s", sender_keyword="sender"
+    )
+    def SetCallsEnabled(self, enabled: bool, sender=None) -> str:
+        """Save the opt-in and apply it now; returns the calls_* status keys."""
+        return self._sync(lambda: self._authorized(
+            sender, "settings",
+            lambda: self._json_response(self.operations.set_calls_enabled(bool(enabled))),
+        ))
+
+    @dbus.service.method(
+        CALLS_IFACE, in_signature="", out_signature="s", sender_keyword="sender"
+    )
+    def ListCalls(self, sender=None) -> str:
+        """Unicast snapshot of current calls, including caller identities."""
+        return self._sync(lambda: self._authorized(
+            sender, "read",
+            lambda: self._json_response(self.operations.list_calls()),
+        ))
+
+    @dbus.service.method(
+        CALLS_IFACE, in_signature="s", out_signature="s", sender_keyword="sender",
+        async_callbacks=("reply_handler", "error_handler"),
+    )
+    def Dial(self, number: str, reply_handler, error_handler, sender=None) -> None:
+        self._call_control(
+            sender, "calls-dial",
+            lambda success, failure: self.operations.dial(
+                str(number), lambda call_id: success(str(call_id or "")), failure,
+            ),
+            reply_handler, error_handler,
+        )
+
+    @dbus.service.method(
+        CALLS_IFACE, in_signature="s", out_signature="", sender_keyword="sender",
+        async_callbacks=("reply_handler", "error_handler"),
+    )
+    def Answer(self, call_id: str, reply_handler, error_handler, sender=None) -> None:
+        self._call_control(
+            sender, "calls-answer",
+            lambda success, failure: self.operations.answer_call(
+                str(call_id), lambda _result: success(), failure,
+            ),
+            reply_handler, error_handler,
+        )
+
+    @dbus.service.method(
+        CALLS_IFACE, in_signature="s", out_signature="", sender_keyword="sender",
+        async_callbacks=("reply_handler", "error_handler"),
+    )
+    def Hangup(self, call_id: str, reply_handler, error_handler, sender=None) -> None:
+        self._call_control(
+            sender, "calls-control",
+            lambda success, failure: self.operations.hangup_call(
+                str(call_id), lambda _result: success(), failure,
+            ),
+            reply_handler, error_handler,
+        )
+
+    @dbus.service.method(
+        CALLS_IFACE, in_signature="", out_signature="", sender_keyword="sender",
+        async_callbacks=("reply_handler", "error_handler"),
+    )
+    def HangupAll(self, reply_handler, error_handler, sender=None) -> None:
+        self._call_control(
+            sender, "calls-control",
+            lambda success, failure: self.operations.hangup_all_calls(
+                lambda _result: success(), failure,
+            ),
+            reply_handler, error_handler,
+        )
+
+    @dbus.service.method(
+        CALLS_IFACE, in_signature="ss", out_signature="", sender_keyword="sender",
+        async_callbacks=("reply_handler", "error_handler"),
+    )
+    def SendTones(
+        self, call_id: str, tones: str, reply_handler, error_handler, sender=None,
+    ) -> None:
+        self._call_control(
+            sender, "calls-control",
+            lambda success, failure: self.operations.send_call_tones(
+                str(call_id), str(tones), lambda _result: success(), failure,
+            ),
+            reply_handler, error_handler,
+        )
+
+    @dbus.service.method(
+        CALLS_IFACE, in_signature="", out_signature="", sender_keyword="sender",
+        async_callbacks=("reply_handler", "error_handler"),
+    )
+    def SwapCalls(self, reply_handler, error_handler, sender=None) -> None:
+        self._call_control(
+            sender, "calls-control",
+            lambda success, failure: self.operations.swap_calls(
+                lambda _result: success(), failure,
+            ),
+            reply_handler, error_handler,
+        )
+
+    @dbus.service.method(
+        CALLS_IFACE, in_signature="", out_signature="", sender_keyword="sender",
+        async_callbacks=("reply_handler", "error_handler"),
+    )
+    def HoldAndAnswer(self, reply_handler, error_handler, sender=None) -> None:
+        self._call_control(
+            sender, "calls-answer",
+            lambda success, failure: self.operations.hold_and_answer_call(
+                lambda _result: success(), failure,
+            ),
+            reply_handler, error_handler,
+        )
+
     @dbus.service.signal(EVENTS_IFACE, signature="a{sv}")
     def HistoryChanged(self, props):
         """Private history changed; payload contains only a local revision."""
@@ -542,6 +754,26 @@ class MessagesService(dbus.service.Object):
     @dbus.service.signal(EVENTS_IFACE, signature="s")
     def OpenMessageRequested(self, handle: str):
         """A desktop notification requested an opaque message handle."""
+
+    @dbus.service.signal(EVENTS_IFACE, signature="")
+    def NowPlayingChanged(self):
+        """iPhone now-playing changed; clients call Media1.GetNowPlaying."""
+
+    def emit_now_playing_changed(self) -> None:
+        try:
+            self.NowPlayingChanged()
+        except Exception:
+            log.exception("NowPlayingChanged emit failed")
+
+    @dbus.service.signal(EVENTS_IFACE, signature="")
+    def CallsChanged(self):
+        """Call state changed; clients fetch details with Calls1.ListCalls."""
+
+    def emit_calls_changed(self) -> None:
+        try:
+            self.CallsChanged()
+        except Exception:
+            log.exception("CallsChanged emit failed")
 
     def emit_history_changed(self) -> None:
         try:
