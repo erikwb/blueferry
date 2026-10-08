@@ -55,6 +55,8 @@ from blueferry.calls.settings import CallsSettings
 from blueferry.commands import run_command
 from blueferry.confirmed_groups import ConfirmedGroupsStore
 from blueferry.connectivity import Connectivity
+from blueferry.contact_photos import PhotoFiles
+from blueferry.contact_repository import ContactRepository
 from blueferry.contact_sync import ContactSync
 from blueferry.contacts import ContactsResolver
 from blueferry.dbus_service import MessagesService, claim_bus_name
@@ -157,6 +159,16 @@ class Daemon:
         self.storage = StorageSecurity(initialize=False)
         self.storage.require_preparation()
         self.contacts = ContactsResolver(storage=self.storage)
+        # Opt-in avatars. Disabled means inert: nothing is parsed, served,
+        # or written, and photos kept by an earlier opt-in are erased.
+        self.photo_files: PhotoFiles | None = None
+        if config.CONTACT_PHOTOS:
+            self.photo_files = PhotoFiles(
+                photo_ref=self.contacts.photo_ref,
+                load_photo=self.contacts.load_photo,
+            )
+        else:
+            self._erase_contact_photos()
         self.connectivity = Connectivity()
         self.notification_policy = NotificationPolicyStore()
         self.starred_threads = StarredThreadsStore(storage=self.storage)
@@ -173,6 +185,9 @@ class Daemon:
             notification_open_target=self.notification_policy.open_target,
             storage=self.storage,
             on_incoming_message=lambda: self._verify_setup_task(MESSAGE_NOTIFICATIONS),
+            contact_photo=(
+                self.photo_files.path_for if self.photo_files is not None else None
+            ),
             perform_ancs_action=self._perform_ancs_action,
             ancs_actions_enabled=self._ancs_actions_active,
             on_call_action=self._notification_call_action,
@@ -686,6 +701,7 @@ class Daemon:
                 on_storage_prepared=self._apply_storage_preparation,
                 on_storage_changed=self._on_storage_changed,
                 set_proximity_lock=self._set_proximity_lock,
+                contact_photos=config.CONTACT_PHOTOS,
                 call_history=lambda: self.call_history,
                 set_call_history=self._set_call_history,
                 open_notification_click=self.events.open_notification_click,
@@ -894,7 +910,25 @@ class Daemon:
         if self._dbus_service is not None:
             self._dbus_service.retry_storage_unlock(initialize=True)
 
+    def _erase_contact_photos(self) -> None:
+        try:
+            if ContactRepository(self.storage).clear_photos():
+                log.info("erased contact photos retained while the option was enabled")
+        except Exception as error:
+            log.warning("could not erase retained contact photos: %s", type(error).__name__)
+
+    def _clear_photo_files(self) -> None:
+        if self.photo_files is not None:
+            self.photo_files.clear()
+
+    def _retire_photo_files(self) -> None:
+        # A refreshed cache must not reuse old files, but popups already
+        # shown may still read theirs; see PhotoFiles.retire().
+        if self.photo_files is not None:
+            self.photo_files.retire()
+
     def _apply_storage_preparation(self, prepared: PreparedStorage) -> None:
+        self._clear_photo_files()
         self.contacts.adopt_cache(prepared.contacts)
         self.contact_sync.storage_prepared()
         self.events.seed_historical_ancs(prepared.historical_ancs)
@@ -904,6 +938,7 @@ class Daemon:
             self._mark_setup_task(MESSAGE_NOTIFICATIONS)
 
     def _on_storage_changed(self) -> None:
+        self._clear_photo_files()
         if self.storage.status.can_write and self.contacts.count() > 0:
             self._mark_setup_task(CONTACTS)
         self.contact_sync.storage_changed()
@@ -1320,6 +1355,7 @@ class Daemon:
         # Completing PullAll proves that the iPhone granted Sync Contacts,
         # even when its phonebook is empty.
         self._mark_setup_task(CONTACTS)
+        self._retire_photo_files()
         if self._dbus_service is not None:
             self._dbus_service.operations.invalidate_conversations()
             self._dbus_service.emit_history_changed()
@@ -1425,6 +1461,7 @@ class Daemon:
             **self.proximity.snapshot(),
             **self._phone_status(),
             "contacts": self.contacts.count(),
+            **self._contact_photo_status(),
             "events": history_count(storage=self.storage),
             "verified_iphone_setup": list(self.setup_verification.verified),
             "history_retention_days": config.HISTORY_RETENTION_DAYS,
@@ -1443,6 +1480,15 @@ class Daemon:
             **self.connectivity.snapshot(),
         }
 
+    def _contact_photo_status(self) -> dict[str, object]:
+        if not config.CONTACT_PHOTOS:
+            return {"contact_photos": False}
+        # Content-free counters: clients drop cached avatars on change.
+        return {
+            "contact_photos": True,
+            "contact_photo_revision": self.contacts.photo_revision,
+            "contact_photo_count": self.contacts.photo_count(),
+        }
     def _le_bond_detection_applies(self) -> bool:
         """Report stale LE bonds only where ANCS is expected to work."""
         return bool(
@@ -1578,6 +1624,7 @@ class Daemon:
             self.media.close()
         self.solicitation.stop()
         self.events.stop()
+        self._clear_photo_files()
         if self._sleep_match is not None:
             try:
                 self._sleep_match.remove()

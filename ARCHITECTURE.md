@@ -81,7 +81,8 @@ All paths are relative to `src/blueferry/` unless noted.
 | `call_history_repository.py` | Encrypted call-history mirror, retention, and the already-announced missed-call set. |
 | `call_history_sync.py` | Schedules call-history pulls (ANCS-triggered, missed-calls-only fallback poll, one OBEX worker job per listing) and reports newly seen missed calls. |
 | `call_history_settings.py` | The saved call-history opt-in (`settings.json`, seeded from `local.env`). |
-| `vcard.py` | Linear, resource-bounded vCard block extraction. |
+| `vcard.py` | Linear, resource-bounded vCard block extraction; the photo-aware variant splits PHOTO out under its own budget. |
+| `contact_photos.py` | Opt-in contact photos: bounded base64 PHOTO decoding and volatile owner-only copies for notification icons. |
 | `ancs/client.py` | ANCS GATT client: subscribes to characteristics, requests attributes, emits `AncsEvent`s, and sends opt-in `PerformNotificationAction` writes. |
 | `ancs/parsers.py` | Pure ANCS wire-format parsers and command builders. |
 | `ancs/constants.py` | ANCS spec constants. |
@@ -159,6 +160,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | --- | --- |
 | `cli.py`, `__main__.py` | Typer CLI (`run`, `doctor`, sync, setup, and hidden `pairing-*` JSON helpers). |
 | `cli_messages.py` | CLI message listing, recipient selection, and send. |
+| `cli_contacts.py` | `contacts-photo` export of one cached contact photo. |
 | `cli_call_history.py` | Opt-in `call-history` listing, enable, and disable. |
 | `cli_common.py` | Small CLI presentation helpers. |
 | `cli_proximity.py` | `proximity-lock` status, dry run, enable, and disable. |
@@ -181,6 +183,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `qt/app.py` | PySide6/Kirigami entry point. |
 | `qt/controller.py` | Asynchronous `BridgeController` exposed to QML. |
 | `qt/tasks.py` | Qt worker primitive. |
+| `qt/avatars.py` | Image provider that decodes opt-in contact photos with `QImageReader` after header and size checks. |
 | `qt/activation.py` | Qt adapter for client activation. |
 | `qt/qml/Main.qml` | Kirigami window: navigation and composition. |
 | `qt/qml/ConversationLogic.qml` | Thread lookup, roster-warning dedup, participant parsing (also used by Quickshell). |
@@ -196,6 +199,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `qt/qml/PhoneStatusIndicator.qml` | Optional iPhone battery/signal indicator (loaded only when values are known; plain-text tooltip). |
 | `qt/qml/ExpandingMessageComposer.qml` | Growing message editor. |
 | `qt/qml/MessageBubble.qml` | Message bubble. |
+| `qt/qml/ContactAvatar.qml` | Conversation icon, replaced by the contact photo when the option is on. |
 | `qt/qml/RecentCallsPage.qml` | Opt-in recent-calls list, created through a `Loader`. |
 | `qt/qml/CallHistorySettings.qml` | Call-history opt-in checkboxes in the iPhone settings. |
 | `qt/qml/NowPlayingBar.qml` | Opt-in iPhone now-playing bar with transport buttons. |
@@ -571,6 +575,29 @@ A change to these rules has to be made in both places.
   delivery continues. Only an explicit client action may create or unlock the
   key. History writes are transactional, and a monotonic revision invalidates
   the projection.
+- **Contact photos** are opt-in (`BLUEFERRY_CONTACT_PHOTOS`). The daemon keeps
+  inline JPEG/PNG bytes within size limits. It checks the declared canvas by
+  reading the header and never decodes pixels. It stores the raw bytes
+  AES-GCM-sealed in a BLOB next to the contact records, in the same
+  transaction, and erases them at startup when the option is off. The photo
+  table is created only when a sync stores a photo, and the off-path check is
+  read-only, so a profile that never opted in keeps the upstream schema.
+  A trigger created with the table deletes all photos whenever
+  `secure_contacts` rows are deleted, so a release without this feature
+  removes them with its own contact clear or next sync after a downgrade.
+  Photo reads open the database read-only with a short lock timeout. While a
+  sync holds the database, or a hot journal from a crash awaits rollback, they
+  return `NotReady`, which clients retry. Clients get them through
+  `GetContactPhoto(address) -> ay`. It has its own rate-limit bucket (with a
+  higher daemon-wide window, so several clients can fill their lists) and
+  returns a photo only for an unambiguous address. Clients drop cached photos
+  when the content-free `contact_photo_revision` status key changes.
+  Presentation processes decode the images with toolkit loaders. Notification
+  icons are temporary `image-path` files in the runtime directory; a contact
+  refresh retires them (no reuse, still readable for popups already shown,
+  bounded to 64 files) and storage changes or daemon stop delete them. The
+  pull logs one content-free summary per sync (size buckets, rejection
+  reasons) so the caps can be checked against a real phone.
 - **ANCS content:** the app is identified before any content is requested.
   The default policy never fetches content from other apps. The opt-in `all`
   policy applies exact bundle-ID allow/block rules first and delivers content

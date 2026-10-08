@@ -29,6 +29,7 @@ LOCAL_ENV_KEYS = frozenset({
     "BLUEFERRY_HISTORY_MAX_PAYLOAD_BYTES",
     "BLUEFERRY_PROXIMITY_LOCK",
     "BLUEFERRY_PROXIMITY_LOCK_GRACE_SEC",
+    "BLUEFERRY_CONTACT_PHOTOS",
     "BLUEFERRY_CALL_HISTORY_ENABLED",
     "BLUEFERRY_CALL_HISTORY_INTERVAL_SEC",
     "BLUEFERRY_MISSED_CALL_NOTIFICATIONS",
@@ -289,6 +290,13 @@ Some notification-center "block" actions (menu bar do-not-disturb toggles,
 some panel widgets) dismiss the popup rather than merely hiding it, which
 would otherwise mark the message read on the phone without the user ever
 seeing it.
+"""
+CONTACT_PHOTOS: bool = _env_bool("BLUEFERRY_CONTACT_PHOTOS", False)
+"""Opt-in: keep PBAP contact photos and offer them as avatars.
+
+Off by default. Photos enlarge the private contact cache and put more
+remote-controlled bytes in front of client image decoders; see
+``blueferry.contact_photos`` for the threat model.
 """
 HISTORY_RETENTION_DAYS: int = _env_int(
     "BLUEFERRY_HISTORY_RETENTION_DAYS", 30, 1, 3650

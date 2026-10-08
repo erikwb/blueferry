@@ -59,6 +59,7 @@ class EventDispatcher:
         notification_open_target=None,
         storage=None,
         on_incoming_message=None,
+        contact_photo: Callable[[str | None], str | None] | None = None,
         perform_ancs_action=None,
         ancs_actions_enabled: Callable[[], bool] | None = None,
         on_call_action: Callable[[str, str], None] | None = None,
@@ -76,6 +77,7 @@ class EventDispatcher:
         self.notification_open_target = notification_open_target
         self.storage = storage
         self.on_incoming_message = on_incoming_message
+        self.contact_photo = contact_photo
         self.perform_ancs_action = perform_ancs_action
         self.ancs_actions_enabled = ancs_actions_enabled
         self.on_call_action = on_call_action
@@ -156,12 +158,17 @@ class EventDispatcher:
             return False
         if any(sink.name == "libnotify" for sink in self.sinks):
             return True
+        options: dict[str, object] = {}
+        if self.contact_photo is not None:
+            # Passed only when opted in, so the disabled sink is unchanged.
+            options["contact_photo"] = self.contact_photo
         try:
             sink = self._notification_sink_factory(
                 defer_mark_read=self.defer_mark_read,
                 notification_policy=self.notification_policy,
                 contacts_only_notifications=self.contacts_only_notifications,
                 on_open_message=self._open_message,
+                **options,
                 open_target=self.notification_open_target,
                 on_open_target=self._open_target,
                 on_ancs_action=self.perform_ancs_action,

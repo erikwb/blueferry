@@ -72,6 +72,27 @@ MAX_DESKTOP_MESSAGE_TRACKERS = 256
 MAX_PHONEBOOK_CONTACTS = 65_535
 MAX_CONTACT_ADDRESSES_PER_CARD = 64
 
+# Contact photos (opt-in, BLUEFERRY_CONTACT_PHOTOS). What iOS puts into a
+# PBAP PHOTO has not been measured on a real phone yet; the per-sync summary
+# log line (size buckets and reasons) exists to settle that. #187 only used
+# an 800 KiB picture as an illustrative worst case for the card budget. The
+# per-photo cap admits such a picture, the encoded limit adds room for base64
+# expansion and folding whitespace, and larger values are dropped unread.
+# The total budget bounds one sync's retained photos (and the extra memory
+# the pull holds before storing them); the whole transfer is already capped
+# by MAX_PHONEBOOK_BYTES, so 64 MiB of base64 can never decode to more than
+# 48 MiB of photos anyway.
+MAX_CONTACT_PHOTO_BYTES = 1024 * 1024
+MAX_CONTACT_PHOTO_CHARS = (MAX_CONTACT_PHOTO_BYTES * 4 // 3) + 64 * 1024
+MAX_CONTACT_PHOTOS_TOTAL_BYTES = 32 * 1024 * 1024
+# Time spent decoding photos per sync (expected: well under 1 s). Parsing
+# the rest of the cards does not count against it.
+MAX_CONTACT_PHOTO_DECODE_SECONDS = 5.0
+MAX_CONTACT_PHOTO_FILES = 64
+# Header-declared pixel size accepted anywhere (daemon, clients, and the
+# image-path handed to notification servers). A small file can declare an
+# enormous canvas; decoders without their own limit would allocate it.
+MAX_CONTACT_PHOTO_DIMENSION = 2048
 # PBAP call history. iOS keeps a short recent-calls list; these bounds only
 # stop a malformed or hostile peer from forcing unbounded work or storage.
 MAX_CALL_HISTORY_PER_FOLDER = 1_000

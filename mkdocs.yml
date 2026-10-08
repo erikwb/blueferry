@@ -106,6 +106,7 @@ nav:
           - Phone calls (experimental): en/user/calls.md
           - Phone battery and signal: en/user/phone-status.md
           - Privacy and storage: en/user/privacy.md
+          - Contact photos: en/user/contact-photos.md
           - Notification actions: en/user/notification-actions.md
           - Troubleshooting: en/user/troubleshooting.md
           - Stale LE pairing: en/user/stale-le-bond.md
@@ -130,6 +131,7 @@ nav:
           - Anrufe (experimentell): de/user/calls.md
           - Akku und Empfang: de/user/phone-status.md
           - Datenschutz und Speicher: de/user/privacy.md
+          - Kontaktfotos: de/user/contact-photos.md
           - Mitteilungs-Aktionen: de/user/notification-actions.md
           - Fehlerbehebung: de/user/troubleshooting.md
           - Veraltete LE-Kopplung: de/user/stale-le-bond.md

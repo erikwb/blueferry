@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from collections import OrderedDict
 from collections.abc import Callable
 
 from PySide6.QtCore import (
@@ -30,6 +31,7 @@ from blueferry.i18n import _
 from blueferry.models import BackendStatus, CallsSnapshot
 from blueferry.onboarding import OnboardingState, effective_compatibility
 from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH
+from blueferry.qt.avatars import avatar_url
 from blueferry.qt.tasks import Task
 from blueferry.quirks_report import issue_report, issue_url
 from blueferry.service_manager import bluetooth_restart_command
@@ -38,6 +40,16 @@ from blueferry.setup_client import (
     ConfigurationState,
     SetupClient,
 )
+
+# Bounds on the per-window avatar cache (least recently used entries are
+# dropped). The count covers a long list of small photos; the byte bound
+# keeps large ones (up to limits.MAX_CONTACT_PHOTO_BYTES each) from holding
+# hundreds of MiB of encoded images.
+MAX_CACHED_AVATARS = 512
+MAX_CACHED_AVATAR_BYTES = 32 * 1024 * 1024
+MAX_PENDING_AVATARS = 32
+AVATAR_RETRY_SECONDS = 30
+AVATAR_RETRY_MAX_SECONDS = 600
 
 
 class BridgeController(QObject):
@@ -59,6 +71,7 @@ class BridgeController(QObject):
     groupConfirmationRequested = Signal(str, str, str)
     threadSendSucceeded = Signal(str, str)
     messageSendSucceeded = Signal(str, str)
+    avatarsChanged = Signal()
     callHistoryChanged = Signal()
     nowPlayingChanged = Signal()
     phoneCallsChanged = Signal()
@@ -108,6 +121,21 @@ class BridgeController(QObject):
         self._storage_unlock_attempted = False
         self._pairing_confirmation_lock = threading.Lock()
         self._pairing_confirmation: tuple[threading.Event, list[bool]] | None = None
+        # Opt-in avatars (status["contact_photos"]). Bytes are fetched on the
+        # worker and read by the QML image provider's thread, hence the lock.
+        self._avatar_lock = threading.Lock()
+        # LRU caches: displayed avatars are touched on every binding read.
+        self._avatars: OrderedDict[str, bytes] = OrderedDict()
+        self._avatar_missing: OrderedDict[str, None] = OrderedDict()
+        self._avatar_pending: set[str] = set()
+        self._avatar_backoff: OrderedDict[str, None] = OrderedDict()
+        self._avatar_failures: OrderedDict[str, int] = OrderedDict()
+        # Generation: changes only when the daemon's photo cache changes and
+        # is part of every avatar URL. Revision: bumped on each arrival so
+        # QML re-reads avatarSource(); it never changes a shown avatar's URL.
+        self._avatar_generation = 0
+        self._avatar_revision = 0
+        self._photo_status: tuple[bool, object] = (False, None)
         self._refresh_timer = QTimer(self)
         self._refresh_timer.setSingleShot(True)
         self._refresh_timer.setInterval(100)
@@ -154,6 +182,118 @@ class BridgeController(QObject):
     @Property("QVariantMap", notify=statusChanged)
     def status(self):
         return self._status
+
+    @Property(int, notify=avatarsChanged)
+    def avatarRevision(self) -> int:
+        return self._avatar_revision
+
+    @Slot(str, result=str)
+    def avatarSource(self, address: str) -> str:
+        """Provider URL for a fetched avatar, else ``""`` (fetching lazily).
+
+        The URL carries the cache *generation*, which changes only when the
+        daemon reloads its contacts, so an avatar that is already shown keeps
+        the same URL (and is not reloaded) while other avatars arrive.
+        ``avatarRevision`` only tells QML to re-read this slot. Addresses with
+        no photo are remembered until the generation changes; failed lookups
+        (rate limit, busy store) are retried after a backoff.
+        """
+        key = str(address or "").strip()
+        if not key or not self._status.get("contact_photos"):
+            return ""
+        with self._avatar_lock:
+            if key in self._avatars:
+                self._avatars.move_to_end(key)
+                return avatar_url(key, self._avatar_generation)
+        if (
+            key in self._avatar_missing
+            or key in self._avatar_pending
+            or key in self._avatar_backoff
+            or len(self._avatar_pending) >= MAX_PENDING_AVATARS
+        ):
+            return ""
+        self._avatar_pending.add(key)
+        generation = self._avatar_generation
+
+        def fetched(value: object) -> None:
+            self._avatar_pending.discard(key)
+            if generation != self._avatar_generation:
+                return
+            self._avatar_failures.pop(key, None)
+            data = value if isinstance(value, bytes) and value else None
+            if data is None:
+                self._avatar_missing[key] = None
+                while len(self._avatar_missing) > MAX_CACHED_AVATARS:
+                    self._avatar_missing.popitem(last=False)
+                return
+            with self._avatar_lock:
+                self._avatars[key] = data
+                cached = sum(len(item) for item in self._avatars.values())
+                # The newest avatar always stays, even above the byte bound.
+                while len(self._avatars) > 1 and (
+                    len(self._avatars) > MAX_CACHED_AVATARS
+                    or cached > MAX_CACHED_AVATAR_BYTES
+                ):
+                    _old, dropped = self._avatars.popitem(last=False)
+                    cached -= len(dropped)
+            self._avatar_revision += 1
+            self.avatarsChanged.emit()
+
+        def failed(_message: str) -> None:
+            # Avatars are decoration: never surface a lookup, busy-store, or
+            # rate-limit failure as an error banner. Retry after a backoff.
+            self._avatar_pending.discard(key)
+            if generation != self._avatar_generation:
+                return
+            attempts = self._avatar_failures.pop(key, 0) + 1
+            self._avatar_failures[key] = attempts
+            self._avatar_backoff[key] = None
+            # Bounded like the other caches. Evicting a backoff entry only
+            # allows an earlier retry, which the daemon's rate limit covers.
+            for pending in (self._avatar_failures, self._avatar_backoff):
+                while len(pending) > MAX_CACHED_AVATARS:
+                    pending.popitem(last=False)
+            delay = min(
+                AVATAR_RETRY_SECONDS * 2 ** (attempts - 1), AVATAR_RETRY_MAX_SECONDS,
+            )
+            self._schedule_avatar_retry(int(delay * 1000), key, generation)
+
+        self._run(lambda: self._backend.contact_photo(key), fetched, failed, busy=False)
+        return ""
+
+    def _schedule_avatar_retry(self, delay_ms: int, key: str, generation: int) -> None:
+        def release() -> None:
+            if generation != self._avatar_generation:
+                return
+            self._avatar_backoff.pop(key, None)
+            # Let QML ask again; the binding re-reads avatarSource().
+            self._avatar_revision += 1
+            self.avatarsChanged.emit()
+
+        QTimer.singleShot(delay_ms, self, release)
+
+    def avatar_bytes(self, address: str) -> bytes | None:
+        """Thread-safe lookup used by :class:`AvatarImageProvider`."""
+        with self._avatar_lock:
+            return self._avatars.get(address)
+
+    def _sync_avatars(self) -> None:
+        """Drop cached avatars when photos toggle or the contact cache reloads."""
+        current = (
+            bool(self._status.get("contact_photos")),
+            self._status.get("contact_photo_revision"),
+        )
+        if current == self._photo_status:
+            return
+        self._photo_status = current
+        with self._avatar_lock:
+            self._avatars.clear()
+        self._avatar_missing.clear()
+        self._avatar_backoff.clear()
+        self._avatar_failures.clear()
+        self._avatar_generation += 1
+        self._avatar_revision += 1
+        self.avatarsChanged.emit()
 
     @Property(bool, notify=statusChanged)
     def callHistoryEnabled(self) -> bool:
@@ -517,6 +657,7 @@ class BridgeController(QObject):
                 self._status = dict(status)
                 self._state.status = BackendStatus.from_dict(self._status)
                 self.statusChanged.emit()
+                self._sync_avatars()
                 self._maybe_unlock_storage()
             self._set_error("")
             if self._configuration.configured:
@@ -617,6 +758,7 @@ class BridgeController(QObject):
         if snapshot.status is not None or snapshot.status_error:
             self._status = self._state.status.to_dict()
             self.statusChanged.emit()
+            self._sync_avatars()
             self._maybe_unlock_storage()
             self._now_playing_timer.start()
             # StatusChanged also fires for unrelated changes (bearers,
@@ -1202,6 +1344,7 @@ class BridgeController(QObject):
             self.configuredChanged.emit()
             self.compatibilityChanged.emit()
             self.statusChanged.emit()
+            self._sync_avatars()
             self.threadsChanged.emit()
             self._update_onboarding_stage()
             self.loadDevices(False)

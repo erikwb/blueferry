@@ -825,6 +825,59 @@ def test_live_signal_contains_only_an_opaque_revision(public_service) -> None:
     assert int(received[0]["revision"]) == 1
 
 
+class _PhotoContacts:
+    def __init__(self, photos):
+        self.photos = photos
+
+    def photo(self, address):
+        return self.photos.get(address)
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_contact_photo_crosses_the_bus_as_bounded_bytes(public_service, enabled) -> None:
+    name, _pending, _policy, _changes, service = public_service
+    from .photo_fixtures import jpeg as make_jpeg
+
+    jpeg = make_jpeg()
+    service.operations.dependencies = replace(
+        service.operations.dependencies,
+        contacts=_PhotoContacts({"+15551112222": jpeg}),
+        contact_photos=enabled,
+    )
+    outcome = {}
+
+    def fetch() -> None:
+        connection, interface = _client(name)
+        client = BackendClient(interface_factory=lambda _: interface)
+        try:
+            outcome["photo"] = client.contact_photo("+15551112222")
+            outcome["unknown"] = client.contact_photo("+19999999999")
+            outcome["raw"] = interface.GetContactPhoto(
+                "+15551112222", timeout=5, byte_arrays=True,
+            )
+            outcome["status"] = client.status().to_dict()["contact_photos"]
+            try:
+                interface.GetContactPhoto("", timeout=5)
+            except dbus.DBusException as error:
+                outcome["invalid"] = error.get_dbus_name()
+        except Exception as error:
+            outcome["error"] = error
+        finally:
+            connection.close()
+
+    thread = threading.Thread(target=fetch)
+    thread.start()
+    _dispatch_until(lambda: not thread.is_alive())
+
+    assert "error" not in outcome, outcome.get("error")
+    assert outcome["photo"] == (jpeg if enabled else b"")
+    assert outcome["unknown"] == b""
+    assert isinstance(outcome["raw"], dbus.ByteArray)
+    assert bytes(outcome["raw"]) == outcome["photo"]
+    assert outcome["status"] is enabled
+    assert outcome["invalid"].endswith(".InvalidArgs")
+
+
 def test_call_history_is_not_ready_until_opted_in(public_service) -> None:
     name, _pending, _policy, _policy_changes, _service = public_service
 

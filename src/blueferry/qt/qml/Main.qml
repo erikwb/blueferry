@@ -622,11 +622,12 @@ Kirigami.ApplicationWindow {
                                 contentItem: RowLayout {
                                     spacing: Kirigami.Units.smallSpacing
 
-                                    Kirigami.Icon {
-                                        source: threadDelegate.modelData.is_group
-                                            ? "system-users" : "user-identity"
-                                        implicitWidth: Kirigami.Units.iconSizes.smallMedium
-                                        implicitHeight: implicitWidth
+                                    ContactAvatar {
+                                        bridge: root.bridge
+                                        group: threadDelegate.modelData.is_group
+                                        address: !threadDelegate.modelData.is_group
+                                            && threadDelegate.modelData.recipients.length === 1
+                                            ? threadDelegate.modelData.recipients[0] : ""
                                     }
                                     ColumnLayout {
                                         Layout.fillWidth: true
@@ -718,6 +719,15 @@ Kirigami.ApplicationWindow {
                                     Controls.ToolTip.text: text
                                     Controls.ToolTip.visible: hovered
                                     onClicked: root.selectedThreadKey = ""
+                                }
+                                ContactAvatar {
+                                    visible: messagesPage.thread !== null
+                                    bridge: root.bridge
+                                    group: messagesPage.thread !== null && messagesPage.thread.is_group
+                                    address: messagesPage.thread !== null && !messagesPage.thread.is_group
+                                        && messagesPage.thread.recipients.length === 1
+                                        ? messagesPage.thread.recipients[0] : ""
+                                    implicitWidth: Kirigami.Units.iconSizes.medium
                                 }
                                 ColumnLayout {
                                     Layout.fillWidth: true

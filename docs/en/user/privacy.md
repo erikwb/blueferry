@@ -73,6 +73,12 @@ restarts. You choose how:
   the same storage mode.
 - `blueferry history-clear` deletes local message history.
 
+With the optional [contact photos](contact-photos.md), the contact cache
+also holds your contacts' pictures under the same storage mode, and the
+backend keeps short-lived owner-only copies in `$XDG_RUNTIME_DIR/blueferry`
+for popup icons. Turning the option off deletes the stored photos on the next
+backend start.
+
 Encryption protects data at rest. Other programs running as your user can
 still use the BlueFerry D-Bus API and, while the wallet is unlocked, may be
 able to read its secrets.
@@ -102,6 +108,7 @@ Edit `~/.config/blueferry/local.env`, then restart the service with
 | `BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE` | `true` | Keep calls and music on the iPhone |
 | `BLUEFERRY_ANCS_APP_ALLOWLIST` | unset | See [Filter apps](#filter-apps) |
 | `BLUEFERRY_ANCS_APP_BLOCKLIST` | unset | See [Filter apps](#filter-apps) |
+| `BLUEFERRY_CONTACT_PHOTOS` | `false` | Keep contact photos for avatars and popup icons; see [Contact photos](contact-photos.md) |
 
 Pairing writes the phone and adapter settings to the same file; change those
 by pairing again rather than by hand.

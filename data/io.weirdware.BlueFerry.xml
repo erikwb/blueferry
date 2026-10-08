@@ -70,6 +70,14 @@
       <annotation name="io.weirdware.BlueFerry.Errors"
                   value="NotReady,ResponseTooLarge"/>
     </method>
+    <method name="GetContactPhoto">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Bounded JPEG/PNG avatar of the one cached contact owning an address; empty when absent, ambiguous, or BLUEFERRY_CONTACT_PHOTOS is off. Clients decode it; the daemon does not."/>
+      <arg name="address" type="s" direction="in"/>
+      <arg name="photo" type="ay" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady"/>
+    </method>
     <method name="SetGroupParticipants">
       <arg name="thread_key" type="s" direction="in"/>
       <arg name="recipients" type="as" direction="in"/>

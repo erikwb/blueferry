@@ -26,6 +26,7 @@ STORAGE_POLICIES = frozenset({ENCRYPTED_STORAGE, PLAINTEXT_STORAGE, NO_STORAGE})
 DEFAULT_STORAGE_POLICY = ENCRYPTED_STORAGE
 
 _PREFIX = "blueferry:aesgcm:v1:"
+_BYTES_PREFIX = _PREFIX.encode("ascii")
 _KEY_BYTES = 32
 _SCHEMA_NAME = "io.weirdware.BlueFerry.StorageKey"
 _ATTRIBUTES = {"purpose": "local-storage", "version": "1"}
@@ -654,6 +655,41 @@ class StorageSecurity:
         except (ValueError, InvalidTag, UnicodeDecodeError) as error:
             raise CorruptStorageError("retained data failed authentication") from error
 
+    def encrypt_bytes(self, plaintext: bytes, *, purpose: str) -> bytes:
+        """Seal binary data for a BLOB column without base64 expansion."""
+        if not self.status.can_write:
+            raise StorageUnavailableError(self._detail)
+        if self._policy == PLAINTEXT_STORAGE:
+            return bytes(plaintext)
+        if self._key is None:
+            raise StorageUnavailableError(self._detail)
+        nonce = os.urandom(12)
+        return _BYTES_PREFIX + nonce + AESGCM(bytes(self._key)).encrypt(
+            nonce, bytes(plaintext), purpose.encode("ascii"),
+        )
+
+    def decrypt_bytes(self, value: bytes, *, purpose: str) -> bytes:
+        """Authenticate and open one purpose-bound binary record."""
+        if not self.status.can_read:
+            raise StorageUnavailableError(self._detail)
+        selected = bytes(value)
+        if self._policy == PLAINTEXT_STORAGE:
+            if selected.startswith(_BYTES_PREFIX):
+                raise CorruptStorageError(
+                    "encrypted data remains under the unencrypted storage policy"
+                )
+            return selected
+        if not selected.startswith(_BYTES_PREFIX):
+            raise CorruptStorageError("retained data is not authenticated")
+        if self._key is None:
+            raise StorageUnavailableError(self._detail)
+        framed = selected[len(_BYTES_PREFIX):]
+        try:
+            return AESGCM(bytes(self._key)).decrypt(
+                framed[:12], framed[12:], purpose.encode("ascii"),
+            )
+        except (ValueError, InvalidTag) as error:
+            raise CorruptStorageError("retained data failed authentication") from error
 
 def is_encrypted_value(value: str) -> bool:
     """Return whether a stored value has BlueFerry's ciphertext frame."""
