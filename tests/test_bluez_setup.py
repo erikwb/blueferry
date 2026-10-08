@@ -12,7 +12,7 @@ from blueferry import bluez_setup, config
 class TestAncsAdvertisement:
     def test_pairing_payload_is_discoverable_and_solicits_ancs(self):
         props = bluez_setup._AncsAdvert.GetAll(
-            None, "org.bluez.LEAdvertisement1"
+            SimpleNamespace(compact=False), "org.bluez.LEAdvertisement1"
         )
 
         assert str(props["Type"]) == "peripheral"
@@ -219,6 +219,7 @@ def adverts(monkeypatch):
 
     context = SimpleNamespace(iteration=lambda _block: dispatched.pop(0)() if dispatched else None)
     monkeypatch.setattr(bluez_setup, '_advert_instance', None)
+    monkeypatch.setattr(bluez_setup, '_compact_advert_adapters', set())
     monkeypatch.setattr(bluez_setup, 'get_system_bus', lambda: SimpleNamespace(
         get_object=lambda *a, **k: None, call_async=call_async,
     ))
@@ -305,3 +306,101 @@ def test_pairing_registration_deadline_cleans_up_an_unanswered_request(adverts):
     assert adverts.removed == [adverts.requests[0].path]
     adverts.requests[0].reply_handler()
     assert not bluez_setup.advert_registered()
+
+
+def _advert_packet_bytes() -> int:
+    """Size BlueZ accounts for the registered payload, as calc_max_adv_len does."""
+    properties = bluez_setup._advert_instance.GetAll('org.bluez.LEAdvertisement1')
+    size = 3  # Flags, added for a discoverable advertisement.
+    size += sum(2 + 16 for _uuid in properties['SolicitUUIDs'])
+    size += sum(4 + len(data) for data in properties['ManufacturerData'].values())
+    size += sum(4 + len(data) for data in properties.get('ServiceData', {}).values())
+    if 'tx-power' in properties.get('Includes', []):
+        size += 3
+    return size
+
+
+def test_advert_keeps_its_full_payload_while_bluez_accepts_it(adverts):
+    bluez_setup.register_advert('hci7')
+    adverts.requests[0].reply_handler()
+
+    properties = bluez_setup._advert_instance.GetAll('org.bluez.LEAdvertisement1')
+    assert set(properties) >= {'SolicitUUIDs', 'ManufacturerData', 'ServiceData', 'Includes'}
+    assert _advert_packet_bytes() == 40  # Needs extended advertising.
+
+
+def test_rejected_advert_payload_is_retried_in_the_legacy_packet_size(adverts):
+    bluez_setup.register_advert('hci7')
+    adverts.requests[0].error_handler(dbus.exceptions.DBusException(
+        'Failed to parse advertisement.', name='org.bluez.Error.Failed',
+    ))
+
+    bluez_setup.register_advert('hci7')
+
+    properties = bluez_setup._advert_instance.GetAll('org.bluez.LEAdvertisement1')
+    assert 'ServiceData' not in properties and 'Includes' not in properties
+    assert list(properties['SolicitUUIDs']) == [bluez_setup.config.ANCS_SOLICIT_UUID]
+    assert properties['ManufacturerData']  # Still not a solicitation-only advert.
+    assert _advert_packet_bytes() <= 31
+    adverts.requests[1].reply_handler()
+    assert bluez_setup.advert_registered()
+
+
+@pytest.mark.parametrize('error_name,message', [
+    ('org.freedesktop.DBus.Error.NoReply', 'timed out'),
+    ('org.bluez.Error.AlreadyExists', 'Already Exists'),
+    ('org.bluez.Error.NotPermitted', 'Maximum advertisements reached'),
+    # The controller refused it; nothing says the payload was at fault.
+    ('org.bluez.Error.Failed', 'Failed to register advertisement'),
+])
+def test_failures_unrelated_to_the_payload_keep_the_full_advert(
+    adverts, error_name, message,
+):
+    bluez_setup.register_advert('hci7')
+    adverts.requests[0].error_handler(
+        dbus.exceptions.DBusException(message, name=error_name)
+    )
+
+    bluez_setup.register_advert('hci7')
+
+    assert _advert_packet_bytes() == 40
+
+
+def test_pairing_retries_a_rejected_payload_without_waiting_for_the_daemon(adverts):
+    adverts.dispatched.append(lambda: adverts.requests[0].error_handler(
+        dbus.exceptions.DBusException(
+            'Failed to parse advertisement.', name='org.bluez.Error.Failed',
+        )
+    ))
+    adverts.dispatched.append(lambda: adverts.requests[1].reply_handler())
+
+    assert bluez_setup.register_advert('hci7', settle_for_pairing=True)
+
+    assert len(adverts.requests) == 2
+    assert _advert_packet_bytes() <= 31
+
+
+def test_pairing_does_not_loop_when_the_compact_advert_also_fails(adverts):
+    for index in range(2):
+        adverts.dispatched.append(lambda index=index: adverts.requests[index].error_handler(
+            dbus.exceptions.DBusException(
+                'Failed to parse advertisement.', name='org.bluez.Error.Failed',
+            )
+        ))
+
+    assert not bluez_setup.register_advert('hci7', settle_for_pairing=True)
+
+    assert len(adverts.requests) == 2
+
+
+def test_a_new_bluez_owner_is_offered_the_full_advert_again(adverts):
+    bluez_setup.register_advert('hci7')
+    adverts.requests[0].error_handler(dbus.exceptions.DBusException(
+        'Failed to parse advertisement.', name='org.bluez.Error.Failed',
+    ))
+    assert bluez_setup._compact_advert_adapters == {'hci7'}
+
+    bluez_setup.forget_advert_registration()
+    bluez_setup.register_advert('hci7')
+
+    assert _advert_packet_bytes() == 40

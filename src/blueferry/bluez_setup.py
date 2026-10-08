@@ -149,6 +149,26 @@ def set_cod(
 
 # ---- BLE advertisement (SolicitUUIDs = ANCS) ----------------------------
 
+# Adapters on which BlueZ rejected the full advertisement. A legacy
+# advertising packet carries 31 bytes: flags and tx-power take 3 each, the
+# 128-bit solicitation 18, and the manufacturer and service payloads 8 each.
+# Controllers with extended advertising fit all 40; the others fit only
+# flags, solicitation and manufacturer data.
+_compact_advert_adapters: set[str] = set()
+
+
+def _advert_payload_rejected(error: dbus.exceptions.DBusException) -> bool:
+    """Whether BlueZ refused the advertisement's contents, as when too long.
+
+    A controller-side failure is the same error name with "Failed to register
+    advertisement" and says nothing about the payload.
+    """
+    return (
+        error.get_dbus_name() == "org.bluez.Error.Failed"
+        and "parse advertisement" in (error.get_dbus_message() or "").casefold()
+    )
+
+
 class _AncsAdvert(dbus.service.Object):
     """LEAdvertisement1 object shaped like a real ANCS accessory.
 
@@ -157,6 +177,9 @@ class _AncsAdvert(dbus.service.Object):
     some iOS/controller combinations ignored the solicitation-only advert
     during first pairing.  0xffff and 0x9999 are explicitly test/private IDs;
     they do not impersonate a hardware vendor or service.
+
+    The compact form drops the service payload and tx-power, keeping the
+    manufacturer payload, for controllers limited to legacy advertising.
     """
 
     PATH = config.BLE_ADVERT_DBUS_PATH
@@ -173,6 +196,7 @@ class _AncsAdvert(dbus.service.Object):
         super().__init__(bus, path)
         self.adapter = adapter
         self.path = path
+        self.compact = adapter in _compact_advert_adapters
         self.registered = False
         self.pending = False
         self.retired = False
@@ -212,6 +236,12 @@ class _AncsAdvert(dbus.service.Object):
         self.request = None
         log.warning("RegisterAdvertisement failed: %s: %s",
                     error.get_dbus_name(), error.get_dbus_message())
+        if not self.compact and _advert_payload_rejected(error):
+            log.info(
+                "the next ANCS advertisement on %s omits its optional fields",
+                self.adapter,
+            )
+            _compact_advert_adapters.add(self.adapter)
         # NoReply and AlreadyExists are not activation proof. Retire this
         # unique path so an unresolved request cannot poison future retries.
         self.retire()
@@ -251,7 +281,7 @@ class _AncsAdvert(dbus.service.Object):
             raise dbus.exceptions.DBusException(
                 f"Unknown interface {iface}",
                 name="org.freedesktop.DBus.Error.InvalidArgs")
-        return {
+        properties: dict[str, Any] = {
             "Type": dbus.String("peripheral"),
             "SolicitUUIDs": dbus.Array([config.ANCS_SOLICIT_UUID], signature="s"),
             "ManufacturerData": dbus.Dictionary({
@@ -260,21 +290,24 @@ class _AncsAdvert(dbus.service.Object):
                     signature="y", variant_level=1,
                 ),
             }, signature="qv"),
-            "ServiceData": dbus.Dictionary({
-                "00009999-0000-1000-8000-00805f9b34fb": dbus.Array(
-                    [dbus.Byte(v) for v in (0x9E, 0x85, 0x39, 0x96)],
-                    signature="y", variant_level=1,
-                ),
-            }, signature="sv"),
             # Scoped to this advertisement rather than making the whole
             # adapter permanently discoverable.  Three minutes is enough for
             # a deliberate first-pair operation; ANCS solicitation remains
             # present after the discoverable flag expires.
             "Discoverable": dbus.Boolean(True),
             "DiscoverableTimeout": dbus.UInt16(180),
+            # BlueZ places the name in the scan response, not the packet.
             "LocalName": dbus.String(config.BLE_ADVERT_LOCAL_NAME),
-            "Includes": dbus.Array(["tx-power"], signature="s"),
         }
+        if not self.compact:
+            properties["ServiceData"] = dbus.Dictionary({
+                "00009999-0000-1000-8000-00805f9b34fb": dbus.Array(
+                    [dbus.Byte(v) for v in (0x9E, 0x85, 0x39, 0x96)],
+                    signature="y", variant_level=1,
+                ),
+            }, signature="sv")
+            properties["Includes"] = dbus.Array(["tx-power"], signature="s")
+        return properties
 
     @dbus.service.method("org.freedesktop.DBus.Properties",
                          in_signature="ss", out_signature="v")
@@ -298,6 +331,8 @@ def advert_registration_pending() -> bool:
 def forget_advert_registration() -> None:
     """Discard registration state that belonged to a departed BlueZ owner."""
     global _advert_instance
+    # A replacement bluetoothd gets the full advertisement first again.
+    _compact_advert_adapters.clear()
     previous, _advert_instance = _advert_instance, None
     if previous is not None:
         previous.retire(unregister=False)
@@ -345,6 +380,9 @@ def register_advert(
         log.warning("timed out waiting for ANCS advertisement registration")
         current.retire()
     if not current.registered:
+        if not current.compact and adapter in _compact_advert_adapters:
+            # Pairing cannot wait for the daemon's next reconciliation.
+            return register_advert(adapter, settle_for_pairing=True)
         return False
     deadline = time.monotonic() + PAIRING_ADVERT_SETTLE_SECONDS
     while current.registered and time.monotonic() < deadline:
