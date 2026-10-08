@@ -41,6 +41,7 @@ from blueferry.recipients import participant_lines
 from blueferry.text_safety import terminal_text
 from blueferry.time_display import format_message_timestamp
 from blueferry.tui_calls import CallsScreen
+from blueferry.tui_options import OptionsScreen
 
 _REFRESH_SECONDS = 15.0
 _SIGNAL_PUMP_SECONDS = 0.2
@@ -541,6 +542,7 @@ class HelpScreen(ModalScreen[None]):
             "[bold #7dd3fc]Star conversation[/]  s\n"
             "[bold #7dd3fc]Delete conversation[/]  Delete\n"
             f"{calls_line}"
+            "[bold #7dd3fc]Options[/]  o\n"
             "[bold #7dd3fc]Commands[/]  Ctrl+P\n"
             "[bold #7dd3fc]Refresh[/]  r\n"
             "[bold #7dd3fc]Back[/]  Esc\n"
@@ -575,6 +577,7 @@ class BlueFerryApp(App[None]):
         Binding("s", "toggle_star", "Star"),
         Binding("delete", "delete_thread", "Delete"),
         Binding("c", "calls", "Calls", show=False),
+        Binding("o", "options", "Options"),
         Binding("escape", "return_to_list", "Back", show=False),
     ]
 
@@ -1057,6 +1060,12 @@ class BlueFerryApp(App[None]):
 
     def action_help(self) -> None:
         self.push_screen(HelpScreen(calls_enabled=bool(self.state.status.calls_enabled)))
+
+    def action_options(self) -> None:
+        focused = self.focused
+        if isinstance(focused, Input | TextArea) or isinstance(self.screen, OptionsScreen):
+            return
+        self.push_screen(OptionsScreen(self.state.client))
 
     def action_new_message(self) -> None:
         self.push_screen(NewMessageScreen(), self._new_message_ready)
