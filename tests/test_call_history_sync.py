@@ -387,7 +387,7 @@ def test_manual_callers_join_one_pull(harness) -> None:
     assert harness.phone.pulls == 1
 
 
-def test_pull_failure_keeps_the_previous_list_and_reports_the_transport(harness) -> None:
+def test_pull_failure_keeps_the_previous_list_and_leaves_the_sessions_alone(harness) -> None:
     harness.phone.calls = [_call(OUTGOING, 1)]
     harness.sync.sync()
     harness.run()
@@ -403,7 +403,7 @@ def test_pull_failure_keeps_the_previous_list_and_reports_the_transport(harness)
     assert [str(error) for error in failures] == [
         "org.freedesktop.DBus.Error.UnknownObject: transfer gone"
     ]
-    assert len(harness.errors) == 1
+    assert harness.errors == []
     assert harness.sync.records() == [_call(OUTGOING, 1)]
 
 
@@ -870,15 +870,14 @@ def test_requests_coalesce_to_a_full_pull_if_any_asked_for_one(gated) -> None:
     assert gated.phone.listings == ["ich", "och", "mch", "mch"]
 
 
-@pytest.mark.parametrize(("message", "reported"), [
-    ("org.freedesktop.DBus.Error.NoReply: Did not receive a reply", False),
-    ("transfer timed out", False),
-    ("org.freedesktop.DBus.Error.UnknownObject: no such session", True),
-    ("org.freedesktop.DBus.Error.ServiceUnknown: obexd is gone", True),
+@pytest.mark.parametrize("message", [
+    "org.freedesktop.DBus.Error.NoReply: Did not receive a reply",
+    "transfer timed out",
+    "org.freedesktop.DBus.Error.UnknownObject: no such session",
+    "org.freedesktop.DBus.Error.ServiceUnknown: obexd is gone",
 ])
-def test_only_a_vanished_session_is_reported_never_a_timeout(
-    harness, message, reported,
-) -> None:
+def test_call_history_failures_never_drop_the_obex_sessions(harness, message) -> None:
+    """Vanished sessions are seen by the session manager's own watch."""
     def broken(_sessions, _phonebook, _direction):
         raise RuntimeError(message)
 
@@ -886,7 +885,7 @@ def test_only_a_vanished_session_is_reported_never_a_timeout(
     harness.sync.sync()
     harness.run()
 
-    assert bool(harness.errors) is reported
+    assert harness.errors == []
     assert not harness.sync.pending
 
 

@@ -348,9 +348,10 @@ specification and third-party reports, not captured observations:
   contact-sync MAP gating (defer while MAP reconnects, three-minute grace when
   MAP never connected). Each listing is a separate worker job bounded to
   45 seconds of transfer, so a queued MAP send never waits behind a whole
-  sync. A `NoReply` or transfer timeout from these optional pulls is not
-  reported to the session manager (which would drop MAP and PBAP); only
-  "object gone" errors are.
+  sync. No error from these optional pulls (`NoReply`, a transfer
+  timeout, `UnknownObject`) is reported to the session manager, which would
+  drop MAP and PBAP; a session that really vanished is already noticed through
+  `InterfacesRemoved`/`NameOwnerChanged`.
 - When the phone's own time zone or DST changes, iOS is expected to re-render
   offset-free timestamps of existing calls. A missed call whose text differs
   from an announced one for the same number by whole quarter hours (at most
