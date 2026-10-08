@@ -722,6 +722,87 @@ def test_proximity_lock_setter_round_trips_and_rejects_bad_grace(public_service)
     assert policy.proximity == (False, 30)
 
 
+def test_notification_click_rules_round_trip_through_the_shared_client(tmp_path) -> None:
+    from blueferry.notification_policy import NotificationPolicyStore
+
+    bus = dbus.SessionBus()
+    name = f"{BUS_NAME}.Testopen{os.getpid()}n{next(_service_ids)}"
+    bus_name = dbus.service.BusName(name, bus=bus, do_not_queue=True)
+    store = NotificationPolicyStore(tmp_path / "settings.json")
+    changes = []
+    service = MessagesService(
+        bus_name,
+        _Sessions(),
+        BackendDependencies(
+            status_provider=lambda: {
+                "initializing": False, "api_version": MESSAGES_API_VERSION,
+            },
+            notification_policy=store,
+            on_notification_policy_changed=lambda: changes.append(True),
+            open_notification_click=lambda click_id, token: (
+                clicks.append((click_id, token)) or click_id == "known"
+            ),
+        ),
+    )
+    outcome = {}
+    clicks = []
+
+    def edit_rules() -> None:
+        connection = dbus.SessionBus(private=True, mainloop=dbus.mainloop.NULL_MAIN_LOOP)
+        client = BackendClient(interface_factory=lambda interface: dbus.Interface(
+            connection.get_object(name, OBJECT_PATH), interface
+        ))
+        try:
+            outcome["empty"] = client.notification_open_map()
+            outcome["set"] = client.set_notification_open_target(
+                "net.whatsapp.WhatsApp", "https://web.whatsapp.com"
+            )
+            try:
+                client.set_notification_open_target("com.example.App", "file:///etc/passwd")
+            except Exception as error:
+                outcome["rejected"] = type(error).__name__
+            outcome["removed"] = client.remove_notification_open_target("net.whatsapp.WhatsApp")
+            outcome["after"] = client.notification_open_map()
+            outcome["click"] = client.open_notification_click("known", "tok")
+            outcome["stale_click"] = client.open_notification_click("gone", "")
+            try:
+                client.open_notification_click("x" * 65, "")
+            except Exception as error:
+                outcome["bad_click"] = type(error).__name__
+        except Exception as error:
+            outcome["error"] = error
+        finally:
+            connection.close()
+
+    try:
+        client_thread = threading.Thread(target=edit_rules)
+        client_thread.start()
+        _dispatch_until(lambda: not client_thread.is_alive())
+        client_thread.join(timeout=1)
+    finally:
+        service.close()
+        service.remove_from_connection()
+        bus.release_name(name)
+
+    assert outcome == {
+        "empty": [],
+        "set": [{
+            "bundle_id": "net.whatsapp.WhatsApp",
+            "target": "https://web.whatsapp.com",
+            "kind": "url",
+        }],
+        "rejected": "BackendError",
+        "removed": True,
+        "after": [],
+        "click": True,
+        "stale_click": False,
+        "bad_click": "BackendError",
+    }
+    assert clicks == [("known", "tok"), ("gone", "")]
+    assert store.open_map == {}
+    assert changes == [True, True]
+
+
 def test_live_signal_contains_only_an_opaque_revision(public_service) -> None:
     name, _pending, _policy, _policy_changes, service = public_service
     connection = dbus.SessionBus(private=True)

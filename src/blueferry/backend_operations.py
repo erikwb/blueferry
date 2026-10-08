@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import re
+import secrets
 import sqlite3
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -59,6 +60,8 @@ from blueferry.limits import (
     MAX_THREAD_QUERY_LIMIT,
 )
 from blueferry.named_groups import stored_named_group_key
+from blueferry.notification_open import MAX_ACTIVATION_TOKEN_CHARS, MAX_CLICK_ID_CHARS
+from blueferry.notification_open_map import open_map_entries
 from blueferry.obex.map_query import list_recent_messages
 from blueferry.obex.map_send import send_group_message, send_message
 from blueferry.protocol import MESSAGES_API_VERSION
@@ -127,6 +130,13 @@ class NotificationPolicy(Protocol):
     def set(self, value: str) -> str: ...
 
     def set_contacts_only(self, enabled: bool) -> bool: ...
+
+    @property
+    def open_map(self) -> dict[str, str]: ...
+
+    def set_open_target(self, bundle_id: str, target: str) -> dict[str, str]: ...
+
+    def remove_open_target(self, bundle_id: str) -> bool: ...
 
     @property
     def ancs_actions(self) -> bool: ...
@@ -237,6 +247,7 @@ class BackendDependencies:
     # opted in. A callable because the opt-in can change at runtime.
     call_history: Callable[[], CallHistory | None] | None = None
     set_call_history: Callable[[bool, bool], dict[str, Any]] | None = None
+    open_notification_click: Callable[[str, str], bool] | None = None
     # Called on every request: the opt-in can change at runtime.
     media: Callable[[], MediaControl | None] | None = None
     set_media_control: Callable[[bool], dict[str, Any]] | None = None
@@ -257,6 +268,10 @@ class BackendOperations:
         self.sessions = sessions
         self.dependencies = dependencies or BackendDependencies()
         self._confirmed_groups: dict[str, str] = {}
+        # Content-free GetStatus marker for click-rule edits. Clients reread
+        # the rules only when it changes; a random start makes a restarted
+        # daemon's value differ from what a client last saw.
+        self._open_map_revision = secrets.randbelow(1 << 31)
         self._conversations = ConversationIndex(
             lambda: read_events(
                 limit=None if self._starred_keys() else MAX_CONVERSATION_EVENTS,
@@ -739,6 +754,9 @@ class BackendOperations:
                 self.get_contacts_only_notifications()
             ),
         }
+        if self.dependencies.notification_policy is not None:
+            # Also the capability marker: daemons without click rules lack it.
+            status["notification_open_map_revision"] = self._open_map_revision
         calls = self.dependencies.calls
         if calls is not None:
             # A backend without the calls feature reports no calls keys at all.
@@ -1122,6 +1140,58 @@ class BackendOperations:
             raise NotReadyError(
                 "could not save the proximity lock preference"
             ) from error
+
+    def get_notification_open_map(self) -> list[dict[str, str]]:
+        policy = self.dependencies.notification_policy
+        if policy is None:
+            return []
+        return open_map_entries(policy.open_map)
+
+    def set_notification_open_target(
+        self, bundle_id: str, target: str
+    ) -> list[dict[str, str]]:
+        policy = self.dependencies.notification_policy
+        if policy is None:
+            raise NotReadyError("notification policy storage is unavailable")
+        if not isinstance(bundle_id, str) or not isinstance(target, str):
+            raise InvalidArgumentsError("bundle ID and target must be strings")
+        try:
+            mapping = policy.set_open_target(bundle_id, target)
+        except ValueError as error:
+            raise InvalidArgumentsError(str(error)) from error
+        self._open_map_revision += 1
+        if self.dependencies.on_notification_policy_changed is not None:
+            self.dependencies.on_notification_policy_changed()
+        return open_map_entries(mapping)
+
+    def open_notification_click(self, click_id: str, token: str) -> bool:
+        """Treat a shell-run popup argv like a live click on that popup."""
+        handler = self.dependencies.open_notification_click
+        if handler is None:
+            raise NotReadyError("desktop notifications are unavailable")
+        if (
+            not isinstance(click_id, str) or not isinstance(token, str)
+            or not click_id or len(click_id) > MAX_CLICK_ID_CHARS
+            or len(token) > MAX_ACTIVATION_TOKEN_CHARS
+        ):
+            raise InvalidArgumentsError("invalid notification click")
+        return bool(handler(click_id, token))
+
+    def remove_notification_open_target(self, bundle_id: str) -> bool:
+        policy = self.dependencies.notification_policy
+        if policy is None:
+            raise NotReadyError("notification policy storage is unavailable")
+        if not isinstance(bundle_id, str) or len(bundle_id) > 1024:
+            raise InvalidArgumentsError("invalid bundle ID")
+        try:
+            removed = policy.remove_open_target(bundle_id)
+        except ValueError as error:
+            raise InvalidArgumentsError(str(error)) from error
+        if removed:
+            self._open_map_revision += 1
+            if self.dependencies.on_notification_policy_changed is not None:
+                self.dependencies.on_notification_policy_changed()
+        return removed
 
     def list_recent(
         self, folder: str, limit: int, success: Success, failure: Failure

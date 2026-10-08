@@ -81,3 +81,10 @@ MAX_CALL_HISTORY_QUERY_LIMIT = 2_000
 # Missed-call identities already announced (or silently seeded). Bounded, and
 # additionally aged out with the history retention window.
 MAX_CALL_HISTORY_SEEN_KEYS = 5_000
+# Notification-click mappings launch local applications, so both the number
+# of rules and each configured target stay small and explicit.
+MAX_NOTIFICATION_OPEN_MAPPINGS = 64
+MAX_NOTIFICATION_OPEN_URL_CHARS = 2048
+# Clickable app popups are tracked separately from message popups so they
+# can never evict a message popup's read-state sync.
+MAX_NOTIFICATION_CLICK_TRACKERS = 64

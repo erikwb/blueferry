@@ -100,6 +100,7 @@ nav:
           - Without systemd (OpenRC): en/user/openrc.md
           - Clients: en/user/clients.md
           - Call history: en/user/call-history.md
+          - Notification click rules: en/user/notification-click-rules.md
           - Media control: en/user/media-control.md
           - Away lock: en/user/proximity-lock.md
           - Phone calls (experimental): en/user/calls.md
@@ -123,6 +124,7 @@ nav:
           - Ohne systemd (OpenRC): de/user/openrc.md
           - Clients: de/user/clients.md
           - Anrufliste: de/user/call-history.md
+          - Klickregeln für Mitteilungen: de/user/notification-click-rules.md
           - Mediensteuerung: de/user/media-control.md
           - Abwesenheitssperre: de/user/proximity-lock.md
           - Anrufe (experimentell): de/user/calls.md
