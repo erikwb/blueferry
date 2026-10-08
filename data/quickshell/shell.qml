@@ -41,6 +41,7 @@ ShellRoot {
   property bool ancsActionsBusy: false
   readonly property SavedChoice mediaControl: SavedChoice {}
   readonly property SavedChoice mprisPlayer: SavedChoice {}
+  readonly property SavedChoice proximityLock: SavedChoice {}
   property bool storagePolicyBusy: false
   property bool storageUnlockBusy: false
 
@@ -235,6 +236,7 @@ ShellRoot {
           result.contacts_only_notifications === true
         root.mediaControl.reported(result.media_control_enabled === true)
         root.mprisPlayer.reported(result.media_mpris_enabled === true)
+        root.proximityLock.reported(result.proximity_lock_enabled === true)
         var storagePolicy = result.storage_policy || "encrypted"
         root.storagePolicy = ["encrypted", "plaintext", "none"].indexOf(storagePolicy) >= 0
           ? storagePolicy : "encrypted"
@@ -310,6 +312,12 @@ ShellRoot {
             ? result.media_mpris_enabled === true : root.mprisPlayer.value,
           root.statusBusy)
         root.reload()
+      } else if (method === "set_proximity_lock") {
+        root.proximityLock.saved(
+          typeof result === "object" && result !== null
+            ? result.proximity_lock_enabled === true : root.proximityLock.value,
+          root.statusBusy)
+        root.reload()
       } else if (method === "set_storage_policy") {
         root.storagePolicyBusy = false
         if (typeof result === "object" && result !== null) {
@@ -374,6 +382,10 @@ ShellRoot {
         root.mprisPlayer.failed(root.backendStatus.media_mpris_enabled === true)
         root.errorText = message || "Could not save desktop media controls preference"
         root.reload()
+      } else if (method === "set_proximity_lock") {
+        root.proximityLock.failed(root.backendStatus.proximity_lock_enabled === true)
+        root.errorText = message || "Could not save away lock preference"
+        root.reload()
       } else if (method === "set_storage_policy") {
         root.storagePolicyBusy = false
         root.errorText = message
@@ -395,6 +407,8 @@ ShellRoot {
           root.mediaControl.failed(root.backendStatus.media_control_enabled === true)
         if (root.mprisPlayer.busy)
           root.mprisPlayer.failed(root.backendStatus.media_mpris_enabled === true)
+        if (root.proximityLock.busy)
+          root.proximityLock.failed(root.backendStatus.proximity_lock_enabled === true)
         root.storagePolicyBusy = false
         root.storageUnlockBusy = false
         root.errorText = message
@@ -1019,6 +1033,7 @@ ShellRoot {
           status: Object.assign({}, root.backendStatus, {
             notification_policy: root.notificationPolicy,
             contacts_only_notifications: root.contactsOnlyNotifications,
+            proximity_lock_enabled: root.proximityLock.value,
             storage_policy: root.storagePolicy,
             bluetooth_restart_command: root.bluetoothRestartCommand
           }, root.backendStatus.media_control_enabled === undefined ? {} : {
@@ -1031,6 +1046,7 @@ ShellRoot {
                   ancsActions: root.ancsActionsBusy,
                   mediaControl: root.mediaControl.busy,
                   mprisPlayer: root.mprisPlayer.busy,
+                  proximityLock: root.proximityLock.busy,
                   storage: root.storagePolicyBusy})
           visible: root.phoneSettingsVisible
           Layout.fillWidth: true
@@ -1048,6 +1064,7 @@ ShellRoot {
             if (method === "set_ancs_notification_actions") root.ancsActionsBusy = true
             if (method === "set_media_control") root.mediaControl.request(args.enabled)
             if (method === "set_mpris_player") root.mprisPlayer.request(args.enabled)
+            if (method === "set_proximity_lock") root.proximityLock.request(args.enabled)
             if (method === "set_storage_policy") {
               if (args.policy === "encrypted") root.storageUnlockAttempted = true
               root.storagePolicyBusy = true

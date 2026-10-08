@@ -141,6 +141,11 @@ class QuickshellBridge:
             return self.client.set_media_control(_boolean(args, "enabled"))
         if method == "set_mpris_player":
             return self.client.set_mpris_player(_boolean(args, "enabled"))
+        if method == "set_proximity_lock":
+            grace = args.get("grace_seconds")
+            if isinstance(grace, bool) or not isinstance(grace, int):
+                raise RequestError("grace_seconds must be an integer")
+            return self.client.set_proximity_lock(_boolean(args, "enabled"), grace)
         if method == "set_storage_policy":
             return self.client.set_storage_policy(_text(args, "policy"))
         if method == "unlock_storage":

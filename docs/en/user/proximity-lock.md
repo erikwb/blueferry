@@ -21,8 +21,10 @@ blueferry proximity-lock test                # dry run, never locks
 blueferry proximity-lock disable
 ```
 
-The GTK, terminal (TUI) and Quickshell clients have no settings for this yet;
-use the CLI there.
+The GTK and Quickshell clients have an **Away Lock** switch in their iPhone
+settings. It turns the lock on or off and keeps the saved grace period; change
+the grace period in the Qt client or with the CLI. The terminal client (TUI)
+has no setting for this; use the CLI there.
 
 ### Settings in `local.env`
 

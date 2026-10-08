@@ -7,9 +7,10 @@ import threading
 from gi.repository import Adw, Gio, GLib, Gtk
 
 from blueferry.bluetooth_devices import PairedDevice, iphone_candidates
-from blueferry.i18n import _
+from blueferry.i18n import _, ngettext
 from blueferry.models import BackendStatus
 from blueferry.onboarding import OnboardingState, ancs_unavailable_detail
+from blueferry.proximity_lock import clamp_grace
 from blueferry.quirks_report import issue_report, issue_url
 from blueferry.setup_client import (
     DISCOVERY_SECONDS,
@@ -50,6 +51,8 @@ class IPhonePage(Gtk.Box):
         self._applying_media_switches = False
         self._media_control_choice = SavedChoice()
         self._mpris_player_choice = SavedChoice()
+        self._applying_proximity_lock = False
+        self._proximity_lock_choice = SavedChoice()
         self._applying_storage_policy = False
         self._storage_unlock_attempted = False
         self._pairing_issue_report = ""
@@ -381,6 +384,29 @@ class IPhonePage(Gtk.Box):
         self._mpris_player_row.set_activatable_widget(self._mpris_player_switch)
         self._media_group.add(self._mpris_player_row)
         page.add(self._media_group)
+
+        # Shown only when the backend reports the away-lock keys.
+        self._proximity_lock_group = Adw.PreferencesGroup(
+            title=_("Away Lock"),
+            description=_(
+                "A convenience, not a security feature: Bluetooth presence can "
+                "be spoofed. BlueFerry never unlocks the desktop."
+            ),
+        )
+        self._proximity_lock_group.set_visible(False)
+        self._proximity_lock_row = Adw.ActionRow(
+            title=_("Lock the Desktop When My iPhone Goes Away"),
+        )
+        self._proximity_lock_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
+        self._proximity_lock_switch.connect(
+            "notify::active", self._proximity_lock_changed
+        )
+        self._proximity_lock_row.add_suffix(self._proximity_lock_switch)
+        self._proximity_lock_row.set_activatable_widget(
+            self._proximity_lock_switch
+        )
+        self._proximity_lock_group.add(self._proximity_lock_row)
+        page.add(self._proximity_lock_group)
 
         data_group = Adw.PreferencesGroup(title=_("Local Data"))
         history_model = Gtk.StringList.new(
@@ -1040,6 +1066,25 @@ class IPhonePage(Gtk.Box):
         self._applying_contacts_only_notifications = False
         self._apply_ancs_actions(status, reachable)
         self._apply_media_switches(status, reachable)
+        self._proximity_lock_group.set_visible("proximity_lock" in status.extra)
+        self._applying_proximity_lock = True
+        self._show_saved_choice(
+            self._proximity_lock_switch,
+            self._proximity_lock_choice,
+            status.extra.get("proximity_lock_enabled") is True,
+        )
+        grace = clamp_grace(status.extra.get("proximity_lock_grace_sec"))
+        self._proximity_lock_row.set_subtitle(
+            ngettext(
+                "Locks after {seconds} second away",
+                "Locks after {seconds} seconds away",
+                grace,
+            ).format(seconds=grace)
+        )
+        self._proximity_lock_row.set_sensitive(
+            reachable and not self._proximity_lock_choice.saving
+        )
+        self._applying_proximity_lock = False
         self._applying_storage_policy = True
         selected_storage = {
             "encrypted": 0,
@@ -1226,6 +1271,33 @@ class IPhonePage(Gtk.Box):
             self._apply_status(self._last_status)
 
         save(switch.get_active(), saved, failed)
+
+    def _proximity_lock_changed(self, _switch, _property) -> None:
+        if self._applying_proximity_lock:
+            return
+        enabled = self._proximity_lock_switch.get_active()
+        # The switch only opts in or out; the saved grace period is kept.
+        grace = clamp_grace(self._last_status.extra.get("proximity_lock_grace_sec"))
+        self._proximity_lock_choice.begin(enabled)
+        self._proximity_lock_row.set_sensitive(False)
+
+        def saved(status: dict) -> None:
+            self._proximity_lock_choice.saved(
+                status.get("proximity_lock_enabled") is True
+            )
+            self._toast(_("Away lock preference saved"))
+            self._refresh()
+
+        def failed(error: str) -> None:
+            self._proximity_lock_choice.failed()
+            self._toast(
+                _("Could not save away lock preference: {error}").format(
+                    error=error
+                )
+            )
+            self._apply_status(self._last_status)
+
+        self._client.set_proximity_lock_async(enabled, grace, saved, failed)
 
     def _storage_policy_changed(self, _row, _property) -> None:
         if self._applying_storage_policy:

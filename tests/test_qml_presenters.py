@@ -2209,6 +2209,98 @@ def test_quickshell_ancs_actions_checkbox_is_opt_in_and_gated(
     theme.deleteLater()
 
 
+def _quickshell_settings_page(qml_engine, quickshell_setup, status):
+    from PySide6.QtQuick import QQuickWindow
+
+    theme_component = _component(qml_engine, "data/quickshell/ThemePalette.qml")
+    theme = theme_component.create()
+    component = _component(qml_engine, "data/quickshell/PhoneSettingsPage.qml")
+    page = component.createWithInitialProperties({
+        "ferryTheme": theme, "setup": quickshell_setup, "status": status,
+        "width": 640, "height": 1400,
+    })
+    assert page is not None
+    quickshell_setup.setProperty("configured", True)
+    window = QQuickWindow()
+    window.resize(640, 1400)
+    page.setParentItem(window.contentItem())
+    window.show()
+    QGuiApplication.processEvents()
+    calls = []
+    page.operationRequested.connect(
+        lambda method, args: calls.append((
+            method, args.toVariant() if hasattr(args, "toVariant") else args,
+        ))
+    )
+
+    def close(_components=(theme_component, component)):
+        # The default argument keeps the components, which own the page
+        # and the theme, alive until the test is done.
+        window.close()
+        page.deleteLater()
+        theme.deleteLater()
+
+    return page, calls, close
+
+
+def test_quickshell_away_lock_checkbox_is_opt_in_and_keeps_the_grace_period(
+    qml_engine, quickshell_setup,
+):
+    base = {"notification_policy": "all", "contacts_only_notifications": False}
+    page, calls, close = _quickshell_settings_page(qml_engine, quickshell_setup, base)
+    checkbox = page.findChild(QObject, "proximityLockCheckBox")
+    assert checkbox is not None
+    # Daemons without the away-lock keys do not support the setting.
+    assert checkbox.property("visible") is False
+
+    status = {
+        **base, "proximity_lock": "disabled",
+        "proximity_lock_enabled": False, "proximity_lock_grace_sec": 120,
+    }
+    page.setProperty("status", status)
+    QGuiApplication.processEvents()
+    assert checkbox.property("visible") is True
+    assert checkbox.property("checked") is False
+    assert checkbox.property("enabled") is True
+    page.setProperty("busy", {"proximityLock": True})
+    QGuiApplication.processEvents()
+    assert checkbox.property("enabled") is False
+    page.setProperty("busy", {})
+    page.setProperty("status", {**status, "proximity_lock_enabled": True})
+    QGuiApplication.processEvents()
+    assert checkbox.property("checked") is True
+    page.setProperty("status", status)
+    QGuiApplication.processEvents()
+
+    assert QMetaObject.invokeMethod(checkbox, "toggle")
+    assert QMetaObject.invokeMethod(checkbox, "clicked")
+    assert calls == [("set_proximity_lock", {"enabled": True, "grace_seconds": 120})]
+    close()
+
+
+def test_quickshell_saved_choice_is_not_undone_by_a_late_status(qml_engine) -> None:
+    component = _component(qml_engine, "data/quickshell/SavedChoice.qml")
+    choice = component.create()
+    assert choice is not None
+    qml_engine.globalObject().setProperty("choice", qml_engine.newQObject(choice))
+
+    def state(script):
+        return _evaluate(qml_engine, script + "; [choice.value, choice.busy]")
+
+    assert state("choice.reported(true)") == [True, False]
+    # While the save runs, a status still reporting the old value is ignored.
+    assert state("choice.request(false); choice.reported(true)") == [False, True]
+    # A status requested before the save finished is skipped once.
+    assert state("choice.saved(false, true); choice.reported(true)") == [False, False]
+    assert state("choice.reported(true)") == [True, False]
+    # No status in flight: the next report is shown as it is.
+    assert state("choice.request(false); choice.saved(false, false)") == [False, False]
+    assert state("choice.reported(true)") == [True, False]
+    # A failed save returns to what the daemon last reported.
+    assert state("choice.request(false); choice.failed(true)") == [True, False]
+    choice.deleteLater()
+
+
 @pytest.mark.private_dbus
 def test_quickshell_keeps_the_restart_command_when_the_daemon_is_unavailable(
     tmp_path, quickshell_environment,
@@ -2574,40 +2666,6 @@ def test_battery_warning_checkbox_follows_the_daemon(qml_engine, settings_window
     ) == [{"method": "setPhoneBatteryWarning", "args": [True]}]
 
 
-def _quickshell_settings_page(qml_engine, quickshell_setup, status):
-    from PySide6.QtQuick import QQuickWindow
-
-    theme_component = _component(qml_engine, "data/quickshell/ThemePalette.qml")
-    theme = theme_component.create()
-    component = _component(qml_engine, "data/quickshell/PhoneSettingsPage.qml")
-    page = component.createWithInitialProperties({
-        "ferryTheme": theme, "setup": quickshell_setup, "status": status,
-        "width": 640, "height": 1400,
-    })
-    assert page is not None
-    quickshell_setup.setProperty("configured", True)
-    window = QQuickWindow()
-    window.resize(640, 1400)
-    page.setParentItem(window.contentItem())
-    window.show()
-    QGuiApplication.processEvents()
-    calls = []
-    page.operationRequested.connect(
-        lambda method, args: calls.append((
-            method, args.toVariant() if hasattr(args, "toVariant") else args,
-        ))
-    )
-
-    def close(_components=(theme_component, component)):
-        # The default argument keeps the components, which own the page
-        # and the theme, alive until the test is done.
-        window.close()
-        page.deleteLater()
-        theme.deleteLater()
-
-    return page, calls, close
-
-
 def test_quickshell_media_checkboxes_are_opt_in_and_the_player_needs_media_control(
     qml_engine, quickshell_setup,
 ):
@@ -2658,22 +2716,3 @@ def test_quickshell_media_checkboxes_are_opt_in_and_the_player_needs_media_contr
     assert QMetaObject.invokeMethod(mpris, "clicked")
     assert calls[-1] == ("set_mpris_player", {"enabled": True})
     close()
-
-
-def test_quickshell_saved_media_choice_is_not_undone_by_a_late_status(qml_engine) -> None:
-    component = _component(qml_engine, "data/quickshell/SavedChoice.qml")
-    choice = component.create()
-    assert choice is not None
-    choice.reported(False)
-    choice.request(True)
-    assert choice.property("busy") is True and choice.property("value") is True
-    choice.reported(False)
-    assert choice.property("value") is True
-    # Saved while a status request from before the save is still running.
-    choice.saved(True, True)
-    assert choice.property("busy") is False
-    choice.reported(False)
-    assert choice.property("value") is True
-    choice.reported(False)
-    assert choice.property("value") is False
-    choice.deleteLater()
