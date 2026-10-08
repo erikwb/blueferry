@@ -25,6 +25,7 @@ from blueferry.errors import CommandError, PairingError
 from blueferry.pairing_policy import PairingPolicy, resolve_pairing_policy
 from blueferry.pairing_types import PairingAttempt, PairingOutcome, PairingTransports
 from blueferry.private_files import atomic_write_private_text, read_private_text
+from blueferry.service_manager import backend_service_manager
 from blueferry.setup_verification import clear_setup_verification
 from blueferry.wireplumber_policy import WirePlumberPhoneAudioPolicy
 
@@ -146,7 +147,7 @@ def bluez_support_status(*, proc_root: Path = Path("/proc")) -> dict:
 
 
 def activate_bluez_support() -> dict:
-    """Restart Bluetooth via systemd so the packaged drop-in takes effect."""
+    """Restart Bluetooth so BlueZ's experimental bearer API becomes active."""
     return capabilities.activate_bluez_support(
         status=bluez_support_status,
         run_command=run_command,
@@ -840,22 +841,19 @@ def _wait_for_daemon_transports(
 
 
 def _restart_user_service() -> None:
-    for command in (
-        ["/usr/bin/systemctl", "--user", "daemon-reload"],
-        ["/usr/bin/systemctl", "--user", "restart", "blueferry.service"],
-    ):
-        try:
-            run_command(command, timeout=30)
-        except CommandError as error:
-            raise PairingError(f"Could not run {' '.join(command)}: {error}") from error
+    services = backend_service_manager(run_command)
+    try:
+        services.reload(timeout=30)
+        services.control("restart", "blueferry", timeout=30)
+    except CommandError as error:
+        if not error.argv:
+            raise PairingError(f"Could not restart BlueFerry: {error}") from error
+        raise PairingError(f"Could not run {' '.join(error.argv)}: {error}") from error
 
 
 def _stop_user_service() -> None:
     try:
-        run_command(
-            ["/usr/bin/systemctl", "--user", "stop", "blueferry.service"],
-            timeout=30,
-        )
+        backend_service_manager(run_command).control("stop", "blueferry", timeout=30)
     except CommandError as error:
         raise PairingError(f"Could not stop BlueFerry: {error}") from error
 
