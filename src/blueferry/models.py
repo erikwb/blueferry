@@ -78,6 +78,8 @@ class BackendStatus:
     phone_signal_strength: int | None = None
     phone_network_name: str | None = None
     phone_network_status: str | None = None
+    # None when the daemon predates the contact-photo setting.
+    contact_photos: bool | None = None
     extra: Mapping[str, Any] = field(default_factory=dict, repr=False)
 
     @property
@@ -124,6 +126,7 @@ class BackendStatus:
             "phone_signal_strength",
             "phone_network_name",
             "phone_network_status",
+            "contact_photos",
         }
         return cls(
             daemon=_bool(value.get("daemon")),
@@ -164,12 +167,18 @@ class BackendStatus:
             phone_signal_strength=_percent(value.get("phone_signal_strength")),
             phone_network_name=_optional_str(value.get("phone_network_name")),
             phone_network_status=_optional_str(value.get("phone_network_status")),
+            contact_photos=(
+                _bool(value["contact_photos"]) if "contact_photos" in value else None
+            ),
             extra={key: item for key, item in value.items() if key not in known},
         )
 
     def to_dict(self) -> dict[str, Any]:
         # Clients offer the calls opt-in only when the key is present.
         reported = {} if self.calls_enabled is None else {"calls_enabled": self.calls_enabled}
+        # Likewise the contact-photo opt-in.
+        if self.contact_photos is not None:
+            reported["contact_photos"] = self.contact_photos
         return {
             **self.extra,
             **reported,

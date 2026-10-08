@@ -707,3 +707,68 @@ def test_gtk_call_history_switches_save_both_values_together():
     assert page.toasts[-1] == (
         "Could not save missed call notification preference: storage is locked"
     )
+
+
+class _PhotosWidget:
+    def __init__(self, active: bool = False) -> None:
+        self.visible = None
+        self.active = active
+        self.sensitive = None
+
+    def set_visible(self, value) -> None:
+        self.visible = value
+
+    def set_active(self, value) -> None:
+        self.active = value
+
+    def get_active(self) -> bool:
+        return self.active
+
+    def set_sensitive(self, value) -> None:
+        self.sensitive = value
+
+
+def _photos_page():
+    from types import SimpleNamespace
+
+    from blueferry.ui.status import IPhonePage
+
+    calls = []
+    page = SimpleNamespace(
+        _applying_contact_photos=False,
+        _photos_group=_PhotosWidget(), _photos_switch=_PhotosWidget(), _photos_row=_PhotosWidget(),
+        _client=SimpleNamespace(
+            set_contact_photos_async=lambda enabled, ok, err: calls.append((enabled, ok, err))
+        ),
+        _toast=lambda _text: None, _refresh=lambda: None,
+        _apply_status=lambda _status: None, _last_status=BackendStatus(),
+    )
+    page._apply_contact_photos = lambda status, *, reachable: IPhonePage._apply_contact_photos(
+        page, status, reachable=reachable,
+    )
+    page._contact_photos_changed = lambda *args: IPhonePage._contact_photos_changed(page, *args)
+    return page, calls
+
+
+def test_gtk_contact_photo_row_appears_only_for_supporting_daemons():
+    page, calls = _photos_page()
+
+    page._apply_contact_photos(BackendStatus.from_dict({}), reachable=True)
+    assert page._photos_group.visible is False
+
+    page._apply_contact_photos(BackendStatus.from_dict({"contact_photos": True}), reachable=True)
+    assert page._photos_group.visible is True
+    assert page._photos_switch.active is True
+    assert page._photos_row.sensitive is True
+    assert calls == []
+
+
+def test_gtk_contact_photo_switch_saves_through_the_client():
+    page, calls = _photos_page()
+    page._photos_switch.active = True
+
+    page._contact_photos_changed(None, None)
+
+    [(enabled, _ok, _err)] = calls
+    assert enabled is True
+    assert page._photos_row.sensitive is False

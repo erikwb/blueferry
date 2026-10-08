@@ -57,6 +57,7 @@ class IPhonePage(Gtk.Box):
         self._proximity_lock_choice = SavedChoice()
         self._applying_calls_enabled = False
         self._calls_enabled_choice = SavedChoice()
+        self._applying_contact_photos = False
         self._applying_storage_policy = False
         self._storage_unlock_attempted = False
         self._pairing_issue_report = ""
@@ -475,6 +476,26 @@ class IPhonePage(Gtk.Box):
         )
         self._calls_group.add(self._calls_enabled_row)
         page.add(self._calls_group)
+
+        # Shown only for daemons that report the contact-photo opt-in.
+        self._photos_group = Adw.PreferencesGroup(
+            title=_("Contact Photos"),
+            description=_(
+                "Photos are kept with your contacts and arrive with the next "
+                "contact sync. Turning this off erases them."
+            ),
+        )
+        self._photos_row = Adw.ActionRow(
+            title=_("Show Contact Photos"),
+            subtitle=_("Avatars in notifications and conversations"),
+        )
+        self._photos_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
+        self._photos_switch.connect("notify::active", self._contact_photos_changed)
+        self._photos_row.add_suffix(self._photos_switch)
+        self._photos_row.set_activatable_widget(self._photos_switch)
+        self._photos_group.add(self._photos_row)
+        self._photos_group.set_visible(False)
+        page.add(self._photos_group)
 
         data_group = Adw.PreferencesGroup(title=_("Local Data"))
         history_model = Gtk.StringList.new(
@@ -1165,6 +1186,7 @@ class IPhonePage(Gtk.Box):
             reachable and not self._calls_enabled_choice.saving
         )
         self._applying_calls_enabled = False
+        self._apply_contact_photos(status, reachable=reachable)
         self._applying_storage_policy = True
         selected_storage = {
             "encrypted": 0,
@@ -1455,6 +1477,33 @@ class IPhonePage(Gtk.Box):
             self._apply_status(self._last_status)
 
         self._client.set_calls_enabled_async(enabled, saved, failed)
+
+    def _apply_contact_photos(self, status, *, reachable: bool) -> None:
+        self._applying_contact_photos = True
+        try:
+            self._photos_group.set_visible(status.contact_photos is not None)
+            self._photos_switch.set_active(status.contact_photos is True)
+            self._photos_row.set_sensitive(reachable)
+        finally:
+            self._applying_contact_photos = False
+
+    def _contact_photos_changed(self, _switch, _property) -> None:
+        if self._applying_contact_photos:
+            return
+        enabled = self._photos_switch.get_active()
+        self._photos_row.set_sensitive(False)
+
+        def saved(_value: dict) -> None:
+            self._toast(_("Contact photo preference saved"))
+            self._refresh()
+
+        def failed(error: str) -> None:
+            self._toast(
+                _("Could not save the contact photo preference: {error}").format(error=error)
+            )
+            self._apply_status(self._last_status)
+
+        self._client.set_contact_photos_async(enabled, saved, failed)
 
     def _storage_policy_changed(self, _row, _property) -> None:
         if self._applying_storage_policy:
