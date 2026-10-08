@@ -154,6 +154,14 @@ class GroupRoutes(Protocol):
     def clear(self) -> None: ...
 
 
+class MediaControl(Protocol):
+    def snapshot(self) -> dict[str, object]: ...
+
+    def send_command(
+        self, name: str, on_success: Callable[[], None], on_failure: Failure,
+    ) -> None: ...
+
+
 class ConfirmedGroups(Protocol):
     def matching_rosters(self, rosters: Mapping[str, str]) -> set[str]: ...
 
@@ -214,6 +222,9 @@ class BackendDependencies:
     on_storage_prepared: Callable[[Any], None] | None = None
     on_storage_changed: Callable[[], None] | None = None
     set_proximity_lock: Callable[[bool, int], dict[str, Any]] | None = None
+    # Called on every request: the opt-in can change at runtime.
+    media: Callable[[], MediaControl | None] | None = None
+    set_media_control: Callable[[bool], dict[str, Any]] | None = None
     calls: CallControl | None = None
     set_calls_enabled: Callable[[bool], dict[str, Any]] | None = None
     set_phone_battery_warning: Callable[[bool], dict[str, Any]] | None = None
@@ -1135,6 +1146,43 @@ class BackendOperations:
                 failed(error)
 
         sync(succeeded, failed)
+
+    def now_playing(self) -> dict[str, object]:
+        """iPhone now-playing snapshot; ``enabled`` is false when opted out."""
+        media = self._media()
+        if media is None:
+            return {"enabled": False, "available": False, "detail": "disabled"}
+        return media.snapshot()
+
+    def _media(self) -> MediaControl | None:
+        provider = self.dependencies.media
+        return provider() if provider is not None else None
+
+    def send_media_command(
+        self, name: str, on_success: Callable[[], None], on_failure: Failure,
+    ) -> None:
+        media = self._media()
+        if media is None:
+            raise NotReadyError(
+                "iPhone media control is off; turn it on in the iPhone "
+                "settings or with 'blueferry media enable'"
+            )
+        media.send_command(name, on_success, on_failure)
+
+    def set_media_control(self, enabled: bool) -> dict[str, Any]:
+        """Opt in or out of iPhone media control without a restart."""
+        configure = self.dependencies.set_media_control
+        if configure is None:
+            raise NotReadyError("media control settings are unavailable")
+        try:
+            return dict(configure(enabled))
+        except ValueError as error:
+            raise InvalidArgumentsError(str(error)) from error
+        except OSError as error:
+            log.error("could not save media control preference: %s", error)
+            raise NotReadyError(
+                "could not save the media control preference"
+            ) from error
 
     def is_healthy(self) -> bool:
         return self.sessions.map is not None

@@ -8,6 +8,7 @@ from blueferry.dbus_service import MessagesService
 from blueferry.protocol import (
     CALLS_IFACE,
     EVENTS_IFACE,
+    MEDIA_IFACE,
     MESSAGES_IFACE,
     OBJECT_PATH,
     PRESENCE_IFACE,
@@ -45,16 +46,19 @@ def test_contract_matches_exported_methods_and_signals() -> None:
     assert node.attrib["name"] == OBJECT_PATH
     assert {
         interface.attrib["name"] for interface in node.findall("interface")
-    } == {MESSAGES_IFACE, EVENTS_IFACE, PRESENCE_IFACE, CALLS_IFACE}
+    } == {MESSAGES_IFACE, EVENTS_IFACE, PRESENCE_IFACE, CALLS_IFACE, MEDIA_IFACE}
 
     _check_methods(node, MESSAGES_IFACE)
     _check_methods(node, PRESENCE_IFACE)
+    _check_methods(node, MEDIA_IFACE)
     _check_methods(node, CALLS_IFACE)
     exported_interfaces = {
         getattr(member, "_dbus_interface", None)
         for member in vars(MessagesService).values()
     } - {None}
-    assert exported_interfaces == {MESSAGES_IFACE, EVENTS_IFACE, PRESENCE_IFACE, CALLS_IFACE}
+    assert exported_interfaces == {
+        MESSAGES_IFACE, EVENTS_IFACE, PRESENCE_IFACE, CALLS_IFACE, MEDIA_IFACE,
+    }
 
     events = node.find(f"interface[@name='{EVENTS_IFACE}']")
     assert events is not None
@@ -88,6 +92,7 @@ def test_every_documented_error_has_the_stable_namespace() -> None:
         "ConfirmationRequired",
         "ContactSyncFailed",
         "InvalidArgs",
+        "MediaCommandFailed",
         "NotFound",
         "NotReady",
         "QueryFailed",
@@ -96,6 +101,17 @@ def test_every_documented_error_has_the_stable_namespace() -> None:
         "SendFailed",
         "SendOutcomeUnknown",
     }
+
+
+def test_events_signals_carry_no_media_content() -> None:
+    """NowPlayingChanged is an argument-free invalidation, like StatusChanged."""
+    root = ElementTree.parse(CONTRACT).getroot()
+    signal = root.find(
+        f"interface[@name='{EVENTS_IFACE}']/signal[@name='NowPlayingChanged']"
+    )
+    assert signal is not None
+    assert signal.findall("arg") == []
+    assert MessagesService.NowPlayingChanged._dbus_signature == ""
 
 
 def test_calls_changed_signal_is_content_free() -> None:

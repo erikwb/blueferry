@@ -704,6 +704,7 @@ def settings_window(qml_engine):
             property var threads: []
             property var devices: []
             property var contactResults: []
+            property var nowPlaying: ({})
             property var compatibility: ({})
             property var onboardingCompatibility: compatibility
             property bool compatibilityLoaded: false
@@ -736,12 +737,14 @@ def settings_window(qml_engine):
             function answerPairingConfirmation(approved) { record("answerPairingConfirmation", [approved]); }
             function setStoragePolicy(policy) { record("setStoragePolicy", [policy]); }
             function setProximityLock(enabled, grace) { record("setProximityLock", [enabled, grace]); }
+            function setMediaControl(enabled) { record("setMediaControl", [enabled]); }
             function setAncsNotificationActions(enabled) { record("setAncsNotificationActions", [enabled]); }
             function setCallsEnabled(enabled) { record("setCallsEnabled", [enabled]); }
             function setPhoneBatteryWarning(enabled) { record("setPhoneBatteryWarning", [enabled]); }
             function forgetDevice(mac) { record("forgetDevice", [mac]); }
             function activateBluetooth() { record("activateBluetooth", []); }
             function filePairingIssue() { record("filePairingIssue", []); }
+            function sendMediaCommand(command) { record("sendMediaCommand", [command]); }
             function refreshCalls() { record("refreshCalls", []); }
             function dialCall(number) { record("dialCall", [number]); }
             function answerCall(callId) { record("answerCall", [callId]); }
@@ -1076,6 +1079,35 @@ def test_proximity_lock_settings_appear_only_for_supporting_daemons(qml_engine, 
     assert _evaluate(
         qml_engine, "testBridge.calls.filter(c => c.method === 'setProximityLock')"
     ) == [{"method": "setProximityLock", "args": [True, 90]}]
+
+
+def test_media_control_setting_appears_only_for_supporting_daemons(qml_engine, settings_window):
+    window, bridge = settings_window
+    bridge.setProperty("setupLoaded", True)
+    QGuiApplication.processEvents()
+    loader = _settings_object(window, "mediaControlLoader")
+    bridge.setProperty("status", {"daemon": True})
+    assert loader.property("active") is False
+
+    bridge.setProperty("status", {
+        "daemon": True, "media_control_enabled": False, "media_control_available": False,
+    })
+    QGuiApplication.processEvents()
+    assert loader.property("active") is True
+    checkbox = _settings_object(window, "mediaControlCheckBox")
+    assert checkbox.property("checked") is False
+    assert _settings_object(window, "mediaControlStateLabel").property("text") == "Off"
+
+    assert QMetaObject.invokeMethod(checkbox, "toggle")
+    assert QMetaObject.invokeMethod(checkbox, "clicked")
+    assert _evaluate(
+        qml_engine, "testBridge.calls.filter(c => c.method === 'setMediaControl')"
+    ) == [{"method": "setMediaControl", "args": [True]}]
+
+    bridge.setProperty("status", {
+        "daemon": True, "media_control_enabled": True, "media_control_available": True,
+    })
+    assert "Connected" in _settings_object(window, "mediaControlStateLabel").property("text")
 
 
 def test_ancs_actions_checkbox_is_opt_in_and_gated(qml_engine, settings_window):
@@ -2381,6 +2413,53 @@ Item {
     log = result.stdout + result.stderr
     assert result.returncode == 0 and "BLUEFERRY_GROUP_REPLY_OK" in log, log
     assert "WARN scene:" not in log and "ReferenceError" not in log and "TypeError" not in log, log
+
+
+def test_now_playing_bar_is_absent_until_media_is_available(
+    qml_engine, settings_window,
+) -> None:
+    window, _bridge = settings_window
+    assert window.findChild(QObject, "nowPlayingBar") is None
+
+    _evaluate(qml_engine, """testBridge.nowPlaying = {
+        enabled: true, available: true, player: {state: "playing"},
+        track: {title: "<b>Title</b>", artist: "Artist"},
+        supported_commands: ["next", "toggle"]
+    }""")
+    QGuiApplication.processEvents()
+    assert window.findChild(QObject, "nowPlayingBar") is not None
+    label = window.findChild(QObject, "nowPlayingSummary")
+    # Remote text is shown verbatim, never as markup.
+    assert label.property("text") == "<b>Title</b> — Artist"
+    qml_engine.globalObject().setProperty("nowPlayingLabel", qml_engine.newQObject(label))
+    assert _evaluate(qml_engine, "nowPlayingLabel.textFormat") == 0  # Text.PlainText
+    assert not window.findChild(QObject, "nowPlayingPrevious").property("enabled")
+    assert window.findChild(QObject, "nowPlayingBar").property("stateIcon") == (
+        "media-playback-start"
+    )
+    _evaluate(qml_engine, """testBridge.nowPlaying = Object.assign(
+        {}, testBridge.nowPlaying, {player: {state: "paused"}})""")
+    QGuiApplication.processEvents()
+    assert window.findChild(QObject, "nowPlayingBar").property("stateIcon") == (
+        "media-playback-pause"
+    )
+    _evaluate(qml_engine, """testBridge.nowPlaying = Object.assign(
+        {}, testBridge.nowPlaying, {player: {state: "playing"}})""")
+    QGuiApplication.processEvents()
+
+    _click_control(window, window.findChild(QObject, "nowPlayingNext"))
+    _click_control(window, window.findChild(QObject, "nowPlayingToggle"))
+    assert _evaluate(
+        qml_engine,
+        "testBridge.calls.filter(c => c.method === 'sendMediaCommand').map(c => c.args[0])",
+    ) == ["next", "toggle"]
+
+    _evaluate(qml_engine, "testBridge.nowPlaying = {enabled: true, available: false}")
+    from PySide6.QtCore import QCoreApplication, QEvent
+
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+    QGuiApplication.processEvents()
+    assert window.findChild(QObject, "nowPlayingBar") is None
 
 
 def test_phone_calls_opt_in_appears_only_for_supporting_daemons(qml_engine, settings_window):

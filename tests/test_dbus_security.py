@@ -77,6 +77,42 @@ def test_disconnecting_forgets_per_caller_state_but_not_global_quota() -> None:
     assert any(key[0] == "*" for key in guard._attempts)
 
 
+def test_media_commands_have_their_own_quota_that_reconnects_cannot_reset() -> None:
+    now = [100.0]
+    guard = CallerGuard(
+        expected_uid=1000,
+        credential_provider=lambda _sender: {"UnixUserID": 1000},
+        clock=lambda: now[0],
+    )
+
+    for _ in range(60):
+        guard.authorize(":1.20", "media-command")
+    with pytest.raises(RateLimitError):
+        guard.authorize(":1.20", "media-command")
+    # A new connection shares the daemon-wide bucket.
+    with pytest.raises(RateLimitError):
+        guard.authorize(":1.21", "media-command")
+    # Media polling and command floods never starve messaging.
+    guard.authorize(":1.20", "media-read")
+    guard.authorize(":1.20", "read")
+    guard.authorize(":1.20", "send")
+
+    now[0] += 61
+    guard.authorize(":1.21", "media-command")
+
+
+def test_media_reads_do_not_consume_message_read_quota() -> None:
+    guard = CallerGuard(
+        expected_uid=1000,
+        credential_provider=lambda _sender: {"UnixUserID": 1000},
+    )
+    for _ in range(600):
+        guard.authorize(":1.20", "media-read")
+    with pytest.raises(RateLimitError):
+        guard.authorize(":1.20", "media-read")
+    guard.authorize(":1.20", "read")
+
+
 def test_dialing_has_its_own_strict_quota() -> None:
     now = [100.0]
     guard = CallerGuard(

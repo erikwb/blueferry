@@ -58,6 +58,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `build_info.py` | Package release + source-SHA build identity. |
 | `wireplumber_policy.py` | Manages one WirePlumber fragment that keeps iPhone audio on the phone (keeps the hands-free roles when calls are enabled). |
 | `proximity_lock.py` | Opt-in lock-only desktop lock after the iPhone's bearers stay down for a grace period; lock dispatch via ScreenSaver, then logind. |
+| `media.py` | Opt-in now-playing projection, media command policy, coalesced change listeners, and the persisted opt-in (`MediaControlSettings`). |
 
 ### Bluetooth transports and supervision
 
@@ -80,6 +81,10 @@ All paths are relative to `src/blueferry/` unless noted.
 | `ancs/constants.py` | ANCS spec constants. |
 | `ancs/events.py` | `AncsEvent`, the normalized per-app notification. |
 | `ancs/sequencer.py` | Bounded, duplicate-aware backlog of serialized ANCS requests. |
+| `ams/client.py` | Opt-in Apple Media Service GATT client on the ANCS LE link; asynchronous, serialized, bounded. |
+| `ams/parsers.py` | Pure AMS wire-format parsers and command/registration builders. |
+| `ams/state.py` | `NowPlaying` projection of Player, Queue, and Track attributes. |
+| `ams/constants.py` | AMS UUIDs, identifiers, and public command names. |
 | `bearer_supervisor.py` | Connects BR/EDR first, then keeps LE connected alongside it; reports a suspected stale LE bond from persistent bursts of very short LE links. |
 | `solicitation_supervisor.py` | Keeps the ANCS solicitation advertisement on air until ANCS is proven healthy. |
 | `adapter_class_supervisor.py` | Detects Class-of-Device drift and repairs it through the constrained system helper. |
@@ -149,6 +154,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `cli_messages.py` | CLI message listing, recipient selection, and send. |
 | `cli_common.py` | Small CLI presentation helpers. |
 | `cli_proximity.py` | `proximity-lock` status, dry run, enable, and disable. |
+| `cli_media.py` | `blueferry media` now-playing status, commands, and `enable`/`disable`. |
 | `cli_notification_actions.py` | `notification-actions` status, enable, and disable for the opt-in iPhone action buttons. |
 | `cli_calls.py` | Optional `blueferry calls` commands over `Calls1` and `blueferry phone-status` (battery, signal, network from `GetStatus`). |
 | `tui.py` | Textual terminal client. |
@@ -179,6 +185,8 @@ All paths are relative to `src/blueferry/` unless noted.
 | `qt/qml/PhoneStatusIndicator.qml` | Optional iPhone battery/signal indicator (loaded only when values are known; plain-text tooltip). |
 | `qt/qml/ExpandingMessageComposer.qml` | Growing message editor. |
 | `qt/qml/MessageBubble.qml` | Message bubble. |
+| `qt/qml/NowPlayingBar.qml` | Opt-in iPhone now-playing bar with transport buttons. |
+| `qt/qml/MediaControlSettings.qml` | Media-control opt-in checkbox and state; loaded only for daemons that report it. |
 | `quickshell_bridge.py` | Persistent stdin/stdout JSON bridge from Quickshell to the session D-Bus API. |
 
 ### Quickshell client (`data/quickshell/`)
@@ -224,7 +232,10 @@ contract.
   content-free live coordination. `Presence1` holds desktop-presence
   controls that are not messaging (the opt-in away lock); their state is
   reported through `Messages1.GetStatus`, and the compatibility check runs
-  through `Messages1` on the same owner. Identifiers live in `protocol.py`.
+  through `Messages1` on the same owner. The opt-in `Media1` interface returns the
+  now-playing snapshot and sends validated media commands; its
+  `NowPlayingChanged` invalidation on `Events1` has no arguments.
+  Identifiers live in `protocol.py`.
 - `Calls1` is the optional, default-off HFP call interface. It is always
   exported because it also carries the opt-in itself, `SetCallsEnabled`
   (saved in `settings.json`, `BLUEFERRY_CALLS_ENABLED` only seeds it); while
@@ -259,8 +270,8 @@ contract.
   in the daemon log.
 - Every public method checks the caller's UID against the backend's and
   applies per-connection plus daemon-wide quotas, with separate limits for
-  sends, contact sync, storage unlock, destructive operations, reads, and
-  status. Reconnecting does not reset daemon-wide limits. Snapshot sizes,
+  sends, contact sync, storage unlock, destructive operations, reads,
+  status, media reads, and media commands. Reconnecting does not reset daemon-wide limits. Snapshot sizes,
   query text, and replies are bounded.
 - `ListThreads` fits an 8 MiB budget by keeping the newest contiguous tail of
   each thread, capped at 500 messages per thread, and includes retained
@@ -397,6 +408,10 @@ A change to these rules has to be made in both places.
 - **Bearers:** `bearer_supervisor` keeps BR/EDR and LE connected, independent
   of desktop applets. In full mode a missing LE bearer holds back MAP/PBAP
   reconnects. Compatibility mode leaves LE disabled.
+- **Media (opt-in):** `ams/client` never dials. It follows the bearer
+  supervisor's LE observations and BlueZ owner changes, subscribes after the
+  link settles, and resets without `StopNotify` on loss. `media` owns the
+  command policy.
 - **Stale LE bond (report only):** the same supervisor watches
   `Bearer.LE1.Disconnected` (polled transitions as a fallback). It sets
   `le_bond_suspect` only when Classic stays connected across the whole burst,

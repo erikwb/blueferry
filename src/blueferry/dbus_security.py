@@ -43,6 +43,10 @@ _RULES: dict[str, tuple[RateRule, ...]] = {
     "conversation-delete": (RateRule(60, 60), RateRule(500, 3_600)),
     "destructive": (RateRule(6, 600),),
     "unlock": (RateRule(6, 600),),
+    # iPhone media control has its own buckets so a media applet polling
+    # now-playing, or a held volume key, cannot starve message reads or sends.
+    "media-read": (RateRule(600, 60),),
+    "media-command": (RateRule(60, 60), RateRule(1_200, 3_600)),
     # Optional HFP calls. Dialing is consequential (it can cost money), so it
     # is bounded like message sends. Answering moves a call's audio to this
     # computer; a person answers a few calls a minute at most. Hanging up and

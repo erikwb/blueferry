@@ -484,6 +484,18 @@ Kirigami.ApplicationWindow {
                     ]
                 }
 
+                Loader {
+                    Layout.fillWidth: true
+                    // Opt-in media control; absent unless the backend reports
+                    // a connected iPhone media service.
+                    active: !!root.bridge.nowPlaying && root.bridge.nowPlaying.available === true
+                    visible: active
+                    sourceComponent: NowPlayingBar {
+                        nowPlaying: root.bridge.nowPlaying
+                        onCommandRequested: command => root.bridge.sendMediaCommand(command)
+                    }
+                }
+
                 Controls.SplitView {
                     id: messagesSplit
                     Layout.fillWidth: true

@@ -468,6 +468,17 @@ Kirigami.ScrollablePage {
             }
         }
 
+        // Only daemons that report the media-control keys support the setting.
+        Loader {
+            objectName: "mediaControlLoader"
+            Layout.fillWidth: true
+            active: iphonePage.bridge.status.media_control_enabled !== undefined
+            visible: active
+            sourceComponent: MediaControlSettings {
+                bridge: iphonePage.bridge
+            }
+        }
+
         // Only daemons that report calls_enabled support the setting.
         Loader {
             objectName: "phoneCallsLoader"

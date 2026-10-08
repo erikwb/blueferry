@@ -869,6 +869,92 @@ def test_proximity_lock_setting_is_forwarded_and_merged_into_status(monkeypatch)
     assert changes == [True]
 
 
+class _MediaBackend(_Backend):
+    def __init__(self):
+        super().__init__()
+        self.media_commands = []
+        self.now_playing_calls = 0
+
+    def now_playing(self):
+        self.now_playing_calls += 1
+        return {"enabled": True, "available": True, "track": {"title": "Song"}}
+
+    def send_media_command(self, command):
+        self.media_commands.append(command)
+
+
+def test_now_playing_is_fetched_only_when_media_is_enabled(monkeypatch):
+    backend = _MediaBackend()
+    controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+
+    def run_inline(operation, on_done=None, on_failed=None, *, busy=True):
+        assert busy is False
+        try:
+            value = operation()
+        except Exception as error:
+            on_failed(str(error))
+        else:
+            on_done(value)
+
+    monkeypatch.setattr(controller, "_run", run_inline)
+    changes = []
+    controller.nowPlayingChanged.connect(lambda: changes.append(True))
+
+    controller.refreshNowPlaying()
+    assert backend.now_playing_calls == 0
+    assert controller.nowPlaying == {}
+
+    controller._status = {"media_control_enabled": True}
+    controller.refreshNowPlaying()
+    assert backend.now_playing_calls == 1
+    assert controller.nowPlaying["track"]["title"] == "Song"
+    assert changes == [True]
+
+    # A failed read clears stale track details instead of showing them.
+    backend.now_playing = lambda: (_ for _ in ()).throw(BackendError("gone"))
+    controller.refreshNowPlaying()
+    assert controller.nowPlaying == {}
+
+
+def test_media_command_runs_off_the_ui_thread_without_busy_state():
+    backend = _MediaBackend()
+    controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+    controller.sendMediaCommand("next")
+    controller.sendMediaCommand("  ")
+    assert controller.busy is False
+    controller._pool.waitForDone(1000)
+    assert backend.media_commands == ["next"]
+
+
+def test_media_control_setting_is_forwarded_and_merged_into_status(monkeypatch):
+    backend = _MediaBackend()
+    calls = []
+
+    def set_media_control(enabled):
+        calls.append(enabled)
+        return {"media_control_enabled": enabled, "media_control_available": False}
+
+    backend.set_media_control = set_media_control
+    controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+    monkeypatch.setattr(
+        controller,
+        "_run",
+        lambda operation, on_done=None, *_args, **_kwargs: (
+            on_done(operation()) if on_done is not None else operation()
+        ),
+    )
+    changes = []
+    controller.statusChanged.connect(lambda: changes.append(True))
+
+    controller.setMediaControl(True)
+
+    assert calls == [True]
+    assert controller.status["media_control_enabled"] is True
+    assert changes == [True]
+    # The bar follows at once instead of waiting for the next signal.
+    assert backend.now_playing_calls == 1
+
+
 def test_ancs_actions_setting_is_forwarded_and_merged_into_status(monkeypatch):
     backend = _Backend()
     calls = []

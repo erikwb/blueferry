@@ -26,6 +26,13 @@ MAX_ANCS_ACTIONS_IN_FLIGHT = 4
 # Desktop popups that still carry live iPhone action buttons.
 MAX_ANCS_ACTION_POPUPS = 64
 
+# AMS values are short display strings (titles, artists). A full Entity
+# Attribute read can exceed one notification, but never needs to be large.
+MAX_AMS_VALUE_BYTES = 8 * 1024
+# Serialized AMS GATT operations: subscription, registrations, truncation
+# reads and user commands. Beyond this the phone is not answering.
+MAX_AMS_PENDING_OPERATIONS = 32
+
 # D-Bus snapshots are presentation data, not an unlimited archive export. Keep
 # pathological messages or very busy threads from producing enormous replies;
 # ListEvents supports explicit bounded history access with the same body cap.

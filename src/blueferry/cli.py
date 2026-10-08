@@ -12,6 +12,7 @@ import typer
 from blueferry import bluez_setup, config
 from blueferry.cli_calls import calls_app, phone_status
 from blueferry.cli_common import setup_logging as _setup_logging
+from blueferry.cli_media import media
 from blueferry.cli_messages import sms_list, sms_send
 from blueferry.cli_notification_actions import notification_actions_app
 from blueferry.cli_proximity import proximity_app
@@ -590,6 +591,7 @@ def history_clear(
 app.command("sms-list")(sms_list)
 app.command("sms-send")(sms_send)
 app.add_typer(proximity_app, name="proximity-lock")
+app.command("media")(media)
 app.add_typer(notification_actions_app, name="notification-actions")
 app.add_typer(calls_app, name="calls")
 app.command("phone-status")(phone_status)

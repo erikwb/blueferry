@@ -167,6 +167,7 @@ fi
 %{python3_sitelib}/blueferry/*.py
 %{python3_sitelib}/blueferry/tui.tcss
 %{python3_sitelib}/blueferry/__pycache__
+%{python3_sitelib}/blueferry/ams
 %{python3_sitelib}/blueferry/ancs
 %{python3_sitelib}/blueferry/calls
 %{python3_sitelib}/blueferry/obex

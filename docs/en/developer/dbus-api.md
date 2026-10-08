@@ -7,7 +7,7 @@ including the CLI, uses it.
 | --- | --- |
 | Bus name | `io.weirdware.BlueFerry` |
 | Object path | `/io/weirdware/BlueFerry` |
-| Interfaces | `io.weirdware.BlueFerry.Messages1`, `io.weirdware.BlueFerry.Events1`, `io.weirdware.BlueFerry.Calls1` (optional calls) |
+| Interfaces | `io.weirdware.BlueFerry.Messages1`, `io.weirdware.BlueFerry.Events1`, `io.weirdware.BlueFerry.Presence1`, `io.weirdware.BlueFerry.Media1`, `io.weirdware.BlueFerry.Calls1` (optional calls) |
 | Errors | `io.weirdware.BlueFerry.Error.*` |
 
 > **Note:** The canonical contract is
@@ -94,6 +94,28 @@ package to restart an outdated backend after upgrades.
 | `UnlockStorage` | → `s status_json` |
 | `OpenLegacyGtkMessage` | `s handle, s application_owner` → `b delivered` (upgrade compatibility) |
 
+## Presence1 methods
+
+Desktop-presence controls that are not messaging. Their state is reported
+through `Messages1.GetStatus` (`proximity_lock*` keys).
+
+| Method | Arguments → result |
+| --- | --- |
+| `SetProximityLock` | `b enabled, u grace_seconds` → `s status_json` |
+
+## Media1 methods
+
+Opt-in iPhone media control over Apple Media Service. `GetStatus` reports
+`media_control_enabled` and `media_control_available`; clients show media
+settings only when those keys exist, so they never call `Media1` on an older
+backend. Media calls have their own rate-limit buckets.
+
+| Method | Arguments → result | Notes |
+| --- | --- | --- |
+| `GetNowPlaying` | → `s json` | `enabled`, `available`, `detail` (`disabled`, `requires-notification-access-mode`, `le-link-state-unknown`, `waiting-for-iphone`, `ready`), plus `player`, `queue`, `track` and `supported_commands` while available |
+| `SetMediaControl` | `b enabled` → `s status_json` | Saves the opt-in and starts or stops media control at once |
+| `SendMediaCommand` | `s command` | `play`, `pause`, `toggle`, `next`, `previous`, `volume-up`, `volume-down`, `repeat`, `shuffle`, `skip-forward`, `skip-backward`, `like`, `dislike`, `bookmark`; only commands the iPhone currently offers are sent |
+
 ## Calls1 methods (optional phone calls)
 
 `Calls1` is always exported, because it also carries the opt-in. While calls
@@ -122,6 +144,7 @@ adds `calls_state` (`unavailable`, `searching`, `connecting`, `ready`,
 | `HistoryChanged` | `a{sv} revision` | History changed; only a daemon-local revision is sent |
 | `StatusChanged` | none | Fetch `GetStatus` again |
 | `OpenMessageRequested` | `s handle` | A notification was clicked; the handle is a bounded, opaque MAP handle |
+| `NowPlayingChanged` | none | Fetch `Media1.GetNowPlaying` again |
 | `CallsChanged` | none | Optional calls changed; fetch `Calls1.ListCalls`. Never emitted while calls are off |
 
 ## Errors
@@ -131,8 +154,8 @@ bounded messages:
 
 `AuthorizationRequired`, `RateLimited`, `InvalidArgs`, `NotFound`,
 `NotReady`, `ConfirmationRequired`, `SendFailed`, `SendOutcomeUnknown`,
-`ResponseTooLarge`, `QueryFailed`, `ContactSyncFailed`, and for the optional
-calls `CallsDisabled`, `CallsUnavailable`, `CallFailed`
+`ResponseTooLarge`, `QueryFailed`, `ContactSyncFailed`, `MediaCommandFailed`, and
+for the optional calls `CallsDisabled`, `CallsUnavailable`, `CallFailed`
 
 The XML lists which errors each method can return. Unexpected exceptions and
 OBEX details stay in the backend log.

@@ -18,6 +18,7 @@ from gi.repository import GLib
 
 from blueferry import __version__, bluez_setup, config
 from blueferry.adapter_class_supervisor import AdapterClassSupervisor
+from blueferry.ams.client import AmsClient, AmsNotifySessions
 from blueferry.ancs.client import ACTION_DISCONNECTED, AncsClient
 from blueferry.backend_lifecycle import installed_release
 from blueferry.backend_operations import BackendDependencies
@@ -55,6 +56,7 @@ from blueferry.history import (
     history_count,
     mark_event_handles_read,
 )
+from blueferry.media import MediaController, MediaControlSettings
 from blueferry.notification_policy import (
     ALL_NOTIFICATIONS,
     NotificationPolicyStore,
@@ -164,6 +166,19 @@ class Daemon:
         # One MAP reconnect per MNS outage; seeing MNS again rearms it.
         self._mns_reconnect_spent = False
         self.ancs: AncsClient | None = None
+        # Opt-in Apple Media Service. The controller exists whenever the user
+        # opted in so clients can see why media is unavailable; the GATT
+        # client exists only where LE is allowed (full delivery mode).
+        # The opt-in can change at runtime (SetMediaControl).
+        self.media_settings = MediaControlSettings()
+        self.media: MediaController | None = (
+            self._new_media() if self.media_settings.enabled else None
+        )
+        self._media_device_path: str | None = None
+        # BlueZ notify sessions outlive the client that started them; this
+        # remembers them so an opt-out can release them when that is safe.
+        self.media_sessions = AmsNotifySessions()
+        self.ams: AmsClient | None = None
         self.adapter_class = AdapterClassSupervisor(config.ADAPTER)
         self.solicitation = SolicitationSupervisor(config.ADAPTER)
         # The saved phone-calls opt-in decides both the call controller and
@@ -331,6 +346,9 @@ class Daemon:
         self.sessions.close_all(remove_remote=False)
         if self.ancs is not None:
             self.ancs.observe_bearer_state(False)
+        self.media_sessions.observe_bearer_state(False)
+        if self.ams is not None:
+            self.ams.observe_bearer_state(False)
 
     def _resume_after_recovery(self) -> None:
         if not self._bluetooth_initialized:
@@ -561,6 +579,14 @@ class Daemon:
             self.solicitation.set_needed(True)
         if self.ancs is not None:
             self.ancs.observe_bearer_state(connected)
+        try:
+            # An owed release follows the link without a client, too.
+            self.media_sessions.observe_bearer_state(connected)
+            if self.ams is not None:
+                self.ams.observe_bearer_state(connected)
+        except Exception:
+            log.warning("iPhone media control could not follow the LE link",
+                        exc_info=True)
 
     def _on_ancs_status(self) -> None:
         # StartNotify is not the success boundary.  Keep solicitation on air
@@ -626,12 +652,15 @@ class Daemon:
                 on_storage_prepared=self._apply_storage_preparation,
                 on_storage_changed=self._on_storage_changed,
                 set_proximity_lock=self._set_proximity_lock,
+                media=lambda: self.media,
+                set_media_control=self._set_media_control,
                 calls=self.calls,
                 set_calls_enabled=self._set_calls_enabled,
                 set_phone_battery_warning=self._set_battery_warning,
             ),
         )
         self.events.set_dbus_service(self._dbus_service)
+        self._publish_media()
         self._initialize_storage()
         log.info("DBus service ready: %s", BUS_NAME)
         self._emit_status()
@@ -663,6 +692,96 @@ class Daemon:
         setattr(self, attr, schedule_periodic(
             GLib.timeout_add_seconds, seconds, callback, lambda: setattr(self, attr, None),
         ))
+
+    def _publish_media(self) -> None:
+        """Connect the opt-in media controller to its D-Bus surfaces."""
+        if self.media is None or self._dbus_service is None:
+            return
+        self.media.add_listener(self._dbus_service.emit_now_playing_changed)
+
+    def _new_media(self) -> MediaController:
+        return MediaController(
+            le_enabled=config.ANCS_ENABLED,
+            le_state=lambda: self.bearers.le_state,
+        )
+
+    def _media_status(self) -> dict[str, bool]:
+        return {
+            "media_control_enabled": self.media is not None,
+            "media_control_available": bool(self.media and self.media.available),
+        }
+
+    def _set_media_control(self, enabled: bool) -> dict:
+        selected = self.media_settings.set(enabled)
+        if selected and self.media is None:
+            self.media = self._new_media()
+            self._publish_media()
+            if self._media_device_path is not None:
+                self._start_media(self._media_device_path)
+        elif not selected and self.media is not None:
+            # Stop the GATT client first: its availability callback still
+            # needs the controller.
+            ams, self.ams = self.ams, None
+            # Disable the phone's CCCs so a later opt-in gets the command
+            # list again; a new client waits until that is done.
+            if ams is not None:
+                ams.stop(release=True)
+            else:
+                self.media_sessions.release()
+            media, self.media = self.media, None
+            media.close()
+        log.info("iPhone media control %s", "enabled" if selected else "disabled")
+        self._emit_status()
+        if self._dbus_service is not None:
+            self._dbus_service.emit_now_playing_changed()
+        return self._media_status()
+
+    def _on_media_availability(self, available: bool) -> None:
+        if self.media is not None:
+            self.media.handle_availability(available)
+        self._emit_status()
+
+    def _media_released(self) -> None:
+        # Only a renewed opt-in that is still wanted starts again.
+        if (
+            self.media_settings.enabled
+            and self.media is not None
+            and self._media_device_path is not None
+        ):
+            self._start_media(self._media_device_path)
+
+    def _start_media(self, device_path: str) -> None:
+        # Remembered so a later runtime opt-in can start on the same device.
+        self._media_device_path = device_path
+        if self.media is None or self.ams is not None:
+            return
+        if not config.ANCS_ENABLED:
+            log.info("iPhone media control needs the LE link; compatibility mode disables it")
+            return
+        if self.media_sessions.release_owed:
+            # Reusing the old notify session would write no CCC, and iOS
+            # would not send its command list: finish the opt-out first.
+            self.media_sessions.when_released(self._media_released)
+            return
+        media = self.media
+        candidate = AmsClient(
+            device_path,
+            on_update=media.handle_update,
+            on_supported_commands=media.handle_supported_commands,
+            on_availability=self._on_media_availability,
+            sessions=self.media_sessions,
+        )
+        self.ams = candidate
+        media.attach(candidate)
+        try:
+            candidate.observe_bearer_state(self.bearers.le_state)
+            candidate.start()
+        except Exception:
+            # Media control is optional: never let it block messaging.
+            log.warning("iPhone media control could not start", exc_info=True)
+            media.attach(None)
+            self.ams = None
+            candidate.stop()
 
     def _retry_storage(self) -> bool:
         # A daemon activated before the desktop keyring opens must recover
@@ -781,6 +900,7 @@ class Daemon:
                 raise
         elif not config.ANCS_ENABLED:
             log.info("ANCS connection disabled by pairing compatibility policy")
+        self._start_media(device_path)
         self._watch_sleep_resume()
 
         # Sinks don't need the OBEX sessions — set them up now so ANCS events
@@ -843,6 +963,15 @@ class Daemon:
         # the new observation until the next physical link transition.
         if self.ancs is not None:
             self.ancs.observe_bluez_owner(old_owner, new_owner)
+        # Optional media control must never cost messaging its
+        # bluetoothd-restart recovery below.
+        try:
+            self.media_sessions.observe_bluez_owner(old_owner, new_owner)
+            if self.ams is not None:
+                self.ams.observe_bluez_owner(old_owner, new_owner)
+        except Exception:
+            log.warning("iPhone media control could not follow the BlueZ restart",
+                        exc_info=True)
         # Battery objects and notification sessions belonged to the old owner.
         self._battery_link_seen = False
         self.phone_battery.bluez_owner_changed(bool(new_owner))
@@ -1120,6 +1249,7 @@ class Daemon:
             "storage_policy": self.storage.status.policy,
             "storage_state": self.storage.status.state,
             "storage_detail": self.storage.status.detail,
+            **self._media_status(),
             **self._controller_identity(),
             **self.connectivity.snapshot(),
         }
@@ -1245,6 +1375,12 @@ class Daemon:
             self.listener.stop()
         if self.ancs is not None:
             self.ancs.stop()
+        if self.ams is not None:
+            self.ams.stop()
+        # No StopNotify on shutdown: the closing bus connection ends them.
+        self.media_sessions.close()
+        if self.media is not None:
+            self.media.close()
         self.solicitation.stop()
         self.events.stop()
         if self._sleep_match is not None:
