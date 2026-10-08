@@ -223,12 +223,16 @@ def _bytes(call: _Call) -> bytes:
     return bytes(int(value) for value in call.args[0])
 
 
-def _skip_attribute_refresh(timers) -> None:
+def _skip_attribute_refresh(timers, name="_refresh_missing_attributes") -> None:
     """Most tests deliver no values; the refresh has its own tests."""
     for source, callback in list(timers.pending.items()):
-        if getattr(callback, "__name__", "") == "_refresh_missing_attributes":
+        if getattr(callback, "__name__", "") == name:
             del timers.pending[source]
             del timers.delays[source]
+
+
+def _skip_reregistration(timers) -> None:
+    _skip_attribute_refresh(timers, "_reregister_entities")
 
 
 def _subscribe(client, bus, timers) -> None:
@@ -975,6 +979,7 @@ def test_supported_command_list_also_disarms_the_watchdog(harness) -> None:
     client, bus, timers, *_ = harness
     _subscribe(client, bus, timers)
     bus.notify(RC, bytes([0, 1]))
+    _skip_reregistration(timers)
     assert timers.pending == {}
     assert client.available
 
@@ -986,6 +991,7 @@ def test_first_update_disarms_the_watchdog(harness) -> None:
     # Only the command-list check is left, which the list itself disarms.
     assert list(timers.delays[source] for source in timers.pending) == [3]
     bus.notify(RC, bytes([0, 1]))
+    _skip_reregistration(timers)
     assert timers.pending == {}
     assert client.available
 
@@ -1238,6 +1244,7 @@ def test_missing_command_list_after_a_reconnect_reenables_its_ccc_once(harness) 
     assert bus.pending() == [("StartNotify", RC)]
     bus.take("StartNotify", RC).succeed()
     bus.notify(RC, bytes([0, 1, 3]))
+    _skip_reregistration(timers)
     assert commands[-1] == frozenset({
         RemoteCommandID.Play, RemoteCommandID.Pause, RemoteCommandID.NextTrack,
     })
@@ -1246,6 +1253,7 @@ def test_missing_command_list_after_a_reconnect_reenables_its_ccc_once(harness) 
 
     # Once per link: later silence does not toggle the CCC again.
     bus.notify(RC, b"")  # known and empty is still a list
+    _skip_reregistration(timers)
     bus.notify(EU, bytes([2, 2, 0]) + b"Next")
     timers.run_all()
     assert bus.pending() == []
@@ -1269,6 +1277,7 @@ def test_a_list_that_arrives_late_cancels_the_refresh(harness) -> None:
     _subscribe(client, bus, timers)
     bus.notify(EU, bytes([2, 2, 0]) + b"Episode")
     bus.notify(RC, bytes([0]))
+    _skip_reregistration(timers)
     timers.run_all()
     assert bus.pending() == []
 
@@ -1379,4 +1388,101 @@ def test_attribute_refresh_skips_what_arrived_and_a_dropped_link(harness) -> Non
     # that dropped before the timer reads nothing.
     client.observe_bearer_state(False)
     refresh[0]()
+    assert bus.pending() == []
+
+
+def test_a_resent_command_list_registers_the_entities_again(harness) -> None:
+    """btmon 2026-10-08: a 0.5 s LE drop between two bearer polls. BlueZ
+    restored the CCCs, iOS resent its command list, but the Entity Update
+    registrations were never rewritten and AMS stayed silent."""
+    client, bus, timers, updates, _commands, availability = harness
+    _subscribe(client, bus, timers)
+    bus.notify(EU, bytes([2, 2, 0]) + b"Old")
+    _skip_attribute_refresh(timers, "_command_list_missing")
+
+    # The restore: two command lists in a row, no bearer transition seen.
+    bus.notify(RC, bytes([0, 1]))
+    bus.notify(RC, bytes(range(9)))
+    rereg = [s for s, c in timers.pending.items() if c.__name__ == "_reregister_entities"]
+    assert len(rereg) == 1 and timers.delays[rereg[0]] == 1
+    timers.pending.pop(rereg[0])()
+
+    for expected in (b"\x00\x00\x01\x02", b"\x01\x00\x01\x02\x03", b"\x02\x00\x01\x02\x03"):
+        call = bus.take("WriteValue", EU)
+        assert _bytes(call) == expected
+        call.succeed()
+    # Availability never flapped, and the values that follow are delivered.
+    assert availability == [True]
+    bus.notify(EU, bytes([2, 2, 0]) + b"Tricky Disco")
+    assert updates[-1].value == "Tricky Disco"
+    # What iOS does not resend is read afterwards, as after a registration.
+    assert [c.__name__ for c in timers.pending.values()].count(
+        "_refresh_missing_attributes") == 1
+
+
+def test_a_failed_reregistration_resubscribes(harness) -> None:
+    client, bus, timers, _updates, _commands, availability = harness
+    _subscribe(client, bus, timers)
+    bus.notify(RC, bytes([0, 1]))
+    rereg = [s for s, c in timers.pending.items() if c.__name__ == "_reregister_entities"]
+    timers.pending.pop(rereg[0])()
+    bus.take("WriteValue", EU).fail()
+    assert availability == [True, False]
+    timers.run_all()
+    assert bus.pending() == [("StartNotify", RC)]
+
+
+def test_a_reregistration_cancels_the_pending_first_read_at_once(harness) -> None:
+    """Review: the first registration's read stayed armed while the entities
+    were registered again, and could read values that were on their way."""
+    client, bus, timers, *_ = harness
+    client.observe_bearer_state(True)
+    client.start()
+    bus.take("GetManagedObjects").succeed(_objects())
+    timers.run_all()
+    bus.take("StartNotify", RC).succeed()
+    bus.take("StartNotify", EU).succeed()
+    for _entity in EntityID:
+        bus.take("WriteValue", EU).succeed()
+
+    def refreshes() -> list:
+        return [
+            callback for callback in timers.pending.values()
+            if callback.__name__ == "_refresh_missing_attributes"
+        ]
+
+    assert len(refreshes()) == 1
+    bus.notify(RC, bytes([0, 1]))
+    rereg = [s for s, c in timers.pending.items() if c.__name__ == "_reregister_entities"]
+    timers.pending.pop(rereg[0])()
+    # The registrations are in flight; the old read must not fire meanwhile.
+    assert refreshes() == []
+    for _entity in EntityID:
+        bus.take("WriteValue", EU).succeed()
+    assert len(refreshes()) == 1
+    refreshes()[0]()
+    for _ in range(7):
+        bus.take("WriteValue", EA).succeed()
+        bus.take("ReadValue", EA).fail(message="Application error 0xA2")
+    assert bus.pending() == []
+
+
+def test_no_reregistration_while_subscribing_or_without_a_link(harness) -> None:
+    client, bus, timers, *_ = harness
+    client.observe_bearer_state(True)
+    client.start()
+    bus.take("GetManagedObjects").succeed(_objects())
+    # BlueZ restores the CCC at link-up, before BlueFerry subscribes.
+    bus.notify(RC, bytes([0, 1]))
+    assert not any(c.__name__ == "_reregister_entities" for c in timers.pending.values())
+
+    _subscribe_rest = timers.run_all
+    _subscribe_rest()
+    bus.take("StartNotify", RC).succeed()
+    bus.take("StartNotify", EU).succeed()
+    for _entity in EntityID:
+        bus.take("WriteValue", EU).succeed()
+    bus.notify(RC, bytes([0, 1]))
+    client.observe_bearer_state(False)
+    timers.run_all()
     assert bus.pending() == []

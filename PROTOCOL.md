@@ -659,6 +659,18 @@ specification-based expectation, not a captured result.
   the Player and Track attributes that did not arrive through Entity
   Update (read back via Entity Attribute); an absent one (AMS 0xA2) is just
   logged.
+- Short LE drops can go unseen: the bearer state is polled every 5 seconds,
+  and a btmon capture (2026-10-08) showed a 0.5-second drop (Connection
+  Timeout) between two polls. BlueZ restored the CCCs of the bonded iPhone
+  itself (ANCS Data Source, AMS Remote Command and Entity Update; not the
+  ANCS Notification Source in that capture), iOS answered with its command
+  list, but the Entity Update registrations iOS had dropped with the link
+  were never rewritten, so AMS stayed silent through track changes.
+  BlueFerry therefore registers the entities again (without changing
+  availability) one second after any Remote Command notification on a
+  registered link, then reads the values that did not follow. iOS also
+  resends the list when the playing app changes; registering again then is
+  harmless.
 - A truncated value is completed by writing the entity/attribute selector to
   Entity Attribute (`C6B2F38C-…`) and reading it back; the two steps stay
   adjacent in the serialized GATT queue.

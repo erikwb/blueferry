@@ -87,6 +87,9 @@ COMMAND_LIST_REFRESHES_PER_LINK = 1
 ATTRIBUTE_REFRESH_SECONDS = 3
 # The entities whose values a reconnect must not lose; Queue is cosmetic.
 REFRESHED_ENTITIES = (EntityID.Player, EntityID.Track)
+# A Remote Command notification while registered: wait this long for the
+# rest of a CCC restore before registering the entities again.
+REREGISTER_SETTLE_SECONDS = 1
 MANAGER_RETRY_INITIAL_SECONDS = 2
 MANAGER_RETRY_MAX_SECONDS = 60
 # A failed StopNotify is retried this often per settled LE link, with a
@@ -470,6 +473,7 @@ class AmsClient:
         # (entity, attribute) pairs notified since the last registration.
         self._seen_attributes: set[tuple[int, int]] = set()
         self._attribute_refresh_id: int | None = None
+        self._reregister_id: int | None = None
         self._command_refreshes_left = COMMAND_LIST_REFRESHES_PER_LINK
 
     # ---- public state ---------------------------------------------------
@@ -912,6 +916,7 @@ class AmsClient:
         # a characteristic can vanish and return while the link settles.
         for attribute in (
             "_retry_id", "_first_update_id", "_command_list_id", "_attribute_refresh_id",
+            "_reregister_id",
         ):
             source = getattr(self, attribute)
             if source is not None:
@@ -1018,6 +1023,87 @@ class AmsClient:
         self._cancel_command_list_check()
         self._notifications_flow()
         self._report_supported_commands(commands)
+        self._schedule_reregistration()
+
+    def _schedule_reregistration(self) -> None:
+        """iOS sent its command list again: the CCC may have been restored.
+
+        On hardware (btmon, 2026-10-08) an LE drop of 0.5 s fell between two
+        bearer polls. BlueZ re-enabled the CCCs of the bonded iPhone by
+        itself, iOS answered with its command list, but the Entity Update
+        registrations it had forgotten with the link were never rewritten,
+        so AMS stayed silent through track changes. iOS also resends the
+        list when the playing app changes; registering again then is
+        harmless, and iOS answers with the current values.
+        """
+        if (
+            not self._available
+            or self._subscribing
+            or self._reregister_id is not None
+            or self._bearer_connected is not True
+        ):
+            return
+        self._reregister_id = self._schedule(
+            REREGISTER_SETTLE_SECONDS, self._reregister_entities,
+        )
+
+    def _reregister_entities(self) -> bool:
+        self._reregister_id = None
+        eu_path = self._paths.get(ENTITY_UPDATE_CHAR)
+        if (
+            not self._available
+            or self._subscribing
+            or self._bearer_connected is not True
+            or eu_path is None
+        ):
+            return False
+        log.info("iPhone resent its media command list; registering media updates again")
+        generation = self._generation
+        # The first registration's read is moot now: what it would read is
+        # answered (or read) after the registrations below.
+        self._cancel_attribute_refresh()
+        self._seen_attributes.clear()
+        remaining = deque(EntityID)
+
+        def next_step() -> None:
+            if generation != self._generation:
+                return
+            if not remaining:
+                # A second re-registration may have overlapped this one.
+                self._cancel_attribute_refresh()
+                self._attribute_refresh_id = self._schedule(
+                    ATTRIBUTE_REFRESH_SECONDS, self._refresh_missing_attributes,
+                )
+                return
+            entity = remaining.popleft()
+            packet = build_entity_update_registration(entity, ENTITY_ATTRIBUTES[entity])
+            if not self._enqueue(_Operation(
+                f"reregister {entity.name}",
+                lambda ok, fail: self._write(eu_path, packet, ok, fail),
+                next_step, failed, generation,
+            )):
+                failed(AmsQueueFullError("AMS operation queue is full"))
+
+        def failed(error: Exception) -> None:
+            if generation != self._generation:
+                return
+            log.warning("AMS re-registration failed: %s", _error_name(error))
+            # Start over: Notifying is asked again, the entities rewritten.
+            self._owned_notify_paths.clear()
+            self._reset_subscription()
+            self._schedule_retry()
+
+        next_step()
+        return False
+
+    def _cancel_attribute_refresh(self) -> None:
+        if self._attribute_refresh_id is None:
+            return
+        try:
+            self._cancel(self._attribute_refresh_id)
+        except Exception:
+            log.debug("could not remove AMS attribute refresh timer", exc_info=True)
+        self._attribute_refresh_id = None
 
     def _cancel_command_list_check(self) -> None:
         if self._command_list_id is None:
