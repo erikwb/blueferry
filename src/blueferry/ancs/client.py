@@ -65,6 +65,11 @@ log = logging.getLogger(__name__)
 
 REQUEST_TIMEOUT_SECONDS = 15
 DBUS_CALL_TIMEOUT_SECONDS = 10
+# BlueZ rejects a WriteValue with org.bluez.Error.InProgress while another
+# write on the same characteristic is unacknowledged (gatt-client.c write_op),
+# e.g. from another D-Bus client. Retry briefly instead of dropping the request.
+CONTROL_POINT_BUSY_RETRY_SECONDS = 1
+MAX_CONTROL_POINT_BUSY_RETRIES = 3
 SUBSCRIBE_RETRY_SECONDS = 2
 AUTHORIZATION_RETRY_SECONDS = 5
 MANAGER_RETRY_SECONDS = 2
@@ -83,6 +88,7 @@ class _PendingRequest:
     app_probe: bool = False
     expected_app_id: str | None = None
     authorization_probe: bool = False
+    busy_retries: int = 0
 
 
 _APP_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")
@@ -185,6 +191,13 @@ class AncsClient:
         )
         self._active_request: _PendingRequest | None = None
         self._request_timeout_id: int | None = None
+        # Identity of the WriteValue call BlueZ has not answered yet. It is
+        # tracked separately from _active_request: a request can finish
+        # (response, timeout, reassembly failure) while its write is still
+        # unacknowledged, and BlueZ rejects an overlapping write with
+        # InProgress. Only the matching reply/error callback clears it.
+        self._cp_write_token: object | None = None
+        self._cp_busy_retry_id: int | None = None
 
         # ObjectManager watches live for the client lifetime. Characteristic
         # subscriptions are shorter-lived and are rebuilt as one unit whenever
@@ -307,6 +320,9 @@ class AncsClient:
             return
         self._bluez_owner_generation += 1
         self._bluez_owner_available = bool(new_owner)
+        # The old bluetoothd took its pending write_op with it; its late
+        # callback (if any) no longer gates the new owner's Control Point.
+        self._cp_write_token = None
         if self._manager_bind_in_progress:
             self._manager_rebind_pending = True
         if old_owner:
@@ -889,7 +905,12 @@ class AncsClient:
 
     def _pump_requests(self) -> None:
         """Write exactly one CP command; ANCS responses are strictly ordered."""
-        if self._active_request is not None or not self._request_queue:
+        if (
+            self._active_request is not None
+            or self._cp_write_token is not None
+            or self._cp_busy_retry_id is not None
+            or not self._request_queue
+        ):
             return
         if not self._cp_path:
             return
@@ -897,6 +918,8 @@ class AncsClient:
         cp_path = self._cp_path
         request = self._request_queue.popleft()
         self._active_request = request
+        token = object()
+        self._cp_write_token = token
 
         def current_attempt() -> bool:
             return (
@@ -905,21 +928,52 @@ class AncsClient:
                 and self._active_request is request
             )
 
-        try:
-            dbus.Interface(
-                get_system_bus().get_object("org.bluez", cp_path),
-                "org.bluez.GattCharacteristic1",
-            ).WriteValue(
-                [dbus.Byte(value) for value in request.packet],
-                {},
-                timeout=DBUS_CALL_TIMEOUT_SECONDS,
-            )
-        except dbus.exceptions.DBusException as error:
+        def release_write() -> bool:
+            """Clear the in-flight marker if it still belongs to this call."""
+            if self._cp_write_token is token:
+                self._cp_write_token = None
+                return True
+            return False
+
+        def written(*_args) -> None:
+            released = release_write()
             if not current_attempt():
-                log.debug("discarded stale ANCS write failure after BlueZ changed owner")
+                # Also reached when the complete Data Source response arrived
+                # before BlueZ delivered the write reply, or the request timed
+                # out or failed reassembly meanwhile. The next request was
+                # held back until now so the writes never overlap.
+                log.debug(
+                    "discarded ANCS write completion after the request "
+                    "already completed or the owner changed"
+                )
+                if released:
+                    self._pump_requests()
+                return
+            self._request_timeout_id = self._schedule(
+                REQUEST_TIMEOUT_SECONDS, self._request_timed_out
+            )
+
+        def failed(error: dbus.exceptions.DBusException) -> None:
+            released = release_write()
+            if not current_attempt():
+                log.debug("discarded stale ANCS write failure")
+                if released:
+                    self._pump_requests()
                 return
             name = error.get_dbus_name() or type(error).__name__
             detail = error.get_dbus_message() or str(error)
+            if (
+                name.endswith(".InProgress")
+                and request.busy_retries < MAX_CONTROL_POINT_BUSY_RETRIES
+            ):
+                log.info("ANCS Control Point busy; retrying the request")
+                request.busy_retries += 1
+                self._active_request = None
+                self._request_queue.push_front(request.key, request)
+                self._cp_busy_retry_id = self._schedule(
+                    CONTROL_POINT_BUSY_RETRY_SECONDS, self._retry_busy_control_point
+                )
+                return
             log.warning("ANCS CP WriteValue failed: %s: %s", name, detail)
             self._observe_permission_error(error)
             if _connection_was_lost(error):
@@ -928,13 +982,51 @@ class AncsClient:
             self._abandon_request(request)
             self._active_request = None
             self._pump_requests()
+
+        # Asynchronous so a slow or wedged ATT write can never stall the GLib
+        # main loop for DBUS_CALL_TIMEOUT_SECONDS. The next request is written
+        # only after this call's reply or error, so the Control Point remains
+        # strictly serialized even when the request itself finishes earlier.
+        try:
+            dbus.Interface(
+                get_system_bus().get_object("org.bluez", cp_path, introspect=False),
+                "org.bluez.GattCharacteristic1",
+            ).WriteValue(
+                [dbus.Byte(value) for value in request.packet],
+                # Without introspection dbus-python cannot infer a{sv} from
+                # an empty dict and raises before sending.
+                dbus.Dictionary({}, signature="sv"),
+                reply_handler=written,
+                error_handler=failed,
+                timeout=DBUS_CALL_TIMEOUT_SECONDS,
+            )
+        except dbus.exceptions.DBusException as error:
+            # dbus-python can fail before dispatch, e.g. on a closed bus.
+            failed(error)
+        except Exception:
+            # Anything else is a programming error (marshalling, a broken
+            # fake). Release the request so the queue cannot stall, then let
+            # the error surface with its traceback instead of disguising it
+            # as a BlueZ failure.
+            release_write()
+            if self._active_request is request:
+                self._active_request = None
+                self._abandon_request(request)
+            raise
+
+    def _retry_busy_control_point(self) -> bool:
+        self._cp_busy_retry_id = None
+        self._pump_requests()
+        return False
+
+    def _cancel_busy_retry(self) -> None:
+        if self._cp_busy_retry_id is None:
             return
-        if not current_attempt():
-            log.debug("discarded stale ANCS write completion after BlueZ changed owner")
-            return
-        self._request_timeout_id = self._schedule(
-            REQUEST_TIMEOUT_SECONDS, self._request_timed_out
-        )
+        try:
+            self._cancel(self._cp_busy_retry_id)
+        except Exception:
+            log.debug("could not remove ANCS Control Point retry", exc_info=True)
+        self._cp_busy_retry_id = None
 
     def _observe_permission_error(self, error: dbus.exceptions.DBusException) -> None:
         name = error.get_dbus_name() or ""
@@ -1000,6 +1092,7 @@ class AncsClient:
             self._emit(attrs, app_id)
 
     def _reset_requests(self) -> None:
+        self._cancel_busy_retry()
         self._request_queue.clear()
         self._finish_active_request()
         self._pending_app_lookups.clear()
