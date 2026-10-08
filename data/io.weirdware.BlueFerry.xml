@@ -187,6 +187,61 @@
                   value="InvalidArgs,NotReady,MediaCommandFailed"/>
     </method>
   </interface>
+  <interface name="io.weirdware.BlueFerry.Calls1">
+    <annotation name="org.freedesktop.DBus.Description"
+                value="Optional, default-off iPhone call control through oFono HFP; see README"/>
+    <annotation name="io.weirdware.BlueFerry.Errors"
+                value="AuthorizationRequired,RateLimited,CallsDisabled"/>
+    <method name="SetCallsEnabled">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Save the opt-in and apply it without a restart; returns the calls_* GetStatus keys as JSON"/>
+      <arg name="enabled" type="b" direction="in"/>
+      <arg name="status_json" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady"/>
+    </method>
+    <method name="ListCalls">
+      <arg name="json" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="ResponseTooLarge"/>
+    </method>
+    <method name="Dial">
+      <arg name="number" type="s" direction="in"/>
+      <arg name="call_id" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,CallsUnavailable,CallFailed"/>
+    </method>
+    <method name="Answer">
+      <arg name="call_id" type="s" direction="in"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotFound,CallsUnavailable,CallFailed"/>
+    </method>
+    <method name="Hangup">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Hang up an active or held call, or decline a ringing one"/>
+      <arg name="call_id" type="s" direction="in"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotFound,CallsUnavailable,CallFailed"/>
+    </method>
+    <method name="HangupAll">
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="CallsUnavailable,CallFailed"/>
+    </method>
+    <method name="SendTones">
+      <arg name="call_id" type="s" direction="in"/>
+      <arg name="tones" type="s" direction="in"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotFound,CallsUnavailable,CallFailed"/>
+    </method>
+    <method name="SwapCalls">
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="CallsUnavailable,CallFailed"/>
+    </method>
+    <method name="HoldAndAnswer">
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,CallsUnavailable,CallFailed"/>
+    </method>
+  </interface>
   <interface name="io.weirdware.BlueFerry.Events1">
     <annotation name="org.freedesktop.DBus.Description"
                 value="Content-free live invalidations; snapshots are fetched with Messages1"/>
@@ -200,6 +255,10 @@
     <signal name="NowPlayingChanged">
       <annotation name="org.freedesktop.DBus.Description"
                   value="Content-free; fetch details with Media1.GetNowPlaying"/>
+    </signal>
+    <signal name="CallsChanged">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Call state changed; fetch details with Calls1.ListCalls"/>
     </signal>
   </interface>
 </node>

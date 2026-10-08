@@ -73,8 +73,8 @@ def test_notification_capable_native_families_use_their_own_bluetoothd_path() ->
     arch = (ROOT / "packaging/arch/blueferry-bluetooth.conf").read_text()
     rpm = (ROOT / "packaging/rpm/blueferry-bluetooth.conf").read_text()
 
-    assert "ExecStart=/usr/lib/bluetooth/bluetoothd -E" in arch
-    assert "ExecStart=/usr/libexec/bluetooth/bluetoothd -E" in rpm
+    assert "ExecStart=/usr/lib/bluetooth/bluetoothd -E -P hfp\n" in arch
+    assert "ExecStart=/usr/libexec/bluetooth/bluetoothd -E -P hfp\n" in rpm
     assert not (ROOT / "packaging/deb/blueferry-bluetooth.conf").exists()
 
 
@@ -215,6 +215,34 @@ def test_native_backends_ship_the_btmgmt_system_unit_template() -> None:
     assert "systemd/49-blueferry-cod.rules" in arch
     assert "%{_prefix}/lib/blueferry/blueferry-set-cod" in spec
     assert "%{_datadir}/polkit-1/rules.d/49-blueferry-cod.rules" in spec
+
+
+def test_openrc_user_service_mirrors_the_systemd_unit() -> None:
+    unit = (ROOT / "systemd/blueferry.service").read_text()
+    script_path = ROOT / "packaging/openrc/blueferry"
+    script = script_path.read_text()
+
+    assert script.startswith("#!/sbin/openrc-run\n")
+    assert script_path.stat().st_mode & 0o111
+    assert "ExecStart=/usr/bin/blueferry run" in unit
+    assert 'command="${BLUEFERRY_BIN:-/usr/bin/blueferry}"' in script
+    assert 'command_args="run"' in script
+    assert "supervisor=supervise-daemon" in script
+    # ConditionPathExists=%h/.config/blueferry/local.env
+    assert "ConditionPathExists=%h/.config/blueferry/local.env" in unit
+    assert '"${XDG_CONFIG_HOME:-${HOME}/.config}/blueferry/local.env"' in script
+    assert "RestartSec=5" in unit
+    assert "respawn_delay=5" in script
+    assert "UMask=0077" in unit
+    assert "umask=077" in script
+    assert "NoNewPrivileges=true" in unit
+    assert "no_new_privs=" in script
+    assert "TimeoutStopSec=180" in unit
+    assert 'retry="SIGTERM/180/' in script
+    # User services cannot hard-depend on a session bus they may not manage,
+    # and must never source the owner-only configuration as shell.
+    assert "need dbus" not in script
+    assert "\n. " not in script and "\tsource " not in script
 
 
 def test_deb_and_rpm_backend_ship_private_textual_runtime() -> None:

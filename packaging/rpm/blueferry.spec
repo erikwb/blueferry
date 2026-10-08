@@ -34,6 +34,8 @@ Requires:       python3dist(cryptography) >= 41
 Requires:       python3dist(typer) >= 0.9
 Requires:       systemd
 Recommends:     gnome-keyring
+# Only for the experimental, default-off phone calls.
+Suggests:       ofono
 Provides:       bundled(python3dist(linkify-it-py)) = 2.1.0
 Provides:       bundled(python3dist(markdown-it-py)) = 4.2.0
 Provides:       bundled(python3dist(mdit-py-plugins)) = 0.6.1
@@ -167,6 +169,7 @@ fi
 %{python3_sitelib}/blueferry/__pycache__
 %{python3_sitelib}/blueferry/ams
 %{python3_sitelib}/blueferry/ancs
+%{python3_sitelib}/blueferry/calls
 %{python3_sitelib}/blueferry/obex
 %{python3_sitelib}/blueferry/sinks
 %{python3_sitelib}/blueferry-*.dist-info

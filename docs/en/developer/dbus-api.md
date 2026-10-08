@@ -7,7 +7,7 @@ including the CLI, uses it.
 | --- | --- |
 | Bus name | `io.weirdware.BlueFerry` |
 | Object path | `/io/weirdware/BlueFerry` |
-| Interfaces | `io.weirdware.BlueFerry.Messages1`, `io.weirdware.BlueFerry.Events1`, `io.weirdware.BlueFerry.Presence1`, `io.weirdware.BlueFerry.Media1` |
+| Interfaces | `io.weirdware.BlueFerry.Messages1`, `io.weirdware.BlueFerry.Events1`, `io.weirdware.BlueFerry.Presence1`, `io.weirdware.BlueFerry.Media1`, `io.weirdware.BlueFerry.Calls1` (optional calls) |
 | Errors | `io.weirdware.BlueFerry.Error.*` |
 
 > **Note:** The canonical contract is
@@ -114,6 +114,27 @@ backend. Media calls have their own rate-limit buckets.
 | `SetMediaControl` | `b enabled` → `s status_json` | Saves the opt-in and starts or stops media control at once |
 | `SendMediaCommand` | `s command` | `play`, `pause`, `toggle`, `next`, `previous`, `volume-up`, `volume-down`, `repeat`, `shuffle`, `skip-forward`, `skip-backward`, `like`, `dislike`, `bookmark`; only commands the iPhone currently offers are sent |
 
+## Calls1 methods (optional phone calls)
+
+`Calls1` is always exported, because it also carries the opt-in. While calls
+are off, every method except `SetCallsEnabled` fails with `CallsDisabled`, and
+`GetStatus` reports only `calls_enabled: false`. With calls on, `GetStatus`
+adds `calls_state` (`unavailable`, `searching`, `connecting`, `ready`,
+`bluez_conflict`) and `calls_available`. See the
+[phone calls guide](../user/calls.md).
+
+| Method | Arguments → result | Notes |
+| --- | --- | --- |
+| `SetCallsEnabled` | `b enabled` → `s status_json` | Saves the opt-in and applies it at once; returns the `calls_*` status keys. "settings" rate limit |
+| `ListCalls` | → `s json` | Current calls with caller number and contact name; treat as private |
+| `Dial` | `s number` → `s call_id` | Plain numbers only; `*`/`#` and emergency numbers are refused. 6 per minute, 60 per hour |
+| `Answer` | `s call_id` | A waiting call holds the active one. 10 per minute |
+| `Hangup` | `s call_id` | Hangs up, or declines a ringing call |
+| `HangupAll` | | |
+| `SendTones` | `s call_id, s tones` | DTMF on the active call: `0-9`, `*`, `#` |
+| `SwapCalls` | | Swap active and held |
+| `HoldAndAnswer` | | Hold the active call and answer the waiting one. 10 per minute |
+
 ## Events1 signals
 
 | Signal | Arguments | Meaning |
@@ -122,6 +143,7 @@ backend. Media calls have their own rate-limit buckets.
 | `StatusChanged` | none | Fetch `GetStatus` again |
 | `OpenMessageRequested` | `s handle` | A notification was clicked; the handle is a bounded, opaque MAP handle |
 | `NowPlayingChanged` | none | Fetch `Media1.GetNowPlaying` again |
+| `CallsChanged` | none | Optional calls changed; fetch `Calls1.ListCalls`. Never emitted while calls are off |
 
 ## Errors
 
@@ -130,7 +152,8 @@ bounded messages:
 
 `AuthorizationRequired`, `RateLimited`, `InvalidArgs`, `NotFound`,
 `NotReady`, `ConfirmationRequired`, `SendFailed`, `SendOutcomeUnknown`,
-`ResponseTooLarge`, `QueryFailed`, `ContactSyncFailed`, `MediaCommandFailed`
+`ResponseTooLarge`, `QueryFailed`, `ContactSyncFailed`, `MediaCommandFailed`, and
+for the optional calls `CallsDisabled`, `CallsUnavailable`, `CallFailed`
 
 The XML lists which errors each method can return. Unexpected exceptions and
 OBEX details stay in the backend log.

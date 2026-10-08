@@ -11,6 +11,7 @@ from blueferry.ancs.parsers import (
     DataSourceEvent,
     NotificationAttributes,
     build_get_notification_app_identifier,
+    build_get_notification_attributes,
     parse_notification_app_identifier,
 )
 
@@ -92,3 +93,10 @@ def test_app_identifier_probe_does_not_request_notification_content() -> None:
 
     body = struct.pack("<I", uid) + _attr(0, "com.example.App")
     assert parse_notification_app_identifier(body) == (uid, "com.example.App")
+
+
+def test_attribute_request_asks_for_long_title_subtitle_and_message() -> None:
+    # Title and subtitle up to 128 bytes, message up to 1024 bytes (u16-le).
+    assert build_get_notification_attributes(0x01020304) == bytes.fromhex(
+        "00" "04030201" "00" "018000" "028000" "030004"
+    )

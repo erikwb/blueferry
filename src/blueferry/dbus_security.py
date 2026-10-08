@@ -47,6 +47,13 @@ _RULES: dict[str, tuple[RateRule, ...]] = {
     # now-playing, or a held volume key, cannot starve message reads or sends.
     "media-read": (RateRule(600, 60),),
     "media-command": (RateRule(60, 60), RateRule(1_200, 3_600)),
+    # Optional HFP calls. Dialing is consequential (it can cost money), so it
+    # is bounded like message sends. Answering moves a call's audio to this
+    # computer; a person answers a few calls a minute at most. Hanging up and
+    # DTMF share a generous bucket so ending a call is never blocked.
+    "calls-dial": (RateRule(6, 60), RateRule(60, 3_600)),
+    "calls-answer": (RateRule(10, 60), RateRule(120, 3_600)),
+    "calls-control": (RateRule(60, 60), RateRule(600, 3_600)),
 }
 
 

@@ -28,9 +28,14 @@ from blueferry.protocol import (
     OBJECT_PATH,
     backend_compatibility_error,
 )
+from blueferry.service_manager import (
+    BUS_ACTIVATED,
+    UserServiceManager,
+    backend_service_manager,
+)
 
 PACKAGE_RELEASE_PATH = Path("/usr/share/blueferry/package-release")
-SERVICE = "blueferry.service"
+SERVICE_NAME = "blueferry"
 
 log = logging.getLogger(__name__)
 
@@ -58,20 +63,25 @@ def _status(timeout: int = 20) -> dict:
     return value
 
 
-def _systemctl(action: str) -> None:
+def _services() -> UserServiceManager:
+    return backend_service_manager(run_command)
+
+
+def _control(action: str, services: UserServiceManager) -> None:
     try:
-        run_command(["/usr/bin/systemctl", "--user", action, SERVICE], timeout=45)
+        services.control(action, SERVICE_NAME, timeout=45)
     except CommandError as error:
         raise BackendLifecycleError(str(error)) from error
 
 
 def restart_backend() -> None:
-    """Reload the packaged unit and restart this user's daemon."""
+    """Reload the packaged service definition and restart this user's daemon."""
+    services = _services()
     try:
-        run_command(["/usr/bin/systemctl", "--user", "daemon-reload"], timeout=20)
+        services.reload(timeout=20)
     except CommandError as error:
         raise BackendLifecycleError(str(error)) from error
-    _systemctl("restart")
+    _control("restart", services)
 
 
 @contextmanager
@@ -101,8 +111,8 @@ def ensure_backend_current(
     """Start the backend on demand and replace a stale packaged process.
 
     The first GetStatus uses normal session D-Bus activation. A direct
-    systemd start is retained as a fallback for sessions whose bus has not
-    noticed a newly installed activation file yet. Toolkit clients may inject
+    service-manager start is retained as a fallback for sessions whose bus
+    has not noticed a newly installed activation file yet. Toolkit clients may inject
     a reader backed by a connection owned by their worker thread.
     """
     read_status = status_reader or _status
@@ -112,8 +122,13 @@ def ensure_backend_current(
     try:
         status = read_status()
     except (BlueFerryError, dbus.exceptions.DBusException, ValueError) as first_error:
+        services = _services()
+        # Without a service manager, starting is D-Bus activation itself, so
+        # the fallback is one more GetStatus and the first failure is the news.
+        bus_activated = services.name == BUS_ACTIVATED
         try:
-            _systemctl("start")
+            if not bus_activated:
+                _control("start", services)
             status = read_status()
         except (
             BackendLifecycleError,
@@ -121,6 +136,8 @@ def ensure_backend_current(
             dbus.exceptions.DBusException,
             ValueError,
         ) as error:
+            if bus_activated:
+                raise BackendLifecycleError(str(first_error) or str(error)) from error
             raise BackendLifecycleError(str(error) or str(first_error)) from error
 
     # No marker means a source checkout or a package transaction currently

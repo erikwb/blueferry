@@ -111,3 +111,60 @@ def test_media_reads_do_not_consume_message_read_quota() -> None:
     with pytest.raises(RateLimitError):
         guard.authorize(":1.20", "media-read")
     guard.authorize(":1.20", "read")
+
+
+def test_dialing_has_its_own_strict_quota() -> None:
+    now = [100.0]
+    guard = CallerGuard(
+        expected_uid=1000,
+        credential_provider=lambda _sender: {"UnixUserID": 1000},
+        clock=lambda: now[0],
+    )
+
+    for _ in range(6):
+        guard.authorize(":1.20", "calls-dial")
+    with pytest.raises(RateLimitError):
+        guard.authorize(":1.20", "calls-dial")
+    # Answering or hanging up an existing call is never blocked by dialing,
+    # nor does call control consume the message-send quota.
+    for _ in range(30):
+        guard.authorize(":1.20", "calls-control")
+    guard.authorize(":1.20", "send")
+
+    # A second connection cannot bypass the daemon-wide dial quota.
+    with pytest.raises(RateLimitError):
+        guard.authorize(":1.21", "calls-dial")
+    now[0] += 61
+    guard.authorize(":1.21", "calls-dial")
+
+
+def test_dialing_is_bounded_per_hour() -> None:
+    now = [0.0]
+    guard = CallerGuard(
+        expected_uid=1000,
+        credential_provider=lambda _sender: {"UnixUserID": 1000},
+        clock=lambda: now[0],
+    )
+    for _ in range(60):
+        guard.authorize(":1.20", "calls-dial")
+        now[0] += 11
+    with pytest.raises(RateLimitError):
+        guard.authorize(":1.20", "calls-dial")
+
+
+def test_answering_has_its_own_bucket_and_never_blocks_hanging_up() -> None:
+    now = [100.0]
+    guard = CallerGuard(
+        expected_uid=1000,
+        credential_provider=lambda _sender: {"UnixUserID": 1000},
+        clock=lambda: now[0],
+    )
+
+    for _ in range(10):
+        guard.authorize(":1.20", "calls-answer")
+    with pytest.raises(RateLimitError):
+        guard.authorize(":1.20", "calls-answer")
+    for _ in range(30):
+        guard.authorize(":1.20", "calls-control")
+    now[0] += 61
+    guard.authorize(":1.20", "calls-answer")

@@ -550,6 +550,38 @@ def test_qt_onboarding_summary_treats_realtek_as_expected_success(qml_engine) ->
     summary.deleteLater()
 
 
+def test_qt_onboarding_summary_uses_the_supplied_bluetooth_restart_command(
+    qml_engine,
+) -> None:
+    component = _component(
+        qml_engine, "src/blueferry/qt/qml/OnboardingSummary.qml"
+    )
+    status = {"verified_iphone_setup": []}
+    compatibility = {"notifications_supported": False}
+    default = component.createWithInitialProperties({
+        "stage": "ready-without-ancs",
+        "compatibility": compatibility,
+        "status": status,
+    })
+    openrc = component.createWithInitialProperties({
+        "stage": "ready-without-ancs",
+        "compatibility": compatibility,
+        "status": status,
+        "bluetoothRestartCommand": "sudo rc-service bluetooth restart",
+    })
+
+    assert default is not None and openrc is not None
+    qml_engine.globalObject().setProperty("defaultSummary", qml_engine.newQObject(default))
+    qml_engine.globalObject().setProperty("openrcSummary", qml_engine.newQObject(openrc))
+    default_hint = _evaluate(qml_engine, "defaultSummary.ancsUnavailableHint()")
+    openrc_hint = _evaluate(qml_engine, "openrcSummary.ancsUnavailableHint()")
+    assert "sudo systemctl restart bluetooth.service" in default_hint
+    assert "sudo rc-service bluetooth restart" in openrc_hint
+    assert "systemctl" not in openrc_hint
+    default.deleteLater()
+    openrc.deleteLater()
+
+
 def test_qt_onboarding_summary_renders_stage_from_properties(qml_engine) -> None:
     component = _component(
         qml_engine, "src/blueferry/qt/qml/OnboardingSummary.qml"
@@ -607,6 +639,8 @@ def settings_window(qml_engine):
         import QtQuick
         QtObject {
             property var calls: []
+            property var phoneCalls: []
+            property string callsState: "disabled"
             property var status: ({})
             property var threads: []
             property var devices: []
@@ -625,6 +659,7 @@ def settings_window(qml_engine):
             property string errorText: ""
             property string pairingIssueReport: ""
             property string version: "test"
+            property string bluetoothRestartCommand: "sudo rc-service bluetooth restart"
             signal pairingConfirmationRequested(string passkey)
             signal messageOpenRequested(string handle)
             signal messageSendSucceeded(string recipient, string body)
@@ -644,10 +679,16 @@ def settings_window(qml_engine):
             function setStoragePolicy(policy) { record("setStoragePolicy", [policy]); }
             function setProximityLock(enabled, grace) { record("setProximityLock", [enabled, grace]); }
             function setMediaControl(enabled) { record("setMediaControl", [enabled]); }
+            function setCallsEnabled(enabled) { record("setCallsEnabled", [enabled]); }
             function forgetDevice(mac) { record("forgetDevice", [mac]); }
             function activateBluetooth() { record("activateBluetooth", []); }
             function filePairingIssue() { record("filePairingIssue", []); }
             function sendMediaCommand(command) { record("sendMediaCommand", [command]); }
+            function refreshCalls() { record("refreshCalls", []); }
+            function dialCall(number) { record("dialCall", [number]); }
+            function answerCall(callId) { record("answerCall", [callId]); }
+            function hangupCall(callId) { record("hangupCall", [callId]); }
+            function hangupAllCalls() { record("hangupAllCalls", []); }
         }
     ''', QUrl())
     assert not component.isError(), [error.toString() for error in component.errors()]
@@ -783,6 +824,48 @@ def test_qt_storage_label_reports_unavailability_after_failed_reads(settings_win
         bridge.setProperty("status", state.status.to_dict())
         labels.append(status_label.property("text"))
     assert labels == [label, "Unavailable", label]
+
+
+def test_optional_calls_dialog_lists_calls_and_dials_through_the_bridge(
+    qml_engine, settings_window,
+):
+    window, bridge = settings_window
+    # Calls off (the default): the dialog is never instantiated.
+    assert window.findChild(QObject, "callsDialog") is None
+    bridge.setProperty("status", {"calls_enabled": True})
+    QGuiApplication.processEvents()
+    dialog = _settings_object(window, "callsDialog")
+    assert dialog.property("callsReady") is False
+    bridge.setProperty("callsState", "ready")
+    bridge.setProperty("phoneCalls", [
+        {"call_id": "voicecall01", "state": "incoming", "ringing": True, "display_peer": "Alice"},
+    ])
+    assert QMetaObject.invokeMethod(dialog, "open")
+    # onOpened runs after the popup's enter transition.
+    for _ in range(100):
+        if _evaluate(qml_engine, "testBridge.calls.length"):
+            break
+        QTest.qWait(20)
+
+    assert dialog.property("callsReady") is True
+    assert _evaluate(qml_engine, "testBridge.calls.map(call => call.method)") == ["refreshCalls"]
+    _settings_object(window, "callsNumberField").setProperty("text", "+41 79 123 45 67")
+    qml_engine.globalObject().setProperty("callsDialog", qml_engine.newQObject(dialog))
+    # "Hang Up All" needs more than one call; "Dial" needs a number.
+    assert _evaluate(qml_engine, "callsDialog.customFooterActions[0].enabled") is False
+    _evaluate(qml_engine, "callsDialog.customFooterActions[1].trigger()")
+    # Dial only asks; the call is placed from the confirmation.
+    assert _evaluate(qml_engine, "testBridge.calls.length") == 1
+    confirm = _settings_object(window, "callsDialConfirm")
+    assert confirm.property("number") == "+41 79 123 45 67"
+    assert "+41 79 123 45 67" in confirm.property("subtitle")
+    qml_engine.globalObject().setProperty("callsDialConfirm", qml_engine.newQObject(confirm))
+    _evaluate(qml_engine, "callsDialConfirm.customFooterActions[0].trigger()")
+    assert _evaluate(qml_engine, "testBridge.calls[1]") == {
+        "method": "dialCall", "args": ["+41 79 123 45 67"],
+    }
+    assert QMetaObject.invokeMethod(dialog, "close")
+    QGuiApplication.processEvents()
 
 
 def test_phone_settings_first_run_and_reopening_keep_the_page_alive(qml_engine, settings_window):
@@ -1298,6 +1381,40 @@ def quickshell_setup(qml_engine):
     QGuiApplication.processEvents()
 
 
+@pytest.mark.parametrize(
+    ("status", "expected", "absent"),
+    [
+        ({}, "Try running sudo systemctl restart bluetooth.service,", "rc-service"),
+        (
+            {"bluetooth_restart_command": "sudo rc-service bluetooth restart"},
+            "Try running sudo rc-service bluetooth restart,",
+            "systemctl",
+        ),
+        (
+            {"bluetooth_restart_command": ""},
+            "Try restarting the Bluetooth service,",
+            "systemctl",
+        ),
+    ],
+)
+def test_quickshell_ancs_hint_uses_the_bridge_restart_command(
+    qml_engine, quickshell_setup, status, expected, absent,
+):
+    theme = _component(qml_engine, "data/quickshell/ThemePalette.qml").create()
+    component = _component(qml_engine, "data/quickshell/PhoneSettingsPage.qml")
+    page = component.createWithInitialProperties({
+        "ferryTheme": theme, "setup": quickshell_setup, "status": status,
+    })
+    assert page is not None
+    try:
+        qml_engine.globalObject().setProperty("hintPage", qml_engine.newQObject(page))
+        hint = _evaluate(qml_engine, "hintPage.ancsUnavailableHint()")
+        assert expected in hint
+        assert absent not in hint
+    finally:
+        page.deleteLater()
+
+
 @pytest.mark.parametrize("explicit", [False, True])
 @pytest.mark.parametrize("compatibility", [False, True])
 @pytest.mark.parametrize("replace", [False, True])
@@ -1758,8 +1875,90 @@ def test_quickshell_storage_cancel_keeps_the_status_binding(qml_engine, quickshe
 
 
 @pytest.mark.private_dbus
-@pytest.mark.parametrize("late_read", ["success", "failure"])
+def test_quickshell_keeps_the_restart_command_when_the_daemon_is_unavailable(
+    tmp_path, quickshell_environment,
+):
+    """The bridge's host fact must outlive status resets in the real shell."""
+    import shutil
+    import subprocess
+
+    executable = shutil.which("quickshell")
+    if executable is None:
+        pytest.skip("Quickshell is not installed")
+    for source in (ROOT / "data/quickshell").glob("*.qml"):
+        shutil.copyfile(source, tmp_path / source.name)
+    shutil.copyfile(
+        ROOT / "src/blueferry/qt/qml/ConversationLogic.qml",
+        tmp_path / "ConversationLogic.qml",
+    )
+    (tmp_path / "Theme.qml").write_text("import QtQuick\nThemePalette {}\n")
+    (tmp_path / "SetupTransport.qml").write_text('''import QtQuick
+Item {
+  signal lineReceived(int id, string kind, string line)
+  signal finished(int id, string kind, int code, string output, string diagnostic)
+  function execute(id, kind, command, interactive) {}
+  function cancel(id) {}
+  function write(id, text) {}
+}
+''')
+    (tmp_path / "BackendBridge.qml").write_text('''import QtQuick
+Item {
+  property bool desktopClient: false
+  property int nextId: 1
+  signal response(string method, int requestId, var result)
+  signal failure(string method, int requestId, string message)
+  signal eventReceived(string name, var data)
+  function request(method, args) { return nextId++; }
+  function requestLatest(method, args) {}
+  function cancelLatest(method) {}
+}
+''')
+    config = tmp_path / "shell.qml"
+    source = config.read_text()
+    probe = r'''
+  Timer {
+    interval: 200; running: true
+    onTriggered: {
+      function check(value, message) { if (!value) throw new Error(message); }
+      function hint() { return phoneSettingsPage.ancsUnavailableHint(); }
+      try {
+        check(hint().indexOf("systemctl") >= 0, "older bridges lost the systemd text");
+        backendBridge.eventReceived("host",
+          {bluetooth_restart_command: "sudo rc-service bluetooth restart"});
+        check(hint().indexOf("sudo rc-service bluetooth restart") >= 0, "host event ignored");
+        root.markStatusUnavailable("BlueFerry backend is unavailable");
+        check(hint().indexOf("sudo rc-service bluetooth restart") >= 0,
+          "unavailable daemon reset the restart command");
+        setupController.historyReset();
+        check(hint().indexOf("sudo rc-service bluetooth restart") >= 0,
+          "history reset cleared the restart command");
+        backendBridge.response("status", 1, {daemon: true, bluetooth_restart_command: ""});
+        check(hint().indexOf("Try restarting the Bluetooth service") >= 0,
+          "status reply did not update the restart command");
+        backendBridge.response("status", 2, {daemon: true});
+        check(hint().indexOf("Try restarting the Bluetooth service") >= 0,
+          "status without the field cleared the restart command");
+        console.log("BLUEFERRY_RESTART_HINT_OK");
+      } catch (error) {
+        console.error(error);
+      }
+      Qt.quit();
+    }
+  }
+'''
+    config.write_text(source[:source.rfind("}")] + probe + "}\n")
+    result = subprocess.run(
+        [executable, "--path", str(config)], env=quickshell_environment,
+        capture_output=True, text=True, timeout=10, check=False,
+    )
+    log = result.stdout + result.stderr
+    assert result.returncode == 0 and "BLUEFERRY_RESTART_HINT_OK" in log, log
+    assert "ReferenceError" not in log and "TypeError" not in log, log
+
+
 @pytest.mark.parametrize("late_after_refresh", [False, True])
+@pytest.mark.private_dbus
+@pytest.mark.parametrize("late_read", ["success", "failure"])
 def test_quickshell_replies_use_the_saved_members_without_a_checkbox(
     tmp_path, quickshell_environment, late_read, late_after_refresh,
 ):
@@ -1988,3 +2187,34 @@ def test_now_playing_bar_is_absent_until_media_is_available(
     QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
     QGuiApplication.processEvents()
     assert window.findChild(QObject, "nowPlayingBar") is None
+
+
+def test_phone_calls_opt_in_appears_only_for_supporting_daemons(qml_engine, settings_window):
+    window, bridge = settings_window
+    bridge.setProperty("setupLoaded", True)
+    QGuiApplication.processEvents()
+    loader = _settings_object(window, "phoneCallsLoader")
+    bridge.setProperty("status", {"daemon": True})
+    assert loader.property("active") is False
+
+    bridge.setProperty("status", {"daemon": True, "calls_enabled": False})
+    QGuiApplication.processEvents()
+    assert loader.property("active") is True
+    notice = _settings_object(window, "phoneCallsNotice").property("text")
+    assert "audio plays here" in notice
+    # Ticking the box is not the whole setup; the caption points at the guide.
+    assert "oFono set as the hands-free backend" in notice
+    assert "BlueZ's own HFP plugin disabled" in notice
+    assert "documentation" in notice
+    checkbox = _settings_object(window, "phoneCallsCheckBox")
+    assert checkbox.property("checked") is False
+
+    assert QMetaObject.invokeMethod(checkbox, "toggle")
+    assert QMetaObject.invokeMethod(checkbox, "clicked")
+    assert _evaluate(
+        qml_engine, "testBridge.calls.filter(c => c.method === 'setCallsEnabled')"
+    ) == [{"method": "setCallsEnabled", "args": [True]}]
+
+    bridge.setProperty("status", {"daemon": True, "calls_enabled": True})
+    QGuiApplication.processEvents()
+    assert checkbox.property("checked") is True

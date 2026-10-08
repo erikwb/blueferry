@@ -121,6 +121,8 @@ Kirigami.ScrollablePage {
             status: iphonePage.bridge.status
             storagePolicy: iphonePage.bridge.status.storage_policy || ""
             storageState: iphonePage.bridge.status.storage_state || ""
+            bluetoothRestartCommand: iphonePage.bridge.bluetoothRestartCommand
+                ?? "sudo systemctl restart bluetooth.service"
         }
 
         Kirigami.FormLayout {
@@ -428,6 +430,17 @@ Kirigami.ScrollablePage {
             active: iphonePage.bridge.status.media_control_enabled !== undefined
             visible: active
             sourceComponent: MediaControlSettings {
+                bridge: iphonePage.bridge
+            }
+        }
+
+        // Only daemons that report calls_enabled support the setting.
+        Loader {
+            objectName: "phoneCallsLoader"
+            Layout.fillWidth: true
+            active: iphonePage.bridge.status.calls_enabled !== undefined
+            visible: active
+            sourceComponent: PhoneCallsSettings {
                 bridge: iphonePage.bridge
             }
         }

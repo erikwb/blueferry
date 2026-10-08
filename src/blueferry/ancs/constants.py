@@ -11,6 +11,16 @@ UINT_MAX = (2 ** 32) - 1
 # retained, because its title/subtitle provide group metadata missing in MAP.
 MESSAGES_APP_ID = "com.apple.MobileSMS"
 
+# Maximum attribute sizes (UTF-8 bytes) BlueFerry asks the phone for. iOS cuts
+# longer values to this size, so a Messages body at the cap may be a prefix of
+# the matching MAP body; grouping.py relies on the same numbers.
+ANCS_TITLE_MAX_BYTES = 128
+ANCS_SUBTITLE_MAX_BYTES = 128
+ANCS_MESSAGE_MAX_BYTES = 1024
+# Every message cap BlueFerry has ever requested. Releases before 1024 asked
+# for 256 bytes, and rows stored by them stay in history and are correlated.
+ANCS_MESSAGE_CAPS_REQUESTED = (256, ANCS_MESSAGE_MAX_BYTES)
+
 # Service and characteristic UUIDs
 ANCS_SERVICE_UUID = "7905f431-b5ce-4e99-a40f-4b1e122d00d0"
 NOTIFICATION_SOURCE_CHAR = "9fbf120d-6301-42d9-8c58-25e699a21dbd"

@@ -56,6 +56,24 @@ class ConfirmationRequiredError(BlueFerryError):
     dbus_suffix = "ConfirmationRequired"
 
 
+CALLS_DISABLED_HINT = (
+    "phone calls are disabled; enable them in the iPhone settings or with "
+    "'blueferry calls enable'"
+)
+
+
+class CallsDisabledError(BlueFerryError):
+    """The optional phone-call feature is switched off."""
+
+    dbus_suffix = "CallsDisabled"
+
+
+class CallsUnavailableError(BlueFerryError):
+    """Calls are enabled, but oFono or the iPhone's HFP modem is not usable."""
+
+    dbus_suffix = "CallsUnavailable"
+
+
 class SendOutcomeUnknownError(ObexError):
     """The transfer vanished without an observed successful completion."""
 
