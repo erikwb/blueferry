@@ -112,6 +112,25 @@ Bluetooth 3-only controller. The Broadcom MAP/PBAP success in
 [#17](https://github.com/erikwb/blueferry/issues/17) also supports LE advertising.
 ANCS connection failures on those adapters do not imply missing LE hardware.
 
+`btmgmt info` lists supported and current settings separately. A controller
+can support `le` while running with it switched off, typically because
+`/etc/bluetooth/main.conf` sets `ControllerMode = bredr`. The ANCS
+advertisement then never activates. In
+[#192](https://github.com/erikwb/blueferry/issues/192) a Broadcom BCM2045A0
+(`0a5c:6412`, HCI version 7) listed `le` and `advertising` as supported but
+`br/edr powered secure-conn ssp` as current, bonded over Classic, and failed at
+`advert_unavailable` two milliseconds after registering the advertisement.
+The capability probe therefore reports `le_disabled` (with the configured
+`ControllerMode` as a hint); full-mode pairing probes twice more and then stops
+before any pairing transaction with outcome reason `le_disabled`, and
+compatibility mode skips the advertisement. Switching LE on with
+`btmgmt le on` is not a fix under `ControllerMode = bredr`: BlueZ's
+`adapter_register()` skips the GATT database and `LEAdvertisingManager1` in
+that mode, so no advertisement can register until bluetoothd restarts in dual
+or LE mode. In dual mode bluetoothd re-enables LE itself when it starts. This is distinct from controllers whose advertisement
+BlueZ rejects for its size. `le_disabled` was verified with recorded settings
+only, not on that controller.
+
 BlueFerry therefore resolves two delivery modes. Full mode additionally
 requires BlueZ 5.86 or newer. Its bearer API must already be active or be
 activatable through the package's

@@ -115,7 +115,8 @@ Kirigami.ScrollablePage {
             id: onboardingSummary
             Layout.fillWidth: true
             stage: compatibilityMode.checked
-                && iphonePage.effectiveStage === "activate-bluetooth"
+                && (iphonePage.effectiveStage === "activate-bluetooth"
+                    || iphonePage.effectiveStage === "le-disabled")
                 ? "select-device" : iphonePage.effectiveStage
             compatibility: iphonePage.bridge.onboardingCompatibility
             status: iphonePage.bridge.status
@@ -188,6 +189,19 @@ Kirigami.ScrollablePage {
 
         RowLayout {
             visible: !iphonePage.bridge.configured
+            Controls.Button {
+                // BlueFerry cannot switch LE on by itself (#192): with
+                // ControllerMode = bredr, bluetoothd starts no LE advertising
+                // manager, so the user edits main.conf, restarts bluetoothd
+                // and checks again here.
+                objectName: "recheckLowEnergyButton"
+                visible: iphonePage.bridge.compatibility.le_disabled === true
+                    && !compatibilityMode.checked
+                text: qsTr("Check Again")
+                icon.name: "view-refresh"
+                enabled: !iphonePage.bridge.busy
+                onClicked: iphonePage.bridge.loadSetupState()
+            }
             Controls.Button {
                 visible: iphonePage.bridge.compatibility.notifications_supported === true
                     && !iphonePage.bridge.bluetoothActive

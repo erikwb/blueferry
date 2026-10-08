@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Protocol
 
 import dbus
+from gi.repository import GLib
 
 from blueferry import service_manager
 from blueferry.config import is_valid_adapter
@@ -138,6 +139,61 @@ def _parse_btmgmt_info(stdout: str) -> tuple[set[str], set[str], dict[str, int]]
     return supported, current, identity
 
 
+# Same workaround as the packaged blueferry-set-cod helper (``: | btmgmt``).
+BTMGMT_STDIN = ""
+BLUEZ_MAIN_CONF = Path("/etc/bluetooth/main.conf")
+_CONTROLLER_MODES = frozenset({"dual", "bredr", "le"})
+
+
+def bluez_controller_mode(path: Path | None = None) -> str:
+    """Return the ``[General] ControllerMode`` bluetoothd will use, or ``""``.
+
+    bluetoothd loads main.conf with GKeyFile and compares the value with
+    ``strcmp`` (BlueZ ``src/main.c``, ``get_mode``), so this reads the file
+    with the same GKeyFile parser: names are case-sensitive, the value keeps
+    trailing text and whitespace, and a file GKeyFile rejects makes
+    bluetoothd use its defaults. Anything bluetoothd would not recognize
+    runs as dual mode and is reported as ``"other"``; ``""`` means unset,
+    unreadable or ignored. Only these fixed words are returned, never
+    configuration text. The file is world-readable on every distribution
+    BlueFerry packages for.
+    """
+    keyfile = GLib.KeyFile()
+    try:
+        keyfile.load_from_file(str(path or BLUEZ_MAIN_CONF), GLib.KeyFileFlags.NONE)
+        mode = keyfile.get_string("General", "ControllerMode")
+    except GLib.Error:
+        return ""
+    return mode if mode in _CONTROLLER_MODES else "other"
+
+
+def le_disabled_issue(controller_mode: str = "") -> str:
+    """Explain a controller that supports LE but runs with LE switched off.
+
+    BlueFerry cannot fix this by itself. With ``ControllerMode = bredr``,
+    bluetoothd registers neither its GATT database nor LEAdvertisingManager1
+    for the adapter (BlueZ ``src/adapter.c``, ``adapter_register``), so
+    switching LE on in the kernel (``btmgmt le on``) changes nothing until
+    bluetoothd restarts in another mode. In the default dual mode bluetoothd
+    switches LE back on itself when it starts (``read_info_complete``).
+    """
+    head = (
+        "Bluetooth Low Energy is switched off on this adapter, so iPhone "
+        "notifications cannot be set up. "
+    )
+    if controller_mode == "bredr":
+        return head + (
+            "BlueZ is configured with ControllerMode = bredr. Set "
+            "ControllerMode = dual in /etc/bluetooth/main.conf (or remove the "
+            "line), restart bluetoothd, then check again."
+        )
+    return head + (
+        "Restart bluetoothd, which switches LE back on in its default dual "
+        "mode, then check again. If LE stays off, make sure "
+        "/etc/bluetooth/main.conf does not set ControllerMode = bredr."
+    )
+
+
 def controller_settings(
     adapter: str, *, run_command: RunCommand, timeout: float = 15,
 ) -> tuple[bool, set[str], set[str], str, dict[str, int]]:
@@ -145,6 +201,9 @@ def controller_settings(
     try:
         result = run_command(
             ["/usr/bin/btmgmt", "--index", index, "info"], timeout=timeout, check=False,
+            # BlueZ 5.72's btmgmt needs a pollable stdin even for one-shot
+            # commands; services and desktop launchers often give /dev/null.
+            input_text=BTMGMT_STDIN,
         )
     except CommandError as error:
         return False, set(), set(), str(error), {}
@@ -600,9 +659,16 @@ def _profile_fields(
     command_error: str,
     bearer_active: bool,
     bearer_supported: bool,
+    *,
+    controller_mode: str = "",
 ) -> dict[str, object]:
     classic = bool({"br/edr", "bredr"} & supported)
     low_energy = "le" in supported
+    # btmgmt reports supported and current settings separately. ``le`` can be
+    # supported but switched off, e.g. by ControllerMode = bredr (#192); the
+    # ANCS advertisement then never activates.
+    le_enabled = "le" in current
+    le_disabled = available and low_energy and not le_enabled
     advertising = "advertising" in supported
     secure_pairing = bool({"ssp", "secure-conn"} & supported)
     # MAP/PBAP carry data over Classic, but iOS exposes their permissions only
@@ -626,6 +692,8 @@ def _profile_fields(
             "with LE advertising to enable iPhone messages and contacts. "
             "Use a compatible adapter."
         )
+    elif le_disabled:
+        issue = le_disabled_issue(controller_mode)
     elif notifications_supported and not bearer_active:
         issue = "Bluetooth support must be activated before pairing"
     elif not notifications_supported:
@@ -637,6 +705,8 @@ def _profile_fields(
         "powered": "powered" in current,
         "classic": classic,
         "low_energy": low_energy,
+        "le_enabled": le_enabled,
+        "le_disabled": le_disabled,
         "advertising": advertising,
         "secure_pairing": secure_pairing,
         "secure_conn": "secure-conn" in current,
@@ -697,6 +767,7 @@ def compatibility(
         bluez_bearer_api_supported(stack.get("bluez_version"))
         and bearer_configurable
     )
+    controller_mode = bluez_controller_mode()
     options: list[dict[str, object]] = []
     inspected: dict[str, tuple] = {}
     hardware_by_name: dict[str, dict[str, object]] = {}
@@ -720,6 +791,7 @@ def compatibility(
             error,
             bearer_active and bearer_supported,
             bearer_supported,
+            controller_mode=controller_mode,
         )
         options.append(
             {
@@ -756,6 +828,7 @@ def compatibility(
         **fields,
         **stack,
         "adapters": options,
+        "controller_mode": controller_mode,
         "controller_vendor": vendor,
         "ancs_limited_controller": ancs_limited_vendor(vendor),
         "explicit_pairing_default": (

@@ -46,6 +46,31 @@ def run(verbose: bool = typer.Option(False, "-v", "--verbose", "--debug")):
         raise typer.Exit(code=exit_code)
 
 
+def _check_controller_le(log: logging.Logger, adapter: str) -> bool:
+    """Log the controller's LE state; return True when it needs attention."""
+    from blueferry import bluetooth_capabilities
+    from blueferry.commands import run_command
+
+    if not config.is_valid_adapter(adapter):
+        return False
+    available, supported, current, _error, _identity = (
+        bluetooth_capabilities.controller_settings(adapter, run_command=run_command)
+    )
+    if not available or "le" not in supported:
+        # Missing LE hardware and unreadable settings are reported by pairing.
+        return False
+    mode = bluetooth_capabilities.bluez_controller_mode()
+    if "le" in current:
+        log.info("Bluetooth LE enabled on %s  OK", adapter)
+        return False
+    log.warning("%s", bluetooth_capabilities.le_disabled_issue(mode))
+    if mode:
+        log.warning("    /etc/bluetooth/main.conf: ControllerMode = %s", mode)
+    else:
+        log.warning("    /etc/bluetooth/main.conf: ControllerMode not set")
+    return True
+
+
 @app.command()
 def doctor(verbose: bool = typer.Option(False, "-v", "--verbose")):
     """Check that all prerequisites are in place."""
@@ -92,6 +117,10 @@ def doctor(verbose: bool = typer.Option(False, "-v", "--verbose")):
                 cod,
             )
             warnings = True
+
+    # Bluetooth LE switched on? (#192)
+    if _check_controller_le(log, config.ADAPTER):
+        warnings = True
 
     # State dir writable
     try:

@@ -242,6 +242,9 @@ class BluetoothCompatibility:
     controller_vendor: str = ""
     ancs_limited_controller: bool = False
     explicit_pairing_default: bool = False
+    le_enabled: bool = True
+    le_disabled: bool = False
+    controller_mode: str = ""
     bluez_activation_hint: str = ""
 
     @classmethod
@@ -272,6 +275,9 @@ class BluetoothCompatibility:
             controller_vendor=str(value.get("controller_vendor") or ""),
             ancs_limited_controller=bool(value.get("ancs_limited_controller")),
             explicit_pairing_default=bool(value.get("explicit_pairing_default", False)),
+            le_enabled=bool(value.get("le_enabled", True)),
+            le_disabled=bool(value.get("le_disabled", False)),
+            controller_mode=str(value.get("controller_mode") or ""),
             bluez_activation_hint=str(value.get("bluez_activation_hint") or ""),
         )
 

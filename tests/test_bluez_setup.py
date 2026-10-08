@@ -83,6 +83,24 @@ def test_authorized_cod_change_uses_packaged_systemd_unit(monkeypatch):
     ]
     assert calls[0][1]["timeout"] == 120
     assert calls[0][1]["env"]["LC_ALL"] == "C"
+    # systemctl keeps the caller's stdin for the Polkit terminal agent.
+    assert calls[0][1]["input_text"] is None
+
+
+def test_root_cod_change_gives_btmgmt_an_empty_stdin_pipe(monkeypatch):
+    """Running btmgmt directly needs the helper's BlueZ 5.72 workaround."""
+    calls = []
+    monkeypatch.setattr(bluez_setup.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        bluez_setup,
+        "run_command",
+        lambda args, **kwargs: calls.append((args, kwargs))
+        or type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+    )
+
+    assert bluez_setup.set_cod(adapter="hci7") is True
+    assert calls[0][0][:4] == ["/usr/bin/btmgmt", "--index", "7", "class"]
+    assert calls[0][1]["input_text"] == ""
 
 
 @pytest.mark.parametrize(
