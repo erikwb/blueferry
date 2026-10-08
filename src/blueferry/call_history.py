@@ -500,6 +500,16 @@ def caller_match_keys(*texts: str | None) -> frozenset[str]:
     return frozenset(keys)
 
 
+def caller_number_keys(*texts: str | None) -> frozenset[str]:
+    """Only the number keys of ``caller_match_keys``.
+
+    For text that may be a phone number or a fixed label: an ANCS
+    missed-call subtitle is often "Missed Call" (localized), which must not
+    become a name key that any caller could share.
+    """
+    return frozenset(key for key in caller_match_keys(*texts) if key.startswith("n:"))
+
+
 def display_caller(record: CallRecord, resolved: str | None) -> str | None:
     """Contact-cache name first, then the phone's card name, then the number."""
     return resolved or record.name or record.address or None

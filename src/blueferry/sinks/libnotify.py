@@ -54,6 +54,7 @@ from blueferry.call_history import (
     MAX_INDIVIDUAL_MISSED_CALL_POPUPS,
     MissedCallNotice,
     caller_match_keys,
+    caller_number_keys,
 )
 from blueferry.calls.model import CallEvent
 from blueferry.client_activation import activation_argv, select_client
@@ -553,7 +554,11 @@ class LibnotifySink:
             # missed-call path skip a second popup for the same call.
             self._ancs_missed_call_marks().append(_MissedCallMark(
                 event.seen_at,
-                self._caller_digests(caller_match_keys(event.title, event.subtitle)),
+                # The title names the caller; the subtitle is a label such as
+                # "Missed Call" or, at most, the number, so only its digits count.
+                self._caller_digests(
+                    caller_match_keys(event.title) | caller_number_keys(event.subtitle)
+                ),
             ))
         if buttons:
             self._track_ancs_actions(

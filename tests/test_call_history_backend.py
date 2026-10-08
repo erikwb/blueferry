@@ -656,3 +656,27 @@ def test_contacts_only_with_only_unknown_callers_leaves_ancs_marks_alone(monkeyp
 
     assert len(sink._notif.calls) == 1
     assert len(sink._ancs_missed_call_marks()) == 1
+
+
+def test_ancs_subtitle_label_is_no_caller_key(monkeypatch) -> None:
+    """A "Missed Call" subtitle must not pair a PBAP caller who shares it."""
+    from blueferry.ancs.constants import CategoryID
+    from blueferry.ancs.events import AncsEvent
+
+    monkeypatch.setattr("blueferry.sinks.libnotify.config.SHOW_NOTIFICATION_CONTENT", True)
+    sink = _sink("all")
+    call_time = NOW - timedelta(minutes=10)
+    sink.handle_ancs(AncsEvent(
+        notification_id=3, app_id="com.apple.mobilephone", app_name="Phone",
+        title="Anna", subtitle="Missed Call", body="",
+        seen_at=call_time, category=CategoryID.MissedCall,
+    ))
+
+    # Listed first: without the fix its name key equalled the subtitle's.
+    sink.handle_missed_calls([
+        _keyed_notice("Missed Call", call_time - timedelta(minutes=1)),
+        _keyed_notice("Anna", call_time),
+    ])
+
+    assert len(sink._notif.calls) == 2
+    assert "Missed Call" in sink._notif.calls[1][3]

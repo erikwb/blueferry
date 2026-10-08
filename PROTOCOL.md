@@ -361,8 +361,9 @@ captured observations:
   five-second coalescing delay, is assumed, not observed.
 - Under "All iPhone notifications" a PBAP missed call is not announced again
   when an ANCS `MissedCall` popup covers it. BlueFerry assumes that popup's
-  title (or subtitle) names the caller as iOS shows it, a contact name or the
-  number. It pairs one popup with one call, first by caller (name, or the
+  title names the caller as iOS shows it, a contact name or the number; the
+  subtitle only counts if it is a number, because it is often a label such
+  as "Missed Call" that any caller could share. It pairs one popup with one call, first by caller (name, or the
   last nine digits of the number) within -2/+30 minutes of the call time,
   or within 26 hours when the PBAP time had no zone, and only then by time
   alone within -2/+30 minutes. Caller keys are kept in memory as

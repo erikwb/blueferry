@@ -14,6 +14,7 @@ from blueferry.call_history import (
     OUTGOING,
     CallRecord,
     caller_match_keys,
+    caller_number_keys,
     canonical_phone_digits,
     display_caller,
     is_floating_timestamp,
@@ -446,6 +447,13 @@ def test_caller_match_keys_fold_number_spellings_and_name_case() -> None:
     assert caller_match_keys(None, "", "  ") == frozenset()
     # A name with digits stays a name, not a number.
     assert caller_match_keys("Office 2") == frozenset({"a:office2"})
+
+
+def test_caller_number_keys_ignore_labels() -> None:
+    # ANCS missed-call subtitles are labels, never a caller name.
+    assert caller_number_keys("Missed Call") == frozenset()
+    assert caller_number_keys("Verpasster Anruf") == frozenset()
+    assert caller_number_keys("+41 79 555 01 23") == caller_match_keys("0041795550123")
 
 
 def test_floating_timestamps_are_recognised() -> None:
