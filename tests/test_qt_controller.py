@@ -894,6 +894,29 @@ def test_ancs_actions_setting_is_forwarded_and_merged_into_status(monkeypatch):
     assert controller.status["ancs_actions"] is True
 
 
+def test_failed_ancs_actions_change_reports_the_saved_value_again(monkeypatch):
+    controller = BridgeController(
+        backend=_Backend(),
+        setup=object(),
+        subscribe=False,
+        autostart=False,
+    )
+    controller._status["ancs_actions_preference"] = True
+    monkeypatch.setattr(
+        controller,
+        "_run",
+        lambda _operation, _on_done=None, on_failed=None, **_kwargs: on_failed("refused"),
+    )
+    changes = []
+    controller.statusChanged.connect(lambda: changes.append(True))
+
+    controller.setAncsNotificationActions(False)
+
+    assert controller.status["ancs_actions_preference"] is True
+    assert controller.errorText == "refused"
+    assert changes == [True]
+
+
 def test_optional_calls_are_exposed_without_touching_a_disabled_backend():
     from blueferry.models import CallsSnapshot
 

@@ -704,9 +704,16 @@ class BridgeController(QObject):
             )
             self.statusChanged.emit()
 
+        def failed(message: str) -> None:
+            # The checkbox's enabled state follows its own tick, so put the
+            # saved value back on screen instead of leaving it greyed out.
+            self._operation_failed(message)
+            self.statusChanged.emit()
+
         self._run(
             lambda: self._backend.set_ancs_notification_actions(enabled),
             completed,
+            failed,
         )
 
     @Slot(bool, int)
