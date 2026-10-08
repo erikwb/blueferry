@@ -1035,7 +1035,7 @@ class BlueFerryApp(App[None]):
         self.query_one("#thread-list", ListView).focus()
 
     def action_help(self) -> None:
-        self.push_screen(HelpScreen(calls_enabled=self.state.status.calls_enabled))
+        self.push_screen(HelpScreen(calls_enabled=bool(self.state.status.calls_enabled)))
 
     def action_new_message(self) -> None:
         self.push_screen(NewMessageScreen(), self._new_message_ready)

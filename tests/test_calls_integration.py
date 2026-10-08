@@ -104,6 +104,18 @@ def test_status_model_decodes_call_fields() -> None:
     assert BackendStatus.from_dict({}).calls_state == "disabled"
 
 
+def test_status_model_keeps_an_unreported_calls_setting_absent() -> None:
+    # A daemon that predates the setting: clients must not offer the opt-in.
+    older = BackendStatus.from_dict({"daemon": True})
+
+    assert older.calls_enabled is None
+    assert "calls_enabled" not in older.to_dict()
+    assert "calls_enabled" not in BackendStatus().to_dict()
+    for reported in (False, True):
+        status = BackendStatus.from_dict({"daemon": True, "calls_enabled": reported})
+        assert status.to_dict()["calls_enabled"] is reported
+
+
 def test_calls_snapshot_ignores_malformed_entries() -> None:
     snapshot = CallsSnapshot.from_dict({
         "state": "ready",

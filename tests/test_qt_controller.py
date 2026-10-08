@@ -981,3 +981,24 @@ def test_status_refreshes_the_call_list_only_when_the_call_state_changes(monkeyp
     assert refreshed == [True, True]
     apply(calls_enabled=False)
     assert len(refreshed) == 2  # nothing listed, nothing to clear
+
+
+def test_status_from_a_daemon_without_the_calls_setting_omits_it():
+    # The settings page offers the checkbox only when the key is present.
+    controller = BridgeController(
+        backend=_Backend(), setup=object(), subscribe=False, autostart=False,
+    )
+
+    def apply(reported):
+        controller._apply_snapshot((
+            ConversationSnapshot(status=BackendStatus.from_dict(
+                {"daemon": True, "storage_state": "ready", **reported}
+            )),
+            None,
+        ))
+
+    apply({})
+    assert "calls_enabled" not in controller.status
+
+    apply({"calls_enabled": False})
+    assert controller.status["calls_enabled"] is False

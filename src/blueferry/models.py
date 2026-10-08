@@ -53,7 +53,8 @@ class BackendStatus:
     storage_detail: str = ""
     controller_vendor: str = ""
     ancs_limited_controller: bool = False
-    calls_enabled: bool = False
+    # None when the daemon predates the calls setting and does not report it.
+    calls_enabled: bool | None = None
     calls_state: str = "disabled"
     calls_available: bool = False
     extra: Mapping[str, Any] = field(default_factory=dict, repr=False)
@@ -125,15 +126,18 @@ class BackendStatus:
             storage_detail=_str(value.get("storage_detail")),
             controller_vendor=_str(value.get("controller_vendor")),
             ancs_limited_controller=_bool(value.get("ancs_limited_controller")),
-            calls_enabled=_bool(value.get("calls_enabled")),
+            calls_enabled=_bool(value["calls_enabled"]) if "calls_enabled" in value else None,
             calls_state=_str(value.get("calls_state"), "disabled"),
             calls_available=_bool(value.get("calls_available")),
             extra={key: item for key, item in value.items() if key not in known},
         )
 
     def to_dict(self) -> dict[str, Any]:
+        # Clients offer the calls opt-in only when the key is present.
+        reported = {} if self.calls_enabled is None else {"calls_enabled": self.calls_enabled}
         return {
             **self.extra,
+            **reported,
             "daemon": self.daemon,
             "map": self.map,
             "pbap": self.pbap,
@@ -157,7 +161,6 @@ class BackendStatus:
             "map_connection_refused": self.map_connection_refused,
             "controller_vendor": self.controller_vendor,
             "ancs_limited_controller": self.ancs_limited_controller,
-            "calls_enabled": self.calls_enabled,
             "calls_state": self.calls_state,
             "calls_available": self.calls_available,
         }
