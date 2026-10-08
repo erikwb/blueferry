@@ -300,6 +300,44 @@ def test_bonded_start_reconciles_phone_audio_before_adapter_class(make_daemon, m
     assert order == [("audio", True), "class"]
 
 
+def test_busy_adapter_during_root_start_leaves_repair_to_supervisor(
+    make_daemon, monkeypatch, caplog,
+):
+    """btmgmt Busy right after a bluetoothd restart must not degrade startup."""
+    instance = make_daemon()
+    instance.recovery = _idle_recovery()
+    order = []
+    monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args, **_kwargs: True)
+    instance.phone_audio = SimpleNamespace(reconcile=lambda **_kwargs: None)
+    instance.adapter_class = SimpleNamespace(start=lambda: order.append("class"))
+
+    # The real root path: class differs, btmgmt runs directly and says Busy.
+    bluez_setup = daemon_mod.bluez_setup
+    monkeypatch.setattr(bluez_setup, "current_cod", lambda _adapter: 0)
+    monkeypatch.setattr(bluez_setup.os, "geteuid", lambda: 0)
+
+    def busy(_args, **_kwargs):
+        order.append("btmgmt")
+        return SimpleNamespace(
+            returncode=1, stdout="Set Dev Class failed, status 0x0a (Busy)", stderr="",
+        )
+
+    monkeypatch.setattr(bluez_setup, "run_command", busy)
+    monkeypatch.setattr(instance, "_watch_bluez_owner", lambda: order.append("owner"))
+    instance.solicitation = SimpleNamespace(start=lambda: order.append("solicitation"))
+    instance.bearers = SimpleNamespace(
+        start=lambda: order.append("bearers") or (_ for _ in ()).throw(RuntimeError("stop"))
+    )
+    caplog.set_level("INFO", logger=daemon_mod.log.name)
+
+    with pytest.raises(RuntimeError, match="stop"):
+        instance._initialize_bluetooth()
+
+    assert order == ["class", "btmgmt", "owner", "solicitation", "bearers"]
+    assert "adapter-class supervisor retries" in caplog.text
+    assert "adapter preparation reported issues" not in caplog.text
+
+
 def test_transient_missing_release_marker_does_not_stop_daemon(make_daemon, monkeypatch):
     instance = make_daemon()
     releases = iter([None, "0.6.0-6"])

@@ -1005,7 +1005,18 @@ class Daemon:
         # Repair it before opening either bearer and continue supervising it
         # for bluetoothd/controller resets during this daemon generation.
         self.adapter_class.start()
-        if not bluez_setup.prepare_classic():
+        try:
+            prepared = bluez_setup.prepare_classic()
+        except bluez_setup.CodAdapterBusy:
+            # Typical right after a bluetoothd restart. The adapter-class
+            # supervisor started above repairs the class within seconds, so
+            # the bearers and ANCS must still start.
+            log.info(
+                "adapter busy while setting the device class; the "
+                "adapter-class supervisor retries"
+            )
+            prepared = True
+        if not prepared:
             log.warning(
                 "adapter preparation reported issues — continuing anyway, "
                 "but MAP/PBAP may be refused. Re-pair on iPhone after the "
