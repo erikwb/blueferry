@@ -124,6 +124,28 @@ def test_quickshell_onboarding_state_derives_ready_stage(qml_engine) -> None:
     presenter.deleteLater()
 
 
+def test_quickshell_reports_a_suspect_le_bond(qml_engine) -> None:
+    component = _component(qml_engine, "data/quickshell/OnboardingState.qml")
+    presenter = component.createWithInitialProperties({
+        "notificationsSupported": True,
+        "bluezActive": True,
+        "configured": True,
+        "backendStatus": {"daemon": True, "le_bond_suspect": True},
+    })
+    assert presenter is not None
+    qml_engine.globalObject().setProperty(
+        "testOnboarding", qml_engine.newQObject(presenter)
+    )
+    assert _evaluate(qml_engine, "testOnboarding.leBondSuspect()") is True
+    presenter.setProperty("backendStatus", {"daemon": True, "le_bond_suspect": "yes"})
+    assert _evaluate(qml_engine, "testOnboarding.leBondSuspect()") is False
+    presenter.setProperty("backendStatus", {"daemon": True})
+    assert _evaluate(qml_engine, "testOnboarding.leBondSuspect()") is False
+    shell = (ROOT / "data/quickshell/shell.qml").read_text()
+    assert "onboarding.leBondSuspect()" in shell
+    presenter.deleteLater()
+
+
 def test_quickshell_unverified_controller_still_reaches_device_selection(
     qml_engine,
 ) -> None:
@@ -860,6 +882,29 @@ def test_qt_storage_label_reports_unavailability_after_failed_reads(settings_win
         bridge.setProperty("status", state.status.to_dict())
         labels.append(status_label.property("text"))
     assert labels == [label, "Unavailable", label]
+
+
+def test_qt_warns_about_a_suspect_le_bond_only_when_the_backend_reports_it(
+    qml_engine, settings_window,
+):
+    from blueferry.models import BackendStatus
+
+    window, bridge = settings_window
+    message = _settings_object(window, "leBondSuspectMessage")
+    assert "forget" in message.property("text")
+    assert _evaluate(qml_engine, "testWindow.leBondSuspect()") is False
+
+    bridge.setProperty(
+        "status",
+        BackendStatus.from_dict({"daemon": True, "le_bond_suspect": True}).to_dict(),
+    )
+    assert _evaluate(qml_engine, "testWindow.leBondSuspect()") is True
+
+    bridge.setProperty(
+        "status",
+        BackendStatus.from_dict({"daemon": True, "le_bond_suspect": "true"}).to_dict(),
+    )
+    assert _evaluate(qml_engine, "testWindow.leBondSuspect()") is False
 
 
 def test_optional_calls_dialog_lists_calls_and_dials_through_the_bridge(

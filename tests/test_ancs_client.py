@@ -1,6 +1,7 @@
 """ANCS orchestration tests with no characteristic or bus access."""
 from __future__ import annotations
 
+import logging
 import struct
 
 import pytest
@@ -1402,6 +1403,44 @@ def test_control_point_failure_keeps_ancs_unready_and_retries(
     _complete_authorization_probe(client)
     assert client.authorized is True
     assert client.connected is True
+
+
+def test_rapid_le_bearer_cycles_are_logged_at_info_once_per_interval(caplog) -> None:
+    now = [100.0]
+    client = AncsClient(
+        "/device",
+        lambda _event: None,
+        schedule=lambda _delay, _callback: 1,
+        cancel=lambda _source: None,
+        clock=lambda: now[0],
+    )
+    caplog.set_level(logging.DEBUG, logger="blueferry.ancs.client")
+
+    def info_lines() -> list[str]:
+        return [
+            record.getMessage()
+            for record in caplog.records
+            if record.levelno == logging.INFO and "rebuilding" in record.getMessage()
+        ]
+
+    client.observe_bearer_state(False)
+    for _ in range(30):
+        client.observe_bearer_state(True)
+        now[0] += 1
+        client.observe_bearer_state(False)
+        now[0] += 1
+
+    assert info_lines() == [
+        "iPhone LE bearer reconnected; rebuilding ANCS subscription",
+    ]
+
+    now[0] += client_module.BEARER_CYCLE_LOG_SECONDS
+    client.observe_bearer_state(True)
+
+    assert info_lines()[-1] == (
+        "iPhone LE bearer reconnected; rebuilding ANCS subscription "
+        "(29 more since the last report)"
+    )
 
 
 # ---- asynchronous Control Point writes -------------------------------------

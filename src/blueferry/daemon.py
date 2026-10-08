@@ -201,6 +201,9 @@ class Daemon:
             on_le_state=self._observe_le_state,
             on_le_dial=self.solicitation.set_dialing,
             inbound_le_primed=self.solicitation.active,
+            le_bond_detection=self._le_bond_detection_applies,
+            # Publish the report only; a flip is not a bearer transition.
+            on_le_bond_report=self._emit_status,
         )
         # Calls-state and phone-status changes often arrive in bursts (a
         # modem going away, a flapping indicator); coalesce their
@@ -562,6 +565,10 @@ class Daemon:
     def _on_ancs_status(self) -> None:
         # StartNotify is not the success boundary.  Keep solicitation on air
         # until a Control Point/Data Source round trip proves ANCS usable.
+        if self.ancs is not None and self.ancs.connected:
+            # An authorized Control Point round trip needs an encrypted LE
+            # link, so it disproves a stale LE bond.
+            self.bearers.note_le_usable("ANCS authorized")
         self._sync_solicitation()
         self._emit_status()
 
@@ -1116,6 +1123,13 @@ class Daemon:
             **self._controller_identity(),
             **self.connectivity.snapshot(),
         }
+
+    def _le_bond_detection_applies(self) -> bool:
+        """Report stale LE bonds only where ANCS is expected to work."""
+        return bool(
+            config.ANCS_ENABLED
+            and not self._controller_identity()["ancs_limited_controller"]
+        )
 
     def _controller_identity(self) -> dict[str, object]:
         cached = getattr(self, "_controller_identity_cache", None)

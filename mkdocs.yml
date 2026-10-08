@@ -104,6 +104,7 @@ nav:
           - Privacy and storage: en/user/privacy.md
           - Notification actions: en/user/notification-actions.md
           - Troubleshooting: en/user/troubleshooting.md
+          - Stale LE pairing: en/user/stale-le-bond.md
           - FAQ: en/user/faq.md
       - Developer guide:
           - Overview: en/developer/index.md
@@ -123,6 +124,7 @@ nav:
           - Datenschutz und Speicher: de/user/privacy.md
           - Mitteilungs-Aktionen: de/user/notification-actions.md
           - Fehlerbehebung: de/user/troubleshooting.md
+          - Veraltete LE-Kopplung: de/user/stale-le-bond.md
           - FAQ: de/user/faq.md
       - Entwicklung:
           - Überblick: de/developer/index.md

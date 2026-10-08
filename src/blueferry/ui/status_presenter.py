@@ -19,6 +19,19 @@ def map_connection_refused_message() -> str:
     )
 
 
+def le_bond_suspect(status: Mapping) -> bool:
+    """True when the daemon reports a suspected stale LE pairing."""
+    return status.get("le_bond_suspect") is True
+
+
+def le_bond_suspect_message() -> str:
+    return _(
+        "iPhone notifications keep failing to connect; the Bluetooth pairing "
+        "may be outdated. Forget this computer on the iPhone, remove the "
+        "iPhone here, and pair again. Details: blueferry doctor"
+    )
+
+
 def connection_subtitle(status: Mapping, *, reachable: bool) -> str:
     if not reachable:
         return str(status.get("error") or _("Not Reachable — Retrying Automatically"))

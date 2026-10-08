@@ -19,6 +19,32 @@ log = logging.getLogger(__name__)
 
 ManagedObjects = Mapping[object, Mapping[str, Mapping[str, Any]]]
 
+# Public tokens the daemon derives from org.bluez.Reason.* names.
+LE_DISCONNECT_REASONS = frozenset(
+    {"unknown", "timeout", "local", "remote", "authentication", "suspend"}
+)
+
+
+def le_bond_findings(status: Mapping[str, Any]) -> dict[str, Any]:
+    """Normalize the daemon's stale-LE-bond status fields.
+
+    Older daemons omit them; values from the bus are treated as untrusted.
+    """
+    raw_count = status.get("le_flap_count")
+    count = (
+        raw_count
+        if isinstance(raw_count, int) and not isinstance(raw_count, bool)
+        else 0
+    )
+    reason = str(status.get("last_le_disconnect_reason") or "")
+    return {
+        "le_bond_suspect": status.get("le_bond_suspect") is True,
+        "le_flap_count": max(0, min(count, 1_000_000)),
+        "last_le_disconnect_reason": (
+            reason if reason in LE_DISCONNECT_REASONS else ""
+        ),
+    }
+
 
 def bluez_device_snapshot(
     device_path: str,
@@ -218,6 +244,12 @@ def remember_daemon_status(attempt: PairingAttempt | None, status: object) -> No
         "bredr": extra.get("bredr"),
         "le": extra.get("le"),
     }
+    le_bond = le_bond_findings(extra)
+    if le_bond["le_bond_suspect"] or le_bond["le_flap_count"]:
+        daemon.update(le_bond)
+    elif isinstance(previous, dict) and previous.get("le_bond_suspect") is True:
+        # Keep the finding in the report if a later poll no longer shows it.
+        daemon.update(le_bond_findings(previous))
     if last_le_error:
         daemon["last_le_error"] = last_le_error
         if last_le_message:
@@ -239,6 +271,11 @@ def remember_daemon_status(attempt: PairingAttempt | None, status: object) -> No
         quirks_report.mark(attempt, "ancs_subscribed")
     if authorized and "ancs_authorized" not in seen:
         quirks_report.mark(attempt, "ancs_authorized")
+    if le_bond["le_bond_suspect"] and "le_bond_suspect" not in seen:
+        bond_fields: dict[str, object] = {"flaps": le_bond["le_flap_count"]}
+        if le_bond["last_le_disconnect_reason"]:
+            bond_fields["reason"] = le_bond["last_le_disconnect_reason"]
+        quirks_report.mark(attempt, "le_bond_suspect", **bond_fields)
     if last_le_error and "le_connect_failed" not in seen:
         fields: dict[str, str] = {"error": last_le_error}
         if last_le_message:
@@ -309,6 +346,8 @@ def pairing_outcome(
             outcome["last_le_error"] = daemon["last_le_error"]
         if daemon.get("last_le_error_message"):
             outcome["last_le_error_message"] = daemon["last_le_error_message"]
+        if daemon.get("le_bond_suspect") is True:
+            outcome.update(le_bond_findings(daemon))
     if transports is not None:
         outcome["map"], outcome["pbap"], outcome["ancs"] = transports.as_tuple()
     else:

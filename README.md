@@ -669,6 +669,23 @@ If `blueferry-qt` does not open a window or looks unstyled,
 `blueferry-qt --diagnose-style` prints the Qt Quick Controls style it would
 use, how it sets it, and where it looked for the style.
 
+If iPhone notifications never connect and the app or `blueferry doctor`
+says the Bluetooth pairing may be outdated, the LE half of the pairing is
+possibly stale, for example after the pairing was removed on only one side.
+The LE link then connects about every two seconds and drops right away
+while Classic stays connected, with the log repeating LE reconnects.
+`btmon` shows `LE Start Encryption` failing, followed by a disconnect with
+reason 0x08 (supervision timeout). BlueFerry only reports this pattern; it
+does not change how it connects. Re-pairing on both sides cured this on
+the setup it was observed on, so it may help:
+
+1. On the iPhone, open Settings > Bluetooth, tap (i) next to this computer,
+   and choose **Forget This Device**.
+2. On this computer, run `bluetoothctl remove <iPhone address>`, using the
+   address `blueferry doctor` shows as the target. The backend stops when
+   the pairing disappears.
+3. Pair the iPhone again from the app.
+
 If setup reports that **Bluetooth Low Energy is switched off on this adapter**,
 the controller supports LE but BlueZ runs it in Classic-only mode, usually
 because `/etc/bluetooth/main.conf` sets `ControllerMode = bredr`. iPhone

@@ -80,7 +80,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `ancs/constants.py` | ANCS spec constants. |
 | `ancs/events.py` | `AncsEvent`, the normalized per-app notification. |
 | `ancs/sequencer.py` | Bounded, duplicate-aware backlog of serialized ANCS requests. |
-| `bearer_supervisor.py` | Connects BR/EDR first, then keeps LE connected alongside it. |
+| `bearer_supervisor.py` | Connects BR/EDR first, then keeps LE connected alongside it; reports a suspected stale LE bond from persistent bursts of very short LE links. |
 | `solicitation_supervisor.py` | Keeps the ANCS solicitation advertisement on air until ANCS is proven healthy. |
 | `adapter_class_supervisor.py` | Detects Class-of-Device drift and repairs it through the constrained system helper. |
 | `bluetooth_recovery.py` | Last-resort, rate-limited adapter power cycle for persistent ANCS outages. |
@@ -397,6 +397,21 @@ A change to these rules has to be made in both places.
 - **Bearers:** `bearer_supervisor` keeps BR/EDR and LE connected, independent
   of desktop applets. In full mode a missing LE bearer holds back MAP/PBAP
   reconnects. Compatibility mode leaves LE disabled.
+- **Stale LE bond (report only):** the same supervisor watches
+  `Bearer.LE1.Disconnected` (polled transitions as a fallback). It sets
+  `le_bond_suspect` only when Classic stays connected across the whole burst,
+  at least five LE links of at most 5 s drop within any minute with reason
+  Timeout, Remote or Authentication, and that rate persists for three
+  minutes (nine when polling). Local, Unknown and Suspend drops never count.
+  The flag changes no connection behaviour: LE dials, resets and the adapter
+  power cycle run as before. An authorized ANCS round trip, a held link, a
+  new bond, a new bluetoothd generation, Classic being gone for two
+  minutes, or ten minutes without a counted drop clears it; the drop count
+  decays after a quiet minute. Detection
+  is off without ANCS and on controllers flagged as ANCS-limited. `GetStatus`
+  carries the flag, the drop count, and a fixed reason token. `doctor`,
+  pairing reports, Qt, GTK, Quickshell and the TUI explain the possible
+  remedy.
 - **Solicitation:** `solicitation_supervisor` keeps the advertisement on air
   until MAP/PBAP and an ANCS Control Point round trip are both healthy. It
   re-registers the advertisement if BlueZ releases it or changes owner.
