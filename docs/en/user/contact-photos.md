@@ -1,7 +1,8 @@
 # Contact photos
 
 BlueFerry can show the pictures from your iPhone's contacts as avatars in the
-Qt (KDE) conversation list and conversation header, and as the icon of desktop message popups. This is
+GTK, Qt (KDE), and Quickshell conversation lists and conversation headers,
+and as the icon of desktop message popups. This is
 **off by default**.
 
 ## How it works
@@ -14,14 +15,14 @@ no second Bluetooth transfer.
 flowchart LR
     A[iPhone phonebook<br/>PBAP pull] --> B[BlueFerry backend<br/>checks size, type, canvas]
     B --> C[(Contact cache<br/>encrypted)]
-    C --> D[Qt client<br/>decodes avatar]
+    C --> D[GTK, Qt, Quickshell<br/>decode avatar]
     C --> E[Temporary file in<br/>XDG_RUNTIME_DIR]
     E --> F[Notification server<br/>decodes popup icon]
 ```
 
 The backend never decodes an image itself. It only checks that a photo is a
 JPEG or PNG of at most 1 MiB and 2048×2048 pixels. Decoding happens in the
-Qt client and in your notification server.
+desktop clients and in your notification server.
 
 ## Turn it on
 
@@ -66,8 +67,12 @@ contact sync or when the storage mode changes.
 - A photo shows only when the address belongs to exactly one contact. A number
   shared by two contacts shows neither photo, and a contact whose every
   number is shared doesn't have its photo stored at all.
-- Only the Qt client shows avatars so far. The GTK, terminal and Quickshell
-  clients keep their icons.
+- GTK, Qt and Quickshell show photos for direct conversations. Groups keep
+  their group icons, and a contact without a usable photo keeps its usual icon.
+  The terminal client keeps its icons.
+- Avatars load asynchronously and refresh after a contact sync. Turning photos
+  off clears the clients' photo caches after they receive the updated status.
+  Photo lookup failures do not interrupt messaging.
 - Popup icons depend on the notification server honouring `image-path`.
   Plasma is expected to; this hasn't been tested yet. A server that ignores
   it shows the usual icon.

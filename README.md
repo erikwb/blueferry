@@ -383,7 +383,8 @@ Restart the user service after editing `local.env` settings.
 ### Contact photos (optional)
 
 Contact photos are off by default. To show the iPhone's contact pictures as
-avatars in the Qt conversation list and header and as desktop notification icons, add
+avatars in the GTK, Qt and Quickshell conversation lists and headers and as
+desktop notification icons, add
 this to `local.env`, restart the user service, and sync contacts:
 
 ```bash
@@ -398,7 +399,7 @@ backend starts with the option off. Only JPEG and PNG photos up to 1 MiB and
 2048×2048 pixels are kept, at most 32 MiB per sync. A photo shows only when
 its address belongs to exactly one contact. One log line per sync (`grep
 "with photos"`) counts photo sizes and why photos were dropped, with no
-contact data, so the limits can be checked against a real iPhone. The backend never decodes an image: the Qt client and the
+contact data, so the limits can be checked against a real iPhone. The backend never decodes an image: the desktop clients and the
 notification server do. For notifications, the backend puts a temporary
 owner-only copy of the photo under `$XDG_RUNTIME_DIR/blueferry`, passes it as
 the notification's `image-path`, stops reusing it when contacts change (it
@@ -409,8 +410,8 @@ ignores `image-path` just shows the usual icon. Before going back to a
 BlueFerry release without this option, turn it off and start the backend once.
 That start erases the stored photos right away; otherwise the older release
 deletes them with the contacts at its next contact sync. `blueferry contacts-photo NAME -o FILE`
-exports one cached photo. The GTK, terminal, and Quickshell clients don't show
-avatars yet.
+exports one cached photo. Group conversations keep their group icons, and the
+terminal client does not show photos.
 
 ### Clicking iPhone app notifications
 

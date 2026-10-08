@@ -18,6 +18,7 @@ from blueferry.i18n import _
 from blueferry.message_links import is_safe_web_url, linkify_message
 from blueferry.models import BackendStatus, Thread, ThreadMessage
 from blueferry.recipients import participant_lines as _participant_lines
+from blueferry.ui.avatars import AvatarCache
 from blueferry.ui.status_presenter import (
     le_bond_suspect,
     le_bond_suspect_message,
@@ -123,6 +124,7 @@ class ConversationsPage(Gtk.Box):
         self._client = client
         self._toast = toast
         self._state = ConversationState(select_first=False)
+        self._avatars = AvatarCache(client.contact_photo_async, self._refresh_avatars)
         self._pending_open_handle: str | None = None
         self._reload_pending = False
         self._reload_again = False
@@ -246,6 +248,8 @@ class ConversationsPage(Gtk.Box):
             "clicked", self._open_group_roster_dialog
         )
         conversation_header.append(self.back_button)
+        self._conversation_avatar = Gtk.Image(pixel_size=28, visible=False)
+        conversation_header.append(self._conversation_avatar)
         titles = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True)
         titles.append(self._conversation_title)
         self._reply_destination = Gtk.Label(
@@ -438,6 +442,7 @@ class ConversationsPage(Gtk.Box):
         values = status.to_dict()
         self._map_refused_banner.set_revealed(map_connection_refused(values))
         self._le_bond_banner.set_revealed(le_bond_suspect(values))
+        self._avatars.update_status(values)
         return False
 
     def _status_failed(self, message: str) -> bool:
@@ -445,6 +450,7 @@ class ConversationsPage(Gtk.Box):
         self._update_backend_error_banner()
         self._map_refused_banner.set_revealed(False)
         self._le_bond_banner.set_revealed(False)
+        self._avatars.update_status({})
         return False
 
     def _on_status_invalidated(self, _client) -> None:
@@ -579,6 +585,7 @@ class ConversationsPage(Gtk.Box):
             self._update_group_roster_banner(current)
             self._stack.set_visible_child_name("messages")
         else:
+            self._set_avatar(self._conversation_avatar, None)
             self._entry.set_sensitive(False)
             self._send_btn.set_sensitive(False)
             self._update_group_roster_banner(None)
@@ -611,6 +618,9 @@ class ConversationsPage(Gtk.Box):
                     margin_start=10,
                     margin_end=10,
                 )
+                row.avatar = Gtk.Image(pixel_size=28)
+                heading.append(row.avatar)
+                self._set_avatar(row.avatar, thread)
                 copy = Gtk.Box(
                     orientation=Gtk.Orientation.VERTICAL,
                     spacing=2,
@@ -687,11 +697,35 @@ class ConversationsPage(Gtk.Box):
         self._mark_selected_read()
 
     def _update_conversation_title(self, thread: Thread) -> None:
+        self._set_avatar(self._conversation_avatar, thread)
         self._conversation_title.set_label(thread.name)
         self._reply_destination.set_visible(not thread.is_group)
         self._reply_destination.set_label(
             _("Reply to: {address}").format(address=", ".join(thread.recipients))
         )
+
+    def _set_avatar(self, image, thread: Thread | None) -> None:
+        image.set_visible(thread is not None)
+        if thread is None:
+            image.clear()
+            return
+        address = (
+            thread.recipients[0] if not thread.is_group and len(thread.recipients) == 1 else ""
+        )
+        texture = self._avatars.get(address)
+        if texture is not None:
+            image.set_from_paintable(texture)
+        else:
+            image.set_from_icon_name(
+                "system-users-symbolic" if thread.is_group else "avatar-default-symbolic"
+            )
+
+    def _refresh_avatars(self) -> None:
+        self._set_avatar(self._conversation_avatar, self._state.selected)
+        row = self._thread_list.get_first_child()
+        while row is not None:
+            self._set_avatar(row.avatar, self._state.thread(row.thread_key))
+            row = row.get_next_sibling()
 
     def _mark_selected_read(self) -> None:
         window = self.get_root()

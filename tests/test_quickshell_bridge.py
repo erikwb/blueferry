@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import io
 import json
 import threading
@@ -30,6 +31,10 @@ class FakeClient:
 
     def status(self):
         return SimpleNamespace(to_dict=lambda: {"daemon": True})
+
+    def contact_photo(self, address):
+        self.calls.append(("contact_photo", address))
+        return self.photo
 
     def find_contacts(self, query):
         self.calls.append(("contacts", query))
@@ -142,6 +147,37 @@ def test_bridge_dispatches_private_values_without_command_arguments() -> None:
         ("set_thread_starred", "private-thread", True),
         ("set_contacts_only_notifications", True),
     ]
+
+
+def test_bridge_returns_a_validated_photo_without_a_file_or_command_argument():
+    from .photo_fixtures import png
+
+    client = FakeClient()
+    client.photo = png()
+    bridge = QuickshellBridge(client)
+    result = bridge.dispatch("contact_photo", {"address": "alice@example.com"})
+    assert result == {
+        "address": "alice@example.com",
+        "source": "data:image/png;base64," + base64.b64encode(client.photo).decode("ascii"),
+    }
+    assert client.calls == [("contact_photo", "alice@example.com")]
+
+
+@pytest.mark.parametrize("data", [b"", b"GIF89a", b"not a photo"])
+def test_bridge_uses_the_icon_fallback_for_missing_or_invalid_photos(data):
+    client = FakeClient()
+    client.photo = data
+    assert QuickshellBridge(client).dispatch("contact_photo", {"address": "alice@example.com"}) == {
+        "address": "alice@example.com", "source": "",
+    }
+
+
+def test_bridge_rejects_a_photo_with_an_oversized_canvas():
+    from .photo_fixtures import png_header
+
+    client = FakeClient()
+    client.photo = png_header(30000, 30000)
+    assert QuickshellBridge(client).dispatch("contact_photo", {"address": "alice@example.com"})["source"] == ""
 
 
 def test_bridge_sets_the_away_lock_and_returns_its_status() -> None:

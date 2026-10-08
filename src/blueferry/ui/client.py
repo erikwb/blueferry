@@ -277,6 +277,18 @@ class DaemonClient(GObject.Object):
             on_err,
         )
 
+    def contact_photo_async(self, address: str, on_ok, on_err=None) -> None:
+        """Fetch and decode a bounded avatar off the GTK main thread."""
+        from blueferry.ui.avatars import decode_avatar
+
+        self._submit(
+            lambda: decode_avatar(
+                self._call_backend(lambda backend: backend.contact_photo(address))
+            ),
+            on_ok,
+            on_err,
+        )
+
     def set_thread_starred_async(
         self, thread_key: str, starred: bool, on_ok=None, on_err=None
     ) -> None:

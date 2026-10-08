@@ -210,6 +210,7 @@ ShellRoot {
   }
 
   BackendBridge { id: backendBridge; desktopClient: true }
+  AvatarCache { id: avatars; bridge: backendBridge; backendStatus: root.backendStatus }
 
   IpcHandler {
     target: "blueferry"
@@ -223,7 +224,9 @@ ShellRoot {
 
     function onResponse(method, requestId, result) {
       result = root.plainValue(result)
-      if (method === "status") {
+      if (method === "contact_photo") {
+        avatars.accept(requestId, result)
+      } else if (method === "status") {
         root.statusBusy = false
         if (typeof result !== "object" || result === null) {
           root.markStatusUnavailable("BlueFerry backend returned invalid status data")
@@ -359,7 +362,9 @@ ShellRoot {
     }
 
     function onFailure(method, requestId, message) {
-      if (method === "status") {
+      if (method === "contact_photo") {
+        avatars.failed(requestId)
+      } else if (method === "status") {
         root.statusBusy = false
         root.markStatusUnavailable(message || "BlueFerry backend is unavailable")
       } else if (method === "threads") {
@@ -424,6 +429,7 @@ ShellRoot {
         root.storageUnlockBusy = false
         root.errorText = message
       } else {
+        avatars.disconnected()
         root.statusBusy = false
         root.threadsRequestId = 0
         root.contactsBusy = false
@@ -684,23 +690,14 @@ ShellRoot {
                     clip: true
                     spacing: theme.scaled(10)
 
-                    Rectangle {
-                      width: theme.scaled(26)
-                      height: width
+                    ContactAvatar {
+                      ferryTheme: theme
+                      photos: avatars
+                      thread: threadDelegate.modelData
+                      highlighted: threadDelegate.highlighted
+                      width: implicitWidth
+                      height: implicitHeight
                       anchors.verticalCenter: parent.verticalCenter
-                      radius: theme.controlRadius
-                      color: theme.control
-                      border.color: theme.divider
-                      Text {
-                        anchors.centerIn: parent
-                        text: threadDelegate.modelData.is_group ? "#"
-                          : String(threadDelegate.modelData.name || "?").charAt(0).toUpperCase()
-                        textFormat: Text.PlainText
-                        color: threadDelegate.highlighted ? theme.accent : theme.muted
-                        font.family: theme.fontFamily
-                        font.pixelSize: theme.baseFontSize
-                        font.bold: true
-                      }
                     }
 
                     Column {
@@ -834,6 +831,14 @@ ShellRoot {
 
               RowLayout {
                 Layout.fillWidth: true
+                ContactAvatar {
+                  id: conversationAvatar
+                  objectName: "conversationAvatar"
+                  ferryTheme: theme
+                  photos: avatars
+                  thread: conversationPane.thread
+                  visible: conversationPane.thread !== null
+                }
                 FerryLabel {
                   ferryTheme: theme
                   Layout.fillWidth: true
