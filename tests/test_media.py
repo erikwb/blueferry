@@ -819,6 +819,47 @@ def test_a_name_claim_never_releases_what_the_next_claimant_holds() -> None:
     assert len(bus.calls) == 3
 
 
+class _RaisingNameBus(_NameBus):
+    def __init__(self) -> None:
+        super().__init__()
+        self.raising = True
+
+    def call_async(self, *args, **kwargs):
+        if self.raising:
+            raise dbus.exceptions.DBusException(
+                "closed", name="org.freedesktop.DBus.Error.Disconnected",
+            )
+        super().call_async(*args, **kwargs)
+
+
+def test_a_name_call_that_raises_never_leaves_the_claim_busy() -> None:
+    """A closed private connection raises at once instead of replying."""
+    from blueferry.mpris import NameClaim
+
+    bus = _RaisingNameBus()
+    claim = NameClaim(bus, "org.mpris.MediaPlayer2.test")
+    first = []
+    claim.want(True, first.append)
+    # The claimant hears the failure instead of waiting forever.
+    assert first == [False]
+
+    # A later claim is still sent once the connection works again.
+    bus.raising = False
+    second = []
+    claim.want(True, second.append)
+    assert [call[0] for call in bus.calls] == ["RequestName"]
+    bus.calls[0][1](dbus.UInt32(dbus.bus.REQUEST_NAME_REPLY_PRIMARY_OWNER))
+    assert second == [True]
+
+    # A ReleaseName that raises leaves the claim free for the next request.
+    bus.raising = True
+    claim.want(False)
+    bus.raising = False
+    third = []
+    claim.want(True, third.append)
+    assert [call[0] for call in bus.calls] == ["RequestName", "RequestName"]
+
+
 def test_mpris_preference_is_seeded_and_saved(tmp_path, monkeypatch) -> None:
     path = tmp_path / "settings.json"
     monkeypatch.setattr(daemon_mod.config, "MEDIA_MPRIS_ENABLED", True)

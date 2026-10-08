@@ -150,10 +150,15 @@ class NameClaim:
 
     def _call(self, method: str, args: tuple, signature: str, reply, error) -> None:
         self._busy = True
-        self._connection.call_async(
-            _DBUS_NAME, _DBUS_PATH, _DBUS_NAME, method, signature, args,
-            reply, error, timeout=NAME_CALL_TIMEOUT_SECONDS,
-        )
+        try:
+            self._connection.call_async(
+                _DBUS_NAME, _DBUS_PATH, _DBUS_NAME, method, signature, args,
+                reply, error, timeout=NAME_CALL_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:  # a closed connection raises at once
+            # Answer like an asynchronous failure. Staying busy would park
+            # every later want() behind a reply that never comes.
+            error(exc)
 
     def _advance(self) -> None:
         if self._busy:
