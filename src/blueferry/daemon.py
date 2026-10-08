@@ -577,7 +577,7 @@ class Daemon:
             # not read as the 20 % step and warn. Treat it as unknown, which
             # neither fires nor re-arms, until the exact level returns.
             percent = None
-        due = self.low_battery.observe(percent)
+        due = self.low_battery.observe(percent, enabled=self.battery_warning.enabled)
         if due and percent is not None and self.battery_warning.enabled:
             log.info("iPhone battery is low; showing a desktop warning")
             exact = fields.get("phone_battery_source") != SOURCE_HFP
@@ -597,6 +597,7 @@ class Daemon:
     def _set_battery_warning(self, enabled: bool) -> dict:
         selected = self.battery_warning.set(enabled)
         log.info("low-battery warning %s", "enabled" if selected else "disabled")
+        self._observe_low_battery(self._phone_status())
         self._emit_status()
         return self._phone_status()
 
