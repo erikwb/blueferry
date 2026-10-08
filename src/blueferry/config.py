@@ -15,9 +15,13 @@ LOCAL_ENV_KEYS = frozenset({
     "BLUEFERRY_ANCS_ENABLED",
     "BLUEFERRY_ANCS_APP_ALLOWLIST",
     "BLUEFERRY_ANCS_APP_BLOCKLIST",
+    "BLUEFERRY_ANCS_ACTIONS",
+    "BLUEFERRY_ANCS_ACTION_TIMEOUT_MS",
     "BLUEFERRY_SHOW_NOTIFICATION_CONTENT",
     "BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE",
     "BLUEFERRY_CALLS_ENABLED",
+    "BLUEFERRY_PHONE_BATTERY_NOTIFY",
+    "BLUEFERRY_PHONE_BATTERY_LOW_PERCENT",
     "BLUEFERRY_NOTIFICATION_TIMEOUT_MS",
     "BLUEFERRY_MARK_READ_ON_DISMISS",
     "BLUEFERRY_HISTORY_RETENTION_DAYS",
@@ -196,6 +200,19 @@ ANCS_APP_BLOCKLIST: frozenset[str] = (
 """Exact bundle IDs denied after the allowlist; block rules take precedence."""
 
 
+ANCS_ACTIONS: bool = _env_bool("BLUEFERRY_ANCS_ACTIONS", False)
+"""Initial value for offering iPhone notification actions as buttons.
+
+A choice saved from a client (settings.json) wins over this value.
+
+Off by default because it changes the desktop notification UI and lets a
+click act on the phone. It applies only to non-Messages popups shown by the
+"All iPhone Notifications" policy; nothing is invoked without a click.
+Labels are chosen by the sending app and can contain content, so actions stay
+off while BLUEFERRY_SHOW_NOTIFICATION_CONTENT is false.
+"""
+
+
 def include_ancs_app(app_id: str) -> bool:
     """Return whether one validated non-Messages app passes local rules."""
     selected = str(app_id).strip()
@@ -230,9 +247,27 @@ exposes the private ``Calls1`` interface. The WirePlumber phone-audio policy
 then keeps the hands-free roles so call audio can reach this computer, while
 still stripping ``a2dp_sink`` when ``KEEP_PHONE_AUDIO_ON_PHONE`` is true.
 """
+PHONE_BATTERY_NOTIFY: bool = _env_opt_in("BLUEFERRY_PHONE_BATTERY_NOTIFY")
+"""Default-off desktop warning when the iPhone's battery runs low.
+
+The level comes from the iPhone's Bluetooth LE battery (``Battery1`` or
+the GATT Battery Level), which needs no calls; with ``CALLS_ENABLED`` the
+HFP ``battchg`` indicator (20 % steps) fills in when no LE level is known.
+"""
+PHONE_BATTERY_LOW_PERCENT: int = _env_int(
+    "BLUEFERRY_PHONE_BATTERY_LOW_PERCENT", 20, 0, 80
+)
+"""Warn at or below this level. HFP reports 0-100 % in 20 % steps only."""
 NOTIFICATION_TIMEOUT_MS: int = _env_int(
     "BLUEFERRY_NOTIFICATION_TIMEOUT_MS", 8_000, 1_000, 60_000
 )
+
+
+ANCS_ACTION_TIMEOUT_MS: int = _env_int(
+    "BLUEFERRY_ANCS_ACTION_TIMEOUT_MS", 30_000, 1_000, 120_000
+)
+"""Lifetime of ANCS popups that carry action buttons (e.g. a ringing call)."""
+
 MARK_READ_ON_DISMISS: bool = _env_bool("BLUEFERRY_MARK_READ_ON_DISMISS", True)
 """Whether dismissing a message's desktop popup marks it read on the iPhone.
 

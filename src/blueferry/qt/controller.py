@@ -749,6 +749,27 @@ class BridgeController(QObject):
             completed,
         )
 
+    @Slot(bool)
+    def setAncsNotificationActions(self, enabled: bool) -> None:
+        def completed(value: object) -> None:
+            self._status["ancs_actions_preference"] = bool(value)
+            self._status["ancs_actions"] = bool(value) and (
+                self._status.get("notification_content_shown") is not False
+            )
+            self.statusChanged.emit()
+
+        def failed(message: str) -> None:
+            # The checkbox's enabled state follows its own tick, so put the
+            # saved value back on screen instead of leaving it greyed out.
+            self._operation_failed(message)
+            self.statusChanged.emit()
+
+        self._run(
+            lambda: self._backend.set_ancs_notification_actions(enabled),
+            completed,
+            failed,
+        )
+
     @Slot(bool, int)
     def setProximityLock(self, enabled: bool, grace_seconds: int) -> None:
         def completed(value: object) -> None:
@@ -772,6 +793,14 @@ class BridgeController(QObject):
             self.refreshNowPlaying()
 
         self._run(lambda: self._backend.set_media_control(bool(enabled)), completed)
+
+    @Slot(bool)
+    def setPhoneBatteryWarning(self, enabled: bool) -> None:
+        def completed(value: object) -> None:
+            self._status["phone_battery_warning"] = bool(value)
+            self.statusChanged.emit()
+
+        self._run(lambda: self._backend.set_phone_battery_warning(bool(enabled)), completed)
 
     @Slot(bool)
     def setCallsEnabled(self, enabled: bool) -> None:

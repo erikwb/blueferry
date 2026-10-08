@@ -102,7 +102,9 @@ nav:
           - Media control: en/user/media-control.md
           - Away lock: en/user/proximity-lock.md
           - Phone calls (experimental): en/user/calls.md
+          - Phone battery and signal: en/user/phone-status.md
           - Privacy and storage: en/user/privacy.md
+          - Notification actions: en/user/notification-actions.md
           - Troubleshooting: en/user/troubleshooting.md
           - FAQ: en/user/faq.md
       - Developer guide:
@@ -121,7 +123,9 @@ nav:
           - Mediensteuerung: de/user/media-control.md
           - Abwesenheitssperre: de/user/proximity-lock.md
           - Anrufe (experimentell): de/user/calls.md
+          - Akku und Empfang: de/user/phone-status.md
           - Datenschutz und Speicher: de/user/privacy.md
+          - Mitteilungs-Aktionen: de/user/notification-actions.md
           - Fehlerbehebung: de/user/troubleshooting.md
           - FAQ: de/user/faq.md
       - Entwicklung:

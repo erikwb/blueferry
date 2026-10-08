@@ -269,6 +269,54 @@ def test_ancs_attributes_round_trip_across_arbitrary_fragmentation(
 
 
 @PROPERTY_SETTINGS
+@given(
+    positive=st.one_of(st.none(), _WIRE_TEXT),
+    negative=st.one_of(st.none(), _WIRE_TEXT),
+)
+def test_ancs_action_labels_round_trip_and_stay_bounded(
+    positive: str | None,
+    negative: str | None,
+) -> None:
+    label_ids = tuple(
+        attribute_id
+        for attribute_id, value in ((6, positive), (7, negative))
+        if value is not None
+    )
+    body = (
+        struct.pack("<I", 5)
+        + _attr(0, "com.example.App")
+        + _attr(1, "t")
+        + _attr(2, "s")
+        + _attr(3, "m")
+    )
+    for attribute_id, value in ((6, positive), (7, negative)):
+        if value is not None:
+            body += _attr(attribute_id, value)
+    parsed = NotificationAttributes.parse(body, label_ids)
+    for value, label in (
+        (positive, parsed.positive_action_label),
+        (negative, parsed.negative_action_label),
+    ):
+        assert len(label) <= 64
+        assert "\n" not in label
+        if value is None:
+            assert label == ""
+        else:
+            assert label == " ".join(value.split())[:64]
+
+
+@PROPERTY_SETTINGS
+@given(data=st.binary(max_size=2_048), labels=st.sampled_from([(), (6,), (7,), (6, 7)]))
+def test_malformed_labelled_ancs_attributes_only_raise_value_error(
+    data: bytes, labels: tuple[int, ...]
+) -> None:
+    try:
+        NotificationAttributes.parse(data, labels)
+    except ValueError:
+        pass
+
+
+@PROPERTY_SETTINGS
 @given(st.binary(max_size=2_048))
 def test_malformed_ancs_packets_only_raise_documented_parse_errors(data: bytes) -> None:
     for parser in (

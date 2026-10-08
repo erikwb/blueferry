@@ -19,6 +19,12 @@ MAX_ANCS_REQUESTS = 512
 MAX_ANCS_APP_CACHE = 256
 MAX_ANCS_PENDING_PER_APP = 128
 MAX_ANCS_FINGERPRINTS = 10_000
+# Opt-in ANCS notification actions: remember only recent actionable UIDs and
+# allow a few concurrent PerformNotificationAction writes.
+MAX_ANCS_ACTIONABLE = 64
+MAX_ANCS_ACTIONS_IN_FLIGHT = 4
+# Desktop popups that still carry live iPhone action buttons.
+MAX_ANCS_ACTION_POPUPS = 64
 
 # AMS values are short display strings (titles, artists). A full Entity
 # Attribute read can exceed one notification, but never needs to be large.

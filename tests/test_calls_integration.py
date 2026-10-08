@@ -137,6 +137,8 @@ def test_controller_changes_reach_the_bus_signals(make_daemon) -> None:
         emit_status=lambda: emitted.append("status"),
     )
 
+    # StatusChanged from the calls controller is deferred to the main loop.
+    instance._idle_add = lambda callback, **_options: callback()
     # The controller holds the daemon's callbacks from construction.
     instance.calls._on_calls_changed()
     instance.calls._on_state_changed()
@@ -179,6 +181,7 @@ def test_switching_calls_at_runtime_saves_applies_and_rewrites_roles(
     started, applied, statuses = [], [], []
     instance.calls.start = lambda: started.append(True)
     instance._emit_status = lambda: statuses.append(True)
+    instance._idle_add = lambda callback, **_options: callback()
 
     class FakePolicy:
         def __init__(self, *, allow_calls):
@@ -219,6 +222,9 @@ def test_quick_toggles_leave_the_roles_matching_the_saved_setting(
     monkeypatch.setattr(daemon_mod.config, "KEEP_PHONE_AUDIO_ON_PHONE", True)
     instance = make_daemon()
     instance.calls.start = lambda: None
+    # Status emission is coalesced through an idle callback.
+    instance._idle_add = lambda callback, **_options: callback()
+    instance._emit_status = lambda: None
     applied, queued = [], []
 
     class FakePolicy:
@@ -252,6 +258,8 @@ def test_switching_calls_leaves_wireplumber_alone_without_the_audio_policy(
     monkeypatch.setattr(daemon_mod.config, "KEEP_PHONE_AUDIO_ON_PHONE", False)
     instance = make_daemon()
     instance.calls.start = lambda: None
+    instance._idle_add = lambda callback, **_options: callback()
+    instance._emit_status = lambda: None
     def forbidden(_target, _name):
         raise AssertionError("no reconcile expected")
 

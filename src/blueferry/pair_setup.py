@@ -96,6 +96,14 @@ _TEARDOWN_TRACE_MAX_BYTES = 16 * 1024
 _TEARDOWN_TRACE_MAX_AGE_SECONDS = 60 * 60
 
 
+LE_DISABLED_REASON = "le_disabled"
+# bluetoothd switches LE on asynchronously once a controller index appears
+# (read_info_complete), so a single probe can race a bluetoothd restart or an
+# adapter replug. Probe again before stopping a pairing for LE.
+_LE_REPROBE_DELAYS_SECONDS = (1.0, 2.0)
+_sleep = time.sleep
+
+
 def configuration_status() -> dict:
     """Return first-run state without activating the user daemon."""
     values = config.read_local_env(LOCAL_ENV_PATH)
@@ -952,6 +960,9 @@ _COMPATIBILITY_REPORT_KEYS = (
     "powered",
     "classic",
     "low_energy",
+    "le_enabled",
+    "le_disabled",
+    "controller_mode",
     "advertising",
     "secure_pairing",
     "secure_conn",
@@ -1153,6 +1164,30 @@ def _pairing_outcome(
     return pairing_diagnostics.pairing_outcome(attempt, transports, error)
 
 
+def _reprobe_disabled_le(
+    adapter: str, compatibility: dict, attempt: PairingAttempt,
+) -> dict:
+    """Re-read the controller a few times while LE looks switched off.
+
+    Pairing setup runs in the setup client's worker, never on the daemon's
+    GLib main loop, so the short sleeps block nobody else.
+    """
+    if not compatibility.get("le_disabled"):
+        return compatibility
+    probes = 1
+    for delay in _LE_REPROBE_DELAYS_SECONDS:
+        _sleep(delay)
+        compatibility = bluetooth_compatibility(adapter)
+        probes += 1
+        if not compatibility.get("le_disabled"):
+            break
+    recovered = not compatibility.get("le_disabled")
+    quirks_report.mark(attempt, "le_reprobe", probes=probes, recovered=recovered)
+    if recovered:
+        log.info("Bluetooth LE on %s came up after %d probes", adapter, probes)
+    return compatibility
+
+
 def _prepare_pairing(
     mac: str,
     *,
@@ -1186,6 +1221,10 @@ def _prepare_pairing(
     _record_bluez_state(attempt, device.device_path, "device_loaded", force=True)
 
     compatibility = bluetooth_compatibility(selected_adapter)
+    if not compatibility_mode:
+        # Forced compatibility mode continues without LE either way, so only
+        # full mode waits for bluetoothd to switch LE on.
+        compatibility = _reprobe_disabled_le(selected_adapter, compatibility, attempt)
     attempt["controller"] = _controller_snapshot(selected_adapter, compatibility)
     quirks_report.mark(attempt, "compatibility_ready")
     if compatibility.get("pairing_ready") is False:
@@ -1212,6 +1251,19 @@ def _prepare_pairing(
         "enabled" if policy.solicitation_enabled else "unavailable",
         policy.reason,
     )
+    if compatibility.get("le_disabled"):
+        quirks_report.mark(attempt, "le_disabled")
+        issue = str(compatibility.get("issue") or "") or capabilities.le_disabled_issue(
+            str(compatibility.get("controller_mode") or ""),
+        )
+        if policy.ancs_enabled:
+            # Stop before any bond or advertisement: the ANCS advertisement
+            # cannot activate while the controller runs without LE.
+            raise PairingError(issue, reason=LE_DISABLED_REASON)
+        log.warning(
+            "Bluetooth LE is switched off on %s; continuing with MAP/PBAP only",
+            selected_adapter,
+        )
     if policy.ancs_enabled and not compatibility["bearer_api_active"]:
         raise PairingError(
             "Activate Bluetooth support before pairing or re-pairing the iPhone"

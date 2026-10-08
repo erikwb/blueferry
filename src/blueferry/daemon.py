@@ -7,8 +7,10 @@ leave it available in degraded mode and are retried periodically.
 from __future__ import annotations
 
 import logging
+import math
 import signal
 import threading
+import time
 from collections.abc import Callable
 
 import dbus
@@ -17,7 +19,7 @@ from gi.repository import GLib
 from blueferry import __version__, bluez_setup, config
 from blueferry.adapter_class_supervisor import AdapterClassSupervisor
 from blueferry.ams.client import AmsClient
-from blueferry.ancs.client import AncsClient
+from blueferry.ancs.client import ACTION_DISCONNECTED, AncsClient
 from blueferry.backend_lifecycle import installed_release
 from blueferry.backend_operations import BackendDependencies
 from blueferry.bearer_supervisor import BearerSupervisor
@@ -38,6 +40,7 @@ from blueferry.bluetooth_recovery import (
 from blueferry.build_info import build_id, installed_build_sha, running_build_sha
 from blueferry.bus import get_system_bus, main_loop
 from blueferry.calls.controller import CallController
+from blueferry.calls.phone_status import SOURCE_HFP, LowBatteryMonitor, PhoneStatus
 from blueferry.calls.settings import CallsSettings
 from blueferry.commands import run_command
 from blueferry.confirmed_groups import ConfirmedGroupsStore
@@ -63,6 +66,7 @@ from blueferry.obex.mns_watch import MnsWatch
 from blueferry.obex.sessions import SessionManager
 from blueferry.obex.worker import ObexWorker
 from blueferry.pair_setup import bond_status
+from blueferry.phone_battery import BatteryWarningSettings, PhoneBattery
 from blueferry.profile_supervisor import ProfileSessions, ProfileSupervisor
 from blueferry.protocol import BUS_NAME
 from blueferry.proximity_lock import (
@@ -114,6 +118,10 @@ class PairingRequiredError(RuntimeError):
     """Saved configuration exists, but BlueZ has no corresponding bond."""
 
 
+# Battery and signal steps reach clients at most this often.
+PHONE_STATUS_MIN_INTERVAL_SEC = 10
+
+
 def _in_background(target: Callable[[], None], name: str) -> None:
     threading.Thread(target=target, name=name, daemon=True).start()
 
@@ -149,6 +157,8 @@ class Daemon:
             ),
             storage=self.storage,
             on_incoming_message=lambda: self._verify_setup_task(MESSAGE_NOTIFICATIONS),
+            perform_ancs_action=self._perform_ancs_action,
+            ancs_actions_enabled=self._ancs_actions_active,
             on_call_action=self._notification_call_action,
         )
         self.listener: MapEventListener | None = None
@@ -206,6 +216,11 @@ class Daemon:
             on_le_dial=self.solicitation.set_dialing,
             inbound_le_primed=self.solicitation.active,
         )
+        # Calls-state and phone-status changes often arrive in bursts (a
+        # modem going away, a flapping indicator); coalesce their
+        # StatusChanged into one per main-loop iteration.
+        self._status_emit_pending = False
+        self._idle_add: Callable[..., int] = GLib.idle_add
         # Optional HFP calls through oFono. Inert unless explicitly enabled;
         # construction performs no I/O. oFono is only asked to page the phone
         # (Modem.Powered) while the Classic bearer is up.
@@ -215,11 +230,29 @@ class Daemon:
             adapter=config.ADAPTER,
             resolve_contact=self.contacts.resolve,
             on_calls_changed=self._emit_calls_changed,
-            on_state_changed=self._emit_status,
+            on_state_changed=self._emit_status_soon,
             on_event=self.events.call,
             phone_reachable=lambda: self.bearers.bredr_connected,
             hfp_conflict=self._bluez_hfp_conflict,
+            on_phone_status=lambda _status: self._phone_status_changed(),
         )
+        # The phone's battery over LE (GATT Battery Service or BlueZ's
+        # Battery1), independent of calls and HFP. Construction does no I/O.
+        self.phone_battery = PhoneBattery(device_path, on_change=self._phone_status_changed)
+        # Opt-in: one low-battery warning per discharge cycle.
+        self.battery_warning = BatteryWarningSettings()
+        self.low_battery = LowBatteryMonitor(config.PHONE_BATTERY_LOW_PERCENT)
+        # Set once the exact LE level was seen while the phone is present;
+        # the 20 % HFP steps then no longer decide the low-battery warning.
+        self._exact_battery_seen = False
+        # Battery and signal steps would otherwise make every client refetch
+        # its whole status; publish them at most every few seconds.
+        self._published_phone: dict[str, object] | None = None
+        self._phone_emit_id: int | None = None
+        self._phone_emitted_at = float("-inf")
+        self._clock: Callable[[], float] = time.monotonic
+        self._schedule_seconds: Callable[..., int] = GLib.timeout_add_seconds
+        self._battery_link_seen = False
         self.contact_sync = ContactSync(
             sessions=self.sessions,
             storage=self.storage,
@@ -336,6 +369,15 @@ class Daemon:
     def _bearer_status_changed(self) -> None:
         self.proximity.bearer_changed()
         self.calls.poke()
+        le_connected = bool(getattr(self.bearers, "le_connected", False))
+        if le_connected and not self._battery_link_seen:
+            # GATT notification sessions do not survive a dropped LE link.
+            self.phone_battery.link_up()
+        self._battery_link_seen = le_connected
+        # Presence decides whether the LE battery value is shown at all.
+        fields = self._phone_status()
+        self._observe_low_battery(fields)
+        self._published_phone = fields
         self._emit_status()
 
     def _proximity_presence(self) -> bool | None:
@@ -379,6 +421,30 @@ class Daemon:
                 self.phone_audio.reconcile(enabled=True)
 
         _in_background(apply, "blueferry-phone-audio")
+
+    def _emit_status_soon(self) -> None:
+        """Emit one StatusChanged for everything changed in this iteration."""
+        if self._status_emit_pending:
+            return
+        self._status_emit_pending = True
+
+        def flush() -> bool:
+            self._status_emit_pending = False
+            try:
+                self._emit_status()
+            except Exception:
+                # An idle callback must not raise into the GLib loop; the
+                # next change schedules a fresh emission.
+                log.exception("StatusChanged emission failed")
+            return False
+
+        try:
+            # GLib.idle_add defaults to PRIORITY_DEFAULT_IDLE, which busy
+            # D-Bus traffic can starve; status is as urgent as other events.
+            self._idle_add(flush, priority=GLib.PRIORITY_DEFAULT)
+        except Exception:
+            log.debug("could not defer StatusChanged; emitting now", exc_info=True)
+            flush()
 
     def _bluez_hfp_conflict(self) -> bool:
         """Whether bluetoothd's own HFP plugin can be what blocks oFono.
@@ -426,6 +492,82 @@ class Daemon:
             operation(call_id, lambda _result: None, failed)
         except BlueFerryError as error:
             log.info("could not %s the call from its notification (%s)", action, error.dbus_suffix)
+
+    def _phone_status(self) -> dict[str, object]:
+        """GetStatus keys for the phone's battery, signal and network.
+
+        The battery comes from LE (exact percent) whenever the phone is
+        connected and offers it, otherwise from oFono's HFP indicator
+        (20 % steps) while calls are on. Signal and network exist only
+        through HFP, so only while calls are on.
+        """
+        bearers = self.bearers
+        present = bool(
+            getattr(bearers, "bredr_connected", False) or getattr(bearers, "le_connected", False)
+        )
+        le_level = self.phone_battery.percent if present else None
+        if not present:
+            self._exact_battery_seen = False
+        elif le_level is not None:
+            self._exact_battery_seen = True
+        hfp = self.calls.phone_status if self.calls.enabled else PhoneStatus()
+        fields = hfp.to_status()
+        if le_level is not None:
+            fields["phone_battery_level"] = le_level
+            fields["phone_battery_source"] = self.phone_battery.source
+        else:
+            fields["phone_battery_source"] = (
+                SOURCE_HFP if fields["phone_battery_level"] is not None else None
+            )
+        fields["phone_battery_warning"] = self.battery_warning.enabled
+        fields["phone_battery_warning_percent"] = self.low_battery.threshold
+        return fields
+
+    def _phone_status_changed(self) -> None:
+        """Battery, signal or network may have changed: warn, then publish."""
+        fields = self._phone_status()
+        self._observe_low_battery(fields)
+        if fields == self._published_phone or self._phone_emit_id is not None:
+            return
+        wait = self._phone_emitted_at + PHONE_STATUS_MIN_INTERVAL_SEC - self._clock()
+        if wait <= 0:
+            self._publish_phone_status()
+            return
+        self._phone_emit_id = self._schedule_seconds(
+            max(1, math.ceil(wait)), self._phone_status_timer,
+        )
+
+    def _observe_low_battery(self, fields: dict[str, object]) -> None:
+        level = fields.get("phone_battery_level")
+        percent = level if isinstance(level, int) else None
+        stepped = fields.get("phone_battery_source") == SOURCE_HFP
+        if stepped and self._exact_battery_seen:
+            # The LE level dropped out while HFP remains: an exact 23 % must
+            # not read as the 20 % step and warn. Treat it as unknown, which
+            # neither fires nor re-arms, until the exact level returns.
+            percent = None
+        due = self.low_battery.observe(percent)
+        if due and percent is not None and self.battery_warning.enabled:
+            log.info("iPhone battery is low; showing a desktop warning")
+            exact = fields.get("phone_battery_source") != SOURCE_HFP
+            self.events.phone_battery_low(percent, exact=exact)
+
+    def _phone_status_timer(self) -> bool:
+        self._phone_emit_id = None
+        if self._phone_status() != self._published_phone:
+            self._publish_phone_status()
+        return False
+
+    def _publish_phone_status(self) -> None:
+        self._published_phone = self._phone_status()
+        self._phone_emitted_at = self._clock()
+        self._emit_status()
+
+    def _set_battery_warning(self, enabled: bool) -> dict:
+        selected = self.battery_warning.set(enabled)
+        log.info("low-battery warning %s", "enabled" if selected else "disabled")
+        self._emit_status()
+        return self._phone_status()
 
     def _observe_le_state(self, connected: bool | None) -> None:
         if connected is not True:
@@ -490,7 +632,7 @@ class Daemon:
                 contacts=self.contacts,
                 status_provider=self._status,
                 notification_policy=self.notification_policy,
-                on_notification_policy_changed=self._emit_status,
+                on_notification_policy_changed=self._notification_policy_changed,
                 starred_threads=self.starred_threads,
                 confirmed_groups=self.confirmed_groups,
                 group_routes=self.group_routes,
@@ -503,6 +645,7 @@ class Daemon:
                 set_media_control=self._set_media_control,
                 calls=self.calls,
                 set_calls_enabled=self._set_calls_enabled,
+                set_phone_battery_warning=self._set_battery_warning,
             ),
         )
         self.events.set_dbus_service(self._dbus_service)
@@ -723,6 +866,11 @@ class Daemon:
                 previously_authorized=(
                     NOTIFICATION_ACCESS in self.setup_verification.verified
                 ),
+                # Labels are app-defined content: never request them while
+                # notification content is hidden.
+                notification_actions=self._ancs_actions_active,
+                on_notification_removed=self._ancs_notification_removed,
+                on_actions_reset=self._ancs_actions_reset,
             )
             # Publish before start(): its initial D-Bus sweep can dispatch
             # an owner change that must invalidate the in-progress scan.
@@ -745,6 +893,7 @@ class Daemon:
         # Optional calls only observe oFono; failures there never degrade
         # messaging, and a missing oFono is retried in the background.
         self.calls.start()
+        self.phone_battery.start()
 
         # Signal subscriptions belong to the GLib thread; the blocking session
         # creation itself belongs to the serialized OBEX worker.
@@ -806,6 +955,9 @@ class Daemon:
             except Exception:
                 log.warning("iPhone media control could not follow the BlueZ restart",
                             exc_info=True)
+        # Battery objects and notification sessions belonged to the old owner.
+        self._battery_link_seen = False
+        self.phone_battery.bluez_owner_changed(bool(new_owner))
         if (
             new_owner
             and not self.recovery.active
@@ -1000,6 +1152,45 @@ class Daemon:
             self.events.names,
         )
 
+    def _ancs_actions_active(self) -> bool:
+        """Whether ANCS action labels may be requested and shown at all."""
+        # Labels are app-defined content: never request them while
+        # notification content is hidden.
+        return bool(
+            self.notification_policy.ancs_actions and config.SHOW_NOTIFICATION_CONTENT
+        )
+
+    def _notification_policy_changed(self) -> None:
+        ancs = self.ancs
+        if ancs is not None:
+            ancs.notification_actions_changed()
+        self._emit_status()
+
+    def _perform_ancs_action(
+        self, notification_id, positive, token, on_result=None
+    ) -> bool:
+        """Forward one clicked desktop action to the current ANCS session."""
+        ancs = self.ancs
+        if ancs is None:
+            if on_result is not None:
+                on_result(ACTION_DISCONNECTED)
+            return False
+        return ancs.perform_notification_action(
+            notification_id, bool(positive), token, on_result
+        )
+
+    def _ancs_notification_removed(self, notification_id: int) -> None:
+        """Close a desktop popup whose actionable iPhone notification is gone."""
+        removed = getattr(self.events, "ancs_removed", None)
+        if removed is not None:
+            removed(notification_id)
+
+    def _ancs_actions_reset(self) -> None:
+        """Close action popups whose UIDs died with the ANCS session."""
+        reset = getattr(self.events, "ancs_actions_reset", None)
+        if reset is not None:
+            reset()
+
     def _contacts_refreshed(self) -> None:
         """GLib-side follow-up after a pull replaced the contact cache."""
         # Completing PullAll proves that the iPhone granted Sync Contacts,
@@ -1023,8 +1214,12 @@ class Daemon:
             "ancs": bool(ancs and ancs.connected),
             "ancs_subscribed": bool(ancs and ancs.subscribed),
             "ancs_authorized": bool(ancs and ancs.authorized),
+            "ancs_actions": self._ancs_actions_active(),
+            "ancs_actions_preference": self.notification_policy.ancs_actions,
+            "notification_content_shown": config.SHOW_NOTIFICATION_CONTENT,
             **self.bearers.snapshot(),
             **self.proximity.snapshot(),
+            **self._phone_status(),
             "contacts": self.contacts.count(),
             "events": history_count(storage=self.storage),
             "verified_iphone_setup": list(self.setup_verification.verified),
@@ -1124,6 +1319,13 @@ class Daemon:
         self.proximity.stop()
         self.recovery.stop()
         self.calls.stop()
+        self.phone_battery.stop()
+        if self._phone_emit_id is not None:
+            try:
+                GLib.source_remove(self._phone_emit_id)
+            except Exception:
+                log.debug("could not remove phone status timer", exc_info=True)
+            self._phone_emit_id = None
         self.read_receipts.close()
         self.adapter_class.stop()
         self.bearers.stop()

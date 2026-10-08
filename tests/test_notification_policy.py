@@ -55,3 +55,27 @@ def test_contacts_only_requires_a_real_boolean(tmp_path) -> None:
         store.set_contacts_only(1)  # type: ignore[arg-type]
 
     assert store.contacts_only is False
+
+
+def test_ancs_actions_default_comes_from_the_environment(tmp_path, monkeypatch) -> None:
+    from blueferry import config
+
+    monkeypatch.setattr(config, "ANCS_ACTIONS", True)
+    assert NotificationPolicyStore(tmp_path / "a.json").ancs_actions is True
+    monkeypatch.setattr(config, "ANCS_ACTIONS", False)
+    assert NotificationPolicyStore(tmp_path / "b.json").ancs_actions is False
+
+
+def test_saved_ancs_actions_choice_wins_over_the_environment(
+    tmp_path, monkeypatch,
+) -> None:
+    from blueferry import config
+
+    path = tmp_path / "settings.json"
+    monkeypatch.setattr(config, "ANCS_ACTIONS", True)
+    assert NotificationPolicyStore(path).set_ancs_actions(False) is False
+
+    assert NotificationPolicyStore(path).ancs_actions is False
+    assert json.loads(path.read_text())["ancs_notification_actions"] is False
+    with pytest.raises(ValueError, match="must be a boolean"):
+        NotificationPolicyStore(path).set_ancs_actions("yes")  # type: ignore[arg-type]

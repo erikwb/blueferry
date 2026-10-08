@@ -325,6 +325,9 @@ def pairing_outcome(
             outcome["ancs"] = True
     if error is not None:
         outcome["error"] = str(error)[:1024]
+        reason = getattr(error, "reason", None)
+        if isinstance(reason, str) and reason:
+            outcome["reason"] = reason[:64]
     return outcome
 
 
