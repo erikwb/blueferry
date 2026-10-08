@@ -925,6 +925,14 @@ class BlueFerryApp(App[None]):
         elif self.state.notice:
             notice.update(f"✓  {self.state.notice}")
             notice.set_classes("success")
+        elif self.state.status.extra.get("le_bond_suspect") is True:
+            notice.update(
+                "!  iPhone notifications keep failing to connect; the "
+                "Bluetooth pairing may be outdated. Forget this computer on "
+                "the iPhone, remove the iPhone here, and pair again. "
+                "Details: blueferry doctor"
+            )
+            notice.set_classes("warn")
         elif (
             config.ANCS_ENABLED
             and self.state.status.map

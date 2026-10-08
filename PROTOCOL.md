@@ -429,6 +429,43 @@ write keeps solicitation on. A previously authorized Control Point failure or
 timeout escalates to one serialized `Bearer.LE1.Disconnect`; MAP/PBAP stay
 available and LE rebuilds behind the profile-ordering gate.
 
+A stale LE bond looks different from an absent phone. Observed with
+btmon on an Intel AX200, BlueZ 5.87, Linux 7.2.8 and iOS 27: after the bond
+had been removed on only one side, the iPhone still connected over LE about
+every two seconds and offered ANCS during GATT discovery. Every `LE Start
+Encryption` with the stored LTK then failed (`Encryption Change`, status
+0x08), followed by `Disconnect Complete` with reason 0x08 (supervision
+timeout). BlueZ reports that as `org.bluez.Reason.Timeout` in
+`Bearer.LE1.Disconnected(name, message)` (the signal exists since BlueZ
+5.84). Its own auto-connect backoff applies only to
+`org.bluez.Reason.Authentication`, so the loop never stops. `Paired` and
+`Bonded` do not change. On that setup, re-pairing on both sides (Forget
+This Device on the iPhone, `bluetoothctl remove`, pairing again) cured it:
+encryption then completed and ANCS was authorized. The status is still
+surprising: 0x08 is a connection timeout, while a peer that has lost the
+key would normally answer with 0x06 (PIN or key missing) and BlueZ would
+report `Reason.Authentication`. One cured case does not prove that every
+such loop is a stale bond, so BlueFerry treats it as a suspicion.
+
+BlueFerry therefore only reports the pattern and never changes its
+connection behaviour because of it. It counts an LE drop only while Classic
+stays connected across the burst, only for links of at most 5 s, and only
+for `Timeout`, `Remote` or `Authentication`; `Local` (this host: BlueFerry,
+rfkill, adapter power), `Unknown` and `Suspend` never count. At least five
+such drops within any 60 s must persist for 180 s (540 s and a 180 s window
+when only polling sees them). The report clears on an authorized ANCS round
+trip, a link that holds for 15 s, a new bond, a new bluetoothd generation,
+after Classic has been gone for 120 s, or after 600 s without a counted
+drop, also when LE simply stays down. Detection is off without ANCS and
+on controllers flagged as ANCS-limited. The detection is tested only
+against fakes and a fake `org.bluez` on a private bus.
+
+`GetStatus` carries three additive keys for it: `le_bond_suspect`
+(boolean), `le_flap_count` (non-negative integer, short drops in the current
+burst, decays to 0 after a quiet window) and `last_le_disconnect_reason`
+(one of `""`, `unknown`, `timeout`, `local`, `remote`, `authentication`,
+`suspend`). No signal carries them; clients refetch on `StatusChanged()`.
+
 This works on the MediaTek MT7922 and the Intel AX210 while MAP and PBAP stay
 connected over BR/EDR; on the AX210 the LE half of the bond exists only when
 the iPhone initiated the authentication (see "Pairing and iPhone

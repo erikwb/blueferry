@@ -142,6 +142,9 @@ def doctor(verbose: bool = typer.Option(False, "-v", "--verbose")):
         log.error("State dir not writable: %s", e)
         ok = False
 
+    if not _doctor_le_bond(log):
+        warnings = True
+
     if not ok:
         typer.echo(typer.style("One or more checks FAILED.", fg=typer.colors.RED))
         raise typer.Exit(code=1)
@@ -456,6 +459,58 @@ def pairing_forget(
     except PairingError as error:
         typer.echo(json.dumps({"ok": False, "error": str(error)}))
         raise typer.Exit(code=2) from None
+
+
+def _running_backend_status() -> dict | None:
+    """Read status from a running backend; never start one for doctor."""
+    from blueferry.bus import get_session_bus
+    from blueferry.protocol import BUS_NAME
+
+    try:
+        if not get_session_bus().name_has_owner(BUS_NAME):
+            return None
+        status = _backend_client().status(check_compatibility=False)
+    except Exception:
+        # BackendError, D-Bus failures, or an unreachable session bus.
+        logging.getLogger("doctor").debug("backend status unavailable", exc_info=True)
+        return None
+    return dict(status.extra)
+
+
+def _doctor_le_bond(log: logging.Logger) -> bool:
+    """Report the daemon's stale-LE-bond finding; False means a warning."""
+    from blueferry.pairing_diagnostics import le_bond_findings
+
+    status = _running_backend_status()
+    if status is None:
+        log.info("Backend not running; skipped the iPhone LE link check")
+        return True
+    findings = le_bond_findings(status)
+    reason = findings["last_le_disconnect_reason"] or "not reported"
+    if not findings["le_bond_suspect"]:
+        log.info(
+            "iPhone LE link: no stale-bond pattern "
+            "(%d recent short drops, last reason: %s)",
+            findings["le_flap_count"],
+            reason,
+        )
+        return True
+    log.warning(
+        "iPhone LE pairing may be stale: the LE link dropped %d times within "
+        "seconds while Classic stayed connected (last reason: %s). If iPhone "
+        "notifications (ANCS) never connect, pairing again may help.",
+        findings["le_flap_count"],
+        reason,
+    )
+    log.warning(
+        "    On the iPhone: Settings > Bluetooth > (i) next to this computer "
+        "> Forget This Device"
+    )
+    log.warning(
+        "    On this computer: bluetoothctl remove %s, then pair again",
+        config.IPHONE_MAC,
+    )
+    return False
 
 
 def _backend_client():
