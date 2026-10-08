@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from blueferry.i18n import _
-from blueferry.models import BackendStatus
+from blueferry.models import BackendStatus, phone_status_fields
 
 
 def map_connection_refused(status: Mapping) -> bool:
@@ -56,4 +56,14 @@ def connection_subtitle(status: Mapping, *, reachable: bool) -> str:
             state=subtitle,
             seconds=retry,
         )
+    # Phone battery (LE or HFP) and, with calls on, signal; the operator name is
+    # left out of this one-line summary.
+    phone = [
+        _("{label} {value}").format(label=label, value=value)
+        for label, value in phone_status_fields(
+            BackendStatus.from_dict(status), include_network=False,
+        )
+    ]
+    if phone:
+        subtitle = _("{state} · {phone}").format(state=subtitle, phone=" · ".join(phone))
     return subtitle

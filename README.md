@@ -329,6 +329,53 @@ daemon run without logging its notification content:
 journalctl --user -u blueferry -f | grep "ANCS app observed"
 ```
 
+### iPhone notification actions (opt-in)
+
+iOS attaches actions to some notifications, such as **Accept**/**Decline** on
+an incoming call or calendar invitation, or **Clear**. With
+**All iPhone Notifications** selected, you can show them as buttons on the
+desktop popup. Turn it on with the **Show iPhone action buttons** switch in
+the iPhone settings of the Qt, GTK or Quickshell client, or with
+`blueferry notification-actions enable`. `BLUEFERRY_ANCS_ACTIONS=true` in
+`local.env` only sets the initial value; a choice saved from a client wins.
+
+```bash
+# Popups with action buttons stay longer than ordinary ones (1000-120000 ms):
+BLUEFERRY_ANCS_ACTION_TIMEOUT_MS=30000
+```
+
+Clicking a button asks the iPhone to perform that action through ANCS. This is
+independent of hands-free calling: *Accept* on a call answers it on the
+iPhone, and the audio stays wherever iOS routes it. Nothing is sent to the
+phone unless you click a labelled button. Dismissing or letting a popup
+expire never touches the phone, and a click on the popup body never runs an
+action (the popup carries an explicit no-op default action, because some
+notification servers map a body click to the only button). Buttons appear
+only when the notification server reports the `actions` capability, and each
+notification accepts one successful action.
+Messages popups come from MAP and keep their existing open and dismiss
+behavior.
+
+The button text is chosen by the app that sent the notification, so it can
+contain content (for example "Pay CHF 50 to Bob"). Actions therefore stay off
+while `BLUEFERRY_SHOW_NOTIFICATION_CONTENT=false`: the labels are then not even
+requested from the iPhone. iOS reuses notification numbers, so a button is
+bound to the exact notification that offered it: any later event for the
+same number, a replay of existing notifications, or a re-established iPhone
+connection retires the old buttons and closes their popups.
+
+Actions use the same one-at-a-time Control Point queue as notification
+requests, ahead of queued requests. If the notification was already handled
+on the iPhone, or the phone disconnected in the meantime, BlueFerry shows a
+short "iPhone action not completed" notice instead; when the phone was only
+busy or the write failed, the notice has a **Retry** button.
+`blueferry doctor` and `blueferry notification-actions` report the setting,
+and `GetStatus` includes `ancs_actions`, `ancs_actions_preference`, and
+`notification_content_shown`.
+
+This has only been exercised against simulated ANCS responses so far, not a
+physical iPhone.
+
 Restart the user service after editing `local.env` settings.
 
 When WirePlumber 0.5 or newer is installed, BlueFerry keeps calls and music on
@@ -471,6 +518,52 @@ What happens then:
   `CallsChanged` signal carries no content. Calls are not written to message
   history.
 
+### Phone battery, signal, and network
+
+BlueFerry shows the iPhone's battery while it is connected, read over the
+Bluetooth LE link it already holds for notifications: from BlueZ's
+`Battery1` when BlueZ publishes it, otherwise from the standard GATT Battery
+Service (Battery Level, read once, then followed through notifications). This
+needs neither HFP nor oFono, is exact to 1 %, and was confirmed present on an
+iPhone with iOS 27 (BlueZ 5.87 had cached its Battery Level); the reading
+path itself is tested against fakes only.
+
+With calls on, the phone's signal strength and network (operator) name are
+added from oFono's HFP indicators, and the HFP battery (20 % steps, shown as
+"about") fills in when no LE value exists. Without calls there is no signal
+or network: only the hands-free link reports them.
+
+```bash
+blueferry phone-status          # Battery: 87 % (Signal, Network with calls on)
+blueferry phone-status --json
+blueferry phone-status --warn   # or --no-warn
+```
+
+The Qt client shows a small battery and signal indicator next to
+"Conversations" (hover for the network name); the terminal client, the
+Quickshell header, and the GTK status page add battery and signal to their
+connection line.
+
+An optional low-battery warning (off by default) fires once per discharge
+when the battery reaches the threshold, and again only after the phone has
+charged at least 20 % above it (and once more after a BlueFerry restart if
+the phone is still low). Switch it on in the Qt iPhone settings or with
+`blueferry phone-status --warn`; the choice is saved in `settings.json`.
+`BLUEFERRY_PHONE_BATTERY_NOTIFY=true` seeds it and
+`BLUEFERRY_PHONE_BATTERY_LOW_PERCENT=20` (0-80) sets the threshold.
+
+With calls on, oFono answers the first request for the HFP battery by asking
+the phone for its own number (`AT+CNUM`). BlueFerry discards that number and
+never stores, logs, or returns it.
+
+The values are part of the private `GetStatus` reply (keys
+`phone_battery_level`, `phone_battery_source` = `bluez`/`gatt`/`hfp`,
+`phone_signal_strength`, `phone_network_name`, `phone_network_status`, all
+`null` when unknown, plus `phone_battery_warning`). Changes are announced
+with the argument-free `StatusChanged` signal, only when a shown value
+changed and at most every 10 seconds; no value is ever broadcast, and the
+logs never contain the levels or the operator name.
+
 Troubleshooting: if `blueferry calls` stays at **searching** although the
 iPhone is connected, the likely cause is the startup-order race between oFono
 and WirePlumber for the HFP profile. Restart oFono after WirePlumber
@@ -592,6 +685,27 @@ the setup it was observed on, so it may help:
    address `blueferry doctor` shows as the target. The backend stops when
    the pairing disappears.
 3. Pair the iPhone again from the app.
+
+If setup reports that **Bluetooth Low Energy is switched off on this adapter**,
+the controller supports LE but BlueZ runs it in Classic-only mode, usually
+because `/etc/bluetooth/main.conf` sets `ControllerMode = bredr`. iPhone
+notifications need LE, so full-mode pairing stops before it changes anything.
+Check the setting and switch it back to dual mode:
+
+```bash
+grep -i ControllerMode /etc/bluetooth/main.conf
+# set ControllerMode = dual (or comment the line out), then:
+sudo systemctl restart bluetooth   # OpenRC: sudo rc-service bluetooth restart
+```
+
+`sudo btmgmt le on` is not enough under `ControllerMode = bredr`: bluetoothd
+then provides no LE advertising for the adapter until it restarts in dual mode.
+If `ControllerMode` is not `bredr`, restarting bluetoothd switches LE back on.
+The pairing wizard and the KDE client let you check again after the restart;
+BlueFerry never edits `main.conf`. `blueferry doctor` reports the LE state and
+the configured `ControllerMode`. Compatibility mode still pairs Messages and
+Contacts without switching LE on, although iOS may not show their permission
+toggles until LE is available.
 
 If notifications previously worked with the same phone and adapter but stay
 unavailable for five minutes, BlueFerry can attempt one adapter power cycle.

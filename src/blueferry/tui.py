@@ -28,7 +28,13 @@ from blueferry.conversation_state import (
     ReplyDisposition,
     fetch_conversation_snapshot,
 )
-from blueferry.models import BackendStatus, CallsSnapshot, Thread, ThreadMessage
+from blueferry.models import (
+    BackendStatus,
+    CallsSnapshot,
+    Thread,
+    ThreadMessage,
+    phone_status_fields,
+)
 from blueferry.onboarding import ancs_unavailable_detail
 from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH
 from blueferry.recipients import participant_lines
@@ -882,6 +888,13 @@ class BlueFerryApp(App[None]):
             summary, summary_class = "Connecting to iPhone…", "warn"
         else:
             summary, summary_class = "iPhone offline", "bad"
+        # Optional HFP phone status (battery/signal) when oFono provides it.
+        extras = [
+            f"{label} {value}"
+            for label, value in phone_status_fields(status, include_network=False)
+        ]
+        if extras:
+            summary = "  ·  ".join([summary, *extras])
         connection = self.query_one("#connection-summary", Static)
         connection.update(summary)
         connection.set_classes(summary_class)

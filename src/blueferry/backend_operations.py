@@ -125,6 +125,11 @@ class NotificationPolicy(Protocol):
 
     def set_contacts_only(self, enabled: bool) -> bool: ...
 
+    @property
+    def ancs_actions(self) -> bool: ...
+
+    def set_ancs_actions(self, enabled: bool) -> bool: ...
+
 
 class StarredThreads(Protocol):
     def keys(self) -> Sequence[str]: ...
@@ -211,6 +216,7 @@ class BackendDependencies:
     set_proximity_lock: Callable[[bool, int], dict[str, Any]] | None = None
     calls: CallControl | None = None
     set_calls_enabled: Callable[[bool], dict[str, Any]] | None = None
+    set_phone_battery_warning: Callable[[bool], dict[str, Any]] | None = None
 
 
 class BackendOperations:
@@ -1041,6 +1047,26 @@ class BackendOperations:
             self.dependencies.on_notification_policy_changed()
         return selected
 
+    def get_ancs_notification_actions(self) -> bool:
+        """Return the saved opt-in for iPhone notification action buttons."""
+        if self.dependencies.notification_policy is None:
+            return False
+        return bool(self.dependencies.notification_policy.ancs_actions)
+
+    def set_ancs_notification_actions(self, enabled: bool) -> bool:
+        """Opt in or out of iPhone notification action buttons."""
+        if self.dependencies.notification_policy is None:
+            raise NotReadyError("notification policy storage is unavailable")
+        try:
+            selected = self.dependencies.notification_policy.set_ancs_actions(
+                enabled
+            )
+        except ValueError as error:
+            raise InvalidArgumentsError(str(error)) from error
+        if self.dependencies.on_notification_policy_changed is not None:
+            self.dependencies.on_notification_policy_changed()
+        return selected
+
     def set_proximity_lock(self, enabled: bool, grace_sec: int) -> dict[str, Any]:
         """Opt in or out of locking the desktop when the iPhone goes away."""
         configure = self.dependencies.set_proximity_lock
@@ -1120,6 +1146,19 @@ class BackendOperations:
         if calls is None or not calls.enabled:
             raise CallsDisabledError(CALLS_DISABLED_HINT)
         return calls
+
+    def set_phone_battery_warning(self, enabled: bool) -> bool:
+        """Save the low-battery warning opt-in; returns the saved value."""
+        configure = self.dependencies.set_phone_battery_warning
+        if configure is None:
+            raise NotReadyError("the phone battery warning is unavailable")
+        try:
+            return bool(configure(bool(enabled)).get("phone_battery_warning"))
+        except ValueError as error:
+            raise InvalidArgumentsError(str(error)) from error
+        except OSError as error:
+            log.error("could not save the battery warning preference: %s", error)
+            raise NotReadyError("could not save the battery warning preference") from error
 
     def set_calls_enabled(self, enabled: bool) -> dict[str, Any]:
         """Save the phone-calls opt-in and apply it without a restart."""

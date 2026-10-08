@@ -115,7 +115,8 @@ Kirigami.ScrollablePage {
             id: onboardingSummary
             Layout.fillWidth: true
             stage: compatibilityMode.checked
-                && iphonePage.effectiveStage === "activate-bluetooth"
+                && (iphonePage.effectiveStage === "activate-bluetooth"
+                    || iphonePage.effectiveStage === "le-disabled")
                 ? "select-device" : iphonePage.effectiveStage
             compatibility: iphonePage.bridge.onboardingCompatibility
             status: iphonePage.bridge.status
@@ -188,6 +189,19 @@ Kirigami.ScrollablePage {
 
         RowLayout {
             visible: !iphonePage.bridge.configured
+            Controls.Button {
+                // BlueFerry cannot switch LE on by itself (#192): with
+                // ControllerMode = bredr, bluetoothd starts no LE advertising
+                // manager, so the user edits main.conf, restarts bluetoothd
+                // and checks again here.
+                objectName: "recheckLowEnergyButton"
+                visible: iphonePage.bridge.compatibility.le_disabled === true
+                    && !compatibilityMode.checked
+                text: qsTr("Check Again")
+                icon.name: "view-refresh"
+                enabled: !iphonePage.bridge.busy
+                onClicked: iphonePage.bridge.loadSetupState()
+            }
             Controls.Button {
                 visible: iphonePage.bridge.compatibility.notifications_supported === true
                     && !iphonePage.bridge.bluetoothActive
@@ -401,6 +415,18 @@ Kirigami.ScrollablePage {
                 onActivated: iphonePage.bridge.setNotificationPolicy(currentValue)
             }
             Controls.CheckBox {
+                objectName: "phoneBatteryWarningCheckBox"
+                Layout.fillWidth: true
+                // Only daemons that report the key support the setting.
+                visible: iphonePage.bridge.status.phone_battery_warning !== undefined
+                text: qsTr("Warn when the iPhone's battery runs low")
+                checked: iphonePage.bridge.status.phone_battery_warning === true
+                enabled: iphonePage.bridge.status.daemon === true && !iphonePage.bridge.busy
+                onClicked: iphonePage.bridge.setPhoneBatteryWarning(checked)
+                Accessible.description: qsTr("One desktop notification per discharge, at %1 % or less.")
+                    .arg(iphonePage.bridge.status.phone_battery_warning_percent ?? 20)
+            }
+            Controls.CheckBox {
                 Layout.fillWidth: true
                 text: qsTr("Only notify for contacts")
                 checked: iphonePage.bridge.status.contacts_only_notifications === true
@@ -409,6 +435,25 @@ Kirigami.ScrollablePage {
                     && !iphonePage.bridge.busy
                 onClicked: iphonePage.bridge.setContactsOnlyNotifications(checked)
                 Accessible.description: qsTr("Unknown senders remain available in message history.")
+            }
+            // Opt-in; only daemons that report the preference support it.
+            Controls.CheckBox {
+                objectName: "ancsActionsCheckBox"
+                Layout.fillWidth: true
+                visible: iphonePage.bridge.status.ancs_actions_preference !== undefined
+                text: qsTr("Show iPhone action buttons (Accept, Decline, Clear…)")
+                checked: iphonePage.bridge.status.ancs_actions_preference === true
+                // A saved "on" can always be switched off; switching on
+                // needs All iPhone Notifications with content shown.
+                enabled: iphonePage.bridge.status.daemon === true
+                    && !iphonePage.bridge.busy
+                    && (checked
+                        || (iphonePage.bridge.status.notification_policy === "all"
+                            && iphonePage.bridge.status.notification_content_shown !== false))
+                onClicked: iphonePage.bridge.setAncsNotificationActions(checked)
+                Accessible.description: iphonePage.bridge.status.notification_content_shown === false
+                    ? qsTr("Unavailable while notification content is hidden.")
+                    : qsTr("Clicking a button runs that action on the iPhone, for example answering or declining a call. Applies to All iPhone Notifications.")
             }
         }
 

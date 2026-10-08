@@ -141,7 +141,7 @@ def _modem(powered=False, online=False, interfaces=()):
     }, signature="sv"))
 
 
-def _build(*, enabled=True, reachable=lambda: True, contacts=None):
+def _build(*, enabled=True, reachable=lambda: True, contacts=None, on_phone_status=None):
     transport = FakeTransport()
     timers = Timers()
     changes: list[str] = []
@@ -156,6 +156,7 @@ def _build(*, enabled=True, reachable=lambda: True, contacts=None):
         on_state_changed=lambda: changes.append("state"),
         on_event=events.append,
         phone_reachable=reachable,
+        on_phone_status=on_phone_status,
         schedule=timers.schedule,
         cancel=timers.cancel,
     )
@@ -1166,3 +1167,343 @@ def test_a_failing_conflict_check_is_treated_as_no_conflict() -> None:
     _fail_power(transport, timers, controller_mod.POWER_ATTEMPTS_BEFORE_CONFLICT)
 
     assert controller.state == CALLS_CONNECTING
+
+
+# ---- phone battery, signal, and operator ------------------------------------
+
+HANDSFREE = "org.ofono.Handsfree"
+NETREG = "org.ofono.NetworkRegistration"
+ONLINE_WITH_STATUS = [VOICE_CALL_MANAGER_IFACE, HANDSFREE, NETREG]
+
+
+def _phone_ready(interfaces=ONLINE_WITH_STATUS):
+    published = []
+    built = _build(on_phone_status=lambda status: published.append(status.to_status()))
+    controller, transport, *_ = built
+    controller.start()
+    transport.take("GetModems").on_reply([_modem(True, True, interfaces)])
+    transport.take("GetCalls").on_reply([])
+    return (*built, published)
+
+
+def _handsfree_props(level=3):
+    return dbus.Dictionary({
+        "Features": dbus.Array(["three-way-calling"], signature="s"),
+        "InbandRinging": dbus.Boolean(True),
+        "BatteryChargeLevel": dbus.Byte(level),
+        "SubscriberNumbers": dbus.Array(["+41791234567"], signature="s"),
+    }, signature="sv")
+
+
+def _netreg_props(status="registered", name="Sunrise", strength=80):
+    props = {
+        "Status": dbus.String(status),
+        "Mode": dbus.String("auto-only"),
+        "Name": dbus.String(name),
+    }
+    if strength is not None:
+        props["Strength"] = dbus.Byte(strength)
+    return dbus.Dictionary(props, signature="sv")
+
+
+def _phone_keys(controller):
+    # The daemon merges these into GetStatus (with the LE battery, if any).
+    snapshot = controller.phone_status.to_status()
+    return {
+        key: snapshot[key] for key in snapshot
+        if key.startswith("phone_") and key != "phone_battery_source"
+    }
+
+
+def test_online_modem_reads_battery_signal_and_operator() -> None:
+    controller, transport, _timers, changes, _events, published = _phone_ready()
+
+    # Both status interfaces are watched on the modem path before reading.
+    watched = {(m.interface, m.path) for m in transport.matches if m.signal == "PropertyChanged"}
+    assert {(HANDSFREE, MODEM), (NETREG, MODEM)} <= watched
+    transport.take("GetProperties").on_reply(_handsfree_props(3))
+    pending = transport.take("GetProperties")
+    assert (pending.interface, pending.path) == (NETREG, MODEM)
+    pending.on_reply(_netreg_props())
+
+    assert _phone_keys(controller) == {
+        "phone_battery_level": 60,
+        "phone_signal_strength": 80,
+        "phone_network_name": "Sunrise",
+        "phone_network_status": "registered",
+    }
+    # One content-free notification per published change; subscriber
+    # numbers and other Handsfree fields are never kept.
+    assert len(published) == 2
+    assert "+41791234567" not in repr(controller.snapshot())
+    assert "state" in changes  # the calls state itself still reports ready
+
+
+def test_property_changes_update_status_and_skip_invisible_ones() -> None:
+    controller, transport, _timers, _changes, _events, published = _phone_ready()
+    transport.take("GetProperties").on_reply(_handsfree_props(3))
+    transport.take("GetProperties").on_reply(_netreg_props())
+    published.clear()
+
+    transport.emit(HANDSFREE, "PropertyChanged", MODEM, "BatteryChargeLevel", dbus.Byte(1))
+    transport.emit(NETREG, "PropertyChanged", MODEM, "Strength", dbus.Byte(40))
+    transport.emit(HANDSFREE, "PropertyChanged", MODEM, "InbandRinging", dbus.Boolean(False))
+    transport.emit(NETREG, "PropertyChanged", MODEM, "Strength", dbus.Byte(40))
+
+    assert _phone_keys(controller)["phone_battery_level"] == 20
+    assert _phone_keys(controller)["phone_signal_strength"] == 40
+    assert len(published) == 2
+
+    # Losing registration hides the stale strength and the operator.
+    transport.emit(NETREG, "PropertyChanged", MODEM, "Status", dbus.String("searching"))
+    assert _phone_keys(controller) == {
+        "phone_battery_level": 20,
+        "phone_signal_strength": None,
+        "phone_network_name": None,
+        "phone_network_status": "searching",
+    }
+    # A signal on another object path is not ours.
+    transport.emit(HANDSFREE, "PropertyChanged", MODEM + "_other", "BatteryChargeLevel", dbus.Byte(5))
+    assert _phone_keys(controller)["phone_battery_level"] == 20
+
+
+def test_missing_status_interfaces_stay_unknown_without_requests() -> None:
+    controller, transport, _timers, _changes, _events, published = _phone_ready(
+        [VOICE_CALL_MANAGER_IFACE],
+    )
+
+    assert controller.state == CALLS_READY
+    assert [p for p in transport.pending if p.method == "GetProperties"] == []
+    assert all(v is None for v in _phone_keys(controller).values())
+    assert published == []
+
+    # oFono announces Handsfree later: only that interface is read.
+    transport.emit(MODEM_IFACE, "PropertyChanged", MODEM, "Interfaces",
+                   dbus.Array([VOICE_CALL_MANAGER_IFACE, HANDSFREE], signature="s"))
+    pending = transport.take("GetProperties")
+    assert pending.interface == HANDSFREE
+    pending.on_reply(_handsfree_props(5))
+    assert _phone_keys(controller)["phone_battery_level"] == 100
+    assert _phone_keys(controller)["phone_signal_strength"] is None
+
+
+def test_get_properties_failure_leaves_values_unknown_and_logs_once(caplog) -> None:
+    import logging
+
+    caplog.set_level(logging.DEBUG, logger="blueferry.calls.controller")
+    controller, transport, _timers, _changes, _events, published = _phone_ready()
+
+    transport.take("GetProperties").on_error(_missing("org.ofono.Error.Failed"))
+    transport.take("GetProperties").on_error(
+        _missing("org.freedesktop.DBus.Error.UnknownInterface"),
+    )
+
+    assert controller.state == CALLS_READY
+    assert all(v is None for v in _phone_keys(controller).values())
+    assert published == []
+    failures = [r for r in caplog.records if "GetProperties failed" in r.getMessage()]
+    assert len(failures) == 1 and "org.ofono.Error.Failed" in failures[0].getMessage()
+    # PropertyChanged still fills values in afterwards.
+    transport.emit(HANDSFREE, "PropertyChanged", MODEM, "BatteryChargeLevel", dbus.Byte(2))
+    assert _phone_keys(controller)["phone_battery_level"] == 40
+
+
+def test_interface_removal_power_loss_and_owner_loss_clear_phone_status() -> None:
+    controller, transport, _timers, _changes, _events, published = _phone_ready()
+    transport.take("GetProperties").on_reply(_handsfree_props(4))
+    transport.take("GetProperties").on_reply(_netreg_props())
+
+    transport.emit(MODEM_IFACE, "PropertyChanged", MODEM, "Interfaces",
+                   dbus.Array([VOICE_CALL_MANAGER_IFACE, HANDSFREE], signature="s"))
+    netreg_matches = [m for m in transport.matches if m.interface == NETREG]
+    assert all(m.removed for m in netreg_matches)
+    assert _phone_keys(controller)["phone_network_name"] is None
+    assert _phone_keys(controller)["phone_battery_level"] == 80
+
+    # Online dropping keeps the atoms in oFono, and so the values.
+    transport.emit(MODEM_IFACE, "PropertyChanged", MODEM, "Online", dbus.Boolean(False))
+    assert controller.state == CALLS_CONNECTING
+    assert _phone_keys(controller)["phone_battery_level"] == 80
+    assert not any(m.removed for m in transport.matches if m.interface == HANDSFREE)
+
+    transport.emit(MODEM_IFACE, "PropertyChanged", MODEM, "Powered", dbus.Boolean(False))
+    assert all(v is None for v in _phone_keys(controller).values())
+    assert all(m.removed for m in transport.matches if m.interface == HANDSFREE)
+    assert published[-1]["phone_battery_level"] is None
+
+    # A late reply from the dropped watch must not resurrect values.
+    controller2, transport2, *_rest, published2 = _phone_ready()
+    stale = transport2.take("GetProperties")
+    transport2.owner_handler(False)
+    stale.on_reply(_handsfree_props(5))
+    assert controller2.state == CALLS_UNAVAILABLE
+    assert all(v is None for v in _phone_keys(controller2).values())
+    assert published2 == []
+
+
+def test_stale_reply_after_rewatch_is_ignored() -> None:
+    controller, transport, _timers, _changes, _events, _published = _phone_ready(
+        [VOICE_CALL_MANAGER_IFACE, HANDSFREE],
+    )
+    first = transport.take("GetProperties")
+    # Handsfree disappears and reappears within the same oFono generation.
+    for interfaces in ([VOICE_CALL_MANAGER_IFACE], [VOICE_CALL_MANAGER_IFACE, HANDSFREE]):
+        transport.emit(MODEM_IFACE, "PropertyChanged", MODEM, "Interfaces",
+                       dbus.Array(interfaces, signature="s"))
+    second = transport.take("GetProperties")
+
+    second.on_reply(_handsfree_props(2))
+    first.on_reply(_handsfree_props(5))
+
+    assert _phone_keys(controller)["phone_battery_level"] == 40
+
+
+def test_stop_clears_phone_status_without_callbacks() -> None:
+    controller, transport, _timers, _changes, _events, published = _phone_ready()
+    transport.take("GetProperties").on_reply(_handsfree_props(3))
+    published.clear()
+
+    controller.stop()
+
+    assert published == []
+    assert all(v is None for v in _phone_keys(controller).values())
+    assert all(m.removed for m in transport.matches if m.interface in {HANDSFREE, NETREG})
+
+
+def test_phone_status_callback_failure_does_not_break_the_controller() -> None:
+    def boom(_status):
+        raise RuntimeError("consumer bug")
+
+    controller, transport, *_ = _build(on_phone_status=boom)
+    controller.start()
+    transport.take("GetModems").on_reply([_modem(True, True, ONLINE_WITH_STATUS)])
+    transport.take("GetProperties").on_reply(_handsfree_props(1))
+
+    assert controller.state == CALLS_READY
+    assert _phone_keys(controller)["phone_battery_level"] == 20
+
+
+def test_disabled_controller_reports_unknown_phone_status_without_io() -> None:
+    controller, transport, timers, _changes, _events = _build(enabled=False)
+    controller.start()
+    controller.poke()
+
+    assert all(v is None for v in _phone_keys(controller).values())
+    assert transport.pending == [] and transport.matches == [] and timers.entries == {}
+
+
+def test_powered_modem_reports_battery_while_online_is_still_pending() -> None:
+    published = []
+    controller, transport, _timers, _changes, _events = _build(
+        on_phone_status=lambda status: published.append(status.to_status()),
+    )
+    controller.start()
+    # oFono lists the atoms from hfp_pre_sim on, before Online.
+    transport.take("GetModems").on_reply([_modem(True, False, ONLINE_WITH_STATUS)])
+
+    assert controller.state == CALLS_CONNECTING
+    transport.take("GetProperties").on_reply(_handsfree_props(2))
+    transport.take("GetProperties").on_reply(_netreg_props())
+    assert _phone_keys(controller)["phone_battery_level"] == 40
+    assert _phone_keys(controller)["phone_network_name"] == "Sunrise"
+    # The Online request is still outstanding; phone status does not wait.
+    assert transport.take("SetProperty").args[0] == "Online"
+
+
+def test_unpowered_modem_is_never_asked_for_phone_status() -> None:
+    controller, transport, _timers, _changes, _events = _build(reachable=lambda: False)
+    controller.start()
+    transport.take("GetModems").on_reply([_modem(False, False, ONLINE_WITH_STATUS)])
+
+    assert [p for p in transport.pending if p.method == "GetProperties"] == []
+    assert all(v is None for v in _phone_keys(controller).values())
+
+
+def test_in_progress_get_properties_is_retried_once() -> None:
+    controller, transport, timers, _changes, _events, published = _phone_ready(
+        [VOICE_CALL_MANAGER_IFACE, HANDSFREE],
+    )
+
+    # oFono is still waiting for AT+CNUM from an earlier caller.
+    transport.take("GetProperties").on_error(_missing("org.ofono.Error.InProgress"))
+    assert all(v is None for v in _phone_keys(controller).values())
+    assert controller_mod.RETRY_STEADY_SEC in timers.delays()
+
+    timers.fire_all()
+    retry = transport.take("GetProperties")
+    assert (retry.interface, retry.path) == (HANDSFREE, MODEM)
+    retry.on_reply(_handsfree_props(4))
+    assert _phone_keys(controller)["phone_battery_level"] == 80
+    assert published[-1]["phone_battery_level"] == 80
+
+
+def test_phone_status_retry_is_single_and_skips_vanished_interfaces() -> None:
+    _controller, transport, timers, *_ = _phone_ready([VOICE_CALL_MANAGER_IFACE, HANDSFREE])
+
+    transport.take("GetProperties").on_error(_missing("org.ofono.Error.Failed"))
+    timers.fire_all()
+    transport.take("GetProperties").on_error(_missing("org.ofono.Error.Failed"))
+    assert controller_mod.RETRY_STEADY_SEC not in timers.delays()
+    assert [p for p in transport.pending if p.method == "GetProperties"] == []
+
+    _controller2, transport2, timers2, *_ = _phone_ready([VOICE_CALL_MANAGER_IFACE, HANDSFREE])
+    transport2.take("GetProperties").on_error(
+        _missing("org.freedesktop.DBus.Error.UnknownInterface"),
+    )
+    assert controller_mod.RETRY_STEADY_SEC not in timers2.delays()
+
+
+def test_pending_phone_status_retry_is_cancelled_by_unwatch_and_stop() -> None:
+    _controller, transport, timers, *_ = _phone_ready([VOICE_CALL_MANAGER_IFACE, HANDSFREE])
+    transport.take("GetProperties").on_error(_missing("org.ofono.Error.InProgress"))
+    assert controller_mod.RETRY_STEADY_SEC in timers.delays()
+
+    transport.emit(MODEM_IFACE, "PropertyChanged", MODEM, "Interfaces",
+                   dbus.Array([VOICE_CALL_MANAGER_IFACE], signature="s"))
+    assert controller_mod.RETRY_STEADY_SEC not in timers.delays()
+
+    controller2, transport2, timers2, *_ = _phone_ready([VOICE_CALL_MANAGER_IFACE, HANDSFREE])
+    transport2.take("GetProperties").on_error(_missing("org.ofono.Error.InProgress"))
+    controller2.stop()
+    assert timers2.entries == {}
+    assert [p for p in transport2.pending if p.method == "GetProperties"] == []
+
+
+def test_phone_status_failures_are_logged_once_per_modem_session(caplog) -> None:
+    import logging
+
+    caplog.set_level(logging.INFO, logger="blueferry.calls.controller")
+    _controller, transport, timers, *_ = _phone_ready([VOICE_CALL_MANAGER_IFACE, HANDSFREE])
+
+    def failures():
+        return [r for r in caplog.records if "GetProperties failed" in r.getMessage()]
+
+    transport.take("GetProperties").on_error(_missing("org.ofono.Error.Failed"))
+    timers.fire_all()
+    transport.take("GetProperties").on_error(_missing("org.ofono.Error.Failed"))
+    assert len(failures()) == 1
+
+    # Power cycle = new session: its first failure is reported again.
+    for powered in (False, True):
+        transport.emit(MODEM_IFACE, "PropertyChanged", MODEM, "Powered", dbus.Boolean(powered))
+    transport.take("GetProperties").on_error(_missing("org.ofono.Error.Failed"))
+    assert len(failures()) == 2
+
+
+def test_phone_values_and_own_number_never_reach_logs_or_state(caplog) -> None:
+    import logging
+
+    caplog.set_level(logging.DEBUG)
+    controller, transport, *_ = _phone_ready()
+    transport.take("GetProperties").on_reply(_handsfree_props(3))
+    transport.take("GetProperties").on_reply(_netreg_props(name="Sunrise", strength=80))
+    transport.emit(NETREG, "PropertyChanged", MODEM, "Name", dbus.String("Salt Mobile"))
+    transport.emit(HANDSFREE, "PropertyChanged", MODEM, "BatteryChargeLevel", dbus.Byte(1))
+
+    logged = " ".join(record.getMessage() for record in caplog.records)
+    for secret in ("Sunrise", "Salt Mobile", "+41791234567"):
+        assert secret not in logged
+    assert not [r for r in caplog.records if "battery" in r.getMessage().lower()
+                and any(char.isdigit() for char in r.getMessage())]
+    assert "+41791234567" not in repr(controller.phone_status)
+    assert "SubscriberNumbers" not in repr(controller.phone_status)

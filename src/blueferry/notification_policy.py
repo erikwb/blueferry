@@ -26,6 +26,12 @@ class NotificationPolicyStore:
         payload = self._load()
         self._value = self._load_policy(payload)
         self._contacts_only = payload.get("contacts_only_notifications") is True
+        saved_actions = payload.get("ancs_notification_actions")
+        # BLUEFERRY_ANCS_ACTIONS is only the initial value; a saved choice
+        # from a client wins.
+        self._ancs_actions = (
+            saved_actions if isinstance(saved_actions, bool) else config.ANCS_ACTIONS
+        )
 
     @property
     def value(self) -> str:
@@ -34,6 +40,11 @@ class NotificationPolicyStore:
     @property
     def contacts_only(self) -> bool:
         return self._contacts_only
+
+    @property
+    def ancs_actions(self) -> bool:
+        """Saved opt-in for iPhone notification action buttons."""
+        return self._ancs_actions
 
     def _load(self) -> dict:
         try:
@@ -67,4 +78,12 @@ class NotificationPolicyStore:
 
         self._settings.update(contacts_only_notifications=enabled)
         self._contacts_only = enabled
+        return enabled
+
+    def set_ancs_actions(self, enabled: bool) -> bool:
+        if not isinstance(enabled, bool):
+            raise ValueError("notification actions must be a boolean")
+
+        self._settings.update(ancs_notification_actions=enabled)
+        self._ancs_actions = enabled
         return enabled

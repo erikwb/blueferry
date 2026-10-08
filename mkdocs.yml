@@ -100,7 +100,9 @@ nav:
           - Without systemd (OpenRC): en/user/openrc.md
           - Clients: en/user/clients.md
           - Phone calls (experimental): en/user/calls.md
+          - Phone battery and signal: en/user/phone-status.md
           - Privacy and storage: en/user/privacy.md
+          - Notification actions: en/user/notification-actions.md
           - Troubleshooting: en/user/troubleshooting.md
           - Stale LE pairing: en/user/stale-le-bond.md
           - FAQ: en/user/faq.md
@@ -118,7 +120,9 @@ nav:
           - Ohne systemd (OpenRC): de/user/openrc.md
           - Clients: de/user/clients.md
           - Anrufe (experimentell): de/user/calls.md
+          - Akku und Empfang: de/user/phone-status.md
           - Datenschutz und Speicher: de/user/privacy.md
+          - Mitteilungs-Aktionen: de/user/notification-actions.md
           - Fehlerbehebung: de/user/troubleshooting.md
           - Veraltete LE-Kopplung: de/user/stale-le-bond.md
           - FAQ: de/user/faq.md

@@ -18,9 +18,17 @@ Protocol behavior established by the pairing experiments:
   requesting Title+Subtitle+Message, and the response comes back on DS.
 
 - App display names are looked up lazily via GetAppAttributes and cached.
+
+- With the opt-in BLUEFERRY_ANCS_ACTIONS, the full request also asks for the
+  action labels announced by the Notification Source flags, and a clicked
+  desktop action is sent back as PerformNotificationAction. It goes through
+  the same serialized Control Point queue as attribute requests (at its
+  head), so it never overlaps another write; it has no Data Source response
+  and completes with the write reply.
 """
 from __future__ import annotations
 
+import itertools
 import logging
 import re
 import time
@@ -38,6 +46,8 @@ from blueferry.ancs.constants import (
     DATA_SOURCE_CHAR,
     MESSAGES_APP_ID,
     NOTIFICATION_SOURCE_CHAR,
+    ActionID,
+    AncsErrorCode,
     CommandID,
     EventID,
 )
@@ -48,14 +58,18 @@ from blueferry.ancs.parsers import (
     DataSourceEvent,
     Notification,
     NotificationAttributes,
+    att_error_code,
     build_get_app_attributes,
     build_get_notification_app_identifier,
     build_get_notification_attributes,
+    build_perform_notification_action,
     parse_notification_app_identifier,
 )
 from blueferry.ancs.sequencer import RequestBacklog
 from blueferry.bus import get_system_bus
 from blueferry.limits import (
+    MAX_ANCS_ACTIONABLE,
+    MAX_ANCS_ACTIONS_IN_FLIGHT,
     MAX_ANCS_APP_CACHE,
     MAX_ANCS_PENDING_PER_APP,
     MAX_ANCS_REQUESTS,
@@ -65,6 +79,11 @@ log = logging.getLogger(__name__)
 
 REQUEST_TIMEOUT_SECONDS = 15
 DBUS_CALL_TIMEOUT_SECONDS = 10
+# BlueZ rejects a WriteValue with org.bluez.Error.InProgress while another
+# write on the same characteristic is unacknowledged (gatt-client.c write_op),
+# e.g. from another D-Bus client. Retry briefly instead of dropping the request.
+CONTROL_POINT_BUSY_RETRY_SECONDS = 1
+MAX_CONTROL_POINT_BUSY_RETRIES = 3
 SUBSCRIBE_RETRY_SECONDS = 2
 AUTHORIZATION_RETRY_SECONDS = 5
 MANAGER_RETRY_SECONDS = 2
@@ -77,16 +96,45 @@ BEARER_CYCLE_LOG_SECONDS = 60
 
 _BLUEZ_BUS_NAME = "org.bluez"
 
+# PerformNotificationAction outcomes reported to the caller. They carry no
+# notification content and are safe to log.
+ACTION_SENT = "sent"
+ACTION_UNAVAILABLE = "unavailable"      # not offered, consumed, or removed
+ACTION_DISCONNECTED = "disconnected"
+ACTION_BUSY = "busy"
+ACTION_REJECTED = "rejected"            # iOS reported Action Failed
+ACTION_UNSUPPORTED = "unsupported"      # iOS rejected the command itself
+ACTION_FAILED = "failed"
+
+
+@dataclass(slots=True)
+class _ActionRequest:
+    uid: int
+    positive: bool
+    on_result: Callable[[str], None] | None
+
+
+@dataclass(slots=True)
+class _Actionable:
+    """Actions iOS offered for one UID, bound to the event that offered them."""
+    token: int
+    positive: bool
+    negative: bool
+    in_flight: bool = False
+
 
 @dataclass(slots=True)
 class _PendingRequest:
     key: str
     packet: bytes
-    assembler: DataSourceAssembler
+    assembler: DataSourceAssembler | None
     notification: Notification | None = None
     app_probe: bool = False
     expected_app_id: str | None = None
     authorization_probe: bool = False
+    busy_retries: int = 0
+    action_label_ids: tuple[int, ...] = ()
+    action: _ActionRequest | None = None
 
 
 _APP_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")
@@ -105,6 +153,22 @@ def _connection_was_lost(error: dbus.exceptions.DBusException) -> bool:
         or "not connected" in detail
         or "no att transport" in detail
     )
+
+
+def _action_error_result(error: dbus.exceptions.DBusException) -> tuple[str, int | None]:
+    """Map a failed PerformNotificationAction write to a result and ATT code."""
+    if _connection_was_lost(error):
+        return ACTION_DISCONNECTED, None
+    code = att_error_code(error.get_dbus_message() or str(error))
+    if code == AncsErrorCode.InvalidParameter:
+        # The UID no longer names a notification on the phone, typically
+        # because it was handled or cleared there first.
+        return ACTION_UNAVAILABLE, code
+    if code == AncsErrorCode.ActionFailed:
+        return ACTION_REJECTED, code
+    if code in (AncsErrorCode.UnknownCommand, AncsErrorCode.InvalidCommand):
+        return ACTION_UNSUPPORTED, code
+    return ACTION_FAILED, code
 
 
 def _notification_is_already_stopped(
@@ -145,6 +209,9 @@ class AncsClient:
         on_transport_failure: Callable[[], None] | None = None,
         *,
         previously_authorized: bool = False,
+        notification_actions: bool | Callable[[], bool] = False,
+        on_notification_removed: Callable[[int], None] | None = None,
+        on_actions_reset: Callable[[], None] | None = None,
         schedule: Callable[[int, Callable[[], bool]], int] = GLib.timeout_add_seconds,
         cancel: Callable[[int], object] = GLib.source_remove,
         clock: Callable[[], float] = time.monotonic,
@@ -164,6 +231,9 @@ class AncsClient:
         self._clock = clock
         # kind -> (last INFO time, cycles demoted to DEBUG since then)
         self._bearer_cycle_logs: dict[str, tuple[float, int]] = {}
+        self._notification_actions_setting = notification_actions
+        self._on_notification_removed = on_notification_removed
+        self._on_actions_reset = on_actions_reset
 
         # Char path slots — set as InterfacesAdded fires
         self._ns_path: str | None = None
@@ -193,6 +263,22 @@ class AncsClient:
         )
         self._active_request: _PendingRequest | None = None
         self._request_timeout_id: int | None = None
+        # Identity of the WriteValue call BlueZ has not answered yet. It is
+        # tracked separately from _active_request: a request can finish
+        # (response, timeout, reassembly failure) while its write is still
+        # unacknowledged, and BlueZ rejects an overlapping write with
+        # InProgress. Only the matching reply/error callback clears it.
+        self._cp_write_token: object | None = None
+        self._cp_busy_retry_id: int | None = None
+
+        # UID -> offered actions for notifications whose labels were
+        # delivered in the current ANCS session. Each entry carries the token
+        # of the event that offered it; a desktop click must present the same
+        # token. UIDs are only meaningful within one session and iOS reuses
+        # them, so a subscription reset, a PreExisting replay, or any new
+        # Added/Modified/Removed event for the UID invalidates the entry.
+        self._actionable: OrderedDict[int, _Actionable] = OrderedDict()
+        self._action_tokens = itertools.count(1)
 
         # ObjectManager watches live for the client lifetime. Characteristic
         # subscriptions are shorter-lived and are rebuilt as one unit whenever
@@ -315,6 +401,9 @@ class AncsClient:
             return
         self._bluez_owner_generation += 1
         self._bluez_owner_available = bool(new_owner)
+        # The old bluetoothd took its pending write_op with it; its late
+        # callback (if any) no longer gates the new owner's Control Point.
+        self._cp_write_token = None
         if self._manager_bind_in_progress:
             self._manager_rebind_pending = True
         if old_owner:
@@ -608,6 +697,7 @@ class AncsClient:
         self._notify_started = False
         self._authorized = False
         self._reset_requests()
+        self._reset_actions()
 
     def _stop_bluez_notifications(self) -> None:
         """Remove notification ownership created by us while ATT is up."""
@@ -731,6 +821,8 @@ class AncsClient:
         self._cancel_subscribe_retry()
         self._characteristic_signal_matches = matches
         self._notify_started = True
+        # A fresh Notification Source subscription starts a new UID session.
+        self._reset_actions()
         log.info(
             "ANCS characteristic subscriptions active; requesting notification access"
         )
@@ -867,14 +959,23 @@ class AncsClient:
         except ValueError as e:
             log.error("NS parse failed: %s", e)
             return
+        # Any event for a UID retires the actions offered under it before
+        # anything is filtered: iOS reuses UIDs, so a button for an old
+        # notification must never act on a new one (e.g. an incoming call).
+        self._forget_actionable(n.id)
+        if n.type == EventID.NotificationRemoved:
+            log.debug("ANCS removed uid=%d", n.id)
+            return
         # Skip pre-existing (notifications that already existed on the
         # iPhone at our connect time — too noisy on initial subscribe).
         if n.is_preexisting:
             log.debug("ANCS preexisting event uid=%d cat=%d — skipping",
                       n.id, n.category)
-            return
-        if n.type == EventID.NotificationRemoved:
-            log.debug("ANCS removed uid=%d", n.id)
+            # A PreExisting replay means iOS started a new notification
+            # session, possibly without an LE transition we observed.
+            if self._actionable:
+                log.info("ANCS session replay seen; retiring notification actions")
+                self._reset_actions()
             return
         # Added or Modified → identify the source app without content first.
         self._request_attrs(n)
@@ -895,9 +996,14 @@ class AncsClient:
         ))
 
     def _request_full_attrs(self, n: Notification, app_id: str) -> None:
-        # BlueFerry cannot act on ANCS action labels, so do not request them.
-        pkt = build_get_notification_attributes(n.id)
-        expected = [0, 1, 2, 3]
+        # Action labels are requested only when the opt-in is enabled and the
+        # Notification Source flags announced an action. Messages popups come
+        # from MAP, so its ANCS copy never offers actions.
+        label_ids: tuple[int, ...] = ()
+        if self._notification_actions() and app_id != MESSAGES_APP_ID:
+            label_ids = n.action_label_ids()
+        pkt = build_get_notification_attributes(n.id, action_label_ids=label_ids)
+        expected = [0, 1, 2, 3, *label_ids]
         self._enqueue(_PendingRequest(
             key=f"notification:{n.id}",
             packet=pkt,
@@ -908,6 +1014,7 @@ class AncsClient:
             ),
             notification=n,
             expected_app_id=app_id,
+            action_label_ids=label_ids,
         ))
 
     def _enqueue(self, request: _PendingRequest) -> None:
@@ -918,7 +1025,12 @@ class AncsClient:
 
     def _pump_requests(self) -> None:
         """Write exactly one CP command; ANCS responses are strictly ordered."""
-        if self._active_request is not None or not self._request_queue:
+        if (
+            self._active_request is not None
+            or self._cp_write_token is not None
+            or self._cp_busy_retry_id is not None
+            or not self._request_queue
+        ):
             return
         if not self._cp_path:
             return
@@ -926,6 +1038,8 @@ class AncsClient:
         cp_path = self._cp_path
         request = self._request_queue.popleft()
         self._active_request = request
+        token = object()
+        self._cp_write_token = token
 
         def current_attempt() -> bool:
             return (
@@ -934,21 +1048,78 @@ class AncsClient:
                 and self._active_request is request
             )
 
-        try:
-            dbus.Interface(
-                get_system_bus().get_object("org.bluez", cp_path),
-                "org.bluez.GattCharacteristic1",
-            ).WriteValue(
-                [dbus.Byte(value) for value in request.packet],
-                {},
-                timeout=DBUS_CALL_TIMEOUT_SECONDS,
-            )
-        except dbus.exceptions.DBusException as error:
+        def release_write() -> bool:
+            """Clear the in-flight marker if it still belongs to this call."""
+            if self._cp_write_token is token:
+                self._cp_write_token = None
+                return True
+            return False
+
+        def written(*_args) -> None:
+            released = release_write()
+            if request.action is not None:
+                if current_attempt():
+                    # PerformNotificationAction has no Data Source response:
+                    # the write reply completes it.
+                    self._finish_active_request()
+                    self._action_written(request.action)
+                    self._pump_requests()
+                    return
+                # The session was reset meanwhile, but the phone accepted the
+                # command; say so truthfully without touching new state.
+                self._report_action(request.action, ACTION_SENT)
+                if released:
+                    self._pump_requests()
+                return
             if not current_attempt():
-                log.debug("discarded stale ANCS write failure after BlueZ changed owner")
+                # Also reached when the complete Data Source response arrived
+                # before BlueZ delivered the write reply, or the request timed
+                # out or failed reassembly meanwhile. The next request was
+                # held back until now so the writes never overlap.
+                log.debug(
+                    "discarded ANCS write completion after the request "
+                    "already completed or the owner changed"
+                )
+                if released:
+                    self._pump_requests()
+                return
+            self._request_timeout_id = self._schedule(
+                REQUEST_TIMEOUT_SECONDS, self._request_timed_out
+            )
+
+        def failed(error: dbus.exceptions.DBusException) -> None:
+            released = release_write()
+            if not current_attempt():
+                log.debug("discarded stale ANCS write failure")
+                if request.action is not None:
+                    self._report_action(
+                        request.action, _action_error_result(error)[0]
+                    )
+                if released:
+                    self._pump_requests()
                 return
             name = error.get_dbus_name() or type(error).__name__
             detail = error.get_dbus_message() or str(error)
+            if (
+                name.endswith(".InProgress")
+                and request.busy_retries < MAX_CONTROL_POINT_BUSY_RETRIES
+            ):
+                log.info("ANCS Control Point busy; retrying the request")
+                request.busy_retries += 1
+                self._active_request = None
+                self._request_queue.push_front(request.key, request)
+                self._cp_busy_retry_id = self._schedule(
+                    CONTROL_POINT_BUSY_RETRY_SECONDS, self._retry_busy_control_point
+                )
+                return
+            if request.action is not None:
+                self._finish_active_request()
+                self._action_failed(request.action, error)
+                if _connection_was_lost(error):
+                    self._mark_transport_failed()
+                    return
+                self._pump_requests()
+                return
             log.warning("ANCS CP WriteValue failed: %s: %s", name, detail)
             self._observe_permission_error(error)
             if _connection_was_lost(error):
@@ -957,13 +1128,60 @@ class AncsClient:
             self._abandon_request(request)
             self._active_request = None
             self._pump_requests()
+
+        # Asynchronous so a slow or wedged ATT write can never stall the GLib
+        # main loop for DBUS_CALL_TIMEOUT_SECONDS. The next request is written
+        # only after this call's reply or error, so the Control Point remains
+        # strictly serialized even when the request itself finishes earlier.
+        try:
+            dbus.Interface(
+                get_system_bus().get_object("org.bluez", cp_path, introspect=False),
+                "org.bluez.GattCharacteristic1",
+            ).WriteValue(
+                [dbus.Byte(value) for value in request.packet],
+                # Without introspection dbus-python cannot infer a{sv} from
+                # an empty dict and raises before sending.
+                dbus.Dictionary({}, signature="sv"),
+                reply_handler=written,
+                error_handler=failed,
+                timeout=DBUS_CALL_TIMEOUT_SECONDS,
+            )
+        except dbus.exceptions.DBusException as error:
+            # dbus-python can fail before dispatch, e.g. on a closed bus.
+            failed(error)
+        except Exception:
+            # Anything else is a programming error (marshalling, a broken
+            # fake). Release the request so the queue cannot stall, then let
+            # the error surface with its traceback instead of disguising it
+            # as a BlueZ failure.
+            release_write()
+            if self._active_request is request:
+                if request.action is not None:
+                    self._finish_active_request()
+                    self._action_failed(
+                        request.action,
+                        dbus.exceptions.DBusException(
+                            "dispatch failed", name="org.bluez.Error.Failed"
+                        ),
+                    )
+                else:
+                    self._active_request = None
+                    self._abandon_request(request)
+            raise
+
+    def _retry_busy_control_point(self) -> bool:
+        self._cp_busy_retry_id = None
+        self._pump_requests()
+        return False
+
+    def _cancel_busy_retry(self) -> None:
+        if self._cp_busy_retry_id is None:
             return
-        if not current_attempt():
-            log.debug("discarded stale ANCS write completion after BlueZ changed owner")
-            return
-        self._request_timeout_id = self._schedule(
-            REQUEST_TIMEOUT_SECONDS, self._request_timed_out
-        )
+        try:
+            self._cancel(self._cp_busy_retry_id)
+        except Exception:
+            log.debug("could not remove ANCS Control Point retry", exc_info=True)
+        self._cp_busy_retry_id = None
 
     def _observe_permission_error(self, error: dbus.exceptions.DBusException) -> None:
         name = error.get_dbus_name() or ""
@@ -977,7 +1195,7 @@ class AncsClient:
         request = self._active_request
         log.warning(
             "ANCS request timed out (command=%s)",
-            request.assembler.command if request else "none",
+            request.assembler.command if request and request.assembler else "none",
         )
         self._request_timeout_id = None
         if request is not None and request.authorization_probe and self._was_authorized:
@@ -1020,6 +1238,8 @@ class AncsClient:
         if request.authorization_probe:
             self._schedule_authorization_retry()
             return
+        if request.assembler is None:
+            return
         app_id = request.assembler.app_id
         if request.notification is not None or not app_id:
             return
@@ -1029,6 +1249,9 @@ class AncsClient:
             self._emit(attrs, app_id)
 
     def _reset_requests(self) -> None:
+        self._cancel_busy_retry()
+        # Actions that were never written did not reach the phone.
+        self._drop_queued_actions(lambda _action: True, ACTION_DISCONNECTED)
         self._request_queue.clear()
         self._finish_active_request()
         self._pending_app_lookups.clear()
@@ -1043,7 +1266,7 @@ class AncsClient:
         if value is None:
             return
         request = self._active_request
-        if request is None:
+        if request is None or request.assembler is None:
             log.warning("ignoring unsolicited ANCS Data Source fragment")
             return
         try:
@@ -1108,7 +1331,9 @@ class AncsClient:
                     log.debug("discarding ANCS notification after app probe")
             else:
                 try:
-                    attrs = NotificationAttributes.parse(ev.body)
+                    attrs = NotificationAttributes.parse(
+                        ev.body, request.action_label_ids
+                    )
                 except ValueError as error:
                     log.error("NotificationAttributes parse failed: %s", error)
                     self._abandon_request(request)
@@ -1201,7 +1426,14 @@ class AncsClient:
             title=attrs.title,
             subtitle=attrs.subtitle,
             body=attrs.message,
+            positive_action_label=attrs.positive_action_label,
+            negative_action_label=attrs.negative_action_label,
         )
+        if self._notification_actions():
+            self._remember_actionable(event)
+        else:
+            event.positive_action_label = event.negative_action_label = ""
+
         log.info("ANCS event (%d-char body)", len(event.body or ""))
         log.debug(
             "ANCS event metadata: title-chars=%d body-chars=%d",
@@ -1212,3 +1444,174 @@ class AncsClient:
             self.on_event(event)
         except Exception:
             log.exception("on_event callback raised")
+
+    # ---- PerformNotificationAction (opt-in) -----------------------------
+
+    def _notification_actions(self) -> bool:
+        setting = self._notification_actions_setting
+        try:
+            return bool(setting() if callable(setting) else setting)
+        except Exception:
+            log.exception("ANCS notification-actions setting raised")
+            return False
+
+    def notification_actions_changed(self) -> None:
+        """Retire live action buttons when the opt-in was switched off."""
+        if not self._notification_actions():
+            self._reset_actions()
+
+    def _remember_actionable(self, event: AncsEvent) -> None:
+        positive = bool(event.positive_action_label)
+        negative = bool(event.negative_action_label)
+        if not (positive or negative):
+            return
+        token = next(self._action_tokens)
+        event.action_token = token
+        self._actionable[event.notification_id] = _Actionable(
+            token, positive, negative
+        )
+        self._actionable.move_to_end(event.notification_id)
+        while len(self._actionable) > MAX_ANCS_ACTIONABLE:
+            self._actionable.popitem(last=False)
+
+    def _forget_actionable(self, notification_id: int) -> None:
+        dropped = self._drop_queued_actions(
+            lambda action: action.uid == notification_id
+        )
+        if self._actionable.pop(notification_id, None) is None and not dropped:
+            return
+        callback = self._on_notification_removed
+        if callback is None:
+            return
+        try:
+            callback(notification_id)
+        except Exception:
+            log.exception("ANCS notification-removed callback raised")
+
+    def _drop_queued_actions(
+        self,
+        predicate: Callable[[_ActionRequest], bool],
+        result: str = ACTION_UNAVAILABLE,
+    ) -> int:
+        """Remove not yet written actions and tell their callers."""
+        removed = self._request_queue.remove_if(
+            lambda request: request.action is not None and predicate(request.action)
+        )
+        for request in removed:
+            if request.action is not None:
+                self._report_action(request.action, result)
+        return len(removed)
+
+    def _reset_actions(self) -> None:
+        had_actions = bool(self._actionable)
+        self._actionable.clear()
+        dropped = self._drop_queued_actions(lambda _action: True)
+        if not (had_actions or dropped) or self._on_actions_reset is None:
+            return
+        # UIDs are session-scoped and may be reused by the next session, so
+        # desktop buttons wired to the old ones must go away.
+        try:
+            self._on_actions_reset()
+        except Exception:
+            log.exception("ANCS actions-reset callback raised")
+
+    @staticmethod
+    def _report_action(action: _ActionRequest, result: str) -> None:
+        if action.on_result is None:
+            return
+        try:
+            action.on_result(result)
+        except Exception:
+            log.exception("ANCS action result callback raised")
+
+    def _queued_actions(self) -> int:
+        active = self._active_request
+        return self._request_queue.count_if(
+            lambda request: request.action is not None
+        ) + (1 if active is not None and active.action is not None else 0)
+
+    def perform_notification_action(
+        self,
+        notification_id: int,
+        positive: bool,
+        token: int,
+        on_result: Callable[[str], None] | None = None,
+    ) -> bool:
+        """Ask the iPhone to run one notification's positive/negative action.
+
+        Only an action offered by the event identified by ``token`` in the
+        current ANCS session can be sent, and each notification accepts one
+        successful action. The command goes to the head of the serialized
+        Control Point queue; the outcome (one of the ``ACTION_*`` strings) is
+        passed to ``on_result``. Returns whether the action was queued.
+        """
+        kind = "positive" if positive else "negative"
+        try:
+            uid = int(notification_id)
+            token = int(token)
+        except (TypeError, ValueError):
+            uid = -1
+        action = _ActionRequest(uid, bool(positive), on_result)
+        entry = self._actionable.get(uid) if self._notification_actions() else None
+        if (
+            entry is None
+            or entry.token != token
+            or not (entry.positive if positive else entry.negative)
+        ):
+            log.info("ANCS %s action for uid=%d is not available", kind, uid)
+            self._report_action(action, ACTION_UNAVAILABLE)
+            return False
+        if not self.connected or self._cp_path is None:
+            log.info("ANCS %s action for uid=%d skipped: not connected", kind, uid)
+            self._report_action(action, ACTION_DISCONNECTED)
+            return False
+        if entry.in_flight or self._queued_actions() >= MAX_ANCS_ACTIONS_IN_FLIGHT:
+            log.info("ANCS %s action for uid=%d skipped: busy", kind, uid)
+            self._report_action(action, ACTION_BUSY)
+            return False
+        request = _PendingRequest(
+            key=f"action:{uid}",
+            packet=build_perform_notification_action(
+                uid, ActionID.Positive if positive else ActionID.Negative
+            ),
+            assembler=None,
+            action=action,
+        )
+        if not self._request_queue.enqueue(request.key, request, front=True):
+            log.info("ANCS %s action for uid=%d skipped: queue full", kind, uid)
+            self._report_action(action, ACTION_BUSY)
+            return False
+        entry.in_flight = True
+        self._pump_requests()
+        return True
+
+    def _action_written(self, action: _ActionRequest) -> None:
+        # One action per notification: a second click must never repeat a
+        # destructive action such as Decline or Delete.
+        self._actionable.pop(action.uid, None)
+        log.info(
+            "ANCS %s action for uid=%d sent",
+            "positive" if action.positive else "negative",
+            action.uid,
+        )
+        self._report_action(action, ACTION_SENT)
+
+    def _action_failed(
+        self, action: _ActionRequest, error: dbus.exceptions.DBusException
+    ) -> None:
+        result, code = _action_error_result(error)
+        log.warning(
+            "ANCS %s action for uid=%d failed: %s (%s, ATT %s)",
+            "positive" if action.positive else "negative",
+            action.uid,
+            result,
+            error.get_dbus_name() or type(error).__name__,
+            f"0x{code:02x}" if code is not None else "n/a",
+        )
+        entry = self._actionable.get(action.uid)
+        if result == ACTION_UNAVAILABLE:
+            self._actionable.pop(action.uid, None)
+        elif entry is not None:
+            # Not consumed: the user can retry while the UID is still valid.
+            entry.in_flight = False
+        self._report_action(action, result)

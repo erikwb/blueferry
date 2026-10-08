@@ -112,6 +112,25 @@ Bluetooth 3-only controller. The Broadcom MAP/PBAP success in
 [#17](https://github.com/erikwb/blueferry/issues/17) also supports LE advertising.
 ANCS connection failures on those adapters do not imply missing LE hardware.
 
+`btmgmt info` lists supported and current settings separately. A controller
+can support `le` while running with it switched off, typically because
+`/etc/bluetooth/main.conf` sets `ControllerMode = bredr`. The ANCS
+advertisement then never activates. In
+[#192](https://github.com/erikwb/blueferry/issues/192) a Broadcom BCM2045A0
+(`0a5c:6412`, HCI version 7) listed `le` and `advertising` as supported but
+`br/edr powered secure-conn ssp` as current, bonded over Classic, and failed at
+`advert_unavailable` two milliseconds after registering the advertisement.
+The capability probe therefore reports `le_disabled` (with the configured
+`ControllerMode` as a hint); full-mode pairing probes twice more and then stops
+before any pairing transaction with outcome reason `le_disabled`, and
+compatibility mode skips the advertisement. Switching LE on with
+`btmgmt le on` is not a fix under `ControllerMode = bredr`: BlueZ's
+`adapter_register()` skips the GATT database and `LEAdvertisingManager1` in
+that mode, so no advertisement can register until bluetoothd restarts in dual
+or LE mode. In dual mode bluetoothd re-enables LE itself when it starts. This is distinct from controllers whose advertisement
+BlueZ rejects for its size. `le_disabled` was verified with recorded settings
+only, not on that controller.
+
 BlueFerry therefore resolves two delivery modes. Full mode additionally
 requires BlueZ 5.86 or newer. Its bearer API must already be active or be
 activatable through the package's
@@ -460,9 +479,14 @@ observed capabilities and the live API, not a controller-vendor check.
 
 ANCS responses have no outer total-length field and may arrive fragmented.
 Control Point requests must be serialized and reassembled according to the
-requested attribute sequence. The iPhone can replay existing notifications
-after a reconnect, so startup/reconnect delivery needs deduplication without
-suppressing genuine modifications.
+requested attribute sequence. BlueFerry writes each request asynchronously and
+sends the next one only after the previous response completed, failed, or
+timed out *and* BlueZ answered the previous write, so a slow ATT write never
+stalls the daemon's main loop and two writes never overlap (BlueZ rejects an
+overlapping write with `org.bluez.Error.InProgress`; a rejection caused by
+another D-Bus client is retried a few times). The iPhone
+can replay existing notifications after a reconnect, so startup/reconnect
+delivery needs deduplication without suppressing genuine modifications.
 
 Apple Messages also appears through ANCS. BlueFerry retains that copy for group
 correlation but suppresses its desktop popup because MAP already provides the
@@ -475,6 +499,31 @@ are evaluated against that exact identifier before title, subtitle, message,
 or app display-name attributes are requested. Even when mirroring is enabled,
 included non-Messages content is never written to history or placed on
 BlueFerry's D-Bus event feed.
+
+With the opt-in notification actions (a saved setting; `BLUEFERRY_ANCS_ACTIONS`
+is its initial value), BlueFerry reads the Notification
+Source `PositiveAction`/`NegativeAction` event flags. For an included
+non-Messages notification it appends `PositiveActionLabel` (6) and/or
+`NegativeActionLabel` (7) to the attribute request; unlike title, subtitle and
+message, these take no maximum-length parameter. A clicked popup button is
+sent as `PerformNotificationAction` (command 2, the 32-bit notification UID,
+action 0 for positive or 1 for negative). That command produces no Data
+Source response; it goes through the same serialized Control Point queue as
+attribute requests (at its head) and completes with the write reply, so it
+never overlaps another write and BlueZ never answers it with
+`org.bluez.Error.InProgress`. iOS reports failure
+as an ATT error on the write, which BlueZ surfaces as
+`org.bluez.Error.Failed: Operation failed with ATT error: 0xNN`: `0xA2`
+(invalid parameter) means the UID no longer exists, typically because the
+notification was handled on the phone first; `0xA3` means the action failed;
+`0xA0`/`0xA1` mean the command was not understood. UIDs are valid only within
+one ANCS session and iOS reuses them, so every offer carries a content-free
+token that the click must present. Any Added, Modified, or Removed event for
+the UID retires the offer, and a PreExisting replay or a subscription reset
+discards every offer and queued action and closes the desktop popups still
+wired to them. Labels are app-defined
+strings and are requested only while notification content is shown. This path
+is verified only against simulated responses, not a physical iPhone.
 
 Conversation reads update local history immediately. The daemon delays the
 corresponding MAP read acknowledgements by at least five seconds, including
@@ -510,6 +559,28 @@ BlueFerry reports the conflict from bluetoothd's version and arguments when
 power-up fails three times in a row (state `bluez_conflict`), and then retries
 every five minutes. The profile
 registration race itself is unchanged.
+
+oFono 2.18 creates the HFP modem's `VoiceCallManager`, `NetworkRegistration`,
+`Handsfree`, and `CallVolume` atoms, among others (device info and Siri),
+together in `hfp_pre_sim`, i.e. once the modem is powered; they survive
+`Online` dropping. A listed
+`VoiceCallManager` alone therefore does not mean call control works; the
+controller requires `Online` as well. The phone-status atoms expose the
+phone's standard HFP `+CIND` indicators (`doc/handsfree-api.txt`,
+`doc/network-api.txt`, `drivers/hfpmodem/`):
+`Handsfree.BatteryChargeLevel` is the raw `battchg` value 0-5,
+`NetworkRegistration.Strength` is the `signal` indicator 0-5 multiplied by 20,
+`Status` follows the `service`/`roam` indicators, and `Name` comes from
+`AT+COPS?` (HFP limits it to 16 characters; it is empty while unregistered).
+oFono drops the strength silently (no `PropertyChanged`) when registration is
+lost. The first `Handsfree.GetProperties` makes oFono query the phone's own
+number with `AT+CNUM` (returned as `SubscriberNumbers`, cached afterwards);
+until the phone answers, concurrent callers get `org.ofono.Error.InProgress`.
+iOS additionally reports a 0-9 battery level through `AT+IPHONEACCEV`, which
+oFono does not decode, so the HFP battery is limited to 20 % steps. The
+battery does not need HFP, though: iOS exposes the standard GATT Battery
+Service (0x180F, Battery Level 0x2A19, read and notify) to its LE peer;
+BlueFerry prefers that value (or BlueZ's `Battery1` built from it).
 
 ## Pairing diagnostics
 

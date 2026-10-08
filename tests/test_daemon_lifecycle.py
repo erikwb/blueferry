@@ -559,3 +559,109 @@ def test_mns_loss_reconnects_map_once_per_outage():
     instance._mns_present()
     instance._mns_missing("the iPhone closed MAP notifications")
     assert reconnects == ["the iPhone closed MAP notifications"] * 2
+
+
+def test_ancs_actions_are_off_by_default(make_daemon, monkeypatch):
+    monkeypatch.setattr(daemon_mod.config, "ANCS_ACTIONS", False)
+    instance = make_daemon()
+    instance.contacts = SimpleNamespace(count=lambda: 0)
+    instance.setup_verification = SimpleNamespace(verified=())
+    monkeypatch.setattr(daemon_mod, "history_count", lambda **_kwargs: 0)
+
+    assert instance.events.ancs_actions_enabled() is False
+    status = instance._status()
+    assert status["ancs_actions"] is False
+    assert status["ancs_actions_preference"] is False
+
+
+def test_saved_ancs_actions_choice_applies_live(make_daemon, monkeypatch):
+    monkeypatch.setattr(daemon_mod.config, "ANCS_ACTIONS", False)
+    monkeypatch.setattr(daemon_mod.config, "SHOW_NOTIFICATION_CONTENT", True)
+    instance = make_daemon()
+    changed = []
+    instance.ancs = SimpleNamespace(
+        notification_actions_changed=lambda: changed.append(True),
+    )
+    monkeypatch.setattr(instance, "_emit_status", lambda: None)
+
+    instance.notification_policy.set_ancs_actions(True)
+    instance._notification_policy_changed()
+    assert instance.events.ancs_actions_enabled() is True
+    assert changed == [True]
+
+    instance.notification_policy.set_ancs_actions(False)
+    instance._notification_policy_changed()
+    assert instance.events.ancs_actions_enabled() is False
+
+
+def test_enabled_ancs_actions_forward_clicks_to_the_live_client(
+    make_daemon, monkeypatch,
+):
+    monkeypatch.setattr(daemon_mod.config, "ANCS_ACTIONS", True)
+    monkeypatch.setattr(daemon_mod.config, "SHOW_NOTIFICATION_CONTENT", True)
+    instance = make_daemon()
+    results = []
+    perform = instance.events.perform_ancs_action
+
+    assert perform is not None
+    assert perform(42, True, 5, results.append) is False
+    assert results == ["disconnected"]
+
+    calls = []
+    instance.ancs = SimpleNamespace(
+        perform_notification_action=lambda *args: calls.append(args) or True,
+    )
+    assert perform(42, False, 5, results.append) is True
+    assert calls == [(42, False, 5, results.append)]
+
+
+def test_ancs_removal_reaches_the_current_dispatcher(make_daemon):
+    instance = make_daemon()
+    removed = []
+    instance.events = SimpleNamespace(ancs_removed=removed.append)
+
+    instance._ancs_notification_removed(42)
+    instance.events = SimpleNamespace()  # dispatchers without the hook are skipped
+    instance._ancs_notification_removed(43)
+
+    assert removed == [42]
+
+
+def test_hidden_content_keeps_ancs_actions_off(make_daemon, monkeypatch):
+    monkeypatch.setattr(daemon_mod.config, "ANCS_ACTIONS", True)
+    monkeypatch.setattr(daemon_mod.config, "SHOW_NOTIFICATION_CONTENT", False)
+    instance = make_daemon()
+    instance.contacts = SimpleNamespace(count=lambda: 0)
+    instance.setup_verification = SimpleNamespace(verified=())
+    monkeypatch.setattr(daemon_mod, "history_count", lambda **_kwargs: 0)
+
+    instance.notification_policy.set_ancs_actions(True)
+    assert instance.events.ancs_actions_enabled() is False
+    status = instance._status()
+    assert status["ancs_actions"] is False
+    assert status["ancs_actions_preference"] is True
+    assert status["notification_content_shown"] is False
+
+
+def test_ancs_session_reset_reaches_the_current_dispatcher(make_daemon):
+    instance = make_daemon()
+    resets = []
+    instance.events = SimpleNamespace(ancs_actions_reset=lambda: resets.append(True))
+
+    instance._ancs_actions_reset()
+    instance.events = SimpleNamespace()
+    instance._ancs_actions_reset()
+
+    assert resets == [True]
+
+
+def test_ancs_action_timeout_is_a_bounded_local_setting(monkeypatch):
+    from blueferry import config
+
+    assert "BLUEFERRY_ANCS_ACTION_TIMEOUT_MS" in config.LOCAL_ENV_KEYS
+    for raw, expected in (("500", 1_000), ("45000", 45_000), ("999999", 120_000),
+                          ("junk", 30_000)):
+        monkeypatch.setenv("BLUEFERRY_ANCS_ACTION_TIMEOUT_MS", raw)
+        assert config._env_int(
+            "BLUEFERRY_ANCS_ACTION_TIMEOUT_MS", 30_000, 1_000, 120_000
+        ) == expected
