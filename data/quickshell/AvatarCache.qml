@@ -39,6 +39,11 @@ Item {
     revision++
   }
 
+  function cachedSource(address) {
+    return photosEnabled && address && Object.prototype.hasOwnProperty.call(sources, address)
+      ? sources[address] : ""
+  }
+
   function source(address) {
     if (!photosEnabled || !address) return ""
     if (Object.prototype.hasOwnProperty.call(sources, address)) return sources[address]

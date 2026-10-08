@@ -12,7 +12,7 @@ Rectangle {
   readonly property int decodeSize: Math.min(512, Math.ceil(avatarSize * Screen.devicePixelRatio))
   readonly property string address: thread && !thread.is_group
     && thread.recipients && thread.recipients.length === 1 ? thread.recipients[0] : ""
-  readonly property string photoSource: photos.revision >= 0 ? photos.source(address) : ""
+  readonly property string photoSource: photos.revision >= 0 ? photos.cachedSource(address) : ""
   readonly property bool photoReady: photo.status === Image.Ready && photo.source.toString() !== ""
   implicitWidth: avatarSize
   implicitHeight: avatarSize
@@ -20,6 +20,16 @@ Rectangle {
   color: ferryTheme.control
   border.color: ferryTheme.divider
   clip: true
+
+  // Requesting a photo mutates the bridge's request counter. Keep that work
+  // outside the image binding so it cannot re-enter its own evaluation.
+  function requestPhoto() { photos.source(address) }
+  onAddressChanged: Qt.callLater(requestPhoto)
+  Component.onCompleted: Qt.callLater(requestPhoto)
+  Connections {
+    target: avatar.photos
+    function onRevisionChanged() { Qt.callLater(avatar.requestPhoto) }
+  }
 
   Text {
     anchors.centerIn: parent
