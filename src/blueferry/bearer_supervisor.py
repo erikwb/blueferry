@@ -228,6 +228,7 @@ class BearerSupervisor:
         inbound_le_primed: InboundLePrimed | None = None,
         watch_le: WatchLe | None = None,
         le_bond_detection: Callable[[], bool] | None = None,
+        on_le_bond_report: Callable[[], None] | None = None,
         schedule: Schedule = GLib.timeout_add_seconds,
         cancel: Cancel = GLib.source_remove,
         clock: Clock = time.monotonic,
@@ -258,6 +259,9 @@ class BearerSupervisor:
         # Whether stale-bond detection applies at all, e.g. False with ANCS
         # disabled or on controllers that are not expected to finish ANCS.
         self._le_bond_detection = le_bond_detection or (lambda: True)
+        # Called when the stale-bond report flips. Deliberately not
+        # on_status: no bearer changed, and its listeners act on bearers.
+        self._on_le_bond_report = on_le_bond_report
         self._schedule = schedule
         self._cancel = cancel
         self._clock = clock
@@ -655,8 +659,8 @@ class BearerSupervisor:
             int(now - burst_started),
             self._last_le_disconnect_reason or "not reported",
         )
-        if self._on_status is not None:
-            self._on_status()
+        if self._on_le_bond_report is not None:
+            self._on_le_bond_report()
 
     def _clear_le_flaps_if_held(self) -> None:
         """Forgive flaps once the current LE link has stayed up long enough.
@@ -726,8 +730,8 @@ class BearerSupervisor:
             return
         self._le_bond_suspect = False
         log.info("iPhone LE bond no longer suspect: %s", reason)
-        if notify and self._on_status is not None:
-            self._on_status()
+        if notify and self._on_le_bond_report is not None:
+            self._on_le_bond_report()
 
     def _tick(self) -> bool:
         if not self._running:

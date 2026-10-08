@@ -47,6 +47,7 @@ class _Harness:
         self.scheduled: list[tuple[int, object]] = []
         self.cancelled: list[int] = []
         self.statuses = 0
+        self.reports = 0
         self.on_disconnected = None
         self.on_properties = None
         self.unwatched = 0
@@ -67,10 +68,14 @@ class _Harness:
         def status():
             self.statuses += 1
 
+        def report():
+            self.reports += 1
+
         self.supervisor = BearerSupervisor(
             "/org/bluez/hci0/dev_02_00_00_00_00_01",
             le_enabled=le_enabled,
             on_status=status,
+            on_le_bond_report=report,
             read_connected=self.state.get,
             connect=lambda kind, on_success, _on_error: (
                 self.connections.append(kind),
@@ -139,7 +144,9 @@ def test_persistent_burst_of_short_le_links_marks_the_bond_suspect_once(caplog) 
     _burst(h, 30)
 
     assert h.supervisor.le_bond_suspect
-    assert h.statuses == statuses + 1
+    assert h.reports == 1
+    # The report is not a bearer transition: on_status stays silent.
+    assert h.statuses == statuses
     snapshot = h.supervisor.snapshot()
     assert snapshot["le_bond_suspect"] is True
     assert snapshot["le_flap_count"] > LE_FLAP_THRESHOLD
@@ -158,7 +165,8 @@ def test_persistent_burst_of_short_le_links_marks_the_bond_suspect_once(caplog) 
 
     assert h.supervisor.snapshot()["le_flap_count"] == count + 20
     assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 1
-    assert h.statuses == statuses + 1
+    assert h.reports == 1
+    assert h.statuses == statuses
 
 
 @pytest.mark.parametrize("reason", [TIMEOUT, "org.bluez.Reason.Remote",
@@ -261,7 +269,7 @@ def test_suspicion_expires_while_the_phone_is_away() -> None:
     h.supervisor.start()
     _burst(h, LE_FLAP_PERSIST_SECONDS + 10)
     assert h.supervisor.le_bond_suspect
-    statuses = h.statuses
+    reports = h.reports
 
     h.state["bredr"] = False
     _poll_for(h, LE_SUSPECT_ABSENT_EXPIRY_SECONDS - POLL_SECONDS)
@@ -270,7 +278,7 @@ def test_suspicion_expires_while_the_phone_is_away() -> None:
 
     assert not h.supervisor.le_bond_suspect
     assert h.supervisor.snapshot()["le_flap_count"] == 0
-    assert h.statuses > statuses
+    assert h.reports == reports + 1
     # Eight hours away keep it cleared.
     _poll_for(h, 8 * 3600)
     assert not h.supervisor.le_bond_suspect
@@ -339,12 +347,14 @@ def test_ancs_authorization_clears_the_suspicion() -> None:
     h.supervisor.start()
     _burst(h, LE_FLAP_PERSIST_SECONDS + 10)
     statuses = h.statuses
+    reports = h.reports
 
     h.supervisor.note_le_usable("ANCS authorized")
 
     assert not h.supervisor.le_bond_suspect
     assert h.supervisor.snapshot()["le_flap_count"] == 0
-    assert h.statuses == statuses + 1
+    assert h.reports == reports + 1
+    assert h.statuses == statuses
 
 
 def test_a_new_bond_clears_the_suspicion_but_a_removed_key_does_not() -> None:

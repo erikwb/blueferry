@@ -202,6 +202,8 @@ class Daemon:
             on_le_dial=self.solicitation.set_dialing,
             inbound_le_primed=self.solicitation.active,
             le_bond_detection=self._le_bond_detection_applies,
+            # Publish the report only; a flip is not a bearer transition.
+            on_le_bond_report=self._emit_status,
         )
         # Calls-state and phone-status changes often arrive in bursts (a
         # modem going away, a flapping indicator); coalesce their
