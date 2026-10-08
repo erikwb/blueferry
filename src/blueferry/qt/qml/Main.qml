@@ -177,6 +177,13 @@ Kirigami.ApplicationWindow {
                 onTriggered: root.openPhoneSettings()
             },
             Kirigami.Action {
+                // Optional HFP calls; hidden unless the backend enables them.
+                text: qsTr("Phone Calls")
+                icon.name: "call-start"
+                visible: (root.bridge.status || {}).calls_enabled === true
+                onTriggered: (callsLoader.item as CallsDialog)?.open()
+            },
+            Kirigami.Action {
                 text: qsTr("Keyboard Shortcuts")
                 icon.name: "preferences-desktop-keyboard-shortcuts"
                 onTriggered: shortcutsDialog.open()
@@ -388,6 +395,17 @@ Kirigami.ApplicationWindow {
     NewMessageDialog {
         id: newMessageDialog
         bridge: root.bridge
+    }
+
+    // Optional HFP calls: nothing is instantiated unless the backend enables
+    // them, so the default window is unchanged.
+    Loader {
+        id: callsLoader
+        active: (root.bridge.status || {}).calls_enabled === true
+        sourceComponent: CallsDialog {
+            objectName: "callsDialog"
+            bridge: root.bridge
+        }
     }
 
     Kirigami.Page {

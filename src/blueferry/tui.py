@@ -28,12 +28,13 @@ from blueferry.conversation_state import (
     ReplyDisposition,
     fetch_conversation_snapshot,
 )
-from blueferry.models import BackendStatus, Thread, ThreadMessage
+from blueferry.models import BackendStatus, CallsSnapshot, Thread, ThreadMessage
 from blueferry.onboarding import ancs_unavailable_detail
 from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH
 from blueferry.recipients import participant_lines
 from blueferry.text_safety import terminal_text
 from blueferry.time_display import format_message_timestamp
+from blueferry.tui_calls import CallsScreen
 
 _REFRESH_SECONDS = 15.0
 _SIGNAL_PUMP_SECONDS = 0.2
@@ -62,6 +63,15 @@ class _Client(Protocol):
     def mark_thread_read(self, thread_key: str) -> int: ...
 
     def set_thread_starred(self, thread_key: str, starred: bool) -> bool: ...
+
+    # Optional phone calls (Calls1); used only by the calls panel.
+    def calls(self) -> CallsSnapshot: ...
+
+    def dial(self, number: str) -> str: ...
+
+    def answer_call(self, call_id: str) -> None: ...
+
+    def hangup_call(self, call_id: str) -> None: ...
 
 
 class _Monitor(Protocol):
@@ -187,6 +197,7 @@ class _EventMonitor:
     def __init__(self) -> None:
         self.handles: deque[str] = deque()
         self.invalidated = False
+        self.calls_changed = False
         self._context = GLib.MainContext.default()
         bus = get_session_bus()
         common = {
@@ -210,7 +221,20 @@ class _EventMonitor:
                 signal_name="OpenMessageRequested",
                 **common,
             ),
+            # Optional calls: content-free, details come from ListCalls.
+            bus.add_signal_receiver(
+                self._calls_changed,
+                signal_name="CallsChanged",
+                **common,
+            ),
         ]
+
+    def _calls_changed(self) -> None:
+        self.calls_changed = True
+
+    def take_calls_changed(self) -> bool:
+        changed, self.calls_changed = self.calls_changed, False
+        return changed
 
     def _invalidate(self) -> None:
         self.invalidated = True
@@ -494,7 +518,13 @@ class HelpScreen(ModalScreen[None]):
         Binding("escape,question_mark", "close", "Close", show=False),
     ]
 
+    def __init__(self, *, calls_enabled: bool = False) -> None:
+        super().__init__()
+        self.calls_enabled = calls_enabled
+
     def compose(self) -> ComposeResult:
+        # The optional calls panel is listed only while calls are switched on.
+        calls_line = "[bold #7dd3fc]Phone calls[/]  c\n" if self.calls_enabled else ""
         help_text = Text.from_markup(
             "[bold #7dd3fc]Move[/]  ↑ ↓ or j k\n"
             "[bold #7dd3fc]Open / reply[/]  Enter\n"
@@ -504,6 +534,7 @@ class HelpScreen(ModalScreen[None]):
             "[bold #7dd3fc]New message[/]  n\n"
             "[bold #7dd3fc]Star conversation[/]  s\n"
             "[bold #7dd3fc]Delete conversation[/]  Delete\n"
+            f"{calls_line}"
             "[bold #7dd3fc]Commands[/]  Ctrl+P\n"
             "[bold #7dd3fc]Refresh[/]  r\n"
             "[bold #7dd3fc]Back[/]  Esc\n"
@@ -537,6 +568,7 @@ class BlueFerryApp(App[None]):
         Binding("enter", "open_thread", "Open", show=False),
         Binding("s", "toggle_star", "Star"),
         Binding("delete", "delete_thread", "Delete"),
+        Binding("c", "calls", "Calls", show=False),
         Binding("escape", "return_to_list", "Back", show=False),
     ]
 
@@ -553,6 +585,7 @@ class BlueFerryApp(App[None]):
         self._pending_open_handle: str | None = None
         self._sending = False
         self._deleting = False
+        self._announced_calls: set[str] = set()
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="masthead"):
@@ -634,6 +667,9 @@ class BlueFerryApp(App[None]):
         if self._monitor is None:
             return
         invalidated, handle = self._monitor.pump()
+        take_calls = getattr(self._monitor, "take_calls_changed", None)
+        if take_calls is not None and take_calls():
+            self._calls_changed()
         if handle:
             self._pending_open_handle = handle
             if self.state.select_message(handle):
@@ -643,6 +679,26 @@ class BlueFerryApp(App[None]):
                 invalidated = True
         if invalidated:
             self._load_data()
+
+    def _calls_changed(self) -> None:
+        if not self.state.status.calls_enabled or isinstance(self.screen, CallsScreen):
+            return
+        self._check_ringing_calls()
+
+    @work(thread=True, exclusive=True, group="calls-check", exit_on_error=False)
+    def _check_ringing_calls(self) -> None:
+        try:
+            snapshot = self.state.client.calls()
+        except BackendError:
+            return
+        ringing = {call.call_id for call in snapshot.calls if call.ringing}
+        self.call_from_thread(self._announce_ringing_calls, ringing)
+
+    def _announce_ringing_calls(self, ringing: set[str]) -> None:
+        new = ringing - self._announced_calls
+        self._announced_calls = ringing
+        if new and not isinstance(self.screen, CallsScreen):
+            self.notify("Incoming call · press c", severity="warning", timeout=20)
 
     async def _show_selected_from_notification(self) -> None:
         await self._populate_threads()
@@ -987,10 +1043,22 @@ class BlueFerryApp(App[None]):
         self.query_one("#thread-list", ListView).focus()
 
     def action_help(self) -> None:
-        self.push_screen(HelpScreen())
+        self.push_screen(HelpScreen(calls_enabled=bool(self.state.status.calls_enabled)))
 
     def action_new_message(self) -> None:
         self.push_screen(NewMessageScreen(), self._new_message_ready)
+
+    def action_calls(self) -> None:
+        focused = self.focused
+        if isinstance(focused, Input | TextArea) or isinstance(self.screen, CallsScreen):
+            return
+        if not self.state.status.calls_enabled:
+            self.notify(
+                "Phone calls are disabled; enable them with 'blueferry calls enable'",
+                severity="warning",
+            )
+            return
+        self.push_screen(CallsScreen(self.state.client))
 
     def action_toggle_star(self) -> None:
         focused = self.focused

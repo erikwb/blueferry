@@ -239,9 +239,13 @@ list or conversation ID. On the tested iOS release, the corresponding Apple
 Messages ANCS notification supplies the missing display information:
 
 - ANCS app ID is `com.apple.MobileSMS`.
-- The notification body matches the MAP message body. ANCS bodies requested by
-  BlueFerry are capped at 256 characters, so a longer MAP body can match that
-  exact prefix.
+- The notification body matches the MAP message body. BlueFerry asks for at
+  most 1024 bytes of message text (titles and subtitles: 128 bytes); iOS cuts
+  longer text to that many UTF-8 bytes, so a longer MAP body can match that
+  prefix. Releases before 1024 asked for 256 bytes, and rows they stored are
+  still matched against a 256-byte prefix. A cut can land up to three bytes
+  short of the cap on a character boundary, or inside a character, which the
+  parser decodes as U+FFFD; correlation allows for both.
 - For the observed unnamed group, the title is the sender and the subtitle is
   shaped like `To you & participant` (with further names separated by commas
   or ampersands).
@@ -492,6 +496,20 @@ oFono and PipeWire's native HFP backend race to register the same BlueZ
 profile, making startup ordering and distribution integration fragile. That
 complexity, dependency burden, and the project's messaging focus are why the
 feature was removed despite protocol feasibility.
+
+A later opt-in integration (default off, switched on in the settings or with
+`blueferry calls enable`; see README "Phone calls") relies on the user's own
+oFono/WirePlumber setup and only suggests oFono as an optional package. It works around one part of the fragility: with iOS the
+oFono HFP modem stays unpowered until `Modem.Powered=true` is set, and oFono
+rejects `Online=true` until it has reported `Powered=true`. This sequence was
+taken from tincan's oFono controller and has since worked with one iPhone
+(iOS 27, oFono 2.18, BlueZ 5.87); it has not been re-verified against the
+device list above. BlueZ 5.87's own HFP hands-free plugin adds a second
+contender for the RFCOMM channel; `bluetoothd -P hfp` avoids it, and
+BlueFerry reports the conflict from bluetoothd's version and arguments when
+power-up fails three times in a row (state `bluez_conflict`), and then retries
+every five minutes. The profile
+registration race itself is unchanged.
 
 ## Pairing diagnostics
 
