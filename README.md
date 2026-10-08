@@ -329,6 +329,53 @@ daemon run without logging its notification content:
 journalctl --user -u blueferry -f | grep "ANCS app observed"
 ```
 
+### iPhone notification actions (opt-in)
+
+iOS attaches actions to some notifications, such as **Accept**/**Decline** on
+an incoming call or calendar invitation, or **Clear**. With
+**All iPhone Notifications** selected, you can show them as buttons on the
+desktop popup. Turn it on with the **Show iPhone action buttons** switch in
+the iPhone settings of the Qt, GTK or Quickshell client, or with
+`blueferry notification-actions enable`. `BLUEFERRY_ANCS_ACTIONS=true` in
+`local.env` only sets the initial value; a choice saved from a client wins.
+
+```bash
+# Popups with action buttons stay longer than ordinary ones (1000-120000 ms):
+BLUEFERRY_ANCS_ACTION_TIMEOUT_MS=30000
+```
+
+Clicking a button asks the iPhone to perform that action through ANCS. This is
+independent of hands-free calling: *Accept* on a call answers it on the
+iPhone, and the audio stays wherever iOS routes it. Nothing is sent to the
+phone unless you click a labelled button. Dismissing or letting a popup
+expire never touches the phone, and a click on the popup body never runs an
+action (the popup carries an explicit no-op default action, because some
+notification servers map a body click to the only button). Buttons appear
+only when the notification server reports the `actions` capability, and each
+notification accepts one successful action.
+Messages popups come from MAP and keep their existing open and dismiss
+behavior.
+
+The button text is chosen by the app that sent the notification, so it can
+contain content (for example "Pay CHF 50 to Bob"). Actions therefore stay off
+while `BLUEFERRY_SHOW_NOTIFICATION_CONTENT=false`: the labels are then not even
+requested from the iPhone. iOS reuses notification numbers, so a button is
+bound to the exact notification that offered it: any later event for the
+same number, a replay of existing notifications, or a re-established iPhone
+connection retires the old buttons and closes their popups.
+
+Actions use the same one-at-a-time Control Point queue as notification
+requests, ahead of queued requests. If the notification was already handled
+on the iPhone, or the phone disconnected in the meantime, BlueFerry shows a
+short "iPhone action not completed" notice instead; when the phone was only
+busy or the write failed, the notice has a **Retry** button.
+`blueferry doctor` and `blueferry notification-actions` report the setting,
+and `GetStatus` includes `ancs_actions`, `ancs_actions_preference`, and
+`notification_content_shown`.
+
+This has only been exercised against simulated ANCS responses so far, not a
+physical iPhone.
+
 Restart the user service after editing `local.env` settings.
 
 When WirePlumber 0.5 or newer is installed, BlueFerry keeps calls and music on

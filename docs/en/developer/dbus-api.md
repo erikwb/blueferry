@@ -88,6 +88,7 @@ package to restart an outdated backend after upgrades.
 | `IsHealthy` | → `b healthy` |
 | `GetNotificationPolicy` / `SetNotificationPolicy` | `s policy`: `messages`, `all`, or `none` |
 | `GetContactsOnlyNotifications` / `SetContactsOnlyNotifications` | `b enabled` |
+| `GetAncsNotificationActions` / `SetAncsNotificationActions` | `b enabled` (saved opt-in for iPhone action buttons) |
 | `SetPhoneBatteryWarning` | `b enabled` → `b selected`; state is `phone_battery_warning` in `GetStatus` |
 | `GetStoragePolicy` / `SetStoragePolicy` | `s policy`: `encrypted`, `plaintext`, or `none`; `Set` returns `s status_json` |
 | `UnlockStorage` | → `s status_json` |

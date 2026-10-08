@@ -125,6 +125,11 @@ class NotificationPolicy(Protocol):
 
     def set_contacts_only(self, enabled: bool) -> bool: ...
 
+    @property
+    def ancs_actions(self) -> bool: ...
+
+    def set_ancs_actions(self, enabled: bool) -> bool: ...
+
 
 class StarredThreads(Protocol):
     def keys(self) -> Sequence[str]: ...
@@ -1034,6 +1039,26 @@ class BackendOperations:
             raise NotReadyError("notification policy storage is unavailable")
         try:
             selected = self.dependencies.notification_policy.set_contacts_only(
+                enabled
+            )
+        except ValueError as error:
+            raise InvalidArgumentsError(str(error)) from error
+        if self.dependencies.on_notification_policy_changed is not None:
+            self.dependencies.on_notification_policy_changed()
+        return selected
+
+    def get_ancs_notification_actions(self) -> bool:
+        """Return the saved opt-in for iPhone notification action buttons."""
+        if self.dependencies.notification_policy is None:
+            return False
+        return bool(self.dependencies.notification_policy.ancs_actions)
+
+    def set_ancs_notification_actions(self, enabled: bool) -> bool:
+        """Opt in or out of iPhone notification action buttons."""
+        if self.dependencies.notification_policy is None:
+            raise NotReadyError("notification policy storage is unavailable")
+        try:
+            selected = self.dependencies.notification_policy.set_ancs_actions(
                 enabled
             )
         except ValueError as error:

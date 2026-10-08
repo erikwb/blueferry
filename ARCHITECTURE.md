@@ -75,7 +75,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `contact_sync.py` | Schedules PBAP pulls (MAP grace period, daily refresh, joined manual requests) and discards pulls that span a storage key or policy change. |
 | `contact_repository.py` | Contact-cache SQLite schema, replacement transaction, encryption, legacy cleanup. |
 | `vcard.py` | Linear, resource-bounded vCard block extraction. |
-| `ancs/client.py` | ANCS GATT client: subscribes to characteristics, requests attributes, emits `AncsEvent`s. |
+| `ancs/client.py` | ANCS GATT client: subscribes to characteristics, requests attributes, emits `AncsEvent`s, and sends opt-in `PerformNotificationAction` writes. |
 | `ancs/parsers.py` | Pure ANCS wire-format parsers and command builders. |
 | `ancs/constants.py` | ANCS spec constants. |
 | `ancs/events.py` | `AncsEvent`, the normalized per-app notification. |
@@ -100,7 +100,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | --- | --- |
 | `sinks/__init__.py` | Sink protocol: `handle(event)` plus optional `handle_ancs`, `handle_call`, and `handle_phone_battery_low` (optional HFP calls, desktop UI only). |
 | `sinks/sqlite.py` | Persists events to the private history store. |
-| `sinks/libnotify.py` | Desktop notifications via `org.freedesktop.Notifications`, including open and dismiss actions, optional incoming-call Answer/Decline, and the optional phone low-battery warning. |
+| `sinks/libnotify.py` | Desktop notifications via `org.freedesktop.Notifications`, including open and dismiss actions, optional incoming-call Answer/Decline, opt-in iPhone action buttons, and the optional phone low-battery warning. |
 
 ### Storage and privacy
 
@@ -149,6 +149,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `cli_messages.py` | CLI message listing, recipient selection, and send. |
 | `cli_common.py` | Small CLI presentation helpers. |
 | `cli_proximity.py` | `proximity-lock` status, dry run, enable, and disable. |
+| `cli_notification_actions.py` | `notification-actions` status, enable, and disable for the opt-in iPhone action buttons. |
 | `cli_calls.py` | Optional `blueferry calls` commands over `Calls1` and `blueferry phone-status` (battery, signal, network from `GetStatus`). |
 | `tui.py` | Textual terminal client. |
 | `tui_launcher.py` | Launches the TUI with the package-private Textual bundle when present. |
@@ -523,6 +524,18 @@ A change to these rules has to be made in both places.
   policy applies exact bundle-ID allow/block rules first and delivers content
   only to an ephemeral popup sink, never retained or broadcast. Apple Messages
   keeps only the fields needed for group correlation.
+- **ANCS actions** (off by default; saved in `settings.json`,
+  `BLUEFERRY_ANCS_ACTIONS` is the initial value): action labels
+  are app-defined content, so they are requested only while notification
+  content is shown, only for non-Messages notifications that announce an
+  action, shown only as popup buttons (markup characters removed), and never
+  retained, logged, or broadcast. A phone action runs only after a click on its
+  button, once per notification, and only with the content-free token of the
+  event that offered it: any later event for the UID, a PreExisting replay, or
+  a session reset retires the offer and closes its popup. Actions go through
+  the serialized Control Point queue. Clients only toggle the preference
+  (`SetAncsNotificationActions`); no D-Bus method performs an action, because
+  clients never see ANCS notifications or UIDs.
 - **Logs** exclude message bodies, notification text, and recipient
   identities at every level. Markup and terminal output are escaped at their
   display boundaries.

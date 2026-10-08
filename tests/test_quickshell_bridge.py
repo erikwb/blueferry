@@ -59,6 +59,10 @@ class FakeClient:
         self.calls.append(("set_thread_starred", thread_key, starred))
         return starred
 
+    def set_ancs_notification_actions(self, enabled):
+        self.calls.append(("set_ancs_notification_actions", enabled))
+        return enabled
+
     def set_contacts_only_notifications(self, enabled):
         self.calls.append(("set_contacts_only_notifications", enabled))
         return enabled
@@ -286,6 +290,26 @@ def test_stdin_reader_discards_oversized_line_and_recovers(monkeypatch):
     assert len(received) == 2
     assert len(received[0]) > 8
     assert received[1] == "next\n"
+
+
+def test_bridge_saves_the_notification_actions_preference() -> None:
+    client = FakeClient()
+    bridge = QuickshellBridge(client)  # type: ignore[arg-type]
+
+    assert bridge.dispatch(
+        "set_ancs_notification_actions", {"enabled": True}
+    ) is True
+    assert client.calls == [("set_ancs_notification_actions", True)]
+
+
+@pytest.mark.parametrize("args", [{}, {"enabled": 1}, {"enabled": "true"}])
+def test_bridge_rejects_malformed_notification_actions_requests(args) -> None:
+    client = FakeClient()
+    bridge = QuickshellBridge(client)  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="enabled must be a boolean"):
+        bridge.dispatch("set_ancs_notification_actions", args)
+    assert client.calls == []
 
 
 def test_status_carries_the_init_systems_bluetooth_restart_command(monkeypatch) -> None:

@@ -714,6 +714,7 @@ def settings_window(qml_engine):
             function answerPairingConfirmation(approved) { record("answerPairingConfirmation", [approved]); }
             function setStoragePolicy(policy) { record("setStoragePolicy", [policy]); }
             function setProximityLock(enabled, grace) { record("setProximityLock", [enabled, grace]); }
+            function setAncsNotificationActions(enabled) { record("setAncsNotificationActions", [enabled]); }
             function setCallsEnabled(enabled) { record("setCallsEnabled", [enabled]); }
             function setPhoneBatteryWarning(enabled) { record("setPhoneBatteryWarning", [enabled]); }
             function forgetDevice(mac) { record("forgetDevice", [mac]); }
@@ -1030,6 +1031,48 @@ def test_proximity_lock_settings_appear_only_for_supporting_daemons(qml_engine, 
     assert _evaluate(
         qml_engine, "testBridge.calls.filter(c => c.method === 'setProximityLock')"
     ) == [{"method": "setProximityLock", "args": [True, 90]}]
+
+
+def test_ancs_actions_checkbox_is_opt_in_and_gated(qml_engine, settings_window):
+    window, bridge = settings_window
+    bridge.setProperty("setupLoaded", True)
+    bridge.setProperty("status", {"daemon": True, "notification_policy": "all"})
+    QGuiApplication.processEvents()
+    checkbox = _settings_object(window, "ancsActionsCheckBox")
+    # Daemons without the preference key do not support the setting.
+    assert checkbox.property("visible") is False
+
+    status = {
+        "daemon": True,
+        "notification_policy": "messages",
+        "ancs_actions_preference": False,
+        "notification_content_shown": True,
+    }
+    bridge.setProperty("status", status)
+    QGuiApplication.processEvents()
+    assert checkbox.property("visible") is True
+    assert checkbox.property("checked") is False
+    # Actions only apply to "All iPhone Notifications".
+    assert checkbox.property("enabled") is False
+
+    bridge.setProperty("status", {**status, "notification_policy": "all",
+                                  "notification_content_shown": False})
+    QGuiApplication.processEvents()
+    assert checkbox.property("enabled") is False
+
+    # A saved "on" can always be switched off, under any policy.
+    bridge.setProperty("status", {**status, "ancs_actions_preference": True})
+    QGuiApplication.processEvents()
+    assert checkbox.property("enabled") is True
+
+    bridge.setProperty("status", {**status, "notification_policy": "all"})
+    QGuiApplication.processEvents()
+    assert checkbox.property("enabled") is True
+    assert QMetaObject.invokeMethod(checkbox, "toggle")
+    assert QMetaObject.invokeMethod(checkbox, "clicked")
+    assert _evaluate(
+        qml_engine, "testBridge.calls.filter(c => c.method === 'setAncsNotificationActions')"
+    ) == [{"method": "setAncsNotificationActions", "args": [True]}]
 
 
 def test_proximity_grace_edit_survives_a_status_refresh_before_saving(qml_engine):
@@ -1953,6 +1996,75 @@ def test_quickshell_storage_cancel_keeps_the_status_binding(qml_engine, quickshe
     page.setProperty("status", {"storage_policy": "none", "contacts_only_notifications": False})
     QGuiApplication.processEvents()
     assert selector.property("currentIndex") == 2
+    window.close()
+    page.deleteLater()
+    theme.deleteLater()
+
+
+def test_quickshell_ancs_actions_checkbox_is_opt_in_and_gated(
+    qml_engine, quickshell_setup,
+):
+    from PySide6.QtQuick import QQuickWindow
+
+    theme_component = _component(qml_engine, "data/quickshell/ThemePalette.qml")
+    theme = theme_component.create()
+    component = _component(qml_engine, "data/quickshell/PhoneSettingsPage.qml")
+    page = component.createWithInitialProperties({
+        "ferryTheme": theme, "setup": quickshell_setup, "status": {
+            "notification_policy": "all", "contacts_only_notifications": False,
+        }, "width": 640, "height": 1400,
+    })
+    assert page is not None
+    quickshell_setup.setProperty("configured", True)
+    window = QQuickWindow()
+    window.resize(640, 1400)
+    page.setParentItem(window.contentItem())
+    window.show()
+    QGuiApplication.processEvents()
+    checkbox = page.findChild(QObject, "ancsActionsCheckBox")
+    assert checkbox is not None
+    # Daemons without the preference key do not support the setting.
+    assert checkbox.property("visible") is False
+
+    status = {
+        "notification_policy": "messages",
+        "contacts_only_notifications": False,
+        "ancs_actions_preference": False,
+        "notification_content_shown": True,
+    }
+    page.setProperty("status", status)
+    QGuiApplication.processEvents()
+    assert checkbox.property("visible") is True
+    assert checkbox.property("checked") is False
+    # Actions only apply to "All iPhone notifications".
+    assert checkbox.property("enabled") is False
+    page.setProperty("status", {**status, "notification_policy": "all",
+                                "notification_content_shown": False})
+    QGuiApplication.processEvents()
+    assert checkbox.property("enabled") is False
+    page.setProperty("busy", {"ancsActions": True})
+    page.setProperty("status", {**status, "notification_policy": "all"})
+    QGuiApplication.processEvents()
+    assert checkbox.property("enabled") is False
+    page.setProperty("busy", {})
+    QGuiApplication.processEvents()
+    assert checkbox.property("enabled") is True
+    # A saved "on" can always be switched off, under any policy.
+    page.setProperty("status", {**status, "ancs_actions_preference": True})
+    QGuiApplication.processEvents()
+    assert checkbox.property("enabled") is True
+    page.setProperty("status", {**status, "notification_policy": "all"})
+    QGuiApplication.processEvents()
+
+    calls = []
+    page.operationRequested.connect(
+        lambda method, args: calls.append((
+            method, args.toVariant() if hasattr(args, "toVariant") else args,
+        ))
+    )
+    assert QMetaObject.invokeMethod(checkbox, "toggle")
+    assert QMetaObject.invokeMethod(checkbox, "clicked")
+    assert calls == [("set_ancs_notification_actions", {"enabled": True})]
     window.close()
     page.deleteLater()
     theme.deleteLater()

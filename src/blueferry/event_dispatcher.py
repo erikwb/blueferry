@@ -57,6 +57,8 @@ class EventDispatcher:
         contacts_only_notifications=None,
         storage=None,
         on_incoming_message=None,
+        perform_ancs_action=None,
+        ancs_actions_enabled: Callable[[], bool] | None = None,
         on_call_action: Callable[[str, str], None] | None = None,
         notification_sink_factory: Callable[..., Sink] = LibnotifySink,
         session_bus=None,
@@ -71,6 +73,8 @@ class EventDispatcher:
         self.contacts_only_notifications = contacts_only_notifications
         self.storage = storage
         self.on_incoming_message = on_incoming_message
+        self.perform_ancs_action = perform_ancs_action
+        self.ancs_actions_enabled = ancs_actions_enabled
         self.on_call_action = on_call_action
         self._notification_sink_factory = notification_sink_factory
         self._session_bus = session_bus
@@ -111,6 +115,9 @@ class EventDispatcher:
             except Exception:
                 log.debug("could not remove notification owner watch", exc_info=True)
             self._notification_owner_match = None
+        # Shutdown: the server is still ours, so retire live iPhone action
+        # buttons instead of leaving them wired to a daemon that is gone.
+        self.ancs_actions_reset()
         self._remove_libnotify_sink(log_change=False)
 
     def _watch_notification_owner(self) -> None:
@@ -152,6 +159,8 @@ class EventDispatcher:
                 notification_policy=self.notification_policy,
                 contacts_only_notifications=self.contacts_only_notifications,
                 on_open_message=self._open_message,
+                on_ancs_action=self.perform_ancs_action,
+                ancs_actions_enabled=self.ancs_actions_enabled,
                 on_call_action=self.on_call_action,
             )
         except Exception:
@@ -219,6 +228,28 @@ class EventDispatcher:
 
     def set_dbus_service(self, service) -> None:
         self.dbus_service = service
+
+    def ancs_removed(self, notification_id: int) -> None:
+        """Retire desktop popups whose iPhone notification was removed."""
+        for sink in self.sinks:
+            close = getattr(sink, "close_ancs_notification", None)
+            if close is None:
+                continue
+            try:
+                close(notification_id)
+            except Exception:
+                log.exception("sink %s failed to close ANCS popup", sink.name)
+
+    def ancs_actions_reset(self) -> None:
+        """Retire every action popup after the ANCS session reset its UIDs."""
+        for sink in self.sinks:
+            close_all = getattr(sink, "close_all_ancs_notifications", None)
+            if close_all is None:
+                continue
+            try:
+                close_all()
+            except Exception:
+                log.exception("sink %s failed to retire ANCS popups", sink.name)
 
     def _open_message(self, handle: str, token: str) -> None:
         request_message_activation(handle, token)

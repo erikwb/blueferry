@@ -13,7 +13,9 @@ from blueferry import bluez_setup, config
 from blueferry.cli_calls import calls_app, phone_status
 from blueferry.cli_common import setup_logging as _setup_logging
 from blueferry.cli_messages import sms_list, sms_send
+from blueferry.cli_notification_actions import notification_actions_app
 from blueferry.cli_proximity import proximity_app
+from blueferry.notification_policy import NotificationPolicyStore
 
 app = typer.Typer(
     add_completion=False,
@@ -117,6 +119,15 @@ def doctor(verbose: bool = typer.Option(False, "-v", "--verbose")):
                 cod,
             )
             warnings = True
+
+    actions_preference = NotificationPolicyStore().ancs_actions
+    if actions_preference and config.SHOW_NOTIFICATION_CONTENT:
+        actions_state = "enabled"
+    elif actions_preference:
+        actions_state = "disabled while BLUEFERRY_SHOW_NOTIFICATION_CONTENT=false"
+    else:
+        actions_state = "disabled"
+    log.info("ANCS notification actions: %s", actions_state)
 
     # Bluetooth LE switched on? (#192)
     if _check_controller_le(log, config.ADAPTER):
@@ -524,6 +535,7 @@ def history_clear(
 app.command("sms-list")(sms_list)
 app.command("sms-send")(sms_send)
 app.add_typer(proximity_app, name="proximity-lock")
+app.add_typer(notification_actions_app, name="notification-actions")
 app.add_typer(calls_app, name="calls")
 app.command("phone-status")(phone_status)
 

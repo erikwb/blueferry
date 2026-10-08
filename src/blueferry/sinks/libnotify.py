@@ -15,11 +15,18 @@ Read-state sync:
 
 Empirical on iOS 26.5: both directions work. iPhone propagates Read=true
 back over MAP within a few seconds of opening the Messages app.
+
+ANCS notification actions (opt-in, BLUEFERRY_ANCS_ACTIONS):
+  iPhone offers Accept/Decline/Clear/... → popup action buttons
+  user clicks one button                 → PerformNotificationAction
+Dismissing or expiring an ANCS popup never touches the iPhone, and nothing is
+invoked without an explicit click on the labelled button.
 """
 from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Callable
 from html import escape
 from typing import Protocol
@@ -38,7 +45,7 @@ from blueferry.bus import get_session_bus
 from blueferry.calls.model import CallEvent
 from blueferry.client_activation import activation_argv, select_client
 from blueferry.events import SmsEvent
-from blueferry.limits import MAX_DESKTOP_MESSAGE_TRACKERS
+from blueferry.limits import MAX_ANCS_ACTION_POPUPS, MAX_DESKTOP_MESSAGE_TRACKERS
 from blueferry.notification_policy import (
     ALL_NOTIFICATIONS,
     DEFAULT_NOTIFICATION_POLICY,
@@ -61,6 +68,9 @@ _MESSAGE_EXPIRE_MS = config.NOTIFICATION_TIMEOUT_MS
 # they have no desktop-to-phone read-state path, so keeping every popup around
 # indefinitely only creates notification-center clutter.
 _ANCS_EXPIRE_MS = config.NOTIFICATION_TIMEOUT_MS
+# Popups with iPhone action buttons (a ringing call, an invitation) need to
+# stay long enough to be answered.
+_ANCS_ACTION_EXPIRE_MS = config.ANCS_ACTION_TIMEOUT_MS
 
 # NotificationClosed reason codes (org.freedesktop.Notifications spec):
 #   1 = expired (timeout)
@@ -72,6 +82,30 @@ _ANCS_EXPIRE_MS = config.NOTIFICATION_TIMEOUT_MS
 # because the iPhone marked it read (so we'd be in a write-self-write loop).
 # Reason 1 is the normal finite-timeout path and must not mark the phone read.
 _REASON_DISMISSED = 2
+
+# Notification action keys for ANCS actions. They never collide with the
+# message popup's "default" action, so a click on the popup body cannot run an
+# iPhone action.
+_ANCS_POSITIVE_ACTION = "ancs-positive"
+_ANCS_NEGATIVE_ACTION = "ancs-negative"
+_ANCS_RETRY_ACTION = "ancs-retry"
+# Action labels are plain strings, but some notification servers interpret
+# markup in them. Remove only things shaped like real tags (``<b>``,
+# ``</i>``, ``<a href=...>``), then drop the remaining markup-significant
+# characters instead of escaping, so a server that does not parse markup shows
+# no literal entities and "Reply <3 > now" keeps its words.
+_LABEL_TAG_RE = re.compile(r"</?[A-Za-z][A-Za-z0-9-]*(?:\s[^<>]*)?/?>")
+_LABEL_MARKUP_RE = re.compile(r"[<>&]")
+# Results worth a "Retry" button: the UID is still valid on the phone.
+_ANCS_RETRYABLE = frozenset({"busy", "failed"})
+_ANCS_ACTION_FEEDBACK = {
+    "unavailable": "The notification is no longer available on the iPhone.",
+    "disconnected": "The iPhone is not connected.",
+    "busy": "Another iPhone action is still in progress.",
+    "rejected": "The iPhone could not complete the action.",
+    "unsupported": "The iPhone does not support this action.",
+    "failed": "The action could not be sent to the iPhone.",
+}
 
 # Incoming-call popups stay until the call stops ringing; the sink closes
 # them itself when the call is answered, declined, or disappears.
@@ -105,6 +139,8 @@ class LibnotifySink:
         notification_policy=None,
         contacts_only_notifications=None,
         on_open_message=None,
+        on_ancs_action=None,
+        ancs_actions_enabled=None,
         on_call_action=None,
     ) -> None:
         self._defer_mark_read = defer_mark_read
@@ -116,6 +152,17 @@ class LibnotifySink:
         self._notification_policy = notification_policy
         self._contacts_only_notifications = contacts_only_notifications
         self._on_open_message = on_open_message
+        # (uid, positive, token, on_result) -> queued; None disables actions.
+        self._on_ancs_action = on_ancs_action
+        self._ancs_actions_provider = ancs_actions_enabled
+        # desktop notification id -> (ANCS uid, offer token) for popups with
+        # iPhone actions, and for "not completed" popups with a Retry button
+        # -> (uid, positive, token).
+        self._ancs_actions: dict[int, tuple[int, int]] = {}
+        self._ancs_retries: dict[int, tuple[int, bool, int]] = {}
+        # Buttons are offered only once the server confirmed the "actions"
+        # capability; a server that draws no buttons gets the plain popup.
+        self._server_actions = False
         self._notif = dbus.Interface(
             get_session_bus().get_object(
                 "org.freedesktop.Notifications",
@@ -144,7 +191,25 @@ class LibnotifySink:
         self._token_match = self._notif.connect_to_signal(
             "ActivationToken", self._on_activation_token,
         )
+        self._query_capabilities()
         log.info("libnotify sink ready (expiring + bidirectional read-sync)")
+
+    def _query_capabilities(self) -> None:
+        def received(capabilities) -> None:
+            self._server_actions = "actions" in {str(item) for item in capabilities}
+            log.debug(
+                "notification server %s action buttons",
+                "supports" if self._server_actions else "does not support",
+            )
+
+        def failed(error) -> None:
+            name = getattr(error, "get_dbus_name", lambda: None)()
+            log.debug("GetCapabilities failed: %s", name or type(error).__name__)
+
+        try:
+            self._notif.GetCapabilities(reply_handler=received, error_handler=failed)
+        except dbus.exceptions.DBusException as error:
+            failed(error)
 
     def close(self) -> None:
         """Release signal watches before a notification-daemon replacement."""
@@ -165,6 +230,11 @@ class LibnotifySink:
         self._pending.clear()
         self._open_messages.clear()
         getattr(self, "_activation_tokens", {}).clear()
+        # The popups themselves are retired by close_all_ancs_notifications()
+        # while the server is still ours; after an owner change the old
+        # server's popups are gone, and their ids may name someone else's.
+        getattr(self, "_ancs_actions", {}).clear()
+        getattr(self, "_ancs_retries", {}).clear()
         getattr(self, "_call_notifications", {}).clear()
         getattr(self, "_call_popups", {}).clear()
 
@@ -291,16 +361,21 @@ class LibnotifySink:
             body = body[:_BODY_LIMIT - 1] + "…"
         title = escape(terminal_text(title).replace("\n", " "))
         body = escape(terminal_text(body))
+        actions = (
+            self._ancs_action_buttons(event)
+            if getattr(event, "has_actions", False)
+            else []
+        )
         try:
             # No mark-read sync exists for ANCS, so use a normal finite popup
             # lifetime. The event remains available in private SQLite history.
-            self._notif.Notify(
+            nid = self._notif.Notify(
                 _APP_NAME,
                 dbus.UInt32(0),
                 "phone-symbolic",
                 title,
                 body,
-                dbus.Array([], signature="s"),
+                dbus.Array(actions, signature="s"),
                 dbus.Dictionary({
                     "urgency": dbus.Byte(1),
                     # Plasma can retain an expired notification in history.
@@ -308,10 +383,165 @@ class LibnotifySink:
                     # explicitly bypass desktop notification persistence.
                     "transient": dbus.Boolean(True),
                 }, signature="sv"),
-                dbus.Int32(_ANCS_EXPIRE_MS),
+                dbus.Int32(_ANCS_ACTION_EXPIRE_MS if actions else _ANCS_EXPIRE_MS),
             )
         except dbus.exceptions.DBusException as e:
             log.error("libnotify Notify (ANCS) failed: %s", e.get_dbus_name())
+            return
+        if actions:
+            self._track_ancs_actions(
+                int(nid),
+                int(event.notification_id),
+                int(getattr(event, "action_token", 0)),
+            )
+
+    def _ancs_actions_enabled(self) -> bool:
+        # Labels are app-defined ("Pay CHF 50 to Bob"), so they count as
+        # notification content; the provider also checks
+        # BLUEFERRY_SHOW_NOTIFICATION_CONTENT.
+        provider = getattr(self, "_ancs_actions_provider", None)
+        try:
+            enabled = bool(provider()) if provider is not None else False
+        except Exception:
+            log.exception("ANCS actions setting provider raised")
+            return False
+        return enabled and getattr(self, "_on_ancs_action", None) is not None
+
+    def _ancs_action_buttons(self, event: AncsEvent) -> list[str]:
+        """Return freedesktop action pairs for the iPhone-offered actions."""
+        if not self._ancs_actions_enabled() or not getattr(
+            self, "_server_actions", False
+        ):
+            return []
+        actions: list[str] = []
+        for key, label in (
+            (_ANCS_POSITIVE_ACTION, getattr(event, "positive_action_label", "")),
+            (_ANCS_NEGATIVE_ACTION, getattr(event, "negative_action_label", "")),
+        ):
+            # Action labels are plain text in the spec, but some servers
+            # render them loosely; apply the same display sanitizing.
+            text = terminal_text(str(label or "")).replace("\n", " ")
+            text = _LABEL_MARKUP_RE.sub("", _LABEL_TAG_RE.sub("", text))
+            text = " ".join(text.split())
+            if text:
+                actions += [key, text]
+        if actions:
+            # An explicit no-op default action: servers that map a click on
+            # the popup body to the only action (or the first one) would
+            # otherwise run "Decline" or "Delete" on a plain body click.
+            actions = ["default", "", *actions]
+        return actions
+
+    def _track_ancs_actions(self, nid: int, uid: int, token: int) -> None:
+        tracked = getattr(self, "_ancs_actions", None)
+        if tracked is None:
+            tracked = self._ancs_actions = {}
+        tracked.pop(nid, None)
+        tracked[nid] = (uid, token)
+        while len(tracked) > MAX_ANCS_ACTION_POPUPS:
+            tracked.pop(next(iter(tracked)))
+
+    def close_ancs_notification(self, uid: int) -> None:
+        """Close a popup whose iPhone notification was removed on the phone."""
+        for table in (
+            getattr(self, "_ancs_actions", {}),
+            getattr(self, "_ancs_retries", {}),
+        ):
+            for nid in [nid for nid, value in table.items() if value[0] == uid]:
+                table.pop(nid, None)
+                self._close_async(nid)
+
+    def close_all_ancs_notifications(self) -> None:
+        """Retire every action popup when the ANCS session (and UIDs) reset.
+
+        A new session may reuse a UID, so an old button must never stay
+        wired to it.
+        """
+        stale: list[int] = []
+        for table in (
+            getattr(self, "_ancs_actions", {}),
+            getattr(self, "_ancs_retries", {}),
+        ):
+            stale += list(table)
+            table.clear()
+        for nid in stale:
+            self._close_async(nid)
+
+    def _close_async(self, nid: int) -> None:
+        def failed(error) -> None:
+            name = getattr(error, "get_dbus_name", lambda: None)()
+            log.debug("CloseNotification(%d): %s", nid, name or type(error).__name__)
+
+        try:
+            self._notif.CloseNotification(
+                dbus.UInt32(nid),
+                reply_handler=lambda *_args: None,
+                error_handler=failed,
+            )
+        except dbus.exceptions.DBusException as error:
+            failed(error)
+
+    def _invoke_ancs_action(self, nid: int, action: str) -> None:
+        # Pop first: a popup's buttons are single-use even if the server
+        # delivers ActionInvoked twice.
+        if action == _ANCS_RETRY_ACTION:
+            retry = getattr(self, "_ancs_retries", {}).pop(nid, None)
+            if retry is None:
+                return
+            uid, positive, token = retry
+        else:
+            offer = getattr(self, "_ancs_actions", {}).pop(nid, None)
+            if offer is None:
+                return
+            uid, token = offer
+            positive = action == _ANCS_POSITIVE_ACTION
+        callback = getattr(self, "_on_ancs_action", None)
+        if callback is None or not self._ancs_actions_enabled():
+            return
+
+        def result(outcome: str) -> None:
+            self._ancs_action_result(outcome, uid, positive, token)
+
+        try:
+            callback(uid, positive, token, result)
+        except Exception:
+            log.exception("ANCS action callback raised")
+
+    def _ancs_action_result(
+        self, result: str, uid: int, positive: bool, token: int
+    ) -> None:
+        """Tell the user when a clicked iPhone action did not go through."""
+        message = _ANCS_ACTION_FEEDBACK.get(result)
+        if message is None:
+            return
+        retryable = result in _ANCS_RETRYABLE and getattr(
+            self, "_server_actions", False
+        )
+        actions = ["default", "", _ANCS_RETRY_ACTION, "Retry"] if retryable else []
+        try:
+            nid = self._notif.Notify(
+                _APP_NAME,
+                dbus.UInt32(0),
+                "phone-symbolic",
+                "\U0001f4f1 iPhone action not completed",
+                escape(message),
+                dbus.Array(actions, signature="s"),
+                dbus.Dictionary({
+                    "urgency": dbus.Byte(1),
+                    "transient": dbus.Boolean(True),
+                }, signature="sv"),
+                dbus.Int32(_ANCS_EXPIRE_MS),
+            )
+        except dbus.exceptions.DBusException as e:
+            log.debug("libnotify action feedback failed: %s", e.get_dbus_name())
+            return
+        if retryable:
+            retries = getattr(self, "_ancs_retries", None)
+            if retries is None:
+                retries = self._ancs_retries = {}
+            retries[int(nid)] = (uid, positive, token)
+            while len(retries) > MAX_ANCS_ACTION_POPUPS:
+                retries.pop(next(iter(retries)))
 
     # ---- optional phone calls ---------------------------------------------
 
@@ -435,6 +665,11 @@ class LibnotifySink:
             nid_i = int(nid)
         except (TypeError, ValueError):
             return
+        if str(action) in (
+            _ANCS_POSITIVE_ACTION, _ANCS_NEGATIVE_ACTION, _ANCS_RETRY_ACTION,
+        ):
+            self._invoke_ancs_action(nid_i, str(action))
+            return
         call_id = getattr(self, "_call_notifications", {}).get(nid_i)
         if call_id is not None:
             callback = getattr(self, "_on_call_action", None)
@@ -458,6 +693,9 @@ class LibnotifySink:
 
         getattr(self, "_open_messages", {}).pop(nid_i, None)
         getattr(self, "_activation_tokens", {}).pop(nid_i, None)
+        # Closing an ANCS popup, for any reason, never runs an iPhone action.
+        getattr(self, "_ancs_actions", {}).pop(nid_i, None)
+        getattr(self, "_ancs_retries", {}).pop(nid_i, None)
         call_id = getattr(self, "_call_notifications", {}).pop(nid_i, None)
         if call_id is not None:
             getattr(self, "_call_popups", {}).pop(call_id, None)

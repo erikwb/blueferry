@@ -869,6 +869,54 @@ def test_proximity_lock_setting_is_forwarded_and_merged_into_status(monkeypatch)
     assert changes == [True]
 
 
+def test_ancs_actions_setting_is_forwarded_and_merged_into_status(monkeypatch):
+    backend = _Backend()
+    calls = []
+    backend.set_ancs_notification_actions = lambda enabled: calls.append(enabled) or enabled
+    controller = BridgeController(
+        backend=backend,
+        setup=object(),
+        subscribe=False,
+        autostart=False,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_run",
+        lambda operation, on_done=None, *_args, **_kwargs: (
+            on_done(operation()) if on_done is not None else operation()
+        ),
+    )
+
+    controller.setAncsNotificationActions(True)
+
+    assert calls == [True]
+    assert controller.status["ancs_actions_preference"] is True
+    assert controller.status["ancs_actions"] is True
+
+
+def test_failed_ancs_actions_change_reports_the_saved_value_again(monkeypatch):
+    controller = BridgeController(
+        backend=_Backend(),
+        setup=object(),
+        subscribe=False,
+        autostart=False,
+    )
+    controller._status["ancs_actions_preference"] = True
+    monkeypatch.setattr(
+        controller,
+        "_run",
+        lambda _operation, _on_done=None, on_failed=None, **_kwargs: on_failed("refused"),
+    )
+    changes = []
+    controller.statusChanged.connect(lambda: changes.append(True))
+
+    controller.setAncsNotificationActions(False)
+
+    assert controller.status["ancs_actions_preference"] is True
+    assert controller.errorText == "refused"
+    assert changes == [True]
+
+
 def test_checking_bluetooth_le_again_reprobes_the_selected_adapter(
     monkeypatch,
 ) -> None:
