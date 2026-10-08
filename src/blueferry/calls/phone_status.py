@@ -181,14 +181,14 @@ class LowBatteryMonitor:
     def warned(self) -> bool:
         return self._warned
 
-    def observe(self, percent: int | None) -> bool:
-        """Feed the latest level; return True exactly when a warning is due."""
+    def observe(self, percent: int | None, *, enabled: bool = True) -> bool:
+        """Return when a warning is due; disabled observations only re-arm."""
         if percent is None:
             return False
         if percent >= self.threshold + BATTERY_STEP_PERCENT:
             self._warned = False
             return False
-        if percent <= self.threshold and not self._warned:
+        if enabled and percent <= self.threshold and not self._warned:
             self._warned = True
             return True
         return False

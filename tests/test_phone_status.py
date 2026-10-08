@@ -566,3 +566,30 @@ def test_cli_phone_status_reports_backend_errors(monkeypatch) -> None:
     result = _invoke(monkeypatch, Failing())
     assert result.exit_code == 3
     assert "Could not read status" in result.output
+
+
+def test_enabling_warning_at_low_battery_warns_immediately_once(make_daemon) -> None:
+    instance, seen, now, _timers = _daemon_with_recorders(make_daemon)
+    _hfp(instance, 1)
+    assert instance.low_battery.warned is False
+    instance._set_battery_warning(True)
+    assert ("low", 20, False) in seen
+    now[0] += 60
+    _hfp(instance, 0)
+    instance._set_battery_warning(False)
+    instance._set_battery_warning(True)
+    assert [item for item in seen if item != "status"] == [("low", 20, False)]
+
+
+def test_charging_while_warning_disabled_rearms_next_cycle(make_daemon) -> None:
+    instance, seen, now, _timers = _daemon_with_recorders(make_daemon, warning=True)
+    _hfp(instance, 1)
+    instance._set_battery_warning(False)
+    now[0] += 60
+    _hfp(instance, 3)
+    now[0] += 60
+    _hfp(instance, 1)
+    instance._set_battery_warning(True)
+    assert [item for item in seen if item != "status"] == [
+        ("low", 20, False), ("low", 20, False),
+    ]
