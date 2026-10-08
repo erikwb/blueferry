@@ -21,6 +21,7 @@ from __future__ import annotations
 import itertools
 import logging
 import os
+import re
 import stat as stat_mode
 import time
 from collections import deque
@@ -113,6 +114,28 @@ _SUDO_REFUSAL_MARKERS = (
 
 class CodAuthorizationRefused(PairingError):
     """No non-interactive authorization exists for the device-class helper."""
+
+
+COD_ADAPTER_BUSY_MESSAGE = (
+    "The Bluetooth adapter is busy and did not accept the device class yet "
+    "(btmgmt status 0x0a). This is normal right after Bluetooth restarts; "
+    "try again in a few seconds."
+)
+# btmgmt colours its failure line ("Set Dev Class failed, status 0x0a
+# (Busy)") with ANSI escapes and may wrap it in readline's prompt markers
+# \x01/\x02. Strip both before matching.
+_TERMINAL_CONTROL = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|[\x01\x02]")
+_BTMGMT_BUSY = re.compile(r"status 0x0a\b|\(busy\)")
+
+
+class CodAdapterBusy(PairingError):
+    """btmgmt reported Busy (0x0a); the controller is still settling."""
+
+
+def _btmgmt_busy(output: str) -> bool:
+    """Return whether btmgmt output reports MGMT status 0x0a (Busy)."""
+    plain = _TERMINAL_CONTROL.sub("", output).casefold()
+    return _BTMGMT_BUSY.search(plain) is not None
 
 
 # ---- Class-of-Device ----------------------------------------------------
@@ -281,6 +304,15 @@ def set_cod(
         return False
     if r.returncode != 0:
         output = r.stderr.strip() or r.stdout.strip()
+        # btmgmt prints its status on stdout, sudo and systemctl on stderr.
+        # systemctl normally shows only the unit's failure, not the
+        # journal, so Busy is recognised there only if it is visible.
+        if _btmgmt_busy(f"{r.stdout}\n{r.stderr}"):
+            log.debug(
+                "btmgmt class %d %d: adapter busy (status 0x0a)",
+                config.COD_MAJOR, config.COD_MINOR,
+            )
+            raise CodAdapterBusy(COD_ADAPTER_BUSY_MESSAGE)
         if cmd[0] == "/usr/bin/systemctl":
             if _polkit_authentication_unavailable(output):
                 raise PairingError(POLKIT_UNAVAILABLE_MESSAGE)

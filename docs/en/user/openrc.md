@@ -137,6 +137,10 @@ The daemon then logs to `~/.local/state/blueferry/daemon.log`.
   triggers an immediate check. A rule you add later therefore takes effect
   without a restart, and a missing rule does not fill the authentication
   log.
+- Right after `rc-service bluetooth restart` the controller can still be
+  busy, and `btmgmt` answers `Set Dev Class failed, status 0x0a (Busy)`.
+  The daemon then retries after three seconds, up to five times in a row,
+  before it treats the attempt as a failure and backs off as above.
 - The optional user service sets `no_new_privs`, which rules out sudo for its
   daemon. BlueFerry notices and does not call sudo; rerun the helper after
   Bluetooth restarts, or set `no_new_privs=""` in

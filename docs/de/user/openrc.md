@@ -146,6 +146,11 @@ Der Daemon schreibt sein Log dann nach `~/.local/state/blueferry/daemon.log`.
   bluetoothd setzt die Wartezeit zurück und löst eine sofortige Prüfung aus.
   Eine später angelegte Regel wirkt also ohne Neustart, und eine fehlende
   Regel füllt nicht das Authentifizierungslog.
+- Direkt nach `rc-service bluetooth restart` kann der Controller noch
+  beschäftigt sein, und `btmgmt` meldet
+  `Set Dev Class failed, status 0x0a (Busy)`. Dann versucht es der Daemon
+  nach drei Sekunden erneut, bis zu fünfmal hintereinander, bevor er den
+  Versuch als Fehler wertet und wie oben wartet.
 - Der optionale User-Service setzt `no_new_privs`, damit kann sein Daemon
   kein sudo nutzen. BlueFerry erkennt das und ruft sudo gar nicht erst auf;
   starte das Skript nach Bluetooth-Neustarts selbst oder setze

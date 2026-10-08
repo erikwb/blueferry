@@ -472,7 +472,9 @@ A change to these rules has to be made in both places.
   but root could replace, and backs off failed sudo repairs (from 15 minutes
   after a refusal up to six hours, other failures from one up to five
   minutes; a BlueZ restart resets it). On systemd a failed repair is retried
-  every minute.
+  every minute. When `btmgmt` reports the adapter busy (status 0x0a, common
+  right after bluetoothd restarts), the repair is retried after 3 seconds,
+  up to five times in a row, before it counts as a failure.
 - **Bluetooth LE switched off:** when the controller supports LE but runs
   without it, setup detects it, stops full-mode pairing early (after two
   re-probes, since bluetoothd switches LE on asynchronously) and explains the
