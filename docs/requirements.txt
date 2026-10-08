@@ -1,0 +1,13 @@
+# Pinned dependencies for the optional documentation build (zensical build).
+# Regenerate with: pip install zensical && pip freeze
+click==8.5.0
+deepmerge==3.0.1
+Jinja2==3.1.6
+Markdown==3.11
+MarkupSafe==3.0.4
+pathspec==1.1.1
+Pygments==2.21.0
+pymdown-extensions==12.1
+PyYAML==6.0.3
+tomli==2.5.0
+zensical==0.0.68

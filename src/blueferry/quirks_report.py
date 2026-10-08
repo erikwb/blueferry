@@ -421,9 +421,17 @@ def _profile_word(value: Any) -> str | None:
     return None
 
 
+_REASON_TITLES = {
+    "le_disabled": "Bluetooth LE is switched off on the adapter",
+}
+
+
 def _outcome_title(outcome: Any) -> str:
     if not isinstance(outcome, dict):
         return "status unknown"
+    reason_title = _REASON_TITLES.get(str(outcome.get("reason") or ""))
+    if reason_title:
+        return reason_title
     map_state = _profile_word(outcome.get("map"))
     pbap_state = _profile_word(outcome.get("pbap"))
     ancs_state = _profile_word(outcome.get("ancs"))
@@ -437,6 +445,8 @@ def _outcome_title(outcome: Any) -> str:
             parts.append(f"PBAP {pbap_state}")
     if ancs_state:
         parts.append(f"ANCS {ancs_state}")
+    if outcome.get("le_bond_suspect") is True:
+        parts.append("stale LE bond suspected")
     if parts:
         return ", ".join(parts)
     if outcome.get("bonded") is True and outcome.get("setup_complete") is False:

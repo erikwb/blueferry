@@ -1193,7 +1193,9 @@ def test_adapter_selection_prefers_le_advertising_but_honors_explicit_choice(mon
     assert automatic["notifications_active"] is True
     assert automatic["bearer_api_supported"] is False
     assert automatic["bearer_api_active"] is False
-    assert automatic["issue"] == ""
+    # ANCS still needs LE, and this controller has it switched off (#192).
+    assert automatic["le_disabled"] is True
+    assert "Bluetooth Low Energy is switched off" in automatic["issue"]
     assert "le" not in automatic["current_settings"]
     assert automatic["adapters"][0]["hardware_supported"] is False
 
@@ -1806,6 +1808,7 @@ def test_apply_phone_audio_policy_waits_for_wireplumber(monkeypatch):
         pair_setup, "_apply_phone_audio_policy", _REAL_APPLY_PHONE_AUDIO_POLICY
     )
     monkeypatch.setattr(config, "KEEP_PHONE_AUDIO_ON_PHONE", True)
+    monkeypatch.setattr(pair_setup, "calls_enabled", lambda: True)
     constructed = []
 
     class FakePolicy:
@@ -1820,7 +1823,7 @@ def test_apply_phone_audio_policy_waits_for_wireplumber(monkeypatch):
     attempt = pair_setup.quirks_report.start_attempt(interactive=False)
 
     assert pair_setup._apply_phone_audio_policy(attempt) is True
-    assert constructed == [{"wait_for_restart": True}]
+    assert constructed == [{"wait_for_restart": True, "allow_calls": True}]
     assert attempt["timeline"][-1]["event"] == "phone_audio_policy_ready"
 
 

@@ -41,7 +41,7 @@ class _Gatt:
         self.le_up = False
         self.enabled.clear()
 
-    def get_object(self, _name, path):
+    def get_object(self, _name, path, **_kwargs):
         return _Characteristic(self, path)
 
     def add_signal_receiver(self, *_args, **_kwargs):
@@ -81,12 +81,14 @@ class _Characteristic:
         self.gatt.enabled.discard(self.path)
         self.gatt.notifying.discard(self.path)
 
-    def WriteValue(self, _value, _options, **_kwargs) -> None:
+    def WriteValue(self, _value, _options, **kwargs) -> None:
         if not self.gatt.le_up:
-            raise dbus.exceptions.DBusException(
+            kwargs["error_handler"](dbus.exceptions.DBusException(
                 "Not connected", name="org.bluez.Error.Failed",
-            )
+            ))
+            return
         self.gatt.writes += 1
+        kwargs["reply_handler"]()
 
 
 class _Timers:

@@ -1,0 +1,32 @@
+# Pinned fallback for building the documentation with MkDocs and Material.
+# mkdocs stays on 1.x: Material for MkDocs does not support MkDocs 2.0.
+# Regenerate with: pip install "mkdocs<2" mkdocs-material && pip freeze
+babel==2.18.0
+backrefs==8.0
+certifi==2026.7.22
+charset-normalizer==3.5.2
+click==8.5.0
+colorama==0.4.6
+ghp-import==2.1.0
+idna==3.20
+Jinja2==3.1.6
+Markdown==3.11
+MarkupSafe==3.0.4
+mergedeep==1.3.4
+mkdocs==1.6.1
+mkdocs-get-deps==0.2.2
+mkdocs-material==9.7.7
+mkdocs-material-extensions==1.3.1
+packaging==26.3
+paginate==0.5.7
+pathspec==1.1.1
+platformdirs==4.12.3
+Pygments==2.21.0
+pymdown-extensions==12.1
+python-dateutil==2.9.0.post0
+PyYAML==6.0.3
+pyyaml_env_tag==1.1
+requests==2.34.2
+six==1.17.0
+urllib3==2.8.0
+watchdog==6.0.0

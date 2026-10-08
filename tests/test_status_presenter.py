@@ -134,3 +134,156 @@ def test_legacy_degraded_status_still_recognizes_errno_111() -> None:
             "connectivity_detail": "CreateSession(PBAP) failed: Connection refused (111)",
         }
     ) is False
+
+
+def _gtk_actions_page():
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    return SimpleNamespace(
+        _applying_ancs_actions=False,
+        _ancs_actions_row=Mock(),
+        _ancs_actions_switch=Mock(),
+    )
+
+
+def test_gtk_action_buttons_switch_is_hidden_for_daemons_without_the_setting():
+    from blueferry.ui.status import IPhonePage
+
+    page = _gtk_actions_page()
+    IPhonePage._apply_ancs_actions(
+        page, BackendStatus.from_dict({"notification_policy": "all"}), True
+    )
+
+    page._ancs_actions_row.set_visible.assert_called_with(False)
+    page._ancs_actions_switch.set_active.assert_called_with(False)
+    assert page._applying_ancs_actions is False
+
+
+@pytest.mark.parametrize(("status", "saved", "sensitive"), [
+    ({"notification_policy": "all", "notification_content_shown": True}, True, True),
+    ({"notification_policy": "all", "notification_content_shown": True}, False, True),
+    ({"notification_policy": "messages", "notification_content_shown": True}, False, False),
+    ({"notification_policy": "all", "notification_content_shown": False}, False, False),
+    # A saved "on" can always be switched off again.
+    ({"notification_policy": "messages", "notification_content_shown": True}, True, True),
+    ({"notification_policy": "all", "notification_content_shown": False}, True, True),
+])
+def test_gtk_action_buttons_switch_shows_the_saved_choice_and_when_it_applies(
+    status, saved, sensitive
+):
+    from blueferry.ui.status import IPhonePage
+
+    page = _gtk_actions_page()
+    IPhonePage._apply_ancs_actions(
+        page,
+        BackendStatus.from_dict({**status, "ancs_actions_preference": saved}),
+        True,
+    )
+
+    page._ancs_actions_row.set_visible.assert_called_with(True)
+    page._ancs_actions_switch.set_active.assert_called_with(saved)
+    page._ancs_actions_row.set_sensitive.assert_called_with(sensitive)
+    # The switch is set while _applying is on, so it never echoes a save.
+    assert page._applying_ancs_actions is False
+
+
+def test_gtk_action_buttons_switch_is_inactive_while_the_daemon_is_unreachable():
+    from blueferry.ui.status import IPhonePage
+
+    page = _gtk_actions_page()
+    IPhonePage._apply_ancs_actions(
+        page,
+        BackendStatus.from_dict({
+            "notification_policy": "all", "ancs_actions_preference": False,
+        }),
+        False,
+    )
+
+    page._ancs_actions_row.set_sensitive.assert_called_with(False)
+
+
+def test_gtk_action_buttons_switch_saves_the_choice():
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from blueferry.ui.status import IPhonePage
+
+    calls = []
+    toasts = []
+    refreshes = []
+    page = SimpleNamespace(
+        _applying_ancs_actions=False,
+        _ancs_actions_switch=Mock(get_active=lambda: True),
+        _ancs_actions_row=Mock(),
+        _client=SimpleNamespace(
+            set_ancs_notification_actions_async=lambda enabled, ok, _err: (
+                calls.append(enabled), ok(enabled)
+            ),
+        ),
+        _toast=toasts.append,
+        _refresh=lambda: refreshes.append(True),
+    )
+
+    IPhonePage._ancs_actions_changed(page, None, None)
+
+    assert calls == [True]
+    page._ancs_actions_row.set_sensitive.assert_called_with(False)
+    assert toasts == ["Action button preference saved"]
+    assert refreshes == [True]
+
+
+def test_gtk_action_buttons_switch_restores_the_status_after_a_failed_save():
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from blueferry.ui.status import IPhonePage
+
+    rendered = []
+    toasts = []
+    last = BackendStatus.from_dict({"ancs_actions_preference": False})
+    page = SimpleNamespace(
+        _applying_ancs_actions=False,
+        _ancs_actions_switch=Mock(get_active=lambda: True),
+        _ancs_actions_row=Mock(),
+        _last_status=last,
+        _client=SimpleNamespace(
+            set_ancs_notification_actions_async=lambda _enabled, _ok, err: err(
+                "denied"
+            ),
+        ),
+        _toast=toasts.append,
+        _apply_status=rendered.append,
+    )
+
+    IPhonePage._ancs_actions_changed(page, None, None)
+
+    assert rendered == [last]
+    assert toasts == ["Could not save action button preference: denied"]
+
+
+def test_gtk_action_buttons_switch_ignores_updates_from_a_status_refresh():
+    from types import SimpleNamespace
+
+    from blueferry.ui.status import IPhonePage
+
+    # No client or widgets: a refresh must return before touching either.
+    page = SimpleNamespace(_applying_ancs_actions=True)
+
+    IPhonePage._ancs_actions_changed(page, None, None)
+
+
+def test_connection_summary_appends_optional_phone_battery_and_signal() -> None:
+    status = {
+        "connectivity_state": "ready",
+        "phone_battery_level": 40,
+        "phone_battery_source": "hfp",
+        "phone_signal_strength": 60,
+        "phone_network_name": "Sunrise",
+        "phone_network_status": "registered",
+    }
+
+    assert connection_subtitle(status, reachable=True) == (
+        "Ready · Battery about 40 % · Signal 60 %"
+    )
+    assert connection_subtitle({"connectivity_state": "ready"}, reachable=True) == "Ready"

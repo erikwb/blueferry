@@ -48,7 +48,14 @@ Rectangle {
   function ancsUnavailableHint() {
     if (root.ancsLimited())
       return root.ancsExpectedDetail();
-    return "FYI: If ANCS remains unavailable, BlueZ may be retaining stale Bluetooth state. Try running sudo systemctl restart bluetooth.service, then wait for BlueFerry to reconnect. This briefly disconnects all Bluetooth devices.";
+    // shell.qml passes the bridge's bluetooth_restart_command: the init
+    // system's command, or "" when unknown. Older bridges omit it.
+    var command = root.status.bluetooth_restart_command;
+    if (typeof command !== "string")
+      command = "sudo systemctl restart bluetooth.service";
+    return "FYI: If ANCS remains unavailable, BlueZ may be retaining stale Bluetooth state. "
+      + (command === "" ? "Try restarting the Bluetooth service" : "Try running " + command)
+      + ", then wait for BlueFerry to reconnect. This briefly disconnects all Bluetooth devices.";
   }
 
   color: root.theme.windowSurface
@@ -350,6 +357,23 @@ Rectangle {
           Accessible.description: "Unknown senders remain available in message history"
           onClicked: {
             root.operationRequested("set_contacts_only_notifications", {
+              enabled: checked
+            });
+          }
+        }
+        // Opt-in; only daemons that report the preference support it.
+        FerryCheckBox {
+          objectName: "ancsActionsCheckBox"
+          ferryTheme: root.theme
+          visible: root.status.ancs_actions_preference !== undefined
+          text: "Show iPhone action buttons (Accept, Decline, Clear…)"
+          checked: root.status.ancs_actions_preference === true
+          // A saved "on" can always be switched off; switching on needs All
+          // iPhone Notifications with content shown.
+          enabled: root.setup.configured && !root.busy.ancsActions && (checked || (root.status.notification_policy === "all" && root.status.notification_content_shown !== false))
+          Accessible.description: root.status.notification_content_shown === false ? "Unavailable while notification content is hidden." : "Clicking a button runs that action on the iPhone, for example answering or declining a call. Applies to All iPhone notifications."
+          onClicked: {
+            root.operationRequested("set_ancs_notification_actions", {
               enabled: checked
             });
           }

@@ -23,6 +23,7 @@ def test_connects_classic_before_le(caplog) -> None:
         read_connected=state.get,
         connect=connect,
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer: None,
     )
 
     supervisor.start()
@@ -43,6 +44,9 @@ def test_connects_classic_before_le(caplog) -> None:
         "le": True,
         "last_le_error": "",
         "last_le_error_message": "",
+        "le_bond_suspect": False,
+        "le_flap_count": 0,
+        "last_le_disconnect_reason": "",
     }
     assert "probing iPhone BR/EDR and LE bearer state" in caplog.text
     assert "iPhone BREDR bearer state: disconnected" in caplog.text
@@ -72,6 +76,7 @@ def test_snapshot_includes_the_last_le_connect_error() -> None:
         read_connected=state.get,
         connect=connect,
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer: None,
     )
     supervisor.start()
     scheduled[0][1]()
@@ -80,6 +85,9 @@ def test_snapshot_includes_the_last_le_connect_error() -> None:
         "le": False,
         "last_le_error": "org.bluez.Error.Failed",
         "last_le_error_message": "connection-aborted",
+        "le_bond_suspect": False,
+        "le_flap_count": 0,
+        "last_le_disconnect_reason": "",
     }
 
 
@@ -113,6 +121,7 @@ def test_le_is_not_connected_if_classic_drops_during_settling() -> None:
             on_success(),
         ),
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer: None,
     )
 
     supervisor.start()
@@ -138,6 +147,7 @@ def test_le_can_be_held_until_classic_profile_attempt_finishes() -> None:
             on_success(),
         ),
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer: None,
     )
 
     supervisor.start()
@@ -164,6 +174,7 @@ def test_enabling_le_hands_preference_back_before_any_le_dial() -> None:
             on_success(),
         ),
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer: None,
     )
 
     supervisor.start()
@@ -224,6 +235,7 @@ def test_hold_cancels_in_flight_le_once_but_keeps_a_late_connection() -> None:
         prefer=preferences.append,
         on_le_state=observed.append,
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer: None,
     )
     supervisor.start()
     settle = next(
@@ -272,6 +284,7 @@ def test_untyped_classic_connect_restores_le_preference_before_le_dial() -> None
             on_success(),
         ),
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer: None,
         clock=lambda: now,
     )
 
@@ -325,6 +338,7 @@ def test_enabling_le_waits_for_an_outstanding_classic_connect() -> None:
             connect_callbacks.append(on_success),
         ),
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer: None,
     )
 
     supervisor.start()
@@ -377,6 +391,7 @@ def test_inbound_le_retargets_an_outstanding_untyped_classic_connect() -> None:
         prefer=preferences.append,
         on_le_state=observed.append,
         schedule=lambda _delay, _callback: 7,
+        cancel=lambda _timer: None,
     )
     supervisor.start()
 
@@ -431,6 +446,7 @@ def test_untyped_classic_already_connected_rechecks_bearers_before_success() -> 
         connect=connect,
         prefer=preferences.append,
         schedule=lambda _delay, _callback: 7,
+        cancel=lambda _timer: None,
     )
     supervisor.start()
 
@@ -471,6 +487,7 @@ def test_le_settle_retries_failed_preference_handoff_without_blocking_dial() -> 
             ("connect", kind)
         ),
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer: None,
     )
 
     supervisor.start()
@@ -500,6 +517,7 @@ def test_live_le_dials_classic_without_rewriting_preference() -> None:
         prefer=lambda kind: calls.append(("prefer", kind)),
         connect=lambda kind, *_args: calls.append(("connect", kind)),
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer: None,
     )
 
     supervisor.start()
@@ -516,6 +534,7 @@ def test_unknown_le_state_delays_classic_fallback_after_le_is_enabled() -> None:
         prefer=lambda kind: calls.append(("prefer", kind)),
         connect=lambda kind, *_args: calls.append(("connect", kind)),
         schedule=lambda _delay, _callback: 7,
+        cancel=lambda _timer: None,
     )
 
     supervisor.start()
@@ -532,6 +551,7 @@ def test_initial_profile_gate_allows_classic_with_no_le_interface() -> None:
         prefer=lambda kind: calls.append(("prefer", kind)),
         connect=lambda kind, *_args: calls.append(("connect", kind)),
         schedule=lambda _delay, _callback: 7,
+        cancel=lambda _timer: None,
     )
 
     supervisor.start()
@@ -753,6 +773,7 @@ def test_failed_connection_is_retried_after_backoff() -> None:
         read_connected=lambda _kind: False,
         connect=connect,
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer: None,
         clock=lambda: now,
     )
 
@@ -790,6 +811,7 @@ def test_accepted_connection_request_waits_for_observed_state_change() -> None:
             on_success(),
         ),
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer: None,
         clock=lambda: now,
     )
     supervisor.start()
@@ -861,6 +883,7 @@ def test_returning_le_link_retries_classic_without_rewriting_preference() -> Non
         connect=connect,
         prefer=preferences.append,
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer: None,
         clock=lambda: now,
     )
     supervisor.start()
@@ -896,6 +919,7 @@ def test_live_le_keeps_targeted_classic_fallback_bounded() -> None:
         read_connected=state.get,
         connect=connect,
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer: None,
         clock=lambda: now,
     )
     supervisor.start()
@@ -921,6 +945,7 @@ def test_le_dial_pauses_solicitation_until_async_reply() -> None:
         ),
         on_le_dial=dial_states.append,
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer: None,
     )
     supervisor.start()
 
@@ -945,6 +970,7 @@ def test_le_dial_restores_solicitation_after_failure() -> None:
         ),
         on_le_dial=dial_states.append,
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer: None,
     )
     supervisor.start()
 
@@ -969,6 +995,7 @@ def test_le_in_progress_keeps_solicitation_paused_until_connected() -> None:
         ),
         on_le_dial=dial_states.append,
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer: None,
     )
     supervisor.start()
     settle = next(
@@ -1023,6 +1050,7 @@ def test_le_in_progress_times_out_to_solicitation_without_another_dial() -> None
         ),
         on_le_dial=dial_states.append,
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer: None,
         clock=lambda: now,
     )
     supervisor.start()
@@ -1083,6 +1111,7 @@ def test_classic_in_progress_times_out_with_exponential_backoff() -> None:
             (kind, on_success, on_error)
         ),
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer: None,
         clock=lambda: now,
     )
     supervisor.start()
@@ -1131,6 +1160,7 @@ def test_le_already_connected_restores_solicitation_immediately() -> None:
         ),
         on_le_dial=dial_states.append,
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer: None,
     )
     supervisor.start()
     scheduled[0][1]()
@@ -1161,6 +1191,7 @@ def test_le_outbound_dial_is_spent_once_then_solicitation_takes_over() -> None:
             on_success(),
         ),
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer: None,
         clock=lambda: now,
     )
     supervisor.start()
@@ -1191,6 +1222,7 @@ def test_real_le_disconnect_refunds_one_outbound_dial() -> None:
             on_success(),
         ),
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer: None,
     )
     supervisor.start()
     initial_settle = scheduled[0][1]
@@ -1232,6 +1264,7 @@ def test_classic_return_refunds_le_dial_spent_while_phone_was_absent() -> None:
         read_connected=state.get,
         connect=connect,
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer: None,
     )
     supervisor.start()
     health_check = scheduled[0][1]
@@ -1275,6 +1308,7 @@ def test_le_outbound_dial_retries_when_solicitation_is_unavailable() -> None:
         ),
         inbound_le_primed=lambda: False,
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer: None,
         clock=lambda: now,
     )
     supervisor.start()
@@ -1310,6 +1344,7 @@ def test_ancs_transport_reset_refunds_one_le_dial() -> None:
             on_success(),
         ),
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer: None,
     )
     supervisor.start()
     scheduled[0][1]()
@@ -1342,6 +1377,7 @@ def test_le_observer_receives_only_lifecycle_transitions() -> None:
         connect=lambda *_args: None,
         on_le_state=observed.append,
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer: None,
     )
 
     supervisor.start()
@@ -1380,6 +1416,7 @@ def test_gatt_transport_failure_cycles_le_once_before_reconnecting() -> None:
         ),
         on_le_state=observed.append,
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer: None,
         clock=lambda: now,
     )
     supervisor.start()
@@ -1450,6 +1487,7 @@ def test_gatt_transport_recovery_waits_for_profile_gate_to_reopen() -> None:
             on_success(),
         ),
         schedule=lambda _delay, _callback: 7,
+        cancel=lambda _timer: None,
     )
     supervisor.start()
 
@@ -1482,6 +1520,7 @@ def test_bluez_restart_accepts_new_le_link_while_profile_gate_is_closed() -> Non
         prefer=preferences.append,
         on_le_state=observed.append,
         schedule=lambda _delay, _callback: 7,
+        cancel=lambda _timer: None,
         clock=lambda: now,
     )
     supervisor.start()
@@ -1534,6 +1573,7 @@ def test_inbound_le_during_hold_resets_and_caps_classic_backoff() -> None:
             (kind, on_error)
         ),
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer: None,
         clock=lambda: now,
     )
     supervisor.start()
@@ -1577,6 +1617,7 @@ def test_bluez_restart_discards_callbacks_from_the_previous_owner() -> None:
         on_status=lambda: statuses.append(True),
         on_le_state=observed.append,
         schedule=lambda _delay, _callback: 7,
+        cancel=lambda _timer: None,
     )
     supervisor.start()
     assert len(callbacks) == 1

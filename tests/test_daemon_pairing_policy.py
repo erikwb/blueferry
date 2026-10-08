@@ -10,6 +10,7 @@ from blueferry import contact_sync, daemon
 class _Bearer:
     le_state = False
     legacy_connected = False
+    le_bond_suspect = False
 
     def __init__(self, calls):
         self.calls = calls
@@ -112,6 +113,9 @@ def _daemon(make_daemon, calls):
     )()
     # logind and adapter power watches need the real system bus.
     value._watch_sleep_resume = lambda: calls.append("sleep-watch")
+    # The asynchronous adapter-state read for the proximity lock is covered
+    # in test_proximity_lock_daemon; keep it off this fake bus.
+    value._read_adapter_inhibitors = lambda: None
     return value
 
 
@@ -256,6 +260,10 @@ def test_recovery_observation_excludes_permissions_and_missing_profiles(make_dae
     value.profiles.ready = False
     assert not value._recovery_observation().eligible
     value.profiles.ready = True
+    # A suspect LE bond is reported only; it must not block recovery.
+    value.bearers.le_bond_suspect = True
+    assert value._recovery_observation().eligible
+    value.bearers.le_bond_suspect = False
     monkeypatch.setattr(daemon.config, "ANCS_ENABLED", False)
     assert not value._recovery_observation().eligible
 
@@ -662,6 +670,7 @@ def test_automatic_contacts_wait_for_map_but_manual_sync_still_works(make_daemon
         on_ready=lambda: None, on_lost=lambda _: None, on_status=lambda: None,
         on_partial_ready=value._post_available_sessions_setup,
         schedule=lambda delay, callback: timers.append(callback) or 1,
+        cancel=lambda _timer: None,
     )
     profiles._open_failed(0, SessionError('CreateSession(MAP) failed: Forbidden'))
     value._on_storage_changed()  # Wallet unlock must not bypass the same gate.
@@ -723,3 +732,34 @@ def test_unobservable_le_leaves_solicitation_to_ancs_proof(make_daemon, monkeypa
         ("solicitation-needed", True),
         ("solicitation-needed", True),
     ]
+
+
+def test_authorized_ancs_disproves_a_suspect_le_bond(make_daemon, monkeypatch):
+    calls = []
+    value = make_daemon()
+    value.solicitation = _Solicitation(calls)
+    proofs = []
+    monkeypatch.setattr(value.bearers, "note_le_usable", proofs.append)
+
+    value.ancs = SimpleNamespace(connected=False)
+    value._on_ancs_status()
+    assert proofs == []
+
+    value.ancs = SimpleNamespace(connected=True)
+    value._on_ancs_status()
+    assert proofs == ["ANCS authorized"]
+
+
+def test_le_bond_detection_applies_only_where_ancs_is_expected(make_daemon, monkeypatch):
+    value = make_daemon()
+    identity = {"controller_vendor": "", "ancs_limited_controller": False}
+    monkeypatch.setattr(value, "_controller_identity", lambda: identity)
+    monkeypatch.setattr(daemon.config, "ANCS_ENABLED", True)
+    assert value._le_bond_detection_applies()
+
+    identity["ancs_limited_controller"] = True
+    assert not value._le_bond_detection_applies()
+
+    identity["ancs_limited_controller"] = False
+    monkeypatch.setattr(daemon.config, "ANCS_ENABLED", False)
+    assert not value._le_bond_detection_applies()

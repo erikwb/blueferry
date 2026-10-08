@@ -80,6 +80,7 @@ def test_read_failure_does_not_stop_periodic_reconciliation() -> None:
         "hci7",
         read_class=fail,
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer: None,
     )
 
     supervisor.start()

@@ -15,13 +15,21 @@ LOCAL_ENV_KEYS = frozenset({
     "BLUEFERRY_ANCS_ENABLED",
     "BLUEFERRY_ANCS_APP_ALLOWLIST",
     "BLUEFERRY_ANCS_APP_BLOCKLIST",
+    "BLUEFERRY_ANCS_ACTIONS",
+    "BLUEFERRY_ANCS_ACTION_TIMEOUT_MS",
     "BLUEFERRY_SHOW_NOTIFICATION_CONTENT",
     "BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE",
+    "BLUEFERRY_CALLS_ENABLED",
+    "BLUEFERRY_PHONE_BATTERY_NOTIFY",
+    "BLUEFERRY_PHONE_BATTERY_LOW_PERCENT",
     "BLUEFERRY_NOTIFICATION_TIMEOUT_MS",
     "BLUEFERRY_MARK_READ_ON_DISMISS",
     "BLUEFERRY_HISTORY_RETENTION_DAYS",
     "BLUEFERRY_HISTORY_MAX_EVENTS",
     "BLUEFERRY_HISTORY_MAX_PAYLOAD_BYTES",
+    "BLUEFERRY_PROXIMITY_LOCK",
+    "BLUEFERRY_PROXIMITY_LOCK_GRACE_SEC",
+    "BLUEFERRY_MEDIA_CONTROL_ENABLED",
 })
 CONFIG_DIR: Path = Path(
     os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config")
@@ -140,6 +148,12 @@ def _env_bool(name: str, default: bool) -> bool:
     return value.strip().casefold() not in {"0", "false", "no", "off"}
 
 
+def _env_opt_in(name: str) -> bool:
+    """Parse a default-off flag; only an explicit affirmative enables it."""
+    value = os.environ.get(name)
+    return value is not None and value.strip().casefold() in {"1", "true", "yes", "on"}
+
+
 def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
     try:
         value = int(os.environ.get(name, str(default)))
@@ -186,6 +200,19 @@ ANCS_APP_BLOCKLIST: frozenset[str] = (
 """Exact bundle IDs denied after the allowlist; block rules take precedence."""
 
 
+ANCS_ACTIONS: bool = _env_bool("BLUEFERRY_ANCS_ACTIONS", False)
+"""Initial value for offering iPhone notification actions as buttons.
+
+A choice saved from a client (settings.json) wins over this value.
+
+Off by default because it changes the desktop notification UI and lets a
+click act on the phone. It applies only to non-Messages popups shown by the
+"All iPhone Notifications" policy; nothing is invoked without a click.
+Labels are chosen by the sending app and can contain content, so actions stay
+off while BLUEFERRY_SHOW_NOTIFICATION_CONTENT is false.
+"""
+
+
 def include_ancs_app(app_id: str) -> bool:
     """Return whether one validated non-Messages app passes local rules."""
     selected = str(app_id).strip()
@@ -195,15 +222,52 @@ def include_ancs_app(app_id: str) -> bool:
         return False
     return ANCS_APP_ALLOWLIST is None or selected in ANCS_APP_ALLOWLIST
 
+MEDIA_CONTROL_ENABLED: bool = _env_bool("BLUEFERRY_MEDIA_CONTROL_ENABLED", False)
+"""Opt in to iPhone now-playing and media commands over Apple Media Service.
+
+Off by default: AMS subscriptions add LE traffic on the bond that carries
+ANCS, and this is outside BlueFerry's messaging core. Requires the full
+(ANCS/LE) delivery mode; compatibility mode never connects LE.
+"""
+
 SHOW_NOTIFICATION_CONTENT: bool = _env_bool(
     "BLUEFERRY_SHOW_NOTIFICATION_CONTENT", True
 )
 KEEP_PHONE_AUDIO_ON_PHONE: bool = _env_bool(
     "BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE", True
 )
+CALLS_ENABLED: bool = _env_opt_in("BLUEFERRY_CALLS_ENABLED")
+"""Initial value of the experimental, default-off HFP call control.
+
+A preference saved in settings.json (Qt settings, ``blueferry calls
+enable``/``disable``) wins; see ``blueferry.calls.settings``.
+
+When enabled the daemon watches oFono for the iPhone's hands-free modem and
+exposes the private ``Calls1`` interface. The WirePlumber phone-audio policy
+then keeps the hands-free roles so call audio can reach this computer, while
+still stripping ``a2dp_sink`` when ``KEEP_PHONE_AUDIO_ON_PHONE`` is true.
+"""
+PHONE_BATTERY_NOTIFY: bool = _env_opt_in("BLUEFERRY_PHONE_BATTERY_NOTIFY")
+"""Default-off desktop warning when the iPhone's battery runs low.
+
+The level comes from the iPhone's Bluetooth LE battery (``Battery1`` or
+the GATT Battery Level), which needs no calls; with ``CALLS_ENABLED`` the
+HFP ``battchg`` indicator (20 % steps) fills in when no LE level is known.
+"""
+PHONE_BATTERY_LOW_PERCENT: int = _env_int(
+    "BLUEFERRY_PHONE_BATTERY_LOW_PERCENT", 20, 0, 80
+)
+"""Warn at or below this level. HFP reports 0-100 % in 20 % steps only."""
 NOTIFICATION_TIMEOUT_MS: int = _env_int(
     "BLUEFERRY_NOTIFICATION_TIMEOUT_MS", 8_000, 1_000, 60_000
 )
+
+
+ANCS_ACTION_TIMEOUT_MS: int = _env_int(
+    "BLUEFERRY_ANCS_ACTION_TIMEOUT_MS", 30_000, 1_000, 120_000
+)
+"""Lifetime of ANCS popups that carry action buttons (e.g. a ringing call)."""
+
 MARK_READ_ON_DISMISS: bool = _env_bool("BLUEFERRY_MARK_READ_ON_DISMISS", True)
 """Whether dismissing a message's desktop popup marks it read on the iPhone.
 
@@ -224,6 +288,17 @@ HISTORY_MAX_PAYLOAD_BYTES: int = _env_int(
     16 * 1024 * 1024,
     2 * 1024 * 1024 * 1024,
 )
+PROXIMITY_LOCK: bool = _env_bool("BLUEFERRY_PROXIMITY_LOCK", False)
+"""Initial opt-in for locking the desktop when the iPhone goes away.
+
+Off by default. This is a lock trigger only, never an unlock or an
+authentication factor. A value saved through the D-Bus API (settings.json)
+takes precedence; see ``proximity_lock.ProximityLockSettings``.
+"""
+PROXIMITY_LOCK_GRACE_SEC: int = _env_int(
+    "BLUEFERRY_PROXIMITY_LOCK_GRACE_SEC", 60, 10, 3600
+)
+"""Seconds the iPhone must stay continuously disconnected before locking."""
 
 # ---- runtime paths ------------------------------------------------------
 

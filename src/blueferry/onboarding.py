@@ -10,11 +10,18 @@ from typing import Any, Protocol
 from blueferry.i18n import _
 from blueferry.models import BackendStatus
 from blueferry.pairing_policy import notifications_active
+from blueferry.service_manager import bluetooth_restart_command
 from blueferry.setup_verification import remaining_iphone_setup_tasks
 
 ANCS_REPAIR_HINT = _(
     "FYI: If ANCS remains unavailable, BlueZ may be retaining stale "
-    "Bluetooth state. Try running sudo systemctl restart bluetooth.service, "
+    "Bluetooth state. Try running {command}, "
+    "then wait for BlueFerry to reconnect. This briefly disconnects all "
+    "Bluetooth devices."
+)
+ANCS_REPAIR_HINT_GENERIC = _(
+    "FYI: If ANCS remains unavailable, BlueZ may be retaining stale "
+    "Bluetooth state. Try restarting the Bluetooth service, "
     "then wait for BlueFerry to reconnect. This briefly disconnects all "
     "Bluetooth devices."
 )
@@ -27,7 +34,10 @@ ANCS_REPAIR_HINT_CLI = _(
 def ancs_unavailable_detail(*, limited: bool = False, vendor: str = "") -> str:
     """Explain missing iPhone notifications after messages and contacts work."""
     if not limited:
-        return ANCS_REPAIR_HINT
+        command = bluetooth_restart_command()
+        if command is None:
+            return ANCS_REPAIR_HINT_GENERIC
+        return ANCS_REPAIR_HINT.format(command=command)
     name = str(vendor or "").strip()
     if name:
         return _(
@@ -76,6 +86,7 @@ def effective_compatibility(
 class OnboardingStage(str, Enum):
     CHECKING = "checking"
     INCOMPATIBLE = "incompatible"
+    LE_DISABLED = "le-disabled"
     ACTIVATE_BLUETOOTH = "activate-bluetooth"
     SELECT_DEVICE = "select-device"
     STARTING = "starting"
@@ -158,6 +169,9 @@ def derive_stage(
         return OnboardingStage.CHECKING
     if compatibility.get("pairing_ready") is False:
         return OnboardingStage.INCOMPATIBLE
+    # Compatibility mode clears notifications_supported and skips this stage.
+    if compatibility.get("le_disabled") and compatibility.get("notifications_supported"):
+        return OnboardingStage.LE_DISABLED
     if compatibility.get("notifications_supported") and not notifications_active(compatibility):
         return OnboardingStage.ACTIVATE_BLUETOOTH
     if not configured:

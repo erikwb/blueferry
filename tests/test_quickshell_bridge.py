@@ -59,6 +59,10 @@ class FakeClient:
         self.calls.append(("set_thread_starred", thread_key, starred))
         return starred
 
+    def set_ancs_notification_actions(self, enabled):
+        self.calls.append(("set_ancs_notification_actions", enabled))
+        return enabled
+
     def set_contacts_only_notifications(self, enabled):
         self.calls.append(("set_contacts_only_notifications", enabled))
         return enabled
@@ -162,7 +166,10 @@ def test_bridge_returns_structured_success_and_errors() -> None:
         "id": 7,
         "method": "status",
         "ok": True,
-        "result": {"daemon": True},
+        "result": {
+            "daemon": True,
+            "bluetooth_restart_command": "sudo systemctl restart bluetooth.service",
+        },
     }
     assert replies[1]["id"] == 8
     assert replies[1]["method"] == "unknown"
@@ -283,3 +290,65 @@ def test_stdin_reader_discards_oversized_line_and_recovers(monkeypatch):
     assert len(received) == 2
     assert len(received[0]) > 8
     assert received[1] == "next\n"
+
+
+def test_bridge_saves_the_notification_actions_preference() -> None:
+    client = FakeClient()
+    bridge = QuickshellBridge(client)  # type: ignore[arg-type]
+
+    assert bridge.dispatch(
+        "set_ancs_notification_actions", {"enabled": True}
+    ) is True
+    assert client.calls == [("set_ancs_notification_actions", True)]
+
+
+@pytest.mark.parametrize("args", [{}, {"enabled": 1}, {"enabled": "true"}])
+def test_bridge_rejects_malformed_notification_actions_requests(args) -> None:
+    client = FakeClient()
+    bridge = QuickshellBridge(client)  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="enabled must be a boolean"):
+        bridge.dispatch("set_ancs_notification_actions", args)
+    assert client.calls == []
+
+
+def test_status_carries_the_init_systems_bluetooth_restart_command(monkeypatch) -> None:
+    from blueferry import service_manager
+
+    monkeypatch.setattr(service_manager, "init_system", lambda: service_manager.OPENRC)
+    bridge = QuickshellBridge(FakeClient())  # type: ignore[arg-type]
+    assert bridge.dispatch("status", {}) == {
+        "daemon": True,
+        "bluetooth_restart_command": "sudo rc-service bluetooth restart",
+    }
+    monkeypatch.setattr(
+        service_manager, "init_system", lambda: service_manager.NO_SERVICE_MANAGER,
+    )
+    assert QuickshellBridge(FakeClient()).dispatch(  # type: ignore[arg-type]
+        "status", {},
+    )["bluetooth_restart_command"] == ""
+
+
+def test_host_info_is_computed_once_and_needs_no_daemon(monkeypatch) -> None:
+    from blueferry import service_manager
+
+    class NoDaemon(FakeClient):
+        def status(self):
+            raise AssertionError("host info must not query the daemon")
+
+    monkeypatch.setattr(service_manager, "init_system", lambda: service_manager.OPENRC)
+    output = io.StringIO()
+    bridge = QuickshellBridge(NoDaemon(), output)  # type: ignore[arg-type]
+    monkeypatch.setattr(
+        service_manager,
+        "init_system",
+        lambda: (_ for _ in ()).throw(AssertionError("detected the init system again")),
+    )
+
+    # main() sends this event before serving requests.
+    bridge.emit_event("host", bridge.host_info())
+
+    assert json.loads(output.getvalue()) == {
+        "event": "host",
+        "data": {"bluetooth_restart_command": "sudo rc-service bluetooth restart"},
+    }

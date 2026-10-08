@@ -119,7 +119,9 @@ def test_ancs_follows_an_le_link_that_bluez_cannot_report(legacy):
     # Classic alone: both registrations are left pending and the probe fails
     # locally. A retry repeats StartNotify, which is InProgress, not an error.
     assert not client.connected
+    _dispatch_until(lambda: timers.delays("_retry_subscribe"))
     timers.fire("_retry_subscribe")
+    _dispatch_until(lambda: timers.delays("_retry_subscribe"))
     assert not client.connected
     assert tuple(peer.Counters()) == (4, 0, 0)
     assert timers.delays("_retry_subscribe") == [4]
@@ -136,11 +138,13 @@ def test_ancs_follows_an_le_link_that_bluez_cannot_report(legacy):
     # LE drops while Classic keeps Device1.Connected true.
     peer.SetLe(False)
     timers.fire("_tick")
-    assert not client.connected and statuses == [True, False]
+    _dispatch_until(lambda: not client.connected)
+    assert statuses == [True, False]
     assert supervisor.le_state is None and supervisor.legacy_connected
 
     peer.SetLe(True)
     timers.fire("_tick")
+    _dispatch_until(lambda: timers.delays("_retry_subscribe"))
     timers.fire("_retry_subscribe")
     _dispatch_until(lambda: client.connected)
 
@@ -159,6 +163,7 @@ def test_unanswered_ancs_keeps_asking_for_permission(legacy):
     timers.fire("_finish_bearer_settle")
 
     assert client.subscribed and not client.connected
+    _dispatch_until(lambda: timers.delays("_request_timed_out"))
     timers.fire("_request_timed_out")
     assert timers.delays("_retry_authorization") == [
         client_module.AUTHORIZATION_RETRY_SECONDS

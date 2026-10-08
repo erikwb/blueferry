@@ -71,6 +71,7 @@ def test_notification_support_follows_the_bluez_transport(
             return _btmgmt(f"bluetoothctl: {version}\n" if version else "\n")
         return _btmgmt(
             "supported settings: powered ssp br/edr le advertising secure-conn\n"
+            "current settings: powered ssp br/edr le secure-conn\n"
         )
 
     result = compatibility(

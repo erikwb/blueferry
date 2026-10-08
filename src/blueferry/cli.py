@@ -10,8 +10,13 @@ from typing import Optional
 import typer
 
 from blueferry import bluez_setup, config
+from blueferry.cli_calls import calls_app, phone_status
 from blueferry.cli_common import setup_logging as _setup_logging
+from blueferry.cli_media import media
 from blueferry.cli_messages import sms_list, sms_send
+from blueferry.cli_notification_actions import notification_actions_app
+from blueferry.cli_proximity import proximity_app
+from blueferry.notification_policy import NotificationPolicyStore
 
 app = typer.Typer(
     add_completion=False,
@@ -42,6 +47,31 @@ def run(verbose: bool = typer.Option(False, "-v", "--verbose", "--debug")):
     exit_code = Daemon().run()
     if exit_code:
         raise typer.Exit(code=exit_code)
+
+
+def _check_controller_le(log: logging.Logger, adapter: str) -> bool:
+    """Log the controller's LE state; return True when it needs attention."""
+    from blueferry import bluetooth_capabilities
+    from blueferry.commands import run_command
+
+    if not config.is_valid_adapter(adapter):
+        return False
+    available, supported, current, _error, _identity = (
+        bluetooth_capabilities.controller_settings(adapter, run_command=run_command)
+    )
+    if not available or "le" not in supported:
+        # Missing LE hardware and unreadable settings are reported by pairing.
+        return False
+    mode = bluetooth_capabilities.bluez_controller_mode()
+    if "le" in current:
+        log.info("Bluetooth LE enabled on %s  OK", adapter)
+        return False
+    log.warning("%s", bluetooth_capabilities.le_disabled_issue(mode))
+    if mode:
+        log.warning("    /etc/bluetooth/main.conf: ControllerMode = %s", mode)
+    else:
+        log.warning("    /etc/bluetooth/main.conf: ControllerMode not set")
+    return True
 
 
 @app.command()
@@ -91,6 +121,19 @@ def doctor(verbose: bool = typer.Option(False, "-v", "--verbose")):
             )
             warnings = True
 
+    actions_preference = NotificationPolicyStore().ancs_actions
+    if actions_preference and config.SHOW_NOTIFICATION_CONTENT:
+        actions_state = "enabled"
+    elif actions_preference:
+        actions_state = "disabled while BLUEFERRY_SHOW_NOTIFICATION_CONTENT=false"
+    else:
+        actions_state = "disabled"
+    log.info("ANCS notification actions: %s", actions_state)
+
+    # Bluetooth LE switched on? (#192)
+    if _check_controller_le(log, config.ADAPTER):
+        warnings = True
+
     # State dir writable
     try:
         config.ensure_dirs()
@@ -98,6 +141,9 @@ def doctor(verbose: bool = typer.Option(False, "-v", "--verbose")):
     except OSError as e:
         log.error("State dir not writable: %s", e)
         ok = False
+
+    if not _doctor_le_bond(log):
+        warnings = True
 
     if not ok:
         typer.echo(typer.style("One or more checks FAILED.", fg=typer.colors.RED))
@@ -415,6 +461,58 @@ def pairing_forget(
         raise typer.Exit(code=2) from None
 
 
+def _running_backend_status() -> dict | None:
+    """Read status from a running backend; never start one for doctor."""
+    from blueferry.bus import get_session_bus
+    from blueferry.protocol import BUS_NAME
+
+    try:
+        if not get_session_bus().name_has_owner(BUS_NAME):
+            return None
+        status = _backend_client().status(check_compatibility=False)
+    except Exception:
+        # BackendError, D-Bus failures, or an unreachable session bus.
+        logging.getLogger("doctor").debug("backend status unavailable", exc_info=True)
+        return None
+    return dict(status.extra)
+
+
+def _doctor_le_bond(log: logging.Logger) -> bool:
+    """Report the daemon's stale-LE-bond finding; False means a warning."""
+    from blueferry.pairing_diagnostics import le_bond_findings
+
+    status = _running_backend_status()
+    if status is None:
+        log.info("Backend not running; skipped the iPhone LE link check")
+        return True
+    findings = le_bond_findings(status)
+    reason = findings["last_le_disconnect_reason"] or "not reported"
+    if not findings["le_bond_suspect"]:
+        log.info(
+            "iPhone LE link: no stale-bond pattern "
+            "(%d recent short drops, last reason: %s)",
+            findings["le_flap_count"],
+            reason,
+        )
+        return True
+    log.warning(
+        "iPhone LE pairing may be stale: the LE link dropped %d times within "
+        "seconds while Classic stayed connected (last reason: %s). If iPhone "
+        "notifications (ANCS) never connect, pairing again may help.",
+        findings["le_flap_count"],
+        reason,
+    )
+    log.warning(
+        "    On the iPhone: Settings > Bluetooth > (i) next to this computer "
+        "> Forget This Device"
+    )
+    log.warning(
+        "    On this computer: bluetoothctl remove %s, then pair again",
+        config.IPHONE_MAC,
+    )
+    return False
+
+
 def _backend_client():
     """Construct the shared backend client without loading D-Bus for --help."""
     from blueferry.client import BackendClient
@@ -492,6 +590,11 @@ def history_clear(
 
 app.command("sms-list")(sms_list)
 app.command("sms-send")(sms_send)
+app.add_typer(proximity_app, name="proximity-lock")
+app.command("media")(media)
+app.add_typer(notification_actions_app, name="notification-actions")
+app.add_typer(calls_app, name="calls")
+app.command("phone-status")(phone_status)
 
 
 @app.command()

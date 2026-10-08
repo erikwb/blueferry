@@ -49,11 +49,45 @@ style dependencies fail this check even when CLI/TUI startup still succeeds.
   unlock prompt, or inspect the user's encrypted BlueFerry databases.
 - Lifecycle and concurrency tests assert externally meaningful outcomes, not
   private call order unless the order itself prevents a leak or race.
+- Classes that take GLib defaults for `schedule`, `cancel` or `idle` get
+  fakes for all of those seams in tests, never just one: a fake `schedule`
+  next to the real `GLib.source_remove` cancels made-up ids on the default
+  context. The defaults are bound at import time, so patching `GLib` does
+  not replace them. `tests/test_glib_source_guard.py` finds these classes by
+  scanning the source and checks every test construction.
+- Unit tests never arm real GLib timer or idle sources. The autouse
+  `glib_source_guard` in `tests/conftest.py` refuses such a call on the
+  test's thread with an `AssertionError` at the call site, and also fails
+  the test at teardown in case the code under test swallowed it. So a
+  forgotten `schedule`/`idle` injection cannot slip through, whether or not
+  the source would have been cleaned up in time. Tests that need real GLib
+  dispatch are marked `private_dbus` or `real_glib_sources`.
+- In those tests the guard fails a test that leaves a source armed on its
+  own thread, because it would fire later on an orphaned object inside an
+  unrelated test, or that removes a source id it never armed. Callbacks that
+  worker threads post back to the main loop are not attributed to a test.
+- `tests/conftest.py` disables libdbus's exit-on-disconnect on every D-Bus
+  connection the test process opens, from test code or from the code under
+  test. Otherwise a closed private connection that a failing test keeps alive
+  makes the next GLib iteration exit pytest with status 1 and no report.
+  Child processes that open their own connections must disable it themselves.
 - Daemon tests build a real `Daemon` with the `make_daemon` fixture, which
   isolates every state path, and replace only hardware-facing collaborators.
   Never assemble one with `Daemon.__new__` and hand-set private fields.
   Behavior that has its own class, such as `ContactSync`, is tested directly.
 - Packaging tests keep runtime identifiers and installed metadata consistent.
+- `test_potfiles.py` keeps `po/POTFILES.in` equal to the set of sources that
+  mark strings for translation, as described in `po/README.md`. It also runs
+  `xgettext` and `lupdate` over the list and requires every entry to yield a
+  message; those two tests skip where the tools are missing, and the quality
+  workflow sets `BLUEFERRY_REQUIRE_TRANSLATION_TOOLS=1` so that skip fails CI.
+- Locale-dependent tests do not rely on the host's installed locales. The
+  timestamp test compiles its own non-English `LC_TIME` locale with
+  `localedef` into a temporary `LOCPATH`; it skips where `localedef` is
+  missing, and the quality workflow sets `BLUEFERRY_REQUIRE_LOCALE_TEST=1` so
+  that skip fails CI instead. `tests/test_locale_independent_formats.py`
+  additionally rejects strftime name directives (`%a`, `%b`, `%p`, `%c`, ...)
+  and QML locale formatters anywhere under `src/blueferry`.
 - A test should remain valid if the implementation is rewritten without
   changing the behavior it protects.
 
@@ -134,6 +168,21 @@ sent with each reply. Backend tests reject that token after the members change.
 The shell test also delivers pre-save snapshots and failures before or after
 the fresh snapshot, verifies immediate replies use the saved roster, and checks
 that interrupted reads cannot restore history after a reset.
+
+The optional oFono call controller is tested against a recording fake
+transport and a manual timer queue: discovery, the Powered/Online bring-up,
+oFono restarts, backoff, and every call operation run without oFono, BlueZ,
+or a phone. The real transport is exercised only against a fake connection
+object, which checks that calls carry NO_AUTO_START and never create proxies.
+Calls1 round trips and its rate limits use the private test bus with an inert
+controller; no test dials, answers, or reaches `org.ofono`. The phone battery,
+signal, and operator values use the same fake transport for the Handsfree and
+NetworkRegistration interfaces, Hypothesis for the property parsers, and the
+private bus only to check the `GetStatus` keys and the argument-free
+`StatusChanged`. The `InProgress` retry runs on the manual timer queue, the
+StatusChanged coalescing on an injected `idle_add`, and log-capture tests
+check that neither levels, operator names, nor the phone's own number are
+logged.
 
 The Arch package check runs Ruff over the complete source and test tree,
 Bandit over the Python security boundaries, and type-checks every backend

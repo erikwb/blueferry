@@ -836,3 +836,365 @@ def test_successful_group_reply_reuses_confirmation_until_roster_changes(monkeyp
     controller.sendThread("group:test", "third", False)
     assert len(prompts) == 2
     assert len(pending) == 1
+
+
+def test_proximity_lock_setting_is_forwarded_and_merged_into_status(monkeypatch):
+    backend = _Backend()
+    calls = []
+
+    def set_proximity_lock(enabled, grace):
+        calls.append((enabled, grace))
+        return {"proximity_lock": "idle", "proximity_lock_enabled": enabled,
+                "proximity_lock_grace_sec": grace}
+
+    backend.set_proximity_lock = set_proximity_lock
+    controller = BridgeController(
+        backend=backend,
+        setup=object(),
+        subscribe=False,
+        autostart=False,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_run",
+        lambda operation, on_done=None, *_args, **_kwargs: (
+            on_done(operation()) if on_done is not None else operation()
+        ),
+    )
+    changes = []
+    controller.statusChanged.connect(lambda: changes.append(True))
+
+    controller.setProximityLock(True, 120)
+
+    assert calls == [(True, 120)]
+    assert controller.status["proximity_lock_enabled"] is True
+    assert controller.status["proximity_lock_grace_sec"] == 120
+    assert changes == [True]
+
+
+class _MediaBackend(_Backend):
+    def __init__(self):
+        super().__init__()
+        self.media_commands = []
+        self.now_playing_calls = 0
+
+    def now_playing(self):
+        self.now_playing_calls += 1
+        return {"enabled": True, "available": True, "track": {"title": "Song"}}
+
+    def send_media_command(self, command):
+        self.media_commands.append(command)
+
+
+def test_now_playing_is_fetched_only_when_media_is_enabled(monkeypatch):
+    backend = _MediaBackend()
+    controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+
+    def run_inline(operation, on_done=None, on_failed=None, *, busy=True):
+        assert busy is False
+        try:
+            value = operation()
+        except Exception as error:
+            on_failed(str(error))
+        else:
+            on_done(value)
+
+    monkeypatch.setattr(controller, "_run", run_inline)
+    changes = []
+    controller.nowPlayingChanged.connect(lambda: changes.append(True))
+
+    controller.refreshNowPlaying()
+    assert backend.now_playing_calls == 0
+    assert controller.nowPlaying == {}
+
+    controller._status = {"media_control_enabled": True}
+    controller.refreshNowPlaying()
+    assert backend.now_playing_calls == 1
+    assert controller.nowPlaying["track"]["title"] == "Song"
+    assert changes == [True]
+
+    # A failed read clears stale track details instead of showing them.
+    backend.now_playing = lambda: (_ for _ in ()).throw(BackendError("gone"))
+    controller.refreshNowPlaying()
+    assert controller.nowPlaying == {}
+
+
+def test_media_command_runs_off_the_ui_thread_without_busy_state():
+    backend = _MediaBackend()
+    controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+    controller.sendMediaCommand("next")
+    controller.sendMediaCommand("  ")
+    assert controller.busy is False
+    controller._pool.waitForDone(1000)
+    assert backend.media_commands == ["next"]
+
+
+def test_media_control_setting_is_forwarded_and_merged_into_status(monkeypatch):
+    backend = _MediaBackend()
+    calls = []
+
+    def set_media_control(enabled):
+        calls.append(enabled)
+        return {"media_control_enabled": enabled, "media_control_available": False}
+
+    backend.set_media_control = set_media_control
+    controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+    monkeypatch.setattr(
+        controller,
+        "_run",
+        lambda operation, on_done=None, *_args, **_kwargs: (
+            on_done(operation()) if on_done is not None else operation()
+        ),
+    )
+    changes = []
+    controller.statusChanged.connect(lambda: changes.append(True))
+
+    controller.setMediaControl(True)
+
+    assert calls == [True]
+    assert controller.status["media_control_enabled"] is True
+    assert changes == [True]
+    # The bar follows at once instead of waiting for the next signal.
+    assert backend.now_playing_calls == 1
+
+
+def test_ancs_actions_setting_is_forwarded_and_merged_into_status(monkeypatch):
+    backend = _Backend()
+    calls = []
+    backend.set_ancs_notification_actions = lambda enabled: calls.append(enabled) or enabled
+    controller = BridgeController(
+        backend=backend,
+        setup=object(),
+        subscribe=False,
+        autostart=False,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_run",
+        lambda operation, on_done=None, *_args, **_kwargs: (
+            on_done(operation()) if on_done is not None else operation()
+        ),
+    )
+
+    controller.setAncsNotificationActions(True)
+
+    assert calls == [True]
+    assert controller.status["ancs_actions_preference"] is True
+    assert controller.status["ancs_actions"] is True
+
+
+def test_failed_ancs_actions_change_reports_the_saved_value_again(monkeypatch):
+    controller = BridgeController(
+        backend=_Backend(),
+        setup=object(),
+        subscribe=False,
+        autostart=False,
+    )
+    controller._status["ancs_actions_preference"] = True
+    monkeypatch.setattr(
+        controller,
+        "_run",
+        lambda _operation, _on_done=None, on_failed=None, **_kwargs: on_failed("refused"),
+    )
+    changes = []
+    controller.statusChanged.connect(lambda: changes.append(True))
+
+    controller.setAncsNotificationActions(False)
+
+    assert controller.status["ancs_actions_preference"] is True
+    assert controller.errorText == "refused"
+    assert changes == [True]
+
+
+def test_checking_bluetooth_le_again_reprobes_the_selected_adapter(
+    monkeypatch,
+) -> None:
+    """The LE stage offers only a re-check: BlueFerry cannot switch LE on."""
+    from types import SimpleNamespace
+
+    calls = []
+
+    class Setup:
+        def compatibility(self, adapter=None):
+            calls.append(("compatibility", adapter))
+            return SimpleNamespace(
+                to_dict=lambda: {"adapter": adapter, "le_disabled": False},
+                bearer_api_active=True,
+                notifications_active=True,
+            )
+
+        def configuration(self):
+            return SimpleNamespace(
+                configured=False,
+                saved=False,
+                mac="",
+                adapter="hci0",
+                pairing_issue_report="",
+            )
+
+    controller = BridgeController(
+        backend=_Backend(), setup=Setup(), subscribe=False, autostart=False,
+    )
+    controller._compatibility = {"adapter": "hci1", "le_disabled": True}
+    monkeypatch.setattr(
+        controller,
+        "_run",
+        lambda operation, on_done=None, *_args, **_kwargs: (
+            on_done(operation()) if on_done is not None else operation()
+        ),
+    )
+
+    controller.loadSetupState()
+
+    assert calls == [("compatibility", "hci1")]
+    assert controller.compatibility["le_disabled"] is False
+    assert not hasattr(controller, "enableLowEnergy")
+
+
+def test_optional_calls_are_exposed_without_touching_a_disabled_backend():
+    from blueferry.models import CallsSnapshot
+
+    class CallsBackend:
+        def __init__(self):
+            self.requests = []
+
+        def calls(self):
+            self.requests.append(("calls",))
+            return CallsSnapshot.from_dict({"state": "ready", "calls": [
+                {"call_id": "voicecall01", "state": "incoming", "contact_name": "Alice"},
+            ]})
+
+        def dial(self, number):
+            self.requests.append(("dial", number))
+            return "voicecall02"
+
+        def answer_call(self, call_id):
+            self.requests.append(("answer", call_id))
+
+    backend = CallsBackend()
+    controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+
+    controller.refreshCalls()
+    controller._pool.waitForDone(1000)
+    assert backend.requests == []
+    assert controller.callsState == "disabled"
+
+    controller._status = {"calls_enabled": True, "calls_state": "ready"}
+    controller._apply_calls(backend.calls())
+    assert controller.phoneCalls[0]["display_peer"] == "Alice"
+    assert controller.phoneCalls[0]["ringing"] is True
+    assert controller.callsState == "ready"
+
+    controller.dialCall("  0441234567 ")
+    controller.answerCall("voicecall01")
+    controller.dialCall("   ")
+    controller._pool.waitForDone(1000)
+    assert ("dial", "0441234567") in backend.requests
+    assert ("answer", "voicecall01") in backend.requests
+    assert ("dial", "") not in backend.requests
+
+
+def test_failed_or_disabled_calls_refresh_follows_the_status_state():
+    from blueferry.models import CallsSnapshot
+
+    controller = BridgeController(backend=object(), setup=object(), subscribe=False, autostart=False)
+    changes = []
+    controller.phoneCallsChanged.connect(lambda: changes.append(controller.callsState))
+    controller._status = {"calls_enabled": True, "calls_state": "ready"}
+    controller._apply_calls(CallsSnapshot.from_dict({"state": "ready", "calls": [
+        {"call_id": "voicecall01", "state": "active"},
+    ]}))
+
+    # ListCalls failed although status said ready: no stale call, no "ready".
+    controller._calls_unavailable("boom")
+    assert controller.phoneCalls == [] and controller.callsState == "unavailable"
+
+    controller._status = {"calls_enabled": False, "calls_state": "disabled"}
+    controller.refreshCalls()
+    assert controller.callsState == "disabled"
+    assert changes == ["ready", "unavailable", "disabled"]
+    assert not hasattr(controller, "sendCallTones")
+
+
+def test_calls_opt_in_is_forwarded_and_merged_into_status(monkeypatch):
+    backend = _Backend()
+    toggles = []
+
+    def set_calls_enabled(enabled):
+        toggles.append(enabled)
+        return {"calls_enabled": enabled, "calls_state": "unavailable"}
+
+    backend.set_calls_enabled = set_calls_enabled
+    controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+    monkeypatch.setattr(
+        controller,
+        "_run",
+        lambda operation, on_done=None, *_args, **_kwargs: (
+            on_done(operation()) if on_done is not None else operation()
+        ),
+    )
+    refreshed = []
+    monkeypatch.setattr(controller, "refreshCalls", lambda: refreshed.append(True))
+
+    controller.setCallsEnabled(True)
+
+    assert toggles == [True]
+    assert controller.status["calls_enabled"] is True
+    assert refreshed == [True]
+
+
+def test_status_refreshes_the_call_list_only_when_the_call_state_changes(monkeypatch):
+    controller = BridgeController(
+        backend=_Backend(), setup=object(), subscribe=False, autostart=False,
+    )
+    refreshed = []
+    monkeypatch.setattr(controller, "refreshCalls", lambda: refreshed.append(True))
+
+    def apply(**fields):
+        controller._apply_snapshot((
+            ConversationSnapshot(status=BackendStatus(daemon=True, storage_state="ready", **fields)),
+            None,
+        ))
+
+    apply(calls_enabled=True, calls_state="connecting")
+    apply(calls_enabled=True, calls_state="connecting", map=True)
+    assert refreshed == [True]
+    apply(calls_enabled=True, calls_state="ready")
+    assert refreshed == [True, True]
+    apply(calls_enabled=False)
+    assert len(refreshed) == 2  # nothing listed, nothing to clear
+
+
+def test_status_from_a_daemon_without_the_calls_setting_omits_it():
+    # The settings page offers the checkbox only when the key is present.
+    controller = BridgeController(
+        backend=_Backend(), setup=object(), subscribe=False, autostart=False,
+    )
+
+    def apply(reported):
+        controller._apply_snapshot((
+            ConversationSnapshot(status=BackendStatus.from_dict(
+                {"daemon": True, "storage_state": "ready", **reported}
+            )),
+            None,
+        ))
+
+    apply({})
+    assert "calls_enabled" not in controller.status
+
+    apply({"calls_enabled": False})
+    assert controller.status["calls_enabled"] is False
+
+
+def test_battery_warning_is_forwarded_and_merged_into_status(monkeypatch):
+    backend = _Backend()
+    backend.set_phone_battery_warning = lambda enabled: enabled
+    controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+    monkeypatch.setattr(
+        controller, "_run",
+        lambda operation, on_done=None, *_args, **_kwargs: on_done(operation()),
+    )
+
+    controller.setPhoneBatteryWarning(True)
+
+    assert controller.status["phone_battery_warning"] is True

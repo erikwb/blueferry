@@ -1,3 +1,6 @@
+src/blueferry/conversation_state.py
+src/blueferry/onboarding.py
+src/blueferry/models.py
 src/blueferry/ui/app.py
 src/blueferry/ui/window.py
 src/blueferry/ui/conversations.py
@@ -9,3 +12,11 @@ src/blueferry/qt/qml/PhoneSettingsPage.qml
 src/blueferry/qt/qml/PhoneSettingsDialogs.qml
 src/blueferry/qt/qml/MessageBubble.qml
 src/blueferry/qt/qml/OnboardingSummary.qml
+src/blueferry/qt/qml/GroupConfirmationDialog.qml
+src/blueferry/qt/qml/NewMessageDialog.qml
+src/blueferry/qt/qml/ProximityLockSettings.qml
+src/blueferry/qt/qml/NowPlayingBar.qml
+src/blueferry/qt/qml/MediaControlSettings.qml
+src/blueferry/qt/qml/CallsDialog.qml
+src/blueferry/qt/qml/PhoneCallsSettings.qml
+src/blueferry/qt/qml/PhoneStatusIndicator.qml

@@ -20,6 +20,7 @@ from blueferry.limits import (
     MAX_CONTACT_NAME_CHARS,
 )
 from blueferry.obex import transfer
+from blueferry.vcard import iter_vcard_bodies
 
 
 def test_pbap_filters_use_phonebook_access_names():
@@ -301,6 +302,306 @@ def test_oversized_or_unterminated_vcards_do_not_hide_later_contacts() -> None:
     assert _parse_vcard_records(blob) == [
         ("Safe", ["15551234567"], []),
     ]
+
+
+def _folded(text: str, width: int = 75) -> str:
+    return "\n ".join(text[i:i + width] for i in range(0, len(text), width))
+
+
+def test_large_contact_photo_does_not_discard_the_card() -> None:
+    # An 800 KiB JPEG is ~1.07 MiB of base64: over the 1 MiB card budget.
+    photo = "/9j/" + "A" * (1_100_000)
+    blob = (
+        "BEGIN:VCARD\nVERSION:3.0\nFN:Pictured\n"
+        + "PHOTO;ENCODING=b;TYPE=JPEG:" + _folded(photo) + "\n"
+        + "TEL;TYPE=CELL:+15551234567\nEMAIL:p@example.com\nEND:VCARD\n"
+        # vCard 2.1: unindented base64 continuation lines end at a blank line.
+        + "BEGIN:VCARD\nVERSION:2.1\nFN:Old Style\n"
+        + "PHOTO;ENCODING=BASE64;TYPE=JPEG:/9j/AAAA\n"
+        + "\n".join(["A" * 76] * 20_000) + "\n\n"
+        + "TEL;CELL:+15557654321\nEND:VCARD\n"
+    )
+
+    assert _parse_vcard_records(blob) == [
+        ("Pictured", ["15551234567"], ["p@example.com"]),
+        ("Old Style", ["15557654321"], []),
+    ]
+
+
+def test_photo_skipping_keeps_other_fields_and_the_card_budget() -> None:
+    blob = (
+        "BEGIN:VCARD\nFN:A\nNOTE:x\n PHOTO;folded note text\n"
+        "item1.PHOTO;VALUE=uri:https://example.invalid/a.jpg\nTEL:+15550000001\nEND:VCARD\n"
+        "BEGIN:VCARD\nFN:" + "y" * 300 + "\nPHOTO;ENCODING=b:QUJD\nEND:VCARD\n"
+    )
+    bodies = list(iter_vcard_bodies(blob, maximum=10, max_card_chars=200))
+    # A folded line that merely starts with "PHOTO" is unfolded into its
+    # property; a grouped PHOTO is skipped; a non-photo overflow still
+    # discards its card.
+    assert bodies == ["FN:A\nNOTE:xPHOTO;folded note text\nTEL:+15550000001"]
+
+
+def test_large_logo_sound_and_key_values_are_skipped_like_photos() -> None:
+    blob = "".join(
+        f"BEGIN:VCARD\nVERSION:3.0\nFN:{name}\n"
+        + f"{prop};ENCODING=b;TYPE={kind}:" + _folded("A" * 1_100_000) + "\n"
+        + f"TEL:+1555000000{index}\nEND:VCARD\n"
+        for index, (name, prop, kind) in enumerate([
+            ("Logo Co", "LOGO", "PNG"),
+            ("Sound Person", "SOUND", "WAVE"),
+            ("Key Holder", "item2.KEY", "PGP"),
+        ])
+    )
+
+    assert _parse_vcard_records(blob) == [
+        ("Logo Co", ["15550000000"], []),
+        ("Sound Person", ["15550000001"], []),
+        ("Key Holder", ["15550000002"], []),
+    ]
+
+
+def test_quoted_printable_photo_continues_through_soft_line_breaks() -> None:
+    # vCard 2.1 QUOTED-PRINTABLE: a line ending in "=" continues unindented,
+    # and those lines may contain ":" (as "=3A" does not have to be used).
+    body = "=\n".join(["=FF=D8=FF=E0:" + "=00" * 25] * 20_000)
+    blob = (
+        "BEGIN:VCARD\nVERSION:2.1\nFN:Printable\n"
+        + "PHOTO;ENCODING=QUOTED-PRINTABLE;TYPE=JPEG:" + body + "\n"
+        + "TEL;CELL:+15551112222\nNOTE:after=\nEND:VCARD\n"
+    )
+
+    assert _parse_vcard_records(blob) == [("Printable", ["15551112222"], [])]
+    [card] = list(iter_vcard_bodies(blob, maximum=1))
+    # The last photo line has no soft break, so TEL starts a new property.
+    assert card == "VERSION:2.1\nFN:Printable\nTEL;CELL:+15551112222\nNOTE:after="
+
+
+def test_colon_less_lines_never_start_a_skipped_property() -> None:
+    # A vCard 2.1 quoted-printable ADR continues unindented after its soft
+    # line break. Its next line reads like a KEY parameter list, but it is
+    # unfolded into the ADR and must not swallow the lines after it.
+    blob = (
+        "BEGIN:VCARD\nVERSION:2.1\nFN:Postbox\n"
+        "ADR;ENCODING=QUOTED-PRINTABLE:;;Main St 1=\nKey;box 12\n"
+        "TEL;CELL:+15553334444\nEND:VCARD\n"
+    )
+
+    assert _parse_vcard_records(blob) == [("Postbox", ["15553334444"], [])]
+    [card] = list(iter_vcard_bodies(blob, maximum=1))
+    assert card.split("\n") == [
+        "VERSION:2.1", "FN:Postbox",
+        "ADR;ENCODING=QUOTED-PRINTABLE:;;Main St 1Key;box 12", "TEL;CELL:+15553334444",
+    ]
+
+
+def test_soft_break_continuations_of_kept_values_are_not_properties() -> None:
+    # Even with a ":" the soft-break continuation of a kept quoted-printable
+    # value belongs to that value and cannot start a (grouped) PHOTO or KEY.
+    blob = (
+        "BEGIN:VCARD\nVERSION:2.1\nFN:Noted\n"
+        "NOTE;ENCODING=QUOTED-PRINTABLE:first=\nAsk a.Key: second=\nsee p.photo: third\n"
+        "EMAIL:n@example.com\nEND:VCARD\n"
+    )
+
+    [card] = list(iter_vcard_bodies(blob, maximum=1))
+    assert card.split("\n") == [
+        "VERSION:2.1", "FN:Noted",
+        "NOTE;ENCODING=QUOTED-PRINTABLE:firstAsk a.Key: secondsee p.photo: third",
+        "EMAIL:n@example.com",
+    ]
+
+
+def test_base64_continuations_only_follow_base64_media_values() -> None:
+    # A PHOTO link, a SOUND without an encoding, or a data: URI (which folds
+    # like any vCard 3.0/4.0 value) has no unindented base64 continuation,
+    # so colon-less lines after it are not swallowed.
+    blob = (
+        "BEGIN:VCARD\nVERSION:2.1\nFN:Linked\n"
+        "PHOTO;VALUE=uri:https://example.invalid/a.jpg\nStray1\n"
+        "SOUND;X-IRMC-N:Lee;Ann\nStray2\n"
+        "LOGO;BASE64:QUJD\nREVG\n"
+        "KEY:data:application/pgp-keys;base64,QUJD\nR0hJ\n"
+        "END:VCARD\n"
+    )
+
+    [card] = list(iter_vcard_bodies(blob, maximum=1))
+    assert card.split("\n") == ["VERSION:2.1", "FN:Linked", "Stray1", "Stray2", "R0hJ"]
+
+
+def test_a_trailing_equals_sign_is_always_a_soft_line_break() -> None:
+    # A literal "=" must be written "=3D", so a quoted-printable line ending
+    # in "=" continues on the next line, as in Android's vCard 2.1 parser. An
+    # encoder that leaves a final "=" unencoded loses the following line into
+    # that value, but END:VCARD still ends the card and the next card is
+    # unaffected, whatever the size of the value.
+    blob = (
+        "BEGIN:VCARD\nVERSION:2.1\nFN:Equals\n"
+        "PHOTO;ENCODING=QUOTED-PRINTABLE:=FF=D8=\n=00=\n"
+        "TEL;CELL:+15556667777\n"
+        "NOTE;QUOTED-PRINTABLE:a=b=\nEMAIL:e@example.com=\n"
+        "END:VCARD\n"
+        "BEGIN:VCARD\nFN:Next\nTEL:+15550001111\nEND:VCARD\n"
+    )
+
+    assert list(iter_vcard_bodies(blob, maximum=2)) == [
+        "VERSION:2.1\nFN:Equals\nNOTE;QUOTED-PRINTABLE:a=bEMAIL:e@example.com=",
+        "FN:Next\nTEL:+15550001111",
+    ]
+
+
+def test_folding_follows_the_card_version() -> None:
+    # RFC 2426/6350 unfolding removes the line break and one blank; vCard
+    # 2.1 unfolding keeps the blank. A folded property head and a ":" inside
+    # a quoted parameter are still read as one property.
+    blob = (
+        "BEGIN:VCARD\nVERSION:3.0\nFN:Ann\n  Lee\nTE\n L:+15550001111\n"
+        'PHO\n TO;X-NOTE="a:b";ENCODING=b:QUJD\n REVG\nEND:VCARD\n'
+        "BEGIN:VCARD\nVERSION:2.1\nFN:Ann\n Lee\nEND:VCARD\n"
+    )
+
+    assert _parse_vcard_records(blob) == [
+        ("Ann Lee", ["15550001111"], []),
+        ("Ann Lee", [], []),
+    ]
+
+
+def test_skipped_photo_lines_with_crlf_line_endings() -> None:
+    photo = "/9j/" + "A" * 1_100_000
+    blob = (
+        "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Windows Style\r\n"
+        + "PHOTO;ENCODING=b:" + _folded(photo).replace("\n", "\r\n") + "\r\n"
+        + "EMAIL:w@example.com\r\nEND:VCARD\r\n"
+    )
+
+    assert _parse_vcard_records(blob) == [("Windows Style", [], ["w@example.com"])]
+
+
+def test_line_iterables_parse_like_whole_text() -> None:
+    import io
+
+    blob = (
+        "BEGIN:VCARD\r\nFN:One\r\nPHOTO;ENCODING=b:QUJD\r\n DEFG\r\n"
+        "TEL:+15550000001\r\nEND:VCARD\r\n"
+        "BEGIN:VCARD\nFN:Two\nEMAIL:two@example.com\nEND:VCARD"
+    )
+    expected = [("One", ["15550000001"], []), ("Two", [], ["two@example.com"])]
+    assert _parse_vcard_records(blob) == expected
+    assert _parse_vcard_records(io.StringIO(blob, newline=None)) == expected
+    assert _parse_vcard_records(blob.splitlines(keepends=True)) == expected
+
+
+def test_streamed_lines_are_bounded_and_media_chunks_are_still_skipped() -> None:
+    import io
+
+    from blueferry.vcard import iter_bounded_lines
+
+    photo = "PHOTO;ENCODING=b:" + "A" * 50_000  # one unfolded 50 kB line
+    blob = f"BEGIN:VCARD\nFN:Long\n{photo}\nTEL:+15550002222\nEND:VCARD\n"
+    pieces = list(iter_bounded_lines(io.StringIO(blob), limit=4096))
+    assert max(len(piece) for piece in pieces) <= 4096
+    assert _parse_vcard_records(iter_bounded_lines(io.StringIO(blob), limit=4096)) == [
+        ("Long", ["15550002222"], []),
+    ]
+
+
+@pytest.mark.parametrize(
+    "media",
+    [
+        "PHOTO;ENCODING=QUOTED-PRINTABLE;TYPE=JPEG:" + "=FF=D8:x" * 2_000,
+        "PHOTO:data:image/jpeg;base64," + "QUJD:" * 3_000,
+        "LOGO;VALUE=uri:https://example.invalid/" + "a" * 15_000,
+    ],
+    ids=["quoted-printable", "data-uri", "uri"],
+)
+def test_every_piece_of_an_over_long_media_line_is_skipped(media) -> None:
+    import io
+
+    from blueferry.vcard import iter_bounded_lines
+
+    # Any encoding of an unfolded media line longer than the reader limit is
+    # skipped whole; none of its pieces counts against the card budget.
+    blob = f"BEGIN:VCARD\r\nFN:Long\r\n{media}\r\nTEL:+15550004444\r\nEND:VCARD\r\n"
+    pieces = iter_bounded_lines(io.StringIO(blob, newline=None), limit=1_000)
+    assert list(iter_vcard_bodies(pieces, maximum=1, max_card_chars=2_000)) == [
+        "FN:Long\nTEL:+15550004444",
+    ]
+
+
+def test_pieces_of_a_kept_over_long_line_are_rejoined() -> None:
+    import io
+
+    from blueferry.vcard import iter_bounded_lines
+
+    note = "NOTE:" + "n" * 2_500
+    blob = f"BEGIN:VCARD\nFN:Noted\n{note}\nEND:VCARD\nBEGIN:VCARD\nFN:{'y' * 5_000}\nEND:VCARD\n"
+    # A "\r\n" cut between two pieces is still one line break.
+    crlf = ["BEGIN:VCARD\r", "\nFN:Split\r", "\n", "END:VCARD\r\n"]
+
+    assert list(iter_vcard_bodies(
+        iter_bounded_lines(io.StringIO(blob), limit=1_000), maximum=5, max_card_chars=4_000,
+    )) == [f"FN:Noted\n{note}"]
+    assert list(iter_vcard_bodies(crlf, maximum=1)) == ["FN:Split"]
+
+
+def test_a_reader_cut_never_splits_a_marker_or_property_name() -> None:
+    # Pieces as a bounded reader yields them for "\r"-only line endings,
+    # which it does not split at: lines are cut wherever the limit falls.
+    blob = "BEGIN:VCARD\rFN:Cut\rPHOTO;ENCODING=QUOTED-PRINTABLE:=FF=\r=D8\rEND:VCARD\r"
+    pieces = [blob[index:index + 7] for index in range(0, len(blob), 7)]
+
+    assert list(iter_vcard_bodies(pieces, maximum=1)) == ["FN:Cut"]
+
+
+@pytest.mark.parametrize("separator", ["\u2028", "\u2029", "\x0c", "\x0b", "\x85", "\x1e"])
+def test_unicode_line_separators_split_names_the_same_on_every_path(separator) -> None:
+    import io
+
+    from blueferry.obex.bmessage import parse as parse_bmessage
+    from blueferry.vcard import iter_bounded_lines
+
+    card = f"BEGIN:VCARD\r\nVERSION:2.1\r\nFN:Ann{separator}Lee\r\nTEL:+15550003333\r\nEND:VCARD\r\n"
+    expected = [("Ann", ["15550003333"], [])]
+    # Whole text, a universal-newline file, and the bounded production reader
+    # cut the name at the separator exactly as splitlines() did before.
+    assert _parse_vcard_records(card) == expected
+    assert _parse_vcard_records(io.StringIO(card, newline=None)) == expected
+    assert _parse_vcard_records(iter_bounded_lines(io.StringIO(card, newline=None))) == expected
+    # A MAP sender card yields the same name, so it still matches the
+    # stored contact.
+    message = (
+        "BEGIN:BMSG\r\nVERSION:1.0\r\n" + card
+        + "BEGIN:BENV\r\nBEGIN:BBODY\r\nBEGIN:MSG\r\nhi\r\nEND:MSG\r\n"
+        "END:BBODY\r\nEND:BENV\r\nEND:BMSG\r\n"
+    )
+    assert parse_bmessage(message).sender_name == "Ann"
+
+
+def test_phonebook_is_streamed_from_the_transfer_file(tmp_path, monkeypatch) -> None:
+    card = "BEGIN:VCARD\r\nFN:Streamed\r\nTEL:+15550001111\r\nEND:VCARD\r\n"
+    replaced = []
+
+    class _Pbap:
+        def Select(self, *_args, **_kwargs):
+            pass
+
+        def PullAll(self, path, *_args, **_kwargs):
+            Path(path).write_text(card)
+            return "/transfer/phonebook", {"Status": "complete", "Size": len(card)}
+
+    def no_whole_file_read(*_args, **_kwargs):
+        raise AssertionError("the phonebook must be streamed, not read whole")
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setattr(contacts, "obex", lambda *_args: _Pbap())
+    monkeypatch.setattr(contacts, "wait_for_transfer", lambda *_args, **_kwargs: "complete")
+    monkeypatch.setattr(Path, "read_text", no_whole_file_read)
+    monkeypatch.setattr(
+        contact_repository.ContactRepository, "replace",
+        lambda _self, records: replaced.append(records) or len(records),
+    )
+
+    assert contacts.pull_phonebook(SimpleNamespace(pbap_path="/pbap")) == 1
+    assert replaced == [[("Streamed", ["15550001111"], [])]]
 
 
 def test_find_by_name_returns_phone_and_email_destinations(tmp_path, monkeypatch):

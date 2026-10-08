@@ -6,6 +6,33 @@ from datetime import datetime
 
 from blueferry.text_safety import terminal_text
 
+# The labels around these names ("Today", "at", "AM") are English, so the names
+# are spelled out here rather than taken from strftime, whose %A, %b and %p
+# follow LC_TIME once a toolkit (GTK, Qt) calls setlocale(LC_ALL, "").
+_WEEKDAYS = (
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday",
+)
+_MONTHS = (
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+)
+
 
 def _parse(value: str) -> datetime | None:
     try:
@@ -23,8 +50,9 @@ def _in_reference_timezone(value: datetime, reference: datetime) -> datetime:
 
 
 def _clock_time(value: datetime) -> str:
-    hour = value.strftime("%I").lstrip("0") or "12"
-    return f"{hour}:{value:%M} {value:%p}"
+    hour = value.hour % 12 or 12
+    meridiem = "AM" if value.hour < 12 else "PM"
+    return f"{hour}:{value.minute:02d} {meridiem}"
 
 
 def format_message_timestamp(
@@ -57,9 +85,9 @@ def format_message_timestamp(
     elif days_ago == 1:
         day = "Yesterday"
     elif 1 < days_ago < 7:
-        day = local.strftime("%A")
+        day = _WEEKDAYS[local.weekday()]
     elif local.year == reference.year:
-        day = f"{local:%b} {local.day}"
+        day = f"{_MONTHS[local.month - 1]} {local.day}"
     else:
-        day = f"{local:%b} {local.day}, {local.year}"
+        day = f"{_MONTHS[local.month - 1]} {local.day}, {local.year}"
     return f"{day} at {_clock_time(local)}"
