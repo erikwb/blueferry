@@ -11,10 +11,10 @@ import struct
 from dataclasses import dataclass
 
 from blueferry.ancs.constants import (
-    UINT_MAX,
     ANCS_MESSAGE_MAX_BYTES,
     ANCS_SUBTITLE_MAX_BYTES,
     ANCS_TITLE_MAX_BYTES,
+    UINT_MAX,
     USHORT_MAX,
     ActionID,
     AppAttributeID,
