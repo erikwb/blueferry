@@ -3339,4 +3339,4 @@ Item {
     )
     log = result.stdout + result.stderr
     assert result.returncode == 0 and "BLUEFERRY_AVATARS_OK" in log, log
-    assert "ReferenceError" not in log and "TypeError" not in log, log
+    assert "WARN scene:" not in log and "ReferenceError" not in log and "TypeError" not in log, log
