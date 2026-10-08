@@ -1188,7 +1188,14 @@ def test_adapter_selection_prefers_le_advertising_but_honors_explicit_choice(mon
     assert automatic["hci_version"] == 6
     assert automatic["messages_supported"] is True
     assert automatic["pairing_ready"] is True
-    assert automatic["notifications_supported"] is False
+    # BlueZ 5.72 has no bearer API to activate; ANCS is proven over GATT.
+    assert automatic["notifications_supported"] is True
+    assert automatic["notifications_active"] is True
+    assert automatic["bearer_api_supported"] is False
+    assert automatic["bearer_api_active"] is False
+    # ANCS still needs LE, and this controller has it switched off (#192).
+    assert automatic["le_disabled"] is True
+    assert "Bluetooth Low Energy is switched off" in automatic["issue"]
     assert "le" not in automatic["current_settings"]
     assert automatic["adapters"][0]["hardware_supported"] is False
 

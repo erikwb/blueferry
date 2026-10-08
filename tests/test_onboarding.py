@@ -65,6 +65,13 @@ def test_incompatible_controller_never_prompts_for_iphone_permissions() -> None:
         ) is OnboardingStage.INCOMPATIBLE
 
 
+def test_notifications_without_a_bearer_api_need_no_activation() -> None:
+    legacy = {**COMPATIBLE, "bearer_api_active": False, "notifications_active": True}
+    assert derive_stage(
+        setup_loaded=True, configured=False, compatibility=legacy, status={},
+    ) is OnboardingStage.SELECT_DEVICE
+
+
 def test_optional_ancs_transport_controls_activation_step() -> None:
     inactive = {**COMPATIBLE, "bearer_api_active": False}
     assert (

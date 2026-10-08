@@ -23,7 +23,11 @@ from blueferry.bus import get_session_bus, get_system_bus
 from blueferry.calls.settings import calls_enabled
 from blueferry.commands import run_command
 from blueferry.errors import CommandError, PairingError
-from blueferry.pairing_policy import PairingPolicy, resolve_pairing_policy
+from blueferry.pairing_policy import (
+    PairingPolicy,
+    notifications_active,
+    resolve_pairing_policy,
+)
 from blueferry.pairing_types import PairingAttempt, PairingOutcome, PairingTransports
 from blueferry.private_files import atomic_write_private_text, read_private_text
 from blueferry.service_manager import backend_service_manager
@@ -969,6 +973,7 @@ _COMPATIBILITY_REPORT_KEYS = (
     "hardware_supported",
     "messages_supported",
     "notifications_supported",
+    "notifications_active",
     "bearer_api_supported",
     "bearer_api_active",
     "supported_settings",
@@ -1264,7 +1269,7 @@ def _prepare_pairing(
             "Bluetooth LE is switched off on %s; continuing with MAP/PBAP only",
             selected_adapter,
         )
-    if policy.ancs_enabled and not compatibility["bearer_api_active"]:
+    if policy.ancs_enabled and not notifications_active(compatibility):
         raise PairingError(
             "Activate Bluetooth support before pairing or re-pairing the iPhone"
         )

@@ -642,7 +642,9 @@ def test_media_failure_cannot_break_le_state_propagation(make_daemon) -> None:
             raise RuntimeError("boom")
 
     instance.ams = _Broken()  # type: ignore[assignment]
-    instance.ancs = SimpleNamespace(observe_bearer_state=seen.append)
+    instance.ancs = SimpleNamespace(
+        observe_bearer_state=lambda connected, **_legacy: seen.append(connected),
+    )
     instance.solicitation = SimpleNamespace(set_needed=lambda _needed: None)
     instance._observe_le_state(True)  # must not raise into the supervisor
     assert seen == [True]

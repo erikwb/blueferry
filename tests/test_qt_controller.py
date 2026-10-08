@@ -511,6 +511,7 @@ def test_saved_pairing_policy_does_not_overwrite_adapter_capability(monkeypatch)
                     "bearer_api_active": True,
                 },
                 bearer_api_active=True,
+                notifications_active=True,
             )
 
         @staticmethod
@@ -666,6 +667,7 @@ def test_select_adapter_reloads_compatibility_for_that_radio(monkeypatch) -> Non
                     ],
                 },
                 bearer_api_active=True,
+                notifications_active=True,
             )
 
     controller = BridgeController(
@@ -711,6 +713,7 @@ def test_activating_bluetooth_reloads_the_selected_adapter_before_scanning(
             return SimpleNamespace(
                 to_dict=lambda: {"adapter": adapter or "hci0", "bearer_api_active": True},
                 bearer_api_active=True,
+                notifications_active=True,
             )
 
         def configuration(self):
@@ -1017,6 +1020,7 @@ def test_checking_bluetooth_le_again_reprobes_the_selected_adapter(
             return SimpleNamespace(
                 to_dict=lambda: {"adapter": adapter, "le_disabled": False},
                 bearer_api_active=True,
+                notifications_active=True,
             )
 
         def configuration(self):

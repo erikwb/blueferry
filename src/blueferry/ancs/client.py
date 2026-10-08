@@ -89,6 +89,11 @@ AUTHORIZATION_RETRY_SECONDS = 5
 MANAGER_RETRY_SECONDS = 2
 BEARER_SETTLE_SECONDS = 2
 TRANSPORT_RESET_SECONDS = 15
+# Without an LE bearer state, only a Control Point round trip can tell whether
+# ANCS is reachable. Failed probes back off to this ceiling, and a proven
+# transport is checked again at this interval.
+LEGACY_RETRY_CAP_SECONDS = 60
+LEGACY_HEALTH_SECONDS = 60
 # A stale LE bond cycles the link about every two seconds for as long as the
 # phone is nearby. Report bearer cycles at INFO at most once per interval and
 # summarize the rest; the bearer supervisor owns the actionable warning.
@@ -153,6 +158,15 @@ def _connection_was_lost(error: dbus.exceptions.DBusException) -> bool:
         or "not connected" in detail
         or "no att transport" in detail
     )
+
+
+def _notify_registration_pending(error: dbus.exceptions.DBusException) -> bool:
+    """Return whether BlueZ already holds this sender's notify registration.
+
+    StartNotify on a device without an ATT link succeeds and is completed by
+    bluetoothd when LE connects. Until then a repeated call is InProgress.
+    """
+    return (error.get_dbus_name() or "").casefold().endswith(".inprogress")
 
 
 def _action_error_result(error: dbus.exceptions.DBusException) -> tuple[str, int | None]:
@@ -249,6 +263,9 @@ class AncsClient:
         # evidence that the rebuilt GATT transport is stale.
         self._was_authorized = previously_authorized
         self._bearer_connected: bool | None = None
+        # The device is connected and BlueZ cannot report its LE bearer.
+        self._legacy_connected = False
+        self._legacy_retry_delay = SUBSCRIBE_RETRY_SECONDS
         self._bearer_ready = False
         self._transport_blocked = False
         self._owned_notify_paths: set[str] = set()
@@ -294,6 +311,7 @@ class AncsClient:
         self._authorization_retry_id: int | None = None
         self._bearer_settle_id: int | None = None
         self._transport_reset_id: int | None = None
+        self._legacy_health_id: int | None = None
         self._started = False
 
     # ---- lifecycle ------------------------------------------------------
@@ -309,7 +327,7 @@ class AncsClient:
         except Exception:
             self._started = False
             raise
-        if self._bearer_connected is True:
+        if self._transport_available:
             self._schedule_bearer_settle()
 
     def _bind_manager_and_rescan(self) -> None:
@@ -416,6 +434,8 @@ class AncsClient:
             self._cancel_subscribe_retry()
             self._clear_characteristic_subscription(stop_notify=False)
             self._bearer_connected = None
+            self._legacy_connected = False
+            self._legacy_retry_delay = SUBSCRIBE_RETRY_SECONDS
             self._bearer_ready = False
             self._transport_blocked = False
             self._owned_notify_paths.clear()
@@ -478,25 +498,67 @@ class AncsClient:
         return self._authorized
 
     @property
+    def _transport_available(self) -> bool:
+        """LE is known to be up, or it is unknown and GATT may be probed."""
+        return self._bearer_connected is True or self._legacy_connected
+
+    @property
     def connected(self) -> bool:
         # StartNotify only proves that BlueZ subscribed to the GATT
         # characteristics. iOS notification access is usable only after an
         # authorized Control Point round trip succeeds.
         return (
-            self._bearer_connected is True
+            self._transport_available
             and self._bearer_ready
             and not self._transport_blocked
             and self.subscribed
             and self.authorized
         )
 
-    def observe_bearer_state(self, connected: bool | None) -> None:
+    def observe_bearer_state(
+        self, connected: bool | None, *, legacy_connected: bool = False,
+    ) -> None:
         """Invalidate stale GATT state and rebuild it after an LE reconnect.
 
         BlueZ retains ANCS characteristic objects, and sometimes their
         ``Notifying`` property, across a physical LE disconnect. ObjectManager
         removal alone therefore cannot define the subscription lifecycle.
+
+        ``legacy_connected`` means the device is connected and BlueZ has no
+        LE bearer state to report. It permits GATT probes; only an ANCS
+        response proves LE is up. A repeated legacy observation means the
+        aggregate device state changed, so the transport is probed again.
         """
+        if legacy_connected != self._legacy_connected:
+            was_connected = self.connected
+            self._legacy_connected = legacy_connected
+            self._legacy_retry_delay = SUBSCRIBE_RETRY_SECONDS
+            self._cancel_subscribe_retry()
+            self._cancel_bearer_settle()
+            self._cancel_transport_reset()
+            self._clear_characteristic_subscription(stop_notify=False)
+            self._bearer_ready = False
+            self._transport_blocked = False
+            if was_connected and self.on_status is not None:
+                self.on_status()
+            if legacy_connected:
+                log.info(
+                    "iPhone connected without LE bearer state; "
+                    "probing ANCS over GATT"
+                )
+                self._bearer_connected = None
+                if self._started:
+                    self._schedule_bearer_settle()
+                return
+            if connected is not True:
+                # The reset above already retired everything a disconnect
+                # would; do not report the same loss twice.
+                self._bearer_connected = connected
+                return
+        elif legacy_connected:
+            self._bearer_connected = None
+            self._legacy_transport_hint()
+            return
         if connected is None:
             self._bearer_connected = None
             self._bearer_ready = False
@@ -560,7 +622,7 @@ class AncsClient:
             log.info("%s", message)
 
     def _schedule_bearer_settle(self) -> None:
-        if self._bearer_settle_id is not None or self._bearer_connected is not True:
+        if self._bearer_settle_id is not None or not self._transport_available:
             return
         self._bearer_settle_id = self._schedule(
             BEARER_SETTLE_SECONDS,
@@ -569,7 +631,7 @@ class AncsClient:
 
     def _finish_bearer_settle(self) -> bool:
         self._bearer_settle_id = None
-        if not self._started or self._bearer_connected is not True:
+        if not self._started or not self._transport_available:
             return False
         self._bearer_ready = True
         self._try_subscribe()
@@ -585,14 +647,19 @@ class AncsClient:
         self._bearer_settle_id = None
 
     def _mark_transport_failed(self) -> None:
-        """Latch a stale GATT transport until LE genuinely cycles."""
+        """Latch a stale GATT transport until LE cycles or a probe succeeds."""
         was_connected = self.connected
         self._transport_blocked = True
         self._bearer_ready = False
         self._cancel_bearer_settle()
         self._cancel_subscribe_retry()
         self._clear_characteristic_subscription(stop_notify=False)
-        if (
+        if self._legacy_connected:
+            # There is no LE-only reset and no bearer transition to wait for.
+            # Keep the notify registrations, which bluetoothd completes when
+            # the phone's LE link arrives, and probe again with backoff.
+            self._schedule_subscribe_retry()
+        elif (
             self._started
             and self._bearer_connected is True
             and self._on_transport_failure is not None
@@ -666,6 +733,13 @@ class AncsClient:
         elif uuid == CONTROL_POINT_CHAR:
             self._cp_path = path_s
             log.info("ANCS Control Point found:       %s", path_s)
+        if self._legacy_connected and self._transport_blocked:
+            # Removal cancelled the pending probe. Resume once all three
+            # characteristics are back; no bearer transition will do it.
+            # BlueZ exports them again when LE resolves, so probe promptly.
+            self._legacy_retry_delay = SUBSCRIBE_RETRY_SECONDS
+            self._schedule_subscribe_retry()
+            return
         self._try_subscribe()
 
     def _on_iface_removed(self, path, ifaces):
@@ -686,6 +760,7 @@ class AncsClient:
     def _clear_characteristic_subscription(self, *, stop_notify: bool = True) -> None:
         """Remove receivers and notification ownership before rediscovery."""
         self._cancel_authorization_retry()
+        self._cancel_legacy_health()
         for match in self._characteristic_signal_matches:
             try:
                 match.remove()
@@ -734,7 +809,7 @@ class AncsClient:
         # BlueZ keeps bonded ANCS objects after ATT drops. StartNotify/CP on
         # those objects returns Not connected / No ATT transport and never
         # reaches iOS, so the notification-access prompt does not appear.
-        if self._bearer_connected is not True or not self._bearer_ready:
+        if not self._transport_available or not self._bearer_ready:
             return
         if not (self._ns_path and self._ds_path and self._cp_path):
             return
@@ -783,14 +858,14 @@ class AncsClient:
                 "org.bluez.GattCharacteristic1",
             )
             if self._should_start_notify(ns_path):
-                ns.StartNotify(timeout=DBUS_CALL_TIMEOUT_SECONDS)
+                self._start_notify(ns)
                 if current_attempt():
                     self._owned_notify_paths.add(ns_path)
             if not current_attempt():
                 remove_attempt_matches(matches)
                 return
             if self._should_start_notify(ds_path):
-                ds.StartNotify(timeout=DBUS_CALL_TIMEOUT_SECONDS)
+                self._start_notify(ds)
                 if current_attempt():
                     self._owned_notify_paths.add(ds_path)
         except dbus.exceptions.DBusException as e:
@@ -828,6 +903,16 @@ class AncsClient:
         )
         self._queue_authorization_probe()
 
+    def _start_notify(self, characteristic) -> None:
+        try:
+            characteristic.StartNotify(timeout=DBUS_CALL_TIMEOUT_SECONDS)
+        except dbus.exceptions.DBusException as error:
+            # Probing without a known LE link repeats StartNotify while the
+            # earlier registration is still waiting for ATT. That is the
+            # state being asked for, not a failure.
+            if not (self._legacy_connected and _notify_registration_pending(error)):
+                raise
+
     def _should_start_notify(self, path: str) -> bool:
         """Skip StartNotify only when BlueZ still reports Notifying=true."""
         if path not in self._owned_notify_paths:
@@ -862,16 +947,32 @@ class AncsClient:
             or not (self._ns_path and self._ds_path and self._cp_path)
         ):
             return
-        self._subscribe_retry_id = self._schedule(
-            SUBSCRIBE_RETRY_SECONDS,
-            self._retry_subscribe,
-        )
+        delay = SUBSCRIBE_RETRY_SECONDS
+        if self._legacy_connected:
+            delay = self._legacy_retry_delay
+            self._legacy_retry_delay = min(delay * 2, LEGACY_RETRY_CAP_SECONDS)
+        self._subscribe_retry_id = self._schedule(delay, self._retry_subscribe)
 
     def _retry_subscribe(self) -> bool:
         self._subscribe_retry_id = None
         if self._started:
+            if self._legacy_connected:
+                # The retry is itself the probe that replaces a bearer cycle.
+                self._transport_blocked = False
+                self._bearer_ready = True
             self._try_subscribe()
         return False
+
+    def _legacy_transport_hint(self) -> None:
+        """Probe now: the aggregate device state changed under unknown LE."""
+        if not self._started:
+            return
+        if self.connected:
+            self.probe_health()
+        elif self._subscribe_retry_id is not None:
+            self._cancel_subscribe_retry()
+            self._legacy_retry_delay = SUBSCRIBE_RETRY_SECONDS
+            self._schedule_subscribe_retry()
 
     def _cancel_subscribe_retry(self) -> None:
         if self._subscribe_retry_id is None:
@@ -937,6 +1038,8 @@ class AncsClient:
     def _mark_authorized(self) -> None:
         self.health_proof = time.monotonic()
         self.permission_denied = False
+        self._legacy_retry_delay = SUBSCRIBE_RETRY_SECONDS
+        self._schedule_legacy_health()
         if self._authorized:
             return
         self._authorized = True
@@ -945,6 +1048,36 @@ class AncsClient:
         log.info("ANCS notification access authorized for %s", self.device_path)
         if self.on_status is not None:
             self.on_status()
+
+    def _schedule_legacy_health(self) -> None:
+        # Device1 stays connected through Classic after LE disappears, so a
+        # proven transport is rechecked with a content-free round trip.
+        if (
+            self._started
+            and self._legacy_connected
+            and self._legacy_health_id is None
+        ):
+            self._legacy_health_id = self._schedule(
+                LEGACY_HEALTH_SECONDS, self._check_legacy_health,
+            )
+
+    def _check_legacy_health(self) -> bool:
+        self._legacy_health_id = None
+        if self._started and self._legacy_connected and self._authorized:
+            self.probe_health()
+            # A probe that fails at once has already retired the transport.
+            if self._authorized:
+                self._schedule_legacy_health()
+        return False
+
+    def _cancel_legacy_health(self) -> None:
+        if self._legacy_health_id is None:
+            return
+        try:
+            self._cancel(self._legacy_health_id)
+        except Exception:
+            log.debug("could not remove ANCS legacy health timer", exc_info=True)
+        self._legacy_health_id = None
 
     # ---- Notification Source: new/modified/removed events --------------
 
@@ -1208,6 +1341,8 @@ class AncsClient:
             # Retire them while ATT is settled and no StartNotify is pending;
             # doing this from disconnect/partial-subscribe paths is unsafe on
             # BlueZ 5.87. The next connection must create fresh registrations.
+            # With LE unobservable, ATT cannot be known to be settled, so the
+            # registrations are left for bluetoothd to renew on reconnect.
             if self._notify_started and self._bearer_connected is True and self._bearer_ready:
                 self._stop_bluez_notifications()
             self._mark_transport_failed()

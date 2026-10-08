@@ -380,7 +380,8 @@ def test_daemon_constructor_wiring_locks_through_the_real_dispatcher(
 
     # Only the bearer cache is replaced; its callback is the daemon's own.
     instance.bearers = SimpleNamespace(
-        bredr_state=None, le_state=None, stop=lambda: None, snapshot=dict,
+        bredr_state=None, le_state=None, legacy_connected=False,
+        stop=lambda: None, snapshot=dict,
     )
 
     def link(bredr):

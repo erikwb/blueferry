@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import pytest
+
 from blueferry.bluetooth_capabilities import (
     activate_bluez_support,
     ancs_limited_vendor,
     bluez_bearer_api_supported,
+    bluez_lacks_bearer_interfaces,
     bluez_stack,
+    compatibility,
     controller_hardware,
 )
 from blueferry.errors import PairingError
@@ -29,6 +33,63 @@ def test_bluez_bearer_api_requires_5_86_or_newer() -> None:
     assert bluez_bearer_api_supported("unknown") is False
     assert bluez_bearer_api_supported("5.86") is True
     assert bluez_bearer_api_supported("5.87") is True
+
+
+def test_bearer_interfaces_first_appear_in_bluez_5_84() -> None:
+    assert bluez_lacks_bearer_interfaces("5.72") is True
+    assert bluez_lacks_bearer_interfaces("5.83") is True
+    assert bluez_lacks_bearer_interfaces("5.84") is False
+    assert bluez_lacks_bearer_interfaces("5.87") is False
+    # An unreadable version proves nothing about the daemon.
+    assert bluez_lacks_bearer_interfaces("") is False
+    assert bluez_lacks_bearer_interfaces("unknown") is False
+
+
+@pytest.mark.parametrize("version,support,expected", [
+    # Before the bearer interfaces: nothing to activate, with or without -E.
+    ("5.72", {}, (True, True, "")),
+    ("5.83", {"active": True}, (True, True, "")),
+    # Bearer state without a working Disconnect: neither transport applies.
+    ("5.84", {"active": True}, (False, False, "per-app notifications are not")),
+    ("5.85", {}, (False, False, "per-app notifications are not")),
+    # The bearer API proper still needs -E, through the packaged drop-in.
+    ("5.86", {}, (False, False, "per-app notifications are not")),
+    ("5.86", {"packaged_drop_in": True}, (True, False, "must be activated")),
+    ("5.87", {"active": True}, (True, True, "")),
+    ("", {"active": True}, (False, False, "per-app notifications are not")),
+])
+def test_notification_support_follows_the_bluez_transport(
+    version, support, expected,
+) -> None:
+    class Manager:
+        @staticmethod
+        def GetManagedObjects():
+            return {"/org/bluez/hci0": {"org.bluez.Adapter1": {}}}
+
+    def run_command(command, **_kwargs):
+        if command[0] == "bluetoothctl" or command[-1] == "--version":
+            return _btmgmt(f"bluetoothctl: {version}\n" if version else "\n")
+        return _btmgmt(
+            "supported settings: powered ssp br/edr le advertising secure-conn\n"
+            "current settings: powered ssp br/edr le secure-conn\n"
+        )
+
+    result = compatibility(
+        "hci0",
+        adapter_name="hci0",
+        object_manager=Manager,
+        run_command=run_command,
+        support_status=lambda: support,
+    )
+
+    supported, active, issue = expected
+    assert result["messages_supported"] is True
+    assert result["notifications_supported"] is supported
+    assert result["notifications_active"] is active
+    assert issue in result["issue"]
+    # The bearer flags keep describing the bearer API alone.
+    assert result["bearer_api_supported"] is (supported and version >= "5.86")
+    assert result["bearer_api_active"] is (active and version >= "5.86")
 
 
 def test_controller_hardware_describes_a_realtek_usb_stick(tmp_path) -> None:
