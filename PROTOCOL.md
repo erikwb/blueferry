@@ -645,6 +645,12 @@ specification-based expectation, not a captured result.
 - A truncated value is completed by writing the entity/attribute selector to
   Entity Attribute (`C6B2F38C-…`) and reading it back; the two steps stay
   adjacent in the serialized GATT queue.
+- Every write to the ANCS Control Point and to the AMS characteristics
+  passes `{"type": "request"}`. iOS marks them with the "reliable-write"
+  extended property, and without a `type` BlueZ 5.87 then sends a reliable
+  write (Prepare Write plus Execute Write). Observed with btmon
+  (2026-10-08): iOS answered the Execute of an AMS registration with ATT
+  error 0xA0 (InvalidState), and every registration failed from then on.
 - The ANCS BlueZ 5.87 constraint applies here too: no `StopNotify` on a
   dropped or flapping link; surviving `Notifying=true` registrations are kept.
 - AMS offers relative volume steps and fixed skips only, so an MPRIS volume

@@ -88,6 +88,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `ancs/constants.py` | ANCS spec constants. |
 | `ancs/events.py` | `AncsEvent`, the normalized per-app notification. |
 | `ancs/sequencer.py` | Bounded, duplicate-aware backlog of serialized ANCS requests. |
+| `gatt.py` | BlueZ GATT call options for the Apple services (plain Write Request, never a reliable write). |
 | `ams/client.py` | Opt-in Apple Media Service GATT client on the ANCS LE link; asynchronous, serialized, bounded. |
 | `ams/parsers.py` | Pure AMS wire-format parsers and command/registration builders. |
 | `ams/state.py` | `NowPlaying` projection of Player, Queue, and Track attributes. |

@@ -1183,3 +1183,35 @@ def test_a_raising_subscription_setup_does_not_stick(harness, monkeypatch) -> No
     monkeypatch.setattr(client, "_run_subscription", original)
     timers.run_all()
     assert bus.pending() == [("StartNotify", RC)]
+
+
+def test_every_ams_write_forces_a_plain_write_request(harness) -> None:
+    """btmon 2026-10-08: the registration 00 00 01 02 went out as Prepare
+    Write plus Execute Write (reliable-write extended property, no ``type``)
+    and iOS answered every Execute with AMS InvalidState 0xA0."""
+    client, bus, timers, *_ = harness
+    client.observe_bearer_state(True)
+    client.start()
+    bus.take("GetManagedObjects").succeed(_objects())
+    timers.run_all()
+    bus.take("StartNotify", RC).succeed()
+    bus.take("StartNotify", EU).succeed()
+    writes = []
+    for _entity in EntityID:
+        call = bus.take("WriteValue", EU)
+        writes.append(call)
+        call.succeed()
+    bus.notify(EU, bytes([2, 2, 1]) + b"Lo")  # truncated: Entity Attribute
+    selector = bus.take("WriteValue", EA)
+    writes.append(selector)
+    client.send_command(RemoteCommandID.Play, lambda: None, lambda _error: None)
+    selector.succeed()
+    bus.take("ReadValue", EA).succeed(dbus.Array(list(b"Long")))
+    writes.append(bus.take("WriteValue", RC))
+
+    assert len(writes) == 5
+    for call in writes:
+        options = call.args[1]
+        assert options.signature == "sv"
+        assert dict(options) == {"type": "request"}
+        assert isinstance(options["type"], dbus.String)
