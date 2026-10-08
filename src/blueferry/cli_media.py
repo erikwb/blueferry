@@ -15,7 +15,7 @@ _ACTIONS = ("status", *_SETTINGS, *sorted(COMMAND_NAMES))
 _DETAILS = {
     "disabled": (
         "iPhone media control is off. Turn it on with 'blueferry media enable' "
-        "or in the Qt client's iPhone settings."
+        "or in a graphical client's iPhone settings."
     ),
     "requires-notification-access-mode": (
         "iPhone media control needs the Bluetooth LE link, which the "

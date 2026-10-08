@@ -287,3 +287,139 @@ def test_connection_summary_appends_optional_phone_battery_and_signal() -> None:
         "Ready · Battery about 40 % · Signal 60 %"
     )
     assert connection_subtitle({"connectivity_state": "ready"}, reachable=True) == "Ready"
+
+
+def _media_switch_page(**overrides):
+    from types import SimpleNamespace
+
+    from blueferry.ui.saved_choice import SavedChoice
+
+    class Switch:
+        def __init__(self, active=False):
+            self.active = active
+
+        def get_active(self):
+            return self.active
+
+        def set_active(self, active):
+            self.active = active
+
+    class Row:
+        sensitive = visible = None
+
+        def set_sensitive(self, value):
+            self.sensitive = value
+
+        def set_visible(self, value):
+            self.visible = value
+
+    page = SimpleNamespace(
+        _applying_media_switches=False,
+        _media_control_choice=SavedChoice(),
+        _mpris_player_choice=SavedChoice(),
+        _media_control_switch=Switch(),
+        _mpris_player_switch=Switch(),
+        _media_control_row=Row(),
+        _mpris_player_row=Row(),
+        _media_group=Row(),
+        toasts=[],
+        refreshes=[],
+        applied=[],
+        saves=[],
+    )
+    page._toast = page.toasts.append
+    page._refresh = lambda: page.refreshes.append(True)
+    page._apply_status = page.applied.append
+    page._client = SimpleNamespace(
+        set_media_control_async=lambda enabled, ok, err: page.saves.append(
+            ("media", enabled, ok, err)),
+        set_mpris_player_async=lambda enabled, ok, err: page.saves.append(
+            ("mpris", enabled, ok, err)),
+    )
+    from blueferry.ui.status import IPhonePage
+
+    for name in ("_show_saved_choice", "_save_media_switch"):
+        setattr(page, name, getattr(IPhonePage, name).__get__(page))
+    for name, value in overrides.items():
+        setattr(page, name, value)
+    return page
+
+
+def test_gtk_media_switches_follow_the_daemon_and_the_player_needs_media_control():
+    from blueferry.ui.status import IPhonePage
+
+    page = _media_switch_page()
+    apply = lambda values, reachable=True: IPhonePage._apply_media_switches(  # noqa: E731
+        page, BackendStatus.from_dict(values), reachable)
+
+    # Daemons that do not report the keys do not support the settings.
+    apply({})
+    assert page._media_group.visible is False
+
+    apply({"media_control_enabled": False})
+    assert page._media_group.visible is True
+    assert page._mpris_player_row.visible is False
+
+    apply({"media_control_enabled": False, "media_mpris_enabled": True})
+    assert page._mpris_player_row.visible is True
+    assert page._media_control_switch.active is False
+    assert page._mpris_player_switch.active is True
+    assert page._media_control_row.sensitive is True
+    assert page._mpris_player_row.sensitive is False
+
+    apply({"media_control_enabled": True, "media_mpris_enabled": False})
+    assert page._media_control_switch.active is True
+    assert page._mpris_player_row.sensitive is True
+    apply({"media_control_enabled": True, "media_mpris_enabled": False}, reachable=False)
+    assert page._media_control_row.sensitive is False
+    assert page._mpris_player_row.sensitive is False
+    # Setting the switches from a status never saves anything.
+    assert page.saves == [] and page._applying_media_switches is False
+
+
+def test_gtk_media_switch_ignores_updates_from_a_status_refresh():
+    from blueferry.ui.status import IPhonePage
+
+    page = _media_switch_page(_applying_media_switches=True)
+    IPhonePage._media_control_changed(page, page._media_control_switch, None)
+    IPhonePage._mpris_player_changed(page, page._mpris_player_switch, None)
+    assert page.saves == []
+
+
+def test_gtk_mpris_switch_holds_the_choice_until_the_save_settles():
+    from blueferry.ui.status import IPhonePage
+
+    page = _media_switch_page()
+    page._mpris_player_switch.active = True
+    IPhonePage._mpris_player_changed(page, page._mpris_player_switch, None)
+    choice = page._mpris_player_choice
+    assert [(save[0], save[1]) for save in page.saves] == [("mpris", True)]
+    assert page._mpris_player_row.sensitive is False
+    # While the save is running, a status still reporting "off" is not shown.
+    assert choice.saving and choice.resolve(False) == (True, False)
+
+    page.saves[0][2]({"media_mpris_enabled": True, "media_control_enabled": True})
+    assert not choice.saving and page.refreshes == [True]
+    assert page.toasts == ["Desktop media controls preference saved"]
+    # One status read before the save finished is skipped and asked again.
+    page._show_saved_choice(page._mpris_player_switch, choice, False)
+    assert page._mpris_player_switch.active is True and page.refreshes == [True, True]
+    page._show_saved_choice(page._mpris_player_switch, choice, False)
+    assert page._mpris_player_switch.active is False and len(page.refreshes) == 2
+
+
+def test_gtk_media_control_switch_reverts_and_reports_a_failed_save():
+    from blueferry.ui.status import IPhonePage
+
+    last = BackendStatus.from_dict({"media_control_enabled": False})
+    page = _media_switch_page(_last_status=last)
+    page._media_control_switch.active = True
+    IPhonePage._media_control_changed(page, page._media_control_switch, None)
+    assert [(save[0], save[1]) for save in page.saves] == [("media", True)]
+
+    page.saves[0][3]("no LE link")
+    choice = page._media_control_choice
+    assert not choice.saving
+    assert page.applied == [last]
+    assert page.toasts == ["Could not save media control preference: no LE link"]
+    assert choice.resolve(False) == (False, False)

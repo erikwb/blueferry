@@ -67,6 +67,14 @@ class FakeClient:
         self.calls.append(("set_contacts_only_notifications", enabled))
         return enabled
 
+    def set_media_control(self, enabled):
+        self.calls.append(("set_media_control", enabled))
+        return {"media_control_enabled": enabled}
+
+    def set_mpris_player(self, enabled):
+        self.calls.append(("set_mpris_player", enabled))
+        return {"media_mpris_enabled": enabled}
+
 
 def test_bridge_dispatches_private_values_without_command_arguments() -> None:
     client = FakeClient()
@@ -352,3 +360,19 @@ def test_host_info_is_computed_once_and_needs_no_daemon(monkeypatch) -> None:
         "event": "host",
         "data": {"bluetooth_restart_command": "sudo rc-service bluetooth restart"},
     }
+
+
+@pytest.mark.parametrize("method,key", [
+    ("set_media_control", "media_control_enabled"),
+    ("set_mpris_player", "media_mpris_enabled"),
+])
+def test_bridge_saves_the_media_opt_ins_and_returns_their_status(method, key) -> None:
+    client = FakeClient()
+    bridge = QuickshellBridge(client)  # type: ignore[arg-type]
+
+    assert bridge.dispatch(method, {"enabled": True}) == {key: True}
+    assert client.calls == [(method, True)]
+    for args in ({}, {"enabled": 1}, {"enabled": "true"}):
+        with pytest.raises(ValueError, match="enabled must be a boolean"):
+            bridge.dispatch(method, args)
+    assert client.calls == [(method, True)]

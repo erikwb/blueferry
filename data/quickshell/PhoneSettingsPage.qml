@@ -378,6 +378,43 @@ Rectangle {
             });
           }
         }
+        // Only daemons that report the media-control keys support the settings.
+        FerrySectionLabel {
+          ferryTheme: root.theme
+          visible: root.status.media_control_enabled !== undefined
+          text: "Media control"
+        }
+        FerryCheckBox {
+          objectName: "mediaControlCheckBox"
+          ferryTheme: root.theme
+          visible: root.status.media_control_enabled !== undefined
+          text: "Show and control what the iPhone is playing"
+          checked: root.status.media_control_enabled === true
+          enabled: root.setup.configured && !root.busy.mediaControl
+          Accessible.description: "Uses the Bluetooth LE link that also carries notifications."
+          onClicked: root.operationRequested("set_media_control", {enabled: checked})
+        }
+        FerryCheckBox {
+          objectName: "mprisPlayerCheckBox"
+          ferryTheme: root.theme
+          visible: root.status.media_mpris_enabled !== undefined
+          text: "Also show it in the desktop media controls (MPRIS)"
+          checked: root.status.media_mpris_enabled === true
+          // The player needs media control, as in the Qt client.
+          enabled: root.setup.configured && !root.busy.mprisPlayer
+            && !root.busy.mediaControl && root.status.media_control_enabled === true
+          Accessible.description: mprisPlayerWarning.text
+          onClicked: root.operationRequested("set_mpris_player", {enabled: checked})
+        }
+        FerryLabel {
+          id: mprisPlayerWarning
+          objectName: "mprisPlayerWarning"
+          ferryTheme: root.theme
+          visible: root.status.media_mpris_enabled !== undefined
+          Layout.fillWidth: true
+          wrapMode: Text.Wrap
+          text: "Like any desktop music player, every application in your session can then read the title, artist and album."
+        }
         FerrySectionLabel {
           ferryTheme: root.theme
           text: "Local data"

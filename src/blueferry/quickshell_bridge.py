@@ -137,6 +137,10 @@ class QuickshellBridge:
             return self.client.set_ancs_notification_actions(
                 _boolean(args, "enabled")
             )
+        if method == "set_media_control":
+            return self.client.set_media_control(_boolean(args, "enabled"))
+        if method == "set_mpris_player":
+            return self.client.set_mpris_player(_boolean(args, "enabled"))
         if method == "set_storage_policy":
             return self.client.set_storage_policy(_text(args, "policy"))
         if method == "unlock_storage":

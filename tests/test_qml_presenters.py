@@ -2572,3 +2572,108 @@ def test_battery_warning_checkbox_follows_the_daemon(qml_engine, settings_window
     assert _evaluate(
         qml_engine, "testBridge.calls.filter(c => c.method === 'setPhoneBatteryWarning')"
     ) == [{"method": "setPhoneBatteryWarning", "args": [True]}]
+
+
+def _quickshell_settings_page(qml_engine, quickshell_setup, status):
+    from PySide6.QtQuick import QQuickWindow
+
+    theme_component = _component(qml_engine, "data/quickshell/ThemePalette.qml")
+    theme = theme_component.create()
+    component = _component(qml_engine, "data/quickshell/PhoneSettingsPage.qml")
+    page = component.createWithInitialProperties({
+        "ferryTheme": theme, "setup": quickshell_setup, "status": status,
+        "width": 640, "height": 1400,
+    })
+    assert page is not None
+    quickshell_setup.setProperty("configured", True)
+    window = QQuickWindow()
+    window.resize(640, 1400)
+    page.setParentItem(window.contentItem())
+    window.show()
+    QGuiApplication.processEvents()
+    calls = []
+    page.operationRequested.connect(
+        lambda method, args: calls.append((
+            method, args.toVariant() if hasattr(args, "toVariant") else args,
+        ))
+    )
+
+    def close(_components=(theme_component, component)):
+        # The default argument keeps the components, which own the page
+        # and the theme, alive until the test is done.
+        window.close()
+        page.deleteLater()
+        theme.deleteLater()
+
+    return page, calls, close
+
+
+def test_quickshell_media_checkboxes_are_opt_in_and_the_player_needs_media_control(
+    qml_engine, quickshell_setup,
+):
+    base = {"notification_policy": "all", "contacts_only_notifications": False}
+    page, calls, close = _quickshell_settings_page(qml_engine, quickshell_setup, base)
+    media = page.findChild(QObject, "mediaControlCheckBox")
+    mpris = page.findChild(QObject, "mprisPlayerCheckBox")
+    warning = page.findChild(QObject, "mprisPlayerWarning")
+    assert media is not None and mpris is not None and warning is not None
+    # Daemons that do not report the keys do not support the settings.
+    assert media.property("visible") is False
+    assert mpris.property("visible") is False
+    assert warning.property("visible") is False
+
+    # A daemon with media control but without the MPRIS player.
+    page.setProperty("status", {**base, "media_control_enabled": False})
+    QGuiApplication.processEvents()
+    assert media.property("visible") is True
+    assert media.property("checked") is False
+    assert media.property("enabled") is True
+    assert mpris.property("visible") is False
+
+    status = {**base, "media_control_enabled": False, "media_mpris_enabled": False}
+    page.setProperty("status", status)
+    QGuiApplication.processEvents()
+    assert mpris.property("visible") is True
+    assert mpris.property("enabled") is False
+    assert "every application" in warning.property("text")
+
+    page.setProperty("busy", {"mediaControl": True})
+    QGuiApplication.processEvents()
+    assert media.property("enabled") is False
+    page.setProperty("busy", {})
+    assert QMetaObject.invokeMethod(media, "toggle")
+    assert QMetaObject.invokeMethod(media, "clicked")
+    assert calls == [("set_media_control", {"enabled": True})]
+
+    page.setProperty("status", {**status, "media_control_enabled": True})
+    QGuiApplication.processEvents()
+    assert media.property("checked") is True
+    assert mpris.property("enabled") is True
+    assert mpris.property("checked") is False
+    page.setProperty("busy", {"mprisPlayer": True})
+    QGuiApplication.processEvents()
+    assert mpris.property("enabled") is False
+    page.setProperty("busy", {})
+    assert QMetaObject.invokeMethod(mpris, "toggle")
+    assert QMetaObject.invokeMethod(mpris, "clicked")
+    assert calls[-1] == ("set_mpris_player", {"enabled": True})
+    close()
+
+
+def test_quickshell_saved_media_choice_is_not_undone_by_a_late_status(qml_engine) -> None:
+    component = _component(qml_engine, "data/quickshell/SavedChoice.qml")
+    choice = component.create()
+    assert choice is not None
+    choice.reported(False)
+    choice.request(True)
+    assert choice.property("busy") is True and choice.property("value") is True
+    choice.reported(False)
+    assert choice.property("value") is True
+    # Saved while a status request from before the save is still running.
+    choice.saved(True, True)
+    assert choice.property("busy") is False
+    choice.reported(False)
+    assert choice.property("value") is True
+    choice.reported(False)
+    assert choice.property("value") is False
+    choice.deleteLater()

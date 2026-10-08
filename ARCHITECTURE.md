@@ -166,6 +166,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `ui/conversations.py` | GTK conversations page: history, group confirmation, replies. |
 | `ui/status.py` | GTK iPhone page: setup, health, preferences, maintenance. |
 | `ui/status_presenter.py` | Pure presentation rules for the status page (including the optional phone battery/signal suffix). |
+| `ui/saved_choice.py` | Keeps a settings switch on the user's choice while its save and the next status settle. |
 | `ui/client.py` | Asynchronous GTK backend calls and D-Bus invalidations. |
 | `ui/setup_runner.py` | GTK-independent worker for blocking setup operations. |
 | `ui/util.py` | Small UI helpers. |
@@ -206,6 +207,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `ThemePalette.qml` | Pure color/geometry tokens with a system-palette fallback. |
 | `Ferry*.qml` | Styled controls (button, check box, combo box, label, text field, composer, section label, info row). |
 | `QuickshellMessageBubble.qml`, `QuickshellThreadPreview.qml` | Message bubble and thread preview. |
+| `SavedChoice.qml` | The same for Quickshell checkboxes that save through the daemon. |
 | `QuickshellPhoneStatus.qml` | Optional iPhone battery/signal caption in the header (hidden when unknown). |
 
 `data/blueferry-quickshell` is the launcher script, and

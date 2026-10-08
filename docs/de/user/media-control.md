@@ -20,13 +20,13 @@ Bluetooth-Verkehr und liegt außerhalb von BlueFerrys Schwerpunkt Nachrichten.
   sie meldet `blueferry media`, dass der Zustand der LE-Verbindung unbekannt
   ist.
 - Die Kommandozeile funktioniert überall. Der KDE/Kirigami-Client zeigt eine
-  „Wird gespielt“-Leiste. GTK-, Terminal- und Quickshell-Client haben noch
-  keine Medienansicht.
+  „Wird gespielt“-Leiste. GTK- und Quickshell-Client haben die Schalter, aber
+  noch keine Medienansicht; der Terminal-Client hat beides nicht.
 
 ## Einschalten
 
-Im Kirigami-Client die iPhone-Einstellungen öffnen und **Media Control**
-ankreuzen. Im Terminal:
+Im Kirigami-, GTK- oder Quickshell-Client die iPhone-Einstellungen öffnen
+und **Media Control** einschalten. Im Terminal:
 
 ```bash
 blueferry media enable    # blueferry media disable schaltet sie wieder aus
@@ -75,9 +75,9 @@ flowchart LR
 Eine zweite, getrennte Option veröffentlicht das iPhone als MPRIS-Mediaplayer.
 Plasmas Medienwiedergabe, die Medientasten der Tastatur und `playerctl`
 zeigen und steuern die iPhone-Wiedergabe dann wie jeden Desktop-Player. In
-den iPhone-Einstellungen des Kirigami-Clients unter **Media Control** das
-Kästchen **Also show it in the desktop media controls (MPRIS)** ankreuzen,
-oder:
+den iPhone-Einstellungen des Kirigami-, GTK- oder Quickshell-Clients unter
+**Media Control** die Option **Also show it in the desktop media controls
+(MPRIS)** einschalten, oder:
 
 ```bash
 blueferry media enable-mpris    # blueferry media disable-mpris schaltet es aus

@@ -18,13 +18,13 @@ BlueFerry's messaging focus.
   with the bearer API, as notifications need today). Without it,
   `blueferry media` reports that the LE link state is unknown.
 - The command line works everywhere. The KDE/Kirigami client shows a
-  now-playing bar. The GTK, terminal and Quickshell clients have no media
-  view yet.
+  now-playing bar. The GTK and Quickshell clients have the switches but no
+  media view yet; the terminal client has neither.
 
 ## Turn it on
 
-In the Kirigami client, open the iPhone settings and tick **Media Control**.
-From a terminal:
+In the Kirigami, GTK or Quickshell client, open the iPhone settings and
+switch on **Media Control**. From a terminal:
 
 ```bash
 blueferry media enable    # blueferry media disable turns it off again
@@ -73,8 +73,8 @@ flowchart LR
 A second, separate option publishes the iPhone as an MPRIS media player. The
 Plasma media controller, keyboard media keys and `playerctl` then show and
 control iPhone playback like any desktop player. Tick **Also show it in the
-desktop media controls (MPRIS)** under **Media Control** in the Kirigami
-iPhone settings, or run:
+desktop media controls (MPRIS)** under **Media Control** in the iPhone
+settings of the Kirigami, GTK or Quickshell client, or run:
 
 ```bash
 blueferry media enable-mpris    # blueferry media disable-mpris turns it off
