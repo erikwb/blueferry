@@ -48,7 +48,14 @@ Rectangle {
   function ancsUnavailableHint() {
     if (root.ancsLimited())
       return root.ancsExpectedDetail();
-    return "FYI: If ANCS remains unavailable, BlueZ may be retaining stale Bluetooth state. Try running sudo systemctl restart bluetooth.service, then wait for BlueFerry to reconnect. This briefly disconnects all Bluetooth devices.";
+    // shell.qml passes the bridge's bluetooth_restart_command: the init
+    // system's command, or "" when unknown. Older bridges omit it.
+    var command = root.status.bluetooth_restart_command;
+    if (typeof command !== "string")
+      command = "sudo systemctl restart bluetooth.service";
+    return "FYI: If ANCS remains unavailable, BlueZ may be retaining stale Bluetooth state. "
+      + (command === "" ? "Try restarting the Bluetooth service" : "Try running " + command)
+      + ", then wait for BlueFerry to reconnect. This briefly disconnects all Bluetooth devices.";
   }
 
   color: root.theme.windowSurface
@@ -353,6 +360,163 @@ Rectangle {
               enabled: checked
             });
           }
+        }
+        // Opt-in; only daemons that report the preference support it.
+        FerryCheckBox {
+          objectName: "ancsActionsCheckBox"
+          ferryTheme: root.theme
+          visible: root.status.ancs_actions_preference !== undefined
+          text: "Show iPhone action buttons (Accept, Decline, Clear…)"
+          checked: root.status.ancs_actions_preference === true
+          // A saved "on" can always be switched off; switching on needs All
+          // iPhone Notifications with content shown.
+          enabled: root.setup.configured && !root.busy.ancsActions && (checked || (root.status.notification_policy === "all" && root.status.notification_content_shown !== false))
+          Accessible.description: root.status.notification_content_shown === false ? "Unavailable while notification content is hidden." : "Clicking a button runs that action on the iPhone, for example answering or declining a call. Applies to All iPhone notifications."
+          onClicked: {
+            root.operationRequested("set_ancs_notification_actions", {
+              enabled: checked
+            });
+          }
+        }
+        // Only daemons that report the media-control keys support the settings.
+        FerrySectionLabel {
+          ferryTheme: root.theme
+          visible: root.status.media_control_enabled !== undefined
+          text: "Media control"
+        }
+        FerryCheckBox {
+          objectName: "mediaControlCheckBox"
+          ferryTheme: root.theme
+          visible: root.status.media_control_enabled !== undefined
+          text: "Show and control what the iPhone is playing"
+          checked: root.status.media_control_enabled === true
+          enabled: root.setup.configured && !root.busy.mediaControl
+          Accessible.description: "Uses the Bluetooth LE link that also carries notifications."
+          onClicked: root.operationRequested("set_media_control", {enabled: checked})
+        }
+        FerryCheckBox {
+          objectName: "mprisPlayerCheckBox"
+          ferryTheme: root.theme
+          visible: root.status.media_mpris_enabled !== undefined
+          text: "Also show it in the desktop media controls (MPRIS)"
+          checked: root.status.media_mpris_enabled === true
+          // The player needs media control, as in the Qt client.
+          enabled: root.setup.configured && !root.busy.mprisPlayer
+            && !root.busy.mediaControl && root.status.media_control_enabled === true
+          Accessible.description: mprisPlayerWarning.text
+          onClicked: root.operationRequested("set_mpris_player", {enabled: checked})
+        }
+        FerryLabel {
+          id: mprisPlayerWarning
+          objectName: "mprisPlayerWarning"
+          ferryTheme: root.theme
+          visible: root.status.media_mpris_enabled !== undefined
+          Layout.fillWidth: true
+          wrapMode: Text.Wrap
+          text: "Like any desktop music player, every application in your session can then read the title, artist and album."
+        }
+        // Only daemons that report the away-lock keys support the setting.
+        FerrySectionLabel {
+          ferryTheme: root.theme
+          visible: root.status.proximity_lock !== undefined
+          text: "Away lock"
+        }
+        FerryCheckBox {
+          objectName: "proximityLockCheckBox"
+          ferryTheme: root.theme
+          visible: root.status.proximity_lock !== undefined
+          text: "Lock the desktop when my iPhone goes away"
+          checked: root.status.proximity_lock_enabled === true
+          enabled: root.setup.configured && !root.busy.proximityLock
+          Accessible.description: "A convenience, not a security feature. BlueFerry never unlocks the desktop."
+          onClicked: {
+            // The checkbox only opts in or out; the saved grace period is kept.
+            root.operationRequested("set_proximity_lock", {
+              enabled: checked,
+              grace_seconds: root.status.proximity_lock_grace_sec || 60
+            });
+          }
+        }
+        FerryLabel {
+          ferryTheme: root.theme
+          visible: root.status.proximity_lock !== undefined
+          Layout.fillWidth: true
+          wrapMode: Text.Wrap
+          text: "Locks after " + (root.status.proximity_lock_grace_sec || 60) + " seconds away. A convenience, not a security feature: Bluetooth presence can be spoofed, and BlueFerry never unlocks the desktop."
+        }
+        // Shown only when the status carries calls_enabled, as in the Qt client.
+        FerrySectionLabel {
+          ferryTheme: root.theme
+          visible: root.status.calls_enabled !== undefined
+          text: "Phone calls"
+        }
+        FerryCheckBox {
+          objectName: "callsEnabledCheckBox"
+          ferryTheme: root.theme
+          visible: root.status.calls_enabled !== undefined
+          text: "Enable phone calls through this computer"
+          checked: root.status.calls_enabled === true
+          enabled: root.setup.configured && !root.busy.calls
+          Accessible.description: "Experimental. Needs oFono and extra setup."
+          onClicked: {
+            root.operationRequested("set_calls_enabled", {
+              enabled: checked
+            });
+          }
+        }
+        FerryLabel {
+          ferryTheme: root.theme
+          visible: root.status.calls_enabled !== undefined
+          Layout.fillWidth: true
+          wrapMode: Text.Wrap
+          text: "Experimental. While this is on, the iPhone's hands-free link stays connected to this computer, so calls can ring and be answered here and their audio plays here. Music stays on the iPhone. Working calls also need oFono set as the hands-free backend and BlueZ's own HFP plugin disabled; see \"Phone calls\" in the BlueFerry documentation. Make emergency calls on the iPhone itself."
+        }
+        // Only daemons that report the call-history keys support the settings.
+        FerrySectionLabel {
+          ferryTheme: root.theme
+          visible: root.status.call_history_enabled !== undefined
+          text: "Call history"
+        }
+        FerryCheckBox {
+          objectName: "callHistoryCheckBox"
+          ferryTheme: root.theme
+          visible: root.status.call_history_enabled !== undefined
+          text: "Keep the iPhone's recent calls"
+          checked: root.status.call_history_enabled === true
+          enabled: root.setup.configured && !root.busy.callHistory
+          Accessible.description: callHistoryNote.text
+          onClicked: {
+            root.operationRequested("set_call_history", {
+              enabled: checked,
+              missed_call_notifications: missedCallPopupsCheckBox.checked
+            });
+          }
+        }
+        FerryCheckBox {
+          id: missedCallPopupsCheckBox
+          objectName: "missedCallPopupsCheckBox"
+          ferryTheme: root.theme
+          visible: root.status.call_history_enabled !== undefined
+          text: "Notify me about missed calls"
+          checked: root.status.missed_call_notifications !== false
+          // Only offered while call history is on, as in the Qt client.
+          enabled: root.setup.configured && !root.busy.callHistory
+            && root.status.call_history_enabled === true
+          onClicked: {
+            root.operationRequested("set_call_history", {
+              enabled: true,
+              missed_call_notifications: checked
+            });
+          }
+        }
+        FerryLabel {
+          id: callHistoryNote
+          objectName: "callHistoryNote"
+          ferryTheme: root.theme
+          visible: root.status.call_history_enabled !== undefined
+          Layout.fillWidth: true
+          wrapMode: Text.Wrap
+          text: "Keeps the iPhone's recent calls (who called and when) under your local storage setting and can notify you about missed calls. It uses the iPhone's Sync Contacts permission and never places, answers, or listens to calls. Turning it off erases the retained calls."
         }
         FerrySectionLabel {
           ferryTheme: root.theme

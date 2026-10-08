@@ -28,12 +28,13 @@ from blueferry.conversation_state import (
     fetch_conversation_snapshot,
 )
 from blueferry.i18n import _
-from blueferry.models import BackendStatus
+from blueferry.models import BackendStatus, CallsSnapshot
 from blueferry.onboarding import OnboardingState, effective_compatibility
 from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH
 from blueferry.qt.avatars import avatar_url
 from blueferry.qt.tasks import Task
 from blueferry.quirks_report import issue_report, issue_url
+from blueferry.service_manager import bluetooth_restart_command
 from blueferry.setup_client import (
     DISCOVERY_SECONDS,
     ConfigurationState,
@@ -66,10 +67,14 @@ class BridgeController(QObject):
     pairingConfirmationRequested = Signal(str)
     pairingIssueReportChanged = Signal()
     messageOpenRequested = Signal(str)
+    notificationOpenMapChanged = Signal()
     groupConfirmationRequested = Signal(str, str, str)
     threadSendSucceeded = Signal(str, str)
     messageSendSucceeded = Signal(str, str)
     avatarsChanged = Signal()
+    callHistoryChanged = Signal()
+    nowPlayingChanged = Signal()
+    phoneCallsChanged = Signal()
 
     def __init__(
         self,
@@ -94,6 +99,7 @@ class BridgeController(QObject):
         self._contact_results: list[dict] = []
         self._state = ConversationState(select_first=False)
         self._status: dict = {}
+        self._notification_open_map: list[dict] = []
         self._devices: list[dict] = []
         self._bluetooth_active = False
         self._busy_count = 0
@@ -106,6 +112,12 @@ class BridgeController(QObject):
         self._onboarding_stage = str(self._onboarding.stage)
         self._refreshing = False
         self._refresh_again = False
+        # Optional HFP calls (Calls1); empty unless the backend enables them.
+        self._phone_calls: list[dict] = []
+        self._calls_state = "disabled"
+        # (calls_enabled, calls_state) of the last status that refreshed the
+        # call list. Calls themselves are announced by CallsChanged.
+        self._calls_status_key: tuple[object, object] | None = None
         self._storage_unlock_attempted = False
         self._pairing_confirmation_lock = threading.Lock()
         self._pairing_confirmation: tuple[threading.Event, list[bool]] | None = None
@@ -128,6 +140,23 @@ class BridgeController(QObject):
         self._refresh_timer.setSingleShot(True)
         self._refresh_timer.setInterval(100)
         self._refresh_timer.timeout.connect(self.refresh)
+        self._call_history: list[dict] = []
+        self._call_history_error = ""
+        self._call_history_loading = False
+        self._call_history_again = False
+        # Only a visible Recent Calls page keeps call records in this process.
+        self._call_history_watched = False
+        self._call_history_timer = QTimer(self)
+        self._call_history_timer.setSingleShot(True)
+        self._call_history_timer.setInterval(100)
+        self._call_history_timer.timeout.connect(self.loadCallHistory)
+        # Opt-in iPhone media control: coalesce NowPlayingChanged bursts and
+        # fetch the private snapshot through Media1 only when enabled.
+        self._now_playing: dict = {}
+        self._now_playing_timer = QTimer(self)
+        self._now_playing_timer.setSingleShot(True)
+        self._now_playing_timer.setInterval(150)
+        self._now_playing_timer.timeout.connect(self.refreshNowPlaying)
         self._bus = QDBusConnection.sessionBus() if subscribe else None
         if subscribe:
             self._subscribe()
@@ -141,6 +170,14 @@ class BridgeController(QObject):
     @Property("QVariantList", notify=contactResultsChanged)
     def contactResults(self):
         return self._contact_results
+
+    @Property("QVariantList", notify=phoneCallsChanged)
+    def phoneCalls(self):
+        return self._phone_calls
+
+    @Property(str, notify=phoneCallsChanged)
+    def callsState(self) -> str:
+        return self._calls_state
 
     @Property("QVariantMap", notify=statusChanged)
     def status(self):
@@ -258,6 +295,25 @@ class BridgeController(QObject):
         self._avatar_revision += 1
         self.avatarsChanged.emit()
 
+    @Property(bool, notify=statusChanged)
+    def callHistoryEnabled(self) -> bool:
+        return self._status.get("call_history_enabled") is True
+
+    @Property("QVariantList", notify=callHistoryChanged)
+    def callHistory(self):
+        return self._call_history
+
+    @Property(str, notify=callHistoryChanged)
+    def callHistoryError(self) -> str:
+        return self._call_history_error
+    @Property("QVariantList", notify=notificationOpenMapChanged)
+    def notificationOpenMap(self):
+        return self._notification_open_map
+
+    @Property("QVariantMap", notify=nowPlayingChanged)
+    def nowPlaying(self):
+        return self._now_playing
+
     @Property("QVariantList", notify=devicesChanged)
     def devices(self):
         return self._devices
@@ -293,6 +349,7 @@ class BridgeController(QObject):
             "hardware_supported": False,
             "messages_supported": False,
             "notifications_supported": False,
+            "notifications_active": False,
             "bearer_api_active": False,
             "pairing_ready": True,
             "issue": message,
@@ -348,6 +405,10 @@ class BridgeController(QObject):
     @Property(str, constant=True)
     def version(self) -> str:
         return __version__
+
+    @Property(str, constant=True)
+    def bluetoothRestartCommand(self) -> str:
+        return bluetooth_restart_command() or ""
 
     def _set_error(self, message: str) -> None:
         if message == self._error_text:
@@ -433,6 +494,63 @@ class BridgeController(QObject):
             self,
             SLOT("_openMessageRequested(QString)"),
         )
+        self._bus.connect(
+            BUS_NAME,
+            OBJECT_PATH,
+            EVENTS_IFACE,
+            "CallHistoryChanged",
+            self,
+            SLOT("_callHistoryInvalidated()"),
+        )
+        self._bus.connect(
+            BUS_NAME,
+            OBJECT_PATH,
+            EVENTS_IFACE,
+            "NowPlayingChanged",
+            self,
+            SLOT("_nowPlayingInvalidated()"),
+        )
+        self._bus.connect(
+            BUS_NAME,
+            OBJECT_PATH,
+            EVENTS_IFACE,
+            "CallsChanged",
+            self,
+            SLOT("_callsInvalidated()"),
+        )
+
+    @Slot()
+    def _nowPlayingInvalidated(self) -> None:
+        self._now_playing_timer.start()
+
+    def _set_now_playing(self, value: object) -> None:
+        snapshot = dict(value) if isinstance(value, dict) else {}
+        if snapshot != self._now_playing:
+            self._now_playing = snapshot
+            self.nowPlayingChanged.emit()
+
+    @Slot()
+    def refreshNowPlaying(self) -> None:
+        if not self._status.get("media_control_enabled"):
+            self._set_now_playing({})
+            return
+        self._run(
+            self._backend.now_playing,
+            self._set_now_playing,
+            lambda _message: self._set_now_playing({}),
+            busy=False,
+        )
+
+    @Slot(str)
+    def sendMediaCommand(self, command: str) -> None:
+        selected = str(command or "").strip()
+        if not selected:
+            return
+        self._run(
+            lambda: self._backend.send_media_command(selected),
+            lambda _value: None,
+            busy=False,
+        )
 
     @Slot("QVariantMap")
     def _historyChanged(self, _revision) -> None:
@@ -445,6 +563,81 @@ class BridgeController(QObject):
     @Slot(str)
     def _openMessageRequested(self, handle: str) -> None:
         self.messageOpenRequested.emit(handle)
+
+    @Slot()
+    def _callHistoryInvalidated(self) -> None:
+        # The signal carries nothing; only a shown list is refetched.
+        if self.callHistoryEnabled and self._call_history_watched:
+            self._call_history_timer.start()
+
+    @Slot(bool)
+    def watchCallHistory(self, watched: bool) -> None:
+        """The Recent Calls page opened (load now) or closed (forget it)."""
+        self._call_history_watched = bool(watched)
+        if self._call_history_watched:
+            self.loadCallHistory()
+            return
+        self._call_history_timer.stop()
+        self._call_history_again = False
+        if self._call_history or self._call_history_error:
+            self._call_history = []
+            self._call_history_error = ""
+            self.callHistoryChanged.emit()
+
+    @Slot()
+    def loadCallHistory(self) -> None:
+        """Fetch the opt-in call list; never touches the conversation error."""
+        if not self.callHistoryEnabled or not self._call_history_watched:
+            return
+        if self._call_history_loading:
+            self._call_history_again = True
+            return
+        self._call_history_loading = True
+
+        def operation() -> list[dict]:
+            return [entry.to_dict() for entry in self._backend.call_history(200)]
+
+        def completed(value: object) -> None:
+            # A reply that lands after the page closed is discarded.
+            if self._call_history_watched:
+                self._call_history = list(value) if isinstance(value, list) else []
+                self._call_history_error = ""
+                self.callHistoryChanged.emit()
+            finished()
+
+        def failed(message: str) -> None:
+            if self._call_history_watched:
+                self._call_history_error = message or _("Call history is unavailable")
+                self.callHistoryChanged.emit()
+            finished()
+
+        def finished() -> None:
+            self._call_history_loading = False
+            if self._call_history_again:
+                self._call_history_again = False
+                self.loadCallHistory()
+
+        self._run(operation, completed, failed, busy=False)
+
+    @Slot()
+    def syncCallHistory(self) -> None:
+        if not self.callHistoryEnabled:
+            return
+
+        def failed(message: str) -> None:
+            if self._call_history_watched:
+                self._call_history_error = message or _("Call history sync failed")
+                self.callHistoryChanged.emit()
+
+        self._run(
+            self._backend.sync_call_history,
+            lambda _value: self.loadCallHistory(),
+            failed,
+        )
+
+    @Slot()
+    def _callsInvalidated(self) -> None:
+        self.refreshCalls()
 
     @Slot()
     def start(self) -> None:
@@ -500,7 +693,7 @@ class BridgeController(QObject):
             self._compatibility = compatibility.to_dict()
             self._configuration = configuration
             self._setup_loaded = True
-            self._bluetooth_active = compatibility.bearer_api_active
+            self._bluetooth_active = compatibility.notifications_active
             self.compatibilityChanged.emit()
             self.configuredChanged.emit()
             self.setupLoadedChanged.emit()
@@ -533,7 +726,9 @@ class BridgeController(QObject):
         def completed(value: object) -> None:
             compatibility = value
             self._compatibility = compatibility.to_dict()
-            self._bluetooth_active = bool(getattr(compatibility, "bearer_api_active", False))
+            self._bluetooth_active = bool(
+                getattr(compatibility, "notifications_active", False)
+            )
             self.compatibilityChanged.emit()
             self.bluetoothChanged.emit()
             self._update_onboarding_stage()
@@ -565,6 +760,15 @@ class BridgeController(QObject):
             self.statusChanged.emit()
             self._sync_avatars()
             self._maybe_unlock_storage()
+            self._now_playing_timer.start()
+            # StatusChanged also fires for unrelated changes (bearers,
+            # storage, phone status); only a call-state change needs a new
+            # ListCalls. Call list changes arrive through CallsChanged.
+            calls_key = (self._status.get("calls_enabled"), self._status.get("calls_state"))
+            if calls_key != self._calls_status_key:
+                self._calls_status_key = calls_key
+                if self._status.get("calls_enabled") or self._phone_calls:
+                    self.refreshCalls()
         self._update_onboarding_stage()
         self._refresh_pairing_issue_report()
         self._set_error(self._state.error)
@@ -677,6 +881,56 @@ class BridgeController(QObject):
             completed,
         )
 
+    # ---- optional phone calls (Calls1) -----------------------------------
+
+    def _apply_calls(self, snapshot: object) -> None:
+        if not isinstance(snapshot, CallsSnapshot):
+            return
+        self._phone_calls = [call.to_dict() for call in snapshot.calls]
+        self._calls_state = snapshot.state
+        self.phoneCallsChanged.emit()
+
+    def _calls_unavailable(self, _message: str = "") -> None:
+        # Status explains a disabled or missing feature; an in-flight list
+        # must not leave stale calls or a stale "ready" state on screen.
+        state = str(self._status.get("calls_state") or "disabled")
+        if state == "ready":
+            state = "unavailable"  # ListCalls just failed despite the status
+        if self._phone_calls or state != self._calls_state:
+            self._phone_calls = []
+            self._calls_state = state
+            self.phoneCallsChanged.emit()
+
+    @Slot()
+    def refreshCalls(self) -> None:
+        if not self._status.get("calls_enabled"):
+            self._calls_unavailable()
+            return
+        self._run(self._backend.calls, self._apply_calls, self._calls_unavailable, busy=False)
+
+    def _call_action(self, operation: Callable[[], object]) -> None:
+        self._run(operation, lambda _value: self.refreshCalls())
+
+    @Slot(str)
+    def dialCall(self, number: str) -> None:
+        selected = str(number or "").strip()
+        if selected:
+            self._call_action(lambda: self._backend.dial(selected))
+
+    @Slot(str)
+    def answerCall(self, call_id: str) -> None:
+        if call_id:
+            self._call_action(lambda: self._backend.answer_call(str(call_id)))
+
+    @Slot(str)
+    def hangupCall(self, call_id: str) -> None:
+        if call_id:
+            self._call_action(lambda: self._backend.hangup_call(str(call_id)))
+
+    @Slot()
+    def hangupAllCalls(self) -> None:
+        self._call_action(self._backend.hangup_all_calls)
+
     @Slot()
     def syncContacts(self) -> None:
         self._run(self._backend.sync_contacts, lambda _value: self.refresh())
@@ -747,6 +1001,27 @@ class BridgeController(QObject):
             completed,
         )
 
+    @Slot(bool)
+    def setAncsNotificationActions(self, enabled: bool) -> None:
+        def completed(value: object) -> None:
+            self._status["ancs_actions_preference"] = bool(value)
+            self._status["ancs_actions"] = bool(value) and (
+                self._status.get("notification_content_shown") is not False
+            )
+            self.statusChanged.emit()
+
+        def failed(message: str) -> None:
+            # The checkbox's enabled state follows its own tick, so put the
+            # saved value back on screen instead of leaving it greyed out.
+            self._operation_failed(message)
+            self.statusChanged.emit()
+
+        self._run(
+            lambda: self._backend.set_ancs_notification_actions(enabled),
+            completed,
+            failed,
+        )
+
     @Slot(bool, int)
     def setProximityLock(self, enabled: bool, grace_seconds: int) -> None:
         def completed(value: object) -> None:
@@ -760,6 +1035,89 @@ class BridgeController(QObject):
             ),
             completed,
         )
+
+    @Slot(bool, bool)
+    def setCallHistory(self, enabled: bool, missed_call_notifications: bool) -> None:
+        def completed(value: object) -> None:
+            if isinstance(value, dict):
+                self._status.update(value)
+                self.statusChanged.emit()
+
+        self._run(
+            lambda: self._backend.set_call_history(
+                bool(enabled), bool(missed_call_notifications)
+            ),
+            completed,
+        )
+
+    def _open_map_updated(self, value: object) -> None:
+        if isinstance(value, list):
+            self._notification_open_map = [dict(rule) for rule in value if isinstance(rule, dict)]
+            self.notificationOpenMapChanged.emit()
+
+    @Slot()
+    def loadNotificationOpenMap(self) -> None:
+        self._run(
+            self._backend.notification_open_map, self._open_map_updated, busy=False,
+        )
+
+    @Slot(str, str)
+    def setNotificationOpenTarget(self, bundle_id: str, target: str) -> None:
+        bundle = str(bundle_id or "").strip()
+        selected = str(target or "").strip()
+        if not bundle or not selected:
+            return
+        self._run(
+            lambda: self._backend.set_notification_open_target(bundle, selected),
+            self._open_map_updated,
+        )
+
+    @Slot(str)
+    def removeNotificationOpenTarget(self, bundle_id: str) -> None:
+        bundle = str(bundle_id or "").strip()
+        if not bundle:
+            return
+        self._run(
+            lambda: self._backend.remove_notification_open_target(bundle),
+            lambda _removed: self.loadNotificationOpenMap(),
+        )
+
+    @Slot(bool)
+    def setMediaControl(self, enabled: bool) -> None:
+        def completed(value: object) -> None:
+            if isinstance(value, dict):
+                self._status.update(value)
+                self.statusChanged.emit()
+            self.refreshNowPlaying()
+
+        self._run(lambda: self._backend.set_media_control(bool(enabled)), completed)
+
+    @Slot(bool)
+    def setPhoneBatteryWarning(self, enabled: bool) -> None:
+        def completed(value: object) -> None:
+            self._status["phone_battery_warning"] = bool(value)
+            self.statusChanged.emit()
+
+        self._run(lambda: self._backend.set_phone_battery_warning(bool(enabled)), completed)
+
+    @Slot(bool)
+    def setCallsEnabled(self, enabled: bool) -> None:
+        def completed(value: object) -> None:
+            if isinstance(value, dict):
+                self._status.update(value)
+                self.statusChanged.emit()
+                self.refreshCalls()
+
+        self._run(lambda: self._backend.set_calls_enabled(bool(enabled)), completed)
+
+    @Slot(bool)
+    def setMprisPlayer(self, enabled: bool) -> None:
+        def completed(value: object) -> None:
+            if isinstance(value, dict):
+                self._status.update(value)
+                self.statusChanged.emit()
+
+        self._run(lambda: self._backend.set_mpris_player(bool(enabled)), completed)
 
     @Slot(str)
     def setStoragePolicy(self, policy: str) -> None:

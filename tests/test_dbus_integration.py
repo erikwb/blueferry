@@ -24,6 +24,7 @@ from blueferry.grouping import named_group_key
 from blueferry.history import append_event
 from blueferry.protocol import (
     BUS_NAME,
+    CALL_HISTORY_IFACE,
     EVENTS_IFACE,
     MESSAGES_API_VERSION,
     MESSAGES_IFACE,
@@ -51,6 +52,11 @@ class _Sessions:
 class _Policy:
     value = "messages"
     contacts_only = False
+    ancs_actions = False
+
+    def set_ancs_actions(self, enabled: bool) -> bool:
+        self.ancs_actions = enabled
+        return enabled
 
     def set(self, value: str) -> str:
         self.value = value
@@ -125,10 +131,12 @@ def _dispatch_until(predicate, *, timeout: float = 5.0) -> None:
     assert predicate(), "timed out waiting for D-Bus dispatch"
 
 
-def _request_in_thread(name, method, *args):
+def _request_in_thread(name, method, *args, iface=None):
     outcome = {}
     def request():
         connection, interface = _client(name)
+        if iface is not None:
+            interface = dbus.Interface(interface.proxy_object, iface)
         try:
             outcome["value"] = getattr(interface, method)(*args, timeout=5)
         except Exception as error:
@@ -644,6 +652,12 @@ def test_notification_policy_round_trips_without_profile_io(public_service) -> N
             outcome["contacts_after"] = bool(
                 interface.SetContactsOnlyNotifications(True, timeout=5)
             )
+            outcome["actions_before"] = bool(
+                interface.GetAncsNotificationActions(timeout=5)
+            )
+            outcome["actions_after"] = bool(
+                interface.SetAncsNotificationActions(True, timeout=5)
+            )
         except Exception as error:
             outcome["error"] = error
         finally:
@@ -659,10 +673,13 @@ def test_notification_policy_round_trips_without_profile_io(public_service) -> N
         "after": "none",
         "contacts_before": False,
         "contacts_after": True,
+        "actions_before": False,
+        "actions_after": True,
     }
     assert policy.value == "none"
     assert policy.contacts_only is True
-    assert policy_changes == [True, True]
+    assert policy.ancs_actions is True
+    assert policy_changes == [True, True, True]
 
 
 def test_proximity_lock_setter_round_trips_and_rejects_bad_grace(public_service) -> None:
@@ -703,6 +720,87 @@ def test_proximity_lock_setter_round_trips_and_rejects_bad_grace(public_service)
         "error": "io.weirdware.BlueFerry.Error.InvalidArgs",
     }
     assert policy.proximity == (False, 30)
+
+
+def test_notification_click_rules_round_trip_through_the_shared_client(tmp_path) -> None:
+    from blueferry.notification_policy import NotificationPolicyStore
+
+    bus = dbus.SessionBus()
+    name = f"{BUS_NAME}.Testopen{os.getpid()}n{next(_service_ids)}"
+    bus_name = dbus.service.BusName(name, bus=bus, do_not_queue=True)
+    store = NotificationPolicyStore(tmp_path / "settings.json")
+    changes = []
+    service = MessagesService(
+        bus_name,
+        _Sessions(),
+        BackendDependencies(
+            status_provider=lambda: {
+                "initializing": False, "api_version": MESSAGES_API_VERSION,
+            },
+            notification_policy=store,
+            on_notification_policy_changed=lambda: changes.append(True),
+            open_notification_click=lambda click_id, token: (
+                clicks.append((click_id, token)) or click_id == "known"
+            ),
+        ),
+    )
+    outcome = {}
+    clicks = []
+
+    def edit_rules() -> None:
+        connection = dbus.SessionBus(private=True, mainloop=dbus.mainloop.NULL_MAIN_LOOP)
+        client = BackendClient(interface_factory=lambda interface: dbus.Interface(
+            connection.get_object(name, OBJECT_PATH), interface
+        ))
+        try:
+            outcome["empty"] = client.notification_open_map()
+            outcome["set"] = client.set_notification_open_target(
+                "net.whatsapp.WhatsApp", "https://web.whatsapp.com"
+            )
+            try:
+                client.set_notification_open_target("com.example.App", "file:///etc/passwd")
+            except Exception as error:
+                outcome["rejected"] = type(error).__name__
+            outcome["removed"] = client.remove_notification_open_target("net.whatsapp.WhatsApp")
+            outcome["after"] = client.notification_open_map()
+            outcome["click"] = client.open_notification_click("known", "tok")
+            outcome["stale_click"] = client.open_notification_click("gone", "")
+            try:
+                client.open_notification_click("x" * 65, "")
+            except Exception as error:
+                outcome["bad_click"] = type(error).__name__
+        except Exception as error:
+            outcome["error"] = error
+        finally:
+            connection.close()
+
+    try:
+        client_thread = threading.Thread(target=edit_rules)
+        client_thread.start()
+        _dispatch_until(lambda: not client_thread.is_alive())
+        client_thread.join(timeout=1)
+    finally:
+        service.close()
+        service.remove_from_connection()
+        bus.release_name(name)
+
+    assert outcome == {
+        "empty": [],
+        "set": [{
+            "bundle_id": "net.whatsapp.WhatsApp",
+            "target": "https://web.whatsapp.com",
+            "kind": "url",
+        }],
+        "rejected": "BackendError",
+        "removed": True,
+        "after": [],
+        "click": True,
+        "stale_click": False,
+        "bad_click": "BackendError",
+    }
+    assert clicks == [("known", "tok"), ("gone", "")]
+    assert store.open_map == {}
+    assert changes == [True, True]
 
 
 def test_live_signal_contains_only_an_opaque_revision(public_service) -> None:
@@ -778,3 +876,108 @@ def test_contact_photo_crosses_the_bus_as_bounded_bytes(public_service, enabled)
     assert bytes(outcome["raw"]) == outcome["photo"]
     assert outcome["status"] is enabled
     assert outcome["invalid"].endswith(".InvalidArgs")
+
+
+def test_call_history_is_not_ready_until_opted_in(public_service) -> None:
+    name, _pending, _policy, _policy_changes, _service = public_service
+
+    thread, outcome = _request_in_thread(
+        name, "ListCallHistory", dbus.UInt32(5), iface=CALL_HISTORY_IFACE,
+    )
+    _dispatch_until(lambda: not thread.is_alive())
+    thread.join(timeout=1)
+
+    error = outcome["error"]
+    assert error.get_dbus_name() == "io.weirdware.BlueFerry.Error.NotReady"
+    assert "call-history enable" in error.get_dbus_message()
+
+
+def test_call_history_round_trip_and_content_free_signal(public_service) -> None:
+    from datetime import datetime, timezone
+
+    from blueferry.call_history import MISSED, CallRecord
+
+    name, _pending, _policy, _policy_changes, service = public_service
+    moment = datetime.now(timezone.utc).replace(microsecond=0)
+    record = CallRecord(
+        direction=MISSED, occurred_at=moment, raw_time="20260928T120000Z",
+        address="+15551230001", phone="15551230001", name="Card Name",
+    )
+
+    class _History:
+        def records(self):
+            return [record]
+
+        def sync(self, success, _failure):
+            success(1)
+
+        def clear(self):
+            pass
+
+    service.operations.dependencies = replace(
+        service.operations.dependencies, call_history=lambda: _History(),
+    )
+    connection = dbus.SessionBus(private=True)
+    received = []
+    match = connection.add_signal_receiver(
+        lambda *args: received.append(args),
+        dbus_interface=EVENTS_IFACE,
+        signal_name="CallHistoryChanged",
+        bus_name=name,
+        path=OBJECT_PATH,
+    )
+    try:
+        list_thread, listed = _request_in_thread(
+            name, "ListCallHistory", dbus.UInt32(5), iface=CALL_HISTORY_IFACE,
+        )
+        _dispatch_until(lambda: not list_thread.is_alive())
+        sync_thread, synced = _request_in_thread(
+            name, "SyncCallHistory", iface=CALL_HISTORY_IFACE,
+        )
+        _dispatch_until(lambda: not sync_thread.is_alive())
+        service.emit_call_history_changed()
+        _dispatch_until(lambda: bool(received))
+    finally:
+        match.remove()
+        connection.close()
+
+    assert json.loads(str(listed["value"])) == [{
+        "direction": "missed",
+        "timestamp": moment.isoformat(),
+        "address": "+15551230001",
+        "name": "Card Name",
+        "contact_name": None,
+    }]
+    assert int(synced["value"]) == 1
+    assert received == [()]
+
+
+def test_call_history_opt_in_is_set_on_its_own_interface(public_service) -> None:
+    name, _pending, _policy, _policy_changes, service = public_service
+    calls = []
+
+    def configure(enabled, missed):
+        calls.append((enabled, missed))
+        return {"call_history_enabled": enabled, "missed_call_notifications": missed}
+
+    service.operations.dependencies = replace(
+        service.operations.dependencies, set_call_history=configure,
+    )
+    thread, outcome = _request_in_thread(
+        name, "SetCallHistory", True, False, iface=CALL_HISTORY_IFACE,
+    )
+    _dispatch_until(lambda: not thread.is_alive())
+    old, on_messages = _request_in_thread(name, "SetCallHistory", True, True)
+    _dispatch_until(lambda: not old.is_alive())
+
+    assert json.loads(str(outcome["value"])) == {
+        "call_history_enabled": True, "missed_call_notifications": False,
+    }
+    assert calls == [(True, False)]
+    assert on_messages["error"].get_dbus_name() == "org.freedesktop.DBus.Error.UnknownMethod"
+    for method in ("ListCallHistory", "SyncCallHistory"):
+        legacy, result = _request_in_thread(name, method, *(
+            (dbus.UInt32(1),) if method == "ListCallHistory" else ()
+        ))
+        _dispatch_until(lambda thread=legacy: not thread.is_alive())
+        assert result["error"].get_dbus_name() == "org.freedesktop.DBus.Error.UnknownMethod"

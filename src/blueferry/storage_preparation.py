@@ -1,8 +1,11 @@
 """Worker-side storage validation and the cache data committed after it succeeds."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
+from blueferry.call_history import CallRecord
+from blueferry.call_history_repository import CallHistoryRepository, clear_call_history
+from blueferry.call_history_settings import call_history_enabled
 from blueferry.confirmed_groups import ConfirmedGroupsStore
 from blueferry.contacts import ContactsResolver, clear_contact_cache
 from blueferry.group_routes import GroupRoutesStore
@@ -24,6 +27,7 @@ class PreparedStorage:
     contacts: ContactsResolver
     historical_ancs: list[dict]
     has_messages: bool
+    call_history: list[CallRecord] = field(default_factory=list)
 
 
 def prepare_storage(storage: StorageSecurity) -> PreparedStorage:
@@ -32,21 +36,35 @@ def prepare_storage(storage: StorageSecurity) -> PreparedStorage:
     ConfirmedGroupsStore(storage.settings_path, storage=storage).migrate()
     routes = GroupRoutesStore(storage.settings_path, storage=storage)
     routes.migrate()
+    calls: list[CallRecord] = []
     if storage.status.policy == NO_STORAGE:
         clear_events()
         clear_contact_cache()
+        clear_call_history()
     elif storage.status.can_read:
         scrub_unprotected_events(storage=storage)
         # Before pruning: retention must not discard a roster still in use.
         _move_group_routes_out_of_history(storage, routes)
         prune_events(storage=storage)
         minimize_ancs_history(storage=storage)
+        calls = _prepare_call_history(storage)
     contacts = ContactsResolver(storage=storage, strict=True)
     historical = read_events(kinds={"ancs_notification"}, limit=2_000, storage=storage)
     has_messages = bool(read_events(kinds={"sms_received"}, limit=1, storage=storage))
     if storage.status.state == "error":
         raise CorruptStorageError(storage.status.detail)
-    return PreparedStorage(contacts, historical, has_messages)
+    return PreparedStorage(contacts, historical, has_messages, calls)
+
+
+def _prepare_call_history(storage: StorageSecurity) -> list[CallRecord]:
+    """Apply retention to the call mirror, or erase it once the feature is off."""
+    if not call_history_enabled():
+        # Turning the opt-in off must not leave who-called-whom on disk.
+        clear_call_history()
+        return []
+    repository = CallHistoryRepository(storage)
+    repository.prune()
+    return repository.load()
 
 
 def _move_group_routes_out_of_history(

@@ -8,24 +8,38 @@ import dbus.exceptions
 
 from blueferry.bus import get_session_bus
 from blueferry.client_wire import (
+    decode_call_history,
+    decode_calls,
     decode_contact_records,
     decode_contacts,
     decode_events,
     decode_json,
     decode_mapping,
+    decode_open_map,
     decode_thread,
     decode_threads,
 )
 from blueferry.contact_photos import valid_photo
 from blueferry.errors import BlueFerryError
 from blueferry.limits import MAX_CONTACT_PAGE
-from blueferry.models import BackendStatus, EventRecord, Thread
+from blueferry.models import (
+    BackendStatus,
+    CallHistoryEntry,
+    CallsSnapshot,
+    EventRecord,
+    Thread,
+)
 from blueferry.protocol import (
     BUS_NAME,
+    CALL_CONTROL_TIMEOUT_SEC,
+    CALL_HISTORY_IFACE,
+    CALLS_IFACE,
     CLEAR_CALL_TIMEOUT_SEC,
     CONTACT_CALL_TIMEOUT_SEC,
     DELETE_CALL_TIMEOUT_SEC,
     GROUP_ROUTE_CALL_TIMEOUT_SEC,
+    MEDIA_CALL_TIMEOUT_SEC,
+    MEDIA_IFACE,
     MESSAGES_IFACE,
     OBEX_CALL_TIMEOUT_SEC,
     OBJECT_PATH,
@@ -40,6 +54,26 @@ from blueferry.protocol import (
 
 class BackendError(BlueFerryError):
     pass
+
+
+def _dbus_message(error: Exception) -> str:
+    if isinstance(error, dbus.exceptions.DBusException):
+        return error.get_dbus_message() or str(error)
+    return str(error)
+
+
+def _open_map_error(error: Exception) -> BackendError:
+    # Messages1 gained click rules additively, so a backend that was not
+    # restarted after an upgrade answers UnknownMethod; say so plainly.
+    if (
+        isinstance(error, dbus.exceptions.DBusException)
+        and error.get_dbus_name() == "org.freedesktop.DBus.Error.UnknownMethod"
+    ):
+        return BackendError(
+            "the running backend does not support notification click rules; "
+            "restart it after upgrading"
+        )
+    return BackendError(_dbus_message(error))
 
 
 class CompatibilityCache:
@@ -100,6 +134,61 @@ class BackendClient:
         if owner is not None:
             self._compatibility.add(owner)
         return interface
+
+    def _media_iface(self) -> dbus.Interface:
+        """Media1 on the same owner-bound proxy that passed the API check."""
+        messages = self._iface(MESSAGES_IFACE)
+        proxy = getattr(messages, "proxy_object", None)
+        if proxy is None:
+            return self._raw_iface(MEDIA_IFACE)
+        return dbus.Interface(proxy, MEDIA_IFACE)
+
+    @staticmethod
+    def _media_error(error: dbus.exceptions.DBusException) -> BackendError:
+        if (error.get_dbus_name() or "").startswith("org.freedesktop.DBus.Error.Unknown"):
+            return BackendError(
+                "The running BlueFerry backend has no media control; update BlueFerry."
+            )
+        return BackendError(error.get_dbus_message() or str(error))
+
+    def now_playing(self) -> dict:
+        """iPhone now-playing snapshot (``enabled`` is false unless opted in)."""
+        try:
+            return decode_mapping(
+                self._media_iface().GetNowPlaying(timeout=STATUS_CALL_TIMEOUT_SEC)
+            )
+        except dbus.exceptions.DBusException as error:
+            raise self._media_error(error) from error
+        except ValueError as error:
+            raise BackendError(str(error)) from error
+
+    def set_media_control(self, enabled: bool) -> dict:
+        """Opt in or out; returns the media_control_* status keys."""
+        try:
+            return decode_mapping(self._media_iface().SetMediaControl(
+                dbus.Boolean(enabled), timeout=POLICY_CALL_TIMEOUT_SEC,
+            ))
+        except dbus.exceptions.DBusException as error:
+            raise self._media_error(error) from error
+        except ValueError as error:
+            raise BackendError(str(error)) from error
+
+    def set_mpris_player(self, enabled: bool) -> dict:
+        """Opt in or out of the MPRIS player; returns the media_* status keys."""
+        try:
+            return decode_mapping(self._media_iface().SetMprisPlayer(
+                dbus.Boolean(enabled), timeout=POLICY_CALL_TIMEOUT_SEC,
+            ))
+        except dbus.exceptions.DBusException as error:
+            raise self._media_error(error) from error
+        except ValueError as error:
+            raise BackendError(str(error)) from error
+
+    def send_media_command(self, command: str) -> None:
+        try:
+            self._media_iface().SendMediaCommand(command, timeout=MEDIA_CALL_TIMEOUT_SEC)
+        except dbus.exceptions.DBusException as error:
+            raise self._media_error(error) from error
 
     def is_healthy(self) -> bool:
         try:
@@ -241,6 +330,41 @@ class BackendClient:
         except dbus.exceptions.DBusException as error:
             raise BackendError(error.get_dbus_message() or str(error)) from error
 
+    def _call_history_iface(self) -> dbus.Interface:
+        # CallHistory1 has no GetStatus; check compatibility through
+        # Messages1 and address CallHistory1 on that same owner-bound object.
+        messages = self._iface(MESSAGES_IFACE)
+        proxy = getattr(messages, "proxy_object", None)
+        if proxy is None:
+            return self._raw_iface(CALL_HISTORY_IFACE)
+        return dbus.Interface(proxy, CALL_HISTORY_IFACE)
+
+    def call_history(self, limit: int = 200) -> list[CallHistoryEntry]:
+        try:
+            return decode_call_history(self._call_history_iface().ListCallHistory(
+                dbus.UInt32(limit), timeout=SNAPSHOT_CALL_TIMEOUT_SEC,
+            ))
+        except (dbus.exceptions.DBusException, ValueError) as error:
+            raise BackendError(_dbus_message(error)) from error
+
+    def sync_call_history(self) -> int:
+        try:
+            return int(self._call_history_iface().SyncCallHistory(
+                timeout=OBEX_CALL_TIMEOUT_SEC
+            ))
+        except dbus.exceptions.DBusException as error:
+            raise BackendError(error.get_dbus_message() or str(error)) from error
+
+    def set_call_history(self, enabled: bool, missed_call_notifications: bool) -> dict:
+        try:
+            return decode_mapping(self._call_history_iface().SetCallHistory(
+                dbus.Boolean(enabled),
+                dbus.Boolean(missed_call_notifications),
+                timeout=POLICY_CALL_TIMEOUT_SEC,
+            ))
+        except (dbus.exceptions.DBusException, ValueError) as error:
+            raise BackendError(_dbus_message(error)) from error
+
     def clear_history(self) -> None:
         try:
             self._iface(MESSAGES_IFACE).ClearHistory(
@@ -295,6 +419,26 @@ class BackendClient:
         except dbus.exceptions.DBusException as error:
             raise BackendError(error.get_dbus_message() or str(error)) from error
 
+    def set_ancs_notification_actions(self, enabled: bool) -> bool:
+        try:
+            return bool(
+                self._iface(MESSAGES_IFACE).SetAncsNotificationActions(
+                    dbus.Boolean(enabled), timeout=POLICY_CALL_TIMEOUT_SEC
+                )
+            )
+        except dbus.exceptions.DBusException as error:
+            raise BackendError(error.get_dbus_message() or str(error)) from error
+
+    def set_phone_battery_warning(self, enabled: bool) -> bool:
+        try:
+            return bool(
+                self._iface(MESSAGES_IFACE).SetPhoneBatteryWarning(
+                    dbus.Boolean(enabled), timeout=POLICY_CALL_TIMEOUT_SEC
+                )
+            )
+        except dbus.exceptions.DBusException as error:
+            raise BackendError(error.get_dbus_message() or str(error)) from error
+
     def _presence_iface(self) -> dbus.Interface:
         # Presence1 has no GetStatus; check compatibility through Messages1
         # and address Presence1 on that same owner-bound object.
@@ -317,6 +461,40 @@ class BackendClient:
                 if isinstance(error, dbus.exceptions.DBusException)
                 else str(error)
             ) from error
+
+    def notification_open_map(self) -> list[dict[str, str]]:
+        try:
+            return decode_open_map(self._iface(MESSAGES_IFACE).GetNotificationOpenMap(
+                timeout=POLICY_CALL_TIMEOUT_SEC
+            ))
+        except (dbus.exceptions.DBusException, ValueError) as error:
+            raise _open_map_error(error) from error
+
+    def set_notification_open_target(
+        self, bundle_id: str, target: str
+    ) -> list[dict[str, str]]:
+        try:
+            return decode_open_map(self._iface(MESSAGES_IFACE).SetNotificationOpenTarget(
+                bundle_id, target, timeout=POLICY_CALL_TIMEOUT_SEC
+            ))
+        except (dbus.exceptions.DBusException, ValueError) as error:
+            raise _open_map_error(error) from error
+
+    def open_notification_click(self, click_id: str, token: str) -> bool:
+        try:
+            return bool(self._iface(MESSAGES_IFACE).OpenNotificationClick(
+                click_id, token, timeout=POLICY_CALL_TIMEOUT_SEC
+            ))
+        except dbus.exceptions.DBusException as error:
+            raise _open_map_error(error) from error
+
+    def remove_notification_open_target(self, bundle_id: str) -> bool:
+        try:
+            return bool(self._iface(MESSAGES_IFACE).RemoveNotificationOpenTarget(
+                bundle_id, timeout=POLICY_CALL_TIMEOUT_SEC
+            ))
+        except dbus.exceptions.DBusException as error:
+            raise _open_map_error(error) from error
 
     def storage_policy(self) -> str:
         try:
@@ -343,3 +521,55 @@ class BackendClient:
             )
         except (dbus.exceptions.DBusException, ValueError) as error:
             raise BackendError(str(error)) from error
+
+    # ---- optional phone calls (Calls1) -----------------------------------
+
+    def _calls_iface(self) -> dbus.Interface:
+        # Calls1 has no GetStatus; verify compatibility through Messages1 and
+        # reuse its owner-bound proxy so both reach the same daemon.
+        messages = self._iface(MESSAGES_IFACE)
+        proxy = getattr(messages, "proxy_object", None)
+        if self._interface_factory is None and proxy is not None:
+            return dbus.Interface(proxy, CALLS_IFACE)
+        return self._raw_iface(CALLS_IFACE)
+
+    def _calls_call(self, method: str, *args: object, timeout: float) -> object:
+        try:
+            return getattr(self._calls_iface(), method)(*args, timeout=timeout)
+        except dbus.exceptions.DBusException as error:
+            raise BackendError(error.get_dbus_message() or str(error)) from error
+
+    def set_calls_enabled(self, enabled: bool) -> dict:
+        try:
+            return decode_mapping(self._calls_call(
+                "SetCallsEnabled", bool(enabled), timeout=STATUS_CALL_TIMEOUT_SEC,
+            ))
+        except ValueError as error:
+            raise BackendError(str(error)) from error
+
+    def calls(self) -> CallsSnapshot:
+        try:
+            return decode_calls(self._calls_call("ListCalls", timeout=STATUS_CALL_TIMEOUT_SEC))
+        except ValueError as error:
+            raise BackendError(str(error)) from error
+
+    def dial(self, number: str) -> str:
+        return str(self._calls_call("Dial", number, timeout=CALL_CONTROL_TIMEOUT_SEC))
+
+    def answer_call(self, call_id: str) -> None:
+        self._calls_call("Answer", call_id, timeout=CALL_CONTROL_TIMEOUT_SEC)
+
+    def hangup_call(self, call_id: str) -> None:
+        self._calls_call("Hangup", call_id, timeout=CALL_CONTROL_TIMEOUT_SEC)
+
+    def hangup_all_calls(self) -> None:
+        self._calls_call("HangupAll", timeout=CALL_CONTROL_TIMEOUT_SEC)
+
+    def send_call_tones(self, call_id: str, tones: str) -> None:
+        self._calls_call("SendTones", call_id, tones, timeout=CALL_CONTROL_TIMEOUT_SEC)
+
+    def swap_calls(self) -> None:
+        self._calls_call("SwapCalls", timeout=CALL_CONTROL_TIMEOUT_SEC)
+
+    def hold_and_answer_call(self) -> None:
+        self._calls_call("HoldAndAnswer", timeout=CALL_CONTROL_TIMEOUT_SEC)

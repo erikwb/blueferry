@@ -16,7 +16,9 @@ Auf der iPhone-Seite des Clients wählst du einen von drei Modi:
 Mitteilungen anderer Apps werden angezeigt und danach verworfen. Sie landen
 nie im Nachrichtenverlauf und werden nie an andere Programme verteilt.
 Nachrichten, die sowohl über MAP als auch über ANCS ankommen, erscheinen nur
-einmal.
+einmal. Die ANCS-Kopie einer Mitteilung aus Apple Messages (Titel, Untertitel
+und höchstens die ersten 1024 Byte des Texts) bleibt im lokalen Verlauf, im unten
+gewählten Speichermodus, weil sie die Gruppenangaben enthält, die MAP fehlen.
 
 Standardmäßig markiert das Schließen einer Nachrichtenmitteilung die
 Nachricht auch auf dem iPhone als gelesen. Manche „Nicht stören“- oder
@@ -47,6 +49,14 @@ ohne Inhalt:
 ```bash
 journalctl --user -u blueferry -f | grep "ANCS app observed"
 ```
+
+### Klickregeln
+
+[Klickregeln](notification-click-rules.md) öffnen beim Klick auf das Popup
+einer App eine feste Adresse oder App. Nichts aus der Mitteilung wird
+weitergegeben. Die Regeln liegen unverschlüsselt in `settings.json`; der
+Benachrichtigungsserver sieht sie nie, nur eine feste Aktion „Öffnen“ und
+eine zufällige ID pro Popup.
 
 ## Lokale Daten
 
@@ -107,6 +117,16 @@ Bearbeite `~/.config/blueferry/local.env` und starte den Dienst danach mit
 
 Die Kopplung schreibt Telefon- und Adapter-Einstellungen in dieselbe Datei.
 Ändere diese durch eine neue Kopplung statt von Hand.
+
+## Mediensteuerung
+
+Die optionale [Mediensteuerung](media-control.md) ist standardmäßig aus.
+Ist sie an, bleiben Titel, Interpret, Album und App-Name in BlueFerry; Clients
+holen sie über die authentifizierte D-Bus-Schnittstelle. Zu deiner Musik
+wird nichts auf die Festplatte oder ins Protokoll geschrieben. Gespeichert
+wird nur die Wahl an/aus, in `settings.json`. Die getrennte MPRIS-Option macht
+den aktuellen Titel bewusst für jede Anwendung in deiner Sitzung lesbar, wie
+bei jedem Desktop-Musikplayer.
 
 ## Anrufe und Musik bleiben auf dem iPhone
 

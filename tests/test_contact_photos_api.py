@@ -223,7 +223,8 @@ def test_dispatcher_passes_the_photo_provider_only_when_enabled(monkeypatch) -> 
     received = []
 
     def legacy_factory(*, defer_mark_read, notification_policy,
-                       contacts_only_notifications, on_open_message):
+                       contacts_only_notifications, on_open_message, open_target,
+                       on_open_target, on_ancs_action, ancs_actions_enabled, on_call_action):
         received.append(None)
         return SimpleNamespace(name="libnotify")
 

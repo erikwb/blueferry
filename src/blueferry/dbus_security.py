@@ -42,10 +42,22 @@ _RULES: dict[str, tuple[RateRule, ...]] = {
     "contact-photo": (RateRule(120, 60), RateRule(1_200, 3_600)),
     "send": (RateRule(30, 60), RateRule(200, 3_600)),
     "contact-sync": (RateRule(6, 600), RateRule(20, 3_600)),
+    "call-history-sync": (RateRule(12, 600), RateRule(60, 3_600)),
     "settings": (RateRule(30, 60),),
     "conversation-delete": (RateRule(60, 60), RateRule(500, 3_600)),
     "destructive": (RateRule(6, 600),),
     "unlock": (RateRule(6, 600),),
+    # iPhone media control has its own buckets so a media applet polling
+    # MPRIS, or a held volume key, cannot starve message reads or sends.
+    "media-read": (RateRule(600, 60),),
+    "media-command": (RateRule(60, 60), RateRule(1_200, 3_600)),
+    # Optional HFP calls. Dialing is consequential (it can cost money), so it
+    # is bounded like message sends. Answering moves a call's audio to this
+    # computer; a person answers a few calls a minute at most. Hanging up and
+    # DTMF share a generous bucket so ending a call is never blocked.
+    "calls-dial": (RateRule(6, 60), RateRule(60, 3_600)),
+    "calls-answer": (RateRule(10, 60), RateRule(120, 3_600)),
+    "calls-control": (RateRule(60, 60), RateRule(600, 3_600)),
 }
 
 

@@ -15,6 +15,7 @@ from blueferry.bus import get_session_bus
 from blueferry.client_activation import request_message_activation
 from blueferry.events import sms_group_sent_event, sms_sent_event
 from blueferry.limits import MAX_ANCS_FINGERPRINTS
+from blueferry.notification_open import request_open_target
 from blueferry.sinks import Sink
 from blueferry.sinks.libnotify import LibnotifySink
 from blueferry.sinks.sqlite import SqliteSink
@@ -55,9 +56,13 @@ class EventDispatcher:
         historical_ancs=(),
         notification_policy=None,
         contacts_only_notifications=None,
+        notification_open_target=None,
         storage=None,
         on_incoming_message=None,
         contact_photo: Callable[[str | None], str | None] | None = None,
+        perform_ancs_action=None,
+        ancs_actions_enabled: Callable[[], bool] | None = None,
+        on_call_action: Callable[[str, str], None] | None = None,
         notification_sink_factory: Callable[..., Sink] = LibnotifySink,
         session_bus=None,
         schedule: Callable[[int, Callable[[], bool]], int] = GLib.timeout_add_seconds,
@@ -69,9 +74,13 @@ class EventDispatcher:
         self.dbus_service = None
         self.notification_policy = notification_policy
         self.contacts_only_notifications = contacts_only_notifications
+        self.notification_open_target = notification_open_target
         self.storage = storage
         self.on_incoming_message = on_incoming_message
         self.contact_photo = contact_photo
+        self.perform_ancs_action = perform_ancs_action
+        self.ancs_actions_enabled = ancs_actions_enabled
+        self.on_call_action = on_call_action
         self._notification_sink_factory = notification_sink_factory
         self._session_bus = session_bus
         self._schedule = schedule
@@ -111,6 +120,9 @@ class EventDispatcher:
             except Exception:
                 log.debug("could not remove notification owner watch", exc_info=True)
             self._notification_owner_match = None
+        # Shutdown: the server is still ours, so retire live iPhone action
+        # buttons instead of leaving them wired to a daemon that is gone.
+        self.ancs_actions_reset()
         self._remove_libnotify_sink(log_change=False)
 
     def _watch_notification_owner(self) -> None:
@@ -157,6 +169,11 @@ class EventDispatcher:
                 contacts_only_notifications=self.contacts_only_notifications,
                 on_open_message=self._open_message,
                 **options,
+                open_target=self.notification_open_target,
+                on_open_target=self._open_target,
+                on_ancs_action=self.perform_ancs_action,
+                ancs_actions_enabled=self.ancs_actions_enabled,
+                on_call_action=self.on_call_action,
             )
         except Exception:
             log.exception("libnotify sink failed to init — continuing")
@@ -224,8 +241,41 @@ class EventDispatcher:
     def set_dbus_service(self, service) -> None:
         self.dbus_service = service
 
+    def ancs_removed(self, notification_id: int) -> None:
+        """Retire desktop popups whose iPhone notification was removed."""
+        for sink in self.sinks:
+            close = getattr(sink, "close_ancs_notification", None)
+            if close is None:
+                continue
+            try:
+                close(notification_id)
+            except Exception:
+                log.exception("sink %s failed to close ANCS popup", sink.name)
+
+    def ancs_actions_reset(self) -> None:
+        """Retire every action popup after the ANCS session reset its UIDs."""
+        for sink in self.sinks:
+            close_all = getattr(sink, "close_all_ancs_notifications", None)
+            if close_all is None:
+                continue
+            try:
+                close_all()
+            except Exception:
+                log.exception("sink %s failed to retire ANCS popups", sink.name)
+
     def _open_message(self, handle: str, token: str) -> None:
         request_message_activation(handle, token)
+
+    def _open_target(self, target, token: str) -> None:
+        request_open_target(target, token)
+
+    def open_notification_click(self, click_id: str, token: str) -> bool:
+        """A notification shell ran a mapped popup's argv (see notification_open)."""
+        for sink in self.sinks:
+            open_click = getattr(sink, "open_click", None)
+            if sink.name == "libnotify" and open_click is not None:
+                return bool(open_click(click_id, token))
+        return False
 
     def message(self, event) -> None:
         if getattr(event, "kind", "") == "sms_received" and self.on_incoming_message is not None:
@@ -237,6 +287,37 @@ class EventDispatcher:
                 log.exception("sink %s failed on event %s", sink.name, event.handle)
         if self.dbus_service is not None:
             self.dbus_service.emit_history_changed()
+
+    def call(self, event) -> None:
+        """Deliver an optional HFP call event to local desktop sinks only.
+
+        Call events are not written to history, and nothing about them is
+        broadcast here; the call controller emits the content-free
+        CallsChanged invalidation itself.
+        """
+        for sink in self.sinks:
+            handler = getattr(sink, "handle_call", None)
+            if handler is None:
+                continue
+            try:
+                handler(event)
+            except Exception:
+                log.exception("sink %s failed on a call event", sink.name)
+
+    def phone_battery_low(self, percent: int, *, exact: bool = False) -> None:
+        """Warn local desktop sinks that the phone's battery is low.
+
+        ``exact`` is false for HFP's 20 % steps. Not persisted and not
+        broadcast; GetStatus carries the level.
+        """
+        for sink in self.sinks:
+            handler = getattr(sink, "handle_phone_battery_low", None)
+            if handler is None:
+                continue
+            try:
+                handler(percent, exact=exact)
+            except Exception:
+                log.exception("sink %s failed on a phone battery warning", sink.name)
 
     def sent(self, recipient: str, body: str, transfer_path: str) -> None:
         event = sms_sent_event(
@@ -271,6 +352,21 @@ class EventDispatcher:
             len(body or ""),
         )
         self.message(event)
+
+    def missed_calls(self, notices) -> None:
+        """Fan newly missed calls out to sinks that can present them.
+
+        Call history is not message history: persistence belongs to the call
+        repository, and nothing about a call is published on D-Bus here.
+        """
+        for sink in self.sinks:
+            handler = getattr(sink, "handle_missed_calls", None)
+            if handler is None:
+                continue
+            try:
+                handler(list(notices))
+            except Exception:
+                log.exception("sink %s failed on missed calls", sink.name)
 
     def ancs(self, event) -> None:
         fingerprint = _ancs_fingerprint(event)

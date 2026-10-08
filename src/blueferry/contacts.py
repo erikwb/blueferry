@@ -6,14 +6,17 @@ not `SetFolder`. Then `PullAll(targetfile, filters)`.
 """
 from __future__ import annotations
 
+import io
 import logging
+import os
 import tempfile
 import time
 from collections import Counter
-from collections.abc import Callable, Collection, Iterable, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Sequence
+from contextlib import contextmanager
 from copy import copy
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TextIO
 
 import dbus
 
@@ -286,36 +289,37 @@ def _phonebook_temp_root() -> Path:
     return runtime_private_directory()
 
 
-def pull_phonebook(
+@contextmanager
+def open_vcard_listing(
     sessions: SessionManager,
+    phonebook: str,
     *,
-    max_contacts: int = 65535,
-    storage: StorageSecurity | None = None,
-    photos: bool | None = None,
-) -> int:
-    """Pull the iPhone's main phonebook over PBAP and return contact count.
+    max_entries: int,
+    max_bytes: int | None = None,
+    allow_empty: bool = False,
+    overall_timeout_s: float = _PHONEBOOK_TRANSFER_MAX_SECONDS,
+) -> Iterator[TextIO]:
+    """Select one PBAP phonebook in ``int/telecom`` and open its vCards.
 
-    Replaces the local cache atomically (transaction). ``photos`` defaults to
-    ``BLUEFERRY_CONTACT_PHOTOS``. The request is identical either way: without
-    a PBAP ``Fields`` filter the iPhone already includes PHOTO in this single
-    pull, so enabling photos only stops discarding bytes that were transferred
-    anyway. Photos are retained only with a storage policy object.
+    Blocking; call it only on the OBEX worker. The plaintext listing lives in
+    an owner-only runtime directory only while the context is open, so a
+    caller can stream it instead of holding the whole text in memory.
     """
-    max_contacts = max(1, min(int(max_contacts), MAX_PHONEBOOK_CONTACTS))
-    if storage is not None and not storage.status.can_write:
-        raise RuntimeError(storage.status.detail)
+    byte_limit = MAX_PHONEBOOK_BYTES if max_bytes is None else int(max_bytes)
+    # PBAP's MaxCount is a UInt16; never let a caller overflow it.
+    max_entries = max(1, min(int(max_entries), MAX_PHONEBOOK_CONTACTS))
     temporary_root = _phonebook_temp_root()
     pbap = obex(sessions.pbap_path, "org.bluez.obex.PhonebookAccess1")
-    log.info("PBAP Select(int, pb)")
-    pbap.Select("int", "pb", timeout=10.0)
+    log.info("PBAP Select(int, %s)", phonebook)
+    pbap.Select("int", phonebook, timeout=10.0)
 
     with tempfile.TemporaryDirectory(
         prefix="phonebook-", dir=temporary_root
     ) as temporary_name:
-        out = Path(temporary_name) / "pb.vcf"
-        log.info("PBAP PullAll → %s (max=%d)", out, max_contacts)
+        out = Path(temporary_name) / f"{phonebook}.vcf"
+        log.info("PBAP PullAll → %s (max=%d)", out, max_entries)
         ret = pbap.PullAll(
-            str(out), _pbap_pull_filters(max_contacts), timeout=30.0
+            str(out), _pbap_pull_filters(max_entries), timeout=30.0
         )
         if isinstance(ret, tuple | list):
             transfer_path = str(ret[0])
@@ -330,11 +334,11 @@ def pull_phonebook(
         initial_status = str(initial.get("Status", "queued"))
         log.debug("PBAP transfer %s initial status=%s size=%s",
                   transfer_path, initial_status, initial.get("Size", "unknown"))
-        def phonebook_size() -> int:
+        def listing_size() -> int:
             size = out.stat().st_size if out.exists() else 0
-            if max(size, int(initial.get("Size", 0) or 0)) > MAX_PHONEBOOK_BYTES:
+            if max(size, int(initial.get("Size", 0) or 0)) > byte_limit:
                 raise RuntimeError(
-                    f"phonebook exceeds {MAX_PHONEBOOK_BYTES} byte safety limit"
+                    f"phonebook exceeds {byte_limit} byte safety limit"
                 )
             return size
 
@@ -342,10 +346,10 @@ def pull_phonebook(
             transfer_path,
             initial_status=initial_status,
             timeout_s=60,
-            overall_timeout_s=_PHONEBOOK_TRANSFER_MAX_SECONDS,
+            overall_timeout_s=overall_timeout_s,
             property_timeout_s=10.0,
             allow_disappearance=True,
-            get_progress=phonebook_size,
+            get_progress=listing_size,
         )
 
         # obexd may remove a completed transfer object just before its output
@@ -358,51 +362,89 @@ def pull_phonebook(
         size = out.stat().st_size if out.exists() else 0
         log.info("transfer status: %s, file size: %d bytes", status, size)
         if size == 0:
+            if allow_empty:
+                yield io.StringIO("")
+                return
             raise RuntimeError(
                 "iPhone returned an empty phonebook; verify Settings → "
                 "Bluetooth → this computer → Sync Contacts is enabled"
             )
-        phonebook_size()
+        listing_size()
+        with out.open(errors="replace") as stream:
+            yield stream
 
+
+def pull_vcard_listing(
+    sessions: SessionManager,
+    phonebook: str,
+    *,
+    max_entries: int,
+    max_bytes: int | None = None,
+    allow_empty: bool = False,
+    overall_timeout_s: float = _PHONEBOOK_TRANSFER_MAX_SECONDS,
+) -> str:
+    """Return one PBAP phonebook's vCards as text. Worker thread only.
+
+    For small listings bounded by ``max_bytes``. The contact phonebook is
+    streamed through ``open_vcard_listing`` instead.
+    """
+    with open_vcard_listing(
+        sessions,
+        phonebook,
+        max_entries=max_entries,
+        max_bytes=max_bytes,
+        allow_empty=allow_empty,
+        overall_timeout_s=overall_timeout_s,
+    ) as stream:
+        return stream.read()
+
+
+def pull_phonebook(
+    sessions: SessionManager,
+    *,
+    max_contacts: int = 65535,
+    storage: StorageSecurity | None = None,
+    photos: bool | None = None,
+) -> int:
+    """Pull the iPhone's main phonebook over PBAP and return contact count.
+
+    Replaces the local cache atomically (transaction). ``photos`` defaults to
+    ``BLUEFERRY_CONTACT_PHOTOS`` and retains inline photos from the same pull.
+    """
+    max_contacts = max(1, min(int(max_contacts), MAX_PHONEBOOK_CONTACTS))
+    if storage is not None and not storage.status.can_write:
+        raise RuntimeError(storage.status.detail)
+    with open_vcard_listing(sessions, "pb", max_entries=max_contacts) as stream:
+        size = os.fstat(stream.fileno()).st_size
         if (config.CONTACT_PHOTOS if photos is None else photos) and storage is not None:
-            # Two streamed reads of the same file. The first, photo-blind,
-            # finds which records own an address of their own; only their
-            # photos can ever be shown, so only those are decoded and counted
-            # against the budget. The second yields the identical card bodies
-            # plus each card's first PHOTO.
-            with out.open(errors="replace") as stream:
-                servable = _servable_photo_indices(_parse_vcard_records(
-                    iter_bounded_lines(stream), maximum=max_contacts,
-                ))
+            # Find the records that own an address before budgeting photos.
+            servable = _servable_photo_indices(_parse_vcard_records(
+                iter_bounded_lines(stream), maximum=max_contacts,
+            ))
+            stream.seek(0)
             stats = PhotoStats()
-            with out.open(errors="replace") as stream:
-                entries = _parse_vcard_entries(
-                    iter_bounded_lines(stream),
-                    maximum=max_contacts,
-                    servable=servable,
-                    stats=stats,
-                )
+            entries = _parse_vcard_entries(
+                iter_bounded_lines(stream), maximum=max_contacts,
+                servable=servable, stats=stats,
+            )
             log.info(
                 "parsed %d contacts (%d with photos) from %d bytes; photo %s",
-                len(entries),
-                sum(photo is not None for _record, photo in entries),
-                size,
-                stats.summary(),
+                len(entries), sum(photo is not None for _record, photo in entries),
+                size, stats.summary(),
             )
             return ContactRepository(storage).replace(
                 [record for record, _photo in entries],
                 photos=[photo for _record, photo in entries],
             )
-        # Stream lines rather than read_text() plus splitlines(): the
-        # phonebook may be up to MAX_PHONEBOOK_BYTES, and two whole copies of
-        # it are not needed to extract bounded cards.
-        with out.open(errors="replace") as stream:
-            parsed = _parse_vcard_records(
-                iter_bounded_lines(stream), maximum=max_contacts,
-            )
-        log.info("parsed %d contacts from %d bytes", len(parsed), size)
+        # Stream lines rather than read() plus splitlines(): the phonebook
+        # may be up to MAX_PHONEBOOK_BYTES, and two whole copies of it are
+        # not needed to extract bounded cards.
+        parsed = _parse_vcard_records(
+            iter_bounded_lines(stream), maximum=max_contacts,
+        )
+    log.info("parsed %d contacts from %d bytes", len(parsed), size)
 
-        return ContactRepository(storage).replace(parsed)
+    return ContactRepository(storage).replace(parsed)
 
 
 # ---- Lookup -------------------------------------------------------------

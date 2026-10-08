@@ -7,15 +7,20 @@ from __future__ import annotations
 
 import logging
 import re
+import secrets
 import sqlite3
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
+from blueferry.call_history import CallRecord, resolve_contact_name
+from blueferry.call_history_repository import clear_call_history
 from blueferry.contact_repository import PhotoStoreBusy
 from blueferry.contacts import clear_contact_cache
 from blueferry.errors import (
+    CALLS_DISABLED_HINT,
+    CallsDisabledError,
     ConfirmationRequiredError,
     InvalidArgumentsError,
     NotFoundError,
@@ -38,6 +43,7 @@ from blueferry.history import (
     read_events,
 )
 from blueferry.limits import (
+    MAX_CALL_HISTORY_QUERY_LIMIT,
     MAX_CONTACT_ADDRESS_CHARS,
     MAX_CONTACT_PAGE,
     MAX_CONTACT_QUERY_CHARS,
@@ -55,6 +61,8 @@ from blueferry.limits import (
     MAX_THREAD_QUERY_LIMIT,
 )
 from blueferry.named_groups import stored_named_group_key
+from blueferry.notification_open import MAX_ACTIVATION_TOKEN_CHARS, MAX_CLICK_ID_CHARS
+from blueferry.notification_open_map import open_map_entries
 from blueferry.obex.map_query import list_recent_messages
 from blueferry.obex.map_send import send_group_message, send_message
 from blueferry.protocol import MESSAGES_API_VERSION
@@ -126,6 +134,18 @@ class NotificationPolicy(Protocol):
 
     def set_contacts_only(self, enabled: bool) -> bool: ...
 
+    @property
+    def open_map(self) -> dict[str, str]: ...
+
+    def set_open_target(self, bundle_id: str, target: str) -> dict[str, str]: ...
+
+    def remove_open_target(self, bundle_id: str) -> bool: ...
+
+    @property
+    def ancs_actions(self) -> bool: ...
+
+    def set_ancs_actions(self, enabled: bool) -> bool: ...
+
 
 class StarredThreads(Protocol):
     def keys(self) -> Sequence[str]: ...
@@ -150,6 +170,14 @@ class GroupRoutes(Protocol):
     def clear(self) -> None: ...
 
 
+class MediaControl(Protocol):
+    def snapshot(self) -> dict[str, object]: ...
+
+    def send_command(
+        self, name: str, on_success: Callable[[], None], on_failure: Failure,
+    ) -> None: ...
+
+
 class ConfirmedGroups(Protocol):
     def matching_rosters(self, rosters: Mapping[str, str]) -> set[str]: ...
 
@@ -160,6 +188,41 @@ class ConfirmedGroups(Protocol):
     def forget(self, thread_keys: Sequence[str]) -> None: ...
 
     def clear(self) -> None: ...
+
+
+class CallHistory(Protocol):
+    def records(self) -> list[CallRecord]: ...
+
+    def sync(self, success: Success, failure: Failure) -> None: ...
+
+    def clear(self) -> None: ...
+
+
+class CallControl(Protocol):
+    """Optional HFP call control (see ``blueferry.calls.controller``)."""
+
+    @property
+    def enabled(self) -> bool: ...
+
+    def snapshot(self) -> dict[str, object]: ...
+
+    def list_calls(self) -> dict[str, object]: ...
+
+    def dial(self, number: object, success: Success, failure: Failure) -> None: ...
+
+    def answer(self, call_id: object, success: Success, failure: Failure) -> None: ...
+
+    def hangup(self, call_id: object, success: Success, failure: Failure) -> None: ...
+
+    def hangup_all(self, success: Success, failure: Failure) -> None: ...
+
+    def send_tones(
+        self, call_id: object, tones: object, success: Success, failure: Failure,
+    ) -> None: ...
+
+    def swap(self, success: Success, failure: Failure) -> None: ...
+
+    def hold_and_answer(self, success: Success, failure: Failure) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,6 +247,18 @@ class BackendDependencies:
     on_storage_changed: Callable[[], None] | None = None
     set_proximity_lock: Callable[[bool, int], dict[str, Any]] | None = None
     contact_photos: bool = False
+    # Returns the live call-history component, or None while the user has not
+    # opted in. A callable because the opt-in can change at runtime.
+    call_history: Callable[[], CallHistory | None] | None = None
+    set_call_history: Callable[[bool, bool], dict[str, Any]] | None = None
+    open_notification_click: Callable[[str, str], bool] | None = None
+    # Called on every request: the opt-in can change at runtime.
+    media: Callable[[], MediaControl | None] | None = None
+    set_media_control: Callable[[bool], dict[str, Any]] | None = None
+    calls: CallControl | None = None
+    set_calls_enabled: Callable[[bool], dict[str, Any]] | None = None
+    set_phone_battery_warning: Callable[[bool], dict[str, Any]] | None = None
+    set_media_mpris: Callable[[bool], dict[str, Any]] | None = None
 
 
 class BackendOperations:
@@ -197,6 +272,10 @@ class BackendOperations:
         self.sessions = sessions
         self.dependencies = dependencies or BackendDependencies()
         self._confirmed_groups: dict[str, str] = {}
+        # Content-free GetStatus marker for click-rule edits. Clients reread
+        # the rules only when it changes; a random start makes a restarted
+        # daemon's value differ from what a client last saw.
+        self._open_map_revision = secrets.randbelow(1 << 31)
         self._conversations = ConversationIndex(
             lambda: read_events(
                 limit=None if self._starred_keys() else MAX_CONVERSATION_EVENTS,
@@ -702,6 +781,13 @@ class BackendOperations:
             ),
             "contact_photos": bool(self.dependencies.contact_photos),
         }
+        if self.dependencies.notification_policy is not None:
+            # Also the capability marker: daemons without click rules lack it.
+            status["notification_open_map_revision"] = self._open_map_revision
+        calls = self.dependencies.calls
+        if calls is not None:
+            # A backend without the calls feature reports no calls keys at all.
+            status.update(calls.snapshot())
         if self.dependencies.status_provider is not None:
             status.update(self.dependencies.status_provider())
         status["api_version"] = MESSAGES_API_VERSION
@@ -713,12 +799,26 @@ class BackendOperations:
                 "history deletion requires explicit confirmation"
             )
         clear_events()
+        self._clear_call_history()
         if self.dependencies.starred_threads is not None:
             self.dependencies.starred_threads.clear()
         if self.dependencies.group_routes is not None:
             self.dependencies.group_routes.clear()
         self._clear_confirmed_groups()
         self.invalidate_conversations()
+
+    def _clear_call_history(self) -> None:
+        # Erase the file even when the feature is off: it may hold calls from
+        # a time when it was enabled. The next sync seeds silently again.
+        history = self._current_call_history()
+        if history is not None:
+            history.clear()
+        else:
+            clear_call_history()
+
+    def _current_call_history(self) -> CallHistory | None:
+        provider = self.dependencies.call_history
+        return provider() if provider is not None else None
 
     def delete_threads(
         self, thread_keys: Sequence[object], confirmed: bool
@@ -898,6 +998,7 @@ class BackendOperations:
             # archive, but never private data under the wrong policy.
             clear_events()
             clear_contact_cache()
+            self._clear_call_history()
             if self.dependencies.starred_threads is not None:
                 self.dependencies.starred_threads.clear()
             if self.dependencies.group_routes is not None:
@@ -1033,6 +1134,26 @@ class BackendOperations:
             self.dependencies.on_notification_policy_changed()
         return selected
 
+    def get_ancs_notification_actions(self) -> bool:
+        """Return the saved opt-in for iPhone notification action buttons."""
+        if self.dependencies.notification_policy is None:
+            return False
+        return bool(self.dependencies.notification_policy.ancs_actions)
+
+    def set_ancs_notification_actions(self, enabled: bool) -> bool:
+        """Opt in or out of iPhone notification action buttons."""
+        if self.dependencies.notification_policy is None:
+            raise NotReadyError("notification policy storage is unavailable")
+        try:
+            selected = self.dependencies.notification_policy.set_ancs_actions(
+                enabled
+            )
+        except ValueError as error:
+            raise InvalidArgumentsError(str(error)) from error
+        if self.dependencies.on_notification_policy_changed is not None:
+            self.dependencies.on_notification_policy_changed()
+        return selected
+
     def set_proximity_lock(self, enabled: bool, grace_sec: int) -> dict[str, Any]:
         """Opt in or out of locking the desktop when the iPhone goes away."""
         configure = self.dependencies.set_proximity_lock
@@ -1047,6 +1168,58 @@ class BackendOperations:
             raise NotReadyError(
                 "could not save the proximity lock preference"
             ) from error
+
+    def get_notification_open_map(self) -> list[dict[str, str]]:
+        policy = self.dependencies.notification_policy
+        if policy is None:
+            return []
+        return open_map_entries(policy.open_map)
+
+    def set_notification_open_target(
+        self, bundle_id: str, target: str
+    ) -> list[dict[str, str]]:
+        policy = self.dependencies.notification_policy
+        if policy is None:
+            raise NotReadyError("notification policy storage is unavailable")
+        if not isinstance(bundle_id, str) or not isinstance(target, str):
+            raise InvalidArgumentsError("bundle ID and target must be strings")
+        try:
+            mapping = policy.set_open_target(bundle_id, target)
+        except ValueError as error:
+            raise InvalidArgumentsError(str(error)) from error
+        self._open_map_revision += 1
+        if self.dependencies.on_notification_policy_changed is not None:
+            self.dependencies.on_notification_policy_changed()
+        return open_map_entries(mapping)
+
+    def open_notification_click(self, click_id: str, token: str) -> bool:
+        """Treat a shell-run popup argv like a live click on that popup."""
+        handler = self.dependencies.open_notification_click
+        if handler is None:
+            raise NotReadyError("desktop notifications are unavailable")
+        if (
+            not isinstance(click_id, str) or not isinstance(token, str)
+            or not click_id or len(click_id) > MAX_CLICK_ID_CHARS
+            or len(token) > MAX_ACTIVATION_TOKEN_CHARS
+        ):
+            raise InvalidArgumentsError("invalid notification click")
+        return bool(handler(click_id, token))
+
+    def remove_notification_open_target(self, bundle_id: str) -> bool:
+        policy = self.dependencies.notification_policy
+        if policy is None:
+            raise NotReadyError("notification policy storage is unavailable")
+        if not isinstance(bundle_id, str) or len(bundle_id) > 1024:
+            raise InvalidArgumentsError("invalid bundle ID")
+        try:
+            removed = policy.remove_open_target(bundle_id)
+        except ValueError as error:
+            raise InvalidArgumentsError(str(error)) from error
+        if removed:
+            self._open_map_revision += 1
+            if self.dependencies.on_notification_policy_changed is not None:
+                self.dependencies.on_notification_policy_changed()
+        return removed
 
     def list_recent(
         self, folder: str, limit: int, success: Success, failure: Failure
@@ -1102,5 +1275,175 @@ class BackendOperations:
 
         sync(succeeded, failed)
 
+    def _call_history(self) -> CallHistory:
+        history = self._current_call_history()
+        if history is None:
+            raise NotReadyError(
+                "call history is off; turn it on in the iPhone settings or with "
+                "`blueferry call-history enable`"
+            )
+        return history
+
+    def set_call_history(
+        self, enabled: bool, missed_call_notifications: bool,
+    ) -> dict[str, Any]:
+        """Opt in or out of call history; opting out erases retained calls."""
+        configure = self.dependencies.set_call_history
+        if configure is None:
+            raise NotReadyError("call history is unavailable")
+        try:
+            return dict(configure(enabled, missed_call_notifications))
+        except ValueError as error:
+            raise InvalidArgumentsError(str(error)) from error
+        except OSError as error:
+            log.error("could not save call history preference: %s", error)
+            raise NotReadyError(
+                "could not save the call history preference"
+            ) from error
+
+    def list_call_history(self, limit: int) -> list[dict[str, object]]:
+        """Newest-first retained calls with contact-cache names applied."""
+        history = self._call_history()
+        storage = self.dependencies.storage
+        if storage is not None and not storage.status.can_read:
+            raise NotReadyError(storage.status.detail)
+        bounded = max(1, min(int(limit), MAX_CALL_HISTORY_QUERY_LIMIT))
+        contacts = self.dependencies.contacts
+        result: list[dict[str, object]] = []
+        for record in history.records()[:bounded]:
+            resolved = (
+                resolve_contact_name(record, contacts.resolve)
+                if contacts is not None else None
+            )
+            result.append({
+                "direction": record.direction,
+                "timestamp": record.occurred_at.isoformat(),
+                "address": record.address,
+                # Contact-cache name first, then the name on the phone's card.
+                "name": resolved or record.name,
+                "contact_name": resolved,
+            })
+        return result
+
+    def sync_call_history(self, success: Success, failure: Failure) -> None:
+        history = self._call_history()
+        if self.sessions.pbap is None:
+            raise NotReadyError(
+                "PBAP session not open — check Sync Contacts on the iPhone"
+            )
+        storage = self.dependencies.storage
+        if storage is not None and not storage.status.can_write:
+            raise NotReadyError(storage.status.detail)
+        history.sync(
+            success,
+            lambda error: failure(OperationFailedError("CallHistorySync", error)),
+        )
+
+    def now_playing(self) -> dict[str, object]:
+        """iPhone now-playing snapshot; ``enabled`` is false when opted out."""
+        media = self._media()
+        if media is None:
+            return {"enabled": False, "available": False, "detail": "disabled"}
+        return media.snapshot()
+
+    def _media(self) -> MediaControl | None:
+        provider = self.dependencies.media
+        return provider() if provider is not None else None
+
+    def send_media_command(
+        self, name: str, on_success: Callable[[], None], on_failure: Failure,
+    ) -> None:
+        media = self._media()
+        if media is None:
+            raise NotReadyError(
+                "iPhone media control is off; turn it on in the iPhone "
+                "settings or with 'blueferry media enable'"
+            )
+        media.send_command(name, on_success, on_failure)
+
+    def set_media_control(self, enabled: bool) -> dict[str, Any]:
+        """Opt in or out of iPhone media control without a restart."""
+        return self._media_setting(self.dependencies.set_media_control, enabled)
+
+    def set_media_mpris(self, enabled: bool) -> dict[str, Any]:
+        """Opt in or out of also publishing the iPhone as an MPRIS player."""
+        return self._media_setting(self.dependencies.set_media_mpris, enabled)
+
+    @staticmethod
+    def _media_setting(
+        configure: Callable[[bool], dict[str, Any]] | None, enabled: bool,
+    ) -> dict[str, Any]:
+        if configure is None:
+            raise NotReadyError("media control settings are unavailable")
+        try:
+            return dict(configure(enabled))
+        except ValueError as error:
+            raise InvalidArgumentsError(str(error)) from error
+        except OSError as error:
+            log.error("could not save media control preference: %s", error)
+            raise NotReadyError(
+                "could not save the media control preference"
+            ) from error
+
     def is_healthy(self) -> bool:
         return self.sessions.map is not None
+
+    # ---- optional phone calls -------------------------------------------
+
+    def _call_control(self) -> CallControl:
+        calls = self.dependencies.calls
+        if calls is None or not calls.enabled:
+            raise CallsDisabledError(CALLS_DISABLED_HINT)
+        return calls
+
+    def set_phone_battery_warning(self, enabled: bool) -> bool:
+        """Save the low-battery warning opt-in; returns the saved value."""
+        configure = self.dependencies.set_phone_battery_warning
+        if configure is None:
+            raise NotReadyError("the phone battery warning is unavailable")
+        try:
+            return bool(configure(bool(enabled)).get("phone_battery_warning"))
+        except ValueError as error:
+            raise InvalidArgumentsError(str(error)) from error
+        except OSError as error:
+            log.error("could not save the battery warning preference: %s", error)
+            raise NotReadyError("could not save the battery warning preference") from error
+
+    def set_calls_enabled(self, enabled: bool) -> dict[str, Any]:
+        """Save the phone-calls opt-in and apply it without a restart."""
+        configure = self.dependencies.set_calls_enabled
+        if configure is None:
+            raise NotReadyError("phone-call settings are unavailable")
+        try:
+            return dict(configure(bool(enabled)))
+        except ValueError as error:
+            raise InvalidArgumentsError(str(error)) from error
+        except OSError as error:
+            log.error("could not save the phone-calls preference: %s", error)
+            raise NotReadyError("could not save the phone-calls preference") from error
+
+    def list_calls(self) -> dict[str, object]:
+        return self._call_control().list_calls()
+
+    def dial(self, number: str, success: Success, failure: Failure) -> None:
+        self._call_control().dial(number, success, failure)
+
+    def answer_call(self, call_id: str, success: Success, failure: Failure) -> None:
+        self._call_control().answer(call_id, success, failure)
+
+    def hangup_call(self, call_id: str, success: Success, failure: Failure) -> None:
+        self._call_control().hangup(call_id, success, failure)
+
+    def hangup_all_calls(self, success: Success, failure: Failure) -> None:
+        self._call_control().hangup_all(success, failure)
+
+    def send_call_tones(
+        self, call_id: str, tones: str, success: Success, failure: Failure,
+    ) -> None:
+        self._call_control().send_tones(call_id, tones, success, failure)
+
+    def swap_calls(self, success: Success, failure: Failure) -> None:
+        self._call_control().swap(success, failure)
+
+    def hold_and_answer_call(self, success: Success, failure: Failure) -> None:
+        self._call_control().hold_and_answer(success, failure)
