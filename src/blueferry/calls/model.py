@@ -112,17 +112,73 @@ def validate_call_id(value: object) -> str:
     return selected
 
 
-# Widely used emergency numbers (not exhaustive). Emergency calls belong on
-# the phone itself: a desktop HFP bridge can lose its audio when the Classic
+# Known national emergency numbers and where they are used. A fixed list can
+# never be complete, and it matches whole numbers only: lookalikes such as a
+# number with an extra digit are not caught. Emergency calls belong on the
+# phone itself: a desktop HFP bridge can lose its audio when the Classic
 # link, PipeWire, or the adapter hiccups, the computer may not be where the
 # phone is, and iOS ties Emergency SOS and location sharing to its own
 # dialer. Refusing them here also stops a script or a stray TUI keystroke
 # from reaching emergency services through BlueFerry.
-EMERGENCY_NUMBERS = frozenset({
-    "000", "08", "100", "101", "102", "108", "110", "111", "112", "117", "118",
-    "119", "120", "122", "133", "144", "15", "17", "18", "190", "192", "193",
-    "911", "995", "997", "998", "999",
-})
+EMERGENCY_NUMBERS: Mapping[str, str] = {
+    "000": "Australia",
+    "061": "Spain (ambulance)",
+    "062": "Spain (Guardia Civil)",
+    "08": "kept from the first version of this list; country not confirmed",
+    "091": "Spain (national police)",
+    "092": "Spain (local police)",
+    "100": "India, Israel, Greece (police); Belgium (fire, ambulance)",
+    "101": "India (fire); Israel (ambulance); Belgium (police); Russia (fire)",
+    "102": "India (ambulance); Israel (fire); Russia, Ukraine (police)",
+    "103": "Russia, Ukraine (ambulance)",
+    "104": "Hungary (ambulance)",
+    "105": "Hungary (fire); Peru (police)",
+    "107": "Hungary (police); Argentina (ambulance)",
+    "108": "India (ambulance and general emergency)",
+    "110": "Germany, China, Japan (police); Norway (fire)",
+    "111": "New Zealand",
+    "112": "European Union and the GSM standard",
+    "113": "Italy (police); Norway (ambulance); Vietnam (police)",
+    "114": "Vietnam (fire)",
+    "115": "Italy (fire); Vietnam (ambulance)",
+    "116": "Peru (fire)",
+    "117": "Switzerland (police)",
+    "118": "Switzerland (fire); Italy (ambulance); Japan (coast guard)",
+    "119": "Japan, South Korea, China, Taiwan (fire, ambulance)",
+    "120": "China (ambulance)",
+    "122": "Austria (fire); China (traffic accidents); Egypt (police)",
+    "123": "Colombia; Egypt (ambulance)",
+    "125": "Iran (fire)",
+    "131": "Chile (ambulance)",
+    "132": "Chile (fire)",
+    "133": "Austria, Chile (police)",
+    "140": "Austria (mountain rescue)",
+    "144": "Austria, Switzerland (ambulance)",
+    "15": "France (ambulance)",
+    "150": "Czechia, Slovakia (fire)",
+    "155": "Czechia, Slovakia (ambulance); Turkey (police)",
+    "158": "Czechia, Slovakia (police)",
+    "166": "Greece (ambulance)",
+    "17": "France (police)",
+    "18": "France (fire)",
+    "180": "Egypt (fire)",
+    "190": "Brazil (police)",
+    "191": "Thailand (police)",
+    "192": "Brazil (ambulance)",
+    "193": "Brazil (fire)",
+    "199": "Thailand, Greece (fire)",
+    "911": "United States, Canada, Mexico and others",
+    "995": "Singapore (fire, ambulance)",
+    "997": "Poland (police)",
+    "998": "Poland (fire)",
+    "999": "United Kingdom, Ireland, Hong Kong, Malaysia, Poland (ambulance) and others",
+    "1122": "Pakistan (rescue)",
+    "1414": "Switzerland (air rescue)",
+    "1530": "Italy (coast guard)",
+    "1669": "Thailand (ambulance)",
+    "10111": "South Africa (police)",
+    "10177": "South Africa (ambulance, fire)",
+}
 
 
 def normalize_dial_number(value: object) -> str:
@@ -135,7 +191,7 @@ def normalize_dial_number(value: object) -> str:
     change the phone's configuration rather than place a call. Keypad tones
     remain available on an active call through ``validate_dtmf``. Letters,
     pauses, and every other character are rejected as well, and so are the
-    well-known emergency numbers in ``EMERGENCY_NUMBERS``.
+    emergency numbers listed in ``EMERGENCY_NUMBERS`` (exact matches only).
     """
     if not isinstance(value, str) or len(value) > MAX_DIAL_DIGITS * 3:
         raise InvalidArgumentsError("phone number is invalid")

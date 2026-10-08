@@ -111,9 +111,13 @@ ist.
   Servicecodes bilden würden (etwa Rufumleitung), statt anzurufen. Für
   Tastentöne im Gespräch gibt es `dtmf`.
 - Dual-SIM-Telefone zeigen über HFP nur die Standard-Sprachleitung.
-- Notrufnummern (112, 911, 999, 000, 110, 117, 118, 119, 144 und weitere
-  verbreitete) werden abgelehnt. Wähle sie am iPhone, dort hängt der Anruf
-  nicht an der Bluetooth-Verbindung oder dem Audio dieses Computers.
+- Notrufe wählst du am iPhone selbst, dort hängt der Anruf nicht an der
+  Bluetooth-Verbindung oder dem Audio dieses Computers. BlueFerry lehnt eine
+  feste Liste bekannter Notrufnummern ab (112, 911, 999, 000, 110, 117, 118,
+  119, 144 und rund fünfzig weitere nationale), egal mit welchen Leer- oder
+  Trennzeichen. Vollständig kann die Liste nicht sein: Eine Nummer, die
+  nicht darauf steht, wird gewählt, ebenso jede längere Nummer, die eine
+  Notrufnummer nur enthält, etwa `1120` oder `0112`.
 - Jeder Client fragt vor dem Wählen nach. Mehrwertnummern unterscheiden sich
   je nach Land, deshalb versucht BlueFerry nicht, sie zu sperren.
 - Wählen ist begrenzt (6 pro Minute, 60 pro Stunde), Annehmen ebenfalls

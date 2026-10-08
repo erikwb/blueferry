@@ -10,6 +10,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from blueferry.calls.model import (
+    EMERGENCY_NUMBERS,
     MAX_DIAL_DIGITS,
     VOICE_CALL_MANAGER_IFACE,
     ModemInfo,
@@ -47,7 +48,7 @@ _PROPERTY_NAMES = st.sampled_from([
     ("+41 79 123 45 67", "+41791234567"),
     ("(555) 123-4567", "5551234567"),
     ("1234", "1234"),
-    ("1122", "1122"),
+    ("1123", "1123"),
 ])
 def test_dial_numbers_are_normalized(raw, expected) -> None:
     assert normalize_dial_number(raw) == expected
@@ -62,10 +63,43 @@ def test_dial_numbers_reject_anything_else(raw) -> None:
         normalize_dial_number(raw)
 
 
-@pytest.mark.parametrize("raw", ["112", "911", "+112", "1 1 2", "999", "000", "117", "144"])
-def test_emergency_numbers_are_left_to_the_phone(raw) -> None:
-    with pytest.raises(InvalidArgumentsError, match="emergency numbers"):
-        normalize_dial_number(raw)
+def _spellings(number: str) -> list[str]:
+    return [
+        number, f"+{number}", " ".join(number), "-".join(number),
+        f"({number})", f" {number}\n", ".".join(number), "/".join(number),
+    ]
+
+
+@pytest.mark.parametrize("number", sorted(EMERGENCY_NUMBERS))
+def test_emergency_numbers_are_left_to_the_phone(number) -> None:
+    for raw in _spellings(number):
+        with pytest.raises(InvalidArgumentsError, match="emergency numbers"):
+            normalize_dial_number(raw)
+
+
+def test_every_emergency_number_is_plain_digits_with_a_recorded_origin() -> None:
+    for number, origin in EMERGENCY_NUMBERS.items():
+        assert number.isascii() and number.isdigit() and 2 <= len(number) <= 5
+        assert origin.strip()
+
+
+@pytest.mark.parametrize("number", [
+    "10111", "1122", "113", "115", "123", "103", "061", "091", "191", "199", "155",
+])
+def test_emergency_numbers_once_accepted_are_refused(number) -> None:
+    assert number in EMERGENCY_NUMBERS
+
+
+@pytest.mark.parametrize("raw,expected", [
+    # Short operator codes such as voicemail are ordinary calls.
+    ("3311", "3311"), ("1571", "1571"), ("121", "121"), ("086", "086"),
+    ("0441234567", "0441234567"), ("+41 44 123 45 67", "+41441234567"),
+    # The list matches whole numbers; it is not a prefix or suffix filter.
+    ("1120", "1120"), ("0112", "0112"), ("+49 112 345", "+49112345"),
+    ("0911 123456", "0911123456"),
+])
+def test_numbers_outside_the_emergency_list_are_dialed(raw, expected) -> None:
+    assert normalize_dial_number(raw) == expected
 
 
 @pytest.mark.parametrize("raw", ["**21*0791234567#", "##002#", "*#06#", "*31#0800123", "123#"])

@@ -103,9 +103,12 @@ again, so call audio goes back to the phone.
   would form service codes (for example call forwarding) instead of placing a
   call. Use `dtmf` for keypad symbols during a call.
 - Dual-SIM phones expose only the default voice line over HFP.
-- Emergency numbers (112, 911, 999, 000, 110, 117, 118, 119, 144 and other
-  widely used ones) are refused. Call them on the iPhone, where the call
-  doesn't depend on this computer's Bluetooth link or audio.
+- Make emergency calls on the iPhone itself, where the call doesn't depend on
+  this computer's Bluetooth link or audio. BlueFerry refuses a fixed list of
+  known emergency numbers (112, 911, 999, 000, 110, 117, 118, 119, 144 and
+  about fifty other national ones), however they are spaced or punctuated.
+  The list can't be complete: a number that isn't on it is dialed, and so is
+  any longer number that merely contains one, such as `1120` or `0112`.
 - Every client asks before it dials. Premium-rate prefixes differ by country,
   so BlueFerry doesn't try to block them.
 - Dialing is rate-limited (6 per minute, 60 per hour), answering too (10 per

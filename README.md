@@ -437,10 +437,13 @@ What happens then:
   are refused: dialed, they form service codes such as `**21*…#` that
   reconfigure the phone (call forwarding) rather than place a call. Use
   `dtmf` for keypad symbols during a call.
-- Emergency numbers (112, 911, 999, 000, 110, 117, 118, 119, 144 and other
-  widely used ones) are refused: call them on the iPhone, where the call does
+- A fixed list of known emergency numbers (112, 911, 999, 000, 110, 117, 118,
+  119, 144 and about fifty other national ones, `EMERGENCY_NUMBERS` in
+  `calls/model.py`) is refused: call them on the iPhone, where the call does
   not depend on this computer's Bluetooth link or audio, and iOS's Emergency
-  SOS and location sharing apply. Every client asks before it dials, because
+  SOS and location sharing apply. The list matches whole numbers only and
+  cannot be complete, so the phone stays the way to make emergency calls.
+  Every client asks before it dials, because
   premium-rate prefixes differ by country and cannot be listed reliably.
 - Bluetooth recovery (the adapter power cycle after a long ANCS outage) is
   held back while a call is in progress.
