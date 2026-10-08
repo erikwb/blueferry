@@ -120,6 +120,90 @@ def private_session_bus() -> dbus.connection.Connection:
     )
 
 
+class NameClaim:
+    """Own one bus name on one connection, one bus call at a time.
+
+    The daemon keeps the private connection, and so the name, across players:
+    a player closed during its ``RequestName`` must not release the name its
+    successor has just been told it holds. Requests and releases are therefore
+    serialised here, and only the latest claimant hears the outcome.
+    """
+
+    def __init__(self, connection: dbus.connection.Connection, name: str) -> None:
+        self._connection = connection
+        self._name = name
+        self._wanted = False
+        self._held = False
+        self._busy = False
+        self._listener: Callable[[bool], None] | None = None
+
+    def want(self, wanted: bool, listener: Callable[[bool], None] | None = None) -> None:
+        """Ask for or give up the name; ``listener(held)`` reports a request once."""
+        self._wanted = wanted
+        self._listener = listener if wanted else None
+        self._advance()
+
+    def _report(self, held: bool) -> None:
+        listener, self._listener = self._listener, None
+        if listener is not None:
+            listener(held)
+
+    def _call(self, method: str, args: tuple, signature: str, reply, error) -> None:
+        self._busy = True
+        self._connection.call_async(
+            _DBUS_NAME, _DBUS_PATH, _DBUS_NAME, method, signature, args,
+            reply, error, timeout=NAME_CALL_TIMEOUT_SECONDS,
+        )
+
+    def _advance(self) -> None:
+        if self._busy:
+            return
+        if self._wanted == self._held:
+            if self._held:
+                self._report(True)
+            return
+        if self._wanted:
+            self._call(
+                "RequestName",
+                (self._name, dbus.UInt32(dbus.bus.NAME_FLAG_DO_NOT_QUEUE)),
+                "su", self._requested, self._request_failed,
+            )
+        else:
+            self._call("ReleaseName", (self._name,), "s", self._released, self._released)
+
+    def _requested(self, result) -> None:
+        self._busy = False
+        self._held = int(result) in (
+            dbus.bus.REQUEST_NAME_REPLY_PRIMARY_OWNER,
+            dbus.bus.REQUEST_NAME_REPLY_ALREADY_OWNER,
+        )
+        if not self._held and self._wanted:
+            log.warning("MPRIS player name is owned by another process")
+            self._wanted = False
+            self._report(False)
+        self._advance()
+
+    def _request_failed(self, error) -> None:
+        self._busy = False
+        name = (
+            error.get_dbus_name()
+            if isinstance(error, dbus.exceptions.DBusException)
+            else type(error).__name__
+        )
+        if self._wanted:
+            log.warning("could not publish MPRIS player: %s", name)
+            self._wanted = False
+            self._report(False)
+        self._advance()
+
+    def _released(self, _result=None) -> None:
+        # A failed release leaves nothing to retry: the bus drops the name
+        # with the connection at the latest.
+        self._busy = False
+        self._held = False
+        self._advance()
+
+
 class MprisPlayer(dbus.service.Object):
     """Map MPRIS2 to :class:`MediaController`, and own the name while active."""
 
@@ -131,6 +215,7 @@ class MprisPlayer(dbus.service.Object):
         *,
         clock: Callable[[], float] = time.monotonic,
         bus_name: str = MPRIS_BUS_NAME,
+        claim: NameClaim | None = None,
     ) -> None:
         # Exported only while the player name is owned or being requested.
         super().__init__()
@@ -140,10 +225,11 @@ class MprisPlayer(dbus.service.Object):
         self._media = media
         self._guard = caller_guard
         self._clock = clock
-        self._bus_name = bus_name
+        # Shared by every player on this connection; see NameClaim.
+        self._claim = claim or NameClaim(connection, bus_name)
         self._owned = False
         self._exported = False
-        self._name_call_pending = False
+        self._claiming = False
         self._last_properties: dict[str, object] = {}
         self._track_serial: int | None = None
         # Last non-zero rate the phone reported; MPRIS forbids Rate 0.
@@ -191,12 +277,6 @@ class MprisPlayer(dbus.service.Object):
             )
         self._maybe_emit_seeked()
 
-    def _name_call(self, method: str, args: tuple, signature: str, reply, error) -> None:
-        self._connection.call_async(
-            _DBUS_NAME, _DBUS_PATH, _DBUS_NAME, method, signature, args,
-            reply, error, timeout=NAME_CALL_TIMEOUT_SECONDS,
-        )
-
     def _export(self) -> None:
         if not self._exported:
             self.add_to_connection(self._connection, MPRIS_PATH)
@@ -213,61 +293,36 @@ class MprisPlayer(dbus.service.Object):
 
     def _acquire(self) -> None:
         """Request the name asynchronously; the GLib loop never waits."""
-        if self._name_call_pending or self._owned:
+        if self._claiming or self._owned:
             return
-        self._name_call_pending = True
+        self._claiming = True
         # Export first so the object answers as soon as the name appears.
         self._export()
+        self._claim.want(True, self._claimed)
 
-        def acquired(result) -> None:
-            self._name_call_pending = False
-            if int(result) in (
-                dbus.bus.REQUEST_NAME_REPLY_PRIMARY_OWNER,
-                dbus.bus.REQUEST_NAME_REPLY_ALREADY_OWNER,
-            ):
-                self._owned = True
-                self._last_properties = self._player_properties()
-                self._remember_position()
-                log.info("published iPhone MPRIS player")
-            else:
-                log.warning("MPRIS player name is owned by another process")
-                self._unexport()
-            # The player may have stopped while the request was in flight.
-            if self._closed or not self._should_own():
-                self._release()
-
-        def failed(error) -> None:
-            self._name_call_pending = False
-            name = (
-                error.get_dbus_name()
-                if isinstance(error, dbus.exceptions.DBusException)
-                else type(error).__name__
-            )
-            log.warning("could not publish MPRIS player: %s", name)
+    def _claimed(self, held: bool) -> None:
+        self._claiming = False
+        if not held:
             self._unexport()
-
-        self._name_call(
-            "RequestName",
-            (self._bus_name, dbus.UInt32(dbus.bus.NAME_FLAG_DO_NOT_QUEUE)),
-            "su", acquired, failed,
-        )
+            return
+        self._owned = True
+        self._last_properties = self._player_properties()
+        self._remember_position()
+        log.info("published iPhone MPRIS player")
+        # The player may have stopped while the request was in flight.
+        if not self._should_own():
+            self._release()
 
     def _release(self) -> None:
-        if not self._owned:
-            # A pending request re-checks and releases from its reply.
-            if not self._name_call_pending:
-                self._unexport()
-            return
-        self._owned = False
+        owned, claiming = self._owned, self._claiming
+        self._owned = self._claiming = False
         self._last_properties = {}
         self._last_position = None
         self._unexport()
-        self._name_call(
-            "ReleaseName", (self._bus_name,), "s",
-            lambda _result: None,
-            lambda _error: log.debug("could not release MPRIS player name"),
-        )
-        log.info("withdrew iPhone MPRIS player")
+        if owned or claiming:
+            self._claim.want(False)
+        if owned:
+            log.info("withdrew iPhone MPRIS player")
 
     @property
     def connection(self) -> dbus.connection.Connection:
@@ -279,7 +334,6 @@ class MprisPlayer(dbus.service.Object):
         self._closed = True
         self._media.remove_listener(self.refresh)
         self._release()
-        self._unexport()
 
     def _update_track_identity(self) -> None:
         # NowPlaying decides what a new track is: completing a truncated
@@ -532,9 +586,14 @@ class MprisPlayer(dbus.service.Object):
     )
     def Introspect(self, object_path, connection):
         xml = dbus.service.Object.Introspect(self, object_path, connection)
+        # Declare what Get answers: Volume is absent until the phone reports it.
+        player = {
+            name: signature for name, signature in _PLAYER_PROPERTIES.items()
+            if name != "Volume" or self._media.state.volume is not None
+        }
         for interface, properties, writable in (
             (ROOT_IFACE, _ROOT_PROPERTIES, set()),
-            (PLAYER_IFACE, _PLAYER_PROPERTIES, {"Volume"}),
+            (PLAYER_IFACE, player, {"Volume"}),
         ):
             marker = f'  <interface name="{interface}">\n'
             xml = xml.replace(marker, marker + _property_xml(properties, writable), 1)

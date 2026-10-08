@@ -396,6 +396,28 @@ def test_mpris_close_releases_the_name(mpris_factory) -> None:
     player.close()  # idempotent
 
 
+def test_mpris_restarted_during_its_name_request_keeps_the_name(mpris_factory) -> None:
+    """Review #208: the closed player's late release dropped the new one's name."""
+    media, _writer = _media()
+    connection, name, first = mpris_factory(media)
+    claim = first._claim
+    _play(media)
+    first.refresh()
+    assert first._claiming and not first.owned
+    first.close()
+    second = MprisPlayer(connection, media, first._guard, bus_name=name, claim=claim)
+    try:
+        _dispatch_until(lambda: second.owned)
+        observer = dbus.SessionBus()
+        deadline = time.monotonic() + 0.3
+        _dispatch_until(lambda: time.monotonic() > deadline)
+        assert observer.name_has_owner(name)
+        assert _player_props(name)["PlaybackStatus"] == "Playing"
+    finally:
+        second.close()
+        _dispatch_until(lambda: not dbus.SessionBus().name_has_owner(name))
+
+
 def _player_props(name):
     return _call(name, MPRIS_PATH, dbus.PROPERTIES_IFACE, "GetAll", PLAYER_IFACE)["value"]
 
@@ -428,6 +450,10 @@ def test_mpris_omits_an_unknown_volume(mpris_factory) -> None:
     media.handle_update(EntityUpdate(EntityID.Track, 2, False, "Title"))
     _dispatch_until(lambda: player.owned)
     assert "Volume" not in _player_props(name)
+    introspect = lambda: _call(  # noqa: E731
+        name, MPRIS_PATH, dbus.INTROSPECTABLE_IFACE, "Introspect")["value"]
+    assert '<property name="Volume"' not in introspect()
+    assert '<property name="Rate"' in introspect()
     # Setting a volume without a known level sends nothing.
     assert "error" not in _call(
         name, MPRIS_PATH, dbus.PROPERTIES_IFACE, "Set",
@@ -437,6 +463,7 @@ def test_mpris_omits_an_unknown_volume(mpris_factory) -> None:
     media.handle_update(EntityUpdate(EntityID.Player, 2, False, "0.25"))
     player.refresh()
     assert _player_props(name)["Volume"] == pytest.approx(0.25)
+    assert '<property name="Volume" type="d" access="readwrite"/>' in introspect()
 
 
 def test_mpris_trackid_is_stable_when_a_truncated_title_completes(mpris_factory) -> None:

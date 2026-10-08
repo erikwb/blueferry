@@ -5,6 +5,7 @@ import functools
 from types import SimpleNamespace
 from typing import ClassVar
 
+import dbus
 import pytest
 
 from blueferry import daemon as daemon_mod
@@ -681,8 +682,9 @@ def test_mpris_set_authorizes_before_revealing_property_details() -> None:
 class _FakeMpris:
     instances: ClassVar[list] = []
 
-    def __init__(self, connection, media, guard) -> None:
+    def __init__(self, connection, media, guard, claim=None) -> None:
         self.connection = connection
+        self.claim = claim
         self.media = media
         self.guard = guard
         self.closed = False
@@ -732,9 +734,89 @@ def test_mpris_uses_its_own_connection_and_follows_both_opt_ins(mpris_daemon) ->
     instance._set_media_control(True)
     second = _FakeMpris.instances[-1]
     assert second is not player and second.connection is private
+    # Both players share the one claim on the name; see NameClaim.
+    assert second.claim is player.claim is not None
     instance._set_media_mpris(False)
     assert second.closed and instance.mpris is None
     assert MediaControlSettings().mpris is False
+
+
+def test_a_failed_mpris_connection_is_retried_while_wanted(mpris_daemon, monkeypatch, caplog) -> None:
+    import blueferry.mpris as mpris_mod
+
+    instance, private = mpris_daemon
+    attempts = []
+
+    def connect():
+        attempts.append(True)
+        if len(attempts) < 3:
+            raise dbus.exceptions.DBusException("no", name="org.freedesktop.DBus.Error.NoServer")
+        return private
+
+    monkeypatch.setattr(mpris_mod, "private_session_bus", connect)
+    timers = []
+    instance._schedule_seconds = lambda seconds, callback: timers.append((seconds, callback)) or len(timers)
+    removed = []
+    monkeypatch.setattr(daemon_mod.GLib, "source_remove", removed.append)
+    instance._set_media_mpris(True)
+    instance._set_media_control(True)
+
+    assert instance.mpris is None and len(timers) == 1
+    assert timers[0][0] == daemon_mod.MPRIS_RETRY_SEC
+    assert timers[0][1]() is False
+    assert instance.mpris is None and len(timers) == 2
+    assert timers[1][1]() is False
+    assert instance.mpris is not None and len(timers) == 2
+    assert sum("could not export the MPRIS player" in r.message for r in caplog.records) == 1
+
+    # Opting out ends a pending retry.
+    instance._set_media_mpris(False)
+    monkeypatch.setattr(mpris_mod, "private_session_bus", lambda: 1 / 0)
+    instance._mpris_connection = None
+    instance._set_media_mpris(True)
+    assert len(timers) == 3
+    instance._set_media_mpris(False)
+    assert removed == [3]
+    assert timers[2][1]() is False and len(timers) == 3
+
+
+class _NameBus:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def call_async(self, _name, _path, _iface, method, _signature, args, reply, error, timeout=None):
+        self.calls.append((method, reply, error))
+
+
+def test_a_name_claim_never_releases_what_the_next_claimant_holds() -> None:
+    """Review #208: MPRIS toggled off and on while RequestName is in flight."""
+    from blueferry.mpris import NameClaim
+
+    bus = _NameBus()
+    claim = NameClaim(bus, "org.mpris.MediaPlayer2.test")
+    first, second = [], []
+    claim.want(True, first.append)
+    claim.want(False)
+    claim.want(True, second.append)
+    assert [call[0] for call in bus.calls] == ["RequestName"]
+
+    bus.calls[0][1](dbus.UInt32(dbus.bus.REQUEST_NAME_REPLY_PRIMARY_OWNER))
+    assert (first, second) == ([], [True])
+    assert len(bus.calls) == 1
+
+    # Released and wanted again before the release returns: requested anew.
+    third = []
+    claim.want(False)
+    claim.want(True, third.append)
+    assert [call[0] for call in bus.calls] == ["RequestName", "ReleaseName"]
+    bus.calls[1][2](dbus.exceptions.DBusException("gone"))
+    assert [call[0] for call in bus.calls][-1] == "RequestName" and third == []
+
+    # Another owner: the claimant hears it once and may ask again later.
+    bus.calls[2][1](dbus.UInt32(dbus.bus.REQUEST_NAME_REPLY_EXISTS))
+    assert third == [False] and len(bus.calls) == 3
+    claim.want(False)
+    assert len(bus.calls) == 3
 
 
 def test_mpris_preference_is_seeded_and_saved(tmp_path, monkeypatch) -> None:

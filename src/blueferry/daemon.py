@@ -93,7 +93,7 @@ from blueferry.storage_security import StorageSecurity
 from blueferry.wireplumber_policy import WirePlumberPhoneAudioPolicy
 
 if TYPE_CHECKING:
-    from blueferry.mpris import MprisPlayer
+    from blueferry.mpris import MprisPlayer, NameClaim
 
 log = logging.getLogger(__name__)
 
@@ -124,6 +124,8 @@ class PairingRequiredError(RuntimeError):
 
 # Battery and signal steps reach clients at most this often.
 PHONE_STATUS_MIN_INTERVAL_SEC = 10
+# A failed MPRIS bus connection is retried while the player is wanted.
+MPRIS_RETRY_SEC = 30
 
 
 def _in_background(target: Callable[[], None], name: str) -> None:
@@ -185,6 +187,8 @@ class Daemon:
         self.ams: AmsClient | None = None
         self.mpris: MprisPlayer | None = None
         self._mpris_connection: dbus.connection.Connection | None = None
+        self._mpris_claim: NameClaim | None = None
+        self._mpris_retry_id: int | None = None
         self.adapter_class = AdapterClassSupervisor(config.ADAPTER)
         self.solicitation = SolicitationSupervisor(config.ADAPTER)
         # The saved phone-calls opt-in decides both the call controller and
@@ -715,23 +719,45 @@ class Daemon:
         if self.media_settings.mpris:
             self._start_mpris()
 
-    def _start_mpris(self) -> None:
+    def _start_mpris(self, *, retrying: bool = False) -> None:
         if self.media is None or self._dbus_service is None or self.mpris is not None:
             return
-        from blueferry.mpris import MprisPlayer, private_session_bus
+        from blueferry.mpris import MPRIS_BUS_NAME, MprisPlayer, NameClaim, private_session_bus
 
         try:
-            if self._mpris_connection is None:
+            if self._mpris_connection is None or self._mpris_claim is None:
                 # Own connection: the MPRIS name must not address the
                 # BlueFerry object (sandbox proxies filter by name).
                 self._mpris_connection = private_session_bus()
+                self._mpris_claim = NameClaim(self._mpris_connection, MPRIS_BUS_NAME)
             self.mpris = MprisPlayer(
                 self._mpris_connection, self.media, self._dbus_service.caller_guard,
+                claim=self._mpris_claim,
             )
         except Exception:
-            log.warning("could not export the MPRIS player", exc_info=True)
+            # Say it once, then keep trying for as long as it is wanted.
+            if not retrying:
+                log.warning("could not export the MPRIS player", exc_info=True)
+            if self._mpris_retry_id is None:
+                self._mpris_retry_id = self._schedule_seconds(
+                    MPRIS_RETRY_SEC, self._retry_mpris,
+                )
+            return
+        self._cancel_mpris_retry()
+
+    def _retry_mpris(self) -> bool:
+        self._mpris_retry_id = None
+        if self.media_settings.mpris:
+            self._start_mpris(retrying=True)
+        return False
+
+    def _cancel_mpris_retry(self) -> None:
+        retry, self._mpris_retry_id = self._mpris_retry_id, None
+        if retry is not None:
+            GLib.source_remove(retry)
 
     def _stop_mpris(self) -> None:
+        self._cancel_mpris_retry()
         mpris, self.mpris = self.mpris, None
         if mpris is not None:
             mpris.close()
