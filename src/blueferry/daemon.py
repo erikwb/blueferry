@@ -44,7 +44,9 @@ from blueferry.bus import get_system_bus, main_loop
 from blueferry.call_history import (
     CallRecord,
     MissedCallNotice,
+    caller_match_keys,
     display_caller,
+    is_floating_timestamp,
     resolve_contact_name,
 )
 from blueferry.call_history_repository import clear_call_history
@@ -1496,6 +1498,8 @@ class Daemon:
                 caller=display_caller(record, resolved),
                 known_contact=resolved is not None,
                 occurred_at=record.occurred_at,
+                match_keys=caller_match_keys(resolved, record.name, record.address),
+                floating_time=is_floating_timestamp(record.raw_time),
             ))
         self.events.missed_calls(notices)
 

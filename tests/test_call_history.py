@@ -13,8 +13,10 @@ from blueferry.call_history import (
     MISSED,
     OUTGOING,
     CallRecord,
+    caller_match_keys,
     canonical_phone_digits,
     display_caller,
+    is_floating_timestamp,
     merge_call_history,
     parse_call_history,
     parse_call_timestamp,
@@ -435,3 +437,19 @@ def test_contact_resolution_uses_the_first_spelling_that_matches() -> None:
 
     assert resolve_contact_name(record, resolve) == "Anna"
     assert asked == ["0041795550123", "+41795550123"]
+
+
+def test_caller_match_keys_fold_number_spellings_and_name_case() -> None:
+    assert caller_match_keys("+41 79 555 01 23") == caller_match_keys("0041795550123")
+    assert caller_match_keys("Anna-Lena") == caller_match_keys("anna lena")
+    assert caller_match_keys("Anna") != caller_match_keys("Bob")
+    assert caller_match_keys(None, "", "  ") == frozenset()
+    # A name with digits stays a name, not a number.
+    assert caller_match_keys("Office 2") == frozenset({"a:office2"})
+
+
+def test_floating_timestamps_are_recognised() -> None:
+    assert is_floating_timestamp("20260928T101500")
+    assert not is_floating_timestamp("20260928T101500Z")
+    assert not is_floating_timestamp("20260928T101500+0200")
+    assert not is_floating_timestamp("garbage")

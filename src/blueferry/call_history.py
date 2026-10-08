@@ -214,6 +214,12 @@ def parse_call_timestamp(
         return None
 
 
+def is_floating_timestamp(value: str | None) -> bool:
+    """Whether a timestamp has no zone and was read in the desktop's zone."""
+    match = _TIMESTAMP_RE.fullmatch((value or "").strip())
+    return match is not None and match["zone"] is None
+
+
 def wall_clock(value: str | None) -> datetime | None:
     """The timestamp's date and time of day as written, ignoring any zone.
 
@@ -459,6 +465,39 @@ class MissedCallNotice:
     caller: str | None   # contact name, phone-supplied name, or number
     known_contact: bool  # resolved through the local contact cache
     occurred_at: datetime
+    # Normalized spellings of this caller (see ``caller_match_keys``), used
+    # only in memory to pair the notice with the iPhone's own ANCS popup.
+    match_keys: frozenset[str] = frozenset()
+    # The phone sent the time without a zone; it was read in the desktop's.
+    floating_time: bool = False
+
+
+# Digits that identify a number regardless of its spelling (+41 / 0041 / 0).
+_MATCH_NUMBER_DIGITS = 9
+_MIN_MATCH_NUMBER_DIGITS = 5
+
+
+def caller_match_keys(*texts: str | None) -> frozenset[str]:
+    """Spelling-tolerant keys for comparing a caller across ANCS and PBAP.
+
+    A text with enough digits is a number and keeps its last nine digits; any
+    other text is a name, compared case-insensitively on letters and digits.
+    The keys stay in memory and are never logged or stored.
+    """
+    keys = set()
+    for text in texts:
+        value = (text or "").strip()
+        if not value:
+            continue
+        digits = "".join(char for char in value if char.isdigit())
+        letters = [char for char in value if char.isalpha()]
+        if len(digits) >= _MIN_MATCH_NUMBER_DIGITS and not letters:
+            keys.add("n:" + digits[-_MATCH_NUMBER_DIGITS:])
+            continue
+        name = "".join(char for char in value.casefold() if char.isalnum())
+        if name:
+            keys.add("a:" + name)
+    return frozenset(keys)
 
 
 def display_caller(record: CallRecord, resolved: str | None) -> str | None:

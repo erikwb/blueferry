@@ -359,6 +359,14 @@ captured observations:
   only `mch`. That iOS removes the `IncomingCall` notification when a call is
   answered, declined or missed, and writes its call log within the
   five-second coalescing delay, is assumed, not observed.
+- Under "All iPhone notifications" a PBAP missed call is not announced again
+  when an ANCS `MissedCall` popup covers it. BlueFerry assumes that popup's
+  title (or subtitle) names the caller as iOS shows it, a contact name or the
+  number. It pairs one popup with one call, first by caller (name, or the
+  last nine digits of the number) within -2/+30 minutes of the call time,
+  or within 26 hours when the PBAP time had no zone, and only then by time
+  alone within -2/+30 minutes. Caller keys are kept in memory as
+  per-process keyed digests only.
 - Automatic pulls share the single OBEX worker, so they follow the
   contact-sync MAP gating (defer while MAP reconnects, three-minute grace when
   MAP never connected). Each listing is a separate worker job bounded to
