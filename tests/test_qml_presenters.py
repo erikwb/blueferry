@@ -587,6 +587,41 @@ def test_quickshell_thread_preview_stays_inside_one_line(qml_engine) -> None:
     preview.deleteLater()
 
 
+def test_qt_thread_preview_stays_inside_one_line(qml_engine, settings_window) -> None:
+    window, bridge = settings_window
+    bridge.setProperty("threads", [{
+        "key": "one", "name": "Friend", "is_group": False, "starred": False,
+        "messages": [{
+            "outgoing": False,
+            "body": (
+                "A long opening line that cannot fit in the sidebar at all, ever\n\n"
+                "and a second paragraph that must not escape the thread row"
+            ),
+        }],
+    }])
+    QGuiApplication.processEvents()
+
+    # Delegates are not QObject children of the window; look them up in QML.
+    qml_engine.globalObject().setProperty(
+        "threadList", qml_engine.newQObject(_settings_object(window, "threadList"))
+    )
+    preview = _evaluate(qml_engine, """(function() {
+        function find(item) {
+            if (item.objectName === "threadPreview") return item;
+            for (const child of item.children) {
+                const found = find(child);
+                if (found) return found;
+            }
+            return null;
+        }
+        const label = find(threadList.itemAtIndex(0));
+        return [label.text, label.lineCount, label.truncated];
+    })()""")
+
+    assert "\n" not in preview[0]
+    assert preview[1:] == [1, True]
+
+
 def test_qt_onboarding_summary_treats_realtek_as_expected_success(qml_engine) -> None:
     component = _component(
         qml_engine, "src/blueferry/qt/qml/OnboardingSummary.qml"
