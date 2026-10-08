@@ -1372,6 +1372,33 @@ def test_failed_or_disabled_calls_refresh_follows_the_status_state():
     assert not hasattr(controller, "sendCallTones")
 
 
+def test_otp_opt_in_is_forwarded_and_merged_into_status(monkeypatch):
+    backend = _Backend()
+    toggles = []
+
+    def set_otp_autocopy(enabled):
+        toggles.append(enabled)
+        return {"otp_autocopy": enabled}
+
+    backend.set_otp_autocopy = set_otp_autocopy
+    controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+    monkeypatch.setattr(
+        controller,
+        "_run",
+        lambda operation, on_done=None, *_args, **_kwargs: (
+            on_done(operation()) if on_done is not None else operation()
+        ),
+    )
+    changed = []
+    controller.statusChanged.connect(lambda: changed.append(True))
+
+    controller.setOtpAutocopy(True)
+
+    assert toggles == [True]
+    assert controller.status["otp_autocopy"] is True
+    assert changed == [True]
+
+
 def test_calls_opt_in_is_forwarded_and_merged_into_status(monkeypatch):
     backend = _Backend()
     toggles = []

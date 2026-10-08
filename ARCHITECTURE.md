@@ -202,6 +202,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `qt/qml/GroupConfirmationDialog.qml` | Group recipient confirmation before sending. |
 | `qt/qml/NewMessageDialog.qml` | New message composition. |
 | `qt/qml/CallsDialog.qml` | Optional phone-calls dialog (list, dial with confirmation, answer, hang up). |
+| `qt/qml/OtpAutocopySettings.qml` | One-time code auto-copy checkbox; loaded only for daemons that report `otp_autocopy`. |
 | `qt/qml/PhoneCallsSettings.qml` | Phone-calls opt-in checkbox; loaded only for daemons that report `calls_enabled`. |
 | `qt/qml/PhoneStatusIndicator.qml` | Optional iPhone battery/signal indicator (loaded only when values are known; plain-text tooltip). |
 | `qt/qml/ExpandingMessageComposer.qml` | Growing message editor. |

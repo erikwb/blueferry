@@ -1111,6 +1111,15 @@ class BridgeController(QObject):
         self._run(lambda: self._backend.set_phone_battery_warning(bool(enabled)), completed)
 
     @Slot(bool)
+    def setOtpAutocopy(self, enabled: bool) -> None:
+        def completed(value: object) -> None:
+            if isinstance(value, dict):
+                self._status.update(value)
+                self.statusChanged.emit()
+
+        self._run(lambda: self._backend.set_otp_autocopy(bool(enabled)), completed)
+
+    @Slot(bool)
     def setCallsEnabled(self, enabled: bool) -> None:
         def completed(value: object) -> None:
             if isinstance(value, dict):
