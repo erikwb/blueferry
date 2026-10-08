@@ -48,9 +48,11 @@ class IPhonePage(Gtk.Box):
         self._applying_notification_policy = False
         self._applying_contacts_only_notifications = False
         self._applying_ancs_actions = False
-        self._applying_media_switches = False
+        self._applying_saved_switches = False
         self._media_control_choice = SavedChoice()
         self._mpris_player_choice = SavedChoice()
+        self._call_history_choice = SavedChoice()
+        self._missed_call_popups_choice = SavedChoice()
         self._applying_proximity_lock = False
         self._proximity_lock_choice = SavedChoice()
         self._applying_calls_enabled = False
@@ -386,6 +388,42 @@ class IPhonePage(Gtk.Box):
         self._mpris_player_row.set_activatable_widget(self._mpris_player_switch)
         self._media_group.add(self._mpris_player_row)
         page.add(self._media_group)
+
+        # Shown only when the backend reports the call-history keys.
+        self._call_history_group = Adw.PreferencesGroup(
+            title=_("Call History"),
+            description=_(
+                "Keeps the iPhone's recent calls (who called and when) under "
+                "your local storage setting and can notify you about missed "
+                "calls. It uses the iPhone's Sync Contacts permission and "
+                "never places, answers, or listens to calls. Turning it off "
+                "erases the retained calls."
+            ),
+        )
+        self._call_history_group.set_visible(False)
+        self._call_history_row = Adw.ActionRow(
+            title=_("Keep the iPhone's Recent Calls"),
+        )
+        self._call_history_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
+        self._call_history_switch.connect(
+            "notify::active", self._call_history_changed
+        )
+        self._call_history_row.add_suffix(self._call_history_switch)
+        self._call_history_row.set_activatable_widget(self._call_history_switch)
+        self._call_history_group.add(self._call_history_row)
+        self._missed_call_popups_row = Adw.ActionRow(
+            title=_("Notify Me About Missed Calls"),
+        )
+        self._missed_call_popups_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
+        self._missed_call_popups_switch.connect(
+            "notify::active", self._missed_call_popups_changed
+        )
+        self._missed_call_popups_row.add_suffix(self._missed_call_popups_switch)
+        self._missed_call_popups_row.set_activatable_widget(
+            self._missed_call_popups_switch
+        )
+        self._call_history_group.add(self._missed_call_popups_row)
+        page.add(self._call_history_group)
 
         # Shown only when the backend reports the away-lock keys.
         self._proximity_lock_group = Adw.PreferencesGroup(
@@ -1096,6 +1134,7 @@ class IPhonePage(Gtk.Box):
         self._applying_contacts_only_notifications = False
         self._apply_ancs_actions(status, reachable)
         self._apply_media_switches(status, reachable)
+        self._apply_call_history_switches(status, reachable)
         self._proximity_lock_group.set_visible("proximity_lock" in status.extra)
         self._applying_proximity_lock = True
         self._show_saved_choice(
@@ -1248,7 +1287,7 @@ class IPhonePage(Gtk.Box):
         # reports only the first.
         self._media_group.set_visible("media_control_enabled" in status.extra)
         self._mpris_player_row.set_visible("media_mpris_enabled" in status.extra)
-        self._applying_media_switches = True
+        self._applying_saved_switches = True
         self._show_saved_choice(
             self._media_control_switch,
             self._media_control_choice,
@@ -1259,7 +1298,7 @@ class IPhonePage(Gtk.Box):
             self._mpris_player_choice,
             status.extra.get("media_mpris_enabled") is True,
         )
-        self._applying_media_switches = False
+        self._applying_saved_switches = False
         self._media_control_row.set_sensitive(
             reachable and not self._media_control_choice.saving
         )
@@ -1270,8 +1309,62 @@ class IPhonePage(Gtk.Box):
             and self._media_control_switch.get_active()
         )
 
+    def _apply_call_history_switches(
+        self, status: BackendStatus, reachable: bool
+    ) -> None:
+        self._call_history_group.set_visible("call_history_enabled" in status.extra)
+        self._applying_saved_switches = True
+        self._show_saved_choice(
+            self._call_history_switch,
+            self._call_history_choice,
+            status.extra.get("call_history_enabled") is True,
+        )
+        # On unless the daemon says otherwise, as in the Qt client.
+        self._show_saved_choice(
+            self._missed_call_popups_switch,
+            self._missed_call_popups_choice,
+            status.extra.get("missed_call_notifications") is not False,
+        )
+        self._applying_saved_switches = False
+        saving = (
+            self._call_history_choice.saving
+            or self._missed_call_popups_choice.saving
+        )
+        self._call_history_row.set_sensitive(reachable and not saving)
+        self._missed_call_popups_row.set_sensitive(
+            reachable and not saving and self._call_history_switch.get_active()
+        )
+
+    def _call_history_changed(self, switch, _property) -> None:
+        popups = self._missed_call_popups_switch.get_active()
+        self._save_switch(
+            switch,
+            self._call_history_row,
+            self._call_history_choice,
+            "call_history_enabled",
+            lambda enabled, saved, failed: self._client.set_call_history_async(
+                enabled, popups, saved, failed
+            ),
+            _("Call history preference saved"),
+            _("Could not save call history preference: {error}"),
+        )
+
+    def _missed_call_popups_changed(self, switch, _property) -> None:
+        # Only offered while call history is on.
+        self._save_switch(
+            switch,
+            self._missed_call_popups_row,
+            self._missed_call_popups_choice,
+            "missed_call_notifications",
+            lambda popups, saved, failed: self._client.set_call_history_async(
+                True, popups, saved, failed
+            ),
+            _("Missed call notification preference saved"),
+            _("Could not save missed call notification preference: {error}"),
+        )
+
     def _media_control_changed(self, switch, _property) -> None:
-        self._save_media_switch(
+        self._save_switch(
             switch,
             self._media_control_row,
             self._media_control_choice,
@@ -1282,7 +1375,7 @@ class IPhonePage(Gtk.Box):
         )
 
     def _mpris_player_changed(self, switch, _property) -> None:
-        self._save_media_switch(
+        self._save_switch(
             switch,
             self._mpris_player_row,
             self._mpris_player_choice,
@@ -1292,11 +1385,11 @@ class IPhonePage(Gtk.Box):
             _("Could not save desktop media controls preference: {error}"),
         )
 
-    def _save_media_switch(
+    def _save_switch(
         self, switch, row, choice: SavedChoice, key: str, save,
         saved_text: str, failed_text: str,
     ) -> None:
-        if self._applying_media_switches:
+        if self._applying_saved_switches:
             return
         choice.begin(switch.get_active())
         row.set_sensitive(False)

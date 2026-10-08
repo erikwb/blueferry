@@ -40,6 +40,15 @@ from blueferry.bluetooth_recovery import (
 )
 from blueferry.build_info import build_id, installed_build_sha, running_build_sha
 from blueferry.bus import get_system_bus, main_loop
+from blueferry.call_history import (
+    CallRecord,
+    MissedCallNotice,
+    display_caller,
+    resolve_contact_name,
+)
+from blueferry.call_history_repository import clear_call_history
+from blueferry.call_history_settings import CallHistorySettings
+from blueferry.call_history_sync import CallHistorySync
 from blueferry.calls.controller import CallController
 from blueferry.calls.phone_status import SOURCE_HFP, LowBatteryMonitor, PhoneStatus
 from blueferry.calls.settings import CallsSettings
@@ -274,6 +283,12 @@ class Daemon:
             contacts=self.contacts,
             submit=lambda *args, **kwargs: self.obex_worker.submit(*args, **kwargs),
             on_refreshed=self._contacts_refreshed,
+        )
+        # Opt-in: until the user turns it on nothing is pulled, stored, or
+        # scheduled, and no CallHistorySync exists.
+        self.call_history_settings = CallHistorySettings(log_overrides=True)
+        self.call_history: CallHistorySync | None = (
+            self._new_call_history() if self.call_history_settings.enabled else None
         )
         self._bus_name = None
         self._dbus_service: MessagesService | None = None
@@ -670,6 +685,8 @@ class Daemon:
                 on_storage_prepared=self._apply_storage_preparation,
                 on_storage_changed=self._on_storage_changed,
                 set_proximity_lock=self._set_proximity_lock,
+                call_history=lambda: self.call_history,
+                set_call_history=self._set_call_history,
                 open_notification_click=self.events.open_notification_click,
                 media=lambda: self.media,
                 set_media_control=self._set_media_control,
@@ -880,6 +897,8 @@ class Daemon:
         self.contacts.adopt_cache(prepared.contacts)
         self.contact_sync.storage_prepared()
         self.events.seed_historical_ancs(prepared.historical_ancs)
+        if self.call_history is not None:
+            self.call_history.adopt(prepared.call_history)
         if prepared.has_messages:
             self._mark_setup_task(MESSAGE_NOTIFICATIONS)
 
@@ -887,6 +906,8 @@ class Daemon:
         if self.storage.status.can_write and self.contacts.count() > 0:
             self._mark_setup_task(CONTACTS)
         self.contact_sync.storage_changed()
+        if self.call_history is not None:
+            self.call_history.storage_changed()
         self._emit_status()
 
     def _initialize(self) -> bool:
@@ -954,6 +975,7 @@ class Daemon:
                 on_event=self.events.ancs,
                 on_status=self._on_ancs_status,
                 on_transport_failure=self.bearers.recover_le_transport,
+                on_call_activity=self._ancs_call_activity,
                 include_non_message_notifications=lambda: (
                     self.notification_policy.value == ALL_NOTIFICATIONS
                 ),
@@ -1199,6 +1221,8 @@ class Daemon:
     def _post_available_sessions_setup(self) -> None:
         """Start consumers for whichever OBEX profiles are currently live."""
         self.contact_sync.profiles_available()
+        if self.call_history is not None:
+            self.call_history.profiles_available()
 
         # Wire up MAP MNS listener.
         # Resolve through the current cache; contacts refreshes in place.
@@ -1300,6 +1324,80 @@ class Daemon:
             self._dbus_service.emit_history_changed()
         self._emit_status()
 
+    def request_call_history_sync(self, reason: str, *, full: bool = True) -> None:
+        """Integration hook, e.g. for an HFP "call ended" event.
+
+        A no-op unless call history is enabled. Requests coalesce and respect
+        the MAP gating of automatic pulls; ``reason`` must not contain
+        personal data because it is logged.
+        """
+        if self.call_history is not None:
+            self.call_history.request_sync(reason, full=full)
+
+    def _ancs_call_activity(self, activity: str) -> None:
+        """ANCS saw a missed call or the end of an incoming call.
+
+        Only the category is known here, never the caller. A missed call
+        needs only the missed-calls list; an ended call may also have
+        changed the received list.
+        """
+        self.request_call_history_sync(
+            f"ancs {activity}", full=activity != "missed",
+        )
+
+    def _new_call_history(self) -> CallHistorySync:
+        return CallHistorySync(
+            sessions=self.sessions,
+            storage=self.storage,
+            submit=lambda *args, **kwargs: self.obex_worker.submit(*args, **kwargs),
+            on_changed=self._call_history_changed,
+            on_missed=self._missed_calls,
+        )
+
+    def _set_call_history(self, enabled: bool, missed_call_notifications: bool) -> dict:
+        """Apply the user's opt-in at once; opting out erases retained calls."""
+        self.call_history_settings.set(enabled, missed_call_notifications)
+        if enabled and self.call_history is None:
+            self.call_history = self._new_call_history()
+            log.info("call history enabled")
+            # Starts the poll and a prompt first (silent, seeding) sync when
+            # PBAP is already connected; otherwise PBAP's arrival does.
+            self.call_history.profiles_available()
+        elif not enabled and self.call_history is not None:
+            history, self.call_history = self.call_history, None
+            history.disable()
+            clear_call_history()
+            log.info("call history disabled; retained calls erased")
+            self._call_history_changed()
+        self._emit_status()
+        return self._call_history_status()
+
+    def _call_history_status(self) -> dict:
+        return {
+            "call_history_enabled": self.call_history is not None,
+            "missed_call_notifications": (
+                self.call_history_settings.missed_call_notifications
+            ),
+        }
+
+    def _call_history_changed(self) -> None:
+        if self._dbus_service is not None:
+            self._dbus_service.emit_call_history_changed()
+
+    def _missed_calls(self, records: list[CallRecord]) -> None:
+        """GLib-side: resolve callers against the contact cache and notify."""
+        if not self.call_history_settings.missed_call_notifications:
+            return
+        notices = []
+        for record in records:
+            resolved = resolve_contact_name(record, self.contacts.resolve)
+            notices.append(MissedCallNotice(
+                caller=display_caller(record, resolved),
+                known_contact=resolved is not None,
+                occurred_at=record.occurred_at,
+            ))
+        self.events.missed_calls(notices)
+
     def _status(self) -> dict:
         if self.contacts.count() > 0:
             self._mark_setup_task(CONTACTS)
@@ -1329,6 +1427,8 @@ class Daemon:
             "events": history_count(storage=self.storage),
             "verified_iphone_setup": list(self.setup_verification.verified),
             "history_retention_days": config.HISTORY_RETENTION_DAYS,
+            # Always present: clients show the opt-in checkbox from these.
+            **self._call_history_status(),
             "notification_timeout_ms": config.NOTIFICATION_TIMEOUT_MS,
             "notification_policy": self.notification_policy.value,
             "contacts_only_notifications": (
@@ -1405,6 +1505,9 @@ class Daemon:
             log.info("saved iPhone bond was removed; stopping daemon")
             self.proximity.inhibit(INHIBIT_FORGOTTEN)
             self.recovery.forget_phone()
+            if self.call_history is not None:
+                # A re-paired (possibly reset) phone's first sync is silent.
+                self.call_history.forget_phone()
             main_loop.quit()
             return False
         self.proximity.inhibit(INHIBIT_FORGOTTEN)
@@ -1443,6 +1546,8 @@ class Daemon:
         self.bearers.stop()
         self.profiles.stop()
         self.contact_sync.stop()
+        if self.call_history is not None:
+            self.call_history.stop()
         for tid_attr in (
             "_release_check_id",
             "_target_config_check_id",

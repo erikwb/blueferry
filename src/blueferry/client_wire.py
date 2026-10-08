@@ -15,7 +15,13 @@ from blueferry.limits import (
     MAX_CONTACT_ADDRESSES_PER_CARD,
     MAX_CONTACT_NAME_CHARS,
 )
-from blueferry.models import BackendStatus, CallsSnapshot, EventRecord, Thread
+from blueferry.models import (
+    BackendStatus,
+    CallHistoryEntry,
+    CallsSnapshot,
+    EventRecord,
+    Thread,
+)
 
 T = TypeVar("T")
 
@@ -104,3 +110,12 @@ def decode_contact_records(value: object) -> list[tuple[str, list[str], list[str
         for item in items
         if isinstance(item, Mapping)
     ]
+
+
+def decode_call_history(value: object) -> list[CallHistoryEntry]:
+    """Decode ListCallHistory, dropping entries a newer daemon may add."""
+    items = decode_json(value, list)
+    decoded = (
+        CallHistoryEntry.from_dict(item) for item in items if isinstance(item, Mapping)
+    )
+    return [entry for entry in decoded if entry is not None]

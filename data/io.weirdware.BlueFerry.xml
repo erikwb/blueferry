@@ -199,6 +199,32 @@
                   value="InvalidArgs,NotReady"/>
     </method>
   </interface>
+  <interface name="io.weirdware.BlueFerry.CallHistory1">
+    <annotation name="org.freedesktop.DBus.Description"
+                value="Opt-in mirror of the iPhone's recent calls; opt-in state is in Messages1.GetStatus"/>
+    <method name="ListCallHistory">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Retained iPhone call history, newest first, as a JSON array"/>
+      <arg name="limit" type="u" direction="in"/>
+      <arg name="json" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="NotReady,ResponseTooLarge"/>
+    </method>
+    <method name="SyncCallHistory">
+      <arg name="retained_count" type="u" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="NotReady,CallHistorySyncFailed"/>
+    </method>
+    <method name="SetCallHistory">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Opt in or out; turning it off erases the retained calls"/>
+      <arg name="enabled" type="b" direction="in"/>
+      <arg name="missed_call_notifications" type="b" direction="in"/>
+      <arg name="status_json" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady"/>
+    </method>
+  </interface>
   <interface name="io.weirdware.BlueFerry.Media1">
     <annotation name="org.freedesktop.DBus.Description"
                 value="Opt-in iPhone now-playing and media commands over Apple Media Service"/>
@@ -300,6 +326,7 @@
     <signal name="OpenMessageRequested">
       <arg name="handle" type="s"/>
     </signal>
+    <signal name="CallHistoryChanged"/>
     <signal name="NowPlayingChanged">
       <annotation name="org.freedesktop.DBus.Description"
                   value="Content-free; fetch details with Media1.GetNowPlaying"/>

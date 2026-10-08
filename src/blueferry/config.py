@@ -29,6 +29,9 @@ LOCAL_ENV_KEYS = frozenset({
     "BLUEFERRY_HISTORY_MAX_PAYLOAD_BYTES",
     "BLUEFERRY_PROXIMITY_LOCK",
     "BLUEFERRY_PROXIMITY_LOCK_GRACE_SEC",
+    "BLUEFERRY_CALL_HISTORY_ENABLED",
+    "BLUEFERRY_CALL_HISTORY_INTERVAL_SEC",
+    "BLUEFERRY_MISSED_CALL_NOTIFICATIONS",
     "BLUEFERRY_MEDIA_CONTROL_ENABLED",
     "BLUEFERRY_MEDIA_MPRIS_ENABLED",
 })
@@ -311,6 +314,26 @@ PROXIMITY_LOCK_GRACE_SEC: int = _env_int(
 )
 """Seconds the iPhone must stay continuously disconnected before locking."""
 
+CALL_HISTORY_ENABLED: bool = _env_bool("BLUEFERRY_CALL_HISTORY_ENABLED", False)
+"""Opt-in: pull the iPhone's recent calls over PBAP and retain them locally.
+
+Off by default because it retains who called whom and when. It uses the
+existing PBAP session (the iPhone's **Sync Contacts** permission) and the same
+local storage policy and retention window as message history.
+"""
+CALL_HISTORY_INTERVAL_SEC: int = _env_int(
+    "BLUEFERRY_CALL_HISTORY_INTERVAL_SEC", 900, 60, 24 * 60 * 60
+)
+"""Seconds between fallback polls of the missed-calls list.
+
+PBAP has no change events. ANCS call notifications trigger prompt pulls, so
+this poll only covers calls ANCS did not report (e.g. notifications off).
+"""
+MISSED_CALL_NOTIFICATIONS: bool = _env_bool(
+    "BLUEFERRY_MISSED_CALL_NOTIFICATIONS", True
+)
+"""Desktop popups for newly seen missed calls; only with call history enabled."""
+
 # ---- runtime paths ------------------------------------------------------
 
 _state_home = Path(
@@ -320,6 +343,7 @@ _state_home = Path(
 STATE_DIR: Path = _state_home
 EVENTS_DB: Path = _state_home / "events.sqlite"
 CONTACTS_DB: Path = _state_home / "contacts.sqlite"
+CALLS_DB: Path = _state_home / "calls.sqlite"
 
 SETTINGS_JSON: Path = CONFIG_DIR / "settings.json"
 
@@ -344,7 +368,7 @@ def ensure_dirs() -> None:
     if STATE_DIR.stat().st_mode & 0o777 != STATE_DIR_MODE:
         raise PermissionError(f"could not secure private state directory: {STATE_DIR}")
 
-    for path in (EVENTS_DB, CONTACTS_DB):
+    for path in (EVENTS_DB, CONTACTS_DB, CALLS_DB):
         if not path.exists() and not path.is_symlink():
             continue
         if path.is_symlink():

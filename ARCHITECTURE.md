@@ -28,7 +28,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | --- | --- |
 | `daemon.py` | Orchestrates lifecycle: publishes D-Bus, then starts Bluetooth, supervisors, state, and sinks; builds `BackendDependencies`. |
 | `backend_operations.py` | Toolkit- and transport-neutral application operations: validation, thread routing, and policy. |
-| `dbus_service.py` | Session D-Bus adapter (`Messages1`/`Events1`/`Presence1`) that maps operations to wire types; claims the bus name. |
+| `dbus_service.py` | Session D-Bus adapter (`Messages1`/`Events1`/`Presence1`/`CallHistory1`) that maps operations to wire types; claims the bus name. |
 | `dbus_security.py` | Caller UID validation and per-connection/daemon-wide rate limits. |
 | `protocol.py` | Stable D-Bus identifiers and the API-generation compatibility check. |
 | `event_dispatcher.py` | Builds messages from MAP/ANCS events and fans them out to persistence, desktop, and D-Bus sinks. |
@@ -77,6 +77,10 @@ All paths are relative to `src/blueferry/` unless noted.
 | `contacts.py` | PBAP phonebook pull, vCard parsing, and address-to-name resolution. |
 | `contact_sync.py` | Schedules PBAP pulls (MAP grace period, daily refresh, joined manual requests) and discards pulls that span a storage key or policy change. |
 | `contact_repository.py` | Contact-cache SQLite schema, replacement transaction, encryption, legacy cleanup. |
+| `call_history.py` | Opt-in: pure parsing of PBAP call-history vCards (`ich`/`och`/`mch`) and their merge. |
+| `call_history_repository.py` | Encrypted call-history mirror, retention, and the already-announced missed-call set. |
+| `call_history_sync.py` | Schedules call-history pulls (ANCS-triggered, missed-calls-only fallback poll, one OBEX worker job per listing) and reports newly seen missed calls. |
+| `call_history_settings.py` | The saved call-history opt-in (`settings.json`, seeded from `local.env`). |
 | `vcard.py` | Linear, resource-bounded vCard block extraction. |
 | `ancs/client.py` | ANCS GATT client: subscribes to characteristics, requests attributes, emits `AncsEvent`s, and sends opt-in `PerformNotificationAction` writes. |
 | `ancs/parsers.py` | Pure ANCS wire-format parsers and command builders. |
@@ -155,6 +159,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | --- | --- |
 | `cli.py`, `__main__.py` | Typer CLI (`run`, `doctor`, sync, setup, and hidden `pairing-*` JSON helpers). |
 | `cli_messages.py` | CLI message listing, recipient selection, and send. |
+| `cli_call_history.py` | Opt-in `call-history` listing, enable, and disable. |
 | `cli_common.py` | Small CLI presentation helpers. |
 | `cli_proximity.py` | `proximity-lock` status, dry run, enable, and disable. |
 | `cli_notifications.py` | `notifications open-map` rule editing. |
@@ -191,6 +196,8 @@ All paths are relative to `src/blueferry/` unless noted.
 | `qt/qml/PhoneStatusIndicator.qml` | Optional iPhone battery/signal indicator (loaded only when values are known; plain-text tooltip). |
 | `qt/qml/ExpandingMessageComposer.qml` | Growing message editor. |
 | `qt/qml/MessageBubble.qml` | Message bubble. |
+| `qt/qml/RecentCallsPage.qml` | Opt-in recent-calls list, created through a `Loader`. |
+| `qt/qml/CallHistorySettings.qml` | Call-history opt-in checkboxes in the iPhone settings. |
 | `qt/qml/NowPlayingBar.qml` | Opt-in iPhone now-playing bar with transport buttons. |
 | `qt/qml/MediaControlSettings.qml` | Media-control opt-in checkbox and state; loaded only for daemons that report it. |
 | `quickshell_bridge.py` | Persistent stdin/stdout JSON bridge from Quickshell to the session D-Bus API. |
@@ -231,15 +238,19 @@ contract.
   owns fan-out, and `profile_supervisor` owns profile transitions. Its worker,
   session, and timer protocols make races testable without BlueZ.
 - PBAP transport and parsing (`contacts`) stay separate from persistence
-  (`contact_repository`).
+  (`contact_repository`). The opt-in call history follows the same split
+  (`call_history`, `call_history_repository`, `call_history_sync`) and exists
+  in the daemon only while the user has opted in (`CallHistory1.SetCallHistory`,
+  seeded from `BLUEFERRY_CALL_HISTORY_ENABLED`).
 
 ## D-Bus API and compatibility
 
 - `Messages1` carries commands and unicast snapshots; `Events1` carries
   content-free live coordination. `Presence1` holds desktop-presence
-  controls that are not messaging (the opt-in away lock); their state is
-  reported through `Messages1.GetStatus`, and the compatibility check runs
-  through `Messages1` on the same owner. The opt-in `Media1` interface returns the
+  controls that are not messaging (the opt-in away lock), and `CallHistory1`
+  the opt-in mirror of the iPhone's recent calls. Their state is reported
+  through `Messages1.GetStatus`, and the compatibility check runs through
+  `Messages1` on the same owner. The opt-in `Media1` interface returns the
   now-playing snapshot and sends validated media commands; its
   `NowPlayingChanged` invalidation on `Events1` has no arguments.
   Identifiers live in `protocol.py`.
@@ -269,8 +280,9 @@ contract.
 - Payloads cross the bus as JSON and are decoded immediately by `client_wire`
   into `models`, which retain unknown fields for forward compatibility.
 - **What never crosses the bus:** `HistoryChanged` carries only a daemon-local
-  revision, `StatusChanged` has no arguments, and `OpenMessageRequested`
-  carries only a bounded opaque MAP handle. Message records, sender
+  revision, `StatusChanged` and `CallHistoryChanged` have no arguments, and
+  `OpenMessageRequested` carries only a bounded opaque MAP handle. Call
+  records are read only through the authenticated `ListCallHistory`. Message records, sender
   identities, ANCS fields, contacts, and connectivity details are never
   broadcast. Expected errors use stable, length-bounded names under
   `io.weirdware.BlueFerry.Error`; unexpected exceptions and OBEX details stay
@@ -546,8 +558,8 @@ A change to these rules has to be made in both places.
   a roster does not change the key. Legacy name-folded keys remain aliases
   only when history shows a single spelling, and reading history never
   rewrites the database.
-- **Encryption at rest:** history and the contact cache live in `0700`
-  directories as `0600` SQLite files. Sensitive records, including event kind,
+- **Encryption at rest:** history, the contact cache, and the opt-in call
+  history live in `0700` directories as `0600` SQLite files. Sensitive records, including event kind,
   timestamp, and content, are encrypted with AES-256-GCM under one random key
   held by the Secret Service through libsecret. Clients never handle the key,
   and keyring lookup attributes are non-sensitive. Starred keys, saved group

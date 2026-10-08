@@ -1405,6 +1405,54 @@ def test_control_point_failure_keeps_ancs_unready_and_retries(
     assert client.connected is True
 
 
+def _header(event: int, category: int, uid: int, *, flags: int = 0) -> dict:
+    return {"Value": struct.pack("<BBBBI", event, flags, category, 1, uid)}
+
+
+def test_call_activity_comes_from_the_header_alone_under_any_policy() -> None:
+    from blueferry.ancs.constants import CategoryID
+
+    activity = []
+    client = AncsClient(
+        "/device", lambda _event: None, on_call_activity=activity.append,
+    )
+    ns = "org.bluez.GattCharacteristic1"
+
+    client._on_ns_changed(ns, _header(EventID.NotificationAdded, CategoryID.IncomingCall, 1), [])
+    client._on_ns_changed(ns, _header(EventID.NotificationRemoved, CategoryID.IncomingCall, 1), [])
+    client._on_ns_changed(ns, _header(EventID.NotificationAdded, CategoryID.MissedCall, 2), [])
+    client._on_ns_changed(ns, _header(
+        EventID.NotificationAdded, CategoryID.MissedCall, 3, flags=EventFlag.PreExisting,
+    ), [])
+    client._on_ns_changed(ns, _header(EventID.NotificationAdded, CategoryID.Social, 4), [])
+    client._on_ns_changed(ns, _header(EventID.NotificationRemoved, CategoryID.MissedCall, 2), [])
+
+    assert activity == ["ended", "missed"]
+    # Nothing beyond the header was needed: no content request for the
+    # missed call is made under the default (messages-only) policy either.
+    while client._request_queue:
+        assert client._request_queue.popleft().app_probe
+
+
+def test_emitted_event_carries_the_notification_category() -> None:
+    from blueferry.ancs.constants import CategoryID
+
+    emitted = []
+    client = AncsClient(
+        "/device", emitted.append,
+        include_non_message_notifications=lambda: True,
+    )
+    client._app_name_cache["com.apple.mobilephone"] = "Phone"
+    client._on_ns_changed(
+        "org.bluez.GattCharacteristic1",
+        _header(EventID.NotificationAdded, CategoryID.MissedCall, 7), [],
+    )
+    _complete_app_probe(client, 7, "com.apple.mobilephone")
+    _complete_full_response(client, 7, "com.apple.mobilephone")
+
+    assert [event.category for event in emitted] == [CategoryID.MissedCall]
+
+
 def test_rapid_le_bearer_cycles_are_logged_at_info_once_per_interval(caplog) -> None:
     now = [100.0]
     client = AncsClient(

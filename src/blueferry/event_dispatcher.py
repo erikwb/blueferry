@@ -346,6 +346,21 @@ class EventDispatcher:
         )
         self.message(event)
 
+    def missed_calls(self, notices) -> None:
+        """Fan newly missed calls out to sinks that can present them.
+
+        Call history is not message history: persistence belongs to the call
+        repository, and nothing about a call is published on D-Bus here.
+        """
+        for sink in self.sinks:
+            handler = getattr(sink, "handle_missed_calls", None)
+            if handler is None:
+                continue
+            try:
+                handler(list(notices))
+            except Exception:
+                log.exception("sink %s failed on missed calls", sink.name)
+
     def ancs(self, event) -> None:
         fingerprint = _ancs_fingerprint(event)
         if fingerprint in self._seen_ancs:

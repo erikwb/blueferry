@@ -485,6 +485,17 @@ Kirigami.ScrollablePage {
             }
         }
 
+        // Only daemons that report the call-history keys support the setting.
+        Loader {
+            objectName: "callHistoryLoader"
+            Layout.fillWidth: true
+            active: iphonePage.bridge.status.call_history_enabled !== undefined
+            visible: active
+            sourceComponent: CallHistorySettings {
+                bridge: iphonePage.bridge
+            }
+        }
+
         // Only daemons that report the media-control keys support the setting.
         Loader {
             objectName: "mediaControlLoader"

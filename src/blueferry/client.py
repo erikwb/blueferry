@@ -8,6 +8,7 @@ import dbus.exceptions
 
 from blueferry.bus import get_session_bus
 from blueferry.client_wire import (
+    decode_call_history,
     decode_calls,
     decode_contact_records,
     decode_contacts,
@@ -20,10 +21,17 @@ from blueferry.client_wire import (
 )
 from blueferry.errors import BlueFerryError
 from blueferry.limits import MAX_CONTACT_PAGE
-from blueferry.models import BackendStatus, CallsSnapshot, EventRecord, Thread
+from blueferry.models import (
+    BackendStatus,
+    CallHistoryEntry,
+    CallsSnapshot,
+    EventRecord,
+    Thread,
+)
 from blueferry.protocol import (
     BUS_NAME,
     CALL_CONTROL_TIMEOUT_SEC,
+    CALL_HISTORY_IFACE,
     CALLS_IFACE,
     CLEAR_CALL_TIMEOUT_SEC,
     CONTACT_CALL_TIMEOUT_SEC,
@@ -304,6 +312,41 @@ class BackendClient:
             ))
         except dbus.exceptions.DBusException as error:
             raise BackendError(error.get_dbus_message() or str(error)) from error
+
+    def _call_history_iface(self) -> dbus.Interface:
+        # CallHistory1 has no GetStatus; check compatibility through
+        # Messages1 and address CallHistory1 on that same owner-bound object.
+        messages = self._iface(MESSAGES_IFACE)
+        proxy = getattr(messages, "proxy_object", None)
+        if proxy is None:
+            return self._raw_iface(CALL_HISTORY_IFACE)
+        return dbus.Interface(proxy, CALL_HISTORY_IFACE)
+
+    def call_history(self, limit: int = 200) -> list[CallHistoryEntry]:
+        try:
+            return decode_call_history(self._call_history_iface().ListCallHistory(
+                dbus.UInt32(limit), timeout=SNAPSHOT_CALL_TIMEOUT_SEC,
+            ))
+        except (dbus.exceptions.DBusException, ValueError) as error:
+            raise BackendError(_dbus_message(error)) from error
+
+    def sync_call_history(self) -> int:
+        try:
+            return int(self._call_history_iface().SyncCallHistory(
+                timeout=OBEX_CALL_TIMEOUT_SEC
+            ))
+        except dbus.exceptions.DBusException as error:
+            raise BackendError(error.get_dbus_message() or str(error)) from error
+
+    def set_call_history(self, enabled: bool, missed_call_notifications: bool) -> dict:
+        try:
+            return decode_mapping(self._call_history_iface().SetCallHistory(
+                dbus.Boolean(enabled),
+                dbus.Boolean(missed_call_notifications),
+                timeout=POLICY_CALL_TIMEOUT_SEC,
+            ))
+        except (dbus.exceptions.DBusException, ValueError) as error:
+            raise BackendError(_dbus_message(error)) from error
 
     def clear_history(self) -> None:
         try:

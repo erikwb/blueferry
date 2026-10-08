@@ -314,6 +314,49 @@ Contact names are display data, not identities. Phone numbers and email
 addresses are normalized and stored separately; a name that resolves to more
 than one address must remain ambiguous.
 
+### Call history (unverified on hardware)
+
+BlueFerry's opt-in call history relies on the PBAP call-history phonebooks,
+selected with `Select("int", "ich" | "och" | "mch")` and pulled with the same
+`PullAll` filters as the main phonebook. **This path has not yet been
+exercised against an iPhone**; the following are expectations from the PBAP
+specification and third-party reports, not captured observations:
+
+- Entries carry `X-IRMC-CALL-DATETIME;MISSED|RECEIVED|DIALED:<timestamp>`
+  plus `TEL` and, for known callers, `N`/`FN`. Timestamps without `Z` or an
+  offset are treated as local time.
+- iOS is reported to fill `ich`, `och`, and `mch`, while the combined `cch`
+  listing is unreliable, so BlueFerry pulls the three lists and merges them.
+  A call present in both `ich` and `mch` is treated as missed.
+- An empty listing is a valid answer (for example, no missed calls).
+- PBAP offers no change notification. BlueFerry pulls when the ANCS
+  Notification Source reports a new `MissedCall` notification (only `mch`) or
+  the removal of an `IncomingCall` one (all three lists), and otherwise polls
+  only `mch`. That iOS removes the `IncomingCall` notification when a call is
+  answered, declined or missed, and writes its call log within the
+  five-second coalescing delay, is assumed, not observed.
+- Automatic pulls share the single OBEX worker, so they follow the
+  contact-sync MAP gating (defer while MAP reconnects, three-minute grace when
+  MAP never connected). Each listing is a separate worker job bounded to
+  45 seconds of transfer, so a queued MAP send never waits behind a whole
+  sync. A `NoReply` or transfer timeout from these optional pulls is not
+  reported to the session manager (which would drop MAP and PBAP); only
+  "object gone" errors are.
+- When the phone's own time zone or DST changes, iOS is expected to re-render
+  offset-free timestamps of existing calls. A missed call whose text differs
+  from an announced one for the same number by whole quarter hours (at most
+  26 h), while the earlier text is gone from the list, is not announced again.
+- BlueFerry requests `vcard30`. vCard 3.0 text escapes (`\;`, `\,`, `\\`,
+  `\n`) are resolved; vCard 2.1 `QUOTED-PRINTABLE`/`CHARSET` encodings are
+  **not** decoded, on the assumption that iOS honors the requested format.
+- Numbers are compared digits-only with the `00` international prefix folded
+  into the `+` form, so `+41…` and `0041…` are one caller.
+- Offset-free timestamps are interpreted in the desktop's time zone, so the
+  "announce only calls younger than 12 hours" rule is measured there too.
+
+Record the phone model, iOS version, and BlueZ version here once the behavior
+has been observed.
+
 ## OBEX lifecycle
 
 iOS and obexd behave poorly when MAP/PBAP sessions or operations are repeatedly

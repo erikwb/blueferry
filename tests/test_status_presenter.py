@@ -414,7 +414,7 @@ def _media_switch_page(**overrides):
             self.visible = value
 
     page = SimpleNamespace(
-        _applying_media_switches=False,
+        _applying_saved_switches=False,
         _media_control_choice=SavedChoice(),
         _mpris_player_choice=SavedChoice(),
         _media_control_switch=Switch(),
@@ -438,7 +438,7 @@ def _media_switch_page(**overrides):
     )
     from blueferry.ui.status import IPhonePage
 
-    for name in ("_show_saved_choice", "_save_media_switch"):
+    for name in ("_show_saved_choice", "_save_switch"):
         setattr(page, name, getattr(IPhonePage, name).__get__(page))
     for name, value in overrides.items():
         setattr(page, name, value)
@@ -474,13 +474,13 @@ def test_gtk_media_switches_follow_the_daemon_and_the_player_needs_media_control
     assert page._media_control_row.sensitive is False
     assert page._mpris_player_row.sensitive is False
     # Setting the switches from a status never saves anything.
-    assert page.saves == [] and page._applying_media_switches is False
+    assert page.saves == [] and page._applying_saved_switches is False
 
 
 def test_gtk_media_switch_ignores_updates_from_a_status_refresh():
     from blueferry.ui.status import IPhonePage
 
-    page = _media_switch_page(_applying_media_switches=True)
+    page = _media_switch_page(_applying_saved_switches=True)
     IPhonePage._media_control_changed(page, page._media_control_switch, None)
     IPhonePage._mpris_player_changed(page, page._mpris_player_switch, None)
     assert page.saves == []
@@ -631,3 +631,79 @@ def test_saved_choice_returns_to_the_report_after_a_failed_save():
     choice.failed()
     assert not choice.saving
     assert choice.resolve(False) == (False, False)
+
+
+def _call_history_switch_page():
+    from blueferry.ui.saved_choice import SavedChoice
+    from blueferry.ui.status import IPhonePage
+
+    page = _media_switch_page()
+    switch, row = type(page._media_control_switch), type(page._media_control_row)
+    page._call_history_choice = SavedChoice()
+    page._missed_call_popups_choice = SavedChoice()
+    page._call_history_switch = switch()
+    page._missed_call_popups_switch = switch()
+    page._call_history_row = row()
+    page._missed_call_popups_row = row()
+    page._call_history_group = row()
+    page._client.set_call_history_async = lambda enabled, popups, ok, err: page.saves.append(
+        ("history", enabled, popups, ok, err))
+    page.apply = lambda values, reachable=True: IPhonePage._apply_call_history_switches(
+        page, BackendStatus.from_dict(values), reachable)
+    return page
+
+
+def test_gtk_call_history_switches_follow_the_daemon():
+    page = _call_history_switch_page()
+
+    # Daemons that do not report the keys do not support the settings.
+    page.apply({})
+    assert page._call_history_group.visible is False
+
+    page.apply({"call_history_enabled": False, "missed_call_notifications": True})
+    assert page._call_history_group.visible is True
+    assert page._call_history_switch.active is False
+    assert page._missed_call_popups_switch.active is True
+    assert page._call_history_row.sensitive is True
+    # Missed-call popups are only offered while call history is on.
+    assert page._missed_call_popups_row.sensitive is False
+
+    page.apply({"call_history_enabled": True, "missed_call_notifications": False})
+    assert page._call_history_switch.active is True
+    assert page._missed_call_popups_switch.active is False
+    assert page._missed_call_popups_row.sensitive is True
+    page.apply({"call_history_enabled": True}, reachable=False)
+    assert page._call_history_row.sensitive is False
+    assert page._missed_call_popups_row.sensitive is False
+    # Setting the switches from a status never saves anything.
+    assert page.saves == [] and page._applying_saved_switches is False
+
+
+def test_gtk_call_history_switches_save_both_values_together():
+    from blueferry.ui.status import IPhonePage
+
+    page = _call_history_switch_page()
+    page.apply({"call_history_enabled": False, "missed_call_notifications": False})
+    page._call_history_switch.active = True
+    IPhonePage._call_history_changed(page, page._call_history_switch, None)
+    assert page.saves[-1][:3] == ("history", True, False)
+    assert page._call_history_row.sensitive is False
+    choice = page._call_history_choice
+    assert choice.saving and choice.resolve(False) == (True, False)
+
+    page.saves[-1][3]({"call_history_enabled": True, "missed_call_notifications": False})
+    assert not choice.saving and page.refreshes == [True]
+    assert page.toasts == ["Call history preference saved"]
+
+    # The popup switch keeps call history on.
+    page._missed_call_popups_switch.active = True
+    IPhonePage._missed_call_popups_changed(page, page._missed_call_popups_switch, None)
+    assert page.saves[-1][:3] == ("history", True, True)
+
+    page._last_status = BackendStatus.from_dict({"call_history_enabled": True})
+    page.saves[-1][4]("storage is locked")
+    assert not page._missed_call_popups_choice.saving
+    assert page.applied == [page._last_status]
+    assert page.toasts[-1] == (
+        "Could not save missed call notification preference: storage is locked"
+    )

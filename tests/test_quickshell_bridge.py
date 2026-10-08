@@ -82,6 +82,13 @@ class FakeClient:
             "proximity_lock_grace_sec": grace_seconds,
         }
 
+    def set_call_history(self, enabled, missed_call_notifications):
+        self.calls.append(("set_call_history", enabled, missed_call_notifications))
+        return {
+            "call_history_enabled": enabled,
+            "missed_call_notifications": missed_call_notifications,
+        }
+
     def set_calls_enabled(self, enabled):
         self.calls.append(("set_calls_enabled", enabled))
         return {"calls_enabled": enabled}
@@ -432,3 +439,22 @@ def test_bridge_saves_the_media_opt_ins_and_returns_their_status(method, key) ->
         with pytest.raises(ValueError, match="enabled must be a boolean"):
             bridge.dispatch(method, args)
     assert client.calls == [(method, True)]
+
+
+def test_bridge_saves_the_call_history_opt_in_and_returns_its_status() -> None:
+    client = FakeClient()
+    bridge = QuickshellBridge(client)  # type: ignore[arg-type]
+
+    assert bridge.dispatch(
+        "set_call_history", {"enabled": True, "missed_call_notifications": False}
+    ) == {"call_history_enabled": True, "missed_call_notifications": False}
+    assert client.calls == [("set_call_history", True, False)]
+    for args, message in (
+        ({"missed_call_notifications": True}, "enabled must be a boolean"),
+        ({"enabled": True}, "missed_call_notifications must be a boolean"),
+        ({"enabled": True, "missed_call_notifications": 1},
+         "missed_call_notifications must be a boolean"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            bridge.dispatch("set_call_history", args)
+    assert len(client.calls) == 1

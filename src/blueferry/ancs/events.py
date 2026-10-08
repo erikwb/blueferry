@@ -34,6 +34,8 @@ class AncsEvent:
     seen_at: datetime = field(
         default_factory=lambda: datetime.now(timezone.utc)
     )
+    # ANCS CategoryID from the Notification Source header (0 = Other).
+    category: int = 0
 
     @property
     def display_title(self) -> str:

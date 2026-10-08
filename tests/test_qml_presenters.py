@@ -764,6 +764,9 @@ def settings_window(qml_engine):
             property string errorText: ""
             property string pairingIssueReport: ""
             property string version: "test"
+            property bool callHistoryEnabled: false
+            property var callHistory: []
+            property string callHistoryError: ""
             property string bluetoothRestartCommand: "sudo rc-service bluetooth restart"
             signal pairingConfirmationRequested(string passkey)
             signal messageOpenRequested(string handle)
@@ -783,6 +786,7 @@ def settings_window(qml_engine):
             function answerPairingConfirmation(approved) { record("answerPairingConfirmation", [approved]); }
             function setStoragePolicy(policy) { record("setStoragePolicy", [policy]); }
             function setProximityLock(enabled, grace) { record("setProximityLock", [enabled, grace]); }
+            function setCallHistory(enabled, popups) { record("setCallHistory", [enabled, popups]); }
             property var notificationOpenMap: []
             function loadNotificationOpenMap() { record("loadNotificationOpenMap", []); }
             function setNotificationOpenTarget(bundle, target) { record("setNotificationOpenTarget", [bundle, target]); }
@@ -795,6 +799,9 @@ def settings_window(qml_engine):
             function forgetDevice(mac) { record("forgetDevice", [mac]); }
             function activateBluetooth() { record("activateBluetooth", []); }
             function filePairingIssue() { record("filePairingIssue", []); }
+            function watchCallHistory(watched) { record("watchCallHistory", [watched]); }
+            function loadCallHistory() { record("loadCallHistory", []); }
+            function syncCallHistory() { record("syncCallHistory", []); }
             function sendMediaCommand(command) { record("sendMediaCommand", [command]); }
             function refreshCalls() { record("refreshCalls", []); }
             function dialCall(number) { record("dialCall", [number]); }
@@ -1130,6 +1137,50 @@ def test_proximity_lock_settings_appear_only_for_supporting_daemons(qml_engine, 
     assert _evaluate(
         qml_engine, "testBridge.calls.filter(c => c.method === 'setProximityLock')"
     ) == [{"method": "setProximityLock", "args": [True, 90]}]
+
+
+def test_call_history_opt_in_checkbox_appears_only_for_supporting_daemons(
+    qml_engine, settings_window,
+):
+    window, bridge = settings_window
+    bridge.setProperty("setupLoaded", True)
+    QGuiApplication.processEvents()
+    loader = _settings_object(window, "callHistoryLoader")
+    bridge.setProperty("status", {"daemon": True})
+    assert loader.property("active") is False
+
+    bridge.setProperty("status", {
+        "daemon": True,
+        "call_history_enabled": False,
+        "missed_call_notifications": True,
+    })
+    QGuiApplication.processEvents()
+    assert loader.property("active") is True
+    note = _settings_object(window, "callHistoryPrivacyNote")
+    assert "erases" in note.property("text")
+    checkbox = _settings_object(window, "callHistoryCheckBox")
+    popups = _settings_object(window, "missedCallPopupsCheckBox")
+    assert checkbox.property("checked") is False
+    assert popups.property("enabled") is False, "popups need the opt-in first"
+
+    assert QMetaObject.invokeMethod(checkbox, "toggle")
+    assert QMetaObject.invokeMethod(checkbox, "clicked")
+    assert _evaluate(
+        qml_engine, "testBridge.calls.filter(c => c.method === 'setCallHistory')"
+    ) == [{"method": "setCallHistory", "args": [True, True]}]
+
+    bridge.setProperty("status", {
+        "daemon": True,
+        "call_history_enabled": True,
+        "missed_call_notifications": True,
+    })
+    QGuiApplication.processEvents()
+    assert popups.property("enabled") is True
+    assert QMetaObject.invokeMethod(popups, "toggle")
+    assert QMetaObject.invokeMethod(popups, "clicked")
+    assert _evaluate(
+        qml_engine, "testBridge.calls.filter(c => c.method === 'setCallHistory')"
+    )[-1] == {"method": "setCallHistory", "args": [True, False]}
 
 
 def test_click_rule_editor_appears_only_for_supporting_daemons(qml_engine, settings_window):
@@ -2636,6 +2687,85 @@ Item {
     assert "WARN scene:" not in log and "ReferenceError" not in log and "TypeError" not in log, log
 
 
+class _CallsBridge(QObject):
+    """Inert recorder for RecentCallsPage; it performs no I/O."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.loads = 0
+        self.syncs = 0
+
+    @Property("QVariantList", constant=True)
+    def callHistory(self):
+        return [
+            {"direction": "missed", "caller": "<b>Eve</b>", "name": "<b>Eve</b>",
+             "address": "+15551230002", "time": "Today", "missed": True},
+            {"direction": "outgoing", "caller": "+15551230001", "name": "",
+             "address": "+15551230001", "time": "Today", "missed": False},
+        ]
+
+    @Property(str, constant=True)
+    def callHistoryError(self) -> str:
+        return ""
+
+    @Property(bool, constant=True)
+    def busy(self) -> bool:
+        return False
+
+    @Slot()
+    def loadCallHistory(self) -> None:
+        self.loads += 1
+
+    @Slot()
+    def syncCallHistory(self) -> None:
+        self.syncs += 1
+
+
+def test_recent_calls_page_loads_once_and_filters_missed_calls(qml_engine):
+    from PySide6.QtQml import QQmlExpression
+
+    bridge = _CallsBridge()
+    component = _component(qml_engine, "src/blueferry/qt/qml/RecentCallsPage.qml")
+    page = component.createWithInitialProperties({"bridge": bridge})
+    assert page is not None, [error.toString() for error in component.errors()]
+
+    def evaluate(script):
+        expression = QQmlExpression(qml_engine.contextForObject(page), page, script)
+        value, failed = expression.evaluate()
+        assert not failed, expression.error().toString()
+        return value
+
+    assert bridge.loads == 0, "creating the page must not fetch call records"
+    assert evaluate("visibleCalls().length") == 2
+    page.setProperty("missedOnly", True)
+    assert evaluate("visibleCalls().map(call => call.direction).join()") == "missed"
+    assert bridge.syncs == 0
+    # Remote names and numbers are rendered as plain text, never as markup.
+    source = (ROOT / "src/blueferry/qt/qml/RecentCallsPage.qml").read_text()
+    assert source.count("Controls.Label {") == source.count("textFormat: Text.PlainText")
+    page.deleteLater()
+
+
+def test_recent_calls_load_on_open_and_are_forgotten_on_close(qml_engine, settings_window):
+    _window, bridge = settings_window
+    _evaluate(qml_engine, "testWindow.openRecentCalls()")
+    assert _evaluate(qml_engine, "testWindow.recentCallsPage === null") is True
+    assert _evaluate(qml_engine, "testBridge.calls") == [], "disabled feature: nothing opens"
+
+    bridge.setProperty("callHistoryEnabled", True)
+    QGuiApplication.processEvents()
+    _evaluate(qml_engine, "testWindow.openRecentCalls()")
+    QGuiApplication.processEvents()
+    assert _evaluate(qml_engine, "testWindow.recentCallsPage !== null") is True
+    assert [call["method"] for call in _evaluate(qml_engine, "testBridge.calls")] == ["watchCallHistory"]
+    assert _evaluate(qml_engine, "testBridge.calls")[0]["args"] == [True]
+
+    _evaluate(qml_engine, "testWindow.closeRecentCalls()")
+    QGuiApplication.processEvents()
+    assert _evaluate(qml_engine, "testWindow.recentCallsPage === null") is True
+    assert _evaluate(qml_engine, "testBridge.calls")[-1] == {"method": "watchCallHistory", "args": [False]}
+    assert _evaluate(qml_engine, "testWindow.pageStack.depth") == 1
+
 class _OpenRuleBridge(QObject):
     """Inert recorder: the editor may only request validated backend edits."""
 
@@ -2881,4 +3011,48 @@ def test_quickshell_media_checkboxes_are_opt_in_and_the_player_needs_media_contr
     assert QMetaObject.invokeMethod(mpris, "toggle")
     assert QMetaObject.invokeMethod(mpris, "clicked")
     assert calls[-1] == ("set_mpris_player", {"enabled": True})
+    close()
+
+
+def test_quickshell_call_history_checkboxes_are_opt_in(qml_engine, quickshell_setup):
+    base = {"notification_policy": "all", "contacts_only_notifications": False}
+    page, calls, close = _quickshell_settings_page(qml_engine, quickshell_setup, base)
+    history = page.findChild(QObject, "callHistoryCheckBox")
+    popups = page.findChild(QObject, "missedCallPopupsCheckBox")
+    note = page.findChild(QObject, "callHistoryNote")
+    assert history is not None and popups is not None and note is not None
+    # Daemons that do not report the keys do not support the settings.
+    for item in (history, popups, note):
+        assert item.property("visible") is False
+
+    status = {**base, "call_history_enabled": False, "missed_call_notifications": True}
+    page.setProperty("status", status)
+    QGuiApplication.processEvents()
+    assert history.property("visible") is True
+    assert history.property("checked") is False
+    assert history.property("enabled") is True
+    assert popups.property("checked") is True
+    # Missed-call popups are only offered while call history is on.
+    assert popups.property("enabled") is False
+    assert "erases the retained calls" in note.property("text")
+
+    page.setProperty("busy", {"callHistory": True})
+    QGuiApplication.processEvents()
+    assert history.property("enabled") is False
+    page.setProperty("busy", {})
+    assert QMetaObject.invokeMethod(history, "toggle")
+    assert QMetaObject.invokeMethod(history, "clicked")
+    assert calls == [
+        ("set_call_history", {"enabled": True, "missed_call_notifications": True}),
+    ]
+
+    page.setProperty("status", {**status, "call_history_enabled": True})
+    QGuiApplication.processEvents()
+    assert history.property("checked") is True
+    assert popups.property("enabled") is True
+    assert QMetaObject.invokeMethod(popups, "toggle")
+    assert QMetaObject.invokeMethod(popups, "clicked")
+    assert calls[-1] == (
+        "set_call_history", {"enabled": True, "missed_call_notifications": False},
+    )
     close()

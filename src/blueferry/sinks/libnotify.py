@@ -29,7 +29,9 @@ import logging
 import re
 import secrets
 import time
+from collections import deque
 from collections.abc import Callable
+from datetime import datetime, timedelta
 from html import escape
 from typing import Protocol
 
@@ -41,9 +43,11 @@ from blueferry.ancs.constants import (
     ANCS_MESSAGE_MAX_BYTES,
     ANCS_SUBTITLE_MAX_BYTES,
     MESSAGES_APP_ID,
+    CategoryID,
 )
 from blueferry.ancs.events import AncsEvent
 from blueferry.bus import get_session_bus
+from blueferry.call_history import MAX_INDIVIDUAL_MISSED_CALL_POPUPS, MissedCallNotice
 from blueferry.calls.model import CallEvent
 from blueferry.client_activation import activation_argv, select_client
 from blueferry.events import SmsEvent
@@ -59,6 +63,7 @@ from blueferry.notification_policy import (
     NO_NOTIFICATIONS,
 )
 from blueferry.text_safety import terminal_text
+from blueferry.time_display import format_message_timestamp
 
 
 class _SignalMatch(Protocol):
@@ -70,6 +75,13 @@ _APP_NAME = "BlueFerry"
 # Long bodies stay readable: Plasma shows a few lines and expands on click.
 # Large enough for the full subtitle and message BlueFerry requests over ANCS.
 _BODY_LIMIT = ANCS_SUBTITLE_MAX_BYTES + 1 + ANCS_MESSAGE_MAX_BYTES
+# The iPhone's own missed-call popup (ANCS) appears right after the call; the
+# PBAP call-history pull finds the same call seconds to minutes later. A PBAP
+# notice is treated as already shown when an ANCS missed-call popup was shown
+# within this window around the call's time.
+_ANCS_MISSED_CALL_BEFORE = timedelta(minutes=2)
+_ANCS_MISSED_CALL_AFTER = timedelta(minutes=30)
+_MAX_ANCS_MISSED_CALL_MARKS = 32
 _MESSAGE_EXPIRE_MS = config.NOTIFICATION_TIMEOUT_MS
 # ANCS mirrors ordinary iPhone app/system notifications. Unlike MAP messages,
 # they have no desktop-to-phone read-state path, so keeping every popup around
@@ -453,6 +465,10 @@ class LibnotifySink:
         except dbus.exceptions.DBusException as e:
             log.error("libnotify Notify (ANCS) failed: %s", e.get_dbus_name())
             return
+        if getattr(event, "category", CategoryID.Other) == CategoryID.MissedCall:
+            # Remember only when, never who: lets the PBAP missed-call path
+            # skip a second popup for the same call.
+            self._ancs_missed_call_marks().append(event.seen_at)
         if buttons:
             self._track_ancs_actions(
                 int(nid),
@@ -477,6 +493,99 @@ class LibnotifySink:
         except Exception:
             log.debug("could not resolve a notification click rule", exc_info=True)
             return None
+
+    def _ancs_missed_call_marks(self) -> deque[datetime]:
+        marks = getattr(self, "_ancs_missed_calls", None)
+        if marks is None:
+            marks = deque(maxlen=_MAX_ANCS_MISSED_CALL_MARKS)
+            self._ancs_missed_calls = marks
+        return marks
+
+    def _already_shown_by_ancs(self, notice: MissedCallNotice) -> bool:
+        """Consume one ANCS missed-call popup shown around this call's time."""
+        marks = self._ancs_missed_call_marks()
+        for mark in list(marks):
+            if (
+                notice.occurred_at - _ANCS_MISSED_CALL_BEFORE
+                <= mark
+                <= notice.occurred_at + _ANCS_MISSED_CALL_AFTER
+            ):
+                marks.remove(mark)
+                return True
+        return False
+
+    # ---- missed calls (PBAP call history) --------------------------------
+
+    def handle_missed_calls(
+        self,
+        notices: list[MissedCallNotice],
+        *,
+        individual_limit: int = MAX_INDIVIDUAL_MISSED_CALL_POPUPS,
+    ) -> None:
+        """Announce newly missed calls; a burst collapses into one summary.
+
+        Deliberately shown under the default ``messages`` policy, not only
+        ``all``: a missed call is person-to-person communication like a
+        message, and ``BLUEFERRY_CALL_HISTORY_ENABLED`` plus
+        ``BLUEFERRY_MISSED_CALL_NOTIFICATIONS`` are the user's explicit
+        consent. ``none`` and contacts-only still apply.
+        """
+        if self._policy() == NO_NOTIFICATIONS:
+            return
+        if self._contacts_only():
+            notices = [notice for notice in notices if notice.known_contact]
+        # Under "All iPhone notifications" the phone's own missed-call popup
+        # may already be on screen; do not announce the same call twice.
+        notices = [
+            notice for notice in notices if not self._already_shown_by_ancs(notice)
+        ]
+        if not notices:
+            return
+        if len(notices) > individual_limit:
+            title = f"\U0001f4de {len(notices)} missed calls"
+            if config.SHOW_NOTIFICATION_CONTENT:
+                callers = list(dict.fromkeys(
+                    notice.caller or "Unknown caller" for notice in notices
+                ))
+                body = ", ".join(callers)
+            else:
+                body = "Missed calls on your iPhone"
+            self._notify_missed_call(title, body)
+            return
+        for notice in notices:
+            if config.SHOW_NOTIFICATION_CONTENT:
+                title = f"\U0001f4de {notice.caller or 'Unknown caller'}"
+                when = format_message_timestamp(notice.occurred_at.isoformat())
+                body = f"Missed call · {when}" if when else "Missed call"
+            else:
+                title = "\U0001f4de Missed call"
+                body = "Missed call on your iPhone"
+            self._notify_missed_call(title, body)
+
+    def _notify_missed_call(self, title: str, body: str) -> None:
+        if len(body) > _BODY_LIMIT:
+            body = body[:_BODY_LIMIT - 1] + "…"
+        # Caller names and numbers come from the phone: escape like SMS text.
+        title = escape(terminal_text(title).replace("\n", " "))
+        body = escape(terminal_text(body))
+        try:
+            self._notif.Notify(
+                _APP_NAME,
+                dbus.UInt32(0),
+                "call-missed-symbolic",
+                title,
+                body,
+                dbus.Array([], signature="s"),
+                dbus.Dictionary({
+                    "urgency": dbus.Byte(1),
+                    # Callers must not persist in the desktop's notification
+                    # history; BlueFerry's own call list is the record.
+                    "transient": dbus.Boolean(True),
+                }, signature="sv"),
+                dbus.Int32(_MESSAGE_EXPIRE_MS),
+            )
+        except dbus.exceptions.DBusException as e:
+            log.error("libnotify Notify (missed call) failed: %s", e.get_dbus_name())
 
     def _ancs_actions_enabled(self) -> bool:
         # Labels are app-defined ("Pay CHF 50 to Bob"), so they count as

@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
+from blueferry.call_history import CallRecord, resolve_contact_name
+from blueferry.call_history_repository import clear_call_history
 from blueferry.contacts import clear_contact_cache
 from blueferry.errors import (
     CALLS_DISABLED_HINT,
@@ -40,6 +42,7 @@ from blueferry.history import (
     read_events,
 )
 from blueferry.limits import (
+    MAX_CALL_HISTORY_QUERY_LIMIT,
     MAX_CONTACT_ADDRESS_CHARS,
     MAX_CONTACT_PAGE,
     MAX_CONTACT_QUERY_CHARS,
@@ -184,6 +187,14 @@ class ConfirmedGroups(Protocol):
     def clear(self) -> None: ...
 
 
+class CallHistory(Protocol):
+    def records(self) -> list[CallRecord]: ...
+
+    def sync(self, success: Success, failure: Failure) -> None: ...
+
+    def discard_cache(self) -> None: ...
+
+
 class CallControl(Protocol):
     """Optional HFP call control (see ``blueferry.calls.controller``)."""
 
@@ -232,6 +243,10 @@ class BackendDependencies:
     on_storage_prepared: Callable[[Any], None] | None = None
     on_storage_changed: Callable[[], None] | None = None
     set_proximity_lock: Callable[[bool, int], dict[str, Any]] | None = None
+    # Returns the live call-history component, or None while the user has not
+    # opted in. A callable because the opt-in can change at runtime.
+    call_history: Callable[[], CallHistory | None] | None = None
+    set_call_history: Callable[[bool, bool], dict[str, Any]] | None = None
     open_notification_click: Callable[[str, str], bool] | None = None
     # Called on every request: the opt-in can change at runtime.
     media: Callable[[], MediaControl | None] | None = None
@@ -757,12 +772,25 @@ class BackendOperations:
                 "history deletion requires explicit confirmation"
             )
         clear_events()
+        self._clear_call_history()
         if self.dependencies.starred_threads is not None:
             self.dependencies.starred_threads.clear()
         if self.dependencies.group_routes is not None:
             self.dependencies.group_routes.clear()
         self._clear_confirmed_groups()
         self.invalidate_conversations()
+
+    def _clear_call_history(self) -> None:
+        # Erase the file even when the feature is off: it may hold calls from
+        # a time when it was enabled. The next sync seeds silently again.
+        clear_call_history()
+        history = self._current_call_history()
+        if history is not None:
+            history.discard_cache()
+
+    def _current_call_history(self) -> CallHistory | None:
+        provider = self.dependencies.call_history
+        return provider() if provider is not None else None
 
     def delete_threads(
         self, thread_keys: Sequence[object], confirmed: bool
@@ -942,6 +970,7 @@ class BackendOperations:
             # archive, but never private data under the wrong policy.
             clear_events()
             clear_contact_cache()
+            self._clear_call_history()
             if self.dependencies.starred_threads is not None:
                 self.dependencies.starred_threads.clear()
             if self.dependencies.group_routes is not None:
@@ -1217,6 +1246,70 @@ class BackendOperations:
                 failed(error)
 
         sync(succeeded, failed)
+
+    def _call_history(self) -> CallHistory:
+        history = self._current_call_history()
+        if history is None:
+            raise NotReadyError(
+                "call history is off; turn it on in the iPhone settings or with "
+                "`blueferry call-history enable`"
+            )
+        return history
+
+    def set_call_history(
+        self, enabled: bool, missed_call_notifications: bool,
+    ) -> dict[str, Any]:
+        """Opt in or out of call history; opting out erases retained calls."""
+        configure = self.dependencies.set_call_history
+        if configure is None:
+            raise NotReadyError("call history is unavailable")
+        try:
+            return dict(configure(enabled, missed_call_notifications))
+        except ValueError as error:
+            raise InvalidArgumentsError(str(error)) from error
+        except OSError as error:
+            log.error("could not save call history preference: %s", error)
+            raise NotReadyError(
+                "could not save the call history preference"
+            ) from error
+
+    def list_call_history(self, limit: int) -> list[dict[str, object]]:
+        """Newest-first retained calls with contact-cache names applied."""
+        history = self._call_history()
+        storage = self.dependencies.storage
+        if storage is not None and not storage.status.can_read:
+            raise NotReadyError(storage.status.detail)
+        bounded = max(1, min(int(limit), MAX_CALL_HISTORY_QUERY_LIMIT))
+        contacts = self.dependencies.contacts
+        result: list[dict[str, object]] = []
+        for record in history.records()[:bounded]:
+            resolved = (
+                resolve_contact_name(record, contacts.resolve)
+                if contacts is not None else None
+            )
+            result.append({
+                "direction": record.direction,
+                "timestamp": record.occurred_at.isoformat(),
+                "address": record.address,
+                # Contact-cache name first, then the name on the phone's card.
+                "name": resolved or record.name,
+                "contact_name": resolved,
+            })
+        return result
+
+    def sync_call_history(self, success: Success, failure: Failure) -> None:
+        history = self._call_history()
+        if self.sessions.pbap is None:
+            raise NotReadyError(
+                "PBAP session not open — check Sync Contacts on the iPhone"
+            )
+        storage = self.dependencies.storage
+        if storage is not None and not storage.status.can_write:
+            raise NotReadyError(storage.status.detail)
+        history.sync(
+            success,
+            lambda error: failure(OperationFailedError("CallHistorySync", error)),
+        )
 
     def now_playing(self) -> dict[str, object]:
         """iPhone now-playing snapshot; ``enabled`` is false when opted out."""

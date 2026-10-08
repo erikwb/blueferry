@@ -16,6 +16,8 @@ src/blueferry/qt/qml/OnboardingSummary.qml
 src/blueferry/qt/qml/GroupConfirmationDialog.qml
 src/blueferry/qt/qml/NewMessageDialog.qml
 src/blueferry/qt/qml/ProximityLockSettings.qml
+src/blueferry/qt/qml/RecentCallsPage.qml
+src/blueferry/qt/qml/CallHistorySettings.qml
 src/blueferry/qt/qml/NowPlayingBar.qml
 src/blueferry/qt/qml/MediaControlSettings.qml
 src/blueferry/qt/qml/CallsDialog.qml

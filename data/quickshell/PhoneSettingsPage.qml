@@ -471,6 +471,53 @@ Rectangle {
           wrapMode: Text.Wrap
           text: "Experimental. While this is on, the iPhone's hands-free link stays connected to this computer, so calls can ring and be answered here and their audio plays here. Music stays on the iPhone. Working calls also need oFono set as the hands-free backend and BlueZ's own HFP plugin disabled; see \"Phone calls\" in the BlueFerry documentation. Make emergency calls on the iPhone itself."
         }
+        // Only daemons that report the call-history keys support the settings.
+        FerrySectionLabel {
+          ferryTheme: root.theme
+          visible: root.status.call_history_enabled !== undefined
+          text: "Call history"
+        }
+        FerryCheckBox {
+          objectName: "callHistoryCheckBox"
+          ferryTheme: root.theme
+          visible: root.status.call_history_enabled !== undefined
+          text: "Keep the iPhone's recent calls"
+          checked: root.status.call_history_enabled === true
+          enabled: root.setup.configured && !root.busy.callHistory
+          Accessible.description: callHistoryNote.text
+          onClicked: {
+            root.operationRequested("set_call_history", {
+              enabled: checked,
+              missed_call_notifications: missedCallPopupsCheckBox.checked
+            });
+          }
+        }
+        FerryCheckBox {
+          id: missedCallPopupsCheckBox
+          objectName: "missedCallPopupsCheckBox"
+          ferryTheme: root.theme
+          visible: root.status.call_history_enabled !== undefined
+          text: "Notify me about missed calls"
+          checked: root.status.missed_call_notifications !== false
+          // Only offered while call history is on, as in the Qt client.
+          enabled: root.setup.configured && !root.busy.callHistory
+            && root.status.call_history_enabled === true
+          onClicked: {
+            root.operationRequested("set_call_history", {
+              enabled: true,
+              missed_call_notifications: checked
+            });
+          }
+        }
+        FerryLabel {
+          id: callHistoryNote
+          objectName: "callHistoryNote"
+          ferryTheme: root.theme
+          visible: root.status.call_history_enabled !== undefined
+          Layout.fillWidth: true
+          wrapMode: Text.Wrap
+          text: "Keeps the iPhone's recent calls (who called and when) under your local storage setting and can notify you about missed calls. It uses the iPhone's Sync Contacts permission and never places, answers, or listens to calls. Turning it off erases the retained calls."
+        }
         FerrySectionLabel {
           ferryTheme: root.theme
           text: "Local data"

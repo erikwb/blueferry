@@ -9,6 +9,9 @@ EVENTS_IFACE = f"{BUS_NAME}.Events1"
 # Desktop-presence features that are not part of messaging (the opt-in away
 # lock). Its state is reported through Messages1.GetStatus.
 PRESENCE_IFACE = f"{BUS_NAME}.Presence1"
+# The opt-in mirror of the iPhone's recent calls (PBAP). Its opt-in state is
+# reported through Messages1.GetStatus; changes are Events1.CallHistoryChanged.
+CALL_HISTORY_IFACE = f"{BUS_NAME}.CallHistory1"
 MEDIA_IFACE = f"{BUS_NAME}.Media1"
 # Optional, default-off HFP call control. The interface is always exported so
 # introspection is stable; its methods fail with CallsDisabled when the

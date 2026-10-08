@@ -102,6 +102,84 @@ def test_phonebook_transfer_wires_idle_and_overall_timeouts(
     assert callable(captured["get_progress"])
 
 
+def test_phonebook_pull_selects_pb_with_pbap_filters_and_private_name(
+    tmp_path, monkeypatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    seen = {}
+
+    class _Pbap:
+        def Select(self, location, phonebook, **_kwargs):
+            seen["select"] = (location, phonebook)
+
+        def PullAll(self, path, filters, **_kwargs):
+            seen["name"] = Path(path).name
+            seen["filters"] = {key: (type(value).__name__, value) for key, value in filters.items()}
+            Path(path).write_text(
+                "BEGIN:VCARD\nFN:Alice\nTEL:+15551111111\nEND:VCARD\n"
+            )
+            return "/transfer/phonebook", {"Status": "complete", "Size": 1}
+
+    stored = []
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime_dir))
+    monkeypatch.setattr(contacts, "obex", lambda *_args: _Pbap())
+    monkeypatch.setattr(contacts, "wait_for_transfer", lambda *_a, **_k: "complete")
+    monkeypatch.setattr(
+        contacts, "ContactRepository",
+        lambda _storage: SimpleNamespace(replace=lambda records: stored.extend(records) or 1),
+    )
+
+    assert contacts.pull_phonebook(SimpleNamespace(pbap_path="/pbap"), max_contacts=10) == 1
+
+    assert seen["select"] == ("int", "pb")
+    assert seen["name"] == "pb.vcf"
+    assert seen["filters"] == {
+        "MaxCount": ("UInt16", 10), "Format": ("String", "vcard30"),
+    }
+    assert stored == [("Alice", ["15551111111"], [])]
+
+
+def test_listing_pull_clamps_count_and_forwards_the_transfer_bound(
+    tmp_path, monkeypatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    seen = {}
+
+    class _Pbap:
+        def Select(self, location, phonebook, **_kwargs):
+            seen["select"] = (location, phonebook)
+
+        def PullAll(self, path, filters, **_kwargs):
+            seen["name"] = Path(path).name
+            seen["count"] = int(filters["MaxCount"])
+            return "/transfer/mch", {"Status": "complete", "Size": 0}
+
+    def capture_wait(_path, **kwargs):
+        seen["overall"] = kwargs["overall_timeout_s"]
+        return "complete"
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime_dir))
+    monkeypatch.setattr(contacts, "obex", lambda *_args: _Pbap())
+    monkeypatch.setattr(contacts, "wait_for_transfer", capture_wait)
+    monkeypatch.setattr(contacts.time, "sleep", lambda _seconds: None)
+
+    blob = contacts.pull_vcard_listing(
+        SimpleNamespace(pbap_path="/pbap"), "mch",
+        max_entries=10_000_000, allow_empty=True, overall_timeout_s=120,
+    )
+
+    assert blob == ""
+    assert seen == {
+        "select": ("int", "mch"), "name": "mch.vcf", "count": 65535, "overall": 120,
+    }
+    with pytest.raises(RuntimeError, match="empty phonebook"):
+        contacts.pull_vcard_listing(
+            SimpleNamespace(pbap_path="/pbap"), "mch", max_entries=5,
+        )
+
+
 @pytest.mark.parametrize("advertised_size", [0, 17])
 def test_oversized_phonebook_is_cancelled_before_cleanup(
     tmp_path, monkeypatch, advertised_size,

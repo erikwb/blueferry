@@ -421,6 +421,20 @@ class DaemonClient(GObject.Object):
             mutation=True,
         )
 
+    def set_call_history_async(
+        self, enabled: bool, missed_call_notifications: bool, on_ok, on_err
+    ) -> None:
+        self._submit(
+            lambda: self._call_backend(
+                lambda backend: backend.set_call_history(
+                    enabled, missed_call_notifications
+                )
+            ),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
     def set_calls_enabled_async(self, enabled: bool, on_ok, on_err) -> None:
         self._submit(
             lambda: self._call_backend(

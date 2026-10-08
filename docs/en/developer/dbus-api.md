@@ -7,7 +7,7 @@ including the CLI, uses it.
 | --- | --- |
 | Bus name | `io.weirdware.BlueFerry` |
 | Object path | `/io/weirdware/BlueFerry` |
-| Interfaces | `io.weirdware.BlueFerry.Messages1`, `io.weirdware.BlueFerry.Events1`, `io.weirdware.BlueFerry.Presence1`, `io.weirdware.BlueFerry.Media1`, `io.weirdware.BlueFerry.Calls1` (optional calls) |
+| Interfaces | `io.weirdware.BlueFerry.Messages1`, `io.weirdware.BlueFerry.Events1`, `io.weirdware.BlueFerry.Presence1`, `io.weirdware.BlueFerry.CallHistory1`, `io.weirdware.BlueFerry.Media1`, `io.weirdware.BlueFerry.Calls1` (optional calls) |
 | Errors | `io.weirdware.BlueFerry.Error.*` |
 
 > **Note:** The canonical contract is
@@ -98,6 +98,18 @@ package to restart an outdated backend after upgrades.
 | `OpenNotificationClick` | `s click_id, s activation_token` → `b opened` (a notification shell ran a mapped popup's stored argv; the ID is random per popup and stays valid for 10 s after the user dismissed the popup) |
 | `OpenLegacyGtkMessage` | `s handle, s application_owner` → `b delivered` (upgrade compatibility) |
 
+## CallHistory1 methods
+
+The opt-in mirror of the iPhone's recent calls. Whether it is on is reported
+by `Messages1.GetStatus` (`call_history_enabled`,
+`missed_call_notifications`); while it is off, `ListCallHistory` and
+`SyncCallHistory` return `NotReady`.
+
+| Method | Arguments → result | Notes |
+| --- | --- | --- |
+| `ListCallHistory` | `u limit` → `s json` | Newest first; each entry has `direction` (`missed`, `incoming`, `outgoing`), `timestamp`, `address`, `name`, `contact_name`. Private: callers and times |
+| `SyncCallHistory` | → `u retained_count` | Pulls all three call lists from the iPhone now; `CallHistorySyncFailed` on a PBAP failure |
+| `SetCallHistory` | `b enabled, b missed_call_notifications` → `s status_json` | Saves the opt-in; `enabled=false` erases the retained calls at once |
 `GetStatus` reports `notification_open_map_revision`, a content-free number
 that changes whenever a click rule is added, changed or removed. Clients
 reread the rules only when it changes, and a backend without the key does
@@ -154,6 +166,7 @@ adds `calls_state` (`unavailable`, `searching`, `connecting`, `ready`,
 | `HistoryChanged` | `a{sv} revision` | History changed; only a daemon-local revision is sent |
 | `StatusChanged` | none | Fetch `GetStatus` again |
 | `OpenMessageRequested` | `s handle` | A notification was clicked; the handle is a bounded, opaque MAP handle |
+| `CallHistoryChanged` | none | Retained call history changed; call `ListCallHistory` again |
 | `NowPlayingChanged` | none | Fetch `Media1.GetNowPlaying` again |
 | `CallsChanged` | none | Optional calls changed; fetch `Calls1.ListCalls`. Never emitted while calls are off |
 
@@ -164,8 +177,9 @@ bounded messages:
 
 `AuthorizationRequired`, `RateLimited`, `InvalidArgs`, `NotFound`,
 `NotReady`, `ConfirmationRequired`, `SendFailed`, `SendOutcomeUnknown`,
-`ResponseTooLarge`, `QueryFailed`, `ContactSyncFailed`, `MediaCommandFailed`, and
-for the optional calls `CallsDisabled`, `CallsUnavailable`, `CallFailed`
+`ResponseTooLarge`, `QueryFailed`, `ContactSyncFailed`, `CallHistorySyncFailed`,
+`MediaCommandFailed`, and for the optional calls `CallsDisabled`,
+`CallsUnavailable`, `CallFailed`
 
 The XML lists which errors each method can return. Unexpected exceptions and
 OBEX details stay in the backend log.

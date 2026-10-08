@@ -872,6 +872,184 @@ def test_proximity_lock_setting_is_forwarded_and_merged_into_status(monkeypatch)
     assert changes == [True]
 
 
+def _call_history_controller(backend, *, enabled=True):
+    controller = BridgeController(
+        backend=backend, setup=object(), subscribe=False, autostart=False,
+    )
+    controller._status = {"call_history_enabled": enabled}
+    return controller
+
+
+def test_call_history_is_inert_until_the_backend_reports_the_opt_in():
+    class Backend(_Backend):
+        def call_history(self, _limit):
+            raise AssertionError("disabled feature must not be queried")
+
+    controller = _call_history_controller(Backend(), enabled=False)
+
+    controller.watchCallHistory(True)
+    controller.loadCallHistory()
+    controller.syncCallHistory()
+    controller._callHistoryInvalidated()
+    controller._pool.waitForDone(1000)
+
+    assert controller.callHistoryEnabled is False
+    assert controller.callHistory == []
+
+
+def _inline_runs(controller, monkeypatch):
+    """Run controller tasks inline; record that they went through _run."""
+    runs = []
+
+    def run(operation, done=None, failed=None, **kwargs):
+        runs.append(kwargs.get("busy", True))
+        try:
+            value = operation()
+        except Exception as error:
+            (failed or controller._operation_failed)(str(error))
+        else:
+            if done is not None:
+                done(value)
+
+    monkeypatch.setattr(controller, "_run", run)
+    return runs
+
+
+def test_call_history_uses_worker_tasks_without_touching_conversation_errors(monkeypatch):
+    from blueferry.models import CallHistoryEntry
+
+    class Backend(_Backend):
+        synced = 0
+
+        def call_history(self, limit):
+            assert limit == 200
+            return [CallHistoryEntry.from_dict({
+                "direction": "missed", "timestamp": "2026-09-28T09:00:00+00:00",
+                "address": "+15551230002", "name": None, "contact_name": None,
+            })]
+
+        def sync_call_history(self):
+            type(self).synced += 1
+            return 1
+
+    controller = _call_history_controller(Backend())
+    runs = _inline_runs(controller, monkeypatch)
+    changes = []
+    controller.callHistoryChanged.connect(lambda: changes.append(True))
+
+    controller.loadCallHistory()
+    assert runs == [], "nothing is fetched until the page is shown"
+    controller._call_history_watched = True
+    controller.syncCallHistory()
+
+    assert runs == [True, False], "sync shows busy; the list refresh does not"
+    assert Backend.synced == 1
+    assert controller.callHistory[0]["caller"] == "+15551230002"
+    assert controller.callHistory[0]["missed"] is True
+    assert controller.callHistoryError == ""
+    assert controller.errorText == ""
+    assert changes == [True]
+
+
+def test_call_history_failure_is_reported_on_its_own_property(monkeypatch):
+    class Backend(_Backend):
+        def call_history(self, _limit):
+            raise BackendError("storage is locked")
+
+    controller = _call_history_controller(Backend())
+    _inline_runs(controller, monkeypatch)
+
+    controller.watchCallHistory(True)
+
+    assert "storage is locked" in controller.callHistoryError
+    assert controller.errorText == ""
+
+
+def test_content_free_invalidation_reloads_only_a_shown_list(monkeypatch):
+    controller = _call_history_controller(_Backend())
+    started = []
+    monkeypatch.setattr(controller._call_history_timer, "start", lambda: started.append(1))
+    monkeypatch.setattr(controller, "loadCallHistory", lambda: None)
+
+    controller._callHistoryInvalidated()
+    controller.watchCallHistory(True)
+    controller._callHistoryInvalidated()
+
+    assert started == [1]
+
+
+def test_opening_loads_and_closing_forgets_call_records(monkeypatch):
+    from blueferry.models import CallHistoryEntry
+
+    class Backend(_Backend):
+        loads = 0
+
+        def call_history(self, _limit):
+            type(self).loads += 1
+            return [CallHistoryEntry.from_dict({
+                "direction": "incoming", "timestamp": "2026-09-28T09:00:00+00:00",
+                "address": "+15551230002",
+            })]
+
+    controller = _call_history_controller(Backend())
+    runs = _inline_runs(controller, monkeypatch)
+    assert Backend.loads == 0
+
+    controller.watchCallHistory(True)
+    assert Backend.loads == 1 and len(controller.callHistory) == 1
+
+    controller.watchCallHistory(False)
+    assert controller.callHistory == []
+    controller._callHistoryInvalidated()
+    assert Backend.loads == 1 and runs == [False]
+
+
+def test_late_reply_after_close_is_discarded(monkeypatch):
+    controller = _call_history_controller(_Backend())
+    captured = {}
+
+    def run(operation, done=None, failed=None, **_kwargs):
+        captured["done"] = done
+
+    monkeypatch.setattr(controller, "_run", run)
+    controller.watchCallHistory(True)
+    controller.watchCallHistory(False)
+
+    captured["done"]([{"caller": "late"}])
+
+    assert controller.callHistory == []
+
+
+def test_call_history_opt_in_is_forwarded_and_merged_into_status(monkeypatch):
+    backend = _Backend()
+    calls = []
+
+    def set_call_history(enabled, popups):
+        calls.append((enabled, popups))
+        return {"call_history_enabled": enabled, "missed_call_notifications": popups}
+
+    backend.set_call_history = set_call_history
+    controller = BridgeController(
+        backend=backend, setup=object(), subscribe=False, autostart=False,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_run",
+        lambda operation, on_done=None, *_args, **_kwargs: (
+            on_done(operation()) if on_done is not None else operation()
+        ),
+    )
+    changes = []
+    controller.statusChanged.connect(lambda: changes.append(True))
+
+    controller.setCallHistory(True, False)
+
+    assert calls == [(True, False)]
+    assert controller.callHistoryEnabled is True
+    assert controller.status["missed_call_notifications"] is False
+    assert changes == [True]
+
+
 def _synchronous(controller, monkeypatch):
     def run(operation, on_done=None, on_failed=None, **_kwargs):
         try:
