@@ -518,6 +518,26 @@ Rectangle {
           wrapMode: Text.Wrap
           text: "Keeps the iPhone's recent calls (who called and when) under your local storage setting and can notify you about missed calls. It uses the iPhone's Sync Contacts permission and never places, answers, or listens to calls. Turning it off erases the retained calls."
         }
+        // Only daemons that report contact_photos offer the setting.
+        FerrySectionLabel {
+          ferryTheme: root.theme
+          text: "Contact photos"
+          visible: root.status.contact_photos !== undefined
+        }
+        FerryCheckBox {
+          objectName: "contactPhotosCheckBox"
+          ferryTheme: root.theme
+          text: "Show contact photos from the iPhone"
+          visible: root.status.contact_photos !== undefined
+          checked: root.status.contact_photos === true
+          enabled: root.setup.configured && !root.busy.photos
+          Accessible.description: "Photos are kept with your contacts and arrive with the next contact sync. Turning this off erases them."
+          onClicked: {
+            root.operationRequested("set_contact_photos", {
+              enabled: checked
+            });
+          }
+        }
         FerrySectionLabel {
           ferryTheme: root.theme
           text: "Local data"

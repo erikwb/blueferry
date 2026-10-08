@@ -45,6 +45,7 @@ ShellRoot {
   readonly property SavedChoice callsChoice: SavedChoice {}
   readonly property SavedChoice callHistory: SavedChoice {}
   readonly property SavedChoice missedCallPopups: SavedChoice {}
+  property bool contactPhotosBusy: false
   property bool storagePolicyBusy: false
   property bool storageUnlockBusy: false
 
@@ -343,6 +344,14 @@ ShellRoot {
             ? result.calls_enabled === true : root.callsChoice.value,
           root.statusBusy)
         root.reload()
+      } else if (method === "set_contact_photos") {
+        root.contactPhotosBusy = false
+        // The checkbox follows the daemon's answer, not the click.
+        if (typeof result === "object" && result !== null)
+          root.backendStatus = Object.assign({}, root.backendStatus, {
+            contact_photos: result.contact_photos === true
+          })
+        root.reload()
       } else if (method === "set_storage_policy") {
         root.storagePolicyBusy = false
         if (typeof result === "object" && result !== null) {
@@ -422,6 +431,10 @@ ShellRoot {
         root.callsChoice.failed(root.backendStatus.calls_enabled === true)
         root.errorText = message || "Could not save phone calls preference"
         root.reload()
+      } else if (method === "set_contact_photos") {
+        root.contactPhotosBusy = false
+        root.errorText = message || "Could not save the contact photo preference"
+        root.reload()
       } else if (method === "set_storage_policy") {
         root.storagePolicyBusy = false
         root.errorText = message
@@ -452,6 +465,7 @@ ShellRoot {
           root.callHistory.failed(root.backendStatus.call_history_enabled === true)
         if (root.missedCallPopups.busy)
           root.missedCallPopups.failed(root.backendStatus.missed_call_notifications !== false)
+        root.contactPhotosBusy = false
         root.storagePolicyBusy = false
         root.storageUnlockBusy = false
         root.errorText = message
@@ -1096,6 +1110,7 @@ ShellRoot {
                   proximityLock: root.proximityLock.busy,
                   calls: root.callsChoice.busy,
                   callHistory: root.callHistory.busy || root.missedCallPopups.busy,
+                  photos: root.contactPhotosBusy,
                   storage: root.storagePolicyBusy})
           visible: root.phoneSettingsVisible
           Layout.fillWidth: true
@@ -1106,6 +1121,7 @@ ShellRoot {
           onReloadRequested: root.reload()
           onOperationRequested: (method, args) => {
             if (method === "set_notification_policy") root.notificationPolicyBusy = true
+            if (method === "set_contact_photos") root.contactPhotosBusy = true
             if (method === "set_contacts_only_notifications") {
               root.contactsOnlyNotifications = args.enabled
               root.contactsOnlyNotificationsBusy = true

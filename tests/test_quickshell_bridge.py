@@ -494,3 +494,20 @@ def test_bridge_saves_the_call_history_opt_in_and_returns_its_status() -> None:
         with pytest.raises(ValueError, match=message):
             bridge.dispatch("set_call_history", args)
     assert len(client.calls) == 1
+
+
+def test_bridge_saves_the_contact_photo_opt_in() -> None:
+    client = FakeClient()
+    client.set_contact_photos = lambda enabled: (  # type: ignore[attr-defined]
+        client.calls.append(("set_contact_photos", enabled)) or {"contact_photos": enabled}
+    )
+    bridge = QuickshellBridge(client)  # type: ignore[arg-type]
+
+    assert bridge.dispatch("set_contact_photos", {"enabled": True}) == {"contact_photos": True}
+    assert client.calls == [("set_contact_photos", True)]
+    try:
+        bridge.dispatch("set_contact_photos", {"enabled": "yes"})
+    except ValueError as error:
+        assert str(error) == "enabled must be a boolean"
+    else:
+        raise AssertionError("non-boolean preference was accepted")

@@ -163,6 +163,8 @@ class QuickshellBridge:
             )
         if method == "set_calls_enabled":
             return self.client.set_calls_enabled(_boolean(args, "enabled"))
+        if method == "set_contact_photos":
+            return self.client.set_contact_photos(_boolean(args, "enabled"))
         if method == "set_storage_policy":
             return self.client.set_storage_policy(_text(args, "policy"))
         if method == "unlock_storage":
