@@ -1,14 +1,16 @@
 """Optional phone-call CLI (`blueferry calls ...`) over the Calls1 interface."""
 from __future__ import annotations
 
+import json
 import sys
 from collections.abc import Callable
-from typing import TypeVar
+from typing import Optional, TypeVar
 
 import typer
 
+from blueferry.calls.phone_status import PHONE_STATUS_KEYS
 from blueferry.client import BackendClient, BackendError
-from blueferry.models import CALLS_STATE_TEXT, CallInfo, CallsSnapshot
+from blueferry.models import CALLS_STATE_TEXT, CallInfo, CallsSnapshot, phone_status_fields
 from blueferry.text_safety import terminal_text
 
 T = TypeVar("T")
@@ -20,7 +22,6 @@ calls_app = typer.Typer(
 )
 
 
-
 def _interactive() -> bool:
     return sys.stdin.isatty()
 
@@ -29,11 +30,11 @@ def _client() -> BackendClient:
     return BackendClient()
 
 
-def _run(action: Callable[[], T]) -> T:
+def _run(action: Callable[[], T], failure: str = "Call failed") -> T:
     try:
         return action()
     except BackendError as error:
-        typer.echo(typer.style(f"Call failed: {error}", fg=typer.colors.RED), err=True)
+        typer.echo(typer.style(f"{failure}: {error}", fg=typer.colors.RED), err=True)
         raise typer.Exit(code=3) from None
 
 
@@ -181,3 +182,36 @@ def calls_hold_answer() -> None:
     """Hold the active call and answer the waiting one."""
     _run(lambda: _client().hold_and_answer_call())
     typer.echo("Answered the waiting call.")
+
+
+def phone_status(
+    as_json: bool = typer.Option(False, "--json", help="Print the raw status keys as JSON"),
+    warn: Optional[bool] = typer.Option(  # noqa: UP045 - typer needs Optional here
+        None, "--warn/--no-warn",
+        help="Turn the low-battery desktop warning on or off (saved)",
+    ),
+) -> None:
+    """Show the iPhone's battery (over Bluetooth LE) and, with calls on, signal and network."""
+    if warn is not None:
+        selected = _run(
+            lambda: _client().set_phone_battery_warning(warn), "Could not save the setting",
+        )
+        typer.echo(f"Low-battery warning {'on' if selected else 'off'}.")
+        return
+    status = _run(lambda: _client().status(), "Could not read status")
+    if as_json:
+        typer.echo(json.dumps({key: status.to_dict()[key] for key in PHONE_STATUS_KEYS}))
+        return
+    fields = phone_status_fields(status)
+    if not fields:
+        typer.echo(
+            "Phone status unknown: the iPhone is not connected or does not report "
+            "its battery yet."
+        )
+    for label, value in fields:
+        typer.echo(f"{label + ':':<9}{terminal_text(value)}")
+    if status.phone_battery_source == "hfp":
+        typer.echo("(Over the hands-free link the iPhone reports its battery in 20 % steps.)")
+    if not status.calls_enabled:
+        typer.echo("Signal and network need phone calls ('blueferry calls enable').")
+    typer.echo(f"Low-battery warning: {'on' if status.phone_battery_warning else 'off'}.")

@@ -444,6 +444,10 @@ ShellRoot {
             color: theme.accent
           }
           Item { Layout.fillWidth: true }
+          QuickshellPhoneStatus {
+            ferryTheme: theme
+            status: root.backendStatus
+          }
           Rectangle {
             implicitWidth: theme.scaled(5)
             implicitHeight: implicitWidth

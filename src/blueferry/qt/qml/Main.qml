@@ -500,6 +500,19 @@ Kirigami.ApplicationWindow {
                                     font.bold: true
                                     leftPadding: Kirigami.Units.smallSpacing
                                 }
+                                // Optional iPhone battery/signal (HFP calls
+                                // integration); absent unless a value is known.
+                                Loader {
+                                    id: phoneStatusLoader
+                                    readonly property var backendStatus: root.bridge.status || ({})
+                                    active: typeof phoneStatusLoader.backendStatus.phone_battery_level === "number"
+                                        || typeof phoneStatusLoader.backendStatus.phone_signal_strength === "number"
+                                    visible: active
+                                    sourceComponent: PhoneStatusIndicator {
+                                        objectName: "phoneStatusIndicator"
+                                        status: phoneStatusLoader.backendStatus
+                                    }
+                                }
                                 Controls.ToolButton {
                                     icon.name: "list-add"
                                     text: qsTr("New Message")

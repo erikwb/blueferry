@@ -1046,3 +1046,17 @@ def test_status_from_a_daemon_without_the_calls_setting_omits_it():
 
     apply({"calls_enabled": False})
     assert controller.status["calls_enabled"] is False
+
+
+def test_battery_warning_is_forwarded_and_merged_into_status(monkeypatch):
+    backend = _Backend()
+    backend.set_phone_battery_warning = lambda enabled: enabled
+    controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+    monkeypatch.setattr(
+        controller, "_run",
+        lambda operation, on_done=None, *_args, **_kwargs: on_done(operation()),
+    )
+
+    controller.setPhoneBatteryWarning(True)
+
+    assert controller.status["phone_battery_warning"] is True

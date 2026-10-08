@@ -499,6 +499,28 @@ power-up fails three times in a row (state `bluez_conflict`), and then retries
 every five minutes. The profile
 registration race itself is unchanged.
 
+oFono 2.18 creates the HFP modem's `VoiceCallManager`, `NetworkRegistration`,
+`Handsfree`, and `CallVolume` atoms, among others (device info and Siri),
+together in `hfp_pre_sim`, i.e. once the modem is powered; they survive
+`Online` dropping. A listed
+`VoiceCallManager` alone therefore does not mean call control works; the
+controller requires `Online` as well. The phone-status atoms expose the
+phone's standard HFP `+CIND` indicators (`doc/handsfree-api.txt`,
+`doc/network-api.txt`, `drivers/hfpmodem/`):
+`Handsfree.BatteryChargeLevel` is the raw `battchg` value 0-5,
+`NetworkRegistration.Strength` is the `signal` indicator 0-5 multiplied by 20,
+`Status` follows the `service`/`roam` indicators, and `Name` comes from
+`AT+COPS?` (HFP limits it to 16 characters; it is empty while unregistered).
+oFono drops the strength silently (no `PropertyChanged`) when registration is
+lost. The first `Handsfree.GetProperties` makes oFono query the phone's own
+number with `AT+CNUM` (returned as `SubscriberNumbers`, cached afterwards);
+until the phone answers, concurrent callers get `org.ofono.Error.InProgress`.
+iOS additionally reports a 0-9 battery level through `AT+IPHONEACCEV`, which
+oFono does not decode, so the HFP battery is limited to 20 % steps. The
+battery does not need HFP, though: iOS exposes the standard GATT Battery
+Service (0x180F, Battery Level 0x2A19, read and notify) to its LE peer;
+BlueFerry prefers that value (or BlueZ's `Battery1` built from it).
+
 ## Pairing diagnostics
 
 Each pairing attempt records the resolved delivery mode, authentication

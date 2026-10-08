@@ -175,7 +175,14 @@ oFono restarts, backoff, and every call operation run without oFono, BlueZ,
 or a phone. The real transport is exercised only against a fake connection
 object, which checks that calls carry NO_AUTO_START and never create proxies.
 Calls1 round trips and its rate limits use the private test bus with an inert
-controller; no test dials, answers, or reaches `org.ofono`.
+controller; no test dials, answers, or reaches `org.ofono`. The phone battery,
+signal, and operator values use the same fake transport for the Handsfree and
+NetworkRegistration interfaces, Hypothesis for the property parsers, and the
+private bus only to check the `GetStatus` keys and the argument-free
+`StatusChanged`. The `InProgress` retry runs on the manual timer queue, the
+StatusChanged coalescing on an injected `idle_add`, and log-capture tests
+check that neither levels, operator names, nor the phone's own number are
+logged.
 
 The Arch package check runs Ruff over the complete source and test tree,
 Bandit over the Python security boundaries, and type-checks every backend

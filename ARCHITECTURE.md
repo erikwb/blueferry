@@ -90,15 +90,17 @@ All paths are relative to `src/blueferry/` unless noted.
 | `calls/settings.py` | Saved phone-calls opt-in (`settings.json`, seeded by `BLUEFERRY_CALLS_ENABLED`). |
 | `calls/model.py` | Optional HFP calls: pure oFono property parsing, modem selection, dial/DTMF/call-id validation. |
 | `calls/ofono.py` | Asynchronous oFono system-bus transport (hand-built calls with NO_AUTO_START, no synchronous owner lookup). |
-| `calls/controller.py` | Optional HFP calls: oFono modem discovery, Powered→Online bring-up, call tracking and control, backoff. |
+| `calls/controller.py` | Optional HFP calls: oFono modem discovery, Powered→Online bring-up, call tracking and control, backoff; watches the phone's battery/signal interfaces while online. |
+| `phone_battery.py` | The phone's battery over LE (BlueZ `Battery1` or GATT Battery Level), asynchronous, no HFP; saved low-battery warning opt-in. |
+| `calls/phone_status.py` | Optional phone status: pure parsing of oFono's Handsfree/NetworkRegistration properties and the once-per-cycle low-battery decision. |
 
 ### Sinks
 
 | Module | Responsibility |
 | --- | --- |
-| `sinks/__init__.py` | Sink protocol: `handle(event)` plus optional `handle_ancs` and `handle_call` (optional HFP calls, desktop UI only). |
+| `sinks/__init__.py` | Sink protocol: `handle(event)` plus optional `handle_ancs`, `handle_call`, and `handle_phone_battery_low` (optional HFP calls, desktop UI only). |
 | `sinks/sqlite.py` | Persists events to the private history store. |
-| `sinks/libnotify.py` | Desktop notifications via `org.freedesktop.Notifications`, including open and dismiss actions and optional incoming-call Answer/Decline. |
+| `sinks/libnotify.py` | Desktop notifications via `org.freedesktop.Notifications`, including open and dismiss actions, optional incoming-call Answer/Decline, and the optional phone low-battery warning. |
 
 ### Storage and privacy
 
@@ -147,7 +149,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `cli_messages.py` | CLI message listing, recipient selection, and send. |
 | `cli_common.py` | Small CLI presentation helpers. |
 | `cli_proximity.py` | `proximity-lock` status, dry run, enable, and disable. |
-| `cli_calls.py` | Optional `blueferry calls` commands over `Calls1`. |
+| `cli_calls.py` | Optional `blueferry calls` commands over `Calls1` and `blueferry phone-status` (battery, signal, network from `GetStatus`). |
 | `tui.py` | Textual terminal client. |
 | `tui_launcher.py` | Launches the TUI with the package-private Textual bundle when present. |
 | `tui_calls.py` | Optional Textual calls panel. |
@@ -155,7 +157,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `ui/window.py` | Main GTK window. |
 | `ui/conversations.py` | GTK conversations page: history, group confirmation, replies. |
 | `ui/status.py` | GTK iPhone page: setup, health, preferences, maintenance. |
-| `ui/status_presenter.py` | Pure presentation rules for the status page. |
+| `ui/status_presenter.py` | Pure presentation rules for the status page (including the optional phone battery/signal suffix). |
 | `ui/client.py` | Asynchronous GTK backend calls and D-Bus invalidations. |
 | `ui/setup_runner.py` | GTK-independent worker for blocking setup operations. |
 | `ui/util.py` | Small UI helpers. |
@@ -173,6 +175,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `qt/qml/NewMessageDialog.qml` | New message composition. |
 | `qt/qml/CallsDialog.qml` | Optional phone-calls dialog (list, dial with confirmation, answer, hang up). |
 | `qt/qml/PhoneCallsSettings.qml` | Phone-calls opt-in checkbox; loaded only for daemons that report `calls_enabled`. |
+| `qt/qml/PhoneStatusIndicator.qml` | Optional iPhone battery/signal indicator (loaded only when values are known; plain-text tooltip). |
 | `qt/qml/ExpandingMessageComposer.qml` | Growing message editor. |
 | `qt/qml/MessageBubble.qml` | Message bubble. |
 | `quickshell_bridge.py` | Persistent stdin/stdout JSON bridge from Quickshell to the session D-Bus API. |
@@ -193,6 +196,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `ThemePalette.qml` | Pure color/geometry tokens with a system-palette fallback. |
 | `Ferry*.qml` | Styled controls (button, check box, combo box, label, text field, composer, section label, info row). |
 | `QuickshellMessageBubble.qml`, `QuickshellThreadPreview.qml` | Message bubble and thread preview. |
+| `QuickshellPhoneStatus.qml` | Optional iPhone battery/signal caption in the header (hidden when unknown). |
 
 `data/blueferry-quickshell` is the launcher script, and
 `data/io.weirdware.BlueFerry.xml` is the canonical D-Bus introspection
@@ -461,6 +465,26 @@ A change to these rules has to be made in both places.
   busy and does not power-cycle the adapter.
 - Call events go to local desktop sinks only (`handle_call`); they are not
   persisted and nothing about them is broadcast except `CallsChanged`.
+- Phone status: from `Powered=true` on (oFono creates these atoms in
+  `hfp_pre_sim`, independent of `Online`), the controller watches `Handsfree`
+  and `NetworkRegistration` (only when listed in the modem's `Interfaces`)
+  and reads them with an asynchronous `GetProperties`. A failed read other
+  than a vanished interface (typically `InProgress` while oFono queries
+  `AT+CNUM`) is retried once after 30 s. Values are cleared on
+  `Powered=false`, interface or modem removal, an oFono owner change, and
+  stop.
+- The battery does not need HFP: `phone_battery.py` reads it over LE from
+  BlueZ's `Battery1` or the GATT Battery Level characteristic (async
+  `GetManagedObjects`, `ReadValue`, `StartNotify`; `PropertiesChanged`
+  afterwards) and restarts with bluetoothd. The daemon merges both sources
+  into additive `GetStatus` keys (`null` when unknown; LE wins, only while
+  the phone is connected; signal and network only with calls on) and
+  publishes them with the argument-free `StatusChanged` only when a shown
+  value changed, at most every 10 s. Calls-state changes are coalesced per
+  main-loop iteration. The opt-in low-battery warning (saved in
+  `settings.json`, `Messages1.SetPhoneBatteryWarning`) goes to sinks through
+  `handle_phone_battery_low` and fires once per discharge cycle (and again
+  after a daemon restart).
 
 ## Storage and privacy
 

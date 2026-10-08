@@ -471,6 +471,52 @@ What happens then:
   `CallsChanged` signal carries no content. Calls are not written to message
   history.
 
+### Phone battery, signal, and network
+
+BlueFerry shows the iPhone's battery while it is connected, read over the
+Bluetooth LE link it already holds for notifications: from BlueZ's
+`Battery1` when BlueZ publishes it, otherwise from the standard GATT Battery
+Service (Battery Level, read once, then followed through notifications). This
+needs neither HFP nor oFono, is exact to 1 %, and was confirmed present on an
+iPhone with iOS 27 (BlueZ 5.87 had cached its Battery Level); the reading
+path itself is tested against fakes only.
+
+With calls on, the phone's signal strength and network (operator) name are
+added from oFono's HFP indicators, and the HFP battery (20 % steps, shown as
+"about") fills in when no LE value exists. Without calls there is no signal
+or network: only the hands-free link reports them.
+
+```bash
+blueferry phone-status          # Battery: 87 % (Signal, Network with calls on)
+blueferry phone-status --json
+blueferry phone-status --warn   # or --no-warn
+```
+
+The Qt client shows a small battery and signal indicator next to
+"Conversations" (hover for the network name); the terminal client, the
+Quickshell header, and the GTK status page add battery and signal to their
+connection line.
+
+An optional low-battery warning (off by default) fires once per discharge
+when the battery reaches the threshold, and again only after the phone has
+charged at least 20 % above it (and once more after a BlueFerry restart if
+the phone is still low). Switch it on in the Qt iPhone settings or with
+`blueferry phone-status --warn`; the choice is saved in `settings.json`.
+`BLUEFERRY_PHONE_BATTERY_NOTIFY=true` seeds it and
+`BLUEFERRY_PHONE_BATTERY_LOW_PERCENT=20` (0-80) sets the threshold.
+
+With calls on, oFono answers the first request for the HFP battery by asking
+the phone for its own number (`AT+CNUM`). BlueFerry discards that number and
+never stores, logs, or returns it.
+
+The values are part of the private `GetStatus` reply (keys
+`phone_battery_level`, `phone_battery_source` = `bluez`/`gatt`/`hfp`,
+`phone_signal_strength`, `phone_network_name`, `phone_network_status`, all
+`null` when unknown, plus `phone_battery_warning`). Changes are announced
+with the argument-free `StatusChanged` signal, only when a shown value
+changed and at most every 10 seconds; no value is ever broadcast, and the
+logs never contain the levels or the operator name.
+
 Troubleshooting: if `blueferry calls` stays at **searching** although the
 iPhone is connected, the likely cause is the startup-order race between oFono
 and WirePlumber for the HFP profile. Restart oFono after WirePlumber

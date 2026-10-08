@@ -326,3 +326,75 @@ def test_set_calls_enabled_without_a_daemon_hook_is_not_ready(disabled_service) 
     outcome = _call(name, CALLS_IFACE, "SetCallsEnabled", True)
 
     assert outcome["error"].get_dbus_name() == "io.weirdware.BlueFerry.Error.NotReady"
+
+
+class PhoneStatusCalls(FakeCalls):
+    def snapshot(self):
+        return {
+            **super().snapshot(),
+            "phone_battery_level": 40,
+            "phone_signal_strength": 80,
+            "phone_network_name": "Sunrise",
+            "phone_network_status": "registered",
+        }
+
+
+def test_phone_status_is_unicast_in_get_status_and_signalled_without_content() -> None:
+    bus, name, service = _service(PhoneStatusCalls())
+    connection = dbus.SessionBus(private=True)
+    received = []
+    match = connection.add_signal_receiver(
+        lambda *args: received.append(args),
+        dbus_interface=EVENTS_IFACE,
+        signal_name="StatusChanged",
+        bus_name=name,
+        path=OBJECT_PATH,
+    )
+    try:
+        status = json.loads(_call(name, MESSAGES_IFACE, "GetStatus")["value"])
+        # The daemon announces a phone-status change with the existing,
+        # argument-free StatusChanged; values are fetched with GetStatus.
+        service.emit_status()
+        _dispatch_until(lambda: bool(received))
+    finally:
+        match.remove()
+        connection.close()
+        service.close()
+        service.remove_from_connection()
+        bus.release_name(name)
+
+    assert status["phone_battery_level"] == 40
+    assert status["phone_signal_strength"] == 80
+    assert status["phone_network_name"] == "Sunrise"
+    assert status["phone_network_status"] == "registered"
+    assert status["api_version"] == MESSAGES_API_VERSION
+    assert received == [()]
+    assert MessagesService.StatusChanged._dbus_signature == ""
+
+
+def test_set_phone_battery_warning_round_trips_on_messages1() -> None:
+    saved = []
+
+    def configure(enabled):
+        saved.append(enabled)
+        return {"phone_battery_warning": enabled}
+
+    bus = dbus.SessionBus()
+    name = f"{BUS_NAME}.Callsp{os.getpid()}n{next(_service_ids)}"
+    bus_name = dbus.service.BusName(name, bus=bus, do_not_queue=True)
+    service = MessagesService(
+        bus_name, _Sessions(),
+        BackendDependencies(
+            status_provider=lambda: {"initializing": False},
+            set_phone_battery_warning=configure,
+        ),
+    )
+    try:
+        on = _call(name, MESSAGES_IFACE, "SetPhoneBatteryWarning", True)["value"]
+        off = _call(name, MESSAGES_IFACE, "SetPhoneBatteryWarning", False)["value"]
+    finally:
+        service.close()
+        service.remove_from_connection()
+        bus.release_name(name)
+
+    assert (bool(on), bool(off), saved) == (True, False, [True, False])
