@@ -17,6 +17,7 @@ LOCAL_ENV_KEYS = frozenset({
     "BLUEFERRY_ANCS_APP_BLOCKLIST",
     "BLUEFERRY_SHOW_NOTIFICATION_CONTENT",
     "BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE",
+    "BLUEFERRY_CALLS_ENABLED",
     "BLUEFERRY_NOTIFICATION_TIMEOUT_MS",
     "BLUEFERRY_MARK_READ_ON_DISMISS",
     "BLUEFERRY_HISTORY_RETENTION_DAYS",
@@ -142,6 +143,12 @@ def _env_bool(name: str, default: bool) -> bool:
     return value.strip().casefold() not in {"0", "false", "no", "off"}
 
 
+def _env_opt_in(name: str) -> bool:
+    """Parse a default-off flag; only an explicit affirmative enables it."""
+    value = os.environ.get(name)
+    return value is not None and value.strip().casefold() in {"1", "true", "yes", "on"}
+
+
 def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
     try:
         value = int(os.environ.get(name, str(default)))
@@ -203,6 +210,17 @@ SHOW_NOTIFICATION_CONTENT: bool = _env_bool(
 KEEP_PHONE_AUDIO_ON_PHONE: bool = _env_bool(
     "BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE", True
 )
+CALLS_ENABLED: bool = _env_opt_in("BLUEFERRY_CALLS_ENABLED")
+"""Initial value of the experimental, default-off HFP call control.
+
+A preference saved in settings.json (Qt settings, ``blueferry calls
+enable``/``disable``) wins; see ``blueferry.calls.settings``.
+
+When enabled the daemon watches oFono for the iPhone's hands-free modem and
+exposes the private ``Calls1`` interface. The WirePlumber phone-audio policy
+then keeps the hands-free roles so call audio can reach this computer, while
+still stripping ``a2dp_sink`` when ``KEEP_PHONE_AUDIO_ON_PHONE`` is true.
+"""
 NOTIFICATION_TIMEOUT_MS: int = _env_int(
     "BLUEFERRY_NOTIFICATION_TIMEOUT_MS", 8_000, 1_000, 60_000
 )

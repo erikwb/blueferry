@@ -169,6 +169,14 @@ The shell test also delivers pre-save snapshots and failures before or after
 the fresh snapshot, verifies immediate replies use the saved roster, and checks
 that interrupted reads cannot restore history after a reset.
 
+The optional oFono call controller is tested against a recording fake
+transport and a manual timer queue: discovery, the Powered/Online bring-up,
+oFono restarts, backoff, and every call operation run without oFono, BlueZ,
+or a phone. The real transport is exercised only against a fake connection
+object, which checks that calls carry NO_AUTO_START and never create proxies.
+Calls1 round trips and its rate limits use the private test bus with an inert
+controller; no test dials, answers, or reaches `org.ofono`.
+
 The Arch package check runs Ruff over the complete source and test tree,
 Bandit over the Python security boundaries, and type-checks every backend
 module with mypy. Toolkit clients remain outside that

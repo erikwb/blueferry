@@ -1801,6 +1801,7 @@ def test_apply_phone_audio_policy_waits_for_wireplumber(monkeypatch):
         pair_setup, "_apply_phone_audio_policy", _REAL_APPLY_PHONE_AUDIO_POLICY
     )
     monkeypatch.setattr(config, "KEEP_PHONE_AUDIO_ON_PHONE", True)
+    monkeypatch.setattr(pair_setup, "calls_enabled", lambda: True)
     constructed = []
 
     class FakePolicy:
@@ -1815,7 +1816,7 @@ def test_apply_phone_audio_policy_waits_for_wireplumber(monkeypatch):
     attempt = pair_setup.quirks_report.start_attempt(interactive=False)
 
     assert pair_setup._apply_phone_audio_policy(attempt) is True
-    assert constructed == [{"wait_for_restart": True}]
+    assert constructed == [{"wait_for_restart": True, "allow_calls": True}]
     assert attempt["timeline"][-1]["event"] == "phone_audio_policy_ready"
 
 

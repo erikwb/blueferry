@@ -27,7 +27,7 @@ from blueferry.conversation_state import (
     fetch_conversation_snapshot,
 )
 from blueferry.i18n import _
-from blueferry.models import BackendStatus
+from blueferry.models import BackendStatus, CallsSnapshot
 from blueferry.onboarding import OnboardingState, effective_compatibility
 from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH
 from blueferry.qt.tasks import Task
@@ -58,6 +58,7 @@ class BridgeController(QObject):
     groupConfirmationRequested = Signal(str, str, str)
     threadSendSucceeded = Signal(str, str)
     messageSendSucceeded = Signal(str, str)
+    phoneCallsChanged = Signal()
 
     def __init__(
         self,
@@ -94,6 +95,12 @@ class BridgeController(QObject):
         self._onboarding_stage = str(self._onboarding.stage)
         self._refreshing = False
         self._refresh_again = False
+        # Optional HFP calls (Calls1); empty unless the backend enables them.
+        self._phone_calls: list[dict] = []
+        self._calls_state = "disabled"
+        # (calls_enabled, calls_state) of the last status that refreshed the
+        # call list. Calls themselves are announced by CallsChanged.
+        self._calls_status_key: tuple[object, object] | None = None
         self._storage_unlock_attempted = False
         self._pairing_confirmation_lock = threading.Lock()
         self._pairing_confirmation: tuple[threading.Event, list[bool]] | None = None
@@ -114,6 +121,14 @@ class BridgeController(QObject):
     @Property("QVariantList", notify=contactResultsChanged)
     def contactResults(self):
         return self._contact_results
+
+    @Property("QVariantList", notify=phoneCallsChanged)
+    def phoneCalls(self):
+        return self._phone_calls
+
+    @Property(str, notify=phoneCallsChanged)
+    def callsState(self) -> str:
+        return self._calls_state
 
     @Property("QVariantMap", notify=statusChanged)
     def status(self):
@@ -298,6 +313,14 @@ class BridgeController(QObject):
             self,
             SLOT("_openMessageRequested(QString)"),
         )
+        self._bus.connect(
+            BUS_NAME,
+            OBJECT_PATH,
+            EVENTS_IFACE,
+            "CallsChanged",
+            self,
+            SLOT("_callsInvalidated()"),
+        )
 
     @Slot("QVariantMap")
     def _historyChanged(self, _revision) -> None:
@@ -310,6 +333,10 @@ class BridgeController(QObject):
     @Slot(str)
     def _openMessageRequested(self, handle: str) -> None:
         self.messageOpenRequested.emit(handle)
+
+    @Slot()
+    def _callsInvalidated(self) -> None:
+        self.refreshCalls()
 
     @Slot()
     def start(self) -> None:
@@ -428,6 +455,14 @@ class BridgeController(QObject):
             self._status = self._state.status.to_dict()
             self.statusChanged.emit()
             self._maybe_unlock_storage()
+            # StatusChanged also fires for unrelated changes (bearers,
+            # storage, phone status); only a call-state change needs a new
+            # ListCalls. Call list changes arrive through CallsChanged.
+            calls_key = (self._status.get("calls_enabled"), self._status.get("calls_state"))
+            if calls_key != self._calls_status_key:
+                self._calls_status_key = calls_key
+                if self._status.get("calls_enabled") or self._phone_calls:
+                    self.refreshCalls()
         self._update_onboarding_stage()
         self._refresh_pairing_issue_report()
         self._set_error(self._state.error)
@@ -540,6 +575,56 @@ class BridgeController(QObject):
             completed,
         )
 
+    # ---- optional phone calls (Calls1) -----------------------------------
+
+    def _apply_calls(self, snapshot: object) -> None:
+        if not isinstance(snapshot, CallsSnapshot):
+            return
+        self._phone_calls = [call.to_dict() for call in snapshot.calls]
+        self._calls_state = snapshot.state
+        self.phoneCallsChanged.emit()
+
+    def _calls_unavailable(self, _message: str = "") -> None:
+        # Status explains a disabled or missing feature; an in-flight list
+        # must not leave stale calls or a stale "ready" state on screen.
+        state = str(self._status.get("calls_state") or "disabled")
+        if state == "ready":
+            state = "unavailable"  # ListCalls just failed despite the status
+        if self._phone_calls or state != self._calls_state:
+            self._phone_calls = []
+            self._calls_state = state
+            self.phoneCallsChanged.emit()
+
+    @Slot()
+    def refreshCalls(self) -> None:
+        if not self._status.get("calls_enabled"):
+            self._calls_unavailable()
+            return
+        self._run(self._backend.calls, self._apply_calls, self._calls_unavailable, busy=False)
+
+    def _call_action(self, operation: Callable[[], object]) -> None:
+        self._run(operation, lambda _value: self.refreshCalls())
+
+    @Slot(str)
+    def dialCall(self, number: str) -> None:
+        selected = str(number or "").strip()
+        if selected:
+            self._call_action(lambda: self._backend.dial(selected))
+
+    @Slot(str)
+    def answerCall(self, call_id: str) -> None:
+        if call_id:
+            self._call_action(lambda: self._backend.answer_call(str(call_id)))
+
+    @Slot(str)
+    def hangupCall(self, call_id: str) -> None:
+        if call_id:
+            self._call_action(lambda: self._backend.hangup_call(str(call_id)))
+
+    @Slot()
+    def hangupAllCalls(self) -> None:
+        self._call_action(self._backend.hangup_all_calls)
+
     @Slot()
     def syncContacts(self) -> None:
         self._run(self._backend.sync_contacts, lambda _value: self.refresh())
@@ -623,6 +708,16 @@ class BridgeController(QObject):
             ),
             completed,
         )
+
+    @Slot(bool)
+    def setCallsEnabled(self, enabled: bool) -> None:
+        def completed(value: object) -> None:
+            if isinstance(value, dict):
+                self._status.update(value)
+                self.statusChanged.emit()
+                self.refreshCalls()
+
+        self._run(lambda: self._backend.set_calls_enabled(bool(enabled)), completed)
 
     @Slot(str)
     def setStoragePolicy(self, policy: str) -> None:

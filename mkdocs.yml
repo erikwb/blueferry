@@ -99,6 +99,7 @@ nav:
           - Pair an iPhone: en/user/pairing.md
           - Without systemd (OpenRC): en/user/openrc.md
           - Clients: en/user/clients.md
+          - Phone calls (experimental): en/user/calls.md
           - Privacy and storage: en/user/privacy.md
           - Troubleshooting: en/user/troubleshooting.md
           - FAQ: en/user/faq.md
@@ -115,6 +116,7 @@ nav:
           - iPhone koppeln: de/user/pairing.md
           - Ohne systemd (OpenRC): de/user/openrc.md
           - Clients: de/user/clients.md
+          - Anrufe (experimentell): de/user/calls.md
           - Datenschutz und Speicher: de/user/privacy.md
           - Fehlerbehebung: de/user/troubleshooting.md
           - FAQ: de/user/faq.md
