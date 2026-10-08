@@ -195,7 +195,8 @@ class CallHistoryRepository:
         calls on the next sync.
 
         ``phone`` identifies the paired iPhone; a different value than the
-        one stored discards the mirror and re-arms silent seeding.
+        one stored erases the other phone's calls and announcement state
+        together with recording the new id, and re-arms silent seeding.
         ``directions`` names the call directions ``records`` covers when only
         some phonebooks were pulled (e.g. the periodic missed-calls poll);
         retained calls of the other directions are kept.
@@ -218,11 +219,15 @@ class CallHistoryRepository:
             if previous is None:
                 raise CorruptStorageError("retained call history failed authentication")
             normalized_phone = _normalize_phone_id(phone)
+            # What is on disk; the comparisons below decide what to rewrite.
+            stored_records, stored_seen = previous, seen
             if (
                 normalized_phone is not None
                 and stored_phone is not None
                 and stored_phone != normalized_phone
             ):
+                # The other phone's rows and announcement state are erased
+                # with the id change below, even when this answer is empty.
                 log.info("paired iPhone changed; call history mirror reset")
                 previous, seen = [], None
             incoming = list(records)
@@ -253,10 +258,10 @@ class CallHistoryRepository:
                 # Nothing to seed from yet; stay armed (see docstring).
                 retained_seen = None
             # Rows are stored oldest-first; ``kept`` is newest-first.
-            changed = [record.to_storage() for record in previous] != [
+            changed = [record.to_storage() for record in stored_records] != [
                 record.to_storage() for record in reversed(kept)
             ]
-            seen_changed = retained_seen != seen
+            seen_changed = retained_seen != stored_seen
             phone_changed = (
                 normalized_phone is not None and stored_phone != normalized_phone
             )

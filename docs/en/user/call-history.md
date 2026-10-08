@@ -67,7 +67,8 @@ blueferry call-history --sync      # refresh from the iPhone first
 
 The first refresh only records the existing list, so you are not flooded with
 old missed calls. The same applies after you pair a different iPhone or
-remove and re-pair this one.
+remove and re-pair this one. Pairing a different iPhone also erases the
+previous phone's list.
 
 ## Limits
 

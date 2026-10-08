@@ -681,7 +681,8 @@ takes precedence. `BLUEFERRY_CALL_HISTORY_INTERVAL_SEC` (60–86400, default
   **Refresh from iPhone** are never held back.
 - The first refresh after enabling the option, after clearing history, or
   after pairing another iPhone (or re-pairing this one) only records the
-  existing list; you are not flooded with old missed calls. Each missed call
+  existing list; you are not flooded with old missed calls. Pairing another
+  iPhone also erases the previous phone's list. Each missed call
   is announced once, also when the iPhone moves to another time zone, calls
   older than 12 hours are never announced (for iPhone timestamps without a
   time zone, "12 hours" is measured in this computer's time zone), and more

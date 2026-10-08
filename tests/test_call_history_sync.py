@@ -275,6 +275,39 @@ def test_a_different_phone_resets_the_mirror_and_seeds_silently(storage) -> None
     assert [record.phone for record in newer.new_missed] == ["15551230005"]
 
 
+def test_a_different_phone_with_an_empty_first_answer_still_seeds_silently(storage) -> None:
+    repository = CallHistoryRepository(storage)
+    old = [_call(MISSED, 30), _call(INCOMING, 20, "15551230007")]
+    repository.replace(old, now=NOW, phone="AA:BB:CC:DD:EE:01")
+    backlog = [_call(MISSED, 9, "15551239999"), _call(MISSED, 8, "15551239998")]
+
+    first = repository.replace([], now=NOW, phone="AA:BB:CC:DD:EE:02")
+    again = repository.replace([], now=NOW, phone="AA:BB:CC:DD:EE:02")
+    real = repository.replace(backlog, now=NOW, phone="AA:BB:CC:DD:EE:02")
+
+    assert real.seeded and real.new_missed == []
+    assert first.seeded and first.changed and not again.changed
+    newer = repository.replace(
+        [_call(MISSED, 1, "15551230005"), *backlog], now=NOW, phone="AA:BB:CC:DD:EE:02",
+    )
+    assert [record.phone for record in newer.new_missed] == ["15551230005"]
+
+
+def test_a_different_phone_erases_the_previous_phones_calls(storage) -> None:
+    repository = CallHistoryRepository(storage)
+    repository.replace(
+        [_call(MISSED, 30), _call(INCOMING, 20, "15551230007")],
+        now=NOW, phone="AA:BB:CC:DD:EE:01",
+    )
+
+    repository.replace([], now=NOW, phone="AA:BB:CC:DD:EE:02")
+
+    assert repository.load(now=NOW) == []
+    assert _stored_rows() == 0
+    # The old phone's announcement state went with its rows.
+    assert len(_row_state()[1]) == 1
+
+
 def test_forgetting_the_phone_rearms_silent_seeding(storage) -> None:
     repository = CallHistoryRepository(storage)
     repository.replace([_call(MISSED, 30)], now=NOW)

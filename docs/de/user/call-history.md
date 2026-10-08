@@ -68,7 +68,8 @@ blueferry call-history --sync      # vorher vom iPhone aktualisieren
 
 Der erste Abgleich merkt sich nur die vorhandene Liste, damit du nicht mit
 alten verpassten Anrufen überschüttet wirst. Das gilt auch, nachdem du ein
-anderes iPhone gekoppelt oder dieses entfernt und neu gekoppelt hast.
+anderes iPhone gekoppelt oder dieses entfernt und neu gekoppelt hast. Beim
+Koppeln eines anderen iPhones wird außerdem die Liste des bisherigen gelöscht.
 
 ## Grenzen
 
