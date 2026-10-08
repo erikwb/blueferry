@@ -88,6 +88,13 @@ ShellRoot {
     }
   }
 
+  // Qt 6.12 hands arrays in a var signal argument over as sequence wrappers,
+  // nested ones included, which fail Array.isArray. A JSON round trip gives
+  // the handlers the plain JavaScript values the backend sent.
+  function plainValue(value) {
+    return value === undefined ? value : JSON.parse(JSON.stringify(value))
+  }
+
   function threadByKey(key) {
     return conversationLogic.threadByKey(threads, key)
   }
@@ -209,6 +216,7 @@ ShellRoot {
     target: backendBridge
 
     function onResponse(method, requestId, result) {
+      result = root.plainValue(result)
       if (method === "status") {
         root.statusBusy = false
         if (typeof result !== "object" || result === null) {
@@ -366,6 +374,7 @@ ShellRoot {
     }
 
     function onEventReceived(name, data) {
+      data = root.plainValue(data)
       if (name === "open-message") root.openMessage(String(data || ""))
       else if (name === "history-changed" || name === "status-changed") root.reload()
       else if (name === "host" && data && typeof data.bluetooth_restart_command === "string")
@@ -444,6 +453,10 @@ ShellRoot {
             color: theme.accent
           }
           Item { Layout.fillWidth: true }
+          QuickshellPhoneStatus {
+            ferryTheme: theme
+            status: root.backendStatus
+          }
           Rectangle {
             implicitWidth: theme.scaled(5)
             implicitHeight: implicitWidth

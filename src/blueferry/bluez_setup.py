@@ -28,6 +28,7 @@ import dbus.service
 from gi.repository import GLib
 
 from blueferry import config
+from blueferry.bluetooth_capabilities import BTMGMT_STDIN
 from blueferry.bus import bluez, get_system_bus
 from blueferry.commands import run_command
 from blueferry.errors import CommandError, PairingError
@@ -119,6 +120,10 @@ def set_cod(
             timeout=120 if authorize else 10,
             check=False,
             env={**os.environ, "LC_ALL": "C"},
+            # As root btmgmt runs directly and needs the empty stdin pipe the
+            # packaged helper gives it. systemctl keeps the caller's stdin so
+            # a terminal can still answer the Polkit prompt.
+            input_text=BTMGMT_STDIN if cmd[0] == "/usr/bin/btmgmt" else None,
         )
     except CommandError as e:
         log.error("btmgmt failed: %s", e)

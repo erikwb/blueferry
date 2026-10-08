@@ -112,6 +112,25 @@ Bluetooth 3-only controller. The Broadcom MAP/PBAP success in
 [#17](https://github.com/erikwb/blueferry/issues/17) also supports LE advertising.
 ANCS connection failures on those adapters do not imply missing LE hardware.
 
+`btmgmt info` lists supported and current settings separately. A controller
+can support `le` while running with it switched off, typically because
+`/etc/bluetooth/main.conf` sets `ControllerMode = bredr`. The ANCS
+advertisement then never activates. In
+[#192](https://github.com/erikwb/blueferry/issues/192) a Broadcom BCM2045A0
+(`0a5c:6412`, HCI version 7) listed `le` and `advertising` as supported but
+`br/edr powered secure-conn ssp` as current, bonded over Classic, and failed at
+`advert_unavailable` two milliseconds after registering the advertisement.
+The capability probe therefore reports `le_disabled` (with the configured
+`ControllerMode` as a hint); full-mode pairing probes twice more and then stops
+before any pairing transaction with outcome reason `le_disabled`, and
+compatibility mode skips the advertisement. Switching LE on with
+`btmgmt le on` is not a fix under `ControllerMode = bredr`: BlueZ's
+`adapter_register()` skips the GATT database and `LEAdvertisingManager1` in
+that mode, so no advertisement can register until bluetoothd restarts in dual
+or LE mode. In dual mode bluetoothd re-enables LE itself when it starts. This is distinct from controllers whose advertisement
+BlueZ rejects for its size. `le_disabled` was verified with recorded settings
+only, not on that controller.
+
 BlueFerry therefore resolves two delivery modes. Full mode additionally
 requires BlueZ 5.86 or newer. Its bearer API must already be active or be
 activatable through the package's
@@ -504,6 +523,28 @@ BlueFerry reports the conflict from bluetoothd's version and arguments when
 power-up fails three times in a row (state `bluez_conflict`), and then retries
 every five minutes. The profile
 registration race itself is unchanged.
+
+oFono 2.18 creates the HFP modem's `VoiceCallManager`, `NetworkRegistration`,
+`Handsfree`, and `CallVolume` atoms, among others (device info and Siri),
+together in `hfp_pre_sim`, i.e. once the modem is powered; they survive
+`Online` dropping. A listed
+`VoiceCallManager` alone therefore does not mean call control works; the
+controller requires `Online` as well. The phone-status atoms expose the
+phone's standard HFP `+CIND` indicators (`doc/handsfree-api.txt`,
+`doc/network-api.txt`, `drivers/hfpmodem/`):
+`Handsfree.BatteryChargeLevel` is the raw `battchg` value 0-5,
+`NetworkRegistration.Strength` is the `signal` indicator 0-5 multiplied by 20,
+`Status` follows the `service`/`roam` indicators, and `Name` comes from
+`AT+COPS?` (HFP limits it to 16 characters; it is empty while unregistered).
+oFono drops the strength silently (no `PropertyChanged`) when registration is
+lost. The first `Handsfree.GetProperties` makes oFono query the phone's own
+number with `AT+CNUM` (returned as `SubscriberNumbers`, cached afterwards);
+until the phone answers, concurrent callers get `org.ofono.Error.InProgress`.
+iOS additionally reports a 0-9 battery level through `AT+IPHONEACCEV`, which
+oFono does not decode, so the HFP battery is limited to 20 % steps. The
+battery does not need HFP, though: iOS exposes the standard GATT Battery
+Service (0x180F, Battery Level 0x2A19, read and notify) to its LE peer;
+BlueFerry prefers that value (or BlueZ's `Battery1` built from it).
 
 ## Pairing diagnostics
 

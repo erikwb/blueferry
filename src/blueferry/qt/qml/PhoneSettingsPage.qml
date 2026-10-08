@@ -115,7 +115,8 @@ Kirigami.ScrollablePage {
             id: onboardingSummary
             Layout.fillWidth: true
             stage: compatibilityMode.checked
-                && iphonePage.effectiveStage === "activate-bluetooth"
+                && (iphonePage.effectiveStage === "activate-bluetooth"
+                    || iphonePage.effectiveStage === "le-disabled")
                 ? "select-device" : iphonePage.effectiveStage
             compatibility: iphonePage.bridge.onboardingCompatibility
             status: iphonePage.bridge.status
@@ -188,6 +189,19 @@ Kirigami.ScrollablePage {
 
         RowLayout {
             visible: !iphonePage.bridge.configured
+            Controls.Button {
+                // BlueFerry cannot switch LE on by itself (#192): with
+                // ControllerMode = bredr, bluetoothd starts no LE advertising
+                // manager, so the user edits main.conf, restarts bluetoothd
+                // and checks again here.
+                objectName: "recheckLowEnergyButton"
+                visible: iphonePage.bridge.compatibility.le_disabled === true
+                    && !compatibilityMode.checked
+                text: qsTr("Check Again")
+                icon.name: "view-refresh"
+                enabled: !iphonePage.bridge.busy
+                onClicked: iphonePage.bridge.loadSetupState()
+            }
             Controls.Button {
                 visible: iphonePage.bridge.compatibility.notifications_supported === true
                     && !iphonePage.bridge.bluetoothActive
@@ -399,6 +413,18 @@ Kirigami.ScrollablePage {
                     : iphonePage.bridge.status.notification_policy === "none" ? 2 : 1
                 enabled: iphonePage.bridge.status.daemon === true && !iphonePage.bridge.busy
                 onActivated: iphonePage.bridge.setNotificationPolicy(currentValue)
+            }
+            Controls.CheckBox {
+                objectName: "phoneBatteryWarningCheckBox"
+                Layout.fillWidth: true
+                // Only daemons that report the key support the setting.
+                visible: iphonePage.bridge.status.phone_battery_warning !== undefined
+                text: qsTr("Warn when the iPhone's battery runs low")
+                checked: iphonePage.bridge.status.phone_battery_warning === true
+                enabled: iphonePage.bridge.status.daemon === true && !iphonePage.bridge.busy
+                onClicked: iphonePage.bridge.setPhoneBatteryWarning(checked)
+                Accessible.description: qsTr("One desktop notification per discharge, at %1 % or less.")
+                    .arg(iphonePage.bridge.status.phone_battery_warning_percent ?? 20)
             }
             Controls.CheckBox {
                 Layout.fillWidth: true

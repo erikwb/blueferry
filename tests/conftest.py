@@ -323,6 +323,15 @@ def isolate_dbus(monkeypatch, request):
 
 
 @pytest.fixture(autouse=True)
+def isolate_bluez_main_conf(tmp_path_factory, monkeypatch):
+    """Never let capability probes read the operator's /etc/bluetooth/main.conf."""
+    from blueferry import bluetooth_capabilities
+
+    missing = tmp_path_factory.mktemp("bluez") / "main.conf"
+    monkeypatch.setattr(bluetooth_capabilities, "BLUEZ_MAIN_CONF", missing)
+
+
+@pytest.fixture(autouse=True)
 def pin_init_system(monkeypatch):
     """Describe systemd hosts unless a test opts into another init system.
 

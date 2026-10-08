@@ -216,6 +216,7 @@ class BackendDependencies:
     set_proximity_lock: Callable[[bool, int], dict[str, Any]] | None = None
     calls: CallControl | None = None
     set_calls_enabled: Callable[[bool], dict[str, Any]] | None = None
+    set_phone_battery_warning: Callable[[bool], dict[str, Any]] | None = None
 
 
 class BackendOperations:
@@ -1145,6 +1146,19 @@ class BackendOperations:
         if calls is None or not calls.enabled:
             raise CallsDisabledError(CALLS_DISABLED_HINT)
         return calls
+
+    def set_phone_battery_warning(self, enabled: bool) -> bool:
+        """Save the low-battery warning opt-in; returns the saved value."""
+        configure = self.dependencies.set_phone_battery_warning
+        if configure is None:
+            raise NotReadyError("the phone battery warning is unavailable")
+        try:
+            return bool(configure(bool(enabled)).get("phone_battery_warning"))
+        except ValueError as error:
+            raise InvalidArgumentsError(str(error)) from error
+        except OSError as error:
+            log.error("could not save the battery warning preference: %s", error)
+            raise NotReadyError("could not save the battery warning preference") from error
 
     def set_calls_enabled(self, enabled: bool) -> dict[str, Any]:
         """Save the phone-calls opt-in and apply it without a restart."""

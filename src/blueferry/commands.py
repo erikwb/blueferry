@@ -14,8 +14,14 @@ def run_command(
     timeout: float,
     check: bool = True,
     env: Mapping[str, str] | None = None,
+    input_text: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Run an argv-only command and normalize launch, timeout, and exit errors."""
+    """Run an argv-only command and normalize launch, timeout, and exit errors.
+
+    ``input_text`` is written to the command's stdin pipe, which is then
+    closed. Pass ``""`` to give a command an empty, pollable stdin instead of
+    whatever the caller inherited (often ``/dev/null`` under a service).
+    """
     command = tuple(str(value) for value in argv)
     if not command or not command[0]:
         raise ValueError("command argv must not be empty")
@@ -27,6 +33,7 @@ def run_command(
             text=True,
             timeout=timeout,
             env=dict(env) if env is not None else None,
+            input=input_text,
         )
     except FileNotFoundError as error:
         raise CommandError(command, f"{command[0]} is not installed") from error

@@ -10,7 +10,7 @@ from typing import Optional
 import typer
 
 from blueferry import bluez_setup, config
-from blueferry.cli_calls import calls_app
+from blueferry.cli_calls import calls_app, phone_status
 from blueferry.cli_common import setup_logging as _setup_logging
 from blueferry.cli_messages import sms_list, sms_send
 from blueferry.cli_notification_actions import notification_actions_app
@@ -46,6 +46,31 @@ def run(verbose: bool = typer.Option(False, "-v", "--verbose", "--debug")):
     exit_code = Daemon().run()
     if exit_code:
         raise typer.Exit(code=exit_code)
+
+
+def _check_controller_le(log: logging.Logger, adapter: str) -> bool:
+    """Log the controller's LE state; return True when it needs attention."""
+    from blueferry import bluetooth_capabilities
+    from blueferry.commands import run_command
+
+    if not config.is_valid_adapter(adapter):
+        return False
+    available, supported, current, _error, _identity = (
+        bluetooth_capabilities.controller_settings(adapter, run_command=run_command)
+    )
+    if not available or "le" not in supported:
+        # Missing LE hardware and unreadable settings are reported by pairing.
+        return False
+    mode = bluetooth_capabilities.bluez_controller_mode()
+    if "le" in current:
+        log.info("Bluetooth LE enabled on %s  OK", adapter)
+        return False
+    log.warning("%s", bluetooth_capabilities.le_disabled_issue(mode))
+    if mode:
+        log.warning("    /etc/bluetooth/main.conf: ControllerMode = %s", mode)
+    else:
+        log.warning("    /etc/bluetooth/main.conf: ControllerMode not set")
+    return True
 
 
 @app.command()
@@ -103,6 +128,10 @@ def doctor(verbose: bool = typer.Option(False, "-v", "--verbose")):
     else:
         actions_state = "disabled"
     log.info("ANCS notification actions: %s", actions_state)
+
+    # Bluetooth LE switched on? (#192)
+    if _check_controller_le(log, config.ADAPTER):
+        warnings = True
 
     # State dir writable
     try:
@@ -508,6 +537,7 @@ app.command("sms-send")(sms_send)
 app.add_typer(proximity_app, name="proximity-lock")
 app.add_typer(notification_actions_app, name="notification-actions")
 app.add_typer(calls_app, name="calls")
+app.command("phone-status")(phone_status)
 
 
 @app.command()

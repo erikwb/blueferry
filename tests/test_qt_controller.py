@@ -917,6 +917,50 @@ def test_failed_ancs_actions_change_reports_the_saved_value_again(monkeypatch):
     assert changes == [True]
 
 
+def test_checking_bluetooth_le_again_reprobes_the_selected_adapter(
+    monkeypatch,
+) -> None:
+    """The LE stage offers only a re-check: BlueFerry cannot switch LE on."""
+    from types import SimpleNamespace
+
+    calls = []
+
+    class Setup:
+        def compatibility(self, adapter=None):
+            calls.append(("compatibility", adapter))
+            return SimpleNamespace(
+                to_dict=lambda: {"adapter": adapter, "le_disabled": False},
+                bearer_api_active=True,
+            )
+
+        def configuration(self):
+            return SimpleNamespace(
+                configured=False,
+                saved=False,
+                mac="",
+                adapter="hci0",
+                pairing_issue_report="",
+            )
+
+    controller = BridgeController(
+        backend=_Backend(), setup=Setup(), subscribe=False, autostart=False,
+    )
+    controller._compatibility = {"adapter": "hci1", "le_disabled": True}
+    monkeypatch.setattr(
+        controller,
+        "_run",
+        lambda operation, on_done=None, *_args, **_kwargs: (
+            on_done(operation()) if on_done is not None else operation()
+        ),
+    )
+
+    controller.loadSetupState()
+
+    assert calls == [("compatibility", "hci1")]
+    assert controller.compatibility["le_disabled"] is False
+    assert not hasattr(controller, "enableLowEnergy")
+
+
 def test_optional_calls_are_exposed_without_touching_a_disabled_backend():
     from blueferry.models import CallsSnapshot
 
@@ -1050,3 +1094,17 @@ def test_status_from_a_daemon_without_the_calls_setting_omits_it():
 
     apply({"calls_enabled": False})
     assert controller.status["calls_enabled"] is False
+
+
+def test_battery_warning_is_forwarded_and_merged_into_status(monkeypatch):
+    backend = _Backend()
+    backend.set_phone_battery_warning = lambda enabled: enabled
+    controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+    monkeypatch.setattr(
+        controller, "_run",
+        lambda operation, on_done=None, *_args, **_kwargs: on_done(operation()),
+    )
+
+    controller.setPhoneBatteryWarning(True)
+
+    assert controller.status["phone_battery_warning"] is True

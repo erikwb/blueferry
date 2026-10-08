@@ -119,6 +119,14 @@
       <annotation name="io.weirdware.BlueFerry.Errors"
                   value="InvalidArgs,NotReady"/>
     </method>
+    <method name="SetPhoneBatteryWarning">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Opt in or out of the once-per-discharge low-battery warning; state is phone_battery_warning in GetStatus"/>
+      <arg name="enabled" type="b" direction="in"/>
+      <arg name="selected" type="b" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady"/>
+    </method>
     <method name="GetStoragePolicy">
       <arg name="policy" type="s" direction="out"/>
     </method>

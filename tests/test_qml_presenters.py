@@ -13,7 +13,7 @@ os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import Q_ARG, Property, QMetaObject, QObject, QPointF, Qt, QUrl, Slot
+from PySide6.QtCore import Q_ARG, Property, QEvent, QMetaObject, QObject, QPointF, Qt, QUrl, Slot
 from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication
 from PySide6.QtQml import QQmlComponent, QQmlEngine
 from PySide6.QtQuick import QQuickWindow
@@ -500,6 +500,43 @@ def test_message_link_activation_rechecks_the_scheme(qml_engine, client):
         QGuiApplication.processEvents()
 
 
+def test_quickshell_phone_status_shows_only_known_battery_and_signal(qml_engine) -> None:
+    component = _component(qml_engine, "data/quickshell/QuickshellPhoneStatus.qml")
+    theme = _BubbleTheme()
+
+    hidden = component.createWithInitialProperties({
+        "ferryTheme": theme,
+        "status": {"calls_enabled": True, "phone_battery_level": None,
+                   "phone_network_name": "Sunrise"},
+    })
+    assert hidden is not None
+    assert hidden.property("visible") is False
+    assert hidden.property("text") == ""
+
+    shown = component.createWithInitialProperties({
+        "ferryTheme": theme,
+        "status": {"phone_battery_level": 60, "phone_signal_strength": 80,
+                   "phone_network_name": "<b>Sunrise</b>"},
+    })
+    assert shown.property("visible") is True
+    # The operator name is deliberately not part of the compact header.
+    assert shown.property("text") == "BATTERY 60 % · SIGNAL 80 %"
+    stepped = component.createWithInitialProperties({
+        "ferryTheme": theme,
+        "status": {"phone_battery_level": 40, "phone_battery_source": "hfp"},
+    })
+    assert stepped.property("text") == "BATTERY ~40 %"
+    stepped.deleteLater()
+
+    malformed = component.createWithInitialProperties({
+        "ferryTheme": theme,
+        "status": {"phone_battery_level": "60", "phone_signal_strength": 400},
+    })
+    assert malformed.property("visible") is False
+    for item in (hidden, shown, malformed):
+        item.deleteLater()
+
+
 def test_quickshell_thread_preview_stays_inside_one_line(qml_engine) -> None:
     component = _component(
         qml_engine,
@@ -679,6 +716,7 @@ def settings_window(qml_engine):
             function setProximityLock(enabled, grace) { record("setProximityLock", [enabled, grace]); }
             function setAncsNotificationActions(enabled) { record("setAncsNotificationActions", [enabled]); }
             function setCallsEnabled(enabled) { record("setCallsEnabled", [enabled]); }
+            function setPhoneBatteryWarning(enabled) { record("setPhoneBatteryWarning", [enabled]); }
             function forgetDevice(mac) { record("forgetDevice", [mac]); }
             function activateBluetooth() { record("activateBluetooth", []); }
             function filePairingIssue() { record("filePairingIssue", []); }
@@ -864,6 +902,84 @@ def test_optional_calls_dialog_lists_calls_and_dials_through_the_bridge(
     }
     assert QMetaObject.invokeMethod(dialog, "close")
     QGuiApplication.processEvents()
+
+
+def test_optional_phone_status_indicator_appears_only_with_known_values(
+    qml_engine, settings_window,
+):
+    window, bridge = settings_window
+    # Default status (calls off, or oFono without values): nothing is loaded.
+    assert window.findChild(QObject, "phoneStatusIndicator") is None
+    bridge.setProperty("status", {
+        "calls_enabled": True,
+        "phone_battery_level": None,
+        "phone_signal_strength": None,
+    })
+    QGuiApplication.processEvents()
+    assert window.findChild(QObject, "phoneStatusIndicator") is None
+
+    bridge.setProperty("status", {
+        "calls_enabled": True,
+        "phone_battery_level": 40, "phone_battery_source": "hfp",
+        "phone_signal_strength": 80,
+        "phone_network_name": "Sunrise",
+        "phone_network_status": "roaming",
+    })
+    QGuiApplication.processEvents()
+    indicator = _settings_object(window, "phoneStatusIndicator")
+    assert _settings_object(window, "phoneBatteryLabel").property("text") == "40 %"
+    assert indicator.property("batteryIconName") == "battery-040"
+    assert indicator.property("signalIconName") == "network-mobile-80"
+    assert indicator.property("summary") == (
+        "iPhone battery about 40 % · Signal 80 % · Sunrise (roaming)"
+    )
+
+    # The operator name is remote text: the tooltip must not render HTML.
+    bridge.setProperty("status", {
+        "calls_enabled": True,
+        "phone_battery_level": 40, "phone_battery_source": "hfp",
+        "phone_network_name": "<b>Sun</b>",
+        "phone_network_status": "registered",
+    })
+    QGuiApplication.processEvents()
+    tool_tip = indicator.findChild(QObject, "phoneStatusToolTip")
+    assert tool_tip is not None
+    content = tool_tip.property("contentItem")
+    label = content.findChild(QObject, "phoneStatusToolTipLabel")
+    assert label is not None
+    qml_engine.globalObject().setProperty("phoneToolTipLabel", qml_engine.newQObject(label))
+    # Qt::PlainText is 0 (AutoText, the style default, is 2).
+    assert _evaluate(qml_engine, "phoneToolTipLabel.textFormat") == int(Qt.TextFormat.PlainText.value)
+    # Text.Wrap is 4, like the style's own tooltip label.
+    assert _evaluate(qml_engine, "phoneToolTipLabel.wrapMode") == 4
+    assert label.property("text") == "iPhone battery about 40 % · <b>Sun</b>"
+
+    # A long name wraps inside the style's 14-grid-unit width cap.
+    bridge.setProperty("status", {
+        "calls_enabled": True,
+        "phone_battery_level": 40, "phone_battery_source": "hfp",
+        "phone_network_name": "Very Long Operator Name " * 3,
+        "phone_network_status": "registered",
+    })
+    QGuiApplication.processEvents()
+    cap = label.property("maxTextWidth")
+    assert cap > 0
+    assert content.property("implicitWidth") <= cap
+    assert label.property("contentWidth") <= cap
+    assert label.property("lineCount") > 1
+
+    # Signal only: the battery parts hide, the indicator stays.
+    bridge.setProperty("status", {"calls_enabled": True, "phone_signal_strength": 20})
+    QGuiApplication.processEvents()
+    assert _settings_object(window, "phoneBatteryLabel").property("visible") is False
+    assert indicator.property("batteryIconName") == ""
+    assert indicator.property("summary") == "Signal 20 %"
+
+    bridge.setProperty("status", {})
+    QGuiApplication.processEvents()
+    # The Loader releases its item with deleteLater().
+    QGuiApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert window.findChild(QObject, "phoneStatusIndicator") is None
 
 
 def test_phone_settings_first_run_and_reopening_keep_the_page_alive(qml_engine, settings_window):
@@ -2251,3 +2367,22 @@ def test_phone_calls_opt_in_appears_only_for_supporting_daemons(qml_engine, sett
     bridge.setProperty("status", {"daemon": True, "calls_enabled": True})
     QGuiApplication.processEvents()
     assert checkbox.property("checked") is True
+
+
+def test_battery_warning_checkbox_follows_the_daemon(qml_engine, settings_window):
+    window, bridge = settings_window
+    bridge.setProperty("setupLoaded", True)
+    QGuiApplication.processEvents()
+    checkbox = _settings_object(window, "phoneBatteryWarningCheckBox")
+    bridge.setProperty("status", {"daemon": True})
+    QGuiApplication.processEvents()
+    assert checkbox.property("visible") is False
+
+    bridge.setProperty("status", {"daemon": True, "phone_battery_warning": False})
+    QGuiApplication.processEvents()
+    assert checkbox.property("checked") is False
+    assert QMetaObject.invokeMethod(checkbox, "toggle")
+    assert QMetaObject.invokeMethod(checkbox, "clicked")
+    assert _evaluate(
+        qml_engine, "testBridge.calls.filter(c => c.method === 'setPhoneBatteryWarning')"
+    ) == [{"method": "setPhoneBatteryWarning", "args": [True]}]
