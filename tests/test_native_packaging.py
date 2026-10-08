@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pathlib
+import subprocess  # nosec B404
 
 import tomllib
 
@@ -201,7 +202,10 @@ def test_native_backends_ship_the_btmgmt_system_unit_template() -> None:
     assert "RestrictAddressFamilies=AF_BLUETOOTH" in unit
     assert "/bin/sh -c" not in unit
     assert "*[!0-9]*" in helper
-    assert ': | /usr/bin/btmgmt --index "$1" class 4 8' in helper
+    assert (
+        ': | /usr/bin/env -i LC_ALL=C /usr/bin/btmgmt --index "$1" class 4 8'
+        in helper
+    )
     assert "org.freedesktop.systemd1.manage-units" in rule
     assert "polkit.Result.YES" in rule
     assert "AUTH_ADMIN" not in rule
@@ -335,3 +339,43 @@ def test_package_workflow_does_not_run_for_each_commit() -> None:
     assert 'tags: ["v*"]' in triggers
     assert "schedule:" in triggers
     assert "workflow_dispatch:" in triggers
+
+
+def test_set_cod_helper_runs_btmgmt_with_an_empty_environment(tmp_path):
+    # Run as root through sudo, btmgmt must not see a caller's HOME or
+    # XDG_CACHE_HOME (readline history, inputrc). Swap in a fake btmgmt.
+    fake = tmp_path / "btmgmt"
+    seen = tmp_path / "seen"
+    fake.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"HOME=${HOME-unset}\" \"XDG=${XDG_CACHE_HOME-unset}\" "
+        "\"INPUTRC=${INPUTRC-unset}\" \"LC_ALL=${LC_ALL-unset}\" "
+        f"\"args:$*\" > {seen}\n"
+    )
+    fake.chmod(0o755)
+    helper = tmp_path / "blueferry-set-cod"
+    helper.write_text(
+        (ROOT / "systemd/blueferry-set-cod").read_text().replace(
+            "/usr/bin/btmgmt", str(fake),
+        )
+    )
+    helper.chmod(0o755)
+
+    subprocess.run(
+        [str(helper), "3"],
+        check=True,
+        env={
+            "PATH": "/usr/bin:/bin",
+            "HOME": "/home/alice",
+            "XDG_CACHE_HOME": "/home/alice/.cache",
+            "INPUTRC": "/home/alice/.inputrc",
+        },
+    )
+
+    assert seen.read_text().splitlines() == [
+        "HOME=unset",
+        "XDG=unset",
+        "INPUTRC=unset",
+        "LC_ALL=C",
+        "args:--index 3 class 4 8",
+    ]
