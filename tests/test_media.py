@@ -550,6 +550,28 @@ def test_opt_out_right_after_a_reconnect_waits_for_the_link_to_settle(
     assert _inert(instance, bus, timers)
 
 
+def test_a_failed_release_is_retried_before_the_next_opt_in_starts(
+    make_daemon, monkeypatch,
+) -> None:
+    """Review #207: a failed StopNotify was treated as released."""
+    instance, bus, timers = _media_daemon(make_daemon, monkeypatch)
+    instance._set_media_control(True)
+    _run(bus, timers)
+    bus.failing_stops = 2
+
+    instance._set_media_control(False)
+    instance._set_media_control(True)
+    bus.pump()
+
+    assert instance.ams is None and bus.sessions == {RC, EU}
+    assert [timers.delays[source] for source in timers.pending] == [2]
+    timers.run_all()
+    bus.pump()
+    assert bus.sessions == set() and instance.ams is not None
+    _run(bus, timers)
+    assert _shown(instance) == (True, "Song", 5)
+
+
 def test_shutdown_sends_no_stop_notify(make_daemon, monkeypatch) -> None:
     instance, bus, timers = _media_daemon(make_daemon, monkeypatch)
     instance._set_media_control(True)

@@ -71,6 +71,11 @@ FIRST_UPDATE_TIMEOUT_SECONDS = 10
 SILENT_RESUBSCRIBES_PER_LINK = 1
 MANAGER_RETRY_INITIAL_SECONDS = 2
 MANAGER_RETRY_MAX_SECONDS = 60
+# A failed StopNotify is retried this often per settled LE link, with a
+# doubling pause. After that the release rests until the next link-up (or a
+# new opt-in) instead of looping.
+RELEASE_ATTEMPTS = 3
+RELEASE_RETRY_INITIAL_SECONDS = 2
 
 _BLUEZ = "org.bluez"
 _GATT_CHAR = "org.bluez.GattCharacteristic1"
@@ -81,6 +86,22 @@ _NO_REPLY_ERRORS = frozenset({
     "org.freedesktop.DBus.Error.Timeout",
     "org.freedesktop.DBus.Error.TimedOut",
 })
+_OBJECT_GONE_ERRORS = frozenset({
+    "org.freedesktop.DBus.Error.UnknownObject",
+    "org.freedesktop.DBus.Error.UnknownMethod",
+})
+# BlueZ's StopNotify answer when the sender holds no session. Only the text
+# tells it from a real failure; an unrecognized text is retried like one.
+_NO_SESSION_MESSAGE = "no notify session started"
+
+
+def _session_is_gone(error: Exception) -> bool:
+    """A StopNotify error that proves there is no session left to stop."""
+    if not isinstance(error, dbus.exceptions.DBusException):
+        return False
+    if error.get_dbus_name() in _OBJECT_GONE_ERRORS:
+        return True
+    return _NO_SESSION_MESSAGE in (error.get_dbus_message() or "").lower()
 
 Success = Callable[[], None]
 Failure = Callable[[Exception], None]
@@ -138,7 +159,8 @@ class AmsNotifySessions:
     therefore owes a ``StopNotify`` for every session that was started or is
     still being started. It is sent only on a settled LE link with no
     ``StartNotify`` outstanding; until then the release stays owed, and a new
-    client waits for it (``when_released``).
+    client waits for it (``when_released``). A ``StopNotify`` that fails
+    leaves its session marked and is retried a bounded number of times.
     """
 
     def __init__(
@@ -162,6 +184,9 @@ class AmsNotifySessions:
         self._link: bool | None = None
         self._settled = False
         self._settle_id: int | None = None
+        self._retry_id: int | None = None
+        self._attempts_left = RELEASE_ATTEMPTS
+        self._retry_delay = RELEASE_RETRY_INITIAL_SECONDS
 
     @property
     def release_owed(self) -> bool:
@@ -172,8 +197,9 @@ class AmsNotifySessions:
         previous, self._link = self._link, connected
         if connected is not True:
             self._settled = False
-            self._cancel_settle()
+            self._cancel_timers()
         elif previous is not True:
+            self._renew_attempts()
             self._advance()
 
     def observe_bluez_owner(self, old_owner, _new_owner) -> None:
@@ -185,7 +211,7 @@ class AmsNotifySessions:
         self._stopping.clear()
         self._link = None
         self._settled = False
-        self._cancel_settle()
+        self._cancel_timers()
         self._advance()
 
     def forget(self, path: str) -> None:
@@ -235,6 +261,7 @@ class AmsNotifySessions:
         if settled and self._link is True:
             self._settled = True
         self._owed = True
+        self._renew_attempts()
         self._advance()
 
     def when_released(self, callback: Callable[[], None]) -> None:
@@ -244,13 +271,19 @@ class AmsNotifySessions:
             return
         if callback not in self._waiters:
             self._waiters.append(callback)
+        if self._attempts_left <= 0:
+            self._renew_attempts()  # the release rested; try again for this opt-in
         self._advance()
 
     def close(self) -> None:
         """Daemon shutdown: the closing bus connection ends the sessions."""
         self._owed = False
         self._waiters.clear()
-        self._cancel_settle()
+        self._cancel_timers()
+
+    def _renew_attempts(self) -> None:
+        self._attempts_left = RELEASE_ATTEMPTS
+        self._retry_delay = RELEASE_RETRY_INITIAL_SECONDS
 
     def _advance(self) -> None:
         """Send the owed StopNotify calls if, and only if, it is safe now."""
@@ -266,11 +299,24 @@ class AmsNotifySessions:
             if self._settle_id is None:
                 self._settle_id = self._schedule(BEARER_SETTLE_SECONDS, self._settle_elapsed)
             return
+        if self._retry_id is not None:
+            return
+        if self._attempts_left <= 0:
+            # Rest until the next link-up. An opt-in that waits goes ahead on
+            # the old sessions rather than staying off; they stay marked.
+            if self._waiters:
+                log.warning(
+                    "could not release the phone's media notifications; "
+                    "its command list may be missing until the next reconnect"
+                )
+                self._finish()
+            return
+        self._attempts_left -= 1
         self._stop_notifications()
 
     def _finish(self) -> None:
         self._owed = False
-        self._cancel_settle()
+        self._cancel_timers()
         waiters, self._waiters = self._waiters, []
         for waiter in waiters:
             try:
@@ -285,14 +331,20 @@ class AmsNotifySessions:
             self._advance()
         return False
 
-    def _cancel_settle(self) -> None:
-        if self._settle_id is None:
-            return
-        try:
-            self._cancel(self._settle_id)
-        except Exception:
-            log.debug("could not remove AMS release timer", exc_info=True)
-        self._settle_id = None
+    def _retry(self) -> bool:
+        self._retry_id = None
+        self._advance()
+        return False
+
+    def _cancel_timers(self) -> None:
+        for attribute in ("_settle_id", "_retry_id"):
+            source = getattr(self, attribute)
+            if source is not None:
+                try:
+                    self._cancel(source)
+                except Exception:
+                    log.debug("could not remove AMS release timer", exc_info=True)
+                setattr(self, attribute, None)
 
     def _stop_notifications(self) -> None:
         log.info("AMS opted out; releasing the phone's media notifications")
@@ -314,14 +366,31 @@ class AmsNotifySessions:
             return
         self._stopping.discard(path)
         self._alive.discard(path)
-        self._advance()
+        self._stop_answered()
 
     def _stop_failed(self, path: str, error: Exception) -> None:
         if path not in self._stopping:
             return
-        log.debug("AMS StopNotify failed: %s", _error_name(error))
         self._stopping.discard(path)
-        self._alive.discard(path)
+        if _session_is_gone(error):
+            self._alive.discard(path)
+        else:
+            # Not released: the session may still exist and stays marked.
+            log.warning("AMS StopNotify failed: %s", _error_name(error))
+        self._stop_answered()
+
+    def _stop_answered(self) -> None:
+        if self._stopping:
+            return
+        if (
+            self._owed and self._alive and self._link is True
+            and self._attempts_left > 0 and self._retry_id is None
+        ):
+            delay = self._retry_delay
+            self._retry_delay = delay * 2
+            log.info("retrying the AMS release in %ds", delay)
+            self._retry_id = self._schedule(delay, self._retry)
+            return
         self._advance()
 
 

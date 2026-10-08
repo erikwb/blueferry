@@ -159,9 +159,11 @@ class _SessionBus(_Bus):
             if fresh:
                 self._ccc_enabled(path)
         elif method == "StopNotify":
-            if self.failing_stops or path not in self.sessions:
-                self.failing_stops = max(0, self.failing_stops - 1)
+            if self.failing_stops:
+                self.failing_stops -= 1
                 call.fail(name="org.bluez.Error.Failed")
+            elif path not in self.sessions:
+                call.fail(name="org.bluez.Error.Failed", message="No notify session started")
             else:
                 self.sessions.discard(path)
                 call.succeed()
@@ -490,8 +492,137 @@ def test_runtime_opt_out_releases_the_notifications_on_a_steady_link(harness) ->
     assert sorted(bus.pending()) == sorted([("StopNotify", RC), ("StopNotify", EU)])
     bus.take("StopNotify", RC).succeed()
     assert released == []
-    bus.take("StopNotify", EU).fail(name="org.bluez.Error.Failed")
+    bus.take("StopNotify", EU).succeed()
     assert released == [True]
+    assert timers.pending == {}
+
+
+def test_a_failed_stop_notify_is_not_a_release_and_is_retried(session_harness) -> None:
+    """Review #207: the session survived, so the next opt-in got no command list."""
+    new_client, sessions, bus, timers = session_harness
+    client, _commands = new_client()
+    client.observe_bearer_state(True)
+    client.start()
+    _run(bus, timers)
+    bus.failing_stops = 1
+    released = []
+
+    client.stop(release=True, on_released=lambda: released.append(True))
+    bus.pump()
+
+    # Remote Command failed, Entity Update was stopped.
+    assert bus.sessions == {RC} and released == [] and sessions.release_owed
+    assert _settle_delays(timers) == [2]
+    timers.run_all()
+    assert bus.pending() == [("StopNotify", RC)]
+    bus.pump()
+    assert bus.sessions == set() and released == [True]
+    assert not sessions.release_owed and timers.pending == {}
+
+    second, commands = new_client()
+    second.observe_bearer_state(True)
+    second.start()
+    _run(bus, timers)
+    assert second.available and len(commands[-1]) == 5
+
+
+def test_a_stop_notify_that_keeps_failing_is_retried_a_bounded_number_of_times(
+    session_harness,
+) -> None:
+    new_client, sessions, bus, timers = session_harness
+    client, _commands = new_client()
+    client.observe_bearer_state(True)
+    client.start()
+    _run(bus, timers)
+    bus.failing_stops = 1000
+
+    client.stop(release=True)
+    delays = []
+    for _attempt in range(10):
+        bus.pump()
+        delays += _settle_delays(timers)
+        timers.run_all()
+
+    # Three attempts, then the release rests: no timer, no tight loop.
+    assert len(bus.stops()) == 3 * 2 and delays == [2, 4]
+    assert sessions.release_owed and bus.pending() == [] and timers.pending == {}
+
+    # The next settled link is the next safe moment.
+    sessions.observe_bearer_state(False)
+    sessions.observe_bearer_state(True)
+    assert _settle_delays(timers) == [3]
+    bus.failing_stops = 0
+    timers.run_all()
+    bus.pump()
+    assert bus.sessions == set() and not sessions.release_owed
+
+
+def test_an_opt_in_does_not_wait_forever_for_a_failing_release(session_harness) -> None:
+    new_client, sessions, bus, timers = session_harness
+    client, _commands = new_client()
+    client.observe_bearer_state(True)
+    client.start()
+    _run(bus, timers)
+    bus.failing_stops = 1000
+    client.stop(release=True)
+    for _attempt in range(10):
+        bus.pump()
+        timers.run_all()
+    bus.log.clear()
+    released = []
+
+    sessions.when_released(lambda: released.append(True))
+    assert released == []
+    for _attempt in range(10):
+        bus.pump()
+        timers.run_all()
+
+    # A new round of attempts, then the opt-in goes ahead on the old sessions.
+    assert len(bus.stops()) == 3 * 2
+    assert released == [True] and not sessions.release_owed
+    assert bus.pending() == [] and timers.pending == {}
+    # The sessions stay marked, so the next opt-out tries again.
+    bus.failing_stops = 0
+    sessions.release()
+    bus.pump()
+    assert bus.sessions == set()
+
+
+@pytest.mark.parametrize("error", [
+    {"name": "org.freedesktop.DBus.Error.UnknownObject"},
+    {"name": "org.bluez.Error.Failed", "message": "No notify session started"},
+])
+def test_a_stop_notify_refused_for_a_missing_session_counts_as_released(
+    session_harness, error,
+) -> None:
+    new_client, sessions, bus, timers = session_harness
+    client, _commands = new_client()
+    client.observe_bearer_state(True)
+    client.start()
+    _run(bus, timers)
+
+    client.stop(release=True)
+    bus.take("StopNotify", RC).fail(**error)
+    bus.take("StopNotify", EU).fail(**error)
+
+    assert not sessions.release_owed and timers.pending == {}
+
+
+def test_a_link_drop_cancels_the_release_retry(session_harness) -> None:
+    new_client, sessions, bus, timers = session_harness
+    client, _commands = new_client()
+    client.observe_bearer_state(True)
+    client.start()
+    _run(bus, timers)
+    bus.failing_stops = 2
+    client.stop(release=True)
+    bus.pump()
+    assert _settle_delays(timers) == [2]
+
+    sessions.observe_bearer_state(False)
+
+    assert timers.pending == {} and bus.pending() == []
+    assert sessions.release_owed
 
 
 @pytest.fixture
