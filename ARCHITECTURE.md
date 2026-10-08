@@ -117,6 +117,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `otp_context.py` | Bounded, transient MAP/ANCS context for live group correlation and read-state changes; works without history storage. |
 | `otp_clipboard.py` | Chooses wl-copy/xclip/xsel and owns one foreground clipboard helper; first copy waits for the worker capability probe; reaps through a GLib child watch. Cleanup only stops its own source, preserving selections owned by other programs. |
 | `sinks/libnotify.py` | Desktop notifications via `org.freedesktop.Notifications`, including open and dismiss actions, optional incoming-call Answer/Decline, opt-in iPhone action buttons, and the optional phone low-battery warning. |
+| `otp_settings.py` | The saved one-time code opt-in (`otp_autocopy` in `settings.json`, seeded by `BLUEFERRY_OTP_AUTOCOPY`). |
 
 ### Storage and privacy
 
@@ -168,11 +169,11 @@ All paths are relative to `src/blueferry/` unless noted.
 | `cli_call_history.py` | Opt-in `call-history` listing, enable, and disable. |
 | `cli_common.py` | Small CLI presentation helpers. |
 | `cli_proximity.py` | `proximity-lock` status, dry run, enable, and disable. |
-| `cli_otp.py` | `otp-status` and `otp-check` for one-time code auto-copy. |
 | `cli_notifications.py` | `notifications open-map` rule editing. |
 | `cli_media.py` | `blueferry media` now-playing status, commands, and `enable`/`disable`. |
 | `cli_notification_actions.py` | `notification-actions` status, enable, and disable for the opt-in iPhone action buttons. |
 | `cli_calls.py` | Optional `blueferry calls` commands over `Calls1` and `blueferry phone-status` (battery, signal, network from `GetStatus`). |
+| `cli_otp.py` | `blueferry otp status`, `enable`, `disable` and `check` for one-time code auto-copy (`otp-status` and `otp-check` stay as aliases). |
 | `tui.py` | Textual terminal client. |
 | `tui_launcher.py` | Launches the TUI with the package-private Textual bundle when present. |
 | `tui_calls.py` | Optional Textual calls panel. |
