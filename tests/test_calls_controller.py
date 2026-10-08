@@ -1507,3 +1507,36 @@ def test_phone_values_and_own_number_never_reach_logs_or_state(caplog) -> None:
                 and any(char.isdigit() for char in r.getMessage())]
     assert "+41791234567" not in repr(controller.phone_status)
     assert "SubscriberNumbers" not in repr(controller.phone_status)
+
+
+@pytest.mark.parametrize("rebind", [False, True])
+def test_removed_modem_drops_pending_snapshot_and_queued_signals(rebind) -> None:
+    controller, transport, *_ = _build()
+    controller.start()
+    ready = _modem(True, True, [VOICE_CALL_MANAGER_IFACE])
+    transport.take("GetModems").on_reply([ready])
+    snapshot = transport.take("GetCalls")
+    added = next(m.handler for m in transport.matches if m.signal == "CallAdded")
+    transport.emit(MANAGER_IFACE, "ModemRemoved", "/", dbus.ObjectPath(MODEM))
+    if rebind:
+        transport.emit(MANAGER_IFACE, "ModemAdded", "/", *ready)
+        transport.take("GetCalls").on_reply([])
+    snapshot.on_reply([(dbus.ObjectPath(CALL), {"State": "incoming"})])
+    added(dbus.ObjectPath(CALL), {"State": "incoming"})
+    assert controller.calls() == []
+    assert controller.in_call is False
+    if rebind:
+        transport.emit(VOICE_CALL_MANAGER_IFACE, "CallAdded", MODEM,
+                       dbus.ObjectPath(CALL), {"State": "incoming"})
+        assert controller.in_call is True
+
+
+def test_offline_modem_drops_pending_call_snapshot() -> None:
+    controller, transport, *_ = _build()
+    controller.start()
+    transport.take("GetModems").on_reply([_modem(True, True, [VOICE_CALL_MANAGER_IFACE])])
+    snapshot = transport.take("GetCalls")
+    transport.emit(MODEM_IFACE, "PropertyChanged", MODEM, "Online", dbus.Boolean(False))
+    snapshot.on_reply([(dbus.ObjectPath(CALL), {"State": "incoming"})])
+    assert controller.calls() == []
+    assert controller.in_call is False

@@ -180,6 +180,7 @@ class CallController:
         self._state = CALLS_DISABLED if not self.enabled else CALLS_UNAVAILABLE
         self._running = False
         self._generation = 0
+        self._calls_generation = 0
         self._owner_match: SignalMatch | None = None
         self._manager_matches: list[SignalMatch] = []
         self._modem: ModemInfo | None = None
@@ -354,12 +355,17 @@ class CallController:
             log.debug("phone reachability check failed", exc_info=True)
             return False
 
-    def _guard(self, handler: Callable[..., None]) -> Callable[..., None]:
+    def _guard(
+        self, handler: Callable[..., None], *, binding: bool = False,
+    ) -> Callable[..., None]:
         """Drop signals delivered after a reset or stop."""
         generation = self._generation
+        calls_generation = self._calls_generation
 
         def guarded(*args: Any) -> None:
             if not self._running or generation != self._generation:
+                return
+            if binding and calls_generation != self._calls_generation:
                 return
             try:
                 handler(*args)
@@ -850,7 +856,7 @@ class CallController:
                 ("CallRemoved", self._on_call_removed),
             ):
                 self._vcm_matches.append(transport.watch(
-                    self._guard(handler),
+                    self._guard(handler, binding=True),
                     interface=VOICE_CALL_MANAGER_IFACE, signal=signal, path=path,
                 ))
         except Exception:
@@ -865,12 +871,18 @@ class CallController:
         log.info("iPhone HFP modem is online; call control ready")
         self._call(
             path, VOICE_CALL_MANAGER_IFACE, "GetCalls", "", (),
-            self._on_existing_calls,
-            lambda error: log.warning("oFono GetCalls failed: %s", public_error(error)),
+            self._guard(self._on_existing_calls, binding=True),
+            self._guard(
+                lambda error: log.warning("oFono GetCalls failed: %s", public_error(error)),
+                binding=True,
+            ),
         )
         self._maximize_call_volume(path)
 
     def _unbind(self, *, emit: bool) -> None:
+        # A modem can disappear and return at the same object path. Its old
+        # snapshot and queued signals must not populate the new binding.
+        self._calls_generation += 1
         for match in self._vcm_matches:
             self._remove(match)
         self._vcm_matches = []
@@ -930,7 +942,8 @@ class CallController:
             match = self._ensure_transport().watch(
                 self._guard(
                     lambda name, value, call_id=record.call_id:
-                        self._on_call_property(call_id, name, value)
+                        self._on_call_property(call_id, name, value),
+                    binding=True,
                 ),
                 interface=VOICE_CALL_IFACE, signal="PropertyChanged", path=record.path,
             )
