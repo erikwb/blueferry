@@ -157,7 +157,42 @@ class PhotoStats:
         return f"sizes {sizes}; not kept {dropped}"
 
 
-def _unique_addresses(records: Sequence[ContactRecord]) -> dict[int, list[str]]:
+def _identities(phones: Iterable[str], emails: Iterable[str]) -> list[str]:
+    """Canonical identities of a record's addresses, with both NANP forms."""
+    out: list[str] = []
+    for address in (*phones, *emails):
+        identity = canonical_address(address)
+        if identity is None:
+            continue
+        out.append(identity)
+        if identity.startswith("phone:"):
+            number = identity.removeprefix("phone:")
+            if len(number) == 10:
+                out.append(f"phone:1{number}")
+            elif len(number) == 11 and number.startswith("1"):
+                out.append(f"phone:{number[1:]}")
+    return out
+
+
+def _duplicate_owners(records: Sequence[ContactRecord]) -> list[int]:
+    """Map each record to the first record that is an exact duplicate of it.
+
+    iOS can list one person several times in the unfiltered phonebook pull
+    (linked cards, several accounts). Records with the same name and the
+    same address identities are one owner for photos; anything else, such
+    as two names sharing a number, stays a separate owner.
+    """
+    first: dict[tuple[str | None, frozenset[str]], int] = {}
+    owners: list[int] = []
+    for index, (name, phones, emails) in enumerate(records):
+        identities = frozenset(_identities(phones, emails))
+        owners.append(first.setdefault((name, identities), index) if identities else index)
+    return owners
+
+
+def _unique_addresses(
+    records: Sequence[ContactRecord], owner_of: Sequence[int] | None = None,
+) -> dict[int, list[str]]:
     """Map record index to the address identities only that record owns.
 
     Count record ownership, not names: two people can share a name or
@@ -166,19 +201,9 @@ def _unique_addresses(records: Sequence[ContactRecord]) -> dict[int, list[str]]:
     """
     owners: dict[str, set[int]] = {}
     for index, (_name, phones, emails) in enumerate(records):
-        for address in (*phones, *emails):
-            identity = canonical_address(address)
-            if identity is None:
-                continue
-            identities = [identity]
-            if identity.startswith("phone:"):
-                number = identity.removeprefix("phone:")
-                if len(number) == 10:
-                    identities.append(f"phone:1{number}")
-                elif len(number) == 11 and number.startswith("1"):
-                    identities.append(f"phone:{number[1:]}")
-            for value in identities:
-                owners.setdefault(value, set()).add(index)
+        owner = owner_of[index] if owner_of is not None else index
+        for value in _identities(phones, emails):
+            owners.setdefault(value, set()).add(owner)
     unique: dict[int, list[str]] = {}
     for identity, owning in owners.items():
         if len(owning) == 1:
@@ -191,9 +216,14 @@ def _servable_photo_indices(records: Sequence[ContactRecord]) -> set[int]:
 
     A record without an address of its own (every number and email is shared
     with another record) never gets its photo served, so storing it would
-    only cost budget and disk.
+    only cost budget and disk. Exact duplicates of one person count as one
+    owner (see :func:`_duplicate_owners`); each of them stays servable, since
+    which copy carries the photo is only known after decoding.
     """
-    return set(_unique_addresses([_sanitized(record) for record in records]))
+    sanitized = [_sanitized(record) for record in records]
+    owner_of = _duplicate_owners(sanitized)
+    unique = _unique_addresses(sanitized, owner_of)
+    return {index for index, owner in enumerate(owner_of) if owner in unique}
 
 
 def _parse_vcard_entries(
@@ -508,17 +538,25 @@ class ContactsResolver:
                     self._mem.setdefault(address, set()).add(name)
 
         self._thread_addresses: dict[str, tuple[str, ...]] = {}
-        unique = _unique_addresses(self._records)
-        # Photos follow the same rule as reply routing: an address shared by
-        # two records never shows either person's picture.
-        self._photo_refs: dict[str, int] = {}
-        for index, addresses in unique.items():
+        for addresses in _unique_addresses(self._records).values():
             ordered = tuple(sorted(addresses))
             for identity in ordered:
                 self._thread_addresses[identity] = ordered
+        # Photos follow the same rule as reply routing (an address shared by
+        # two people never shows either picture), except that exact
+        # duplicates of one person, which iOS sends, count as one owner. The
+        # photo comes from whichever duplicate carries one.
+        self._photo_refs: dict[str, int] = {}
+        owner_of = _duplicate_owners(self._records)
+        group_photo: dict[int, int] = {}
+        for index, owner in enumerate(owner_of):
             photo = photos[index] if index < len(photos) else None
             if photo is not None:
-                for identity in ordered:
+                group_photo.setdefault(owner, photo)
+        for owner, addresses in _unique_addresses(self._records, owner_of).items():
+            photo = group_photo.get(owner)
+            if photo is not None:
+                for identity in addresses:
                     self._photo_refs[identity] = photo
 
     def thread_addresses(self, raw: str | None) -> tuple[str, ...]:

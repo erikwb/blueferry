@@ -924,6 +924,45 @@ def test_photos_that_can_never_be_shown_are_not_decoded_or_budgeted(monkeypatch)
     assert stats.dropped == {"shared": 2}
 
 
+def test_exact_duplicates_of_one_person_keep_their_photo(storage, monkeypatch, tmp_path) -> None:
+    # Hardware finding (iOS 27): the unfiltered pull lists people more than
+    # once, so every photo record shared all its numbers with its own copy
+    # and the shared-number rule dropped all 42 photos. Exact copies (same
+    # name, same addresses) are one owner; the photo comes from the copy
+    # that has one, in either order. Different names still conflict.
+    blob = (
+        _card("FN:Alice", "TEL:+15551112222", "EMAIL:alice@example.com")
+        + _card("FN:Alice", "PHOTO;ENCODING=b:" + _b64(JPEG), "TEL:(555) 111-2222",
+                "EMAIL:alice@example.com")
+        + _card("FN:Bob", "PHOTO;ENCODING=b:" + _b64(PNG), "TEL:+15550004444")
+        + _card("FN:Bob", "TEL:+15550004444")
+        + _card("FN:Twin A", "PHOTO;ENCODING=b:" + _b64(PNG), "TEL:+15550001111")
+        + _card("FN:Twin B", "PHOTO;ENCODING=b:" + _b64(PNG), "TEL:+15550001111")
+        # Same name, different address set: not an exact copy, so the shared
+        # number stays ambiguous for photos.
+        + _card("FN:Carol", "PHOTO;ENCODING=b:" + _b64(PNG), "TEL:+15550005555")
+        + _card("FN:Carol", "TEL:+15550005555", "TEL:+15550006666")
+    )
+    servable = contacts._servable_photo_indices(_parse_vcard_records(blob))
+    assert servable == {0, 1, 2, 3, 7}
+    stats = contacts.PhotoStats()
+    entries = _parse_vcard_entries(blob, servable=servable, stats=stats)
+    assert [photo for _record, photo in entries] == [None, JPEG, PNG, None, None, None, None, None]
+    assert stats.dropped == {"shared": 3}
+
+    _fake_pull(monkeypatch, tmp_path, blob)
+    monkeypatch.setattr(config, "CONTACT_PHOTOS", True)
+    contacts.pull_phonebook(SimpleNamespace(pbap_path="/pbap"), storage=storage)
+    resolver = ContactsResolver(storage=storage)
+    assert resolver.photo("+15551112222") == JPEG
+    assert resolver.photo("alice@example.com") == JPEG
+    assert resolver.photo("+15550004444") == PNG
+    assert resolver.photo("+15550001111") is None
+    assert resolver.photo("+15550005555") is None
+    # Reply routing keeps main's record-based rule.
+    assert resolver.thread_addresses("+15551112222") == ()
+
+
 def test_budget_exhaustion_is_logged_with_a_count(monkeypatch, caplog) -> None:
     monkeypatch.setattr(contacts, "MAX_CONTACT_PHOTOS_TOTAL_BYTES", len(JPEG))
     blob = "".join(
