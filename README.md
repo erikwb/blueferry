@@ -908,9 +908,10 @@ session as far as polkit is concerned.
 
 Without NetworkManager, BlueFerry brings up only the Bluetooth link and prints
 the interface name (usually `bnep0`). Run your own DHCP client on it, for
-example `sudo dhcpcd bnep0`; BlueFerry never runs privileged commands. That
-link belongs to the daemon's D-Bus connection, so it ends when the daemon
-stops.
+example `sudo dhcpcd bnep0`; BlueFerry never runs privileged commands. BlueZ
+does not end that link when the daemon stops, so it keeps running across a
+daemon restart (and is picked up again while tethering is enabled); end it
+with `blueferry tether off`.
 
 The kernel needs Bluetooth BNEP support (`CONFIG_BT_BNEP`), and BlueZ needs
 its network plugin. The choices made in a client or with `blueferry tether

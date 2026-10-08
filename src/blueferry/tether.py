@@ -507,7 +507,12 @@ class TetherController:
             self._start_watch()
 
     def stop(self) -> None:
-        """Forget local state; a NetworkManager tether outlives the daemon."""
+        """Forget local state; the PAN link itself outlives the daemon.
+
+        Neither backend's link is tied to this process: BlueZ keeps no watch
+        on the caller of ``Network1.Connect``, and NetworkManager owns its
+        activation. A restarted daemon re-adopts the link through the watch.
+        """
         self._running = False
         self._generation += 1
         self._cancel_deadline()

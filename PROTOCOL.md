@@ -684,11 +684,15 @@ version, and controller noted as the maintenance rule below requires:
   BlueZ network plugin / `BT_BNEP`) maps to `not-supported`.
 - PAN shares the Classic ACL link with MAP and PBAP. It is not known whether
   iOS keeps MAP/PBAP/ANCS undisturbed while BNEP is up.
-- BlueZ ties a `Network1` connection to the D-Bus caller that created it, so
-  the link-only fallback ends with the daemon. NetworkManager-owned links
-  survive a daemon restart and are re-adopted through the `Network1` watch,
-  but only while the user has tethering enabled; with it off BlueFerry does
-  not watch `Network1` at all.
+- BlueZ 5 does not tie a `Network1` connection to the D-Bus caller that
+  created it: `profiles/network/connection.c` (checked in 5.87) keeps no
+  owner watch, and only `Network1.Disconnect`, the device's ACL disconnect,
+  or removing the service ends it. So the link-only fallback, like a
+  NetworkManager-owned link, survives a daemon stop or restart; an earlier
+  note here said otherwise. Surviving links are re-adopted through the
+  `Network1` watch, but only while the user has tethering enabled; with it
+  off BlueFerry does not watch `Network1` at all. Not yet observed with a
+  real iPhone.
 
 ## Historical HFP result
 

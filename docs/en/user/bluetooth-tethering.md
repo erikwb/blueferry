@@ -74,9 +74,10 @@ the BlueFerry daemon as part of your active desktop session.
 
 BlueFerry brings up only the Bluetooth link and shows the interface name,
 usually `bnep0`. Run your own DHCP client on it, for example
-`sudo dhcpcd bnep0`. BlueFerry never runs privileged commands. This link
-belongs to the daemon's D-Bus connection, so it ends when the daemon stops or
-restarts.
+`sudo dhcpcd bnep0`. BlueFerry never runs privileged commands. BlueZ does
+not end this link when the daemon stops, so it keeps running across a daemon
+restart and is picked up again while tethering is enabled. End it with
+`blueferry tether off` or the switch.
 
 ## Settings
 

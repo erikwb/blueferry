@@ -9,8 +9,12 @@ BlueFerry create one, per user (``connection.permissions``) and with
 autoconnect off, so NetworkManager never tethers on its own because of it.
 
 Without NetworkManager, BlueFerry calls ``Network1.Connect("nap")`` directly
-and reports the interface; the user runs their own DHCP client. BlueZ ties
-that link to the calling D-Bus connection, so it ends with the daemon.
+and reports the interface; the user runs their own DHCP client. BlueZ 5
+keeps no watch on the caller of ``Network1.Connect`` (see
+``profiles/network/connection.c``), so that link, like a NetworkManager one,
+outlives a daemon stop or restart; only ``Network1.Disconnect``, the phone
+dropping the link, or removing the device ends it. A restarted daemon
+re-adopts it through the ``Network1`` watch while tethering is enabled.
 """
 
 from __future__ import annotations
