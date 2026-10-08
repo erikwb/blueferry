@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import io
 import os
 import sqlite3
 import stat
@@ -24,7 +25,7 @@ from blueferry.contact_repository import ContactRepository
 from blueferry.contacts import ContactsResolver, _parse_vcard_entries, _parse_vcard_records
 from blueferry.settings_store import SettingsStore
 from blueferry.storage_security import StorageSecurity
-from blueferry.vcard import iter_vcard_bodies, iter_vcard_cards
+from blueferry.vcard import iter_bounded_lines, iter_vcard_bodies, iter_vcard_cards
 
 from .photo_fixtures import jpeg, png, png_header
 
@@ -202,6 +203,67 @@ def test_oversized_photo_is_dropped_but_the_contact_survives() -> None:
     assert [record for record, _photo in _parse_vcard_entries(blob)] == [
         ("Big", ["15550001111"], []), ("Next", ["15550002222"], []),
     ]
+
+
+@pytest.mark.parametrize("size,bucket", [
+    (1536 * 1024, "<=4MiB"),
+    (4 * 1024 * 1024, "<=4MiB"),
+    (4 * 1024 * 1024 + 1, ">4MiB"),
+    (6 * 1024 * 1024, ">4MiB"),
+])
+def test_oversized_photo_histogram_uses_full_streamed_payload(monkeypatch, size, bucket):
+    blob = _card("FN:Big", "PHOTO;ENCODING=b:" + _b64(bytes(size)), "TEL:+15550001111")
+    stats = contacts.PhotoStats()
+
+    def no_decode(_prop):
+        raise AssertionError("oversized photos must be counted without decoding")
+
+    monkeypatch.setattr(contacts, "inspect_vcard_photo", no_decode)
+    entries = _parse_vcard_entries(
+        iter_bounded_lines(io.StringIO(blob), limit=4096), stats=stats,
+    )
+    assert entries == [(("Big", ["15550001111"], []), None)]
+    assert stats.sizes == {bucket: 1}
+    assert stats.dropped == {"too-large": 1}
+
+
+@pytest.mark.parametrize("head", [
+    'item1.PHOTO;X-NOTE="a:b";ENCODING=b:',
+    "PHOTO:data:image/jpeg;base64,",
+])
+@pytest.mark.parametrize("padded", [False, True])
+def test_oversized_photo_measurement_ignores_folding_metadata_and_padding(head, padded):
+    encoded = _b64(bytes(3073))
+    if not padded:
+        encoded = encoded.rstrip("=")
+    blob = _card(
+        "FN:Big", _fold(head + encoded, width=37, prefix="\t"),
+        "PHOTO;ENCODING=b:" + _b64(JPEG), "TEL:+15550001111",
+    )
+    sizes = []
+    cards = list(iter_vcard_cards(
+        iter_bounded_lines(io.StringIO(blob), limit=13), maximum=10,
+        max_photo_chars=100, on_oversized_photo=sizes.append,
+    ))
+    assert sizes == [3073]
+    assert cards == list(iter_vcard_cards(blob, maximum=10, max_photo_chars=100))
+    assert cards[0][1] is None
+
+
+def test_oversized_vcard21_photo_measurement_ignores_unindented_continuations():
+    encoded = _b64(bytes(3074))
+    chunks = [encoded[i:i + 76] for i in range(0, len(encoded), 76)]
+    blob = "\r\n".join([
+        "BEGIN:VCARD", "VERSION:2.1", "FN:Big",
+        "PHOTO;ENCODING=BASE64:" + chunks[0], *chunks[1:], "",
+        "TEL:+15550001111", "END:VCARD",
+    ])
+    sizes = []
+    [(body, photo)] = list(iter_vcard_cards(
+        blob, maximum=10, max_photo_chars=100, on_oversized_photo=sizes.append,
+    ))
+    assert sizes == [3074]
+    assert photo is None and "TEL:+15550001111" in body
 
 
 def test_photo_does_not_count_against_the_card_budget() -> None:

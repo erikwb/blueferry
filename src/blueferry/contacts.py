@@ -227,8 +227,8 @@ def _parse_vcard_entries(
     budget = MAX_CONTACT_PHOTOS_TOTAL_BYTES
     spent = 0.0
 
-    def oversized() -> None:
-        selected_stats.observe_size(MAX_CONTACT_PHOTO_CHARS * 3 // 4 + 1)
+    def oversized(size: int) -> None:
+        selected_stats.observe_size(size)
         selected_stats.drop(REJECT_TOO_LARGE)
 
     for body, prop in iter_vcard_cards(
