@@ -10,6 +10,7 @@ from typing import Protocol
 
 import dbus
 
+from blueferry import service_manager
 from blueferry.config import is_valid_adapter
 from blueferry.errors import CommandError, PairingError
 
@@ -319,12 +320,82 @@ def _hardware_summary(identity: dict[str, object]) -> str:
     return chip
 
 
+# Distribution specifics (Gentoo's BLUETOOTH_OPTS, Alpine's command_args)
+# are documented in packaging/openrc/README.md.
+OPENRC_BLUEZ_ACTIVATION_HINT = (
+    "iPhone notifications need BlueZ experimental mode. Start bluetoothd "
+    "with -E (see /etc/conf.d/bluetooth), then run "
+    '"sudo rc-service bluetooth restart". This briefly disconnects all '
+    "Bluetooth devices."
+)
+UNMANAGED_BLUEZ_ACTIVATION_HINT = (
+    "iPhone notifications need BlueZ experimental mode. Start bluetoothd "
+    "with -E and restart the Bluetooth service. This briefly disconnects all "
+    "Bluetooth devices."
+)
+
+
+def _experimental_argv(argv: list[bytes]) -> bool:
+    # Known limit: bundled short options such as "-nE" are not recognized.
+    return b"-E" in argv or b"--experimental" in argv
+
+
+def _running_bluetoothd_argv(proc_root: Path) -> list[bytes] | None:
+    """Return the argv of the running bluetoothd, found by process name.
+
+    Known limit: with /proc mounted ``hidepid=1`` or ``2`` another user's
+    bluetoothd is invisible, so experimental mode reads as inactive.
+    """
+    try:
+        entries = sorted(
+            (entry for entry in proc_root.iterdir() if entry.name.isdigit()),
+            key=lambda entry: int(entry.name),
+        )
+    except OSError:
+        return None
+    for entry in entries:
+        try:
+            if (entry / "comm").read_text(encoding="utf-8").strip() != "bluetoothd":
+                continue
+            argv = (entry / "cmdline").read_bytes().split(b"\0")
+        except (OSError, UnicodeError):
+            continue
+        return [value for value in argv if value]
+    return None
+
+
+def _init_agnostic_support_status(proc_root: Path) -> dict:
+    """Inspect the running bluetoothd directly when systemd is not in charge."""
+    argv = _running_bluetoothd_argv(proc_root) or []
+    active = _experimental_argv(argv)
+    status: dict[str, object] = {
+        "active": active,
+        "packaged_drop_in": False,
+        "exec_start": " ".join(value.decode("utf-8", "replace") for value in argv),
+    }
+    if not active:
+        status["activation_hint"] = (
+            OPENRC_BLUEZ_ACTIVATION_HINT
+            if service_manager.init_system() == service_manager.OPENRC
+            else UNMANAGED_BLUEZ_ACTIVATION_HINT
+        )
+    return status
+
+
 def bluez_support_status(
     *,
     run_command: RunCommand,
     proc_root: Path = Path("/proc"),
 ) -> dict:
-    """Report whether the running daemon has the experimental API enabled."""
+    """Report whether the running daemon has the experimental API enabled.
+
+    Returns ``active``, ``packaged_drop_in``, and ``exec_start``. Without
+    systemd there is no unprivileged activation path, so an inactive result
+    also carries ``activation_hint``: the administrator steps to show instead
+    of offering an automatic Bluetooth restart.
+    """
+    if service_manager.init_system() != service_manager.SYSTEMD:
+        return _init_agnostic_support_status(proc_root)
     try:
         configured = run_command(
             ["/usr/bin/systemctl", "show", "bluetooth.service", "--property=ExecStart", "--value"],
@@ -348,7 +419,7 @@ def bluez_support_status(
                 argv = (proc_root / str(pid) / "cmdline").read_bytes().split(b"\0")
             except OSError:
                 argv = []
-            active = b"-E" in argv or b"--experimental" in argv
+            active = _experimental_argv(argv)
     drop_in = Path("/usr/lib/systemd/system/bluetooth.service.d/blueferry.conf")
     return {
         "active": active,
@@ -620,6 +691,7 @@ def compatibility(
         support = {}
     bearer_active = bool(support.get("active"))
     bearer_configurable = bearer_active or bool(support.get("packaged_drop_in"))
+    activation_hint = str(support.get("activation_hint") or "")
     stack = bluez_stack(run_command=run_command, experimental=bearer_active)
     bearer_supported = (
         bluez_bearer_api_supported(stack.get("bluez_version"))
@@ -690,6 +762,12 @@ def compatibility(
             str(hardware.get("usb_id") or "").casefold() in _EXPLICIT_PAIRING_USB_IDS
         ),
     }
+    if activation_hint and bluez_bearer_api_supported(stack.get("bluez_version")):
+        # Clients cannot restart bluetoothd here; explain the manual step
+        # instead of offering an activation that would always fail.
+        result["bluez_activation_hint"] = activation_hint
+        if result["messages_supported"] and not result["notifications_supported"]:
+            result["issue"] = activation_hint
     if "manufacturer_id" in identity:
         result["manufacturer_id"] = identity["manufacturer_id"]
     if "hci_version" in identity:
@@ -704,10 +782,16 @@ def activate_bluez_support(
     systemctl_path: Path = Path("/usr/bin/systemctl"),
     sleep: Callable[[float], None] = time.sleep,
 ) -> dict:
-    """Restart Bluetooth through systemd so the packaged drop-in takes effect."""
+    """Restart Bluetooth through systemd so the packaged drop-in takes effect.
+
+    Other init systems have no unprivileged restart path; their status carries
+    the administrator steps instead.
+    """
     current = status()
     if current["active"]:
         return current
+    if hint := current.get("activation_hint"):
+        raise PairingError(str(hint))
     if not current["packaged_drop_in"]:
         raise PairingError(
             "The blueferry-backend Bluetooth service drop-in is not installed."

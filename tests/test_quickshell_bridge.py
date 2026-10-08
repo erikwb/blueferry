@@ -162,7 +162,10 @@ def test_bridge_returns_structured_success_and_errors() -> None:
         "id": 7,
         "method": "status",
         "ok": True,
-        "result": {"daemon": True},
+        "result": {
+            "daemon": True,
+            "bluetooth_restart_command": "sudo systemctl restart bluetooth.service",
+        },
     }
     assert replies[1]["id"] == 8
     assert replies[1]["method"] == "unknown"
@@ -283,3 +286,45 @@ def test_stdin_reader_discards_oversized_line_and_recovers(monkeypatch):
     assert len(received) == 2
     assert len(received[0]) > 8
     assert received[1] == "next\n"
+
+
+def test_status_carries_the_init_systems_bluetooth_restart_command(monkeypatch) -> None:
+    from blueferry import service_manager
+
+    monkeypatch.setattr(service_manager, "init_system", lambda: service_manager.OPENRC)
+    bridge = QuickshellBridge(FakeClient())  # type: ignore[arg-type]
+    assert bridge.dispatch("status", {}) == {
+        "daemon": True,
+        "bluetooth_restart_command": "sudo rc-service bluetooth restart",
+    }
+    monkeypatch.setattr(
+        service_manager, "init_system", lambda: service_manager.NO_SERVICE_MANAGER,
+    )
+    assert QuickshellBridge(FakeClient()).dispatch(  # type: ignore[arg-type]
+        "status", {},
+    )["bluetooth_restart_command"] == ""
+
+
+def test_host_info_is_computed_once_and_needs_no_daemon(monkeypatch) -> None:
+    from blueferry import service_manager
+
+    class NoDaemon(FakeClient):
+        def status(self):
+            raise AssertionError("host info must not query the daemon")
+
+    monkeypatch.setattr(service_manager, "init_system", lambda: service_manager.OPENRC)
+    output = io.StringIO()
+    bridge = QuickshellBridge(NoDaemon(), output)  # type: ignore[arg-type]
+    monkeypatch.setattr(
+        service_manager,
+        "init_system",
+        lambda: (_ for _ in ()).throw(AssertionError("detected the init system again")),
+    )
+
+    # main() sends this event before serving requests.
+    bridge.emit_event("host", bridge.host_info())
+
+    assert json.loads(output.getvalue()) == {
+        "event": "host",
+        "data": {"bluetooth_restart_command": "sudo rc-service bluetooth restart"},
+    }

@@ -41,6 +41,11 @@ sudo dnf install ./blueferry-backend-*.fc43.noarch.rpm \
 
 Ersetze `blueferry-gtk` für KDE Plasma durch `blueferry-qt`.
 
+## Gentoo, Alpine und andere Systeme ohne systemd
+
+Dafür gibt es noch keine Pakete. BlueFerry läuft dort aus einer
+Quellcode-Installation; siehe [Betrieb ohne systemd](openrc.md).
+
 ## Was die Pakete an Bluetooth ändern
 
 - Pakete für **Arch und Fedora** verlangen BlueZ 5.86 oder neuer und

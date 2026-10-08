@@ -550,6 +550,38 @@ def test_qt_onboarding_summary_treats_realtek_as_expected_success(qml_engine) ->
     summary.deleteLater()
 
 
+def test_qt_onboarding_summary_uses_the_supplied_bluetooth_restart_command(
+    qml_engine,
+) -> None:
+    component = _component(
+        qml_engine, "src/blueferry/qt/qml/OnboardingSummary.qml"
+    )
+    status = {"verified_iphone_setup": []}
+    compatibility = {"notifications_supported": False}
+    default = component.createWithInitialProperties({
+        "stage": "ready-without-ancs",
+        "compatibility": compatibility,
+        "status": status,
+    })
+    openrc = component.createWithInitialProperties({
+        "stage": "ready-without-ancs",
+        "compatibility": compatibility,
+        "status": status,
+        "bluetoothRestartCommand": "sudo rc-service bluetooth restart",
+    })
+
+    assert default is not None and openrc is not None
+    qml_engine.globalObject().setProperty("defaultSummary", qml_engine.newQObject(default))
+    qml_engine.globalObject().setProperty("openrcSummary", qml_engine.newQObject(openrc))
+    default_hint = _evaluate(qml_engine, "defaultSummary.ancsUnavailableHint()")
+    openrc_hint = _evaluate(qml_engine, "openrcSummary.ancsUnavailableHint()")
+    assert "sudo systemctl restart bluetooth.service" in default_hint
+    assert "sudo rc-service bluetooth restart" in openrc_hint
+    assert "systemctl" not in openrc_hint
+    default.deleteLater()
+    openrc.deleteLater()
+
+
 def test_qt_onboarding_summary_renders_stage_from_properties(qml_engine) -> None:
     component = _component(
         qml_engine, "src/blueferry/qt/qml/OnboardingSummary.qml"
@@ -626,6 +658,7 @@ def settings_window(qml_engine):
             property string errorText: ""
             property string pairingIssueReport: ""
             property string version: "test"
+            property string bluetoothRestartCommand: "sudo rc-service bluetooth restart"
             signal pairingConfirmationRequested(string passkey)
             signal messageOpenRequested(string handle)
             signal messageSendSucceeded(string recipient, string body)
@@ -1316,6 +1349,40 @@ def quickshell_setup(qml_engine):
     QGuiApplication.processEvents()
 
 
+@pytest.mark.parametrize(
+    ("status", "expected", "absent"),
+    [
+        ({}, "Try running sudo systemctl restart bluetooth.service,", "rc-service"),
+        (
+            {"bluetooth_restart_command": "sudo rc-service bluetooth restart"},
+            "Try running sudo rc-service bluetooth restart,",
+            "systemctl",
+        ),
+        (
+            {"bluetooth_restart_command": ""},
+            "Try restarting the Bluetooth service,",
+            "systemctl",
+        ),
+    ],
+)
+def test_quickshell_ancs_hint_uses_the_bridge_restart_command(
+    qml_engine, quickshell_setup, status, expected, absent,
+):
+    theme = _component(qml_engine, "data/quickshell/ThemePalette.qml").create()
+    component = _component(qml_engine, "data/quickshell/PhoneSettingsPage.qml")
+    page = component.createWithInitialProperties({
+        "ferryTheme": theme, "setup": quickshell_setup, "status": status,
+    })
+    assert page is not None
+    try:
+        qml_engine.globalObject().setProperty("hintPage", qml_engine.newQObject(page))
+        hint = _evaluate(qml_engine, "hintPage.ancsUnavailableHint()")
+        assert expected in hint
+        assert absent not in hint
+    finally:
+        page.deleteLater()
+
+
 @pytest.mark.parametrize("explicit", [False, True])
 @pytest.mark.parametrize("compatibility", [False, True])
 @pytest.mark.parametrize("replace", [False, True])
@@ -1776,8 +1843,90 @@ def test_quickshell_storage_cancel_keeps_the_status_binding(qml_engine, quickshe
 
 
 @pytest.mark.private_dbus
-@pytest.mark.parametrize("late_read", ["success", "failure"])
+def test_quickshell_keeps_the_restart_command_when_the_daemon_is_unavailable(
+    tmp_path, quickshell_environment,
+):
+    """The bridge's host fact must outlive status resets in the real shell."""
+    import shutil
+    import subprocess
+
+    executable = shutil.which("quickshell")
+    if executable is None:
+        pytest.skip("Quickshell is not installed")
+    for source in (ROOT / "data/quickshell").glob("*.qml"):
+        shutil.copyfile(source, tmp_path / source.name)
+    shutil.copyfile(
+        ROOT / "src/blueferry/qt/qml/ConversationLogic.qml",
+        tmp_path / "ConversationLogic.qml",
+    )
+    (tmp_path / "Theme.qml").write_text("import QtQuick\nThemePalette {}\n")
+    (tmp_path / "SetupTransport.qml").write_text('''import QtQuick
+Item {
+  signal lineReceived(int id, string kind, string line)
+  signal finished(int id, string kind, int code, string output, string diagnostic)
+  function execute(id, kind, command, interactive) {}
+  function cancel(id) {}
+  function write(id, text) {}
+}
+''')
+    (tmp_path / "BackendBridge.qml").write_text('''import QtQuick
+Item {
+  property bool desktopClient: false
+  property int nextId: 1
+  signal response(string method, int requestId, var result)
+  signal failure(string method, int requestId, string message)
+  signal eventReceived(string name, var data)
+  function request(method, args) { return nextId++; }
+  function requestLatest(method, args) {}
+  function cancelLatest(method) {}
+}
+''')
+    config = tmp_path / "shell.qml"
+    source = config.read_text()
+    probe = r'''
+  Timer {
+    interval: 200; running: true
+    onTriggered: {
+      function check(value, message) { if (!value) throw new Error(message); }
+      function hint() { return phoneSettingsPage.ancsUnavailableHint(); }
+      try {
+        check(hint().indexOf("systemctl") >= 0, "older bridges lost the systemd text");
+        backendBridge.eventReceived("host",
+          {bluetooth_restart_command: "sudo rc-service bluetooth restart"});
+        check(hint().indexOf("sudo rc-service bluetooth restart") >= 0, "host event ignored");
+        root.markStatusUnavailable("BlueFerry backend is unavailable");
+        check(hint().indexOf("sudo rc-service bluetooth restart") >= 0,
+          "unavailable daemon reset the restart command");
+        setupController.historyReset();
+        check(hint().indexOf("sudo rc-service bluetooth restart") >= 0,
+          "history reset cleared the restart command");
+        backendBridge.response("status", 1, {daemon: true, bluetooth_restart_command: ""});
+        check(hint().indexOf("Try restarting the Bluetooth service") >= 0,
+          "status reply did not update the restart command");
+        backendBridge.response("status", 2, {daemon: true});
+        check(hint().indexOf("Try restarting the Bluetooth service") >= 0,
+          "status without the field cleared the restart command");
+        console.log("BLUEFERRY_RESTART_HINT_OK");
+      } catch (error) {
+        console.error(error);
+      }
+      Qt.quit();
+    }
+  }
+'''
+    config.write_text(source[:source.rfind("}")] + probe + "}\n")
+    result = subprocess.run(
+        [executable, "--path", str(config)], env=quickshell_environment,
+        capture_output=True, text=True, timeout=10, check=False,
+    )
+    log = result.stdout + result.stderr
+    assert result.returncode == 0 and "BLUEFERRY_RESTART_HINT_OK" in log, log
+    assert "ReferenceError" not in log and "TypeError" not in log, log
+
+
 @pytest.mark.parametrize("late_after_refresh", [False, True])
+@pytest.mark.private_dbus
+@pytest.mark.parametrize("late_read", ["success", "failure"])
 def test_quickshell_replies_use_the_saved_members_without_a_checkbox(
     tmp_path, quickshell_environment, late_read, late_after_refresh,
 ):

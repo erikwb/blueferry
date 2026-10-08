@@ -32,6 +32,7 @@ from blueferry.onboarding import OnboardingState, effective_compatibility
 from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH
 from blueferry.qt.tasks import Task
 from blueferry.quirks_report import issue_report, issue_url
+from blueferry.service_manager import bluetooth_restart_command
 from blueferry.setup_client import (
     DISCOVERY_SECONDS,
     ConfigurationState,
@@ -223,6 +224,10 @@ class BridgeController(QObject):
     @Property(str, constant=True)
     def version(self) -> str:
         return __version__
+
+    @Property(str, constant=True)
+    def bluetoothRestartCommand(self) -> str:
+        return bluetooth_restart_command() or ""
 
     def _set_error(self, message: str) -> None:
         if message == self._error_text:

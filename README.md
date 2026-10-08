@@ -143,6 +143,18 @@ sudo dnf builddep packaging/rpm/blueferry.spec
 
 Finished packages are written to `dist/rpm/`.
 
+#### OpenRC systems
+
+On OpenRC, install BlueFerry's D-Bus activation file and let the session bus
+start the backend; no init script is needed. An optional OpenRC user service
+(OpenRC 0.62 or newer) is only for desktops whose session bus is
+`$XDG_RUNTIME_DIR/bus`. Do not create one on `dbus-run-session` desktops such
+as Plasma under greetd or SDDM. For iPhone system notifications, start
+`bluetoothd` with `-E` (see `/etc/conf.d/bluetooth`) and run
+`sudo rc-service bluetooth restart`. Without systemd, the daemon also runs
+without the systemd unit's sandboxing. See
+[packaging/openrc/README.md](packaging/openrc/README.md) before setting up.
+
 See [packaging/README.md](packaging/README.md) for the exact support matrix and
 more packaging details.
 
@@ -253,7 +265,9 @@ across themes. Outside Omarchy, it uses the desktop palette.
 BlueFerry can show message notifications only—the default—all iPhone
 notifications, or none. Other app notifications are displayed and discarded;
 they are not added to message history. Messages seen through both MAP and ANCS
-are deduplicated.
+are deduplicated. The ANCS copy of an Apple Messages notification (title,
+subtitle and up to the first 1024 bytes of the text) is kept in local history,
+because it carries the group details that MAP lacks.
 
 Message history and contacts are encrypted by default with a random key stored
 in GNOME Keyring or KDE Wallet. If the wallet is locked, live messages continue
@@ -551,6 +565,9 @@ For logs and prerequisite checks:
 blueferry doctor
 journalctl --user -u blueferry -f
 ```
+
+With the optional OpenRC user service, the backend log is
+`~/.local/state/blueferry/daemon.log`.
 
 If messages work but names do not, use **Sync Contacts** or run
 `blueferry contacts-sync`.

@@ -11,6 +11,10 @@ from pathlib import Path
 from blueferry import config
 from blueferry.commands import run_command
 from blueferry.errors import CommandError
+from blueferry.service_manager import (
+    ServiceManagerUnavailableError,
+    user_service_manager,
+)
 
 log = logging.getLogger(__name__)
 
@@ -73,6 +77,7 @@ MAX_FRAGMENT_BYTES = 16 * 1024
 ActiveCheck = Callable[[], bool]
 SupportedCheck = Callable[[], bool]
 Restart = Callable[[], None]
+RestartHint = Callable[[], str | None]
 
 VERSION_PATTERN = re.compile(r"(?<!\d)(\d+)\.(\d+)(?:\.\d+)?(?!\d)")
 
@@ -95,21 +100,11 @@ def legacy_fragment_path(path: Path) -> Path:
 
 
 def _wireplumber_active() -> bool:
-    try:
-        result = run_command(
-            [
-                "/usr/bin/systemctl",
-                "--user",
-                "is-active",
-                "--quiet",
-                "wireplumber.service",
-            ],
-            timeout=5,
-            check=False,
-        )
-    except CommandError:
-        return False
-    return result.returncode == 0
+    return user_service_manager(run_command).is_active("wireplumber", timeout=5)
+
+
+def _manual_restart_hint() -> str | None:
+    return user_service_manager(run_command).manual_restart_hint("WirePlumber")
 
 
 def _parse_wireplumber_version(output: str) -> tuple[int, int] | None:
@@ -142,11 +137,7 @@ def _wireplumber_05_or_newer() -> bool:
 
 
 def _restart_wireplumber(*, wait: bool = False) -> None:
-    command = ["/usr/bin/systemctl", "--user"]
-    if not wait:
-        command.append("--no-block")
-    command.extend(["try-restart", "wireplumber.service"])
-    run_command(command, timeout=30 if wait else 5)
+    user_service_manager(run_command).try_restart("wireplumber", wait=wait)
 
 
 def _matches(path: Path, expected: str) -> bool:
@@ -192,6 +183,7 @@ class WirePlumberPhoneAudioPolicy:
         supported: SupportedCheck = _wireplumber_05_or_newer,
         restart: Restart | None = None,
         wait_for_restart: bool = False,
+        manual_restart_hint: RestartHint = _manual_restart_hint,
         allow_calls: bool | None = None,
     ) -> None:
         self.path = path or fragment_path()
@@ -201,6 +193,7 @@ class WirePlumberPhoneAudioPolicy:
         self.text = fragment_text(allow_calls=self.allow_calls)
         self._active = active
         self._supported = supported
+        self._manual_restart_hint = manual_restart_hint
         self._restart = restart or (
             lambda: _restart_wireplumber(wait=wait_for_restart)
         )
@@ -243,13 +236,16 @@ class WirePlumberPhoneAudioPolicy:
         if not changed:
             return changed
         if not is_active:
-            # Without a systemd user unit (e.g. OpenRC with a session
-            # launcher) there is nothing BlueFerry can restart.
-            log.info("WirePlumber fragment changed; restart WirePlumber to apply")
+            # Desktops that start PipeWire through a launcher rather than a
+            # service manager cannot be restarted safely from here.
+            if hint := self._manual_restart_hint():
+                log.warning(hint)
             return changed
         try:
             self._restart()
             log.info("restarted WirePlumber after changing its Bluetooth roles")
+        except ServiceManagerUnavailableError as error:
+            log.warning("WirePlumber policy changed; %s", error)
         except (CommandError, OSError):
             log.warning(
                 "WirePlumber policy changed but its active service could not be restarted",

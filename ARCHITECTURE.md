@@ -52,6 +52,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `limits.py` | Central safety and resource limits. |
 | `errors.py` | Application error hierarchy shared across transport and presentation. |
 | `commands.py` | The only path for running external commands (argv, absolute paths, normalized failures). |
+| `service_manager.py` | Detects the init system; maps backend start/restart/stop onto `systemctl --user`, `rc-service --user`, or D-Bus activation plus bus-verified SIGTERM. |
 | `config.py` | Environment-backed configuration (`local.env`) and private runtime paths. |
 | `private_files.py` | Race-resistant owner-only reads and atomic writes for small files. |
 | `build_info.py` | Package release + source-SHA build identity. |
@@ -318,6 +319,9 @@ contract.
 - **Quickshell**: QML has no generic D-Bus client, so one persistent
   `quickshell_bridge` process handles all messaging, contact, status, and
   preference requests over stdin. Private data never goes in process argv.
+  It sends a `host` event at startup, and its `status` replies also carry
+  `bluetooth_restart_command`: the host's BlueZ restart command (`""` when
+  unknown), used in the ANCS repair hint even while the daemon is down.
   Setup uses the separate short-lived `pairing-*` helpers, because setup
   happens before the daemon is available. Quickshell sends the displayed
   roster token so the backend can reject stale routes. Superseded or
@@ -505,12 +509,23 @@ A change to these rules has to be made in both places.
   activated. It is autostarted through a package-owned
   `default.target.wants` link and skipped by `ConditionPathExists` when no
   pairing configuration exists.
+- Without systemd, `service_manager` treats the session bus as the service
+  manager: start is D-Bus activation, and stop signals the same-user process
+  the bus daemon reports as the name owner (SIGTERM, SIGKILL after 180
+  seconds), then waits for the name to disappear. The caller's timeout bounds
+  the whole request; when it ends first the request fails with SIGTERM still
+  in effect, like a timed-out `systemctl stop`. A host booted with systemd
+  but without `/usr/bin/systemctl` (NixOS) takes this path too. Only a running or enabled
+  OpenRC user service (`packaging/openrc/blueferry`) on the desktop's own bus
+  is driven through `rc-service --user`. Neither path has the unit's
+  sandboxing.
 - D-Bus is published before hardware work, and `GetStatus` reports
   `initializing` and degraded state explicitly.
 - Packages install release and source-SHA markers. The daemon publishes them
   as `_build_id` and exits with status 75 when the markers change, so systemd
-  restarts it. Clients compare `_build_id` and fall back to a serialized
-  restart. Package scripts never address other users' service managers.
+  (or OpenRC's supervisor) restarts it. Clients compare `_build_id` and fall
+  back to a serialized restart. Package scripts never address other users'
+  service managers.
 - All external commands go through `commands.run_command`. Lifecycle tests
   replace marker reads and command runners, so they can never restart a real
   service.

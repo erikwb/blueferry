@@ -28,6 +28,11 @@ import dbus
 import dbus.exceptions
 
 from blueferry import config
+from blueferry.ancs.constants import (
+    ANCS_MESSAGE_MAX_BYTES,
+    ANCS_SUBTITLE_MAX_BYTES,
+    MESSAGES_APP_ID,
+)
 from blueferry.ancs.events import AncsEvent
 from blueferry.bus import get_session_bus
 from blueferry.calls.model import CallEvent
@@ -48,7 +53,9 @@ class _SignalMatch(Protocol):
 log = logging.getLogger(__name__)
 
 _APP_NAME = "BlueFerry"
-_BODY_LIMIT = 280
+# Long bodies stay readable: Plasma shows a few lines and expands on click.
+# Large enough for the full subtitle and message BlueFerry requests over ANCS.
+_BODY_LIMIT = ANCS_SUBTITLE_MAX_BYTES + 1 + ANCS_MESSAGE_MAX_BYTES
 _MESSAGE_EXPIRE_MS = config.NOTIFICATION_TIMEOUT_MS
 # ANCS mirrors ordinary iPhone app/system notifications. Unlike MAP messages,
 # they have no desktop-to-phone read-state path, so keeping every popup around
@@ -263,15 +270,22 @@ class LibnotifySink:
             return
         # Messages already arrive through MAP. The ANCS copy is retained for
         # group metadata but never creates a second desktop popup.
-        if event.app_id == "com.apple.MobileSMS":
+        if event.app_id == MESSAGES_APP_ID:
             return
         # Title: "📱 AppName" or "📱 com.bundle.id" if no name yet
         app = event.app_name or event.app_id or "Notification"
+        # Mirror the iPhone's layout: the notification's own title next to the
+        # app name, then subtitle and message on separate lines.
         title = f"\U0001f4f1 {app}"
-        # Body: prefer Title field for headline, then Message
-        body_parts = [p for p in (event.title, event.body) if p]
-        body = " — ".join(body_parts) if body_parts else ""
-        if not config.SHOW_NOTIFICATION_CONTENT:
+        if config.SHOW_NOTIFICATION_CONTENT:
+            # Skip a title that only repeats the app name ("github" under
+            # "GitHub") or is blank, so no dangling separator is left.
+            headline = event.title.strip()
+            if headline and headline.casefold() != app.strip().casefold():
+                title = f"{title} \u00b7 {headline}"
+            body_parts = [p.strip() for p in (event.subtitle, event.body) if p.strip()]
+            body = "\n".join(body_parts)
+        else:
             body = "New iPhone notification"
         if len(body) > _BODY_LIMIT:
             body = body[:_BODY_LIMIT - 1] + "…"

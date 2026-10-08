@@ -17,7 +17,7 @@ import re
 from bisect import bisect_left, bisect_right
 from datetime import datetime, timezone
 
-from blueferry.ancs.constants import MESSAGES_APP_ID
+from blueferry.ancs.constants import ANCS_MESSAGE_CAPS_REQUESTED, MESSAGES_APP_ID
 from blueferry.events import canonical_address, safe_event_address
 from blueferry.named_groups import NamedGroupRoutes
 from blueferry.named_groups import named_group_key as named_group_key
@@ -28,6 +28,10 @@ CORRELATION_WINDOW_SECONDS = 60
 HISTORY_ROW_ID_FIELD = "_blueferry_history_row_id"
 CORRELATED_ANCS_ROW_IDS_FIELD = "_blueferry_correlated_ancs_row_ids"
 
+# UTF-8 needs up to four bytes per character, so a body cut at a byte cap on a
+# character boundary can end up to three bytes short of it.
+_UTF8_CUT_SLACK = 3
+
 _TO_PREFIX = re.compile(r"^To\s+", re.IGNORECASE)
 _MEMBER_SEPARATOR = re.compile(r"\s*(?:,|&)\s*")
 
@@ -37,7 +41,11 @@ class _MessageCandidates:
 
     def __init__(self, events: list[dict], indexes: list[int]) -> None:
         self.exact: dict[str, list[tuple[float, int]]] = {}
-        self.prefix: dict[str, list[tuple[float, int]]] = {}
+        # One prefix index per requested ANCS message cap: rows stored before
+        # the cap was raised still carry bodies cut at the older size.
+        self.prefix: dict[int, dict[str, list[tuple[float, int]]]] = {
+            cap: {} for cap in ANCS_MESSAGE_CAPS_REQUESTED
+        }
         self.maximum_index = len(events)
         for index in indexes:
             event = events[index]
@@ -47,17 +55,29 @@ class _MessageCandidates:
             body = str(event.get("body") or "")
             entry = (when.timestamp(), index)
             self.exact.setdefault(body, []).append(entry)
-            if len(body) > 256:
-                self.prefix.setdefault(body[:256], []).append(entry)
-        for entries in (*self.exact.values(), *self.prefix.values()):
+            encoded = body.encode("utf-8")
+            for cap, index_by_prefix in self.prefix.items():
+                if len(encoded) > cap:
+                    index_by_prefix.setdefault(
+                        _cut_to_bytes(encoded, cap), [],
+                    ).append(entry)
+        for entries in self.exact.values():
             entries.sort()
+        for index_by_prefix in self.prefix.values():
+            for entries in index_by_prefix.values():
+                entries.sort()
 
     def matching(self, body: str, when: datetime, excluded: set[int]) -> list[int]:
         instant = when.timestamp()
         matches: list[int] = []
         buckets = [self.exact.get(body, [])]
-        if len(body) == 256:
-            buckets.append(self.prefix.get(body, []))
+        # iOS may also cut inside a character; the parser then decodes the
+        # partial sequence as U+FFFD. Drop it so the prefix lines up.
+        truncated = body.rstrip("\ufffd")
+        size = len(truncated.encode("utf-8"))
+        for cap, index_by_prefix in self.prefix.items():
+            if cap - _UTF8_CUT_SLACK <= size <= cap:
+                buckets.append(index_by_prefix.get(truncated, []))
         for entries in buckets:
             start = bisect_left(entries, (instant - CORRELATION_WINDOW_SECONDS, -1))
             stop = bisect_right(
@@ -70,6 +90,11 @@ class _MessageCandidates:
                     if len(matches) == 2:
                         return matches
         return matches
+
+
+def _cut_to_bytes(encoded: bytes, cap: int) -> str:
+    """Return the longest whole-character prefix that fits in ``cap`` bytes."""
+    return encoded[:cap].decode("utf-8", errors="ignore")
 
 
 def _seen_at(event: dict) -> datetime | None:

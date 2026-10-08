@@ -239,9 +239,13 @@ list or conversation ID. On the tested iOS release, the corresponding Apple
 Messages ANCS notification supplies the missing display information:
 
 - ANCS app ID is `com.apple.MobileSMS`.
-- The notification body matches the MAP message body. ANCS bodies requested by
-  BlueFerry are capped at 256 characters, so a longer MAP body can match that
-  exact prefix.
+- The notification body matches the MAP message body. BlueFerry asks for at
+  most 1024 bytes of message text (titles and subtitles: 128 bytes); iOS cuts
+  longer text to that many UTF-8 bytes, so a longer MAP body can match that
+  prefix. Releases before 1024 asked for 256 bytes, and rows they stored are
+  still matched against a 256-byte prefix. A cut can land up to three bytes
+  short of the cap on a character boundary, or inside a character, which the
+  parser decodes as U+FFFD; correlation allows for both.
 - For the observed unnamed group, the title is the sender and the subtitle is
   shaped like `To you & participant` (with further names separated by commas
   or ampersands).

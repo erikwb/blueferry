@@ -242,6 +242,7 @@ def test_inactive_wireplumber_asks_the_user_to_restart_it(tmp_path, caplog) -> N
     policy = WirePlumberPhoneAudioPolicy(
         path=path, active=lambda: False, supported=lambda: True,
         restart=lambda: restarted.append(True), allow_calls=True,
+        manual_restart_hint=lambda: "restart WirePlumber to apply",
     )
 
     assert policy.reconcile(enabled=True) is True
@@ -250,3 +251,134 @@ def test_inactive_wireplumber_asks_the_user_to_restart_it(tmp_path, caplog) -> N
     caplog.clear()
     assert policy.reconcile(enabled=True) is False
     assert "restart WirePlumber" not in caplog.text
+
+
+def _openrc(monkeypatch, tmp_path):
+    from blueferry import service_manager
+
+    rc_service = tmp_path / "rc-service"
+    rc_service.write_text("")
+    rc_service.chmod(0o755)
+    monkeypatch.setattr(service_manager, "RC_SERVICE_CANDIDATES", (str(rc_service),))
+    monkeypatch.setattr(service_manager, "init_system", lambda: service_manager.OPENRC)
+    runtime = tmp_path / "runtime"
+    (runtime / "openrc").mkdir(parents=True)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    return str(rc_service)
+
+
+def _started(seen):
+    def fake_run(argv, **_kwargs):
+        seen.append(list(argv))
+        return SimpleNamespace(returncode=0, stdout=" * status: started\n", stderr="")
+
+    return fake_run
+
+
+def test_pairing_restarts_openrc_managed_wireplumber(tmp_path, monkeypatch) -> None:
+    rc_service = _openrc(monkeypatch, tmp_path)
+    seen: list[list[str]] = []
+    monkeypatch.setattr("blueferry.wireplumber_policy.run_command", _started(seen))
+    policy = WirePlumberPhoneAudioPolicy(
+        path=tmp_path / "wireplumber.conf.d" / "99-blueferry-keep-phone-audio.conf",
+        supported=lambda: True,
+        wait_for_restart=True,
+    )
+
+    assert policy.reconcile(enabled=True) is True
+    assert seen == [
+        [rc_service, "--user", "wireplumber", "status"],
+        [rc_service, "--user", "--ifstarted", "wireplumber", "restart"],
+    ]
+
+
+def test_daemon_does_not_block_on_openrc_wireplumber_restart(
+    tmp_path, monkeypatch, caplog,
+) -> None:
+    rc_service = _openrc(monkeypatch, tmp_path)
+    seen: list[list[str]] = []
+    monkeypatch.setattr("blueferry.wireplumber_policy.run_command", _started(seen))
+    policy = WirePlumberPhoneAudioPolicy(
+        path=tmp_path / "wireplumber.conf.d" / "99-blueferry-keep-phone-audio.conf",
+        supported=lambda: True,
+    )
+
+    with caplog.at_level("WARNING", logger="blueferry.wireplumber_policy"):
+        assert policy.reconcile(enabled=True) is True
+
+    assert seen == [[rc_service, "--user", "wireplumber", "status"]]
+    assert "rc-service --user wireplumber restart" in caplog.text
+    assert "Traceback" not in caplog.text
+
+
+def test_session_launched_wireplumber_is_never_restarted(
+    tmp_path, monkeypatch, caplog,
+) -> None:
+    from blueferry import service_manager
+
+    # OpenRC without a user session: dbus-run-session desktops.
+    monkeypatch.setattr(service_manager, "init_system", lambda: service_manager.OPENRC)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        "blueferry.wireplumber_policy.run_command",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("ran a command")),
+    )
+    policy = WirePlumberPhoneAudioPolicy(
+        path=tmp_path / "wireplumber.conf.d" / "99-blueferry-keep-phone-audio.conf",
+        supported=lambda: True,
+        wait_for_restart=True,
+    )
+
+    with caplog.at_level("WARNING", logger="blueferry.wireplumber_policy"):
+        assert policy.reconcile(enabled=True) is True
+
+    assert "restart WirePlumber" in caplog.text
+
+
+def test_openrc_launcher_wireplumber_is_left_running_with_a_hint(
+    tmp_path, monkeypatch, caplog,
+) -> None:
+    rc_service = _openrc(monkeypatch, tmp_path)
+    seen: list[list[str]] = []
+
+    def fake_run(argv, **_kwargs):
+        seen.append(list(argv))
+        return SimpleNamespace(returncode=3, stdout=" * status: stopped\n", stderr="")
+
+    monkeypatch.setattr("blueferry.wireplumber_policy.run_command", fake_run)
+    policy = WirePlumberPhoneAudioPolicy(
+        path=tmp_path / "wireplumber.conf.d" / "99-blueferry-keep-phone-audio.conf",
+        supported=lambda: True,
+        manual_restart_hint=lambda: "restart WirePlumber yourself",
+    )
+
+    with caplog.at_level("WARNING", logger="blueferry.wireplumber_policy"):
+        assert policy.reconcile(enabled=True) is True
+
+    assert seen == [[rc_service, "--user", "wireplumber", "status"]]
+    assert "restart WirePlumber yourself" in caplog.text
+
+
+def test_default_hint_names_the_missing_openrc_service(tmp_path, monkeypatch) -> None:
+    from blueferry.wireplumber_policy import _manual_restart_hint
+
+    assert _manual_restart_hint() is None
+    _openrc(monkeypatch, tmp_path)
+    hint = _manual_restart_hint()
+    assert hint is not None
+    assert "OpenRC user service" in hint
+    assert "restart WirePlumber" in hint
+
+
+def test_inactive_systemd_wireplumber_stays_quiet(tmp_path, caplog) -> None:
+    policy = WirePlumberPhoneAudioPolicy(
+        path=tmp_path / "wireplumber.conf.d" / "99-blueferry-keep-phone-audio.conf",
+        active=lambda: False,
+        supported=lambda: True,
+        restart=lambda: (_ for _ in ()).throw(AssertionError("restarted")),
+    )
+
+    with caplog.at_level("WARNING", logger="blueferry.wireplumber_policy"):
+        assert policy.reconcile(enabled=True) is True
+
+    assert caplog.text == ""

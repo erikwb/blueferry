@@ -12,6 +12,7 @@ from blueferry.client import BackendClient, BackendError
 from blueferry.errors import PairingError
 from blueferry.onboarding import ANCS_REPAIR_HINT_CLI, ancs_unavailable_detail
 from blueferry.quirks_report import cli_issue_hint, latest_report
+from blueferry.service_manager import bluetooth_restart_command
 from blueferry.setup_client import DISCOVERY_SECONDS, SetupClient
 from blueferry.setup_verification import (
     NOTIFICATION_ACCESS,
@@ -55,7 +56,8 @@ def _print_ancs_repair_hint(*, limited: bool = False, vendor: str = "") -> None:
             fg=typer.colors.YELLOW,
         )
     )
-    typer.echo("Run: sudo systemctl restart bluetooth.service")
+    command = bluetooth_restart_command()
+    typer.echo(f"Run: {command}" if command else "Restart the Bluetooth service.")
     typer.echo("Then wait for BlueFerry to reconnect.")
     typer.echo("This briefly disconnects all Bluetooth devices.")
 
@@ -162,6 +164,8 @@ def run_wizard(
                 fg=typer.colors.YELLOW,
             )
         )
+        if hint := getattr(compatibility, "bluez_activation_hint", ""):
+            typer.echo(hint)
     automatic_compatibility = not compatibility.notifications_supported
     effective_compatibility_mode = compatibility_mode or automatic_compatibility
     if (

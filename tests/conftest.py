@@ -322,6 +322,18 @@ def isolate_dbus(monkeypatch, request):
     monkeypatch.setattr(dbus, "SystemBus", _forbid_live_bus("system"))
 
 
+@pytest.fixture(autouse=True)
+def pin_init_system(monkeypatch):
+    """Describe systemd hosts unless a test opts into another init system.
+
+    Command assertions must not depend on whether the developer or CI host
+    booted with systemd or OpenRC.
+    """
+    from blueferry import service_manager
+
+    monkeypatch.setattr(service_manager, "init_system", lambda: service_manager.SYSTEMD)
+
+
 @pytest.fixture
 def isolated_state(tmp_path, monkeypatch):
     """Point every BlueFerry configuration and state path at ``tmp_path``."""
