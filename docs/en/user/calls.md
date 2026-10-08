@@ -73,9 +73,10 @@ Audio itself is routed by PipeWire. BlueFerry only controls the call.
 
    Don't set `bluez5.roles` there; BlueFerry's phone-audio fragment keeps the
    hands-free roles while calls are on.
-4. With BlueZ 5.87 or newer, disable BlueZ's own HFP plugin so it doesn't
-   take the channel before oFono: start `bluetoothd` with `-P hfp`. If you
-   forget and the hands-free link fails three times in a row, BlueFerry shows
+4. With BlueZ 5.87 or newer, BlueZ's own HFP plugin must be off so it doesn't
+   take the channel before oFono. The Arch and Fedora packages already start
+   `bluetoothd` with `-P hfp`; elsewhere, add `-P hfp` yourself. If it is
+   missing and the hands-free link fails three times in a row, BlueFerry shows
    the state `bluez_conflict` and tries again only every five minutes, or
    when the phone reconnects.
 5. Tick **Enable phone calls through this computer** in the Qt client's

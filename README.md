@@ -481,10 +481,10 @@ own HFP hands-free plugin can also claim the RFCOMM channel before oFono
 row while `bluetoothd` 5.87 or newer runs with `-E` and without `-P hfp`,
 BlueFerry reports the call state **bluez_conflict**, logs the remedy once, and
 pages the phone only every five minutes, or when it reconnects, until a
-power-up succeeds. Disable that plugin by starting `bluetoothd` with
-`-P hfp` (for example `BLUETOOTH_OPTS="-E -P hfp"` in
-`/etc/conf.d/bluetooth` on Gentoo, or a `bluetooth.service` drop-in on
-systemd). Audio routing itself is PipeWire's job; BlueFerry only controls the
+power-up succeeds. The Arch and Fedora packages already start `bluetoothd`
+with `-P hfp`, which leaves that plugin out; elsewhere add it yourself (for
+example `BLUETOOTH_OPTS="-E -P hfp"` in `/etc/conf.d/bluetooth` on Gentoo, or
+a `bluetooth.service` drop-in on systemd). Audio routing itself is PipeWire's job; BlueFerry only controls the
 call.
 
 ## Lock when the iPhone goes away

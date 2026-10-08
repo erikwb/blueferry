@@ -73,8 +73,8 @@ def test_notification_capable_native_families_use_their_own_bluetoothd_path() ->
     arch = (ROOT / "packaging/arch/blueferry-bluetooth.conf").read_text()
     rpm = (ROOT / "packaging/rpm/blueferry-bluetooth.conf").read_text()
 
-    assert "ExecStart=/usr/lib/bluetooth/bluetoothd -E" in arch
-    assert "ExecStart=/usr/libexec/bluetooth/bluetoothd -E" in rpm
+    assert "ExecStart=/usr/lib/bluetooth/bluetoothd -E -P hfp\n" in arch
+    assert "ExecStart=/usr/libexec/bluetooth/bluetoothd -E -P hfp\n" in rpm
     assert not (ROOT / "packaging/deb/blueferry-bluetooth.conf").exists()
 
 

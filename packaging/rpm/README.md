@@ -34,7 +34,7 @@ wheel bundle is stored in the source tree and verified against committed
 SHA-256 checksums. Nothing is installed into Python's system package directory,
 so the bundle cannot replace or conflict with Fedora's `python3-textual`.
 
-The backend installs a systemd drop-in that runs `bluetoothd -E`. RPM
+The backend installs a systemd drop-in that runs `bluetoothd -E -P hfp`. RPM
 scriptlets reload systemd and use `try-restart`, so an already-running
 Bluetooth daemon immediately adopts the setting while a stopped or masked
 service remains stopped. Removal restarts a running daemon with Fedora's

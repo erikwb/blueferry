@@ -49,9 +49,10 @@ Quellcode-Installation; siehe [Betrieb ohne systemd](openrc.md).
 ## Was die Pakete an Bluetooth ändern
 
 - Pakete für **Arch und Fedora** verlangen BlueZ 5.86 oder neuer und
-  installieren ein Drop-in für `bluetooth.service`, das `bluetoothd -E`
-  startet. Damit steht die BlueZ-Schnittstelle für iPhone-Mitteilungen
-  bereit. Bluetooth wird nur neu gestartet, wenn es bereits läuft.
+  installieren ein Drop-in für `bluetooth.service`, das
+  `bluetoothd -E -P hfp` startet. Damit steht die BlueZ-Schnittstelle für
+  iPhone-Mitteilungen bereit, und das eigene Freisprech-Plugin von BlueZ
+  bleibt aus, das den optionalen Anrufen im Weg wäre. Bluetooth wird nur neu gestartet, wenn es bereits läuft.
 - Pakete für die **Debian-Familie** ändern Bluetooth nicht und starten es
   nicht neu. Nachrichten und Kontakte funktionieren; Mitteilungen kommen nur
   hinzu, wenn das BlueZ des Rechners sie bereits unterstützt.
