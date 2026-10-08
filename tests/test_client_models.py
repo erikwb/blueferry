@@ -249,7 +249,9 @@ def test_status_model_normalizes_legacy_map_refusal_detail() -> None:
 
 
 def test_status_decodes_the_additive_otp_autocopy_flag() -> None:
-    assert BackendStatus.from_dict({}).otp_autocopy is False
+    # None tells clients that the daemon has no one-time code setting.
+    assert BackendStatus.from_dict({}).otp_autocopy is None
+    assert "otp_autocopy" not in BackendStatus.from_dict({}).to_dict()
     status = BackendStatus.from_dict({"otp_autocopy": True})
     assert status.otp_autocopy is True
     assert status.to_dict()["otp_autocopy"] is True

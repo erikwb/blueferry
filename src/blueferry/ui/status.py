@@ -57,6 +57,7 @@ class IPhonePage(Gtk.Box):
         self._proximity_lock_choice = SavedChoice()
         self._applying_calls_enabled = False
         self._calls_enabled_choice = SavedChoice()
+        self._applying_otp_autocopy = False
         self._applying_storage_policy = False
         self._storage_unlock_attempted = False
         self._pairing_issue_report = ""
@@ -475,6 +476,28 @@ class IPhonePage(Gtk.Box):
         )
         self._calls_group.add(self._calls_enabled_row)
         page.add(self._calls_group)
+
+        # Shown only for daemons that report the one-time code opt-in.
+        self._otp_group = Adw.PreferencesGroup(
+            title=_("One-Time Codes"),
+            description=_(
+                "Codes are not stored or logged. Turning this off clears a copied "
+                "code that is still on the clipboard."
+            ),
+        )
+        self._otp_row = Adw.ActionRow(
+            title=_("Copy One-Time Codes"),
+            subtitle=_(
+                "From new messages of senders not in your contacts, never group chats"
+            ),
+        )
+        self._otp_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
+        self._otp_switch.connect("notify::active", self._otp_autocopy_changed)
+        self._otp_row.add_suffix(self._otp_switch)
+        self._otp_row.set_activatable_widget(self._otp_switch)
+        self._otp_group.add(self._otp_row)
+        self._otp_group.set_visible(False)
+        page.add(self._otp_group)
 
         data_group = Adw.PreferencesGroup(title=_("Local Data"))
         history_model = Gtk.StringList.new(
@@ -1165,6 +1188,7 @@ class IPhonePage(Gtk.Box):
             reachable and not self._calls_enabled_choice.saving
         )
         self._applying_calls_enabled = False
+        self._apply_otp_autocopy(status, reachable=reachable)
         self._applying_storage_policy = True
         selected_storage = {
             "encrypted": 0,
@@ -1455,6 +1479,33 @@ class IPhonePage(Gtk.Box):
             self._apply_status(self._last_status)
 
         self._client.set_calls_enabled_async(enabled, saved, failed)
+
+    def _apply_otp_autocopy(self, status, *, reachable: bool) -> None:
+        self._applying_otp_autocopy = True
+        try:
+            self._otp_group.set_visible(status.otp_autocopy is not None)
+            self._otp_switch.set_active(status.otp_autocopy is True)
+            self._otp_row.set_sensitive(reachable)
+        finally:
+            self._applying_otp_autocopy = False
+
+    def _otp_autocopy_changed(self, _switch, _property) -> None:
+        if self._applying_otp_autocopy:
+            return
+        enabled = self._otp_switch.get_active()
+        self._otp_row.set_sensitive(False)
+
+        def saved(_value: dict) -> None:
+            self._toast(_("One-time code preference saved"))
+            self._refresh()
+
+        def failed(error: str) -> None:
+            self._toast(
+                _("Could not save the one-time code preference: {error}").format(error=error)
+            )
+            self._apply_status(self._last_status)
+
+        self._client.set_otp_autocopy_async(enabled, saved, failed)
 
     def _storage_policy_changed(self, _row, _property) -> None:
         if self._applying_storage_policy:

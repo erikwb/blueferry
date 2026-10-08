@@ -707,3 +707,69 @@ def test_gtk_call_history_switches_save_both_values_together():
     assert page.toasts[-1] == (
         "Could not save missed call notification preference: storage is locked"
     )
+
+
+class _Widget:
+    def __init__(self, active: bool = False) -> None:
+        self.visible = None
+        self.active = active
+        self.sensitive = None
+
+    def set_visible(self, value) -> None:
+        self.visible = value
+
+    def set_active(self, value) -> None:
+        self.active = value
+
+    def get_active(self) -> bool:
+        return self.active
+
+    def set_sensitive(self, value) -> None:
+        self.sensitive = value
+
+
+def _otp_page():
+    from types import SimpleNamespace
+
+    from blueferry.ui.status import IPhonePage
+
+    calls = []
+    page = SimpleNamespace(
+        _applying_otp_autocopy=False,
+        _otp_group=_Widget(), _otp_switch=_Widget(), _otp_row=_Widget(),
+        _client=SimpleNamespace(
+            set_otp_autocopy_async=lambda enabled, ok, err: calls.append((enabled, ok, err))
+        ),
+        _toast=lambda _text: None, _refresh=lambda: None,
+        _apply_status=lambda _status: None, _last_status=BackendStatus(),
+    )
+    page._apply_otp_autocopy = lambda status, *, reachable: IPhonePage._apply_otp_autocopy(
+        page, status, reachable=reachable,
+    )
+    page._otp_autocopy_changed = lambda *args: IPhonePage._otp_autocopy_changed(page, *args)
+    return page, calls
+
+
+def test_gtk_one_time_code_row_appears_only_for_supporting_daemons():
+    page, calls = _otp_page()
+
+    page._apply_otp_autocopy(BackendStatus.from_dict({}), reachable=True)
+    assert page._otp_group.visible is False
+
+    page._apply_otp_autocopy(BackendStatus.from_dict({"otp_autocopy": True}), reachable=True)
+    assert page._otp_group.visible is True
+    assert page._otp_switch.active is True
+    assert page._otp_row.sensitive is True
+    # Reflecting the daemon's state never saves it back.
+    assert calls == []
+
+
+def test_gtk_one_time_code_switch_saves_through_the_client():
+    page, calls = _otp_page()
+    page._otp_switch.active = True
+
+    page._otp_autocopy_changed(None, None)
+
+    [(enabled, _ok, _err)] = calls
+    assert enabled is True
+    assert page._otp_row.sensitive is False
