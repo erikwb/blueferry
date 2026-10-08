@@ -1581,3 +1581,73 @@ def test_a_toggle_stopped_before_a_reset_owes_no_release(harness) -> None:
     assert bus.pending() == [("StopNotify", EU)]
     bus.take("StopNotify", EU).succeed()
     assert released == [True]
+
+
+def _moved(path: str) -> str:
+    """The same characteristic after Service Changed moved AMS."""
+    return path.replace("/service0040/", "/service0050/")
+
+
+def _moved_objects():
+    return {_moved(path): value for path, value in _objects().items()}
+
+
+def test_service_changed_moving_ams_registers_on_the_new_handles(harness) -> None:
+    """Hardware, 2026-10-08: the iPhone's GATT database shifted between
+    connections (AMS at service0023, then service002d). BlueZ removes the
+    old objects and adds the new ones on the live link."""
+    client, bus, timers, _updates, commands, availability = harness
+    _subscribe(client, bus, timers)
+    manager_added, manager_removed = [m for m in bus.matches if m.path == "/"]
+
+    for path in (RC, EU, EA):
+        manager_removed.handler(path, [GATT])
+    assert not client.available
+    for path, interfaces in _moved_objects().items():
+        manager_added.handler(path, interfaces)
+
+    # The link did not drop, so no settle: subscribe on the new objects.
+    bus.take("StartNotify", _moved(RC)).succeed()
+    bus.take("StartNotify", _moved(EU)).succeed()
+    for _entity in EntityID:
+        bus.take("WriteValue", _moved(EU)).succeed()
+    assert client.available
+    assert availability == [True, False, True]
+    assert commands[-1] is None
+    assert bus.pending() == []
+    # The values iOS does not resend are read after this registration too.
+    assert any(
+        callback.__name__ == "_refresh_missing_attributes"
+        for callback in timers.pending.values()
+    )
+
+
+def test_service_changed_announcing_the_new_ams_first_still_moves(harness) -> None:
+    client, bus, timers, _updates, commands, _availability = harness
+    _subscribe(client, bus, timers)
+    manager_added, manager_removed = [m for m in bus.matches if m.path == "/"]
+
+    # New objects before the old ones are removed: that removal will not
+    # match any more, so the move itself has to end the old subscription.
+    added = list(_moved_objects().items())
+    manager_added.handler(*added[0])
+    assert not client.available
+    assert commands[-1] is None
+    # Half moved: nothing is written to a mix of old and new handles.
+    assert bus.pending() == []
+    for path, interfaces in added[1:]:
+        manager_added.handler(path, interfaces)
+    for path in (RC, EU, EA):
+        manager_removed.handler(path, [GATT])
+
+    bus.take("StartNotify", _moved(RC)).succeed()
+    bus.take("StartNotify", _moved(EU)).succeed()
+    for _entity in EntityID:
+        bus.take("WriteValue", _moved(EU)).succeed()
+    assert client.available
+    assert bus.pending() == []
+    # The old receivers are gone; the new ones deliver.
+    old = [m for m in bus.matches if m.path in (RC, EU)]
+    assert old and all(m.removed for m in old)
+    bus.notify(_moved(RC), bytes([0, 1]))
+    assert commands[-1] == frozenset({RemoteCommandID(0), RemoteCommandID(1)})

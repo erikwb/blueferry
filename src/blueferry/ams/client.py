@@ -665,12 +665,23 @@ class AmsClient:
             return
         previous = self._paths.get(uuid)
         if previous is not None:
+            # Service Changed moved the characteristic: the iPhone's GATT
+            # database shifts between connections (AMS at service0023, then
+            # service002d), and BlueZ may announce the new object before it
+            # removes the old one. That removal then no longer matches, so
+            # the subscription on the old handles ends here; the new
+            # characteristic is registered from scratch.
+            log.info("AMS characteristic moved: %s", uuid)
             self._remove_characteristic_match(previous)
             self._owned_notify_paths.discard(previous)
             self._sessions.forget(previous)
+            self._reset_subscription()
         self._paths[uuid] = path_s
         if uuid == REMOTE_COMMAND_CHAR:
             self._commands_seen = False
+            if previous is not None:
+                # As on removal: a new characteristic starts a new list.
+                self._report_supported_commands(None)
         log.info("AMS characteristic found: %s", uuid)
         self._watch_characteristic(uuid, path_s)
         self._try_subscribe()
@@ -756,6 +767,7 @@ class AmsClient:
             or self._bearer_connected is not True
             or not self._bearer_ready
             or not self.characteristics_found
+            or not self._one_service()
         ):
             return
         self._subscribing = True
@@ -767,6 +779,15 @@ class AmsClient:
             log.warning("AMS subscription could not start: %s", _error_name(error))
             self._reset_subscription()
             self._schedule_retry()
+
+    def _one_service(self) -> bool:
+        """All known AMS characteristics belong to one service object.
+
+        While Service Changed moves AMS, the client can briefly know some
+        characteristics at their new path and others at the old one; it
+        subscribes only once they agree.
+        """
+        return len({path.rsplit("/", 1)[0] for path in self._paths.values()}) == 1
 
     def _run_subscription(self) -> None:
         generation = self._generation
