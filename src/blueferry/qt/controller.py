@@ -1111,6 +1111,19 @@ class BridgeController(QObject):
         self._run(lambda: self._backend.set_phone_battery_warning(bool(enabled)), completed)
 
     @Slot(bool)
+    def setContactPhotos(self, enabled: bool) -> None:
+        def completed(value: object) -> None:
+            if isinstance(value, dict):
+                if value.get("contact_photos") is not True:
+                    for key in ("contact_photo_revision", "contact_photo_count"):
+                        self._status.pop(key, None)
+                self._status.update(value)
+                self.statusChanged.emit()
+                self._sync_avatars()
+
+        self._run(lambda: self._backend.set_contact_photos(bool(enabled)), completed)
+
+    @Slot(bool)
     def setCallsEnabled(self, enabled: bool) -> None:
         def completed(value: object) -> None:
             if isinstance(value, dict):

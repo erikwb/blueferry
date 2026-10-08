@@ -802,6 +802,7 @@ def settings_window(qml_engine):
             function setCallsEnabled(enabled) { record("setCallsEnabled", [enabled]); }
             function setPhoneBatteryWarning(enabled) { record("setPhoneBatteryWarning", [enabled]); }
             function setMprisPlayer(enabled) { record("setMprisPlayer", [enabled]); }
+            function setContactPhotos(enabled) { record("setContactPhotos", [enabled]); }
             function forgetDevice(mac) { record("forgetDevice", [mac]); }
             function activateBluetooth() { record("activateBluetooth", []); }
             function filePairingIssue() { record("filePairingIssue", []); }
@@ -3048,6 +3049,33 @@ def test_now_playing_bar_is_absent_until_media_is_available(
     QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
     QGuiApplication.processEvents()
     assert window.findChild(QObject, "nowPlayingBar") is None
+
+
+def test_contact_photo_opt_in_appears_only_for_supporting_daemons(qml_engine, settings_window):
+    window, bridge = settings_window
+    bridge.setProperty("setupLoaded", True)
+    QGuiApplication.processEvents()
+    loader = _settings_object(window, "contactPhotosLoader")
+    bridge.setProperty("status", {"daemon": True})
+    assert loader.property("active") is False
+
+    bridge.setProperty("status", {"daemon": True, "contact_photos": False})
+    QGuiApplication.processEvents()
+    assert loader.property("active") is True
+    caption = _settings_object(window, "contactPhotosCaption").property("text")
+    assert "next contact sync" in caption and "erases" in caption
+    checkbox = _settings_object(window, "contactPhotosCheckBox")
+    assert checkbox.property("checked") is False
+
+    assert QMetaObject.invokeMethod(checkbox, "toggle")
+    assert QMetaObject.invokeMethod(checkbox, "clicked")
+    assert _evaluate(
+        qml_engine, "testBridge.calls.filter(c => c.method === 'setContactPhotos')"
+    ) == [{"method": "setContactPhotos", "args": [True]}]
+
+    bridge.setProperty("status", {"daemon": True, "contact_photos": True})
+    QGuiApplication.processEvents()
+    assert checkbox.property("checked") is True
 
 
 def test_phone_calls_opt_in_appears_only_for_supporting_daemons(qml_engine, settings_window):

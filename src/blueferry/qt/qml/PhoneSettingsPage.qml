@@ -507,6 +507,17 @@ Kirigami.ScrollablePage {
             }
         }
 
+        // Only daemons that report contact_photos support the setting.
+        Loader {
+            objectName: "contactPhotosLoader"
+            Layout.fillWidth: true
+            active: iphonePage.bridge.status.contact_photos !== undefined
+            visible: active
+            sourceComponent: ContactPhotoSettings {
+                bridge: iphonePage.bridge
+            }
+        }
+
         // Only daemons that report calls_enabled support the setting.
         Loader {
             objectName: "phoneCallsLoader"
