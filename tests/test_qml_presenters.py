@@ -1973,7 +1973,11 @@ def test_phone_calls_opt_in_appears_only_for_supporting_daemons(qml_engine, sett
     QGuiApplication.processEvents()
     assert loader.property("active") is True
     notice = _settings_object(window, "phoneCallsNotice").property("text")
-    assert "oFono" in notice and "audio plays here" in notice
+    assert "audio plays here" in notice
+    # Ticking the box is not the whole setup; the caption points at the guide.
+    assert "oFono set as the hands-free backend" in notice
+    assert "BlueZ's own HFP plugin disabled" in notice
+    assert "documentation" in notice
     checkbox = _settings_object(window, "phoneCallsCheckBox")
     assert checkbox.property("checked") is False
 

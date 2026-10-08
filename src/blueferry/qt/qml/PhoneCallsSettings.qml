@@ -20,10 +20,12 @@ ColumnLayout {
         Layout.fillWidth: true
         visible: true
         type: Kirigami.MessageType.Information
-        text: qsTr("Experimental. Needs oFono. While this is on, the iPhone's hands-free link "
-            + "stays connected to this computer, so calls can ring and be answered here and "
-            + "their audio plays here. Music stays on the iPhone. Emergency numbers are always "
-            + "dialed on the iPhone itself.")
+        text: qsTr("Experimental. While this is on, the iPhone's hands-free link stays "
+            + "connected to this computer, so calls can ring and be answered here and their "
+            + "audio plays here. Music stays on the iPhone. Working calls also need oFono set "
+            + "as the hands-free backend and BlueZ's own HFP plugin disabled; see \"Phone "
+            + "calls\" in the BlueFerry documentation. Make emergency calls on the iPhone "
+            + "itself.")
     }
     Kirigami.FormLayout {
         Layout.fillWidth: true

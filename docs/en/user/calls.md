@@ -82,7 +82,9 @@ Audio itself is routed by PipeWire. BlueFerry only controls the call.
    iPhone settings, or run `blueferry calls enable`. The choice is saved and
    applies at once. `BLUEFERRY_CALLS_ENABLED=true` in
    `~/.config/blueferry/local.env` still works as the initial value; a saved
-   choice wins. If WirePlumber is not a systemd user service, restart it
+   choice wins. The checkbox alone doesn't make calls work: oFono must be
+   the hands-free backend (step 3) and BlueZ's own HFP plugin must be
+   disabled (step 4). If WirePlumber is not a systemd user service, restart it
    yourself afterwards so it picks up the hands-free roles.
 
 While calls are on and the iPhone is connected, its hands-free link stays

@@ -86,7 +86,9 @@ Das Audio selbst leitet PipeWire. BlueFerry steuert nur den Anruf.
    this computer** ankreuzen oder `blueferry calls enable` ausführen. Die
    Wahl wird gespeichert und gilt sofort. `BLUEFERRY_CALLS_ENABLED=true` in
    `~/.config/blueferry/local.env` funktioniert weiter als Anfangswert; eine
-   gespeicherte Wahl hat Vorrang. Läuft WirePlumber nicht als
+   gespeicherte Wahl hat Vorrang. Das Häkchen allein reicht nicht: oFono
+   muss das Freisprech-Backend sein (Schritt 3) und das eigene HFP-Plugin
+   von BlueZ abgeschaltet (Schritt 4). Läuft WirePlumber nicht als
    systemd-Benutzerdienst, starte es danach selbst neu, damit es die
    Freisprech-Rollen übernimmt.
 
