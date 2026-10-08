@@ -20,6 +20,14 @@ list only on a CCC write, so a later opt-in must find the CCC disabled.
 ``AmsNotifySessions`` owns that release and defers it until the LE link is up
 and settled with no ``StartNotify`` outstanding. Otherwise registrations are
 released when the daemon's D-Bus connection closes.
+
+The same iOS behaviour bites after an ordinary LE reconnect: the CCC state is
+kept for the bond, the Remote Command characteristic is not readable, and
+iOS may answer the re-enable with no command list at all while Entity
+Updates flow. When the Media Source is demonstrably talking (an Entity Update
+arrived) but no command list followed, the client toggles the Remote Command
+CCC once per link (StopNotify, then StartNotify), serialized in the GATT
+queue on the steady, subscribed link, so iOS sees a fresh subscription.
 """
 from __future__ import annotations
 
@@ -69,6 +77,10 @@ FIRST_UPDATE_TIMEOUT_SECONDS = 10
 # has nothing to report (no player has ever run), more attempts would only
 # flap availability; a new link starts a new budget.
 SILENT_RESUBSCRIBES_PER_LINK = 1
+# After the first Entity Update, how long the Remote Command list may lag
+# before the client re-enables its notifications to ask for it again.
+COMMAND_LIST_GRACE_SECONDS = 3
+COMMAND_LIST_REFRESHES_PER_LINK = 1
 MANAGER_RETRY_INITIAL_SECONDS = 2
 MANAGER_RETRY_MAX_SECONDS = 60
 # A failed StopNotify is retried this often per settled LE link, with a
@@ -400,7 +412,7 @@ class AmsClient:
         device_path: str,
         *,
         on_update: Callable[[EntityUpdate], None],
-        on_supported_commands: Callable[[frozenset[RemoteCommandID]], None],
+        on_supported_commands: Callable[[frozenset[RemoteCommandID] | None], None],
         on_availability: Callable[[bool], None] | None = None,
         sessions: AmsNotifySessions | None = None,
         bus_factory: Callable[[], Any] = get_system_bus,
@@ -445,6 +457,11 @@ class AmsClient:
         self._retry_delay = SUBSCRIBE_RETRY_INITIAL_SECONDS
         self._manager_retry_delay = MANAGER_RETRY_INITIAL_SECONDS
         self._silent_resubscribes_left = SILENT_RESUBSCRIBES_PER_LINK
+        # Whether the current Remote Command characteristic object has sent
+        # its command list (an empty list counts: it is known to be empty).
+        self._commands_seen = False
+        self._command_list_id: int | None = None
+        self._command_refreshes_left = COMMAND_LIST_REFRESHES_PER_LINK
 
     # ---- public state ---------------------------------------------------
 
@@ -510,6 +527,7 @@ class AmsClient:
         if previous is True:
             return
         self._silent_resubscribes_left = SILENT_RESUBSCRIBES_PER_LINK
+        self._command_refreshes_left = COMMAND_LIST_REFRESHES_PER_LINK
         if self._started:
             self._schedule_settle()
 
@@ -539,8 +557,10 @@ class AmsClient:
             self._remove_characteristic_match(path)
         self._paths.clear()
         self._owned_notify_paths.clear()
+        self._commands_seen = False
         if had_commands:
-            self._report_supported_commands(frozenset())
+            # Unknown, not empty: a new characteristic starts a new list.
+            self._report_supported_commands(None)
 
     # ---- discovery ------------------------------------------------------
 
@@ -631,6 +651,8 @@ class AmsClient:
             self._owned_notify_paths.discard(previous)
             self._sessions.forget(previous)
         self._paths[uuid] = path_s
+        if uuid == REMOTE_COMMAND_CHAR:
+            self._commands_seen = False
         log.info("AMS characteristic found: %s", uuid)
         self._watch_characteristic(uuid, path_s)
         self._try_subscribe()
@@ -677,8 +699,10 @@ class AmsClient:
                 self._remove_characteristic_match(path_s)
                 self._reset_subscription()
                 if uuid == REMOTE_COMMAND_CHAR:
-                    # A new characteristic object starts a new command list.
-                    self._report_supported_commands(frozenset())
+                    # A new characteristic object starts a new command list;
+                    # until it arrives the list is unknown, not empty.
+                    self._commands_seen = False
+                    self._report_supported_commands(None)
                 return
 
     # ---- subscription ---------------------------------------------------
@@ -873,7 +897,7 @@ class AmsClient:
         self._subscribing = False
         # The settle timer belongs to the bearer, not to this subscription:
         # a characteristic can vanish and return while the link settles.
-        for attribute in ("_retry_id", "_first_update_id"):
+        for attribute in ("_retry_id", "_first_update_id", "_command_list_id"):
             source = getattr(self, attribute)
             if source is not None:
                 try:
@@ -975,10 +999,108 @@ class AmsClient:
         # Accepted even during the bearer settle window: BlueZ re-enables the
         # CCC at link-up and iOS answers with its list before BlueFerry
         # subscribes again. It is metadata, not track content.
+        self._commands_seen = True
+        self._cancel_command_list_check()
         self._notifications_flow()
         self._report_supported_commands(commands)
 
-    def _report_supported_commands(self, commands: frozenset[RemoteCommandID]) -> None:
+    def _cancel_command_list_check(self) -> None:
+        if self._command_list_id is None:
+            return
+        try:
+            self._cancel(self._command_list_id)
+        except Exception:
+            log.debug("could not remove AMS command-list timer", exc_info=True)
+        self._command_list_id = None
+
+    def _arm_command_list_check(self) -> None:
+        """Entity Updates flow; expect the command list shortly as well."""
+        if (
+            self._commands_seen
+            or self._command_list_id is not None
+            or self._command_refreshes_left <= 0
+            or not self._available
+        ):
+            return
+        self._command_list_id = self._schedule(
+            COMMAND_LIST_GRACE_SECONDS, self._command_list_missing,
+        )
+
+    def _command_list_missing(self) -> bool:
+        self._command_list_id = None
+        path = self._paths.get(REMOTE_COMMAND_CHAR)
+        if (
+            self._commands_seen
+            or not self._available
+            or self._subscribing
+            or self._bearer_connected is not True
+            or self._command_refreshes_left <= 0
+            or path is None
+            or path not in self._owned_notify_paths
+        ):
+            return False
+        self._command_refreshes_left -= 1
+        log.info("iPhone sent no media command list; re-enabling its notifications")
+        generation = self._generation
+
+        def run(ok: Success, fail: Failure) -> None:
+            characteristic = self._characteristic(path)
+
+            def stopped() -> None:
+                self._owned_notify_paths.discard(path)
+                if generation != self._generation:
+                    return  # reset meanwhile; the next subscription starts it
+                # Tracked like every StartNotify, so a runtime opt-out that
+                # arrives meanwhile waits for this reply and then releases
+                # the session instead of leaving the CCC enabled.
+                token = self._sessions.starting(path)
+
+                def started() -> None:
+                    self._sessions.started(token)
+                    self._owned_notify_paths.add(path)
+                    ok()
+
+                def start_failed(error: Exception) -> None:
+                    self._sessions.start_failed(token, error)
+                    fail(error)
+
+                try:
+                    characteristic.StartNotify(
+                        dbus_interface=_GATT_CHAR,
+                        reply_handler=started,
+                        error_handler=start_failed,
+                        timeout=DBUS_CALL_TIMEOUT_SECONDS,
+                    )
+                except Exception as error:
+                    start_failed(error)
+
+            characteristic.StopNotify(
+                dbus_interface=_GATT_CHAR,
+                reply_handler=stopped,
+                error_handler=fail,
+                timeout=DBUS_CALL_TIMEOUT_SECONDS,
+            )
+
+        def failed(error: Exception) -> None:
+            if generation != self._generation:
+                return
+            log.warning(
+                "could not re-enable AMS command notifications: %s", _error_name(error),
+            )
+            # Commands may no longer be subscribed; start them afresh.
+            self._owned_notify_paths.discard(path)
+            self._reset_subscription()
+            self._schedule_retry()
+
+        if not self._enqueue(_Operation(
+            "refresh remote-command", run, lambda: None, failed, generation,
+        )):
+            log.warning("AMS operation queue full; not refreshing the command list")
+        return False
+
+    def _report_supported_commands(
+        self, commands: frozenset[RemoteCommandID] | None,
+    ) -> None:
         try:
             self._on_supported_commands(commands)
         except Exception:
@@ -1013,6 +1135,7 @@ class AmsClient:
         if self._attribute_updates.get(key) != update:
             self._attribute_updates[key] = update
         self._deliver(update)
+        self._arm_command_list_check()
         if update.truncated:
             self._fetch_full_value(update.entity, update.attribute)
 

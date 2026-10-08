@@ -133,7 +133,7 @@ backend. Media calls have their own rate-limit buckets.
 
 | Method | Arguments → result | Notes |
 | --- | --- | --- |
-| `GetNowPlaying` | → `s json` | `enabled`, `available`, `detail` (`disabled`, `requires-notification-access-mode`, `le-link-state-unknown`, `waiting-for-iphone`, `ready`), plus `player`, `queue`, `track` and `supported_commands` while available |
+| `GetNowPlaying` | → `s json` | `enabled`, `available`, `detail` (`disabled`, `requires-notification-access-mode`, `le-link-state-unknown`, `waiting-for-iphone`, `ready`), plus `player`, `queue`, `track`, `supported_commands` and `supported_commands_known` (false while the phone has not sent its list; commands are then sent as asked) while available |
 | `SetMediaControl` | `b enabled` → `s status_json` | Saves the opt-in and starts or stops media control at once |
 | `SetMprisPlayer` | `b enabled` → `s status_json` | Saves the separate MPRIS opt-in (`media_mpris_enabled`, `media_mpris_active`); the player exists only while media control is on and uses its own private connection |
 | `SendMediaCommand` | `s command` | `play`, `pause`, `toggle`, `next`, `previous`, `volume-up`, `volume-down`, `repeat`, `shuffle`, `skip-forward`, `skip-backward`, `like`, `dislike`, `bookmark`; only commands the iPhone currently offers are sent |

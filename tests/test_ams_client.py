@@ -973,6 +973,9 @@ def test_first_update_disarms_the_watchdog(harness) -> None:
     client, bus, timers, *_ = harness
     _subscribe(client, bus, timers)
     bus.notify(EU, bytes([0, 0, 0]) + b"Music")
+    # Only the command-list check is left, which the list itself disarms.
+    assert list(timers.delays[source] for source in timers.pending) == [3]
+    bus.notify(RC, bytes([0, 1]))
     assert timers.pending == {}
     assert client.available
 
@@ -1041,8 +1044,9 @@ def test_commands_survive_a_reconnect_when_bluez_rewrites_the_ccc(harness) -> No
     client.send_command(RemoteCommandID.Play, lambda: done.append("ok"), done.append)
     bus.take("WriteValue", RC).succeed()
     assert done == ["ok"]
-    # A soft reset never reported an empty list.
+    # A soft reset never reported an empty or unknown list.
     assert frozenset() not in commands
+    assert None not in commands
 
 
 def test_entity_updates_without_a_live_link_are_ignored(harness) -> None:
@@ -1059,7 +1063,8 @@ def test_removing_the_command_characteristic_clears_the_list(harness) -> None:
     bus.notify(RC, bytes([0]))
     removed = [m for m in bus.matches if m.path == "/"][1]
     removed.handler(RC, [GATT])
-    assert commands[-1] == frozenset()
+    # Unknown, not empty: the next characteristic sends a new list.
+    assert commands[-1] is None
     assert all(m.removed for m in bus.matches if m.path == RC)
 
 
@@ -1068,7 +1073,7 @@ def test_owner_change_clears_the_list_and_receivers(harness) -> None:
     _subscribe(client, bus, timers)
     bus.notify(RC, bytes([0]))
     client.observe_bluez_owner(":1.1", "")
-    assert commands[-1] == frozenset()
+    assert commands[-1] is None
     assert all(m.removed for m in bus.matches)
 
 
@@ -1183,3 +1188,115 @@ def test_a_raising_subscription_setup_does_not_stick(harness, monkeypatch) -> No
     monkeypatch.setattr(client, "_run_subscription", original)
     timers.run_all()
     assert bus.pending() == [("StartNotify", RC)]
+
+
+def _reconnect_with_new_characteristics(client, bus, timers) -> None:
+    """Hardware 2026-10-08: BlueZ drops and re-adds the GATT objects."""
+    manager_added, manager_removed = [m for m in bus.matches if m.path == "/"]
+    client.observe_bearer_state(False)
+    for path in (RC, EU, EA):
+        manager_removed.handler(path, [GATT])
+    client.observe_bearer_state(True)
+    for path, interfaces in _objects().items():
+        manager_added.handler(path, interfaces)
+    timers.run_all()  # settle
+    bus.take("StartNotify", RC).succeed()
+    bus.take("StartNotify", EU).succeed()
+    for _entity in EntityID:
+        bus.take("WriteValue", EU).succeed()
+    assert client.available
+
+
+def test_missing_command_list_after_a_reconnect_reenables_its_ccc_once(harness) -> None:
+    """Hardware 2026-10-08: after an LE reconnect iOS sent track values but
+    no command list, so every MPRIS Can* read false until the next opt-in."""
+    client, bus, timers, _updates, commands, availability = harness
+    _subscribe(client, bus, timers)
+    bus.notify(RC, bytes([0, 1, 3]))
+    _reconnect_with_new_characteristics(client, bus, timers)
+    assert commands[-1] is None
+
+    # Entity Updates flow, the command list does not.
+    bus.notify(EU, bytes([2, 2, 0]) + b"Episode")
+    assert bus.pending() == []
+    timers.run_all()
+
+    # One serialized round trip: disable, then enable the Remote Command CCC.
+    assert bus.pending() == [("StopNotify", RC)]
+    bus.take("StopNotify", RC).succeed()
+    assert bus.pending() == [("StartNotify", RC)]
+    bus.take("StartNotify", RC).succeed()
+    bus.notify(RC, bytes([0, 1, 3]))
+    assert commands[-1] == frozenset({
+        RemoteCommandID.Play, RemoteCommandID.Pause, RemoteCommandID.NextTrack,
+    })
+    assert client.available
+    assert availability[-1] is True
+
+    # Once per link: later silence does not toggle the CCC again.
+    bus.notify(RC, b"")  # known and empty is still a list
+    bus.notify(EU, bytes([2, 2, 0]) + b"Next")
+    timers.run_all()
+    assert bus.pending() == []
+
+
+def test_command_list_refresh_needs_entity_updates_and_a_steady_link(harness) -> None:
+    client, bus, timers, *_ = harness
+    _subscribe(client, bus, timers)
+    # No Entity Update yet: the silence watchdog owns this case.
+    assert "StopNotify" not in [call.method for call in bus.calls]
+
+    bus.notify(EU, bytes([2, 2, 0]) + b"Episode")
+    client.observe_bearer_state(False)  # the link drops before the check
+    timers.run_all()
+    assert "StopNotify" not in [call.method for call in bus.calls]
+    assert "StartNotify" not in [call.method for call in bus.calls]
+
+
+def test_a_list_that_arrives_late_cancels_the_refresh(harness) -> None:
+    client, bus, timers, *_ = harness
+    _subscribe(client, bus, timers)
+    bus.notify(EU, bytes([2, 2, 0]) + b"Episode")
+    bus.notify(RC, bytes([0]))
+    timers.run_all()
+    assert bus.pending() == []
+
+
+def test_a_link_drop_during_the_refresh_never_reenables_late(harness) -> None:
+    client, bus, timers, *_ = harness
+    _subscribe(client, bus, timers)
+    bus.notify(EU, bytes([2, 2, 0]) + b"Episode")
+    timers.run_all()
+    stop = bus.take("StopNotify", RC)
+    client.observe_bearer_state(False)
+    stop.succeed()
+    # bluetoothd 5.87 crashes on a CCC enable completing after an LE flap.
+    assert bus.pending() == []
+
+
+def test_a_failed_refresh_resubscribes(harness) -> None:
+    client, bus, timers, _updates, _commands, availability = harness
+    _subscribe(client, bus, timers)
+    bus.notify(EU, bytes([2, 2, 0]) + b"Episode")
+    timers.run_all()
+    bus.take("StopNotify", RC).succeed()
+    bus.take("StartNotify", RC).fail()
+
+    assert availability[-1] is False
+    timers.run_all()  # retry
+    # Commands are subscribed from scratch, not trusted from the cache.
+    assert bus.pending() == [("StartNotify", RC)]
+
+
+def test_a_new_link_restores_the_refresh_budget(harness) -> None:
+    client, bus, timers, *_ = harness
+    _subscribe(client, bus, timers)
+    bus.notify(EU, bytes([2, 2, 0]) + b"Episode")
+    timers.run_all()
+    bus.take("StopNotify", RC).succeed()
+    bus.take("StartNotify", RC).succeed()  # and still no list
+
+    _reconnect_with_new_characteristics(client, bus, timers)
+    bus.notify(EU, bytes([2, 2, 0]) + b"Episode")
+    timers.run_all()
+    assert bus.pending() == [("StopNotify", RC)]

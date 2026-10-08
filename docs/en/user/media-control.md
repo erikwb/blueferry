@@ -56,6 +56,11 @@ blueferry media --json         # the raw status for scripts
 BlueFerry only sends commands the iPhone currently offers. Which ones those
 are depends on the app that is playing; `blueferry media` lists them. A
 command the app does not offer is refused locally and nothing is sent.
+The iPhone sends that list only when BlueFerry subscribes, and after a
+reconnect it sometimes doesn't. BlueFerry then asks once more on that
+connection. Until the list arrives, `blueferry media` shows the commands as
+unknown, and BlueFerry sends a command as asked; the iPhone ignores or
+refuses one the app lacks.
 
 In the Kirigami client a small bar with title, artist and
 previous/play-pause/next buttons appears above the conversations while
@@ -113,9 +118,10 @@ BlueFerry's message interface through it.
   disconnected, too.
 - BlueFerry deliberately does not use AVRCP. Acting as an AVRCP remote could
   make the iPhone send its audio to the computer, which BlueFerry prevents.
-- Verified on real hardware so far: the now-playing display. Commands,
-  long-title completion and reconnects are tested with simulated Bluetooth
-  only. Please report what you see.
+- Verified on real hardware so far: the now-playing display, commands, and
+  switching media control off and on. The renewed request for the command
+  list after a reconnect and long-title completion are tested with simulated
+  Bluetooth only. Please report what you see.
 
 ## Privacy
 

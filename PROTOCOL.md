@@ -633,8 +633,18 @@ specification-based expectation, not a captured result.
   the solicitation advertisement and never dials LE for it; it only uses the
   link the ANCS bearer supervision already maintains.
 - Remote Command (`9B3C81D8-…`) notifies the list of currently available
-  command IDs and accepts a one-byte command write. Commands outside that
-  list are not sent.
+  command IDs and accepts a one-byte command write; it is not readable.
+  Observed on hardware (iOS 27, Intel 8087:0033, BlueZ 5.87): iOS sends the
+  list only after a CCC write that enables notifications, so switching media
+  control off and on needs a `StopNotify` first. After an ordinary LE
+  reconnect, with BlueZ re-creating the GATT objects, Entity Updates flowed
+  but no list arrived. BlueFerry therefore treats the list as unknown (not
+  empty) until it arrives, and once per LE link, after an Entity Update with
+  no list within 3 seconds, toggles the Remote Command CCC (`StopNotify`,
+  then `StartNotify`) in the serialized GATT queue on the steady link. While
+  the list is unknown, commands are sent as asked; with a known list,
+  commands outside it are not sent. Whether the toggle brings the list back
+  after a reconnect still needs a hardware run.
 - Entity Update (`2F7CABCE-…`) is registered with one write per entity
   (Player, Queue, Track). Registrations are expected to be forgotten on
   disconnect, so they are rewritten after every LE reconnect. Notifications
@@ -647,6 +657,9 @@ specification-based expectation, not a captured result.
   adjacent in the serialized GATT queue.
 - The ANCS BlueZ 5.87 constraint applies here too: no `StopNotify` on a
   dropped or flapping link; surviving `Notifying=true` registrations are kept.
+  The two deliberate `StopNotify` paths (runtime opt-out, command-list
+  toggle) run only on a steady, subscribed link, and a toggle whose link
+  drops after the `StopNotify` never re-enables late.
 - AMS offers relative volume steps and fixed skips only, so an MPRIS volume
   write becomes one step, MPRIS `CanSeek` is false and `Seek`/`SetPosition`
   have no effect, and MPRIS `Stop` pauses. The skips remain available through

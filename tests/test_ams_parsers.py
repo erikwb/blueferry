@@ -267,9 +267,26 @@ def test_snapshot_shape() -> None:
             "duration": 180.5, "elapsed": 5.0,
         },
         "supported_commands": ["next", "play"],
+        "supported_commands_known": True,
     }
     state.reset()
     assert state.title is None and state.supported_commands == frozenset()
+    assert state.supported_commands_known is False
+
+
+def test_unknown_and_known_empty_command_lists_differ() -> None:
+    state = NowPlaying()
+    assert state.supported_commands_known is False
+    assert state.set_supported_commands(frozenset()) is True
+    assert state.supported_commands_known is True
+    assert state.set_supported_commands(frozenset()) is False
+    assert state.set_supported_commands(None) is True
+    assert state.supported_commands_known is False
+    assert state.snapshot(0.0)["supported_commands"] == []
+    # A playback reset keeps whatever is known about the list.
+    state.set_supported_commands(frozenset({RemoteCommandID.Play}))
+    state.clear_playback()
+    assert state.supported_commands_known is True
 
 
 def _track(state: NowPlaying, attribute: int, value: str, truncated: bool = False) -> None:
