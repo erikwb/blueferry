@@ -1540,3 +1540,51 @@ def test_offline_modem_drops_pending_call_snapshot() -> None:
     snapshot.on_reply([(dbus.ObjectPath(CALL), {"State": "incoming"})])
     assert controller.calls() == []
     assert controller.in_call is False
+
+
+
+@pytest.mark.parametrize("saw_added", [False, True])
+def test_call_removed_during_initial_snapshot_stays_removed(saw_added) -> None:
+    controller, transport, _timers, _changes, events = _build()
+    controller.start()
+    transport.take("GetModems").on_reply([_modem(True, True, [VOICE_CALL_MANAGER_IFACE])])
+    snapshot = transport.take("GetCalls")
+    if saw_added:
+        _ring(transport)
+    transport.emit(VOICE_CALL_MANAGER_IFACE, "CallRemoved", MODEM, dbus.ObjectPath(CALL))
+    before = list(events)
+    snapshot.on_reply([(dbus.ObjectPath(CALL), {"State": "incoming"})])
+    assert controller.calls() == []
+    assert controller.in_call is False
+    assert events == before
+
+
+def test_initial_snapshot_keeps_newer_call_state_and_discovers_untouched_calls() -> None:
+    controller, transport, *_ = _build()
+    controller.start()
+    transport.take("GetModems").on_reply([_modem(True, True, [VOICE_CALL_MANAGER_IFACE])])
+    snapshot = transport.take("GetCalls")
+    _ring(transport)
+    transport.emit(VOICE_CALL_IFACE, "PropertyChanged", CALL, "State", "active")
+    other = MODEM + "/voicecall02"
+    snapshot.on_reply([
+        (dbus.ObjectPath(CALL), {"State": "incoming"}),
+        (dbus.ObjectPath(other), {"State": "held"}),
+    ])
+    assert {call.path: call.state for call in controller.calls()} == {CALL: "active", other: "held"}
+
+
+def test_initial_snapshot_does_not_overwrite_reused_call_path() -> None:
+    controller, transport, *_ = _build()
+    controller.start()
+    transport.take("GetModems").on_reply([_modem(True, True, [VOICE_CALL_MANAGER_IFACE])])
+    snapshot = transport.take("GetCalls")
+    _ring(transport)
+    transport.emit(VOICE_CALL_MANAGER_IFACE, "CallRemoved", MODEM, dbus.ObjectPath(CALL))
+    _ring(transport, state="active", number="+15551230099")
+    snapshot.on_reply([(dbus.ObjectPath(CALL), {
+        "State": "incoming", "LineIdentification": "+15551230001",
+    })])
+    assert len(controller.calls()) == 1
+    assert controller.calls()[0].state == "active"
+    assert controller.calls()[0].number == "+15551230099"

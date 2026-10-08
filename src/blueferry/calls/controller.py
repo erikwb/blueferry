@@ -188,6 +188,7 @@ class CallController:
         self._vcm_matches: list[SignalMatch] = []
         self._call_matches: dict[str, SignalMatch] = {}
         self._calls: dict[str, CallRecord] = {}
+        self._snapshot_changes: set[str] | None = None
         self._bound_path: str | None = None
         self._retry_id: int | None = None
         self._retry_index = 0
@@ -849,6 +850,7 @@ class CallController:
 
     def _bind(self, path: str) -> None:
         self._unbind(emit=True)
+        self._snapshot_changes = set()
         transport = self._ensure_transport()
         try:
             for signal, handler in (
@@ -864,6 +866,7 @@ class CallController:
             for match in self._vcm_matches:
                 self._remove(match)
             self._vcm_matches = []
+            self._snapshot_changes = None
             self._schedule_retry()
             return
         self._bound_path = path
@@ -872,10 +875,7 @@ class CallController:
         self._call(
             path, VOICE_CALL_MANAGER_IFACE, "GetCalls", "", (),
             self._guard(self._on_existing_calls, binding=True),
-            self._guard(
-                lambda error: log.warning("oFono GetCalls failed: %s", public_error(error)),
-                binding=True,
-            ),
+            self._guard(self._on_existing_calls_failed, binding=True),
         )
         self._maximize_call_volume(path)
 
@@ -883,6 +883,7 @@ class CallController:
         # A modem can disappear and return at the same object path. Its old
         # snapshot and queued signals must not populate the new binding.
         self._calls_generation += 1
+        self._snapshot_changes = None
         for match in self._vcm_matches:
             self._remove(match)
         self._vcm_matches = []
@@ -912,9 +913,18 @@ class CallController:
             )
 
     def _on_existing_calls(self, calls: object = ()) -> None:
+        changed, self._snapshot_changes = self._snapshot_changes or set(), None
         for entry in calls if isinstance(calls, list | tuple) else ():
             if isinstance(entry, list | tuple) and len(entry) == 2:
+                # Signals delivered while GetCalls was pending are newer than
+                # its snapshot, including removals of calls not yet observed.
+                if call_id_from_path(entry[0]) in changed:
+                    continue
                 self._on_call_added(entry[0], entry[1])
+
+    def _on_existing_calls_failed(self, error: Exception) -> None:
+        self._snapshot_changes = None
+        log.warning("oFono GetCalls failed: %s", public_error(error))
 
     def _resolved(self, record: CallRecord) -> CallRecord:
         name = ""
@@ -930,6 +940,8 @@ class CallController:
         if record is None:
             log.warning("ignoring malformed oFono call")
             return
+        if self._snapshot_changes is not None:
+            self._snapshot_changes.add(record.call_id)
         if record.call_id in self._calls and isinstance(properties, Mapping):
             # GetCalls and CallAdded can race after binding.
             for key, value in properties.items():
@@ -958,6 +970,8 @@ class CallController:
         self._calls_changed()
 
     def _on_call_property(self, call_id: str, name: object, value: object) -> None:
+        if self._snapshot_changes is not None:
+            self._snapshot_changes.add(call_id)
         current = self._calls.get(call_id)
         if current is None:
             return
@@ -979,6 +993,8 @@ class CallController:
         call_id = call_id_from_path(path)
         if call_id is None:
             return
+        if self._snapshot_changes is not None:
+            self._snapshot_changes.add(call_id)
         record = self._calls.pop(call_id, None)
         self._remove(self._call_matches.pop(call_id, None))
         if record is None:
