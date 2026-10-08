@@ -405,8 +405,9 @@ A change to these rules has to be made in both places.
   minutes (nine when polling). Local, Unknown and Suspend drops never count.
   The flag changes no connection behaviour: LE dials, resets and the adapter
   power cycle run as before. An authorized ANCS round trip, a held link, a
-  new bond, a new bluetoothd generation, or Classic being gone for two
-  minutes clears it; the drop count decays after a quiet minute. Detection
+  new bond, a new bluetoothd generation, Classic being gone for two
+  minutes, or ten minutes without a counted drop clears it; the drop count
+  decays after a quiet minute. Detection
   is off without ANCS and on controllers flagged as ANCS-limited. `GetStatus`
   carries the flag, the drop count, and a fixed reason token. `doctor`,
   pairing reports, Qt, GTK, Quickshell and the TUI explain the possible

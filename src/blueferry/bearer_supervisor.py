@@ -861,8 +861,9 @@ class BearerSupervisor:
             # device that remains absent still receives only one attempt.
             self._rearm_le_dial("iPhone LE disconnected")
             if not deliberate and not self._le_disconnect_signal_seen:
-                # Fallback for BlueZ without Bearer.LE1.Disconnected: the
-                # poll samples only some flaps, hence the wider window.
+                # Until a Bearer.LE1.Disconnected signal has arrived, the
+                # poll counts the drop; it samples only some flaps, hence
+                # the wider window.
                 since = self._connected_since["le"]
                 self._record_le_drop(
                     None if since is None else self._clock() - since,

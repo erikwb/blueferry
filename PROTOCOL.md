@@ -455,7 +455,8 @@ rfkill, adapter power), `Unknown` and `Suspend` never count. At least five
 such drops within any 60 s must persist for 180 s (540 s and a 180 s window
 when only polling sees them). The report clears on an authorized ANCS round
 trip, a link that holds for 15 s, a new bond, a new bluetoothd generation,
-or after Classic has been gone for 120 s. Detection is off without ANCS and
+after Classic has been gone for 120 s, or after 600 s without a counted
+drop, also when LE simply stays down. Detection is off without ANCS and
 on controllers flagged as ANCS-limited. The detection is tested only
 against fakes and a fake `org.bluez` on a private bus.
 
