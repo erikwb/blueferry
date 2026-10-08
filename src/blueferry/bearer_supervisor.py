@@ -569,9 +569,30 @@ class BearerSupervisor:
         """Handle org.bluez.Bearer.LE1.Disconnected(name, message)."""
         if not self._running:
             return
+        self._count_le_disconnect(str(name))
+        # Every drop is published, also a local or suspend one: the link
+        # and every GATT registration on it are gone either way.
+        self._observe_signalled_le(False)
+
+    def _observe_signalled_le(self, connected: bool) -> None:
+        """Publish an LE transition that BlueZ signalled, without a poll.
+
+        A link can drop and come back between two polls (0.5 s on
+        hardware). Polling alone then never reports the cycle, and ANCS
+        and AMS keep registrations that iOS forgot with the link. The
+        signals arrive in order, so the last one always matches the
+        bearer; polling stays as the fallback.
+        """
+        if self._states["le"] is connected:
+            return
+        # The Disconnected signal counts the drop for the stale-bond report
+        # with its reason; the polled fallback must not count it again.
+        self._update_state("le", connected, deliberate=True)
+
+    def _count_le_disconnect(self, name: str) -> None:
         first_signal = not self._le_disconnect_signal_seen
         self._le_disconnect_signal_seen = True
-        reason = _LE_DISCONNECT_REASONS.get(str(name), "unknown")
+        reason = _LE_DISCONNECT_REASONS.get(name, "unknown")
         now = self._clock()
         polled = self._le_last_polled_drop_at
         if (
@@ -618,8 +639,10 @@ class BearerSupervisor:
         interface = str(interface)
         observations.properties_changed(self.device_path, interface, changed, _invalidated)
         if interface == _INTERFACES["le"] and "Connected" in changed:
-            if bool(changed["Connected"]):
+            connected = bool(changed["Connected"])
+            if connected:
                 self._le_link_up_at = self._clock()
+            self._observe_signalled_le(connected)
         if interface in {_INTERFACES["le"], "org.bluez.Device1"} and any(
             bool(changed.get(key)) for key in ("Paired", "Bonded")
         ):

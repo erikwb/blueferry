@@ -51,6 +51,7 @@ class _Harness:
         self.on_disconnected = None
         self.on_properties = None
         self.unwatched = 0
+        self.flaps = 0
 
         def watch_le(on_disconnected, on_properties):
             self.on_disconnected = on_disconnected
@@ -107,6 +108,7 @@ class _Harness:
 
     def flap(self, *, reason=TIMEOUT, up_for=1.5, down_for=0.5) -> None:
         """One short-lived LE link as seen in the btmon trace."""
+        self.flaps += 1
         self.link_up()
         self.clock.now += up_for
         self.on_properties(LE, {"Connected": False}, [])
@@ -140,13 +142,16 @@ def test_persistent_burst_of_short_le_links_marks_the_bond_suspect_once(caplog) 
     _burst(h, LE_FLAP_PERSIST_SECONDS - 20)
     assert not h.supervisor.le_bond_suspect
     statuses = h.statuses
+    flaps = h.flaps
 
     _burst(h, 30)
 
     assert h.supervisor.le_bond_suspect
     assert h.reports == 1
-    # The report is not a bearer transition: on_status stays silent.
-    assert h.statuses == statuses
+    # The report is not a bearer transition: on_status hears only the two
+    # signalled transitions of each flap.
+    assert h.statuses == statuses + 2 * (h.flaps - flaps)
+    statuses = h.statuses
     snapshot = h.supervisor.snapshot()
     assert snapshot["le_bond_suspect"] is True
     assert snapshot["le_flap_count"] > LE_FLAP_THRESHOLD
@@ -166,7 +171,7 @@ def test_persistent_burst_of_short_le_links_marks_the_bond_suspect_once(caplog) 
     assert h.supervisor.snapshot()["le_flap_count"] == count + 20
     assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 1
     assert h.reports == 1
-    assert h.statuses == statuses
+    assert h.statuses == statuses + 2 * 20
 
 
 @pytest.mark.parametrize("reason", [TIMEOUT, "org.bluez.Reason.Remote",
