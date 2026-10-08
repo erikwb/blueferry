@@ -15,7 +15,7 @@ from blueferry.call_history import (
     CallRecord,
     MissedCallNotice,
 )
-from blueferry.call_history_repository import CallHistoryRepository
+from blueferry.call_history_repository import CallHistoryRepository, clear_call_history
 from blueferry.dbus_service import MessagesService
 from blueferry.errors import NotReadyError, OperationFailedError
 from blueferry.event_dispatcher import EventDispatcher
@@ -91,7 +91,8 @@ class _History:
     def sync(self, success, failure):
         self.sync_calls.append((success, failure))
 
-    def discard_cache(self):
+    def clear(self):
+        clear_call_history()
         self.discarded += 1
         self._records = []
 
