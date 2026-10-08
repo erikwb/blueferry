@@ -1,6 +1,8 @@
 """Behavioral checks for extracted QML presentation components."""
 from __future__ import annotations
 
+import base64
+import json
 import os
 from pathlib import Path
 
@@ -16,7 +18,10 @@ pytest.importorskip("PySide6")
 from PySide6.QtCore import (
     Q_ARG,
     Property,
+    QBuffer,
+    QByteArray,
     QEvent,
+    QIODevice,
     QMetaObject,
     QObject,
     QPointF,
@@ -25,7 +30,7 @@ from PySide6.QtCore import (
     Signal,
     Slot,
 )
-from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication
+from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication, QImage
 from PySide6.QtQml import QQmlComponent, QQmlEngine
 from PySide6.QtQuick import QQuickWindow
 from PySide6.QtTest import QTest
@@ -3057,3 +3062,281 @@ def test_quickshell_call_history_checkboxes_are_opt_in(qml_engine, quickshell_se
         "set_call_history", {"enabled": True, "missed_call_notifications": False},
     )
     close()
+
+
+@pytest.fixture
+def quickshell_photos(qml_engine):
+    component = QQmlComponent(qml_engine)
+    component.setData(b'''import QtQuick
+QtObject {
+  property var calls: []
+  property int nextId: 1
+  function request(method, args) {
+    const id = nextId++;
+    calls.push({id: id, method: method, args: args});
+    return id;
+  }
+}''', QUrl())
+    bridge = component.create()
+    assert bridge is not None
+    cache_component = _component(qml_engine, "data/quickshell/AvatarCache.qml")
+    cache = cache_component.createWithInitialProperties({
+        "bridge": bridge,
+    })
+    assert cache is not None
+    qml_engine.globalObject().setProperty("testPhotoCache", qml_engine.newQObject(cache))
+    qml_engine.globalObject().setProperty("testPhotoBridge", qml_engine.newQObject(bridge))
+    yield cache, bridge
+    cache.deleteLater()
+    bridge.deleteLater()
+    QGuiApplication.processEvents()
+
+
+def _avatar_data_url():
+    image = QImage(32, 16, QImage.Format.Format_RGB32)
+    image.fill(0x3366CC)
+    data = QByteArray()
+    buffer = QBuffer(data)
+    buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+    assert image.save(buffer, "PNG")
+    return "data:image/png;base64," + base64.b64encode(bytes(data)).decode("ascii")
+
+
+def test_quickshell_avatar_cache_is_opt_in_and_coalesces_reads(qml_engine, quickshell_photos):
+    cache, _bridge = quickshell_photos
+    assert _evaluate(qml_engine, 'testPhotoCache.source("alice@example.com")') == ""
+    assert _evaluate(qml_engine, "testPhotoBridge.calls.length") == 0
+    cache.setProperty("backendStatus", {"contact_photos": True, "contact_photo_revision": 1})
+    _evaluate(qml_engine, 'testPhotoCache.source("alice@example.com")')
+    _evaluate(qml_engine, 'testPhotoCache.source("alice@example.com")')
+    assert _evaluate(qml_engine, "testPhotoBridge.calls.length") == 1
+    source = _avatar_data_url()
+    result = json.dumps({"address": "alice@example.com", "source": source})
+    _evaluate(qml_engine, f"testPhotoCache.accept(1, {result})")
+    assert _evaluate(qml_engine, 'testPhotoCache.source("alice@example.com")') == source
+    assert _evaluate(qml_engine, "testPhotoBridge.calls.length") == 1
+
+
+@pytest.mark.parametrize("next_status", [
+    {"contact_photos": False},
+    {"contact_photos": True, "contact_photo_revision": 2},
+    {},
+])
+def test_quickshell_ignores_late_photos_after_refresh_or_disable(
+    qml_engine, quickshell_photos, next_status,
+):
+    cache, _bridge = quickshell_photos
+    cache.setProperty("backendStatus", {"contact_photos": True, "contact_photo_revision": 1})
+    _evaluate(qml_engine, 'testPhotoCache.source("alice@example.com")')
+    cache.setProperty("backendStatus", next_status)
+    result = json.dumps({"address": "alice@example.com", "source": _avatar_data_url()})
+    _evaluate(qml_engine, f"testPhotoCache.accept(1, {result})")
+    assert _evaluate(qml_engine, 'testPhotoCache.source("alice@example.com")') == ""
+    assert _evaluate(qml_engine, "testPhotoBridge.calls.length") == (
+        2 if next_status.get("contact_photos") else 1
+    )
+
+
+def test_quickshell_missing_photos_and_failures_do_not_flood_the_bridge(qml_engine, quickshell_photos):
+    cache, _bridge = quickshell_photos
+    cache.setProperty("backendStatus", {"contact_photos": True})
+    _evaluate(qml_engine, '''
+      testPhotoCache.source("missing@example.com");
+      testPhotoCache.accept(1, {address: "missing@example.com", source: ""});
+      testPhotoCache.source("missing@example.com");
+      testPhotoCache.source("busy@example.com");
+      testPhotoCache.failed(2);
+      testPhotoCache.source("busy@example.com");
+    ''')
+    assert _evaluate(qml_engine, "testPhotoBridge.calls.length") == 2
+    _evaluate(qml_engine, '''
+      testPhotoCache.retryAt["busy@example.com"] = Date.now() - 1;
+      testPhotoCache.source("busy@example.com");
+    ''')
+    assert _evaluate(qml_engine, "testPhotoBridge.calls.length") == 3
+
+
+def test_quickshell_avatar_reads_remain_bounded_across_generations(qml_engine, quickshell_photos):
+    cache, _bridge = quickshell_photos
+    cache.setProperty("maxPending", 2)
+    for revision in range(5):
+        cache.setProperty("backendStatus", {"contact_photos": True, "contact_photo_revision": revision})
+        _evaluate(qml_engine, '''
+          testPhotoCache.source("one@example.com");
+          testPhotoCache.source("two@example.com");
+          testPhotoCache.source("three@example.com");
+        ''')
+    assert _evaluate(qml_engine, "testPhotoBridge.calls.length") == 2
+    _evaluate(qml_engine, 'testPhotoCache.accept(1, {address: "one@example.com", source: ""})')
+    _evaluate(qml_engine, 'testPhotoCache.source("three@example.com")')
+    assert _evaluate(qml_engine, "testPhotoBridge.calls.length") == 3
+    _evaluate(qml_engine, "testPhotoCache.disconnected()")
+    assert _evaluate(qml_engine, "Object.keys(testPhotoCache.tickets).length") == 0
+
+
+def test_quickshell_full_avatar_cache_does_not_thrash_visible_images(qml_engine, quickshell_photos):
+    cache, _bridge = quickshell_photos
+    cache.setProperty("backendStatus", {"contact_photos": True})
+    cache.setProperty("maxChars", 1)
+    cache.setProperty("maxEntries", 2)
+    source = json.dumps(_avatar_data_url())
+    _evaluate(qml_engine, f'''
+      testPhotoCache.source("one@example.com");
+      testPhotoCache.accept(1, {{address: "one@example.com", source: {source}}});
+      testPhotoCache.source("two@example.com");
+      testPhotoCache.accept(2, {{address: "two@example.com", source: {source}}});
+      for (let i = 0; i < 5; ++i) {{
+        testPhotoCache.source("one@example.com");
+        testPhotoCache.source("two@example.com");
+        testPhotoCache.source("three@example.com");
+      }}
+    ''')
+    assert _evaluate(qml_engine, "testPhotoBridge.calls.length") == 2
+    assert cache.property("cachedChars") == 0
+
+
+def test_quickshell_avatar_renders_a_photo_and_preserves_group_fallback(qml_engine, quickshell_photos):
+    cache, _bridge = quickshell_photos
+    theme_component = _component(qml_engine, "data/quickshell/ThemePalette.qml")
+    theme = theme_component.create()
+    component = _component(qml_engine, "data/quickshell/ContactAvatar.qml")
+    avatar = component.createWithInitialProperties({
+        "photos": cache, "ferryTheme": theme,
+        "thread": {"name": "Alice", "is_group": False, "recipients": ["alice@example.com"]},
+    })
+    assert avatar is not None
+    cache.setProperty("backendStatus", {"contact_photos": True})
+    QGuiApplication.processEvents()
+    assert _evaluate(qml_engine, "testPhotoBridge.calls.length") == 1
+    result = json.dumps({"address": "alice@example.com", "source": _avatar_data_url()})
+    _evaluate(qml_engine, f"testPhotoCache.accept(1, {result})")
+    assert avatar.property("photoSource") == _avatar_data_url()
+    for _ in range(100):
+        if avatar.property("photoReady"):
+            break
+        QTest.qWait(10)
+    assert avatar.property("photoReady") is True
+    avatar.setProperty("thread", {
+        "name": "Crew", "is_group": True, "recipients": ["alice@example.com"],
+    })
+    QGuiApplication.processEvents()
+    assert avatar.property("photoReady") is False
+    assert avatar.property("photoSource") == ""
+    assert _evaluate(qml_engine, "testPhotoBridge.calls.length") == 1
+    avatar.deleteLater()
+    theme.deleteLater()
+
+
+@pytest.mark.private_dbus
+def test_quickshell_shell_shares_photos_and_discards_late_opt_out_results(
+    tmp_path, quickshell_environment,
+):
+    import shutil
+    import subprocess
+
+    executable = shutil.which("quickshell")
+    if executable is None:
+        pytest.skip("Quickshell is not installed")
+    for source in (ROOT / "data/quickshell").glob("*.qml"):
+        shutil.copyfile(source, tmp_path / source.name)
+    shutil.copyfile(
+        ROOT / "src/blueferry/qt/qml/ConversationLogic.qml", tmp_path / "ConversationLogic.qml",
+    )
+    (tmp_path / "Theme.qml").write_text("import QtQuick\nThemePalette {}\n")
+    (tmp_path / "SetupTransport.qml").write_text('''import QtQuick
+Item {
+  signal lineReceived(int id, string kind, string line)
+  signal finished(int id, string kind, int code, string output, string diagnostic)
+  function execute(id, kind, command, interactive) {}
+  function cancel(id) {}
+  function write(id, text) {}
+}
+''')
+    (tmp_path / "BackendBridge.qml").write_text('''import QtQuick
+Item {
+  property bool desktopClient: false
+  property var calls: []
+  property int nextId: 1
+  signal response(string method, int requestId, var result)
+  signal failure(string method, int requestId, string message)
+  signal eventReceived(string name, var data)
+  function request(method, args) {
+    const id = nextId++;
+    calls.push({id: id, method: method, args: args});
+    return id;
+  }
+  function requestLatest(method, args) {}
+  function cancelLatest(method) {}
+}
+''')
+    config = tmp_path / "shell.qml"
+    source = config.read_text()
+    probe = r'''
+  Timer {
+    interval: 100; repeat: true; running: true
+    property int phase: 0
+    property int attempts: 0
+    onTriggered: {
+      function check(value, message) { if (!value) throw new Error(message); }
+      function reads() { return backendBridge.calls.filter(call => call.method === "contact_photo"); }
+      function status(enabled, revision) {
+        backendBridge.response("status", 1, {
+          daemon: true, contact_photos: enabled, contact_photo_revision: revision,
+          storage_policy: "plaintext", storage_state: "ready"
+        });
+      }
+      try {
+        check(attempts++ < 30, "avatar probe did not finish");
+        if (phase === 0) {
+          setupController.configured = true;
+          root.threads = [
+            {key: "alice", name: "Alice", recipients: ["alice@example.com"],
+             is_group: false, messages: [], reply_ready: true},
+            {key: "crew", name: "Crew", recipients: ["alice@example.com"],
+             is_group: true, messages: [], reply_ready: true}
+          ];
+          root.selectedThreadKey = "alice";
+          status(true, 1);
+          phase = 1;
+        } else if (phase === 1) {
+          check(reads().length === 1, "list and header did not share a read or group fetched a photo");
+          backendBridge.response("contact_photo", reads()[0].id,
+            {address: "alice@example.com", source: PHOTO_SOURCE});
+          phase = 2;
+        } else if (phase === 2) {
+          if (!conversationAvatar.photoReady) return;
+          root.selectedThreadKey = "crew";
+          phase = 3;
+        } else if (phase === 3) {
+          check(!conversationAvatar.photoReady, "group displayed a participant photo");
+          check(reads().length === 1, "group caused an additional photo read");
+          root.selectedThreadKey = "alice";
+          status(true, 2);
+          phase = 4;
+        } else if (phase === 4) {
+          check(reads().length === 2, "contact refresh did not refetch the photo");
+          status(false, 2);
+          backendBridge.response("contact_photo", reads()[1].id,
+            {address: "alice@example.com", source: PHOTO_SOURCE});
+          phase = 5;
+        } else {
+          check(!conversationAvatar.photoReady, "late reply restored an opted-out photo");
+          check(reads().length === 2, "opt-out caused another photo read");
+          console.log("BLUEFERRY_AVATARS_OK");
+          Qt.quit();
+        }
+      } catch (error) {
+        console.error(error);
+        Qt.quit();
+      }
+    }
+  }
+'''.replace("PHOTO_SOURCE", json.dumps(_avatar_data_url()))
+    config.write_text(source[:source.rfind("}")] + probe + "}\n")
+    result = subprocess.run(
+        [executable, "--path", str(config)], env=quickshell_environment,
+        capture_output=True, text=True, timeout=10, check=False,
+    )
+    log = result.stdout + result.stderr
+    assert result.returncode == 0 and "BLUEFERRY_AVATARS_OK" in log, log
+    assert "WARN scene:" not in log and "ReferenceError" not in log and "TypeError" not in log, log

@@ -60,6 +60,7 @@ class _FakeGtk:
     ListBoxRow = _FakeRow
     Box = _FakeWidget
     Label = _FakeWidget
+    Image = _FakeWidget
     Button = _FakeWidget
     GestureClick = _FakeGesture
 
@@ -114,7 +115,7 @@ def _thread(**changes) -> Thread:
 
 
 def _name_label(row):
-    return row.child.children[0].children[0]
+    return row.child.children[1].children[0]
 
 
 def test_group_dialog_rejects_a_roster_changed_while_it_was_open(monkeypatch):
@@ -145,6 +146,7 @@ def test_sidebar_rebuild_does_not_fire_selection_callback(monkeypatch):
     page = SimpleNamespace(
         _thread_list=thread_list,
         _thread_selected_handler=42,
+        _set_avatar=lambda *_args: None,
         _show_thread_context_menu=lambda *_args: None,
         _toggle_star=lambda *_args: None,
         _state=state,
@@ -181,6 +183,7 @@ def test_unread_thread_name_uses_heading_style(monkeypatch):
     page = SimpleNamespace(
         _thread_list=thread_list,
         _thread_selected_handler=42,
+        _set_avatar=lambda *_args: None,
         _show_thread_context_menu=lambda *_args: None,
         _toggle_star=lambda *_args: None,
         _state=state,
@@ -253,6 +256,7 @@ def test_map_refusal_reveals_prominent_message_banner() -> None:
     banner = Banner()
     page = SimpleNamespace(
         _map_refused_banner=banner,
+        _avatars=SimpleNamespace(update_status=lambda _status: None),
         _le_bond_banner=SimpleNamespace(set_revealed=lambda _value: None),
         _state=ConversationState(select_first=False),
         _update_backend_error_banner=lambda: None,
@@ -280,6 +284,7 @@ def test_suspect_le_bond_reveals_its_banner_and_failures_hide_it() -> None:
     map_banner, bond_banner = Banner(), Banner()
     page = SimpleNamespace(
         _map_refused_banner=map_banner,
+        _avatars=SimpleNamespace(update_status=lambda _status: None),
         _le_bond_banner=bond_banner,
         _state=ConversationState(select_first=False),
         _update_backend_error_banner=lambda: None,

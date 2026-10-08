@@ -15,8 +15,8 @@ never decodes pixels. It only:
   a client or notification server allocate an enormous image.
 
 Everything that interprets image structure runs in a presentation process
-with a standard toolkit loader (Qt's ``QImageReader`` in the Kirigami client,
-the desktop notification server for popups), so a decoder bug cannot reach
+with a standard toolkit loader (GdkPixbuf in GTK, Qt image loaders in Kirigami
+and Quickshell, the desktop notification server for popups), so a decoder bug cannot reach
 the process that holds MAP/PBAP sessions and the storage key. Stored photos
 share the contact cache's database, encryption, and replacement lifecycle.
 """

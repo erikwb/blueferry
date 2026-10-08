@@ -1,7 +1,7 @@
 # Kontaktfotos
 
 BlueFerry kann die Bilder aus den Kontakten deines iPhones als Avatare in der
-Gesprächsliste und im Gesprächskopf des Qt-Clients (KDE) und als Symbol von
+Gesprächsliste und im Gesprächskopf der GTK-, Qt- (KDE) und Quickshell-Clients und als Symbol von
 Desktop-Mitteilungen anzeigen. Die Funktion ist **standardmäßig aus**.
 
 ## So funktioniert es
@@ -14,14 +14,14 @@ Bluetooth-Übertragung gibt es nicht.
 flowchart LR
     A[iPhone-Telefonbuch<br/>PBAP-Abruf] --> B[BlueFerry-Backend<br/>prüft Größe, Typ, Bildmaß]
     B --> C[(Kontakt-Cache<br/>verschlüsselt)]
-    C --> D[Qt-Client<br/>dekodiert Avatar]
+    C --> D[GTK, Qt, Quickshell<br/>dekodieren Avatar]
     C --> E[Temporäre Datei in<br/>XDG_RUNTIME_DIR]
     E --> F[Mitteilungsdienst<br/>dekodiert Popup-Symbol]
 ```
 
 Das Backend dekodiert selbst nie ein Bild. Es prüft nur, ob ein Foto ein JPEG
-oder PNG mit höchstens 1 MiB und 2048×2048 Pixeln ist. Dekodiert wird im
-Qt-Client und in deinem Mitteilungsdienst.
+oder PNG mit höchstens 1 MiB und 2048×2048 Pixeln ist. Dekodiert wird in
+den Desktop-Clients und in deinem Mitteilungsdienst.
 
 ## Einschalten
 
@@ -68,8 +68,12 @@ Speichermodus ändert.
   Nummer, die zwei Kontakte teilen, zeigt keines der beiden Fotos, und von
   einem Kontakt, dessen Nummern alle geteilt sind, wird das Foto gar nicht
   gespeichert.
-- Bisher zeigt nur der Qt-Client Avatare. GTK-, Terminal- und
-  Quickshell-Client behalten ihre Symbole.
+- GTK, Qt und Quickshell zeigen Fotos für direkte Gespräche. Gruppen behalten
+  ihre Gruppensymbole; ohne nutzbares Foto bleibt das bisherige Kontaktsymbol.
+  Der Terminal-Client behält seine Symbole.
+- Avatare werden asynchron geladen und nach einer Kontaktsynchronisierung
+  aktualisiert. Nach dem Ausschalten und dem nächsten Statusbericht leeren
+  die Clients ihre Foto-Caches. Fehler beim Laden unterbrechen keine Nachrichten.
 - Popup-Symbole setzen voraus, dass der Mitteilungsdienst `image-path`
   beachtet. Bei Plasma ist das zu erwarten, aber noch nicht getestet. Ein
   Dienst, der es ignoriert, zeigt das übliche Symbol.

@@ -6,6 +6,7 @@ message content, destinations, or contact queries in child-process argv.
 """
 from __future__ import annotations
 
+import base64
 import json
 import queue
 import sys
@@ -16,6 +17,7 @@ from typing import Any, TextIO
 from blueferry.bus import get_session_bus
 from blueferry.client import BackendClient
 from blueferry.client_activation import record_client_use
+from blueferry.contact_photos import image_type, valid_photo
 from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH
 from blueferry.service_manager import bluetooth_restart_command
 
@@ -103,6 +105,14 @@ class QuickshellBridge:
                 {"name": name, "address": address}
                 for name, address in self.client.find_contacts(_text(args, "query"))
             ]
+        if method == "contact_photo":
+            address = _text(args, "address")
+            data = valid_photo(self.client.contact_photo(address))
+            source = (
+                f"data:{image_type(data)};base64,{base64.b64encode(data).decode('ascii')}"
+                if data else ""
+            )
+            return {"address": address, "source": source}
         if method == "send":
             return self.client.send(_text(args, "recipient"), _text(args, "body"))
         if method == "send_to_thread":

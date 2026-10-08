@@ -178,6 +178,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `ui/status_presenter.py` | Pure presentation rules for the status page (including the optional phone battery/signal suffix). |
 | `ui/saved_choice.py` | Keeps a settings switch on the user's choice while its save and the next status settle. |
 | `ui/client.py` | Asynchronous GTK backend calls and D-Bus invalidations. |
+| `ui/avatars.py` | Bounded GTK photo cache and worker-side thumbnail decoding; late results from earlier contact generations are discarded. |
 | `ui/setup_runner.py` | GTK-independent worker for blocking setup operations. |
 | `ui/util.py` | Small UI helpers. |
 | `qt/app.py` | PySide6/Kirigami entry point. |
@@ -222,6 +223,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `ThemePalette.qml` | Pure color/geometry tokens with a system-palette fallback. |
 | `Ferry*.qml` | Styled controls (button, check box, combo box, label, text field, composer, section label, info row). |
 | `QuickshellMessageBubble.qml`, `QuickshellThreadPreview.qml` | Message bubble and thread preview. |
+| `AvatarCache.qml`, `ContactAvatar.qml` | Bounded asynchronous contact photos in the conversation list and header; the bridge delivers validated bytes as data URLs without writing avatar files. |
 | `SavedChoice.qml` | The same for Quickshell checkboxes that save through the daemon. |
 | `QuickshellPhoneStatus.qml` | Optional iPhone battery/signal caption in the header (hidden when unknown). |
 
