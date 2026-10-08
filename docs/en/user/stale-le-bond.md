@@ -75,9 +75,13 @@ bluetoothd restarts, or when classic Bluetooth has been gone for 2 minutes
   the iPhone, `bluetoothctl remove` and pairing again cured it: encryption
   completed and notifications arrived. One case is not proof for every
   phone and adapter, so the warning says "may".
-- On BlueZ older than 5.84 (or without the LE bearer interface), BlueFerry
-  falls back to polling every 5 seconds. Detection is then slower (180 s
-  window, 9 minutes of persistence) and only samples the drops.
+- Detection needs BlueZ 5.84 or newer with its LE bearer interface. Older
+  BlueZ cannot tell the LE link apart, so nothing is detected there. If the
+  disconnect signal cannot be watched, BlueFerry samples the LE link every
+  5 seconds instead; detection is then slower (180 s window, 9 minutes of
+  persistence) and only sees some of the drops.
+- The warning clears once the phone has been away for two minutes, once no
+  short LE drop was seen for 10 minutes, or after pairing again.
 
 ## Privacy
 

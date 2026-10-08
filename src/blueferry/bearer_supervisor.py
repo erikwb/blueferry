@@ -64,14 +64,20 @@ LE_FLAP_MAX_LINK_SECONDS = 5
 # The burst must sustain the threshold rate, without a gap longer than the
 # window, for this long before the bond is reported as suspect.
 LE_FLAP_PERSIST_SECONDS = 180
-# Without BlueZ's Bearer.LE1.Disconnected signal (before 5.84) only the
-# five-second polling sees flaps, and it samples at most one transition per
-# two polls. Use wider windows so the same threshold remains reachable.
+# If the Bearer.LE1.Disconnected watch cannot be installed, the five-second
+# polling of Bearer.LE1.Connected sees the flaps instead, sampling at most one
+# transition per two polls. Use wider windows so the same threshold remains
+# reachable. Without bearer interfaces (BlueZ before 5.84) LE reads unknown,
+# so nothing is detected.
 POLLED_LE_FLAP_WINDOW_SECONDS = 180
 POLLED_LE_FLAP_PERSIST_SECONDS = 540
 # Reported suspicion expires once Classic has been gone this long: the phone
 # is away, and the report would otherwise say "re-pair" all day.
 LE_SUSPECT_ABSENT_EXPIRY_SECONDS = 120
+# A stale bond keeps the LE link cycling while the phone is near. Once no
+# short drop was seen for this long, the evidence is gone and the report
+# expires, also when LE simply stays down while Classic is up.
+LE_SUSPECT_QUIET_EXPIRY_SECONDS = 600
 _COUNTED_LE_DISCONNECT_REASONS = frozenset({"timeout", "remote", "authentication"})
 # Ignore BlueZ Local-reason drops this soon after BlueFerry's own Disconnect.
 OWN_LE_DISCONNECT_GRACE_SECONDS = 10
@@ -298,6 +304,8 @@ class BearerSupervisor:
         self._le_bond_suspect = False
         self._le_disconnect_signal_seen = False
         self._le_link_up_at: float | None = None
+        self._le_last_drop_at: float | None = None
+        self._le_last_polled_drop_at: float | None = None
         self._last_le_disconnect_reason = ""
         self._own_le_disconnect_at: float | None = None
 
@@ -515,9 +523,23 @@ class BearerSupervisor:
         """Handle org.bluez.Bearer.LE1.Disconnected(name, message)."""
         if not self._running:
             return
+        first_signal = not self._le_disconnect_signal_seen
         self._le_disconnect_signal_seen = True
         reason = _LE_DISCONNECT_REASONS.get(str(name), "unknown")
         now = self._clock()
+        polled = self._le_last_polled_drop_at
+        if (
+            first_signal
+            and polled is not None
+            and now - polled <= POLL_SECONDS * 2
+            and self._le_flaps
+            and self._le_flaps[-1] == polled
+        ):
+            # Polling counted this very drop before the first signal arrived;
+            # the signal, with its reason and link age, replaces that count.
+            self._le_flaps.pop()
+            self._le_flap_count = max(0, self._le_flap_count - 1)
+        self._le_last_polled_drop_at = None
         up_at, self._le_link_up_at = self._le_link_up_at, None
         lifetime = None if up_at is None else now - up_at
         if reason == "suspend":
@@ -552,9 +574,6 @@ class BearerSupervisor:
             # clears Paired on disconnect only for unbonded pairings. A removed
             # bond stops the daemon through its periodic bond check instead.
             self._clear_le_flaps("iPhone bond changed")
-            self._le_dial_spent = False
-            if self._running:
-                self._tick()
 
     def _record_le_drop(self, lifetime: float | None, reason: str | None) -> None:
         """Count one LE drop towards a stale-bond burst, or break the burst.
@@ -606,6 +625,9 @@ class BearerSupervisor:
             self._le_burst_started_at = now
         burst_started = self._le_burst_started_at
         self._le_flaps.append(now)
+        self._le_last_drop_at = now
+        if not signal:
+            self._le_last_polled_drop_at = now
         while self._le_flaps and now - self._le_flaps[0] > window:
             self._le_flaps.popleft()
         self._le_flap_count += 1
@@ -683,6 +705,12 @@ class BearerSupervisor:
             and now - self._bredr_lost_at >= LE_SUSPECT_ABSENT_EXPIRY_SECONDS
         ):
             self._clear_le_flaps("iPhone away")
+        if (
+            self._le_bond_suspect
+            and self._le_last_drop_at is not None
+            and now - self._le_last_drop_at >= LE_SUSPECT_QUIET_EXPIRY_SECONDS
+        ):
+            self._clear_le_flaps("no short LE drops for a while")
         if self._le_bond_suspect and not self._le_bond_detection_active():
             self._clear_le_flaps("detection no longer applies")
 

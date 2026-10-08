@@ -79,9 +79,15 @@ Telefon ist fort). Der Abbruchzähler fällt nach einer ruhigen Minute auf 0.
   neues Koppeln es behoben: Die Verschlüsselung kam zustande und
   Mitteilungen kamen an. Ein Fall ist kein Beweis für jedes Telefon und
   jeden Adapter, deshalb sagt die Warnung „kann“.
-- Unter BlueZ älter als 5.84 (oder ohne LE-Bearer-Schnittstelle) fragt
-  BlueFerry ersatzweise alle 5 Sekunden ab. Die Erkennung ist dann langsamer
-  (180-s-Fenster, 9 Minuten Dauer) und sieht nur Stichproben der Abbrüche.
+- Die Erkennung braucht BlueZ 5.84 oder neuer mit LE-Bearer-Schnittstelle.
+  Älteres BlueZ kann die LE-Verbindung nicht unterscheiden, dort wird nichts
+  erkannt. Lässt sich das Trennungssignal nicht beobachten, fragt BlueFerry
+  die LE-Verbindung ersatzweise alle 5 Sekunden ab. Die Erkennung ist dann
+  langsamer (180-s-Fenster, 9 Minuten Dauer) und sieht nur einen Teil der
+  Abbrüche.
+- Die Warnung verschwindet, wenn das Telefon zwei Minuten weg war, wenn
+  10 Minuten lang kein kurzer LE-Abbruch mehr kam, oder nach einer
+  Neukopplung.
 
 ## Datenschutz
 

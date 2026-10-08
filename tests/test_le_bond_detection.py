@@ -17,6 +17,7 @@ from blueferry.bearer_supervisor import (
     LE_FLAP_THRESHOLD,
     LE_FLAP_WINDOW_SECONDS,
     LE_SUSPECT_ABSENT_EXPIRY_SECONDS,
+    LE_SUSPECT_QUIET_EXPIRY_SECONDS,
     POLL_SECONDS,
     POLLED_LE_FLAP_PERSIST_SECONDS,
     STABLE_CONNECTION_SECONDS,
@@ -356,6 +357,57 @@ def test_a_new_bond_clears_the_suspicion_but_a_removed_key_does_not() -> None:
 
     h.on_properties("org.bluez.Device1", {"Bonded": True}, [])
     assert not h.supervisor.le_bond_suspect
+
+
+def test_a_new_bond_only_clears_the_report() -> None:
+    # Report-only: a new bond must not trigger a dial or an extra check.
+    h = _Harness()
+    h.supervisor.start()
+    _burst(h, LE_FLAP_PERSIST_SECONDS + 10)
+    # The one outbound LE dial is spent; only solicitation may reconnect.
+    h.supervisor._le_dial_spent = True
+    connections, scheduled = list(h.connections), list(h.scheduled)
+
+    h.on_properties("org.bluez.Device1", {"Bonded": True}, [])
+
+    assert not h.supervisor.le_bond_suspect
+    assert h.supervisor._le_dial_spent is True
+    assert h.connections == connections
+    assert h.scheduled == scheduled
+
+
+def test_the_report_expires_when_le_stays_down_while_classic_is_up() -> None:
+    h = _Harness()
+    h.supervisor.start()
+    _burst(h, LE_FLAP_PERSIST_SECONDS + 10)
+    assert h.supervisor.le_bond_suspect
+
+    _poll_for(h, LE_SUSPECT_QUIET_EXPIRY_SECONDS - 2 * POLL_SECONDS)
+    assert h.supervisor.le_bond_suspect
+    _poll_for(h, 3 * POLL_SECONDS)
+
+    assert not h.supervisor.le_bond_suspect
+    assert h.supervisor.snapshot()["le_flap_count"] == 0
+
+
+def test_the_first_signal_does_not_count_a_polled_drop_twice() -> None:
+    h = _Harness()
+    h.supervisor.start()
+    # A two-second link: polling sees it up, then down, before BlueZ's
+    # first Disconnected signal for that very drop arrives.
+    h.link_up()
+    h.state["le"] = True
+    h.clock.now += 1
+    h.poll()
+    h.state["le"] = False
+    h.clock.now += 1
+    h.poll()
+    assert h.supervisor.snapshot()["le_flap_count"] == 1
+
+    h.clock.now += 0.5
+    h.on_disconnected(TIMEOUT, "Connection timeout")
+
+    assert h.supervisor.snapshot()["le_flap_count"] == 1
 
 
 def test_walking_away_and_back_is_not_a_broken_bond() -> None:
