@@ -704,6 +704,11 @@ class CallController:
             self._cancel_timer("_bringup_id")
             if self._bound_path != modem.path:
                 self._bind(modem.path)
+            if self._bound_path != modem.path:
+                # Online alone is insufficient: without call-manager watches
+                # the controller cannot accept operations or track calls.
+                self._set_state(CALLS_CONNECTING)
+                return
             self._set_state(CALLS_READY)
             return
         if self._bound_path is not None:

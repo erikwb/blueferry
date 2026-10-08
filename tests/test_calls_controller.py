@@ -236,6 +236,37 @@ def test_missing_system_bus_keeps_the_daemon_running() -> None:
     assert [p.method for p in transport.pending] == ["GetModems"]
 
 
+@pytest.mark.parametrize("failed_signal", ["CallAdded", "CallRemoved"])
+def test_failed_call_binding_stays_connecting_until_retry(monkeypatch, failed_signal) -> None:
+    controller, transport, timers, *_ = _build()
+    original = transport.watch
+    failing = [True]
+
+    def watch(handler, *, interface, signal, path=None):
+        if failing[0] and interface == VOICE_CALL_MANAGER_IFACE and signal == failed_signal:
+            raise _missing("org.freedesktop.DBus.Error.NoServer")
+        return original(handler, interface=interface, signal=signal, path=path)
+
+    monkeypatch.setattr(transport, "watch", watch)
+    controller.start()
+    ready = _modem(True, True, [VOICE_CALL_MANAGER_IFACE])
+    transport.take("GetModems").on_reply([ready])
+    assert controller.available is False
+    assert controller.state == CALLS_CONNECTING
+    assert all(m.removed for m in transport.matches if m.interface == VOICE_CALL_MANAGER_IFACE)
+    assert not any(p.method == "GetCalls" for p in transport.pending)
+
+    failing[0] = False
+    timers.fire_all()
+    transport.take("GetModems").on_reply([ready])
+    transport.take("GetCalls").on_reply([])
+    assert controller.available is True
+    assert controller.state == CALLS_READY
+    transport.emit(VOICE_CALL_MANAGER_IFACE, "CallAdded", MODEM,
+                   dbus.ObjectPath(CALL), {"State": "incoming"})
+    assert controller.in_call is True
+
+
 def test_absent_modem_backs_off_then_polls_steadily() -> None:
     controller, transport, timers, _changes, _events = _build()
     controller.start()
