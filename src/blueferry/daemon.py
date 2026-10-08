@@ -148,6 +148,8 @@ class Daemon:
             self._new_media() if self.media_settings.enabled else None
         )
         self._media_device_path: str | None = None
+        # True while a runtime opt-out still waits for its StopNotify replies.
+        self._media_releasing = False
         self.ams: AmsClient | None = None
         self.adapter_class = AdapterClassSupervisor(config.ADAPTER)
         self.solicitation = SolicitationSupervisor(config.ADAPTER)
@@ -446,7 +448,10 @@ class Daemon:
             # needs the controller.
             ams, self.ams = self.ams, None
             if ams is not None:
-                ams.stop()
+                # Disable the phone's CCCs so a later opt-in gets the command
+                # list again; a new client waits until that is done.
+                self._media_releasing = True
+                ams.stop(release=True, on_released=self._media_released)
             media, self.media = self.media, None
             media.close()
         log.info("iPhone media control %s", "enabled" if selected else "disabled")
@@ -460,10 +465,21 @@ class Daemon:
             self.media.handle_availability(available)
         self._emit_status()
 
+    def _media_released(self) -> None:
+        self._media_releasing = False
+        # Runs synchronously when nothing had to be released, while the
+        # opt-out is still tearing down; only a renewed opt-in starts again.
+        if (
+            self.media_settings.enabled
+            and self.media is not None
+            and self._media_device_path is not None
+        ):
+            self._start_media(self._media_device_path)
+
     def _start_media(self, device_path: str) -> None:
         # Remembered so a later runtime opt-in can start on the same device.
         self._media_device_path = device_path
-        if self.media is None or self.ams is not None:
+        if self.media is None or self.ams is not None or self._media_releasing:
             return
         if not config.ANCS_ENABLED:
             log.info("iPhone media control needs the LE link; compatibility mode disables it")

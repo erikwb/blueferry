@@ -404,6 +404,46 @@ def test_stop_is_inert_afterwards(harness) -> None:
     client.stop()
 
 
+def test_runtime_opt_out_releases_the_notifications_on_a_steady_link(harness) -> None:
+    """Review #207: iOS resends its command list only on a CCC write."""
+    client, bus, timers, *_ = harness
+    _subscribe(client, bus, timers)
+    released = []
+
+    client.stop(release=True, on_released=lambda: released.append(True))
+
+    assert sorted(bus.pending()) == sorted([("StopNotify", RC), ("StopNotify", EU)])
+    bus.take("StopNotify", RC).succeed()
+    assert released == []
+    bus.take("StopNotify", EU).fail(name="org.bluez.Error.Failed")
+    assert released == [True]
+
+
+def test_opt_out_never_releases_while_the_link_is_down_or_subscribing(harness) -> None:
+    client, bus, timers, *_ = harness
+    _subscribe(client, bus, timers)
+    client.observe_bearer_state(False)
+    released = []
+    client.stop(release=True, on_released=lambda: released.append(True))
+    assert "StopNotify" not in [call.method for call in bus.calls]
+    assert released == [True]
+
+    bus2, timers2 = _Bus(), _Timers()
+    subscribing = AmsClient(
+        DEVICE, on_update=lambda _u: None, on_supported_commands=lambda _c: None,
+        on_availability=lambda _a: None, bus_factory=lambda: bus2,
+        schedule=timers2.schedule, cancel=timers2.cancel,
+    )
+    subscribing.observe_bearer_state(True)
+    subscribing.start()
+    bus2.take("GetManagedObjects").succeed(_objects())
+    timers2.run_all()
+    bus2.take("StartNotify", RC).succeed()  # EU still in flight
+    subscribing.stop(release=True, on_released=lambda: released.append(True))
+    assert "StopNotify" not in [call.method for call in bus2.calls]
+    assert released == [True, True]
+
+
 def test_characteristic_removed_and_added_during_settle_resubscribes(harness) -> None:
     client, bus, timers, *_ = harness
     client.observe_bearer_state(True)

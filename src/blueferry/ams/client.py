@@ -12,10 +12,13 @@ daemon's GLib loop is never blocked, and all GATT operations are serialized
 through one bounded queue. Replies that arrive after a bearer reset, a BlueZ
 owner change or ``stop()`` are discarded by generation.
 
-Like the ANCS client, this client never calls ``StopNotify``: bluetoothd 5.87
-crashes when a CCC enable completes after its registration was freed during
-an LE flap (see PROTOCOL.md). Registrations are released when the daemon's
-D-Bus connection closes.
+Like the ANCS client, this client never calls ``StopNotify`` on a dropped or
+flapping link: bluetoothd 5.87 crashes when a CCC enable completes after its
+registration was freed during an LE flap (see PROTOCOL.md). The one exception
+is a deliberate runtime opt-out on a steady link with no subscription in
+flight (``stop(release=True)``): iOS sends its command list only on a CCC
+write, so a later opt-in must find the CCC disabled. Otherwise registrations
+are released when the daemon's D-Bus connection closes.
 """
 from __future__ import annotations
 
@@ -187,10 +190,28 @@ class AmsClient:
         if self._bearer_connected is True:
             self._schedule_settle()
 
-    def stop(self) -> None:
+    def stop(
+        self,
+        *,
+        release: bool = False,
+        on_released: Callable[[], None] | None = None,
+    ) -> None:
+        """Stop the client; with ``release``, also disable the phone's CCCs.
+
+        ``on_released`` runs once the StopNotify replies are in (or at once
+        when nothing is released), so a new client never overlaps them.
+        """
         if not self._started:
+            if on_released is not None:
+                on_released()
             return
         log.info("AMS client stopping")
+        released = (
+            tuple(self._owned_notify_paths)
+            if release and self._bearer_connected is True and not self._subscribing
+            else ()
+        )
+        self._release_notifications(released, on_released)
         self._started = False
         self._bearer_ready = False
         self._cancel_settle()
@@ -199,6 +220,37 @@ class AmsClient:
         self._forget_characteristics()
         self._remove_matches(self._manager_matches)
         self._manager_generation += 1
+
+    def _release_notifications(
+        self, paths: tuple[str, ...], on_released: Callable[[], None] | None,
+    ) -> None:
+        """StopNotify ``paths`` on the steady link; report when all replied."""
+        pending = set(paths)
+
+        def done(path: str) -> None:
+            pending.discard(path)
+            if not pending and on_released is not None:
+                on_released()
+
+        if not pending:
+            if on_released is not None:
+                on_released()
+            return
+        log.info("AMS opted out; releasing the phone's media notifications")
+        for path in paths:
+            def failed(error, path=path) -> None:
+                log.debug("AMS StopNotify failed: %s", _error_name(error))
+                done(path)
+
+            try:
+                self._characteristic(path).StopNotify(
+                    dbus_interface=_GATT_CHAR,
+                    reply_handler=lambda path=path: done(path),
+                    error_handler=failed,
+                    timeout=DBUS_CALL_TIMEOUT_SECONDS,
+                )
+            except Exception as error:  # a vanished object or bus
+                failed(error)
 
     def observe_bearer_state(self, connected: bool | None) -> None:
         previous = self._bearer_connected

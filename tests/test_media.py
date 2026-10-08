@@ -298,8 +298,10 @@ class _FakeAms:
     def start(self) -> None:
         self.started = True
 
-    def stop(self) -> None:
+    def stop(self, *, release=False, on_released=None) -> None:
         self.stopped = True
+        self.release = release
+        self.on_released = on_released
 
 
 def test_enabled_media_follows_the_shared_le_bearer(make_daemon, monkeypatch) -> None:
@@ -361,6 +363,64 @@ def test_media_can_be_enabled_and_disabled_at_runtime(make_daemon, monkeypatch) 
     # A restarted daemon keeps the saved choice.
     instance._set_media_control(True)
     assert make_daemon().media is not None
+
+
+def test_opt_in_right_after_an_opt_out_waits_for_the_release(make_daemon, monkeypatch) -> None:
+    monkeypatch.setattr(daemon_mod.config, "ANCS_ENABLED", True)
+    monkeypatch.setattr(daemon_mod, "AmsClient", _FakeAms)
+    instance = make_daemon()
+    monkeypatch.setattr(instance, "_emit_status", lambda: None)
+    instance._start_media("/device")
+    instance._set_media_control(True)
+    first = instance.ams
+
+    instance._set_media_control(False)
+    assert first.release is True
+    instance._set_media_control(True)
+    # The old client's StopNotify replies are still outstanding.
+    assert instance.ams is None
+
+    first.on_released()
+    assert isinstance(instance.ams, _FakeAms) and instance.ams is not first
+    assert instance.ams.started
+
+
+def test_a_release_without_a_new_opt_in_starts_nothing(make_daemon, monkeypatch) -> None:
+    monkeypatch.setattr(daemon_mod.config, "ANCS_ENABLED", True)
+    monkeypatch.setattr(daemon_mod, "AmsClient", _FakeAms)
+    instance = make_daemon()
+    monkeypatch.setattr(instance, "_emit_status", lambda: None)
+    instance._start_media("/device")
+    instance._set_media_control(True)
+    first = instance.ams
+    instance._set_media_control(False)
+
+    first.on_released()
+
+    assert instance.ams is None and instance.media is None
+
+
+def test_an_immediate_release_during_the_opt_out_starts_nothing(make_daemon, monkeypatch) -> None:
+    # Nothing to release (link down): the real client reports at once,
+    # while the daemon is still tearing the old controller down.
+    class _ImmediateAms(_FakeAms):
+        def stop(self, *, release=False, on_released=None) -> None:
+            super().stop(release=release, on_released=on_released)
+            if on_released is not None:
+                on_released()
+
+    monkeypatch.setattr(daemon_mod.config, "ANCS_ENABLED", True)
+    monkeypatch.setattr(daemon_mod, "AmsClient", _ImmediateAms)
+    instance = make_daemon()
+    monkeypatch.setattr(instance, "_emit_status", lambda: None)
+    instance._start_media("/device")
+    instance._set_media_control(True)
+
+    instance._set_media_control(False)
+
+    assert instance.ams is None and instance.media is None
+    instance._set_media_control(True)
+    assert instance.ams is not None and instance.ams.started
 
 
 def test_runtime_opt_in_before_bluetooth_init_waits_for_it(make_daemon, monkeypatch) -> None:
