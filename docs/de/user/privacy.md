@@ -16,7 +16,9 @@ Auf der iPhone-Seite des Clients wählst du einen von drei Modi:
 Mitteilungen anderer Apps werden angezeigt und danach verworfen. Sie landen
 nie im Nachrichtenverlauf und werden nie an andere Programme verteilt.
 Nachrichten, die sowohl über MAP als auch über ANCS ankommen, erscheinen nur
-einmal.
+einmal. Die ANCS-Kopie einer Mitteilung aus Apple Messages (Titel, Untertitel
+und höchstens die ersten 1024 Byte des Texts) bleibt im lokalen Verlauf, im unten
+gewählten Speichermodus, weil sie die Gruppenangaben enthält, die MAP fehlen.
 
 Standardmäßig markiert das Schließen einer Nachrichtenmitteilung die
 Nachricht auch auf dem iPhone als gelesen. Manche „Nicht stören“- oder

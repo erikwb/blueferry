@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from blueferry import grouping
+from blueferry.ancs.constants import ANCS_MESSAGE_CAPS_REQUESTED, ANCS_MESSAGE_MAX_BYTES
 from blueferry.grouping import (
     correlate_group_events,
     group_members_from_ancs,
@@ -414,3 +417,46 @@ def test_conflicting_verified_group_routes_are_not_collapsed() -> None:
     ]
 
     assert len(groups) == 2
+
+
+def _group_burst(ancs_body: str, map_body: str) -> dict:
+    events = [
+        _sms("bob@icloud.com", None, map_body, "2026-08-08T16:18:34+00:00"),
+        _ancs("Bob", "To you & Alice", ancs_body, "2026-08-08T16:18:37+00:00"),
+    ]
+    return correlate_group_events(events)[0]
+
+
+@pytest.mark.parametrize("cap", ANCS_MESSAGE_CAPS_REQUESTED)
+def test_long_map_body_matches_an_ancs_body_cut_at_any_requested_cap(cap) -> None:
+    # 256 is what rows stored by older releases carry; 1024 is the current cap.
+    body = ("long group message " * 200)[:3000]
+    assert _group_burst(body[:cap], body)["group_name"] == "Alice, Bob"
+
+
+def test_current_cap_is_one_of_the_correlated_caps() -> None:
+    assert ANCS_MESSAGE_MAX_BYTES in ANCS_MESSAGE_CAPS_REQUESTED
+
+
+def test_body_cut_short_of_a_cap_is_not_a_prefix_match() -> None:
+    body = "x" * 3000
+    assert _group_burst(body[:900], body).get("group_name") is None
+
+
+@pytest.mark.parametrize("cap", ANCS_MESSAGE_CAPS_REQUESTED)
+def test_multibyte_body_cut_at_a_byte_cap_on_a_character_boundary(cap) -> None:
+    # iOS caps attributes in UTF-8 bytes; "ä" is two bytes and "😀" four, so
+    # the cut lands short of the cap on a character boundary.
+    body = "ä😀" * 1000
+    cut = body.encode("utf-8")[:cap].decode("utf-8", errors="ignore")
+    assert len(cut.encode("utf-8")) < cap
+    assert _group_burst(cut, body)["group_name"] == "Alice, Bob"
+
+
+def test_multibyte_body_cut_inside_a_character_still_matches() -> None:
+    # A cut inside a character reaches the parser as U+FFFD.
+    body = "a" + "😀" * 1000
+    raw = body.encode("utf-8")[:ANCS_MESSAGE_MAX_BYTES]
+    cut = raw.decode("utf-8", errors="replace")
+    assert cut.endswith("�")
+    assert _group_burst(cut, body)["group_name"] == "Alice, Bob"

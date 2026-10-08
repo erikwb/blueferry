@@ -9,11 +9,18 @@ from typing import Any, Protocol
 
 from blueferry.i18n import _
 from blueferry.models import BackendStatus
+from blueferry.service_manager import bluetooth_restart_command
 from blueferry.setup_verification import remaining_iphone_setup_tasks
 
 ANCS_REPAIR_HINT = _(
     "FYI: If ANCS remains unavailable, BlueZ may be retaining stale "
-    "Bluetooth state. Try running sudo systemctl restart bluetooth.service, "
+    "Bluetooth state. Try running {command}, "
+    "then wait for BlueFerry to reconnect. This briefly disconnects all "
+    "Bluetooth devices."
+)
+ANCS_REPAIR_HINT_GENERIC = _(
+    "FYI: If ANCS remains unavailable, BlueZ may be retaining stale "
+    "Bluetooth state. Try restarting the Bluetooth service, "
     "then wait for BlueFerry to reconnect. This briefly disconnects all "
     "Bluetooth devices."
 )
@@ -26,7 +33,10 @@ ANCS_REPAIR_HINT_CLI = _(
 def ancs_unavailable_detail(*, limited: bool = False, vendor: str = "") -> str:
     """Explain missing iPhone notifications after messages and contacts work."""
     if not limited:
-        return ANCS_REPAIR_HINT
+        command = bluetooth_restart_command()
+        if command is None:
+            return ANCS_REPAIR_HINT_GENERIC
+        return ANCS_REPAIR_HINT.format(command=command)
     name = str(vendor or "").strip()
     if name:
         return _(

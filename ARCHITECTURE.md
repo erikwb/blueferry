@@ -52,10 +52,11 @@ All paths are relative to `src/blueferry/` unless noted.
 | `limits.py` | Central safety and resource limits. |
 | `errors.py` | Application error hierarchy shared across transport and presentation. |
 | `commands.py` | The only path for running external commands (argv, absolute paths, normalized failures). |
+| `service_manager.py` | Detects the init system; maps backend start/restart/stop onto `systemctl --user`, `rc-service --user`, or D-Bus activation plus bus-verified SIGTERM. |
 | `config.py` | Environment-backed configuration (`local.env`) and private runtime paths. |
 | `private_files.py` | Race-resistant owner-only reads and atomic writes for small files. |
 | `build_info.py` | Package release + source-SHA build identity. |
-| `wireplumber_policy.py` | Manages one WirePlumber fragment that keeps iPhone audio on the phone. |
+| `wireplumber_policy.py` | Manages one WirePlumber fragment that keeps iPhone audio on the phone (keeps the hands-free roles when calls are enabled). |
 | `proximity_lock.py` | Opt-in lock-only desktop lock after the iPhone's bearers stay down for a grace period; lock dispatch via ScreenSaver, then logind. |
 
 ### Bluetooth transports and supervision
@@ -86,14 +87,18 @@ All paths are relative to `src/blueferry/` unless noted.
 | `bluez_setup.py` | Adapter preparation: Class-of-Device and the ANCS solicitation advertisement. |
 | `bluetooth_capabilities.py` | Controller capability probing and packaged BlueZ activation. |
 | `bluetooth_devices.py` | Typed BlueZ device projection for setup and clients. |
+| `calls/settings.py` | Saved phone-calls opt-in (`settings.json`, seeded by `BLUEFERRY_CALLS_ENABLED`). |
+| `calls/model.py` | Optional HFP calls: pure oFono property parsing, modem selection, dial/DTMF/call-id validation. |
+| `calls/ofono.py` | Asynchronous oFono system-bus transport (hand-built calls with NO_AUTO_START, no synchronous owner lookup). |
+| `calls/controller.py` | Optional HFP calls: oFono modem discovery, Powered→Online bring-up, call tracking and control, backoff. |
 
 ### Sinks
 
 | Module | Responsibility |
 | --- | --- |
-| `sinks/__init__.py` | Sink protocol: `handle(event)` plus optional `handle_ancs`. |
+| `sinks/__init__.py` | Sink protocol: `handle(event)` plus optional `handle_ancs` and `handle_call` (optional HFP calls, desktop UI only). |
 | `sinks/sqlite.py` | Persists events to the private history store. |
-| `sinks/libnotify.py` | Desktop notifications via `org.freedesktop.Notifications`, including open and dismiss actions. |
+| `sinks/libnotify.py` | Desktop notifications via `org.freedesktop.Notifications`, including open and dismiss actions and optional incoming-call Answer/Decline. |
 
 ### Storage and privacy
 
@@ -142,8 +147,10 @@ All paths are relative to `src/blueferry/` unless noted.
 | `cli_messages.py` | CLI message listing, recipient selection, and send. |
 | `cli_common.py` | Small CLI presentation helpers. |
 | `cli_proximity.py` | `proximity-lock` status, dry run, enable, and disable. |
+| `cli_calls.py` | Optional `blueferry calls` commands over `Calls1`. |
 | `tui.py` | Textual terminal client. |
 | `tui_launcher.py` | Launches the TUI with the package-private Textual bundle when present. |
+| `tui_calls.py` | Optional Textual calls panel. |
 | `ui/app.py` | GTK4/libadwaita application entry point. |
 | `ui/window.py` | Main GTK window. |
 | `ui/conversations.py` | GTK conversations page: history, group confirmation, replies. |
@@ -164,6 +171,8 @@ All paths are relative to `src/blueferry/` unless noted.
 | `qt/qml/ProximityLockSettings.qml` | Away-lock toggle, grace period, and warning; loaded only for daemons that report it. |
 | `qt/qml/GroupConfirmationDialog.qml` | Group recipient confirmation before sending. |
 | `qt/qml/NewMessageDialog.qml` | New message composition. |
+| `qt/qml/CallsDialog.qml` | Optional phone-calls dialog (list, dial with confirmation, answer, hang up). |
+| `qt/qml/PhoneCallsSettings.qml` | Phone-calls opt-in checkbox; loaded only for daemons that report `calls_enabled`. |
 | `qt/qml/ExpandingMessageComposer.qml` | Growing message editor. |
 | `qt/qml/MessageBubble.qml` | Message bubble. |
 | `quickshell_bridge.py` | Persistent stdin/stdout JSON bridge from Quickshell to the session D-Bus API. |
@@ -211,6 +220,16 @@ contract.
   controls that are not messaging (the opt-in away lock); their state is
   reported through `Messages1.GetStatus`, and the compatibility check runs
   through `Messages1` on the same owner. Identifiers live in `protocol.py`.
+- `Calls1` is the optional, default-off HFP call interface. It is always
+  exported because it also carries the opt-in itself, `SetCallsEnabled`
+  (saved in `settings.json`, `BLUEFERRY_CALLS_ENABLED` only seeds it); while
+  calls are off its other methods fail with `CallsDisabled`, `GetStatus`
+  reports only `calls_enabled=false`, and a missing oFono or modem yields
+  `CallsUnavailable`.
+  Its `CallsChanged` invalidation on `Events1` has no arguments; caller
+  numbers and names are only returned by the rate-limited `ListCalls`.
+  Dialing has its own strict quota. Adding it did not change the API
+  generation.
 - `data/io.weirdware.BlueFerry.xml` is canonical, installed under
   `dbus-1/interfaces`, and checked against the service's dbus-python
   decorators.
@@ -300,6 +319,9 @@ contract.
 - **Quickshell**: QML has no generic D-Bus client, so one persistent
   `quickshell_bridge` process handles all messaging, contact, status, and
   preference requests over stdin. Private data never goes in process argv.
+  It sends a `host` event at startup, and its `status` replies also carry
+  `bluetooth_restart_command`: the host's BlueZ restart command (`""` when
+  unknown), used in the ANCS repair hint even while the daemon is down.
   Setup uses the separate short-lived `pairing-*` helpers, because setup
   happens before the daemon is available. Quickshell sends the displayed
   roster token so the backend can reject stale routes. Superseded or
@@ -404,6 +426,42 @@ A change to these rules has to be made in both places.
 - **Read receipts** go through `read_receipts`, which delays MAP write-back so
   ANCS can still fetch group metadata. Local reads take effect immediately.
 
+## Optional phone calls
+
+- `calls.controller` only observes and drives oFono on the system bus; BlueZ
+  and PipeWire/WirePlumber own the HFP profile and SCO audio. oFono is an
+  optional runtime service: `ServiceUnknown` means "unavailable", retried
+  every 60 s and immediately on an `org.ofono` owner change. Calls carry
+  NO_AUTO_START, so BlueFerry never makes the bus activate oFono. oFono's
+  shipped D-Bus policy only admits root and `at_console`; `AccessDenied` is
+  also "unavailable" and logged once.
+- `Dial` accepts plain numbers only (`+` and digits); `*`/`#` service codes
+  are rejected so a caller cannot reconfigure the phone (for example call
+  forwarding). Keypad symbols remain available as DTMF on an active call.
+  Well-known emergency numbers are refused (they belong on the phone), and
+  every client confirms a number before dialing. `Answer`/`HoldAndAnswer`
+  have their own quota; hanging up is never blocked by it.
+- The modem must end in the configured iPhone's `dev_…` path and be of type
+  `hfp`; the configured adapter wins, then Online, then Powered. iOS needs
+  `Powered=true`, a confirming `PropertyChanged`, then `Online=true`.
+  `Powered` is only requested while the Classic bearer is connected, so an
+  absent phone is not paged; bearer status changes poke the controller.
+- Discovery and bring-up back off 1/2/4/8/15 s, then poll every 30 s; a
+  30 s watchdog retries a modem that never confirms. Replies and signals
+  carry a generation, so an oFono restart or modem removal drops stale
+  state; control replies still reach their D-Bus caller.
+- If a `Powered=true` bring-up times out or is rejected while bluetoothd's
+  own experimental HFP plugin is active (`-E` without `-P hfp`, read from
+  bluetoothd's argv by process name), the state becomes `bluez_conflict`
+  and paging stops until the Classic link returns or oFono makes progress.
+- `stop()` (daemon exit or switching calls off) sends `Powered=false`,
+  flushed and without awaiting a reply, for the modem BlueFerry powered
+  itself; a modem another oFono client powered is left alone.
+- While the phone reports any call, Bluetooth recovery treats the link as
+  busy and does not power-cycle the adapter.
+- Call events go to local desktop sinks only (`handle_call`); they are not
+  persisted and nothing about them is broadcast except `CallsChanged`.
+
 ## Storage and privacy
 
 - **Remote input is untrusted.** Names, vCards, notification text,
@@ -459,12 +517,23 @@ A change to these rules has to be made in both places.
   activated. It is autostarted through a package-owned
   `default.target.wants` link and skipped by `ConditionPathExists` when no
   pairing configuration exists.
+- Without systemd, `service_manager` treats the session bus as the service
+  manager: start is D-Bus activation, and stop signals the same-user process
+  the bus daemon reports as the name owner (SIGTERM, SIGKILL after 180
+  seconds), then waits for the name to disappear. The caller's timeout bounds
+  the whole request; when it ends first the request fails with SIGTERM still
+  in effect, like a timed-out `systemctl stop`. A host booted with systemd
+  but without `/usr/bin/systemctl` (NixOS) takes this path too. Only a running or enabled
+  OpenRC user service (`packaging/openrc/blueferry`) on the desktop's own bus
+  is driven through `rc-service --user`. Neither path has the unit's
+  sandboxing.
 - D-Bus is published before hardware work, and `GetStatus` reports
   `initializing` and degraded state explicitly.
 - Packages install release and source-SHA markers. The daemon publishes them
   as `_build_id` and exits with status 75 when the markers change, so systemd
-  restarts it. Clients compare `_build_id` and fall back to a serialized
-  restart. Package scripts never address other users' service managers.
+  (or OpenRC's supervisor) restarts it. Clients compare `_build_id` and fall
+  back to a serialized restart. Package scripts never address other users'
+  service managers.
 - All external commands go through `commands.run_command`. Lifecycle tests
   replace marker reads and command runners, so they can never restart a real
   service.

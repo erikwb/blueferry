@@ -118,6 +118,7 @@ package_blueferry-backend() {
     'python-typer>=0.12'
     'systemd'
   )
+  optdepends=('ofono: experimental phone calls (off by default)')
   cd "$pkgbase-$pkgver"
   install -d "$pkgdir/$_site"
   cp -a "$srcdir/$_stage/$_site/blueferry" "$pkgdir/$_site/"

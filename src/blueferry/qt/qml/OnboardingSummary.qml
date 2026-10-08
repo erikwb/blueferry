@@ -9,6 +9,8 @@ Kirigami.InlineMessage {
     required property var status
     property string storagePolicy: ""
     property string storageState: ""
+    // Supplied by the controller for the host's init system; empty if unknown.
+    property string bluetoothRestartCommand: "sudo systemctl restart bluetooth.service"
 
     visible: true
     text: htmlEscape(titleForStage()) + "\n"
@@ -103,8 +105,10 @@ Kirigami.InlineMessage {
     }
 
     function ancsUnavailableHint() {
+        if (!ancsLimitedController() && root.bluetoothRestartCommand === "")
+            return qsTr("FYI: If ANCS remains unavailable, BlueZ may be retaining stale Bluetooth state. Try restarting the Bluetooth service, then wait for BlueFerry to reconnect. This briefly disconnects all Bluetooth devices.")
         if (!ancsLimitedController())
-            return qsTr("FYI: If ANCS remains unavailable, BlueZ may be retaining stale Bluetooth state. Try running sudo systemctl restart bluetooth.service, then wait for BlueFerry to reconnect. This briefly disconnects all Bluetooth devices.")
+            return qsTr("FYI: If ANCS remains unavailable, BlueZ may be retaining stale Bluetooth state. Try running %1, then wait for BlueFerry to reconnect. This briefly disconnects all Bluetooth devices.").arg(root.bluetoothRestartCommand)
         return ancsLimitedDetail()
     }
 }
