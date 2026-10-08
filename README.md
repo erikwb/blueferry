@@ -944,8 +944,8 @@ While it is **on**:
 
 - A tether started elsewhere is shown as active in BlueFerry and can be
   turned off from it.
-- While a tether link demonstrably exists (its network interface is present),
-  BlueFerry skips its last-resort Bluetooth adapter power cycle so it does not
+- While a tether link demonstrably exists (its network interface is present,
+  also after udev renamed `bnep0` to a predictable name), BlueFerry skips its last-resort Bluetooth adapter power cycle so it does not
   cut your connection. This applies to applet-started tethers too.
 - Turning a tether off in the network applet counts as a deliberate stop:
   automatic tethering does not bring it back until you turn it on again.

@@ -1123,3 +1123,75 @@ def test_a_failed_pause_save_does_not_break_disconnect(caplog) -> None:
     assert snapshot["state"] == DISCONNECTING
     assert "read-only" not in caplog.text
     assert "OSError" in caplog.text
+
+
+def _sysfs_net(root, name, index, *, bluetooth=True):
+    entry = root / name
+    entry.mkdir()
+    (entry / "ifindex").write_text(f"{index}\n")
+    devtype = "DEVTYPE=bluetooth\n" if bluetooth else ""
+    (entry / "uevent").write_text(f"INTERFACE={name}\nIFINDEX={index}\n{devtype}")
+    return entry
+
+
+def _renamed_tether(root, *, interface="bnep0"):
+    def exists(name):
+        return (root / name).is_dir()
+
+    timers = Timers()
+    chooser = Chooser()
+    value = TetherController(
+        chooser, enabled=True, schedule=timers.schedule, cancel=timers.cancel,
+        clock=Clock(), interface_exists=exists, net=tether.NetInterfaces(str(root)),
+    )
+    value.start()
+    value.connect()
+    chooser.backend.connects[0][0](interface)
+    return value
+
+
+def test_a_udev_renamed_tether_interface_keeps_the_recovery_hold(tmp_path) -> None:
+    """udev: "bluetooth hci0:256 enp0s20f0u14: renamed from bnep0 (while UP)"."""
+    _sysfs_net(tmp_path, "bnep0", 7)
+    _sysfs_net(tmp_path, "eth0", 2, bluetooth=False)
+    value = _renamed_tether(tmp_path)
+    assert value.link_alive() is True
+
+    (tmp_path / "bnep0").rename(tmp_path / "enp0s20f0u14")
+
+    assert value.link_alive() is True
+    assert value.snapshot()["interface"] == "enp0s20f0u14"
+    # BlueZ keeps reporting the old name; that must not undo the rename.
+    value.observe_link(True, "bnep0")
+    assert value.snapshot()["interface"] == "enp0s20f0u14"
+    assert value.link_alive() is True
+
+
+def test_a_rename_before_the_first_check_finds_the_only_bnep_link(tmp_path) -> None:
+    _sysfs_net(tmp_path, "enp0s20f0u14", 7)
+    _sysfs_net(tmp_path, "eth0", 2, bluetooth=False)
+    value = _renamed_tether(tmp_path)  # BlueZ still says bnep0
+
+    assert value.link_alive() is True
+    assert value.snapshot()["interface"] == "enp0s20f0u14"
+
+
+def test_a_vanished_tether_interface_is_not_mistaken_for_another_link(tmp_path) -> None:
+    _sysfs_net(tmp_path, "bnep0", 7)
+    value = _renamed_tether(tmp_path)
+    (tmp_path / "bnep0" / "ifindex").unlink()
+    (tmp_path / "bnep0" / "uevent").unlink()
+    (tmp_path / "bnep0").rmdir()
+    # Another Bluetooth network link with a different ifindex is not ours.
+    _sysfs_net(tmp_path, "bnep1", 9)
+    _sysfs_net(tmp_path, "eth0", 7, bluetooth=False)
+
+    assert value.link_alive() is False
+
+
+def test_two_unknown_bnep_links_are_ambiguous(tmp_path) -> None:
+    _sysfs_net(tmp_path, "bnep1", 8)
+    _sysfs_net(tmp_path, "bnep2", 9)
+    value = _renamed_tether(tmp_path)
+
+    assert value.link_alive() is False

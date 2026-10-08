@@ -103,8 +103,63 @@ UNKNOWN_INTERFACE_TRUST_SECONDS = 600
 LINK_DOWN_GRACE_SECONDS = 3
 
 
+SYS_CLASS_NET = "/sys/class/net"
+
+
 def _interface_exists(name: str) -> bool:
-    return bool(name) and os.path.exists(os.path.join("/sys/class/net", name))
+    return bool(name) and os.path.exists(os.path.join(SYS_CLASS_NET, name))
+
+
+class NetInterfaces:
+    """Read-only view of ``/sys/class/net`` that follows a renamed BNEP link.
+
+    BlueZ reports the ``bnep`` name it created and never updates it, but udev
+    may rename the interface right after it comes up (``renamed from bnep0
+    (while UP)``). The kernel ifindex survives a rename, and every BNEP
+    interface carries ``DEVTYPE=bluetooth`` in its uevent.
+    """
+
+    def __init__(self, root: str | None = None) -> None:
+        self._fixed_root = root
+
+    @property
+    def _root(self) -> Path:
+        return Path(self._fixed_root or SYS_CLASS_NET)
+
+    def index(self, name: str) -> int | None:
+        if not name:
+            return None
+        try:
+            return int((self._root / name / "ifindex").read_text().strip())
+        except (OSError, ValueError):
+            return None
+
+    def _is_bluetooth(self, entry: Path) -> bool:
+        try:
+            uevent = (entry / "uevent").read_text()
+        except OSError:
+            return False
+        return "DEVTYPE=bluetooth" in uevent.splitlines()
+
+    def find_bluetooth(self, index: int | None) -> str:
+        """Current name of the BNEP interface with ``index``.
+
+        Without a known index, only a single Bluetooth network interface is
+        an unambiguous answer.
+        """
+        try:
+            entries = sorted(self._root.iterdir())
+        except OSError:
+            return ""
+        candidates = [entry for entry in entries if self._is_bluetooth(entry)]
+        if index is not None:
+            for entry in candidates:
+                if self.index(entry.name) == index:
+                    return _safe_interface(entry.name)
+            return ""
+        if len(candidates) == 1:
+            return _safe_interface(candidates[0].name)
+        return ""
 
 
 def dbus_error_name(error: object) -> str:
@@ -404,6 +459,7 @@ class TetherController:
         cancel: Cancel | None = None,
         clock: Callable[[], float] = time.monotonic,
         interface_exists: Callable[[str], bool] = _interface_exists,
+        net: NetInterfaces | None = None,
     ) -> None:
         if schedule is None or cancel is None:
             from gi.repository import GLib
@@ -421,9 +477,12 @@ class TetherController:
         self._cancel = cancel
         self._clock = clock
         self._interface_exists = interface_exists
+        self._net = net if net is not None else NetInterfaces()
         self._state = OFF
         self._error = ""
         self._interface = ""
+        # Kernel ifindex of the interface, so a udev rename can be followed.
+        self._ifindex: int | None = None
         self._backend: TetherBackend | None = None
         self._external = False
         self._generation = 0
@@ -471,9 +530,26 @@ class TetherController:
         if not self._enabled or self._state != CONNECTED:
             return False
         if self._interface:
-            return self._interface_exists(self._interface)
+            if self._interface_exists(self._interface):
+                return True
+            return self._follow_rename()
         since = self._connected_at
         return since is not None and self._clock() - since < UNKNOWN_INTERFACE_TRUST_SECONDS
+
+    def _follow_rename(self) -> bool:
+        """Find the tether interface again after udev renamed it.
+
+        BlueZ keeps reporting the original ``bnep`` name, so a missing name
+        alone does not mean the link is gone.
+        """
+        renamed = self._net.find_bluetooth(self._ifindex)
+        if not renamed or not self._interface_exists(renamed):
+            return False
+        log.info("Bluetooth tethering interface was renamed; following it")
+        self._interface = renamed
+        self._ifindex = self._net.index(renamed)
+        self._publish()
+        return True
 
     def probe_link(self) -> None:
         """Ask BlueZ for the current link, e.g. before recovery trusts it."""
@@ -913,6 +989,7 @@ class TetherController:
             changed = True
         if interface is not None and interface != self._interface:
             self._interface = interface
+            self._ifindex = self._net.index(interface)
             changed = True
         if changed:
             self._publish()

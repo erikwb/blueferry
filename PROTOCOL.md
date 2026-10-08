@@ -693,6 +693,11 @@ version, and controller noted as the maintenance rule below requires:
   `Network1` watch, but only while the user has tethering enabled; with it
   off BlueFerry does not watch `Network1` at all. Not yet observed with a
   real iPhone.
+- udev can rename the `bnep` interface right after BlueZ brought it up
+  (observed: `bluetooth hci0:256 enp0s20f0u14: renamed from bnep0 (while
+  UP)`), while `Network1.Interface` keeps the old name. The recovery hold
+  therefore follows the kernel ifindex, or the only interface with
+  `DEVTYPE=bluetooth`, instead of trusting the reported name.
 
 ## Historical HFP result
 
