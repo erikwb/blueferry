@@ -24,6 +24,8 @@ from blueferry.bluetooth_capabilities import (
     ancs_limited_vendor,
     bluetoothd_argv,
     bluez_hfp_plugin_active,
+    bluez_hfp_plugin_possible,
+    bluez_stack,
     controller_hardware,
 )
 from blueferry.bluetooth_recovery import (
@@ -36,6 +38,7 @@ from blueferry.build_info import build_id, installed_build_sha, running_build_sh
 from blueferry.bus import get_system_bus, main_loop
 from blueferry.calls.controller import CallController
 from blueferry.calls.settings import CallsSettings
+from blueferry.commands import run_command
 from blueferry.confirmed_groups import ConfirmedGroupsStore
 from blueferry.connectivity import Connectivity
 from blueferry.contact_sync import ContactSync
@@ -160,6 +163,9 @@ class Daemon:
             allow_calls=self.calls_settings.enabled,
         )
         self._phone_audio_lock = threading.Lock()
+        # None until looked up, "" when it could not be determined.
+        self._bluez_version: str | None = None
+        self._bluez_version_requested = False
         # Opt-in convenience lock. It only reads bearer state the supervisor
         # below already polls and never unlocks anything.
         self.proximity_settings = ProximityLockSettings()
@@ -198,7 +204,7 @@ class Daemon:
             on_state_changed=self._emit_status,
             on_event=self.events.call,
             phone_reachable=lambda: self.bearers.bredr_connected,
-            hfp_conflict=lambda: bluez_hfp_plugin_active(bluetoothd_argv()),
+            hfp_conflict=self._bluez_hfp_conflict,
         )
         self.contact_sync = ContactSync(
             sessions=self.sessions,
@@ -352,6 +358,31 @@ class Daemon:
                 self.phone_audio.reconcile(enabled=True)
 
         _in_background(apply, "blueferry-phone-audio")
+
+    def _bluez_hfp_conflict(self) -> bool:
+        """Whether bluetoothd's own HFP plugin can be what blocks oFono.
+
+        Asked by the call controller only after repeated power-up failures.
+        The version lookup runs a command, so it happens off the main loop
+        and the first answer is "no"; the controller asks again after its
+        next failed attempt.
+        """
+        if not bluez_hfp_plugin_active(bluetoothd_argv()):
+            return False
+        if self._bluez_version is None:
+            if not self._bluez_version_requested:
+                self._bluez_version_requested = True
+                _in_background(self._read_bluez_version, "blueferry-bluez-version")
+            return False
+        return bluez_hfp_plugin_possible(self._bluez_version)
+
+    def _read_bluez_version(self) -> None:
+        version = ""
+        try:
+            stack = bluez_stack(run_command=run_command, experimental=False)
+            version = str(stack.get("bluez_version") or "")
+        finally:
+            self._bluez_version = version
 
     def _emit_calls_changed(self) -> None:
         emit = getattr(self._dbus_service, "emit_calls_changed", None)

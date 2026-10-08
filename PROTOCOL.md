@@ -466,8 +466,9 @@ taken from tincan's oFono controller and has since worked with one iPhone
 (iOS 27, oFono 2.18, BlueZ 5.87); it has not been re-verified against the
 device list above. BlueZ 5.87's own HFP hands-free plugin adds a second
 contender for the RFCOMM channel; `bluetoothd -P hfp` avoids it, and
-BlueFerry detects the conflict from bluetoothd's arguments when bring-up
-times out (state `bluez_conflict`). The profile
+BlueFerry reports the conflict from bluetoothd's version and arguments when
+power-up fails three times in a row (state `bluez_conflict`), and then retries
+every five minutes. The profile
 registration race itself is unchanged.
 
 ## Pairing diagnostics

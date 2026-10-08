@@ -3,7 +3,11 @@ from __future__ import annotations
 
 import pytest
 
-from blueferry.bluetooth_capabilities import bluetoothd_argv, bluez_hfp_plugin_active
+from blueferry.bluetooth_capabilities import (
+    bluetoothd_argv,
+    bluez_hfp_plugin_active,
+    bluez_hfp_plugin_possible,
+)
 
 BTD = "/usr/libexec/bluetooth/bluetoothd"
 
@@ -49,3 +53,13 @@ def test_missing_bluetoothd_or_proc_is_unknown(tmp_path) -> None:
 
     assert bluetoothd_argv(tmp_path) is None
     assert bluetoothd_argv(tmp_path / "missing") is None
+
+
+@pytest.mark.parametrize("version,expected", [
+    ("5.87", True), ("5.87.1", True), ("5.90", True), ("6.0", True),
+    ("5.86", False), ("5.66", False),
+    # Unknown is not evidence that the plugin is absent.
+    ("", True), (None, True), ("unknown", True),
+])
+def test_hfp_plugin_needs_a_bluez_that_ships_it(version, expected) -> None:
+    assert bluez_hfp_plugin_possible(version) is expected

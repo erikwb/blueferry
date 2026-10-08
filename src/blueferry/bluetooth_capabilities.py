@@ -408,9 +408,10 @@ def bluez_hfp_plugin_active(argv: list[str] | None) -> bool:
     when bluetoothd runs with ``-E``, which BlueFerry's bearer API needs, and
     it then competes with oFono for the iPhone's HFP RFCOMM channel.
     ``-P hfp`` (``--noplugin``) or a ``-p`` list without it turns it off.
-    Plugin patterns are shell globs, as in bluetoothd. Older BlueZ without
-    the plugin is reported as active too when ``-E`` is set; callers only
-    use this to explain a bring-up that keeps timing out.
+    Plugin patterns are shell globs, as in bluetoothd. This reads only the
+    options; ``bluez_hfp_plugin_possible`` rules out a BlueZ that predates
+    the plugin. Callers only use both to explain a bring-up that keeps
+    failing.
     """
     if not argv:
         return False
@@ -431,15 +432,31 @@ _BLUEZ_DAEMONS = (
 )
 _BLUEZ_VERSION = re.compile(r"(\d+\.\d+(?:\.\d+)?)")
 _MIN_BLUEZ_BEARER_API = (5, 86)
+_MIN_BLUEZ_HFP_PLUGIN = (5, 87)
+
+
+def _bluez_version_tuple(version: object) -> tuple[int, ...] | None:
+    match = _BLUEZ_VERSION.fullmatch(str(version).strip())
+    if match is None:
+        return None
+    parts = tuple(int(part) for part in match.group(1).split("."))
+    return (parts + (0, 0))[:2]
 
 
 def bluez_bearer_api_supported(version: object) -> bool:
     """Return whether BlueZ has working per-bearer Connect/Disconnect methods."""
-    match = _BLUEZ_VERSION.fullmatch(str(version).strip())
-    if match is None:
-        return False
-    parts = tuple(int(part) for part in match.group(1).split("."))
-    return (parts + (0, 0))[:2] >= _MIN_BLUEZ_BEARER_API
+    parts = _bluez_version_tuple(version)
+    return parts is not None and parts >= _MIN_BLUEZ_BEARER_API
+
+
+def bluez_hfp_plugin_possible(version: object) -> bool:
+    """Return whether this BlueZ can contain its own HFP hands-free plugin.
+
+    Only a known older version rules the plugin out; an unknown version does
+    not.
+    """
+    parts = _bluez_version_tuple(version)
+    return parts is None or parts >= _MIN_BLUEZ_HFP_PLUGIN
 
 
 def bluez_stack(

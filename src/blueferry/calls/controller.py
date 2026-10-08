@@ -107,6 +107,12 @@ UNAVAILABLE_RETRY_SEC = 60
 # Powered waits for the HFP service-level connection. If neither Powered nor
 # Online arrives in this window, retry the bring-up through the backoff.
 BRINGUP_TIMEOUT_SEC = 30
+# One failed Powered proves nothing (the phone may be busy or just out of
+# range). Only this many failures in a row, with bluetoothd's own HFP plugin
+# loaded, are reported as a BlueZ conflict; paging then slows down to this
+# cadence so the state still recovers without a Classic reconnect.
+POWER_ATTEMPTS_BEFORE_CONFLICT = 3
+CONFLICT_RETRY_SEC = 300
 # oFono's CallVolume is a percentage; iPhone call audio is inaudibly faint at
 # oFono's 50 % default.
 CALL_VOLUME_MAX = 100
@@ -179,8 +185,10 @@ class CallController:
         # down again on stop; a modem never seen while enabled is left alone.
         self._powered_path: str | None = None
         self._discovering = False
-        # Paging stopped because bluetoothd's own HFP plugin most likely owns
-        # the channel; cleared when Classic returns or oFono makes progress.
+        # Powered attempts that failed in a row, and whether they were
+        # reported as a BlueZ HFP conflict. Both are cleared when Classic
+        # returns or oFono makes progress.
+        self._power_failures = 0
         self._blocked = False
         self._last_reachable = False
         # Log each distinct discovery failure once, not on every retry.
@@ -292,9 +300,11 @@ class CallController:
             and self._state in (CALLS_CONNECTING, CALLS_BLUEZ_CONFLICT)
             and not self._request_in_flight
         ):
-            # A fresh Classic link is worth one more attempt, also after a
-            # BlueZ HFP conflict (the user may have restarted bluetoothd).
+            # A fresh Classic link is worth a new series of attempts, also
+            # after a BlueZ HFP conflict (the user may have restarted
+            # bluetoothd).
             self._blocked = False
+            self._power_failures = 0
             self._retry_index = 0
             self._cancel_timer("_retry_id")
             self._advance()
@@ -623,6 +633,7 @@ class CallController:
         self._request_in_flight = False
         self._requested.clear()
         self._blocked = False
+        self._power_failures = 0
         self._cancel_timer("_bringup_id")
 
     def _on_modem_property(self, name: object, value: object) -> None:
@@ -645,6 +656,7 @@ class CallController:
             self._cancel_timer("_retry_id")
             self._retry_index = 0
             self._blocked = False
+            self._power_failures = 0
         if str(name) in {"Powered", "Online", "Interfaces"}:
             self._advance()
 
@@ -664,9 +676,8 @@ class CallController:
             # Online dropped or the phone disconnected: its calls are gone.
             log.info("iPhone HFP modem went offline")
             self._unbind(emit=True)
-        if self._blocked:
-            return
-        self._set_state(CALLS_CONNECTING)
+        if not self._blocked:
+            self._set_state(CALLS_CONNECTING)
         if self._request_in_flight or self._retry_id is not None:
             return
         if not modem.powered:
@@ -713,9 +724,10 @@ class CallController:
             )
             if self._modem is not None and self._modem.path == path:
                 self._cancel_timer("_bringup_id")
-                if name == "Powered" and self._bluez_conflict():
-                    return
-                self._schedule_retry()
+                if name == "Powered":
+                    self._power_failed()
+                else:
+                    self._schedule_retry()
 
         def stale() -> None:
             # oFono refuses Powered=false while this request is pending, so a
@@ -738,44 +750,48 @@ class CallController:
         if self._bringup_id is None:
             self._bringup_id = self._schedule(BRINGUP_TIMEOUT_SEC, self._bringup_timeout)
 
-    def _bluez_conflict(self) -> bool:
-        """Stop paging when bluetoothd's own HFP plugin is the likely cause.
+    def _power_failed(self) -> None:
+        """Retry a failed Powered, reporting a BlueZ HFP conflict if it persists.
 
         oFono's Powered=true waits for the HFP service-level connection. When
         bluetoothd runs its experimental hands-free plugin it can take the
-        iPhone's HFP channel first, and every retry would page the phone
-        again without a chance of success. Report it once and wait for the
-        Classic link to come back instead.
+        iPhone's HFP channel first, and every retry pages the phone again
+        with little chance of success. A few failures in a row with that
+        plugin loaded are reported, and the retries slow down.
         """
-        try:
-            conflict = bool(self._hfp_conflict())
-        except Exception:
-            log.debug("BlueZ HFP plugin check failed", exc_info=True)
-            conflict = False
-        if not conflict:
-            return False
-        if not self._blocked:
-            log.warning(
-                "iPhone HFP modem did not power up and bluetoothd runs its own HFP "
-                "hands-free plugin (-E without -P hfp), which competes with oFono "
-                "for the call channel; start bluetoothd with -P hfp. Not retrying "
-                "until the iPhone reconnects."
-            )
-        self._blocked = True
+        self._power_failures += 1
         self._request_in_flight = False
         self._requested.clear()
-        self._cancel_timer("_retry_id")
         self._cancel_timer("_bringup_id")
-        self._set_state(CALLS_BLUEZ_CONFLICT)
-        return True
+        if self._power_failures >= POWER_ATTEMPTS_BEFORE_CONFLICT and self._bluez_conflict():
+            if not self._blocked:
+                log.warning(
+                    "iPhone HFP modem did not power up in %d attempts and bluetoothd "
+                    "runs its own HFP hands-free plugin (-E without -P hfp), which "
+                    "competes with oFono for the call channel; start bluetoothd with "
+                    "-P hfp. Retrying every %d minutes and when the iPhone reconnects.",
+                    self._power_failures, CONFLICT_RETRY_SEC // 60,
+                )
+            self._blocked = True
+            self._set_state(CALLS_BLUEZ_CONFLICT)
+            self._schedule_retry(CONFLICT_RETRY_SEC)
+            return
+        if self._blocked:
+            # bluetoothd no longer loads the plugin; back to the normal pace.
+            self._blocked = False
+            self._retry_index = 0
+            self._set_state(CALLS_CONNECTING)
+        self._schedule_retry()
+
+    def _bluez_conflict(self) -> bool:
+        try:
+            return bool(self._hfp_conflict())
+        except Exception:
+            log.debug("BlueZ HFP plugin check failed", exc_info=True)
+            return False
 
     def _bringup_timeout(self) -> bool:
         self._bringup_id = None
-        if (
-            self._running and self._modem is not None and not self._modem.powered
-            and self._bluez_conflict()
-        ):
-            return False
         if self._running and self._state != CALLS_READY:
             log.log(
                 self._bringup_level(),
@@ -783,7 +799,10 @@ class CallController:
             )
             self._request_in_flight = False
             self._requested.clear()
-            self._schedule_retry()
+            if self._modem is not None and not self._modem.powered:
+                self._power_failed()
+            else:
+                self._schedule_retry()
         return False
 
     # ---- internals: calls -----------------------------------------------

@@ -78,9 +78,10 @@ Das Audio selbst leitet PipeWire. BlueFerry steuert nur den Anruf.
    Setze dort keine `bluez5.roles`; BlueFerrys Telefon-Audio-Fragment behält
    die Freisprech-Rollen, solange Anrufe an sind.
 4. Ab BlueZ 5.87 das eigene HFP-Plugin von BlueZ abschalten, damit es oFono
-   den Kanal nicht wegnimmt: `bluetoothd` mit `-P hfp` starten. Fehlt das,
-   zeigt BlueFerry den Zustand `bluez_conflict` und ruft das Telefon erst
-   nach einer neuen Verbindung wieder an.
+   den Kanal nicht wegnimmt: `bluetoothd` mit `-P hfp` starten. Fehlt das
+   und scheitert die Freisprech-Verbindung dreimal in Folge, zeigt BlueFerry
+   den Zustand `bluez_conflict` und versucht es nur noch alle fünf Minuten
+   oder nach einer neuen Verbindung des Telefons.
 5. In den iPhone-Einstellungen des Qt-Clients **Enable phone calls through
    this computer** ankreuzen oder `blueferry calls enable` ausführen. Die
    Wahl wird gespeichert und gilt sofort. `BLUEFERRY_CALLS_ENABLED=true` in

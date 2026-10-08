@@ -213,3 +213,71 @@ def test_switching_calls_leaves_wireplumber_alone_without_the_audio_policy(
     monkeypatch.setattr(daemon_mod, "_in_background", forbidden)
 
     instance._set_calls_enabled(True)
+
+
+def _conflict_daemon(make_daemon, monkeypatch, *, argv, version):
+    from blueferry import daemon as daemon_mod
+
+    background, commands = [], []
+
+    def stack(*, run_command, experimental):
+        commands.append(experimental)
+        return {"bluez_version": version} if version else {}
+
+    monkeypatch.setattr(daemon_mod, "bluetoothd_argv", lambda: argv)
+    monkeypatch.setattr(daemon_mod, "bluez_stack", stack)
+    monkeypatch.setattr(daemon_mod, "_in_background", lambda target, _name: background.append(target))
+    return make_daemon(), background, commands
+
+
+def test_hfp_conflict_needs_the_plugin_options_and_a_bluez_that_has_it(
+    make_daemon, monkeypatch,
+) -> None:
+    instance, background, commands = _conflict_daemon(
+        make_daemon, monkeypatch, argv=["bluetoothd", "-E"], version="5.87",
+    )
+
+    # The version lookup never runs on the main loop: unknown is "no" first.
+    assert instance._bluez_hfp_conflict() is False
+    assert instance._bluez_hfp_conflict() is False
+    assert len(background) == 1 and commands == []
+
+    background[0]()
+
+    assert instance._bluez_hfp_conflict() is True
+    assert len(background) == 1 and commands == [False]
+
+
+def test_hfp_conflict_is_not_reported_on_a_bluez_without_the_plugin(
+    make_daemon, monkeypatch,
+) -> None:
+    instance, background, _commands = _conflict_daemon(
+        make_daemon, monkeypatch, argv=["bluetoothd", "-E"], version="5.86",
+    )
+    instance._bluez_hfp_conflict()
+    background[0]()
+
+    assert instance._bluez_hfp_conflict() is False
+
+
+def test_hfp_conflict_with_an_unknown_bluez_version_follows_the_options(
+    make_daemon, monkeypatch,
+) -> None:
+    instance, background, _commands = _conflict_daemon(
+        make_daemon, monkeypatch, argv=["bluetoothd", "-E"], version="",
+    )
+    instance._bluez_hfp_conflict()
+    background[0]()
+
+    assert instance._bluez_hfp_conflict() is True
+
+
+def test_hfp_conflict_without_the_plugin_options_never_looks_up_the_version(
+    make_daemon, monkeypatch,
+) -> None:
+    instance, background, _commands = _conflict_daemon(
+        make_daemon, monkeypatch, argv=["bluetoothd", "-E", "-P", "hfp"], version="5.87",
+    )
+
+    assert instance._bluez_hfp_conflict() is False
+    assert background == []

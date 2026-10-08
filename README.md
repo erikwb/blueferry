@@ -460,10 +460,11 @@ and WirePlumber for the HFP profile. Restart oFono after WirePlumber
 (`sudo rc-service ofono restart` on OpenRC, `sudo systemctl restart ofono` on
 systemd), then check the backend log for the modem. With BlueZ 5.87 or newer, BlueZ's
 own HFP hands-free plugin can also claim the RFCOMM channel before oFono
-(oFono's `Powered=true` then times out). When that happens while
-`bluetoothd` runs with `-E` and without `-P hfp`, BlueFerry reports the call
-state **bluez_conflict**, logs the remedy once, and stops paging the phone
-until it reconnects. Disable that plugin by starting `bluetoothd` with
+(oFono's `Powered=true` then times out). When that happens three times in a
+row while `bluetoothd` 5.87 or newer runs with `-E` and without `-P hfp`,
+BlueFerry reports the call state **bluez_conflict**, logs the remedy once, and
+pages the phone only every five minutes, or when it reconnects, until a
+power-up succeeds. Disable that plugin by starting `bluetoothd` with
 `-P hfp` (for example `BLUETOOTH_OPTS="-E -P hfp"` in
 `/etc/conf.d/bluetooth` on Gentoo, or a `bluetooth.service` drop-in on
 systemd). Audio routing itself is PipeWire's job; BlueFerry only controls the

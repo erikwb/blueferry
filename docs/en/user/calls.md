@@ -75,8 +75,9 @@ Audio itself is routed by PipeWire. BlueFerry only controls the call.
    hands-free roles while calls are on.
 4. With BlueZ 5.87 or newer, disable BlueZ's own HFP plugin so it doesn't
    take the channel before oFono: start `bluetoothd` with `-P hfp`. If you
-   forget, BlueFerry shows the state `bluez_conflict` and stops paging the
-   phone until it reconnects.
+   forget and the hands-free link fails three times in a row, BlueFerry shows
+   the state `bluez_conflict` and tries again only every five minutes, or
+   when the phone reconnects.
 5. Tick **Enable phone calls through this computer** in the Qt client's
    iPhone settings, or run `blueferry calls enable`. The choice is saved and
    applies at once. `BLUEFERRY_CALLS_ENABLED=true` in

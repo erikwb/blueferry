@@ -1017,48 +1017,128 @@ def _conflicted(conflict=lambda: True, reachable=lambda: True):
     return controller, transport, timers
 
 
-def test_bluez_hfp_conflict_stops_paging_until_classic_returns() -> None:
-    reachable = [True]
-    controller, transport, timers = _conflicted(reachable=lambda: reachable[0])
-    controller.poke()
+_REJECTED = dbus.exceptions.DBusException("x", name="org.ofono.Error.Failed")
+
+
+def _fail_power(transport, timers, attempts: int) -> None:
+    """Reject Powered ``attempts`` times, firing the backoff in between."""
+    for attempt in range(attempts):
+        if attempt:
+            timers.fire_all()
+        transport.take("GetModems").on_reply([_modem()])
+        transport.take("SetProperty").on_error(_REJECTED)
+
+
+def test_one_failed_power_request_is_not_a_bluez_conflict() -> None:
+    controller, transport, timers = _conflicted()
+    controller.start()
+
+    _fail_power(transport, timers, 1)
+
+    assert controller.state == CALLS_CONNECTING
+    assert timers.delays() == [1]
+
+
+def test_one_bring_up_timeout_is_not_a_bluez_conflict() -> None:
+    controller, transport, timers = _conflicted()
     controller.start()
     transport.take("GetModems").on_reply([_modem()])
     transport.take("SetProperty").on_reply()
 
     timers.fire_all()  # bring-up watchdog: Powered never arrived
 
+    assert controller.state == CALLS_CONNECTING
+    assert timers.delays() == [1]
+
+
+def test_repeated_power_failures_with_the_plugin_report_a_conflict(caplog) -> None:
+    controller, transport, timers = _conflicted()
+    controller.start()
+
+    _fail_power(transport, timers, controller_mod.POWER_ATTEMPTS_BEFORE_CONFLICT)
+
     assert controller.state == "bluez_conflict"
-    assert timers.entries == {} and transport.pending == []
+    assert timers.delays() == [controller_mod.CONFLICT_RETRY_SEC]
+    assert transport.pending == []
     with pytest.raises(CallsUnavailableError, match="HFP plugin"):
         controller.dial("0441234567", _noop, _noop)
 
-    # Classic drops and returns: exactly one new attempt.
+    # The slow retry pages again without leaving the reported state, and
+    # warns only once.
+    timers.fire_all()
+    transport.take("GetModems").on_reply([_modem()])
+    assert controller.state == "bluez_conflict"
+    transport.take("SetProperty").on_error(_REJECTED)
+    assert controller.state == "bluez_conflict"
+    assert timers.delays() == [controller_mod.CONFLICT_RETRY_SEC]
+    assert len([r for r in caplog.records if "HFP hands-free plugin" in r.getMessage()]) == 1
+
+
+def test_repeated_bring_up_timeouts_with_the_plugin_report_a_conflict() -> None:
+    controller, transport, timers = _conflicted()
+    controller.start()
+    for _ in range(controller_mod.POWER_ATTEMPTS_BEFORE_CONFLICT):
+        transport.take("GetModems").on_reply([_modem()])
+        transport.take("SetProperty").on_reply()
+        timers.fire_all()  # bring-up watchdog
+        if controller.state != "bluez_conflict":
+            timers.fire_all()  # backoff -> rediscover
+
+    assert controller.state == "bluez_conflict"
+    assert timers.delays() == [controller_mod.CONFLICT_RETRY_SEC]
+
+
+def test_conflict_recovers_through_the_slow_retry_without_a_reconnect() -> None:
+    controller, transport, timers = _conflicted()
+    controller.start()
+    _fail_power(transport, timers, controller_mod.POWER_ATTEMPTS_BEFORE_CONFLICT)
+
+    timers.fire_all()
+    transport.take("GetModems").on_reply([_modem()])
+    transport.take("SetProperty").on_reply()
+    transport.emit(MODEM_IFACE, "PropertyChanged", MODEM, "Powered", dbus.Boolean(True))
+
+    assert controller.state == CALLS_CONNECTING
+    assert transport.take("SetProperty").args == ("Online", True)
+
+
+def test_conflict_ends_when_bluetoothd_drops_the_plugin() -> None:
+    conflict = [True]
+    controller, transport, timers = _conflicted(conflict=lambda: conflict[0])
+    controller.start()
+    _fail_power(transport, timers, controller_mod.POWER_ATTEMPTS_BEFORE_CONFLICT)
+    assert controller.state == "bluez_conflict"
+
+    conflict[0] = False
+    timers.fire_all()
+    _fail_power(transport, timers, 1)
+
+    assert controller.state == CALLS_CONNECTING
+    assert timers.delays() == [1]
+
+
+def test_classic_returning_restarts_the_attempts_after_a_conflict() -> None:
+    reachable = [True]
+    controller, transport, timers = _conflicted(reachable=lambda: reachable[0])
+    controller.poke()
+    controller.start()
+    _fail_power(transport, timers, controller_mod.POWER_ATTEMPTS_BEFORE_CONFLICT)
+    assert controller.state == "bluez_conflict"
+
     reachable[0] = False
     controller.poke()
     reachable[0] = True
     controller.poke()
+
     assert transport.take("SetProperty").args == ("Powered", True)
     assert controller.state == CALLS_CONNECTING
-
-
-def test_bluez_hfp_conflict_also_applies_to_a_rejected_power_request() -> None:
-    controller, transport, timers = _conflicted()
-    controller.start()
-    transport.take("GetModems").on_reply([_modem()])
-    transport.take("SetProperty").on_error(
-        dbus.exceptions.DBusException("x", name="org.ofono.Error.Failed")
-    )
-
-    assert controller.state == "bluez_conflict"
-    assert timers.entries == {}
+    assert timers.delays() == [controller_mod.BRINGUP_TIMEOUT_SEC]
 
 
 def test_progress_after_a_conflict_resumes_bring_up() -> None:
     controller, transport, timers = _conflicted()
     controller.start()
-    transport.take("GetModems").on_reply([_modem()])
-    transport.take("SetProperty").on_reply()
-    timers.fire_all()
+    _fail_power(transport, timers, controller_mod.POWER_ATTEMPTS_BEFORE_CONFLICT)
     assert controller.state == "bluez_conflict"
 
     transport.emit(MODEM_IFACE, "PropertyChanged", MODEM, "Powered", dbus.Boolean(True))
@@ -1067,16 +1147,14 @@ def test_progress_after_a_conflict_resumes_bring_up() -> None:
     assert controller.state == CALLS_CONNECTING
 
 
-def test_without_a_conflict_the_watchdog_keeps_retrying() -> None:
+def test_without_a_conflict_power_failures_keep_backing_off() -> None:
     controller, transport, timers = _conflicted(conflict=lambda: False)
     controller.start()
-    transport.take("GetModems").on_reply([_modem()])
-    transport.take("SetProperty").on_reply()
 
-    timers.fire_all()
+    _fail_power(transport, timers, controller_mod.POWER_ATTEMPTS_BEFORE_CONFLICT + 1)
 
     assert controller.state == CALLS_CONNECTING
-    assert timers.delays() == [1]
+    assert timers.delays() == [8]
 
 
 def test_a_failing_conflict_check_is_treated_as_no_conflict() -> None:
@@ -1085,8 +1163,6 @@ def test_a_failing_conflict_check_is_treated_as_no_conflict() -> None:
 
     controller, transport, timers = _conflicted(conflict=broken)
     controller.start()
-    transport.take("GetModems").on_reply([_modem()])
-    transport.take("SetProperty").on_reply()
-    timers.fire_all()
+    _fail_power(transport, timers, controller_mod.POWER_ATTEMPTS_BEFORE_CONFLICT)
 
     assert controller.state == CALLS_CONNECTING
