@@ -97,6 +97,21 @@ und bei entsperrtem Schlüsselbund unter Umständen dessen Geheimnisse lesen.
 
 Beim Deinstallieren der Pakete bleiben beide Ordner erhalten.
 
+## Einmalcodes
+
+Das [Kopieren von Einmalcodes](otp-autocopy.md) ist standardmässig aus.
+Schaltest du es ein, legt das Backend Bestätigungscodes aus neuen
+Nachrichten in die Zwischenablage des Desktops, wo jedes Programm, das die
+Zwischenablage liest, sie sehen kann. Der Code wird nie geloggt,
+gespeichert oder über BlueFerrys D-Bus-Schnittstelle veröffentlicht. Mit
+`BLUEFERRY_OTP_CLEAR_SECONDS` gibt das Backend beim Ablauf des Timers nur
+seine eigene Zwischenablage-Quelle frei; beim Beenden auch ohne Timer.
+Es liest die Zwischenablage nicht zurück und leert keine Auswahl eines
+anderen Programms. Kopien in Persistenzwerkzeugen oder Zwischenablage-Managern
+bleiben unter deren Kontrolle. Die erste Wayland-Kopie wartet auf die
+Prüfung der Sensitiv-Markierung; Manager müssen diese beachten, um Codes
+aus ihrem Verlauf auszuschließen.
+
 ## Einstellungen in local.env
 
 Bearbeite `~/.config/blueferry/local.env` und starte den Dienst danach mit
@@ -113,6 +128,8 @@ Bearbeite `~/.config/blueferry/local.env` und starte den Dienst danach mit
 | `BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE` | `true` | Anrufe und Musik auf dem iPhone lassen |
 | `BLUEFERRY_ANCS_APP_ALLOWLIST` | nicht gesetzt | Siehe [Apps filtern](#apps-filtern) |
 | `BLUEFERRY_ANCS_APP_BLOCKLIST` | nicht gesetzt | Siehe [Apps filtern](#apps-filtern) |
+| `BLUEFERRY_OTP_AUTOCOPY` | `false` | Einmalcodes in die Zwischenablage kopieren, siehe [Einmalcodes](#einmalcodes) |
+| `BLUEFERRY_OTP_CLEAR_SECONDS` | `0` | Kopierten Code nach so vielen Sekunden entfernen (0 = behalten, max. 600) |
 | `BLUEFERRY_CONTACT_PHOTOS` | `false` | Kontaktfotos für Avatare und Popup-Symbole behalten; siehe [Kontaktfotos](contact-photos.md) |
 
 Die Kopplung schreibt Telefon- und Adapter-Einstellungen in dieselbe Datei.

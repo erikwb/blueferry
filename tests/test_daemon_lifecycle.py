@@ -208,6 +208,8 @@ def test_status_exposes_split_ancs_and_last_le_error(make_daemon, monkeypatch):
     assert status["ancs_subscribed"] is True
     assert status["ancs_authorized"] is False
     assert status["contacts_only_notifications"] is False
+    assert status["otp_autocopy"] is daemon_mod.config.OTP_AUTOCOPY
+    assert isinstance(status["otp_autocopy"], bool)
     assert status["bredr"] is True
     assert status["le"] is False
     assert status["last_le_error"] == "org.bluez.Error.Failed"

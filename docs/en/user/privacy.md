@@ -92,6 +92,20 @@ able to read its secrets.
 
 Uninstalling the packages doesn't remove either folder.
 
+## One-time codes
+
+[One-time code auto-copy](otp-autocopy.md) is off by default. When you turn
+it on, the backend puts verification codes from new messages on the desktop
+clipboard, where every application that reads the clipboard can see them.
+The code is never logged, stored, or published on BlueFerry's D-Bus API.
+With `BLUEFERRY_OTP_CLEAR_SECONDS`, the backend releases its own clipboard
+source when the timer fires; shutdown does the same even without a timer.
+It never reads the clipboard back or globally clears another program's
+selection. Copies retained by persistence tools or clipboard managers
+remain under those tools' control. The first Wayland copy waits for the
+sensitive-hint capability probe; managers must honor that hint to exclude
+codes from their history.
+
 ## Settings in local.env
 
 Edit `~/.config/blueferry/local.env`, then restart the service with
@@ -108,6 +122,8 @@ Edit `~/.config/blueferry/local.env`, then restart the service with
 | `BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE` | `true` | Keep calls and music on the iPhone |
 | `BLUEFERRY_ANCS_APP_ALLOWLIST` | unset | See [Filter apps](#filter-apps) |
 | `BLUEFERRY_ANCS_APP_BLOCKLIST` | unset | See [Filter apps](#filter-apps) |
+| `BLUEFERRY_OTP_AUTOCOPY` | `false` | Copy one-time codes to the clipboard, see [One-time codes](#one-time-codes) |
+| `BLUEFERRY_OTP_CLEAR_SECONDS` | `0` | Clear a copied code after this many seconds (0 = keep, max 600) |
 | `BLUEFERRY_CONTACT_PHOTOS` | `false` | Keep contact photos for avatars and popup icons; see [Contact photos](contact-photos.md) |
 
 Pairing writes the phone and adapter settings to the same file; change those

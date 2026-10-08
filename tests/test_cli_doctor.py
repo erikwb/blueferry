@@ -175,3 +175,75 @@ def test_doctor_does_not_start_the_backend(monkeypatch, caplog) -> None:
 
     assert result.exit_code == 0
     assert "Backend not running" in caplog.text
+
+
+def _forbid_processes(monkeypatch) -> list:
+    import subprocess
+
+    from blueferry import commands
+
+    started = []
+
+    def forbidden(*args, **_kwargs):
+        started.append(args)
+        raise AssertionError("doctor must not start a real process in tests")
+
+    monkeypatch.setattr(commands.subprocess, "run", forbidden)
+    monkeypatch.setattr(commands.subprocess, "Popen", forbidden)
+    monkeypatch.setattr(subprocess, "run", forbidden)
+    return started
+
+
+def test_doctor_warns_when_autocopy_has_no_clipboard_helper(monkeypatch) -> None:
+    from blueferry import otp_clipboard
+
+    _healthy_non_cod_checks(monkeypatch)
+    started = _forbid_processes(monkeypatch)
+    monkeypatch.setattr(cli.bluez_setup, "current_cod", lambda: 0x240404)
+    monkeypatch.setattr(cli.bluez_setup, "desired_cod_matches", lambda _cod: True)
+    monkeypatch.setattr(config, "OTP_AUTOCOPY", True)
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+    monkeypatch.setattr(otp_clipboard.shutil, "which", lambda _tool, path=None: None)
+
+    result = CliRunner().invoke(cli.app, ["doctor"])
+
+    assert result.exit_code == 0
+    assert "Checks completed with warnings." in result.output
+    assert started == []
+
+
+def test_doctor_with_a_real_path_probes_only_through_the_fake_runner(monkeypatch) -> None:
+    import subprocess
+
+    from blueferry import commands
+
+    _healthy_non_cod_checks(monkeypatch)
+    started = _forbid_processes(monkeypatch)
+    probes = []
+
+    def fake_run(argv, **_kwargs):
+        if not argv[0].endswith("/wl-copy"):
+            from blueferry.errors import CommandError
+
+            raise CommandError(tuple(argv), "unrelated doctor probe unavailable in tests")
+        probes.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, "-o, --paste-once", "")
+
+    monkeypatch.setattr(commands, "run_command", fake_run)
+    monkeypatch.setattr(cli.bluez_setup, "current_cod", lambda: 0x240404)
+    monkeypatch.setattr(cli.bluez_setup, "desired_cod_matches", lambda _cod: True)
+    monkeypatch.setattr(config, "OTP_AUTOCOPY", True)
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+
+    result = CliRunner().invoke(cli.app, ["doctor"])
+
+    # With or without wl-copy on this machine's PATH the check warns: either
+    # no helper, or a helper whose (faked) help lacks --sensitive.
+    assert result.exit_code == 0
+    assert "Checks completed with warnings." in result.output
+    assert started == []
+    assert all(argv[1:] == ["--help"] and argv[0].endswith("/wl-copy") for argv in probes)
+    import shutil
+
+    if shutil.which("wl-copy"):
+        assert probes, "the capability probe must go through commands.run_command"

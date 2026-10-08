@@ -99,6 +99,7 @@ nav:
           - Pair an iPhone: en/user/pairing.md
           - Without systemd (OpenRC): en/user/openrc.md
           - Clients: en/user/clients.md
+          - One-time codes: en/user/otp-autocopy.md
           - Call history: en/user/call-history.md
           - Notification click rules: en/user/notification-click-rules.md
           - Media control: en/user/media-control.md
@@ -124,6 +125,7 @@ nav:
           - iPhone koppeln: de/user/pairing.md
           - Ohne systemd (OpenRC): de/user/openrc.md
           - Clients: de/user/clients.md
+          - Einmalcodes: de/user/otp-autocopy.md
           - Anrufliste: de/user/call-history.md
           - Klickregeln für Mitteilungen: de/user/notification-click-rules.md
           - Mediensteuerung: de/user/media-control.md

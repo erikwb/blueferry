@@ -10,6 +10,7 @@ from hashlib import blake2b
 
 from gi.repository import GLib
 
+from blueferry import config
 from blueferry.ancs.constants import MESSAGES_APP_ID
 from blueferry.bus import get_session_bus
 from blueferry.client_activation import request_message_activation
@@ -19,6 +20,24 @@ from blueferry.notification_open import request_open_target
 from blueferry.sinks import Sink
 from blueferry.sinks.libnotify import LibnotifySink
 from blueferry.sinks.sqlite import SqliteSink
+
+_OTP_SINK_NAME = "otp-clipboard"
+
+
+def _default_otp_sink(
+    *, notification_policy, session_bus=None, amend_message_popup=None, resolve_metadata=None
+) -> Sink:
+    from blueferry.otp_clipboard import ClipboardWriter
+    from blueferry.sinks.otp_clipboard import DesktopNotifier, OtpClipboardSink
+
+    return OtpClipboardSink(
+        writer=ClipboardWriter(clear_after_s=config.OTP_CLEAR_SECONDS),
+        notification_policy=notification_policy,
+        notifier=DesktopNotifier(session_bus),
+        amend_message_popup=amend_message_popup,
+        resolve_metadata=resolve_metadata,
+    )
+
 
 log = logging.getLogger(__name__)
 
@@ -64,6 +83,9 @@ class EventDispatcher:
         ancs_actions_enabled: Callable[[], bool] | None = None,
         on_call_action: Callable[[str, str], None] | None = None,
         notification_sink_factory: Callable[..., Sink] = LibnotifySink,
+        otp_autocopy: Callable[[], bool] | None = None,
+        otp_sink_factory: Callable[..., Sink] = _default_otp_sink,
+        resolve_otp_metadata=None,
         session_bus=None,
         schedule: Callable[[int, Callable[[], bool]], int] = GLib.timeout_add_seconds,
         cancel: Callable[[int], object] = GLib.source_remove,
@@ -82,6 +104,9 @@ class EventDispatcher:
         self.ancs_actions_enabled = ancs_actions_enabled
         self.on_call_action = on_call_action
         self._notification_sink_factory = notification_sink_factory
+        self._otp_autocopy = otp_autocopy
+        self._otp_sink_factory = otp_sink_factory
+        self._resolve_otp_metadata = resolve_otp_metadata
         self._session_bus = session_bus
         self._schedule = schedule
         self._cancel = cancel
@@ -107,6 +132,7 @@ class EventDispatcher:
         self._setup_complete = True
         self._watch_notification_owner()
         self._ensure_libnotify_sink()
+        self._ensure_otp_sink()
         log.info("sinks ready: %s", self.names)
         self._setup_logged = True
 
@@ -124,6 +150,46 @@ class EventDispatcher:
         # buttons instead of leaving them wired to a daemon that is gone.
         self.ancs_actions_reset()
         self._remove_libnotify_sink(log_change=False)
+        self._remove_sinks(_OTP_SINK_NAME)
+
+    def _ensure_otp_sink(self) -> None:
+        """Add the opt-in one-time code clipboard sink."""
+        enabled = (
+            self._otp_autocopy() if self._otp_autocopy is not None else config.OTP_AUTOCOPY
+        )
+        if not enabled or any(sink.name == _OTP_SINK_NAME for sink in self.sinks):
+            return
+        try:
+            self.sinks.append(
+                self._otp_sink_factory(
+                    notification_policy=self.notification_policy,
+                    session_bus=self._session_bus,
+                    amend_message_popup=self._amend_message_popup,
+                    resolve_metadata=self._resolve_otp_metadata,
+                )
+            )
+        except Exception:
+            log.exception("one-time code clipboard sink failed to init — continuing")
+
+    def _amend_message_popup(self, handle: str, line: str) -> bool:
+        """Let the code sink extend the message popup instead of adding one."""
+        for sink in self.sinks:
+            amend = getattr(sink, "amend_message_popup", None)
+            if sink.name == "libnotify" and amend is not None:
+                return bool(amend(handle, line))
+        return False
+
+    def _remove_sinks(self, name: str) -> None:
+        removed = [sink for sink in self.sinks if sink.name == name]
+        self.sinks = [sink for sink in self.sinks if sink.name != name]
+        for sink in removed:
+            close = getattr(sink, "close", None)
+            if close is None:
+                continue
+            try:
+                close()
+            except Exception:
+                log.debug("could not close %s sink", name, exc_info=True)
 
     def _watch_notification_owner(self) -> None:
         if self._notification_owner_match is not None:
@@ -287,6 +353,16 @@ class EventDispatcher:
                 log.exception("sink %s failed on event %s", sink.name, event.handle)
         if self.dbus_service is not None:
             self.dbus_service.emit_history_changed()
+
+    def message_read(self, handle: str) -> None:
+        """Retire pending code copies when the phone or a client reads a message."""
+        for sink in self.sinks:
+            note_read = getattr(sink, "message_read", None)
+            if note_read is not None:
+                try:
+                    note_read(handle)
+                except Exception:
+                    log.exception("sink %s failed to observe a message read", sink.name)
 
     def call(self, event) -> None:
         """Deliver an optional HFP call event to local desktop sinks only.

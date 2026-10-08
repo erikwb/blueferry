@@ -246,3 +246,11 @@ def test_status_model_normalizes_legacy_map_refusal_detail() -> None:
 
     assert status.map_connection_refused is True
     assert status.to_dict()["map_connection_refused"] is True
+
+
+def test_status_decodes_the_additive_otp_autocopy_flag() -> None:
+    assert BackendStatus.from_dict({}).otp_autocopy is False
+    status = BackendStatus.from_dict({"otp_autocopy": True})
+    assert status.otp_autocopy is True
+    assert status.to_dict()["otp_autocopy"] is True
+    assert "otp_autocopy" not in status.extra

@@ -1,0 +1,1197 @@
+"""The opt-in one-time code sink: only new incoming messages, never leaks."""
+from __future__ import annotations
+
+import logging
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+
+import pytest
+
+from blueferry import event_dispatcher
+from blueferry.event_dispatcher import EventDispatcher
+from blueferry.events import SmsEvent, sms_sent_event
+from blueferry.otp_context import OtpMetadata
+from blueferry.sinks import otp_clipboard as sink_module
+from blueferry.sinks.otp_clipboard import DesktopNotifier, OtpClipboardSink, notification_text
+
+CODE = "482913"
+NOW = datetime(2026, 9, 28, 12, 0, tzinfo=timezone.utc)
+BODY = f"Your verification code is {CODE}. Don't share it."
+
+
+class _Writer:
+    """Fake ClipboardWriter; ``outcomes`` scripts each copy's final state."""
+
+    def __init__(self, *, outcomes=None, clear_after_s=0) -> None:
+        self.copied: list[tuple[str, frozenset]] = []
+        self.outcomes = list(outcomes or [])
+        self.clear_after_s = clear_after_s
+        self.released = False
+        self.probed = False
+        self.owner = None
+
+    def start_probe(self) -> None:
+        self.probed = True
+
+    def prepare(self, ready) -> None:
+        ready()
+
+    def copy(self, code: str, *, exclude=frozenset()):
+        self.copied.append((code, frozenset(exclude)))
+        state = self.outcomes.pop(0) if self.outcomes else "running"
+        if state is None:
+            return None
+        tool = "xclip" if "wl-copy" in exclude else "wl-copy"
+        ticket = SimpleNamespace(tool=tool, final_state=state)
+        self.owner = ticket
+        return ticket
+
+    def state(self, ticket):
+        if ticket is not self.owner:
+            return "superseded"
+        return ticket.final_state
+
+    def close(self) -> None:
+        self.released = True
+
+
+class _Notifier:
+    def __init__(self) -> None:
+        self.shown: list[tuple[str, str]] = []
+        self.closed = False
+
+    def notify(self, summary: str, body: str) -> None:
+        self.shown.append((summary, body))
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _Timers:
+    def __init__(self) -> None:
+        self.pending: dict[int, object] = {}
+        self.next_id = 1
+
+    def schedule(self, _delay, callback) -> int:
+        source = self.next_id
+        self.next_id += 1
+        self.pending[source] = callback
+        return source
+
+    def cancel(self, source) -> None:
+        self.pending.pop(source, None)
+
+    def step(self) -> None:
+        source = next(iter(self.pending))
+        self.pending.pop(source)()
+
+    def settle(self) -> None:
+        while self.pending:
+            source = next(iter(self.pending))
+            self.pending.pop(source)()
+
+
+def _received(body=BODY, *, handle="message1", path="/org/bluez/obex/client/session1/message1",
+              age=timedelta(seconds=5), kind="sms_received") -> SmsEvent:
+    if path == "/org/bluez/obex/client/session1/message1":
+        path = path.rsplit("/", 1)[0] + "/" + handle
+    return SmsEvent(
+        kind=kind,
+        handle=handle,
+        sender_address="+15551234567",
+        sender_phone_norm="15551234567",
+        contact_name=None,
+        body=body,
+        timestamp=NOW - age,
+        is_read=False,
+        message_path=path,
+        seen_at=NOW,
+    )
+
+
+def _sink(writer=None, *, policy="messages", amend=None, resolve=None, now=lambda: NOW):
+    notifier = _Notifier()
+    timers = _Timers()
+    sink = OtpClipboardSink(
+        writer=writer or _Writer(),
+        notification_policy=lambda: policy,
+        notifier=notifier,
+        schedule_ms=timers.schedule,
+        cancel=timers.cancel,
+        now=now,
+        amend_message_popup=amend,
+        resolve_metadata=resolve,
+    )
+    return sink, notifier, timers
+
+
+def _codes(writer) -> list[str]:
+    return [code for code, _exclude in writer.copied]
+
+
+def _group_notification(*, subtitle="Team", body=BODY):
+    from blueferry.ancs.events import AncsEvent
+
+    return AncsEvent(42, "com.apple.MobileSMS", "Messages", "Unsaved participant",
+                     subtitle, body, seen_at=NOW)
+
+
+def test_burst_bounds_phone_queries_before_any_result() -> None:
+    requests = []
+    writer = _Writer()
+    sink, _notifier, timers = _sink(
+        writer, resolve=lambda event, done: requests.append(done),
+    )
+    for index in range(20):
+        sink.handle(replace(_received(handle=f"message{index}"), timestamp=None))
+    timers.settle()
+
+    assert len(requests) == 3
+    assert writer.copied == []
+    for done in requests:
+        done(OtpMetadata(NOW, False))
+    timers.settle()
+    assert len(writer.copied) == 3
+
+
+def test_failed_phone_queries_cannot_bypass_the_attempt_budget() -> None:
+    requests = []
+    writer = _Writer()
+    sink, _notifier, timers = _sink(
+        writer, resolve=lambda event, done: requests.append(done),
+    )
+    for index in range(20):
+        sink.handle(replace(_received(handle=f"message{index}"), timestamp=None))
+        timers.settle()
+        if len(requests) > index:
+            requests[index](None)
+
+    assert len(requests) == 3
+    assert writer.copied == []
+
+
+def test_read_flag_returned_by_the_phone_cancels_a_pending_copy() -> None:
+    requests = []
+    writer = _Writer()
+    sink, notifier, timers = _sink(writer, resolve=lambda event, done: requests.append(done))
+    sink.handle(replace(_received(), timestamp=None))
+    timers.step()
+
+    requests[0](OtpMetadata(NOW, True))
+    timers.settle()
+
+    assert writer.copied == []
+    assert notifier.shown == []
+
+
+def test_read_event_while_preparing_clipboard_cancels_copy() -> None:
+    prepared = []
+    writer = _Writer()
+    writer.prepare = prepared.append
+    sink, _notifier, timers = _sink(writer)
+    event = _received()
+    sink.handle(event)
+    timers.step()
+    sink.message_read(event.handle)
+    # A duplicate push cannot restore an unread snapshot.
+    sink.handle(event)
+
+    prepared.pop()()
+    timers.settle()
+
+    assert writer.copied == []
+
+
+def test_delayed_sensitive_probe_rechecks_phone_age() -> None:
+    prepared = []
+    clock = [NOW]
+    writer = _Writer()
+    writer.prepare = prepared.append
+    sink, _notifier, timers = _sink(writer, now=lambda: clock[0])
+    sink.handle(_received(age=timedelta(minutes=4, seconds=59)))
+    timers.step()
+    clock[0] += timedelta(seconds=2)
+
+    prepared.pop()()
+    timers.settle()
+
+    assert writer.copied == []
+
+
+@pytest.mark.parametrize("subtitle", ["Team", "To you & Alice"])
+@pytest.mark.parametrize("phase", ["before_map", "during_lookup", "during_probe"])
+def test_group_context_blocks_copies_in_either_transport_order(subtitle, phase) -> None:
+    requests, prepared = [], []
+    writer = _Writer()
+    writer.prepare = prepared.append
+    sink, notifier, timers = _sink(writer, resolve=lambda event, done: requests.append(done))
+    ancs = _group_notification(subtitle=subtitle)
+
+    if phase == "before_map":
+        sink.handle_ancs(ancs)
+    sink.handle(replace(_received(), timestamp=None))
+    timers.settle()
+    if phase == "before_map":
+        assert requests == []
+    else:
+        if phase == "during_lookup":
+            sink.handle_ancs(ancs)
+        requests.pop()(OtpMetadata(NOW, False))
+        if phase == "during_probe":
+            sink.handle_ancs(ancs)
+            prepared.pop()()
+    timers.settle()
+
+    assert writer.copied == []
+    assert notifier.shown == []
+
+
+def test_ambiguous_group_metadata_blocks_both_candidate_messages() -> None:
+    writer = _Writer()
+    sink, _notifier, timers = _sink(writer)
+    sink.handle(_received(handle="message1"))
+    sink.handle(_received(handle="message2"))
+    sink.handle_ancs(_group_notification())
+
+    timers.settle()
+
+    assert writer.copied == []
+
+
+def test_unrelated_app_metadata_does_not_block_a_service_code() -> None:
+    writer = _Writer()
+    sink, _notifier, timers = _sink(writer)
+    sink.handle(_received())
+    sink.handle_ancs(replace(_group_notification(), app_id="org.example.other"))
+
+    timers.settle()
+
+    assert _codes(writer) == [CODE]
+
+
+def test_real_map_and_ancs_dispatch_blocks_an_unsaved_group_sender(monkeypatch) -> None:
+    from blueferry.obex.map_events import MapEventListener
+
+    writer = _Writer()
+    sink, _notifier, timers = _sink(writer)
+    dispatcher = _dispatcher(monkeypatch, enabled=True, factory=lambda **kwargs: sink)
+    dispatcher.setup()
+    dispatcher.ancs(replace(_group_notification(), seen_at=datetime.now(timezone.utc)))
+    listener = MapEventListener(
+        object(), dispatcher.message, submit_obex=lambda *_args, **_kwargs: None,
+    )
+    listener._running = True
+    # Actual MAP objects have no group_key; group evidence came through ANCS.
+    listener._fetched(
+        "message1", "/session/message1", {"Timestamp": "20260928T115955Z"},
+        SimpleNamespace(sender_address="+15551234567", body=BODY, status="UNREAD"),
+    )
+    timers.settle()
+
+    assert writer.copied == []
+    dispatcher.stop()
+
+
+def test_new_incoming_code_is_copied_and_announced(monkeypatch) -> None:
+    monkeypatch.setattr(sink_module.config, "SHOW_NOTIFICATION_CONTENT", False)
+    writer = _Writer()
+    sink, notifier, timers = _sink(writer)
+
+    assert writer.probed is True
+    sink.handle(_received())
+    timers.settle()
+
+    assert _codes(writer) == [CODE]
+    assert notifier.shown == [("Verification code copied", "Paste it with Ctrl+V.")]
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        sms_sent_event("+15551234567", BODY),
+        _received(kind="sms_seen"),
+        # Listed/reconstructed records carry no live Message1 path.
+        _received(path=None),
+        # A stale message replayed after a reconnect.
+        _received(age=timedelta(minutes=30)),
+        _received(body="See you at 18:30"),
+        # Fail closed on missing, zone-less, or implausible times.
+        replace(_received(), timestamp=None),
+        replace(_received(), timestamp=NOW.replace(tzinfo=None)),
+        _received(age=-timedelta(minutes=5)),
+        # Already read on the phone.
+        replace(_received(), is_read=True),
+        # Saved contacts and group conversations are chat, not services.
+        replace(_received(), contact_name="Anna"),
+        replace(_received(), group_key="group:abc", group_name="Family"),
+    ],
+)
+def test_only_new_incoming_messages_with_a_code_are_copied(event) -> None:
+    writer = _Writer()
+    sink, notifier, timers = _sink(writer)
+
+    sink.handle(event)
+    timers.settle()
+
+    assert writer.copied == []
+    assert notifier.shown == []
+
+
+def test_stale_message_is_logged_without_content(caplog) -> None:
+    caplog.set_level(logging.DEBUG)
+    sink, _notifier, _timers = _sink()
+
+    sink.handle(_received(age=timedelta(minutes=30)))
+
+    _timers.settle()
+
+    assert "ignoring a message 1800 seconds old" in caplog.text
+    assert CODE not in caplog.text
+
+
+def test_future_phone_timestamp_is_not_in_the_past_five_minutes() -> None:
+    writer = _Writer()
+    sink, _notifier, timers = _sink(writer)
+
+    sink.handle(_received(age=-timedelta(seconds=60)))
+    timers.settle()
+
+    assert _codes(writer) == []
+
+
+def test_recent_message_from_before_backend_startup_is_eligible() -> None:
+    writer = _Writer()
+    notifier = _Notifier()
+    timers = _Timers()
+    clock = [NOW]
+    sink = OtpClipboardSink(
+        writer=writer,
+        notification_policy=lambda: "messages",
+        notifier=notifier,
+        schedule_ms=timers.schedule,
+        cancel=timers.cancel,
+        now=lambda: clock[0],
+    )
+
+    # The phone's five-minute window also applies across backend restarts.
+    sink.handle(_received(handle="old", age=timedelta(minutes=2)))
+    sink.handle(_received(handle="new", age=timedelta(seconds=10)))
+    timers.settle()
+
+    assert _codes(writer) == [CODE, CODE]
+
+
+@pytest.mark.parametrize(
+    "age,copied",
+    [
+        (timedelta(0), True),
+        (timedelta(minutes=5), True),
+        (timedelta(minutes=5, microseconds=1), False),
+        (timedelta(minutes=6), False),
+        (-timedelta(microseconds=1), False),
+    ],
+)
+def test_phone_timestamp_must_be_in_the_past_five_minutes(age, copied) -> None:
+    writer = _Writer()
+    sink, _notifier, timers = _sink(writer)
+
+    sink.handle(_received(age=age))
+    timers.settle()
+
+    assert _codes(writer) == ([CODE] if copied else [])
+
+
+def test_phone_timestamp_compares_instants_across_time_zones() -> None:
+    writer = _Writer()
+    sink, _notifier, timers = _sink(writer)
+    event = _received(age=timedelta(minutes=4))
+    event.timestamp = event.timestamp.astimezone(timezone(timedelta(hours=-4)))
+
+    sink.handle(event)
+    timers.settle()
+
+    assert _codes(writer) == [CODE]
+
+
+@pytest.mark.parametrize(
+    "timestamp,copied",
+    [
+        (NOW - timedelta(minutes=4), True),
+        (NOW - timedelta(minutes=6), False),
+        (NOW + timedelta(seconds=1), False),
+        (NOW.replace(tzinfo=None), False),
+        (None, False),
+    ],
+)
+def test_push_without_timestamp_waits_for_phone_metadata(timestamp, copied) -> None:
+    requests = []
+    writer = _Writer()
+    sink, notifier, timers = _sink(
+        writer, resolve=lambda event, done: requests.append((event, done)),
+    )
+    event = replace(_received(), timestamp=None)
+
+    sink.handle(event)
+    sink.handle(event)  # Duplicated push must not queue another query.
+    assert writer.copied == []
+    timers.step()
+    assert len(requests) == 1
+    assert requests[0][0].message_path == event.message_path
+
+    requests[0][1](OtpMetadata(timestamp, False))
+    timers.settle()
+    assert _codes(writer) == ([CODE] if copied else [])
+    assert bool(notifier.shown) is copied
+
+
+def test_delayed_lookup_uses_age_at_copy_time() -> None:
+    requests = []
+    clock = [NOW]
+    writer = _Writer()
+    sink, _notifier, timers = _sink(
+        writer, now=lambda: clock[0], resolve=lambda event, done: requests.append(done),
+    )
+    sink.handle(replace(_received(), timestamp=None))
+    timers.step()
+    clock[0] += timedelta(seconds=2)
+
+    requests[0](OtpMetadata(NOW - timedelta(minutes=5), False))
+    timers.settle()
+
+    assert writer.copied == []
+
+
+def test_old_timestamp_reply_cannot_replace_a_newer_copy() -> None:
+    requests = []
+    writer = _Writer()
+    sink, _notifier, timers = _sink(
+        writer, resolve=lambda event, done: requests.append(done),
+    )
+    sink.handle(replace(_received(handle="older"), timestamp=None))
+    sink.handle(_received(body="Your verification code is 135790", handle="newer"))
+    timers.step()
+    timers.step()
+
+    requests[1](OtpMetadata(NOW, False))
+    requests[0](OtpMetadata(NOW, False))
+    timers.settle()
+
+    assert _codes(writer) == ["135790"]
+
+
+def test_timestamp_reply_after_shutdown_cannot_copy() -> None:
+    requests = []
+    writer = _Writer()
+    sink, notifier, timers = _sink(
+        writer, resolve=lambda event, done: requests.append(done),
+    )
+    sink.handle(replace(_received(), timestamp=None))
+    timers.step()
+    sink.close()
+
+    requests[0](OtpMetadata(NOW, False))
+    timers.settle()
+
+    assert writer.copied == []
+    assert notifier.shown == []
+
+
+@pytest.mark.parametrize(
+    "event",
+    [replace(_received(), contact_name="Alice"), replace(_received(), is_read=True),
+     replace(_received(), group_key="group:family"), _received(body="Hello"),
+     _received(kind="sms_seen"), _received(path=None)],
+)
+def test_ineligible_pushes_never_query_phone_metadata(event) -> None:
+    requests = []
+    writer = _Writer()
+    sink, _notifier, timers = _sink(
+        writer, resolve=lambda event, done: requests.append(done),
+    )
+
+    sink.handle(replace(event, timestamp=None))
+    timers.settle()
+
+    assert requests == []
+    assert writer.copied == []
+
+
+def test_lookup_submission_failure_does_not_copy_or_log_content(caplog) -> None:
+    def resolve(_event, _done):
+        raise RuntimeError(BODY)
+
+    caplog.set_level(logging.DEBUG)
+    writer = _Writer()
+    sink, notifier, timers = _sink(writer, resolve=resolve)
+
+    sink.handle(replace(_received(), timestamp=None))
+    timers.settle()
+
+    assert writer.copied == []
+    assert notifier.shown == []
+    assert "lookup failed: RuntimeError" in caplog.text
+    assert CODE not in caplog.text
+
+
+def test_bursts_of_codes_are_rate_limited(caplog) -> None:
+    caplog.set_level(logging.DEBUG)
+    writer = _Writer()
+    notifier = _Notifier()
+    timers = _Timers()
+    clock = [NOW]
+    sink = OtpClipboardSink(
+        writer=writer,
+        notification_policy=lambda: "messages",
+        notifier=notifier,
+        schedule_ms=timers.schedule,
+        cancel=timers.cancel,
+        now=lambda: clock[0],
+    )
+
+    for index in range(5):
+        sink.handle(_received(handle=f"m{index}", age=timedelta(0)))
+    timers.settle()
+    assert len(writer.copied) == sink_module.MAX_COPIES_PER_WINDOW
+    assert "checks rate limited" in caplog.text
+
+    clock[0] = NOW + sink_module.COPY_WINDOW + timedelta(seconds=1)
+    sink.handle(_received(handle="later", age=timedelta(0)))
+    timers.settle()
+    assert len(writer.copied) == sink_module.MAX_COPIES_PER_WINDOW + 1
+
+
+def test_the_same_message_is_copied_only_once() -> None:
+    writer = _Writer()
+    sink, _notifier, timers = _sink(writer)
+
+    sink.handle(_received())
+    sink.handle(_received())
+    timers.settle()
+
+    assert _codes(writer) == [CODE]
+
+
+def test_failed_wl_copy_falls_back_to_x11_once(caplog) -> None:
+    caplog.set_level(logging.DEBUG)
+    writer = _Writer(outcomes=["failed", "running"])
+    sink, notifier, timers = _sink(writer)
+
+    sink.handle(_received())
+    timers.settle()
+
+    assert writer.copied == [(CODE, frozenset()), (CODE, frozenset({"wl-copy"}))]
+    assert len(notifier.shown) == 1
+    assert "copied a one-time code to the clipboard via xclip" in caplog.text
+    assert CODE not in caplog.text
+
+
+def test_expired_code_is_not_copied_during_clipboard_helper_fallback() -> None:
+    clock = [NOW]
+    writer = _Writer(outcomes=["failed", "running"])
+    sink, notifier, timers = _sink(writer, now=lambda: clock[0])
+
+    sink.handle(_received(age=timedelta(minutes=4, seconds=59)))
+    timers.step()
+    clock[0] += timedelta(seconds=2)
+    timers.settle()
+
+    assert writer.copied == [(CODE, frozenset())]
+    assert notifier.shown == []
+
+
+@pytest.mark.parametrize("update", ["read", "group"])
+def test_updated_eligibility_prevents_clipboard_helper_fallback(update) -> None:
+    writer = _Writer(outcomes=["failed", "running"])
+    sink, notifier, timers = _sink(writer)
+    sink.handle(_received())
+    timers.step()
+    if update == "read":
+        sink.message_read("message1")
+    else:
+        sink.handle_ancs(_group_notification())
+    timers.settle()
+
+    assert writer.copied == [(CODE, frozenset())]
+    assert notifier.shown == []
+
+
+def test_fallback_warning_is_logged_once(caplog) -> None:
+    caplog.set_level(logging.DEBUG)
+    writer = _Writer(outcomes=["failed", "running", "failed", "running"])
+    sink, notifier, timers = _sink(writer)
+
+    sink.handle(_received(handle="message1"))
+    timers.settle()
+    sink.handle(_received(handle="message2"))
+    timers.settle()
+
+    assert len(writer.copied) == 4
+    assert len(notifier.shown) == 2
+    assert caplog.text.count("trying X11 helpers") == 1
+
+
+def test_failed_fallback_does_not_claim_success(caplog) -> None:
+    caplog.set_level(logging.DEBUG)
+    writer = _Writer(outcomes=["failed", "failed"])
+    sink, notifier, timers = _sink(writer)
+
+    sink.handle(_received())
+    timers.settle()
+
+    assert len(writer.copied) == 2
+    assert notifier.shown == []
+    assert "xclip could not take the clipboard" in caplog.text
+    assert CODE not in caplog.text
+
+
+def test_two_codes_within_the_confirm_delay_confirm_only_the_newer() -> None:
+    writer = _Writer(outcomes=["running", "running"])
+    sink, notifier, timers = _sink(writer)
+
+    sink.handle(_received(handle="message1"))
+    sink.handle(_received(body="Your verification code is 135790", handle="message2"))
+    timers.settle()
+
+    assert _codes(writer) == [CODE, "135790"]
+    assert len(notifier.shown) == 1
+
+
+def test_close_cancels_pending_confirmations() -> None:
+    writer = _Writer()
+    sink, notifier, timers = _sink(writer)
+    sink.handle(_received())
+
+    sink.close()
+    timers.settle()
+
+    assert notifier.shown == []
+    assert notifier.closed is True
+    assert writer.released is True
+
+
+def test_notifications_off_still_copies_silently() -> None:
+    writer = _Writer()
+    sink, notifier, timers = _sink(writer, policy="none")
+
+    sink.handle(_received())
+    timers.settle()
+
+    assert _codes(writer) == [CODE]
+    assert notifier.shown == []
+
+
+def test_code_is_shown_only_when_content_is_allowed() -> None:
+    shown = notification_text(CODE, "Alice", show_content=True, clear_after_s=30)
+    hidden = notification_text(CODE, "Alice", show_content=False, clear_after_s=30)
+
+    assert CODE in shown[0]
+    assert "Alice" in shown[1]
+    assert "30 seconds" in shown[1]
+    assert all(CODE not in part and "Alice" not in part for part in hidden)
+
+
+def test_notification_text_escapes_remote_sender() -> None:
+    _summary, body = notification_text(CODE, "<b>Bank</b>", show_content=True, clear_after_s=0)
+    assert "<b>" not in body
+
+
+def test_code_never_reaches_the_log(caplog, monkeypatch) -> None:
+    monkeypatch.setattr(sink_module.config, "SHOW_NOTIFICATION_CONTENT", True)
+    caplog.set_level(logging.DEBUG)
+    sink, notifier, timers = _sink()
+
+    sink.handle(_received())
+    timers.settle()
+
+    assert notifier.shown and CODE in notifier.shown[0][0]
+    assert "copied a one-time code" in caplog.text
+    assert CODE not in caplog.text
+    assert "15551234567" not in caplog.text
+
+
+# ---- desktop notifier ---------------------------------------------------
+
+
+class _NotificationBus:
+    def __init__(self, *, owner: bool) -> None:
+        self.owner = owner
+        self.callback = None
+        self.lookups = 0
+        self.calls = []
+        self.match = SimpleNamespace(removed=False)
+        self.match.remove = lambda: setattr(self.match, "removed", True)
+
+    def add_signal_receiver(self, callback, **kwargs):
+        assert kwargs["arg0"] == "org.freedesktop.Notifications"
+        self.callback = callback
+        return self.match
+
+    def call_async(self, bus_name, path, interface, method, signature, args,
+                   reply_handler, error_handler):
+        assert (bus_name, method, signature) == ("org.freedesktop.DBus", "NameHasOwner", "s")
+        assert args == ("org.freedesktop.Notifications",)
+        self.pending_reply = (reply_handler, error_handler)
+
+    def reply(self) -> None:
+        reply_handler, _error_handler = self.pending_reply
+        reply_handler(self.owner)
+
+    def name_has_owner(self, _name):
+        raise AssertionError("the owner query must be asynchronous")
+
+    def get_object(self, _name, _path):
+        self.lookups += 1
+        bus = self
+
+        class _Object:
+            def get_dbus_method(self, member, dbus_interface=None):
+                def call(*args, **kwargs):
+                    bus.calls.append((member, args, kwargs))
+                return call
+
+        return _Object()
+
+
+def test_notifier_follows_the_notification_owner() -> None:
+    bus = _NotificationBus(owner=False)
+    notifier = DesktopNotifier(bus)
+    bus.reply()
+
+    notifier.notify("Verification code copied", "Paste it with Ctrl+V.")
+    assert bus.lookups == 0
+
+    bus.callback("org.freedesktop.Notifications", "", ":1.7")
+    notifier.notify("Verification code copied", "Paste it with Ctrl+V.")
+    notifier.notify("Verification code copied", "Paste it with Ctrl+V.")
+    assert bus.lookups == 1
+    [(_member, args, kwargs)] = bus.calls[:1]
+    hints = args[6]
+    assert bool(hints["transient"]) is True
+    assert "category" not in hints
+    assert "reply_handler" in kwargs and "error_handler" in kwargs
+
+    # A replaced notification daemon is resolved again.
+    bus.callback("org.freedesktop.Notifications", ":1.7", ":1.9")
+    notifier.notify("Verification code copied", "Paste it with Ctrl+V.")
+    assert bus.lookups == 2
+
+    notifier.close()
+    assert bus.match.removed is True
+
+
+def test_notifier_without_a_bus_is_inert() -> None:
+    class _BrokenBus:
+        def add_signal_receiver(self, *_args, **_kwargs):
+            raise RuntimeError("no bus")
+
+    notifier = DesktopNotifier(_BrokenBus())
+    notifier.notify("Verification code copied", "Paste it with Ctrl+V.")
+    notifier.close()
+
+
+# ---- dispatcher wiring --------------------------------------------------
+
+
+class _SqliteSink:
+    name = "sqlite"
+
+    def __init__(self, *, storage=None) -> None:
+        pass
+
+    def handle(self, _event) -> None:
+        pass
+
+
+class _Bus:
+    def add_signal_receiver(self, *_args, **_kwargs):
+        return None
+
+    def name_has_owner(self, _name) -> bool:
+        return False
+
+
+def _failing_notification_sink(**_kwargs):
+    raise RuntimeError("no notification server")
+
+
+def _dispatcher(monkeypatch, *, enabled: bool, factory):
+    monkeypatch.setattr(event_dispatcher, "SqliteSink", _SqliteSink)
+    return EventDispatcher(
+        object(),
+        defer_mark_read=lambda _path: None,
+        notification_sink_factory=_failing_notification_sink,
+        session_bus=_Bus(),
+        otp_autocopy=lambda: enabled,
+        otp_sink_factory=factory,
+        schedule=lambda *_args: 1,
+        cancel=lambda _source: None,
+    )
+
+
+def test_disabled_autocopy_never_builds_the_sink(monkeypatch) -> None:
+    built = []
+    dispatcher = _dispatcher(
+        monkeypatch, enabled=False, factory=lambda **kwargs: built.append(kwargs)
+    )
+
+    dispatcher.setup()
+    dispatcher.message(_received())
+
+    assert built == []
+    assert "otp-clipboard" not in dispatcher.names
+
+
+def test_autocopy_is_off_by_default_and_configurable(tmp_path) -> None:
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    env = {
+        key: value for key, value in os.environ.items()
+        if not key.startswith("BLUEFERRY_")
+    }
+    env.update(HOME=str(tmp_path), XDG_CONFIG_HOME=str(tmp_path / "config"),
+               XDG_STATE_HOME=str(tmp_path / "state"),
+               PYTHONPATH=str(Path(__file__).resolve().parents[1] / "src"))
+    script = (
+        "from blueferry import config; "
+        "print(config.OTP_AUTOCOPY, config.OTP_CLEAR_SECONDS, "
+        "'BLUEFERRY_OTP_AUTOCOPY' in config.LOCAL_ENV_KEYS, "
+        "'BLUEFERRY_OTP_CLEAR_SECONDS' in config.LOCAL_ENV_KEYS)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script], env=env, capture_output=True, text=True,
+        check=True, timeout=30,
+    )
+    assert result.stdout.split() == ["False", "0", "True", "True"]
+
+
+def test_enabled_autocopy_receives_messages_and_is_released_on_stop(monkeypatch) -> None:
+    writer = _Writer()
+    sink, _notifier, timers = _sink(writer)
+    received_kwargs = []
+
+    def factory(**kwargs):
+        received_kwargs.append(kwargs)
+        return sink
+
+    dispatcher = _dispatcher(monkeypatch, enabled=True, factory=factory)
+
+    dispatcher.setup()
+    dispatcher.setup()
+    assert dispatcher.names.count("otp-clipboard") == 1
+    assert isinstance(received_kwargs[0]["session_bus"], _Bus)
+
+    dispatcher.message(_received())
+    timers.settle()
+    assert _codes(writer) == [CODE]
+
+    dispatcher.stop()
+    assert writer.released is True
+    assert "otp-clipboard" not in dispatcher.names
+
+
+@pytest.mark.parametrize("invalidate", [None, "session", "listener"])
+def test_daemon_dispatches_immediately_and_ignores_stale_metadata(
+    make_daemon, monkeypatch, invalidate,
+) -> None:
+    from blueferry import daemon as daemon_module
+    from blueferry.obex.sessions import ObexSession
+
+    daemon = make_daemon()
+    writer = _Writer()
+    timers = _Timers()
+    notifier = _Notifier()
+    pending = []
+    queries = []
+    dispatched = []
+    session_path = "/org/bluez/obex/client/session1"
+    daemon.sessions.map = ObexSession("MAP", session_path)
+    daemon.listener = SimpleNamespace()
+    daemon.obex_worker.submit = lambda operation, **callbacks: pending.append(
+        (operation, callbacks)
+    )
+
+    def lookup(session, path):
+        queries.append((session, path))
+        return OtpMetadata(NOW - timedelta(minutes=4), False)
+
+    def factory(**kwargs):
+        return OtpClipboardSink(
+            writer=writer, notifier=notifier, now=lambda: NOW,
+            schedule_ms=timers.schedule, cancel=timers.cancel,
+            resolve_metadata=kwargs["resolve_metadata"],
+        )
+
+    monkeypatch.setattr(daemon_module, "lookup_otp_metadata", lookup)
+    monkeypatch.setattr(event_dispatcher, "SqliteSink", _SqliteSink)
+    daemon.events._otp_autocopy = lambda: True
+    daemon.events._otp_sink_factory = factory
+    daemon.events._notification_sink_factory = _failing_notification_sink
+    daemon.events._session_bus = _Bus()
+    daemon.events._schedule = lambda *_args: 1
+    daemon.events._cancel = lambda _source: None
+    daemon.events.on_incoming_message = None
+    daemon.events.setup()
+    daemon.events.sinks.append(SimpleNamespace(name="observer", handle=dispatched.append))
+    event = replace(_received(), timestamp=None)
+
+    daemon.events.message(event)
+    assert dispatched == [event]  # Regular message delivery did not wait.
+    assert writer.copied == []
+    timers.step()
+    operation, callbacks = pending.pop()
+    result = operation()
+    assert queries == [(session_path, event.message_path)]
+
+    if invalidate == "session":
+        # Even a reused object path belongs to a different connection.
+        daemon.sessions.map = ObexSession("MAP", session_path)
+    elif invalidate == "listener":
+        daemon.listener = SimpleNamespace()
+    callbacks["on_success"](result)
+    timers.settle()
+
+    assert _codes(writer) == ([CODE] if invalidate is None else [])
+    daemon.events.stop()
+
+
+@pytest.mark.parametrize("failure", ["queue", "remote"])
+def test_daemon_timestamp_failure_fails_closed_without_content(
+    make_daemon, monkeypatch, caplog, failure,
+) -> None:
+    from blueferry.obex.sessions import ObexSession
+
+    daemon = make_daemon()
+    daemon.sessions.map = ObexSession("MAP", "/session")
+    daemon.listener = SimpleNamespace()
+    received = []
+
+    def submit(_operation, **callbacks):
+        if failure == "queue":
+            raise RuntimeError(BODY)
+        callbacks["on_error"](RuntimeError(BODY))
+
+    daemon.obex_worker.submit = submit
+    caplog.set_level(logging.DEBUG)
+
+    daemon._resolve_otp_metadata(_received(path="/session/message1"), received.append)
+
+    assert received == [None]
+    assert CODE not in caplog.text
+
+
+def test_queued_timestamp_query_does_not_access_a_replaced_session(
+    make_daemon, monkeypatch,
+) -> None:
+    from blueferry import daemon as daemon_module
+    from blueferry.obex.sessions import ObexSession
+
+    daemon = make_daemon()
+    daemon.sessions.map = ObexSession("MAP", "/session")
+    daemon.listener = SimpleNamespace()
+    pending = []
+    daemon.obex_worker.submit = lambda operation, **callbacks: pending.append(operation)
+    monkeypatch.setattr(
+        daemon_module, "lookup_otp_metadata",
+        lambda *_args: pytest.fail("old session must not access the phone"),
+    )
+
+    daemon._resolve_otp_metadata(_received(path="/session/message1"), lambda _result: None)
+    daemon.sessions.map = ObexSession("MAP", "/session")
+
+    assert pending.pop()() is None
+
+
+@pytest.mark.parametrize("source", ["phone", "client", "popup", "stale_session"])
+def test_daemon_read_paths_cancel_pending_codes_immediately(make_daemon, monkeypatch, source):
+    from blueferry import daemon as daemon_module
+    from blueferry.obex.sessions import ObexSession
+
+    daemon = make_daemon()
+    writer = _Writer()
+    sink, _notifier, timers = _sink(writer)
+    daemon.events.sinks = [sink]
+    daemon.sessions.map = ObexSession("MAP", "/session")
+    deferred = []
+    daemon.read_receipts.defer = lambda session, handles: deferred.append((session, list(handles)))
+    monkeypatch.setattr(daemon_module, "mark_event_handles_read", lambda *args, **kwargs: False)
+    sink.handle(_received(path="/session/message1"))
+    if source == "phone":
+        daemon._message_read("message1")
+    elif source == "client":
+        daemon._defer_message_reads("/session", ["message1"])
+    elif source == "popup":
+        daemon._defer_message_read_path("/session/message1")
+    else:
+        daemon._defer_message_reads("/old_session", ["message1"])
+    timers.settle()
+    assert _codes(writer) == ([CODE] if source == "stale_session" else [])
+    assert deferred == ([("/session", ["message1"])] if source in {"client", "popup"} else [])
+    daemon.events.stop()
+
+
+@pytest.mark.parametrize("update", ["read", "group"])
+def test_blocked_candidate_stays_blocked_when_transient_context_expires(update):
+    clock = [NOW]
+    replies = []
+    writer = _Writer()
+    sink, _notifier, timers = _sink(
+        writer, now=lambda: clock[0], resolve=lambda event, done: replies.append(done),
+    )
+    event = _received()
+    sink.handle(event)
+    timers.step()
+    if update == "read":
+        sink.message_read(event.handle)
+    else:
+        sink.handle_ancs(_group_notification())
+    clock[0] += timedelta(seconds=61)
+    # Another arrival prunes the transient correlation cache before the
+    # phone query returns. Previously observed disqualification still holds.
+    sink.handle(_received(body="ordinary message", handle="message2"))
+    replies[0](OtpMetadata(event.timestamp, False))
+    timers.settle()
+    assert writer.copied == []
+
+
+@pytest.mark.parametrize("padding", ["x", "€"])
+def test_truncated_group_notification_blocks_code(padding):
+    body = BODY + " " + padding * 260
+    truncated = body.encode("utf-8")[:256].decode("utf-8", errors="replace")
+    writer = _Writer()
+    sink, _notifier, timers = _sink(writer)
+    sink.handle(_received(body=body))
+    sink.handle_ancs(_group_notification(body=truncated))
+    timers.settle()
+    assert writer.copied == []
+
+
+def test_default_config_leaves_autocopy_disabled(make_daemon, monkeypatch) -> None:
+    monkeypatch.delenv("BLUEFERRY_OTP_AUTOCOPY", raising=False)
+    daemon = make_daemon()
+
+    monkeypatch.setattr(event_dispatcher, "SqliteSink", _SqliteSink)
+    monkeypatch.setattr(event_dispatcher.config, "OTP_AUTOCOPY", False)
+    daemon.events._session_bus = _Bus()
+    daemon.events._notification_sink_factory = _failing_notification_sink
+    daemon.events._schedule = lambda *_args: 1
+    daemon.events.setup()
+
+    assert "otp-clipboard" not in daemon.events.names
+
+
+def test_notifier_learns_an_existing_server_asynchronously() -> None:
+    bus = _NotificationBus(owner=True)
+    notifier = DesktopNotifier(bus)
+
+    notifier.notify("Verification code copied", "Paste it with Ctrl+V.")
+    assert bus.lookups == 0  # reply not in yet: no popup, no blocking call
+
+    bus.reply()
+    notifier.notify("Verification code copied", "Paste it with Ctrl+V.")
+    assert bus.lookups == 1
+
+
+def test_a_late_owner_reply_does_not_override_a_newer_owner_change() -> None:
+    bus = _NotificationBus(owner=True)
+    notifier = DesktopNotifier(bus)
+    bus.callback("org.freedesktop.Notifications", ":1.7", "")
+    bus.reply()  # stale "has owner" answer
+
+    notifier.notify("Verification code copied", "Paste it with Ctrl+V.")
+    assert bus.lookups == 0
+
+
+def test_the_message_popup_is_extended_instead_of_a_second_popup(monkeypatch) -> None:
+    monkeypatch.setattr(sink_module.config, "SHOW_NOTIFICATION_CONTENT", True)
+    amended = []
+    writer = _Writer(clear_after_s=45)
+    sink, notifier, timers = _sink(
+        writer, amend=lambda handle, line: amended.append((handle, line)) or True
+    )
+
+    sink.handle(_received())
+    timers.settle()
+
+    assert notifier.shown == []
+    assert amended == [
+        ("message1", "Verification code copied to the clipboard. "
+         "BlueFerry releases its clipboard copy in 45 seconds.")
+    ]
+    # The line never repeats the code, whatever the content setting.
+    assert CODE not in amended[0][1]
+
+
+@pytest.mark.parametrize("amend", [lambda _h, _l: False, None])
+def test_without_an_open_message_popup_the_sink_shows_its_own(amend) -> None:
+    sink, notifier, timers = _sink(amend=amend)
+
+    sink.handle(_received())
+    timers.settle()
+
+    assert len(notifier.shown) == 1
+
+
+def test_a_failing_popup_update_falls_back_to_an_own_popup() -> None:
+    def amend(_handle, _line):
+        raise RuntimeError("bus gone")
+
+    sink, notifier, timers = _sink(amend=amend)
+
+    sink.handle(_received())
+    timers.settle()
+
+    assert len(notifier.shown) == 1
+
+
+def test_a_failed_copy_does_not_touch_the_message_popup() -> None:
+    amended = []
+    sink, notifier, timers = _sink(
+        _Writer(outcomes=["failed", "failed"]),
+        amend=lambda handle, line: amended.append(handle) or True,
+    )
+
+    sink.handle(_received())
+    timers.settle()
+
+    assert amended == []
+    assert notifier.shown == []
+
+
+def test_dispatcher_routes_popup_updates_to_the_libnotify_sink(monkeypatch) -> None:
+    built = []
+
+    def factory(**kwargs):
+        built.append(kwargs)
+        return SimpleNamespace(name="otp-clipboard", handle=lambda _event: None)
+
+    dispatcher = _dispatcher(monkeypatch, enabled=True, factory=factory)
+    dispatcher.setup()
+    amend = built[0]["amend_message_popup"]
+    assert amend("message1", "line") is False
+
+    calls = []
+    dispatcher.sinks.append(
+        SimpleNamespace(
+            name="libnotify",
+            handle=lambda _event: None,
+            amend_message_popup=lambda handle, line: calls.append((handle, line)) or True,
+        )
+    )
+    assert amend("message1", "line") is True
+    assert calls == [("message1", "line")]
+
+
+def test_failed_x11_helper_logs_a_content_free_hint(caplog) -> None:
+    writer = _Writer(outcomes=["failed", "failed"])
+    writer.failure_hint = lambda ticket: "XAUTHORITY points into /tmp" if ticket.tool == "xclip" else None
+    sink, _notifier, timers = _sink(writer)
+
+    sink.handle(_received())
+    timers.settle()
+
+    assert "xclip could not take the clipboard: XAUTHORITY points into /tmp" in caplog.text
+    assert CODE not in caplog.text

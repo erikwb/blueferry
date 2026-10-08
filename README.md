@@ -331,6 +331,71 @@ daemon run without logging its notification content:
 journalctl --user -u blueferry -f | grep "ANCS app observed"
 ```
 
+### One-time codes
+
+BlueFerry can copy verification codes (2FA/OTP) from newly received SMS and
+iMessages to the clipboard. This is off by default because it changes the
+clipboard without you doing anything:
+
+```bash
+BLUEFERRY_OTP_AUTOCOPY=true
+# Optional: clear the clipboard after this many seconds (0 = keep, max 600)
+BLUEFERRY_OTP_CLEAR_SECONDS=60
+```
+
+Only an unread message that has just arrived from a sender who is not a
+saved contact counts: sent messages, history, group conversations, messages
+from contacts, and messages without a phone timestamp from the past five
+minutes are ignored. BlueFerry checks the exact message's timestamp and current read flag in a bounded inbox listing; lookup
+failures skip the copy. Candidates wait five seconds for live group metadata
+from Apple Messages notifications, without delaying message delivery. At most
+three eligibility checks and three copies per minute are allowed, bounding
+phone work before it is queued. A number is treated as a code only
+when it is tied to a code word: "verification code", "Bestätigungscode",
+"mTAN" or "OTP" near it, "code: 123456" or "code is 123456", "123456 is your
+… code", or "enter 123456" in a message about verifying or logging in. Words
+like "verify" or "one-time" alone never pick a number, promotions and
+bookings need a specific code word, and amounts, dates, times, phone numbers,
+and order or tracking numbers are skipped. `G-123456` and `123-456` are copied
+as `123456`. Check what a message would copy with
+`echo 'Your code is 123456' | blueferry otp-check`.
+
+The message popup gets one extra line saying the code was copied; when there
+is no message popup (for example with notifications limited to contacts), a
+short popup of its own confirms the copy. The code and sender show only when
+`BLUEFERRY_SHOW_NOTIFICATION_CONTENT` is on, and then the desktop's
+notification server receives them, as it does for any message popup; with the
+notification setting **None** the code is copied silently. The code is never
+logged, stored, or published on BlueFerry's D-Bus API, so there is no command
+to show it again.
+
+The backend copies with `wl-copy` from wl-clipboard on Wayland, or `xclip` or
+`xsel` on X11; `blueferry otp-status` shows which one it finds. With
+wl-clipboard 2.3 or newer the code is marked as sensitive; clipboard managers
+that honor the hint keep it out of their history. The first copy waits for the
+capability probe. Older versions and the X11 tools cannot set this hint.
+The clear timer and backend shutdown release only BlueFerry's own clipboard
+source. If a persistence tool such as wl-clip-persist takes the selection over,
+its copy remains under that tool's control. BlueFerry never reads and globally
+clears the clipboard, so cleanup cannot erase a later user copy or delete
+entries a clipboard manager already saved.
+
+The helpers need the graphical session in the backend service's
+environment. On Wayland, `WAYLAND_DISPLAY` is used, or else the only
+`wayland-N` socket in `$XDG_RUNTIME_DIR`; if `wl-copy` cannot reach that
+display, BlueFerry tries `xclip`/`xsel` once. X11 needs `DISPLAY` and
+`XAUTHORITY` in the service environment (for example through
+`systemctl --user import-environment DISPLAY XAUTHORITY`). The systemd unit's
+`PrivateTmp=true` hides `/tmp`: X clients still reach the server through its
+abstract socket, but an `XAUTHORITY` file under `/tmp` is not visible, and the
+log says so when that is why `xclip`/`xsel` failed. Copying relies on
+the Wayland data-control protocol, which KWin and wlroots compositors provide;
+GNOME/Mutter without it is untested.
+
+The iPhone often sends message times without a time zone, and they are read
+in this computer's zone. If the phone and the computer use different zones,
+codes can look older than five minutes and are skipped; the debug log then
+shows "ignoring a message N seconds old".
 ### iPhone notification actions (opt-in)
 
 iOS attaches actions to some notifications, such as **Accept**/**Decline** on
@@ -824,6 +889,7 @@ blueferry contacts-photo Alice --output alice.jpg   # needs BLUEFERRY_CONTACT_PH
 blueferry call-history --missed   # after `blueferry call-history enable`
 blueferry media status
 blueferry history-clear
+blueferry otp-status
 blueferry notifications open-map list
 blueferry doctor
 ```
@@ -899,7 +965,7 @@ read-only MAP request. Automatic cycling is skipped if another Bluetooth
 device is paired or connected to that adapter, discovery is active, or BlueFerry
 is transferring data. It requires BlueZ to report power transitions and
 respects Bluetooth being turned off and explicit permission failures.
-The attempt limit survives backend restarts: another cycle requires ten minutes
+The attempt limit survives backend restarts: another cycle requires five minutes
 of verified notification connectivity, and cycles are at least an hour apart.
 If a power request times out, the running backend keeps checking the original
 controller and retries restoration without issuing another power-off request.

@@ -18,6 +18,7 @@ from blueferry.cli_media import media
 from blueferry.cli_messages import sms_list, sms_send
 from blueferry.cli_notification_actions import notification_actions_app
 from blueferry.cli_notifications import notifications_app
+from blueferry.cli_otp import otp_check, otp_status
 from blueferry.cli_proximity import proximity_app
 from blueferry.notification_policy import NotificationPolicyStore
 
@@ -145,6 +146,18 @@ def doctor(verbose: bool = typer.Option(False, "-v", "--verbose")):
         log.error("State dir not writable: %s", e)
         ok = False
 
+    # Optional one-time code auto-copy needs a clipboard helper.
+    if config.OTP_AUTOCOPY:
+        from blueferry.cli_otp import status_lines
+
+        lines, otp_warning = status_lines(
+            enabled=True,
+            clear_after_s=config.OTP_CLEAR_SECONDS,
+            environ=os.environ,
+        )
+        for line in lines[2:-1]:
+            (log.warning if otp_warning else log.info)("%s", line)
+        warnings = warnings or otp_warning
     if not _doctor_le_bond(log):
         warnings = True
 
@@ -595,6 +608,8 @@ app.command("contacts-photo")(contacts_photo)
 app.command("sms-list")(sms_list)
 app.command("sms-send")(sms_send)
 app.add_typer(proximity_app, name="proximity-lock")
+app.command("otp-status")(otp_status)
+app.command("otp-check")(otp_check)
 app.add_typer(call_history_app, name="call-history")
 app.add_typer(notifications_app, name="notifications")
 app.command("media")(media)

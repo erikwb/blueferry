@@ -34,6 +34,9 @@ Requires:       python3dist(cryptography) >= 41
 Requires:       python3dist(typer) >= 0.9
 Requires:       systemd
 Recommends:     gnome-keyring
+Suggests:       wl-clipboard
+Suggests:       xclip
+Suggests:       xsel
 # Only for the experimental, default-off phone calls.
 Suggests:       ofono
 Provides:       bundled(python3dist(linkify-it-py)) = 2.1.0

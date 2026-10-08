@@ -385,6 +385,45 @@ def test_tokens_are_scoped_to_notification_and_consumed_once(monkeypatch):
     assert sink._activation_tokens == {}
 
 
+class _AsyncFakeNotifications(_FakeNotifications):
+    def Notify(self, *args, reply_handler=None, error_handler=None):
+        self.calls.append(args)
+        if reply_handler is not None:
+            reply_handler(args[1])
+            return None
+        return 7
+
+
+def test_another_sink_can_extend_an_open_message_popup(monkeypatch) -> None:
+    monkeypatch.setattr("blueferry.sinks.libnotify.config.SHOW_NOTIFICATION_CONTENT", True)
+    sink = LibnotifySink.__new__(LibnotifySink)
+    sink._notif = _AsyncFakeNotifications()
+    sink._pending = {}
+    sink._open_messages = {}
+    sink._msg_subs = {}
+    event = SimpleNamespace(
+        kind="sms_received",
+        handle="message-7",
+        display_sender="+15551234567",
+        body="Your code is <b>482913</b>",
+        message_path=None,
+    )
+    sink.handle(event)
+
+    assert sink.amend_message_popup("message-7", "Code copied <now>.")
+
+    original, amended = sink._notif.calls
+    # Same popup id, actions and hints; the line is escaped and appended.
+    assert int(amended[1]) == 7
+    assert amended[3] == original[3]
+    assert amended[4] == f"{original[4]}\nCode copied &lt;now&gt;."
+    assert list(amended[5]) == list(original[5])
+    assert dict(amended[6]) == dict(original[6])
+    # Unknown or closed popups are left to the caller.
+    assert not sink.amend_message_popup("message-other", "x")
+    sink._on_closed(7, 1)
+    assert not sink.amend_message_popup("message-7", "x")
+    assert not sink.amend_message_popup("", "x")
 # ---- per-app notification click rules --------------------------------------
 
 _HOSTILE_TITLE = "$(touch /tmp/pwned)`id`; rm -rf ~ && https://evil.example/"
