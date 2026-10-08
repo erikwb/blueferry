@@ -538,6 +538,9 @@ class BearerSupervisor:
             and now - polled <= POLL_SECONDS * 2
             and self._le_flaps
             and self._le_flaps[-1] == polled
+            # A link that came up after the polled drop is a later one,
+            # and so is the drop this signal reports.
+            and (self._le_link_up_at is None or self._le_link_up_at <= polled)
         ):
             # Polling counted this very drop before the first signal arrived;
             # the signal, with its reason and link age, replaces that count.

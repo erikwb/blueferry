@@ -420,6 +420,26 @@ def test_the_first_signal_does_not_count_a_polled_drop_twice() -> None:
     assert h.supervisor.snapshot()["le_flap_count"] == 1
 
 
+def test_the_first_signal_for_a_later_drop_keeps_the_polled_one() -> None:
+    h = _Harness()
+    h.supervisor.start()
+    # Only polling sees the first drop; no signal arrives for it.
+    h.link_up()
+    h.state["le"] = True
+    h.clock.now += 1
+    h.poll()
+    h.state["le"] = False
+    h.clock.now += 1
+    h.poll()
+    assert h.supervisor.snapshot()["le_flap_count"] == 1
+
+    # The link comes up again and drops, this time with a signal.
+    h.clock.now += 1
+    h.flap()
+
+    assert h.supervisor.snapshot()["le_flap_count"] == 2
+
+
 @pytest.mark.parametrize(
     "reason",
     ["org.bluez.Reason.Local", "org.bluez.Reason.Unknown", "org.bluez.Reason.Suspend"],
