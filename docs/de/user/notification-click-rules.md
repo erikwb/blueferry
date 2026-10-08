@@ -44,8 +44,10 @@ Manche Benachrichtigungs-Shells, etwa die von Omarchy, führen einen im Popup
 hinterlegten Befehl aus, statt den Klick zu melden. BlueFerry gibt solchen
 Popups einen Befehl mit, der nur eine zufällige ID für dieses Popup enthält.
 Der Befehl reicht die ID an den Daemon zurück, der dann genau dieselben
-Schritte wie oben ausführt. Ist das Popup weg oder wurde der Dienst neu
-gestartet, ist die ID unbekannt und öffnet nichts.
+Schritte wie oben ausführt. Diese Shells schließen das Popup, sobald sie den
+Befehl ausführen. Deshalb bleibt die ID noch zehn Sekunden gültig, nachdem
+ein Popup weggeklickt wurde. Danach, nach einem von selbst abgelaufenen Popup
+oder nach einem Neustart des Dienstes ist die ID unbekannt und öffnet nichts.
 
 ## Einschalten
 

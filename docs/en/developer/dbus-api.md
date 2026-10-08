@@ -95,7 +95,7 @@ package to restart an outdated backend after upgrades.
 | `GetNotificationOpenMap` | → `s rules_json` (list of `bundle_id`, `target`, `kind`) |
 | `SetNotificationOpenTarget` | `s bundle_id, s target` → `s rules_json` |
 | `RemoveNotificationOpenTarget` | `s bundle_id` → `b removed` |
-| `OpenNotificationClick` | `s click_id, s activation_token` → `b opened` (a notification shell ran a mapped popup's stored argv; the ID is random per popup) |
+| `OpenNotificationClick` | `s click_id, s activation_token` → `b opened` (a notification shell ran a mapped popup's stored argv; the ID is random per popup and stays valid for 10 s after the user dismissed the popup) |
 | `OpenLegacyGtkMessage` | `s handle, s application_owner` → `b delivered` (upgrade compatibility) |
 
 `GetStatus` reports `notification_open_map_revision`, a content-free number

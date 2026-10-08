@@ -42,8 +42,11 @@ popup stays clickable.
 Some notification shells, such as Omarchy's, run a command stored in the
 popup instead of reporting the click. BlueFerry gives those popups a command
 that contains only a random ID for that popup. The command hands the ID back
-to the daemon, which then follows exactly the same steps as above. After the
-popup is gone or the service restarted, the ID is unknown and opens nothing.
+to the daemon, which then follows exactly the same steps as above. These
+shells dismiss the popup as soon as they run the command, so the ID stays
+valid for ten seconds after you dismiss a popup. After that, after a popup
+expired on its own, or after the service restarted, the ID is unknown and
+opens nothing.
 
 ## Turn it on
 

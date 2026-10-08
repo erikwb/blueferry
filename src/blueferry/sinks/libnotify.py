@@ -91,6 +91,10 @@ _ANCS_ACTION_EXPIRE_MS = config.ANCS_ACTION_TIMEOUT_MS
 _REASON_DISMISSED = 2
 # Minimum spacing between two launches of the same notification target.
 _OPEN_TARGET_INTERVAL_S = 1.0
+# How long a click ID stays usable after the user dismissed its popup. Omarchy
+# runs the popup's argv and dismisses the popup at once, so the close arrives
+# before the helper has started and called OpenNotificationClick.
+_DISMISSED_CLICK_GRACE_S = 10.0
 
 # Notification action keys for ANCS actions. They never collide with the
 # message popup's "default" action, so a click on the popup body cannot run an
@@ -198,6 +202,9 @@ class LibnotifySink:
         # argv instead of invoking the action (Omarchy) hand this opaque ID
         # back through the daemon, so the same click path applies.
         self._click_ids: dict[str, int] = {}
+        # Click ID -> (bundle ID, monotonic deadline) for popups the user
+        # just dismissed; see _DISMISSED_CLICK_GRACE_S.
+        self._dismissed_clicks: dict[str, tuple[str, float]] = {}
         # target -> monotonic time of its last launch (per-target throttle)
         self._recent_open_targets: dict[object, float] = {}
         # notification_id -> SignalMatch for the per-Message1 PropertiesChanged sub
@@ -254,6 +261,7 @@ class LibnotifySink:
         self._open_messages.clear()
         getattr(self, "_open_apps", {}).clear()
         getattr(self, "_click_ids", {}).clear()
+        getattr(self, "_dismissed_clicks", {}).clear()
         getattr(self, "_activation_tokens", {}).clear()
         # The popups themselves are retired by close_all_ancs_notifications()
         # while the server is still ours; after an owner change the old
@@ -424,8 +432,9 @@ class LibnotifySink:
             # It carries only a random per-popup ID, never the target or the
             # bundle ID; the helper hands it back to the daemon, which applies
             # the current rule, the throttle and the one-shot tracker exactly
-            # as for a live click. A restored toast's ID is unknown after the
-            # popup closed or the daemon restarted, so it opens nothing.
+            # as for a live click. A restored toast's ID is unknown once the
+            # popup has been closed for a few seconds or the daemon restarted,
+            # so it opens nothing.
             click_id = secrets.token_urlsafe(18)
             hints["omarchy-exec-argv"] = json.dumps(click_argv(click_id))
         try:
@@ -766,9 +775,36 @@ class LibnotifySink:
         if not isinstance(click_id, str) or len(click_id) > MAX_CLICK_ID_CHARS:
             return False
         nid = getattr(self, "_click_ids", {}).get(click_id)
-        if nid is None:
+        if nid is not None:
+            return self._activate_app_popup(nid, token)
+        # The popup is gone. Only a dismissal within the grace period still
+        # counts, and it goes through the current rule and the throttle too.
+        dismissed = self._live_dismissed_clicks()
+        entry = dismissed.get(click_id)
+        if entry is None or not self._open_app_target(entry[0], token):
             return False
-        return self._activate_app_popup(nid, token)
+        del dismissed[click_id]
+        return True
+
+    def _live_dismissed_clicks(self) -> dict[str, tuple[str, float]]:
+        dismissed = getattr(self, "_dismissed_clicks", None)
+        if dismissed is None:
+            dismissed = self._dismissed_clicks = {}
+        now = time.monotonic()
+        for stale in [
+            key for key, (_app_id, deadline) in dismissed.items() if now >= deadline
+        ]:
+            del dismissed[stale]
+        return dismissed
+
+    def _keep_dismissed_click(self, nid: int, app_id: str) -> None:
+        dismissed = self._live_dismissed_clicks()
+        deadline = time.monotonic() + _DISMISSED_CLICK_GRACE_S
+        for click_id, value in getattr(self, "_click_ids", {}).items():
+            if value == nid:
+                dismissed[click_id] = (app_id, deadline)
+        while len(dismissed) > MAX_NOTIFICATION_CLICK_TRACKERS:
+            del dismissed[next(iter(dismissed))]
 
     def _activate_app_popup(self, nid: int, token: str) -> bool:
         # A click rule fires once per popup. The tracker is consumed only
@@ -821,7 +857,10 @@ class LibnotifySink:
             return
 
         getattr(self, "_open_messages", {}).pop(nid_i, None)
-        getattr(self, "_open_apps", {}).pop(nid_i, None)
+        app_id = getattr(self, "_open_apps", {}).pop(nid_i, None)
+        if app_id and reason_i == _REASON_DISMISSED:
+            # A shell that runs the popup's argv dismisses the popup first.
+            self._keep_dismissed_click(nid_i, app_id)
         self._forget_click_id(nid_i)
         getattr(self, "_activation_tokens", {}).pop(nid_i, None)
         # Closing an ANCS popup, for any reason, never runs an iPhone action.

@@ -578,7 +578,10 @@ A change to these rules has to be made in both places.
   `ActionInvoked` (Omarchy's `omarchy-exec-argv` hint) get only a random
   per-popup click ID; the helper hands it back through `OpenNotificationClick`,
   so the current rule, the per-target throttle, and the one-shot tracker
-  apply there too. Neither the target nor the bundle ID is put in a hint.
+  apply there too. Such a shell dismisses the popup before the helper's call
+  arrives, so the ID stays valid for 10 s after a dismissal (not after an
+  expiry or any other close). Neither the target nor the bundle ID is put in
+  a hint.
 - **ANCS actions** (off by default; saved in `settings.json`,
   `BLUEFERRY_ANCS_ACTIONS` is the initial value): action labels
   are app-defined content, so they are requested only while notification
