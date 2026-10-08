@@ -57,7 +57,7 @@ class IPhonePage(Gtk.Box):
         self._proximity_lock_choice = SavedChoice()
         self._applying_calls_enabled = False
         self._calls_enabled_choice = SavedChoice()
-        self._applying_otp_autocopy = False
+        self._otp_choice = SavedChoice()
         self._applying_storage_policy = False
         self._storage_unlock_attempted = False
         self._pairing_issue_report = ""
@@ -1481,31 +1481,24 @@ class IPhonePage(Gtk.Box):
         self._client.set_calls_enabled_async(enabled, saved, failed)
 
     def _apply_otp_autocopy(self, status, *, reachable: bool) -> None:
-        self._applying_otp_autocopy = True
-        try:
-            self._otp_group.set_visible(status.otp_autocopy is not None)
-            self._otp_switch.set_active(status.otp_autocopy is True)
-            self._otp_row.set_sensitive(reachable)
-        finally:
-            self._applying_otp_autocopy = False
+        self._otp_group.set_visible(status.otp_autocopy is not None)
+        self._applying_saved_switches = True
+        self._show_saved_choice(
+            self._otp_switch, self._otp_choice, status.otp_autocopy is True,
+        )
+        self._applying_saved_switches = False
+        self._otp_row.set_sensitive(reachable and not self._otp_choice.saving)
 
-    def _otp_autocopy_changed(self, _switch, _property) -> None:
-        if self._applying_otp_autocopy:
-            return
-        enabled = self._otp_switch.get_active()
-        self._otp_row.set_sensitive(False)
-
-        def saved(_value: dict) -> None:
-            self._toast(_("One-time code preference saved"))
-            self._refresh()
-
-        def failed(error: str) -> None:
-            self._toast(
-                _("Could not save the one-time code preference: {error}").format(error=error)
-            )
-            self._apply_status(self._last_status)
-
-        self._client.set_otp_autocopy_async(enabled, saved, failed)
+    def _otp_autocopy_changed(self, switch, _property) -> None:
+        self._save_switch(
+            switch,
+            self._otp_row,
+            self._otp_choice,
+            "otp_autocopy",
+            self._client.set_otp_autocopy_async,
+            _("One-time code preference saved"),
+            _("Could not save the one-time code preference: {error}"),
+        )
 
     def _storage_policy_changed(self, _row, _property) -> None:
         if self._applying_storage_policy:

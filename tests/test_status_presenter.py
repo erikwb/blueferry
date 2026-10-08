@@ -731,18 +731,24 @@ class _Widget:
 def _otp_page():
     from types import SimpleNamespace
 
+    from blueferry.ui.saved_choice import SavedChoice
     from blueferry.ui.status import IPhonePage
 
     calls = []
     page = SimpleNamespace(
-        _applying_otp_autocopy=False,
+        _applying_saved_switches=False,
+        _otp_choice=SavedChoice(),
         _otp_group=_Widget(), _otp_switch=_Widget(), _otp_row=_Widget(),
         _client=SimpleNamespace(
             set_otp_autocopy_async=lambda enabled, ok, err: calls.append((enabled, ok, err))
         ),
-        _toast=lambda _text: None, _refresh=lambda: None,
+        toasts=[], refreshes=[],
         _apply_status=lambda _status: None, _last_status=BackendStatus(),
     )
+    page._toast = page.toasts.append
+    page._refresh = lambda: page.refreshes.append(True)
+    for name in ("_show_saved_choice", "_save_switch"):
+        setattr(page, name, getattr(IPhonePage, name).__get__(page))
     page._apply_otp_autocopy = lambda status, *, reachable: IPhonePage._apply_otp_autocopy(
         page, status, reachable=reachable,
     )
@@ -768,8 +774,26 @@ def test_gtk_one_time_code_switch_saves_through_the_client():
     page, calls = _otp_page()
     page._otp_switch.active = True
 
-    page._otp_autocopy_changed(None, None)
+    page._otp_autocopy_changed(page._otp_switch, None)
 
     [(enabled, _ok, _err)] = calls
     assert enabled is True
     assert page._otp_row.sensitive is False
+
+
+def test_gtk_one_time_code_switch_is_not_undone_by_a_late_status():
+    page, calls = _otp_page()
+    page._apply_otp_autocopy(BackendStatus.from_dict({"otp_autocopy": False}), reachable=True)
+    page._otp_switch.active = True
+    page._otp_autocopy_changed(page._otp_switch, None)
+    [(_enabled, saved, _failed)] = calls
+
+    # A status requested before the save finished still says off.
+    page._apply_otp_autocopy(BackendStatus.from_dict({"otp_autocopy": False}), reachable=True)
+    assert page._otp_switch.active is True and page._otp_row.sensitive is False
+    saved({"otp_autocopy": True})
+    page._apply_otp_autocopy(BackendStatus.from_dict({"otp_autocopy": False}), reachable=True)
+    assert page._otp_switch.active is True
+    assert page.refreshes  # asks again instead of trusting the stale status
+    page._apply_otp_autocopy(BackendStatus.from_dict({"otp_autocopy": True}), reachable=True)
+    assert page._otp_switch.active is True and page._otp_row.sensitive is True
