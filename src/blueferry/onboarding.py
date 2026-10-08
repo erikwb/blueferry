@@ -85,7 +85,7 @@ def effective_compatibility(
 class OnboardingStage(str, Enum):
     CHECKING = "checking"
     INCOMPATIBLE = "incompatible"
-    ENABLE_LE = "enable-le"
+    LE_DISABLED = "le-disabled"
     ACTIVATE_BLUETOOTH = "activate-bluetooth"
     SELECT_DEVICE = "select-device"
     STARTING = "starting"
@@ -170,7 +170,7 @@ def derive_stage(
         return OnboardingStage.INCOMPATIBLE
     # Compatibility mode clears notifications_supported and skips this stage.
     if compatibility.get("le_disabled") and compatibility.get("notifications_supported"):
-        return OnboardingStage.ENABLE_LE
+        return OnboardingStage.LE_DISABLED
     if compatibility.get("notifications_supported") and not compatibility.get("bearer_api_active"):
         return OnboardingStage.ACTIVATE_BLUETOOTH
     if not configured:

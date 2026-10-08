@@ -247,7 +247,7 @@ def test_le_switched_off_asks_to_turn_it_on_before_activation() -> None:
     le_off = {**COMPATIBLE, "le_disabled": True, "bearer_api_active": False}
     assert derive_stage(
         setup_loaded=True, configured=False, compatibility=le_off, status={},
-    ) is OnboardingStage.ENABLE_LE
+    ) is OnboardingStage.LE_DISABLED
     # Compatibility mode clears notifications_supported and keeps messaging.
     compat = {**le_off, "notifications_supported": False}
     assert derive_stage(

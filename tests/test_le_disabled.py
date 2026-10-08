@@ -116,6 +116,9 @@ def test_le_off_issue_names_a_bredr_controller_mode(monkeypatch, tmp_path):
         # Lines GKeyFile rejects make bluetoothd ignore the whole file.
         ("; comment\n[General]\nControllerMode = bredr\n", ""),
         ("ControllerMode = bredr\n[General]\n", ""),
+        # A line GKeyFile rejects after the key: bluetoothd uses defaults.
+        ("[General]\nControllerMode=bredr\n = junk\n", ""),
+        ("[General]\nControllerMode=\n", "other"),
         # The last assignment wins, also across repeated groups.
         ("[General]\nControllerMode = dual\n[Policy]\n[General]\nControllerMode = bredr\n", "bredr"),
     ],
@@ -240,7 +243,7 @@ def test_full_mode_pairing_stops_before_the_advertisement_when_le_is_off(monkeyp
 def test_compatibility_mode_pairing_continues_without_solicitation_when_le_is_off(
     monkeypatch, caplog,
 ):
-    device, _sleeps = _le_off_compatibility(monkeypatch)
+    device, sleeps = _le_off_compatibility(monkeypatch)
     attempt = pair_setup.quirks_report.start_attempt(interactive=False)
 
     preparation = pair_setup._prepare_pairing(
@@ -256,6 +259,9 @@ def test_compatibility_mode_pairing_continues_without_solicitation_when_le_is_of
     assert preparation.policy.solicitation_enabled is False
     assert "continuing with MAP/PBAP only" in caplog.text
     assert "le_disabled" in [entry["event"] for entry in attempt["timeline"]]
+    # The result does not matter in forced compatibility mode: no waiting.
+    assert sleeps == []
+    assert "le_reprobe" not in [entry["event"] for entry in attempt["timeline"]]
 
 
 def test_full_mode_pairing_probes_again_before_stopping_for_le(monkeypatch):

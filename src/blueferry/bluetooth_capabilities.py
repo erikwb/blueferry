@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Protocol
 
 import dbus
+from gi.repository import GLib
 
 from blueferry import service_manager
 from blueferry.config import is_valid_adapter
@@ -147,39 +148,21 @@ _CONTROLLER_MODES = frozenset({"dual", "bredr", "le"})
 def bluez_controller_mode(path: Path | None = None) -> str:
     """Return the ``[General] ControllerMode`` bluetoothd will use, or ``""``.
 
-    bluetoothd reads main.conf with GKeyFile and compares the value with
-    ``strcmp`` (BlueZ ``src/main.c``, ``get_mode``), so this parser follows
-    the same rules: group and key names are case-sensitive, only whole lines
-    starting with ``#`` are comments, the value keeps trailing text and
-    whitespace, and a line GKeyFile rejects makes bluetoothd ignore the whole
-    file. Anything bluetoothd would not recognize runs as dual mode and is
-    reported as ``"other"``; ``""`` means unset, unreadable or ignored. Only
-    these fixed words are returned, never configuration text. The file is
-    world-readable on every distribution BlueFerry packages for.
+    bluetoothd loads main.conf with GKeyFile and compares the value with
+    ``strcmp`` (BlueZ ``src/main.c``, ``get_mode``), so this reads the file
+    with the same GKeyFile parser: names are case-sensitive, the value keeps
+    trailing text and whitespace, and a file GKeyFile rejects makes
+    bluetoothd use its defaults. Anything bluetoothd would not recognize
+    runs as dual mode and is reported as ``"other"``; ``""`` means unset,
+    unreadable or ignored. Only these fixed words are returned, never
+    configuration text. The file is world-readable on every distribution
+    BlueFerry packages for.
     """
+    keyfile = GLib.KeyFile()
     try:
-        text = (path or BLUEZ_MAIN_CONF).read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return ""
-    group: str | None = None
-    mode = ""
-    for raw in text.split("\n"):
-        line = raw.lstrip(" \t\r\v\f")
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("["):
-            closing = line.rfind("]")
-            if closing < 0 or line[closing + 1:].strip(" \t"):
-                return ""
-            group = line[1:closing]
-            continue
-        key, separator, value = line.partition("=")
-        if not separator or group is None:
-            # GKeyFile fails to load the file; bluetoothd uses its defaults.
-            return ""
-        if group == "General" and key.rstrip() == "ControllerMode":
-            mode = value.lstrip(" \t\r\v\f") or "other"
-    if not mode:
+        keyfile.load_from_file(str(path or BLUEZ_MAIN_CONF), GLib.KeyFileFlags.NONE)
+        mode = keyfile.get_string("General", "ControllerMode")
+    except GLib.Error:
         return ""
     return mode if mode in _CONTROLLER_MODES else "other"
 

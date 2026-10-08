@@ -1220,9 +1220,11 @@ def _prepare_pairing(
     _snapshot_phone(attempt, device)
     _record_bluez_state(attempt, device.device_path, "device_loaded", force=True)
 
-    compatibility = _reprobe_disabled_le(
-        selected_adapter, bluetooth_compatibility(selected_adapter), attempt,
-    )
+    compatibility = bluetooth_compatibility(selected_adapter)
+    if not compatibility_mode:
+        # Forced compatibility mode continues without LE either way, so only
+        # full mode waits for bluetoothd to switch LE on.
+        compatibility = _reprobe_disabled_le(selected_adapter, compatibility, attempt)
     attempt["controller"] = _controller_snapshot(selected_adapter, compatibility)
     quirks_report.mark(attempt, "compatibility_ready")
     if compatibility.get("pairing_ready") is False:

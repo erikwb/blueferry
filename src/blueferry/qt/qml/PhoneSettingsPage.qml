@@ -116,7 +116,7 @@ Kirigami.ScrollablePage {
             Layout.fillWidth: true
             stage: compatibilityMode.checked
                 && (iphonePage.effectiveStage === "activate-bluetooth"
-                    || iphonePage.effectiveStage === "enable-le")
+                    || iphonePage.effectiveStage === "le-disabled")
                 ? "select-device" : iphonePage.effectiveStage
             compatibility: iphonePage.bridge.onboardingCompatibility
             status: iphonePage.bridge.status
