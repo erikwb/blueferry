@@ -91,7 +91,9 @@ BlueFerrys `settings.json` gespeichert, sobald du sie in einem Client oder
 mit `blueferry tether enable`/`disable` änderst, und wirken sofort.
 Automatisches Tethering funktioniert nur, solange Tethering aktiviert ist;
 `blueferry tether off` oder Ausschalten im Netzwerk-Applet pausiert es bis
-zum nächsten ausdrücklichen `on`.
+zum nächsten ausdrücklichen `on` oder bis du **Connect automatically** wieder
+einschaltest. Auch die Pause wird gespeichert, ein Daemon-Neustart bringt die
+Freigabe also nicht zurück.
 
 Optionale Variablen in `~/.config/blueferry/local.env`:
 

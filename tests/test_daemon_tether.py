@@ -1,6 +1,7 @@
 """Daemon wiring for opt-in tethering, built with the real composition root."""
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -217,3 +218,55 @@ def test_autoconnect_flag_reaches_the_controller(make_daemon, monkeypatch) -> No
     instance = make_daemon()
     assert instance.tether.snapshot()["autoconnect"] is True
     assert instance.tether.snapshot()["enabled"] is False
+
+
+def _ready_for_autoconnect(instance, chosen: list) -> None:
+    """Make an automatic attempt possible without touching a bus."""
+    instance.tether._choose_backend = lambda on_backend, _on_error: chosen.append(on_backend)
+    instance.tether._running = True
+    instance.tether._classic_ready = lambda: True
+    instance.tether._autoconnect_ready = lambda: True
+    instance.tether._schedule = lambda _seconds, _callback: 1
+    instance.tether._cancel = lambda _source: None
+
+
+def test_an_explicit_off_survives_a_daemon_restart(make_daemon) -> None:
+    """Reproduces the review case: disconnect, restart, no reconnect."""
+    from blueferry import config
+
+    SettingsStore().update(tether_enabled=True, tether_autoconnect=True)
+    first = make_daemon()
+    chosen: list = []
+    _ready_for_autoconnect(first, chosen)
+    first.tether.disconnect()  # the user's explicit "off"
+
+    assert json.loads(config.SETTINGS_JSON.read_text())["tether_auto_suppressed"] is True
+
+    restarted = make_daemon()
+    _ready_for_autoconnect(restarted, chosen)
+    restarted.tether.maybe_autoconnect()
+    assert chosen == []
+
+    # An explicit Connect lifts the pause, also for the next restart.
+    restarted.tether.connect()
+    assert len(chosen) == 1
+    assert json.loads(config.SETTINGS_JSON.read_text())["tether_auto_suppressed"] is False
+    again = make_daemon()
+    _ready_for_autoconnect(again, chosen)
+    again.tether.maybe_autoconnect()
+    assert len(chosen) == 2
+
+
+def test_turning_automatic_tethering_on_again_lifts_a_saved_pause(make_daemon) -> None:
+    SettingsStore().update(
+        tether_enabled=True, tether_autoconnect=False, tether_auto_suppressed=True,
+    )
+    instance = make_daemon()
+    instance.tether._link_watch = None
+    chosen: list = []
+    _ready_for_autoconnect(instance, chosen)
+
+    instance._set_tethering(True, True)
+
+    assert len(chosen) == 1
+    assert make_daemon().tether_settings.auto_suppressed is False

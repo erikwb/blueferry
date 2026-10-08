@@ -85,7 +85,8 @@ BlueFerry's `settings.json` when you change them in a client or with
 `blueferry tether enable`/`disable`, and take effect at once. Automatic
 tethering only works while tethering is enabled; `blueferry tether off`, or
 turning sharing off in the network applet, pauses it until the next explicit
-`on`.
+`on` or until you tick **Connect automatically** again. The pause is saved
+too, so a daemon restart does not bring the tether back.
 
 Optional variables in `~/.config/blueferry/local.env`:
 

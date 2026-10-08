@@ -319,6 +319,8 @@ class Daemon:
             on_changed=self._emit_tether_changed,
             enabled=self.tether_settings.enabled,
             autoconnect=self.tether_settings.autoconnect,
+            auto_suppressed=self.tether_settings.auto_suppressed,
+            on_auto_suppressed=self.tether_settings.set_auto_suppressed,
             schedule=GLib.timeout_add_seconds,
             cancel=GLib.source_remove,
         )

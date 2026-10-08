@@ -923,7 +923,7 @@ enable [--autoconnect|--no-autoconnect]` / `disable` are saved in
 BLUEFERRY_TETHER_ENABLED=false
 # Tether automatically once messages are connected (off by default; only
 # while tethering is enabled). `blueferry tether off` pauses this until the
-# next explicit `on`. A saved choice wins.
+# next explicit `on`, also across daemon restarts. A saved choice wins.
 BLUEFERRY_TETHER_AUTOCONNECT=false
 # auto (default) prefers NetworkManager; bluez forces the link-only mode.
 BLUEFERRY_TETHER_BACKEND=auto

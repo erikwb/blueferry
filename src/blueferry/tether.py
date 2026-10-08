@@ -304,6 +304,10 @@ class TetherSettings:
 
     ENABLED_KEY = "tether_enabled"
     AUTOCONNECT_KEY = "tether_autoconnect"
+    # The user's last explicit "off" (Disconnect, or a stop in the network
+    # applet). It pauses automatic tethering until an explicit Connect or
+    # until automatic tethering is turned on again, also across restarts.
+    SUPPRESSED_KEY = "tether_auto_suppressed"
 
     def __init__(
         self,
@@ -331,6 +335,7 @@ class TetherSettings:
                 self._note_overridden(name, bool(seeded), value)
             values.append(value)
         self._enabled, self._autoconnect = values
+        self._auto_suppressed = payload.get(self.SUPPRESSED_KEY) is True
 
     @staticmethod
     def _note_overridden(name: str, seeded: bool, effective: bool) -> None:
@@ -350,6 +355,17 @@ class TetherSettings:
     @property
     def autoconnect(self) -> bool:
         return self._autoconnect
+
+    @property
+    def auto_suppressed(self) -> bool:
+        return self._auto_suppressed
+
+    def set_auto_suppressed(self, suppressed: bool) -> None:
+        suppressed = bool(suppressed)
+        if suppressed == self._auto_suppressed:
+            return
+        self._settings.update(**{self.SUPPRESSED_KEY: suppressed})
+        self._auto_suppressed = suppressed
 
     def set(self, enabled: bool, autoconnect: bool) -> tuple[bool, bool]:
         if not isinstance(enabled, bool) or not isinstance(autoconnect, bool):
@@ -382,6 +398,8 @@ class TetherController:
         on_changed: Callable[[], None] | None = None,
         enabled: bool = False,
         autoconnect: bool = False,
+        auto_suppressed: bool = False,
+        on_auto_suppressed: Callable[[bool], None] | None = None,
         schedule: Schedule | None = None,
         cancel: Cancel | None = None,
         clock: Callable[[], float] = time.monotonic,
@@ -419,8 +437,10 @@ class TetherController:
         self._awaiting_link_down = False
         self._link_down_grace_spent = False
         # An explicit Disconnect() is a user decision; automatic attempts wait
-        # for the next explicit Connect() or a new daemon generation.
-        self._auto_suppressed = False
+        # for the next explicit Connect() or until automatic tethering is
+        # switched on again. The daemon saves it, so a restart keeps it.
+        self._auto_suppressed = bool(auto_suppressed)
+        self._on_auto_suppressed = on_auto_suppressed
         # Enabling with autoconnect waits for the watch's first report, so a
         # link another tool already holds is adopted, never claimed as ours.
         self._autoconnect_after_probe = False
@@ -530,7 +550,7 @@ class TetherController:
             self._start_watch()
         if enabled and autoconnect and not (was_enabled and was_auto):
             # Turning automatic tethering on is an explicit user decision.
-            self._auto_suppressed = False
+            self._suppress_auto(False)
             self._auto_failures = 0
             if not was_enabled and self._link_watch is not None:
                 self._autoconnect_after_probe = True
@@ -590,7 +610,7 @@ class TetherController:
                 "iPhone settings or with 'blueferry tether enable'"
             )
         if not automatic:
-            self._auto_suppressed = False
+            self._suppress_auto(False)
             self._auto_failures = 0
             self._cancel_retry()
         if self._state in (CONNECTING, CONNECTED):
@@ -638,7 +658,7 @@ class TetherController:
         return self.snapshot()
 
     def disconnect(self) -> dict[str, object]:
-        self._auto_suppressed = True
+        self._suppress_auto(True)
         self._cancel_retry()
         if self._state == DISCONNECTING:
             return self.snapshot()
@@ -731,7 +751,7 @@ class TetherController:
             # Someone deliberately turned it off (e.g. in the network applet).
             # Respect that exactly like an explicit Disconnect().
             log.info("Bluetooth tethering was turned off outside BlueFerry")
-            self._auto_suppressed = True
+            self._suppress_auto(True)
             self._cancel_retry()
             self._set(OFF, error="", interface="")
             return
@@ -863,6 +883,20 @@ class TetherController:
         self._set(CONNECTED, error=GENERIC_ERROR, interface=_safe_interface(interface))
 
     # ---- helpers -----------------------------------------------------------
+
+    def _suppress_auto(self, suppressed: bool) -> None:
+        if suppressed == self._auto_suppressed:
+            return
+        self._auto_suppressed = suppressed
+        if self._on_auto_suppressed is not None:
+            try:
+                self._on_auto_suppressed(suppressed)
+            except Exception as error:
+                # Saving is best effort; the choice still holds until restart.
+                log.warning(
+                    "could not save the automatic tethering pause: %s",
+                    type(error).__name__,
+                )
 
     def _set(self, state: str, *, error: str | None = None, interface: str | None = None) -> None:
         changed = state != self._state

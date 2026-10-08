@@ -1075,3 +1075,51 @@ def test_failed_adopted_disconnect_explains_retry_to_user(confirmed_up):
     assert "try disconnecting again" in status.summary()
     assert "may still be active" in status.summary()
     value.stop()
+
+
+def test_settings_remember_the_automatic_tethering_pause(isolated_state) -> None:
+    settings = tether.TetherSettings(default_enabled=True, default_autoconnect=True)
+    assert settings.auto_suppressed is False
+    settings.set_auto_suppressed(True)
+    assert tether.TetherSettings().auto_suppressed is True
+    settings.set_auto_suppressed(False)
+    assert tether.TetherSettings().auto_suppressed is False
+
+
+def test_controller_reports_pause_changes_and_starts_paused() -> None:
+    saved: list[bool] = []
+    chooser = Chooser()
+    timers = Timers()
+    value = TetherController(
+        chooser, enabled=True, autoconnect=True, auto_suppressed=True,
+        on_auto_suppressed=saved.append,
+        schedule=timers.schedule, cancel=timers.cancel,
+    )
+    value.start()
+    value.maybe_autoconnect()
+    assert chooser.calls == 0
+
+    value.connect()
+    chooser.backend.connects[0][0]("bnep0")
+    value.disconnect()
+    value.disconnect()  # repeated "off" saves nothing new
+    assert saved == [False, True]
+
+
+def test_a_failed_pause_save_does_not_break_disconnect(caplog) -> None:
+    def broken(_value: bool) -> None:
+        raise OSError("read-only")
+
+    chooser = Chooser()
+    timers = Timers()
+    value = TetherController(
+        chooser, enabled=True, on_auto_suppressed=broken,
+        schedule=timers.schedule, cancel=timers.cancel,
+    )
+    value.connect()
+    chooser.backend.connects[0][0]("bnep0")
+    with caplog.at_level("WARNING", logger="blueferry.tether"):
+        snapshot = value.disconnect()
+    assert snapshot["state"] == DISCONNECTING
+    assert "read-only" not in caplog.text
+    assert "OSError" in caplog.text
