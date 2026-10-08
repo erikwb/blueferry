@@ -430,7 +430,7 @@ def test_cli_reports_disabled_ambiguous_and_missing(cli_backend, tmp_path) -> No
     target = tmp_path / "out.jpg"
     cli_backend.enabled = False
     result = runner.invoke(app, ["contacts-photo", "Alice", "-o", str(target)])
-    assert result.exit_code == 2 and "BLUEFERRY_CONTACT_PHOTOS" in result.output
+    assert result.exit_code == 2 and "contact-photos enable" in result.output
     cli_backend.enabled = True
 
     cli_backend.matches = [("Alice", "+1"), ("Alicia", "+2")]
