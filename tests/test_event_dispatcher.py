@@ -218,6 +218,60 @@ def test_notification_action_routes_to_one_client_even_without_backend_service(m
     assert opened == [("message-opaque-42", "focus-token")]
 
 
+def test_notification_click_rule_is_handed_to_the_launcher_helper(monkeypatch):
+    from blueferry.notification_open_map import OpenTarget
+
+    launched = []
+    monkeypatch.setattr(
+        event_dispatcher, "request_open_target",
+        lambda target, token: launched.append((target, token)),
+    )
+    monkeypatch.setattr(event_dispatcher, "SqliteSink", _SqliteSink)
+    received = {}
+
+    def create_sink(**kwargs):
+        received.update(kwargs)
+        return _NotificationSink()
+
+    def rule(app_id):
+        return OpenTarget("url", "https://web.whatsapp.com") if app_id == "net.whatsapp.WhatsApp" else None
+
+    dispatcher = EventDispatcher(
+        object(),
+        defer_mark_read=lambda _path: None,
+        notification_open_target=rule,
+        notification_sink_factory=create_sink,
+        session_bus=_Bus(owner=True),
+    )
+    dispatcher.setup()
+
+    assert received["open_target"] is rule
+    received["on_open_target"](rule("net.whatsapp.WhatsApp"), "focus-token")
+    assert launched == [(OpenTarget("url", "https://web.whatsapp.com"), "focus-token")]
+
+
+def test_shell_notification_clicks_reach_only_the_libnotify_sink(monkeypatch):
+    monkeypatch.setattr(event_dispatcher, "SqliteSink", _SqliteSink)
+    clicks = []
+
+    class _ClickableSink(_NotificationSink):
+        def open_click(self, click_id, token):
+            clicks.append((click_id, token))
+            return True
+
+    dispatcher = EventDispatcher(
+        object(),
+        defer_mark_read=lambda _path: None,
+        notification_sink_factory=lambda **_kwargs: _ClickableSink(),
+        session_bus=_Bus(owner=True),
+    )
+    assert dispatcher.open_notification_click("abc", "tok") is False
+    dispatcher.setup()
+
+    assert dispatcher.open_notification_click("abc", "tok") is True
+    assert clicks == [("abc", "tok")]
+
+
 def test_libnotify_is_added_when_notification_server_appears(monkeypatch):
     monkeypatch.setattr(event_dispatcher, "SqliteSink", _SqliteSink)
     bus = _Bus()

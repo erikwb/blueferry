@@ -46,6 +46,13 @@ notification. BlueFerry logs each app once, without content:
 journalctl --user -u blueferry -f | grep "ANCS app observed"
 ```
 
+### Click rules
+
+[Click rules](notification-click-rules.md) open a fixed address or app when
+an app's popup is clicked. Nothing from the notification is passed along.
+Rules are stored unencrypted in `settings.json`, and the notification server
+never sees them, only a fixed "Open" action and a random per-popup ID.
+
 ## Local data
 
 BlueFerry keeps message history and a contact cache so conversations survive

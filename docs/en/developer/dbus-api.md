@@ -92,7 +92,16 @@ package to restart an outdated backend after upgrades.
 | `SetPhoneBatteryWarning` | `b enabled` → `b selected`; state is `phone_battery_warning` in `GetStatus` |
 | `GetStoragePolicy` / `SetStoragePolicy` | `s policy`: `encrypted`, `plaintext`, or `none`; `Set` returns `s status_json` |
 | `UnlockStorage` | → `s status_json` |
+| `GetNotificationOpenMap` | → `s rules_json` (list of `bundle_id`, `target`, `kind`) |
+| `SetNotificationOpenTarget` | `s bundle_id, s target` → `s rules_json` |
+| `RemoveNotificationOpenTarget` | `s bundle_id` → `b removed` |
+| `OpenNotificationClick` | `s click_id, s activation_token` → `b opened` (a notification shell ran a mapped popup's stored argv; the ID is random per popup and stays valid for 10 s after the user dismissed the popup) |
 | `OpenLegacyGtkMessage` | `s handle, s application_owner` → `b delivered` (upgrade compatibility) |
+
+`GetStatus` reports `notification_open_map_revision`, a content-free number
+that changes whenever a click rule is added, changed or removed. Clients
+reread the rules only when it changes, and a backend without the key does
+not support click rules.
 
 ## Presence1 methods
 

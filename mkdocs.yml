@@ -99,6 +99,7 @@ nav:
           - Pair an iPhone: en/user/pairing.md
           - Without systemd (OpenRC): en/user/openrc.md
           - Clients: en/user/clients.md
+          - Notification click rules: en/user/notification-click-rules.md
           - Media control: en/user/media-control.md
           - Away lock: en/user/proximity-lock.md
           - Phone calls (experimental): en/user/calls.md
@@ -121,6 +122,7 @@ nav:
           - iPhone koppeln: de/user/pairing.md
           - Ohne systemd (OpenRC): de/user/openrc.md
           - Clients: de/user/clients.md
+          - Klickregeln für Mitteilungen: de/user/notification-click-rules.md
           - Mediensteuerung: de/user/media-control.md
           - Abwesenheitssperre: de/user/proximity-lock.md
           - Anrufe (experimentell): de/user/calls.md

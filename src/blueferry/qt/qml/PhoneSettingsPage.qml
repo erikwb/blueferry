@@ -456,6 +456,23 @@ Kirigami.ScrollablePage {
                     : qsTr("Clicking a button runs that action on the iPhone, for example answering or declining a call. Applies to All iPhone Notifications.")
             }
         }
+        // Click rules only apply to non-Messages popups, which exist only in
+        // the "all" policy. Load the editor (and its backend read) on demand,
+        // and only for daemons that report the rules' revision: an older,
+        // not yet restarted backend lacks the methods.
+        Loader {
+            objectName: "notificationOpenMapLoader"
+            Layout.fillWidth: true
+            active: iphonePage.bridge.status.daemon === true
+                && iphonePage.bridge.status.notification_policy === "all"
+                && iphonePage.bridge.status.notification_open_map_revision !== undefined
+            visible: active
+            sourceComponent: Component {
+                NotificationOpenMapEditor {
+                    bridge: iphonePage.bridge
+                }
+            }
+        }
 
         // Only daemons that report the proximity keys support the setting.
         Loader {

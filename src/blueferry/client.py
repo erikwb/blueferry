@@ -14,6 +14,7 @@ from blueferry.client_wire import (
     decode_events,
     decode_json,
     decode_mapping,
+    decode_open_map,
     decode_thread,
     decode_threads,
 )
@@ -44,6 +45,26 @@ from blueferry.protocol import (
 
 class BackendError(BlueFerryError):
     pass
+
+
+def _dbus_message(error: Exception) -> str:
+    if isinstance(error, dbus.exceptions.DBusException):
+        return error.get_dbus_message() or str(error)
+    return str(error)
+
+
+def _open_map_error(error: Exception) -> BackendError:
+    # Messages1 gained click rules additively, so a backend that was not
+    # restarted after an upgrade answers UnknownMethod; say so plainly.
+    if (
+        isinstance(error, dbus.exceptions.DBusException)
+        and error.get_dbus_name() == "org.freedesktop.DBus.Error.UnknownMethod"
+    ):
+        return BackendError(
+            "the running backend does not support notification click rules; "
+            "restart it after upgrading"
+        )
+    return BackendError(_dbus_message(error))
 
 
 class CompatibilityCache:
@@ -380,6 +401,40 @@ class BackendClient:
                 if isinstance(error, dbus.exceptions.DBusException)
                 else str(error)
             ) from error
+
+    def notification_open_map(self) -> list[dict[str, str]]:
+        try:
+            return decode_open_map(self._iface(MESSAGES_IFACE).GetNotificationOpenMap(
+                timeout=POLICY_CALL_TIMEOUT_SEC
+            ))
+        except (dbus.exceptions.DBusException, ValueError) as error:
+            raise _open_map_error(error) from error
+
+    def set_notification_open_target(
+        self, bundle_id: str, target: str
+    ) -> list[dict[str, str]]:
+        try:
+            return decode_open_map(self._iface(MESSAGES_IFACE).SetNotificationOpenTarget(
+                bundle_id, target, timeout=POLICY_CALL_TIMEOUT_SEC
+            ))
+        except (dbus.exceptions.DBusException, ValueError) as error:
+            raise _open_map_error(error) from error
+
+    def open_notification_click(self, click_id: str, token: str) -> bool:
+        try:
+            return bool(self._iface(MESSAGES_IFACE).OpenNotificationClick(
+                click_id, token, timeout=POLICY_CALL_TIMEOUT_SEC
+            ))
+        except dbus.exceptions.DBusException as error:
+            raise _open_map_error(error) from error
+
+    def remove_notification_open_target(self, bundle_id: str) -> bool:
+        try:
+            return bool(self._iface(MESSAGES_IFACE).RemoveNotificationOpenTarget(
+                bundle_id, timeout=POLICY_CALL_TIMEOUT_SEC
+            ))
+        except dbus.exceptions.DBusException as error:
+            raise _open_map_error(error) from error
 
     def storage_policy(self) -> str:
         try:

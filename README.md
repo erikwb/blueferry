@@ -378,6 +378,37 @@ physical iPhone.
 
 Restart the user service after editing `local.env` settings.
 
+### Clicking iPhone app notifications
+
+Clicking a message popup opens the conversation in BlueFerry. Other app
+popups (**All iPhone Notifications**) do nothing when clicked unless you add
+a click rule for that app. A rule maps one exact bundle ID to either an
+`http`/`https` address, opened in your default browser, or a desktop entry
+ID, launched like any installed app:
+
+```bash
+blueferry notifications open-map set com.apple.mobilemail org.mozilla.Thunderbird.desktop
+blueferry notifications open-map set net.whatsapp.WhatsApp https://web.whatsapp.com
+blueferry notifications open-map set com.tinyspeck.chatlyio com.slack.Slack.desktop
+blueferry notifications open-map list
+blueferry notifications open-map remove net.whatsapp.WhatsApp
+```
+
+The Qt client edits the same rules under **Desktop Notifications** while all
+notifications are shown. Rules are stored with the other popup preferences in
+`~/.config/blueferry/settings.json` (owner-only, not encrypted) and take
+effect without restarting the service.
+
+Rules only ever open the fixed address or app you configured. Nothing from
+the notification (title, text, sender) is added to the address or passed to
+the app, and no shell is involved. Addresses must be plain `http(s)` URLs
+without credentials, quotes, spaces or other characters that need escaping;
+`javascript:`, `file:` and custom app schemes are rejected. Desktop entries
+must be bare IDs ending in `.desktop` (no paths, arguments or commands). Find
+an app's ID with `ls /usr/share/applications ~/.local/share/applications
+/var/lib/flatpak/exports/share/applications`. Apps without a rule, and Apple
+Messages, keep their normal behaviour.
+
 When WirePlumber 0.5 or newer is installed, BlueFerry keeps calls and music on
 the iPhone by writing
 `~/.config/wireplumber/wireplumber.conf.d/99-blueferry-keep-phone-audio.conf`
@@ -686,6 +717,7 @@ blueferry sms-send Alice 'running late'
 blueferry contacts-sync
 blueferry media status
 blueferry history-clear
+blueferry notifications open-map list
 blueferry doctor
 ```
 

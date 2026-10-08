@@ -383,6 +383,77 @@ def test_notification_policy_is_backend_owned_and_notifies_status() -> None:
         operations.set_ancs_notification_actions("on")
 
 
+def test_notification_click_rules_are_validated_by_the_backend(tmp_path) -> None:
+    from blueferry.notification_policy import NotificationPolicyStore
+
+    changes = []
+    operations = _operations(
+        notification_policy=NotificationPolicyStore(tmp_path / "settings.json"),
+        on_notification_policy_changed=lambda: changes.append(True),
+    )
+
+    assert operations.get_notification_open_map() == []
+    revisions = [operations.status()["notification_open_map_revision"]]
+    assert operations.set_notification_open_target(
+        "com.apple.mobilemail", "org.mozilla.Thunderbird.desktop"
+    ) == [{
+        "bundle_id": "com.apple.mobilemail",
+        "target": "org.mozilla.Thunderbird.desktop",
+        "kind": "desktop",
+    }]
+    for bundle_id, target in (
+        ("com.example.App", "javascript:alert(1)"),
+        ("com.example.App", "file:///etc/passwd"),
+        ("com.example.App", "xdg-open https://example.com"),
+        ("com.apple.MobileSMS", "https://example.com"),
+        ("com example", "https://example.com"),
+    ):
+        with pytest.raises(InvalidArgumentsError):
+            operations.set_notification_open_target(bundle_id, target)
+    with pytest.raises(InvalidArgumentsError):
+        operations.set_notification_open_target(None, "https://example.com")  # type: ignore[arg-type]
+    with pytest.raises(InvalidArgumentsError):
+        operations.remove_notification_open_target("x" * 2000)
+
+    revisions.append(operations.status()["notification_open_map_revision"])
+    assert operations.remove_notification_open_target("com.example.Unknown") is False
+    revisions.append(operations.status()["notification_open_map_revision"])
+    assert operations.remove_notification_open_target("com.apple.mobilemail") is True
+    revisions.append(operations.status()["notification_open_map_revision"])
+    assert operations.get_notification_open_map() == []
+    # Only real changes invalidate client status and bump the revision.
+    assert changes == [True, True]
+    first = revisions[0]
+    assert revisions == [first, first + 1, first + 1, first + 2]
+
+
+def test_notification_click_rules_need_policy_storage() -> None:
+    operations = _operations()
+
+    assert operations.get_notification_open_map() == []
+    assert "notification_open_map_revision" not in operations.status()
+    with pytest.raises(NotReadyError):
+        operations.set_notification_open_target("com.slack", "slack.desktop")
+    with pytest.raises(NotReadyError):
+        operations.remove_notification_open_target("com.slack")
+
+
+def test_shell_notification_clicks_are_bounded_and_forwarded() -> None:
+    calls = []
+    operations = _operations(
+        open_notification_click=lambda click_id, token: calls.append((click_id, token)) or True,
+    )
+
+    assert operations.open_notification_click("abc", "tok") is True
+    for click_id, token in (("", ""), ("x" * 65, ""), ("abc", "t" * 4097), (None, "")):
+        with pytest.raises(InvalidArgumentsError):
+            operations.open_notification_click(click_id, token)  # type: ignore[arg-type]
+    assert calls == [("abc", "tok")]
+
+    with pytest.raises(NotReadyError):
+        _operations().open_notification_click("abc", "")
+
+
 def test_invalid_notification_policy_has_public_invalid_args_error() -> None:
     class Policy:
         value = "messages"

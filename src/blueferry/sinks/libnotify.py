@@ -27,6 +27,8 @@ from __future__ import annotations
 import json
 import logging
 import re
+import secrets
+import time
 from collections.abc import Callable
 from html import escape
 from typing import Protocol
@@ -45,7 +47,12 @@ from blueferry.bus import get_session_bus
 from blueferry.calls.model import CallEvent
 from blueferry.client_activation import activation_argv, select_client
 from blueferry.events import SmsEvent
-from blueferry.limits import MAX_ANCS_ACTION_POPUPS, MAX_DESKTOP_MESSAGE_TRACKERS
+from blueferry.limits import (
+    MAX_ANCS_ACTION_POPUPS,
+    MAX_DESKTOP_MESSAGE_TRACKERS,
+    MAX_NOTIFICATION_CLICK_TRACKERS,
+)
+from blueferry.notification_open import MAX_CLICK_ID_CHARS, click_argv
 from blueferry.notification_policy import (
     ALL_NOTIFICATIONS,
     DEFAULT_NOTIFICATION_POLICY,
@@ -82,6 +89,12 @@ _ANCS_ACTION_EXPIRE_MS = config.ANCS_ACTION_TIMEOUT_MS
 # because the iPhone marked it read (so we'd be in a write-self-write loop).
 # Reason 1 is the normal finite-timeout path and must not mark the phone read.
 _REASON_DISMISSED = 2
+# Minimum spacing between two launches of the same notification target.
+_OPEN_TARGET_INTERVAL_S = 1.0
+# How long a click ID stays usable after the user dismissed its popup. Omarchy
+# runs the popup's argv and dismisses the popup at once, so the close arrives
+# before the helper has started and called OpenNotificationClick.
+_DISMISSED_CLICK_GRACE_S = 10.0
 
 # Notification action keys for ANCS actions. They never collide with the
 # message popup's "default" action, so a click on the popup body cannot run an
@@ -139,6 +152,8 @@ class LibnotifySink:
         notification_policy=None,
         contacts_only_notifications=None,
         on_open_message=None,
+        open_target=None,
+        on_open_target=None,
         on_ancs_action=None,
         ancs_actions_enabled=None,
         on_call_action=None,
@@ -152,6 +167,9 @@ class LibnotifySink:
         self._notification_policy = notification_policy
         self._contacts_only_notifications = contacts_only_notifications
         self._on_open_message = on_open_message
+        # Resolves an ANCS bundle ID to the user's click rule (or None).
+        self._open_target = open_target
+        self._on_open_target = on_open_target
         # (uid, positive, token, on_result) -> queued; None disables actions.
         self._on_ancs_action = on_ancs_action
         self._ancs_actions_provider = ancs_actions_enabled
@@ -177,6 +195,18 @@ class LibnotifySink:
         # phone number or message body on the session bus.
         self._open_messages: dict[int, str] = {}
         self._activation_tokens: dict[int, str] = {}
+        # notification_id -> ANCS bundle ID with a configured click rule. The
+        # rule itself is looked up again on click so a removed rule is final.
+        self._open_apps: dict[int, str] = {}
+        # Random per-popup click ID -> notification_id. Shells that run an
+        # argv instead of invoking the action (Omarchy) hand this opaque ID
+        # back through the daemon, so the same click path applies.
+        self._click_ids: dict[str, int] = {}
+        # Click ID -> (bundle ID, monotonic deadline) for popups the user
+        # just dismissed; see _DISMISSED_CLICK_GRACE_S.
+        self._dismissed_clicks: dict[str, tuple[str, float]] = {}
+        # target -> monotonic time of its last launch (per-target throttle)
+        self._recent_open_targets: dict[object, float] = {}
         # notification_id -> SignalMatch for the per-Message1 PropertiesChanged sub
         self._msg_subs: dict[int, _SignalMatch] = {}
 
@@ -229,6 +259,9 @@ class LibnotifySink:
         self._msg_subs.clear()
         self._pending.clear()
         self._open_messages.clear()
+        getattr(self, "_open_apps", {}).clear()
+        getattr(self, "_click_ids", {}).clear()
+        getattr(self, "_dismissed_clicks", {}).clear()
         getattr(self, "_activation_tokens", {}).clear()
         # The popups themselves are retired by close_all_ancs_notifications()
         # while the server is still ours; after an owner change the old
@@ -314,13 +347,25 @@ class LibnotifySink:
         self._prune_trackers()
 
     def _prune_trackers(self) -> None:
-        """Bound read-state subscriptions if close signals never arrive."""
+        """Bound read-state and click trackers if close signals never arrive.
+
+        Message popups and mapped app popups have separate budgets: a burst
+        of iPhone app notifications must never evict a message popup and
+        with it the dismiss-to-read sync, as it could not before click rules.
+        """
         open_messages = getattr(self, "_open_messages", {})
-        while len(set(self._pending) | set(open_messages)) > MAX_DESKTOP_MESSAGE_TRACKERS:
-            tracked = open_messages or self._pending
-            oldest = next(iter(tracked))
+        open_apps = getattr(self, "_open_apps", {})
+        while True:
+            if len(set(self._pending) | set(open_messages)) > MAX_DESKTOP_MESSAGE_TRACKERS:
+                oldest = next(iter(open_messages or self._pending))
+            elif len(open_apps) > MAX_NOTIFICATION_CLICK_TRACKERS:
+                oldest = next(iter(open_apps))
+            else:
+                return
             self._pending.pop(oldest, None)
             open_messages.pop(oldest, None)
+            open_apps.pop(oldest, None)
+            self._forget_click_id(oldest)
             getattr(self, "_activation_tokens", {}).pop(oldest, None)
             subscription = self._msg_subs.pop(oldest, None)
             if subscription is not None:
@@ -361,11 +406,37 @@ class LibnotifySink:
             body = body[:_BODY_LIMIT - 1] + "…"
         title = escape(terminal_text(title).replace("\n", " "))
         body = escape(terminal_text(body))
-        actions = (
+        buttons = (
             self._ancs_action_buttons(event)
             if getattr(event, "has_actions", False)
             else []
         )
+        app_id = event.app_id if isinstance(event.app_id, str) else ""
+        # Only a user-configured rule adds a click action; without one the
+        # popup stays exactly as before. The action label is fixed text.
+        open_target = self._resolve_open_target(app_id)
+        clickable = open_target is not None
+        # With iPhone action buttons, "Open" takes the place of their no-op
+        # default action; the buttons themselves stay.
+        actions = ["default", "Open", *buttons[2:]] if clickable else buttons
+        hints: dict[str, object] = {
+            "urgency": dbus.Byte(1),
+            # Plasma can retain an expired notification in history.
+            # ANCS events already live in BlueFerry's own feed, so
+            # explicitly bypass desktop notification persistence.
+            "transient": dbus.Boolean(True),
+        }
+        click_id = ""
+        if clickable:
+            # Omarchy's shell runs this argv instead of invoking the action.
+            # It carries only a random per-popup ID, never the target or the
+            # bundle ID; the helper hands it back to the daemon, which applies
+            # the current rule, the throttle and the one-shot tracker exactly
+            # as for a live click. A restored toast's ID is unknown once the
+            # popup has been closed for a few seconds or the daemon restarted,
+            # so it opens nothing.
+            click_id = secrets.token_urlsafe(18)
+            hints["omarchy-exec-argv"] = json.dumps(click_argv(click_id))
         try:
             # No mark-read sync exists for ANCS, so use a normal finite popup
             # lifetime. The event remains available in private SQLite history.
@@ -376,24 +447,36 @@ class LibnotifySink:
                 title,
                 body,
                 dbus.Array(actions, signature="s"),
-                dbus.Dictionary({
-                    "urgency": dbus.Byte(1),
-                    # Plasma can retain an expired notification in history.
-                    # ANCS events already live in BlueFerry's own feed, so
-                    # explicitly bypass desktop notification persistence.
-                    "transient": dbus.Boolean(True),
-                }, signature="sv"),
-                dbus.Int32(_ANCS_ACTION_EXPIRE_MS if actions else _ANCS_EXPIRE_MS),
+                dbus.Dictionary(hints, signature="sv"),
+                dbus.Int32(_ANCS_ACTION_EXPIRE_MS if buttons else _ANCS_EXPIRE_MS),
             )
         except dbus.exceptions.DBusException as e:
             log.error("libnotify Notify (ANCS) failed: %s", e.get_dbus_name())
             return
-        if actions:
+        if buttons:
             self._track_ancs_actions(
                 int(nid),
                 int(event.notification_id),
                 int(getattr(event, "action_token", 0)),
             )
+        if clickable:
+            if not hasattr(self, "_open_apps"):
+                self._open_apps = {}
+            self._open_apps[int(nid)] = app_id
+            if not hasattr(self, "_click_ids"):
+                self._click_ids = {}
+            self._click_ids[click_id] = int(nid)
+            self._prune_trackers()
+
+    def _resolve_open_target(self, app_id: str):
+        provider = getattr(self, "_open_target", None)
+        if provider is None or not app_id:
+            return None
+        try:
+            return provider(app_id)
+        except Exception:
+            log.debug("could not resolve a notification click rule", exc_info=True)
+            return None
 
     def _ancs_actions_enabled(self) -> bool:
         # Labels are app-defined ("Pay CHF 50 to Bob"), so they count as
@@ -656,7 +739,8 @@ class LibnotifySink:
             nid_i = int(nid)
         except (TypeError, ValueError):
             return
-        if nid_i in self._open_messages and len(str(token)) <= 4096:
+        tracked = nid_i in self._open_messages or nid_i in getattr(self, "_open_apps", {})
+        if tracked and len(str(token)) <= 4096:
             self._activation_tokens[nid_i] = str(token)
 
     def _on_action(self, nid, action) -> None:
@@ -683,6 +767,87 @@ class LibnotifySink:
         token = getattr(self, "_activation_tokens", {}).pop(nid_i, "")
         if handle and callback is not None:
             callback(handle, token)
+            return
+        self._activate_app_popup(nid_i, token)
+
+    def open_click(self, click_id: str, token: str) -> bool:
+        """A shell ran a popup's argv; treat it exactly like a live click."""
+        if not isinstance(click_id, str) or len(click_id) > MAX_CLICK_ID_CHARS:
+            return False
+        nid = getattr(self, "_click_ids", {}).get(click_id)
+        if nid is not None:
+            return self._activate_app_popup(nid, token)
+        # The popup is gone. Only a dismissal within the grace period still
+        # counts, and it goes through the current rule and the throttle too.
+        dismissed = self._live_dismissed_clicks()
+        entry = dismissed.get(click_id)
+        if entry is None or not self._open_app_target(entry[0], token):
+            return False
+        del dismissed[click_id]
+        return True
+
+    def _live_dismissed_clicks(self) -> dict[str, tuple[str, float]]:
+        dismissed = getattr(self, "_dismissed_clicks", None)
+        if dismissed is None:
+            dismissed = self._dismissed_clicks = {}
+        now = time.monotonic()
+        for stale in [
+            key for key, (_app_id, deadline) in dismissed.items() if now >= deadline
+        ]:
+            del dismissed[stale]
+        return dismissed
+
+    def _keep_dismissed_click(self, nid: int, app_id: str) -> None:
+        dismissed = self._live_dismissed_clicks()
+        deadline = time.monotonic() + _DISMISSED_CLICK_GRACE_S
+        for click_id, value in getattr(self, "_click_ids", {}).items():
+            if value == nid:
+                dismissed[click_id] = (app_id, deadline)
+        while len(dismissed) > MAX_NOTIFICATION_CLICK_TRACKERS:
+            del dismissed[next(iter(dismissed))]
+
+    def _activate_app_popup(self, nid: int, token: str) -> bool:
+        # A click rule fires once per popup. The tracker is consumed only
+        # when a launch was requested, so a throttled click leaves the popup
+        # clickable instead of dead.
+        open_apps = getattr(self, "_open_apps", {})
+        app_id = open_apps.get(nid)
+        if not app_id or not self._open_app_target(app_id, token):
+            return False
+        open_apps.pop(nid, None)
+        self._forget_click_id(nid)
+        return True
+
+    def _forget_click_id(self, nid: int) -> None:
+        click_ids = getattr(self, "_click_ids", {})
+        for click_id in [key for key, value in click_ids.items() if value == nid]:
+            del click_ids[click_id]
+
+    def _open_app_target(self, app_id: str, token: str) -> bool:
+        """Open the rule configured for this app; never the notification text."""
+        target = self._resolve_open_target(app_id)
+        callback = getattr(self, "_on_open_target", None)
+        if target is None or callback is None:
+            return False
+        # A misbehaving notification server must not turn repeated action
+        # signals into a stream of launches of the same target. Different
+        # targets are independent, so two mapped popups clicked in quick
+        # succession both open.
+        now = time.monotonic()
+        recent = getattr(self, "_recent_open_targets", None)
+        if recent is None:
+            recent = self._recent_open_targets = {}
+        for stale in [
+            key for key, opened in recent.items()
+            if now - opened >= _OPEN_TARGET_INTERVAL_S
+        ]:
+            del recent[stale]
+        if target in recent:
+            log.info("ignoring a repeated notification click")
+            return False
+        recent[target] = now
+        callback(target, token)
+        return True
 
     def _on_closed(self, nid, reason) -> None:
         try:
@@ -692,6 +857,11 @@ class LibnotifySink:
             return
 
         getattr(self, "_open_messages", {}).pop(nid_i, None)
+        app_id = getattr(self, "_open_apps", {}).pop(nid_i, None)
+        if app_id and reason_i == _REASON_DISMISSED:
+            # A shell that runs the popup's argv dismisses the popup first.
+            self._keep_dismissed_click(nid_i, app_id)
+        self._forget_click_id(nid_i)
         getattr(self, "_activation_tokens", {}).pop(nid_i, None)
         # Closing an ANCS popup, for any reason, never runs an iPhone action.
         getattr(self, "_ancs_actions", {}).pop(nid_i, None)

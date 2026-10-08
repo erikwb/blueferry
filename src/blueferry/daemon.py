@@ -161,6 +161,7 @@ class Daemon:
             contacts_only_notifications=(
                 lambda: self.notification_policy.contacts_only
             ),
+            notification_open_target=self.notification_policy.open_target,
             storage=self.storage,
             on_incoming_message=lambda: self._verify_setup_task(MESSAGE_NOTIFICATIONS),
             perform_ancs_action=self._perform_ancs_action,
@@ -669,6 +670,7 @@ class Daemon:
                 on_storage_prepared=self._apply_storage_preparation,
                 on_storage_changed=self._on_storage_changed,
                 set_proximity_lock=self._set_proximity_lock,
+                open_notification_click=self.events.open_notification_click,
                 media=lambda: self.media,
                 set_media_control=self._set_media_control,
                 calls=self.calls,
