@@ -649,10 +649,19 @@ Only commands the iPhone currently offers are sent; for example, like/dislike
 exist only for players that advertise them. The Kirigami client shows a small
 now-playing bar above the conversations while a player is active.
 
-Track details are only available through BlueFerry's own authenticated D-Bus
-API, and its change signal carries no content. AMS has no absolute volume,
-seek or stop: volume moves one iPhone step at a time, and
-`blueferry media skip-forward` or `skip-backward` use the phone's fixed skips.
+With the MPRIS option (`blueferry media enable-mpris`, or the second
+checkbox under **Media Control**), BlueFerry registers
+`org.mpris.MediaPlayer2.blueferry_iphone` on your session bus while the iPhone
+reports an active player. **MPRIS is public within your login session:** any
+application you run can read the current title, artist and album and is
+notified of changes, exactly as with a desktop music player. Without the MPRIS
+option, track details are only available through BlueFerry's own
+authenticated D-Bus API, and its change signal carries no content. AMS has no
+absolute volume, seek or stop, so through MPRIS a volume change moves the
+iPhone one step, seeking is not offered (use `blueferry media skip-forward` or
+`skip-backward` for the phone's fixed skips), and Stop pauses playback. The
+player has a D-Bus connection of its own, so the MPRIS name never reaches
+BlueFerry's message interface.
 
 `BLUEFERRY_MEDIA_CONTROL_ENABLED=true` in `local.env` sets the initial value;
 a choice saved through a client or the CLI takes precedence. Media control

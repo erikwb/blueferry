@@ -103,7 +103,7 @@ ENTITY_ATTRIBUTES: dict[EntityID, tuple[int, ...]] = {
     EntityID.Track: tuple(TrackAttributeID),
 }
 
-# Stable, public command names used by D-Bus and the CLI.
+# Stable, public command names used by D-Bus, the CLI and MPRIS mapping.
 COMMAND_NAMES: dict[str, RemoteCommandID] = {
     "play": RemoteCommandID.Play,
     "pause": RemoteCommandID.Pause,

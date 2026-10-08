@@ -228,6 +228,7 @@ class BackendDependencies:
     calls: CallControl | None = None
     set_calls_enabled: Callable[[bool], dict[str, Any]] | None = None
     set_phone_battery_warning: Callable[[bool], dict[str, Any]] | None = None
+    set_media_mpris: Callable[[bool], dict[str, Any]] | None = None
 
 
 class BackendOperations:
@@ -1171,7 +1172,16 @@ class BackendOperations:
 
     def set_media_control(self, enabled: bool) -> dict[str, Any]:
         """Opt in or out of iPhone media control without a restart."""
-        configure = self.dependencies.set_media_control
+        return self._media_setting(self.dependencies.set_media_control, enabled)
+
+    def set_media_mpris(self, enabled: bool) -> dict[str, Any]:
+        """Opt in or out of also publishing the iPhone as an MPRIS player."""
+        return self._media_setting(self.dependencies.set_media_mpris, enabled)
+
+    @staticmethod
+    def _media_setting(
+        configure: Callable[[bool], dict[str, Any]] | None, enabled: bool,
+    ) -> dict[str, Any]:
         if configure is None:
             raise NotReadyError("media control settings are unavailable")
         try:

@@ -20,13 +20,13 @@ Bluetooth-Verkehr und liegt außerhalb von BlueFerrys Schwerpunkt Nachrichten.
   sie meldet `blueferry media`, dass der Zustand der LE-Verbindung unbekannt
   ist.
 - Die Kommandozeile funktioniert überall. Der KDE/Kirigami-Client zeigt eine
-  „Wird gespielt“-Leiste. GTK-, Terminal- und Quickshell-Client haben noch
-  keine Medienansicht.
+  „Wird gespielt“-Leiste. GTK- und Quickshell-Client haben die Schalter, aber
+  noch keine Medienansicht; der Terminal-Client hat beides nicht.
 
 ## Einschalten
 
-Im Kirigami-Client die iPhone-Einstellungen öffnen und **Media Control**
-ankreuzen. Im Terminal:
+Im Kirigami-, GTK- oder Quickshell-Client die iPhone-Einstellungen öffnen
+und **Media Control** einschalten. Im Terminal:
 
 ```bash
 blueferry media enable    # blueferry media disable schaltet sie wieder aus
@@ -70,6 +70,41 @@ flowchart LR
     Backend -- "authentifiziertes D-Bus (Media1)" --> Kirigami["Kirigami-Leiste"]
 ```
 
+## Medientasten, Plasma und playerctl (MPRIS, optional)
+
+Eine zweite, getrennte Option veröffentlicht das iPhone als MPRIS-Mediaplayer.
+Plasmas Medienwiedergabe, die Medientasten der Tastatur und `playerctl`
+zeigen und steuern die iPhone-Wiedergabe dann wie jeden Desktop-Player. In
+den iPhone-Einstellungen des Kirigami-, GTK- oder Quickshell-Clients unter
+**Media Control** die Option **Also show it in the desktop media controls
+(MPRIS)** einschalten, oder:
+
+```bash
+blueferry media enable-mpris    # blueferry media disable-mpris schaltet es aus
+```
+
+Das wirkt sofort und nur, solange die Mediensteuerung selbst an ist.
+`BLUEFERRY_MEDIA_MPRIS_ENABLED=true` in `local.env` legt den Anfangswert fest.
+
+```bash
+playerctl -p blueferry_iphone status
+playerctl -p blueferry_iphone next
+```
+
+Der Player heißt „iPhone (BlueFerry)“ und erscheint nur, solange das iPhone
+einen aktiven Player meldet; ein gestoppter Eintrag bleibt also nicht stehen.
+Da AMS weder Stopp noch Spulen kennt, pausiert `Stop`, und Spulen bewirkt
+nichts; dafür gibt es `blueferry media skip-forward`. Eine Lautstärkeänderung
+bewegt die iPhone-Lautstärke um eine Stufe; bis das iPhone seine Lautstärke
+gemeldet hat, zeigt der Player keinen Lautstärkeregler. Der Fortschritt folgt
+der Wiedergabegeschwindigkeit des iPhones (etwa ein Podcast mit 1,5×).
+
+Der Player nutzt eine eigene D-Bus-Verbindung. Eine App, die nur mit
+Mediaplayern sprechen darf (etwa eine Flatpak-App), erreicht darüber also
+nicht BlueFerrys Nachrichten-Schnittstelle.
+
+**Vor dem Einschalten von MPRIS bitte den Abschnitt Datenschutz lesen.**
+
 ## Grenzen
 
 - AMS kennt keine absolute Lautstärke, kein Spulen und kein Stopp. Die
@@ -93,6 +128,12 @@ flowchart LR
   holen sie über BlueFerrys authentifizierte D-Bus-Schnittstelle mit
   Ratenbegrenzung. Das Signal, das Clients zum Aktualisieren auffordert,
   enthält keine Inhalte.
+- **Mit der MPRIS-Option ändert sich das bewusst.** MPRIS ist innerhalb deiner
+  Anmeldesitzung öffentlich: Jedes Programm, das du startest, kann Titel,
+  Interpret und Album lesen und wird über Änderungen informiert, genau wie bei
+  Spotify, VLC oder jedem anderen Desktop-Player. Deshalb ist MPRIS eine
+  eigene Option. Steuerbefehle laufen weiterhin über BlueFerrys
+  Benutzerprüfung und Ratenbegrenzung.
 - Protokolle enthalten Befehlsnamen und Längen, nie Titel, Interpreten oder
   App-Namen.
 - Zu deiner Musik wird nichts auf der Festplatte gespeichert.

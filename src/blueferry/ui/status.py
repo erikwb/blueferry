@@ -23,6 +23,7 @@ from blueferry.setup_verification import (
     NOTIFICATION_ACCESS,
     remaining_iphone_setup_tasks,
 )
+from blueferry.ui.saved_choice import SavedChoice
 from blueferry.ui.setup_runner import SetupRunner
 from blueferry.ui.status_presenter import (
     connection_subtitle,
@@ -46,6 +47,9 @@ class IPhonePage(Gtk.Box):
         self._applying_notification_policy = False
         self._applying_contacts_only_notifications = False
         self._applying_ancs_actions = False
+        self._applying_media_switches = False
+        self._media_control_choice = SavedChoice()
+        self._mpris_player_choice = SavedChoice()
         self._applying_storage_policy = False
         self._storage_unlock_attempted = False
         self._pairing_issue_report = ""
@@ -347,6 +351,36 @@ class IPhonePage(Gtk.Box):
         self._ancs_actions_row.set_activatable_widget(self._ancs_actions_switch)
         notification_group.add(self._ancs_actions_row)
         page.add(notification_group)
+
+        # Shown only when the backend reports the media-control keys.
+        self._media_group = Adw.PreferencesGroup(title=_("Media Control"))
+        self._media_group.set_visible(False)
+        self._media_control_row = Adw.ActionRow(
+            title=_("Show and Control What the iPhone Is Playing"),
+            subtitle=_("Uses the Bluetooth LE link that also carries notifications."),
+        )
+        self._media_control_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
+        self._media_control_switch.connect(
+            "notify::active", self._media_control_changed
+        )
+        self._media_control_row.add_suffix(self._media_control_switch)
+        self._media_control_row.set_activatable_widget(self._media_control_switch)
+        self._media_group.add(self._media_control_row)
+        self._mpris_player_row = Adw.ActionRow(
+            title=_("Also Show It in the Desktop Media Controls (MPRIS)"),
+            subtitle=_(
+                "Like any desktop music player, every application in your "
+                "session can then read the title, artist and album."
+            ),
+        )
+        self._mpris_player_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
+        self._mpris_player_switch.connect(
+            "notify::active", self._mpris_player_changed
+        )
+        self._mpris_player_row.add_suffix(self._mpris_player_switch)
+        self._mpris_player_row.set_activatable_widget(self._mpris_player_switch)
+        self._media_group.add(self._mpris_player_row)
+        page.add(self._media_group)
 
         data_group = Adw.PreferencesGroup(title=_("Local Data"))
         history_model = Gtk.StringList.new(
@@ -1005,6 +1039,7 @@ class IPhonePage(Gtk.Box):
         )
         self._applying_contacts_only_notifications = False
         self._apply_ancs_actions(status, reachable)
+        self._apply_media_switches(status, reachable)
         self._applying_storage_policy = True
         selected_storage = {
             "encrypted": 0,
@@ -1114,6 +1149,83 @@ class IPhonePage(Gtk.Box):
         self._client.set_ancs_notification_actions_async(
             enabled, saved, failed
         )
+
+    def _show_saved_choice(self, switch, choice: SavedChoice, reported: bool) -> None:
+        """Set ``switch`` for a status reporting ``reported``."""
+        shown, stale = choice.resolve(reported)
+        switch.set_active(shown)
+        if stale:
+            self._refresh()
+
+    def _apply_media_switches(self, status: BackendStatus, reachable: bool) -> None:
+        # Older daemons report neither key; one before the MPRIS player
+        # reports only the first.
+        self._media_group.set_visible("media_control_enabled" in status.extra)
+        self._mpris_player_row.set_visible("media_mpris_enabled" in status.extra)
+        self._applying_media_switches = True
+        self._show_saved_choice(
+            self._media_control_switch,
+            self._media_control_choice,
+            status.extra.get("media_control_enabled") is True,
+        )
+        self._show_saved_choice(
+            self._mpris_player_switch,
+            self._mpris_player_choice,
+            status.extra.get("media_mpris_enabled") is True,
+        )
+        self._applying_media_switches = False
+        self._media_control_row.set_sensitive(
+            reachable and not self._media_control_choice.saving
+        )
+        # The player needs media control, as in the Qt client.
+        self._mpris_player_row.set_sensitive(
+            reachable
+            and not self._mpris_player_choice.saving
+            and self._media_control_switch.get_active()
+        )
+
+    def _media_control_changed(self, switch, _property) -> None:
+        self._save_media_switch(
+            switch,
+            self._media_control_row,
+            self._media_control_choice,
+            "media_control_enabled",
+            self._client.set_media_control_async,
+            _("Media control preference saved"),
+            _("Could not save media control preference: {error}"),
+        )
+
+    def _mpris_player_changed(self, switch, _property) -> None:
+        self._save_media_switch(
+            switch,
+            self._mpris_player_row,
+            self._mpris_player_choice,
+            "media_mpris_enabled",
+            self._client.set_mpris_player_async,
+            _("Desktop media controls preference saved"),
+            _("Could not save desktop media controls preference: {error}"),
+        )
+
+    def _save_media_switch(
+        self, switch, row, choice: SavedChoice, key: str, save,
+        saved_text: str, failed_text: str,
+    ) -> None:
+        if self._applying_media_switches:
+            return
+        choice.begin(switch.get_active())
+        row.set_sensitive(False)
+
+        def saved(status: dict) -> None:
+            choice.saved(status.get(key) is True)
+            self._toast(saved_text)
+            self._refresh()
+
+        def failed(error: str) -> None:
+            choice.failed()
+            self._toast(failed_text.format(error=error))
+            self._apply_status(self._last_status)
+
+        save(switch.get_active(), saved, failed)
 
     def _storage_policy_changed(self, _row, _property) -> None:
         if self._applying_storage_policy:

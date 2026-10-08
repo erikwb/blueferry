@@ -40,6 +40,10 @@ class _Backend:
             raise BackendError(self.fail)
         self.sent.append(command)
 
+    def set_mpris_player(self, enabled: bool) -> dict:
+        self.sent.append("enable-mpris" if enabled else "disable-mpris")
+        return {"media_mpris_enabled": enabled, "media_control_enabled": False}
+
     def set_media_control(self, enabled: bool) -> dict:
         if self.fail:
             raise BackendError(self.fail)
@@ -186,3 +190,13 @@ def test_client_sets_media_control_on_the_checked_owner() -> None:
     client = BackendClient(interface_factory=lambda name: _Interface(name, calls))
     assert client.set_media_control(True) == {"media_control_enabled": True}
     assert calls == [(MESSAGES_IFACE, "GetStatus"), (MEDIA_IFACE, "SetMediaControl:True")]
+
+
+def test_mpris_opt_in_warns_about_session_wide_metadata(backend) -> None:
+    result = CliRunner().invoke(app, ["media", "enable-mpris"])
+    assert result.exit_code == 0
+    assert "Every application in your login session" in result.output
+    assert "blueferry media enable" in result.output
+    result = CliRunner().invoke(app, ["media", "disable-mpris"])
+    assert "not published" in result.output
+    assert backend.sent == ["enable-mpris", "disable-mpris"]

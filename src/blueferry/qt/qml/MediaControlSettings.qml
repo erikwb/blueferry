@@ -35,6 +35,28 @@ ColumnLayout {
             onClicked: mediaSettings.bridge.setMediaControl(checked)
             Accessible.description: qsTr("Uses the Bluetooth LE link that also carries notifications.")
         }
+        Controls.CheckBox {
+            objectName: "mprisPlayerCheckBox"
+            Layout.fillWidth: true
+            // Only daemons that report the MPRIS preference support it.
+            visible: mediaSettings.status.media_mpris_enabled !== undefined
+            text: qsTr("Also show it in the desktop media controls (MPRIS)")
+            checked: mediaSettings.status.media_mpris_enabled === true
+            enabled: mediaSettings.available && mediaSettings.status.media_control_enabled === true
+            onClicked: mediaSettings.bridge.setMprisPlayer(checked)
+            Accessible.description: mprisWarning.text
+        }
+        Controls.Label {
+            id: mprisWarning
+            objectName: "mprisPlayerWarning"
+            Layout.fillWidth: true
+            visible: mediaSettings.status.media_mpris_enabled !== undefined
+            wrapMode: Text.Wrap
+            textFormat: Text.PlainText
+            font: Kirigami.Theme.smallFont
+            text: qsTr("Like any desktop music player, every application in your session can then "
+                + "read the title, artist and album.")
+        }
         Controls.Label {
             objectName: "mediaControlStateLabel"
             Kirigami.FormData.label: qsTr("Status:")

@@ -3,7 +3,7 @@
 ``MediaController`` owns the now-playing projection and command policy. It is
 independent of D-Bus and BlueZ: the daemon feeds it AMS updates and attaches
 the :class:`~blueferry.ams.client.AmsClient` that writes commands. Listeners
-(such as the content-free ``NowPlayingChanged`` signal)
+(the content-free ``NowPlayingChanged`` signal and the optional MPRIS player)
 receive one coalesced invalidation per burst of updates, because iOS reports a
 track change as several separate attribute notifications.
 """
@@ -63,27 +63,56 @@ class MediaControlSettings:
     """
 
     ENABLED_KEY = "media_control_enabled"
+    MPRIS_KEY = "media_mpris_enabled"
 
-    def __init__(self, path: Path | None = None, *, default: bool | None = None) -> None:
+    def __init__(
+        self,
+        path: Path | None = None,
+        *,
+        default: bool | None = None,
+        default_mpris: bool | None = None,
+    ) -> None:
         self._settings = SettingsStore(path or config.SETTINGS_JSON)
-        seeded = config.MEDIA_CONTROL_ENABLED if default is None else default
-        stored = self._settings.read().get(self.ENABLED_KEY)  # {} when unreadable
-        self._enabled = stored if isinstance(stored, bool) else bool(seeded)
-        if (
-            default is None
-            and isinstance(stored, bool)
-            and "BLUEFERRY_MEDIA_CONTROL_ENABLED" in os.environ
-            and stored != bool(seeded)
-        ):
+        payload = self._settings.read()  # {} when unreadable
+        self._enabled = self._load(
+            payload, self.ENABLED_KEY, "BLUEFERRY_MEDIA_CONTROL_ENABLED",
+            config.MEDIA_CONTROL_ENABLED if default is None else default,
+            note=default is None,
+        )
+        self._mpris = self._load(
+            payload, self.MPRIS_KEY, "BLUEFERRY_MEDIA_MPRIS_ENABLED",
+            config.MEDIA_MPRIS_ENABLED if default_mpris is None else default_mpris,
+            note=default_mpris is None,
+        )
+
+    @staticmethod
+    def _load(payload: dict, key: str, env: str, seeded: bool, *, note: bool) -> bool:
+        stored = payload.get(key)
+        if not isinstance(stored, bool):
+            return bool(seeded)
+        if note and env in os.environ and stored != bool(seeded):
             log.info(
-                "BLUEFERRY_MEDIA_CONTROL_ENABLED is ignored because a media "
-                "control preference was saved in settings.json (using %s)",
-                stored,
+                "%s is ignored because a media control preference was saved "
+                "in settings.json (using %s)",
+                env, stored,
             )
+        return stored
 
     @property
     def enabled(self) -> bool:
         return self._enabled
+
+    @property
+    def mpris(self) -> bool:
+        """Also publish an MPRIS player; effective only while enabled."""
+        return self._mpris
+
+    def set_mpris(self, enabled: bool) -> bool:
+        if not isinstance(enabled, bool):
+            raise ValueError("MPRIS player enabled must be a boolean")
+        self._settings.update(**{self.MPRIS_KEY: enabled})
+        self._mpris = enabled
+        return enabled
 
     def set(self, enabled: bool) -> bool:
         if not isinstance(enabled, bool):

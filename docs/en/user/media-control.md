@@ -18,13 +18,13 @@ BlueFerry's messaging focus.
   with the bearer API, as notifications need today). Without it,
   `blueferry media` reports that the LE link state is unknown.
 - The command line works everywhere. The KDE/Kirigami client shows a
-  now-playing bar. The GTK, terminal and Quickshell clients have no media
-  view yet.
+  now-playing bar. The GTK and Quickshell clients have the switches but no
+  media view yet; the terminal client has neither.
 
 ## Turn it on
 
-In the Kirigami client, open the iPhone settings and tick **Media Control**.
-From a terminal:
+In the Kirigami, GTK or Quickshell client, open the iPhone settings and
+switch on **Media Control**. From a terminal:
 
 ```bash
 blueferry media enable    # blueferry media disable turns it off again
@@ -68,6 +68,40 @@ flowchart LR
     Backend -- "authenticated D-Bus (Media1)" --> Kirigami["Kirigami now-playing bar"]
 ```
 
+## Media keys, Plasma and playerctl (MPRIS, optional)
+
+A second, separate option publishes the iPhone as an MPRIS media player. The
+Plasma media controller, keyboard media keys and `playerctl` then show and
+control iPhone playback like any desktop player. Tick **Also show it in the
+desktop media controls (MPRIS)** under **Media Control** in the iPhone
+settings of the Kirigami, GTK or Quickshell client, or run:
+
+```bash
+blueferry media enable-mpris    # blueferry media disable-mpris turns it off
+```
+
+It applies at once and only while media control itself is on.
+`BLUEFERRY_MEDIA_MPRIS_ENABLED=true` in `local.env` sets the initial value.
+
+```bash
+playerctl -p blueferry_iphone status
+playerctl -p blueferry_iphone next
+```
+
+The player is called "iPhone (BlueFerry)" and appears only while the iPhone
+reports an active player, so no stopped entry lingers. Because AMS has no
+stop or seek, `Stop` pauses and seeking does nothing; use
+`blueferry media skip-forward` instead. A volume change moves one iPhone step,
+and until the iPhone has reported its volume the player shows no volume
+control. Progress follows the iPhone's playback speed (for example a podcast
+at 1.5×).
+
+The player uses a D-Bus connection of its own, so an application that is only
+allowed to talk to media players (for example a Flatpak app) cannot reach
+BlueFerry's message interface through it.
+
+**Read the privacy note below before turning MPRIS on.**
+
 ## Limits
 
 - AMS has no absolute volume, seek or stop. Volume moves one step at a time,
@@ -88,6 +122,12 @@ flowchart LR
 - Track, artist, album and player name stay inside BlueFerry. Clients fetch
   them through BlueFerry's authenticated, rate-limited D-Bus interface.
   The change signal that tells clients to refresh carries no content.
+- **With the MPRIS option this changes on purpose.** MPRIS is public within
+  your login session: every application you run can read the current title,
+  artist and album and is notified of changes, exactly as with Spotify, VLC
+  or any other desktop player. That is why MPRIS is its own opt-in. Calls
+  that control playback still go through BlueFerry's user check and rate
+  limits.
 - Logs contain command names and value lengths, never titles, artists or
   player names.
 - Nothing about your music is stored on disk.

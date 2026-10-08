@@ -39,6 +39,8 @@ ShellRoot {
   property bool notificationPolicyBusy: false
   property bool contactsOnlyNotificationsBusy: false
   property bool ancsActionsBusy: false
+  readonly property SavedChoice mediaControl: SavedChoice {}
+  readonly property SavedChoice mprisPlayer: SavedChoice {}
   property bool storagePolicyBusy: false
   property bool storageUnlockBusy: false
 
@@ -231,6 +233,8 @@ ShellRoot {
           ? policy : "messages"
         root.contactsOnlyNotifications =
           result.contacts_only_notifications === true
+        root.mediaControl.reported(result.media_control_enabled === true)
+        root.mprisPlayer.reported(result.media_mpris_enabled === true)
         var storagePolicy = result.storage_policy || "encrypted"
         root.storagePolicy = ["encrypted", "plaintext", "none"].indexOf(storagePolicy) >= 0
           ? storagePolicy : "encrypted"
@@ -294,6 +298,18 @@ ShellRoot {
       } else if (method === "set_ancs_notification_actions") {
         root.ancsActionsBusy = false
         root.reload()
+      } else if (method === "set_media_control") {
+        root.mediaControl.saved(
+          typeof result === "object" && result !== null
+            ? result.media_control_enabled === true : root.mediaControl.value,
+          root.statusBusy)
+        root.reload()
+      } else if (method === "set_mpris_player") {
+        root.mprisPlayer.saved(
+          typeof result === "object" && result !== null
+            ? result.media_mpris_enabled === true : root.mprisPlayer.value,
+          root.statusBusy)
+        root.reload()
       } else if (method === "set_storage_policy") {
         root.storagePolicyBusy = false
         if (typeof result === "object" && result !== null) {
@@ -350,6 +366,14 @@ ShellRoot {
         root.ancsActionsBusy = false
         root.errorText = message || "Could not save action button preference"
         root.reload()
+      } else if (method === "set_media_control") {
+        root.mediaControl.failed(root.backendStatus.media_control_enabled === true)
+        root.errorText = message || "Could not save media control preference"
+        root.reload()
+      } else if (method === "set_mpris_player") {
+        root.mprisPlayer.failed(root.backendStatus.media_mpris_enabled === true)
+        root.errorText = message || "Could not save desktop media controls preference"
+        root.reload()
       } else if (method === "set_storage_policy") {
         root.storagePolicyBusy = false
         root.errorText = message
@@ -367,6 +391,10 @@ ShellRoot {
         root.notificationPolicyBusy = false
         root.contactsOnlyNotificationsBusy = false
         root.ancsActionsBusy = false
+        if (root.mediaControl.busy)
+          root.mediaControl.failed(root.backendStatus.media_control_enabled === true)
+        if (root.mprisPlayer.busy)
+          root.mprisPlayer.failed(root.backendStatus.media_mpris_enabled === true)
         root.storagePolicyBusy = false
         root.storageUnlockBusy = false
         root.errorText = message
@@ -993,10 +1021,16 @@ ShellRoot {
             contacts_only_notifications: root.contactsOnlyNotifications,
             storage_policy: root.storagePolicy,
             bluetooth_restart_command: root.bluetoothRestartCommand
+          }, root.backendStatus.media_control_enabled === undefined ? {} : {
+            media_control_enabled: root.mediaControl.value
+          }, root.backendStatus.media_mpris_enabled === undefined ? {} : {
+            media_mpris_enabled: root.mprisPlayer.value
           })
           busy: ({notifications: root.notificationPolicyBusy,
                   contactsOnly: root.contactsOnlyNotificationsBusy,
                   ancsActions: root.ancsActionsBusy,
+                  mediaControl: root.mediaControl.busy,
+                  mprisPlayer: root.mprisPlayer.busy,
                   storage: root.storagePolicyBusy})
           visible: root.phoneSettingsVisible
           Layout.fillWidth: true
@@ -1012,6 +1046,8 @@ ShellRoot {
               root.contactsOnlyNotificationsBusy = true
             }
             if (method === "set_ancs_notification_actions") root.ancsActionsBusy = true
+            if (method === "set_media_control") root.mediaControl.request(args.enabled)
+            if (method === "set_mpris_player") root.mprisPlayer.request(args.enabled)
             if (method === "set_storage_policy") {
               if (args.policy === "encrypted") root.storageUnlockAttempted = true
               root.storagePolicyBusy = true

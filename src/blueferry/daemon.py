@@ -12,6 +12,7 @@ import signal
 import threading
 import time
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 import dbus
 from gi.repository import GLib
@@ -91,6 +92,9 @@ from blueferry.storage_preparation import PreparedStorage, prepare_storage
 from blueferry.storage_security import StorageSecurity
 from blueferry.wireplumber_policy import WirePlumberPhoneAudioPolicy
 
+if TYPE_CHECKING:
+    from blueferry.mpris import MprisPlayer, NameClaim
+
 log = logging.getLogger(__name__)
 
 
@@ -120,6 +124,8 @@ class PairingRequiredError(RuntimeError):
 
 # Battery and signal steps reach clients at most this often.
 PHONE_STATUS_MIN_INTERVAL_SEC = 10
+# A failed MPRIS bus connection is retried while the player is wanted.
+MPRIS_RETRY_SEC = 30
 
 
 def _in_background(target: Callable[[], None], name: str) -> None:
@@ -179,6 +185,10 @@ class Daemon:
         # remembers them so an opt-out can release them when that is safe.
         self.media_sessions = AmsNotifySessions()
         self.ams: AmsClient | None = None
+        self.mpris: MprisPlayer | None = None
+        self._mpris_connection: dbus.connection.Connection | None = None
+        self._mpris_claim: NameClaim | None = None
+        self._mpris_retry_id: int | None = None
         self.adapter_class = AdapterClassSupervisor(config.ADAPTER)
         self.solicitation = SolicitationSupervisor(config.ADAPTER)
         # The saved phone-calls opt-in decides both the call controller and
@@ -664,6 +674,7 @@ class Daemon:
                 calls=self.calls,
                 set_calls_enabled=self._set_calls_enabled,
                 set_phone_battery_warning=self._set_battery_warning,
+                set_media_mpris=self._set_media_mpris,
             ),
         )
         self.events.set_dbus_service(self._dbus_service)
@@ -705,6 +716,61 @@ class Daemon:
         if self.media is None or self._dbus_service is None:
             return
         self.media.add_listener(self._dbus_service.emit_now_playing_changed)
+        if self.media_settings.mpris:
+            self._start_mpris()
+
+    def _start_mpris(self, *, retrying: bool = False) -> None:
+        if self.media is None or self._dbus_service is None or self.mpris is not None:
+            return
+        from blueferry.mpris import MPRIS_BUS_NAME, MprisPlayer, NameClaim, private_session_bus
+
+        try:
+            if self._mpris_connection is None or self._mpris_claim is None:
+                # Own connection: the MPRIS name must not address the
+                # BlueFerry object (sandbox proxies filter by name).
+                self._mpris_connection = private_session_bus()
+                self._mpris_claim = NameClaim(self._mpris_connection, MPRIS_BUS_NAME)
+            self.mpris = MprisPlayer(
+                self._mpris_connection, self.media, self._dbus_service.caller_guard,
+                claim=self._mpris_claim,
+            )
+        except Exception:
+            # Say it once, then keep trying for as long as it is wanted.
+            if not retrying:
+                log.warning("could not export the MPRIS player", exc_info=True)
+            if self._mpris_retry_id is None:
+                self._mpris_retry_id = self._schedule_seconds(
+                    MPRIS_RETRY_SEC, self._retry_mpris,
+                )
+            return
+        self._cancel_mpris_retry()
+
+    def _retry_mpris(self) -> bool:
+        self._mpris_retry_id = None
+        if self.media_settings.mpris:
+            self._start_mpris(retrying=True)
+        return False
+
+    def _cancel_mpris_retry(self) -> None:
+        retry, self._mpris_retry_id = self._mpris_retry_id, None
+        if retry is not None:
+            GLib.source_remove(retry)
+
+    def _stop_mpris(self) -> None:
+        self._cancel_mpris_retry()
+        mpris, self.mpris = self.mpris, None
+        if mpris is not None:
+            mpris.close()
+
+    def _set_media_mpris(self, enabled: bool) -> dict:
+        selected = self.media_settings.set_mpris(enabled)
+        if selected:
+            self._start_mpris()
+        else:
+            self._stop_mpris()
+        log.info("iPhone MPRIS player %s", "enabled" if selected else "disabled")
+        self._emit_status()
+        return self._media_status()
 
     def _new_media(self) -> MediaController:
         return MediaController(
@@ -716,6 +782,9 @@ class Daemon:
         return {
             "media_control_enabled": self.media is not None,
             "media_control_available": bool(self.media and self.media.available),
+            # The saved preference, and whether the player object exists.
+            "media_mpris_enabled": self.media_settings.mpris,
+            "media_mpris_active": self.mpris is not None,
         }
 
     def _set_media_control(self, enabled: bool) -> dict:
@@ -726,8 +795,9 @@ class Daemon:
             if self._media_device_path is not None:
                 self._start_media(self._media_device_path)
         elif not selected and self.media is not None:
-            # Stop the GATT client first: its availability callback still
-            # needs the controller.
+            # The MPRIS player and the GATT client go first: both still use
+            # the controller while they shut down.
+            self._stop_mpris()
             ams, self.ams = self.ams, None
             # Disable the phone's CCCs so a later opt-in gets the command
             # list again; a new client waits until that is done.
@@ -1395,6 +1465,7 @@ class Daemon:
             self.ams.stop()
         # No StopNotify on shutdown: the closing bus connection ends them.
         self.media_sessions.close()
+        self._stop_mpris()
         if self.media is not None:
             self.media.close()
         self.solicitation.stop()

@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import functools
 from types import SimpleNamespace
+from typing import ClassVar
 
+import dbus
 import pytest
 
 from blueferry import daemon as daemon_mod
@@ -250,6 +252,7 @@ def test_close_cancels_pending_invalidation() -> None:
 
 def test_media_is_off_by_default_and_creates_no_ble_client(make_daemon) -> None:
     assert daemon_mod.config.MEDIA_CONTROL_ENABLED is False
+    assert daemon_mod.config.MEDIA_MPRIS_ENABLED is False
     instance = make_daemon()
     assert instance.media is None
 
@@ -257,6 +260,7 @@ def test_media_is_off_by_default_and_creates_no_ble_client(make_daemon) -> None:
     instance._observe_le_state(True)
 
     assert instance.ams is None
+    assert instance.mpris is None
 
 
 def test_default_status_reports_media_disabled(make_daemon, monkeypatch) -> None:
@@ -267,6 +271,8 @@ def test_default_status_reports_media_disabled(make_daemon, monkeypatch) -> None
     status = instance._status()
     assert status["media_control_enabled"] is False
     assert status["media_control_available"] is False
+    assert status["media_mpris_enabled"] is False
+    assert status["media_mpris_active"] is False
 
 
 def test_compatibility_mode_never_starts_ams(make_daemon, monkeypatch) -> None:
@@ -352,7 +358,8 @@ def test_media_can_be_enabled_and_disabled_at_runtime(make_daemon, monkeypatch) 
     assert instance.ams is None
 
     result = instance._set_media_control(True)
-    assert result == {"media_control_enabled": True, "media_control_available": False}
+    assert result["media_control_enabled"] is True
+    assert result["media_control_available"] is False
     ams = instance.ams
     assert isinstance(ams, _FakeAms) and ams.started and ams.device_path == "/device"
     assert instance.media is not None
@@ -360,7 +367,7 @@ def test_media_can_be_enabled_and_disabled_at_runtime(make_daemon, monkeypatch) 
     assert MediaControlSettings().enabled is True
 
     result = instance._set_media_control(False)
-    assert result == {"media_control_enabled": False, "media_control_available": False}
+    assert result["media_control_enabled"] is False
     assert ams.stopped
     assert instance.ams is None and instance.media is None
     assert MediaControlSettings().enabled is False
@@ -648,3 +655,175 @@ def test_media_failure_cannot_break_le_state_propagation(make_daemon) -> None:
     instance.solicitation = SimpleNamespace(set_needed=lambda _needed: None)
     instance._observe_le_state(True)  # must not raise into the supervisor
     assert seen == [True]
+
+
+def test_mpris_set_authorizes_before_revealing_property_details() -> None:
+    from blueferry.errors import RateLimitError
+    from blueferry.mpris import MprisPlayer
+
+    class _Guard:
+        def authorize(self, _sender, action):
+            assert action == "media-command"
+            raise RateLimitError("too many requests; wait before trying again")
+
+    media, _writer, _timers = _controller()
+    player = MprisPlayer(object(), media, _Guard())  # never exported: no player yet
+    try:
+        with pytest.raises(Exception) as raised:
+            player.Set("org.mpris.MediaPlayer2.Player", "PlaybackStatus", "x", sender=":1.5")
+        assert raised.value.get_dbus_name() == "io.weirdware.BlueFerry.Error.RateLimited"
+        with pytest.raises(Exception) as raised:
+            player.Seek(1, sender=":1.5")
+        assert raised.value.get_dbus_name() == "io.weirdware.BlueFerry.Error.RateLimited"
+    finally:
+        player.close()
+
+
+class _FakeMpris:
+    instances: ClassVar[list] = []
+
+    def __init__(self, connection, media, guard, claim=None) -> None:
+        self.connection = connection
+        self.claim = claim
+        self.media = media
+        self.guard = guard
+        self.closed = False
+        _FakeMpris.instances.append(self)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+@pytest.fixture
+def mpris_daemon(make_daemon, monkeypatch):
+    import blueferry.mpris as mpris_mod
+
+    _FakeMpris.instances = []
+    monkeypatch.setattr(daemon_mod.config, "ANCS_ENABLED", True)
+    monkeypatch.setattr(daemon_mod, "AmsClient", _FakeAms)
+    monkeypatch.setattr(mpris_mod, "MprisPlayer", _FakeMpris)
+    private = object()
+    monkeypatch.setattr(mpris_mod, "private_session_bus", lambda: private)
+    instance = make_daemon()
+    instance._dbus_service = SimpleNamespace(
+        connection=object(), caller_guard=object(),
+        emit_now_playing_changed=lambda: None, emit_status=lambda: None,
+    )
+    return instance, private
+
+
+def test_mpris_uses_its_own_connection_and_follows_both_opt_ins(mpris_daemon) -> None:
+    """Review #208: MPRIS never shares the daemon's main connection."""
+    instance, private = mpris_daemon
+    status = instance._set_media_mpris(True)
+    # Preference saved, but no player without media control.
+    assert status["media_mpris_enabled"] is True and status["media_mpris_active"] is False
+    assert _FakeMpris.instances == []
+
+    instance._set_media_control(True)
+    player = _FakeMpris.instances[-1]
+    assert player.connection is private
+    assert player.connection is not instance._dbus_service.connection
+    assert player.media is instance.media
+    assert instance._media_status()["media_mpris_active"] is True
+
+    # Turning media control off closes the player with it.
+    instance._set_media_control(False)
+    assert player.closed and instance.mpris is None
+
+    instance._set_media_control(True)
+    second = _FakeMpris.instances[-1]
+    assert second is not player and second.connection is private
+    # Both players share the one claim on the name; see NameClaim.
+    assert second.claim is player.claim is not None
+    instance._set_media_mpris(False)
+    assert second.closed and instance.mpris is None
+    assert MediaControlSettings().mpris is False
+
+
+def test_a_failed_mpris_connection_is_retried_while_wanted(mpris_daemon, monkeypatch, caplog) -> None:
+    import blueferry.mpris as mpris_mod
+
+    instance, private = mpris_daemon
+    attempts = []
+
+    def connect():
+        attempts.append(True)
+        if len(attempts) < 3:
+            raise dbus.exceptions.DBusException("no", name="org.freedesktop.DBus.Error.NoServer")
+        return private
+
+    monkeypatch.setattr(mpris_mod, "private_session_bus", connect)
+    timers = []
+    instance._schedule_seconds = lambda seconds, callback: timers.append((seconds, callback)) or len(timers)
+    removed = []
+    monkeypatch.setattr(daemon_mod.GLib, "source_remove", removed.append)
+    instance._set_media_mpris(True)
+    instance._set_media_control(True)
+
+    assert instance.mpris is None and len(timers) == 1
+    assert timers[0][0] == daemon_mod.MPRIS_RETRY_SEC
+    assert timers[0][1]() is False
+    assert instance.mpris is None and len(timers) == 2
+    assert timers[1][1]() is False
+    assert instance.mpris is not None and len(timers) == 2
+    assert sum("could not export the MPRIS player" in r.message for r in caplog.records) == 1
+
+    # Opting out ends a pending retry.
+    instance._set_media_mpris(False)
+    monkeypatch.setattr(mpris_mod, "private_session_bus", lambda: 1 / 0)
+    instance._mpris_connection = None
+    instance._set_media_mpris(True)
+    assert len(timers) == 3
+    instance._set_media_mpris(False)
+    assert removed == [3]
+    assert timers[2][1]() is False and len(timers) == 3
+
+
+class _NameBus:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def call_async(self, _name, _path, _iface, method, _signature, args, reply, error, timeout=None):
+        self.calls.append((method, reply, error))
+
+
+def test_a_name_claim_never_releases_what_the_next_claimant_holds() -> None:
+    """Review #208: MPRIS toggled off and on while RequestName is in flight."""
+    from blueferry.mpris import NameClaim
+
+    bus = _NameBus()
+    claim = NameClaim(bus, "org.mpris.MediaPlayer2.test")
+    first, second = [], []
+    claim.want(True, first.append)
+    claim.want(False)
+    claim.want(True, second.append)
+    assert [call[0] for call in bus.calls] == ["RequestName"]
+
+    bus.calls[0][1](dbus.UInt32(dbus.bus.REQUEST_NAME_REPLY_PRIMARY_OWNER))
+    assert (first, second) == ([], [True])
+    assert len(bus.calls) == 1
+
+    # Released and wanted again before the release returns: requested anew.
+    third = []
+    claim.want(False)
+    claim.want(True, third.append)
+    assert [call[0] for call in bus.calls] == ["RequestName", "ReleaseName"]
+    bus.calls[1][2](dbus.exceptions.DBusException("gone"))
+    assert [call[0] for call in bus.calls][-1] == "RequestName" and third == []
+
+    # Another owner: the claimant hears it once and may ask again later.
+    bus.calls[2][1](dbus.UInt32(dbus.bus.REQUEST_NAME_REPLY_EXISTS))
+    assert third == [False] and len(bus.calls) == 3
+    claim.want(False)
+    assert len(bus.calls) == 3
+
+
+def test_mpris_preference_is_seeded_and_saved(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "settings.json"
+    monkeypatch.setattr(daemon_mod.config, "MEDIA_MPRIS_ENABLED", True)
+    assert MediaControlSettings(path).mpris is True
+    MediaControlSettings(path).set_mpris(False)
+    assert MediaControlSettings(path).mpris is False
+    with pytest.raises(ValueError):
+        MediaControlSettings(path).set_mpris("yes")  # type: ignore[arg-type]

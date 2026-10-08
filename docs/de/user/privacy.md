@@ -109,7 +109,9 @@ Die optionale [Mediensteuerung](media-control.md) ist standardmäßig aus.
 Ist sie an, bleiben Titel, Interpret, Album und App-Name in BlueFerry; Clients
 holen sie über die authentifizierte D-Bus-Schnittstelle. Zu deiner Musik
 wird nichts auf die Festplatte oder ins Protokoll geschrieben. Gespeichert
-wird nur die Wahl an/aus, in `settings.json`.
+wird nur die Wahl an/aus, in `settings.json`. Die getrennte MPRIS-Option macht
+den aktuellen Titel bewusst für jede Anwendung in deiner Sitzung lesbar, wie
+bei jedem Desktop-Musikplayer.
 
 ## Anrufe und Musik bleiben auf dem iPhone
 

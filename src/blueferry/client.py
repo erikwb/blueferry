@@ -143,6 +143,17 @@ class BackendClient:
         except ValueError as error:
             raise BackendError(str(error)) from error
 
+    def set_mpris_player(self, enabled: bool) -> dict:
+        """Opt in or out of the MPRIS player; returns the media_* status keys."""
+        try:
+            return decode_mapping(self._media_iface().SetMprisPlayer(
+                dbus.Boolean(enabled), timeout=POLICY_CALL_TIMEOUT_SEC,
+            ))
+        except dbus.exceptions.DBusException as error:
+            raise self._media_error(error) from error
+        except ValueError as error:
+            raise BackendError(str(error)) from error
+
     def send_media_command(self, command: str) -> None:
         try:
             self._media_iface().SendMediaCommand(command, timeout=MEDIA_CALL_TIMEOUT_SEC)

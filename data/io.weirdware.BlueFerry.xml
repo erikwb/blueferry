@@ -196,6 +196,14 @@
       <annotation name="io.weirdware.BlueFerry.Errors"
                   value="InvalidArgs,NotReady"/>
     </method>
+    <method name="SetMprisPlayer">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Also publish the iPhone as an MPRIS2 player (session-wide metadata); effective while media control is on"/>
+      <arg name="enabled" type="b" direction="in"/>
+      <arg name="status_json" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady"/>
+    </method>
     <method name="SendMediaCommand">
       <annotation name="org.freedesktop.DBus.Description"
                   value="play, pause, toggle, next, previous, volume-up, volume-down, repeat, shuffle, skip-forward, skip-backward, like, dislike, bookmark"/>
