@@ -173,6 +173,7 @@ class CallHistorySync:
         self._phone = config.IPHONE_MAC if phone is None else phone
         self._records: list[CallRecord] = []
         self._cache_generation = 0
+        self._clear_generation = 0
         self._store_lock = threading.Lock()
         self._pending = False
         self._pending_full = False
@@ -235,6 +236,7 @@ class CallHistorySync:
         # commit before erasing, and prevent queued old writes from following.
         with self._store_lock:
             self._cache_generation += 1
+            self._clear_generation += 1
             clear_call_history()
         self._synced = False
         self._resync = False
@@ -383,6 +385,7 @@ class CallHistorySync:
         plan = FULL_PULL if full else MISSED_PULL
         revision = self._storage.revision
         cache_generation = self._cache_generation
+        clear_generation = self._clear_generation
         # The worker gets its own key buffer; the live one is zeroed in place
         # whenever storage relocks or changes policy. ``follow`` makes the
         # copy refuse to seal once the policy or key changed mid-sync.
@@ -451,9 +454,13 @@ class CallHistorySync:
 
         def stored(result: ReplaceResult) -> None:
             try:
-                if cache_generation != self._cache_generation:
+                # An explicit clear has already erased this write. A cache
+                # invalidation alone still owes the key/policy cleanup below.
+                if clear_generation != self._clear_generation:
                     raise StorageChangedDuringCallSync("call history was cleared")
-                count = self._stored(result, revision, now, full=full)
+                count = self._stored(
+                    result, revision, now, full=full, cache_generation=cache_generation,
+                )
             except Exception as error:
                 self._finished(error=error, transport=False)
             else:
@@ -462,7 +469,8 @@ class CallHistorySync:
         pull_next()
 
     def _stored(
-        self, result: ReplaceResult, revision: int, now: datetime, *, full: bool,
+        self, result: ReplaceResult, revision: int, now: datetime, *,
+        full: bool, cache_generation: int,
     ) -> int:
         if self._storage.revision != revision:
             # Sealed under a key or policy that is no longer current. The phone
@@ -478,6 +486,8 @@ class CallHistorySync:
                 clear_call_history()
             self.discard_cache()
             raise CallHistoryStopped("call history is off")
+        if cache_generation != self._cache_generation:
+            raise StorageChangedDuringCallSync("call history cache was discarded")
         self._records = list(result.records)
         if full:
             self._synced = True

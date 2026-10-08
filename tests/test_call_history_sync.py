@@ -1142,3 +1142,57 @@ def test_clear_cancels_followup_syncs_requested_before_clear(harness) -> None:
     assert h.sync._request_id is None
     assert len(completions) == 1
     assert isinstance(completions[0], call_history_sync.StorageChangedDuringCallSync)
+
+
+
+@pytest.mark.parametrize("replace_key", [False, True])
+def test_cache_invalidation_still_cleans_up_obsolete_storage_write(harness, wallet, replace_key):
+    h = harness
+    h.phone.calls = [_call(MISSED, 5)]
+    h.sync.sync()
+    for _ in call_history_sync.FULL_PULL:
+        operation, handlers = h.jobs.pop(0)
+        handlers["on_success"](operation())
+    operation, handlers = h.jobs.pop(0)
+    result = operation()
+    assert _stored_rows() == 1
+
+    _lock(h.storage, wallet)
+    h.sync.storage_changed()
+    wallet.locked = False
+    if replace_key:
+        wallet.key = b"R" * 32
+    h.storage.refresh(allow_prompt=False)
+    handlers["on_success"](result)
+    assert _stored_rows() == 0
+    assert h.sync.records() == []
+    assert h.missed == []
+
+    finished = []
+    h.sync.sync(finished.append, finished.append)
+    h.run()
+    assert finished == [1]
+    assert h.sync.records() == h.phone.calls
+    assert h.storage.status.can_read
+
+
+def test_clear_then_key_change_does_not_erase_newer_history(harness, wallet):
+    h = harness
+    h.phone.calls = [_call(MISSED, 5)]
+    h.sync.sync()
+    for _ in call_history_sync.FULL_PULL:
+        operation, handlers = h.jobs.pop(0)
+        handlers["on_success"](operation())
+    operation, handlers = h.jobs.pop(0)
+    stale = operation()
+    h.sync.clear()
+    wallet.key = b"R" * 32
+    h.storage.refresh(allow_prompt=False)
+    newer = [_call(INCOMING, 1)]
+    CallHistoryRepository(h.storage).replace(newer, now=NOW)
+    h.sync.adopt(newer)
+
+    handlers["on_success"](stale)
+    assert CallHistoryRepository(h.storage).load(now=NOW) == newer
+    assert h.sync.records() == newer
+    assert h.missed == []
