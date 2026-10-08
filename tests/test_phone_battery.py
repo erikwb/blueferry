@@ -210,3 +210,33 @@ def test_a_missing_bus_keeps_the_daemon_running() -> None:
     watcher.start()
     assert watcher.percent is None
     watcher.stop()
+
+
+def test_removed_characteristic_drops_pending_read_and_notify_replies() -> None:
+    watcher, bus, _changes = _battery()
+    watcher.start()
+    bus.take("GetManagedObjects")[5]({dbus.ObjectPath(CHAR): _char(50)})
+    read, notify = bus.take("ReadValue"), bus.take("StartNotify")
+    bus.emit("InterfacesRemoved", dbus.ObjectPath(CHAR), [GATT_CHAR_IFACE])
+
+    read[5](dbus.Array([dbus.Byte(49)], signature="y"))
+    notify[5]()
+    assert watcher.percent is None
+    watcher.stop()
+    assert not any(call[2] == "StopNotify" for call in bus.calls)
+
+
+def test_recreated_characteristic_at_same_path_ignores_old_values() -> None:
+    watcher, bus, _changes = _battery()
+    watcher.start()
+    bus.take("GetManagedObjects")[5]({dbus.ObjectPath(CHAR): _char(50)})
+    read = bus.take("ReadValue")
+    old_watch = next(match for match in bus.matches if match.kwargs.get("path") == CHAR)
+    bus.emit("InterfacesRemoved", dbus.ObjectPath(CHAR), [GATT_CHAR_IFACE])
+    bus.emit("InterfacesAdded", dbus.ObjectPath(CHAR), _char(80))
+
+    read[5](dbus.Array([dbus.Byte(49)], signature="y"))
+    old_watch.handler(GATT_CHAR_IFACE, {"Value": [48]}, [])
+    assert watcher.percent == 80
+    bus.take("ReadValue")[5](dbus.Array([dbus.Byte(79)], signature="y"))
+    assert watcher.percent == 79

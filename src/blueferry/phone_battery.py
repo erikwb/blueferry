@@ -86,6 +86,7 @@ class PhoneBattery:
         # brings the watcher back with the new bluetoothd.
         self._wanted = False
         self._generation = 0
+        self._char_generation = 0
         self._matches: list[Any] = []
         self._char_match: Any = None
         self._char_path: str | None = None
@@ -173,11 +174,16 @@ class PhoneBattery:
 
     # ---- internals ------------------------------------------------------
 
-    def _guard(self, handler: Callable[..., None]) -> Callable[..., None]:
+    def _guard(
+        self, handler: Callable[..., None], *, characteristic: bool = False,
+    ) -> Callable[..., None]:
         generation = self._generation
+        char_generation = self._char_generation
 
         def guarded(*args: Any, **kwargs: Any) -> None:
             if not self._running or generation != self._generation:
+                return
+            if characteristic and char_generation != self._char_generation:
                 return
             try:
                 handler(*args, **kwargs)
@@ -195,15 +201,24 @@ class PhoneBattery:
         args: tuple[Any, ...],
         on_reply: Callable[..., None],
         on_error: Callable[[Exception], None],
+        *,
+        characteristic: bool = False,
     ) -> None:
         generation = self._generation
+        char_generation = self._char_generation
+
+        def current() -> bool:
+            return (
+                self._running and generation == self._generation
+                and (not characteristic or char_generation == self._char_generation)
+            )
 
         def replied(*values: Any) -> None:
-            if self._running and generation == self._generation:
+            if current():
                 on_reply(*values)
 
         def failed(error: Exception) -> None:
-            if self._running and generation == self._generation:
+            if current():
                 on_error(error)
 
         try:
@@ -299,7 +314,8 @@ class PhoneBattery:
         self._char_path = path
         try:
             self._char_match = self._bus_factory().add_signal_receiver(
-                self._guard(self._on_char_changed), signal_name="PropertiesChanged",
+                self._guard(self._on_char_changed, characteristic=True),
+                signal_name="PropertiesChanged",
                 dbus_interface=PROPERTIES_IFACE, bus_name=BLUEZ,
                 path=path, arg0=GATT_CHAR_IFACE,
             )
@@ -323,6 +339,7 @@ class PhoneBattery:
             (dbus.Dictionary({}, signature="sv"),),
             lambda value=None: self._set_gatt(parse_battery_level(value)),
             self._failed("ReadValue"),
+            characteristic=True,
         )
         if self._notifying:
             return
@@ -332,6 +349,7 @@ class PhoneBattery:
 
         self._call(
             path, GATT_CHAR_IFACE, "StartNotify", "", (), started, self._failed("StartNotify"),
+            characteristic=True,
         )
 
     def _on_char_changed(self, interface: object, changed: object, _invalidated=None) -> None:
@@ -340,6 +358,9 @@ class PhoneBattery:
                 self._set_gatt(parse_battery_level(changed["Value"]))
 
     def _forget_characteristic(self, *, stop_notify: bool) -> None:
+        # Paths can be reused after removal; replies belong to an object
+        # lifetime, not just a bluetoothd process or a path string.
+        self._char_generation += 1
         path, self._char_path = self._char_path, None
         self._remove(self._char_match)
         self._char_match = None
