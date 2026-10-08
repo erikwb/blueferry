@@ -29,7 +29,7 @@ including the CLI, uses it.
 - **Caller checks:** every method checks that the caller runs as the same
   user as the backend and applies per-connection and daemon-wide rate limits,
   with separate limits for sends, contact sync, storage unlock, destructive
-  operations, reads, and status.
+  operations, settings, notification clicks, reads, and status.
 - **Bounded responses:** `ListThreads` fits an 8 MiB budget, keeps at most 500
   messages per thread, and sets `messages_truncated` when it trims.
 

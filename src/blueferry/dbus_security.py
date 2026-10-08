@@ -44,6 +44,10 @@ _RULES: dict[str, tuple[RateRule, ...]] = {
     "contact-sync": (RateRule(6, 600), RateRule(20, 3_600)),
     "call-history-sync": (RateRule(12, 600), RateRule(60, 3_600)),
     "settings": (RateRule(30, 60),),
+    # Clicks on mapped popups. Each one is a fresh helper connection, so the
+    # daemon-wide window is what bounds them. Kept apart from "settings" so
+    # editing rules and clicking popups never starve each other.
+    "notification-click": (RateRule(30, 60), RateRule(300, 3_600)),
     "conversation-delete": (RateRule(60, 60), RateRule(500, 3_600)),
     "destructive": (RateRule(6, 600),),
     "unlock": (RateRule(6, 600),),
