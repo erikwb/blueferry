@@ -259,6 +259,7 @@ class BackendDependencies:
     set_calls_enabled: Callable[[bool], dict[str, Any]] | None = None
     set_phone_battery_warning: Callable[[bool], dict[str, Any]] | None = None
     set_media_mpris: Callable[[bool], dict[str, Any]] | None = None
+    set_otp_autocopy: Callable[[bool], dict[str, Any]] | None = None
 
 
 class BackendOperations:
@@ -1421,6 +1422,19 @@ class BackendOperations:
         except OSError as error:
             log.error("could not save the phone-calls preference: %s", error)
             raise NotReadyError("could not save the phone-calls preference") from error
+
+    def set_otp_autocopy(self, enabled: bool) -> dict[str, Any]:
+        """Save the one-time code auto-copy opt-in and apply it at once."""
+        configure = self.dependencies.set_otp_autocopy
+        if configure is None:
+            raise NotReadyError("one-time code settings are unavailable")
+        try:
+            return dict(configure(bool(enabled)))
+        except ValueError as error:
+            raise InvalidArgumentsError(str(error)) from error
+        except OSError as error:
+            log.error("could not save the one-time code preference: %s", error)
+            raise NotReadyError("could not save the one-time code preference") from error
 
     def list_calls(self) -> dict[str, object]:
         return self._call_control().list_calls()

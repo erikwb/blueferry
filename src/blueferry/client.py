@@ -439,6 +439,19 @@ class BackendClient:
         except dbus.exceptions.DBusException as error:
             raise BackendError(error.get_dbus_message() or str(error)) from error
 
+    def set_otp_autocopy(self, enabled: bool) -> dict:
+        """Save the one-time code auto-copy opt-in; returns ``otp_autocopy``."""
+        try:
+            return decode_mapping(self._iface(MESSAGES_IFACE).SetOtpAutocopy(
+                dbus.Boolean(enabled), timeout=POLICY_CALL_TIMEOUT_SEC,
+            ))
+        except (dbus.exceptions.DBusException, ValueError) as error:
+            raise BackendError(
+                error.get_dbus_message()
+                if isinstance(error, dbus.exceptions.DBusException)
+                else str(error)
+            ) from error
+
     def _presence_iface(self) -> dbus.Interface:
         # Presence1 has no GetStatus; check compatibility through Messages1
         # and address Presence1 on that same owner-bound object.
