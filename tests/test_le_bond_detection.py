@@ -410,6 +410,38 @@ def test_the_first_signal_does_not_count_a_polled_drop_twice() -> None:
     assert h.supervisor.snapshot()["le_flap_count"] == 1
 
 
+@pytest.mark.parametrize(
+    "reason",
+    ["org.bluez.Reason.Local", "org.bluez.Reason.Unknown", "org.bluez.Reason.Suspend"],
+)
+def test_an_uncounted_first_signal_leaves_no_burst_start_behind(reason) -> None:
+    h = _Harness()
+    h.supervisor.start()
+    # Polling counts a drop; BlueZ's first signal for it then takes the
+    # count back and, with this reason, does not count the drop itself.
+    h.link_up()
+    h.state["le"] = True
+    h.clock.now += 1
+    h.poll()
+    h.state["le"] = False
+    h.clock.now += 1
+    h.poll()
+    h.clock.now += 0.2
+    h.on_disconnected(reason, "x")
+    assert h.supervisor.snapshot()["le_flap_count"] == 0
+    assert h.supervisor._le_burst_started_at is None
+
+    # Hours later, with Classic up throughout, a short cluster of flaps
+    # is a new burst and must persist like any other.
+    _poll_for(h, 3 * 3600)
+    for _ in range(LE_FLAP_THRESHOLD + 1):
+        h.flap()
+
+    assert not h.supervisor.le_bond_suspect
+    _burst(h, LE_FLAP_PERSIST_SECONDS)
+    assert h.supervisor.le_bond_suspect
+
+
 def test_walking_away_and_back_is_not_a_broken_bond() -> None:
     h = _Harness()
     h.supervisor.start()

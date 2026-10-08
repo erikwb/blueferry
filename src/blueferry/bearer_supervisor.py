@@ -539,6 +539,10 @@ class BearerSupervisor:
             # the signal, with its reason and link age, replaces that count.
             self._le_flaps.pop()
             self._le_flap_count = max(0, self._le_flap_count - 1)
+            if not self._le_flaps:
+                # No drop is left to date the burst from; a signal that is
+                # not counted below must not leave a stale start behind.
+                self._le_burst_started_at = None
         self._le_last_polled_drop_at = None
         up_at, self._le_link_up_at = self._le_link_up_at, None
         lifetime = None if up_at is None else now - up_at
