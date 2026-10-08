@@ -649,7 +649,11 @@ specification-based expectation, not a captured result.
   dropped or flapping link; surviving `Notifying=true` registrations are kept.
 - AMS offers relative volume steps and fixed skips only, so an MPRIS volume
   write becomes one step, MPRIS `CanSeek` is false and `Seek`/`SetPosition`
-  have no effect, and MPRIS `Stop` pauses. The skips remain available through
+  have no effect, and MPRIS `Stop` pauses. A track whose PlaybackInfo is not
+  known yet reports `Paused`, not `Stopped` (desktops answer Stopped with
+  Play), and `Play`, `Pause` and `Stop` are then sent as TogglePlayPause;
+  with a known state they are sent as asked, or have no effect if the phone
+  is already in that state. The skips remain available through
   `Media1`. MPRIS `Rate` follows the PlaybackInfo rate (the last positive one
   while paused, since MPRIS forbids 0), `Volume` is omitted until the phone
   reports it, and `mpris:trackid` stays the same when a truncated title is

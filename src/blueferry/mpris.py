@@ -403,9 +403,14 @@ class MprisPlayer(dbus.service.Object):
 
     def _player_properties(self) -> dict[str, object]:
         state = self._media.state
-        if not self._media.available or state.playback_state is None:
+        if not self._media.available or (
+            state.playback_state is None and state.title is None
+        ):
             status = "Stopped"
-        elif state.playback_state == PlaybackState.Paused:
+        elif state.playback_state is None or state.playback_state == PlaybackState.Paused:
+            # A track without a known PlaybackInfo is not "Stopped": desktops
+            # answer Stopped with Play, which a playing phone ignores. The
+            # AMS client reads the missing value within seconds.
             status = "Paused"
         else:
             status = "Playing"
@@ -541,7 +546,18 @@ class MprisPlayer(dbus.service.Object):
 
     @dbus.service.method(PLAYER_IFACE, in_signature="", out_signature="", sender_keyword="sender")
     def Pause(self, sender=None) -> None:
-        self._player_call(sender, "pause")
+        self._pause(sender)
+
+    def _pause(self, sender) -> None:
+        self._authorize(sender, "media-command")
+        state = self._media.state
+        if state.playback_state is None:
+            # Shown as Paused but really unknown: the toggle does what the
+            # user sees the button offer, whatever the phone is doing.
+            self._command("toggle")
+        elif state.playing:
+            self._command("pause")
+        # Already paused: MPRIS says no effect.
 
     @dbus.service.method(PLAYER_IFACE, in_signature="", out_signature="", sender_keyword="sender")
     def PlayPause(self, sender=None) -> None:
@@ -550,11 +566,21 @@ class MprisPlayer(dbus.service.Object):
     @dbus.service.method(PLAYER_IFACE, in_signature="", out_signature="", sender_keyword="sender")
     def Stop(self, sender=None) -> None:
         # AMS has no stop; pausing is the closest non-destructive action.
-        self._player_call(sender, "pause")
+        self._pause(sender)
 
     @dbus.service.method(PLAYER_IFACE, in_signature="", out_signature="", sender_keyword="sender")
     def Play(self, sender=None) -> None:
-        self._player_call(sender, "play")
+        # On hardware, with the playback state lost after an LE reconnect,
+        # MPRIS said Stopped and Play from the Plasma widget had no visible
+        # effect on a phone that was playing. With an unknown state, send
+        # the toggle (the state is shown as Paused); otherwise Play as asked.
+        self._authorize(sender, "media-command")
+        state = self._media.state
+        if state.playback_state is None:
+            self._command("toggle")
+        elif not state.playing:
+            self._command("play")
+        # Already playing: MPRIS says no effect.
 
     @dbus.service.method(PLAYER_IFACE, in_signature="x", out_signature="", sender_keyword="sender")
     def Seek(self, offset: int, sender=None) -> None:
