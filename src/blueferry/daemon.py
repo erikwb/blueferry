@@ -339,22 +339,27 @@ class Daemon:
         selected = self.calls_settings.set(enabled)
         self.calls.set_enabled(selected)
         log.info("phone calls %s", "enabled" if selected else "disabled")
-        self._apply_phone_audio_roles(selected)
+        self._apply_phone_audio_roles()
         self._emit_status()
         return self.calls.snapshot()
 
-    def _apply_phone_audio_roles(self, allow_calls: bool) -> None:
+    def _apply_phone_audio_roles(self) -> None:
         """Rewrite the WirePlumber fragment off the main loop.
 
         Reconciling may run ``wireplumber --version`` and restart WirePlumber
-        (bounded, but seconds), which must not stall D-Bus replies.
+        (bounded, but seconds), which must not stall D-Bus replies. Threads
+        of quick successive toggles take the lock in any order, so each
+        writes the setting saved at that moment, not the one it was started
+        for: whichever runs last leaves the fragment matching the setting.
         """
         if not config.KEEP_PHONE_AUDIO_ON_PHONE:
             return
 
         def apply() -> None:
             with self._phone_audio_lock:
-                self.phone_audio = WirePlumberPhoneAudioPolicy(allow_calls=allow_calls)
+                self.phone_audio = WirePlumberPhoneAudioPolicy(
+                    allow_calls=self.calls_settings.enabled,
+                )
                 self.phone_audio.reconcile(enabled=True)
 
         _in_background(apply, "blueferry-phone-audio")

@@ -199,6 +199,39 @@ def test_switching_calls_at_runtime_saves_applies_and_rewrites_roles(
     assert applied[-1] == (False, True)
 
 
+def test_quick_toggles_leave_the_roles_matching_the_saved_setting(
+    make_daemon, monkeypatch,
+) -> None:
+    from blueferry import daemon as daemon_mod
+
+    monkeypatch.setattr(daemon_mod.config, "KEEP_PHONE_AUDIO_ON_PHONE", True)
+    instance = make_daemon()
+    instance.calls.start = lambda: None
+    applied, queued = [], []
+
+    class FakePolicy:
+        def __init__(self, *, allow_calls):
+            self.allow_calls = allow_calls
+
+        def reconcile(self, *, enabled):
+            applied.append(self.allow_calls)
+            return True
+
+    monkeypatch.setattr(daemon_mod, "WirePlumberPhoneAudioPolicy", FakePolicy)
+    monkeypatch.setattr(daemon_mod, "_in_background", lambda target, _name: queued.append(target))
+
+    instance._set_calls_enabled(True)
+    instance._set_calls_enabled(False)
+    assert len(queued) == 2 and applied == []
+
+    # The thread started for "on" gets the lock last.
+    queued[1]()
+    queued[0]()
+
+    assert applied[-1] is False
+    assert instance.phone_audio.allow_calls is False
+
+
 def test_switching_calls_leaves_wireplumber_alone_without_the_audio_policy(
     make_daemon, monkeypatch,
 ) -> None:
