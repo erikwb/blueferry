@@ -118,12 +118,11 @@ def test_gatt_battery_is_read_and_followed_asynchronously() -> None:
     assert all(match.removed for match in bus.matches)
 
 
-def test_battery1_wins_and_follows_property_changes() -> None:
+def test_battery1_is_followed_while_the_characteristic_has_no_value() -> None:
     watcher, bus, _changes = _battery()
     watcher.start()
     bus.take("GetManagedObjects")[5]({
         dbus.ObjectPath(DEVICE): {BATTERY1_IFACE: {"Percentage": dbus.Byte(70)}},
-        dbus.ObjectPath(CHAR): _char(60),
     })
     assert (watcher.percent, watcher.source) == (70, "bluez")
 
@@ -131,7 +130,31 @@ def test_battery1_wins_and_follows_property_changes() -> None:
              path=DEVICE, arg0=BATTERY1_IFACE)
     assert watcher.percent == 69
     bus.emit("InterfacesRemoved", dbus.ObjectPath(DEVICE), [BATTERY1_IFACE])
-    assert (watcher.percent, watcher.source) == (60, "gatt")
+    assert (watcher.percent, watcher.source) == (None, None)
+
+
+def test_the_phones_own_level_wins_over_a_stale_battery1() -> None:
+    # bluetoothd 5.87 after an LE reconnect: Battery1 keeps the old level
+    # ("error registering battery: path exists") while the phone reports 97.
+    watcher, bus, changes = _battery()
+    watcher.start()
+    bus.take("GetManagedObjects")[5]({
+        dbus.ObjectPath(DEVICE): {BATTERY1_IFACE: {"Percentage": dbus.Byte(100)}},
+        dbus.ObjectPath(CHAR): _char(97),
+    })
+    assert (watcher.percent, watcher.source) == (97, "gatt")
+
+    bus.emit("PropertiesChanged", GATT_CHAR_IFACE, {"Value": dbus.Array([dbus.Byte(96)])}, [],
+             path=CHAR, arg0=GATT_CHAR_IFACE)
+    assert (watcher.percent, watcher.source) == (96, "gatt")
+    seen = len(changes)
+    bus.emit("PropertiesChanged", BATTERY1_IFACE, {"Percentage": dbus.Byte(99)}, [],
+             path=DEVICE, arg0=BATTERY1_IFACE)
+    assert (watcher.percent, watcher.source) == (96, "gatt")
+    assert len(changes) == seen
+
+    bus.emit("InterfacesRemoved", dbus.ObjectPath(CHAR), [GATT_CHAR_IFACE])
+    assert (watcher.percent, watcher.source) == (99, "bluez")
 
 
 def test_characteristic_appearing_later_is_adopted_and_removal_forgets_it() -> None:

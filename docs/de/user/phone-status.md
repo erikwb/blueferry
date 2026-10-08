@@ -18,9 +18,10 @@ flowchart LR
     C -- GetStatus --> B
 ```
 
-- **Akku**: aus BlueZ' `Battery1`, falls BlueZ es für das Telefon anbietet,
-  sonst aus dem Standard-GATT-Battery-Service (Merkmal Battery Level), einmal
-  gelesen und danach über Benachrichtigungen verfolgt. Auf 1 % genau. Sind
+- **Akku**: aus dem Standard-GATT-Battery-Service des Telefons (Merkmal
+  Battery Level), einmal gelesen und danach über Benachrichtigungen verfolgt;
+  BlueZ' `Battery1` wird nur verwendet, solange dieser Wert fehlt. Auf 1 %
+  genau. Sind
   Anrufe an und es gibt keinen LE-Wert, wird der Freisprech-Wert verwendet
   (20-%-Schritte, als „etwa“ angezeigt).
 - **Empfang und Netz**: nur mit eingeschalteten Anrufen, von oFono.

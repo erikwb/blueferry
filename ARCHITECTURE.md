@@ -505,7 +505,8 @@ A change to these rules has to be made in both places.
   `Powered=false`, interface or modem removal, an oFono owner change, and
   stop.
 - The battery does not need HFP: `phone_battery.py` reads it over LE from
-  BlueZ's `Battery1` or the GATT Battery Level characteristic (async
+  the GATT Battery Level characteristic, with BlueZ's `Battery1` as the
+  fallback (async
   `GetManagedObjects`, `ReadValue`, `StartNotify`; `PropertiesChanged`
   afterwards) and restarts with bluetoothd. The daemon merges both sources
   into additive `GetStatus` keys (`null` when unknown; LE wins, only while
