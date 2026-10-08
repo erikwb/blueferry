@@ -45,7 +45,7 @@ ShellRoot {
   readonly property SavedChoice callsChoice: SavedChoice {}
   readonly property SavedChoice callHistory: SavedChoice {}
   readonly property SavedChoice missedCallPopups: SavedChoice {}
-  property bool contactPhotosBusy: false
+  readonly property SavedChoice contactPhotos: SavedChoice {}
   property bool storagePolicyBusy: false
   property bool storageUnlockBusy: false
 
@@ -247,6 +247,7 @@ ShellRoot {
         root.callsChoice.reported(result.calls_enabled === true)
         root.callHistory.reported(result.call_history_enabled === true)
         root.missedCallPopups.reported(result.missed_call_notifications !== false)
+        root.contactPhotos.reported(result.contact_photos === true)
         var storagePolicy = result.storage_policy || "encrypted"
         root.storagePolicy = ["encrypted", "plaintext", "none"].indexOf(storagePolicy) >= 0
           ? storagePolicy : "encrypted"
@@ -345,12 +346,10 @@ ShellRoot {
           root.statusBusy)
         root.reload()
       } else if (method === "set_contact_photos") {
-        root.contactPhotosBusy = false
-        // The checkbox follows the daemon's answer, not the click.
-        if (typeof result === "object" && result !== null)
-          root.backendStatus = Object.assign({}, root.backendStatus, {
-            contact_photos: result.contact_photos === true
-          })
+        root.contactPhotos.saved(
+          typeof result === "object" && result !== null
+            ? result.contact_photos === true : root.contactPhotos.value,
+          root.statusBusy)
         root.reload()
       } else if (method === "set_storage_policy") {
         root.storagePolicyBusy = false
@@ -432,7 +431,7 @@ ShellRoot {
         root.errorText = message || "Could not save phone calls preference"
         root.reload()
       } else if (method === "set_contact_photos") {
-        root.contactPhotosBusy = false
+        root.contactPhotos.failed(root.backendStatus.contact_photos === true)
         root.errorText = message || "Could not save the contact photo preference"
         root.reload()
       } else if (method === "set_storage_policy") {
@@ -465,7 +464,8 @@ ShellRoot {
           root.callHistory.failed(root.backendStatus.call_history_enabled === true)
         if (root.missedCallPopups.busy)
           root.missedCallPopups.failed(root.backendStatus.missed_call_notifications !== false)
-        root.contactPhotosBusy = false
+        if (root.contactPhotos.busy)
+          root.contactPhotos.failed(root.backendStatus.contact_photos === true)
         root.storagePolicyBusy = false
         root.storageUnlockBusy = false
         root.errorText = message
@@ -1101,6 +1101,8 @@ ShellRoot {
           }, root.backendStatus.call_history_enabled === undefined ? {} : {
             call_history_enabled: root.callHistory.value,
             missed_call_notifications: root.missedCallPopups.value
+          }, root.backendStatus.contact_photos === undefined ? {} : {
+            contact_photos: root.contactPhotos.value
           })
           busy: ({notifications: root.notificationPolicyBusy,
                   contactsOnly: root.contactsOnlyNotificationsBusy,
@@ -1110,7 +1112,7 @@ ShellRoot {
                   proximityLock: root.proximityLock.busy,
                   calls: root.callsChoice.busy,
                   callHistory: root.callHistory.busy || root.missedCallPopups.busy,
-                  photos: root.contactPhotosBusy,
+                  photos: root.contactPhotos.busy,
                   storage: root.storagePolicyBusy})
           visible: root.phoneSettingsVisible
           Layout.fillWidth: true
@@ -1121,7 +1123,7 @@ ShellRoot {
           onReloadRequested: root.reload()
           onOperationRequested: (method, args) => {
             if (method === "set_notification_policy") root.notificationPolicyBusy = true
-            if (method === "set_contact_photos") root.contactPhotosBusy = true
+            if (method === "set_contact_photos") root.contactPhotos.request(args.enabled)
             if (method === "set_contacts_only_notifications") {
               root.contactsOnlyNotifications = args.enabled
               root.contactsOnlyNotificationsBusy = true
