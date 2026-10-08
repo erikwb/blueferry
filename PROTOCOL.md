@@ -651,7 +651,14 @@ specification-based expectation, not a captured result.
   carry entity, attribute, a truncation flag, and a UTF-8 value. The
   specification states that the Media Source answers a registration with the
   current values; BlueFerry resubscribes (without resetting LE) if no update
-  arrives within 10 seconds of a registration.
+  arrives within 10 seconds of a registration. Observed on hardware
+  (2026-10-08, iOS 27, an audiobook playing, LE reconnecting every 1.5 to 2
+  minutes): after re-registration iOS sent a changed track title but neither
+  the player name nor PlaybackInfo, so the cleared state read "nothing
+  playing". Three seconds after each registration BlueFerry therefore reads
+  the Player and Track attributes that did not arrive through Entity
+  Update (read back via Entity Attribute); an absent one (AMS 0xA2) is just
+  logged.
 - A truncated value is completed by writing the entity/attribute selector to
   Entity Attribute (`C6B2F38C-…`) and reading it back; the two steps stay
   adjacent in the serialized GATT queue.

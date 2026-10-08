@@ -223,6 +223,14 @@ def _bytes(call: _Call) -> bytes:
     return bytes(int(value) for value in call.args[0])
 
 
+def _skip_attribute_refresh(timers) -> None:
+    """Most tests deliver no values; the refresh has its own tests."""
+    for source, callback in list(timers.pending.items()):
+        if getattr(callback, "__name__", "") == "_refresh_missing_attributes":
+            del timers.pending[source]
+            del timers.delays[source]
+
+
 def _subscribe(client, bus, timers) -> None:
     client.observe_bearer_state(True)
     client.start()
@@ -234,6 +242,7 @@ def _subscribe(client, bus, timers) -> None:
         call = bus.take("WriteValue", EU)
         assert _bytes(call) == expected
         call.succeed()
+    _skip_attribute_refresh(timers)
 
 
 def test_subscribes_and_registers_all_entities_after_bearer_settles(harness) -> None:
@@ -929,6 +938,7 @@ def test_missing_first_update_resubscribes_with_backoff(harness) -> None:
     for _entity in EntityID:
         bus.take("WriteValue", EU).succeed()
     assert availability == [True, False, True]
+    _skip_attribute_refresh(timers)
     timers.run_all()
     # One resubscribe per link: a second silent registration means an idle
     # Media Source, so availability does not flap and nothing is retried.
@@ -1204,6 +1214,7 @@ def _reconnect_with_new_characteristics(client, bus, timers) -> None:
     bus.take("StartNotify", EU).succeed()
     for _entity in EntityID:
         bus.take("WriteValue", EU).succeed()
+    _skip_attribute_refresh(timers)
     assert client.available
 
 
@@ -1300,3 +1311,72 @@ def test_a_new_link_restores_the_refresh_budget(harness) -> None:
     bus.notify(EU, bytes([2, 2, 0]) + b"Episode")
     timers.run_all()
     assert bus.pending() == [("StopNotify", RC)]
+
+
+def test_values_ios_did_not_resend_after_registering_are_read(harness) -> None:
+    """Hardware 2026-10-08: after LE reconnects iOS sent a new track title
+    but no player name or PlaybackInfo; MPRIS showed a playing audiobook as
+    Stopped and Plasma's play button sent Play."""
+    client, bus, timers, updates, *_ = harness
+    client.observe_bearer_state(True)
+    client.start()
+    bus.take("GetManagedObjects").succeed(_objects())
+    timers.run_all()
+    bus.take("StartNotify", RC).succeed()
+    bus.take("StartNotify", EU).succeed()
+    for _entity in EntityID:
+        bus.take("WriteValue", EU).succeed()
+    bus.notify(EU, bytes([2, 2, 0]) + b"E719")  # Track/Title only
+    bus.notify(RC, bytes([0, 1]))
+
+    refresh = [
+        source for source, callback in timers.pending.items()
+        if callback.__name__ == "_refresh_missing_attributes"
+    ]
+    assert [timers.delays[source] for source in refresh] == [3]
+    timers.pending.pop(refresh[0])()
+
+    # Player Name, PlaybackInfo, Volume, then Track Artist, Album, Duration;
+    # each as an adjacent selector write and read.
+    expected = [(0, 0), (0, 1), (0, 2), (2, 0), (2, 1), (2, 3)]
+    for index, (entity, attribute) in enumerate(expected):
+        write = bus.take("WriteValue", EA)
+        assert _bytes(write) == bytes([entity, attribute])
+        write.succeed()
+        read = bus.take("ReadValue", EA)
+        if index == 2:
+            read.fail(message="Application error 0xA2")  # absent volume
+        else:
+            read.succeed(dbus.Array(list(b"1,1.0,30" if attribute == 1 and entity == 0
+                                         else b"Pocket FM")))
+    assert bus.pending() == []
+    delivered = {(update.entity, update.attribute) for update in updates}
+    assert {(0, 0), (0, 1), (2, 2)} <= delivered
+    assert (0, 2) not in delivered
+
+
+def test_attribute_refresh_skips_what_arrived_and_a_dropped_link(harness) -> None:
+    client, bus, timers, *_ = harness
+    client.observe_bearer_state(True)
+    client.start()
+    bus.take("GetManagedObjects").succeed(_objects())
+    timers.run_all()
+    bus.take("StartNotify", RC).succeed()
+    bus.take("StartNotify", EU).succeed()
+    for _entity in EntityID:
+        bus.take("WriteValue", EU).succeed()
+    for entity, attributes in ((0, (0, 1, 2)), (2, (0, 1, 2, 3))):
+        for attribute in attributes:
+            bus.notify(EU, bytes([entity, attribute, 0]) + b"x")
+    refresh = [
+        callback for callback in timers.pending.values()
+        if callback.__name__ == "_refresh_missing_attributes"
+    ]
+    refresh[0]()
+    assert bus.pending() == []
+
+    # Re-registration on a new link starts from nothing again, but a link
+    # that dropped before the timer reads nothing.
+    client.observe_bearer_state(False)
+    refresh[0]()
+    assert bus.pending() == []

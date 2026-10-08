@@ -289,6 +289,16 @@ def test_unknown_and_known_empty_command_lists_differ() -> None:
     assert state.supported_commands_known is True
 
 
+@pytest.mark.parametrize("value", ["", "   ", "\t\n"])
+def test_empty_playback_info_means_no_active_player(value) -> None:
+    info = parse_playback_info(value)
+    assert (info.state, info.rate, info.elapsed) == (None, None, None)
+    state = NowPlaying()
+    state.apply(EntityUpdate(EntityID.Player, 1, False, "1,1.0,30"), 0.0)
+    assert state.apply(EntityUpdate(EntityID.Player, 1, False, value), 1.0) is True
+    assert state.playback_state is None and state.elapsed is None
+
+
 def _track(state: NowPlaying, attribute: int, value: str, truncated: bool = False) -> None:
     state.apply(EntityUpdate(EntityID.Track, attribute, truncated, value), 0.0)
 

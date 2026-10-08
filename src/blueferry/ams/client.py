@@ -81,6 +81,12 @@ SILENT_RESUBSCRIBES_PER_LINK = 1
 # before the client re-enables its notifications to ask for it again.
 COMMAND_LIST_GRACE_SECONDS = 3
 COMMAND_LIST_REFRESHES_PER_LINK = 1
+# After registering, how long to wait for the current Player and Track
+# values before reading the ones that did not arrive through Entity Update
+# (read back via Entity Attribute).
+ATTRIBUTE_REFRESH_SECONDS = 3
+# The entities whose values a reconnect must not lose; Queue is cosmetic.
+REFRESHED_ENTITIES = (EntityID.Player, EntityID.Track)
 MANAGER_RETRY_INITIAL_SECONDS = 2
 MANAGER_RETRY_MAX_SECONDS = 60
 # A failed StopNotify is retried this often per settled LE link, with a
@@ -461,6 +467,9 @@ class AmsClient:
         # its command list (an empty list counts: it is known to be empty).
         self._commands_seen = False
         self._command_list_id: int | None = None
+        # (entity, attribute) pairs notified since the last registration.
+        self._seen_attributes: set[tuple[int, int]] = set()
+        self._attribute_refresh_id: int | None = None
         self._command_refreshes_left = COMMAND_LIST_REFRESHES_PER_LINK
 
     # ---- public state ---------------------------------------------------
@@ -752,6 +761,7 @@ class AmsClient:
 
     def _run_subscription(self) -> None:
         generation = self._generation
+        self._seen_attributes.clear()
         rc_path = self._paths[REMOTE_COMMAND_CHAR]
         eu_path = self._paths[ENTITY_UPDATE_CHAR]
         # The value receivers were installed when the characteristics were
@@ -779,6 +789,9 @@ class AmsClient:
                 log.info("AMS media updates registered")
                 self._first_update_id = self._schedule(
                     FIRST_UPDATE_TIMEOUT_SECONDS, self._first_update_missing,
+                )
+                self._attribute_refresh_id = self._schedule(
+                    ATTRIBUTE_REFRESH_SECONDS, self._refresh_missing_attributes,
                 )
                 return
             label, run = remaining.popleft()
@@ -897,7 +910,9 @@ class AmsClient:
         self._subscribing = False
         # The settle timer belongs to the bearer, not to this subscription:
         # a characteristic can vanish and return while the link settles.
-        for attribute in ("_retry_id", "_first_update_id", "_command_list_id"):
+        for attribute in (
+            "_retry_id", "_first_update_id", "_command_list_id", "_attribute_refresh_id",
+        ):
             source = getattr(self, attribute)
             if source is not None:
                 try:
@@ -1134,10 +1149,35 @@ class AmsClient:
         key = (update.entity, update.attribute)
         if self._attribute_updates.get(key) != update:
             self._attribute_updates[key] = update
+        self._seen_attributes.add((update.entity, update.attribute))
         self._deliver(update)
         self._arm_command_list_check()
         if update.truncated:
             self._fetch_full_value(update.entity, update.attribute)
+
+    def _refresh_missing_attributes(self) -> bool:
+        """Read the Player and Track values iOS did not resend.
+
+        On hardware, after an LE reconnect iOS sent a changed track title but
+        neither the player name nor PlaybackInfo, although the specification
+        says a registration is answered with the current values. The media
+        state was cleared with the link, so MPRIS reported "Stopped" for a
+        playing audiobook. Entity Attribute reads any registered attribute.
+        """
+        self._attribute_refresh_id = None
+        if not self._available or self._subscribing or self._bearer_connected is not True:
+            return False
+        missing = [
+            (entity, attribute)
+            for entity in REFRESHED_ENTITIES
+            for attribute in ENTITY_ATTRIBUTES[entity]
+            if (entity, attribute) not in self._seen_attributes
+        ]
+        if missing:
+            log.info("AMS did not resend %d media values; reading them", len(missing))
+        for entity, attribute in missing:
+            self._fetch_full_value(entity, attribute)
+        return False
 
     def _deliver(self, update: EntityUpdate) -> None:
         try:
