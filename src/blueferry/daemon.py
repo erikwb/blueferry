@@ -56,6 +56,8 @@ from blueferry.calls.settings import CallsSettings
 from blueferry.commands import run_command
 from blueferry.confirmed_groups import ConfirmedGroupsStore
 from blueferry.connectivity import Connectivity
+from blueferry.contact_photo_settings import ContactPhotoSettings
+from blueferry.contact_photo_settings import set_runtime as set_photo_runtime
 from blueferry.contact_photos import PhotoFiles
 from blueferry.contact_repository import ContactRepository
 from blueferry.contact_sync import ContactSync
@@ -162,15 +164,16 @@ class Daemon:
         # keys for the same database.
         self.storage = StorageSecurity(initialize=False)
         self.storage.require_preparation()
+        # Opt-in avatars, saved in settings.json (local.env only seeds it).
+        # Disabled means inert: nothing is parsed, served, or written, and
+        # photos kept by an earlier opt-in are erased. Publish the choice
+        # before the contact cache loads, since it decides photo references.
+        self.photo_settings = ContactPhotoSettings(log_overrides=True)
+        set_photo_runtime(self.photo_settings.enabled)
         self.contacts = ContactsResolver(storage=self.storage)
-        # Opt-in avatars. Disabled means inert: nothing is parsed, served,
-        # or written, and photos kept by an earlier opt-in are erased.
         self.photo_files: PhotoFiles | None = None
-        if config.CONTACT_PHOTOS:
-            self.photo_files = PhotoFiles(
-                photo_ref=self.contacts.photo_ref,
-                load_photo=self.contacts.load_photo,
-            )
+        if self.photo_settings.enabled:
+            self.photo_files = self._new_photo_files()
         else:
             self._erase_contact_photos()
         self.connectivity = Connectivity()
@@ -189,12 +192,12 @@ class Daemon:
             notification_open_target=self.notification_policy.open_target,
             storage=self.storage,
             on_incoming_message=lambda: self._verify_setup_task(MESSAGE_NOTIFICATIONS),
-            contact_photo=(
-                self.photo_files.path_for if self.photo_files is not None else None
-            ),
             perform_ancs_action=self._perform_ancs_action,
             ancs_actions_enabled=self._ancs_actions_active,
             on_call_action=self._notification_call_action,
+            # Always wired, so switching photos on needs no new sink; it
+            # returns no icon while photos are off.
+            contact_photo=self._contact_photo_path,
             resolve_otp_metadata=self._resolve_otp_metadata,
         )
         self.listener: MapEventListener | None = None
@@ -720,7 +723,6 @@ class Daemon:
                 on_storage_prepared=self._apply_storage_preparation,
                 on_storage_changed=self._on_storage_changed,
                 set_proximity_lock=self._set_proximity_lock,
-                contact_photos=config.CONTACT_PHOTOS,
                 call_history=lambda: self.call_history,
                 set_call_history=self._set_call_history,
                 open_notification_click=self.events.open_notification_click,
@@ -730,6 +732,8 @@ class Daemon:
                 set_calls_enabled=self._set_calls_enabled,
                 set_phone_battery_warning=self._set_battery_warning,
                 set_media_mpris=self._set_media_mpris,
+                contact_photos=lambda: self.photo_settings.enabled,
+                set_contact_photos=self._set_contact_photos,
             ),
         )
         self.events.set_dbus_service(self._dbus_service)
@@ -928,6 +932,55 @@ class Daemon:
     def _initialize_storage(self) -> None:
         if self._dbus_service is not None:
             self._dbus_service.retry_storage_unlock(initialize=True)
+
+    def _new_photo_files(self) -> PhotoFiles:
+        return PhotoFiles(
+            photo_ref=self.contacts.photo_ref,
+            load_photo=self.contacts.load_photo,
+        )
+
+    def _contact_photo_path(self, address: str | None) -> str | None:
+        photo_files = self.photo_files
+        return photo_files.path_for(address) if photo_files is not None else None
+
+    def _set_contact_photos(self, enabled: bool) -> dict:
+        """Save the contact-photo opt-in and apply it without a restart.
+
+        On: photos arrive with the next phonebook pull, which starts now.
+        Off: avatar files are deleted at once and stored photos are erased
+        on the OBEX worker, after any pull that is already running, so a
+        pull that started with photos on cannot leave them behind.
+        """
+        was_enabled = self.photo_settings.enabled
+        selected = self.photo_settings.set(enabled)
+        set_photo_runtime(selected)
+        if selected and not was_enabled:
+            self.photo_files = self._new_photo_files()
+            log.info("contact photos enabled; they arrive with the next contact sync")
+            self.contact_sync.refresh()
+        elif not selected and was_enabled:
+            photo_files, self.photo_files = self.photo_files, None
+            if photo_files is not None:
+                photo_files.clear()
+            self.obex_worker.submit(
+                self._erase_contact_photos,
+                on_success=lambda _result: self._photos_erased(),
+                on_error=lambda error: log.warning(
+                    "could not erase contact photos: %s", type(error).__name__
+                ),
+            )
+            log.info("contact photos disabled")
+        self._emit_status()
+        return self._contact_photo_status()
+
+    def _photos_erased(self) -> None:
+        # Reload the cache without photo references and tell clients.
+        try:
+            self.contacts.refresh()
+        except Exception as error:
+            log.warning("could not reload contacts after erasing photos: %s",
+                        type(error).__name__)
+        self._emit_status()
 
     def _erase_contact_photos(self) -> None:
         try:
@@ -1547,7 +1600,7 @@ class Daemon:
         }
 
     def _contact_photo_status(self) -> dict[str, object]:
-        if not config.CONTACT_PHOTOS:
+        if not self.photo_settings.enabled:
             return {"contact_photos": False}
         # Content-free counters: clients drop cached avatars on change.
         return {

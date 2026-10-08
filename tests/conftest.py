@@ -332,6 +332,14 @@ def isolate_bluez_main_conf(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def reset_contact_photo_runtime(monkeypatch):
+    """A daemon publishes its photo setting process-wide; never leak it."""
+    from blueferry import contact_photo_settings
+
+    monkeypatch.setattr(contact_photo_settings, "_runtime", None)
+
+
+@pytest.fixture(autouse=True)
 def pin_init_system(monkeypatch):
     """Describe systemd hosts unless a test opts into another init system.
 

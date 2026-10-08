@@ -20,8 +20,8 @@ from typing import TYPE_CHECKING, TextIO
 
 import dbus
 
-from blueferry import config
 from blueferry.bus import obex
+from blueferry.contact_photo_settings import photos_enabled
 from blueferry.contact_photos import REJECT_TOO_LARGE, inspect_vcard_photo
 from blueferry.contact_repository import ContactRecord, ContactRepository
 from blueferry.events import canonical_address, is_email_shaped, normalize_phone
@@ -409,14 +409,18 @@ def pull_phonebook(
     """Pull the iPhone's main phonebook over PBAP and return contact count.
 
     Replaces the local cache atomically (transaction). ``photos`` defaults to
-    ``BLUEFERRY_CONTACT_PHOTOS`` and retains inline photos from the same pull.
+    the saved contact-photo setting (see ``contact_photo_settings``). The
+    request is identical either way: without a PBAP ``Fields`` filter the
+    iPhone already includes PHOTO in this single pull, so enabling photos
+    only stops discarding bytes that were transferred anyway. Photos are
+    retained only with a storage policy object.
     """
     max_contacts = max(1, min(int(max_contacts), MAX_PHONEBOOK_CONTACTS))
     if storage is not None and not storage.status.can_write:
         raise RuntimeError(storage.status.detail)
     with open_vcard_listing(sessions, "pb", max_entries=max_contacts) as stream:
         size = os.fstat(stream.fileno()).st_size
-        if (config.CONTACT_PHOTOS if photos is None else photos) and storage is not None:
+        if (photos_enabled() if photos is None else photos) and storage is not None:
             # Find the records that own an address before budgeting photos.
             servable = _servable_photo_indices(_parse_vcard_records(
                 iter_bounded_lines(stream), maximum=max_contacts,
@@ -491,7 +495,7 @@ class ContactsResolver:
         # disabled resolver is exactly the photo-blind one.
         entries = (
             self._repository.load_entries(strict=strict)
-            if config.CONTACT_PHOTOS
+            if photos_enabled()
             else [(record, None) for record in self._repository.load(strict=strict)]
         )
         loaded = [(_sanitized(record), photo) for record, photo in entries]
