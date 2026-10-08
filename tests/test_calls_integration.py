@@ -222,6 +222,9 @@ def test_quick_toggles_leave_the_roles_matching_the_saved_setting(
     monkeypatch.setattr(daemon_mod.config, "KEEP_PHONE_AUDIO_ON_PHONE", True)
     instance = make_daemon()
     instance.calls.start = lambda: None
+    # Status emission is coalesced through an idle callback.
+    instance._idle_add = lambda callback, **_options: callback()
+    instance._emit_status = lambda: None
     applied, queued = [], []
 
     class FakePolicy:
