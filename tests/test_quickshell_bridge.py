@@ -59,9 +59,32 @@ class FakeClient:
         self.calls.append(("set_thread_starred", thread_key, starred))
         return starred
 
+    def set_ancs_notification_actions(self, enabled):
+        self.calls.append(("set_ancs_notification_actions", enabled))
+        return enabled
+
     def set_contacts_only_notifications(self, enabled):
         self.calls.append(("set_contacts_only_notifications", enabled))
         return enabled
+
+    def set_media_control(self, enabled):
+        self.calls.append(("set_media_control", enabled))
+        return {"media_control_enabled": enabled}
+
+    def set_mpris_player(self, enabled):
+        self.calls.append(("set_mpris_player", enabled))
+        return {"media_mpris_enabled": enabled}
+
+    def set_proximity_lock(self, enabled, grace_seconds):
+        self.calls.append(("set_proximity_lock", enabled, grace_seconds))
+        return {
+            "proximity_lock_enabled": enabled,
+            "proximity_lock_grace_sec": grace_seconds,
+        }
+
+    def set_calls_enabled(self, enabled):
+        self.calls.append(("set_calls_enabled", enabled))
+        return {"calls_enabled": enabled}
 
 
 def test_bridge_dispatches_private_values_without_command_arguments() -> None:
@@ -114,6 +137,51 @@ def test_bridge_dispatches_private_values_without_command_arguments() -> None:
     ]
 
 
+def test_bridge_sets_the_away_lock_and_returns_its_status() -> None:
+    client = FakeClient()
+    bridge = QuickshellBridge(client)  # type: ignore[arg-type]
+
+    assert bridge.dispatch("set_proximity_lock", {
+        "enabled": True, "grace_seconds": 90,
+    }) == {"proximity_lock_enabled": True, "proximity_lock_grace_sec": 90}
+    assert client.calls == [("set_proximity_lock", True, 90)]
+
+
+@pytest.mark.parametrize(("args", "message"), [
+    ({"enabled": 1, "grace_seconds": 60}, "enabled must be a boolean"),
+    ({"enabled": True}, "grace_seconds must be an integer"),
+    ({"enabled": True, "grace_seconds": True}, "grace_seconds must be an integer"),
+    ({"enabled": True, "grace_seconds": "60"}, "grace_seconds must be an integer"),
+])
+def test_bridge_rejects_malformed_away_lock_requests(args, message) -> None:
+    client = FakeClient()
+    bridge = QuickshellBridge(client)  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match=message):
+        bridge.dispatch("set_proximity_lock", args)
+    assert client.calls == []
+
+
+def test_bridge_sets_the_phone_calls_opt_in_and_returns_its_status() -> None:
+    client = FakeClient()
+    bridge = QuickshellBridge(client)  # type: ignore[arg-type]
+
+    assert bridge.dispatch("set_calls_enabled", {"enabled": True}) == {
+        "calls_enabled": True,
+    }
+    assert client.calls == [("set_calls_enabled", True)]
+
+
+@pytest.mark.parametrize("args", [{}, {"enabled": 1}, {"enabled": "true"}])
+def test_bridge_rejects_malformed_phone_calls_requests(args) -> None:
+    client = FakeClient()
+    bridge = QuickshellBridge(client)  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="enabled must be a boolean"):
+        bridge.dispatch("set_calls_enabled", args)
+    assert client.calls == []
+
+
 def test_bridge_rejects_non_boolean_contacts_only_value() -> None:
     bridge = QuickshellBridge(FakeClient())  # type: ignore[arg-type]
 
@@ -162,7 +230,10 @@ def test_bridge_returns_structured_success_and_errors() -> None:
         "id": 7,
         "method": "status",
         "ok": True,
-        "result": {"daemon": True},
+        "result": {
+            "daemon": True,
+            "bluetooth_restart_command": "sudo systemctl restart bluetooth.service",
+        },
     }
     assert replies[1]["id"] == 8
     assert replies[1]["method"] == "unknown"
@@ -283,3 +354,81 @@ def test_stdin_reader_discards_oversized_line_and_recovers(monkeypatch):
     assert len(received) == 2
     assert len(received[0]) > 8
     assert received[1] == "next\n"
+
+
+def test_bridge_saves_the_notification_actions_preference() -> None:
+    client = FakeClient()
+    bridge = QuickshellBridge(client)  # type: ignore[arg-type]
+
+    assert bridge.dispatch(
+        "set_ancs_notification_actions", {"enabled": True}
+    ) is True
+    assert client.calls == [("set_ancs_notification_actions", True)]
+
+
+@pytest.mark.parametrize("args", [{}, {"enabled": 1}, {"enabled": "true"}])
+def test_bridge_rejects_malformed_notification_actions_requests(args) -> None:
+    client = FakeClient()
+    bridge = QuickshellBridge(client)  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="enabled must be a boolean"):
+        bridge.dispatch("set_ancs_notification_actions", args)
+    assert client.calls == []
+
+
+def test_status_carries_the_init_systems_bluetooth_restart_command(monkeypatch) -> None:
+    from blueferry import service_manager
+
+    monkeypatch.setattr(service_manager, "init_system", lambda: service_manager.OPENRC)
+    bridge = QuickshellBridge(FakeClient())  # type: ignore[arg-type]
+    assert bridge.dispatch("status", {}) == {
+        "daemon": True,
+        "bluetooth_restart_command": "sudo rc-service bluetooth restart",
+    }
+    monkeypatch.setattr(
+        service_manager, "init_system", lambda: service_manager.NO_SERVICE_MANAGER,
+    )
+    assert QuickshellBridge(FakeClient()).dispatch(  # type: ignore[arg-type]
+        "status", {},
+    )["bluetooth_restart_command"] == ""
+
+
+def test_host_info_is_computed_once_and_needs_no_daemon(monkeypatch) -> None:
+    from blueferry import service_manager
+
+    class NoDaemon(FakeClient):
+        def status(self):
+            raise AssertionError("host info must not query the daemon")
+
+    monkeypatch.setattr(service_manager, "init_system", lambda: service_manager.OPENRC)
+    output = io.StringIO()
+    bridge = QuickshellBridge(NoDaemon(), output)  # type: ignore[arg-type]
+    monkeypatch.setattr(
+        service_manager,
+        "init_system",
+        lambda: (_ for _ in ()).throw(AssertionError("detected the init system again")),
+    )
+
+    # main() sends this event before serving requests.
+    bridge.emit_event("host", bridge.host_info())
+
+    assert json.loads(output.getvalue()) == {
+        "event": "host",
+        "data": {"bluetooth_restart_command": "sudo rc-service bluetooth restart"},
+    }
+
+
+@pytest.mark.parametrize("method,key", [
+    ("set_media_control", "media_control_enabled"),
+    ("set_mpris_player", "media_mpris_enabled"),
+])
+def test_bridge_saves_the_media_opt_ins_and_returns_their_status(method, key) -> None:
+    client = FakeClient()
+    bridge = QuickshellBridge(client)  # type: ignore[arg-type]
+
+    assert bridge.dispatch(method, {"enabled": True}) == {key: True}
+    assert client.calls == [(method, True)]
+    for args in ({}, {"enabled": 1}, {"enabled": "true"}):
+        with pytest.raises(ValueError, match="enabled must be a boolean"):
+            bridge.dispatch(method, args)
+    assert client.calls == [(method, True)]

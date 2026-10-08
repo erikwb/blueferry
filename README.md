@@ -31,8 +31,9 @@ on, so don't make it your only way to receive an important message yet.
 
 BlueFerry only knows about messages it sees while connected; it does not
 download your iCloud Messages archive. Attachments, reactions, typing
-indicators, FaceTime, placing or answering calls, and complete sent-message
-history are not supported.
+indicators, FaceTime, and complete sent-message history are not supported.
+Phone calls are off by default; an experimental, opt-in oFono integration is
+described under [Phone calls](#phone-calls-optional-experimental).
 
 Direct conversations combine the phone numbers and email addresses that belong
 unambiguously to one synced contact. Replies use the most recent incoming
@@ -144,6 +145,18 @@ sudo dnf builddep packaging/rpm/blueferry.spec
 
 Finished packages are written to `dist/rpm/`.
 
+#### OpenRC systems
+
+On OpenRC, install BlueFerry's D-Bus activation file and let the session bus
+start the backend; no init script is needed. An optional OpenRC user service
+(OpenRC 0.62 or newer) is only for desktops whose session bus is
+`$XDG_RUNTIME_DIR/bus`. Do not create one on `dbus-run-session` desktops such
+as Plasma under greetd or SDDM. For iPhone system notifications, start
+`bluetoothd` with `-E` (see `/etc/conf.d/bluetooth`) and run
+`sudo rc-service bluetooth restart`. Without systemd, the daemon also runs
+without the systemd unit's sandboxing. See
+[packaging/openrc/README.md](packaging/openrc/README.md) before setting up.
+
 See [packaging/README.md](packaging/README.md) for the exact support matrix and
 more packaging details.
 
@@ -254,7 +267,9 @@ across themes. Outside Omarchy, it uses the desktop palette.
 BlueFerry can show message notifications only—the default—all iPhone
 notifications, or none. Other app notifications are displayed and discarded;
 they are not added to message history. Messages seen through both MAP and ANCS
-are deduplicated.
+are deduplicated. The ANCS copy of an Apple Messages notification (title,
+subtitle and up to the first 1024 bytes of the text) is kept in local history,
+because it carries the group details that MAP lacks.
 
 Message history and contacts are encrypted by default with a random key stored
 in GNOME Keyring or KDE Wallet. If the wallet is locked, live messages continue
@@ -316,6 +331,53 @@ daemon run without logging its notification content:
 journalctl --user -u blueferry -f | grep "ANCS app observed"
 ```
 
+### iPhone notification actions (opt-in)
+
+iOS attaches actions to some notifications, such as **Accept**/**Decline** on
+an incoming call or calendar invitation, or **Clear**. With
+**All iPhone Notifications** selected, you can show them as buttons on the
+desktop popup. Turn it on with the **Show iPhone action buttons** switch in
+the iPhone settings of the Qt, GTK or Quickshell client, or with
+`blueferry notification-actions enable`. `BLUEFERRY_ANCS_ACTIONS=true` in
+`local.env` only sets the initial value; a choice saved from a client wins.
+
+```bash
+# Popups with action buttons stay longer than ordinary ones (1000-120000 ms):
+BLUEFERRY_ANCS_ACTION_TIMEOUT_MS=30000
+```
+
+Clicking a button asks the iPhone to perform that action through ANCS. This is
+independent of hands-free calling: *Accept* on a call answers it on the
+iPhone, and the audio stays wherever iOS routes it. Nothing is sent to the
+phone unless you click a labelled button. Dismissing or letting a popup
+expire never touches the phone, and a click on the popup body never runs an
+action (the popup carries an explicit no-op default action, because some
+notification servers map a body click to the only button). Buttons appear
+only when the notification server reports the `actions` capability, and each
+notification accepts one successful action.
+Messages popups come from MAP and keep their existing open and dismiss
+behavior.
+
+The button text is chosen by the app that sent the notification, so it can
+contain content (for example "Pay CHF 50 to Bob"). Actions therefore stay off
+while `BLUEFERRY_SHOW_NOTIFICATION_CONTENT=false`: the labels are then not even
+requested from the iPhone. iOS reuses notification numbers, so a button is
+bound to the exact notification that offered it: any later event for the
+same number, a replay of existing notifications, or a re-established iPhone
+connection retires the old buttons and closes their popups.
+
+Actions use the same one-at-a-time Control Point queue as notification
+requests, ahead of queued requests. If the notification was already handled
+on the iPhone, or the phone disconnected in the meantime, BlueFerry shows a
+short "iPhone action not completed" notice instead; when the phone was only
+busy or the write failed, the notice has a **Retry** button.
+`blueferry doctor` and `blueferry notification-actions` report the setting,
+and `GetStatus` includes `ancs_actions`, `ancs_actions_preference`, and
+`notification_content_shown`.
+
+This has only been exercised against simulated ANCS responses so far, not a
+physical iPhone.
+
 Restart the user service after editing `local.env` settings.
 
 When WirePlumber 0.5 or newer is installed, BlueFerry keeps calls and music on
@@ -327,13 +389,205 @@ auto-connect on phone cards so a later `bluetooth-a2dp-autoconnect` rule cannot
 steal the stream. A failed pairing attempt removes a fragment that attempt
 installed. After a successful bond the daemon keeps reconciling the same
 file. Set `BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE=false` to remove BlueFerry's
-fragment only.
+fragment only. With the optional phone calls enabled, the fragment keeps the
+hands-free roles (`hfp_hf`, `hsp_hs`) and still removes `a2dp_sink`: music
+stays on the iPhone, calls can come to this computer.
+
+## Phone calls (optional, experimental)
+
+BlueFerry can answer, decline, place, and hang up iPhone calls through
+[oFono](https://git.kernel.org/pub/scm/network/ofono/ofono.git)'s Hands-Free
+Profile support. This is **off by default** and not needed for messaging.
+An earlier HFP experiment was removed from BlueFerry because oFono and
+PipeWire's native HFP backend race for the same BlueZ profile (see
+[Historical HFP result](PROTOCOL.md#historical-hfp-result)); this opt-in
+integration leaves that choice and its setup to you, only suggests oFono as
+an optional package, and keeps working normally when oFono is missing.
+
+The integration was developed against oFono 2.18 and BlueZ 5.87 and has been
+used with an iPhone on one Gentoo/OpenRC desktop: the modem comes up, an
+incoming call rings with a popup, and calls can be answered and hung up.
+Call waiting, DTMF, and other setups are untested; treat it as a preview.
+
+Requirements:
+
+- oFono running as a system service, with its HFP hands-free plugin.
+  BlueFerry never starts oFono itself (its calls carry D-Bus NO_AUTO_START).
+- oFono's D-Bus policy must admit your user. oFono's shipped `ofono.conf`
+  (for example `/etc/dbus-1/system.d/ofono.conf` or
+  `/usr/share/dbus-1/system.d/ofono.conf`, depending on the distribution)
+  only allows root and `at_console` sessions; a desktop without console tracking gets
+  `AccessDenied` and BlueFerry reports calls as **unavailable** (logged once).
+  A minimal drop-in, for example `/etc/dbus-1/system.d/ofono-local.conf`:
+
+  ```xml
+  <!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-BUS Bus Configuration 1.0//EN"
+   "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+  <busconfig>
+    <policy user="your-login">
+      <allow send_destination="org.ofono"/>
+    </policy>
+  </busconfig>
+  ```
+
+  Security meaning: every process running as that user (or, with
+  `<policy group="…">`, as any member of that group) may fully control oFono,
+  i.e. place, answer, and end calls and change settings of every modem oFono
+  manages, not only BlueFerry. Prefer `user=` over a broad group. The system
+  bus normally picks up the new file by itself; otherwise reload it.
+- PipeWire/WirePlumber configured to hand HFP to oFono. Your own fragment
+  should only select the backend, for example
+  `~/.config/wireplumber/wireplumber.conf.d/51-bluez-ofono.conf`:
+
+  ```text
+  monitor.bluez.properties = {
+    bluez5.hfphsp-backend = "ofono"
+  }
+  ```
+
+  Do not set roles there: BlueFerry's `99-` phone-audio fragment (above)
+  overrides `bluez5.roles` and, with calls enabled, keeps `hfp_hf` and
+  `hsp_hs` while still removing `a2dp_sink`. If you set
+  `BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE=false`, BlueFerry manages no roles and
+  your own `bluez5.roles` must include `hfp_hf`.
+
+Switch it on with **Enable phone calls through this computer** in the iPhone
+settings of the Qt, GTK or Quickshell client, or with `blueferry calls enable`
+(`disable` turns it off again). The choice is saved in `settings.json` and applied without a
+restart. `BLUEFERRY_CALLS_ENABLED=true` in `~/.config/blueferry/local.env`
+still works as the initial value; a saved choice wins.
+
+What turning it on means: while the iPhone is connected, its hands-free link
+stays up with this computer, so calls ring here and, once answered here,
+their audio plays here. Turning it off (or quitting the backend) powers the
+hands-free modem down again (`Powered=false`) if BlueFerry powered it or
+found it powered while calls were on, so
+call audio goes back to the phone; a call in progress continues there.
+
+Toggling rewrites the phone-audio fragment. BlueFerry restarts
+`wireplumber.service` only through systemd; on hosts where WirePlumber is not
+a systemd user service (for example OpenRC with a session launcher), restart
+WirePlumber yourself, e.g. `gentoo-pipewire-launcher restart`. The backend
+log then says "WirePlumber fragment changed; restart WirePlumber to apply".
+
+What happens then:
+
+- The backend looks for the iPhone's oFono modem (type `hfp`, path ending in
+  `dev_XX_XX_XX_XX_XX_XX` for the paired phone). iOS does not power this modem
+  up by itself: BlueFerry sets `Powered=true` while the Classic link is up,
+  waits for oFono to confirm it, then sets `Online=true`. Call control is
+  ready once the modem is online and lists oFono's call manager. It also
+  raises oFono's call volume to 100 % because the 50 % default is nearly
+  inaudible with an iPhone.
+- An incoming call shows a desktop notification with **Answer** and
+  **Decline** (without the caller when
+  `BLUEFERRY_SHOW_NOTIFICATION_CONTENT=false`; the contacts-only notification
+  setting deliberately does not apply to calls). The Qt client has a
+  **Phone Calls** dialog, the terminal client a calls panel (`c`) and an
+  "Incoming call" notice, and the CLI a `calls` command group:
+
+  ```bash
+  blueferry calls                 # state and current calls
+  blueferry calls enable          # or: disable
+  blueferry calls dial '+41 79 123 45 67'   # asks first; --yes in scripts
+  blueferry calls answer          # the ringing call
+  blueferry calls dtmf 1234#      # tones on the active call
+  blueferry calls hangup          # or: hangup --all
+  ```
+
+- `dial` accepts plain numbers only (an optional leading `+` and digits;
+  spaces, dashes, dots, parentheses, and slashes are ignored). `*` and `#`
+  are refused: dialed, they form service codes such as `**21*…#` that
+  reconfigure the phone (call forwarding) rather than place a call. Use
+  `dtmf` for keypad symbols during a call.
+- A fixed list of known emergency numbers (112, 911, 999, 000, 110, 117, 118,
+  119, 144 and about fifty other national ones, `EMERGENCY_NUMBERS` in
+  `calls/model.py`) is refused: call them on the iPhone, where the call does
+  not depend on this computer's Bluetooth link or audio, and iOS's Emergency
+  SOS and location sharing apply. The list matches whole numbers only and
+  cannot be complete, so the phone stays the way to make emergency calls.
+  Every client asks before it dials, because
+  premium-rate prefixes differ by country and cannot be listed reliably.
+- Bluetooth recovery (the adapter power cycle after a long ANCS outage) is
+  held back while a call is in progress.
+- With a second call, answering holds the active call (HoldAndAnswer);
+  `swap` and `hold-answer` are available, but "release and answer" is not
+  exposed. Hanging up the held call of two relies on the phone supporting
+  `AT+CHLD=1x` through oFono and still needs hardware verification.
+- If oFono is not installed, not running, or denies access, calls report
+  **unavailable**; BlueFerry notices when oFono starts. Call details are only
+  returned by the private `Calls1.ListCalls` method; the broadcast
+  `CallsChanged` signal carries no content. Calls are not written to message
+  history.
+
+### Phone battery, signal, and network
+
+BlueFerry shows the iPhone's battery while it is connected, read over the
+Bluetooth LE link it already holds for notifications: from the
+standard GATT Battery Service (Battery Level, read once, then followed
+through notifications), or from BlueZ's `Battery1` while that is missing. This
+needs neither HFP nor oFono, is exact to 1 %, and was confirmed present on an
+iPhone with iOS 27 (BlueZ 5.87 had cached its Battery Level); the reading
+path itself is tested against fakes only.
+
+With calls on, the phone's signal strength and network (operator) name are
+added from oFono's HFP indicators, and the HFP battery (20 % steps, shown as
+"about") fills in when no LE value exists. Without calls there is no signal
+or network: only the hands-free link reports them.
+
+```bash
+blueferry phone-status          # Battery: 87 % (Signal, Network with calls on)
+blueferry phone-status --json
+blueferry phone-status --warn   # or --no-warn
+```
+
+The Qt client shows a small battery and signal indicator next to
+"Conversations" (hover for the network name); the terminal client, the
+Quickshell header, and the GTK status page add battery and signal to their
+connection line.
+
+An optional low-battery warning (off by default) fires once per discharge
+when the battery reaches the threshold, and again only after the phone has
+charged at least 20 % above it (and once more after a BlueFerry restart if
+the phone is still low). Switch it on in the Qt iPhone settings or with
+`blueferry phone-status --warn`; the choice is saved in `settings.json`.
+`BLUEFERRY_PHONE_BATTERY_NOTIFY=true` seeds it and
+`BLUEFERRY_PHONE_BATTERY_LOW_PERCENT=20` (0-80) sets the threshold.
+
+With calls on, oFono answers the first request for the HFP battery by asking
+the phone for its own number (`AT+CNUM`). BlueFerry discards that number and
+never stores, logs, or returns it.
+
+The values are part of the private `GetStatus` reply (keys
+`phone_battery_level`, `phone_battery_source` = `bluez`/`gatt`/`hfp`,
+`phone_signal_strength`, `phone_network_name`, `phone_network_status`, all
+`null` when unknown, plus `phone_battery_warning`). Changes are announced
+with the argument-free `StatusChanged` signal, only when a shown value
+changed and at most every 10 seconds; no value is ever broadcast, and the
+logs never contain the levels or the operator name.
+
+Troubleshooting: if `blueferry calls` stays at **searching** although the
+iPhone is connected, the likely cause is the startup-order race between oFono
+and WirePlumber for the HFP profile. Restart oFono after WirePlumber
+(`sudo rc-service ofono restart` on OpenRC, `sudo systemctl restart ofono` on
+systemd), then check the backend log for the modem. With BlueZ 5.87 or newer, BlueZ's
+own HFP hands-free plugin can also claim the RFCOMM channel before oFono
+(oFono's `Powered=true` then times out). When that happens three times in a
+row while `bluetoothd` 5.87 or newer runs with `-E` and without `-P hfp`,
+BlueFerry reports the call state **bluez_conflict**, logs the remedy once, and
+pages the phone only every five minutes, or when it reconnects, until a
+power-up succeeds. The Arch and Fedora packages already start `bluetoothd`
+with `-P hfp`, which leaves that plugin out; elsewhere add it yourself (for
+example `BLUETOOTH_OPTS="-E -P hfp"` in `/etc/conf.d/bluetooth` on Gentoo, or
+a `bluetooth.service` drop-in on systemd). Audio routing itself is PipeWire's job; BlueFerry only controls the
+call.
 
 ## Lock when the iPhone goes away
 
 BlueFerry can lock your desktop session after the paired iPhone has been
-disconnected for a while. It is off by default. Turn it on in the Qt client's
-iPhone settings (**Away Lock**) or from a terminal:
+disconnected for a while. It is off by default. Turn it on in the iPhone
+settings of the Qt, GTK or Quickshell client (**Away Lock**) or from a
+terminal:
 
 ```bash
 blueferry proximity-lock enable --grace 60   # opt in, lock after 60 s away
@@ -383,7 +637,7 @@ BlueFerry can mirror the iPhone's **Recents** list (incoming, outgoing, and
 missed calls) and show a desktop notification for new missed calls. This is
 off by default because it retains who called you and when. It reuses the
 existing PBAP connection, so the iPhone's **Sync Contacts** permission is all
-it needs; BlueFerry never places, answers, or listens to calls.
+it needs; call history itself never places, answers, or listens to calls.
 
 Turn it on in the Qt client's iPhone settings (**Call History**) or from a
 terminal; it applies at once:
@@ -445,6 +699,49 @@ takes precedence. `BLUEFERRY_CALL_HISTORY_INTERVAL_SEC` (60–86400, default
 View the list with `blueferry call-history` (`--missed`, `--limit N`,
 `--sync` to refresh from the iPhone first) or **Recent Calls** in the KDE
 client's menu. The GTK, terminal, and Quickshell clients do not show it yet.
+## iPhone media control (optional)
+
+BlueFerry can show what the iPhone is playing and send play, pause, next,
+previous, volume, skip and like/dislike commands through Apple's Media
+Service (AMS). AMS uses the same Bluetooth LE bond as notifications, so it
+needs the full pairing mode; compatibility mode never connects LE. It is off
+by default because it adds Bluetooth traffic and is outside BlueFerry's
+messaging focus. Turn it on in the Qt client's iPhone settings
+(**Media Control**) or from a terminal; no restart is needed:
+
+```bash
+blueferry media enable     # opt in (blueferry media disable to opt out)
+blueferry media            # now playing
+blueferry media toggle     # also: play, pause, next, previous, volume-up,
+                           # volume-down, skip-forward, skip-backward, like, ...
+```
+
+Only commands the iPhone currently offers are sent; for example, like/dislike
+exist only for players that advertise them. The Kirigami client shows a small
+now-playing bar above the conversations while a player is active.
+
+With the MPRIS option (`blueferry media enable-mpris`, or the second
+checkbox under **Media Control**), BlueFerry registers
+`org.mpris.MediaPlayer2.blueferry_iphone` on your session bus while the iPhone
+reports an active player. **MPRIS is public within your login session:** any
+application you run can read the current title, artist and album and is
+notified of changes, exactly as with a desktop music player. Without the MPRIS
+option, track details are only available through BlueFerry's own
+authenticated D-Bus API, and its change signal carries no content. AMS has no
+absolute volume, seek or stop, so through MPRIS a volume change moves the
+iPhone one step, seeking is not offered (use `blueferry media skip-forward` or
+`skip-backward` for the phone's fixed skips), and Stop pauses playback. The
+player has a D-Bus connection of its own, so the MPRIS name never reaches
+BlueFerry's message interface.
+
+`BLUEFERRY_MEDIA_CONTROL_ENABLED=true` in `local.env` sets the initial value;
+a choice saved through a client or the CLI takes precedence. Media control
+waits for BlueZ to report the iPhone's LE link (`Bearer.LE1`, BlueZ 5.86 or
+newer with the bearer API); on older BlueZ `blueferry media` says so instead
+of waiting forever.
+
+BlueFerry deliberately does not use AVRCP for this: acting as an AVRCP
+controller could make the iPhone route its audio to this computer.
 
 ## Command line
 
@@ -458,6 +755,7 @@ blueferry sms-send person@icloud.com 'hello from Linux'
 blueferry sms-send Alice 'running late'
 blueferry contacts-sync
 blueferry call-history --missed   # after `blueferry call-history enable`
+blueferry media status
 blueferry history-clear
 blueferry doctor
 ```
@@ -478,12 +776,53 @@ blueferry doctor
 journalctl --user -u blueferry -f
 ```
 
+With the optional OpenRC user service, the backend log is
+`~/.local/state/blueferry/daemon.log`.
+
 If messages work but names do not, use **Sync Contacts** or run
 `blueferry contacts-sync`.
 
 If `blueferry-qt` does not open a window or looks unstyled,
 `blueferry-qt --diagnose-style` prints the Qt Quick Controls style it would
 use, how it sets it, and where it looked for the style.
+
+If iPhone notifications never connect and the app or `blueferry doctor`
+says the Bluetooth pairing may be outdated, the LE half of the pairing is
+possibly stale, for example after the pairing was removed on only one side.
+The LE link then connects about every two seconds and drops right away
+while Classic stays connected, with the log repeating LE reconnects.
+`btmon` shows `LE Start Encryption` failing, followed by a disconnect with
+reason 0x08 (supervision timeout). BlueFerry only reports this pattern; it
+does not change how it connects. Re-pairing on both sides cured this on
+the setup it was observed on, so it may help:
+
+1. On the iPhone, open Settings > Bluetooth, tap (i) next to this computer,
+   and choose **Forget This Device**.
+2. On this computer, run `bluetoothctl remove <iPhone address>`, using the
+   address `blueferry doctor` shows as the target. The backend stops when
+   the pairing disappears.
+3. Pair the iPhone again from the app.
+
+If setup reports that **Bluetooth Low Energy is switched off on this adapter**,
+the controller supports LE but BlueZ runs it in Classic-only mode, usually
+because `/etc/bluetooth/main.conf` sets `ControllerMode = bredr`. iPhone
+notifications need LE, so full-mode pairing stops before it changes anything.
+Check the setting and switch it back to dual mode:
+
+```bash
+grep -i ControllerMode /etc/bluetooth/main.conf
+# set ControllerMode = dual (or comment the line out), then:
+sudo systemctl restart bluetooth   # OpenRC: sudo rc-service bluetooth restart
+```
+
+`sudo btmgmt le on` is not enough under `ControllerMode = bredr`: bluetoothd
+then provides no LE advertising for the adapter until it restarts in dual mode.
+If `ControllerMode` is not `bredr`, restarting bluetoothd switches LE back on.
+The pairing wizard and the KDE client let you check again after the restart;
+BlueFerry never edits `main.conf`. `blueferry doctor` reports the LE state and
+the configured `ControllerMode`. Compatibility mode still pairs Messages and
+Contacts without switching LE on, although iOS may not show their permission
+toggles until LE is available.
 
 If notifications previously worked with the same phone and adapter but stay
 unavailable for five minutes, BlueFerry can attempt one adapter power cycle.
@@ -539,7 +878,8 @@ The deeper design and protocol notes live in
 
 BlueFerry began from
 [iphonebridge](https://github.com/gabrielmeir53/iphonebridge), created by Gabe
-Shatunovsky. The ANCS constants and wire-format code are adapted from
+Shatunovsky. Parts of the optional oFono call controller are adapted from
+[tincan](https://github.com/quad341/tincan) under the MIT License. The ANCS constants and wire-format code are adapted from
 [ANCS4Linux](https://github.com/bmh129/ancs4linux), by Paweł Zmarzły and
 Bradley Harmon, under GPL-2.0-or-later.
 

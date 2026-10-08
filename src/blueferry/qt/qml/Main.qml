@@ -75,6 +75,11 @@ Kirigami.ApplicationWindow {
         return status.map_connection_refused === true
     }
 
+    function leBondSuspect() {
+        const status = bridge.status || ({})
+        return status.le_bond_suspect === true
+    }
+
     function retainedStorageUnavailable() {
         const status = bridge.status || ({})
         return status.daemon === true
@@ -206,6 +211,13 @@ Kirigami.ApplicationWindow {
                 // Opt-in backend feature (iPhone settings → Call History).
                 visible: root.bridge.callHistoryEnabled === true
                 onTriggered: root.openRecentCalls()
+            },
+            Kirigami.Action {
+                // Optional HFP calls; hidden unless the backend enables them.
+                text: qsTr("Phone Calls")
+                icon.name: "call-start"
+                visible: (root.bridge.status || {}).calls_enabled === true
+                onTriggered: (callsLoader.item as CallsDialog)?.open()
             },
             Kirigami.Action {
                 text: qsTr("Keyboard Shortcuts")
@@ -421,6 +433,17 @@ Kirigami.ApplicationWindow {
         bridge: root.bridge
     }
 
+    // Optional HFP calls: nothing is instantiated unless the backend enables
+    // them, so the default window is unchanged.
+    Loader {
+        id: callsLoader
+        active: (root.bridge.status || {}).calls_enabled === true
+        sourceComponent: CallsDialog {
+            objectName: "callsDialog"
+            bridge: root.bridge
+        }
+    }
+
     Kirigami.Page {
         id: messagesPage
         visible: false
@@ -462,6 +485,21 @@ Kirigami.ApplicationWindow {
                 }
 
                 Kirigami.InlineMessage {
+                    objectName: "leBondSuspectMessage"
+                    Layout.fillWidth: true
+                    visible: root.leBondSuspect()
+                    text: qsTr("iPhone notifications keep failing to connect; the Bluetooth pairing may be outdated. On the iPhone, open Settings > Bluetooth and forget this computer; then forget the iPhone here and pair again.")
+                    type: Kirigami.MessageType.Warning
+                    position: Kirigami.InlineMessage.Position.Header
+                    actions: [
+                        Kirigami.Action {
+                            text: qsTr("Open iPhone Settings")
+                            onTriggered: root.openPhoneSettings()
+                        }
+                    ]
+                }
+
+                Kirigami.InlineMessage {
                     Layout.fillWidth: true
                     visible: root.retainedStorageUnavailable()
                     text: root.htmlEscape(root.storageDetail())
@@ -480,6 +518,18 @@ Kirigami.ApplicationWindow {
                             onTriggered: root.openPhoneSettings()
                         }
                     ]
+                }
+
+                Loader {
+                    Layout.fillWidth: true
+                    // Opt-in media control; absent unless the backend reports
+                    // a connected iPhone media service.
+                    active: !!root.bridge.nowPlaying && root.bridge.nowPlaying.available === true
+                    visible: active
+                    sourceComponent: NowPlayingBar {
+                        nowPlaying: root.bridge.nowPlaying
+                        onCommandRequested: command => root.bridge.sendMediaCommand(command)
+                    }
                 }
 
                 Controls.SplitView {
@@ -518,6 +568,19 @@ Kirigami.ApplicationWindow {
                                     font.bold: true
                                     leftPadding: Kirigami.Units.smallSpacing
                                 }
+                                // Optional iPhone battery/signal (HFP calls
+                                // integration); absent unless a value is known.
+                                Loader {
+                                    id: phoneStatusLoader
+                                    readonly property var backendStatus: root.bridge.status || ({})
+                                    active: typeof phoneStatusLoader.backendStatus.phone_battery_level === "number"
+                                        || typeof phoneStatusLoader.backendStatus.phone_signal_strength === "number"
+                                    visible: active
+                                    sourceComponent: PhoneStatusIndicator {
+                                        objectName: "phoneStatusIndicator"
+                                        status: phoneStatusLoader.backendStatus
+                                    }
+                                }
                                 Controls.ToolButton {
                                     icon.name: "list-add"
                                     text: qsTr("New Message")
@@ -542,6 +605,7 @@ Kirigami.ApplicationWindow {
 
                         ListView {
                             id: threadList
+                            objectName: "threadList"
                             Layout.fillWidth: true
                             Layout.fillHeight: true
                             clip: true
@@ -576,12 +640,17 @@ Kirigami.ApplicationWindow {
                                             elide: Text.ElideRight
                                         }
                                         Controls.Label {
+                                            objectName: "threadPreview"
                                             Layout.fillWidth: true
+                                            // One line: a line break in the message would
+                                            // switch off eliding and grow the row.
                                             text: threadDelegate.modelData.messages.length
-                                                ? threadDelegate.modelData.messages[threadDelegate.modelData.messages.length - 1].body
+                                                ? String(threadDelegate.modelData.messages[threadDelegate.modelData.messages.length - 1].body || "")
+                                                    .replace(/\s+/g, " ").trim()
                                                 : qsTr("No Messages")
                                             textFormat: Text.PlainText
                                             opacity: 0.7
+                                            maximumLineCount: 1
                                             elide: Text.ElideRight
                                         }
                                     }

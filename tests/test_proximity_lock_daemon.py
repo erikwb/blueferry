@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from blueferry import bearer_supervisor
 from blueferry import daemon as daemon_mod
 from blueferry import proximity_lock as pl
 from blueferry.bearer_supervisor import BearerSupervisor
@@ -379,7 +380,8 @@ def test_daemon_constructor_wiring_locks_through_the_real_dispatcher(
 
     # Only the bearer cache is replaced; its callback is the daemon's own.
     instance.bearers = SimpleNamespace(
-        bredr_state=None, le_state=None, stop=lambda: None, snapshot=dict,
+        bredr_state=None, le_state=None, legacy_connected=False,
+        stop=lambda: None, snapshot=dict,
     )
 
     def link(bredr):
@@ -393,3 +395,66 @@ def test_daemon_constructor_wiring_locks_through_the_real_dispatcher(
     assert calls == [("session", "Lock")]
     assert instance._status()["proximity_lock_last_result"] == pl.RESULT_SCREENSAVER
     assert statuses
+
+
+def test_a_stale_bond_report_flip_only_publishes_status(make_daemon) -> None:
+    from tests.test_le_bond_detection import TIMEOUT, _burst, _Harness
+
+    instance = make_daemon()
+    # The daemon's own wiring: a flip goes to the plain status emission.
+    assert instance.bearers._on_le_bond_report == instance._emit_status
+    h = _Harness()
+    instance.bearers = h.supervisor
+    h.supervisor._on_status = instance._bearer_status_changed
+    timers = FakeTimers(h.clock)
+    locker = FakeLocker()
+    instance.proximity = pl.ProximityLock(
+        enabled=True,
+        grace_sec=30,
+        read_presence=instance._proximity_presence,
+        locker=locker,
+        schedule=timers.schedule,
+        cancel=timers.cancel,
+        clock=h.clock,
+    )
+    acted = []
+    bearer_changed = instance.proximity.bearer_changed
+    instance.proximity.bearer_changed = lambda: (
+        acted.append("proximity"), bearer_changed(),
+    )
+    instance.calls.poke = lambda: acted.append("calls")
+    statuses = []
+    instance._emit_status = lambda: statuses.append(True)
+    h.supervisor._on_le_bond_report = instance._emit_status
+
+    h.supervisor.start()
+    assert instance.proximity.state == pl.STATE_ARMED
+    _burst(h, bearer_supervisor.LE_FLAP_PERSIST_SECONDS - 3)
+    assert not h.supervisor.le_bond_suspect
+    # The user disconnects the phone from the desktop; the supervisor's
+    # cache still says connected until its next poll.
+    instance._on_device_disconnected("org.bluez.Reason.Local", "")
+    h.state["bredr"] = False
+    assert instance.proximity.state == pl.STATE_IDLE
+    acted.clear()
+    statuses.clear()
+
+    # Short drops still queued raise the report before that poll.
+    h.flap(reason=TIMEOUT)
+    h.flap(reason=TIMEOUT)
+
+    assert h.supervisor.le_bond_suspect
+    assert statuses == [True]
+    assert acted == []
+    # Clearing the report is as inert as raising it.
+    h.supervisor.note_le_usable("ANCS authorized")
+    assert not h.supervisor.le_bond_suspect
+    assert statuses == [True, True]
+    assert acted == []
+    assert instance.proximity.state == pl.STATE_IDLE
+
+    h.state["le"] = False
+    h.clock.now += 3
+    h.poll()
+    timers.advance(3600)
+    assert locker.calls == 0

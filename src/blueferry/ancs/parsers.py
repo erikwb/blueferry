@@ -6,11 +6,17 @@ DBus / BlueZ.
 """
 from __future__ import annotations
 
+import re
 import struct
 from dataclasses import dataclass
 
 from blueferry.ancs.constants import (
+    ANCS_MESSAGE_MAX_BYTES,
+    ANCS_SUBTITLE_MAX_BYTES,
+    ANCS_TITLE_MAX_BYTES,
+    UINT_MAX,
     USHORT_MAX,
+    ActionID,
     AppAttributeID,
     CommandID,
     EventFlag,
@@ -19,6 +25,16 @@ from blueferry.ancs.constants import (
 )
 
 MAX_DATA_SOURCE_RESPONSE = 64 * 1024
+
+# Action labels are short UI strings chosen by iOS ("Accept", "Clear", ...).
+# They are not length-prefixed with a maximum in the request, so bound them
+# locally before they reach a notification server.
+MAX_ACTION_LABEL_CHARS = 64
+
+ACTION_LABEL_ATTRIBUTE_IDS = (
+    NotificationAttributeID.PositiveActionLabel,
+    NotificationAttributeID.NegativeActionLabel,
+)
 
 # ---- inbound parsers -----------------------------------------------------
 
@@ -59,6 +75,23 @@ class Notification:
     def is_preexisting(self) -> bool:
         return bool(self.flags & EventFlag.PreExisting)
 
+    @property
+    def has_positive_action(self) -> bool:
+        return bool(self.flags & EventFlag.PositiveAction)
+
+    @property
+    def has_negative_action(self) -> bool:
+        return bool(self.flags & EventFlag.NegativeAction)
+
+    def action_label_ids(self) -> tuple[int, ...]:
+        """Return the label attributes worth requesting for this event."""
+        ids: list[int] = []
+        if self.has_positive_action:
+            ids.append(NotificationAttributeID.PositiveActionLabel)
+        if self.has_negative_action:
+            ids.append(NotificationAttributeID.NegativeActionLabel)
+        return tuple(ids)
+
 
 @dataclass(slots=True)
 class NotificationAttributes:
@@ -68,25 +101,59 @@ class NotificationAttributes:
     title: str
     subtitle: str
     message: str
+    positive_action_label: str = ""
+    negative_action_label: str = ""
 
     @classmethod
-    def parse(cls, body: bytes) -> NotificationAttributes:
+    def parse(
+        cls,
+        body: bytes,
+        action_label_ids: tuple[int, ...] = (),
+    ) -> NotificationAttributes:
+        """Parse the four content fields plus any requested action labels.
+
+        ``action_label_ids`` must match the label attributes appended to the
+        request, in order. With the default empty tuple the response must
+        contain exactly the four content attributes, as before.
+        """
         msg = bytearray(body)
         if len(msg) < 4:
             raise ValueError("attrs response too short")
         uid = struct.unpack("<I", bytes(msg[:4]))[0]
         msg = msg[4:]
-        # BlueFerry requests exactly these four fields and no action labels.
         app_id, msg = parse_attr_string(msg)
         title, msg = parse_attr_string(msg)
         subtitle, msg = parse_attr_string(msg)
         message, msg = parse_attr_string(msg)
+        labels: dict[int, str] = {}
+        for expected in action_label_ids:
+            if expected not in ACTION_LABEL_ATTRIBUTE_IDS or expected in labels:
+                raise ValueError("unsupported action label request")
+            if not msg or msg[0] != expected:
+                raise ValueError("unexpected notification attributes")
+            label, msg = parse_attr_string(msg)
+            labels[expected] = _clean_action_label(label)
         if msg:
             raise ValueError("unexpected notification attributes")
         return cls(
             id=uid, app_id=app_id, title=title, subtitle=subtitle,
             message=message,
+            positive_action_label=labels.get(
+                NotificationAttributeID.PositiveActionLabel, ""
+            ),
+            negative_action_label=labels.get(
+                NotificationAttributeID.NegativeActionLabel, ""
+            ),
         )
+
+
+_LABEL_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]+")
+
+
+def _clean_action_label(label: str) -> str:
+    """Collapse controls/newlines and bound one remote UI label."""
+    cleaned = " ".join(_LABEL_CONTROL_RE.sub(" ", label).split())
+    return cleaned[:MAX_ACTION_LABEL_CHARS]
 
 
 @dataclass(slots=True)
@@ -214,12 +281,14 @@ class DataSourceAssembler:
 def build_get_notification_attributes(
     notification_id: int,
     *,
-    title_max: int = 64,
-    subtitle_max: int = 64,
-    message_max: int = 256,
+    title_max: int = ANCS_TITLE_MAX_BYTES,
+    subtitle_max: int = ANCS_SUBTITLE_MAX_BYTES,
+    message_max: int = ANCS_MESSAGE_MAX_BYTES,
+    action_label_ids: tuple[int, ...] = (),
 ) -> bytes:
     """Construct a Control Point write asking for an incoming notification's
-    full attributes. Variable-length attributes need a u16-le maximum size.
+    full attributes. Title, Subtitle and Message need a u16-le maximum size;
+    the action label attributes are requested by ID only.
     """
     title_max = max(0, min(title_max, USHORT_MAX))
     subtitle_max = max(0, min(subtitle_max, USHORT_MAX))
@@ -234,7 +303,46 @@ def build_get_notification_attributes(
     out += struct.pack("<H", subtitle_max)
     out.append(NotificationAttributeID.Message)
     out += struct.pack("<H", message_max)
+    seen: set[int] = set()
+    for attribute_id in action_label_ids:
+        if attribute_id not in ACTION_LABEL_ATTRIBUTE_IDS or attribute_id in seen:
+            raise ValueError("unsupported action label request")
+        seen.add(attribute_id)
+        out.append(attribute_id)
     return bytes(out)
+
+
+def build_perform_notification_action(notification_id: int, action_id: int) -> bytes:
+    """Construct a PerformNotificationAction Control Point write.
+
+    Wire format: [CommandID=2][NotificationUID: u32-le][ActionID: u8]. iOS
+    sends no Data Source response; success or an ATT error is reported only
+    on the write itself.
+    """
+    if not 0 <= int(notification_id) <= UINT_MAX:
+        raise ValueError("notification id out of range")
+    if action_id not in (ActionID.Positive, ActionID.Negative):
+        raise ValueError("unknown ANCS action id")
+    return (
+        bytes([CommandID.PerformNotificationAction])
+        + struct.pack("<I", int(notification_id))
+        + bytes([action_id])
+    )
+
+
+_ATT_ERROR_RE = re.compile(r"att error:?\s*0x([0-9a-f]{1,2})\b", re.IGNORECASE)
+
+
+def att_error_code(detail: str) -> int | None:
+    """Extract the ATT error code BlueZ embeds in a failed write message.
+
+    BlueZ reports unmapped ATT application errors as
+    ``org.bluez.Error.Failed: Operation failed with ATT error: 0xa2``.
+    """
+    match = _ATT_ERROR_RE.search(detail or "")
+    if match is None:
+        return None
+    return int(match.group(1), 16)
 
 
 def build_get_notification_app_identifier(notification_id: int) -> bytes:
@@ -269,6 +377,7 @@ def build_get_app_attributes(app_id: str) -> bytes:
 
 # Re-export EventID/EventFlag for callers
 __all__ = [
+    "ACTION_LABEL_ATTRIBUTE_IDS",
     "AppAttributes",
     "DataSourceAssembler",
     "DataSourceEvent",
@@ -276,8 +385,10 @@ __all__ = [
     "EventID",
     "Notification",
     "NotificationAttributes",
+    "att_error_code",
     "build_get_app_attributes",
     "build_get_notification_app_identifier",
     "build_get_notification_attributes",
+    "build_perform_notification_action",
     "parse_notification_app_identifier",
 ]

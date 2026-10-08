@@ -7,19 +7,31 @@ leave it available in degraded mode and are retried periodically.
 from __future__ import annotations
 
 import logging
+import math
 import signal
+import threading
+import time
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 import dbus
 from gi.repository import GLib
 
 from blueferry import __version__, bluez_setup, config
 from blueferry.adapter_class_supervisor import AdapterClassSupervisor
-from blueferry.ancs.client import AncsClient
+from blueferry.ams.client import AmsClient, AmsNotifySessions
+from blueferry.ancs.client import ACTION_DISCONNECTED, AncsClient
 from blueferry.backend_lifecycle import installed_release
 from blueferry.backend_operations import BackendDependencies
 from blueferry.bearer_supervisor import BearerSupervisor
-from blueferry.bluetooth_capabilities import ancs_limited_vendor, controller_hardware
+from blueferry.bluetooth_capabilities import (
+    ancs_limited_vendor,
+    bluetoothd_argv,
+    bluez_hfp_plugin_active,
+    bluez_hfp_plugin_possible,
+    bluez_stack,
+    controller_hardware,
+)
 from blueferry.bluetooth_recovery import (
     BluetoothRecovery,
     BluezRecoveryAdapter,
@@ -37,11 +49,16 @@ from blueferry.call_history import (
 from blueferry.call_history_repository import clear_call_history
 from blueferry.call_history_settings import CallHistorySettings
 from blueferry.call_history_sync import CallHistorySync
+from blueferry.calls.controller import CallController
+from blueferry.calls.phone_status import SOURCE_HFP, LowBatteryMonitor, PhoneStatus
+from blueferry.calls.settings import CallsSettings
+from blueferry.commands import run_command
 from blueferry.confirmed_groups import ConfirmedGroupsStore
 from blueferry.connectivity import Connectivity
 from blueferry.contact_sync import ContactSync
 from blueferry.contacts import ContactsResolver
 from blueferry.dbus_service import MessagesService, claim_bus_name
+from blueferry.errors import BlueFerryError
 from blueferry.event_dispatcher import EventDispatcher
 from blueferry.glib_timers import schedule_periodic
 from blueferry.group_routes import GroupRoutesStore
@@ -49,6 +66,7 @@ from blueferry.history import (
     history_count,
     mark_event_handles_read,
 )
+from blueferry.media import MediaController, MediaControlSettings
 from blueferry.notification_policy import (
     ALL_NOTIFICATIONS,
     NotificationPolicyStore,
@@ -58,6 +76,7 @@ from blueferry.obex.mns_watch import MnsWatch
 from blueferry.obex.sessions import SessionManager
 from blueferry.obex.worker import ObexWorker
 from blueferry.pair_setup import bond_status
+from blueferry.phone_battery import BatteryWarningSettings, PhoneBattery
 from blueferry.profile_supervisor import ProfileSessions, ProfileSupervisor
 from blueferry.protocol import BUS_NAME
 from blueferry.proximity_lock import (
@@ -81,6 +100,9 @@ from blueferry.starred_threads import StarredThreadsStore
 from blueferry.storage_preparation import PreparedStorage, prepare_storage
 from blueferry.storage_security import StorageSecurity
 from blueferry.wireplumber_policy import WirePlumberPhoneAudioPolicy
+
+if TYPE_CHECKING:
+    from blueferry.mpris import MprisPlayer, NameClaim
 
 log = logging.getLogger(__name__)
 
@@ -107,6 +129,16 @@ RESTART_AFTER_UPGRADE_EXIT = 75
 
 class PairingRequiredError(RuntimeError):
     """Saved configuration exists, but BlueZ has no corresponding bond."""
+
+
+# Battery and signal steps reach clients at most this often.
+PHONE_STATUS_MIN_INTERVAL_SEC = 10
+# A failed MPRIS bus connection is retried while the player is wanted.
+MPRIS_RETRY_SEC = 30
+
+
+def _in_background(target: Callable[[], None], name: str) -> None:
+    threading.Thread(target=target, name=name, daemon=True).start()
 
 
 class Daemon:
@@ -140,15 +172,44 @@ class Daemon:
             ),
             storage=self.storage,
             on_incoming_message=lambda: self._verify_setup_task(MESSAGE_NOTIFICATIONS),
+            perform_ancs_action=self._perform_ancs_action,
+            ancs_actions_enabled=self._ancs_actions_active,
+            on_call_action=self._notification_call_action,
         )
         self.listener: MapEventListener | None = None
         self.mns_watch: MnsWatch | None = None
         # One MAP reconnect per MNS outage; seeing MNS again rearms it.
         self._mns_reconnect_spent = False
         self.ancs: AncsClient | None = None
+        # Opt-in Apple Media Service. The controller exists whenever the user
+        # opted in so clients can see why media is unavailable; the GATT
+        # client exists only where LE is allowed (full delivery mode).
+        # The opt-in can change at runtime (SetMediaControl).
+        self.media_settings = MediaControlSettings()
+        self.media: MediaController | None = (
+            self._new_media() if self.media_settings.enabled else None
+        )
+        self._media_device_path: str | None = None
+        # BlueZ notify sessions outlive the client that started them; this
+        # remembers them so an opt-out can release them when that is safe.
+        self.media_sessions = AmsNotifySessions()
+        self.ams: AmsClient | None = None
+        self.mpris: MprisPlayer | None = None
+        self._mpris_connection: dbus.connection.Connection | None = None
+        self._mpris_claim: NameClaim | None = None
+        self._mpris_retry_id: int | None = None
         self.adapter_class = AdapterClassSupervisor(config.ADAPTER)
         self.solicitation = SolicitationSupervisor(config.ADAPTER)
-        self.phone_audio = WirePlumberPhoneAudioPolicy()
+        # The saved phone-calls opt-in decides both the call controller and
+        # whether the WirePlumber fragment keeps the hands-free roles.
+        self.calls_settings = CallsSettings()
+        self.phone_audio = WirePlumberPhoneAudioPolicy(
+            allow_calls=self.calls_settings.enabled,
+        )
+        self._phone_audio_lock = threading.Lock()
+        # None until looked up, "" when it could not be determined.
+        self._bluez_version: str | None = None
+        self._bluez_version_requested = False
         # Opt-in convenience lock. It only reads bearer state the supervisor
         # below already polls and never unlocks anything.
         self.proximity_settings = ProximityLockSettings()
@@ -174,7 +235,47 @@ class Daemon:
             on_le_state=self._observe_le_state,
             on_le_dial=self.solicitation.set_dialing,
             inbound_le_primed=self.solicitation.active,
+            le_bond_detection=self._le_bond_detection_applies,
+            # Publish the report only; a flip is not a bearer transition.
+            on_le_bond_report=self._emit_status,
         )
+        # Calls-state and phone-status changes often arrive in bursts (a
+        # modem going away, a flapping indicator); coalesce their
+        # StatusChanged into one per main-loop iteration.
+        self._status_emit_pending = False
+        self._idle_add: Callable[..., int] = GLib.idle_add
+        # Optional HFP calls through oFono. Inert unless explicitly enabled;
+        # construction performs no I/O. oFono is only asked to page the phone
+        # (Modem.Powered) while the Classic bearer is up.
+        self.calls = CallController(
+            enabled=self.calls_settings.enabled,
+            mac=config.IPHONE_MAC,
+            adapter=config.ADAPTER,
+            resolve_contact=self.contacts.resolve,
+            on_calls_changed=self._emit_calls_changed,
+            on_state_changed=self._emit_status_soon,
+            on_event=self.events.call,
+            phone_reachable=lambda: self.bearers.bredr_connected,
+            hfp_conflict=self._bluez_hfp_conflict,
+            on_phone_status=lambda _status: self._phone_status_changed(),
+        )
+        # The phone's battery over LE (GATT Battery Service or BlueZ's
+        # Battery1), independent of calls and HFP. Construction does no I/O.
+        self.phone_battery = PhoneBattery(device_path, on_change=self._phone_status_changed)
+        # Opt-in: one low-battery warning per discharge cycle.
+        self.battery_warning = BatteryWarningSettings()
+        self.low_battery = LowBatteryMonitor(config.PHONE_BATTERY_LOW_PERCENT)
+        # Set once the exact LE level was seen while the phone is present;
+        # the 20 % HFP steps then no longer decide the low-battery warning.
+        self._exact_battery_seen = False
+        # Battery and signal steps would otherwise make every client refetch
+        # its whole status; publish them at most every few seconds.
+        self._published_phone: dict[str, object] | None = None
+        self._phone_emit_id: int | None = None
+        self._phone_emitted_at = float("-inf")
+        self._clock: Callable[[], float] = time.monotonic
+        self._schedule_seconds: Callable[..., int] = GLib.timeout_add_seconds
+        self._battery_link_seen = False
         self.contact_sync = ContactSync(
             sessions=self.sessions,
             storage=self.storage,
@@ -253,7 +354,9 @@ class Daemon:
                 and self.bearers.bredr_connected and self.bearers.le_state is not None
                 and self.solicitation.active()
             ),
-            busy=self.bearers.busy,
+            # A recovery power cycle drops Classic, and with it the audio of a
+            # call routed to this computer. An LE hiccup is not worth that.
+            busy=self.bearers.busy or self.calls.in_call,
         )
 
     def _pause_for_recovery(self) -> None:
@@ -268,6 +371,9 @@ class Daemon:
         self.sessions.close_all(remove_remote=False)
         if self.ancs is not None:
             self.ancs.observe_bearer_state(False)
+        self.media_sessions.observe_bearer_state(False)
+        if self.ams is not None:
+            self.ams.observe_bearer_state(False)
 
     def _resume_after_recovery(self) -> None:
         if not self._bluetooth_initialized:
@@ -292,6 +398,16 @@ class Daemon:
 
     def _bearer_status_changed(self) -> None:
         self.proximity.bearer_changed()
+        self.calls.poke()
+        le_connected = bool(getattr(self.bearers, "le_connected", False))
+        if le_connected and not self._battery_link_seen:
+            # GATT notification sessions do not survive a dropped LE link.
+            self.phone_battery.link_up()
+        self._battery_link_seen = le_connected
+        # Presence decides whether the LE battery value is shown at all.
+        fields = self._phone_status()
+        self._observe_low_battery(fields)
+        self._published_phone = fields
         self._emit_status()
 
     def _proximity_presence(self) -> bool | None:
@@ -307,15 +423,210 @@ class Daemon:
         )
         return self.proximity.snapshot()
 
+    def _set_calls_enabled(self, enabled: bool) -> dict:
+        selected = self.calls_settings.set(enabled)
+        self.calls.set_enabled(selected)
+        log.info("phone calls %s", "enabled" if selected else "disabled")
+        self._apply_phone_audio_roles()
+        self._emit_status()
+        return self.calls.snapshot()
+
+    def _apply_phone_audio_roles(self) -> None:
+        """Rewrite the WirePlumber fragment off the main loop.
+
+        Reconciling may run ``wireplumber --version`` and restart WirePlumber
+        (bounded, but seconds), which must not stall D-Bus replies. Threads
+        of quick successive toggles take the lock in any order, so each
+        writes the setting saved at that moment, not the one it was started
+        for: whichever runs last leaves the fragment matching the setting.
+        """
+        if not config.KEEP_PHONE_AUDIO_ON_PHONE:
+            return
+
+        def apply() -> None:
+            with self._phone_audio_lock:
+                self.phone_audio = WirePlumberPhoneAudioPolicy(
+                    allow_calls=self.calls_settings.enabled,
+                )
+                self.phone_audio.reconcile(enabled=True)
+
+        _in_background(apply, "blueferry-phone-audio")
+
+    def _emit_status_soon(self) -> None:
+        """Emit one StatusChanged for everything changed in this iteration."""
+        if self._status_emit_pending:
+            return
+        self._status_emit_pending = True
+
+        def flush() -> bool:
+            self._status_emit_pending = False
+            try:
+                self._emit_status()
+            except Exception:
+                # An idle callback must not raise into the GLib loop; the
+                # next change schedules a fresh emission.
+                log.exception("StatusChanged emission failed")
+            return False
+
+        try:
+            # GLib.idle_add defaults to PRIORITY_DEFAULT_IDLE, which busy
+            # D-Bus traffic can starve; status is as urgent as other events.
+            self._idle_add(flush, priority=GLib.PRIORITY_DEFAULT)
+        except Exception:
+            log.debug("could not defer StatusChanged; emitting now", exc_info=True)
+            flush()
+
+    def _bluez_hfp_conflict(self) -> bool:
+        """Whether bluetoothd's own HFP plugin can be what blocks oFono.
+
+        Asked by the call controller only after repeated power-up failures.
+        The version lookup runs a command, so it happens off the main loop
+        and the first answer is "no"; the controller asks again after its
+        next failed attempt.
+        """
+        if not bluez_hfp_plugin_active(bluetoothd_argv()):
+            return False
+        if self._bluez_version is None:
+            if not self._bluez_version_requested:
+                self._bluez_version_requested = True
+                _in_background(self._read_bluez_version, "blueferry-bluez-version")
+            return False
+        return bluez_hfp_plugin_possible(self._bluez_version)
+
+    def _read_bluez_version(self) -> None:
+        version = ""
+        try:
+            stack = bluez_stack(run_command=run_command, experimental=False)
+            version = str(stack.get("bluez_version") or "")
+        finally:
+            self._bluez_version = version
+
+    def _emit_calls_changed(self) -> None:
+        emit = getattr(self._dbus_service, "emit_calls_changed", None)
+        if emit is not None:
+            emit()
+
+    def _notification_call_action(self, call_id: str, action: str) -> None:
+        """Answer or decline from an incoming-call desktop notification."""
+        operation = self.calls.answer if action == "answer" else self.calls.hangup
+
+        def failed(error: Exception) -> None:
+            # The controller already logged oFono's error name; never log the
+            # raw oFono text here, it can contain the caller's number.
+            log.debug(
+                "notification %s failed: %s", action,
+                getattr(error, "dbus_suffix", type(error).__name__),
+            )
+
+        try:
+            operation(call_id, lambda _result: None, failed)
+        except BlueFerryError as error:
+            log.info("could not %s the call from its notification (%s)", action, error.dbus_suffix)
+
+    def _phone_status(self) -> dict[str, object]:
+        """GetStatus keys for the phone's battery, signal and network.
+
+        The battery comes from LE (exact percent) whenever the phone is
+        connected and offers it, otherwise from oFono's HFP indicator
+        (20 % steps) while calls are on. Signal and network exist only
+        through HFP, so only while calls are on.
+        """
+        bearers = self.bearers
+        present = bool(
+            getattr(bearers, "bredr_connected", False) or getattr(bearers, "le_connected", False)
+        )
+        le_level = self.phone_battery.percent if present else None
+        if not present:
+            self._exact_battery_seen = False
+        elif le_level is not None:
+            self._exact_battery_seen = True
+        hfp = self.calls.phone_status if self.calls.enabled else PhoneStatus()
+        fields = hfp.to_status()
+        if le_level is not None:
+            fields["phone_battery_level"] = le_level
+            fields["phone_battery_source"] = self.phone_battery.source
+        else:
+            fields["phone_battery_source"] = (
+                SOURCE_HFP if fields["phone_battery_level"] is not None else None
+            )
+        fields["phone_battery_warning"] = self.battery_warning.enabled
+        fields["phone_battery_warning_percent"] = self.low_battery.threshold
+        return fields
+
+    def _phone_status_changed(self) -> None:
+        """Battery, signal or network may have changed: warn, then publish."""
+        fields = self._phone_status()
+        self._observe_low_battery(fields)
+        if fields == self._published_phone or self._phone_emit_id is not None:
+            return
+        wait = self._phone_emitted_at + PHONE_STATUS_MIN_INTERVAL_SEC - self._clock()
+        if wait <= 0:
+            self._publish_phone_status()
+            return
+        self._phone_emit_id = self._schedule_seconds(
+            max(1, math.ceil(wait)), self._phone_status_timer,
+        )
+
+    def _observe_low_battery(self, fields: dict[str, object]) -> None:
+        level = fields.get("phone_battery_level")
+        percent = level if isinstance(level, int) else None
+        stepped = fields.get("phone_battery_source") == SOURCE_HFP
+        if stepped and self._exact_battery_seen:
+            # The LE level dropped out while HFP remains: an exact 23 % must
+            # not read as the 20 % step and warn. Treat it as unknown, which
+            # neither fires nor re-arms, until the exact level returns.
+            percent = None
+        due = self.low_battery.observe(percent)
+        if due and percent is not None and self.battery_warning.enabled:
+            log.info("iPhone battery is low; showing a desktop warning")
+            exact = fields.get("phone_battery_source") != SOURCE_HFP
+            self.events.phone_battery_low(percent, exact=exact)
+
+    def _phone_status_timer(self) -> bool:
+        self._phone_emit_id = None
+        if self._phone_status() != self._published_phone:
+            self._publish_phone_status()
+        return False
+
+    def _publish_phone_status(self) -> None:
+        self._published_phone = self._phone_status()
+        self._phone_emitted_at = self._clock()
+        self._emit_status()
+
+    def _set_battery_warning(self, enabled: bool) -> dict:
+        selected = self.battery_warning.set(enabled)
+        log.info("low-battery warning %s", "enabled" if selected else "disabled")
+        self._emit_status()
+        return self._phone_status()
+
     def _observe_le_state(self, connected: bool | None) -> None:
-        if connected is not True:
+        legacy_connected = self.bearers.legacy_connected
+        if connected is not True and not legacy_connected:
             self.solicitation.set_needed(True)
         if self.ancs is not None:
-            self.ancs.observe_bearer_state(connected)
+            self.ancs.observe_bearer_state(
+                connected, legacy_connected=legacy_connected,
+            )
+        try:
+            # An owed release follows the link without a client, too.
+            self.media_sessions.observe_bearer_state(connected)
+            if self.ams is not None:
+                self.ams.observe_bearer_state(connected)
+        except Exception:
+            log.warning("iPhone media control could not follow the LE link",
+                        exc_info=True)
+        if legacy_connected:
+            # BlueZ cannot report LE here, so the bearer never reads as
+            # connected. Only ANCS's own proof may withdraw the solicitation.
+            self._sync_solicitation()
 
     def _on_ancs_status(self) -> None:
         # StartNotify is not the success boundary.  Keep solicitation on air
         # until a Control Point/Data Source round trip proves ANCS usable.
+        if self.ancs is not None and self.ancs.connected:
+            # An authorized Control Point round trip needs an encrypted LE
+            # link, so it disproves a stale LE bond.
+            self.bearers.note_le_usable("ANCS authorized")
         self._sync_solicitation()
         self._emit_status()
 
@@ -364,7 +675,7 @@ class Daemon:
                 contacts=self.contacts,
                 status_provider=self._status,
                 notification_policy=self.notification_policy,
-                on_notification_policy_changed=self._emit_status,
+                on_notification_policy_changed=self._notification_policy_changed,
                 starred_threads=self.starred_threads,
                 confirmed_groups=self.confirmed_groups,
                 group_routes=self.group_routes,
@@ -375,9 +686,16 @@ class Daemon:
                 set_proximity_lock=self._set_proximity_lock,
                 call_history=lambda: self.call_history,
                 set_call_history=self._set_call_history,
+                media=lambda: self.media,
+                set_media_control=self._set_media_control,
+                calls=self.calls,
+                set_calls_enabled=self._set_calls_enabled,
+                set_phone_battery_warning=self._set_battery_warning,
+                set_media_mpris=self._set_media_mpris,
             ),
         )
         self.events.set_dbus_service(self._dbus_service)
+        self._publish_media()
         self._initialize_storage()
         log.info("DBus service ready: %s", BUS_NAME)
         self._emit_status()
@@ -409,6 +727,155 @@ class Daemon:
         setattr(self, attr, schedule_periodic(
             GLib.timeout_add_seconds, seconds, callback, lambda: setattr(self, attr, None),
         ))
+
+    def _publish_media(self) -> None:
+        """Connect the opt-in media controller to its D-Bus surfaces."""
+        if self.media is None or self._dbus_service is None:
+            return
+        self.media.add_listener(self._dbus_service.emit_now_playing_changed)
+        if self.media_settings.mpris:
+            self._start_mpris()
+
+    def _start_mpris(self, *, retrying: bool = False) -> None:
+        if self.media is None or self._dbus_service is None or self.mpris is not None:
+            return
+        from blueferry.mpris import MPRIS_BUS_NAME, MprisPlayer, NameClaim, private_session_bus
+
+        try:
+            if self._mpris_connection is None or self._mpris_claim is None:
+                # Own connection: the MPRIS name must not address the
+                # BlueFerry object (sandbox proxies filter by name).
+                self._mpris_connection = private_session_bus()
+                self._mpris_claim = NameClaim(self._mpris_connection, MPRIS_BUS_NAME)
+            self.mpris = MprisPlayer(
+                self._mpris_connection, self.media, self._dbus_service.caller_guard,
+                claim=self._mpris_claim,
+            )
+        except Exception:
+            # Say it once, then keep trying for as long as it is wanted.
+            if not retrying:
+                log.warning("could not export the MPRIS player", exc_info=True)
+            if self._mpris_retry_id is None:
+                self._mpris_retry_id = self._schedule_seconds(
+                    MPRIS_RETRY_SEC, self._retry_mpris,
+                )
+            return
+        self._cancel_mpris_retry()
+
+    def _retry_mpris(self) -> bool:
+        self._mpris_retry_id = None
+        if self.media_settings.mpris:
+            self._start_mpris(retrying=True)
+        return False
+
+    def _cancel_mpris_retry(self) -> None:
+        retry, self._mpris_retry_id = self._mpris_retry_id, None
+        if retry is not None:
+            GLib.source_remove(retry)
+
+    def _stop_mpris(self) -> None:
+        self._cancel_mpris_retry()
+        mpris, self.mpris = self.mpris, None
+        if mpris is not None:
+            mpris.close()
+
+    def _set_media_mpris(self, enabled: bool) -> dict:
+        selected = self.media_settings.set_mpris(enabled)
+        if selected:
+            self._start_mpris()
+        else:
+            self._stop_mpris()
+        log.info("iPhone MPRIS player %s", "enabled" if selected else "disabled")
+        self._emit_status()
+        return self._media_status()
+
+    def _new_media(self) -> MediaController:
+        return MediaController(
+            le_enabled=config.ANCS_ENABLED,
+            le_state=lambda: self.bearers.le_state,
+        )
+
+    def _media_status(self) -> dict[str, bool]:
+        return {
+            "media_control_enabled": self.media is not None,
+            "media_control_available": bool(self.media and self.media.available),
+            # The saved preference, and whether the player object exists.
+            "media_mpris_enabled": self.media_settings.mpris,
+            "media_mpris_active": self.mpris is not None,
+        }
+
+    def _set_media_control(self, enabled: bool) -> dict:
+        selected = self.media_settings.set(enabled)
+        if selected and self.media is None:
+            self.media = self._new_media()
+            self._publish_media()
+            if self._media_device_path is not None:
+                self._start_media(self._media_device_path)
+        elif not selected and self.media is not None:
+            # The MPRIS player and the GATT client go first: both still use
+            # the controller while they shut down.
+            self._stop_mpris()
+            ams, self.ams = self.ams, None
+            # Disable the phone's CCCs so a later opt-in gets the command
+            # list again; a new client waits until that is done.
+            if ams is not None:
+                ams.stop(release=True)
+            else:
+                self.media_sessions.release()
+            media, self.media = self.media, None
+            media.close()
+        log.info("iPhone media control %s", "enabled" if selected else "disabled")
+        self._emit_status()
+        if self._dbus_service is not None:
+            self._dbus_service.emit_now_playing_changed()
+        return self._media_status()
+
+    def _on_media_availability(self, available: bool) -> None:
+        if self.media is not None:
+            self.media.handle_availability(available)
+        self._emit_status()
+
+    def _media_released(self) -> None:
+        # Only a renewed opt-in that is still wanted starts again.
+        if (
+            self.media_settings.enabled
+            and self.media is not None
+            and self._media_device_path is not None
+        ):
+            self._start_media(self._media_device_path)
+
+    def _start_media(self, device_path: str) -> None:
+        # Remembered so a later runtime opt-in can start on the same device.
+        self._media_device_path = device_path
+        if self.media is None or self.ams is not None:
+            return
+        if not config.ANCS_ENABLED:
+            log.info("iPhone media control needs the LE link; compatibility mode disables it")
+            return
+        if self.media_sessions.release_owed:
+            # Reusing the old notify session would write no CCC, and iOS
+            # would not send its command list: finish the opt-out first.
+            self.media_sessions.when_released(self._media_released)
+            return
+        media = self.media
+        candidate = AmsClient(
+            device_path,
+            on_update=media.handle_update,
+            on_supported_commands=media.handle_supported_commands,
+            on_availability=self._on_media_availability,
+            sessions=self.media_sessions,
+        )
+        self.ams = candidate
+        media.attach(candidate)
+        try:
+            candidate.observe_bearer_state(self.bearers.le_state)
+            candidate.start()
+        except Exception:
+            # Media control is optional: never let it block messaging.
+            log.warning("iPhone media control could not start", exc_info=True)
+            media.attach(None)
+            self.ams = None
+            candidate.stop()
 
     def _retry_storage(self) -> bool:
         # A daemon activated before the desktop keyring opens must recover
@@ -474,7 +941,8 @@ class Daemon:
                 "the saved iPhone is not currently paired; open a client to pair it"
             )
 
-        self.phone_audio.reconcile(enabled=config.KEEP_PHONE_AUDIO_ON_PHONE)
+        with self._phone_audio_lock:
+            self.phone_audio.reconcile(enabled=config.KEEP_PHONE_AUDIO_ON_PHONE)
 
         # Class-of-Device is controller state, not durable configuration.
         # Repair it before opening either bearer and continue supervising it
@@ -513,12 +981,20 @@ class Daemon:
                 previously_authorized=(
                     NOTIFICATION_ACCESS in self.setup_verification.verified
                 ),
+                # Labels are app-defined content: never request them while
+                # notification content is hidden.
+                notification_actions=self._ancs_actions_active,
+                on_notification_removed=self._ancs_notification_removed,
+                on_actions_reset=self._ancs_actions_reset,
             )
             # Publish before start(): its initial D-Bus sweep can dispatch
             # an owner change that must invalidate the in-progress scan.
             self.ancs = candidate
             try:
-                candidate.observe_bearer_state(self.bearers.le_state)
+                candidate.observe_bearer_state(
+                    self.bearers.le_state,
+                    legacy_connected=self.bearers.legacy_connected,
+                )
                 candidate.start()
             except Exception:
                 self.ancs = None
@@ -526,11 +1002,16 @@ class Daemon:
                 raise
         elif not config.ANCS_ENABLED:
             log.info("ANCS connection disabled by pairing compatibility policy")
+        self._start_media(device_path)
         self._watch_sleep_resume()
 
         # Sinks don't need the OBEX sessions — set them up now so ANCS events
         # still reach the desktop while MAP/PBAP are degraded.
         self.events.setup()
+        # Optional calls only observe oFono; failures there never degrade
+        # messaging, and a missing oFono is retried in the background.
+        self.calls.start()
+        self.phone_battery.start()
 
         # Signal subscriptions belong to the GLib thread; the blocking session
         # creation itself belongs to the serialized OBEX worker.
@@ -584,6 +1065,18 @@ class Daemon:
         # the new observation until the next physical link transition.
         if self.ancs is not None:
             self.ancs.observe_bluez_owner(old_owner, new_owner)
+        # Optional media control must never cost messaging its
+        # bluetoothd-restart recovery below.
+        try:
+            self.media_sessions.observe_bluez_owner(old_owner, new_owner)
+            if self.ams is not None:
+                self.ams.observe_bluez_owner(old_owner, new_owner)
+        except Exception:
+            log.warning("iPhone media control could not follow the BlueZ restart",
+                        exc_info=True)
+        # Battery objects and notification sessions belonged to the old owner.
+        self._battery_link_seen = False
+        self.phone_battery.bluez_owner_changed(bool(new_owner))
         if (
             new_owner
             and not self.recovery.active
@@ -780,6 +1273,45 @@ class Daemon:
             self.events.names,
         )
 
+    def _ancs_actions_active(self) -> bool:
+        """Whether ANCS action labels may be requested and shown at all."""
+        # Labels are app-defined content: never request them while
+        # notification content is hidden.
+        return bool(
+            self.notification_policy.ancs_actions and config.SHOW_NOTIFICATION_CONTENT
+        )
+
+    def _notification_policy_changed(self) -> None:
+        ancs = self.ancs
+        if ancs is not None:
+            ancs.notification_actions_changed()
+        self._emit_status()
+
+    def _perform_ancs_action(
+        self, notification_id, positive, token, on_result=None
+    ) -> bool:
+        """Forward one clicked desktop action to the current ANCS session."""
+        ancs = self.ancs
+        if ancs is None:
+            if on_result is not None:
+                on_result(ACTION_DISCONNECTED)
+            return False
+        return ancs.perform_notification_action(
+            notification_id, bool(positive), token, on_result
+        )
+
+    def _ancs_notification_removed(self, notification_id: int) -> None:
+        """Close a desktop popup whose actionable iPhone notification is gone."""
+        removed = getattr(self.events, "ancs_removed", None)
+        if removed is not None:
+            removed(notification_id)
+
+    def _ancs_actions_reset(self) -> None:
+        """Close action popups whose UIDs died with the ANCS session."""
+        reset = getattr(self.events, "ancs_actions_reset", None)
+        if reset is not None:
+            reset()
+
     def _contacts_refreshed(self) -> None:
         """GLib-side follow-up after a pull replaced the contact cache."""
         # Completing PullAll proves that the iPhone granted Sync Contacts,
@@ -870,6 +1402,7 @@ class Daemon:
         if self.ancs and self.ancs.connected:
             self._mark_setup_task(NOTIFICATION_ACCESS)
         ancs = self.ancs
+        bearers = self.bearers.snapshot()
         return {
             "backend_release": self._running_release,
             "_build_id": self._running_build_id,
@@ -877,8 +1410,17 @@ class Daemon:
             "ancs": bool(ancs and ancs.connected),
             "ancs_subscribed": bool(ancs and ancs.subscribed),
             "ancs_authorized": bool(ancs and ancs.authorized),
-            **self.bearers.snapshot(),
+            "ancs_actions": self._ancs_actions_active(),
+            "ancs_actions_preference": self.notification_policy.ancs_actions,
+            "notification_content_shown": config.SHOW_NOTIFICATION_CONTENT,
+            **bearers,
+            # Without an LE bearer state, an ANCS round trip is the only
+            # proof that LE is up.
+            "le": bool(bearers.get("le")) or bool(
+                self.bearers.legacy_connected and ancs and ancs.connected
+            ),
             **self.proximity.snapshot(),
+            **self._phone_status(),
             "contacts": self.contacts.count(),
             "events": history_count(storage=self.storage),
             "verified_iphone_setup": list(self.setup_verification.verified),
@@ -893,9 +1435,17 @@ class Daemon:
             "storage_policy": self.storage.status.policy,
             "storage_state": self.storage.status.state,
             "storage_detail": self.storage.status.detail,
+            **self._media_status(),
             **self._controller_identity(),
             **self.connectivity.snapshot(),
         }
+
+    def _le_bond_detection_applies(self) -> bool:
+        """Report stale LE bonds only where ANCS is expected to work."""
+        return bool(
+            config.ANCS_ENABLED
+            and not self._controller_identity()["ancs_limited_controller"]
+        )
 
     def _controller_identity(self) -> dict[str, object]:
         cached = getattr(self, "_controller_identity_cache", None)
@@ -981,6 +1531,14 @@ class Daemon:
                 log.debug("could not remove BlueZ owner watch", exc_info=True)
         self.proximity.stop()
         self.recovery.stop()
+        self.calls.stop()
+        self.phone_battery.stop()
+        if self._phone_emit_id is not None:
+            try:
+                GLib.source_remove(self._phone_emit_id)
+            except Exception:
+                log.debug("could not remove phone status timer", exc_info=True)
+            self._phone_emit_id = None
         self.read_receipts.close()
         self.adapter_class.stop()
         self.bearers.stop()
@@ -1008,6 +1566,13 @@ class Daemon:
             self.listener.stop()
         if self.ancs is not None:
             self.ancs.stop()
+        if self.ams is not None:
+            self.ams.stop()
+        # No StopNotify on shutdown: the closing bus connection ends them.
+        self.media_sessions.close()
+        self._stop_mpris()
+        if self.media is not None:
+            self.media.close()
         self.solicitation.stop()
         self.events.stop()
         if self._sleep_match is not None:

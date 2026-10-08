@@ -52,6 +52,11 @@ class _Sessions:
 class _Policy:
     value = "messages"
     contacts_only = False
+    ancs_actions = False
+
+    def set_ancs_actions(self, enabled: bool) -> bool:
+        self.ancs_actions = enabled
+        return enabled
 
     def set(self, value: str) -> str:
         self.value = value
@@ -647,6 +652,12 @@ def test_notification_policy_round_trips_without_profile_io(public_service) -> N
             outcome["contacts_after"] = bool(
                 interface.SetContactsOnlyNotifications(True, timeout=5)
             )
+            outcome["actions_before"] = bool(
+                interface.GetAncsNotificationActions(timeout=5)
+            )
+            outcome["actions_after"] = bool(
+                interface.SetAncsNotificationActions(True, timeout=5)
+            )
         except Exception as error:
             outcome["error"] = error
         finally:
@@ -662,10 +673,13 @@ def test_notification_policy_round_trips_without_profile_io(public_service) -> N
         "after": "none",
         "contacts_before": False,
         "contacts_after": True,
+        "actions_before": False,
+        "actions_after": True,
     }
     assert policy.value == "none"
     assert policy.contacts_only is True
-    assert policy_changes == [True, True]
+    assert policy.ancs_actions is True
+    assert policy_changes == [True, True, True]
 
 
 def test_proximity_lock_setter_round_trips_and_rejects_bad_grace(public_service) -> None:

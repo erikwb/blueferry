@@ -22,8 +22,10 @@ blueferry proximity-lock test                # Probelauf, sperrt nie
 blueferry proximity-lock disable
 ```
 
-Der GTK-, der Terminal- (TUI) und der Quickshell-Client haben dafür noch keine
-Einstellungen; dort nutzt du die CLI.
+Der GTK- und der Quickshell-Client haben in den iPhone-Einstellungen einen
+Schalter **Away Lock**. Er schaltet die Sperre ein oder aus und behält die
+gespeicherte Wartezeit; die Wartezeit änderst du im Qt-Client oder mit der CLI.
+Der Terminal-Client (TUI) hat dafür keine Einstellung; dort nutzt du die CLI.
 
 ### Einstellungen in `local.env`
 

@@ -18,6 +18,9 @@ ShellRoot {
   property string errorText: ""
   property bool phoneSettingsVisible: false
   property var backendStatus: ({})
+  // Host fact from the bridge; kept when backendStatus is reset because the
+  // daemon is unavailable. undefined means an older bridge did not send it.
+  property var bluetoothRestartCommand: undefined
   property string notificationPolicy: "messages"
   property bool contactsOnlyNotifications: false
   property string storagePolicy: "encrypted"
@@ -35,6 +38,11 @@ ShellRoot {
   property bool deleteThreadsBusy: false
   property bool notificationPolicyBusy: false
   property bool contactsOnlyNotificationsBusy: false
+  property bool ancsActionsBusy: false
+  readonly property SavedChoice mediaControl: SavedChoice {}
+  readonly property SavedChoice mprisPlayer: SavedChoice {}
+  readonly property SavedChoice proximityLock: SavedChoice {}
+  readonly property SavedChoice callsChoice: SavedChoice {}
   property bool storagePolicyBusy: false
   property bool storageUnlockBusy: false
 
@@ -82,6 +90,13 @@ ShellRoot {
       storageUnlockBusy = true
       backendBridge.request("unlock_storage", {})
     }
+  }
+
+  // Qt 6.12 hands arrays in a var signal argument over as sequence wrappers,
+  // nested ones included, which fail Array.isArray. A JSON round trip gives
+  // the handlers the plain JavaScript values the backend sent.
+  function plainValue(value) {
+    return value === undefined ? value : JSON.parse(JSON.stringify(value))
   }
 
   function threadByKey(key) {
@@ -205,6 +220,7 @@ ShellRoot {
     target: backendBridge
 
     function onResponse(method, requestId, result) {
+      result = root.plainValue(result)
       if (method === "status") {
         root.statusBusy = false
         if (typeof result !== "object" || result === null) {
@@ -212,11 +228,17 @@ ShellRoot {
           return
         }
         root.backendStatus = result
+        if (typeof result.bluetooth_restart_command === "string")
+          root.bluetoothRestartCommand = result.bluetooth_restart_command
         var policy = result.notification_policy || "messages"
         root.notificationPolicy = ["all", "messages", "none"].indexOf(policy) >= 0
           ? policy : "messages"
         root.contactsOnlyNotifications =
           result.contacts_only_notifications === true
+        root.mediaControl.reported(result.media_control_enabled === true)
+        root.mprisPlayer.reported(result.media_mpris_enabled === true)
+        root.proximityLock.reported(result.proximity_lock_enabled === true)
+        root.callsChoice.reported(result.calls_enabled === true)
         var storagePolicy = result.storage_policy || "encrypted"
         root.storagePolicy = ["encrypted", "plaintext", "none"].indexOf(storagePolicy) >= 0
           ? storagePolicy : "encrypted"
@@ -277,6 +299,33 @@ ShellRoot {
         root.contactsOnlyNotificationsBusy = false
         root.contactsOnlyNotifications = result === true
         root.reload()
+      } else if (method === "set_ancs_notification_actions") {
+        root.ancsActionsBusy = false
+        root.reload()
+      } else if (method === "set_media_control") {
+        root.mediaControl.saved(
+          typeof result === "object" && result !== null
+            ? result.media_control_enabled === true : root.mediaControl.value,
+          root.statusBusy)
+        root.reload()
+      } else if (method === "set_mpris_player") {
+        root.mprisPlayer.saved(
+          typeof result === "object" && result !== null
+            ? result.media_mpris_enabled === true : root.mprisPlayer.value,
+          root.statusBusy)
+        root.reload()
+      } else if (method === "set_proximity_lock") {
+        root.proximityLock.saved(
+          typeof result === "object" && result !== null
+            ? result.proximity_lock_enabled === true : root.proximityLock.value,
+          root.statusBusy)
+        root.reload()
+      } else if (method === "set_calls_enabled") {
+        root.callsChoice.saved(
+          typeof result === "object" && result !== null
+            ? result.calls_enabled === true : root.callsChoice.value,
+          root.statusBusy)
+        root.reload()
       } else if (method === "set_storage_policy") {
         root.storagePolicyBusy = false
         if (typeof result === "object" && result !== null) {
@@ -329,6 +378,26 @@ ShellRoot {
         root.contactsOnlyNotificationsBusy = false
         root.errorText = message || "Could not save notification preference"
         root.reload()
+      } else if (method === "set_ancs_notification_actions") {
+        root.ancsActionsBusy = false
+        root.errorText = message || "Could not save action button preference"
+        root.reload()
+      } else if (method === "set_media_control") {
+        root.mediaControl.failed(root.backendStatus.media_control_enabled === true)
+        root.errorText = message || "Could not save media control preference"
+        root.reload()
+      } else if (method === "set_mpris_player") {
+        root.mprisPlayer.failed(root.backendStatus.media_mpris_enabled === true)
+        root.errorText = message || "Could not save desktop media controls preference"
+        root.reload()
+      } else if (method === "set_proximity_lock") {
+        root.proximityLock.failed(root.backendStatus.proximity_lock_enabled === true)
+        root.errorText = message || "Could not save away lock preference"
+        root.reload()
+      } else if (method === "set_calls_enabled") {
+        root.callsChoice.failed(root.backendStatus.calls_enabled === true)
+        root.errorText = message || "Could not save phone calls preference"
+        root.reload()
       } else if (method === "set_storage_policy") {
         root.storagePolicyBusy = false
         root.errorText = message
@@ -345,6 +414,15 @@ ShellRoot {
         root.deleteThreadsBusy = false
         root.notificationPolicyBusy = false
         root.contactsOnlyNotificationsBusy = false
+        root.ancsActionsBusy = false
+        if (root.mediaControl.busy)
+          root.mediaControl.failed(root.backendStatus.media_control_enabled === true)
+        if (root.mprisPlayer.busy)
+          root.mprisPlayer.failed(root.backendStatus.media_mpris_enabled === true)
+        if (root.proximityLock.busy)
+          root.proximityLock.failed(root.backendStatus.proximity_lock_enabled === true)
+        if (root.callsChoice.busy)
+          root.callsChoice.failed(root.backendStatus.calls_enabled === true)
         root.storagePolicyBusy = false
         root.storageUnlockBusy = false
         root.errorText = message
@@ -352,8 +430,11 @@ ShellRoot {
     }
 
     function onEventReceived(name, data) {
+      data = root.plainValue(data)
       if (name === "open-message") root.openMessage(String(data || ""))
       else if (name === "history-changed" || name === "status-changed") root.reload()
+      else if (name === "host" && data && typeof data.bluetooth_restart_command === "string")
+        root.bluetoothRestartCommand = data.bluetooth_restart_command
     }
   }
 
@@ -428,6 +509,10 @@ ShellRoot {
             color: theme.accent
           }
           Item { Layout.fillWidth: true }
+          QuickshellPhoneStatus {
+            ferryTheme: theme
+            status: root.backendStatus
+          }
           Rectangle {
             implicitWidth: theme.scaled(5)
             implicitHeight: implicitWidth
@@ -479,6 +564,27 @@ ShellRoot {
             textFormat: Text.PlainText
             color: theme.windowText
             font.bold: true
+            wrapMode: Text.Wrap
+          }
+        }
+
+        Rectangle {
+          objectName: "leBondSuspectBanner"
+          Layout.fillWidth: true
+          implicitHeight: leBondSuspectLabel.implicitHeight + theme.scaled(16)
+          visible: !root.phoneSettingsVisible && onboarding.leBondSuspect()
+          color: Qt.rgba(theme.warning.r, theme.warning.g, theme.warning.b, 0.14)
+          border.color: theme.warning
+          radius: theme.controlRadius
+
+          FerryLabel {
+            ferryTheme: theme
+            id: leBondSuspectLabel
+            anchors.fill: parent
+            anchors.margins: theme.scaled(8)
+            text: "iPhone notifications keep failing to connect; the Bluetooth pairing may be outdated. Forget this computer on the iPhone, remove the iPhone here, and pair again. Details: blueferry doctor"
+            textFormat: Text.PlainText
+            color: theme.windowText
             wrapMode: Text.Wrap
           }
         }
@@ -935,15 +1041,29 @@ ShellRoot {
         }
 
         PhoneSettingsPage {
+          id: phoneSettingsPage
           ferryTheme: theme
           setup: setupController
           status: Object.assign({}, root.backendStatus, {
             notification_policy: root.notificationPolicy,
             contacts_only_notifications: root.contactsOnlyNotifications,
-            storage_policy: root.storagePolicy
+            proximity_lock_enabled: root.proximityLock.value,
+            storage_policy: root.storagePolicy,
+            bluetooth_restart_command: root.bluetoothRestartCommand
+          }, root.backendStatus.media_control_enabled === undefined ? {} : {
+            media_control_enabled: root.mediaControl.value
+          }, root.backendStatus.media_mpris_enabled === undefined ? {} : {
+            media_mpris_enabled: root.mprisPlayer.value
+          }, root.backendStatus.calls_enabled === undefined ? {} : {
+            calls_enabled: root.callsChoice.value
           })
           busy: ({notifications: root.notificationPolicyBusy,
                   contactsOnly: root.contactsOnlyNotificationsBusy,
+                  ancsActions: root.ancsActionsBusy,
+                  mediaControl: root.mediaControl.busy,
+                  mprisPlayer: root.mprisPlayer.busy,
+                  proximityLock: root.proximityLock.busy,
+                  calls: root.callsChoice.busy,
                   storage: root.storagePolicyBusy})
           visible: root.phoneSettingsVisible
           Layout.fillWidth: true
@@ -958,6 +1078,11 @@ ShellRoot {
               root.contactsOnlyNotifications = args.enabled
               root.contactsOnlyNotificationsBusy = true
             }
+            if (method === "set_ancs_notification_actions") root.ancsActionsBusy = true
+            if (method === "set_media_control") root.mediaControl.request(args.enabled)
+            if (method === "set_mpris_player") root.mprisPlayer.request(args.enabled)
+            if (method === "set_proximity_lock") root.proximityLock.request(args.enabled)
+            if (method === "set_calls_enabled") root.callsChoice.request(args.enabled)
             if (method === "set_storage_policy") {
               if (args.policy === "encrypted") root.storageUnlockAttempted = true
               root.storagePolicyBusy = true

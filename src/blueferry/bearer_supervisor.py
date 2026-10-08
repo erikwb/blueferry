@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from collections import deque
 from collections.abc import Callable
 
 import dbus
@@ -37,6 +38,56 @@ LE_CONNECTED_CLASSIC_BACKOFF_CAP_SECONDS = 30
 _INTERFACES = {
     "bredr": "org.bluez.Bearer.BREDR1",
     "le": "org.bluez.Bearer.LE1",
+}
+# Suspected stale LE bond (report only). One observed failure mode, probably
+# an LTK the iPhone no longer has after the bond was removed on one side
+# only, makes the kernel/bluetoothd auto-connect loop indefinitely: the link
+# comes up, encryption does not complete, and the link drops about two
+# seconds later. The captured trace showed Encryption Change status 0x08
+# (connection timeout), not 0x06 (PIN or key missing). On that setup,
+# forgetting the computer on the iPhone, removing the device in BlueZ and
+# pairing again cured it, but one case does not prove every 0x08 loop is a
+# stale bond; BlueFerry therefore only reports a suspicion, re-pairing may
+# help, and it never changes its own connection behaviour because of it.
+#
+# The pattern is deliberately narrow so ordinary radio flapping does not
+# match: Classic must stay connected across the whole burst (the phone is
+# demonstrably nearby), only very short links count, only Timeout, Remote
+# and Authentication reasons count (Local drops come from this host, e.g.
+# rfkill, adapter power or BlueFerry itself), and the drop rate must persist
+# for minutes rather than for one unlucky minute.
+LE_FLAP_THRESHOLD = 5
+LE_FLAP_WINDOW_SECONDS = 60
+# A link that drops after encryption failed lives about two seconds. Links
+# that lived longer than this are ordinary drops and break a burst.
+LE_FLAP_MAX_LINK_SECONDS = 5
+# The burst must sustain the threshold rate, without a gap longer than the
+# window, for this long before the bond is reported as suspect.
+LE_FLAP_PERSIST_SECONDS = 180
+# If the Bearer.LE1.Disconnected watch cannot be installed, the five-second
+# polling of Bearer.LE1.Connected sees the flaps instead, sampling at most one
+# transition per two polls. Use wider windows so the same threshold remains
+# reachable. Without bearer interfaces (BlueZ before 5.84) LE reads unknown,
+# so nothing is detected.
+POLLED_LE_FLAP_WINDOW_SECONDS = 180
+POLLED_LE_FLAP_PERSIST_SECONDS = 540
+# Reported suspicion expires once Classic has been gone this long: the phone
+# is away, and the report would otherwise say "re-pair" all day.
+LE_SUSPECT_ABSENT_EXPIRY_SECONDS = 120
+# A stale bond keeps the LE link cycling while the phone is near. Once no
+# short drop was seen for this long, the evidence is gone and the report
+# expires, also when LE simply stays down while Classic is up.
+LE_SUSPECT_QUIET_EXPIRY_SECONDS = 600
+_COUNTED_LE_DISCONNECT_REASONS = frozenset({"timeout", "remote", "authentication"})
+# Ignore BlueZ Local-reason drops this soon after BlueFerry's own Disconnect.
+OWN_LE_DISCONNECT_GRACE_SECONDS = 10
+_LE_DISCONNECT_REASONS = {
+    "org.bluez.Reason.Unknown": "unknown",
+    "org.bluez.Reason.Timeout": "timeout",
+    "org.bluez.Reason.Local": "local",
+    "org.bluez.Reason.Remote": "remote",
+    "org.bluez.Reason.Authentication": "authentication",
+    "org.bluez.Reason.Suspend": "suspend",
 }
 _PUBLIC_ERROR_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]{0,255}$")
 
@@ -100,6 +151,19 @@ def bearer_connected_unavailable(error: Exception) -> bool:
     return "no such property" in detail and "connected" in detail
 
 
+def bearer_interface_missing(error: Exception) -> bool:
+    """True when this BlueZ has no bearer interfaces at all (before 5.84).
+
+    Later builds without ``-E`` register the interface with no properties and
+    answer "No such property" instead; they are not treated as legacy.
+    """
+    if not isinstance(error, dbus.exceptions.DBusException):
+        return False
+    if error.get_dbus_name() == "org.freedesktop.DBus.Error.UnknownInterface":
+        return True
+    return "no such interface" in (error.get_dbus_message() or "").casefold()
+
+
 ReadConnected = Callable[[str], bool | None]
 Connect = Callable[[str, Callable[[], None], Callable[[Exception], None]], None]
 Disconnect = Callable[[str, Callable[[], None], Callable[[Exception], None]], None]
@@ -107,9 +171,51 @@ Prefer = Callable[[str], None]
 ObserveLeState = Callable[[bool | None], None]
 ObserveLeDial = Callable[[bool], None]
 InboundLePrimed = Callable[[], bool]
+OnLeDisconnected = Callable[[str, str], None]
+OnLeProperties = Callable[[str, dict, list], None]
+# Subscribe to Bearer.LE1.Disconnected and the device's PropertiesChanged;
+# return a callable that removes both subscriptions.
+WatchLe = Callable[[OnLeDisconnected, OnLeProperties], Callable[[], None]]
 Schedule = Callable[[int, Callable[[], bool]], int]
 Cancel = Callable[[int], object]
 Clock = Callable[[], float]
+
+
+def watch_bluez_le(
+    device_path: str,
+    on_disconnected: OnLeDisconnected,
+    on_properties: OnLeProperties,
+) -> Callable[[], None]:
+    """Subscribe to one device's LE disconnect reasons and property changes.
+
+    ``org.bluez.Bearer.LE1.Disconnected(s name, s message)`` has existed
+    since BlueZ 5.84 (experimental interface). BlueZ emits it for every LE
+    link loss with an ``org.bluez.Reason.*`` name. dbus-python follows the
+    ``org.bluez`` owner, so the subscription survives bluetoothd restarts.
+    """
+    bus = get_system_bus()
+    matches = [
+        bus.add_signal_receiver(
+            on_disconnected,
+            dbus_interface=_INTERFACES["le"],
+            signal_name="Disconnected",
+            bus_name="org.bluez",
+            path=device_path,
+        ),
+        bus.add_signal_receiver(
+            on_properties,
+            dbus_interface="org.freedesktop.DBus.Properties",
+            signal_name="PropertiesChanged",
+            bus_name="org.bluez",
+            path=device_path,
+        ),
+    ]
+
+    def remove() -> None:
+        for match in matches:
+            match.remove()
+
+    return remove
 
 
 class BearerSupervisor:
@@ -133,6 +239,9 @@ class BearerSupervisor:
         disconnect: Disconnect | None = None,
         prefer: Prefer | None = None,
         inbound_le_primed: InboundLePrimed | None = None,
+        watch_le: WatchLe | None = None,
+        le_bond_detection: Callable[[], bool] | None = None,
+        on_le_bond_report: Callable[[], None] | None = None,
         schedule: Schedule = GLib.timeout_add_seconds,
         cancel: Cancel = GLib.source_remove,
         clock: Clock = time.monotonic,
@@ -148,10 +257,33 @@ class BearerSupervisor:
             self._prefer_bluez if connect is None else lambda _kind: None
         )
         self._inbound_le_primed = inbound_le_primed or (lambda: True)
+        # Injected fakes replace BlueZ entirely; only the production
+        # supervisor subscribes to the real bearer signals.
+        self._watch_le = watch_le or (
+            (
+                lambda on_disconnected, on_properties: watch_bluez_le(
+                    device_path, on_disconnected, on_properties
+                )
+            )
+            if read_connected is None
+            else None
+        )
+        self._unwatch_le: Callable[[], None] | None = None
+        # Whether stale-bond detection applies at all, e.g. False with ANCS
+        # disabled or on controllers that are not expected to finish ANCS.
+        self._le_bond_detection = le_bond_detection or (lambda: True)
+        # Called when the stale-bond report flips. Deliberately not
+        # on_status: no bearer changed, and its listeners act on bearers.
+        self._on_le_bond_report = on_le_bond_report
         self._schedule = schedule
         self._cancel = cancel
         self._clock = clock
         self._le_enabled = le_enabled
+        # A missing LE bearer API is different from a transient failed read:
+        # BlueZ can then report only the aggregate Device1 state. Recheck it,
+        # because a replacement bluetoothd may expose the API.
+        self._le_api_available: bool | None = None
+        self._legacy_observation: tuple[bool, bool] | None = None
         self._timer_id: int | None = None
         self._le_settle_id: int | None = None
         self._running = False
@@ -185,6 +317,19 @@ class BearerSupervisor:
         # One-shot: a held LE link may forgive Classic backoff earned while the
         # phone was away, not failures that happened with ANCS already up.
         self._le_dwell_should_forgive_classic = False
+        # Stale-bond detection (report only). Timestamps of short-lived LE
+        # drops in the current burst; see LE_FLAP_THRESHOLD.
+        self._le_flaps: deque[float] = deque()
+        self._le_flap_count = 0
+        self._le_burst_started_at: float | None = None
+        self._bredr_lost_at: float | None = None
+        self._le_bond_suspect = False
+        self._le_disconnect_signal_seen = False
+        self._le_link_up_at: float | None = None
+        self._le_last_drop_at: float | None = None
+        self._le_last_polled_drop_at: float | None = None
+        self._last_le_disconnect_reason = ""
+        self._own_le_disconnect_at: float | None = None
 
     @property
     def bredr_connected(self) -> bool:
@@ -204,10 +349,32 @@ class BearerSupervisor:
         """Return the latest observed LE bearer state."""
         return self._states["le"]
 
+    @property
+    def legacy_connected(self) -> bool:
+        """The device is connected and BlueZ cannot say over which bearer.
+
+        This permits a GATT probe; it is not evidence of an LE connection.
+        """
+        return (
+            self._le_api_available is False
+            and self._legacy_observation is not None
+            and self._legacy_observation[0]
+        )
+
+    @property
+    def le_bond_suspect(self) -> bool:
+        """True while LE keeps dropping in a way that suggests a stale bond.
+
+        This is a report only. BlueFerry's connection behaviour does not
+        depend on it.
+        """
+        return self._le_bond_suspect
+
     def start(self) -> None:
         if self._running:
             return
         self._running = True
+        self._start_le_watch()
         self._tick()
         self._timer_id = self._schedule(POLL_SECONDS, self._tick)
 
@@ -263,6 +430,8 @@ class BearerSupervisor:
         """Forget callbacks and observations owned by the previous daemon."""
         previous = dict(self._states)
         self._generation += 1
+        self._le_api_available = None
+        self._legacy_observation = None
         self._connecting.clear()
         self._connect_request_ids.clear()
         self._connect_targeted.clear()
@@ -282,6 +451,11 @@ class BearerSupervisor:
         self._connected_since = {"bredr": None, "le": None}
         self._le_dwell_should_forgive_classic = False
         self._last_errors.clear()
+        # A new bluetoothd generation reloads its keys; judge it afresh.
+        self._clear_le_flaps("BlueZ restarted", notify=False)
+        self._le_disconnect_signal_seen = False
+        self._le_link_up_at = None
+        self._own_le_disconnect_at = None
         if self._on_le_state is not None:
             self._on_le_state(None)
         if any(value is not None for value in previous.values()) and self._on_status:
@@ -295,7 +469,8 @@ class BearerSupervisor:
 
     def recover_le_transport(self, *, allow_disconnected: bool = False) -> None:
         """Request one serialized LE reset after GATT and bearer state diverge."""
-        if not self._running:
+        if not self._running or self._le_api_available is False:
+            # Without Bearer.LE1 the only disconnect drops Classic as well.
             return
         # A successful reset is published locally as disconnected before the
         # polling source can see a replacement inbound link. Ignore duplicate
@@ -318,6 +493,7 @@ class BearerSupervisor:
 
     def stop(self) -> None:
         self._running = False
+        self._legacy_observation = None
         self._generation += 1
         self._connecting.clear()
         self._connect_request_ids.clear()
@@ -330,6 +506,7 @@ class BearerSupervisor:
         self._le_dial_spent = False
         self._le_reset_pending = False
         self._cancel_le_settle()
+        self._stop_le_watch()
         if self._timer_id is not None:
             try:
                 self._cancel(self._timer_id)
@@ -348,20 +525,261 @@ class BearerSupervisor:
             "last_le_error_message": (
                 _public_error_token(name, message) if name or message else ""
             ),
+            "le_bond_suspect": self._le_bond_suspect,
+            "le_flap_count": self._le_flap_count,
+            "last_le_disconnect_reason": self._last_le_disconnect_reason,
         }
+
+    # ---- broken LE bond detection -----------------------------------------
+
+    def note_le_usable(self, reason: str) -> None:
+        """Record positive evidence that LE encrypted, e.g. ANCS authorized."""
+        self._clear_le_flaps(reason)
+
+    def _start_le_watch(self) -> None:
+        if self._watch_le is None or self._unwatch_le is not None:
+            return
+        try:
+            self._unwatch_le = self._watch_le(
+                self._on_le_disconnected_signal,
+                self._on_le_properties_changed,
+            )
+        except Exception:
+            # Polling transitions remain the fallback detection source.
+            log.debug("could not watch iPhone LE bearer signals", exc_info=True)
+
+    def _stop_le_watch(self) -> None:
+        unwatch, self._unwatch_le = self._unwatch_le, None
+        if unwatch is None:
+            return
+        try:
+            unwatch()
+        except Exception:
+            log.debug("could not remove iPhone LE bearer watch", exc_info=True)
+
+    def _on_le_disconnected_signal(self, name: str, _message: str) -> None:
+        """Handle org.bluez.Bearer.LE1.Disconnected(name, message)."""
+        if not self._running:
+            return
+        first_signal = not self._le_disconnect_signal_seen
+        self._le_disconnect_signal_seen = True
+        reason = _LE_DISCONNECT_REASONS.get(str(name), "unknown")
+        now = self._clock()
+        polled = self._le_last_polled_drop_at
+        if (
+            first_signal
+            and polled is not None
+            and now - polled <= POLL_SECONDS * 2
+            and self._le_flaps
+            and self._le_flaps[-1] == polled
+            # A link that came up after the polled drop is a later one,
+            # and so is the drop this signal reports.
+            and (self._le_link_up_at is None or self._le_link_up_at <= polled)
+        ):
+            # Polling counted this very drop before the first signal arrived;
+            # the signal, with its reason and link age, replaces that count.
+            self._le_flaps.pop()
+            self._le_flap_count = max(0, self._le_flap_count - 1)
+            if not self._le_flaps:
+                # No drop is left to date the burst from; a signal that is
+                # not counted below must not leave a stale start behind.
+                self._le_burst_started_at = None
+        self._le_last_polled_drop_at = None
+        up_at, self._le_link_up_at = self._le_link_up_at, None
+        lifetime = None if up_at is None else now - up_at
+        if reason == "suspend":
+            return
+        if (
+            reason == "local"
+            and self._own_le_disconnect_at is not None
+            and now - self._own_le_disconnect_at < OWN_LE_DISCONNECT_GRACE_SECONDS
+        ):
+            # BlueFerry's own reset; not even worth reporting as last reason.
+            return
+        self._last_le_disconnect_reason = reason
+        self._record_le_drop(lifetime, reason)
+
+    def _on_le_properties_changed(
+        self,
+        interface: str,
+        changed: dict,
+        _invalidated: list,
+    ) -> None:
+        if not self._running:
+            return
+        interface = str(interface)
+        if interface == _INTERFACES["le"] and "Connected" in changed:
+            if bool(changed["Connected"]):
+                self._le_link_up_at = self._clock()
+        if interface in {_INTERFACES["le"], "org.bluez.Device1"} and any(
+            bool(changed.get(key)) for key in ("Paired", "Bonded")
+        ):
+            # Only a new bond resets the evidence. BlueZ 5.87 leaves a stored
+            # LTK's Paired/Bonded untouched when encryption fails, and it
+            # clears Paired on disconnect only for unbonded pairings. A removed
+            # bond stops the daemon through its periodic bond check instead.
+            self._clear_le_flaps("iPhone bond changed")
+
+    def _record_le_drop(self, lifetime: float | None, reason: str | None) -> None:
+        """Count one LE drop towards a stale-bond burst, or break the burst.
+
+        ``reason`` is the normalized BlueZ reason, or None when only polling
+        observed the drop.
+        """
+        if not self._le_bond_detection_active():
+            self._reset_le_burst()
+            return
+        if lifetime is not None and lifetime >= STABLE_CONNECTION_SECONDS:
+            # The link held long enough to be usable; this was an ordinary
+            # departure, not a failed encryption.
+            self._clear_le_flaps("LE link held")
+            return
+        if reason is not None and reason not in _COUNTED_LE_DISCONNECT_REASONS:
+            # Local drops come from this host (rfkill, adapter power,
+            # BlueFerry); unknown reasons are no evidence either way.
+            return
+        signal = reason is not None
+        if signal and (lifetime is None or lifetime > LE_FLAP_MAX_LINK_SECONDS):
+            # Signal mode measures each link from its Connected transition. A
+            # link of unknown or moderate age is not the two-second pattern.
+            self._reset_le_burst()
+            return
+        now = self._clock()
+        bredr_since = self._connected_since["bredr"]
+        if self._states["bredr"] is not True or bredr_since is None:
+            # Without Classic the phone may be leaving; that is not evidence.
+            self._reset_le_burst()
+            return
+        window = (
+            LE_FLAP_WINDOW_SECONDS
+            if self._le_disconnect_signal_seen
+            else POLLED_LE_FLAP_WINDOW_SECONDS
+        )
+        persist = (
+            LE_FLAP_PERSIST_SECONDS
+            if self._le_disconnect_signal_seen
+            else POLLED_LE_FLAP_PERSIST_SECONDS
+        )
+        if self._le_flaps and now - self._le_flaps[-1] > window:
+            # A quiet gap longer than the window ends the burst.
+            self._reset_le_burst()
+        if self._le_burst_started_at is not None and bredr_since > self._le_burst_started_at:
+            # Classic dropped during the burst; start over from this drop.
+            self._reset_le_burst()
+        if self._le_burst_started_at is None:
+            self._le_burst_started_at = now
+        burst_started = self._le_burst_started_at
+        self._le_flaps.append(now)
+        self._le_last_drop_at = now
+        if not signal:
+            self._le_last_polled_drop_at = now
+        while self._le_flaps and now - self._le_flaps[0] > window:
+            self._le_flaps.popleft()
+        self._le_flap_count += 1
+        if (
+            self._le_bond_suspect
+            or len(self._le_flaps) < LE_FLAP_THRESHOLD
+            or now - burst_started < persist
+        ):
+            return
+        self._le_bond_suspect = True
+        log.warning(
+            "iPhone LE link keeps dropping within seconds while Classic stays "
+            "connected (%d short drops in the last %ds, pattern seen for %ds, "
+            "last reason: %s). The LE pairing may be stale, for example after "
+            "it was removed on only one side; re-pairing may help: on the "
+            "iPhone open Settings > Bluetooth, tap (i) next to this computer "
+            "and choose Forget This Device; on this computer run 'bluetoothctl "
+            "remove <iPhone address>' and pair again.",
+            len(self._le_flaps),
+            window,
+            int(now - burst_started),
+            self._last_le_disconnect_reason or "not reported",
+        )
+        if self._on_le_bond_report is not None:
+            self._on_le_bond_report()
+
+    def _clear_le_flaps_if_held(self) -> None:
+        """Forgive flaps once the current LE link has stayed up long enough.
+
+        Five-second polling can see Connected=true on consecutive probes while
+        the link actually cycles every two seconds in between. Once BlueZ's
+        Disconnected signal is known to work, only a link age measured from
+        its own transitions counts.
+        """
+        if not (self._le_flaps or self._le_bond_suspect):
+            return
+        since = (
+            self._le_link_up_at
+            if self._le_disconnect_signal_seen
+            else self._connected_since["le"]
+        )
+        if since is not None and self._clock() - since >= STABLE_CONNECTION_SECONDS:
+            self._clear_le_flaps("LE link held")
+
+    def _le_bond_detection_active(self) -> bool:
+        if not self._le_enabled:
+            return False
+        try:
+            return bool(self._le_bond_detection())
+        except Exception:
+            log.debug("could not decide whether LE bond detection applies", exc_info=True)
+            return False
+
+    def _reset_le_burst(self) -> None:
+        """Forget the current burst without touching a reported suspicion."""
+        self._le_flaps.clear()
+        self._le_burst_started_at = None
+        if not self._le_bond_suspect:
+            self._le_flap_count = 0
+
+    def _age_le_evidence(self) -> None:
+        """Let old drops decay and expire a suspicion once the phone left."""
+        now = self._clock()
+        if self._le_flaps and not self._le_bond_suspect:
+            window = (
+                LE_FLAP_WINDOW_SECONDS
+                if self._le_disconnect_signal_seen
+                else POLLED_LE_FLAP_WINDOW_SECONDS
+            )
+            if now - self._le_flaps[-1] > window:
+                self._reset_le_burst()
+        if (
+            self._le_bond_suspect
+            and self._bredr_lost_at is not None
+            and now - self._bredr_lost_at >= LE_SUSPECT_ABSENT_EXPIRY_SECONDS
+        ):
+            self._clear_le_flaps("iPhone away")
+        if (
+            self._le_bond_suspect
+            and self._le_last_drop_at is not None
+            and now - self._le_last_drop_at >= LE_SUSPECT_QUIET_EXPIRY_SECONDS
+        ):
+            self._clear_le_flaps("no short LE drops for a while")
+        if self._le_bond_suspect and not self._le_bond_detection_active():
+            self._clear_le_flaps("detection no longer applies")
+
+    def _clear_le_flaps(self, reason: str, *, notify: bool = True) -> None:
+        self._le_flaps.clear()
+        self._le_flap_count = 0
+        self._le_burst_started_at = None
+        if not self._le_bond_suspect:
+            return
+        self._le_bond_suspect = False
+        log.info("iPhone LE bond no longer suspect: %s", reason)
+        if notify and self._on_le_bond_report is not None:
+            self._on_le_bond_report()
 
     def _tick(self) -> bool:
         if not self._running:
             return False
 
         log.debug("probing iPhone BR/EDR and LE bearer state")
-        bredr = self._read("bredr")
-        le = self._read("le")
-        self._update_state("bredr", bredr)
         # The profile gate controls BlueFerry's outbound LE requests, not links
         # initiated by the phone. Publishing an inbound link lets ANCS perform
         # its authorization handshake while Classic recovers independently.
-        self._update_state("le", le)
+        bredr, le = self._refresh_states()
+        self._age_le_evidence()
 
         if self._le_reset_pending and self._le_enabled:
             if le is False:
@@ -388,7 +806,11 @@ class BearerSupervisor:
         return True
 
     def _schedule_le_connect(self) -> None:
-        if self._le_settle_id is not None or self._le_dial_exhausted():
+        if (
+            self._le_api_available is False
+            or self._le_settle_id is not None
+            or self._le_dial_exhausted()
+        ):
             return
         log.info(
             "iPhone BR/EDR connected; allowing %ds to settle before LE",
@@ -403,11 +825,13 @@ class BearerSupervisor:
         self._le_settle_id = None
         if not self._running:
             return False
-        bredr = self._read("bredr")
-        le = self._read("le")
-        self._update_state("bredr", bredr)
-        self._update_state("le", le)
-        if bredr is True and le is False and self._le_enabled:
+        bredr, le = self._refresh_states()
+        if (
+            bredr is True
+            and le is False
+            and self._le_enabled
+            and self._le_api_available is not False
+        ):
             # The handoff may have failed when LE was enabled or when this
             # timer was armed. Retry at the last safe point before the
             # targeted dial; a transient Set failure must not suppress the
@@ -418,6 +842,27 @@ class BearerSupervisor:
         elif bredr is False:
             self._request_connect("bredr")
         return False
+
+    def _refresh_states(self) -> tuple[bool | None, bool | None]:
+        bredr = self._read("bredr")
+        self._update_state("bredr", bredr)
+        return bredr, self._refresh_le_state()
+
+    def _refresh_le_state(self) -> bool | None:
+        previous_le = self._states["le"]
+        previous_observation = self._legacy_observation
+        le = self._read("le")
+        self._update_state("le", le)
+        # The aggregate device state can change while LE stays unknown, for
+        # example when the API is first found missing or a bearer comes or
+        # goes. Consumers that probe GATT themselves need that observation.
+        if (
+            previous_le == le
+            and previous_observation != self._legacy_observation
+            and self._on_le_state is not None
+        ):
+            self._on_le_state(le)
+        return le
 
     def _cancel_le_settle(self) -> None:
         if self._le_settle_id is None:
@@ -439,7 +884,13 @@ class BearerSupervisor:
             )
             return None
 
-    def _update_state(self, kind: str, value: bool | None) -> None:
+    def _update_state(
+        self,
+        kind: str,
+        value: bool | None,
+        *,
+        deliberate: bool = False,
+    ) -> None:
         self._settle_in_progress_connect(kind, value)
         previous = self._states[kind]
         self._states[kind] = value
@@ -467,6 +918,24 @@ class BearerSupervisor:
             # one-shot budget. This is deliberately transition-driven: a
             # device that remains absent still receives only one attempt.
             self._rearm_le_dial("iPhone LE disconnected")
+            if not deliberate and not self._le_disconnect_signal_seen:
+                # Until a Bearer.LE1.Disconnected signal has arrived, the
+                # poll counts the drop; it samples only some flaps, hence
+                # the wider window.
+                since = self._connected_since["le"]
+                self._record_le_drop(
+                    None if since is None else self._clock() - since,
+                    None,
+                )
+        if kind == "bredr":
+            if value is True:
+                self._bredr_lost_at = None
+            elif previous is True:
+                self._bredr_lost_at = self._clock()
+                self._reset_le_burst()
+        if kind == "le" and previous is not True and value is True:
+            if self._le_link_up_at is None:
+                self._le_link_up_at = self._clock()
         if value is True:
             if self._connected_since[kind] is None:
                 self._connected_since[kind] = self._clock()
@@ -476,6 +945,8 @@ class BearerSupervisor:
                         or self._clock() < self._next_attempt["bredr"]
                     )
             self._clear_backoff_if_stable(kind)
+            if kind == "le":
+                self._clear_le_flaps_if_held()
         elif value is False:
             self._connected_since[kind] = None
             if kind == "le":
@@ -626,7 +1097,7 @@ class BearerSupervisor:
                     # state so an inbound link supersedes this untyped request
                     # with Bearer.BREDR1.Connect instead of creating a false
                     # Classic success and quiet window.
-                    self._update_state("le", self._read("le"))
+                    self._refresh_le_state()
                     if not self._connect_request_is_current(
                         kind,
                         generation,
@@ -778,11 +1249,14 @@ class BearerSupervisor:
         return BACKOFF_CAP_SECONDS
 
     def _request_le_disconnect(self, *, force: bool = False) -> None:
+        if self._le_api_available is False:
+            return
         if "le" in self._disconnecting:
             return
         if not force and self._clock() < self._next_le_reset_attempt:
             return
         self._disconnecting.add("le")
+        self._own_le_disconnect_at = self._clock()
         generation = self._generation
         try:
             self._disconnect(
@@ -809,7 +1283,7 @@ class BearerSupervisor:
         self._le_reset_pending = False
         self._le_reset_failures = 0
         self._next_le_reset_attempt = 0.0
-        self._update_state("le", False)
+        self._update_state("le", False, deliberate=True)
         if self.bredr_connected and self._le_enabled:
             self._schedule_le_connect()
 
@@ -864,7 +1338,37 @@ class BearerSupervisor:
                         timeout=5.0,
                     )
                 )
-        return bool(properties.Get(_INTERFACES[kind], "Connected", timeout=5.0))
+        try:
+            connected = bool(
+                properties.Get(_INTERFACES[kind], "Connected", timeout=5.0)
+            )
+        except dbus.exceptions.DBusException as error:
+            if not bearer_interface_missing(error):
+                raise
+        else:
+            self._le_api_available = True
+            return connected
+        if self._le_api_available is not False:
+            log.info(
+                "BlueZ exposes no LE bearer state; using the aggregate "
+                "device connection"
+            )
+        self._le_api_available = False
+        device_connected = bool(
+            properties.Get("org.bluez.Device1", "Connected", timeout=5.0)
+        )
+        # BlueZ clears ServicesResolved when either bearer disconnects and
+        # sets it again once one resolves, so a change in it marks a bearer
+        # coming or going while the aggregate Connected stays true.
+        try:
+            resolved = bool(
+                properties.Get("org.bluez.Device1", "ServicesResolved", timeout=5.0)
+            )
+        except dbus.exceptions.DBusException:
+            resolved = False
+        self._legacy_observation = (device_connected, resolved)
+        # Aggregate false rules LE out; aggregate true may be Classic alone.
+        return None if device_connected else False
 
     def _connect_bluez(
         self,

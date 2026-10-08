@@ -17,6 +17,7 @@ from blueferry.bus import get_session_bus
 from blueferry.client import BackendClient
 from blueferry.client_activation import record_client_use
 from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH
+from blueferry.service_manager import bluetooth_restart_command
 
 MAX_REQUEST_CHARS = 1_048_576
 MAX_PENDING_REQUESTS = 32
@@ -68,6 +69,13 @@ class QuickshellBridge:
         self.output = output
         self._output_lock = threading.Lock()
         self.desktop_client = desktop_client
+        # Host fact, not daemon state: the command that restarts BlueZ on this
+        # init system, or "" when unknown. It cannot change while running.
+        self.bluetooth_restart_command = bluetooth_restart_command() or ""
+
+    def host_info(self) -> dict[str, str]:
+        """Return daemon-independent facts sent to the shell at startup."""
+        return {"bluetooth_restart_command": self.bluetooth_restart_command}
 
     def emit(self, payload: Mapping[str, Any]) -> None:
         line = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
@@ -84,7 +92,7 @@ class QuickshellBridge:
             record_client_use("quickshell")
             return None
         if method == "status":
-            return self.client.status().to_dict()
+            return self.client.status().to_dict() | self.host_info()
         if method == "threads":
             limit = args.get("limit", 200)
             if isinstance(limit, bool) or not isinstance(limit, int):
@@ -125,6 +133,21 @@ class QuickshellBridge:
             return self.client.set_contacts_only_notifications(
                 _boolean(args, "enabled")
             )
+        if method == "set_ancs_notification_actions":
+            return self.client.set_ancs_notification_actions(
+                _boolean(args, "enabled")
+            )
+        if method == "set_media_control":
+            return self.client.set_media_control(_boolean(args, "enabled"))
+        if method == "set_mpris_player":
+            return self.client.set_mpris_player(_boolean(args, "enabled"))
+        if method == "set_proximity_lock":
+            grace = args.get("grace_seconds")
+            if isinstance(grace, bool) or not isinstance(grace, int):
+                raise RequestError("grace_seconds must be an integer")
+            return self.client.set_proximity_lock(_boolean(args, "enabled"), grace)
+        if method == "set_calls_enabled":
+            return self.client.set_calls_enabled(_boolean(args, "enabled"))
         if method == "set_storage_policy":
             return self.client.set_storage_policy(_text(args, "policy"))
         if method == "unlock_storage":
@@ -243,6 +266,8 @@ def main() -> int:
     DBusGMainLoop(set_as_default=True)
     desktop_client = "--desktop-client" in sys.argv[1:]
     bridge = QuickshellBridge(BackendClient(), desktop_client=desktop_client)
+    # Delivered before any request, so it survives an unavailable daemon.
+    bridge.emit_event("host", bridge.host_info())
     activation = None
     if desktop_client:
         from blueferry.glib_client_activation import ClientActivation

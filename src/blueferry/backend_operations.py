@@ -17,6 +17,8 @@ from blueferry.call_history import CallRecord, resolve_contact_name
 from blueferry.call_history_repository import clear_call_history
 from blueferry.contacts import clear_contact_cache
 from blueferry.errors import (
+    CALLS_DISABLED_HINT,
+    CallsDisabledError,
     ConfirmationRequiredError,
     InvalidArgumentsError,
     NotFoundError,
@@ -126,6 +128,11 @@ class NotificationPolicy(Protocol):
 
     def set_contacts_only(self, enabled: bool) -> bool: ...
 
+    @property
+    def ancs_actions(self) -> bool: ...
+
+    def set_ancs_actions(self, enabled: bool) -> bool: ...
+
 
 class StarredThreads(Protocol):
     def keys(self) -> Sequence[str]: ...
@@ -150,6 +157,14 @@ class GroupRoutes(Protocol):
     def clear(self) -> None: ...
 
 
+class MediaControl(Protocol):
+    def snapshot(self) -> dict[str, object]: ...
+
+    def send_command(
+        self, name: str, on_success: Callable[[], None], on_failure: Failure,
+    ) -> None: ...
+
+
 class ConfirmedGroups(Protocol):
     def matching_rosters(self, rosters: Mapping[str, str]) -> set[str]: ...
 
@@ -168,6 +183,33 @@ class CallHistory(Protocol):
     def sync(self, success: Success, failure: Failure) -> None: ...
 
     def discard_cache(self) -> None: ...
+
+
+class CallControl(Protocol):
+    """Optional HFP call control (see ``blueferry.calls.controller``)."""
+
+    @property
+    def enabled(self) -> bool: ...
+
+    def snapshot(self) -> dict[str, object]: ...
+
+    def list_calls(self) -> dict[str, object]: ...
+
+    def dial(self, number: object, success: Success, failure: Failure) -> None: ...
+
+    def answer(self, call_id: object, success: Success, failure: Failure) -> None: ...
+
+    def hangup(self, call_id: object, success: Success, failure: Failure) -> None: ...
+
+    def hangup_all(self, success: Success, failure: Failure) -> None: ...
+
+    def send_tones(
+        self, call_id: object, tones: object, success: Success, failure: Failure,
+    ) -> None: ...
+
+    def swap(self, success: Success, failure: Failure) -> None: ...
+
+    def hold_and_answer(self, success: Success, failure: Failure) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,6 +237,13 @@ class BackendDependencies:
     # opted in. A callable because the opt-in can change at runtime.
     call_history: Callable[[], CallHistory | None] | None = None
     set_call_history: Callable[[bool, bool], dict[str, Any]] | None = None
+    # Called on every request: the opt-in can change at runtime.
+    media: Callable[[], MediaControl | None] | None = None
+    set_media_control: Callable[[bool], dict[str, Any]] | None = None
+    calls: CallControl | None = None
+    set_calls_enabled: Callable[[bool], dict[str, Any]] | None = None
+    set_phone_battery_warning: Callable[[bool], dict[str, Any]] | None = None
+    set_media_mpris: Callable[[bool], dict[str, Any]] | None = None
 
 
 class BackendOperations:
@@ -690,6 +739,10 @@ class BackendOperations:
                 self.get_contacts_only_notifications()
             ),
         }
+        calls = self.dependencies.calls
+        if calls is not None:
+            # A backend without the calls feature reports no calls keys at all.
+            status.update(calls.snapshot())
         if self.dependencies.status_provider is not None:
             status.update(self.dependencies.status_provider())
         status["api_version"] = MESSAGES_API_VERSION
@@ -1035,6 +1088,26 @@ class BackendOperations:
             self.dependencies.on_notification_policy_changed()
         return selected
 
+    def get_ancs_notification_actions(self) -> bool:
+        """Return the saved opt-in for iPhone notification action buttons."""
+        if self.dependencies.notification_policy is None:
+            return False
+        return bool(self.dependencies.notification_policy.ancs_actions)
+
+    def set_ancs_notification_actions(self, enabled: bool) -> bool:
+        """Opt in or out of iPhone notification action buttons."""
+        if self.dependencies.notification_policy is None:
+            raise NotReadyError("notification policy storage is unavailable")
+        try:
+            selected = self.dependencies.notification_policy.set_ancs_actions(
+                enabled
+            )
+        except ValueError as error:
+            raise InvalidArgumentsError(str(error)) from error
+        if self.dependencies.on_notification_policy_changed is not None:
+            self.dependencies.on_notification_policy_changed()
+        return selected
+
     def set_proximity_lock(self, enabled: bool, grace_sec: int) -> dict[str, Any]:
         """Opt in or out of locking the desktop when the iPhone goes away."""
         configure = self.dependencies.set_proximity_lock
@@ -1168,5 +1241,111 @@ class BackendOperations:
             lambda error: failure(OperationFailedError("CallHistorySync", error)),
         )
 
+    def now_playing(self) -> dict[str, object]:
+        """iPhone now-playing snapshot; ``enabled`` is false when opted out."""
+        media = self._media()
+        if media is None:
+            return {"enabled": False, "available": False, "detail": "disabled"}
+        return media.snapshot()
+
+    def _media(self) -> MediaControl | None:
+        provider = self.dependencies.media
+        return provider() if provider is not None else None
+
+    def send_media_command(
+        self, name: str, on_success: Callable[[], None], on_failure: Failure,
+    ) -> None:
+        media = self._media()
+        if media is None:
+            raise NotReadyError(
+                "iPhone media control is off; turn it on in the iPhone "
+                "settings or with 'blueferry media enable'"
+            )
+        media.send_command(name, on_success, on_failure)
+
+    def set_media_control(self, enabled: bool) -> dict[str, Any]:
+        """Opt in or out of iPhone media control without a restart."""
+        return self._media_setting(self.dependencies.set_media_control, enabled)
+
+    def set_media_mpris(self, enabled: bool) -> dict[str, Any]:
+        """Opt in or out of also publishing the iPhone as an MPRIS player."""
+        return self._media_setting(self.dependencies.set_media_mpris, enabled)
+
+    @staticmethod
+    def _media_setting(
+        configure: Callable[[bool], dict[str, Any]] | None, enabled: bool,
+    ) -> dict[str, Any]:
+        if configure is None:
+            raise NotReadyError("media control settings are unavailable")
+        try:
+            return dict(configure(enabled))
+        except ValueError as error:
+            raise InvalidArgumentsError(str(error)) from error
+        except OSError as error:
+            log.error("could not save media control preference: %s", error)
+            raise NotReadyError(
+                "could not save the media control preference"
+            ) from error
+
     def is_healthy(self) -> bool:
         return self.sessions.map is not None
+
+    # ---- optional phone calls -------------------------------------------
+
+    def _call_control(self) -> CallControl:
+        calls = self.dependencies.calls
+        if calls is None or not calls.enabled:
+            raise CallsDisabledError(CALLS_DISABLED_HINT)
+        return calls
+
+    def set_phone_battery_warning(self, enabled: bool) -> bool:
+        """Save the low-battery warning opt-in; returns the saved value."""
+        configure = self.dependencies.set_phone_battery_warning
+        if configure is None:
+            raise NotReadyError("the phone battery warning is unavailable")
+        try:
+            return bool(configure(bool(enabled)).get("phone_battery_warning"))
+        except ValueError as error:
+            raise InvalidArgumentsError(str(error)) from error
+        except OSError as error:
+            log.error("could not save the battery warning preference: %s", error)
+            raise NotReadyError("could not save the battery warning preference") from error
+
+    def set_calls_enabled(self, enabled: bool) -> dict[str, Any]:
+        """Save the phone-calls opt-in and apply it without a restart."""
+        configure = self.dependencies.set_calls_enabled
+        if configure is None:
+            raise NotReadyError("phone-call settings are unavailable")
+        try:
+            return dict(configure(bool(enabled)))
+        except ValueError as error:
+            raise InvalidArgumentsError(str(error)) from error
+        except OSError as error:
+            log.error("could not save the phone-calls preference: %s", error)
+            raise NotReadyError("could not save the phone-calls preference") from error
+
+    def list_calls(self) -> dict[str, object]:
+        return self._call_control().list_calls()
+
+    def dial(self, number: str, success: Success, failure: Failure) -> None:
+        self._call_control().dial(number, success, failure)
+
+    def answer_call(self, call_id: str, success: Success, failure: Failure) -> None:
+        self._call_control().answer(call_id, success, failure)
+
+    def hangup_call(self, call_id: str, success: Success, failure: Failure) -> None:
+        self._call_control().hangup(call_id, success, failure)
+
+    def hangup_all_calls(self, success: Success, failure: Failure) -> None:
+        self._call_control().hangup_all(success, failure)
+
+    def send_call_tones(
+        self, call_id: str, tones: str, success: Success, failure: Failure,
+    ) -> None:
+        self._call_control().send_tones(call_id, tones, success, failure)
+
+    def swap_calls(self, success: Success, failure: Failure) -> None:
+        self._call_control().swap(success, failure)
+
+    def hold_and_answer_call(self, success: Success, failure: Failure) -> None:
+        self._call_control().hold_and_answer(success, failure)

@@ -52,11 +52,14 @@ All paths are relative to `src/blueferry/` unless noted.
 | `limits.py` | Central safety and resource limits. |
 | `errors.py` | Application error hierarchy shared across transport and presentation. |
 | `commands.py` | The only path for running external commands (argv, absolute paths, normalized failures). |
+| `service_manager.py` | Detects the init system; maps backend start/restart/stop onto `systemctl --user`, `rc-service --user`, or D-Bus activation plus bus-verified SIGTERM. |
 | `config.py` | Environment-backed configuration (`local.env`) and private runtime paths. |
 | `private_files.py` | Race-resistant owner-only reads and atomic writes for small files. |
 | `build_info.py` | Package release + source-SHA build identity. |
-| `wireplumber_policy.py` | Manages one WirePlumber fragment that keeps iPhone audio on the phone. |
+| `wireplumber_policy.py` | Manages one WirePlumber fragment that keeps iPhone audio on the phone (keeps the hands-free roles when calls are enabled). |
 | `proximity_lock.py` | Opt-in lock-only desktop lock after the iPhone's bearers stay down for a grace period; lock dispatch via ScreenSaver, then logind. |
+| `media.py` | Opt-in now-playing projection, media command policy, coalesced change listeners, and the persisted opt-in (`MediaControlSettings`). |
+| `mpris.py` | Optional MPRIS2 player (`org.mpris.MediaPlayer2.blueferry_iphone`) over `media.py`, exported on its own private session-bus connection so the MPRIS name never addresses the BlueFerry object. |
 
 ### Bluetooth transports and supervision
 
@@ -78,26 +81,36 @@ All paths are relative to `src/blueferry/` unless noted.
 | `call_history_sync.py` | Schedules call-history pulls (ANCS-triggered, missed-calls-only fallback poll, one OBEX worker job per listing) and reports newly seen missed calls. |
 | `call_history_settings.py` | The saved call-history opt-in (`settings.json`, seeded from `local.env`). |
 | `vcard.py` | Linear, resource-bounded vCard block extraction. |
-| `ancs/client.py` | ANCS GATT client: subscribes to characteristics, requests attributes, emits `AncsEvent`s. |
+| `ancs/client.py` | ANCS GATT client: subscribes to characteristics, requests attributes, emits `AncsEvent`s, and sends opt-in `PerformNotificationAction` writes. |
 | `ancs/parsers.py` | Pure ANCS wire-format parsers and command builders. |
 | `ancs/constants.py` | ANCS spec constants. |
 | `ancs/events.py` | `AncsEvent`, the normalized per-app notification. |
 | `ancs/sequencer.py` | Bounded, duplicate-aware backlog of serialized ANCS requests. |
-| `bearer_supervisor.py` | Connects BR/EDR first, then keeps LE connected alongside it. |
+| `ams/client.py` | Opt-in Apple Media Service GATT client on the ANCS LE link; asynchronous, serialized, bounded. |
+| `ams/parsers.py` | Pure AMS wire-format parsers and command/registration builders. |
+| `ams/state.py` | `NowPlaying` projection of Player, Queue, and Track attributes. |
+| `ams/constants.py` | AMS UUIDs, identifiers, and public command names. |
+| `bearer_supervisor.py` | Connects BR/EDR first, then keeps LE connected alongside it; reports a suspected stale LE bond from persistent bursts of very short LE links. |
 | `solicitation_supervisor.py` | Keeps the ANCS solicitation advertisement on air until ANCS is proven healthy. |
 | `adapter_class_supervisor.py` | Detects Class-of-Device drift and repairs it through the constrained system helper. |
 | `bluetooth_recovery.py` | Last-resort, rate-limited adapter power cycle for persistent ANCS outages. |
 | `bluez_setup.py` | Adapter preparation: Class-of-Device and the ANCS solicitation advertisement. |
 | `bluetooth_capabilities.py` | Controller capability probing and packaged BlueZ activation. |
 | `bluetooth_devices.py` | Typed BlueZ device projection for setup and clients. |
+| `calls/settings.py` | Saved phone-calls opt-in (`settings.json`, seeded by `BLUEFERRY_CALLS_ENABLED`). |
+| `calls/model.py` | Optional HFP calls: pure oFono property parsing, modem selection, dial/DTMF/call-id validation. |
+| `calls/ofono.py` | Asynchronous oFono system-bus transport (hand-built calls with NO_AUTO_START, no synchronous owner lookup). |
+| `calls/controller.py` | Optional HFP calls: oFono modem discovery, Powered→Online bring-up, call tracking and control, backoff; watches the phone's battery/signal interfaces while online. |
+| `phone_battery.py` | The phone's battery over LE (BlueZ `Battery1` or GATT Battery Level), asynchronous, no HFP; saved low-battery warning opt-in. |
+| `calls/phone_status.py` | Optional phone status: pure parsing of oFono's Handsfree/NetworkRegistration properties and the once-per-cycle low-battery decision. |
 
 ### Sinks
 
 | Module | Responsibility |
 | --- | --- |
-| `sinks/__init__.py` | Sink protocol: `handle(event)` plus optional `handle_ancs`. |
+| `sinks/__init__.py` | Sink protocol: `handle(event)` plus optional `handle_ancs`, `handle_call`, and `handle_phone_battery_low` (optional HFP calls, desktop UI only). |
 | `sinks/sqlite.py` | Persists events to the private history store. |
-| `sinks/libnotify.py` | Desktop notifications via `org.freedesktop.Notifications`, including open and dismiss actions. |
+| `sinks/libnotify.py` | Desktop notifications via `org.freedesktop.Notifications`, including open and dismiss actions, optional incoming-call Answer/Decline, opt-in iPhone action buttons, and the optional phone low-battery warning. |
 
 ### Storage and privacy
 
@@ -147,13 +160,18 @@ All paths are relative to `src/blueferry/` unless noted.
 | `cli_call_history.py` | Opt-in `call-history` listing, enable, and disable. |
 | `cli_common.py` | Small CLI presentation helpers. |
 | `cli_proximity.py` | `proximity-lock` status, dry run, enable, and disable. |
+| `cli_media.py` | `blueferry media` now-playing status, commands, and `enable`/`disable`. |
+| `cli_notification_actions.py` | `notification-actions` status, enable, and disable for the opt-in iPhone action buttons. |
+| `cli_calls.py` | Optional `blueferry calls` commands over `Calls1` and `blueferry phone-status` (battery, signal, network from `GetStatus`). |
 | `tui.py` | Textual terminal client. |
 | `tui_launcher.py` | Launches the TUI with the package-private Textual bundle when present. |
+| `tui_calls.py` | Optional Textual calls panel. |
 | `ui/app.py` | GTK4/libadwaita application entry point. |
 | `ui/window.py` | Main GTK window. |
 | `ui/conversations.py` | GTK conversations page: history, group confirmation, replies. |
 | `ui/status.py` | GTK iPhone page: setup, health, preferences, maintenance. |
-| `ui/status_presenter.py` | Pure presentation rules for the status page. |
+| `ui/status_presenter.py` | Pure presentation rules for the status page (including the optional phone battery/signal suffix). |
+| `ui/saved_choice.py` | Keeps a settings switch on the user's choice while its save and the next status settle. |
 | `ui/client.py` | Asynchronous GTK backend calls and D-Bus invalidations. |
 | `ui/setup_runner.py` | GTK-independent worker for blocking setup operations. |
 | `ui/util.py` | Small UI helpers. |
@@ -169,10 +187,15 @@ All paths are relative to `src/blueferry/` unless noted.
 | `qt/qml/ProximityLockSettings.qml` | Away-lock toggle, grace period, and warning; loaded only for daemons that report it. |
 | `qt/qml/GroupConfirmationDialog.qml` | Group recipient confirmation before sending. |
 | `qt/qml/NewMessageDialog.qml` | New message composition. |
+| `qt/qml/CallsDialog.qml` | Optional phone-calls dialog (list, dial with confirmation, answer, hang up). |
+| `qt/qml/PhoneCallsSettings.qml` | Phone-calls opt-in checkbox; loaded only for daemons that report `calls_enabled`. |
+| `qt/qml/PhoneStatusIndicator.qml` | Optional iPhone battery/signal indicator (loaded only when values are known; plain-text tooltip). |
 | `qt/qml/ExpandingMessageComposer.qml` | Growing message editor. |
 | `qt/qml/MessageBubble.qml` | Message bubble. |
 | `qt/qml/RecentCallsPage.qml` | Opt-in recent-calls list, created through a `Loader`. |
 | `qt/qml/CallHistorySettings.qml` | Call-history opt-in checkboxes in the iPhone settings. |
+| `qt/qml/NowPlayingBar.qml` | Opt-in iPhone now-playing bar with transport buttons. |
+| `qt/qml/MediaControlSettings.qml` | Media-control opt-in checkbox and state; loaded only for daemons that report it. |
 | `quickshell_bridge.py` | Persistent stdin/stdout JSON bridge from Quickshell to the session D-Bus API. |
 
 ### Quickshell client (`data/quickshell/`)
@@ -191,6 +214,8 @@ All paths are relative to `src/blueferry/` unless noted.
 | `ThemePalette.qml` | Pure color/geometry tokens with a system-palette fallback. |
 | `Ferry*.qml` | Styled controls (button, check box, combo box, label, text field, composer, section label, info row). |
 | `QuickshellMessageBubble.qml`, `QuickshellThreadPreview.qml` | Message bubble and thread preview. |
+| `SavedChoice.qml` | The same for Quickshell checkboxes that save through the daemon. |
+| `QuickshellPhoneStatus.qml` | Optional iPhone battery/signal caption in the header (hidden when unknown). |
 
 `data/blueferry-quickshell` is the launcher script, and
 `data/io.weirdware.BlueFerry.xml` is the canonical D-Bus introspection
@@ -221,7 +246,20 @@ contract.
   controls that are not messaging (the opt-in away lock), and `CallHistory1`
   the opt-in mirror of the iPhone's recent calls. Their state is reported
   through `Messages1.GetStatus`, and the compatibility check runs through
-  `Messages1` on the same owner. Identifiers live in `protocol.py`.
+  `Messages1` on the same owner. The opt-in `Media1` interface returns the
+  now-playing snapshot and sends validated media commands; its
+  `NowPlayingChanged` invalidation on `Events1` has no arguments.
+  Identifiers live in `protocol.py`.
+- `Calls1` is the optional, default-off HFP call interface. It is always
+  exported because it also carries the opt-in itself, `SetCallsEnabled`
+  (saved in `settings.json`, `BLUEFERRY_CALLS_ENABLED` only seeds it); while
+  calls are off its other methods fail with `CallsDisabled`, `GetStatus`
+  reports only `calls_enabled=false`, and a missing oFono or modem yields
+  `CallsUnavailable`.
+  Its `CallsChanged` invalidation on `Events1` has no arguments; caller
+  numbers and names are only returned by the rate-limited `ListCalls`.
+  Dialing has its own strict quota. Adding it did not change the API
+  generation.
 - `data/io.weirdware.BlueFerry.xml` is canonical, installed under
   `dbus-1/interfaces`, and checked against the service's dbus-python
   decorators.
@@ -247,8 +285,8 @@ contract.
   in the daemon log.
 - Every public method checks the caller's UID against the backend's and
   applies per-connection plus daemon-wide quotas, with separate limits for
-  sends, contact sync, storage unlock, destructive operations, reads, and
-  status. Reconnecting does not reset daemon-wide limits. Snapshot sizes,
+  sends, contact sync, storage unlock, destructive operations, reads,
+  status, media reads, and media commands. Reconnecting does not reset daemon-wide limits. Snapshot sizes,
   query text, and replies are bounded.
 - `ListThreads` fits an 8 MiB budget by keeping the newest contiguous tail of
   each thread, capped at 500 messages per thread, and includes retained
@@ -312,6 +350,9 @@ contract.
 - **Quickshell**: QML has no generic D-Bus client, so one persistent
   `quickshell_bridge` process handles all messaging, contact, status, and
   preference requests over stdin. Private data never goes in process argv.
+  It sends a `host` event at startup, and its `status` replies also carry
+  `bluetooth_restart_command`: the host's BlueZ restart command (`""` when
+  unknown), used in the ANCS repair hint even while the daemon is down.
   Setup uses the separate short-lived `pairing-*` helpers, because setup
   happens before the daemon is available. Quickshell sends the displayed
   roster token so the backend can reject stale routes. Superseded or
@@ -382,6 +423,27 @@ A change to these rules has to be made in both places.
 - **Bearers:** `bearer_supervisor` keeps BR/EDR and LE connected, independent
   of desktop applets. In full mode a missing LE bearer holds back MAP/PBAP
   reconnects. Compatibility mode leaves LE disabled.
+- **Media (opt-in):** `ams/client` never dials. It follows the bearer
+  supervisor's LE observations and BlueZ owner changes, subscribes after the
+  link settles, and resets without `StopNotify` on loss. `media` owns the
+  command policy; the optional `mpris` adapter owns its bus name only while a
+  player is active. MPRIS broadcasts metadata session-wide by design, which
+  is why it is a separate opt-in from `Media1`.
+- **Stale LE bond (report only):** the same supervisor watches
+  `Bearer.LE1.Disconnected` (polled transitions as a fallback). It sets
+  `le_bond_suspect` only when Classic stays connected across the whole burst,
+  at least five LE links of at most 5 s drop within any minute with reason
+  Timeout, Remote or Authentication, and that rate persists for three
+  minutes (nine when polling). Local, Unknown and Suspend drops never count.
+  The flag changes no connection behaviour: LE dials, resets and the adapter
+  power cycle run as before. An authorized ANCS round trip, a held link, a
+  new bond, a new bluetoothd generation, Classic being gone for two
+  minutes, or ten minutes without a counted drop clears it; the drop count
+  decays after a quiet minute. Detection
+  is off without ANCS and on controllers flagged as ANCS-limited. `GetStatus`
+  carries the flag, the drop count, and a fixed reason token. `doctor`,
+  pairing reports, Qt, GTK, Quickshell and the TUI explain the possible
+  remedy.
 - **Solicitation:** `solicitation_supervisor` keeps the advertisement on air
   until MAP/PBAP and an ANCS Control Point round trip are both healthy. It
   re-registers the advertisement if BlueZ releases it or changes owner.
@@ -390,6 +452,14 @@ A change to these rules has to be made in both places.
   systemd helper that can only set the validated adapter to A/V Hands-Free, as
   permitted by a narrow Polkit rule. No general `btmgmt` or systemd access is
   exposed.
+- **Bluetooth LE switched off:** when the controller supports LE but runs
+  without it, setup detects it, stops full-mode pairing early (after two
+  re-probes, since bluetoothd switches LE on asynchronously) and explains the
+  fix. BlueFerry does not switch LE on itself: under `ControllerMode = bredr`
+  bluetoothd creates no GATT database or LE advertising manager for the
+  adapter, so `btmgmt le on` would not help until bluetoothd restarts in
+  another mode. BlueFerry never edits `/etc/bluetooth/main.conf`; it only
+  reads `ControllerMode` with GKeyFile, the parser bluetoothd itself uses.
 - **Recovery:** `bluetooth_recovery` performs a last-resort power cycle of the
   selected controller only. It runs after a sustained ANCS outage on a setup
   that previously worked, tries an LE-only reset first, and allows one cycle
@@ -407,6 +477,63 @@ A change to these rules has to be made in both places.
   only its state keys through the existing argument-free `StatusChanged`.
 - **Read receipts** go through `read_receipts`, which delays MAP write-back so
   ANCS can still fetch group metadata. Local reads take effect immediately.
+
+## Optional phone calls
+
+- `calls.controller` only observes and drives oFono on the system bus; BlueZ
+  and PipeWire/WirePlumber own the HFP profile and SCO audio. oFono is an
+  optional runtime service: `ServiceUnknown` means "unavailable", retried
+  every 60 s and immediately on an `org.ofono` owner change. Calls carry
+  NO_AUTO_START, so BlueFerry never makes the bus activate oFono. oFono's
+  shipped D-Bus policy only admits root and `at_console`; `AccessDenied` is
+  also "unavailable" and logged once.
+- `Dial` accepts plain numbers only (`+` and digits); `*`/`#` service codes
+  are rejected so a caller cannot reconfigure the phone (for example call
+  forwarding). Keypad symbols remain available as DTMF on an active call.
+  Well-known emergency numbers are refused (they belong on the phone), and
+  every client confirms a number before dialing. `Answer`/`HoldAndAnswer`
+  have their own quota; hanging up is never blocked by it.
+- The modem must end in the configured iPhone's `dev_…` path and be of type
+  `hfp`; the configured adapter wins, then Online, then Powered. iOS needs
+  `Powered=true`, a confirming `PropertyChanged`, then `Online=true`.
+  `Powered` is only requested while the Classic bearer is connected, so an
+  absent phone is not paged; bearer status changes poke the controller.
+- Discovery and bring-up back off 1/2/4/8/15 s, then poll every 30 s; a
+  30 s watchdog retries a modem that never confirms. Replies and signals
+  carry a generation, so an oFono restart or modem removal drops stale
+  state; control replies still reach their D-Bus caller.
+- If a `Powered=true` bring-up times out or is rejected while bluetoothd's
+  own experimental HFP plugin is active (`-E` without `-P hfp`, read from
+  bluetoothd's argv by process name), the state becomes `bluez_conflict`
+  and paging stops until the Classic link returns or oFono makes progress.
+- `stop()` (daemon exit or switching calls off) sends `Powered=false`,
+  flushed and without awaiting a reply, for the modem BlueFerry powered
+  itself; a modem another oFono client powered is left alone.
+- While the phone reports any call, Bluetooth recovery treats the link as
+  busy and does not power-cycle the adapter.
+- Call events go to local desktop sinks only (`handle_call`); they are not
+  persisted and nothing about them is broadcast except `CallsChanged`.
+- Phone status: from `Powered=true` on (oFono creates these atoms in
+  `hfp_pre_sim`, independent of `Online`), the controller watches `Handsfree`
+  and `NetworkRegistration` (only when listed in the modem's `Interfaces`)
+  and reads them with an asynchronous `GetProperties`. A failed read other
+  than a vanished interface (typically `InProgress` while oFono queries
+  `AT+CNUM`) is retried once after 30 s. Values are cleared on
+  `Powered=false`, interface or modem removal, an oFono owner change, and
+  stop.
+- The battery does not need HFP: `phone_battery.py` reads it over LE from
+  the GATT Battery Level characteristic, with BlueZ's `Battery1` as the
+  fallback (async
+  `GetManagedObjects`, `ReadValue`, `StartNotify`; `PropertiesChanged`
+  afterwards) and restarts with bluetoothd. The daemon merges both sources
+  into additive `GetStatus` keys (`null` when unknown; LE wins, only while
+  the phone is connected; signal and network only with calls on) and
+  publishes them with the argument-free `StatusChanged` only when a shown
+  value changed, at most every 10 s. Calls-state changes are coalesced per
+  main-loop iteration. The opt-in low-battery warning (saved in
+  `settings.json`, `Messages1.SetPhoneBatteryWarning`) goes to sinks through
+  `handle_phone_battery_low` and fires once per discharge cycle (and again
+  after a daemon restart).
 
 ## Storage and privacy
 
@@ -445,6 +572,18 @@ A change to these rules has to be made in both places.
   policy applies exact bundle-ID allow/block rules first and delivers content
   only to an ephemeral popup sink, never retained or broadcast. Apple Messages
   keeps only the fields needed for group correlation.
+- **ANCS actions** (off by default; saved in `settings.json`,
+  `BLUEFERRY_ANCS_ACTIONS` is the initial value): action labels
+  are app-defined content, so they are requested only while notification
+  content is shown, only for non-Messages notifications that announce an
+  action, shown only as popup buttons (markup characters removed), and never
+  retained, logged, or broadcast. A phone action runs only after a click on its
+  button, once per notification, and only with the content-free token of the
+  event that offered it: any later event for the UID, a PreExisting replay, or
+  a session reset retires the offer and closes its popup. Actions go through
+  the serialized Control Point queue. Clients only toggle the preference
+  (`SetAncsNotificationActions`); no D-Bus method performs an action, because
+  clients never see ANCS notifications or UIDs.
 - **Logs** exclude message bodies, notification text, and recipient
   identities at every level. Markup and terminal output are escaped at their
   display boundaries.
@@ -463,12 +602,23 @@ A change to these rules has to be made in both places.
   activated. It is autostarted through a package-owned
   `default.target.wants` link and skipped by `ConditionPathExists` when no
   pairing configuration exists.
+- Without systemd, `service_manager` treats the session bus as the service
+  manager: start is D-Bus activation, and stop signals the same-user process
+  the bus daemon reports as the name owner (SIGTERM, SIGKILL after 180
+  seconds), then waits for the name to disappear. The caller's timeout bounds
+  the whole request; when it ends first the request fails with SIGTERM still
+  in effect, like a timed-out `systemctl stop`. A host booted with systemd
+  but without `/usr/bin/systemctl` (NixOS) takes this path too. Only a running or enabled
+  OpenRC user service (`packaging/openrc/blueferry`) on the desktop's own bus
+  is driven through `rc-service --user`. Neither path has the unit's
+  sandboxing.
 - D-Bus is published before hardware work, and `GetStatus` reports
   `initializing` and degraded state explicitly.
 - Packages install release and source-SHA markers. The daemon publishes them
   as `_build_id` and exits with status 75 when the markers change, so systemd
-  restarts it. Clients compare `_build_id` and fall back to a serialized
-  restart. Package scripts never address other users' service managers.
+  (or OpenRC's supervisor) restarts it. Clients compare `_build_id` and fall
+  back to a serialized restart. Package scripts never address other users'
+  service managers.
 - All external commands go through `commands.run_command`. Lifecycle tests
   replace marker reads and command runners, so they can never restart a real
   service.
