@@ -41,7 +41,7 @@ sequenceDiagram
 
 ## How to turn it on
 
-In the KDE client, open the iPhone settings and check **Keep the iPhone's
+In the KDE, GTK or Quickshell client, open the iPhone settings and check **Keep the iPhone's
 recent calls** under **Call History**. **Notify me about missed calls**
 controls the popups. Or from a terminal:
 

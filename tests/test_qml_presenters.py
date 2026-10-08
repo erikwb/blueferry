@@ -3012,3 +3012,47 @@ def test_quickshell_media_checkboxes_are_opt_in_and_the_player_needs_media_contr
     assert QMetaObject.invokeMethod(mpris, "clicked")
     assert calls[-1] == ("set_mpris_player", {"enabled": True})
     close()
+
+
+def test_quickshell_call_history_checkboxes_are_opt_in(qml_engine, quickshell_setup):
+    base = {"notification_policy": "all", "contacts_only_notifications": False}
+    page, calls, close = _quickshell_settings_page(qml_engine, quickshell_setup, base)
+    history = page.findChild(QObject, "callHistoryCheckBox")
+    popups = page.findChild(QObject, "missedCallPopupsCheckBox")
+    note = page.findChild(QObject, "callHistoryNote")
+    assert history is not None and popups is not None and note is not None
+    # Daemons that do not report the keys do not support the settings.
+    for item in (history, popups, note):
+        assert item.property("visible") is False
+
+    status = {**base, "call_history_enabled": False, "missed_call_notifications": True}
+    page.setProperty("status", status)
+    QGuiApplication.processEvents()
+    assert history.property("visible") is True
+    assert history.property("checked") is False
+    assert history.property("enabled") is True
+    assert popups.property("checked") is True
+    # Missed-call popups are only offered while call history is on.
+    assert popups.property("enabled") is False
+    assert "erases the retained calls" in note.property("text")
+
+    page.setProperty("busy", {"callHistory": True})
+    QGuiApplication.processEvents()
+    assert history.property("enabled") is False
+    page.setProperty("busy", {})
+    assert QMetaObject.invokeMethod(history, "toggle")
+    assert QMetaObject.invokeMethod(history, "clicked")
+    assert calls == [
+        ("set_call_history", {"enabled": True, "missed_call_notifications": True}),
+    ]
+
+    page.setProperty("status", {**status, "call_history_enabled": True})
+    QGuiApplication.processEvents()
+    assert history.property("checked") is True
+    assert popups.property("enabled") is True
+    assert QMetaObject.invokeMethod(popups, "toggle")
+    assert QMetaObject.invokeMethod(popups, "clicked")
+    assert calls[-1] == (
+        "set_call_history", {"enabled": True, "missed_call_notifications": False},
+    )
+    close()

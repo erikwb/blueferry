@@ -43,6 +43,8 @@ ShellRoot {
   readonly property SavedChoice mprisPlayer: SavedChoice {}
   readonly property SavedChoice proximityLock: SavedChoice {}
   readonly property SavedChoice callsChoice: SavedChoice {}
+  readonly property SavedChoice callHistory: SavedChoice {}
+  readonly property SavedChoice missedCallPopups: SavedChoice {}
   property bool storagePolicyBusy: false
   property bool storageUnlockBusy: false
 
@@ -239,6 +241,8 @@ ShellRoot {
         root.mprisPlayer.reported(result.media_mpris_enabled === true)
         root.proximityLock.reported(result.proximity_lock_enabled === true)
         root.callsChoice.reported(result.calls_enabled === true)
+        root.callHistory.reported(result.call_history_enabled === true)
+        root.missedCallPopups.reported(result.missed_call_notifications !== false)
         var storagePolicy = result.storage_policy || "encrypted"
         root.storagePolicy = ["encrypted", "plaintext", "none"].indexOf(storagePolicy) >= 0
           ? storagePolicy : "encrypted"
@@ -320,6 +324,16 @@ ShellRoot {
             ? result.proximity_lock_enabled === true : root.proximityLock.value,
           root.statusBusy)
         root.reload()
+      } else if (method === "set_call_history") {
+        var historySaved = typeof result === "object" && result !== null
+        root.callHistory.saved(
+          historySaved ? result.call_history_enabled === true : root.callHistory.value,
+          root.statusBusy)
+        root.missedCallPopups.saved(
+          historySaved ? result.missed_call_notifications !== false
+                       : root.missedCallPopups.value,
+          root.statusBusy)
+        root.reload()
       } else if (method === "set_calls_enabled") {
         root.callsChoice.saved(
           typeof result === "object" && result !== null
@@ -394,6 +408,11 @@ ShellRoot {
         root.proximityLock.failed(root.backendStatus.proximity_lock_enabled === true)
         root.errorText = message || "Could not save away lock preference"
         root.reload()
+      } else if (method === "set_call_history") {
+        root.callHistory.failed(root.backendStatus.call_history_enabled === true)
+        root.missedCallPopups.failed(root.backendStatus.missed_call_notifications !== false)
+        root.errorText = message || "Could not save call history preference"
+        root.reload()
       } else if (method === "set_calls_enabled") {
         root.callsChoice.failed(root.backendStatus.calls_enabled === true)
         root.errorText = message || "Could not save phone calls preference"
@@ -423,6 +442,10 @@ ShellRoot {
           root.proximityLock.failed(root.backendStatus.proximity_lock_enabled === true)
         if (root.callsChoice.busy)
           root.callsChoice.failed(root.backendStatus.calls_enabled === true)
+        if (root.callHistory.busy)
+          root.callHistory.failed(root.backendStatus.call_history_enabled === true)
+        if (root.missedCallPopups.busy)
+          root.missedCallPopups.failed(root.backendStatus.missed_call_notifications !== false)
         root.storagePolicyBusy = false
         root.storageUnlockBusy = false
         root.errorText = message
@@ -1056,6 +1079,9 @@ ShellRoot {
             media_mpris_enabled: root.mprisPlayer.value
           }, root.backendStatus.calls_enabled === undefined ? {} : {
             calls_enabled: root.callsChoice.value
+          }, root.backendStatus.call_history_enabled === undefined ? {} : {
+            call_history_enabled: root.callHistory.value,
+            missed_call_notifications: root.missedCallPopups.value
           })
           busy: ({notifications: root.notificationPolicyBusy,
                   contactsOnly: root.contactsOnlyNotificationsBusy,
@@ -1064,6 +1090,7 @@ ShellRoot {
                   mprisPlayer: root.mprisPlayer.busy,
                   proximityLock: root.proximityLock.busy,
                   calls: root.callsChoice.busy,
+                  callHistory: root.callHistory.busy || root.missedCallPopups.busy,
                   storage: root.storagePolicyBusy})
           visible: root.phoneSettingsVisible
           Layout.fillWidth: true
@@ -1083,6 +1110,10 @@ ShellRoot {
             if (method === "set_mpris_player") root.mprisPlayer.request(args.enabled)
             if (method === "set_proximity_lock") root.proximityLock.request(args.enabled)
             if (method === "set_calls_enabled") root.callsChoice.request(args.enabled)
+            if (method === "set_call_history") {
+              root.callHistory.request(args.enabled)
+              root.missedCallPopups.request(args.missed_call_notifications)
+            }
             if (method === "set_storage_policy") {
               if (args.policy === "encrypted") root.storageUnlockAttempted = true
               root.storagePolicyBusy = true

@@ -670,7 +670,8 @@ off by default because it retains who called you and when. It reuses the
 existing PBAP connection, so the iPhone's **Sync Contacts** permission is all
 it needs; call history itself never places, answers, or listens to calls.
 
-Turn it on in the Qt client's iPhone settings (**Call History**) or from a
+Turn it on in the iPhone settings of the Qt, GTK or Quickshell client
+(**Call History**) or from a
 terminal; it applies at once:
 
 ```bash

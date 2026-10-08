@@ -42,7 +42,7 @@ sequenceDiagram
 
 ## Einschalten
 
-Im KDE-Client die iPhone-Einstellungen öffnen und unter **Call History**
+Im KDE-, GTK- oder Quickshell-Client die iPhone-Einstellungen öffnen und unter **Call History**
 **Keep the iPhone's recent calls** anhaken. **Notify me about missed calls**
 steuert die Mitteilungen. Oder im Terminal:
 
