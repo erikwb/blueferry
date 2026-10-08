@@ -245,7 +245,14 @@ class CallHistoryRepository:
             seeded = seen is None
             known = dict(seen or {})
             missed = [record for record in kept if record.direction == MISSED]
-            new_missed = [] if seeded else _unseen(missed, known, kept)
+            pulled = DIRECTIONS if directions is None else directions
+            new_missed = [] if seeded else _unseen(
+                missed, known, kept,
+                rerendered=_rerendered(
+                    [record for record in previous if record.direction in pulled],
+                    records,
+                ),
+            )
             for record in missed:
                 known[record.key] = record.occurred_at.timestamp()
             floor = cutoff.timestamp()
@@ -376,19 +383,39 @@ _RERENDER_STEP = timedelta(minutes=15)
 _RERENDER_MAX = timedelta(hours=26)
 
 
+def _rerendered(previous: Sequence[CallRecord], listed: Sequence[CallRecord]) -> bool:
+    """Whether the phone may have re-rendered every timestamp of this listing.
+
+    A zone or DST change rewrites all calls at once, so when any retained call
+    of the pulled lists is still listed with exactly the same text, nothing
+    was re-rendered and every unknown missed call is new.
+    """
+    listed_keys = {record.key for record in listed}
+    return not any(record.key in listed_keys for record in previous)
+
+
 def _unseen(
-    missed: Sequence[CallRecord], known: dict[str, float], current: Sequence[CallRecord],
+    missed: Sequence[CallRecord],
+    known: dict[str, float],
+    current: Sequence[CallRecord],
+    *,
+    rerendered: bool = True,
 ) -> list[CallRecord]:
     """Missed calls not announced before, tolerating a phone-side re-render.
 
-    A missed call counts as already announced when an announced key for the
-    same number differs from it only by a whole number of quarter hours of
-    wall-clock time (at most 26 h) and that earlier rendering is gone from
-    the current list. A genuinely new call from the same number leaves the
-    earlier one in the list, so it is still announced.
+    Only when the listing looks re-rendered as a whole (see ``_rerendered``),
+    a missed call counts as already announced when an announced key for the
+    same number differs from it by the listing's common shift: a whole number
+    of quarter hours of wall-clock time (at most 26 h), the same for every
+    matched call, with that earlier rendering gone from the current list. A
+    genuinely new call from the same number leaves the earlier one in the
+    list, so it is still announced.
     """
+    fresh = [record for record in missed if record.key not in known]
+    if not fresh or not rerendered:
+        return fresh
     present = {record.key for record in current}
-    candidates: dict[tuple[str, str], list[tuple[str, datetime]]] = {}
+    candidates: dict[tuple[str, str], list[datetime]] = {}
     for key in known:
         if key in present:
             continue
@@ -398,26 +425,47 @@ def _unseen(
         direction, raw_time, number = parts
         clock = wall_clock(raw_time)
         if clock is not None:
-            candidates.setdefault((direction, number), []).append((key, clock))
-    fresh: list[CallRecord] = []
-    for record in missed:
-        if record.key in known:
-            continue
+            candidates.setdefault((direction, number), []).append(clock)
+
+    def shifts(record: CallRecord) -> set[timedelta]:
         clock = wall_clock(record.raw_time)
-        options = candidates.get((record.direction, record.number_identity), [])
-        match = None
-        if clock is not None:
-            for index, (_key, earlier) in enumerate(options):
-                shift = abs(clock - earlier)
-                if shift <= _RERENDER_MAX and shift % _RERENDER_STEP == timedelta(0):
-                    match = index
-                    break
-        if match is None:
-            fresh.append(record)
-        else:
+        if clock is None:
+            return set()
+        found = set()
+        for earlier in candidates.get((record.direction, record.number_identity), []):
+            shift = clock - earlier
+            if (
+                shift != timedelta(0)
+                and abs(shift) <= _RERENDER_MAX
+                and shift % _RERENDER_STEP == timedelta(0)
+            ):
+                found.add(shift)
+        return found
+
+    options = {record.key: shifts(record) for record in fresh}
+    # A re-render moves every call by one offset: use the offset that
+    # explains the most calls and only that one.
+    support: dict[timedelta, int] = {}
+    for found in options.values():
+        for shift in found:
+            support[shift] = support.get(shift, 0) + 1
+    if not support:
+        return fresh
+    common = max(support, key=lambda shift: (support[shift], -abs(shift)))
+    remaining: dict[tuple[str, str], list[datetime]] = {
+        key: list(value) for key, value in candidates.items()
+    }
+    unseen: list[CallRecord] = []
+    for record in fresh:
+        clock = wall_clock(record.raw_time)
+        pool = remaining.get((record.direction, record.number_identity), [])
+        target = None if clock is None else clock - common
+        if common in options[record.key] and target in pool:
             # Each earlier rendering explains at most one current call.
-            options.pop(match)
-    return fresh
+            pool.remove(target)
+        else:
+            unseen.append(record)
+    return unseen
 
 
 def clear_call_history(path: Path | None = None) -> None:

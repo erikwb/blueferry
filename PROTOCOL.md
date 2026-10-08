@@ -353,9 +353,13 @@ specification and third-party reports, not captured observations:
   drop MAP and PBAP; a session that really vanished is already noticed through
   `InterfacesRemoved`/`NameOwnerChanged`.
 - When the phone's own time zone or DST changes, iOS is expected to re-render
-  offset-free timestamps of existing calls. A missed call whose text differs
-  from an announced one for the same number by whole quarter hours (at most
-  26 h), while the earlier text is gone from the list, is not announced again.
+  offset-free timestamps of existing calls, all of them at once. Only when no
+  previously retained call of the pulled lists is still listed with the same
+  text is a listing treated as re-rendered; then a missed call whose text
+  differs from an announced one for the same number by the listing's common
+  shift (whole quarter hours, at most 26 h, the shift that explains the most
+  calls), while the earlier text is gone from the list, is not announced
+  again.
 - BlueFerry requests `vcard30`. vCard 3.0 text escapes (`\;`, `\,`, `\\`,
   `\n`) are resolved; vCard 2.1 `QUOTED-PRINTABLE`/`CHARSET` encodings are
   **not** decoded, on the assumption that iOS honors the requested format.
