@@ -22,9 +22,20 @@ class AncsEvent:
     subtitle: str
     body: str
 
+    # iOS-supplied action button labels. Empty unless BLUEFERRY_ANCS_ACTIONS
+    # is enabled and the Notification Source flags announced the action.
+    # They are presentation strings, never retained or put on D-Bus.
+    positive_action_label: str = ""
+    negative_action_label: str = ""
+    # Opaque, content-free id of the offer above. A desktop click must hand
+    # it back so a reused UID can never inherit an older popup's buttons.
+    action_token: int = 0
+
     seen_at: datetime = field(
         default_factory=lambda: datetime.now(timezone.utc)
     )
+    # ANCS CategoryID from the Notification Source header (0 = Other).
+    category: int = 0
 
     @property
     def display_title(self) -> str:
@@ -32,6 +43,10 @@ class AncsEvent:
         if self.title:
             return self.title
         return self.app_name or self.app_id or "Notification"
+
+    @property
+    def has_actions(self) -> bool:
+        return bool(self.positive_action_label or self.negative_action_label)
 
     def correlation_dict(self) -> dict:
         """Return only the Messages fields required for group correlation."""

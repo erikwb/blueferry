@@ -15,7 +15,13 @@ from blueferry.limits import (
     MAX_CONTACT_ADDRESSES_PER_CARD,
     MAX_CONTACT_NAME_CHARS,
 )
-from blueferry.models import BackendStatus, EventRecord, Thread
+from blueferry.models import (
+    BackendStatus,
+    CallHistoryEntry,
+    CallsSnapshot,
+    EventRecord,
+    Thread,
+)
 
 T = TypeVar("T")
 
@@ -34,8 +40,24 @@ def decode_mapping(value: object) -> dict[str, Any]:
     return decode_json(value, dict)
 
 
+def decode_open_map(value: object) -> list[dict[str, str]]:
+    """Notification click rules: ``bundle_id``, ``target`` and ``kind`` strings."""
+    rules = []
+    for item in decode_json(value, list):
+        if not isinstance(item, Mapping):
+            continue
+        rule = {key: item.get(key) for key in ("bundle_id", "target", "kind")}
+        if all(isinstance(field, str) and field for field in rule.values()):
+            rules.append({key: str(field) for key, field in rule.items()})
+    return rules
+
+
 def decode_status(value: object) -> BackendStatus:
     return BackendStatus.from_dict(decode_mapping(value))
+
+
+def decode_calls(value: object) -> CallsSnapshot:
+    return CallsSnapshot.from_dict(decode_mapping(value))
 
 
 def decode_threads(value: object) -> list[Thread]:
@@ -88,3 +110,12 @@ def decode_contact_records(value: object) -> list[tuple[str, list[str], list[str
         for item in items
         if isinstance(item, Mapping)
     ]
+
+
+def decode_call_history(value: object) -> list[CallHistoryEntry]:
+    """Decode ListCallHistory, dropping entries a newer daemon may add."""
+    items = decode_json(value, list)
+    decoded = (
+        CallHistoryEntry.from_dict(item) for item in items if isinstance(item, Mapping)
+    )
+    return [entry for entry in decoded if entry is not None]

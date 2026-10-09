@@ -16,7 +16,9 @@ Auf der iPhone-Seite des Clients wählst du einen von drei Modi:
 Mitteilungen anderer Apps werden angezeigt und danach verworfen. Sie landen
 nie im Nachrichtenverlauf und werden nie an andere Programme verteilt.
 Nachrichten, die sowohl über MAP als auch über ANCS ankommen, erscheinen nur
-einmal.
+einmal. Die ANCS-Kopie einer Mitteilung aus Apple Messages (Titel, Untertitel
+und höchstens die ersten 1024 Byte des Texts) bleibt im lokalen Verlauf, im unten
+gewählten Speichermodus, weil sie die Gruppenangaben enthält, die MAP fehlen.
 
 Standardmäßig markiert das Schließen einer Nachrichtenmitteilung die
 Nachricht auch auf dem iPhone als gelesen. Manche „Nicht stören“- oder
@@ -48,6 +50,14 @@ ohne Inhalt:
 journalctl --user -u blueferry -f | grep "ANCS app observed"
 ```
 
+### Klickregeln
+
+[Klickregeln](notification-click-rules.md) öffnen beim Klick auf das Popup
+einer App eine feste Adresse oder App. Nichts aus der Mitteilung wird
+weitergegeben. Die Regeln liegen unverschlüsselt in `settings.json`; der
+Benachrichtigungsserver sieht sie nie, nur eine feste Aktion „Öffnen“ und
+eine zufällige ID pro Popup.
+
 ## Lokale Daten
 
 BlueFerry speichert Nachrichtenverlauf und einen Kontakt-Cache, damit
@@ -68,6 +78,12 @@ Unterhaltungen einen Neustart überstehen. Du entscheidest, wie:
   Gruppenbestätigungen folgen demselben Speichermodus.
 - `blueferry history-clear` löscht den lokalen Nachrichtenverlauf.
 
+Mit den optionalen [Kontaktfotos](contact-photos.md) enthält der
+Kontakt-Cache auch die Bilder deiner Kontakte, im selben Speichermodus. Für
+Popup-Symbole legt das Backend kurzlebige Kopien, die nur dir gehören, in
+`$XDG_RUNTIME_DIR/blueferry` ab. Schaltest du die Option aus, löscht der
+nächste Backend-Start die gespeicherten Fotos.
+
 Die Verschlüsselung schützt gespeicherte Daten. Andere Programme, die unter
 deinem Benutzer laufen, können trotzdem die D-Bus-API von BlueFerry nutzen
 und bei entsperrtem Schlüsselbund unter Umständen dessen Geheimnisse lesen.
@@ -80,6 +96,21 @@ und bei entsperrtem Schlüsselbund unter Umständen dessen Geheimnisse lesen.
 | `~/.local/state/blueferry/` | Nachrichtenverlauf, Kontakt-Cache, bereinigte Kopplungsberichte |
 
 Beim Deinstallieren der Pakete bleiben beide Ordner erhalten.
+
+## Einmalcodes
+
+Das [Kopieren von Einmalcodes](otp-autocopy.md) ist standardmässig aus.
+Schaltest du es ein, legt das Backend Bestätigungscodes aus neuen
+Nachrichten in die Zwischenablage des Desktops, wo jedes Programm, das die
+Zwischenablage liest, sie sehen kann. Der Code wird nie geloggt,
+gespeichert oder über BlueFerrys D-Bus-Schnittstelle veröffentlicht. Mit
+`BLUEFERRY_OTP_CLEAR_SECONDS` gibt das Backend beim Ablauf des Timers nur
+seine eigene Zwischenablage-Quelle frei; beim Beenden auch ohne Timer.
+Es liest die Zwischenablage nicht zurück und leert keine Auswahl eines
+anderen Programms. Kopien in Persistenzwerkzeugen oder Zwischenablage-Managern
+bleiben unter deren Kontrolle. Die erste Wayland-Kopie wartet auf die
+Prüfung der Sensitiv-Markierung; Manager müssen diese beachten, um Codes
+aus ihrem Verlauf auszuschließen.
 
 ## Einstellungen in local.env
 
@@ -97,9 +128,22 @@ Bearbeite `~/.config/blueferry/local.env` und starte den Dienst danach mit
 | `BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE` | `true` | Anrufe und Musik auf dem iPhone lassen |
 | `BLUEFERRY_ANCS_APP_ALLOWLIST` | nicht gesetzt | Siehe [Apps filtern](#apps-filtern) |
 | `BLUEFERRY_ANCS_APP_BLOCKLIST` | nicht gesetzt | Siehe [Apps filtern](#apps-filtern) |
+| `BLUEFERRY_OTP_AUTOCOPY` | `false` | Einmalcodes in die Zwischenablage kopieren, siehe [Einmalcodes](#einmalcodes) |
+| `BLUEFERRY_OTP_CLEAR_SECONDS` | `0` | Kopierten Code nach so vielen Sekunden entfernen (0 = behalten, max. 600) |
+| `BLUEFERRY_CONTACT_PHOTOS` | `false` | Kontaktfotos für Avatare und Popup-Symbole behalten; siehe [Kontaktfotos](contact-photos.md) |
 
 Die Kopplung schreibt Telefon- und Adapter-Einstellungen in dieselbe Datei.
 Ändere diese durch eine neue Kopplung statt von Hand.
+
+## Mediensteuerung
+
+Die optionale [Mediensteuerung](media-control.md) ist standardmäßig aus.
+Ist sie an, bleiben Titel, Interpret, Album und App-Name in BlueFerry; Clients
+holen sie über die authentifizierte D-Bus-Schnittstelle. Zu deiner Musik
+wird nichts auf die Festplatte oder ins Protokoll geschrieben. Gespeichert
+wird nur die Wahl an/aus, in `settings.json`. Die getrennte MPRIS-Option macht
+den aktuellen Titel bewusst für jede Anwendung in deiner Sitzung lesbar, wie
+bei jedem Desktop-Musikplayer.
 
 ## Anrufe und Musik bleiben auf dem iPhone
 

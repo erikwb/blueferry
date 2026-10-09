@@ -6,8 +6,8 @@ maintainers. These are empirical observations, not promises made by Apple.
 
 Unless stated otherwise, the behavior was observed with an iPhone 16 Pro Max
 running iOS 26.5 and Linux controllers supporting both BR/EDR and LE. MAP/PBAP
-behavior spans BlueZ 5.72 or newer; the dual-bearer ANCS flow requires BlueZ
-5.86 or newer with its bearer API exposed. The complete MAP, PBAP, and ANCS
+behavior spans BlueZ 5.72 or newer; the dual-bearer ANCS flow described here
+requires BlueZ 5.86 or newer with its bearer API exposed. The complete MAP, PBAP, and ANCS
 combination has been exercised with a MediaTek MT7922. A later first-attempt
 clean test also completed all three on a previously tested Intel controller
 with an iPhone 17 Pro Max running an iOS 27 beta. Other iPhone, iOS, BlueZ, and
@@ -31,6 +31,11 @@ during pairing. The reliable setup has these properties:
 - The working advertisement also contains inert private/test manufacturer and
   service identifiers `0xffff` and `0x9999`, following the behavior established
   by ancs4linux. They do not claim an Apple or hardware-vendor identity.
+  With tx-power they need 40 bytes, which fits only extended advertising. When
+  BlueZ rejects that payload, the next registration omits the service
+  identifier and tx-power and keeps the manufacturer identifier, which fits
+  the 31 bytes of a legacy advertising packet. This fallback follows BlueZ's
+  size accounting and has not been exercised on such a controller.
 - Linux discovers the iPhone and initiates the connection to that selected
   device; the user does not start pairing by tapping the computer under iOS
   **Other Devices**. The pre-bond Linux identity does not need a globally
@@ -112,10 +117,30 @@ Bluetooth 3-only controller. The Broadcom MAP/PBAP success in
 [#17](https://github.com/erikwb/blueferry/issues/17) also supports LE advertising.
 ANCS connection failures on those adapters do not imply missing LE hardware.
 
+`btmgmt info` lists supported and current settings separately. A controller
+can support `le` while running with it switched off, typically because
+`/etc/bluetooth/main.conf` sets `ControllerMode = bredr`. The ANCS
+advertisement then never activates. In
+[#192](https://github.com/erikwb/blueferry/issues/192) a Broadcom BCM2045A0
+(`0a5c:6412`, HCI version 7) listed `le` and `advertising` as supported but
+`br/edr powered secure-conn ssp` as current, bonded over Classic, and failed at
+`advert_unavailable` two milliseconds after registering the advertisement.
+The capability probe therefore reports `le_disabled` (with the configured
+`ControllerMode` as a hint); full-mode pairing probes twice more and then stops
+before any pairing transaction with outcome reason `le_disabled`, and
+compatibility mode skips the advertisement. Switching LE on with
+`btmgmt le on` is not a fix under `ControllerMode = bredr`: BlueZ's
+`adapter_register()` skips the GATT database and `LEAdvertisingManager1` in
+that mode, so no advertisement can register until bluetoothd restarts in dual
+or LE mode. In dual mode bluetoothd re-enables LE itself when it starts. This is distinct from controllers whose advertisement
+BlueZ rejects for its size. `le_disabled` was verified with recorded settings
+only, not on that controller.
+
 BlueFerry therefore resolves two delivery modes. Full mode additionally
-requires BlueZ 5.86 or newer. Its bearer API must already be active or be
-activatable through the package's
-systemd drop-in before pairing proceeds. Compatibility mode is selected
+requires a BlueZ on which ANCS can be supervised. On BlueZ 5.86 or newer its
+bearer API must already be active or be activatable through the package's
+systemd drop-in before pairing proceeds. BlueZ before 5.84 has no bearer API
+and needs no activation (see "ANCS without bearer state"). Compatibility mode is selected
 automatically when ANCS is unavailable or explicitly for iOS 18 and earlier.
 It still broadcasts ANCS solicitation when the controller can advertise,
 because that signal exposes the MAP/PBAP permissions, but persists
@@ -239,9 +264,13 @@ list or conversation ID. On the tested iOS release, the corresponding Apple
 Messages ANCS notification supplies the missing display information:
 
 - ANCS app ID is `com.apple.MobileSMS`.
-- The notification body matches the MAP message body. ANCS bodies requested by
-  BlueFerry are capped at 256 characters, so a longer MAP body can match that
-  exact prefix.
+- The notification body matches the MAP message body. BlueFerry asks for at
+  most 1024 bytes of message text (titles and subtitles: 128 bytes); iOS cuts
+  longer text to that many UTF-8 bytes, so a longer MAP body can match that
+  prefix. Releases before 1024 asked for 256 bytes, and rows they stored are
+  still matched against a 256-byte prefix. A cut can land up to three bytes
+  short of the cap on a character boundary, or inside a character, which the
+  parser decodes as U+FFFD; correlation allows for both.
 - For the observed unnamed group, the title is the sender and the subtitle is
   shaped like `To you & participant` (with further names separated by commas
   or ampersands).
@@ -277,6 +306,15 @@ The iPhone phonebook is available through BlueZ's
   zero-byte file.
 - vCards contain `FN`, multiple `TEL` values, and `EMAIL` values. Retaining
   emails is necessary for contacts that exist only as Apple-ID destinations.
+- BlueFerry sends no `Fields` filter, and BlueZ then omits the PBAP Filter
+  application parameter. The PBAP specification treats a missing filter as
+  "all attributes", so inline `PHOTO` values are already part of this single
+  bulk pull whether or not BlueFerry keeps them. gutbash/blue reports iOS
+  including photos without a filter. The opt-in contact-photo feature
+  therefore reuses the same pull rather than adding a second photo-only pull
+  or per-entry `Pull` calls. BlueFerry itself has not captured a photo-bearing
+  iOS phonebook yet, so how iOS encodes PHOTO (vCard 3.0 `ENCODING=b`,
+  folded base64, JPEG) is expected but unverified.
 - Small or fast BlueZ transfers can disappear from D-Bus with status `gone`
   just before the output file becomes visible. Preserve the initial transfer
   properties and allow a short, bounded file-visibility grace period.
@@ -284,6 +322,49 @@ The iPhone phonebook is available through BlueZ's
 Contact names are display data, not identities. Phone numbers and email
 addresses are normalized and stored separately; a name that resolves to more
 than one address must remain ambiguous.
+
+### Call history (unverified on hardware)
+
+BlueFerry's opt-in call history relies on the PBAP call-history phonebooks,
+selected with `Select("int", "ich" | "och" | "mch")` and pulled with the same
+`PullAll` filters as the main phonebook. **This path has not yet been
+exercised against an iPhone**; the following are expectations from the PBAP
+specification and third-party reports, not captured observations:
+
+- Entries carry `X-IRMC-CALL-DATETIME;MISSED|RECEIVED|DIALED:<timestamp>`
+  plus `TEL` and, for known callers, `N`/`FN`. Timestamps without `Z` or an
+  offset are treated as local time.
+- iOS is reported to fill `ich`, `och`, and `mch`, while the combined `cch`
+  listing is unreliable, so BlueFerry pulls the three lists and merges them.
+  A call present in both `ich` and `mch` is treated as missed.
+- An empty listing is a valid answer (for example, no missed calls).
+- PBAP offers no change notification. BlueFerry pulls when the ANCS
+  Notification Source reports a new `MissedCall` notification (only `mch`) or
+  the removal of an `IncomingCall` one (all three lists), and otherwise polls
+  only `mch`. That iOS removes the `IncomingCall` notification when a call is
+  answered, declined or missed, and writes its call log within the
+  five-second coalescing delay, is assumed, not observed.
+- Automatic pulls share the single OBEX worker, so they follow the
+  contact-sync MAP gating (defer while MAP reconnects, three-minute grace when
+  MAP never connected). Each listing is a separate worker job bounded to
+  45 seconds of transfer, so a queued MAP send never waits behind a whole
+  sync. A `NoReply` or transfer timeout from these optional pulls is not
+  reported to the session manager (which would drop MAP and PBAP); only
+  "object gone" errors are.
+- When the phone's own time zone or DST changes, iOS is expected to re-render
+  offset-free timestamps of existing calls. A missed call whose text differs
+  from an announced one for the same number by whole quarter hours (at most
+  26 h), while the earlier text is gone from the list, is not announced again.
+- BlueFerry requests `vcard30`. vCard 3.0 text escapes (`\;`, `\,`, `\\`,
+  `\n`) are resolved; vCard 2.1 `QUOTED-PRINTABLE`/`CHARSET` encodings are
+  **not** decoded, on the assumption that iOS honors the requested format.
+- Numbers are compared digits-only with the `00` international prefix folded
+  into the `+` form, so `+41…` and `0041…` are one caller.
+- Offset-free timestamps are interpreted in the desktop's time zone, so the
+  "announce only calls younger than 12 hours" rule is measured there too.
+
+Record the phone model, iOS version, and BlueZ version here once the behavior
+has been observed.
 
 ## OBEX lifecycle
 
@@ -380,6 +461,34 @@ bootstrap. If BlueZ cannot keep the solicitation registered, bounded outbound
 LE retries remain enabled rather than treating an unavailable inbound path as
 primed.
 
+### ANCS without bearer state
+
+BlueZ before 5.84 has no `org.bluez.Bearer` interfaces. `Device1.Connected` is
+true while either bearer is up, there is no LE-only `Connect` or `Disconnect`,
+and `Device1.PreferredBearer` does not exist. This section follows BlueZ's
+`src/device.c` and `src/gatt-client.c`; it has not been validated on hardware.
+
+The supervisor distinguishes a missing bearer interface (`InvalidArgs`, "No
+such interface") from a failed read. An aggregate `Connected=false` rules LE
+out. An aggregate `true` leaves LE unknown and only permits a GATT probe. No
+outbound LE dial and no LE reset is attempted; the solicitation advertisement
+is the only way the LE link arrives. The supervisor does not dial Classic
+there either, since an untyped `Device1.Connect` may select LE on such a
+BlueZ; the OBEX profiles open Classic, as they do in compatibility mode.
+
+The GATT side needs no bearer state. `StartNotify` on a retained
+characteristic with no ATT link succeeds, and bluetoothd completes the
+registration itself when LE connects and repeats it on every reconnect; a
+second `StartNotify` in the meantime returns `InProgress`. A Control Point
+write with no ATT link fails locally as "Not connected". BlueFerry therefore
+registers once, then uses the content-free authorization request as the
+liveness test: a local failure is retried with backoff up to one minute, and a
+Data Source reply proves the transport. A proven transport is rechecked every
+minute. `Device1.ServicesResolved` is cleared whenever either bearer drops and
+set again once one resolves, so a change in it triggers a probe at once.
+Registrations are never stopped from a failure path. Guarded Bluetooth power
+cycling stays disabled here because it requires an observed LE state.
+
 Solicitation remains registered until both MAP/PBAP and end-to-end ANCS are
 healthy, subject to a three-minute minimum permission window. It is restored
 when LE or either protocol becomes unhealthy, when BlueZ releases it, and when
@@ -406,6 +515,43 @@ write keeps solicitation on. A previously authorized Control Point failure or
 timeout escalates to one serialized `Bearer.LE1.Disconnect`; MAP/PBAP stay
 available and LE rebuilds behind the profile-ordering gate.
 
+A stale LE bond looks different from an absent phone. Observed with
+btmon on an Intel AX200, BlueZ 5.87, Linux 7.2.8 and iOS 27: after the bond
+had been removed on only one side, the iPhone still connected over LE about
+every two seconds and offered ANCS during GATT discovery. Every `LE Start
+Encryption` with the stored LTK then failed (`Encryption Change`, status
+0x08), followed by `Disconnect Complete` with reason 0x08 (supervision
+timeout). BlueZ reports that as `org.bluez.Reason.Timeout` in
+`Bearer.LE1.Disconnected(name, message)` (the signal exists since BlueZ
+5.84). Its own auto-connect backoff applies only to
+`org.bluez.Reason.Authentication`, so the loop never stops. `Paired` and
+`Bonded` do not change. On that setup, re-pairing on both sides (Forget
+This Device on the iPhone, `bluetoothctl remove`, pairing again) cured it:
+encryption then completed and ANCS was authorized. The status is still
+surprising: 0x08 is a connection timeout, while a peer that has lost the
+key would normally answer with 0x06 (PIN or key missing) and BlueZ would
+report `Reason.Authentication`. One cured case does not prove that every
+such loop is a stale bond, so BlueFerry treats it as a suspicion.
+
+BlueFerry therefore only reports the pattern and never changes its
+connection behaviour because of it. It counts an LE drop only while Classic
+stays connected across the burst, only for links of at most 5 s, and only
+for `Timeout`, `Remote` or `Authentication`; `Local` (this host: BlueFerry,
+rfkill, adapter power), `Unknown` and `Suspend` never count. At least five
+such drops within any 60 s must persist for 180 s (540 s and a 180 s window
+when only polling sees them). The report clears on an authorized ANCS round
+trip, a link that holds for 15 s, a new bond, a new bluetoothd generation,
+after Classic has been gone for 120 s, or after 600 s without a counted
+drop, also when LE simply stays down. Detection is off without ANCS and
+on controllers flagged as ANCS-limited. The detection is tested only
+against fakes and a fake `org.bluez` on a private bus.
+
+`GetStatus` carries three additive keys for it: `le_bond_suspect`
+(boolean), `le_flap_count` (non-negative integer, short drops in the current
+burst, decays to 0 after a quiet window) and `last_le_disconnect_reason`
+(one of `""`, `unknown`, `timeout`, `local`, `remote`, `authentication`,
+`suspend`). No signal carries them; clients refetch on `StatusChanged()`.
+
 This works on the MediaTek MT7922 and the Intel AX210 while MAP and PBAP stay
 connected over BR/EDR; on the AX210 the LE half of the bond exists only when
 the iPhone initiated the authentication (see "Pairing and iPhone
@@ -413,16 +559,22 @@ permissions").
 BlueFerry's Arch and RPM packages enable the necessary bluetoothd experimental
 API and require BlueZ 5.86 or newer. DEB packages target several distributions
 with older or divergent BlueZ releases and deliberately do not modify the
-system Bluetooth unit; full ANCS is offered there only when the installed
-daemon already exposes the 5.86+ bearer API. Otherwise pairing falls back to
+system Bluetooth unit; full ANCS is offered there when the installed daemon
+already exposes the 5.86+ bearer API, or predates the bearer interfaces
+(before 5.84) and is supervised without them. Otherwise pairing falls back to
 MAP/PBAP compatibility mode instead of blocking. The requirement is based on
 observed capabilities and the live API, not a controller-vendor check.
 
 ANCS responses have no outer total-length field and may arrive fragmented.
 Control Point requests must be serialized and reassembled according to the
-requested attribute sequence. The iPhone can replay existing notifications
-after a reconnect, so startup/reconnect delivery needs deduplication without
-suppressing genuine modifications.
+requested attribute sequence. BlueFerry writes each request asynchronously and
+sends the next one only after the previous response completed, failed, or
+timed out *and* BlueZ answered the previous write, so a slow ATT write never
+stalls the daemon's main loop and two writes never overlap (BlueZ rejects an
+overlapping write with `org.bluez.Error.InProgress`; a rejection caused by
+another D-Bus client is retried a few times). The iPhone
+can replay existing notifications after a reconnect, so startup/reconnect
+delivery needs deduplication without suppressing genuine modifications.
 
 Apple Messages also appears through ANCS. BlueFerry retains that copy for group
 correlation but suppresses its desktop popup because MAP already provides the
@@ -436,12 +588,84 @@ or app display-name attributes are requested. Even when mirroring is enabled,
 included non-Messages content is never written to history or placed on
 BlueFerry's D-Bus event feed.
 
+With the opt-in notification actions (a saved setting; `BLUEFERRY_ANCS_ACTIONS`
+is its initial value), BlueFerry reads the Notification
+Source `PositiveAction`/`NegativeAction` event flags. For an included
+non-Messages notification it appends `PositiveActionLabel` (6) and/or
+`NegativeActionLabel` (7) to the attribute request; unlike title, subtitle and
+message, these take no maximum-length parameter. A clicked popup button is
+sent as `PerformNotificationAction` (command 2, the 32-bit notification UID,
+action 0 for positive or 1 for negative). That command produces no Data
+Source response; it goes through the same serialized Control Point queue as
+attribute requests (at its head) and completes with the write reply, so it
+never overlaps another write and BlueZ never answers it with
+`org.bluez.Error.InProgress`. iOS reports failure
+as an ATT error on the write, which BlueZ surfaces as
+`org.bluez.Error.Failed: Operation failed with ATT error: 0xNN`: `0xA2`
+(invalid parameter) means the UID no longer exists, typically because the
+notification was handled on the phone first; `0xA3` means the action failed;
+`0xA0`/`0xA1` mean the command was not understood. UIDs are valid only within
+one ANCS session and iOS reuses them, so every offer carries a content-free
+token that the click must present. Any Added, Modified, or Removed event for
+the UID retires the offer, and a PreExisting replay or a subscription reset
+discards every offer and queued action and closes the desktop popups still
+wired to them. Labels are app-defined
+strings and are requested only while notification content is shown. This path
+is verified only against simulated responses, not a physical iPhone.
+
 Conversation reads update local history immediately. The daemon delays the
 corresponding MAP read acknowledgements by at least five seconds, including
 those caused by dismissing desktop message notifications. This gives ANCS time
 to fetch group metadata before iOS removes the notification. The delay does not
 block the OBEX worker or require ANCS to arrive; pending acknowledgements are
 discarded if their MAP session is replaced or the daemon stops.
+
+## Apple Media Service (mostly unverified on hardware)
+
+Optional media control follows Apple's published AMS reference. One part has
+been observed with a real iPhone (iOS 27, Intel AX200, BlueZ 5.87): AMS
+appears beside ANCS on the same LE bond, and now-playing information (track,
+artist, playback state) arrives through Entity Update. Everything else below is a
+specification-based expectation, not a captured result.
+
+- AMS (`89D3502B-0F36-433A-8EF4-C502AD55F8DC`) is expected in the iPhone's
+  GATT database beside ANCS on the same LE bond. BlueFerry does not add AMS to
+  the solicitation advertisement and never dials LE for it; it only uses the
+  link the ANCS bearer supervision already maintains.
+- Remote Command (`9B3C81D8-…`) notifies the list of currently available
+  command IDs and accepts a one-byte command write. Commands outside that
+  list are not sent.
+- Entity Update (`2F7CABCE-…`) is registered with one write per entity
+  (Player, Queue, Track). Registrations are expected to be forgotten on
+  disconnect, so they are rewritten after every LE reconnect. Notifications
+  carry entity, attribute, a truncation flag, and a UTF-8 value. The
+  specification states that the Media Source answers a registration with the
+  current values; BlueFerry resubscribes (without resetting LE) if no update
+  arrives within 10 seconds of a registration.
+- A truncated value is completed by writing the entity/attribute selector to
+  Entity Attribute (`C6B2F38C-…`) and reading it back; the two steps stay
+  adjacent in the serialized GATT queue.
+- The ANCS BlueZ 5.87 constraint applies here too: no `StopNotify` on a
+  dropped or flapping link; surviving `Notifying=true` registrations are kept.
+- AMS offers relative volume steps and fixed skips only, so an MPRIS volume
+  write becomes one step, MPRIS `CanSeek` is false and `Seek`/`SetPosition`
+  have no effect, and MPRIS `Stop` pauses. The skips remain available through
+  `Media1`. MPRIS `Rate` follows the PlaybackInfo rate (the last positive one
+  while paused, since MPRIS forbids 0), `Volume` is omitted until the phone
+  reports it, and `mpris:trackid` stays the same when a truncated title is
+  completed.
+- AMS ATT application errors 0xA0 (InvalidState), 0xA1 (InvalidCommand) and
+  0xA2 (AbsentAttribute) appear only in BlueZ's error message text; BlueFerry
+  logs them by name.
+- AVRCP is intentionally not used: acting as an AVRCP controller could make
+  iOS route audio to this computer, which BlueFerry's WirePlumber policy
+  exists to prevent.
+
+Open questions for further hardware tests: whether iOS 26 also exposes AMS
+without soliciting it; that current values always follow a registration
+immediately (the specification guarantees it); remote commands, truncation
+reads and reconnect behavior; and whether AMS traffic affects ANCS
+reliability on other controllers.
 
 ## Historical HFP result
 
@@ -456,6 +680,44 @@ oFono and PipeWire's native HFP backend race to register the same BlueZ
 profile, making startup ordering and distribution integration fragile. That
 complexity, dependency burden, and the project's messaging focus are why the
 feature was removed despite protocol feasibility.
+
+A later opt-in integration (default off, switched on in the settings or with
+`blueferry calls enable`; see README "Phone calls") relies on the user's own
+oFono/WirePlumber setup and only suggests oFono as an optional package. It works around one part of the fragility: with iOS the
+oFono HFP modem stays unpowered until `Modem.Powered=true` is set, and oFono
+rejects `Online=true` until it has reported `Powered=true`. This sequence was
+taken from tincan's oFono controller and has since worked with one iPhone
+(iOS 27, oFono 2.18, BlueZ 5.87); it has not been re-verified against the
+device list above. BlueZ 5.87's own HFP hands-free plugin adds a second
+contender for the RFCOMM channel; `bluetoothd -P hfp` avoids it, and
+BlueFerry reports the conflict from bluetoothd's version and arguments when
+power-up fails three times in a row (state `bluez_conflict`), and then retries
+every five minutes. The profile
+registration race itself is unchanged.
+
+oFono 2.18 creates the HFP modem's `VoiceCallManager`, `NetworkRegistration`,
+`Handsfree`, and `CallVolume` atoms, among others (device info and Siri),
+together in `hfp_pre_sim`, i.e. once the modem is powered; they survive
+`Online` dropping. A listed
+`VoiceCallManager` alone therefore does not mean call control works; the
+controller requires `Online` as well. The phone-status atoms expose the
+phone's standard HFP `+CIND` indicators (`doc/handsfree-api.txt`,
+`doc/network-api.txt`, `drivers/hfpmodem/`):
+`Handsfree.BatteryChargeLevel` is the raw `battchg` value 0-5,
+`NetworkRegistration.Strength` is the `signal` indicator 0-5 multiplied by 20,
+`Status` follows the `service`/`roam` indicators, and `Name` comes from
+`AT+COPS?` (HFP limits it to 16 characters; it is empty while unregistered).
+oFono drops the strength silently (no `PropertyChanged`) when registration is
+lost. The first `Handsfree.GetProperties` makes oFono query the phone's own
+number with `AT+CNUM` (returned as `SubscriberNumbers`, cached afterwards);
+until the phone answers, concurrent callers get `org.ofono.Error.InProgress`.
+iOS additionally reports a 0-9 battery level through `AT+IPHONEACCEV`, which
+oFono does not decode, so the HFP battery is limited to 20 % steps. The
+battery does not need HFP, though: iOS exposes the standard GATT Battery
+Service (0x180F, Battery Level 0x2A19, read and notify) to its LE peer;
+BlueFerry prefers that value. BlueZ's `Battery1`, built from the same
+service, is only the fallback: bluetoothd 5.87 was seen to keep an old level
+there after an LE reconnect (`error registering battery: path exists`).
 
 ## Pairing diagnostics
 

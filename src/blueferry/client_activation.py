@@ -103,7 +103,8 @@ def activation_argv(handle: str) -> list[str]:
     return [sys.executable, "-m", "blueferry.client_activation", f"--message={handle}"]
 
 
-def _activation_environment(token: str) -> dict[str, str]:
+def activation_environment(token: str) -> dict[str, str]:
+    """This process's environment with only the given single-use token."""
     environment = dict(os.environ)
     for name in ("XDG_ACTIVATION_TOKEN", "DESKTOP_STARTUP_ID"):
         environment.pop(name, None)
@@ -111,6 +112,58 @@ def _activation_environment(token: str) -> dict[str, str]:
         environment["XDG_ACTIVATION_TOKEN"] = token
         environment["DESKTOP_STARTUP_ID"] = token
     return environment
+
+
+_activation_environment = activation_environment
+
+# Session variables a GUI started by the systemd user manager needs; the
+# manager's own environment may predate the graphical session.
+TRANSIENT_SESSION_KEYS = (
+    "DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS",
+    "XDG_RUNTIME_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME",
+)
+
+
+def start_transient_service(
+    bus,
+    name_prefix: str,
+    argv: Sequence[str],
+    variables: Sequence[str],
+    extra_properties: Sequence[tuple[str, object]] = (),
+) -> None:
+    """Ask the systemd user manager to run ``argv`` outside the backend.
+
+    ExecStartEx with ``no-env-expand`` disables systemd's $VARIABLE
+    substitution, so every argument arrives unchanged, just as with execve.
+    """
+    manager = bus.get_object("org.freedesktop.systemd1", "/org/freedesktop/systemd1")
+    manager.StartTransientUnit(
+        f"{name_prefix}-{uuid.uuid4().hex}.service", "fail",
+        dbus.Array([
+            ("Type", "exec"), ("CollectMode", "inactive-or-failed"),
+            *extra_properties,
+            ("ExecStartEx", dbus.Array([
+                (argv[0], list(argv), ["no-env-expand"]),
+            ], signature="(sasas)")),
+            ("Environment", dbus.Array(list(variables), signature="s")),
+        ], signature="(sv)"),
+        dbus.Array([], signature="(sa(sv))"),
+        dbus_interface="org.freedesktop.systemd1.Manager", timeout=3,
+    )
+
+
+def transient_unit_environment(
+    environment: Mapping[str, str], token: str, *, extra_keys: Sequence[str] = (),
+) -> list[str]:
+    """``Environment=`` assignments for a GUI launched outside the backend."""
+    variables = [
+        f"{name}={environment[name]}"
+        for name in (*TRANSIENT_SESSION_KEYS, *extra_keys) if name in environment
+    ]
+    variables.extend(
+        f"{name}={token}" for name in ("XDG_ACTIVATION_TOKEN", "DESKTOP_STARTUP_ID")
+    )
+    return variables
 
 
 def request_message_activation(handle: str, token: str) -> None:
@@ -220,30 +273,9 @@ def open_message(handle: str, token: str) -> bool:
             # A child of blueferry.service inherits PrivateDevices/PrivateTmp
             # and dies when the backend restarts. Let the user manager create
             # the GUI outside the backend's sandbox and cgroup instead.
-            manager = bus.get_object("org.freedesktop.systemd1", "/org/freedesktop/systemd1")
-            session_keys = (
-                "DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS",
-                "XDG_RUNTIME_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME",
-            )
-            variables = [
-                f"{name}={environment[name]}" for name in session_keys if name in environment
-            ]
-            variables.extend(
-                f"{name}={token}" for name in ("XDG_ACTIVATION_TOKEN", "DESKTOP_STARTUP_ID")
-            )
-            manager.StartTransientUnit(
-                f"app-blueferry-{client.key}-{uuid.uuid4().hex}.service", "fail",
-                dbus.Array([
-                    ("Type", "exec"), ("CollectMode", "inactive-or-failed"),
-                    # ExecStartEx disables systemd's $VARIABLE substitution;
-                    # the handle must arrive unchanged, just as with execve.
-                    ("ExecStartEx", dbus.Array([
-                        (client.executable, argv, ["no-env-expand"]),
-                    ], signature="(sasas)")),
-                    ("Environment", dbus.Array(variables, signature="s")),
-                ], signature="(sv)"),
-                dbus.Array([], signature="(sa(sv))"),
-                dbus_interface="org.freedesktop.systemd1.Manager", timeout=3,
+            start_transient_service(
+                bus, f"app-blueferry-{client.key}", argv,
+                transient_unit_environment(environment, token),
             )
         else:
             # A manually run daemon on a desktop without a systemd user manager.

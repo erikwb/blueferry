@@ -73,6 +73,7 @@ class AdapterClassSupervisor:
         if self._running:
             self.poke()
             return
+        self._reset_backoff()
         self._running = True
         self._reconcile()
         self._timer_id = self._schedule(RECONCILE_SECONDS, self._tick)

@@ -68,8 +68,9 @@ flowchart TD
    Beide Zeilen müssen `root:root 755` zeigen. Richte die sudoers-Regel nie
    auf eine Kopie in deinem Home-Verzeichnis oder an einem anderen Ort, an dem
    du schreiben kannst: Wer diese Datei ersetzen kann, bekommt Root ohne
-   Passwort. BlueFerry prüft das und ruft sudo für ein Skript, das jemand
-   anderes als root ersetzen kann, gar nicht erst auf.
+   Passwort. BlueFerry prüft den ursprünglichen Pfad, jedes Symlink-Ziel
+   und deren übergeordnete Verzeichnisse. Benutzer-eigene oder beschreibbare
+   Pfade, defekte Links und Symlink-Schleifen werden abgelehnt.
 
    Danach erlaubt ein Administrator es einmalig mit
    `visudo -f /etc/sudoers.d/blueferry` (Gruppe anpassen; braucht sudo 1.9.10
@@ -139,9 +140,10 @@ Der Daemon schreibt sein Log dann nach `~/.local/state/blueferry/daemon.log`.
   trotzdem nur die Klasse eines vorhandenen Adapters setzen.
 - `sudo -n` gelingt auch ohne Regel, solange ein frischer `sudo`-Zeitstempel
   aus einem Terminal zwischengespeichert ist.
-- Nach einem abgelehnten oder fehlgeschlagenen Versuch wartet der Daemon:
-  zuerst 15 Minuten, dann immer länger, höchstens sechs Stunden, und nach
-  einem Neustart von bluetoothd sofort. Eine später angelegte Regel wirkt
+- Nach einer verweigerten Autorisierung wartet der Daemon zuerst 15 Minuten,
+  dann doppelt so lange, höchstens sechs Stunden. Andere Fehler beginnen bei
+  einer Minute. Ein Neustart von bluetoothd setzt die Wartezeit zurück und
+  löst eine sofortige Prüfung aus. Eine später angelegte Regel wirkt
   also ohne Neustart, und eine fehlende Regel füllt nicht das
   Authentifizierungslog.
 - Der optionale User-Service setzt `no_new_privs`, damit kann sein Daemon

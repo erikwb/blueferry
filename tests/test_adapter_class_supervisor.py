@@ -217,3 +217,14 @@ def test_a_matching_class_clears_the_backoff() -> None:
     _run_minutes(scheduled, now, 1)
 
     assert attempts == ["hci7", "hci7"]
+
+
+def test_supervisor_restart_does_not_reuse_an_old_authorization_backoff() -> None:
+    attempts, scheduled, now = [], [], [0.0]
+    supervisor = _failing_supervisor(attempts, scheduled, now, error="refused")
+    supervisor.start()
+    _run_minutes(scheduled, now, 5)
+    assert attempts == ["hci7"]
+    supervisor.stop()
+    supervisor.start()
+    assert attempts == ["hci7", "hci7"]

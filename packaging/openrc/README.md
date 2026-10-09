@@ -137,10 +137,12 @@ stat -c '%U:%G %a %n' /usr/lib/blueferry /usr/lib/blueferry/blueferry-set-cod
 Both lines must read `root:root 755`. A NOPASSWD rule for a file that a user
 can replace (a copy in a home directory, a user-owned `/usr/lib/blueferry`,
 or any group- or world-writable directory on the path) is passwordless root
-for that user. BlueFerry resolves the helper path and refuses to call sudo
-unless the file and every directory above it are owned by root and not
-writable by group or others. A package recipe should install it the same
-way as the Arch, Debian and RPM recipes do.
+for that user. BlueFerry checks the original path and every symlink hop,
+including intermediate targets and parent directories. It refuses to call
+sudo unless the file, links and directories are root-owned, and the file
+and directories are not writable by group or others. Broken links, symlink
+loops and non-regular helper files are refused. A package recipe should
+install it the same way as the Arch, Debian and RPM recipes do.
 
 Then add the rule (edit with `visudo -f /etc/sudoers.d/blueferry` and adjust
 the group):

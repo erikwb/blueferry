@@ -16,10 +16,44 @@ import dbus.exceptions
 from blueferry.bus import obex
 from blueferry.events import normalize_phone, parse_map_timestamp
 from blueferry.limits import MAX_REMOTE_PROPERTY_CHARS, MAX_THREAD_BODY_CHARS
+from blueferry.otp_context import OtpMetadata
 
 log = logging.getLogger(__name__)
 
 QUERY_DEADLINE_SECONDS = 60
+OTP_QUERY_DEADLINE_SECONDS = 20
+OTP_QUERY_LIMIT = 20
+
+
+def lookup_otp_metadata(session_path: str, message_path: str) -> OtpMetadata | None:
+    """Read the phone's time and read flag for one push, on the OBEX worker.
+
+    MNS notifications often omit Timestamp. Listing the inbox populates it,
+    but the newest entry might be another message. Fail closed unless the
+    exact object path appears in a small, bounded listing of this session.
+    """
+    parent, _, handle = message_path.rpartition("/")
+    if parent != session_path or not handle.startswith("message"):
+        return None
+    deadline = time.monotonic() + OTP_QUERY_DEADLINE_SECONDS
+    map_iface = obex(session_path, "org.bluez.obex.MessageAccess1")
+    _navigate_to_folder(map_iface, "telecom/msg/INBOX", deadline=deadline)
+    messages = map_iface.ListMessages(
+        "", {"MaxListCount": dbus.UInt16(OTP_QUERY_LIMIT)},
+        timeout=_remaining(deadline, 10),
+    )
+    # ListMessages returns a{oa{sv}} with the same Message1 properties that
+    # GetAll exposes. No body download or read-state write is necessary.
+    props = messages.get(message_path)
+    if props is None:
+        return None
+    timestamp = props.get("Timestamp")
+    read = props.get("Read")
+    return OtpMetadata(
+        parse_map_timestamp(timestamp) if isinstance(timestamp, str) else None,
+        # Missing or malformed flags cannot establish that the code is unread.
+        bool(read) if isinstance(read, (bool, dbus.Boolean)) else True,
+    )
 
 
 def _bounded_text(value: object, maximum: int) -> str:

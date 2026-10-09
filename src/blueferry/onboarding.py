@@ -9,6 +9,7 @@ from typing import Any, Protocol
 
 from blueferry.i18n import _
 from blueferry.models import BackendStatus
+from blueferry.pairing_policy import notifications_active
 from blueferry.service_manager import bluetooth_restart_command
 from blueferry.setup_verification import remaining_iphone_setup_tasks
 
@@ -85,6 +86,7 @@ def effective_compatibility(
 class OnboardingStage(str, Enum):
     CHECKING = "checking"
     INCOMPATIBLE = "incompatible"
+    LE_DISABLED = "le-disabled"
     ACTIVATE_BLUETOOTH = "activate-bluetooth"
     SELECT_DEVICE = "select-device"
     STARTING = "starting"
@@ -167,7 +169,10 @@ def derive_stage(
         return OnboardingStage.CHECKING
     if compatibility.get("pairing_ready") is False:
         return OnboardingStage.INCOMPATIBLE
-    if compatibility.get("notifications_supported") and not compatibility.get("bearer_api_active"):
+    # Compatibility mode clears notifications_supported and skips this stage.
+    if compatibility.get("le_disabled") and compatibility.get("notifications_supported"):
+        return OnboardingStage.LE_DISABLED
+    if compatibility.get("notifications_supported") and not notifications_active(compatibility):
         return OnboardingStage.ACTIVATE_BLUETOOTH
     if not configured:
         return OnboardingStage.SELECT_DEVICE

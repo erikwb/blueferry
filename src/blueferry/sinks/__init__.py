@@ -6,6 +6,10 @@ not affect the others.
 
 A sink may *optionally* also implement:
   • handle_ancs(event: AncsEvent) — per-app notifications (ANCS)
+  • handle_call(event: CallEvent) — optional HFP call lifecycle (local
+    desktop UI only; call events are neither persisted nor broadcast)
+  • handle_phone_battery_low(percent: int) — optional low-battery warning
+    for the phone (local desktop UI only)
 The daemon duck-types these via getattr, so a sink opts in simply by
 defining the method.
 """

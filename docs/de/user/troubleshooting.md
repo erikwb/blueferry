@@ -80,13 +80,20 @@ Steht `le` unter **supported settings**, aber nicht unter
 ControllerMode = bredr
 ```
 
-- **Dauerhaft:** `ControllerMode = dual` setzen (oder die Zeile entfernen)
-  und Bluetooth neu starten.
-- **Bis zum nächsten Bluetooth-Neustart:** `sudo btmgmt --index 0 le on`
-  (`0` durch den Index deines Adapters ersetzen, zum Beispiel `1` für
-  `hci1`).
+`ControllerMode = dual` setzen (oder die Zeile entfernen) und Bluetooth neu
+starten:
 
-Danach neu koppeln.
+```bash
+sudo systemctl restart bluetooth   # OpenRC: sudo rc-service bluetooth restart
+```
+
+`sudo btmgmt le on` allein hilft hier nicht. Mit `ControllerMode = bredr`
+bietet BlueZ für den Adapter keine LE-Advertisements an, bis es im Dual-Modus
+neu startet. Steht `ControllerMode` nicht auf `bredr`, schaltet ein
+Bluetooth-Neustart LE von selbst wieder ein.
+
+Danach neu koppeln. Der Kopplungsassistent und der KDE-Client können erneut
+prüfen, ohne von vorn zu beginnen.
 
 ## bluetoothd hängt und lässt sich nicht neu starten
 

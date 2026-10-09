@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import io
 import json
 import threading
@@ -31,6 +32,10 @@ class FakeClient:
     def status(self):
         return SimpleNamespace(to_dict=lambda: {"daemon": True})
 
+    def contact_photo(self, address):
+        self.calls.append(("contact_photo", address))
+        return self.photo
+
     def find_contacts(self, query):
         self.calls.append(("contacts", query))
         return [("Alice", "+15551234567")]
@@ -59,9 +64,39 @@ class FakeClient:
         self.calls.append(("set_thread_starred", thread_key, starred))
         return starred
 
+    def set_ancs_notification_actions(self, enabled):
+        self.calls.append(("set_ancs_notification_actions", enabled))
+        return enabled
+
     def set_contacts_only_notifications(self, enabled):
         self.calls.append(("set_contacts_only_notifications", enabled))
         return enabled
+
+    def set_media_control(self, enabled):
+        self.calls.append(("set_media_control", enabled))
+        return {"media_control_enabled": enabled}
+
+    def set_mpris_player(self, enabled):
+        self.calls.append(("set_mpris_player", enabled))
+        return {"media_mpris_enabled": enabled}
+
+    def set_proximity_lock(self, enabled, grace_seconds):
+        self.calls.append(("set_proximity_lock", enabled, grace_seconds))
+        return {
+            "proximity_lock_enabled": enabled,
+            "proximity_lock_grace_sec": grace_seconds,
+        }
+
+    def set_call_history(self, enabled, missed_call_notifications):
+        self.calls.append(("set_call_history", enabled, missed_call_notifications))
+        return {
+            "call_history_enabled": enabled,
+            "missed_call_notifications": missed_call_notifications,
+        }
+
+    def set_calls_enabled(self, enabled):
+        self.calls.append(("set_calls_enabled", enabled))
+        return {"calls_enabled": enabled}
 
 
 def test_bridge_dispatches_private_values_without_command_arguments() -> None:
@@ -112,6 +147,82 @@ def test_bridge_dispatches_private_values_without_command_arguments() -> None:
         ("set_thread_starred", "private-thread", True),
         ("set_contacts_only_notifications", True),
     ]
+
+
+def test_bridge_returns_a_validated_photo_without_a_file_or_command_argument():
+    from .photo_fixtures import png
+
+    client = FakeClient()
+    client.photo = png()
+    bridge = QuickshellBridge(client)
+    result = bridge.dispatch("contact_photo", {"address": "alice@example.com"})
+    assert result == {
+        "address": "alice@example.com",
+        "source": "data:image/png;base64," + base64.b64encode(client.photo).decode("ascii"),
+    }
+    assert client.calls == [("contact_photo", "alice@example.com")]
+
+
+@pytest.mark.parametrize("data", [b"", b"GIF89a", b"not a photo"])
+def test_bridge_uses_the_icon_fallback_for_missing_or_invalid_photos(data):
+    client = FakeClient()
+    client.photo = data
+    assert QuickshellBridge(client).dispatch("contact_photo", {"address": "alice@example.com"}) == {
+        "address": "alice@example.com", "source": "",
+    }
+
+
+def test_bridge_rejects_a_photo_with_an_oversized_canvas():
+    from .photo_fixtures import png_header
+
+    client = FakeClient()
+    client.photo = png_header(30000, 30000)
+    assert QuickshellBridge(client).dispatch("contact_photo", {"address": "alice@example.com"})["source"] == ""
+
+
+def test_bridge_sets_the_away_lock_and_returns_its_status() -> None:
+    client = FakeClient()
+    bridge = QuickshellBridge(client)  # type: ignore[arg-type]
+
+    assert bridge.dispatch("set_proximity_lock", {
+        "enabled": True, "grace_seconds": 90,
+    }) == {"proximity_lock_enabled": True, "proximity_lock_grace_sec": 90}
+    assert client.calls == [("set_proximity_lock", True, 90)]
+
+
+@pytest.mark.parametrize(("args", "message"), [
+    ({"enabled": 1, "grace_seconds": 60}, "enabled must be a boolean"),
+    ({"enabled": True}, "grace_seconds must be an integer"),
+    ({"enabled": True, "grace_seconds": True}, "grace_seconds must be an integer"),
+    ({"enabled": True, "grace_seconds": "60"}, "grace_seconds must be an integer"),
+])
+def test_bridge_rejects_malformed_away_lock_requests(args, message) -> None:
+    client = FakeClient()
+    bridge = QuickshellBridge(client)  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match=message):
+        bridge.dispatch("set_proximity_lock", args)
+    assert client.calls == []
+
+
+def test_bridge_sets_the_phone_calls_opt_in_and_returns_its_status() -> None:
+    client = FakeClient()
+    bridge = QuickshellBridge(client)  # type: ignore[arg-type]
+
+    assert bridge.dispatch("set_calls_enabled", {"enabled": True}) == {
+        "calls_enabled": True,
+    }
+    assert client.calls == [("set_calls_enabled", True)]
+
+
+@pytest.mark.parametrize("args", [{}, {"enabled": 1}, {"enabled": "true"}])
+def test_bridge_rejects_malformed_phone_calls_requests(args) -> None:
+    client = FakeClient()
+    bridge = QuickshellBridge(client)  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="enabled must be a boolean"):
+        bridge.dispatch("set_calls_enabled", args)
+    assert client.calls == []
 
 
 def test_bridge_rejects_non_boolean_contacts_only_value() -> None:
@@ -288,6 +399,26 @@ def test_stdin_reader_discards_oversized_line_and_recovers(monkeypatch):
     assert received[1] == "next\n"
 
 
+def test_bridge_saves_the_notification_actions_preference() -> None:
+    client = FakeClient()
+    bridge = QuickshellBridge(client)  # type: ignore[arg-type]
+
+    assert bridge.dispatch(
+        "set_ancs_notification_actions", {"enabled": True}
+    ) is True
+    assert client.calls == [("set_ancs_notification_actions", True)]
+
+
+@pytest.mark.parametrize("args", [{}, {"enabled": 1}, {"enabled": "true"}])
+def test_bridge_rejects_malformed_notification_actions_requests(args) -> None:
+    client = FakeClient()
+    bridge = QuickshellBridge(client)  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="enabled must be a boolean"):
+        bridge.dispatch("set_ancs_notification_actions", args)
+    assert client.calls == []
+
+
 def test_status_carries_the_init_systems_bluetooth_restart_command(monkeypatch) -> None:
     from blueferry import service_manager
 
@@ -328,3 +459,38 @@ def test_host_info_is_computed_once_and_needs_no_daemon(monkeypatch) -> None:
         "event": "host",
         "data": {"bluetooth_restart_command": "sudo rc-service bluetooth restart"},
     }
+
+
+@pytest.mark.parametrize("method,key", [
+    ("set_media_control", "media_control_enabled"),
+    ("set_mpris_player", "media_mpris_enabled"),
+])
+def test_bridge_saves_the_media_opt_ins_and_returns_their_status(method, key) -> None:
+    client = FakeClient()
+    bridge = QuickshellBridge(client)  # type: ignore[arg-type]
+
+    assert bridge.dispatch(method, {"enabled": True}) == {key: True}
+    assert client.calls == [(method, True)]
+    for args in ({}, {"enabled": 1}, {"enabled": "true"}):
+        with pytest.raises(ValueError, match="enabled must be a boolean"):
+            bridge.dispatch(method, args)
+    assert client.calls == [(method, True)]
+
+
+def test_bridge_saves_the_call_history_opt_in_and_returns_its_status() -> None:
+    client = FakeClient()
+    bridge = QuickshellBridge(client)  # type: ignore[arg-type]
+
+    assert bridge.dispatch(
+        "set_call_history", {"enabled": True, "missed_call_notifications": False}
+    ) == {"call_history_enabled": True, "missed_call_notifications": False}
+    assert client.calls == [("set_call_history", True, False)]
+    for args, message in (
+        ({"missed_call_notifications": True}, "enabled must be a boolean"),
+        ({"enabled": True}, "missed_call_notifications must be a boolean"),
+        ({"enabled": True, "missed_call_notifications": 1},
+         "missed_call_notifications must be a boolean"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            bridge.dispatch("set_call_history", args)
+    assert len(client.calls) == 1

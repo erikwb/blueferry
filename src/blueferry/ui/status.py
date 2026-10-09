@@ -7,9 +7,10 @@ import threading
 from gi.repository import Adw, Gio, GLib, Gtk
 
 from blueferry.bluetooth_devices import PairedDevice, iphone_candidates
-from blueferry.i18n import _
+from blueferry.i18n import _, ngettext
 from blueferry.models import BackendStatus
 from blueferry.onboarding import OnboardingState, ancs_unavailable_detail
+from blueferry.proximity_lock import clamp_grace
 from blueferry.quirks_report import issue_report, issue_url
 from blueferry.setup_client import (
     DISCOVERY_SECONDS,
@@ -23,6 +24,7 @@ from blueferry.setup_verification import (
     NOTIFICATION_ACCESS,
     remaining_iphone_setup_tasks,
 )
+from blueferry.ui.saved_choice import SavedChoice
 from blueferry.ui.setup_runner import SetupRunner
 from blueferry.ui.status_presenter import (
     connection_subtitle,
@@ -45,6 +47,16 @@ class IPhonePage(Gtk.Box):
         self._onboarding = OnboardingState()
         self._applying_notification_policy = False
         self._applying_contacts_only_notifications = False
+        self._applying_ancs_actions = False
+        self._applying_saved_switches = False
+        self._media_control_choice = SavedChoice()
+        self._mpris_player_choice = SavedChoice()
+        self._call_history_choice = SavedChoice()
+        self._missed_call_popups_choice = SavedChoice()
+        self._applying_proximity_lock = False
+        self._proximity_lock_choice = SavedChoice()
+        self._applying_calls_enabled = False
+        self._calls_enabled_choice = SavedChoice()
         self._applying_storage_policy = False
         self._storage_unlock_attempted = False
         self._pairing_issue_report = ""
@@ -333,7 +345,136 @@ class IPhonePage(Gtk.Box):
             self._contacts_only_switch
         )
         notification_group.add(self._contacts_only_row)
+        # Opt-in; shown only when the daemon reports the saved preference.
+        self._ancs_actions_row = Adw.ActionRow(
+            title=_("Show iPhone Action Buttons"),
+        )
+        self._ancs_actions_row.set_visible(False)
+        self._ancs_actions_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
+        self._ancs_actions_switch.connect(
+            "notify::active", self._ancs_actions_changed
+        )
+        self._ancs_actions_row.add_suffix(self._ancs_actions_switch)
+        self._ancs_actions_row.set_activatable_widget(self._ancs_actions_switch)
+        notification_group.add(self._ancs_actions_row)
         page.add(notification_group)
+
+        # Shown only when the backend reports the media-control keys.
+        self._media_group = Adw.PreferencesGroup(title=_("Media Control"))
+        self._media_group.set_visible(False)
+        self._media_control_row = Adw.ActionRow(
+            title=_("Show and Control What the iPhone Is Playing"),
+            subtitle=_("Uses the Bluetooth LE link that also carries notifications."),
+        )
+        self._media_control_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
+        self._media_control_switch.connect(
+            "notify::active", self._media_control_changed
+        )
+        self._media_control_row.add_suffix(self._media_control_switch)
+        self._media_control_row.set_activatable_widget(self._media_control_switch)
+        self._media_group.add(self._media_control_row)
+        self._mpris_player_row = Adw.ActionRow(
+            title=_("Also Show It in the Desktop Media Controls (MPRIS)"),
+            subtitle=_(
+                "Like any desktop music player, every application in your "
+                "session can then read the title, artist and album."
+            ),
+        )
+        self._mpris_player_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
+        self._mpris_player_switch.connect(
+            "notify::active", self._mpris_player_changed
+        )
+        self._mpris_player_row.add_suffix(self._mpris_player_switch)
+        self._mpris_player_row.set_activatable_widget(self._mpris_player_switch)
+        self._media_group.add(self._mpris_player_row)
+        page.add(self._media_group)
+
+        # Shown only when the backend reports the call-history keys.
+        self._call_history_group = Adw.PreferencesGroup(
+            title=_("Call History"),
+            description=_(
+                "Keeps the iPhone's recent calls (who called and when) under "
+                "your local storage setting and can notify you about missed "
+                "calls. It uses the iPhone's Sync Contacts permission and "
+                "never places, answers, or listens to calls. Turning it off "
+                "erases the retained calls."
+            ),
+        )
+        self._call_history_group.set_visible(False)
+        self._call_history_row = Adw.ActionRow(
+            title=_("Keep the iPhone's Recent Calls"),
+        )
+        self._call_history_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
+        self._call_history_switch.connect(
+            "notify::active", self._call_history_changed
+        )
+        self._call_history_row.add_suffix(self._call_history_switch)
+        self._call_history_row.set_activatable_widget(self._call_history_switch)
+        self._call_history_group.add(self._call_history_row)
+        self._missed_call_popups_row = Adw.ActionRow(
+            title=_("Notify Me About Missed Calls"),
+        )
+        self._missed_call_popups_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
+        self._missed_call_popups_switch.connect(
+            "notify::active", self._missed_call_popups_changed
+        )
+        self._missed_call_popups_row.add_suffix(self._missed_call_popups_switch)
+        self._missed_call_popups_row.set_activatable_widget(
+            self._missed_call_popups_switch
+        )
+        self._call_history_group.add(self._missed_call_popups_row)
+        page.add(self._call_history_group)
+
+        # Shown only when the backend reports the away-lock keys.
+        self._proximity_lock_group = Adw.PreferencesGroup(
+            title=_("Away Lock"),
+            description=_(
+                "A convenience, not a security feature: Bluetooth presence can "
+                "be spoofed. BlueFerry never unlocks the desktop."
+            ),
+        )
+        self._proximity_lock_group.set_visible(False)
+        self._proximity_lock_row = Adw.ActionRow(
+            title=_("Lock the Desktop When My iPhone Goes Away"),
+        )
+        self._proximity_lock_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
+        self._proximity_lock_switch.connect(
+            "notify::active", self._proximity_lock_changed
+        )
+        self._proximity_lock_row.add_suffix(self._proximity_lock_switch)
+        self._proximity_lock_row.set_activatable_widget(
+            self._proximity_lock_switch
+        )
+        self._proximity_lock_group.add(self._proximity_lock_row)
+        page.add(self._proximity_lock_group)
+
+        # Shown only when the status carries calls_enabled, as in the Qt client.
+        self._calls_group = Adw.PreferencesGroup(
+            title=_("Phone Calls"),
+            description=_(
+                "Experimental. While this is on, the iPhone's hands-free "
+                "link stays connected to this computer, so calls can ring "
+                "and be answered here and their audio plays here. Music "
+                "stays on the iPhone. Working calls also need oFono set as "
+                "the hands-free backend and BlueZ's own HFP plugin disabled; "
+                "see \"Phone calls\" in the BlueFerry documentation. Make "
+                "emergency calls on the iPhone itself."
+            ),
+        )
+        self._calls_group.set_visible(False)
+        self._calls_enabled_row = Adw.ActionRow(
+            title=_("Enable Phone Calls Through This Computer"),
+        )
+        self._calls_enabled_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
+        self._calls_enabled_switch.connect(
+            "notify::active", self._calls_enabled_changed
+        )
+        self._calls_enabled_row.add_suffix(self._calls_enabled_switch)
+        self._calls_enabled_row.set_activatable_widget(
+            self._calls_enabled_switch
+        )
+        self._calls_group.add(self._calls_enabled_row)
+        page.add(self._calls_group)
 
         data_group = Adw.PreferencesGroup(title=_("Local Data"))
         history_model = Gtk.StringList.new(
@@ -470,7 +611,7 @@ class IPhonePage(Gtk.Box):
             )
 
     def _apply_bluetooth_support_status(self, compatibility) -> None:
-        active = compatibility.bearer_api_active
+        active = compatibility.notifications_active
         compatibility_mode = self._compatibility_switch.get_active()
         if compatibility_mode:
             self._bluez_row.set_subtitle(
@@ -991,6 +1132,39 @@ class IPhonePage(Gtk.Box):
             reachable and policy != "none"
         )
         self._applying_contacts_only_notifications = False
+        self._apply_ancs_actions(status, reachable)
+        self._apply_media_switches(status, reachable)
+        self._apply_call_history_switches(status, reachable)
+        self._proximity_lock_group.set_visible("proximity_lock" in status.extra)
+        self._applying_proximity_lock = True
+        self._show_saved_choice(
+            self._proximity_lock_switch,
+            self._proximity_lock_choice,
+            status.extra.get("proximity_lock_enabled") is True,
+        )
+        grace = clamp_grace(status.extra.get("proximity_lock_grace_sec"))
+        self._proximity_lock_row.set_subtitle(
+            ngettext(
+                "Locks after {seconds} second away",
+                "Locks after {seconds} seconds away",
+                grace,
+            ).format(seconds=grace)
+        )
+        self._proximity_lock_row.set_sensitive(
+            reachable and not self._proximity_lock_choice.saving
+        )
+        self._applying_proximity_lock = False
+        self._calls_group.set_visible("calls_enabled" in values)
+        self._applying_calls_enabled = True
+        self._show_saved_choice(
+            self._calls_enabled_switch,
+            self._calls_enabled_choice,
+            status.calls_enabled is True,
+        )
+        self._calls_enabled_row.set_sensitive(
+            reachable and not self._calls_enabled_choice.saving
+        )
+        self._applying_calls_enabled = False
         self._applying_storage_policy = True
         selected_storage = {
             "encrypted": 0,
@@ -1051,6 +1225,236 @@ class IPhonePage(Gtk.Box):
         self._client.set_contacts_only_notifications_async(
             enabled, saved, failed
         )
+
+    def _apply_ancs_actions(self, status: BackendStatus, reachable: bool) -> None:
+        preference = status.extra.get("ancs_actions_preference")
+        self._ancs_actions_row.set_visible(isinstance(preference, bool))
+        content_hidden = status.extra.get("notification_content_shown") is False
+        if content_hidden:
+            subtitle = _("Unavailable while notification content is hidden")
+        elif status.notification_policy != "all":
+            subtitle = _("Applies only to All iPhone Notifications")
+        else:
+            subtitle = _(
+                "A click runs the action on the iPhone, for example answering "
+                "or declining a call"
+            )
+        self._ancs_actions_row.set_subtitle(subtitle)
+        self._applying_ancs_actions = True
+        self._ancs_actions_switch.set_active(preference is True)
+        # A saved "on" can always be switched off; switching on needs All
+        # iPhone Notifications with content shown.
+        self._ancs_actions_row.set_sensitive(
+            reachable
+            and (
+                preference is True
+                or (status.notification_policy == "all" and not content_hidden)
+            )
+        )
+        self._applying_ancs_actions = False
+
+    def _ancs_actions_changed(self, _switch, _property) -> None:
+        if self._applying_ancs_actions:
+            return
+        enabled = self._ancs_actions_switch.get_active()
+        self._ancs_actions_row.set_sensitive(False)
+
+        def saved(_value: bool) -> None:
+            self._toast(_("Action button preference saved"))
+            self._refresh()
+
+        def failed(error: str) -> None:
+            self._toast(
+                _("Could not save action button preference: {error}").format(
+                    error=error
+                )
+            )
+            self._apply_status(self._last_status)
+
+        self._client.set_ancs_notification_actions_async(
+            enabled, saved, failed
+        )
+
+    def _show_saved_choice(self, switch, choice: SavedChoice, reported: bool) -> None:
+        """Set ``switch`` for a status reporting ``reported``."""
+        shown, stale = choice.resolve(reported)
+        switch.set_active(shown)
+        if stale:
+            self._refresh()
+
+    def _apply_media_switches(self, status: BackendStatus, reachable: bool) -> None:
+        # Older daemons report neither key; one before the MPRIS player
+        # reports only the first.
+        self._media_group.set_visible("media_control_enabled" in status.extra)
+        self._mpris_player_row.set_visible("media_mpris_enabled" in status.extra)
+        self._applying_saved_switches = True
+        self._show_saved_choice(
+            self._media_control_switch,
+            self._media_control_choice,
+            status.extra.get("media_control_enabled") is True,
+        )
+        self._show_saved_choice(
+            self._mpris_player_switch,
+            self._mpris_player_choice,
+            status.extra.get("media_mpris_enabled") is True,
+        )
+        self._applying_saved_switches = False
+        self._media_control_row.set_sensitive(
+            reachable and not self._media_control_choice.saving
+        )
+        # The player needs media control, as in the Qt client.
+        self._mpris_player_row.set_sensitive(
+            reachable
+            and not self._mpris_player_choice.saving
+            and self._media_control_switch.get_active()
+        )
+
+    def _apply_call_history_switches(
+        self, status: BackendStatus, reachable: bool
+    ) -> None:
+        self._call_history_group.set_visible("call_history_enabled" in status.extra)
+        self._applying_saved_switches = True
+        self._show_saved_choice(
+            self._call_history_switch,
+            self._call_history_choice,
+            status.extra.get("call_history_enabled") is True,
+        )
+        # On unless the daemon says otherwise, as in the Qt client.
+        self._show_saved_choice(
+            self._missed_call_popups_switch,
+            self._missed_call_popups_choice,
+            status.extra.get("missed_call_notifications") is not False,
+        )
+        self._applying_saved_switches = False
+        saving = (
+            self._call_history_choice.saving
+            or self._missed_call_popups_choice.saving
+        )
+        self._call_history_row.set_sensitive(reachable and not saving)
+        self._missed_call_popups_row.set_sensitive(
+            reachable and not saving and self._call_history_switch.get_active()
+        )
+
+    def _call_history_changed(self, switch, _property) -> None:
+        popups = self._missed_call_popups_switch.get_active()
+        self._save_switch(
+            switch,
+            self._call_history_row,
+            self._call_history_choice,
+            "call_history_enabled",
+            lambda enabled, saved, failed: self._client.set_call_history_async(
+                enabled, popups, saved, failed
+            ),
+            _("Call history preference saved"),
+            _("Could not save call history preference: {error}"),
+        )
+
+    def _missed_call_popups_changed(self, switch, _property) -> None:
+        # Only offered while call history is on.
+        self._save_switch(
+            switch,
+            self._missed_call_popups_row,
+            self._missed_call_popups_choice,
+            "missed_call_notifications",
+            lambda popups, saved, failed: self._client.set_call_history_async(
+                True, popups, saved, failed
+            ),
+            _("Missed call notification preference saved"),
+            _("Could not save missed call notification preference: {error}"),
+        )
+
+    def _media_control_changed(self, switch, _property) -> None:
+        self._save_switch(
+            switch,
+            self._media_control_row,
+            self._media_control_choice,
+            "media_control_enabled",
+            self._client.set_media_control_async,
+            _("Media control preference saved"),
+            _("Could not save media control preference: {error}"),
+        )
+
+    def _mpris_player_changed(self, switch, _property) -> None:
+        self._save_switch(
+            switch,
+            self._mpris_player_row,
+            self._mpris_player_choice,
+            "media_mpris_enabled",
+            self._client.set_mpris_player_async,
+            _("Desktop media controls preference saved"),
+            _("Could not save desktop media controls preference: {error}"),
+        )
+
+    def _save_switch(
+        self, switch, row, choice: SavedChoice, key: str, save,
+        saved_text: str, failed_text: str,
+    ) -> None:
+        if self._applying_saved_switches:
+            return
+        choice.begin(switch.get_active())
+        row.set_sensitive(False)
+
+        def saved(status: dict) -> None:
+            choice.saved(status.get(key) is True)
+            self._toast(saved_text)
+            self._refresh()
+
+        def failed(error: str) -> None:
+            choice.failed()
+            self._toast(failed_text.format(error=error))
+            self._apply_status(self._last_status)
+
+        save(switch.get_active(), saved, failed)
+
+    def _proximity_lock_changed(self, _switch, _property) -> None:
+        if self._applying_proximity_lock:
+            return
+        enabled = self._proximity_lock_switch.get_active()
+        # The switch only opts in or out; the saved grace period is kept.
+        grace = clamp_grace(self._last_status.extra.get("proximity_lock_grace_sec"))
+        self._proximity_lock_choice.begin(enabled)
+        self._proximity_lock_row.set_sensitive(False)
+
+        def saved(status: dict) -> None:
+            self._proximity_lock_choice.saved(
+                status.get("proximity_lock_enabled") is True
+            )
+            self._toast(_("Away lock preference saved"))
+            self._refresh()
+
+        def failed(error: str) -> None:
+            self._proximity_lock_choice.failed()
+            self._toast(
+                _("Could not save away lock preference: {error}").format(
+                    error=error
+                )
+            )
+            self._apply_status(self._last_status)
+
+        self._client.set_proximity_lock_async(enabled, grace, saved, failed)
+
+    def _calls_enabled_changed(self, _switch, _property) -> None:
+        if self._applying_calls_enabled:
+            return
+        enabled = self._calls_enabled_switch.get_active()
+        self._calls_enabled_choice.begin(enabled)
+        self._calls_enabled_row.set_sensitive(False)
+
+        def saved(status: dict) -> None:
+            self._calls_enabled_choice.saved(status.get("calls_enabled") is True)
+            self._toast(_("Phone calls preference saved"))
+            self._refresh()
+
+        def failed(error: str) -> None:
+            self._calls_enabled_choice.failed()
+            self._toast(
+                _("Could not save phone calls preference: {error}").format(
+                    error=error
+                )
+            )
+            self._apply_status(self._last_status)
+
+        self._client.set_calls_enabled_async(enabled, saved, failed)
 
     def _storage_policy_changed(self, _row, _property) -> None:
         if self._applying_storage_policy:

@@ -73,8 +73,8 @@ def test_notification_capable_native_families_use_their_own_bluetoothd_path() ->
     arch = (ROOT / "packaging/arch/blueferry-bluetooth.conf").read_text()
     rpm = (ROOT / "packaging/rpm/blueferry-bluetooth.conf").read_text()
 
-    assert "ExecStart=/usr/lib/bluetooth/bluetoothd -E" in arch
-    assert "ExecStart=/usr/libexec/bluetooth/bluetoothd -E" in rpm
+    assert "ExecStart=/usr/lib/bluetooth/bluetoothd -E -P hfp\n" in arch
+    assert "ExecStart=/usr/libexec/bluetooth/bluetoothd -E -P hfp\n" in rpm
     assert not (ROOT / "packaging/deb/blueferry-bluetooth.conf").exists()
 
 
@@ -109,7 +109,7 @@ def test_notification_capable_packages_reload_and_restart_running_bluetooth() ->
     assert "if [ $1 -eq 0 ]" in rpm_spec
 
 
-def test_deb_is_map_pbap_only_and_does_not_manage_bluetooth_service() -> None:
+def test_deb_does_not_manage_bluetooth_service() -> None:
     control = (ROOT / "packaging/deb/control").read_text()
     rules = (ROOT / "packaging/deb/rules").read_text()
     install = (ROOT / "packaging/deb/blueferry-backend.install").read_text()
@@ -124,7 +124,9 @@ def test_deb_is_map_pbap_only_and_does_not_manage_bluetooth_service() -> None:
     assert not (ROOT / "packaging/deb/blueferry-backend.postrm").exists()
     assert "MAP messages and PBAP contacts" in readme
     assert "never enables `-E` or" in readme
-    assert "already has BlueZ 5.86 or newer" in readme
+    assert "**5.86 or newer:**" in readme
+    assert "**Before 5.84:** available without `-E`" in readme
+    assert "has not yet been validated on hardware" in readme
 
 
 def test_deb_and_rpm_install_secret_service_client_bindings() -> None:

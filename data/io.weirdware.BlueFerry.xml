@@ -70,6 +70,14 @@
       <annotation name="io.weirdware.BlueFerry.Errors"
                   value="NotReady,ResponseTooLarge"/>
     </method>
+    <method name="GetContactPhoto">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Bounded JPEG/PNG avatar of the one cached contact owning an address; empty when absent, ambiguous, or BLUEFERRY_CONTACT_PHOTOS is off. Clients decode it; the daemon does not."/>
+      <arg name="address" type="s" direction="in"/>
+      <arg name="photo" type="ay" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady"/>
+    </method>
     <method name="SetGroupParticipants">
       <arg name="thread_key" type="s" direction="in"/>
       <arg name="recipients" type="as" direction="in"/>
@@ -105,6 +113,46 @@
       <arg name="enabled" type="b" direction="out"/>
     </method>
     <method name="SetContactsOnlyNotifications">
+      <arg name="enabled" type="b" direction="in"/>
+      <arg name="selected" type="b" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady"/>
+    </method>
+    <method name="GetNotificationOpenMap">
+      <arg name="rules_json" type="s" direction="out"/>
+    </method>
+    <method name="SetNotificationOpenTarget">
+      <arg name="bundle_id" type="s" direction="in"/>
+      <arg name="target" type="s" direction="in"/>
+      <arg name="rules_json" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady"/>
+    </method>
+    <method name="OpenNotificationClick">
+      <arg name="click_id" type="s" direction="in"/>
+      <arg name="activation_token" type="s" direction="in"/>
+      <arg name="opened" type="b" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady"/>
+    </method>
+    <method name="RemoveNotificationOpenTarget">
+      <arg name="bundle_id" type="s" direction="in"/>
+      <arg name="removed" type="b" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady"/>
+    </method>
+    <method name="GetAncsNotificationActions">
+      <arg name="enabled" type="b" direction="out"/>
+    </method>
+    <method name="SetAncsNotificationActions">
+      <arg name="enabled" type="b" direction="in"/>
+      <arg name="selected" type="b" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady"/>
+    </method>
+    <method name="SetPhoneBatteryWarning">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Opt in or out of the once-per-discharge low-battery warning; state is phone_battery_warning in GetStatus"/>
       <arg name="enabled" type="b" direction="in"/>
       <arg name="selected" type="b" direction="out"/>
       <annotation name="io.weirdware.BlueFerry.Errors"
@@ -159,6 +207,123 @@
                   value="InvalidArgs,NotReady"/>
     </method>
   </interface>
+  <interface name="io.weirdware.BlueFerry.CallHistory1">
+    <annotation name="org.freedesktop.DBus.Description"
+                value="Opt-in mirror of the iPhone's recent calls; opt-in state is in Messages1.GetStatus"/>
+    <method name="ListCallHistory">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Retained iPhone call history, newest first, as a JSON array"/>
+      <arg name="limit" type="u" direction="in"/>
+      <arg name="json" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="NotReady,ResponseTooLarge"/>
+    </method>
+    <method name="SyncCallHistory">
+      <arg name="retained_count" type="u" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="NotReady,CallHistorySyncFailed"/>
+    </method>
+    <method name="SetCallHistory">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Opt in or out; turning it off erases the retained calls"/>
+      <arg name="enabled" type="b" direction="in"/>
+      <arg name="missed_call_notifications" type="b" direction="in"/>
+      <arg name="status_json" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady"/>
+    </method>
+  </interface>
+  <interface name="io.weirdware.BlueFerry.Media1">
+    <annotation name="org.freedesktop.DBus.Description"
+                value="Opt-in iPhone now-playing and media commands over Apple Media Service"/>
+    <annotation name="io.weirdware.BlueFerry.Errors"
+                value="AuthorizationRequired,RateLimited"/>
+    <method name="GetNowPlaying">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="JSON snapshot; enabled is false unless the user opted in"/>
+      <arg name="json" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="ResponseTooLarge"/>
+    </method>
+    <method name="SetMediaControl">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Persist the opt-in and start or stop media control at once; returns the media_control_* status keys"/>
+      <arg name="enabled" type="b" direction="in"/>
+      <arg name="status_json" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady"/>
+    </method>
+    <method name="SetMprisPlayer">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Also publish the iPhone as an MPRIS2 player (session-wide metadata); effective while media control is on"/>
+      <arg name="enabled" type="b" direction="in"/>
+      <arg name="status_json" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady"/>
+    </method>
+    <method name="SendMediaCommand">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="play, pause, toggle, next, previous, volume-up, volume-down, repeat, shuffle, skip-forward, skip-backward, like, dislike, bookmark"/>
+      <arg name="command" type="s" direction="in"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady,MediaCommandFailed"/>
+    </method>
+  </interface>
+  <interface name="io.weirdware.BlueFerry.Calls1">
+    <annotation name="org.freedesktop.DBus.Description"
+                value="Optional, default-off iPhone call control through oFono HFP; see README"/>
+    <annotation name="io.weirdware.BlueFerry.Errors"
+                value="AuthorizationRequired,RateLimited,CallsDisabled"/>
+    <method name="SetCallsEnabled">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Save the opt-in and apply it without a restart; returns the calls_* GetStatus keys as JSON"/>
+      <arg name="enabled" type="b" direction="in"/>
+      <arg name="status_json" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady"/>
+    </method>
+    <method name="ListCalls">
+      <arg name="json" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="ResponseTooLarge"/>
+    </method>
+    <method name="Dial">
+      <arg name="number" type="s" direction="in"/>
+      <arg name="call_id" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,CallsUnavailable,CallFailed"/>
+    </method>
+    <method name="Answer">
+      <arg name="call_id" type="s" direction="in"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotFound,CallsUnavailable,CallFailed"/>
+    </method>
+    <method name="Hangup">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Hang up an active or held call, or decline a ringing one"/>
+      <arg name="call_id" type="s" direction="in"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotFound,CallsUnavailable,CallFailed"/>
+    </method>
+    <method name="HangupAll">
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="CallsUnavailable,CallFailed"/>
+    </method>
+    <method name="SendTones">
+      <arg name="call_id" type="s" direction="in"/>
+      <arg name="tones" type="s" direction="in"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotFound,CallsUnavailable,CallFailed"/>
+    </method>
+    <method name="SwapCalls">
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="CallsUnavailable,CallFailed"/>
+    </method>
+    <method name="HoldAndAnswer">
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,CallsUnavailable,CallFailed"/>
+    </method>
+  </interface>
   <interface name="io.weirdware.BlueFerry.Events1">
     <annotation name="org.freedesktop.DBus.Description"
                 value="Content-free live invalidations; snapshots are fetched with Messages1"/>
@@ -168,6 +333,15 @@
     <signal name="StatusChanged"/>
     <signal name="OpenMessageRequested">
       <arg name="handle" type="s"/>
+    </signal>
+    <signal name="CallHistoryChanged"/>
+    <signal name="NowPlayingChanged">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Content-free; fetch details with Media1.GetNowPlaying"/>
+    </signal>
+    <signal name="CallsChanged">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Call state changed; fetch details with Calls1.ListCalls"/>
     </signal>
   </interface>
 </node>

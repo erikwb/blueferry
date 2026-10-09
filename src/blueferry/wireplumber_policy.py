@@ -8,6 +8,7 @@ import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
+from blueferry import config
 from blueferry.commands import run_command
 from blueferry.errors import CommandError
 from blueferry.service_manager import (
@@ -20,33 +21,57 @@ log = logging.getLogger(__name__)
 FRAGMENT_NAME = "99-blueferry-keep-phone-audio.conf"
 LEGACY_FRAGMENT_NAME = "90-blueferry-keep-phone-audio.conf"
 # 99- loads after other bluetooth auto-connect fragments.
-FRAGMENT_TEXT = """\
+#
+# Without calls, this computer offers only source/gateway roles to the phone:
+# no a2dp_sink (music stays on the phone) and no hfp_hf/hsp_hs (calls stay on
+# the phone). With phone calls enabled the hands-free roles are kept so
+# oFono's HFP modem can carry call audio here, while a2dp_sink is still
+# stripped: music stays on the phone, calls can come to the PC. Auto-connect
+# stays empty in both cases; BlueFerry's call controller asks oFono to bring
+# up HFP (Modem.Powered) instead of WirePlumber paging the phone.
+BASE_ROLES = ("a2dp_source", "hfp_ag", "bap_source")
+CALL_ROLES = ("hfp_hf", "hsp_hs")
+
+
+def fragment_text(*, allow_calls: bool = False) -> str:
+    roles = BASE_ROLES + (CALL_ROLES if allow_calls else ())
+    calls_note = (
+        "# BlueFerry phone calls are enabled: keep the hands-free roles (hfp_hf,\n"
+        "# hsp_hs) so calls can reach this computer; a2dp_sink stays off.\n"
+        if allow_calls
+        else ""
+    )
+    return f"""\
 # Managed by BlueFerry. To remove this policy, set
 # BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE=false in BlueFerry's local.env and
 # restart blueferry.service.
-monitor.bluez.properties = {
-  override.bluez5.roles = [ a2dp_source hfp_ag bap_source ]
-}
+{calls_note}monitor.bluez.properties = {{
+  override.bluez5.roles = [ {" ".join(roles)} ]
+}}
 monitor.bluez.rules = [
-  {
+  {{
     matches = [
-      {
+      {{
         device.name = "~bluez_card.*"
         device.icon-name = "phone"
-      }
-      {
+      }}
+      {{
         device.name = "~bluez_card.*"
         device.icon-name = "audio-card-phone"
-      }
+      }}
     ]
-    actions = {
-      update-props = {
+    actions = {{
+      update-props = {{
         bluez5.auto-connect = [ ]
-      }
-    }
-  }
+      }}
+    }}
+  }}
 ]
 """
+
+
+FRAGMENT_TEXT = fragment_text(allow_calls=False)
+CALLS_FRAGMENT_TEXT = fragment_text(allow_calls=True)
 MAX_FRAGMENT_BYTES = 16 * 1024
 
 ActiveCheck = Callable[[], bool]
@@ -159,8 +184,13 @@ class WirePlumberPhoneAudioPolicy:
         restart: Restart | None = None,
         wait_for_restart: bool = False,
         manual_restart_hint: RestartHint = _manual_restart_hint,
+        allow_calls: bool | None = None,
     ) -> None:
         self.path = path or fragment_path()
+        # Pairing and the daemon both construct the policy; both follow the
+        # configured opt-in unless a caller decides explicitly.
+        self.allow_calls = config.CALLS_ENABLED if allow_calls is None else allow_calls
+        self.text = fragment_text(allow_calls=self.allow_calls)
         self._active = active
         self._supported = supported
         self._manual_restart_hint = manual_restart_hint
@@ -180,8 +210,8 @@ class WirePlumberPhoneAudioPolicy:
             is_supported = self._supported()
             legacy = legacy_fragment_path(self.path)
             if enabled and is_supported:
-                if not _matches(self.path, FRAGMENT_TEXT):
-                    _write_fragment(self.path, FRAGMENT_TEXT)
+                if not _matches(self.path, self.text):
+                    _write_fragment(self.path, self.text)
                     changed = True
                     log.info("installed WirePlumber phone-audio policy: %s", self.path)
                 if legacy.exists() or legacy.is_symlink():

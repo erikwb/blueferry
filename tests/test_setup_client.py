@@ -460,3 +460,16 @@ def test_isolated_pairing_unexpected_exit_status_includes_diagnostic_stderr(
         )
 
     assert "traceback or error detail" in str(raised.value)
+
+
+@pytest.mark.parametrize("reply,expected", [
+    ({"bearer_api_active": True}, True),  # A backend that predates the flag.
+    ({"bearer_api_active": False}, False),
+    ({"bearer_api_active": False, "notifications_active": True}, True),
+    ({"bearer_api_active": True, "notifications_active": False}, False),
+])
+def test_notification_readiness_accepts_replies_from_older_backends(reply, expected):
+    compatibility = setup_client.BluetoothCompatibility.from_dict(reply)
+
+    assert compatibility.notifications_active is expected
+    assert compatibility.to_dict()["notifications_active"] is expected

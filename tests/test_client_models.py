@@ -49,6 +49,9 @@ class _Messages:
     def SetContactsOnlyNotifications(self, enabled, **_kwargs):
         return enabled
 
+    def SetAncsNotificationActions(self, enabled, **_kwargs):
+        return enabled
+
     def SetGroupParticipants(self, key, recipients, **_kwargs):
         return json.dumps({
             "key": key,
@@ -182,6 +185,7 @@ def test_backend_client_returns_shared_models(monkeypatch):
     assert client.set_notification_policy("none") == "none"
     assert client.contacts_only_notifications() is False
     assert client.set_contacts_only_notifications(True) is True
+    assert client.set_ancs_notification_actions(True) is True
     group = client.set_group_participants(
         "group:named:test", ["+15551111111", "+15552222222"]
     )
@@ -242,3 +246,11 @@ def test_status_model_normalizes_legacy_map_refusal_detail() -> None:
 
     assert status.map_connection_refused is True
     assert status.to_dict()["map_connection_refused"] is True
+
+
+def test_status_decodes_the_additive_otp_autocopy_flag() -> None:
+    assert BackendStatus.from_dict({}).otp_autocopy is False
+    status = BackendStatus.from_dict({"otp_autocopy": True})
+    assert status.otp_autocopy is True
+    assert status.to_dict()["otp_autocopy"] is True
+    assert "otp_autocopy" not in status.extra

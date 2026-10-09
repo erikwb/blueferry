@@ -63,9 +63,9 @@ flowchart TD
 
    Both lines must show `root:root 755`. Never point the sudoers rule at a
    copy in your home directory or any other place you can write to: whoever
-   can replace that file gets passwordless root. BlueFerry checks this and
-   refuses to call sudo for a helper that someone other than root can
-   replace.
+   can replace that file gets passwordless root. BlueFerry checks the
+   original path, every symlink hop, and their parent directories.
+   User-owned or writable paths, broken links and symlink loops are refused.
 
    Then allow it once with `visudo -f /etc/sudoers.d/blueferry` (adjust the
    group; needs sudo 1.9.10 or newer):
@@ -131,9 +131,9 @@ The daemon then logs to `~/.local/state/blueferry/daemon.log`.
   inactive sessions. It can still only set an existing adapter's class.
 - `sudo -n` also succeeds without the rule while a recent terminal `sudo`
   timestamp is cached.
-- After a refused or failed attempt, the daemon backs off: it retries after
-  15 minutes, then less and less often, at most every six hours, and
-  immediately after bluetoothd restarts. A rule you add later therefore
+- After an authorization refusal, the daemon backs off from 15 minutes,
+  doubling up to six hours. Other failures start at one minute. A bluetoothd
+  restart resets the backoff and triggers an immediate check. A rule you add later therefore
   takes effect without a restart, and a missing rule does not fill the
   authentication log.
 - The optional user service sets `no_new_privs`, which rules out sudo for its

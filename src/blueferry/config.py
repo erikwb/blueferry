@@ -15,15 +15,28 @@ LOCAL_ENV_KEYS = frozenset({
     "BLUEFERRY_ANCS_ENABLED",
     "BLUEFERRY_ANCS_APP_ALLOWLIST",
     "BLUEFERRY_ANCS_APP_BLOCKLIST",
+    "BLUEFERRY_ANCS_ACTIONS",
+    "BLUEFERRY_ANCS_ACTION_TIMEOUT_MS",
     "BLUEFERRY_SHOW_NOTIFICATION_CONTENT",
     "BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE",
+    "BLUEFERRY_CALLS_ENABLED",
+    "BLUEFERRY_PHONE_BATTERY_NOTIFY",
+    "BLUEFERRY_PHONE_BATTERY_LOW_PERCENT",
     "BLUEFERRY_NOTIFICATION_TIMEOUT_MS",
     "BLUEFERRY_MARK_READ_ON_DISMISS",
+    "BLUEFERRY_OTP_AUTOCOPY",
+    "BLUEFERRY_OTP_CLEAR_SECONDS",
     "BLUEFERRY_HISTORY_RETENTION_DAYS",
     "BLUEFERRY_HISTORY_MAX_EVENTS",
     "BLUEFERRY_HISTORY_MAX_PAYLOAD_BYTES",
     "BLUEFERRY_PROXIMITY_LOCK",
     "BLUEFERRY_PROXIMITY_LOCK_GRACE_SEC",
+    "BLUEFERRY_CONTACT_PHOTOS",
+    "BLUEFERRY_CALL_HISTORY_ENABLED",
+    "BLUEFERRY_CALL_HISTORY_INTERVAL_SEC",
+    "BLUEFERRY_MISSED_CALL_NOTIFICATIONS",
+    "BLUEFERRY_MEDIA_CONTROL_ENABLED",
+    "BLUEFERRY_MEDIA_MPRIS_ENABLED",
 })
 CONFIG_DIR: Path = Path(
     os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config")
@@ -142,6 +155,12 @@ def _env_bool(name: str, default: bool) -> bool:
     return value.strip().casefold() not in {"0", "false", "no", "off"}
 
 
+def _env_opt_in(name: str) -> bool:
+    """Parse a default-off flag; only an explicit affirmative enables it."""
+    value = os.environ.get(name)
+    return value is not None and value.strip().casefold() in {"1", "true", "yes", "on"}
+
+
 def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
     try:
         value = int(os.environ.get(name, str(default)))
@@ -188,6 +207,19 @@ ANCS_APP_BLOCKLIST: frozenset[str] = (
 """Exact bundle IDs denied after the allowlist; block rules take precedence."""
 
 
+ANCS_ACTIONS: bool = _env_bool("BLUEFERRY_ANCS_ACTIONS", False)
+"""Initial value for offering iPhone notification actions as buttons.
+
+A choice saved from a client (settings.json) wins over this value.
+
+Off by default because it changes the desktop notification UI and lets a
+click act on the phone. It applies only to non-Messages popups shown by the
+"All iPhone Notifications" policy; nothing is invoked without a click.
+Labels are chosen by the sending app and can contain content, so actions stay
+off while BLUEFERRY_SHOW_NOTIFICATION_CONTENT is false.
+"""
+
+
 def include_ancs_app(app_id: str) -> bool:
     """Return whether one validated non-Messages app passes local rules."""
     selected = str(app_id).strip()
@@ -197,15 +229,62 @@ def include_ancs_app(app_id: str) -> bool:
         return False
     return ANCS_APP_ALLOWLIST is None or selected in ANCS_APP_ALLOWLIST
 
+MEDIA_CONTROL_ENABLED: bool = _env_bool("BLUEFERRY_MEDIA_CONTROL_ENABLED", False)
+"""Opt in to iPhone now-playing and media commands over Apple Media Service.
+
+Off by default: AMS subscriptions add LE traffic on the bond that carries
+ANCS, and this is outside BlueFerry's messaging core. Requires the full
+(ANCS/LE) delivery mode; compatibility mode never connects LE.
+"""
+
+MEDIA_MPRIS_ENABLED: bool = _env_bool("BLUEFERRY_MEDIA_MPRIS_ENABLED", False)
+"""Initial value for also publishing the iPhone as an MPRIS2 player.
+
+Effective only while media control is on. MPRIS metadata (title, artist,
+album) is by design readable by every application in the login session, like
+any desktop music player. It is a separate opt-in so enabling media control
+alone keeps track details behind BlueFerry's authenticated Media1 API. A
+choice saved through a client or the CLI takes precedence.
+"""
+
 SHOW_NOTIFICATION_CONTENT: bool = _env_bool(
     "BLUEFERRY_SHOW_NOTIFICATION_CONTENT", True
 )
 KEEP_PHONE_AUDIO_ON_PHONE: bool = _env_bool(
     "BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE", True
 )
+CALLS_ENABLED: bool = _env_opt_in("BLUEFERRY_CALLS_ENABLED")
+"""Initial value of the experimental, default-off HFP call control.
+
+A preference saved in settings.json (Qt settings, ``blueferry calls
+enable``/``disable``) wins; see ``blueferry.calls.settings``.
+
+When enabled the daemon watches oFono for the iPhone's hands-free modem and
+exposes the private ``Calls1`` interface. The WirePlumber phone-audio policy
+then keeps the hands-free roles so call audio can reach this computer, while
+still stripping ``a2dp_sink`` when ``KEEP_PHONE_AUDIO_ON_PHONE`` is true.
+"""
+PHONE_BATTERY_NOTIFY: bool = _env_opt_in("BLUEFERRY_PHONE_BATTERY_NOTIFY")
+"""Default-off desktop warning when the iPhone's battery runs low.
+
+The level comes from the iPhone's Bluetooth LE battery (``Battery1`` or
+the GATT Battery Level), which needs no calls; with ``CALLS_ENABLED`` the
+HFP ``battchg`` indicator (20 % steps) fills in when no LE level is known.
+"""
+PHONE_BATTERY_LOW_PERCENT: int = _env_int(
+    "BLUEFERRY_PHONE_BATTERY_LOW_PERCENT", 20, 0, 80
+)
+"""Warn at or below this level. HFP reports 0-100 % in 20 % steps only."""
 NOTIFICATION_TIMEOUT_MS: int = _env_int(
     "BLUEFERRY_NOTIFICATION_TIMEOUT_MS", 8_000, 1_000, 60_000
 )
+
+
+ANCS_ACTION_TIMEOUT_MS: int = _env_int(
+    "BLUEFERRY_ANCS_ACTION_TIMEOUT_MS", 30_000, 1_000, 120_000
+)
+"""Lifetime of ANCS popups that carry action buttons (e.g. a ringing call)."""
+
 MARK_READ_ON_DISMISS: bool = _env_bool("BLUEFERRY_MARK_READ_ON_DISMISS", True)
 """Whether dismissing a message's desktop popup marks it read on the iPhone.
 
@@ -213,6 +292,22 @@ Some notification-center "block" actions (menu bar do-not-disturb toggles,
 some panel widgets) dismiss the popup rather than merely hiding it, which
 would otherwise mark the message read on the phone without the user ever
 seeing it.
+"""
+OTP_AUTOCOPY: bool = _env_bool("BLUEFERRY_OTP_AUTOCOPY", False)
+"""Copy one-time codes from newly received messages to the clipboard.
+
+Off by default: it changes the clipboard without a user action. The code is
+never logged or broadcast, and the confirmation popup shows it only when
+``SHOW_NOTIFICATION_CONTENT`` is enabled.
+"""
+OTP_CLEAR_SECONDS: int = _env_int("BLUEFERRY_OTP_CLEAR_SECONDS", 0, 0, 600)
+"""Clear a copied code after this many seconds if nothing replaced it (0 = keep)."""
+CONTACT_PHOTOS: bool = _env_bool("BLUEFERRY_CONTACT_PHOTOS", False)
+"""Opt-in: keep PBAP contact photos and offer them as avatars.
+
+Off by default. Photos enlarge the private contact cache and put more
+remote-controlled bytes in front of client image decoders; see
+``blueferry.contact_photos`` for the threat model.
 """
 HISTORY_RETENTION_DAYS: int = _env_int(
     "BLUEFERRY_HISTORY_RETENTION_DAYS", 30, 1, 3650
@@ -238,6 +333,26 @@ PROXIMITY_LOCK_GRACE_SEC: int = _env_int(
 )
 """Seconds the iPhone must stay continuously disconnected before locking."""
 
+CALL_HISTORY_ENABLED: bool = _env_bool("BLUEFERRY_CALL_HISTORY_ENABLED", False)
+"""Opt-in: pull the iPhone's recent calls over PBAP and retain them locally.
+
+Off by default because it retains who called whom and when. It uses the
+existing PBAP session (the iPhone's **Sync Contacts** permission) and the same
+local storage policy and retention window as message history.
+"""
+CALL_HISTORY_INTERVAL_SEC: int = _env_int(
+    "BLUEFERRY_CALL_HISTORY_INTERVAL_SEC", 900, 60, 24 * 60 * 60
+)
+"""Seconds between fallback polls of the missed-calls list.
+
+PBAP has no change events. ANCS call notifications trigger prompt pulls, so
+this poll only covers calls ANCS did not report (e.g. notifications off).
+"""
+MISSED_CALL_NOTIFICATIONS: bool = _env_bool(
+    "BLUEFERRY_MISSED_CALL_NOTIFICATIONS", True
+)
+"""Desktop popups for newly seen missed calls; only with call history enabled."""
+
 # ---- runtime paths ------------------------------------------------------
 
 _state_home = Path(
@@ -247,6 +362,7 @@ _state_home = Path(
 STATE_DIR: Path = _state_home
 EVENTS_DB: Path = _state_home / "events.sqlite"
 CONTACTS_DB: Path = _state_home / "contacts.sqlite"
+CALLS_DB: Path = _state_home / "calls.sqlite"
 
 SETTINGS_JSON: Path = CONFIG_DIR / "settings.json"
 
@@ -271,7 +387,7 @@ def ensure_dirs() -> None:
     if STATE_DIR.stat().st_mode & 0o777 != STATE_DIR_MODE:
         raise PermissionError(f"could not secure private state directory: {STATE_DIR}")
 
-    for path in (EVENTS_DB, CONTACTS_DB):
+    for path in (EVENTS_DB, CONTACTS_DB, CALLS_DB):
         if not path.exists() and not path.is_symlink():
             continue
         if path.is_symlink():
