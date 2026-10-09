@@ -222,7 +222,7 @@ class NetworkLinkWatch:
         self,
         bus: Callable[[], AsyncBus],
         device_path: str,
-        on_change: Callable[[bool, str], None],
+        on_change: Callable[[bool | None, str], None],
     ) -> None:
         self._bus = bus
         self._device_path = device_path
@@ -259,7 +259,13 @@ class NetworkLinkWatch:
             if generation != self._generation:
                 return
             log.debug("could not read the phone's PAN link: %s", dbus_error_name(error))
-            self._on_change(False, "")
+            # A timeout or denied read says nothing about the existing link.
+            # Only a missing device/interface/service establishes absence.
+            absent = dbus_error_name(error) in (
+                _DBUS_MISSING_API_NAMES
+                | (_DBUS_MISSING_SERVICE_NAMES - {"org.freedesktop.DBus.Error.Disconnected"})
+            )
+            self._on_change(False if absent else None, "")
 
         try:
             self._bus().call_async(
@@ -719,6 +725,7 @@ class TetherController:
         if generation != self._generation:
             return
         self._generation += 1
+        self._cancel_deadline()
         self._cancel_confirm()
         if user_requested:
             # Someone deliberately turned it off (e.g. in the network applet).
@@ -728,8 +735,10 @@ class TetherController:
             self._cancel_retry()
             self._set(OFF, error="", interface="")
             return
-        if self._state != CONNECTED:
+        if self._state not in (CONNECTING, CONNECTED):
             return  # the link watch already reported the loss
+        # NetworkManager can lose activation while its interface lookup is
+        # still pending. Settle that attempt too; its callbacks are now stale.
         token = token if token in ERROR_TOKENS else LINK_LOST
         log.warning("Bluetooth tethering ended: %s", token)
         self._set(OFF, error=token, interface="")
@@ -785,10 +794,20 @@ class TetherController:
         if self._link_watch is not None and self._watching:
             self._link_watch.probe()
 
-    def observe_link(self, connected: bool, interface: str) -> None:
+    def observe_link(self, connected: bool | None, interface: str) -> None:
         """Reconcile with BlueZ's Network1 state (ground truth for the link)."""
         if not self._enabled:
             # Off means off: never adopt or track a PAN link.
+            return
+        if connected is None:
+            if self._awaiting_link_down:
+                # The stop reply alone cannot confirm an adopted link ended.
+                # Keep its last known state and allow the user to retry.
+                self._awaiting_link_down = False
+                self._cancel_confirm()
+                self._external = True
+                self._connected_at = self._clock()
+                self._set(CONNECTED, error=GENERIC_ERROR)
             return
         self._observe_link(connected, interface)
         if self._autoconnect_after_probe:

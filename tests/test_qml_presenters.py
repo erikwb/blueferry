@@ -3495,7 +3495,9 @@ def _quickshell_tether_page(qml_engine, quickshell_setup, tether: dict, *, daemo
     quickshell_setup.setProperty("configured", True)
     calls: list = []
     page.operationRequested.connect(
-        lambda method, args: calls.append((method, args.toVariant()))
+        lambda method, args: calls.append((
+            method, args.toVariant() if hasattr(args, "toVariant") else args,
+        ))
     )
     _tether_components.extend([theme_component, component])
     return page, theme, calls

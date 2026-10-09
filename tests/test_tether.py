@@ -1007,3 +1007,49 @@ def test_a_failed_stop_after_disabling_leaves_no_stale_failure() -> None:
     assert value.snapshot()["error"] == ""
     value.configure(True, False)
     assert value.snapshot()["state"] == OFF
+
+
+@pytest.mark.parametrize('error_name', [
+    'org.freedesktop.DBus.Error.NoReply',
+    'org.freedesktop.DBus.Error.Timeout',
+    'org.freedesktop.DBus.Error.AccessDenied',
+    'org.freedesktop.DBus.Error.Disconnected',
+])
+def test_failed_link_read_preserves_live_recovery_hold(error_name) -> None:
+    bus = LinkBus(reply={'Connected': True, 'Interface': 'bnep0'})
+    interfaces = {'bnep0'}
+    value, *_ = controller(interfaces=interfaces)
+    value._link_watch = NetworkLinkWatch(lambda: bus, '/dev', value.observe_link)
+    value.start()
+    assert value.link_alive()
+
+    bus.error = _error(error_name)
+    value.probe_link()
+
+    assert value.state == CONNECTED
+    assert value.link_alive()
+    # Retaining the last report never overrides evidence from the kernel.
+    interfaces.clear()
+    assert not value.link_alive()
+    bus.error = None
+    bus.reply = {'Connected': False}
+    value.probe_link()
+    assert value.state == OFF
+
+
+def test_unknown_stop_confirmation_keeps_adopted_link_retryable() -> None:
+    bus = LinkBus(reply={'Connected': True, 'Interface': 'bnep0'})
+    chooser = Chooser()
+    value, timers, *_ = controller(chooser)
+    value._link_watch = NetworkLinkWatch(lambda: bus, '/dev', value.observe_link)
+    value.start()
+    value.disconnect()
+    bus.error = _error('org.freedesktop.DBus.Error.NoReply')
+    chooser.backend.disconnects[0][0]()
+
+    assert value.state == CONNECTED
+    assert value.snapshot()['error'] == tether.GENERIC_ERROR
+    assert value.link_alive()
+    assert timers.delays() == []
+    value.disconnect()
+    assert len(chooser.backend.disconnects) == 2

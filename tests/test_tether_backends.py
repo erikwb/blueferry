@@ -670,3 +670,28 @@ def test_failed_probe_is_reported_as_a_token() -> None:
     errors = []
     choose_backend(lambda: bus, DEVICE, MAC)(lambda _b: None, errors.append)
     assert errors == [tether.GENERIC_ERROR]
+
+
+@pytest.mark.parametrize('user_requested', [False, True])
+def test_loss_before_interface_reply_settles_attempt_and_ignores_late_reply(user_requested):
+    from tests.test_tether import Chooser, controller
+
+    bus = nm_bus(state=2)
+    del bus.handlers[(tether.PROPERTIES_IFACE, 'Get', NM_ACTIVE_IFACE, 'Devices')]
+    backend = NetworkManagerTether(lambda: bus, MAC)
+    value, timers, *_ = controller(Chooser(backend), autoconnect=True)
+    value.start()
+    value.connect()
+    assert value.state == tether.CONNECTING
+    held = bus.held.pop()
+
+    bus.emit('StateChanged', ACTIVE, 4, 2 if user_requested else 5)
+
+    assert value.state == tether.OFF
+    assert value.snapshot()['error'] == ('' if user_requested else tether.IP_CONFIG_FAILED)
+    assert timers.delays() == ([] if user_requested else [tether.AUTOCONNECT_RETRY_SECONDS])
+    held[3]([NM_DEVICE])  # the old Devices/IpInterface lookup finally completes
+    assert value.state == tether.OFF
+    value.connect()  # an explicit retry is accepted, rather than stuck forever
+    assert len([call for call in bus.calls if call[3] == 'ActivateConnection']) == 2
+    value.stop()
