@@ -47,12 +47,36 @@ flowchart TD
    Then run `sudo rc-service bluetooth restart`. This briefly disconnects all
    Bluetooth devices. Until then BlueFerry pairs for messages and contacts
    and shows these steps instead of an activation button.
-3. Set the adapter's device class before pairing, and again after Bluetooth
-   restarts (the setting does not survive a restart):
+3. Let BlueFerry set the adapter's device class. Pairing needs the class
+   set to A/V Hands-Free, and the daemon repairs it when it drifts, for
+   example after Bluetooth restarts. Without systemd, BlueFerry runs the
+   argument-checked helper as
+   `sudo -n -- /usr/lib/blueferry/blueferry-set-cod N` (`N` is the adapter
+   index; `-n` never prompts). No package installs the helper on OpenRC, so
+   an administrator installs it from the source tree, owned by root:
 
    ```sh
-   sudo /usr/lib/blueferry/blueferry-set-cod 0   # adapter hci0
+   sudo install -D -o root -g root -m 755 systemd/blueferry-set-cod \
+     /usr/lib/blueferry/blueferry-set-cod
+   stat -c '%U:%G %a %n' /usr/lib/blueferry /usr/lib/blueferry/blueferry-set-cod
    ```
+
+   Both lines must show `root:root 755`. Never point the sudoers rule at a
+   copy in your home directory or any other place you can write to: whoever
+   can replace that file gets passwordless root. BlueFerry checks the
+   original path, every symlink hop, and their parent directories.
+   User-owned or writable paths, broken links and symlink loops are refused.
+
+   Then allow it once with `visudo -f /etc/sudoers.d/blueferry` (adjust the
+   group; needs sudo 1.9.10 or newer):
+
+   ```
+   %wheel ALL=(root) NOPASSWD: /usr/lib/blueferry/blueferry-set-cod ^[0-9]+$
+   ```
+
+   Without the rule, setup tells you how to add it or how to run the helper
+   once by hand, for example `sudo /usr/lib/blueferry/blueferry-set-cod 0`
+   for `hci0`.
 
 4. Pair as usual with `blueferry-qt`, `blueferry-gtk`,
    `blueferry-quickshell`, or `blueferry pair`.
@@ -99,6 +123,23 @@ The daemon then logs to `~/.local/state/blueferry/daemon.log`.
 - Experimental mode is found through `/proc`. A bundled option such as `-nE`
   is not recognized, and with `/proc` mounted `hidepid=1` or `2` it reads as
   inactive.
+- **Compared with systemd's polkit path**, the sudoers rule grants more.
+  On systemd, polkit lets only an active local session start a sandboxed
+  unit (only the network capabilities `btmgmt` needs, read-only system,
+  no device nodes). The sudoers rule runs the helper as full root with no
+  sandbox, for every session of the listed users, including SSH and
+  inactive sessions. It can still only set an existing adapter's class.
+- `sudo -n` also succeeds without the rule while a recent terminal `sudo`
+  timestamp is cached.
+- After an authorization refusal, the daemon backs off from 15 minutes,
+  doubling up to six hours. Other failures start at one minute. A bluetoothd
+  restart resets the backoff and triggers an immediate check. A rule you add later therefore
+  takes effect without a restart, and a missing rule does not fill the
+  authentication log.
+- The optional user service sets `no_new_privs`, which rules out sudo for its
+  daemon. BlueFerry notices and does not call sudo; rerun the helper after
+  Bluetooth restarts, or set `no_new_privs=""` in
+  `~/.config/rc/conf.d/blueferry`. `doas` is not supported.
 - WirePlumber is restarted after a policy change only if it runs as an OpenRC
   user service. With a session launcher such as `gentoo-pipewire-launcher`,
   restart WirePlumber yourself or log in again.

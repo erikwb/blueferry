@@ -115,15 +115,74 @@ and experimental mode reads as inactive.
 
 ## Bluetooth device class
 
-Pairing needs the adapter's Class of Device set to A/V Hands-Free. systemd
-packages set it through the argument-validated `blueferry-set-cod` helper,
-started as a Polkit-authorized system unit. OpenRC has no such path yet, so
-set the class as an administrator before pairing, and again after Bluetooth
-restarts because the setting is volatile:
+Pairing needs the adapter's Class of Device set to A/V Hands-Free, and the
+daemon repairs it whenever it drifts, for example after Bluetooth restarts.
+systemd packages run the argument-validated helper
+`/usr/lib/blueferry/blueferry-set-cod` as a sandboxed system unit that a
+narrow Polkit rule lets active local sessions start. Without systemd,
+BlueFerry runs the same helper as
+`sudo -n -- /usr/lib/blueferry/blueferry-set-cod N`, where the adapter index
+is its only argument. `-n` never prompts, so an administrator authorizes it
+with a sudoers rule.
+
+There is no OpenRC package, so first install the helper from the source tree,
+owned by root and in a directory tree only root can write:
 
 ```sh
-sudo /usr/lib/blueferry/blueferry-set-cod 0   # adapter hci0
+sudo install -D -o root -g root -m 755 systemd/blueferry-set-cod \
+  /usr/lib/blueferry/blueferry-set-cod
+stat -c '%U:%G %a %n' /usr/lib/blueferry /usr/lib/blueferry/blueferry-set-cod
 ```
+
+Both lines must read `root:root 755`. A NOPASSWD rule for a file that a user
+can replace (a copy in a home directory, a user-owned `/usr/lib/blueferry`,
+or any group- or world-writable directory on the path) is passwordless root
+for that user. BlueFerry checks the original path and every symlink hop,
+including intermediate targets and parent directories. It refuses to call
+sudo unless the file, links and directories are root-owned, and the file
+and directories are not writable by group or others. Broken links, symlink
+loops and non-regular helper files are refused. A package recipe should
+install it the same way as the Arch, Debian and RPM recipes do.
+
+Then add the rule (edit with `visudo -f /etc/sudoers.d/blueferry` and adjust
+the group):
+
+```
+%wheel ALL=(root) NOPASSWD: /usr/lib/blueferry/blueferry-set-cod ^[0-9]+$
+```
+
+The `^[0-9]+$` argument pattern needs sudo 1.9.10 or newer; the helper also
+rejects anything but one decimal index. Without the rule, setup explains how
+to add it or how to run the helper once by hand, for example
+`sudo /usr/lib/blueferry/blueferry-set-cod 0` for `hci0`.
+
+Notes and trade-offs:
+
+- Compared with the polkit path: on systemd, polkit lets only an active local
+  session start `blueferry-btmgmt-set-class@N.service`, which runs sandboxed
+  (`ProtectSystem=strict`, `PrivateDevices=`) with only `CAP_NET_ADMIN` and
+  `CAP_NET_RAW`. The sudoers rule runs the
+  helper as full root with no capability bounding set or sandbox, and it
+  applies to every session of the listed users (SSH, inactive, or remote),
+  not only active local ones. It can still only set the class of an existing
+  adapter to 4/8.
+- `sudo -n` also succeeds without a rule while a sudo timestamp from a recent
+  `sudo` in the same terminal is cached. Authorization then comes from that
+  cache, not from BlueFerry.
+- After sudo refuses, the daemon backs off instead of retrying every minute:
+  15 minutes, then doubling up to six hours, and immediately after a BlueZ
+  restart. Other failures back off from one minute. A rule added later takes
+  effect without a restart, and a missing rule does not fill the
+  authentication log.
+- The optional OpenRC user service sets `no_new_privs`, which makes sudo
+  impossible for the daemon. BlueFerry detects this and does not call sudo.
+  Pairing, which runs from the desktop session, and the D-Bus-activated daemon
+  are unaffected. With the user service, either rerun the helper after
+  Bluetooth restarts or set `no_new_privs=""` in
+  `~/.config/rc/conf.d/blueferry`, giving up that hardening measure.
+- Setting file capabilities on `blueferry-set-cod` has no effect, because the
+  kernel ignores them on scripts. Granting them to `btmgmt` would give every
+  local user all Bluetooth management commands, so it is not supported.
 
 ## WirePlumber
 

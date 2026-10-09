@@ -191,6 +191,160 @@ def test_cod_change_rejects_an_invalid_adapter(monkeypatch):
     assert calls == []
 
 
+def _without_systemd(
+    monkeypatch, *, executables, no_new_privs=False, result=None, root_controlled=True,
+):
+    from blueferry import service_manager
+
+    calls = []
+    monkeypatch.setattr(bluez_setup.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(
+        service_manager, "init_system", lambda: service_manager.OPENRC,
+    )
+    monkeypatch.setattr(bluez_setup, "_executable", lambda path: path in executables)
+    monkeypatch.setattr(bluez_setup, "_no_new_privs", lambda: no_new_privs)
+    monkeypatch.setattr(bluez_setup, "_root_controlled", lambda path: root_controlled)
+    monkeypatch.setattr(
+        bluez_setup,
+        "run_command",
+        lambda args, **kwargs: calls.append((args, kwargs))
+        or result
+        or SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+    return calls
+
+
+@pytest.mark.parametrize("adapter,index", [("hci07", "7"), ("hci000", "0"), ("hci" + "0" * 5000 + "7", "7")])
+def test_without_systemd_the_helper_runs_through_noninteractive_sudo(monkeypatch, adapter, index):
+    calls = _without_systemd(
+        monkeypatch,
+        executables={bluez_setup.SET_COD_HELPER, bluez_setup.SUDO},
+    )
+
+    assert bluez_setup.set_cod(adapter=adapter, authorize=True) is True
+    assert calls[0][0] == [
+        "/usr/bin/sudo", "-n", "--", "/usr/lib/blueferry/blueferry-set-cod", index,
+    ]
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        "sudo: a password is required\n",
+        "alice is not in the sudoers file.\n",
+        "Sorry, user alice is not allowed to execute "
+        "'/usr/lib/blueferry/blueferry-set-cod 2' as root on host.\n",
+        "Sorry, user alice may not run sudo on host.\n",
+        # Defaults requiretty
+        "sudo: sorry, you must have a tty to run sudo\n",
+        "sudo: a terminal is required to read the password; either use the -S "
+        "option to read from standard input or configure an askpass helper\n",
+        "sudo: 3 incorrect password attempts\n",
+        "sudo: /usr/bin/sudo must be owned by uid 0 and have the setuid bit set\n",
+        # sudo-rs, wording from src/common/error.rs
+        "sudo: interactive authentication is required\n",
+        "sudo: I'm sorry alice. I'm afraid I can't do that\n",
+        "sudo-rs: Sorry, user alice may not run "
+        "/usr/lib/blueferry/blueferry-set-cod 2 on host.\n",
+        "sudo: maximum 3 incorrect authentication attempts\n",
+    ],
+)
+def test_unauthorized_sudo_explains_the_sudoers_rule(monkeypatch, stderr):
+    _without_systemd(
+        monkeypatch,
+        executables={bluez_setup.SET_COD_HELPER, bluez_setup.SUDO},
+        result=SimpleNamespace(returncode=1, stdout="", stderr=stderr),
+    )
+
+    with pytest.raises(bluez_setup.CodAuthorizationRefused) as failure:
+        bluez_setup.set_cod(adapter="hci2", authorize=True)
+
+    assert str(failure.value) == bluez_setup.SUDO_NOT_AUTHORIZED_MESSAGE.format(index="2")
+    assert "sudo /usr/lib/blueferry/blueferry-set-cod 2" in str(failure.value)
+
+
+def test_no_new_privs_process_never_invokes_sudo(monkeypatch):
+    calls = _without_systemd(
+        monkeypatch,
+        executables={bluez_setup.SET_COD_HELPER, bluez_setup.SUDO},
+        no_new_privs=True,
+    )
+
+    with pytest.raises(bluez_setup.CodAuthorizationRefused, match="no_new_privs"):
+        bluez_setup.set_cod(adapter="hci0", authorize=True)
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Name:\tpython\nNoNewPrivs:\t1\nSeccomp:\t0\n", True),
+        ("Name:\tpython\nNoNewPrivs:\t0\n", False),
+        ("Name:\tpython\n", False),
+    ],
+)
+def test_no_new_privs_is_read_from_proc_status(tmp_path, text, expected):
+    status = tmp_path / "status"
+    status.write_text(text)
+
+    assert bluez_setup._no_new_privs(str(status)) is expected
+    assert bluez_setup._no_new_privs(str(tmp_path / "missing")) is False
+
+
+def test_sudo_under_no_new_privs_is_explained(monkeypatch):
+    _without_systemd(
+        monkeypatch,
+        executables={bluez_setup.SET_COD_HELPER, bluez_setup.SUDO},
+        result=SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr=(
+                'sudo: The "no new privileges" flag is set, which prevents '
+                "sudo from running as root.\n"
+            ),
+        ),
+    )
+
+    with pytest.raises(bluez_setup.CodAuthorizationRefused, match="no_new_privs"):
+        bluez_setup.set_cod(adapter="hci0", authorize=True)
+
+
+def test_failed_helper_under_sudo_is_not_mislabelled(monkeypatch):
+    _without_systemd(
+        monkeypatch,
+        executables={bluez_setup.SET_COD_HELPER, bluez_setup.SUDO},
+        result=SimpleNamespace(returncode=1, stdout="", stderr="Invalid index\n"),
+    )
+
+    assert bluez_setup.set_cod(adapter="hci0", authorize=True) is False
+
+
+@pytest.mark.parametrize(
+    "executables",
+    [set(), {bluez_setup.SUDO}, {bluez_setup.SET_COD_HELPER}],
+)
+def test_without_an_authorization_path_no_command_runs(monkeypatch, executables):
+    calls = _without_systemd(monkeypatch, executables=executables)
+
+    with pytest.raises(bluez_setup.CodAuthorizationRefused) as failure:
+        bluez_setup.set_cod(adapter="hci3", authorize=True)
+
+    assert calls == []
+    assert str(failure.value) == (
+        bluez_setup.COD_AUTHORIZATION_UNAVAILABLE_MESSAGE.format(index="3")
+    )
+
+
+def test_unauthorized_cod_change_never_tries_sudo(monkeypatch):
+    calls = _without_systemd(
+        monkeypatch,
+        executables={bluez_setup.SET_COD_HELPER, bluez_setup.SUDO},
+    )
+
+    assert bluez_setup.set_cod(adapter="hci0", authorize=False) is False
+    assert calls == []
+
+
 @pytest.fixture
 def adverts(monkeypatch):
     now = [0.0]
@@ -404,3 +558,160 @@ def test_a_new_bluez_owner_is_offered_the_full_advert_again(adverts):
     bluez_setup.register_advert('hci7')
 
     assert _advert_packet_bytes() == 40
+
+
+def test_a_helper_others_can_replace_is_never_run_through_sudo(monkeypatch):
+    calls = _without_systemd(
+        monkeypatch,
+        executables={bluez_setup.SET_COD_HELPER, bluez_setup.SUDO},
+        root_controlled=False,
+    )
+
+    with pytest.raises(bluez_setup.CodAuthorizationRefused) as failure:
+        bluez_setup.set_cod(adapter="hci0", authorize=True)
+
+    assert calls == []
+    assert str(failure.value) == bluez_setup.SET_COD_HELPER_INSECURE_MESSAGE
+    assert "install -D -o root -g root -m 755" in str(failure.value)
+
+
+def _fake_stat(entries):
+    def stat(path):
+        if path not in entries:
+            raise FileNotFoundError(path)
+        uid, mode = entries[path]
+        return SimpleNamespace(st_uid=uid, st_mode=mode)
+
+    return stat
+
+
+_SAFE_TREE = {
+    "/": (0, 0o40755),
+    "/usr": (0, 0o40755),
+    "/usr/lib": (0, 0o40755),
+    "/usr/lib/blueferry": (0, 0o40755),
+    "/usr/lib/blueferry/blueferry-set-cod": (0, 0o100755),
+}
+
+
+@pytest.mark.parametrize(
+    ("change", "expected"),
+    [
+        ({}, True),
+        # The helper itself belongs to the user, or is group/world writable.
+        ({"/usr/lib/blueferry/blueferry-set-cod": (1000, 0o100755)}, False),
+        ({"/usr/lib/blueferry/blueferry-set-cod": (0, 0o100775)}, False),
+        ({"/usr/lib/blueferry/blueferry-set-cod": (0, 0o100757)}, False),
+        # A user-owned or writable directory lets the user swap the file.
+        ({"/usr/lib/blueferry": (1000, 0o40755)}, False),
+        ({"/usr/lib/blueferry": (0, 0o40777)}, False),
+        ({"/usr": (0, 0o41777)}, False),
+        # Unreadable metadata fails closed.
+        ({"/usr/lib": None}, False),
+    ],
+)
+def test_helper_must_be_replaceable_only_by_root(change, expected):
+    tree = {**_SAFE_TREE, **change}
+    tree = {path: entry for path, entry in tree.items() if entry is not None}
+
+    assert bluez_setup._root_controlled(
+        bluez_setup.SET_COD_HELPER, stat=_fake_stat(tree),
+    ) is expected
+
+
+def test_helper_ownership_is_checked_on_the_resolved_path():
+    tree = {**_SAFE_TREE,
+        bluez_setup.SET_COD_HELPER: (0, 0o120777),
+        "/home": (0, 0o40755),
+        "/home/alice": (1000, 0o40700),
+        "/home/alice/set-cod": (1000, 0o100755),
+    }
+    assert bluez_setup._root_controlled(
+        bluez_setup.SET_COD_HELPER, stat=_fake_stat(tree),
+        readlink=lambda _path: "/home/alice/set-cod",
+    ) is False
+
+
+@pytest.mark.parametrize("unsafe", [None, "original_parent", "intermediate_parent", "link_owner"])
+def test_helper_symlink_hops_and_their_directories_are_checked(unsafe):
+    helper = bluez_setup.SET_COD_HELPER
+    tree = {**_SAFE_TREE,
+        helper: (0, 0o120777),
+        "/opt": (0, 0o40755),
+        "/opt/relay": (0, 0o40755),
+        "/opt/relay/next": (0, 0o120777),
+        "/opt/trusted": (0, 0o40755),
+        "/opt/trusted/helper": (0, 0o100755),
+    }
+    links = {helper: "/opt/relay/next", "/opt/relay/next": "/opt/trusted/helper"}
+    if unsafe == "original_parent":
+        tree["/usr/lib/blueferry"] = (0, 0o40777)
+    elif unsafe == "intermediate_parent":
+        tree["/opt/relay"] = (1000, 0o40755)
+    elif unsafe == "link_owner":
+        tree[helper] = (1000, 0o120777)
+    assert bluez_setup._root_controlled(
+        helper, stat=_fake_stat(tree), readlink=links.__getitem__,
+    ) is (unsafe is None)
+
+
+@pytest.mark.parametrize("target", ["/opt/trusted/helper", "../../../opt/trusted/helper"])
+def test_trusted_absolute_and_relative_helper_symlinks_are_allowed(target):
+    tree = {**_SAFE_TREE,
+        bluez_setup.SET_COD_HELPER: (0, 0o120777),
+        "/opt": (0, 0o40755),
+        "/opt/trusted": (0, 0o40755),
+        "/opt/trusted/helper": (0, 0o100755),
+    }
+    assert bluez_setup._root_controlled(
+        bluez_setup.SET_COD_HELPER, stat=_fake_stat(tree), readlink=lambda _path: target,
+    ) is True
+
+
+def test_symlink_dotdot_does_not_hide_a_writable_directory():
+    tree = {**_SAFE_TREE,
+        bluez_setup.SET_COD_HELPER: (0, 0o120777),
+        "/opt": (0, 0o40755),
+        "/opt/unsafe": (0, 0o40777),
+        "/opt/trusted": (0, 0o40755),
+        "/opt/trusted/helper": (0, 0o100755),
+    }
+    assert bluez_setup._root_controlled(
+        bluez_setup.SET_COD_HELPER, stat=_fake_stat(tree),
+        readlink=lambda _path: "/opt/unsafe/../trusted/helper",
+    ) is False
+
+
+def test_unreadable_symlink_and_symlink_cycles_fail_closed():
+    tree = {**_SAFE_TREE, bluez_setup.SET_COD_HELPER: (0, 0o120777)}
+    def unreadable(_path):
+        raise PermissionError("not readable")
+    for readlink in (unreadable, lambda _path: bluez_setup.SET_COD_HELPER):
+        assert bluez_setup._root_controlled(
+            bluez_setup.SET_COD_HELPER, stat=_fake_stat(tree), readlink=readlink,
+        ) is False
+
+
+@pytest.mark.parametrize("mode", [0o40755, 0o10755, 0o60755])
+def test_helper_must_be_a_regular_file(mode):
+    tree = {**_SAFE_TREE, bluez_setup.SET_COD_HELPER: (0, mode)}
+    assert bluez_setup._root_controlled(
+        bluez_setup.SET_COD_HELPER, stat=_fake_stat(tree),
+    ) is False
+
+
+def test_user_replaceable_symlink_never_reaches_sudo(monkeypatch, tmp_path):
+    # Real filesystem regression: a user-controlled link points at a trusted
+    # system binary. No command is executed; all privileged I/O is recorded.
+    guard = bluez_setup._root_controlled
+    calls = _without_systemd(
+        monkeypatch, executables={bluez_setup.SET_COD_HELPER, bluez_setup.SUDO},
+    )
+    link = tmp_path / "helper"
+    link.symlink_to("/usr/bin/true")
+    monkeypatch.setattr(bluez_setup, "SET_COD_HELPER", str(link))
+    monkeypatch.setattr(bluez_setup, "_executable", lambda _path: True)
+    monkeypatch.setattr(bluez_setup, "_root_controlled", guard)
+    with pytest.raises(bluez_setup.CodAuthorizationRefused):
+        bluez_setup.set_cod(adapter="hci0", authorize=True)
+    assert calls == []
