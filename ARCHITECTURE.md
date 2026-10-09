@@ -105,7 +105,6 @@ All paths are relative to `src/blueferry/` unless noted.
 | `calls/controller.py` | Optional HFP calls: oFono modem discovery, Powered→Online bring-up, call tracking and control, backoff; watches the phone's battery/signal interfaces while online. |
 | `phone_battery.py` | The phone's battery over LE (BlueZ `Battery1` or GATT Battery Level), asynchronous, no HFP; saved low-battery warning opt-in. |
 | `calls/phone_status.py` | Optional phone status: pure parsing of oFono's Handsfree/NetworkRegistration properties and the once-per-cycle low-battery decision. |
-
 | `tether.py` | Opt-in Bluetooth PAN tethering: saved opt-in (`TetherSettings`), state machine, Network1 link watch, and BlueZ error tokens. |
 | `tether_backends.py` | Tethering strategies: a per-user NetworkManager PAN profile, or plain `Network1.Connect("nap")`. |
 
@@ -177,7 +176,6 @@ All paths are relative to `src/blueferry/` unless noted.
 | `cli_media.py` | `blueferry media` now-playing status, commands, and `enable`/`disable`. |
 | `cli_notification_actions.py` | `notification-actions` status, enable, and disable for the opt-in iPhone action buttons. |
 | `cli_calls.py` | Optional `blueferry calls` commands over `Calls1` and `blueferry phone-status` (battery, signal, network from `GetStatus`). |
-
 | `cli_tether.py` | `blueferry tether [status\|enable\|disable\|on\|off]`. |
 | `tui.py` | Textual terminal client. |
 | `tui_launcher.py` | Launches the TUI with the package-private Textual bundle when present. |

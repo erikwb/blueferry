@@ -20,8 +20,8 @@ from blueferry.cli_notification_actions import notification_actions_app
 from blueferry.cli_notifications import notifications_app
 from blueferry.cli_otp import otp_check, otp_status
 from blueferry.cli_proximity import proximity_app
-from blueferry.notification_policy import NotificationPolicyStore
 from blueferry.cli_tether import tether
+from blueferry.notification_policy import NotificationPolicyStore
 
 app = typer.Typer(
     add_completion=False,

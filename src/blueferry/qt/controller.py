@@ -320,6 +320,7 @@ class BridgeController(QObject):
     @Property("QVariantMap", notify=nowPlayingChanged)
     def nowPlaying(self):
         return self._now_playing
+
     @Property("QVariantMap", notify=tetherChanged)
     def tether(self):
         return self._tether
@@ -1144,6 +1145,7 @@ class BridgeController(QObject):
                 self.statusChanged.emit()
 
         self._run(lambda: self._backend.set_mpris_player(bool(enabled)), completed)
+
     # ---- opt-in tethering --------------------------------------------------
 
     def _apply_tether(self, value: object, *, pending: bool = False) -> None:

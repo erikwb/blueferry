@@ -207,4 +207,3 @@ def test_tether_bucket_has_an_hourly_ceiling() -> None:
         now[0] += 61
     with pytest.raises(RateLimitError):
         guard.authorize(":1.20", "tether")
-

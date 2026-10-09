@@ -78,7 +78,7 @@ def test_tether_interface_is_small_and_its_signal_is_content_free() -> None:
     # Tethering never widens the messaging generation's Events1 contract.
     assert set(_exported(EVENTS_IFACE, "_dbus_is_signal")) == {
         "HistoryChanged", "StatusChanged", "OpenMessageRequested",
-        "NowPlayingChanged", "CallsChanged",
+        "NowPlayingChanged", "CallsChanged", "CallHistoryChanged",
     }
 
 

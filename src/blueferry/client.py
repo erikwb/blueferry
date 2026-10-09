@@ -585,6 +585,7 @@ class BackendClient:
 
     def hold_and_answer_call(self) -> None:
         self._calls_call("HoldAndAnswer", timeout=CALL_CONTROL_TIMEOUT_SEC)
+
     # ---- Tether1 (independent of the messaging API generation) -----------
 
     def _tether_call(self, method: str, *args: object) -> TetherStatus:

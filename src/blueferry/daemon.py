@@ -648,6 +648,7 @@ class Daemon:
         self._observe_low_battery(self._phone_status())
         self._emit_status()
         return self._phone_status()
+
     def _set_tethering(self, enabled: bool, autoconnect: bool) -> dict:
         selected, automatic = self.tether_settings.set(enabled, autoconnect)
         log.info(

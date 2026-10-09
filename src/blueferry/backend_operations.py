@@ -223,6 +223,8 @@ class CallControl(Protocol):
     def swap(self, success: Success, failure: Failure) -> None: ...
 
     def hold_and_answer(self, success: Success, failure: Failure) -> None: ...
+
+
 class TetherControl(Protocol):
     def snapshot(self) -> dict[str, object]: ...
 
@@ -1392,6 +1394,7 @@ class BackendOperations:
             raise NotReadyError(
                 "could not save the media control preference"
             ) from error
+
     def _tether(self) -> TetherControl:
         if self.dependencies.tether is None:
             raise NotReadyError("Bluetooth tethering is unavailable in this backend")

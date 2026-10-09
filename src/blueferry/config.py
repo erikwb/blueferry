@@ -355,6 +355,7 @@ MISSED_CALL_NOTIFICATIONS: bool = _env_bool(
     "BLUEFERRY_MISSED_CALL_NOTIFICATIONS", True
 )
 """Desktop popups for newly seen missed calls; only with call history enabled."""
+
 TETHER_ENABLED: bool = _env_bool("BLUEFERRY_TETHER_ENABLED", False)
 """Initial opt-in for Bluetooth tethering as a whole.
 

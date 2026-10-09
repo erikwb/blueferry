@@ -24,10 +24,8 @@ from blueferry.setup_verification import (
     NOTIFICATION_ACCESS,
     remaining_iphone_setup_tasks,
 )
-from blueferry.ui.saved_choice import SavedChoice
-
-
 from blueferry.tether_status import TetherStatus
+from blueferry.ui.saved_choice import SavedChoice
 from blueferry.ui.setup_runner import SetupRunner
 from blueferry.ui.status_presenter import (
     connection_subtitle,

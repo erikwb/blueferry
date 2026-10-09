@@ -798,6 +798,7 @@ class MessagesService(dbus.service.Object):
             ),
             reply_handler, error_handler,
         )
+
     # ---- Tether1: opt-in Bluetooth PAN through the iPhone hotspot --------
 
     @dbus.service.method(
