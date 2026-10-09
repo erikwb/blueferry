@@ -434,7 +434,14 @@ class NetworkManagerTether:
             )
             # The profile may already be up before the watch existed.
             self._get(path, NM_ACTIVE_IFACE, "State",
-                      lambda state: observe(int(state), -1), fail("state read"))
+                      lambda state: observe(int(state), -1), state_read_failed)
+
+        def state_read_failed(error: Exception) -> None:
+            if current():
+                # Activation was accepted: a failed read cannot establish that
+                # it stopped. Keep the watch and active path so a later signal,
+                # explicit stop, or the controller's deadline settles it.
+                log.info("NetworkManager state read failed: %s", dbus_error_name(error))
 
         def observe(state: int, reason: int) -> None:
             nonlocal established
@@ -447,7 +454,7 @@ class NetworkManagerTether:
                 self._drop_state_match()
                 self._active_path = None
                 log.info("NetworkManager deactivated the tether (reason %d)", reason)
-                if established:
+                if established or reason == NM_REASON_USER_DISCONNECTED:
                     on_lost(
                         _NM_REASON_TOKENS.get(reason, LINK_LOST),
                         reason == NM_REASON_USER_DISCONNECTED,

@@ -1053,3 +1053,25 @@ def test_unknown_stop_confirmation_keeps_adopted_link_retryable() -> None:
     assert timers.delays() == []
     value.disconnect()
     assert len(chooser.backend.disconnects) == 2
+
+
+@pytest.mark.parametrize("confirmed_up", [True, None])
+def test_failed_adopted_disconnect_explains_retry_to_user(confirmed_up):
+    from blueferry.tether_status import TetherStatus
+
+    chooser = Chooser()
+    value, timers, _, _ = controller(chooser, link=Link())
+    value.start()
+    value.observe_link(True, "bnep0")
+    value.disconnect()
+    chooser.backend.disconnects[-1][0]()
+    value.observe_link(confirmed_up, "bnep0")
+    if confirmed_up:
+        timers.fire(lambda seconds: seconds == tether.LINK_DOWN_GRACE_SECONDS)
+        value.observe_link(True, "bnep0")
+    status = TetherStatus.from_dict(value.snapshot())
+    assert status.state == CONNECTED
+    assert status.error
+    assert "try disconnecting again" in status.summary()
+    assert "may still be active" in status.summary()
+    value.stop()

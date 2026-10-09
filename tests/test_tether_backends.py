@@ -695,3 +695,59 @@ def test_loss_before_interface_reply_settles_attempt_and_ignores_late_reply(user
     value.connect()  # an explicit retry is accepted, rather than stuck forever
     assert len([call for call in bus.calls if call[3] == 'ActivateConnection']) == 2
     value.stop()
+
+
+@pytest.mark.parametrize("state", [3, 4])
+def test_user_cancel_during_activation_suppresses_automatic_retry(state):
+    from tests.test_tether import Chooser, controller
+
+    bus = nm_bus(state=1)
+    backend = NetworkManagerTether(lambda: bus, MAC, user=lambda: "alice")
+    value, timers, _, _ = controller(Chooser(backend), autoconnect=True)
+    value.start()
+    value.connect()
+    bus.emit("StateChanged", ACTIVE, state, 2)
+    assert value.state == tether.OFF
+    assert not value.snapshot()["error"]
+    assert timers.delays() == []
+    value.maybe_autoconnect()
+    assert bus.methods().count("ActivateConnection") == 1
+    value.connect()
+    assert bus.methods().count("ActivateConnection") == 2
+    value.stop()
+
+
+@pytest.mark.parametrize("outcome", ["signal", "stop", "deadline", "late_error"])
+def test_failed_activation_state_read_preserves_monitoring_and_cleanup(outcome):
+    from tests.test_tether import Chooser, Link, controller
+
+    bus = nm_bus(state=1)
+    key = ("org.freedesktop.DBus.Properties", "Get", NM_ACTIVE_IFACE, "State")
+    del bus.handlers[key]
+    backend = NetworkManagerTether(lambda: bus, MAC, user=lambda: "alice")
+    value, timers, _, _ = controller(Chooser(backend), link=Link())
+    value.start()
+    value.connect()
+    value.observe_link(True, "bnep0")
+    if outcome == "late_error":
+        bus.emit("StateChanged", ACTIVE, 2, 1)
+    next(entry for entry in bus.held if entry[0] == key)[4](
+        _error("org.freedesktop.DBus.Error.NoReply"))
+    assert bus.live_receivers() == 1
+    if outcome in ("signal", "late_error"):
+        bus.emit("StateChanged", ACTIVE, 2, 1)
+        assert value.state == tether.CONNECTED
+        assert value.link_alive()
+        value.disconnect()
+        assert value.state == tether.OFF
+    elif outcome == "stop":
+        assert value.state == tether.CONNECTING
+        value.disconnect()
+        assert value.state == tether.OFF
+    else:
+        assert value.state == tether.CONNECTING
+        timers.fire(lambda seconds: seconds == tether.CONNECT_DEADLINE_SECONDS)
+        assert value.state == tether.FAILED
+        assert value.snapshot()["error"] == tether.TIMEOUT
+    assert "DeactivateConnection" in bus.methods()
+    value.stop()

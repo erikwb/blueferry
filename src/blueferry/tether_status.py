@@ -55,6 +55,11 @@ class TetherStatus:
         if self.state == "disconnecting":
             return _("Disconnecting from the iPhone's Personal Hotspot…")
         if self.state == "connected":
+            if self.error:
+                return _(
+                    "Could not confirm that Bluetooth tethering stopped. "
+                    "The connection may still be active; try disconnecting again."
+                )
             if self.needs_dhcp and self.interface:
                 return _(
                     "Bluetooth link to the Personal Hotspot is up on {interface}. "
