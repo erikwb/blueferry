@@ -218,6 +218,7 @@ class BridgeController(QObject):
         def fetched(value: object) -> None:
             self._avatar_pending.discard(key)
             if generation != self._avatar_generation:
+                self._notify_avatar_slot_released()
                 return
             self._avatar_failures.pop(key, None)
             data = value if isinstance(value, bytes) and value else None
@@ -225,6 +226,7 @@ class BridgeController(QObject):
                 self._avatar_missing[key] = None
                 while len(self._avatar_missing) > MAX_CACHED_AVATARS:
                     self._avatar_missing.popitem(last=False)
+                self._notify_avatar_slot_released()
                 return
             with self._avatar_lock:
                 self._avatars[key] = data
@@ -244,6 +246,7 @@ class BridgeController(QObject):
             # rate-limit failure as an error banner. Retry after a backoff.
             self._avatar_pending.discard(key)
             if generation != self._avatar_generation:
+                self._notify_avatar_slot_released()
                 return
             attempts = self._avatar_failures.pop(key, 0) + 1
             self._avatar_failures[key] = attempts
@@ -257,9 +260,16 @@ class BridgeController(QObject):
                 AVATAR_RETRY_SECONDS * 2 ** (attempts - 1), AVATAR_RETRY_MAX_SECONDS,
             )
             self._schedule_avatar_retry(int(delay * 1000), key, generation)
+            self._notify_avatar_slot_released()
 
         self._run(lambda: self._backend.contact_photo(key), fetched, failed, busy=False)
         return ""
+
+    def _notify_avatar_slot_released(self) -> None:
+        # QML may have tried other visible addresses while every fetch slot
+        # was occupied. Empty, stale, and failed replies free a slot too.
+        self._avatar_revision += 1
+        self.avatarsChanged.emit()
 
     def _schedule_avatar_retry(self, delay_ms: int, key: str, generation: int) -> None:
         def release() -> None:
