@@ -225,6 +225,14 @@ class CallControl(Protocol):
     def hold_and_answer(self, success: Success, failure: Failure) -> None: ...
 
 
+class TetherControl(Protocol):
+    def snapshot(self) -> dict[str, object]: ...
+
+    def connect(self, *, automatic: bool = False) -> dict[str, object]: ...
+
+    def disconnect(self) -> dict[str, object]: ...
+
+
 @dataclass(frozen=True, slots=True)
 class BackendDependencies:
     """Explicit optional capabilities supplied by the daemon composition root."""
@@ -259,6 +267,8 @@ class BackendDependencies:
     set_calls_enabled: Callable[[bool], dict[str, Any]] | None = None
     set_phone_battery_warning: Callable[[bool], dict[str, Any]] | None = None
     set_media_mpris: Callable[[bool], dict[str, Any]] | None = None
+    tether: TetherControl | None = None
+    set_tethering: Callable[[bool, bool], dict[str, Any]] | None = None
 
 
 class BackendOperations:
@@ -1384,6 +1394,33 @@ class BackendOperations:
             raise NotReadyError(
                 "could not save the media control preference"
             ) from error
+
+    def _tether(self) -> TetherControl:
+        if self.dependencies.tether is None:
+            raise NotReadyError("Bluetooth tethering is unavailable in this backend")
+        return self.dependencies.tether
+
+    def tether_state(self) -> dict[str, object]:
+        return self._tether().snapshot()
+
+    def tether_connect(self) -> dict[str, object]:
+        return self._tether().connect()
+
+    def tether_disconnect(self) -> dict[str, object]:
+        return self._tether().disconnect()
+
+    def set_tethering(self, enabled: bool, autoconnect: bool) -> dict[str, object]:
+        """Opt in or out of Bluetooth tethering and automatic tethering."""
+        configure = self.dependencies.set_tethering
+        if configure is None:
+            raise NotReadyError("Bluetooth tethering is unavailable in this backend")
+        try:
+            return dict(configure(enabled, autoconnect))
+        except ValueError as error:
+            raise InvalidArgumentsError(str(error)) from error
+        except OSError as error:
+            log.error("could not save tethering preference: %s", error)
+            raise NotReadyError("could not save the tethering preference") from error
 
     def is_healthy(self) -> bool:
         return self.sessions.map is not None

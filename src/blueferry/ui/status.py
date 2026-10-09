@@ -24,12 +24,14 @@ from blueferry.setup_verification import (
     NOTIFICATION_ACCESS,
     remaining_iphone_setup_tasks,
 )
+from blueferry.tether_status import TetherStatus
 from blueferry.ui.saved_choice import SavedChoice
 from blueferry.ui.setup_runner import SetupRunner
 from blueferry.ui.status_presenter import (
     connection_subtitle,
     map_connection_refused,
     map_connection_refused_message,
+    tether_controls,
 )
 
 
@@ -63,6 +65,9 @@ class IPhonePage(Gtk.Box):
         self._compatibility_override = False
         self._explicit_pairing_overrides: dict[str, bool] = {}
         self._applying_pairing_mode = False
+        self._tether: TetherStatus | None = None
+        self._tether_pending = False
+        self._applying_tether = False
 
         page = Adw.PreferencesPage()
         self.append(page)
@@ -476,6 +481,36 @@ class IPhonePage(Gtk.Box):
         self._calls_group.add(self._calls_enabled_row)
         page.add(self._calls_group)
 
+
+        # Opt-in Bluetooth tethering, shown only when the daemon offers
+        # Tether1. Until it is enabled the daemon ignores PAN links.
+        self._tether_group = Adw.PreferencesGroup(title=_("Internet Sharing"))
+        self._tether_group.set_visible(False)
+        self._tether_enable_row, self._tether_enable_switch = self._switch_row(
+            _("Enable Bluetooth tethering"), self._tether_enable_changed
+        )
+        self._tether_connect_row, self._tether_connect_switch = self._switch_row(
+            _("Share iPhone Internet"), self._tether_connect_changed
+        )
+        self._tether_connect_row.set_subtitle(
+            _("Turn on Personal Hotspot on the iPhone first")
+        )
+        self._tether_auto_row, self._tether_auto_switch = self._switch_row(
+            _("Connect automatically when the iPhone is connected"),
+            self._tether_auto_changed,
+        )
+        self._tether_summary = Gtk.Label(wrap=True, xalign=0)
+        self._tether_summary.set_margin_start(12)
+        self._tether_summary.set_margin_end(12)
+        self._tether_summary.set_margin_top(6)
+        self._tether_summary.set_margin_bottom(6)
+        for widget in (
+            self._tether_enable_row, self._tether_connect_row,
+            self._tether_auto_row, self._tether_summary,
+        ):
+            self._tether_group.add(widget)
+        page.add(self._tether_group)
+
         data_group = Adw.PreferencesGroup(title=_("Local Data"))
         history_model = Gtk.StringList.new(
             [
@@ -517,11 +552,25 @@ class IPhonePage(Gtk.Box):
         data_group.add(clear_row)
         page.add(data_group)
 
-        client.connect("availability-changed", lambda *_: self._refresh())
+        client.connect("availability-changed", lambda *_: self._refresh_all())
         client.connect("status-invalidated", self._status_invalidated)
+        client.connect("tether-invalidated", lambda *_: self._refresh_tether())
         self._load_setup_state()
         if self._setup.configuration().configured:
-            self._refresh()
+            self._refresh_all()
+
+    def _refresh_all(self) -> None:
+        self._refresh()
+        self._refresh_tether()
+
+    @staticmethod
+    def _switch_row(title: str, changed) -> tuple[Adw.ActionRow, Gtk.Switch]:
+        row = Adw.ActionRow(title=title)
+        switch = Gtk.Switch(valign=Gtk.Align.CENTER)
+        switch.connect("notify::active", changed)
+        row.add_suffix(switch)
+        row.set_activatable_widget(switch)
+        return row, switch
 
     def _selected_device(self) -> PairedDevice | None:
         selected = self._device_row.get_selected()
@@ -1052,6 +1101,86 @@ class IPhonePage(Gtk.Box):
     def _status_invalidated(self, _client) -> None:
         self._refresh()
 
+    # ---- opt-in tethering ------------------------------------------------
+
+    def _refresh_tether(self) -> None:
+        # A transient read failure keeps the last known state.
+        self._client.get_tether_async(self._apply_tether, lambda _message: None)
+
+    def _apply_tether(self, tether: TetherStatus | None) -> bool:
+        self._tether = tether
+        controls = tether_controls(
+            tether, reachable=self._last_status.daemon, pending=self._tether_pending,
+        )
+        self._applying_tether = True
+        self._tether_group.set_visible(controls.group_visible)
+        self._tether_enable_switch.set_active(controls.enable_active)
+        self._tether_enable_row.set_sensitive(controls.enable_sensitive)
+        self._tether_connect_row.set_visible(controls.connect_visible)
+        self._tether_connect_switch.set_active(controls.connect_active)
+        self._tether_connect_row.set_sensitive(controls.connect_sensitive)
+        self._tether_auto_row.set_visible(controls.auto_visible)
+        self._tether_auto_switch.set_active(controls.auto_active)
+        self._tether_auto_row.set_sensitive(controls.auto_sensitive)
+        self._applying_tether = False
+        self._tether_summary.set_label(controls.summary)
+        if controls.warning:
+            self._tether_summary.add_css_class("warning")
+        else:
+            self._tether_summary.remove_css_class("warning")
+        return False
+
+    def _tether_request(self, start) -> None:
+        if self._tether_pending:
+            # One request at a time; snap the switch back to the daemon state.
+            self._apply_tether(self._tether)
+            return
+        self._tether_pending = True
+        self._apply_tether(self._tether)
+
+        def done(value: TetherStatus | None) -> None:
+            self._tether_pending = False
+            self._apply_tether(value)
+
+        def failed(error: str) -> None:
+            self._tether_pending = False
+            self._toast(_("Tethering request failed: {error}").format(error=error))
+            self._apply_tether(self._tether)
+            self._refresh_tether()
+
+        start(done, failed)
+
+    def _tether_enable_changed(self, _switch, _property) -> None:
+        if self._applying_tether:
+            return
+        enabled = self._tether_enable_switch.get_active()
+        autoconnect = bool(self._tether and self._tether.autoconnect)
+        self._tether_request(
+            lambda done, failed: self._client.configure_tether_async(
+                enabled, autoconnect, done, failed
+            )
+        )
+
+    def _tether_connect_changed(self, _switch, _property) -> None:
+        if self._applying_tether:
+            return
+        connected = self._tether_connect_switch.get_active()
+        self._tether_request(
+            lambda done, failed: self._client.set_tether_connected_async(
+                connected, done, failed
+            )
+        )
+
+    def _tether_auto_changed(self, _switch, _property) -> None:
+        if self._applying_tether:
+            return
+        autoconnect = self._tether_auto_switch.get_active()
+        self._tether_request(
+            lambda done, failed: self._client.configure_tether_async(
+                True, autoconnect, done, failed
+            )
+        )
+
     def _status_failed(self, message: str) -> bool:
         self._apply_status(BackendStatus(extra={"error": message}))
         return False
@@ -1181,6 +1310,9 @@ class IPhonePage(Gtk.Box):
         self._update_iphone_setup_tasks()
         self._update_onboarding()
         self._refresh_issue_offer()
+        if self._tether is not None:
+            # Sensitivity follows daemon reachability.
+            self._apply_tether(self._tether)
         return False
 
     def _notification_policy_changed(self, _row, _property) -> None:

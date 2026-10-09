@@ -13,14 +13,16 @@ from gi.repository import GLib, GObject
 
 from blueferry.backend_lifecycle import ensure_backend_current
 from blueferry.bus import get_session_bus
-from blueferry.client import BackendClient, CompatibilityCache
+from blueferry.client import BackendClient, CompatibilityCache, TetherUnsupportedError
 from blueferry.models import BackendStatus
 from blueferry.protocol import (
     BUS_NAME,
     EVENTS_IFACE,
     OBJECT_PATH,
+    TETHER_IFACE,
 )
 from blueferry.setup_client import SetupClient
+from blueferry.tether_status import TetherStatus
 
 log = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -54,6 +56,7 @@ class DaemonClient(GObject.Object):
         "status-invalidated": (GObject.SignalFlags.RUN_FIRST, None, ()),
         "availability-changed": (GObject.SignalFlags.RUN_FIRST, None, (bool,)),
         "open-message-requested": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
+        "tether-invalidated": (GObject.SignalFlags.RUN_FIRST, None, ()),
     }
 
     def __init__(self) -> None:
@@ -104,6 +107,16 @@ class DaemonClient(GObject.Object):
                 lambda: self.emit("status-invalidated"),
                 dbus_interface=EVENTS_IFACE,
                 signal_name="StatusChanged",
+                bus_name=BUS_NAME,
+                path=OBJECT_PATH,
+            )
+        )
+        # Optional Tether1: content-free, clients refetch with GetState.
+        self._matches.append(
+            self._bus.add_signal_receiver(
+                lambda: self.emit("tether-invalidated"),
+                dbus_interface=TETHER_IFACE,
+                signal_name="TetherChanged",
                 bus_name=BUS_NAME,
                 path=OBJECT_PATH,
             )
@@ -470,6 +483,51 @@ class DaemonClient(GObject.Object):
     def unlock_storage_async(self, on_ok, on_err) -> None:
         self._submit(
             lambda: self._call_backend(lambda backend: backend.unlock_storage()),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
+    def _tether_operation(
+        self, request: Callable[[BackendClient], TetherStatus]
+    ) -> Callable[[], TetherStatus | None]:
+        """Run a Tether1 call; ``None`` means the daemon does not offer it."""
+        def operation() -> TetherStatus | None:
+            try:
+                return self._call_backend(request)
+            except TetherUnsupportedError:
+                return None
+
+        return operation
+
+    def get_tether_async(self, on_ok, on_err=None) -> None:
+        self._submit(
+            self._tether_operation(lambda backend: backend.tether_state()),
+            on_ok,
+            on_err,
+        )
+
+    def set_tether_connected_async(self, connected: bool, on_ok, on_err) -> None:
+        """Explicit user action; the daemon never tethers without one."""
+        self._submit(
+            self._tether_operation(
+                lambda backend: backend.tether_connect()
+                if connected
+                else backend.tether_disconnect()
+            ),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
+    def configure_tether_async(
+        self, enabled: bool, autoconnect: bool, on_ok, on_err
+    ) -> None:
+        """Save the opt-in; off makes the daemon ignore PAN links entirely."""
+        self._submit(
+            self._tether_operation(
+                lambda backend: backend.tether_configure(enabled, autoconnect)
+            ),
             on_ok,
             on_err,
             mutation=True,

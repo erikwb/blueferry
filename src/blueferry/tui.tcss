@@ -566,3 +566,25 @@ ModalScreen {
 #workspace.narrow .message-bubble {
     max-width: 92%;
 }
+
+#tether-dialog {
+    width: 64;
+}
+
+#tether-connect-row {
+    height: 3;
+}
+
+#tether-connect-label {
+    padding: 1 1 0 1;
+}
+
+#tether-summary {
+    height: auto;
+    padding-top: 1;
+    color: #cbd5e1;
+}
+
+#tether-close {
+    margin-top: 1;
+}

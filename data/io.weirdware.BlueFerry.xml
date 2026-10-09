@@ -344,4 +344,40 @@
                   value="Call state changed; fetch details with Calls1.ListCalls"/>
     </signal>
   </interface>
+  <interface name="io.weirdware.BlueFerry.Tether1">
+    <annotation name="org.freedesktop.DBus.Description"
+                value="Opt-in internet tethering through the iPhone Personal Hotspot over Bluetooth PAN; independent of the messaging API generation"/>
+    <annotation name="io.weirdware.BlueFerry.Errors"
+                value="AuthorizationRequired,RateLimited"/>
+    <method name="GetState">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="JSON with state, interface, backend, external, error, needs_dhcp, enabled, autoconnect; never IP configuration"/>
+      <arg name="json" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors" value="NotReady"/>
+    </method>
+    <method name="Connect">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Start tethering and return the new state; the outcome arrives through TetherChanged. Refused with NotReady while tethering is not enabled"/>
+      <arg name="json" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors" value="NotReady"/>
+    </method>
+    <method name="Disconnect">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Stop the PAN link only; the phone connection and MAP/PBAP/ANCS stay up"/>
+      <arg name="json" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors" value="NotReady"/>
+    </method>
+    <method name="SetTethering">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Save the opt-in (off by default) and automatic tethering in settings.json and return the new state. While disabled the daemon does not watch or adopt PAN links, does not hold back adapter recovery for them, and refuses Connect; disabling stops a tether BlueFerry started and leaves links started elsewhere alone"/>
+      <arg name="enabled" type="b" direction="in"/>
+      <arg name="autoconnect" type="b" direction="in"/>
+      <arg name="json" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors" value="InvalidArgs,NotReady"/>
+    </method>
+    <signal name="TetherChanged">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Content-free invalidation; fetch details with GetState"/>
+    </signal>
+  </interface>
 </node>

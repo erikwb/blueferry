@@ -494,3 +494,95 @@ def test_bridge_saves_the_call_history_opt_in_and_returns_its_status() -> None:
         with pytest.raises(ValueError, match=message):
             bridge.dispatch("set_call_history", args)
     assert len(client.calls) == 1
+
+
+class TetherClient:
+    def __init__(self, *, unsupported: bool = False) -> None:
+        self.calls: list[tuple[object, ...]] = []
+        self.unsupported = unsupported
+        self.enabled = False
+        self.autoconnect = False
+
+    def _status(self, name, state="off", *args):
+        from blueferry.client import TetherUnsupportedError
+        from blueferry.tether_status import TetherStatus
+
+        self.calls.append((name, *args))
+        if self.unsupported:
+            raise TetherUnsupportedError("no Tether1")
+        return TetherStatus.from_dict({
+            "state": state, "enabled": self.enabled, "autoconnect": self.autoconnect,
+        })
+
+    def tether_state(self):
+        return self._status("state")
+
+    def tether_connect(self):
+        return self._status("connect", "connecting")
+
+    def tether_disconnect(self):
+        return self._status("disconnect", "disconnecting")
+
+    def tether_configure(self, enabled, autoconnect):
+        self.enabled, self.autoconnect = enabled, autoconnect
+        return self._status("configure", "off", enabled, autoconnect)
+
+
+def test_bridge_dispatches_tethering_with_the_shared_summary() -> None:
+    client = TetherClient()
+    bridge = QuickshellBridge(client)  # type: ignore[arg-type]
+
+    state = bridge.dispatch("tether_state", {})
+    assert state["available"] is True
+    assert state["enabled"] is False
+    assert "turned off" in state["summary"]
+
+    configured = bridge.dispatch("tether_configure", {"enabled": True, "autoconnect": False})
+    assert (configured["enabled"], configured["autoconnect"]) == (True, False)
+    assert "Not sharing" in configured["summary"]
+    assert bridge.dispatch("tether_connect", {})["state"] == "connecting"
+    assert bridge.dispatch("tether_disconnect", {})["state"] == "disconnecting"
+    assert client.calls == [
+        ("state",), ("configure", True, False), ("connect",), ("disconnect",),
+    ]
+
+
+@pytest.mark.parametrize("args", [
+    {"enabled": "yes", "autoconnect": False},
+    {"enabled": True},
+    {"enabled": True, "autoconnect": 1},
+])
+def test_bridge_rejects_non_boolean_tether_settings(args) -> None:
+    client = TetherClient()
+    bridge = QuickshellBridge(client)  # type: ignore[arg-type]
+    with pytest.raises(RequestError, match="must be a boolean"):
+        bridge.dispatch("tether_configure", args)
+    assert client.calls == []
+
+
+def test_bridge_hides_tethering_for_a_daemon_without_tether1() -> None:
+    bridge = QuickshellBridge(TetherClient(unsupported=True))  # type: ignore[arg-type]
+    assert bridge.dispatch("tether_state", {}) == {"available": False}
+
+
+def test_tether_changed_is_forwarded_as_a_content_free_event(monkeypatch) -> None:
+    from blueferry import quickshell_bridge
+    from blueferry.protocol import TETHER_IFACE
+
+    receivers: dict[str, tuple] = {}
+
+    class _Bus:
+        def add_signal_receiver(self, handler, signal_name, **keywords):
+            receivers[signal_name] = (handler, keywords)
+            return signal_name
+
+    monkeypatch.setattr(quickshell_bridge, "get_session_bus", lambda: _Bus())
+    output = io.StringIO()
+    bridge = QuickshellBridge(FakeClient(), output)  # type: ignore[arg-type]
+
+    quickshell_bridge._install_signal_receivers(bridge)
+    handler, keywords = receivers["TetherChanged"]
+    assert keywords["dbus_interface"] == TETHER_IFACE
+    handler()
+
+    assert json.loads(output.getvalue()) == {"event": "tether-changed", "data": None}

@@ -30,6 +30,7 @@ from blueferry.protocol import (
     MEDIA_IFACE,
     OBJECT_PATH,
     PRESENCE_IFACE,
+    TETHER_IFACE,
 )
 from blueferry.protocol import (
     MESSAGES_IFACE as IFACE,
@@ -797,6 +798,60 @@ class MessagesService(dbus.service.Object):
             ),
             reply_handler, error_handler,
         )
+
+    # ---- Tether1: opt-in Bluetooth PAN through the iPhone hotspot --------
+
+    @dbus.service.method(
+        TETHER_IFACE, in_signature="", out_signature="s", sender_keyword="sender"
+    )
+    def GetState(self, sender=None) -> str:
+        """Tether state JSON: state, interface name, backend, error token."""
+        return self._sync(lambda: self._authorized(
+            sender, "status",
+            lambda: self._json_response(self.operations.tether_state()),
+        ))
+
+    @dbus.service.method(
+        TETHER_IFACE, in_signature="", out_signature="s", sender_keyword="sender"
+    )
+    def Connect(self, sender=None) -> str:
+        """Start tethering; the outcome arrives through TetherChanged."""
+        return self._sync(lambda: self._authorized(
+            sender, "tether",
+            lambda: self._json_response(self.operations.tether_connect()),
+        ))
+
+    @dbus.service.method(
+        TETHER_IFACE, in_signature="", out_signature="s", sender_keyword="sender"
+    )
+    def Disconnect(self, sender=None) -> str:
+        """Stop tethering; only the PAN link, never the phone connection."""
+        return self._sync(lambda: self._authorized(
+            sender, "tether",
+            lambda: self._json_response(self.operations.tether_disconnect()),
+        ))
+
+    @dbus.service.method(
+        TETHER_IFACE, in_signature="bb", out_signature="s", sender_keyword="sender"
+    )
+    def SetTethering(self, enabled: bool, autoconnect: bool, sender=None) -> str:
+        """Save the tethering opt-in; off stops watching and refuses Connect."""
+        return self._sync(lambda: self._authorized(
+            sender, "settings",
+            lambda: self._json_response(self.operations.set_tethering(
+                bool(enabled), bool(autoconnect)
+            )),
+        ))
+
+    @dbus.service.signal(TETHER_IFACE, signature="")
+    def TetherChanged(self):
+        """Tether state changed; clients fetch it with GetState."""
+
+    def emit_tether_changed(self) -> None:
+        try:
+            self.TetherChanged()
+        except Exception:
+            log.exception("TetherChanged emit failed")
 
     @dbus.service.signal(EVENTS_IFACE, signature="a{sv}")
     def HistoryChanged(self, props):
