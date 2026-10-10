@@ -42,6 +42,7 @@ class AdapterState:
     power_state: str = "on"
     revision: int = 0
     incarnation: int = 0
+    le_reset_safe: bool = False
 
 
 @dataclass
@@ -248,16 +249,16 @@ class BluezRecoveryAdapter:
         props = objects[self.path]["org.bluez.Adapter1"]
         phone = objects.get(self.device_path, {}).get("org.bluez.Device1", {})
         powered = bool(props["Powered"])
-        safe = (
+        le_reset_safe = (
             powered
             # Without PowerState a timed-out Set(False) cannot be distinguished
             # from an idle, powered controller. Do not start that transaction.
             and str(props.get("PowerState", "")) == "on"
-            and not props.get("Discovering", True)
-            and not props.get("Discoverable", True)
             and bool(phone.get("Bonded", phone.get("Paired", False)))
             and not phone.get("Blocked", False)
         )
+        safe = (le_reset_safe and not props.get("Discovering", True)
+                and not props.get("Discoverable", True))
         for path, interfaces in objects.items():
             if not str(path).startswith(self.path + "/") or str(path) == self.device_path:
                 continue
@@ -273,7 +274,7 @@ class BluezRecoveryAdapter:
         if revision != self._revision:
             raise RuntimeError("adapter topology changed during inspection")
         return AdapterState(owner, str(props["Address"]).upper(), powered, safe,
-                            str(props.get("PowerState", "")), revision, incarnation)
+                            str(props.get("PowerState", "")), revision, incarnation, le_reset_safe)
 
     def _properties(self, owner: str):
         # Resolve the proxy before the final snapshot, and avoid asynchronous
@@ -476,6 +477,7 @@ class BluetoothRecovery:
         self._outage_since: float | None = None
         self._healthy_since: float | None = None
         self._last_observation = self._clock()
+        self._le_outage_since: float | None = None
         self._soft_reset_at: float | None = None
         self._probing = False
         self.active = False
@@ -523,6 +525,7 @@ class BluetoothRecovery:
         if suspended is not None:
             self._suspended = suspended
         self._outage_since = None
+        self._le_outage_since = None
         self._healthy_since = None
         self._soft_reset_at = None
         self._probing = False
@@ -606,11 +609,13 @@ class BluetoothRecovery:
         if now - self._last_observation > HEALTH_FRESH_SECONDS:
             self._healthy_since = None
             self._outage_since = None
+            self._le_outage_since = None
             self._soft_reset_at = None
         self._last_observation = now
         observed = self._observe()
         if observed.healthy:
             self._outage_since = None
+            self._le_outage_since = None
             self._soft_reset_at = None
             if self._known(state) and self._record.get("spent") is False:
                 return
@@ -636,17 +641,30 @@ class BluetoothRecovery:
         self._healthy_since = None
         if observed.busy:
             return
-        if not state.safe or not observed.eligible or not self._allowed(state):
+        # Phone-only recovery does not interrupt discovery or other devices.
+        # Retain the phone identity, bond, power, and active-operation guards.
+        if (not state.le_reset_safe or not observed.eligible or not self._known(state)
+                or self.adapter.cleanup_pending):
             self._outage_since = None
+            self._le_outage_since = None
             self._soft_reset_at = None
             return
-        if self._outage_since is None:
+        if self._le_outage_since is None:
+            self._le_outage_since = now
+        cycle_allowed = state.safe and self._allowed(state)
+        if not cycle_allowed:
+            self._outage_since = None
+        elif self._outage_since is None:
             self._outage_since = now
         if self._probing:
             return
-        if self._soft_reset_at is None and now - self._outage_since >= SOFT_RESET_SECONDS:
+        if self._soft_reset_at is None and now - self._le_outage_since >= SOFT_RESET_SECONDS:
             self._soft_reset_at = now
             self._reset_le()
+            return
+        # Power cycling still requires its own uninterrupted safe window and
+        # persisted budget. A blocked cycle must not re-arm phone-only resets.
+        if not cycle_allowed or self._outage_since is None:
             return
         if (
             now - self._outage_since < OUTAGE_SECONDS
