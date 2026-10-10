@@ -51,7 +51,7 @@ class Harness:
     def __init__(self, tmp_path):
         self.now = 10000.0
         self.wall = 100000.0
-        self.state = mod.AdapterState(":1.2", RADIO, True, True)
+        self.state = mod.AdapterState(":1.2", RADIO, True, True, le_reset_safe=True)
         self.observed = mod.RecoveryObservation(False, None, True)
         self.settings = SettingsStore(tmp_path / "settings.json")
         self.settings.update(**{mod.SETTINGS_KEY: {
@@ -1218,3 +1218,68 @@ def test_shutdown_retries_journal_cleanup_without_waiting_for_it(bluez, monkeypa
     assert adapter.cleanup_pending is not disk_recovers
     assert fake.writes == [False, True]
     assert not fake.props["Powered"]
+
+
+@pytest.mark.parametrize("reason", ["discovery", "other-device", "spent", "cooldown"])
+def test_phone_only_recovery_does_not_need_adapter_cycle_permission(h, reason):
+    if reason in ("discovery", "other-device"):
+        h.state = replace(h.state, safe=False)
+    elif reason == "spent":
+        h.recovery._record["spent"] = True
+    else:
+        h.recovery._record["last_attempt"] = h.wall
+    h.tick()
+    h.tick(mod.SOFT_RESET_SECONDS - 1)
+    assert h.calls == []
+    h.tick(1)
+    assert h.calls == ["reset-le"]
+    h.tick(mod.OUTAGE_SECONDS * 2)
+    assert h.calls == ["reset-le"]
+    assert not h.worker.jobs
+
+
+def test_cycle_still_requires_fresh_safe_window_after_scanning(h):
+    h.state = replace(h.state, safe=False)
+    h.tick(mod.OUTAGE_SECONDS * 2)
+    assert h.calls == ["reset-le"]
+    h.state = replace(h.state, safe=True)
+    h.tick()
+    h.tick(mod.OUTAGE_SECONDS - 1)
+    assert not h.worker.jobs
+    h.tick(1)
+    assert len(h.worker.jobs) == 1
+    assert h.calls == ["reset-le"]
+
+
+@pytest.mark.parametrize("reason", ["blocked", "unpaired", "power-transition", "missing-power"])
+def test_phone_only_recovery_rejects_unsafe_phone_state(bluez, h, reason):
+    adapter, fake = bluez
+    phone = fake.objects[adapter.device_path]["org.bluez.Device1"]
+    if reason == "blocked":
+        phone["Blocked"] = True
+    elif reason == "unpaired":
+        phone["Paired"] = False
+    elif reason == "power-transition":
+        fake.props["PowerState"] = "on-disabling"
+    else:
+        del fake.props["PowerState"]
+    h.state = adapter.read()
+    assert not h.state.le_reset_safe
+    h.tick(mod.OUTAGE_SECONDS * 2)
+    assert not h.calls and not h.worker.jobs
+
+
+@pytest.mark.parametrize("reason", ["discovery", "discoverable", "other-device"])
+def test_inspection_separates_phone_reset_from_adapter_cycle(bluez, reason):
+    adapter, fake = bluez
+    if reason == "discovery":
+        fake.props["Discovering"] = True
+    elif reason == "discoverable":
+        fake.props["Discoverable"] = True
+    else:
+        fake.objects[adapter.path + "/dev_00_00_00_00_00_01"] = {
+            "org.bluez.Device1": {"Connected": True, "Paired": True},
+        }
+    state = adapter.read()
+    assert state.le_reset_safe
+    assert not state.safe
