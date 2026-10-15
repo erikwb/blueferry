@@ -49,6 +49,7 @@ class Bus:
         self.types: list[tuple[str, str]] = []
         self.hold_probe = False
         self.held_probes: list[tuple] = []
+        self.fail_subscribe_at: int | None = None
 
     def call(self, bus_name, path, interface, method, signature, args,
              reply_type, on_reply, on_error, *, timeout):
@@ -68,6 +69,8 @@ class Bus:
     def subscribe(self, sender, interface, member, handler, *, path=None, arg0=None,
                   with_path=False):
         assert sender == "org.bluez"
+        if self.fail_subscribe_at is not None and len(self.receivers) == self.fail_subscribe_at:
+            raise DBusCallError("org.freedesktop.DBus.Error.LimitsExceeded", "too many matches")
         if member == "PropertiesChanged" and arg0 == "org.bluez.MediaTransport1":
             assert with_path and path is None
             member = "TransportPropertiesChanged"
@@ -190,6 +193,36 @@ def test_reply_of_a_superseded_probe_is_dropped() -> None:
     newer_reply(tree(transport=True))
     older_reply(tree(connected=False))
     assert subject.snapshot()["phone_audio_route"] == "pc"
+
+
+@pytest.mark.parametrize("failing", [0, 2, 3])
+def test_a_failed_watch_leaves_no_half_subscription(failing) -> None:
+    bus = Bus(tree(transport=True))
+    bus.fail_subscribe_at = failing
+    subject, timers, _changes = route(bus)
+    subject.start()  # must not raise into the daemon
+    assert bus.removed == failing
+    assert [call[2] for call in bus.calls] == []
+    snap = subject.snapshot()
+    assert (snap["phone_audio_route"], snap["phone_audio_reason"]) == ("unavailable", "unknown")
+    assert [seconds for seconds, _cb in timers.pending.values()] == [30]
+    subject.start()  # a second start while the retry waits adds no timer
+    assert len(timers.pending) == 1
+    bus.fail_subscribe_at = None
+    bus.receivers.clear()
+    timers.fire()  # the retry watches again and probes
+    assert subject.snapshot()["phone_audio_route"] == "pc"
+    assert timers.pending == {}
+
+
+def test_stop_cancels_a_pending_watch_retry() -> None:
+    bus = Bus(tree())
+    bus.fail_subscribe_at = 1
+    subject, timers, _changes = route(bus)
+    subject.start()
+    assert len(timers.pending) == 1
+    subject.stop()
+    assert timers.pending == {}
 
 
 def test_switch_to_pc_calls_connect_profile_and_settles_with_a_reprobe() -> None:

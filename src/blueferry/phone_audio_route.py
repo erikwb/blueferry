@@ -83,6 +83,8 @@ RESUME_AFTER_HANDBACK_SEC = 2
 # iOS suspends the stream briefly between tracks; a change away from "pc"
 # (and any other change) must hold this long before clients see it.
 PLAYING_DEBOUNCE_SEC = 2
+# Try the signal watches again after the bus refused one.
+WATCH_RETRY_SEC = 30
 
 IN_PROGRESS_TEXT = (
     "Bluetooth is still changing the iPhone's audio connection. Try again "
@@ -142,6 +144,7 @@ class PhoneAudioRoute:
         self._media_state = media_state or (lambda: MEDIA_UNKNOWN)
         self._playing: str | None = None
         self._debounce_id: int | None = None
+        self._watch_retry_id: int | None = None
         self._stopped = False
 
     # ---- state ---------------------------------------------------------
@@ -233,23 +236,42 @@ class PhoneAudioRoute:
             self.media_changed()
             return
         bus = self._bus
-        self._matches = [
-            bus.subscribe(BLUEZ, OBJECT_MANAGER_IFACE, "InterfacesAdded", self._interfaces_added),
-            bus.subscribe(
-                BLUEZ, OBJECT_MANAGER_IFACE, "InterfacesRemoved", self._interfaces_removed,
-            ),
-            bus.subscribe(
+        try:
+            self._matches.append(bus.subscribe(
+                BLUEZ, OBJECT_MANAGER_IFACE, "InterfacesAdded", self._interfaces_added))
+            self._matches.append(bus.subscribe(
+                BLUEZ, OBJECT_MANAGER_IFACE, "InterfacesRemoved", self._interfaces_removed))
+            self._matches.append(bus.subscribe(
                 BLUEZ, PROPERTIES_IFACE, "PropertiesChanged", self._properties_changed,
                 path=self._device_path, arg0=DEVICE_IFACE,
-            ),
+            ))
             # The transport path is only known once it exists; filter on it
             # in the handler.
-            bus.subscribe(
+            self._matches.append(bus.subscribe(
                 BLUEZ, PROPERTIES_IFACE, "PropertiesChanged", self._transport_changed,
                 arg0=TRANSPORT_IFACE, with_path=True,
-            ),
-        ]
+            ))
+        except Exception as error:
+            # Without every watch the state would go stale unnoticed; drop
+            # the watches made so far, stay "unknown" and try again later.
+            log.warning(
+                "could not watch the phone's audio state, retrying in %ds: %s",
+                WATCH_RETRY_SEC, error_name(error),
+            )
+            self._remove_matches()
+            before = self.snapshot()
+            self._known = False
+            self._changed(before)
+            if self._watch_retry_id is None:
+                self._watch_retry_id = self._schedule(WATCH_RETRY_SEC, self._retry_watch)
+            return
         self.probe()
+
+    def _retry_watch(self) -> bool:
+        self._watch_retry_id = None
+        if not self._stopped:
+            self.start()
+        return False
 
     def probe(self) -> None:
         """Re-read the device and its transports from bluetoothd."""
@@ -446,9 +468,15 @@ class PhoneAudioRoute:
             self._cancel(self._resume_id)
             self._resume_id = None
         self._generation += 1
+        if self._watch_retry_id is not None:
+            self._cancel(self._watch_retry_id)
+            self._watch_retry_id = None
         if self._settle_id is not None:
             self._cancel(self._settle_id)
             self._settle_id = None
+        self._remove_matches()
+
+    def _remove_matches(self) -> None:
         matches, self._matches = self._matches, []
         for match in matches:
             try:
