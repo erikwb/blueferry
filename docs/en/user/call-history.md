@@ -83,6 +83,9 @@ previous phone's list.
   `--sync` and **Refresh from iPhone** are never held back.
 - It mirrors the phone; calls you delete on the iPhone disappear on the next
   full refresh.
+- The iPhone hands over at most its 100 most recent calls per list (incoming,
+  dialled, missed), so older calls are not shown even inside the retention
+  window.
 - The list and missed-call popups need stored local data. They don't work
   while the wallet is locked or with **Do not retain local data**.
 - GTK, the terminal client, and Quickshell don't show the list yet.

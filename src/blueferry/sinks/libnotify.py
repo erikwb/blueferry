@@ -24,6 +24,8 @@ invoked without an explicit click on the labelled button.
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import logging
 import re
@@ -34,7 +36,7 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 from html import escape
 from pathlib import Path
-from typing import Protocol
+from typing import NamedTuple, Protocol
 
 import dbus
 import dbus.exceptions
@@ -48,7 +50,12 @@ from blueferry.ancs.constants import (
 )
 from blueferry.ancs.events import AncsEvent
 from blueferry.bus import get_session_bus
-from blueferry.call_history import MAX_INDIVIDUAL_MISSED_CALL_POPUPS, MissedCallNotice
+from blueferry.call_history import (
+    MAX_INDIVIDUAL_MISSED_CALL_POPUPS,
+    MissedCallNotice,
+    caller_match_keys,
+    caller_number_keys,
+)
 from blueferry.calls.model import CallEvent
 from blueferry.client_activation import activation_argv, select_client
 from blueferry.events import SmsEvent
@@ -82,7 +89,16 @@ _BODY_LIMIT = ANCS_SUBTITLE_MAX_BYTES + 1 + ANCS_MESSAGE_MAX_BYTES
 # within this window around the call's time.
 _ANCS_MISSED_CALL_BEFORE = timedelta(minutes=2)
 _ANCS_MISSED_CALL_AFTER = timedelta(minutes=30)
+# A floating PBAP time read in the wrong zone is off by up to 26 h (UTC-12
+# to UTC+14); only a popup for the same caller may be matched that far away.
+_ANCS_MISSED_CALL_ZONE_SLACK = timedelta(hours=26)
 _MAX_ANCS_MISSED_CALL_MARKS = 32
+
+
+class _MissedCallMark(NamedTuple):
+    seen_at: datetime
+    callers: frozenset[bytes]   # keyed digests of caller_match_keys
+
 _MESSAGE_EXPIRE_MS = config.NOTIFICATION_TIMEOUT_MS
 # ANCS mirrors ordinary iPhone app/system notifications. Unlike MAP messages,
 # they have no desktop-to-phone read-state path, so keeping every popup around
@@ -544,9 +560,16 @@ class LibnotifySink:
             log.error("libnotify Notify (ANCS) failed: %s", e.get_dbus_name())
             return
         if getattr(event, "category", CategoryID.Other) == CategoryID.MissedCall:
-            # Remember only when, never who: lets the PBAP missed-call path
-            # skip a second popup for the same call.
-            self._ancs_missed_call_marks().append(event.seen_at)
+            # Remember when, and only keyed digests of who: lets the PBAP
+            # missed-call path skip a second popup for the same call.
+            self._ancs_missed_call_marks().append(_MissedCallMark(
+                event.seen_at,
+                # The title names the caller; the subtitle is a label such as
+                # "Missed Call" or, at most, the number, so only its digits count.
+                self._caller_digests(
+                    caller_match_keys(event.title) | caller_number_keys(event.subtitle)
+                ),
+            ))
         if buttons:
             self._track_ancs_actions(
                 int(nid),
@@ -572,25 +595,75 @@ class LibnotifySink:
             log.debug("could not resolve a notification click rule", exc_info=True)
             return None
 
-    def _ancs_missed_call_marks(self) -> deque[datetime]:
+    def _ancs_missed_call_marks(self) -> deque[_MissedCallMark]:
         marks = getattr(self, "_ancs_missed_calls", None)
         if marks is None:
             marks = deque(maxlen=_MAX_ANCS_MISSED_CALL_MARKS)
             self._ancs_missed_calls = marks
         return marks
 
-    def _already_shown_by_ancs(self, notice: MissedCallNotice) -> bool:
-        """Consume one ANCS missed-call popup shown around this call's time."""
+    def _caller_digests(self, keys: frozenset[str]) -> frozenset[bytes]:
+        """Per-process keyed digests, so no caller text is kept for matching."""
+        salt = getattr(self, "_caller_digest_salt", None)
+        if salt is None:
+            salt = secrets.token_bytes(32)
+            self._caller_digest_salt = salt
+        return frozenset(
+            hmac.new(salt, key.encode("utf-8"), hashlib.sha256).digest()
+            for key in keys
+        )
+
+    def _drop_ancs_popups_already_shown(
+        self, notices: list[MissedCallNotice],
+    ) -> list[MissedCallNotice]:
+        """Pair PBAP notices with ANCS missed-call popups, one to one.
+
+        First a popup for the same caller (by name or number) within the
+        window, or, for a floating PBAP time, within the zone slack. Then,
+        for notices still unpaired, any popup within the window, as before:
+        how iOS titles a missed-call popup is not verified on hardware, and a
+        popup whose title names nobody must still cover one call.
+        """
         marks = self._ancs_missed_call_marks()
+        if not marks or not notices:
+            # Contacts-only can filter every notice away; leave the marks be.
+            return notices
+        newest = max(notice.occurred_at for notice in notices)
         for mark in list(marks):
-            if (
-                notice.occurred_at - _ANCS_MISSED_CALL_BEFORE
-                <= mark
-                <= notice.occurred_at + _ANCS_MISSED_CALL_AFTER
-            ):
+            if mark.seen_at < newest - _ANCS_MISSED_CALL_ZONE_SLACK - _ANCS_MISSED_CALL_AFTER:
                 marks.remove(mark)
-                return True
-        return False
+
+        def in_window(notice: MissedCallNotice, mark: _MissedCallMark, slack: bool) -> bool:
+            if slack:
+                return abs(mark.seen_at - notice.occurred_at) <= _ANCS_MISSED_CALL_ZONE_SLACK
+            return (
+                notice.occurred_at - _ANCS_MISSED_CALL_BEFORE
+                <= mark.seen_at
+                <= notice.occurred_at + _ANCS_MISSED_CALL_AFTER
+            )
+
+        paired: set[int] = set()
+        for index, notice in enumerate(notices):
+            digests = self._caller_digests(notice.match_keys)
+            same_caller = [
+                mark for mark in marks
+                if mark.callers & digests and in_window(notice, mark, notice.floating_time)
+            ]
+            if same_caller:
+                closest = min(
+                    same_caller, key=lambda mark: abs(mark.seen_at - notice.occurred_at),
+                )
+                marks.remove(closest)
+                paired.add(index)
+        for index, notice in enumerate(notices):
+            if index in paired:
+                continue
+            for mark in list(marks):
+                if in_window(notice, mark, False):
+                    marks.remove(mark)
+                    paired.add(index)
+                    break
+        return [notice for index, notice in enumerate(notices) if index not in paired]
 
     # ---- missed calls (PBAP call history) --------------------------------
 
@@ -614,9 +687,7 @@ class LibnotifySink:
             notices = [notice for notice in notices if notice.known_contact]
         # Under "All iPhone notifications" the phone's own missed-call popup
         # may already be on screen; do not announce the same call twice.
-        notices = [
-            notice for notice in notices if not self._already_shown_by_ancs(notice)
-        ]
+        notices = self._drop_ancs_popups_already_shown(notices)
         if not notices:
             return
         if len(notices) > individual_limit:

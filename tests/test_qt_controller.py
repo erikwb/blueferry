@@ -1372,6 +1372,64 @@ def test_failed_or_disabled_calls_refresh_follows_the_status_state():
     assert not hasattr(controller, "sendCallTones")
 
 
+def test_contact_photo_opt_in_is_forwarded_and_drops_cached_avatars(monkeypatch):
+    backend = _Backend()
+    toggles = []
+
+    def set_contact_photos(enabled):
+        toggles.append(enabled)
+        return {"contact_photos": enabled}
+
+    backend.set_contact_photos = set_contact_photos
+    controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+    monkeypatch.setattr(
+        controller,
+        "_run",
+        lambda operation, on_done=None, *_args, **_kwargs: (
+            on_done(operation()) if on_done is not None else operation()
+        ),
+    )
+    controller._status.update(
+        {"contact_photos": True, "contact_photo_revision": 3, "contact_photo_count": 2}
+    )
+    synced = []
+    monkeypatch.setattr(controller, "_sync_avatars", lambda: synced.append(True))
+
+    controller.setContactPhotos(False)
+
+    assert toggles == [False]
+    assert controller.status["contact_photos"] is False
+    assert "contact_photo_revision" not in controller.status
+    assert synced == [True]
+
+
+def test_otp_opt_in_is_forwarded_and_merged_into_status(monkeypatch):
+    backend = _Backend()
+    toggles = []
+
+    def set_otp_autocopy(enabled):
+        toggles.append(enabled)
+        return {"otp_autocopy": enabled}
+
+    backend.set_otp_autocopy = set_otp_autocopy
+    controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+    monkeypatch.setattr(
+        controller,
+        "_run",
+        lambda operation, on_done=None, *_args, **_kwargs: (
+            on_done(operation()) if on_done is not None else operation()
+        ),
+    )
+    changed = []
+    controller.statusChanged.connect(lambda: changed.append(True))
+
+    controller.setOtpAutocopy(True)
+
+    assert toggles == [True]
+    assert controller.status["otp_autocopy"] is True
+    assert changed == [True]
+
+
 def test_calls_opt_in_is_forwarded_and_merged_into_status(monkeypatch):
     backend = _Backend()
     toggles = []

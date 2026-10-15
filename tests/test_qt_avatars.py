@@ -330,6 +330,63 @@ def test_avatar_cache_is_bounded_in_bytes(application, monkeypatch) -> None:
     assert controller.avatar_bytes("+2") is None and controller.avatar_bytes("+3") is None
 
 
+def test_avatars_on_screen_above_the_byte_bound_do_not_thrash(application, monkeypatch) -> None:
+    # Review scenario: more avatars on screen than the byte bound holds. Each
+    # arrival used to evict a shown avatar, which blanked, was fetched again
+    # and evicted the next one (202 fetches in 200 binding passes).
+    from blueferry.qt import controller as controller_module
+
+    png = _encoded(8, 8, "PNG")
+    monkeypatch.setattr(controller_module, "MAX_CACHED_AVATAR_BYTES", 2 * len(png))
+    retries: list[str] = []
+    monkeypatch.setattr(
+        BridgeController, "_schedule_avatar_retry",
+        lambda _self, _delay, key, _generation: retries.append(key),
+    )
+    addresses = [f"+1555000{index:04d}" for index in range(5)]
+    controller, backend, worker = _queued_controller({address: png for address in addresses})
+    fetch = backend.contact_photo
+
+    def bounded_fetch(address):
+        # Without the fix the binding loop never settles; fail instead of hang.
+        if len(backend.requests) >= 50:
+            raise BackendError("thrashing")
+        return fetch(address)
+
+    backend.contact_photo = bounded_fetch
+
+    def binding_pass() -> list[str]:
+        return [controller.avatarSource(address) for address in addresses]
+
+    controller.avatarsChanged.connect(binding_pass)  # QML re-reads on every change
+    for _ in range(200):
+        binding_pass()
+        worker.drain()
+
+    assert len(backend.requests) == len(addresses)  # one fetch each, not per pass
+    shown = [url for url in binding_pass() if url]
+    assert len(shown) == 2  # the bound holds; shown avatars stay shown
+    assert sorted(retries) == sorted(addresses[2:])  # the rest retry later
+
+
+def test_an_avatar_that_left_the_screen_can_be_evicted(application, monkeypatch) -> None:
+    from blueferry.qt import controller as controller_module
+
+    png = _encoded(8, 8, "PNG")
+    monkeypatch.setattr(controller_module, "MAX_CACHED_AVATAR_BYTES", 2 * len(png))
+    controller, _backend, worker = _queued_controller({"+1": png, "+2": png, "+3": png})
+    for address in ("+1", "+2"):
+        controller.avatarSource(address)
+    worker.drain()
+    # A later binding pass shows only +2 and +3 (the user scrolled).
+    controller._avatars_changed()
+    controller.avatarSource("+2")
+    controller.avatarSource("+3")
+    worker.drain()
+    assert controller.avatar_bytes("+1") is None
+    assert controller.avatar_bytes("+2") == png and controller.avatar_bytes("+3") == png
+
+
 def test_pending_fetches_are_bounded(application, monkeypatch) -> None:
     from blueferry.qt import controller as controller_module
 

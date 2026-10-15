@@ -474,6 +474,18 @@ Kirigami.ScrollablePage {
             }
         }
 
+        // Older daemons report the value without a runtime setter.
+        Loader {
+            objectName: "otpAutocopyLoader"
+            Layout.fillWidth: true
+            active: iphonePage.bridge.status.saved_opt_ins === true
+                && iphonePage.bridge.status.otp_autocopy !== undefined
+            visible: active
+            sourceComponent: OtpAutocopySettings {
+                bridge: iphonePage.bridge
+            }
+        }
+
         // Only daemons that report the proximity keys support the setting.
         Loader {
             objectName: "proximityLockLoader"
@@ -503,6 +515,18 @@ Kirigami.ScrollablePage {
             active: iphonePage.bridge.status.media_control_enabled !== undefined
             visible: active
             sourceComponent: MediaControlSettings {
+                bridge: iphonePage.bridge
+            }
+        }
+
+        // Older daemons report the value without a runtime setter.
+        Loader {
+            objectName: "contactPhotosLoader"
+            Layout.fillWidth: true
+            active: iphonePage.bridge.status.saved_opt_ins === true
+                && iphonePage.bridge.status.contact_photos !== undefined
+            visible: active
+            sourceComponent: ContactPhotoSettings {
                 bridge: iphonePage.bridge
             }
         }

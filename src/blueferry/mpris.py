@@ -387,8 +387,16 @@ class MprisPlayer(dbus.service.Object):
         return dbus.Dictionary(metadata, signature="sv")
 
     def _supports(self, *commands: RemoteCommandID) -> bool:
-        supported = self._media.state.supported_commands
-        return self._media.available and any(command in supported for command in commands)
+        if not self._media.available:
+            return False
+        state = self._media.state
+        if not state.supported_commands_known:
+            # The phone has not sent its list (after a reconnect it may not
+            # at all). Offer the transport controls; the command is sent as
+            # asked and iOS ignores or refuses one the app lacks. A known
+            # empty list still disables them.
+            return True
+        return any(command in state.supported_commands for command in commands)
 
     def _current_rate(self) -> float:
         """The phone's playback rate (podcasts at 1.5x), never 0 or negative.

@@ -516,8 +516,39 @@ ModalScreen {
     width: 76;
 }
 
+#options-dialog {
+    width: 72;
+}
+
+#options-dialog Checkbox {
+    margin-top: 1;
+}
+
+#options-error {
+    color: #fca5a5;
+}
+
 #calls-confirm-dialog {
     width: 60;
+}
+
+#rules-dialog {
+    width: 84;
+}
+
+#rules-list {
+    height: auto;
+    max-height: 8;
+    background: #151f35;
+}
+
+#rules-bundle, #rules-target {
+    height: 3;
+}
+
+#rules-policy-note {
+    height: auto;
+    color: #fbbf24;
 }
 
 #calls-number {

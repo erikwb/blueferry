@@ -79,7 +79,10 @@ def render_now_playing(snapshot: dict) -> list[str]:
     if details:
         lines.append("   ".join(details))
     commands = snapshot.get("supported_commands")
-    if isinstance(commands, list):
+    if snapshot.get("supported_commands_known") is False:
+        # Older backends omit the key; their list is always the known one.
+        lines.append("Commands: unknown (the iPhone has not sent its list yet)")
+    elif isinstance(commands, list):
         lines.append(
             "Commands: " + (", ".join(terminal_text(c) for c in commands) or "none")
         )
