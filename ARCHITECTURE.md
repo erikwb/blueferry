@@ -476,7 +476,10 @@ A change to these rules has to be made in both places.
   `ReconnectPhone` performs the reset and answers `profile-reset`.
   GetStatus: `profile_reset_auto`, `profile_reset_suggested` (reason token),
   `profile_reset_last` (`hfp_powered_timeout`/`manual`),
-  `profile_reset_last_at` (Unix time) and `profile_reset_last_auto`.
+  `profile_reset_last_at` (Unix time) and `profile_reset_last_auto`. With calls on,
+  `blueferry doctor` warns when oFono runs next to a bluetoothd that loads
+  its hfp plugin (`-E` without `-P hfp`, read from `/proc`) and shows the
+  reset setting, a stuck profile and the last reset.
 - **BlueZ health:** `bluez_health` marks bluetoothd unresponsive after two
   unanswered asynchronous `Peer.Ping`s 15 s apart (pinged every 30 s; a
   NoReply from a bearer read only triggers an early ping). While

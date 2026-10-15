@@ -493,6 +493,43 @@ def bluetoothd_argv(proc_root: Path = Path("/proc")) -> list[str] | None:
     Works without systemd (OpenRC, runit). Returns ``None`` when no
     bluetoothd is visible, e.g. with ``hidepid`` or in a container.
     """
+    return _process_argv(proc_root, "bluetoothd")
+
+
+OPENRC_HFP_PLUGIN_HINT = (
+    'Add "-P hfp" to BLUETOOTH_OPTS in /etc/conf.d/bluetooth (keep -E), then '
+    'run "sudo rc-service bluetooth restart".'
+)
+SYSTEMD_HFP_PLUGIN_HINT = (
+    'Add "-P hfp" to bluetoothd\'s ExecStart in a drop-in (keep -E): '
+    "sudo systemctl edit bluetooth.service, an empty ExecStart= line, then the "
+    'full command line with -P hfp; then run "sudo systemctl restart bluetooth".'
+)
+
+
+def hfp_plugin_conflict(proc_root: Path = Path("/proc")) -> bool | None:
+    """True when oFono runs next to a bluetoothd with its own hfp plugin.
+
+    Both then race for the iPhone's HFP RFCOMM channel; when bluetoothd wins,
+    oFono's Modem.Powered times out (seen with BlueZ 5.87 and oFono 2.18 on
+    2026-10-06). ``None`` when either process is not visible, which includes
+    the ``hidepid`` limit of ``bluetoothd_argv``.
+    """
+    if _process_argv(proc_root, "ofonod") is None:
+        return None
+    argv = bluetoothd_argv(proc_root)
+    if argv is None:
+        return None
+    return bluez_hfp_plugin_active(argv)
+
+
+def hfp_plugin_hint() -> str:
+    if service_manager.init_system() == service_manager.SYSTEMD:
+        return SYSTEMD_HFP_PLUGIN_HINT
+    return OPENRC_HFP_PLUGIN_HINT
+
+
+def _process_argv(proc_root: Path, comm: str) -> list[str] | None:
     try:
         entries = list(proc_root.iterdir())
     except OSError:
@@ -502,7 +539,7 @@ def bluetoothd_argv(proc_root: Path = Path("/proc")) -> list[str] | None:
             continue
         try:
             name = (entry / "comm").read_text(encoding="utf-8", errors="replace").strip()
-            if name != "bluetoothd":
+            if name != comm:
                 continue
             raw = (entry / "cmdline").read_bytes()
         except OSError:
