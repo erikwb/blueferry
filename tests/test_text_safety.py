@@ -15,3 +15,12 @@ def test_unicode_line_separators_cannot_create_terminal_rows() -> None:
 
 def test_emoji_joiners_are_not_destroyed_as_bidi_controls() -> None:
     assert terminal_text("👩\u200d💻") == "👩\u200d💻"
+
+
+def test_control_text_escapes_only_text_qt_would_read_as_markup() -> None:
+    from blueferry.text_safety import control_text
+
+    assert control_text("Tom & Jerry") == "Tom & Jerry"
+    assert control_text("<b>x</b> & y") == "&lt;b&gt;x&lt;/b&gt; &amp; y"
+    assert control_text(None) == ""
+
