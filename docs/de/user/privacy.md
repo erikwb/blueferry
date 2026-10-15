@@ -128,7 +128,7 @@ Bearbeite `~/.config/blueferry/local.env` und starte den Dienst danach mit
 | `BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE` | `true` | Anrufe und Musik auf dem iPhone lassen |
 | `BLUEFERRY_ANCS_APP_ALLOWLIST` | nicht gesetzt | Siehe [Apps filtern](#apps-filtern) |
 | `BLUEFERRY_ANCS_APP_BLOCKLIST` | nicht gesetzt | Siehe [Apps filtern](#apps-filtern) |
-| `BLUEFERRY_OTP_AUTOCOPY` | `false` | Einmalcodes in die Zwischenablage kopieren, siehe [Einmalcodes](#einmalcodes) |
+| `BLUEFERRY_OTP_AUTOCOPY` | `false` | Startwert für das Kopieren von Einmalcodes, bis ein Client die Einstellung speichert, siehe [Einmalcodes](#einmalcodes) |
 | `BLUEFERRY_OTP_CLEAR_SECONDS` | `0` | Kopierten Code nach so vielen Sekunden entfernen (0 = behalten, max. 600) |
 | `BLUEFERRY_CONTACT_PHOTOS` | `false` | Kontaktfotos für Avatare und Popup-Symbole behalten; siehe [Kontaktfotos](contact-photos.md) |
 

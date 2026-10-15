@@ -296,7 +296,9 @@ seeing it.
 OTP_AUTOCOPY: bool = _env_bool("BLUEFERRY_OTP_AUTOCOPY", False)
 """Copy one-time codes from newly received messages to the clipboard.
 
-Off by default: it changes the clipboard without a user action. The code is
+Only the starting value: once a client saves ``otp_autocopy`` in
+settings.json (see ``otp_settings``), the saved choice wins. Off by
+default: it changes the clipboard without a user action. The code is
 never logged or broadcast, and the confirmation popup shows it only when
 ``SHOW_NOTIFICATION_CONTENT`` is enabled.
 """
