@@ -119,6 +119,14 @@ def test_nothing_playing() -> None:
     assert lines[-1] == "Commands: none"
 
 
+def test_an_unknown_command_list_is_not_shown_as_none() -> None:
+    lines = cli_media.render_now_playing({
+        "enabled": True, "available": True, "player": {}, "track": {}, "queue": {},
+        "supported_commands": [], "supported_commands_known": False,
+    })
+    assert lines[-1] == "Commands: unknown (the iPhone has not sent its list yet)"
+
+
 class _Interface:
     def __init__(self, name: str, calls: list, *, missing: bool = False) -> None:
         self.name = name

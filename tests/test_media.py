@@ -101,6 +101,23 @@ def test_only_advertised_commands_are_sent() -> None:
     assert [command for command, *_ in writer.sent] == [RemoteCommandID.NextTrack]
 
 
+def test_an_unknown_command_list_sends_the_command_as_asked() -> None:
+    """Hardware 2026-10-08: no list after a reconnect must not block keys."""
+    media, writer, timers = _controller(supported=[RemoteCommandID.NextTrack])
+    media.handle_supported_commands(None)
+    timers.flush()
+    assert media.snapshot()["supported_commands_known"] is False
+    media.send_command("toggle", lambda: None, lambda _error: None)
+    media.send_command("previous", lambda: None, lambda _error: None)
+    assert [command for command, *_ in writer.sent] == [
+        RemoteCommandID.TogglePlayPause, RemoteCommandID.PreviousTrack,
+    ]
+    # A known empty list still refuses.
+    media.handle_supported_commands(frozenset())
+    with pytest.raises(NotReadyError):
+        media.resolve_command("next")
+
+
 def test_toggle_and_play_pause_fall_back_to_the_advertised_variant() -> None:
     media, _, _ = _controller(supported=[RemoteCommandID.Play, RemoteCommandID.Pause])
     assert media.resolve_command("toggle") == RemoteCommandID.Play

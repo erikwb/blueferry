@@ -180,7 +180,9 @@ class MediaController:
         if self.state.apply(update, self._clock()):
             self._changed()
 
-    def handle_supported_commands(self, commands: frozenset[RemoteCommandID]) -> None:
+    def handle_supported_commands(
+        self, commands: frozenset[RemoteCommandID] | None,
+    ) -> None:
         if self.state.set_supported_commands(commands):
             self._changed()
 
@@ -188,7 +190,7 @@ class MediaController:
         if not available:
             # Nothing is known about playback once the link is gone; never
             # present a stale track as current. The command list survives:
-            # the AMS client reports an empty one when it is really gone.
+            # the AMS client reports it as unknown when it is really gone.
             self.state.clear_playback()
         log.info("iPhone media control %s", "available" if available else "unavailable")
         self._changed()
@@ -241,6 +243,11 @@ class MediaController:
             )
         if not self.available:
             raise NotReadyError("iPhone media control is not connected")
+        if not self.state.supported_commands_known:
+            # The phone has not sent its list (yet). Send the command as
+            # asked; iOS rejects one its player does not offer, and the
+            # caller gets that error.
+            return command
         supported = self.state.supported_commands
         if command in supported:
             return command

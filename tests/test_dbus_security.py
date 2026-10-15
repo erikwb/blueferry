@@ -168,3 +168,34 @@ def test_answering_has_its_own_bucket_and_never_blocks_hanging_up() -> None:
         guard.authorize(":1.20", "calls-control")
     now[0] += 61
     guard.authorize(":1.20", "calls-answer")
+
+
+def test_notification_clicks_have_their_own_budget_apart_from_settings() -> None:
+    now = [0.0]
+    guard = CallerGuard(
+        expected_uid=1000,
+        credential_provider=lambda _sender: {"UnixUserID": 1000},
+        clock=lambda: now[0],
+    )
+    # A burst of rule edits does not block clicks, and vice versa.
+    for index in range(30):
+        guard.authorize(f":1.{index}", "settings")
+    with pytest.raises(RateLimitError):
+        guard.authorize(":1.99", "settings")
+    for index in range(30):
+        # Every click comes from a fresh helper connection.
+        guard.authorize(f":2.{index}", "notification-click")
+    with pytest.raises(RateLimitError):
+        guard.authorize(":2.99", "notification-click")
+
+    # The hourly window still bounds a steady stream of helper connections.
+    clicks = 30
+    while True:
+        now[0] += 61
+        try:
+            for index in range(30):
+                guard.authorize(f":3.{clicks}.{index}", "notification-click")
+                clicks += 1
+        except RateLimitError:
+            break
+    assert clicks == 300

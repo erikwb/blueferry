@@ -206,10 +206,11 @@ def test_oversized_photo_is_dropped_but_the_contact_survives() -> None:
 
 
 @pytest.mark.parametrize("size,bucket", [
-    (1536 * 1024, "<=4MiB"),
+    (1536 * 1024, "<=2MiB"),
     (4 * 1024 * 1024, "<=4MiB"),
-    (4 * 1024 * 1024 + 1, ">4MiB"),
-    (6 * 1024 * 1024, ">4MiB"),
+    (4 * 1024 * 1024 + 1, "<=8MiB"),
+    (6 * 1024 * 1024, "<=8MiB"),
+    (8 * 1024 * 1024 + 1, ">8MiB"),
 ])
 def test_oversized_photo_histogram_uses_full_streamed_payload(monkeypatch, size, bucket):
     blob = _card("FN:Big", "PHOTO;ENCODING=b:" + _b64(bytes(size)), "TEL:+15550001111")
@@ -224,6 +225,7 @@ def test_oversized_photo_histogram_uses_full_streamed_payload(monkeypatch, size,
     )
     assert entries == [(("Big", ["15550001111"], []), None)]
     assert stats.sizes == {bucket: 1}
+    assert stats.largest == size
     assert stats.dropped == {"too-large": 1}
 
 
@@ -885,7 +887,9 @@ def test_photo_summary_counts_sizes_and_reasons_without_contact_data() -> None:
         "not-inline": 1, "format": 1, "dimensions": 1, "too-large": 1,
     }
     summary = stats.summary()
-    assert "<=64KiB:3" in summary and ">4MiB:0" in summary
+    # JPEG, GIF and the bomb header are tiny; the oversized one is measured
+    # past the cap even though it is never retained.
+    assert "<=16KiB:3" in summary and ">8MiB:0" in summary
     assert "dimensions:1" in summary and "too-large:1" in summary
     assert "Alice" not in summary and "1555" not in summary
 
@@ -924,6 +928,45 @@ def test_photos_that_can_never_be_shown_are_not_decoded_or_budgeted(monkeypatch)
     assert stats.dropped == {"shared": 2}
 
 
+def test_exact_duplicates_of_one_person_keep_their_photo(storage, monkeypatch, tmp_path) -> None:
+    # Hardware finding (iOS 27): the unfiltered pull lists people more than
+    # once, so every photo record shared all its numbers with its own copy
+    # and the shared-number rule dropped all 42 photos. Exact copies (same
+    # name, same addresses) are one owner; the photo comes from the copy
+    # that has one, in either order. Different names still conflict.
+    blob = (
+        _card("FN:Alice", "TEL:+15551112222", "EMAIL:alice@example.com")
+        + _card("FN:Alice", "PHOTO;ENCODING=b:" + _b64(JPEG), "TEL:(555) 111-2222",
+                "EMAIL:alice@example.com")
+        + _card("FN:Bob", "PHOTO;ENCODING=b:" + _b64(PNG), "TEL:+15550004444")
+        + _card("FN:Bob", "TEL:+15550004444")
+        + _card("FN:Twin A", "PHOTO;ENCODING=b:" + _b64(PNG), "TEL:+15550001111")
+        + _card("FN:Twin B", "PHOTO;ENCODING=b:" + _b64(PNG), "TEL:+15550001111")
+        # Same name, different address set: not an exact copy, so the shared
+        # number stays ambiguous for photos.
+        + _card("FN:Carol", "PHOTO;ENCODING=b:" + _b64(PNG), "TEL:+15550005555")
+        + _card("FN:Carol", "TEL:+15550005555", "TEL:+15550006666")
+    )
+    servable = contacts._servable_photo_indices(_parse_vcard_records(blob))
+    assert servable == {0, 1, 2, 3, 7}
+    stats = contacts.PhotoStats()
+    entries = _parse_vcard_entries(blob, servable=servable, stats=stats)
+    assert [photo for _record, photo in entries] == [None, JPEG, PNG, None, None, None, None, None]
+    assert stats.dropped == {"shared": 3}
+
+    _fake_pull(monkeypatch, tmp_path, blob)
+    monkeypatch.setattr(config, "CONTACT_PHOTOS", True)
+    contacts.pull_phonebook(SimpleNamespace(pbap_path="/pbap"), storage=storage)
+    resolver = ContactsResolver(storage=storage)
+    assert resolver.photo("+15551112222") == JPEG
+    assert resolver.photo("alice@example.com") == JPEG
+    assert resolver.photo("+15550004444") == PNG
+    assert resolver.photo("+15550001111") is None
+    assert resolver.photo("+15550005555") is None
+    # Reply routing keeps main's record-based rule.
+    assert resolver.thread_addresses("+15551112222") == ()
+
+
 def test_budget_exhaustion_is_logged_with_a_count(monkeypatch, caplog) -> None:
     monkeypatch.setattr(contacts, "MAX_CONTACT_PHOTOS_TOTAL_BYTES", len(JPEG))
     blob = "".join(
@@ -948,7 +991,7 @@ def test_pull_logs_a_content_free_photo_summary(storage, monkeypatch, tmp_path, 
         assert contacts.pull_phonebook(SimpleNamespace(pbap_path="/pbap"), storage=storage) == 3
     [line] = [record.getMessage() for record in caplog.records if "with photos" in record.getMessage()]
     assert "parsed 3 contacts (1 with photos)" in line
-    assert "<=64KiB:1" in line and "shared:2" in line
+    assert "<=16KiB:3" in line and "shared:2" in line and "max:" in line
     assert "Alice" not in line and "Twin" not in line and "1555" not in line
     resolver = ContactsResolver(storage=storage)
     assert resolver.photo("+15551112222") == JPEG and resolver.photo_count() == 1
@@ -1038,3 +1081,35 @@ def test_photo_pull_streams_the_transfer_file(storage, monkeypatch, tmp_path) ->
             SimpleNamespace(pbap_path="/pbap"), storage=storage,
         ) == 1
     assert ContactsResolver(storage=storage).photo("+15551112222") == JPEG
+
+
+@pytest.mark.parametrize("size,bucket", [
+    (1, "<=16KiB"),
+    (16 * 1024, "<=16KiB"),
+    (16 * 1024 + 1, "<=64KiB"),
+    (256 * 1024, "<=256KiB"),
+    (256 * 1024 + 1, "<=1MiB"),
+    (1536 * 1024, "<=2MiB"),
+    (3 * 1024 * 1024, "<=4MiB"),
+    (6 * 1024 * 1024, "<=8MiB"),
+    (8 * 1024 * 1024 + 1, ">8MiB"),
+])
+def test_photo_size_buckets_cover_sizes_far_over_the_cap(size, bucket) -> None:
+    stats = contacts.PhotoStats()
+    stats.observe_size(size)
+    summary = stats.summary()
+    assert f"{bucket}:1" in summary
+    assert sum(stats.sizes.values()) == 1 and stats.sizes[bucket] == 1
+    assert f"max:{size}" in summary
+
+
+def test_photos_skipped_without_decoding_are_still_sized(monkeypatch) -> None:
+    monkeypatch.setattr(contacts, "MAX_CONTACT_PHOTOS_TOTAL_BYTES", len(JPEG))
+    blob = "".join(
+        _card(f"FN:P{index}", "PHOTO;ENCODING=b:" + _b64(JPEG), f"TEL:+1555000{index:04d}")
+        for index in range(3)
+    )
+    stats = contacts.PhotoStats()
+    _parse_vcard_entries(blob, stats=stats)
+    assert stats.dropped == {"budget": 2}
+    assert sum(stats.sizes.values()) == 3

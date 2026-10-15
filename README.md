@@ -460,11 +460,13 @@ The iPhone already sends photos in the normal contact download, so this
 doesn't add a second Bluetooth transfer. BlueFerry just stops throwing them
 away. Photos are stored in the contact cache with the same encryption, storage
 mode, and replacement as the contacts, and are deleted the next time the
-backend starts with the option off. Only JPEG and PNG photos up to 1 MiB and
-2048×2048 pixels are kept, at most 32 MiB per sync. A photo shows only when
+backend starts with the option off. Only JPEG and PNG photos up to 256 KiB and
+2048×2048 pixels are kept, at most 16 MiB per sync (one iPhone on iOS 27
+sent thumbnails of 2 to 19 KiB). A photo shows only when
 its address belongs to exactly one contact. One log line per sync (`grep
-"with photos"`) counts photo sizes and why photos were dropped, with no
-contact data, so the limits can be checked against a real iPhone. The backend never decodes an image: the desktop clients and the
+"with photos"`) counts photo sizes (including how far over the limit dropped
+photos were, and the largest size) and why photos were dropped, with no
+contact data. The backend never decodes an image: the desktop clients and the
 notification server do. For notifications, the backend puts a temporary
 owner-only copy of the photo under `$XDG_RUNTIME_DIR/blueferry`, passes it as
 the notification's `image-path`, stops reusing it when contacts change (it
@@ -495,7 +497,8 @@ blueferry notifications open-map remove net.whatsapp.WhatsApp
 ```
 
 The Qt client edits the same rules under **Desktop Notifications** while all
-notifications are shown. Rules are stored with the other popup preferences in
+notifications are shown, and the terminal client in a panel opened with `l`.
+Rules are stored with the other popup preferences in
 `~/.config/blueferry/settings.json` (owner-only, not encrypted) and take
 effect without restarting the service.
 

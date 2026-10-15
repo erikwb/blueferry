@@ -8,10 +8,14 @@ when it is bound to a code noun ("code", "Bestätigungscode", "TAN", "OTP",
   close to the number;
 * a plain noun followed by a connector ("code: 123456", "code is 123456",
   "Code lautet 123456") or preceded by "123456 is your ... code";
-* a plain noun immediately followed by the number ("Telegram code 58291")
-  or an authentication qualifier ("code de vérification: 123456");
+* a plain noun after a service name and immediately followed by the number
+  ("Telegram code 58291", not "Hello code 4821"), or followed by an
+  authentication qualifier ("code de vérification: 123456");
 * an entry instruction ("enter 123456", "geben Sie 123456 ein") in a
   sentence with OTP context. Plain PINs and passwords also need OTP context.
+
+Codes people share never bind: a first-person possessive or a household
+word before the noun ("my code", "Our alarm code is 1234", "door code").
 
 Context words alone ("Verify your email to get 5000 points", "one-time
 offer", "Einmalzahlung") never bind a number. Numbers that look like
@@ -164,6 +168,31 @@ _NEGATIVE_CODE_PREFIXES = frozenset({
     "descuento", "kortings", "cadeau", "regalo", "iban", "bic", "swift",
     "sort", "bank", "bankleit", "zugriffs-promo", "uni", "geo", "html",
     "door", "tür", "tuer", "garage", "gate", "wifi", "wi-fi", "wlan", "router",
+    # Codes people share: "Our alarm code is 1234", "the safe code is 4821".
+    "alarm", "safe", "locker", "lock", "padlock", "keypad", "combination",
+    "entry", "entrance", "lobby", "building", "house", "home", "front", "bike",
+    "network", "laptop", "computer", "pc", "screen", "haustür", "haustuer",
+    "haus", "tor", "schloss", "tresor", "netzwerk", "fahrrad", "bildschirm",
+    # A first-person possessive marks a code the sender shares: "my code".
+    "my", "our", "mein", "meine", "meinen", "unser", "unsere", "mon", "ma",
+    "notre", "mio", "mia", "nostro", "mi", "nuestro", "mijn", "onze",
+})
+# Capitalised words that are not a service name right before a plain noun:
+# articles, and the greetings, interjections and replies that open chat
+# messages ("Hello code 4821", "Sorry code 4821 didn't work"). Any other
+# capitalised word still reads as a service name ("Telegram code 58291").
+_NOT_SERVICE_NAMES = frozenset({
+    "the", "a", "an", "this", "that", "these", "those", "der", "die", "das",
+    "ein", "eine", "dieser", "diese", "dieses", "le", "la", "les", "il", "el",
+    "los", "de", "het", "new", "neuer", "neue", "same", "old", "alter", "alte",
+    "hello", "hi", "hey", "hiya", "yo", "dear", "ok", "okay", "sorry", "thanks",
+    "thank", "thx", "yes", "yeah", "yep", "no", "nope", "please", "pls",
+    "oh", "ah", "well", "so", "and", "but", "or", "also", "here", "there",
+    "now", "just", "btw", "fyi", "re", "fwd", "lol", "haha", "wait", "again",
+    "hallo", "moin", "servus", "grüezi", "gruezi", "salü", "salut",
+    "danke", "bitte", "ja", "nein", "doch", "und", "aber", "oder",
+    "hier", "jetzt", "nochmal", "liebe", "lieber", "bonjour",
+    "merci", "oui", "non", "ciao", "grazie", "si", "hola", "gracias",
 })
 
 # Labels that turn a following number into an order/tracking/etc. number.
@@ -247,6 +276,24 @@ def _normalize(text: str) -> str:
 def _previous_word(text: str, end: int) -> str:
     match = re.search(r"(\w[\w-]*)[\s-]+$", text[max(0, end - 32):end])
     return match.group(1).casefold() if match else ""
+
+
+def _names_a_service(text: str, keyword: _Keyword, *, context: bool) -> bool:
+    """True when a plain noun right before a number is a service's code.
+
+    A capitalised name right before the noun qualifies ("Telegram code
+    58291"), a greeting does not ("Hello code 4821"). A noun that opens the
+    sentence needs OTP context: "Code 2024 is your login code" qualifies,
+    "Code 4821 for the gym" does not.
+    """
+    window = text[max(0, keyword.start - 32):keyword.start]
+    if not window.strip() or window.rstrip()[-1:] in ".!?\n":
+        return context
+    match = re.search(r"([^\W\d_][\w.-]*)[ \t]+$", window)
+    if match is None:
+        return False
+    word = match.group(1)
+    return word[:1].isupper() and word.casefold() not in _NOT_SERVICE_NAMES
 
 
 def _prefixed(
@@ -414,7 +461,7 @@ def _keyword_gap(message: _Message, candidate: _Candidate, keyword: _Keyword) ->
             return None
         elif before and (
             _CONNECTOR.fullmatch(between)
-            or not between.strip()
+            or (not between.strip() and _names_a_service(text, keyword, context=message.context))
             or _CODE_QUALIFIER.fullmatch(between)
         ):
             return gap
