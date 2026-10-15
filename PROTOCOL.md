@@ -676,9 +676,16 @@ specification-based expectation, not a captured result.
   adjacent in the serialized GATT queue.
 - The ANCS BlueZ 5.87 constraint applies here too: no `StopNotify` on a
   dropped or flapping link; surviving `Notifying=true` registrations are kept.
-  The two deliberate `StopNotify` paths (runtime opt-out, command-list
-  toggle) run only on a steady, subscribed link, and a toggle whose link
-  drops after the `StopNotify` never re-enables late.
+  The deliberate `StopNotify` paths (runtime opt-out, command-list toggle,
+  InvalidState toggle) run only on a steady, subscribed link, and a toggle
+  whose link drops after the `StopNotify` never re-enables late.
+- After an LE drop, iOS can forget the Entity Update subscription while
+  BlueZ keeps its notify session and `Notifying=true` (hardware, 2026-10-15,
+  drop forced with `Bearer.LE1.Disconnect`): every registration is refused
+  with 0xA0 (InvalidState), and a repeated `StartNotify` writes no CCC. On
+  that answer BlueFerry toggles the Remote Command and Entity Update CCCs
+  (`StopNotify`, then `StartNotify`) before registering again, at most twice
+  per LE link; after that the ordinary subscription backoff applies.
 - AMS offers relative volume steps and fixed skips only, so an MPRIS volume
   write becomes one step, MPRIS `CanSeek` is false and `Seek`/`SetPosition`
   have no effect, and MPRIS `Stop` pauses. The skips remain available through

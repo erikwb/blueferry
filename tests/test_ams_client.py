@@ -1651,3 +1651,179 @@ def test_service_changed_announcing_the_new_ams_first_still_moves(harness) -> No
     assert old and all(m.removed for m in old)
     bus.notify(_moved(RC), bytes([0, 1]))
     assert commands[-1] == frozenset({RemoteCommandID(0), RemoteCommandID(1)})
+
+
+INVALID_STATE = "Operation failed with ATT error: 0xa0"
+
+
+def _reconnect_with_surviving_characteristics(client, bus, timers) -> None:
+    """An LE drop and reconnect; BlueZ keeps the objects and sessions."""
+    client.observe_bearer_state(False)
+    client.observe_bearer_state(True)
+    timers.run_all()  # settle
+    bus.take("Get", RC).succeed(True)
+    bus.take("Get", EU).succeed(True)
+
+
+def _retry_delays(timers) -> list[int]:
+    return [
+        timers.delays[source] for source, callback in timers.pending.items()
+        if getattr(callback, "__name__", "") == "_retry"
+    ]
+
+
+def _expect_ccc_toggle(bus, path) -> None:
+    assert bus.pending() == [("StopNotify", path)]
+    bus.take("StopNotify", path).succeed()
+    assert bus.pending() == [("StartNotify", path)]
+    bus.take("StartNotify", path).succeed()
+
+
+def test_invalid_state_registration_reenables_both_cccs_then_registers(harness) -> None:
+    """Hardware 2026-10-15: after ``Bearer.LE1.Disconnect`` every Entity
+    Update registration was refused with 0xA0, and the retries never wrote a
+    CCC because BlueZ still reported ``Notifying``, until the daemon was
+    restarted."""
+    client, bus, timers, _updates, _commands, availability = harness
+    _subscribe(client, bus, timers)
+    _reconnect_with_surviving_characteristics(client, bus, timers)
+    bus.take("WriteValue", EU).fail(message=INVALID_STATE)
+    assert not client.available
+
+    # Retried soon, not after the grown backoff.
+    assert _retry_delays(timers) == [2]
+    timers.run_all()
+    # No Notifying query this time: both CCCs are written again, in order.
+    _expect_ccc_toggle(bus, RC)
+    _expect_ccc_toggle(bus, EU)
+    for expected in (b"\x00\x00\x01\x02", b"\x01\x00\x01\x02\x03", b"\x02\x00\x01\x02\x03"):
+        call = bus.take("WriteValue", EU)
+        assert _bytes(call) == expected
+        call.succeed()
+    assert client.available
+    assert availability[-1] is True
+
+
+def test_invalid_state_toggles_are_bounded_per_link(harness) -> None:
+    client, bus, timers, *_ = harness
+    _subscribe(client, bus, timers)
+    _reconnect_with_surviving_characteristics(client, bus, timers)
+    bus.take("WriteValue", EU).fail(message=INVALID_STATE)
+    for _attempt in range(2):
+        timers.run_all()
+        _expect_ccc_toggle(bus, RC)
+        _expect_ccc_toggle(bus, EU)
+        bus.take("WriteValue", EU).fail(message=INVALID_STATE)
+
+    # The budget is spent: the ordinary backoff, trusting BlueZ's sessions.
+    for delay in (2, 4, 8):
+        assert _retry_delays(timers) == [delay]
+        timers.run_all()
+        assert bus.pending() == [("Get", RC)]
+        bus.take("Get", RC).succeed(True)
+        bus.take("Get", EU).succeed(True)
+        bus.take("WriteValue", EU).fail(message=INVALID_STATE)
+    assert "StopNotify" not in [call.method for call in bus.calls]
+
+
+def test_invalid_state_budget_returns_with_a_new_link(harness) -> None:
+    client, bus, timers, *_ = harness
+    _subscribe(client, bus, timers)
+    _reconnect_with_surviving_characteristics(client, bus, timers)
+    bus.take("WriteValue", EU).fail(message=INVALID_STATE)
+    for _attempt in range(2):
+        timers.run_all()
+        _expect_ccc_toggle(bus, RC)
+        _expect_ccc_toggle(bus, EU)
+        bus.take("WriteValue", EU).fail(message=INVALID_STATE)
+
+    _reconnect_with_surviving_characteristics(client, bus, timers)
+    bus.take("WriteValue", EU).fail(message=INVALID_STATE)
+    timers.run_all()
+    _expect_ccc_toggle(bus, RC)
+
+
+def test_other_registration_failures_do_not_toggle_the_cccs(harness) -> None:
+    client, bus, timers, *_ = harness
+    _subscribe(client, bus, timers)
+    _reconnect_with_surviving_characteristics(client, bus, timers)
+    bus.take("WriteValue", EU).fail(message="Operation failed with ATT error: 0x0e")
+    timers.run_all()
+    assert sorted(bus.pending()) == [("Get", RC)]
+
+
+def test_invalid_state_toggle_starts_notify_without_a_session(harness) -> None:
+    client, bus, timers, *_ = harness
+    _subscribe(client, bus, timers)
+    _reconnect_with_surviving_characteristics(client, bus, timers)
+    bus.take("WriteValue", EU).fail(message=INVALID_STATE)
+    timers.run_all()
+    # BlueZ lost the session already; StartNotify then writes the CCC.
+    bus.take("StopNotify", RC).fail(message="No notify session started")
+    bus.take("StartNotify", RC).succeed()
+    bus.take("StopNotify", EU).fail(message="No notify session started")
+    bus.take("StartNotify", EU).succeed()
+    for _entity in EntityID:
+        bus.take("WriteValue", EU).succeed()
+    assert client.available
+
+
+def test_a_failed_invalid_state_toggle_backs_off(harness) -> None:
+    client, bus, timers, *_ = harness
+    _subscribe(client, bus, timers)
+    _reconnect_with_surviving_characteristics(client, bus, timers)
+    bus.take("WriteValue", EU).fail(message=INVALID_STATE)
+    timers.run_all()
+    bus.take("StopNotify", RC).fail()
+    assert not client.available
+    assert _retry_delays(timers) == [2]
+    timers.run_all()
+    # Not an InvalidState answer: the next attempt asks Notifying as usual.
+    assert bus.pending() == [("Get", RC)]
+
+
+def test_a_link_drop_during_the_invalid_state_toggle_never_enables_late(harness) -> None:
+    client, bus, timers, *_ = harness
+    _subscribe(client, bus, timers)
+    _reconnect_with_surviving_characteristics(client, bus, timers)
+    bus.take("WriteValue", EU).fail(message=INVALID_STATE)
+    timers.run_all()
+    stop = bus.take("StopNotify", RC)
+    client.observe_bearer_state(False)
+    stop.succeed()
+    # bluetoothd 5.87 crashes on a CCC enable completing after an LE flap.
+    assert bus.pending() == []
+
+
+def test_an_opt_out_during_the_invalid_state_toggle_releases_after_it(harness) -> None:
+    client, bus, timers, *_ = harness
+    _subscribe(client, bus, timers)
+    _reconnect_with_surviving_characteristics(client, bus, timers)
+    bus.take("WriteValue", EU).fail(message=INVALID_STATE)
+    timers.run_all()
+    bus.take("StopNotify", RC).succeed()
+    start = bus.take("StartNotify", RC)
+    released = []
+    client.stop(release=True, on_released=lambda: released.append(True))
+    assert bus.pending() == []
+    start.succeed()
+    assert sorted(bus.pending()) == sorted([("StopNotify", RC), ("StopNotify", EU)])
+    bus.take("StopNotify", RC).succeed()
+    bus.take("StopNotify", EU).succeed()
+    assert released == [True]
+
+
+def test_an_invalid_state_reregistration_reenables_the_cccs(harness) -> None:
+    client, bus, timers, *_ = harness
+    _subscribe(client, bus, timers)
+    bus.notify(RC, bytes([0, 1]))
+    rereg = [s for s, c in timers.pending.items() if c.__name__ == "_reregister_entities"]
+    timers.pending.pop(rereg[0])()
+    bus.take("WriteValue", EU).fail(message=INVALID_STATE)
+    assert _retry_delays(timers) == [2]
+    timers.run_all()
+    _expect_ccc_toggle(bus, RC)
+    _expect_ccc_toggle(bus, EU)
+    for _entity in EntityID:
+        bus.take("WriteValue", EU).succeed()
+    assert client.available

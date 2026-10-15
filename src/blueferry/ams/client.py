@@ -28,6 +28,12 @@ Updates flow. When the Media Source is demonstrably talking (an Entity Update
 arrived) but no command list followed, the client toggles the Remote Command
 CCC once per link (StopNotify, then StartNotify), serialized in the GATT
 queue on the steady, subscribed link, so iOS sees a fresh subscription.
+
+An LE drop can also leave iOS without the Entity Update subscription while
+BlueZ keeps its notify session (and ``Notifying``): every registration is
+then refused with InvalidState (0xA0), and a repeated ``StartNotify`` writes
+no CCC. On that answer the next subscription toggles both CCCs the same way
+before registering, a bounded number of times per link.
 """
 from __future__ import annotations
 
@@ -44,6 +50,7 @@ from gi.repository import GLib
 
 from blueferry.ams.constants import (
     AMS_CHAR_UUIDS,
+    AMS_ERROR_INVALID_STATE,
     AMS_ERROR_NAMES,
     ENTITY_ATTRIBUTE_CHAR,
     ENTITY_ATTRIBUTES,
@@ -90,6 +97,12 @@ REFRESHED_ENTITIES = (EntityID.Player, EntityID.Track)
 # A Remote Command notification while registered: wait this long for the
 # rest of a CCC restore before registering the entities again.
 REREGISTER_SETTLE_SECONDS = 1
+# iOS refused an Entity Update registration with InvalidState (0xA0): it
+# holds no Entity Update subscription for this link while BlueZ still keeps
+# its notify session. How often per LE link the client disables and
+# re-enables both CCCs before registering again; after that the ordinary
+# backoff takes over.
+NOTIFY_REFRESHES_PER_LINK = 2
 MANAGER_RETRY_INITIAL_SECONDS = 2
 MANAGER_RETRY_MAX_SECONDS = 60
 # A failed StopNotify is retried this often per settled LE link, with a
@@ -143,6 +156,17 @@ def _char_path_to_device_path(char_path: str) -> str:
 _ATT_CODE_RE = re.compile(r"0x([0-9a-f]{2})\b", re.IGNORECASE)
 
 
+def _att_code(error: Exception) -> int | None:
+    """The AMS ATT code in a BlueZ error, if it reports a known one."""
+    if not isinstance(error, dbus.exceptions.DBusException):
+        return None
+    for match in _ATT_CODE_RE.finditer(error.get_dbus_message() or ""):
+        code = int(match.group(1), 16)
+        if code in AMS_ERROR_NAMES:
+            return code
+    return None
+
+
 def _error_name(error: Exception) -> str:
     """D-Bus error name plus a named AMS ATT code when BlueZ reports one.
 
@@ -152,10 +176,9 @@ def _error_name(error: Exception) -> str:
     if not isinstance(error, dbus.exceptions.DBusException):
         return type(error).__name__
     name = error.get_dbus_name() or type(error).__name__
-    for match in _ATT_CODE_RE.finditer(error.get_dbus_message() or ""):
-        code = int(match.group(1), 16)
-        if code in AMS_ERROR_NAMES:
-            return f"{name} (AMS {AMS_ERROR_NAMES[code]} 0x{code:02X})"
+    code = _att_code(error)
+    if code is not None:
+        return f"{name} (AMS {AMS_ERROR_NAMES[code]} 0x{code:02X})"
     return name
 
 
@@ -480,6 +503,10 @@ class AmsClient:
         self._attribute_refresh_id: int | None = None
         self._reregister_id: int | None = None
         self._command_refreshes_left = COMMAND_LIST_REFRESHES_PER_LINK
+        # Set by an InvalidState answer: the next subscription disables and
+        # re-enables both CCCs instead of trusting BlueZ's notify sessions.
+        self._notify_refresh_due = False
+        self._notify_refreshes_left = NOTIFY_REFRESHES_PER_LINK
 
     # ---- public state ---------------------------------------------------
 
@@ -546,6 +573,7 @@ class AmsClient:
             return
         self._silent_resubscribes_left = SILENT_RESUBSCRIBES_PER_LINK
         self._command_refreshes_left = COMMAND_LIST_REFRESHES_PER_LINK
+        self._notify_refreshes_left = NOTIFY_REFRESHES_PER_LINK
         if self._started:
             self._schedule_settle()
 
@@ -796,10 +824,24 @@ class AmsClient:
         eu_path = self._paths[ENTITY_UPDATE_CHAR]
         # The value receivers were installed when the characteristics were
         # found (see _watch_characteristic), before any StartNotify.
-        steps: list[tuple[str, Callable[[Success, Failure], None]]] = [
-            ("start-notify remote-command", lambda ok, fail: self._start_notify(rc_path, ok, fail)),
-            ("start-notify entity-update", lambda ok, fail: self._start_notify(eu_path, ok, fail)),
-        ]
+        steps: list[tuple[str, Callable[[Success, Failure], None]]]
+        if self._notify_refresh_due:
+            # iOS refused a registration with InvalidState: write both CCCs
+            # again (disable, enable) so it sees fresh subscriptions.
+            self._notify_refresh_due = False
+            steps = [
+                ("refresh-notify remote-command",
+                 lambda ok, fail: self._toggle_notify(rc_path, generation, ok, fail)),
+                ("refresh-notify entity-update",
+                 lambda ok, fail: self._toggle_notify(eu_path, generation, ok, fail)),
+            ]
+        else:
+            steps = [
+                ("start-notify remote-command",
+                 lambda ok, fail: self._start_notify(rc_path, ok, fail)),
+                ("start-notify entity-update",
+                 lambda ok, fail: self._start_notify(eu_path, ok, fail)),
+            ]
         def register(packet: bytes) -> Callable[[Success, Failure], None]:
             return lambda ok, fail: self._write(eu_path, packet, ok, fail)
 
@@ -825,20 +867,42 @@ class AmsClient:
                 )
                 return
             label, run = remaining.popleft()
-            if not self._enqueue(_Operation(label, run, next_step, failed, generation)):
-                failed(AmsQueueFullError("AMS operation queue is full"))
 
-        def failed(error: Exception) -> None:
+            def step_failed(error: Exception, label: str = label) -> None:
+                failed(error, registering=label.startswith("register"))
+
+            if not self._enqueue(_Operation(label, run, next_step, step_failed, generation)):
+                step_failed(AmsQueueFullError("AMS operation queue is full"))
+
+        def failed(error: Exception, *, registering: bool) -> None:
             if generation != self._generation:
                 return
             log.warning("AMS subscription step failed: %s", _error_name(error))
+            refresh = registering and self._request_notify_refresh(error)
             self._reset_subscription()
             # A lost ATT transport normally comes with a bearer transition
             # that restarts subscription; the bounded retry also covers a
             # bearer observation that has not caught up yet.
-            self._schedule_retry()
+            self._schedule_retry(prompt=refresh)
 
         next_step()
+
+    def _request_notify_refresh(self, error: Exception) -> bool:
+        """An InvalidState registration: re-enable both CCCs next time.
+
+        Hardware 2026-10-15: after an LE drop (``Bearer.LE1.Disconnect``) the
+        characteristic objects survived, BlueZ still reported ``Notifying``,
+        and every Entity Update registration was refused with 0xA0, the AMS
+        answer to a registration without an Entity Update subscription. A
+        repeated ``StartNotify`` writes no CCC, so the retries never changed
+        anything until the daemon restarted. Bounded per LE link.
+        """
+        if _att_code(error) != AMS_ERROR_INVALID_STATE or self._notify_refreshes_left <= 0:
+            return False
+        self._notify_refreshes_left -= 1
+        self._notify_refresh_due = True
+        log.info("iPhone refused the media registration; re-enabling its media notifications")
+        return True
 
     def _start_notify(self, path: str, ok: Success, fail: Failure) -> None:
         characteristic = self._characteristic(path)
@@ -890,11 +954,15 @@ class AmsClient:
             timeout=DBUS_CALL_TIMEOUT_SECONDS,
         )
 
-    def _schedule_retry(self) -> None:
+    def _schedule_retry(self, *, prompt: bool = False) -> None:
+        """Retry with backoff; ``prompt`` retries soon without growing it."""
         if not self._started or self._retry_id is not None:
             return
-        delay = self._retry_delay
-        self._retry_delay = min(self._retry_delay * 2, SUBSCRIBE_RETRY_MAX_SECONDS)
+        if prompt:
+            delay = SUBSCRIBE_RETRY_INITIAL_SECONDS
+        else:
+            delay = self._retry_delay
+            self._retry_delay = min(self._retry_delay * 2, SUBSCRIBE_RETRY_MAX_SECONDS)
         log.info("retrying AMS subscription in %ds", delay)
         self._retry_id = self._schedule(delay, self._retry)
 
@@ -1114,10 +1182,12 @@ class AmsClient:
             if generation != self._generation:
                 return
             log.warning("AMS re-registration failed: %s", _error_name(error))
-            # Start over: Notifying is asked again, the entities rewritten.
+            refresh = self._request_notify_refresh(error)
+            # Start over: Notifying is asked again (or, after InvalidState,
+            # both CCCs re-enabled), the entities rewritten.
             self._owned_notify_paths.clear()
             self._reset_subscription()
-            self._schedule_retry()
+            self._schedule_retry(prompt=refresh)
 
         next_step()
         return False
@@ -1171,45 +1241,7 @@ class AmsClient:
         generation = self._generation
 
         def run(ok: Success, fail: Failure) -> None:
-            characteristic = self._characteristic(path)
-
-            def stopped() -> None:
-                self._owned_notify_paths.discard(path)
-                # Reported even after a reset, so a later opt-out does not
-                # stop a session that is already gone.
-                self._sessions.stopped(path)
-                if generation != self._generation:
-                    return  # reset meanwhile; the next subscription starts it
-                # Tracked like every StartNotify, so a runtime opt-out that
-                # arrives meanwhile waits for this reply and then releases
-                # the session instead of leaving the CCC enabled.
-                token = self._sessions.starting(path)
-
-                def started() -> None:
-                    self._sessions.started(token)
-                    self._owned_notify_paths.add(path)
-                    ok()
-
-                def start_failed(error: Exception) -> None:
-                    self._sessions.start_failed(token, error)
-                    fail(error)
-
-                try:
-                    characteristic.StartNotify(
-                        dbus_interface=_GATT_CHAR,
-                        reply_handler=started,
-                        error_handler=start_failed,
-                        timeout=DBUS_CALL_TIMEOUT_SECONDS,
-                    )
-                except Exception as error:
-                    start_failed(error)
-
-            characteristic.StopNotify(
-                dbus_interface=_GATT_CHAR,
-                reply_handler=stopped,
-                error_handler=fail,
-                timeout=DBUS_CALL_TIMEOUT_SECONDS,
-            )
+            self._toggle_notify(path, generation, ok, fail)
 
         def failed(error: Exception) -> None:
             if generation != self._generation:
@@ -1227,6 +1259,61 @@ class AmsClient:
         )):
             log.warning("AMS operation queue full; not refreshing the command list")
         return False
+
+    def _toggle_notify(
+        self, path: str, generation: int, ok: Success, fail: Failure,
+    ) -> None:
+        """StopNotify, then StartNotify: make BlueZ write the CCC again.
+
+        Runs as one queued operation on a steady, subscribed link. A
+        StopNotify refused because no session exists goes on to the
+        StartNotify, which then writes the CCC by itself.
+        """
+        characteristic = self._characteristic(path)
+
+        def stopped() -> None:
+            self._owned_notify_paths.discard(path)
+            # Reported even after a reset, so a later opt-out does not
+            # stop a session that is already gone.
+            self._sessions.stopped(path)
+            if generation != self._generation:
+                return  # reset meanwhile; the next subscription starts it
+            # Tracked like every StartNotify, so a runtime opt-out that
+            # arrives meanwhile waits for this reply and then releases
+            # the session instead of leaving the CCC enabled.
+            token = self._sessions.starting(path)
+
+            def started() -> None:
+                self._sessions.started(token)
+                self._owned_notify_paths.add(path)
+                ok()
+
+            def start_failed(error: Exception) -> None:
+                self._sessions.start_failed(token, error)
+                fail(error)
+
+            try:
+                characteristic.StartNotify(
+                    dbus_interface=_GATT_CHAR,
+                    reply_handler=started,
+                    error_handler=start_failed,
+                    timeout=DBUS_CALL_TIMEOUT_SECONDS,
+                )
+            except Exception as error:
+                start_failed(error)
+
+        def stop_failed(error: Exception) -> None:
+            if _session_is_gone(error):
+                stopped()
+            else:
+                fail(error)
+
+        characteristic.StopNotify(
+            dbus_interface=_GATT_CHAR,
+            reply_handler=stopped,
+            error_handler=stop_failed,
+            timeout=DBUS_CALL_TIMEOUT_SECONDS,
+        )
 
     def _report_supported_commands(
         self, commands: frozenset[RemoteCommandID] | None,
