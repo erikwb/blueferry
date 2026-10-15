@@ -35,6 +35,7 @@ from blueferry.plugin_api.client import Photo
 from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH
 from blueferry.qt import phone_link
 from blueferry.qt.avatars import avatar_url
+from blueferry.qt.companion import CompanionTools
 from blueferry.qt.plugin_settings import PluginSettings
 from blueferry.qt.plugin_surfaces import PluginSurfaces
 from blueferry.qt.tasks import Task
@@ -82,6 +83,7 @@ class BridgeController(QObject):
     nowPlayingChanged = Signal()
     notificationsChanged = Signal()
     photosChanged = Signal()
+    companionToolsChanged = Signal()
     pluginSettingsChanged = Signal()
     pluginSurfacesChanged = Signal()
     phoneIdentityChanged = Signal()
@@ -97,6 +99,7 @@ class BridgeController(QObject):
         subscribe: bool = True,
         autostart: bool = True,
         parent: QObject | None = None,
+        companion: CompanionTools | None = None,
         plugin_settings: PluginSettings | None = None,
         plugin_surfaces: PluginSurfaces | None = None,
         doctor: Callable[[], DoctorReport] = run_doctor,
@@ -204,6 +207,9 @@ class BridgeController(QObject):
         self._photos_plugin: object = None
         self._photos: dict = {"present": False, "ready": False, "loaded": False,
                               "hint": "", "items": []}
+        # UxPlay, LocalSend and iPhone photos: client-side, no daemon involved.
+        self._companion = companion or CompanionTools(parent=self)
+        self._companion.changed.connect(self.companionToolsChanged)
         # Plugin management runs git, pip and plugin calls on its own queue.
         self._plugin_settings = plugin_settings or PluginSettings(parent=self)
         self._plugin_settings.changed.connect(self.pluginSettingsChanged)
@@ -560,6 +566,22 @@ class BridgeController(QObject):
         """A card action with send_to, or files dropped on a card item."""
         self._plugin_surfaces.send_from_card(
             str(plugin_id), str(target_id), str(label), list(urls or []))
+
+    @Property("QVariantMap", notify=companionToolsChanged)
+    def companionTools(self):
+        return self._companion.state()
+
+    @Slot()
+    def refreshCompanionTools(self) -> None:
+        self._companion.refresh()
+
+    @Slot(str)
+    def runCompanionTool(self, action: str) -> None:
+        self._companion.run(action)
+
+    @Slot()
+    def clearCompanionMessage(self) -> None:
+        self._companion.clear_message()
 
     @Property("QVariantMap", notify=photosChanged)
     def photos(self):

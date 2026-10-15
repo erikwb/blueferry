@@ -171,5 +171,12 @@ Controls.ScrollView {
             id: pluginCards
             bridge: card.bridge
         }
+
+        Kirigami.Separator { Layout.fillWidth: true }
+
+        CompanionToolsSection {
+            Layout.bottomMargin: Kirigami.Units.largeSpacing
+            bridge: card.bridge
+        }
     }
 }
