@@ -68,6 +68,7 @@ from blueferry.ams.parsers import (
     parse_supported_commands,
 )
 from blueferry.bus import get_system_bus
+from blueferry.gatt import write_request_options
 from blueferry.limits import MAX_AMS_PENDING_OPERATIONS
 
 log = logging.getLogger(__name__)
@@ -1050,7 +1051,8 @@ class AmsClient:
     def _write(self, path: str, packet: bytes, ok: Success, fail: Failure) -> None:
         self._characteristic(path).WriteValue(
             dbus.Array([dbus.Byte(value) for value in packet], signature="y"),
-            dbus.Dictionary({}, signature="sv"),
+            # Never a reliable write: iOS rejects its Execute with 0xA0.
+            write_request_options(),
             dbus_interface=_GATT_CHAR,
             reply_handler=ok,
             error_handler=fail,

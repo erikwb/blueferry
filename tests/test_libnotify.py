@@ -1385,3 +1385,34 @@ def test_ancs_popup_shows_the_full_requested_subtitle_and_message(
         monkeypatch, title="t", subtitle=subtitle, body=message,
     )
     assert body == f"{subtitle}\n{message}"
+
+
+def test_click_rule_and_iphone_actions_share_one_popup(monkeypatch) -> None:
+    invoked = []
+    opened = []
+    sink, server = _action_sink(
+        monkeypatch, enabled=True,
+        callback=lambda uid, positive, token, _done: invoked.append((uid, positive, token)),
+    )
+    rules = {"com.apple.mobilephone": "https://calls.example.com/"}
+    sink._open_target = lambda app_id: resolve_open_target(rules, app_id)
+    sink._on_open_target = lambda target, token: opened.append(target) or True
+
+    sink.handle_ancs(_call_event())
+
+    (_, nid, args), = _notify_calls(server)
+    # The body click opens the rule's target instead of the no-op default;
+    # the iPhone buttons stay, with the longer action timeout.
+    assert list(args[5]) == [
+        "default", "Open", "ancs-positive", "Accept", "ancs-negative", "Decline",
+    ]
+    assert int(args[7]) == libnotify_mod._ANCS_ACTION_EXPIRE_MS
+    assert "omarchy-exec-argv" in args[6]
+
+    server.signals["ActionInvoked"](nid, "default")
+    assert opened == [OpenTarget("url", "https://calls.example.com/")]
+    assert invoked == []
+
+    server.signals["ActionInvoked"](nid, "ancs-negative")
+    assert invoked == [(42, False, 5)]
+    assert opened == [OpenTarget("url", "https://calls.example.com/")]
