@@ -65,7 +65,8 @@ class BackendStatus:
     storage_detail: str = ""
     controller_vendor: str = ""
     ancs_limited_controller: bool = False
-    otp_autocopy: bool = False
+    # None when the daemon predates the one-time code setting.
+    otp_autocopy: bool | None = None
     # None when the daemon predates the calls setting and does not report it.
     calls_enabled: bool | None = None
     calls_state: str = "disabled"
@@ -157,7 +158,7 @@ class BackendStatus:
             storage_detail=_str(value.get("storage_detail")),
             controller_vendor=_str(value.get("controller_vendor")),
             ancs_limited_controller=_bool(value.get("ancs_limited_controller")),
-            otp_autocopy=_bool(value.get("otp_autocopy")),
+            otp_autocopy=_bool(value["otp_autocopy"]) if "otp_autocopy" in value else None,
             calls_enabled=_bool(value["calls_enabled"]) if "calls_enabled" in value else None,
             calls_state=_str(value.get("calls_state"), "disabled"),
             calls_available=_bool(value.get("calls_available")),
@@ -179,6 +180,9 @@ class BackendStatus:
         # Likewise the contact-photo opt-in.
         if self.contact_photos is not None:
             reported["contact_photos"] = self.contact_photos
+        # Likewise the one-time code opt-in.
+        if self.otp_autocopy is not None:
+            reported["otp_autocopy"] = self.otp_autocopy
         return {
             **self.extra,
             **reported,
@@ -205,7 +209,6 @@ class BackendStatus:
             "map_connection_refused": self.map_connection_refused,
             "controller_vendor": self.controller_vendor,
             "ancs_limited_controller": self.ancs_limited_controller,
-            "otp_autocopy": self.otp_autocopy,
             "calls_state": self.calls_state,
             "calls_available": self.calls_available,
             "phone_battery_level": self.phone_battery_level,

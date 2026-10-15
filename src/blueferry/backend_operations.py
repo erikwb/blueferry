@@ -261,6 +261,7 @@ class BackendDependencies:
     # The contact-photo opt-in: a fixed value or the daemon's live setting.
     contact_photos: bool | Callable[[], bool] = False
     set_contact_photos: Callable[[bool], dict[str, Any]] | None = None
+    set_otp_autocopy: Callable[[bool], dict[str, Any]] | None = None
 
 
 class BackendOperations:
@@ -1440,6 +1441,19 @@ class BackendOperations:
         except OSError as error:
             log.error("could not save the contact-photo preference: %s", error)
             raise NotReadyError("could not save the contact-photo preference") from error
+
+    def set_otp_autocopy(self, enabled: bool) -> dict[str, Any]:
+        """Save the one-time code auto-copy opt-in and apply it at once."""
+        configure = self.dependencies.set_otp_autocopy
+        if configure is None:
+            raise NotReadyError("one-time code settings are unavailable")
+        try:
+            return dict(configure(bool(enabled)))
+        except ValueError as error:
+            raise InvalidArgumentsError(str(error)) from error
+        except OSError as error:
+            log.error("could not save the one-time code preference: %s", error)
+            raise NotReadyError("could not save the one-time code preference") from error
 
     def list_calls(self) -> dict[str, object]:
         return self._call_control().list_calls()

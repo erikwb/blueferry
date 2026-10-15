@@ -82,6 +82,7 @@ from blueferry.obex.mns_watch import MnsWatch
 from blueferry.obex.sessions import SessionManager
 from blueferry.obex.worker import ObexWorker
 from blueferry.otp_context import OtpMetadata
+from blueferry.otp_settings import OtpSettings
 from blueferry.pair_setup import bond_status
 from blueferry.phone_battery import BatteryWarningSettings, PhoneBattery
 from blueferry.profile_supervisor import ProfileSessions, ProfileSupervisor
@@ -182,6 +183,8 @@ class Daemon:
         self.confirmed_groups = ConfirmedGroupsStore(storage=self.storage)
         self.group_routes = GroupRoutesStore(storage=self.storage)
         self.setup_verification = SetupVerification(config.IPHONE_MAC)
+        # The saved one-time code opt-in (local.env only seeds it).
+        self.otp_settings = OtpSettings(log_overrides=True)
         self.events = EventDispatcher(
             self.contacts,
             defer_mark_read=self._defer_message_read_path,
@@ -199,6 +202,7 @@ class Daemon:
             # returns no icon while photos are off.
             contact_photo=self._contact_photo_path,
             resolve_otp_metadata=self._resolve_otp_metadata,
+            otp_autocopy=lambda: self.otp_settings.enabled,
         )
         self.listener: MapEventListener | None = None
         self.mns_watch: MnsWatch | None = None
@@ -470,6 +474,14 @@ class Daemon:
         self._emit_status()
         return self.calls.snapshot()
 
+    def _set_otp_autocopy(self, enabled: bool) -> dict:
+        """Save the one-time code opt-in and add or remove the sink now."""
+        selected = self.otp_settings.set(enabled)
+        self.events.apply_otp_autocopy()
+        log.info("one-time code auto-copy %s", "enabled" if selected else "disabled")
+        self._emit_status()
+        return {"otp_autocopy": selected}
+
     def _apply_phone_audio_roles(self) -> None:
         """Rewrite the WirePlumber fragment off the main loop.
 
@@ -737,6 +749,7 @@ class Daemon:
                 set_media_mpris=self._set_media_mpris,
                 contact_photos=self._contact_photos_enabled,
                 set_contact_photos=self._set_contact_photos,
+                set_otp_autocopy=self._set_otp_autocopy,
             ),
         )
         self.events.set_dbus_service(self._dbus_service)
@@ -1595,7 +1608,7 @@ class Daemon:
                 self.notification_policy.contacts_only
             ),
             # Configuration only; codes themselves never cross the bus.
-            "otp_autocopy": config.OTP_AUTOCOPY,
+            "otp_autocopy": self.otp_settings.enabled,
             "storage_policy": self.storage.status.policy,
             "storage_state": self.storage.status.state,
             "storage_detail": self.storage.status.detail,

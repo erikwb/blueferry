@@ -335,10 +335,14 @@ journalctl --user -u blueferry -f | grep "ANCS app observed"
 
 BlueFerry can copy verification codes (2FA/OTP) from newly received SMS and
 iMessages to the clipboard. This is off by default because it changes the
-clipboard without you doing anything:
+clipboard without you doing anything. Turn it on with the "Copy one-time
+codes to the clipboard" checkbox in the Qt, GTK or Quickshell iPhone
+settings, the terminal client's Options (`o`), or `blueferry otp enable`.
+The choice is saved in `settings.json` and applies at once;
+`BLUEFERRY_OTP_AUTOCOPY=true` in `local.env` still works as the starting
+value until a client changes it. The clear timer stays in `local.env`:
 
 ```bash
-BLUEFERRY_OTP_AUTOCOPY=true
 # Optional: clear the clipboard after this many seconds (0 = keep, max 600)
 BLUEFERRY_OTP_CLEAR_SECONDS=60
 ```
@@ -358,7 +362,7 @@ like "verify" or "one-time" alone never pick a number, promotions and
 bookings need a specific code word, and amounts, dates, times, phone numbers,
 and order or tracking numbers are skipped. `G-123456` and `123-456` are copied
 as `123456`. Check what a message would copy with
-`echo 'Your code is 123456' | blueferry otp-check`.
+`echo 'Your code is 123456' | blueferry otp check`.
 
 The message popup gets one extra line saying the code was copied; when there
 is no message popup (for example with notifications limited to contacts), a
@@ -370,7 +374,7 @@ logged, stored, or published on BlueFerry's D-Bus API, so there is no command
 to show it again.
 
 The backend copies with `wl-copy` from wl-clipboard on Wayland, or `xclip` or
-`xsel` on X11; `blueferry otp-status` shows which one it finds. With
+`xsel` on X11; `blueferry otp status` shows which one it finds. With
 wl-clipboard 2.3 or newer the code is marked as sensitive; clipboard managers
 that honor the hint keep it out of their history. The first copy waits for the
 capability probe. Older versions and the X11 tools cannot set this hint.
@@ -890,7 +894,7 @@ blueferry contacts-photo Alice --output alice.jpg   # needs contact photos on
 blueferry call-history --missed   # after `blueferry call-history enable`
 blueferry media status
 blueferry history-clear
-blueferry otp-status
+blueferry otp status
 blueferry notifications open-map list
 blueferry doctor
 ```

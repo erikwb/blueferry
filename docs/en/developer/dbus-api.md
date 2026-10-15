@@ -91,6 +91,7 @@ package to restart an outdated backend after upgrades.
 | `GetAncsNotificationActions` / `SetAncsNotificationActions` | `b enabled` (saved opt-in for iPhone action buttons) |
 | `SetPhoneBatteryWarning` | `b enabled` → `b selected`; state is `phone_battery_warning` in `GetStatus` |
 | `SetContactPhotos` | `b enabled` → `s status_json`: saves the contact-photo opt-in in `settings.json` and applies it at once (off deletes avatar files and erases stored photos); returns the `contact_photo*` status keys. `GetStatus` reports the current value as `contact_photos` |
+| `SetOtpAutocopy` | `b enabled` → `s status_json`: saves the one-time code auto-copy opt-in in `settings.json` and applies it at once; returns `{"otp_autocopy": b}`. `GetStatus` reports the current value as `otp_autocopy` |
 | `GetStoragePolicy` / `SetStoragePolicy` | `s policy`: `encrypted`, `plaintext`, or `none`; `Set` returns `s status_json` |
 | `UnlockStorage` | → `s status_json` |
 | `GetNotificationOpenMap` | → `s rules_json` (list of `bundle_id`, `target`, `kind`) |

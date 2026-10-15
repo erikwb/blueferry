@@ -803,6 +803,7 @@ def settings_window(qml_engine):
             function setPhoneBatteryWarning(enabled) { record("setPhoneBatteryWarning", [enabled]); }
             function setMprisPlayer(enabled) { record("setMprisPlayer", [enabled]); }
             function setContactPhotos(enabled) { record("setContactPhotos", [enabled]); }
+            function setOtpAutocopy(enabled) { record("setOtpAutocopy", [enabled]); }
             function forgetDevice(mac) { record("forgetDevice", [mac]); }
             function activateBluetooth() { record("activateBluetooth", []); }
             function filePairingIssue() { record("filePairingIssue", []); }
@@ -2482,6 +2483,41 @@ def test_quickshell_offers_the_contact_photo_opt_in_only_when_reported(
     theme.deleteLater()
 
 
+def test_quickshell_offers_the_one_time_code_opt_in_only_when_reported(
+    qml_engine, quickshell_setup,
+):
+    theme_component = _component(qml_engine, "data/quickshell/ThemePalette.qml")
+    theme = theme_component.create()
+    component = _component(qml_engine, "data/quickshell/PhoneSettingsPage.qml")
+    page = component.createWithInitialProperties({
+        "ferryTheme": theme, "setup": quickshell_setup,
+        "status": {"contacts_only_notifications": False},
+    })
+    assert page is not None
+    quickshell_setup.setProperty("configured", True)
+    checkbox = page.findChild(QObject, "otpAutocopyCheckBox")
+    assert checkbox is not None
+    assert checkbox.property("visible") is False
+
+    page.setProperty("status", {"contacts_only_notifications": False, "otp_autocopy": False})
+    QGuiApplication.processEvents()
+    assert checkbox.property("visible") is True
+    assert checkbox.property("checked") is False
+    calls = []
+    page.operationRequested.connect(
+        lambda method, args: calls.append((method, args.toVariant()))
+    )
+    assert QMetaObject.invokeMethod(checkbox, "toggle")
+    assert QMetaObject.invokeMethod(checkbox, "clicked")
+    assert calls == [("set_otp_autocopy", {"enabled": True})]
+
+    page.setProperty("busy", {"otp": True})
+    QGuiApplication.processEvents()
+    assert checkbox.property("enabled") is False
+    page.deleteLater()
+    theme.deleteLater()
+
+
 @pytest.mark.private_dbus
 def test_quickshell_keeps_the_restart_command_when_the_daemon_is_unavailable(
     tmp_path, quickshell_environment,
@@ -3109,6 +3145,33 @@ def test_contact_photo_opt_in_appears_only_for_supporting_daemons(qml_engine, se
     ) == [{"method": "setContactPhotos", "args": [True]}]
 
     bridge.setProperty("status", {"daemon": True, "contact_photos": True})
+    QGuiApplication.processEvents()
+    assert checkbox.property("checked") is True
+
+
+def test_otp_autocopy_opt_in_appears_only_for_supporting_daemons(qml_engine, settings_window):
+    window, bridge = settings_window
+    bridge.setProperty("setupLoaded", True)
+    QGuiApplication.processEvents()
+    loader = _settings_object(window, "otpAutocopyLoader")
+    bridge.setProperty("status", {"daemon": True})
+    assert loader.property("active") is False
+
+    bridge.setProperty("status", {"daemon": True, "otp_autocopy": False})
+    QGuiApplication.processEvents()
+    assert loader.property("active") is True
+    caption = _settings_object(window, "otpAutocopyCaption").property("text")
+    assert "not in your contacts" in caption and "group chats" in caption
+    checkbox = _settings_object(window, "otpAutocopyCheckBox")
+    assert checkbox.property("checked") is False
+
+    assert QMetaObject.invokeMethod(checkbox, "toggle")
+    assert QMetaObject.invokeMethod(checkbox, "clicked")
+    assert _evaluate(
+        qml_engine, "testBridge.calls.filter(c => c.method === 'setOtpAutocopy')"
+    ) == [{"method": "setOtpAutocopy", "args": [True]}]
+
+    bridge.setProperty("status", {"daemon": True, "otp_autocopy": True})
     QGuiApplication.processEvents()
     assert checkbox.property("checked") is True
 

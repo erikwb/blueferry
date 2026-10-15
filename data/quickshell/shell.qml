@@ -46,6 +46,7 @@ ShellRoot {
   readonly property SavedChoice callHistory: SavedChoice {}
   readonly property SavedChoice missedCallPopups: SavedChoice {}
   readonly property SavedChoice contactPhotos: SavedChoice {}
+  readonly property SavedChoice otpAutocopy: SavedChoice {}
   property bool storagePolicyBusy: false
   property bool storageUnlockBusy: false
 
@@ -248,6 +249,7 @@ ShellRoot {
         root.callHistory.reported(result.call_history_enabled === true)
         root.missedCallPopups.reported(result.missed_call_notifications !== false)
         root.contactPhotos.reported(result.contact_photos === true)
+        root.otpAutocopy.reported(result.otp_autocopy === true)
         var storagePolicy = result.storage_policy || "encrypted"
         root.storagePolicy = ["encrypted", "plaintext", "none"].indexOf(storagePolicy) >= 0
           ? storagePolicy : "encrypted"
@@ -351,6 +353,12 @@ ShellRoot {
             ? result.contact_photos === true : root.contactPhotos.value,
           root.statusBusy)
         root.reload()
+      } else if (method === "set_otp_autocopy") {
+        root.otpAutocopy.saved(
+          typeof result === "object" && result !== null
+            ? result.otp_autocopy === true : root.otpAutocopy.value,
+          root.statusBusy)
+        root.reload()
       } else if (method === "set_storage_policy") {
         root.storagePolicyBusy = false
         if (typeof result === "object" && result !== null) {
@@ -434,6 +442,10 @@ ShellRoot {
         root.contactPhotos.failed(root.backendStatus.contact_photos === true)
         root.errorText = message || "Could not save the contact photo preference"
         root.reload()
+      } else if (method === "set_otp_autocopy") {
+        root.otpAutocopy.failed(root.backendStatus.otp_autocopy === true)
+        root.errorText = message || "Could not save the one-time code preference"
+        root.reload()
       } else if (method === "set_storage_policy") {
         root.storagePolicyBusy = false
         root.errorText = message
@@ -466,6 +478,8 @@ ShellRoot {
           root.missedCallPopups.failed(root.backendStatus.missed_call_notifications !== false)
         if (root.contactPhotos.busy)
           root.contactPhotos.failed(root.backendStatus.contact_photos === true)
+        if (root.otpAutocopy.busy)
+          root.otpAutocopy.failed(root.backendStatus.otp_autocopy === true)
         root.storagePolicyBusy = false
         root.storageUnlockBusy = false
         root.errorText = message
@@ -1103,6 +1117,8 @@ ShellRoot {
             missed_call_notifications: root.missedCallPopups.value
           }, root.backendStatus.contact_photos === undefined ? {} : {
             contact_photos: root.contactPhotos.value
+          }, root.backendStatus.otp_autocopy === undefined ? {} : {
+            otp_autocopy: root.otpAutocopy.value
           })
           busy: ({notifications: root.notificationPolicyBusy,
                   contactsOnly: root.contactsOnlyNotificationsBusy,
@@ -1113,6 +1129,7 @@ ShellRoot {
                   calls: root.callsChoice.busy,
                   callHistory: root.callHistory.busy || root.missedCallPopups.busy,
                   photos: root.contactPhotos.busy,
+                  otp: root.otpAutocopy.busy,
                   storage: root.storagePolicyBusy})
           visible: root.phoneSettingsVisible
           Layout.fillWidth: true
@@ -1124,6 +1141,7 @@ ShellRoot {
           onOperationRequested: (method, args) => {
             if (method === "set_notification_policy") root.notificationPolicyBusy = true
             if (method === "set_contact_photos") root.contactPhotos.request(args.enabled)
+            if (method === "set_otp_autocopy") root.otpAutocopy.request(args.enabled)
             if (method === "set_contacts_only_notifications") {
               root.contactsOnlyNotifications = args.enabled
               root.contactsOnlyNotificationsBusy = true

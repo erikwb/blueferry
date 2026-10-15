@@ -474,6 +474,17 @@ Kirigami.ScrollablePage {
             }
         }
 
+        // Only daemons that report otp_autocopy support the setting.
+        Loader {
+            objectName: "otpAutocopyLoader"
+            Layout.fillWidth: true
+            active: iphonePage.bridge.status.otp_autocopy !== undefined
+            visible: active
+            sourceComponent: OtpAutocopySettings {
+                bridge: iphonePage.bridge
+            }
+        }
+
         // Only daemons that report the proximity keys support the setting.
         Loader {
             objectName: "proximityLockLoader"

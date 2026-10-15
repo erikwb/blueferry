@@ -49,6 +49,15 @@ OPT_INS: tuple[OptIn, ...] = (
         ),
         save=lambda client, enabled: client.set_contact_photos(enabled),
     ),
+    OptIn(
+        key="otp_autocopy",
+        label="Copy one-time codes to the clipboard",
+        caption=(
+            "Only new messages from senders not in your contacts, never group "
+            "chats. Turning this off clears a copied code still on the clipboard."
+        ),
+        save=lambda client, enabled: client.set_otp_autocopy(enabled),
+    ),
 )
 
 

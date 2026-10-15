@@ -123,7 +123,7 @@ Edit `~/.config/blueferry/local.env`, then restart the service with
 | `BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE` | `true` | Keep calls and music on the iPhone |
 | `BLUEFERRY_ANCS_APP_ALLOWLIST` | unset | See [Filter apps](#filter-apps) |
 | `BLUEFERRY_ANCS_APP_BLOCKLIST` | unset | See [Filter apps](#filter-apps) |
-| `BLUEFERRY_OTP_AUTOCOPY` | `false` | Copy one-time codes to the clipboard, see [One-time codes](#one-time-codes) |
+| `BLUEFERRY_OTP_AUTOCOPY` | `false` | Starting value for one-time code auto-copy until a client saves the setting, see [One-time codes](#one-time-codes) |
 | `BLUEFERRY_OTP_CLEAR_SECONDS` | `0` | Clear a copied code after this many seconds (0 = keep, max 600) |
 | `BLUEFERRY_CONTACT_PHOTOS` | `false` | Starting value for contact photos until a client saves the setting; see [Contact photos](contact-photos.md) |
 
