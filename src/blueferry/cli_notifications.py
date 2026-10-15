@@ -49,6 +49,46 @@ def _print_rules(rules: list[dict[str, str]]) -> None:
         )
 
 
+def render_notifications(snapshot: dict) -> list[str]:
+    if not snapshot.get("enabled"):
+        return [
+            "The notification list is off. Turn it on with "
+            "'blueferry features on notification_history' (or "
+            "BLUEFERRY_NOTIFICATION_HISTORY=true in ~/.config/blueferry/local.env) "
+            "and restart the backend."
+        ]
+    records = snapshot.get("notifications")
+    if not isinstance(records, list) or not records:
+        return ["No iPhone app notifications since the backend started."]
+    lines = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        app = record.get("app_name") or record.get("app_id") or "?"
+        head = f"{terminal_text(str(record.get('time', ''))[:19])}  {terminal_text(app)}"
+        text = " - ".join(
+            terminal_text(record[key]) for key in ("title", "body") if record.get(key)
+        )
+        lines.append(f"{head}  {text}" if text else head)
+    return lines
+
+
+@notifications_app.command("recent")
+def notifications_recent(
+    limit: int = typer.Option(20, "--limit", min=1, max=200, help="Number of entries"),
+) -> None:
+    """List recent iPhone app notifications (opt-in, memory only)."""
+    from blueferry.client import BackendError
+
+    try:
+        snapshot = _client().notifications(limit)
+    except BackendError as error:
+        typer.echo(terminal_text(error), err=True)
+        raise typer.Exit(code=2) from None
+    for line in render_notifications(snapshot):
+        typer.echo(line)
+
+
 @open_map_app.command("list")
 def open_map_list() -> None:
     """Show every notification click rule."""

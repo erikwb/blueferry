@@ -428,6 +428,15 @@ class BackendClient:
         except dbus.exceptions.DBusException as error:
             raise BackendError(error.get_dbus_message() or str(error)) from error
 
+    def notifications(self, limit: int = 50) -> dict:
+        """Recent iPhone app notifications (opt-in, memory only)."""
+        try:
+            return decode_mapping(self._iface(MESSAGES_IFACE).ListNotifications(
+                dbus.UInt32(max(1, int(limit))), timeout=STATUS_CALL_TIMEOUT_SEC,
+            ))
+        except (dbus.exceptions.DBusException, ValueError) as error:
+            raise BackendError(_dbus_message(error)) from error
+
     def features(self) -> dict:
         """Allowlisted local.env switches (Messages1.GetFeatures)."""
         try:

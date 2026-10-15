@@ -472,7 +472,8 @@ class EventDispatcher:
                     event.notification_id,
                 )
         # Non-Messages ANCS events are an optional live desktop-popup stream.
-        # No ANCS content is published on D-Bus. Messages correlation records
+        # No ANCS content is broadcast on D-Bus (the opt-in notification log
+        # emits its own content-free signal). Messages correlation records
         # only trigger a content-free history invalidation after persistence.
         if self.dbus_service is not None and event.app_id == MESSAGES_APP_ID:
             self.dbus_service.emit_history_changed()
