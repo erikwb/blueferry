@@ -25,3 +25,4 @@ src/blueferry/qt/qml/PhoneCallsSettings.qml
 src/blueferry/qt/qml/PhoneStatusIndicator.qml
 src/blueferry/plugin_stopper.py
 src/blueferry/plugin_surfaces.py
+src/blueferry/photos_view.py
