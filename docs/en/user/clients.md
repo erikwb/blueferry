@@ -39,10 +39,10 @@ System Settings:
 
 | Category | What's there |
 | --- | --- |
-| Phone | Pairing, connection health, **Run Diagnostics** (the same checks as `blueferry doctor`, shown in the window), contact sync |
-| Notifications | Which events create popups, contacts only, click rules, notification content, action buttons, mark read on dismiss |
+| Phone | Pairing, connection health, **Run Diagnostics** (the same checks as `blueferry doctor`, shown in the window), contact sync, contact photos |
+| Notifications | Which events create popups, contacts only, click rules, notification content, action buttons, sync notifications with iPhone, mark read on dismiss |
 | Calls & Audio | Phone calls, call history, battery warning, [iPhone sound on this computer](phone-audio.md), media control |
-| Security | Away lock, local storage and its encryption, Clear History |
+| Security | One-time codes, away lock, local storage and its encryption, Clear History |
 | About | Version, the background service, keyboard shortcuts, Quit |
 
 In a narrow window the categories become a list; a category opens on its
@@ -62,6 +62,29 @@ the service's own environment still wins, and the switch then says so.
 blueferry features                                 # every switch, its value and source
 blueferry features off keep_phone_audio_on_phone   # applies after a restart
 ```
+
+### System tray item
+
+`blueferry-tray` comes with `blueferry-qt` and puts a phone in the system
+tray (a StatusNotifierItem on KDE Plasma). The icon shows the number of
+unread messages; the tooltip shows the connection, battery, signal, and
+network. Click it to open BlueFerry, or to bring an open window to the front.
+
+Start it from the application menu as **BlueFerry Tray**. It does not start
+at login unless you ask for that: check **Start at login** in its menu, or
+run:
+
+```bash
+blueferry-tray --autostart on     # off, or status
+```
+
+This writes `~/.config/autostart/io.weirdware.BlueFerry.Tray.desktop`, the
+same file the desktop's own autostart settings show.
+
+The tray only follows a running background service; it never starts it.
+Without a BlueFerry setup the icon stays hidden. While the tray runs,
+`blueferry-qt` leaves out its own tray icon and quits when you close its
+window; the tray opens it again.
 
 ## Quickshell
 

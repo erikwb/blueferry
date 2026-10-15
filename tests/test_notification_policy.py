@@ -167,3 +167,18 @@ def test_saved_ancs_actions_choice_wins_over_the_environment(
     assert json.loads(path.read_text())["ancs_notification_actions"] is False
     with pytest.raises(ValueError, match="must be a boolean"):
         NotificationPolicyStore(path).set_ancs_actions("yes")  # type: ignore[arg-type]
+
+
+def test_following_iphone_removals_is_opt_in_and_saved(tmp_path) -> None:
+    path = tmp_path / "settings.json"
+    store = NotificationPolicyStore(path)
+    assert store.mirror_removals is False
+    assert store.set_mirror_removals(True) is True
+
+    assert NotificationPolicyStore(path).mirror_removals is True
+    assert json.loads(path.read_text())["mirror_iphone_removals"] is True
+    with pytest.raises(ValueError, match="must be a boolean"):
+        store.set_mirror_removals("yes")  # type: ignore[arg-type]
+    # Only a saved JSON true opts in.
+    path.write_text('{"mirror_iphone_removals": "true"}')
+    assert NotificationPolicyStore(path).mirror_removals is False

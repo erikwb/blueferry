@@ -442,3 +442,24 @@ def test_ancs_actions_default_to_disabled_in_the_sink_factory(monkeypatch):
     dispatcher.ancs_actions_reset()
 
     assert received["on_ancs_action"] is None
+
+
+def test_mirrored_removal_and_session_reset_reach_popup_sinks() -> None:
+    calls = []
+    good = SimpleNamespace(
+        name="popups",
+        close_removed_ancs_popup=lambda uid: calls.append(("close", uid)),
+        forget_ancs_popups=lambda: calls.append(("forget",)),
+    )
+
+    def broken(*_args):
+        raise RuntimeError("sink broke")
+
+    bad = SimpleNamespace(
+        name="bad", close_removed_ancs_popup=broken, forget_ancs_popups=broken,
+    )
+    dispatcher = EventDispatcher(object(), defer_mark_read=lambda _path: None)
+    dispatcher.sinks = [bad, SimpleNamespace(name="plain"), good]
+    dispatcher.ancs_mirror_removed(42)
+    dispatcher.ancs_session_reset()
+    assert calls == [("close", 42), ("forget",)]

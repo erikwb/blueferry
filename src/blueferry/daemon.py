@@ -59,6 +59,7 @@ from blueferry.calls.settings import CallsSettings
 from blueferry.commands import run_command
 from blueferry.confirmed_groups import ConfirmedGroupsStore
 from blueferry.connectivity import Connectivity
+from blueferry.contact_photo_settings import ContactPhotoSettings
 from blueferry.contact_photos import PhotoFiles
 from blueferry.contact_repository import ContactRepository
 from blueferry.contact_sync import ContactSync
@@ -88,6 +89,7 @@ from blueferry.obex.mns_watch import MnsWatch
 from blueferry.obex.sessions import SessionManager
 from blueferry.obex.worker import ObexWorker
 from blueferry.otp_context import OtpMetadata
+from blueferry.otp_settings import OtpSettings
 from blueferry.pair_setup import bond_status
 from blueferry.phone_audio_route import PhoneAudioRoute
 from blueferry.phone_battery import BatteryWarningSettings, PhoneBattery
@@ -174,23 +176,35 @@ class Daemon:
         # keys for the same database.
         self.storage = StorageSecurity(initialize=False)
         self.storage.require_preparation()
-        self.contacts = ContactsResolver(storage=self.storage)
-        # Opt-in avatars. Disabled means inert: nothing is parsed, served,
-        # or written, and photos kept by an earlier opt-in are erased.
+        # Opt-in avatars, saved in settings.json (local.env only seeds it).
+        # The cache, sync and storage preparation follow the live setting.
+        self.photo_settings = ContactPhotoSettings(log_overrides=True)
+        self.contacts = ContactsResolver(
+            storage=self.storage, photos=self._contact_photos_enabled,
+        )
+        # Keep cleanup ownership across opt-outs. Sweep only after claiming
+        # the bus name, so another launch cannot delete the live owner's files.
+        self._avatar_files = PhotoFiles(
+            photo_ref=self.contacts.photo_ref,
+            load_photo=self.contacts.load_photo,
+            sweep_orphans=False,
+        )
         self.photo_files: PhotoFiles | None = None
-        if config.CONTACT_PHOTOS:
-            self.photo_files = PhotoFiles(
-                photo_ref=self.contacts.photo_ref,
-                load_photo=self.contacts.load_photo,
-            )
+        self._photo_erase_pending = False
+        self._photo_erase_running = False
+        self._photo_erase_generation = 0
+        if self.photo_settings.enabled:
+            self.photo_files = self._avatar_files
         else:
-            self._erase_contact_photos()
+            self._photo_erase_pending = not self._erase_contact_photos()
         self.connectivity = Connectivity()
         self.notification_policy = NotificationPolicyStore()
         self.starred_threads = StarredThreadsStore(storage=self.storage)
         self.confirmed_groups = ConfirmedGroupsStore(storage=self.storage)
         self.group_routes = GroupRoutesStore(storage=self.storage)
         self.setup_verification = SetupVerification(config.IPHONE_MAC)
+        # The saved one-time code opt-in (local.env only seeds it).
+        self.otp_settings = OtpSettings(log_overrides=True)
         self.events = EventDispatcher(
             self.contacts,
             defer_mark_read=self._defer_message_read_path,
@@ -201,14 +215,15 @@ class Daemon:
             notification_open_target=self.notification_policy.open_target,
             storage=self.storage,
             on_incoming_message=lambda: self._verify_setup_task(MESSAGE_NOTIFICATIONS),
-            contact_photo=(
-                self.photo_files.path_for if self.photo_files is not None else None
-            ),
             perform_ancs_action=self._perform_ancs_action,
             ancs_actions_enabled=self._ancs_actions_active,
             on_call_action=self._notification_call_action,
+            # Always wired, so switching photos on needs no new sink; it
+            # returns no icon while photos are off.
+            contact_photo=self._contact_photo_path,
             resolve_otp_metadata=self._resolve_otp_metadata,
             plugin_action=self._plugin_popup_action,
+            otp_autocopy=lambda: self.otp_settings.enabled,
         )
         # Popups from plugins with the notify capability; watched once the
         # sinks exist. Inert while no such plugin is installed and enabled.
@@ -345,6 +360,7 @@ class Daemon:
             contacts=self.contacts,
             submit=lambda *args, **kwargs: self.obex_worker.submit(*args, **kwargs),
             on_refreshed=self._contacts_refreshed,
+            photos=self._contact_photos_enabled,
         )
         # Opt-in: until the user turns it on nothing is pulled, stored, or
         # scheduled, and no CallHistorySync exists.
@@ -501,6 +517,14 @@ class Daemon:
         self._apply_phone_audio_roles()
         self._emit_status()
         return self.calls.snapshot()
+
+    def _set_otp_autocopy(self, enabled: bool) -> dict:
+        """Save the one-time code opt-in and add or remove the sink now."""
+        selected = self.otp_settings.set(enabled)
+        self.events.apply_otp_autocopy()
+        log.info("one-time code auto-copy %s", "enabled" if selected else "disabled")
+        self._emit_status()
+        return {"otp_autocopy": selected}
 
     def _apply_phone_audio_roles(self) -> None:
         """Rewrite the WirePlumber fragment off the main loop.
@@ -732,6 +756,7 @@ class Daemon:
         # the control surface before any Bluetooth operation that can wait on
         # hardware or the phone.
         self._bus_name = claim_bus_name()
+        self._avatar_files.sweep_orphans()
         # Construction may overlap the previous daemon finishing recovery.
         # Only its successor may refresh or act on the persisted obligation.
         self.recovery.adapter.reload_journal()
@@ -752,11 +777,12 @@ class Daemon:
                 confirmed_groups=self.confirmed_groups,
                 group_routes=self.group_routes,
                 storage=self.storage,
-                prepare_storage=prepare_storage,
+                prepare_storage=lambda storage: prepare_storage(
+                    storage, photos=self._contact_photos_enabled,
+                ),
                 on_storage_prepared=self._apply_storage_preparation,
                 on_storage_changed=self._on_storage_changed,
                 set_proximity_lock=self._set_proximity_lock,
-                contact_photos=config.CONTACT_PHOTOS,
                 call_history=lambda: self.call_history,
                 set_call_history=self._set_call_history,
                 open_notification_click=self.events.open_notification_click,
@@ -770,6 +796,9 @@ class Daemon:
                 notification_log=self.notification_log,
                 notification_content=config.SHOW_NOTIFICATION_CONTENT,
                 features=FeatureSettings(),
+                contact_photos=self._contact_photos_enabled,
+                set_contact_photos=self._set_contact_photos,
+                set_otp_autocopy=self._set_otp_autocopy,
             ),
         )
         if self.notification_log is not None:
@@ -970,22 +999,114 @@ class Daemon:
                 self._dbus_service.retry_storage_unlock()
         except Exception:
             log.warning("could not schedule background storage retry", exc_info=True)
+        cleanup_pending = self._avatar_files.cleanup_pending
+        self._avatar_files.retry_cleanup()
+        if cleanup_pending != self._avatar_files.cleanup_pending:
+            self._emit_status()
+        self._queue_photo_erase()
+        if (
+            self.photo_settings.enabled
+            and not self._photo_erase_pending
+            and self.contact_sync.photo_refresh_pending
+        ):
+            self.contact_sync.refresh()
         return True
 
     def _initialize_storage(self) -> None:
         if self._dbus_service is not None:
             self._dbus_service.retry_storage_unlock(initialize=True)
 
-    def _erase_contact_photos(self) -> None:
+    def _contact_photos_enabled(self) -> bool:
+        return self.photo_settings.enabled
+
+    def _contact_photo_path(self, address: str | None) -> str | None:
+        photo_files = self.photo_files
+        return photo_files.path_for(address) if photo_files is not None else None
+
+    def _set_contact_photos(self, enabled: bool) -> dict:
+        """Save the contact-photo opt-in and apply it without a restart.
+
+        On: photos arrive with the next phonebook pull, which starts now.
+        Off: avatar files are deleted at once and stored photos are erased
+        on the OBEX worker, after any pull that is already running, so a
+        pull that started with photos on cannot leave them behind.
+        """
+        was_enabled = self.photo_settings.enabled
+        selected = self.photo_settings.set(enabled)
+        if selected and not was_enabled:
+            self.photo_files = self._avatar_files
+            log.info("contact photos enabled; they arrive with the next contact sync")
+            if not self._photo_erase_pending:
+                self.contact_sync.photos_changed()
+        elif not selected:
+            photo_files, self.photo_files = self.photo_files, None
+            if photo_files is not None:
+                photo_files.clear()
+            self._photo_erase_generation += 1
+            self._photo_erase_pending = True
+            self._queue_photo_erase()
+            log.info("contact photos disabled")
+        self._emit_status()
+        return self._contact_photo_status()
+
+    def _queue_photo_erase(self) -> None:
+        """Keep erasure owed across queue rejection, storage errors and toggles.
+
+        The existing storage retry tick retries failures. A newer opt-out
+        needs its own erasure after any intervening photo-enabled pull.
+        """
+        if not self._photo_erase_pending or self._photo_erase_running:
+            return
+        generation = self._photo_erase_generation
+        self._photo_erase_running = True
+
+        def completed(erased: bool) -> None:
+            self._photo_erase_running = False
+            if not erased:
+                return  # _erase_contact_photos logged the failure; retry later
+            if generation == self._photo_erase_generation:
+                self._photo_erase_pending = False
+            self._photos_erased()
+            if self._photo_erase_pending:
+                self._queue_photo_erase()
+            elif self.photo_settings.enabled:
+                # Opted back in while deletion was queued: fetch only after
+                # the old deletion can no longer erase newly downloaded data.
+                self.contact_sync.photos_changed()
+
+        def failed(error: Exception) -> None:
+            self._photo_erase_running = False
+            log.warning("contact photo erasure deferred: %s", type(error).__name__)
+
+        try:
+            self.obex_worker.submit(
+                self._erase_contact_photos, on_success=completed, on_error=failed,
+            )
+        except Exception as error:
+            failed(error)
+
+    def _photos_erased(self) -> None:
+        # Reload the cache without photo references and tell clients.
+        try:
+            self.contacts.refresh()
+        except Exception as error:
+            log.warning("could not reload contacts after erasing photos: %s",
+                        type(error).__name__)
+        self._emit_status()
+
+    def _erase_contact_photos(self) -> bool:
         try:
             if ContactRepository(self.storage).clear_photos():
                 log.info("erased contact photos retained while the option was enabled")
         except Exception as error:
             log.warning("could not erase retained contact photos: %s", type(error).__name__)
+            return False
+        return True
 
     def _clear_photo_files(self) -> None:
         if self.photo_files is not None:
             self.photo_files.clear()
+        self._avatar_files.retry_cleanup()
 
     def _retire_photo_files(self) -> None:
         # A refreshed cache must not reuse old files, but popups already
@@ -1101,6 +1222,8 @@ class Daemon:
                 notification_actions=self._ancs_actions_active,
                 on_notification_removed=self._ancs_notification_removed,
                 on_actions_reset=self._ancs_actions_reset,
+                on_removed=self._ancs_removed_on_iphone,
+                on_session_reset=self._ancs_session_reset,
             )
             # Publish before start(): its initial D-Bus sweep can dispatch
             # an owner change that must invalidate the in-progress scan.
@@ -1487,6 +1610,21 @@ class Daemon:
         if removed is not None:
             removed(notification_id)
 
+    def _ancs_removed_on_iphone(self, notification_id: int) -> None:
+        """Opt-in: close the popup of a notification removed on the iPhone."""
+        if not self.notification_policy.mirror_removals:
+            return
+        removed = getattr(self.events, "ancs_mirror_removed", None)
+        if removed is not None:
+            removed(notification_id)
+
+    def _ancs_session_reset(self) -> None:
+        # Always, even with the setting off: switching it on later must never
+        # match a UID of an ended session.
+        reset = getattr(self.events, "ancs_session_reset", None)
+        if reset is not None:
+            reset()
+
     def _ancs_actions_reset(self) -> None:
         """Close action popups whose UIDs died with the ANCS session."""
         reset = getattr(self.events, "ancs_actions_reset", None)
@@ -1618,7 +1756,9 @@ class Daemon:
                 self.notification_policy.contacts_only
             ),
             # Configuration only; codes themselves never cross the bus.
-            "otp_autocopy": config.OTP_AUTOCOPY,
+            "otp_autocopy": self.otp_settings.enabled,
+            # Older daemons report the values but have no runtime setters.
+            "saved_opt_ins": True,
             "storage_policy": self.storage.status.policy,
             "storage_state": self.storage.status.state,
             "storage_detail": self.storage.status.detail,
@@ -1630,11 +1770,17 @@ class Daemon:
         }
 
     def _contact_photo_status(self) -> dict[str, object]:
-        if not config.CONTACT_PHOTOS:
-            return {"contact_photos": False}
+        status: dict[str, object] = {
+            "contact_photos": self.photo_settings.enabled,
+            "contact_photo_cleanup_pending": (
+                self._photo_erase_pending or self._avatar_files.cleanup_pending
+            ),
+        }
+        if not self.photo_settings.enabled:
+            return status
         # Content-free counters: clients drop cached avatars on change.
         return {
-            "contact_photos": True,
+            **status,
             "contact_photo_revision": self.contacts.photo_revision,
             "contact_photo_count": self.contacts.photo_count(),
         }
@@ -1849,6 +1995,10 @@ class Daemon:
         main_loop.quit()
 
     def _cleanup_bluetooth_worker(self) -> None:
+        # Queued erasures may have been cancelled by shutdown. The worker is
+        # now past every in-flight pull, so the last cleanup cannot be undone.
+        if self._photo_erase_pending or not self.photo_settings.enabled:
+            self._erase_contact_photos()
         # A second daemon still runs stop() when claiming the name fails. It
         # must not replay or clear recovery state belonging to the live owner.
         if self._bus_name is not None:

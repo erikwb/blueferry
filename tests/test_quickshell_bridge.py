@@ -525,3 +525,92 @@ def test_status_carries_the_shared_sound_switch_wording() -> None:
     assert "phone_audio_view" not in QuickshellBridge(FakeClient()).dispatch(  # type: ignore[arg-type]
         "status", {},
     )
+
+
+def test_bridge_reduces_now_playing_to_booleans_and_verbatim_text() -> None:
+    snapshot = {
+        "enabled": True, "available": True,
+        "player": {"state": "playing"},
+        "track": {"title": "<b>Song</b>", "artist": "Band"},
+        "supported_commands": ["pause", "next"],
+    }
+    bridge = QuickshellBridge(SimpleNamespace(now_playing=lambda: snapshot))  # type: ignore[arg-type]
+
+    result = bridge.dispatch("now_playing", {})
+    assert result == {
+        "visible": True, "playing": True, "title": "<b>Song</b>", "artist": "Band",
+        "idle": False, "previous": False, "toggle": True, "next": True,
+    }
+    # No arrays reach QML, whatever the Qt version does with them.
+    assert not any(isinstance(value, list | tuple) for value in result.values())
+    assert json.loads(json.dumps(result)) == result
+
+
+@pytest.mark.parametrize("snapshot", [
+    {"enabled": False, "available": False, "detail": "disabled"},
+    {"enabled": True, "available": False, "detail": "waiting-for-iphone"},
+])
+def test_bridge_hides_now_playing_until_the_media_service_is_available(snapshot) -> None:
+    bridge = QuickshellBridge(SimpleNamespace(now_playing=lambda: snapshot))  # type: ignore[arg-type]
+
+    assert bridge.dispatch("now_playing", {}) == {
+        "visible": False, "playing": False, "title": "", "artist": "", "idle": False,
+        "previous": False, "toggle": False, "next": False,
+    }
+
+
+def test_bridge_marks_an_idle_player() -> None:
+    snapshot = {"enabled": True, "available": True, "player": {}, "track": {}}
+    bridge = QuickshellBridge(SimpleNamespace(now_playing=lambda: snapshot))  # type: ignore[arg-type]
+
+    assert bridge.dispatch("now_playing", {})["idle"] is True
+
+
+def test_bridge_sends_only_the_transport_media_commands() -> None:
+    sent: list[str] = []
+    bridge = QuickshellBridge(SimpleNamespace(send_media_command=sent.append))  # type: ignore[arg-type]
+
+    assert bridge.dispatch("media_command", {"command": "next"}) is None
+    for args, message in (
+        ({}, "command must be a string"),
+        ({"command": 1}, "command must be a string"),
+        ({"command": "volume-up"}, "unsupported media command"),
+        ({"command": "like"}, "unsupported media command"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            bridge.dispatch("media_command", args)
+    assert sent == ["next"]
+
+
+def test_bridge_saves_the_contact_photo_opt_in() -> None:
+    client = FakeClient()
+    client.set_contact_photos = lambda enabled: (  # type: ignore[attr-defined]
+        client.calls.append(("set_contact_photos", enabled)) or {"contact_photos": enabled}
+    )
+    bridge = QuickshellBridge(client)  # type: ignore[arg-type]
+
+    assert bridge.dispatch("set_contact_photos", {"enabled": True}) == {"contact_photos": True}
+    assert client.calls == [("set_contact_photos", True)]
+    try:
+        bridge.dispatch("set_contact_photos", {"enabled": "yes"})
+    except ValueError as error:
+        assert str(error) == "enabled must be a boolean"
+    else:
+        raise AssertionError("non-boolean preference was accepted")
+
+
+def test_bridge_saves_the_one_time_code_opt_in() -> None:
+    client = FakeClient()
+    client.set_otp_autocopy = lambda enabled: (  # type: ignore[attr-defined]
+        client.calls.append(("set_otp_autocopy", enabled)) or {"otp_autocopy": enabled}
+    )
+    bridge = QuickshellBridge(client)  # type: ignore[arg-type]
+
+    assert bridge.dispatch("set_otp_autocopy", {"enabled": True}) == {"otp_autocopy": True}
+    assert client.calls == [("set_otp_autocopy", True)]
+    try:
+        bridge.dispatch("set_otp_autocopy", {"enabled": "yes"})
+    except ValueError as error:
+        assert str(error) == "enabled must be a boolean"
+    else:
+        raise AssertionError("non-boolean preference was accepted")

@@ -26,6 +26,7 @@ jobs:
           ruff check .
           bandit -r src/blueferry -q
           mypy src/blueferry
+          python tools/lint_mainloop.py
       - name: Hermetic tests and coverage
         run: |
           dbus-run-session --config-file=tests/dbus-test.conf -- sh -ec '

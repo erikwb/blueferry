@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=BlueFerry Tray
+GenericName=iPhone Status
+Comment=iPhone status and unread messages in the system tray
+Exec=blueferry-tray
+Icon=io.weirdware.BlueFerry
+Terminal=false
+Categories=Network;Qt;KDE;
+Keywords=iPhone;Bluetooth;Tray;Messages;
+X-KDE-autostart-phase=2
+X-GNOME-Autostart-enabled=true
