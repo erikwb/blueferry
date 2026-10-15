@@ -621,8 +621,14 @@ class AncsClient:
                 "reconnected",
                 "iPhone LE bearer reconnected; rebuilding ANCS subscription",
             )
-            self._transport_blocked = False
-            self._cancel_transport_reset()
+        # Also after an unknown state: a reset can reach this client as
+        # False, unknown, True, and once the reset timer has expired nothing
+        # else clears the latch. On hardware (2026-10-15) ANCS then stayed
+        # unsubscribed on a working link until the next LE reset, minutes
+        # later; the debug-level bearer states were not logged, so the
+        # unknown step is inferred.
+        self._transport_blocked = False
+        self._cancel_transport_reset()
         if self._started:
             self._schedule_bearer_settle()
 

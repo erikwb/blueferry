@@ -2618,3 +2618,61 @@ def test_control_point_waits_for_the_ccc_reenable(monkeypatch) -> None:
     writes = [call for call in calls if call[0] == "write"]
     assert writes == [("write", CommandID.GetAppAttributes)]
     assert client._active_request.authorization_probe is True
+
+
+@pytest.mark.parametrize("between", [(False, None), (None,)])
+def test_blocked_transport_resubscribes_after_an_unknown_bearer_state(
+    monkeypatch, between,
+) -> None:
+    calls: list = []
+    scheduled: list = []
+
+    class _Characteristic:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        @staticmethod
+        def Get(_iface, name, **_kwargs):
+            return False
+
+        def StartNotify(self, **_kwargs) -> None:
+            calls.append(("start", self.name))
+
+        def WriteValue(self, _value, _options, **kwargs) -> None:
+            calls.append(("write", self.name))
+            kwargs["reply_handler"]()
+
+    bus = _CharacteristicBus({
+        "/device/ns": _Characteristic("ns"),
+        "/device/ds": _Characteristic("ds"),
+        "/device/cp": _Characteristic("cp"),
+    })
+    monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
+    monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
+    client = AncsClient(
+        "/device",
+        lambda _event: None,
+        previously_authorized=True,
+        on_transport_failure=lambda: None,
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer: None,
+    )
+    client._started = True
+    client._bearer_connected = True
+    client._bearer_ready = True
+    client._ns_path = "/device/ns"
+    client._ds_path = "/device/ds"
+    client._cp_path = "/device/cp"
+    client._mark_transport_failed()
+    # The reset timer fires (the LE reset itself happens elsewhere).
+    _fire(scheduled, client._request_transport_reset)
+    assert client._transport_blocked is True
+
+    for state in between:
+        client.observe_bearer_state(state)
+    client.observe_bearer_state(True)
+    _fire(scheduled, client._finish_bearer_settle)
+
+    assert client._transport_blocked is False
+    assert calls == [("start", "ns"), ("start", "ds"), ("write", "cp")]
+    assert client.subscribed is True
