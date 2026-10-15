@@ -311,6 +311,8 @@ class Daemon:
                 get_system_bus,
                 device_path,
                 lambda connected, interface: self.tether.observe_link(connected, interface),
+                schedule=GLib.timeout_add_seconds,
+                cancel=GLib.source_remove,
             ),
             classic_ready=lambda: classic_reachable(self.bearers, self.sessions),
             autoconnect_ready=lambda: (

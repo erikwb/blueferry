@@ -101,6 +101,11 @@ _MAX_INTERFACE_CHARS = 15  # IFNAMSIZ - 1
 UNKNOWN_INTERFACE_TRUST_SECONDS = 600
 # BNEP teardown can trail the stop request's reply by a moment.
 LINK_DOWN_GRACE_SECONDS = 3
+# A probe that got no usable answer says nothing about the link; ask again.
+# The delay doubles (5, 10, 20, 40 s) and then stays at 60 s for as long as
+# BlueZ keeps failing to answer: one cheap GetAll a minute, never a storm.
+PROBE_RETRY_SECONDS = 5
+PROBE_RETRY_CAP_SECONDS = 60
 
 
 SYS_CLASS_NET = "/sys/class/net"
@@ -189,6 +194,20 @@ _DBUS_MISSING_API_NAMES = frozenset({
     "org.freedesktop.DBus.Error.UnknownMethod",
     "org.freedesktop.DBus.Error.UnknownInterface",
 })
+# Answers to Properties.GetAll(Network1) that prove there is no PAN link:
+# the device has no Network1 (BlueZ answers GetAll for an interface the
+# object lacks with InvalidArgs "No such interface"), the device object is
+# gone, or bluetoothd is not on the bus. Counting a missing bluetoothd as
+# "no link" is deliberate: when it leaves the bus (a crash or a restart) the
+# adapter is reset and the BNEP link goes with it, and the daemon's BlueZ
+# restart handling probes again once it is back. Anything else (NoReply, a
+# timeout, a dropped bus connection, a denied read) only means the probe
+# failed.
+_LINK_ABSENT_NAMES = frozenset({
+    "org.freedesktop.DBus.Error.InvalidArgs",
+    *_DBUS_MISSING_API_NAMES,
+    *(_DBUS_MISSING_SERVICE_NAMES - {"org.freedesktop.DBus.Error.Disconnected"}),
+})
 
 
 def bluez_error_token(error: object) -> str:
@@ -271,19 +290,32 @@ def _safe_interface(value: object) -> str:
 
 
 class NetworkLinkWatch:
-    """Observe ``org.bluez.Network1`` on the phone, whoever connected it."""
+    """Observe ``org.bluez.Network1`` on the phone, whoever connected it.
+
+    A probe without a usable answer reports ``None`` (unknown). With a
+    scheduler it is also asked again with back-off, so a later answer settles
+    what the failed read could not, e.g. an automatic connect that waits for
+    the first report.
+    """
 
     def __init__(
         self,
         bus: Callable[[], AsyncBus],
         device_path: str,
         on_change: Callable[[bool | None, str], None],
+        *,
+        schedule: Schedule | None = None,
+        cancel: Cancel | None = None,
     ) -> None:
         self._bus = bus
         self._device_path = device_path
         self._on_change = on_change
+        self._schedule = schedule
+        self._cancel = cancel
         self._match: Any = None
         self._generation = 0
+        self._retry_id: int | None = None
+        self._retry_failures = 0
 
     def start(self) -> None:
         if self._match is None:
@@ -299,12 +331,14 @@ class NetworkLinkWatch:
 
     def probe(self) -> None:
         """Read the current link once; Network1 may be absent entirely."""
+        self._cancel_retry()
         self._generation += 1
         generation = self._generation
 
         def reply(properties: Mapping) -> None:
             if generation != self._generation:
                 return
+            self._retry_failures = 0
             self._on_change(
                 bool(properties.get("Connected", False)),
                 _safe_interface(properties.get("Interface", "")),
@@ -313,14 +347,17 @@ class NetworkLinkWatch:
         def failed(error: Exception) -> None:
             if generation != self._generation:
                 return
-            log.debug("could not read the phone's PAN link: %s", dbus_error_name(error))
+            name = dbus_error_name(error)
+            log.debug("could not read the phone's PAN link: %s", name)
             # A timeout or denied read says nothing about the existing link.
             # Only a missing device/interface/service establishes absence.
-            absent = dbus_error_name(error) in (
-                _DBUS_MISSING_API_NAMES
-                | (_DBUS_MISSING_SERVICE_NAMES - {"org.freedesktop.DBus.Error.Disconnected"})
-            )
-            self._on_change(False if absent else None, "")
+            if name in _LINK_ABSENT_NAMES:
+                self._retry_failures = 0
+                self._on_change(False, "")
+                return
+            self._on_change(None, "")
+            if generation == self._generation:
+                self._schedule_retry(generation)
 
         try:
             self._bus().call_async(
@@ -330,9 +367,37 @@ class NetworkLinkWatch:
         except Exception as error:
             failed(error)
 
+    def _schedule_retry(self, generation: int) -> None:
+        if self._schedule is None:
+            return
+        delay = min(
+            PROBE_RETRY_CAP_SECONDS,
+            PROBE_RETRY_SECONDS * (2 ** min(self._retry_failures, 10)),
+        )
+        self._retry_failures += 1
+
+        def retry() -> bool:
+            self._retry_id = None
+            if generation == self._generation:
+                self.probe()
+            return False
+
+        self._retry_id = self._schedule(delay, retry)
+
+    def _cancel_retry(self) -> None:
+        source_id, self._retry_id = self._retry_id, None
+        if source_id is None or self._cancel is None:
+            return
+        try:
+            self._cancel(source_id)
+        except Exception as error:
+            log.debug("could not remove PAN link re-check: %s", dbus_error_name(error))
+
     def _properties_changed(self, interface, changed, _invalidated) -> None:
         if str(interface) != NETWORK_IFACE or "Connected" not in changed:
             return
+        self._cancel_retry()
+        self._retry_failures = 0
         self._generation += 1  # a live signal supersedes an older probe
         self._on_change(
             bool(changed["Connected"]),
@@ -341,6 +406,8 @@ class NetworkLinkWatch:
 
     def stop(self) -> None:
         self._generation += 1
+        self._cancel_retry()
+        self._retry_failures = 0
         match, self._match = self._match, None
         if match is not None:
             try:
@@ -933,6 +1000,14 @@ class TetherController:
             # Keep the generation: a NetworkManager "user disconnected" report
             # for this same session may still arrive and must win.
             external = self._external
+            if external and self._error == GENERIC_ERROR:
+                # The stop whose result could not be confirmed (or which left
+                # the link up for a moment) has taken effect after all. That
+                # is what the user asked for, not a lost link.
+                self._external = False
+                log.info("Bluetooth tethering stopped")
+                self._set(OFF, error="", interface="")
+                return
             self._external = False
             log.warning("Bluetooth tethering link was lost")
             self._set(OFF, error=LINK_LOST, interface="")

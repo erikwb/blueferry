@@ -534,11 +534,147 @@ def test_link_watch_probes_and_follows_network1_properties() -> None:
     assert bus.removed == 1
 
 
-def test_link_watch_treats_a_missing_network1_as_down() -> None:
-    bus = LinkBus(error=_error("org.freedesktop.DBus.Error.UnknownInterface"))
-    seen = []
-    NetworkLinkWatch(lambda: bus, "/dev", lambda *a: seen.append(a)).start()
+def _watch(bus, seen, timers=None):
+    timers = timers or Timers()
+    return NetworkLinkWatch(
+        lambda: bus, "/dev", lambda *a: seen.append(a),
+        schedule=timers.schedule, cancel=timers.cancel,
+    ), timers
+
+
+@pytest.mark.parametrize("name", [
+    # BlueZ answers GetAll for an interface the device lacks with InvalidArgs.
+    "org.freedesktop.DBus.Error.InvalidArgs",
+    "org.freedesktop.DBus.Error.UnknownInterface",
+    "org.freedesktop.DBus.Error.UnknownMethod",
+    "org.freedesktop.DBus.Error.UnknownObject",
+    "org.freedesktop.DBus.Error.ServiceUnknown",
+    "org.freedesktop.DBus.Error.NameHasNoOwner",
+])
+def test_link_watch_treats_a_missing_network1_as_down(name) -> None:
+    bus = LinkBus(error=_error(name))
+    seen: list = []
+    watch, timers = _watch(bus, seen)
+    watch.start()
     assert seen == [(False, "")]
+    assert timers.pending == {}
+
+
+def test_link_watch_without_a_scheduler_reports_unknown_once() -> None:
+    bus = LinkBus(error=_error("org.freedesktop.DBus.Error.NoReply"))
+    seen: list = []
+    NetworkLinkWatch(lambda: bus, "/dev", lambda *a: seen.append(a)).start()
+    assert seen == [(None, "")]
+    assert len(bus.calls) == 1
+
+
+@pytest.mark.parametrize("error", [
+    _error("org.freedesktop.DBus.Error.NoReply"),
+    _error("org.freedesktop.DBus.Error.Timeout"),
+    _error("org.freedesktop.DBus.Error.Disconnected"),
+    _error("org.bluez.Error.Failed"),
+    RuntimeError("bus not available"),
+])
+def test_link_watch_asks_again_when_a_probe_gets_no_answer(error) -> None:
+    bus = LinkBus(error=error)
+    seen: list = []
+    watch, timers = _watch(bus, seen)
+    watch.start()
+
+    assert seen == [(None, "")]  # unknown, not "down"
+    assert timers.delays() == [tether.PROBE_RETRY_SECONDS]
+    timers.fire()
+    assert len(bus.calls) == 2
+    assert timers.delays() == [2 * tether.PROBE_RETRY_SECONDS]
+
+    bus.error = None
+    bus.reply = {"Connected": True, "Interface": "bnep0"}
+    timers.fire()
+    assert seen[-1] == (True, "bnep0")
+    assert timers.pending == {}
+
+
+def test_link_watch_retry_backs_off_to_a_cap_and_stops_with_the_watch() -> None:
+    bus = LinkBus(error=_error("org.freedesktop.DBus.Error.NoReply"))
+    seen: list = []
+    watch, timers = _watch(bus, seen)
+    watch.start()
+    for _ in range(8):
+        timers.fire()
+    assert timers.delays() == [tether.PROBE_RETRY_CAP_SECONDS]
+
+    watch.stop()
+    assert timers.pending == {}
+    assert {report for report in seen} == {(None, "")}
+
+
+def test_link_watch_signal_supersedes_a_pending_retry() -> None:
+    bus = LinkBus(error=_error("org.freedesktop.DBus.Error.NoReply"))
+    seen: list = []
+    watch, timers = _watch(bus, seen)
+    watch.start()
+    handler, _kwargs = bus.receivers[0]
+
+    handler("org.bluez.Network1", {"Connected": True, "Interface": "bnep0"}, [])
+
+    assert seen == [(None, ""), (True, "bnep0")]
+    assert timers.pending == {}
+
+
+def _watched_controller(bus, **kwargs):
+    holder: dict = {}
+    timers = Timers()
+    watch = NetworkLinkWatch(
+        lambda: bus, "/dev",
+        lambda connected, interface: holder["value"].observe_link(connected, interface),
+        schedule=timers.schedule, cancel=timers.cancel,
+    )
+    chooser = Chooser()
+    value = TetherController(
+        chooser, link_watch=watch,
+        schedule=timers.schedule, cancel=timers.cancel, clock=Clock(),
+        interface_exists=lambda name: name == "bnep0", **kwargs,
+    )
+    holder["value"] = value
+    return value, timers, chooser
+
+
+def test_enabling_autoconnect_waits_out_an_unanswered_first_probe() -> None:
+    bus = LinkBus(error=_error("org.freedesktop.DBus.Error.NoReply"))
+    value, timers, chooser = _watched_controller(bus, enabled=False)
+    value.start()
+    value.configure(True, True)
+
+    # The first report is unknown: never dial a link that may already be up.
+    assert chooser.calls == 0
+    bus.error = None
+    bus.reply = {"Connected": False, "Interface": ""}
+    timers.fire(lambda seconds: seconds == tether.PROBE_RETRY_SECONDS)
+    # The re-check settles it, and the deferred automatic connect runs.
+    assert chooser.calls == 1
+    assert value.state == CONNECTING
+
+
+def test_a_stop_confirmed_after_an_unanswered_probe_ends_without_an_error() -> None:
+    bus = LinkBus(reply={"Connected": True, "Interface": "bnep0"})
+    value, timers, chooser = _watched_controller(bus, enabled=True)
+    value.start()
+    assert value.snapshot()["external"] is True
+
+    value.disconnect()
+    bus.reply = None
+    bus.error = _error("org.freedesktop.DBus.Error.NoReply")
+    chooser.backend.disconnects[0][0]()
+    assert value.snapshot()["error"] == tether.GENERIC_ERROR  # could not confirm
+
+    bus.error = None
+    bus.reply = {"Connected": False}
+    timers.fire(lambda seconds: seconds == tether.PROBE_RETRY_SECONDS)
+    snapshot = value.snapshot()
+    # The stop the user asked for took effect: off, and not "link lost".
+    assert (snapshot["state"], snapshot["error"]) == (OFF, "")
+    assert chooser.backend.connects == []
+    assert timers.pending == {}  # no automatic retry after the user's stop
 
 
 # ---- adopted links, deliberate deactivation, recovery gating ----------------
