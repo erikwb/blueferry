@@ -764,7 +764,9 @@ def settings_window(qml_engine):
             property var notifications: []
             property var notificationsInfo: ({})
             property var callHistoryRows: ({})
+            property var photos: ({})
             property var pluginSettings: ({})
+            property var pluginSurfaces: ({})
             property var features: ({})
             property var doctor: ({})
             property var compatibility: ({})
@@ -818,6 +820,9 @@ def settings_window(qml_engine):
             function refreshNotifications() { record("refreshNotifications", []); }
             function setThreadStarred(key, starred) { record("setThreadStarred", [key, starred]); }
             function markThreadRead(key) { record("markThreadRead", [key]); }
+            function watchPhotos(watched) { record("watchPhotos", [watched]); }
+            function refreshPhotos() { record("refreshPhotos", []); }
+            function openPhoto(photoId) { record("openPhoto", [photoId]); }
             function loadPlugins() { record("loadPlugins", []); }
             function loadPluginStore(refresh) { record("loadPluginStore", [refresh]); }
             function setPluginEnabled(id, enabled) { record("setPluginEnabled", [id, enabled]); }
@@ -3938,6 +3943,44 @@ def _delegate_value(engine, window, list_name, child, expression):
         const item = find(delegate)
         return {expression}
     }})()""")
+
+
+def test_photos_tab_loads_while_shown_and_hints_without_a_plugin(qml_engine, settings_window):
+    window, _bridge = settings_window
+    _evaluate(qml_engine, "testWindow.currentTab = testWindow.photosTab")
+    QGuiApplication.processEvents()
+    assert _evaluate(qml_engine, "testBridge.calls") == [
+        {"method": "watchPhotos", "args": [True]},
+    ]
+    _evaluate(qml_engine, """testBridge.photos = {
+        present: false, ready: false, loaded: true,
+        hint: "Set up Immich photos with: blueferry plugins immich setup --url https://x"
+    }""")
+    QGuiApplication.processEvents()
+    placeholder = _settings_object(window, "photosPlaceholder")
+    assert placeholder.property("visible") is True
+    assert placeholder.property("enabled") is False
+    assert "plugins immich setup" in placeholder.property("explanation")
+    assert _settings_object(window, "photosGrid").property("visible") is False
+
+    _evaluate(qml_engine, """testBridge.photos = {
+        present: true, ready: true, loaded: true, hint: "2 recent items",
+        items: [{id: "a", label: "<b>2026</b>", video: false, thumbnail: "", original: ""},
+                {id: "b", label: "x", video: true, thumbnail: "", original: "file:///tmp/b.mov"}]
+    }""")
+    QGuiApplication.processEvents()
+    assert placeholder.property("visible") is False
+    assert _settings_object(window, "photosGrid").property("count") == 2
+    source = (ROOT / "src/blueferry/qt/qml/PhotosTab.qml").read_text()
+    assert source.count("Controls.Label {") == source.count("textFormat: Text.PlainText")
+    _click_control(window, _settings_object(window, "photosRefresh"))
+    assert _evaluate(qml_engine, "testBridge.calls")[-1] == {"method": "refreshPhotos", "args": []}
+
+    _evaluate(qml_engine, "testWindow.currentTab = testWindow.messagesTab")
+    QGuiApplication.processEvents()
+    assert _evaluate(qml_engine, "testBridge.calls")[-1] == {
+        "method": "watchPhotos", "args": [False],
+    }
 
 
 def test_settings_plugins_list_store_form_and_confirmation(qml_engine, settings_window):

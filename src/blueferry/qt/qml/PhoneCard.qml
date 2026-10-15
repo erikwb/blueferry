@@ -164,5 +164,12 @@ Controls.ScrollView {
                 checked = Qt.binding(function() { return card.status.proximity_lock_enabled === true })
             }
         }
+
+        Kirigami.Separator { Layout.fillWidth: true; visible: pluginCards.visible }
+
+        PluginCardSection {
+            id: pluginCards
+            bridge: card.bridge
+        }
     }
 }

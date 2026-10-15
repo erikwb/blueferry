@@ -1633,3 +1633,54 @@ class _PhoneLinkBackend:
             {"id": 1, "app_id": "com.example.chat", "app_name": "",
              "time": "2026-10-06T10:00:00+00:00"},
         ]}
+
+
+def test_photo_load_failure_stops_the_spinner(monkeypatch):
+    controller = BridgeController(
+        backend=_Backend(), setup=object(), subscribe=False, autostart=False,
+    )
+    monkeypatch.setattr(
+        controller, "_run",
+        lambda _operation, _on_done=None, on_failed=None, **_kwargs: on_failed("boom"),
+    )
+    controller.watchPhotos(True)
+    assert controller.photos["loaded"] is True and controller.photos["hint"] == "boom"
+
+
+def test_photos_load_only_while_watched_and_open_the_original(monkeypatch, tmp_path):
+    from blueferry import photos_view
+    from blueferry.plugin_api.client import Photo
+    from blueferry.plugin_api.testing import manifest
+
+    plugin = manifest()
+    thumb = tmp_path / "t.webp"
+    original = tmp_path / "IMG_1.HEIC"
+    snapshot = photos_view.PhotosSnapshot(True, True, "1 recent items", [
+        Photo("a", "2026-10-06T16:21:00Z", "video", thumb),
+    ])
+    monkeypatch.setattr(photos_view, "find_plugin", lambda: plugin)
+    monkeypatch.setattr(photos_view, "load_recent", lambda manifest: snapshot)
+    fetched = []
+    monkeypatch.setattr(photos_view, "fetch_original",
+                        lambda manifest, photo_id: fetched.append(photo_id) or original)
+    opened = []
+    from PySide6.QtGui import QDesktopServices
+    monkeypatch.setattr(QDesktopServices, "openUrl", lambda url: opened.append(url.toLocalFile()))
+    controller = BridgeController(
+        backend=_Backend(), setup=object(), subscribe=False, autostart=False,
+    )
+    monkeypatch.setattr(
+        controller, "_run",
+        lambda operation, on_done=None, *_args, **_kwargs: on_done(operation()),
+    )
+    controller.refreshPhotos()
+    assert controller.photos["loaded"] is False  # not watched: nothing loaded
+    controller.watchPhotos(True)
+    item = controller.photos["items"][0]
+    assert item["video"] is True and item["thumbnail"].endswith("/t.webp")
+    assert item["original"] == "" and controller.photos["ready"] is True
+    controller.openPhoto("a")
+    assert fetched == ["a"] and opened == [str(original)]
+    assert controller.photos["items"][0]["original"].endswith("/IMG_1.HEIC")
+    controller.watchPhotos(False)
+    assert controller.photos["items"] == []

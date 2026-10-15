@@ -17,7 +17,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtDBus import QDBusConnection
 
-from blueferry import __version__, phone_audio_view, phone_overview
+from blueferry import __version__, phone_audio_view, phone_overview, photos_view
 from blueferry.backend_lifecycle import ensure_backend_current, restart_backend
 from blueferry.bluetooth_devices import iphone_candidates
 from blueferry.client import BackendClient
@@ -31,10 +31,12 @@ from blueferry.doctor_report import DoctorReport, run_doctor
 from blueferry.i18n import _
 from blueferry.models import BackendStatus, CallsSnapshot
 from blueferry.onboarding import OnboardingState, effective_compatibility
+from blueferry.plugin_api.client import Photo
 from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH
 from blueferry.qt import phone_link
 from blueferry.qt.avatars import avatar_url
 from blueferry.qt.plugin_settings import PluginSettings
+from blueferry.qt.plugin_surfaces import PluginSurfaces
 from blueferry.qt.tasks import Task
 from blueferry.quirks_report import issue_report, issue_url
 from blueferry.service_manager import bluetooth_restart_command
@@ -79,7 +81,9 @@ class BridgeController(QObject):
     callHistoryChanged = Signal()
     nowPlayingChanged = Signal()
     notificationsChanged = Signal()
+    photosChanged = Signal()
     pluginSettingsChanged = Signal()
+    pluginSurfacesChanged = Signal()
     phoneIdentityChanged = Signal()
     featuresChanged = Signal()
     doctorChanged = Signal()
@@ -94,6 +98,7 @@ class BridgeController(QObject):
         autostart: bool = True,
         parent: QObject | None = None,
         plugin_settings: PluginSettings | None = None,
+        plugin_surfaces: PluginSurfaces | None = None,
         doctor: Callable[[], DoctorReport] = run_doctor,
     ) -> None:
         super().__init__(parent)
@@ -194,10 +199,23 @@ class BridgeController(QObject):
         self._notifications_timer.timeout.connect(self.refreshNotifications)
         self.devicesChanged.connect(self.phoneIdentityChanged)
         self.configuredChanged.connect(self.phoneIdentityChanged)
+        # The Photos tab (a plugin with the photos capability).
+        self._photos_watched = False
+        self._photos_plugin: object = None
+        self._photos: dict = {"present": False, "ready": False, "loaded": False,
+                              "hint": "", "items": []}
         # Plugin management runs git, pip and plugin calls on its own queue.
         self._plugin_settings = plugin_settings or PluginSettings(parent=self)
         self._plugin_settings.changed.connect(self.pluginSettingsChanged)
         self._bus = QDBusConnection.sessionBus() if subscribe else None
+        # "From Plugins" and "Send to…", on their own pool.
+        self._plugin_surfaces = plugin_surfaces or PluginSurfaces(
+            bus=self._bus, parent=self,
+        )
+        self._plugin_surfaces.changed.connect(self.pluginSurfacesChanged)
+        # Enabling, installing or removing a plugin changes the card.
+        self._plugin_set: tuple = ()
+        self._plugin_settings.changed.connect(self._plugin_set_changed)
         if subscribe:
             self._subscribe()
         if autostart:
@@ -499,6 +517,123 @@ class BridgeController(QObject):
     @Slot()
     def clearPluginMessage(self) -> None:
         self._plugin_settings.clear_message()
+
+    def _plugin_set_changed(self) -> None:
+        current = tuple(
+            (row.get("id"), row.get("enabled"))
+            for row in self._plugin_settings.state().get("plugins", [])
+        )
+        if current != self._plugin_set:
+            known = bool(self._plugin_set)
+            self._plugin_set = current
+            if known:
+                self._plugin_surfaces.schedule_reload()
+
+    @Property("QVariantMap", notify=pluginSurfacesChanged)
+    def pluginSurfaces(self):
+        """cards (per plugin: name, ok, hint, items with actions), busy,
+        message, targets for "Send to…"; everything plain text."""
+        return self._plugin_surfaces.state()
+
+    @Slot()
+    def refreshPluginCards(self) -> None:
+        self._plugin_surfaces.reload()
+
+    @Slot(str, str, str)
+    def invokePluginAction(self, plugin_id: str, item_id: str, action_id: str) -> None:
+        self._plugin_surfaces.invoke(str(plugin_id), str(item_id), str(action_id))
+
+    @Slot()
+    def clearPluginCardMessage(self) -> None:
+        self._plugin_surfaces.clear_message()
+
+    @Slot()
+    def loadShareTargets(self) -> None:
+        self._plugin_surfaces.load_targets()
+
+    @Slot(str, "QVariantList")
+    def sendToTarget(self, key: str, urls: list) -> None:
+        self._plugin_surfaces.send(str(key), list(urls or []))
+
+    @Slot(str, str, str, "QVariantList")
+    def sendFromPluginCard(self, plugin_id: str, target_id: str, label: str, urls: list) -> None:
+        """A card action with send_to, or files dropped on a card item."""
+        self._plugin_surfaces.send_from_card(
+            str(plugin_id), str(target_id), str(label), list(urls or []))
+
+    @Property("QVariantMap", notify=photosChanged)
+    def photos(self):
+        """present, ready, loaded, hint and items (id, label, video, thumbnail, original)."""
+        return self._photos
+
+    @Slot(bool)
+    def watchPhotos(self, watched: bool) -> None:
+        """The Photos tab became visible (load) or hidden (forget the list)."""
+        self._photos_watched = bool(watched)
+        if self._photos_watched:
+            self.refreshPhotos()
+            return
+        if self._photos["items"]:
+            self._photos = {**self._photos, "items": []}
+            self.photosChanged.emit()
+
+    @Slot()
+    def refreshPhotos(self) -> None:
+        if not self._photos_watched:
+            return
+
+        def load():
+            manifest = photos_view.find_plugin()
+            return manifest, photos_view.load_recent(manifest)
+
+        def completed(value: object) -> None:
+            manifest, snapshot = value  # type: ignore[misc]
+            self._photos_plugin = manifest
+            if not self._photos_watched:
+                return
+            self._photos = {
+                "present": snapshot.present,
+                "ready": snapshot.ready,
+                "loaded": True,
+                "hint": snapshot.hint,
+                "items": [_photo_item(photo) for photo in snapshot.photos],
+            }
+            self.photosChanged.emit()
+
+        def failed(message: str) -> None:
+            # Never leave the tab spinning: show why instead.
+            self._photos = {
+                "present": self._photos_plugin is not None, "ready": False, "loaded": True,
+                "hint": message or _("Photos unavailable"), "items": [],
+            }
+            self.photosChanged.emit()
+
+        self._run(load, completed, failed, busy=False)
+
+    @Slot(str)
+    def openPhoto(self, photo_id: str) -> None:
+        """Download the original (plugin) and open it in the default viewer."""
+        manifest = self._photos_plugin
+        if manifest is None:
+            return
+
+        def completed(value: object) -> None:
+            from PySide6.QtCore import QUrl
+            from PySide6.QtGui import QDesktopServices
+
+            url = QUrl.fromLocalFile(str(value))
+            items = [
+                {**item, "original": url.toString()} if item["id"] == photo_id else item
+                for item in self._photos["items"]
+            ]
+            self._photos = {**self._photos, "items": items}
+            self.photosChanged.emit()
+            QDesktopServices.openUrl(url)
+
+        self._run(
+            lambda: photos_view.fetch_original(manifest, str(photo_id)),  # type: ignore[arg-type]
+            completed,
+        )
 
     @Property("QVariantList", notify=notificationsChanged)
     def notifications(self):
@@ -1705,3 +1840,19 @@ class BridgeController(QObject):
 
         adapter = self._configuration.adapter.strip() or None
         self._run(lambda: self._setup.forget(mac, adapter=adapter), completed)
+
+
+def _photo_item(photo: Photo) -> dict[str, object]:
+    """One grid cell; paths become file URLs, text stays plain."""
+    from PySide6.QtCore import QUrl
+
+    def url(path: object) -> str:
+        return QUrl.fromLocalFile(str(path)).toString() if path else ""
+
+    return {
+        "id": photo.id,
+        "label": photos_view.label(photo),
+        "video": photo.type == "video",
+        "thumbnail": url(photo.thumbnail),
+        "original": url(photo.original),
+    }

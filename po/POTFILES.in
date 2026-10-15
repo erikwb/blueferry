@@ -44,3 +44,6 @@ src/blueferry/qt/plugin_settings.py
 src/blueferry/qt/qml/PluginConfigForm.qml
 src/blueferry/qt/qml/PluginStoreCard.qml
 src/blueferry/qt/qml/SettingsPlugins.qml
+src/blueferry/qt/plugin_surfaces.py
+src/blueferry/qt/qml/PhotosTab.qml
+src/blueferry/qt/qml/PluginCardSection.qml
