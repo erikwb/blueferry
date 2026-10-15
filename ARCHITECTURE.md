@@ -61,6 +61,9 @@ All paths are relative to `src/blueferry/` unless noted.
 | `wireplumber_policy.py` | Manages one WirePlumber fragment that keeps iPhone audio on the phone (keeps the hands-free roles when calls are enabled). |
 | `proximity_lock.py` | Opt-in lock-only desktop lock after the iPhone's bearers stay down for a grace period; lock dispatch via ScreenSaver, then logind. |
 | `media.py` | Opt-in now-playing projection, media command policy, coalesced change listeners, and the persisted opt-in (`MediaControlSettings`). |
+| `phone_audio_route.py` | Content-free iPhone A2DP route (`pc`/`phone`/`unavailable`) from BlueZ `MediaTransport1`/`Device1` over GDBus, switched through `ConnectProfile`/`DisconnectProfile`; also where the sound plays (`phone_audio_playing`) from `MediaTransport1.State` and the AMS playback state, debounced. |
+| `gio_dbus.py` | `GioBus`: a two-method seam (typed asynchronous `call`, `subscribe`) over a `Gio.DBusConnection`, with dbus-python-compatible error names; used by `phone_audio_route.py`. |
+| `phone_audio_view.py` | Toolkit-free wording of the PC/iPhone sound switch for every client. |
 | `mpris.py` | Optional MPRIS2 player (`org.mpris.MediaPlayer2.blueferry_iphone`) over `media.py`, exported on its own private session-bus connection so the MPRIS name never addresses the BlueFerry object. |
 
 ### Bluetooth transports and supervision
@@ -174,6 +177,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `cli_proximity.py` | `proximity-lock` status, dry run, enable, and disable. |
 | `cli_notifications.py` | `notifications open-map` rule editing. |
 | `cli_media.py` | `blueferry media` now-playing status, commands, and `enable`/`disable`. |
+| `cli_audio.py` | `blueferry audio [status\|pc\|phone]`. |
 | `cli_notification_actions.py` | `notification-actions` status, enable, and disable for the opt-in iPhone action buttons. |
 | `cli_calls.py` | Optional `blueferry calls` commands over `Calls1` and `blueferry phone-status` (battery, signal, network from `GetStatus`). |
 | `cli_otp.py` | `blueferry otp status`, `enable`, `disable` and `check` for one-time code auto-copy (`otp-status` and `otp-check` stay as aliases). |
