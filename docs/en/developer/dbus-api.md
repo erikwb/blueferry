@@ -86,7 +86,7 @@ package to restart an outdated backend after upgrades.
 | --- | --- |
 | `GetStatus` | → `s json` |
 | `IsHealthy` | → `b healthy` |
-| `ReconnectPhone` | → `s result`: `started`, `in-progress`, `connected`, or `bluez-unresponsive`/`bluez-kernel` while bluetoothd does not answer D-Bus (`GetStatus`: `bluez_unresponsive`, `bluez_unresponsive_reason`). Clears the Classic reconnect backoff and pages the iPhone once; `GetStatus` reports the outcome in `phone_reconnect_state` (`connected`, `connecting`, `waiting`, `unreachable`), `phone_reconnect_paused` and `phone_reconnect_next_in_sec`. Own rate bucket (6 per minute) |
+| `ReconnectPhone` | → `s result`: `started`, `in-progress`, `connected`, `profile-reset` (the link was up but a profile was stuck, so the device was disconnected and connected again; `GetStatus`: `profile_reset_*`), or `bluez-unresponsive`/`bluez-kernel` while bluetoothd does not answer D-Bus (`GetStatus`: `bluez_unresponsive`, `bluez_unresponsive_reason`). Clears the Classic reconnect backoff and pages the iPhone once; `GetStatus` reports the outcome in `phone_reconnect_state` (`connected`, `connecting`, `waiting`, `unreachable`), `phone_reconnect_paused` and `phone_reconnect_next_in_sec`. Own rate bucket (6 per minute) |
 | `GetNotificationPolicy` / `SetNotificationPolicy` | `s policy`: `messages`, `all`, or `none` |
 | `GetContactsOnlyNotifications` / `SetContactsOnlyNotifications` | `b enabled` |
 | `GetAncsNotificationActions` / `SetAncsNotificationActions` | `b enabled` (saved opt-in for iPhone action buttons) |

@@ -86,6 +86,7 @@ from blueferry.obex.worker import ObexWorker
 from blueferry.otp_context import OtpMetadata
 from blueferry.pair_setup import bond_status
 from blueferry.phone_battery import BatteryWarningSettings, PhoneBattery
+from blueferry.profile_reset import ProfileResetController, auto_reset_enabled
 from blueferry.profile_supervisor import ProfileSessions, ProfileSupervisor
 from blueferry.protocol import BUS_NAME
 from blueferry.proximity_lock import (
@@ -283,6 +284,18 @@ class Daemon:
         # StatusChanged into one per main-loop iteration.
         self._status_emit_pending = False
         self._idle_add: Callable[..., int] = GLib.idle_add
+        # Heal HFP bring-ups that bluetoothd keeps stuck with one device
+        # reset, through the bearer supervisor so it never overlaps a
+        # reconnect. Inert until a symptom is reported.
+        self.profile_reset = ProfileResetController(
+            enabled=auto_reset_enabled(),
+            reset=self.bearers.reset_profiles,
+            peer_connected=lambda: self.bearers.bredr_connected,
+            bluez_blocked=lambda: self.bluez_health.unresponsive,
+            call_active=lambda: self.calls.in_call,
+            recovering=lambda: self.recovery.active,
+            on_changed=self._emit_status_soon,
+        )
         # Optional HFP calls through oFono. Inert unless explicitly enabled;
         # construction performs no I/O. oFono is only asked to page the phone
         # (Modem.Powered) while the Classic bearer is up.
@@ -297,6 +310,8 @@ class Daemon:
             phone_reachable=lambda: self.bearers.bredr_connected,
             hfp_conflict=self._bluez_hfp_conflict,
             on_phone_status=lambda _status: self._phone_status_changed(),
+            on_powered_failed=self.profile_reset.hfp_powered_failed,
+            on_powered=self.profile_reset.hfp_powered,
         )
         # The phone's battery over LE (GATT Battery Service or BlueZ's
         # Battery1), independent of calls and HFP. Construction does no I/O.
@@ -446,6 +461,11 @@ class Daemon:
 
     def _reconnect_phone(self) -> str:
         result = self.bearers.reconnect_now()
+        if result == "connected" and self.profile_reset.suggested:
+            # The link is up but a profile is stuck: "Reconnect" then means
+            # the same device reset the automatic path would do.
+            if self.profile_reset.manual_reset() == "started":
+                result = "profile-reset"
         if result == "bluez-unresponsive" and (
             self.bluez_health.snapshot()["bluez_unresponsive_reason"] == "kernel"
         ):
@@ -474,6 +494,8 @@ class Daemon:
         }
 
     def _bearer_status_changed(self) -> None:
+        if getattr(self.bearers, "bredr_state", None) is False:
+            self.profile_reset.peer_lost()
         self.proximity.bearer_changed()
         self.calls.poke()
         le_connected = bool(getattr(self.bearers, "le_connected", False))
@@ -1579,6 +1601,7 @@ class Daemon:
             "notification_content_shown": config.SHOW_NOTIFICATION_CONTENT,
             **bearers,
             **self._reconnect_status(),
+            **self.profile_reset.snapshot(),
             **self.bluez_health.snapshot(),
             # Without an LE bearer state, an ANCS round trip is the only
             # proof that LE is up.

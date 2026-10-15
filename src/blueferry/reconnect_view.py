@@ -19,6 +19,17 @@ BLUEZ_UNRESPONSIVE_TEXT = _(
     "The system Bluetooth service is not responding. If this persists, restart the computer."
 )
 UNSUPPORTED_TEXT = _("The running BlueFerry service cannot reconnect on request.")
+PROFILE_RESET_TEXT = _("Resetting the iPhone's Bluetooth connection…")
+# profile_reset reason tokens (GetStatus profile_reset_suggested/_last).
+_PROFILE_REASONS = {
+    "hfp_powered_timeout": _("Call audio (HFP) is stuck."),
+    "manual": _("Reset on request."),
+}
+
+
+def profile_reason_text(reason: object) -> str:
+    """Text for a content-free profile_reset reason token ("" when unknown)."""
+    return _PROFILE_REASONS.get(reason, "") if isinstance(reason, str) else ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +60,12 @@ def reconnect_view(status: Mapping[str, Any] | None) -> ReconnectView:
     if status.get("bluez_unresponsive") is True:
         return ReconnectView(True, True, bluez_text(status), attention=True)
     if state == "connected":
+        stuck = profile_reason_text(status.get("profile_reset_suggested"))
+        if stuck:
+            # Connected, but a profile hangs: Reconnect resets the device.
+            return ReconnectView(True, True, stuck + " " + _(
+                "Reconnect resets the iPhone's Bluetooth connection."
+            ), attention=True)
         return ReconnectView(True, False, CONNECTED_TEXT)
     if state == "connecting":
         return ReconnectView(True, False, STARTED_TEXT)
@@ -86,6 +103,7 @@ def result_text(result: str) -> str:
     """User-facing text for a ReconnectPhone() reply."""
     return {
         "started": STARTED_TEXT,
+        "profile-reset": PROFILE_RESET_TEXT,
         "in-progress": IN_PROGRESS_TEXT,
         "connected": CONNECTED_TEXT,
         "unreachable": UNREACHABLE_TEXT,
