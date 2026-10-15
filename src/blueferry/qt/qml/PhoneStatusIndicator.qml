@@ -4,12 +4,15 @@ import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
 
 // iPhone battery (over LE, or HFP steps) and, with calls on, signal and
-// network. Main.qml only loads this when
-// GetStatus reports at least one value; it performs no I/O itself.
+// network. PhoneCard only loads this when GetStatus reports at least one
+// value; it performs no I/O itself.
 RowLayout {
     id: indicator
     required property var status
     readonly property var batteryLevel: indicator.validPercent(indicator.status.phone_battery_level)
+    // HFP reports 20 % steps; the LE sources are exact.
+    readonly property bool batteryExact: indicator.batteryLevel !== null
+        && indicator.status.phone_battery_source !== "hfp"
     readonly property var signalStrength: indicator.validPercent(indicator.status.phone_signal_strength)
     readonly property string networkName: typeof indicator.status.phone_network_name === "string"
         ? indicator.status.phone_network_name : ""
@@ -74,6 +77,19 @@ RowLayout {
         implicitWidth: Kirigami.Units.iconSizes.small
         implicitHeight: implicitWidth
     }
+
+    Controls.Label {
+        objectName: "phoneNetworkLabel"
+        Layout.fillWidth: true
+        visible: indicator.networkName !== ""
+        text: indicator.roaming
+            ? qsTr("%1 (roaming)").arg(indicator.networkName) : indicator.networkName
+        textFormat: Text.PlainText
+        elide: Text.ElideRight
+        color: Kirigami.Theme.disabledTextColor
+    }
+    // Keeps the values together on the left when no network name is known.
+    Item { Layout.fillWidth: true; visible: indicator.networkName === "" }
 
     HoverHandler { id: hover }
 
