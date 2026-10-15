@@ -36,6 +36,7 @@ from blueferry.models import (
     phone_status_fields,
 )
 from blueferry.onboarding import ancs_unavailable_detail
+from blueferry.phone_audio_view import phone_audio
 from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH
 from blueferry.recipients import participant_lines
 from blueferry.text_safety import terminal_text
@@ -88,6 +89,8 @@ class _Client(Protocol):
     ) -> list[dict[str, str]]: ...
 
     def remove_notification_open_target(self, bundle_id: str) -> bool: ...
+    # Optional PC/iPhone sound switch (Media1.SetPhoneAudioRoute).
+    def set_phone_audio_route(self, route: str) -> str: ...
 
 
 class _Monitor(Protocol):
@@ -534,13 +537,18 @@ class HelpScreen(ModalScreen[None]):
         Binding("escape,question_mark", "close", "Close", show=False),
     ]
 
-    def __init__(self, *, calls_enabled: bool = False) -> None:
+    def __init__(self, *, calls_enabled: bool = False, phone_audio: bool = False) -> None:
         super().__init__()
         self.calls_enabled = calls_enabled
+        self.phone_audio = phone_audio
 
     def compose(self) -> ComposeResult:
         # The optional calls panel is listed only while calls are switched on.
         calls_line = "[bold #7dd3fc]Phone calls[/]  c\n" if self.calls_enabled else ""
+        # Likewise the sound switch, for backends that report the route.
+        audio_line = "[bold #7dd3fc]iPhone sound here / on iPhone[/]  a\n" if (
+            self.phone_audio
+        ) else ""
         help_text = Text.from_markup(
             "[bold #7dd3fc]Move[/]  ↑ ↓ or j k\n"
             "[bold #7dd3fc]Open / reply[/]  Enter\n"
@@ -552,6 +560,7 @@ class HelpScreen(ModalScreen[None]):
             "[bold #7dd3fc]Delete conversation[/]  Delete\n"
             f"{calls_line}"
             "[bold #7dd3fc]Notification click rules[/]  l\n"
+            f"{audio_line}"
             "[bold #7dd3fc]Commands[/]  Ctrl+P\n"
             "[bold #7dd3fc]Refresh[/]  r\n"
             "[bold #7dd3fc]Back[/]  Esc\n"
@@ -589,6 +598,7 @@ class BlueFerryApp(App[None]):
         # "o" belongs to the Options screen of the one-time code and
         # contact-photo PRs; once one of them lands, the rules move there.
         Binding("l", "click_rules", "Click rules", show=False),
+        Binding("a", "phone_audio", "Sound", show=False),
         Binding("escape", "return_to_list", "Back", show=False),
     ]
 
@@ -907,6 +917,9 @@ class BlueFerryApp(App[None]):
             f"{label} {value}"
             for label, value in phone_status_fields(status, include_network=False)
         ]
+        audio = phone_audio(status.to_dict())
+        if audio["available"]:
+            extras.append("sound here" if audio["on_pc"] else "sound on iPhone")
         if extras:
             summary = "  ·  ".join([summary, *extras])
         connection = self.query_one("#connection-summary", Static)
@@ -1070,7 +1083,11 @@ class BlueFerryApp(App[None]):
         self.query_one("#thread-list", ListView).focus()
 
     def action_help(self) -> None:
-        self.push_screen(HelpScreen(calls_enabled=bool(self.state.status.calls_enabled)))
+        status = self.state.status
+        self.push_screen(HelpScreen(
+            calls_enabled=bool(status.calls_enabled),
+            phone_audio="phone_audio_route" in status.extra,
+        ))
 
     def action_new_message(self) -> None:
         self.push_screen(NewMessageScreen(), self._new_message_ready)
@@ -1105,6 +1122,30 @@ class BlueFerryApp(App[None]):
         self.push_screen(NotificationRulesScreen(
             self.state.client, policy_all=status.notification_policy == "all",
         ))
+
+    def action_phone_audio(self) -> None:
+        if isinstance(self.focused, Input | TextArea) or isinstance(self.screen, ModalScreen):
+            return
+        # to_dict(): phone_audio_playing is a typed field, not in .extra.
+        audio = phone_audio(self.state.status.to_dict())
+        if not audio["available"]:
+            self.notify(terminal_text(audio["hint"]), severity="warning", markup=False)
+            return
+        self._phone_audio_worker("phone" if audio["on_pc"] else "pc")
+
+    @work(thread=True, exclusive=True, group="phone-audio", exit_on_error=False)
+    def _phone_audio_worker(self, route: str) -> None:
+        try:
+            self.state.client.set_phone_audio_route(route)
+        except BackendError as error:
+            self.call_from_thread(
+                self.notify, terminal_text(error).replace("\n", " "),
+                severity="error", markup=False,
+            )
+            return
+        done = "iPhone sound on this computer" if route == "pc" else "iPhone sound on the iPhone"
+        self.call_from_thread(self.notify, done, markup=False)
+        self.call_from_thread(self.action_refresh)
 
     def action_toggle_star(self) -> None:
         focused = self.focused
