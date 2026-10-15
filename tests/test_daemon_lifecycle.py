@@ -234,6 +234,36 @@ def test_manual_reconnect_is_forwarded_to_the_bearer_supervisor(make_daemon):
         instance._reconnect_phone()
 
 
+def test_manual_reconnect_during_a_call_reports_the_call(make_daemon):
+    instance = make_daemon()
+    instance.bearers = SimpleNamespace(reconnect_now=lambda: "connected")
+    instance.profile_reset = SimpleNamespace(
+        suggested="hfp_powered_timeout", manual_reset=lambda: "call-active",
+    )
+    assert instance._reconnect_phone() == "call-active"
+    instance.profile_reset = SimpleNamespace(
+        suggested="hfp_powered_timeout", manual_reset=lambda: "started",
+    )
+    assert instance._reconnect_phone() == "profile-reset"
+
+
+def test_auto_profile_reset_opt_out_is_saved_and_applied(make_daemon, tmp_path, monkeypatch):
+    from blueferry import config, profile_reset
+
+    monkeypatch.setattr(config, "SETTINGS_JSON", tmp_path / "settings.json")
+    instance = make_daemon()
+    emitted = []
+    # The controller's change callback coalesces through _idle_add.
+    instance._idle_add = lambda *_args: 1
+    monkeypatch.setattr(instance, "_emit_status", lambda: emitted.append(True))
+    assert instance._set_auto_profile_reset(False) == {"profile_reset_auto": False}
+    assert instance.profile_reset.enabled is False
+    assert profile_reset.auto_reset_enabled(tmp_path / "settings.json") is False
+    assert instance._set_auto_profile_reset(True) == {"profile_reset_auto": True}
+    assert instance.profile_reset.enabled is True
+    assert emitted
+
+
 def test_manual_reconnect_names_a_stuck_kernel(make_daemon):
     instance = make_daemon()
     instance.bearers = SimpleNamespace(reconnect_now=lambda: "bluez-unresponsive")

@@ -86,7 +86,11 @@ from blueferry.obex.worker import ObexWorker
 from blueferry.otp_context import OtpMetadata
 from blueferry.pair_setup import bond_status
 from blueferry.phone_battery import BatteryWarningSettings, PhoneBattery
-from blueferry.profile_reset import ProfileResetController, auto_reset_enabled
+from blueferry.profile_reset import (
+    ProfileResetController,
+    auto_reset_enabled,
+    save_auto_reset,
+)
 from blueferry.profile_supervisor import ProfileSessions, ProfileSupervisor
 from blueferry.protocol import BUS_NAME
 from blueferry.proximity_lock import (
@@ -464,8 +468,12 @@ class Daemon:
         if result == "connected" and self.profile_reset.suggested:
             # The link is up but a profile is stuck: "Reconnect" then means
             # the same device reset the automatic path would do.
-            if self.profile_reset.manual_reset() == "started":
+            reset = self.profile_reset.manual_reset()
+            if reset == "started":
                 result = "profile-reset"
+            elif reset == "call-active":
+                # Not "connected": the stuck profile stays until the call ends.
+                result = "call-active"
         if result == "bluez-unresponsive" and (
             self.bluez_health.snapshot()["bluez_unresponsive_reason"] == "kernel"
         ):
@@ -692,6 +700,13 @@ class Daemon:
         self._phone_emitted_at = self._clock()
         self._emit_status()
 
+    def _set_auto_profile_reset(self, enabled: bool) -> dict:
+        selected = save_auto_reset(enabled)
+        self.profile_reset.set_enabled(selected)
+        log.info("automatic profile reset %s", "enabled" if selected else "disabled")
+        self._emit_status()
+        return {"profile_reset_auto": self.profile_reset.enabled}
+
     def _set_battery_warning(self, enabled: bool) -> dict:
         selected = self.battery_warning.set(enabled)
         log.info("low-battery warning %s", "enabled" if selected else "disabled")
@@ -794,6 +809,7 @@ class Daemon:
                 calls=self.calls,
                 set_calls_enabled=self._set_calls_enabled,
                 set_phone_battery_warning=self._set_battery_warning,
+                set_auto_profile_reset=self._set_auto_profile_reset,
                 set_media_mpris=self._set_media_mpris,
             ),
         )

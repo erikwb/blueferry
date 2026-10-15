@@ -16,9 +16,9 @@ report into the same guards and rate limit.
 This module only *decides*. It counts the symptoms, applies the guards and the
 rate limit, and asks ``BearerSupervisor.reset_profiles`` to do the reset, so a
 reset can never overlap a regular or manual reconnect. It never pages a phone
-whose Classic link is down (doing that to a vanishing phone hung the kernel
-the same day), and never resets while bluetoothd does not answer, during a
-call, or during the adapter recovery.
+whose Classic link is down (a page to a vanishing phone coincided with
+bluetoothd hanging in the kernel the same day), and never resets while
+bluetoothd does not answer, during a call, or during the adapter recovery.
 
 At most one automatic reset per ``AUTO_RESET_INTERVAL_SECONDS``; each further
 automatic reset without a healthy profile in between doubles the wait, up to
@@ -60,6 +60,14 @@ def auto_reset_enabled(path: Path | None = None) -> bool:
     if isinstance(stored, bool):
         return stored
     return config.AUTO_PROFILE_RESET
+
+
+def save_auto_reset(enabled: bool, path: Path | None = None) -> bool:
+    """Save the opt-out in settings.json; it then wins over local.env."""
+    if not isinstance(enabled, bool):
+        raise ValueError("automatic profile reset must be a boolean")
+    SettingsStore(path or config.SETTINGS_JSON).update(**{SETTINGS_KEY: enabled})
+    return enabled
 
 
 Reset = Callable[[], str]
@@ -105,6 +113,15 @@ class ProfileResetController:
     @property
     def enabled(self) -> bool:
         return self._enabled
+
+    def set_enabled(self, enabled: bool) -> None:
+        """Switch the automatic reset on or off at runtime (manual stays)."""
+        if self._enabled == bool(enabled):
+            return
+        self._enabled = bool(enabled)
+        # A suppression logged while switched off must be logged again.
+        self._suppressed_logged = ""
+        self._on_changed()
 
     @property
     def suggested(self) -> str:

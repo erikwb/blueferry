@@ -350,3 +350,24 @@ def test_daemon_wires_the_controller_and_reports_content_free_status(make_daemon
         "profile_reset_last_at", "profile_reset_last_auto",
     }
     assert all(isinstance(value, bool | int | str) for value in snapshot.values())
+
+
+def test_runtime_opt_out_is_saved_and_takes_effect_at_once(tmp_path) -> None:
+    path = tmp_path / "settings.json"
+    assert profile_reset.save_auto_reset(False, path) is False
+    assert profile_reset.auto_reset_enabled(path) is False
+    with pytest.raises(ValueError):
+        profile_reset.save_auto_reset("no", path)  # type: ignore[arg-type]
+
+    h = Harness()
+    h.subject.set_enabled(False)
+    assert h.changes == 1 and h.subject.snapshot()["profile_reset_auto"] is False
+    h.subject.set_enabled(False)
+    assert h.changes == 1
+    _stick(h)
+    assert h.resets == []
+    assert h.subject.suggested == REASON_HFP
+    # Switched on again: the next symptom resets automatically.
+    h.subject.set_enabled(True)
+    _stick(h)
+    assert h.resets == ["reset"]

@@ -24,12 +24,26 @@ BLUEZ_UNRESPONSIVE_TEXT = _(
 )
 UNSUPPORTED_TEXT = _("The running BlueFerry service cannot reconnect on request.")
 PROFILE_RESET_TEXT = _("Resetting the iPhone's Bluetooth connection…")
+CALL_ACTIVE_TEXT = _(
+    "A call is active. The stuck connection is reset after the call; "
+    "try Reconnect again then."
+)
 RATE_LIMITED_TEXT = _("Please wait a moment, then try again.")
+UNSUPPORTED_AUTO_RESET_TEXT = _(
+    "The running BlueFerry service has no automatic connection reset."
+)
 # profile_reset reason tokens (GetStatus profile_reset_suggested/_last).
 _PROFILE_REASONS = {
     "hfp_powered_timeout": _("Call audio (HFP) is stuck."),
     "manual": _("Reset on request."),
 }
+
+
+def auto_reset_text(enabled: bool) -> str:
+    """Confirmation after saving the automatic profile reset opt-out."""
+    if enabled:
+        return _("A stuck iPhone connection is now reset automatically.")
+    return _("A stuck iPhone connection is no longer reset automatically; use Reconnect.")
 
 
 def is_rate_limited(error_name: str) -> bool:
@@ -115,6 +129,7 @@ def result_text(result: str) -> str:
     return {
         "started": STARTED_TEXT,
         "profile-reset": PROFILE_RESET_TEXT,
+        "call-active": CALL_ACTIVE_TEXT,
         "in-progress": IN_PROGRESS_TEXT,
         "connected": CONNECTED_TEXT,
         "unreachable": UNREACHABLE_TEXT,

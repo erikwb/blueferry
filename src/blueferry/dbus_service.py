@@ -370,6 +370,16 @@ class MessagesService(dbus.service.Object):
         ))
 
     @dbus.service.method(
+        IFACE, in_signature="b", out_signature="b", sender_keyword="sender"
+    )
+    def SetAutoProfileReset(self, enabled: bool, sender=None) -> bool:
+        """Switch the automatic reset of a stuck iPhone profile on or off."""
+        return self._sync(lambda: self._authorized(
+            sender, "settings",
+            lambda: self.operations.set_auto_profile_reset(bool(enabled)),
+        ))
+
+    @dbus.service.method(
         IFACE, in_signature="", out_signature="s", sender_keyword="sender"
     )
     def ReconnectPhone(self, sender=None) -> str:

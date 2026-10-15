@@ -259,6 +259,7 @@ class BackendDependencies:
     calls: CallControl | None = None
     set_calls_enabled: Callable[[bool], dict[str, Any]] | None = None
     set_phone_battery_warning: Callable[[bool], dict[str, Any]] | None = None
+    set_auto_profile_reset: Callable[[bool], dict[str, Any]] | None = None
     set_media_mpris: Callable[[bool], dict[str, Any]] | None = None
 
 
@@ -1416,6 +1417,19 @@ class BackendOperations:
         except OSError as error:
             log.error("could not save the battery warning preference: %s", error)
             raise NotReadyError("could not save the battery warning preference") from error
+
+    def set_auto_profile_reset(self, enabled: bool) -> bool:
+        """Save the automatic profile reset opt-out; returns the saved value."""
+        configure = self.dependencies.set_auto_profile_reset
+        if configure is None:
+            raise NotReadyError("the automatic profile reset is unavailable")
+        try:
+            return bool(configure(bool(enabled)).get("profile_reset_auto"))
+        except ValueError as error:
+            raise InvalidArgumentsError(str(error)) from error
+        except OSError as error:
+            log.error("could not save the profile reset preference: %s", error)
+            raise NotReadyError("could not save the profile reset preference") from error
 
     def set_calls_enabled(self, enabled: bool) -> dict[str, Any]:
         """Save the phone-calls opt-in and apply it without a restart."""

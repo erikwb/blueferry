@@ -158,6 +158,14 @@
       <annotation name="io.weirdware.BlueFerry.Errors"
                   value="InvalidArgs,NotReady"/>
     </method>
+    <method name="SetAutoProfileReset">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Switch the automatic reset of a stuck iPhone profile on or off (saved in settings.json); state is profile_reset_auto in GetStatus. The manual ReconnectPhone reset is unaffected"/>
+      <arg name="enabled" type="b" direction="in"/>
+      <arg name="selected" type="b" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady"/>
+    </method>
     <method name="GetStoragePolicy">
       <arg name="policy" type="s" direction="out"/>
     </method>

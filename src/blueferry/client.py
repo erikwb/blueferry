@@ -442,6 +442,16 @@ class BackendClient:
         except dbus.exceptions.DBusException as error:
             raise BackendError(_dbus_message(error)) from error
 
+    def set_auto_profile_reset(self, enabled: bool) -> bool:
+        try:
+            return bool(
+                self._iface(MESSAGES_IFACE).SetAutoProfileReset(
+                    dbus.Boolean(enabled), timeout=POLICY_CALL_TIMEOUT_SEC
+                )
+            )
+        except dbus.exceptions.DBusException as error:
+            raise BackendError(_dbus_message(error)) from error
+
     def reconnect_phone(self) -> str:
         """Clear the Classic backoff and page the iPhone once now."""
         try:

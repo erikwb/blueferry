@@ -111,3 +111,36 @@ def test_rate_limits_read_as_a_request_to_wait() -> None:
     assert _dbus_message(error) == RATE_LIMITED_TEXT
     other = dbus.exceptions.DBusException("no phone", name="io.weirdware.BlueFerry.Error.NotReady")
     assert _dbus_message(other) == "no phone"
+
+
+def test_reconnect_during_a_call_says_so(monkeypatch) -> None:
+    result = _run(monkeypatch, _Backend("call-active", ["connected"]))
+    assert result.exit_code == 1
+    assert "call is active" in result.output
+    assert result_text("call-active") != result_text("connected")
+
+
+def test_reconnect_saves_the_automatic_reset_choice(monkeypatch) -> None:
+    class Saving(_Backend):
+        def __init__(self, error=None):
+            super().__init__("started", ["connected"])
+            self.saved: list[bool] = []
+            self.error = error
+
+        def set_auto_profile_reset(self, enabled: bool) -> bool:
+            if self.error is not None:
+                raise self.error
+            self.saved.append(enabled)
+            return enabled
+
+    backend = Saving()
+    result = _run(monkeypatch, backend, "--no-auto-reset")
+    assert result.exit_code == 0, result.output
+    assert "Automatic profile reset off." in result.output
+    assert backend.saved == [False] and backend.calls == 0
+    result = _run(monkeypatch, backend, "--auto-reset")
+    assert "Automatic profile reset on." in result.output
+    failing = Saving(BackendError("Unknown method"))
+    result = _run(monkeypatch, failing, "--no-auto-reset")
+    assert result.exit_code == 2
+    assert "Could not save the setting" in result.output
