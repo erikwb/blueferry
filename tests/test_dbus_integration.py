@@ -981,3 +981,39 @@ def test_call_history_opt_in_is_set_on_its_own_interface(public_service) -> None
         ))
         _dispatch_until(lambda thread=legacy: not thread.is_alive())
         assert result["error"].get_dbus_name() == "org.freedesktop.DBus.Error.UnknownMethod"
+
+
+def test_feature_switches_round_trip(public_service, tmp_path, monkeypatch) -> None:
+    from blueferry.features import FEATURES, FeatureSettings
+
+    name, *_rest, service = public_service
+    running = {feature.name: feature.default for feature in FEATURES}
+    monkeypatch.setattr(service.operations, "dependencies", BackendDependencies(
+        features=FeatureSettings(tmp_path / "s.json", running=lambda: running,
+                                 explicit=frozenset(), local_env=dict),
+    ))
+    outcome = {}
+
+    def change() -> None:
+        connection, interface = _client(name)
+        try:
+            client = BackendClient(
+                interface_factory=lambda iface: dbus.Interface(interface.proxy_object, iface)
+            )
+            outcome["set"] = client.set_feature("keep_phone_audio_on_phone", False)
+            outcome["features"] = client.features()["keep_phone_audio_on_phone"]
+            try:
+                client.set_feature("mac", True)
+            except Exception as error:  # BackendError
+                outcome["bad"] = str(error)
+        finally:
+            connection.close()
+
+    thread = threading.Thread(target=change)
+    thread.start()
+    _dispatch_until(lambda: not thread.is_alive())
+    thread.join(timeout=1)
+    assert outcome["set"] == "restart-required"
+    assert outcome["features"]["value"] is False
+    assert outcome["features"]["source"] == "settings"
+    assert "unknown feature" in outcome["bad"]

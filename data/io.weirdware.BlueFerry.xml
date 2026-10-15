@@ -118,6 +118,22 @@
       <annotation name="io.weirdware.BlueFerry.Errors"
                   value="InvalidArgs,NotReady"/>
     </method>
+    <method name="GetFeatures">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="JSON object keyed by feature name (show_notification_content, mark_read_on_dismiss, keep_phone_audio_on_phone): {value, running, source (environment, settings, local.env or default), variable, restart_required}"/>
+      <arg name="features" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="NotReady"/>
+    </method>
+    <method name="SetFeature">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Store one allowlisted boolean switch in settings.json, where it overrides local.env from the next daemon start; an explicit process environment still wins. Returns active, restart-required or environment"/>
+      <arg name="name" type="s" direction="in"/>
+      <arg name="enabled" type="b" direction="in"/>
+      <arg name="result" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady"/>
+    </method>
     <method name="GetNotificationOpenMap">
       <arg name="rules_json" type="s" direction="out"/>
     </method>

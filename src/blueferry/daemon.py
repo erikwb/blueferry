@@ -67,6 +67,7 @@ from blueferry.dbus_service import MessagesService, claim_bus_name
 from blueferry.errors import BlueFerryError
 from blueferry.event_dispatcher import EventDispatcher
 from blueferry.events import SmsEvent
+from blueferry.features import FeatureSettings
 from blueferry.gio_dbus import GioDBus
 from blueferry.gio_dbus import system_bus as gio_system_bus
 from blueferry.glib_timers import schedule_periodic
@@ -753,6 +754,7 @@ class Daemon:
                 set_phone_battery_warning=self._set_battery_warning,
                 set_media_mpris=self._set_media_mpris,
                 phone_audio=self.phone_audio_route,
+                features=FeatureSettings(),
             ),
         )
         self.events.set_dbus_service(self._dbus_service)
