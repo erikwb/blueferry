@@ -76,8 +76,11 @@ restarts. You choose how:
 With the optional [contact photos](contact-photos.md), the contact cache
 also holds your contacts' pictures under the same storage mode, and the
 backend keeps short-lived owner-only copies in `$XDG_RUNTIME_DIR/blueferry`
-for popup icons. Turning the option off deletes the stored photos on the next
-backend start.
+for popup icons. The setting itself is saved as `contact_photos` in
+`settings.json`. Turning the option off stops photo display immediately and
+starts deleting the avatar files and stored photos. Cleanup waits for active
+contact syncs and retries failures; `blueferry contact-photos status` reports
+when it is complete.
 
 Encryption protects data at rest. Other programs running as your user can
 still use the BlueFerry D-Bus API and, while the wallet is unlocked, may be
@@ -122,9 +125,9 @@ Edit `~/.config/blueferry/local.env`, then restart the service with
 | `BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE` | `true` | Keep calls and music on the iPhone |
 | `BLUEFERRY_ANCS_APP_ALLOWLIST` | unset | See [Filter apps](#filter-apps) |
 | `BLUEFERRY_ANCS_APP_BLOCKLIST` | unset | See [Filter apps](#filter-apps) |
-| `BLUEFERRY_OTP_AUTOCOPY` | `false` | Copy one-time codes to the clipboard, see [One-time codes](#one-time-codes) |
+| `BLUEFERRY_OTP_AUTOCOPY` | `false` | Starting value for one-time code auto-copy until a client saves the setting, see [One-time codes](#one-time-codes) |
 | `BLUEFERRY_OTP_CLEAR_SECONDS` | `0` | Clear a copied code after this many seconds (0 = keep, max 600) |
-| `BLUEFERRY_CONTACT_PHOTOS` | `false` | Keep contact photos for avatars and popup icons; see [Contact photos](contact-photos.md) |
+| `BLUEFERRY_CONTACT_PHOTOS` | `false` | Starting value for contact photos until a client saves the setting; see [Contact photos](contact-photos.md) |
 
 Pairing writes the phone and adapter settings to the same file; change those
 by pairing again rather than by hand.

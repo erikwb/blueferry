@@ -116,7 +116,9 @@ def test_stop_cancels_reconciliation() -> None:
     assert scheduled[0][1]() is False
 
 
-def _failing_supervisor(attempts, scheduled, now, error=None, state=None):
+def _failing_supervisor(
+    attempts, scheduled, now, error=None, state=None, uses_sudo=True,
+):
     from blueferry.bluez_setup import CodAuthorizationRefused
 
     state = state if state is not None else {"class": 0x104}
@@ -137,6 +139,7 @@ def _failing_supervisor(attempts, scheduled, now, error=None, state=None):
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
         cancel=lambda _timer_id: None,
         clock=lambda: now[0],
+        uses_sudo=lambda: uses_sudo,
     )
 
 
@@ -177,17 +180,91 @@ def test_refusal_backoff_is_capped_so_a_day_logs_only_a_handful_of_attempts() ->
 
 
 @pytest.mark.parametrize("error", [None, "raise"])
-def test_unrecognized_failures_also_back_off(error) -> None:
-    # Unknown sudo wording, a missing polkit agent, or btmgmt failing all
-    # land here; none may turn into one authentication event per minute.
+def test_unrecognized_sudo_failures_back_off_but_only_for_minutes(error) -> None:
+    # Unknown sudo wording or btmgmt failing without systemd must not turn
+    # into one authentication event per minute, yet a cause that clears is
+    # still repaired within a few minutes.
     attempts, scheduled, now = [], [], [0.0]
     supervisor = _failing_supervisor(attempts, scheduled, now, error=error)
 
     supervisor.start()
     _run_minutes(scheduled, now, 60)
 
-    # 0, 1, 3, 7, 15, 31 minutes.
-    assert len(attempts) == 6
+    # 0, 1, 3, 7, then every 5 minutes: 12, 17, ..., 57.
+    assert len(attempts) == 14
+    assert adapter_class_supervisor.MAX_FAILED_REPAIR_BACKOFF_SECONDS == 5 * 60
+
+
+@pytest.mark.parametrize("error", [None, "raise"])
+def test_systemd_failures_are_retried_every_minute_as_before(error) -> None:
+    # A missing polkit agent or a failing unit can clear on its own, and
+    # until the repair lands iOS refuses Classic MAP/PBAP: no backoff here.
+    attempts, scheduled, now = [], [], [0.0]
+    supervisor = _failing_supervisor(
+        attempts, scheduled, now, error=error, uses_sudo=False,
+    )
+
+    supervisor.start()
+    _run_minutes(scheduled, now, 10 * 60)
+
+    assert len(attempts) == 1 + 10 * 60
+
+
+def test_systemd_failure_is_not_repeated_by_a_recheck_within_the_minute() -> None:
+    # A completed asynchronous class read calls recheck(); on systemd it must
+    # not turn one failing repair per minute into one per reply.
+    attempts, scheduled, now = [], [], [0.0]
+    supervisor = _failing_supervisor(
+        attempts, scheduled, now, error=None, uses_sudo=False,
+    )
+
+    supervisor.start()
+    now[0] = 20.0
+    supervisor.recheck()
+    assert attempts == ["hci7"]
+
+    _run_minutes(scheduled, now, 1)
+    assert attempts == ["hci7", "hci7"]
+
+
+def test_systemd_repair_lands_one_minute_after_a_long_failure_clears() -> None:
+    attempts, scheduled, now = [], [], [0.0]
+    outcome = {"error": "raise"}
+    state = {"class": 0x104}
+
+    def repair(adapter):
+        attempts.append(adapter)
+        if outcome["error"]:
+            raise RuntimeError("unit failed")
+        state["class"] = 0x408
+        return True
+
+    supervisor = AdapterClassSupervisor(
+        "hci7",
+        read_class=lambda _adapter: state["class"],
+        matches=lambda value: value == 0x408,
+        repair=repair,
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer_id: None,
+        clock=lambda: now[0],
+        uses_sudo=lambda: False,
+    )
+    supervisor.start()
+    _run_minutes(scheduled, now, 10 * 60)
+
+    outcome["error"] = None
+    _run_minutes(scheduled, now, 1)
+
+    assert state["class"] == 0x408
+
+
+def test_service_manager_decides_whether_failures_back_off(monkeypatch) -> None:
+    from blueferry import service_manager
+
+    monkeypatch.setattr(service_manager, "init_system", lambda: service_manager.SYSTEMD)
+    assert adapter_class_supervisor._repairs_through_sudo() is False
+    monkeypatch.setattr(service_manager, "init_system", lambda: service_manager.OPENRC)
+    assert adapter_class_supervisor._repairs_through_sudo() is True
 
 
 def test_bluez_restart_poke_clears_the_backoff() -> None:
@@ -268,3 +345,174 @@ def test_async_class_reply_is_consumed_without_refunding_repair_backoff():
     supervisor.stop()
     replies[-1](0x104)
     assert len(repairs) == 2  # A reply after shutdown cannot run the helper.
+
+
+class _Timers:
+    """Fake GLib timers: ids, cancellation and firing by delay."""
+
+    def __init__(self):
+        self.pending = {}
+        self.cancelled = []
+        self._next = 1
+
+    def schedule(self, delay, callback):
+        timer_id = self._next
+        self._next += 1
+        self.pending[timer_id] = (delay, callback)
+        return timer_id
+
+    def cancel(self, timer_id):
+        self.cancelled.append(timer_id)
+        self.pending.pop(timer_id, None)
+
+    def one_shots(self):
+        return [
+            timer_id for timer_id, (delay, _callback) in self.pending.items()
+            if delay == adapter_class_supervisor.BUSY_RETRY_SECONDS
+        ]
+
+    def fire_one_shot(self):
+        (timer_id,) = self.one_shots()
+        _delay, callback = self.pending.pop(timer_id)
+        return callback()
+
+    def tick(self):
+        (callback,) = [
+            callback for delay, callback in self.pending.values()
+            if delay == adapter_class_supervisor.RECONCILE_SECONDS
+        ]
+        return callback()
+
+
+def _busy_supervisor(outcomes, attempts, timers, now, state=None):
+    from blueferry.bluez_setup import CodAdapterBusy
+
+    state = state if state is not None else {"class": 0x000000}
+
+    def repair(adapter):
+        attempts.append(adapter)
+        outcome = outcomes.pop(0) if outcomes else "busy"
+        if outcome == "busy":
+            raise CodAdapterBusy("busy")
+        state["class"] = 0x408
+        return True
+
+    return AdapterClassSupervisor(
+        "hci7",
+        read_class=lambda _adapter: state["class"],
+        matches=lambda value: value == 0x408,
+        repair=repair,
+        schedule=timers.schedule,
+        cancel=timers.cancel,
+        clock=lambda: now[0],
+        uses_sudo=lambda: True,
+    )
+
+
+def test_busy_adapter_is_retried_after_seconds_without_backoff() -> None:
+    attempts, timers, now, state = [], _Timers(), [0.0], {"class": 0}
+    supervisor = _busy_supervisor(["busy", "ok"], attempts, timers, now, state)
+
+    supervisor.start()
+    assert attempts == ["hci7"]
+    assert len(timers.one_shots()) == 1
+
+    now[0] += adapter_class_supervisor.BUSY_RETRY_SECONDS
+    assert timers.fire_one_shot() is False
+
+    assert attempts == ["hci7", "hci7"]
+    assert state["class"] == 0x408
+    assert supervisor._retry_at is None
+    assert supervisor._busy_retries == 0
+    assert timers.one_shots() == []
+
+
+def test_busy_retries_are_bounded_then_back_off() -> None:
+    attempts, timers, now = [], _Timers(), [0.0]
+    supervisor = _busy_supervisor([], attempts, timers, now)
+
+    supervisor.start()
+    for _retry in range(adapter_class_supervisor.MAX_BUSY_RETRIES):
+        now[0] += adapter_class_supervisor.BUSY_RETRY_SECONDS
+        assert timers.fire_one_shot() is False
+
+    assert len(attempts) == 1 + adapter_class_supervisor.MAX_BUSY_RETRIES
+    assert timers.one_shots() == []
+    assert supervisor._retry_at == (
+        now[0] + adapter_class_supervisor.FAILED_REPAIR_BACKOFF_SECONDS
+    )
+
+    # The usual sudo backoff now applies: no attempt within the minute.
+    now[0] += 30
+    assert timers.tick() is True
+    assert len(attempts) == 1 + adapter_class_supervisor.MAX_BUSY_RETRIES
+
+
+def test_busy_retry_never_plans_a_second_timer() -> None:
+    attempts, timers, now = [], _Timers(), [0.0]
+    supervisor = _busy_supervisor([], attempts, timers, now)
+
+    supervisor.start()
+    # The periodic tick meets Busy again while the one-shot is pending.
+    now[0] += 1
+    assert timers.tick() is True
+
+    assert len(attempts) == 2
+    assert len(timers.one_shots()) == 1
+
+
+def test_stop_cancels_the_busy_retry() -> None:
+    attempts, timers, now = [], _Timers(), [0.0]
+    supervisor = _busy_supervisor([], attempts, timers, now)
+    supervisor.start()
+    (busy_timer,) = timers.one_shots()
+
+    supervisor.stop()
+
+    assert busy_timer in timers.cancelled
+    assert timers.pending == {}
+    assert supervisor._busy_retries == 0
+
+
+def test_busy_retry_after_stop_does_nothing() -> None:
+    attempts, timers, now = [], _Timers(), [0.0]
+    supervisor = _busy_supervisor([], attempts, timers, now)
+    supervisor.start()
+    (busy_timer,) = timers.one_shots()
+    _delay, callback = timers.pending[busy_timer]
+    supervisor.stop()
+
+    assert callback() is False
+    assert attempts == ["hci7"]
+
+
+def test_poke_resets_the_busy_budget() -> None:
+    attempts, timers, now = [], _Timers(), [0.0]
+    supervisor = _busy_supervisor([], attempts, timers, now)
+    supervisor.start()
+    for _retry in range(adapter_class_supervisor.MAX_BUSY_RETRIES):
+        assert timers.fire_one_shot() is False
+    assert supervisor._retry_at is not None
+
+    supervisor.poke()
+
+    assert supervisor._busy_retries == 1
+    assert len(timers.one_shots()) == 1
+
+
+def test_busy_logs_one_warning_and_info_retries(caplog) -> None:
+    import logging
+
+    attempts, timers, now = [], _Timers(), [0.0]
+    supervisor = _busy_supervisor(["busy", "busy", "ok"], attempts, timers, now)
+
+    with caplog.at_level(logging.DEBUG, logger=adapter_class_supervisor.__name__):
+        supervisor.start()
+        timers.fire_one_shot()
+        timers.fire_one_shot()
+
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    busy = [r for r in caplog.records if "adapter busy; retrying in 3 s" in r.getMessage()]
+    assert len(warnings) == 1
+    assert len(busy) == 2
+    assert all(r.levelno == logging.INFO for r in busy)

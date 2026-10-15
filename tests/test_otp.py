@@ -158,6 +158,43 @@ def test_rejects_false_positives(body: str) -> None:
     assert extract_otp(body) is None
 
 
+# Follow-up to the re-review of #196: plain nouns in messages people write
+# to each other, which a number right after the noun or a connector still
+# bound.
+@pytest.mark.parametrize(
+    "body",
+    [
+        "Our alarm code is 1234, confirm when you are in",
+        "My code is 4821",
+        "Unser Code ist 4821",
+        "The safe code is 4821",
+        "Code 4821 for the gym",
+        "Hello code 4821",
+        "Okay code 4821",
+        "Sorry code 4821 didn't work",
+        "Thanks code 4821",
+        "Hallo Code 4821",
+        "Danke Code 4821",
+        "Ja Code 4821",
+    ],
+)
+def test_rejects_codes_people_share(body: str) -> None:
+    assert extract_otp(body) is None
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ("WhatsApp code 123-456", "123456"),
+        ("Your Uber code is 4821", "4821"),
+        ("Code: 4821", "4821"),
+        ("Code 2024 is your login code", "2024"),
+    ],
+)
+def test_still_detects_service_codes_next_to_a_plain_noun(body: str, expected: str) -> None:
+    assert extract_otp(body) == expected
+
+
 def test_dates_need_the_keyword_right_before_them() -> None:
     assert extract_otp("Your code: 20261007") == "20261007"
     assert extract_otp("Your verification code was reset on 20261007") is None

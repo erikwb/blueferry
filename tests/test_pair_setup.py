@@ -1957,6 +1957,27 @@ def test_complete_pairing_prepares_the_selected_adapter_not_a_leftover_bond(
     assert saved == [(phone.mac, "hci1")]
 
 
+def test_busy_adapter_during_pairing_reports_retry_hint(monkeypatch):
+    """btmgmt Busy reaches the user as a retry hint, not a traceback."""
+    activated = []
+    monkeypatch.setattr(
+        bluez_setup,
+        "prepare_classic",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            bluez_setup.CodAdapterBusy(bluez_setup.COD_ADAPTER_BUSY_MESSAGE)
+        ),
+    )
+    monkeypatch.setattr(pair_setup, "_activate_obex_mns", lambda: activated.append(True))
+
+    with pytest.raises(pair_setup.PairingError) as failure:
+        pair_setup._prepare_classic_transport(
+            "hci0", pair_setup.quirks_report.start_attempt(interactive=False),
+        )
+
+    assert "try again in a few seconds" in str(failure.value)
+    assert activated == []
+
+
 def test_classic_connect_requires_observable_settled_connection(monkeypatch):
     calls = []
 

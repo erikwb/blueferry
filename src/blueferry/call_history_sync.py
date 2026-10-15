@@ -23,10 +23,12 @@ pulls wait for the same three-minute grace period as contact sync and the
 periodic tick stays off; only prompt, grace-expiry, and requested pulls run.
 Explicit client syncs are never gated.
 
-A call-history failure never tears down the OBEX sessions on a timeout
-(``NoReply``): these pulls are optional and frequent, and dropping MAP for
-them would cost message delivery. Only definitive "the session object is
-gone" errors are reported to the session manager.
+A call-history failure never tears down the OBEX sessions, whatever the
+error (``NoReply``, a transfer timeout, ``UnknownObject``): these pulls are
+optional and frequent, and ``report_error`` drops MAP together with PBAP,
+which would cost message delivery. A session that really vanished is already
+noticed per profile by the session manager's ``InterfacesRemoved`` and
+``NameOwnerChanged`` watch.
 """
 from __future__ import annotations
 
@@ -89,8 +91,6 @@ FULL_PULL: tuple[tuple[str, str], ...] = PHONEBOOKS
 MISSED_PULL: tuple[tuple[str, str], ...] = tuple(
     entry for entry in PHONEBOOKS if entry[1] == MISSED
 )
-# Only these mean the PBAP session object is gone; see the module docstring.
-_SESSION_GONE_MARKERS = ("UnknownObject", "ServiceUnknown", "NameHasNoOwner")
 
 Success = Callable[[int], None]
 Failure = Callable[[Exception], None]
@@ -508,16 +508,6 @@ class CallHistorySync:
                 log.exception("missed-call notification failed")
         return len(result.records)
 
-    def _report_transport(self, error: Exception) -> None:
-        text = str(error)
-        if not any(marker in text for marker in _SESSION_GONE_MARKERS):
-            # Includes NoReply: a slow listing is no reason to drop MAP.
-            return
-        try:
-            self._sessions.report_error(error)
-        except Exception:
-            log.exception("could not report call history transport failure")
-
     def _finished(
         self, *, count: int = 0, error: Exception | None = None,
         transport: bool = True,
@@ -535,8 +525,8 @@ class CallHistorySync:
             self._skip_ticks = min(
                 2 ** self._failures - 1, CALL_HISTORY_MAX_BACKOFF_TICKS,
             )
+            # Not reported to the session manager; see the module docstring.
             log.error("call history sync failed; keeping previous list: %s", error)
-            self._report_transport(error)
         for success, failure in waiters:
             try:
                 if error is None:

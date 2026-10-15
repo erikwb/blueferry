@@ -58,6 +58,9 @@ class NowPlaying:
     title: str | None = None
     duration: float | None = None
     supported_commands: frozenset[RemoteCommandID] = field(default_factory=frozenset)
+    # False until the phone has sent its command list for the current
+    # characteristic: an unknown list is not an empty one.
+    supported_commands_known: bool = False
     # Increases whenever the track changes; completing a truncated value is
     # not a change. Never reset, so an identifier is never reused.
     track_serial: int = 0
@@ -67,6 +70,7 @@ class NowPlaying:
     def reset(self) -> None:
         self.clear_playback()
         self.supported_commands = frozenset()
+        self.supported_commands_known = False
 
     def clear_playback(self) -> None:
         """Forget what is playing but keep the phone's command list.
@@ -76,14 +80,23 @@ class NowPlaying:
         list is not necessarily sent again after a reconnect.
         """
         for name in self.__slots__:
-            if name not in ("supported_commands", "track_serial", "truncated_track"):
+            if name not in (
+                "supported_commands", "supported_commands_known",
+                "track_serial", "truncated_track",
+            ):
                 setattr(self, name, None)
         self.truncated_track = frozenset()
 
-    def set_supported_commands(self, commands: frozenset[RemoteCommandID]) -> bool:
-        if commands == self.supported_commands:
+    def set_supported_commands(
+        self, commands: frozenset[RemoteCommandID] | None,
+    ) -> bool:
+        """Store the phone's list; ``None`` means it is unknown again."""
+        known = commands is not None
+        commands = commands if commands is not None else frozenset()
+        if commands == self.supported_commands and known == self.supported_commands_known:
             return False
         self.supported_commands = commands
+        self.supported_commands_known = known
         return True
 
     def apply(self, update: EntityUpdate, now: float) -> bool:
@@ -161,7 +174,7 @@ class NowPlaying:
             self.player_name, self.playback_state, self.playback_rate,
             self.elapsed, self.volume, self.queue_index, self.queue_count,
             self.shuffle, self.repeat, self.artist, self.album, self.title,
-            self.duration, self.supported_commands,
+            self.duration, self.supported_commands, self.supported_commands_known,
         )
 
     @property
@@ -211,4 +224,5 @@ class NowPlaying:
             "supported_commands": sorted(
                 COMMAND_IDS[command] for command in self.supported_commands
             ),
+            "supported_commands_known": self.supported_commands_known,
         }

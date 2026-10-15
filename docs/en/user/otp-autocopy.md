@@ -43,13 +43,15 @@ flowchart LR
     "Bestätigungsnummer", "code de vérification", ...;
   - "code" followed by the number: "code: 123456", "Code lautet 123456";
   - "123456 is your ... code";
-  - "code" immediately followed by the number, as in "Telegram code 58291";
+  - a service name, then "code" and the number, as in "Telegram code
+    58291" (a greeting such as "Hello code 4821" is not a service name);
   - "enter 123456" or "geben Sie 123456 ein" in a sentence about
     authentication, including resetting a password.
 
-  Plain PINs and passwords require authentication context. Door and Wi-Fi
-  codes are excluded, as are numbers followed by units such as steps or
-  messages. A code noun in another sentence never binds an unrelated number.
+  Plain PINs and passwords require authentication context. Codes people
+  share, such as "my code", door, alarm and Wi-Fi codes, are excluded, as
+  are numbers followed by units such as steps or messages. A code noun in
+  another sentence never binds an unrelated number.
 
   Words like "verify", "one-time" or "Einmal" alone never pick a number,
   so "Verify your email to get 5000 points" or "Einmalzahlung von 1500"
@@ -64,15 +66,25 @@ flowchart LR
 
 ## Turn it on
 
-Add these lines to `~/.config/blueferry/local.env`:
+Tick **Copy one-time codes to the clipboard** in the iPhone settings of the
+Qt, GTK or Quickshell client, or in the terminal client's Options (`o`), or
+run:
 
 ```bash
-BLUEFERRY_OTP_AUTOCOPY=true
-# Optional: clear the clipboard after this many seconds (0 = keep, max 600)
-BLUEFERRY_OTP_CLEAR_SECONDS=60
+blueferry otp enable     # blueferry otp disable turns it off again
 ```
 
-Then restart the BlueFerry user service.
+The choice is saved in `~/.config/blueferry/settings.json` and applies
+at once, without a restart. Older setups with `BLUEFERRY_OTP_AUTOCOPY=true`
+in `~/.config/blueferry/local.env` keep working: that line is only the
+starting value until you change the setting in a client.
+
+The optional clear timer stays in `local.env` and needs a service restart:
+
+```bash
+# Clear the clipboard after this many seconds (0 = keep, max 600)
+BLUEFERRY_OTP_CLEAR_SECONDS=60
+```
 
 You need one clipboard helper:
 
@@ -84,9 +96,9 @@ You need one clipboard helper:
 Check the setup:
 
 ```bash
-blueferry otp-status     # is it on, which helper is used, sensitive marking
+blueferry otp status     # is it on, which helper is used, sensitive marking
 blueferry doctor         # warns about a missing helper or an old wl-clipboard
-echo 'Your code is 123456' | blueferry otp-check   # dry run, copies nothing
+echo 'Your code is 123456' | blueferry otp check   # dry run, copies nothing
 ```
 
 ## Clipboard history (Klipper and others)
@@ -97,7 +109,7 @@ copy waits for the capability probe; a failed probe skips pending copies
 and can be retried for the next message. Older
 wl-clipboard versions and the X11 tools can't set that mark, and the code
 then stays in the manager's history even after the clear timer fired.
-`blueferry otp-status` tells you which case applies.
+`blueferry otp status` tells you which case applies.
 
 ## Clear timer
 
@@ -119,7 +131,7 @@ provides source ownership, but no atomic check-and-clear of another source.
 
 - **It's a heuristic.** Unusually phrased codes can be missed and unrelated
   text can still resemble an authentication message.
-  Use `blueferry otp-check` to test messages from your own providers; it
+  Use `blueferry otp check` to test messages from your own providers; it
   checks only the text, not the sender rules.
 - **Group conversations.** The iPhone's message push does not say whether a
   message belongs to a group. Live Apple Messages notifications supply the

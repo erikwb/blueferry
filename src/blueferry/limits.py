@@ -7,7 +7,12 @@ MAX_OUTGOING_BODY_BYTES = 256 * 1024
 MAX_BMESSAGE_BYTES = 1024 * 1024
 
 # A full phonebook can legitimately be large. This is a byte limit, separate
-# from PBAP's MaxCount contact limit.
+# from PBAP's MaxCount contact limit. The unfiltered pull carries inline
+# PHOTO values whether or not contact photos are enabled, so photos count
+# here too. Measured on one iPhone (iOS 27, 3730 contacts, 42 with a photo):
+# the whole pull was 726487 bytes, about 1% of this limit; its photos were
+# small thumbnails (largest about 19 KiB, average about 5 KiB), so filling
+# 64 MiB would take roughly ten thousand such photos.
 MAX_PHONEBOOK_BYTES = 64 * 1024 * 1024
 MAX_VCARD_CHARS = 1024 * 1024
 MAX_CONTACT_NAME_CHARS = 512
@@ -72,19 +77,20 @@ MAX_DESKTOP_MESSAGE_TRACKERS = 256
 MAX_PHONEBOOK_CONTACTS = 65_535
 MAX_CONTACT_ADDRESSES_PER_CARD = 64
 
-# Contact photos (opt-in, BLUEFERRY_CONTACT_PHOTOS). What iOS puts into a
-# PBAP PHOTO has not been measured on a real phone yet; the per-sync summary
-# log line (size buckets and reasons) exists to settle that. #187 only used
-# an 800 KiB picture as an illustrative worst case for the card budget. The
-# per-photo cap admits such a picture, the encoded limit adds room for base64
-# expansion and folding whitespace, and larger values are dropped unread.
-# The total budget bounds one sync's retained photos (and the extra memory
-# the pull holds before storing them); the whole transfer is already capped
-# by MAX_PHONEBOOK_BYTES, so 64 MiB of base64 can never decode to more than
-# 48 MiB of photos anyway.
-MAX_CONTACT_PHOTO_BYTES = 1024 * 1024
+# Contact photos (opt-in). Measured on one iPhone (iOS 27, PBAP unfiltered
+# pull): iOS includes PHOTO, as small JPEG thumbnails. 42 of 3730 contacts
+# had one; the stored photos were 1.9 to 19.2 KiB (average about 5 KiB,
+# 213 KiB in total, sizes slightly above the raw image because they are
+# stored sealed). The per-photo cap leaves more than ten times the largest
+# measured photo as headroom for other iOS versions and hand-set pictures;
+# the encoded limit adds room for base64 expansion and folding whitespace,
+# and larger values are dropped unread (the per-sync summary line still
+# counts how large they were). The total budget bounds one sync's retained
+# photos and the extra memory the pull holds before storing them; at the
+# measured average it fits about three thousand photos.
+MAX_CONTACT_PHOTO_BYTES = 256 * 1024
 MAX_CONTACT_PHOTO_CHARS = (MAX_CONTACT_PHOTO_BYTES * 4 // 3) + 64 * 1024
-MAX_CONTACT_PHOTOS_TOTAL_BYTES = 32 * 1024 * 1024
+MAX_CONTACT_PHOTOS_TOTAL_BYTES = 16 * 1024 * 1024
 # Time spent decoding photos per sync (expected: well under 1 s). Parsing
 # the rest of the cards does not count against it.
 MAX_CONTACT_PHOTO_DECODE_SECONDS = 5.0
