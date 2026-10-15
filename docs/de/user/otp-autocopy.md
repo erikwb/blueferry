@@ -69,15 +69,27 @@ flowchart LR
 
 ## Einschalten
 
-Diese Zeilen in `~/.config/blueferry/local.env` eintragen:
+**Einmalcodes in die Zwischenablage kopieren** in den iPhone-Einstellungen
+des Qt-, GTK- oder Quickshell-Clients ankreuzen, oder in den Optionen des
+Terminal-Clients (`o`), oder:
 
 ```bash
-BLUEFERRY_OTP_AUTOCOPY=true
-# Optional: Zwischenablage nach so vielen Sekunden leeren (0 = behalten, max. 600)
-BLUEFERRY_OTP_CLEAR_SECONDS=60
+blueferry otp enable     # blueferry otp disable schaltet es wieder aus
 ```
 
-Danach den BlueFerry-Benutzerdienst neu starten.
+Die Wahl wird in `~/.config/blueferry/settings.json` gespeichert und
+gilt sofort, ohne Neustart. Ältere Einrichtungen mit
+`BLUEFERRY_OTP_AUTOCOPY=true` in `~/.config/blueferry/local.env`
+funktionieren weiter: Die Zeile ist nur der Startwert, bis du die
+Einstellung in einem Client änderst.
+
+Der optionale Lösch-Timer bleibt in `local.env` und braucht einen
+Neustart des Dienstes:
+
+```bash
+# Zwischenablage nach so vielen Sekunden leeren (0 = behalten, max. 600)
+BLUEFERRY_OTP_CLEAR_SECONDS=60
+```
 
 Du brauchst ein Zwischenablage-Hilfsprogramm:
 
@@ -89,9 +101,9 @@ Du brauchst ein Zwischenablage-Hilfsprogramm:
 Einrichtung prüfen:
 
 ```bash
-blueferry otp-status     # an/aus, verwendetes Hilfsprogramm, Sensitiv-Markierung
+blueferry otp status     # an/aus, verwendetes Hilfsprogramm, Sensitiv-Markierung
 blueferry doctor         # warnt bei fehlendem Hilfsprogramm oder altem wl-clipboard
-echo 'Dein Code lautet 123456' | blueferry otp-check   # Probelauf, kopiert nichts
+echo 'Dein Code lautet 123456' | blueferry otp check   # Probelauf, kopiert nichts
 ```
 
 ## Zwischenablage-Verlauf (Klipper und andere)
@@ -102,7 +114,7 @@ wartet auf die Fähigkeitsprüfung; schlägt sie fehl, entfallen wartende
 Kopien und die nächste Nachricht kann die Prüfung erneut versuchen. Ältere
 wl-clipboard-Versionen und die X11-Programme können diese Markierung nicht
 setzen; dann bleibt der Code im Verlauf des Managers, auch nachdem der
-Lösch-Timer abgelaufen ist. `blueferry otp-status` zeigt, welcher Fall
+Lösch-Timer abgelaufen ist. `blueferry otp status` zeigt, welcher Fall
 zutrifft.
 
 ## Lösch-Timer
@@ -124,7 +136,7 @@ Kontrolle, auch beim Beenden.
 
 - **Es ist eine Heuristik.** Ungewöhnlich formulierte Codes können verpasst
   werden; andere Texte können trotzdem wie Authentifizierungsnachrichten
-  aussehen. Mit `blueferry otp-check` kannst du
+  aussehen. Mit `blueferry otp check` kannst du
   Nachrichten deiner eigenen Anbieter testen; es prüft nur den Text, nicht
   die Absender-Regeln.
 - **Gruppenunterhaltungen.** Die Nachrichten-Meldung des iPhones sagt nicht,

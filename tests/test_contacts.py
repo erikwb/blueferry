@@ -760,6 +760,7 @@ def test_records_tolerate_a_malformed_stored_row(tmp_path, monkeypatch):
     ])
     resolver._mem = {}
     resolver._records = []
+    resolver._photos = lambda: False
     resolver._warm()
 
     assert resolver.records() == [

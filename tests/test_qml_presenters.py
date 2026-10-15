@@ -808,6 +808,7 @@ def settings_window(qml_engine):
             function removeNotificationOpenTarget(bundle) { record("removeNotificationOpenTarget", [bundle]); }
             function setMediaControl(enabled) { record("setMediaControl", [enabled]); }
             function setAncsNotificationActions(enabled) { record("setAncsNotificationActions", [enabled]); }
+            function setMirrorNotificationRemovals(enabled) { record("setMirrorNotificationRemovals", [enabled]); }
             function setCallsEnabled(enabled) { record("setCallsEnabled", [enabled]); }
             function setPhoneBatteryWarning(enabled) { record("setPhoneBatteryWarning", [enabled]); }
             function setMprisPlayer(enabled) { record("setMprisPlayer", [enabled]); }
@@ -823,6 +824,8 @@ def settings_window(qml_engine):
             function runDoctor() { record("runDoctor", []); }
             function restartBackend() { record("restartBackend", []); }
             function syncContacts() { record("syncContacts", []); }
+            function setContactPhotos(enabled) { record("setContactPhotos", [enabled]); }
+            function setOtpAutocopy(enabled) { record("setOtpAutocopy", [enabled]); }
             function forgetDevice(mac) { record("forgetDevice", [mac]); }
             function activateBluetooth() { record("activateBluetooth", []); }
             function filePairingIssue() { record("filePairingIssue", []); }
@@ -1346,6 +1349,47 @@ def test_ancs_actions_checkbox_is_opt_in_and_gated(qml_engine, settings_window):
     assert _evaluate(
         qml_engine, "testBridge.calls.filter(c => c.method === 'setAncsNotificationActions')"
     ) == [{"method": "setAncsNotificationActions", "args": [True]}]
+
+
+def test_mirror_removals_checkbox_is_opt_in_and_needs_a_supporting_daemon(
+    qml_engine, settings_window,
+):
+    window, bridge = settings_window
+    bridge.setProperty("setupLoaded", True)
+    bridge.setProperty("status", {"daemon": True, "notification_policy": "all"})
+    QGuiApplication.processEvents()
+    checkbox = _settings_object(window, "mirrorRemovalsCheckBox")
+    # Daemons that don't report the key do not support the setting.
+    assert checkbox.property("visible") is False
+
+    status = {
+        "daemon": True,
+        "notification_policy": "all",
+        "mirror_iphone_removals": False,
+    }
+    bridge.setProperty("status", status)
+    QGuiApplication.processEvents()
+    assert checkbox.property("visible") is True
+    assert checkbox.property("checked") is False
+    assert checkbox.property("enabled") is True
+
+    bridge.setProperty("busy", True)
+    QGuiApplication.processEvents()
+    assert checkbox.property("enabled") is False
+    bridge.setProperty("busy", False)
+    bridge.setProperty("status", {**status, "daemon": False})
+    QGuiApplication.processEvents()
+    assert checkbox.property("enabled") is False
+
+    bridge.setProperty("status", {**status, "mirror_iphone_removals": True})
+    QGuiApplication.processEvents()
+    assert checkbox.property("checked") is True
+    assert QMetaObject.invokeMethod(checkbox, "toggle")
+    assert QMetaObject.invokeMethod(checkbox, "clicked")
+    assert _evaluate(
+        qml_engine,
+        "testBridge.calls.filter(c => c.method === 'setMirrorNotificationRemovals')",
+    ) == [{"method": "setMirrorNotificationRemovals", "args": [False]}]
 
 
 def test_mpris_checkbox_needs_media_control_and_a_supporting_daemon(qml_engine, settings_window):
@@ -2509,6 +2553,92 @@ def test_quickshell_saved_choice_is_not_undone_by_a_late_status(qml_engine) -> N
     choice.deleteLater()
 
 
+def test_quickshell_offers_the_contact_photo_opt_in_only_when_reported(
+    qml_engine, quickshell_setup,
+):
+    theme_component = _component(qml_engine, "data/quickshell/ThemePalette.qml")
+    theme = theme_component.create()
+    component = _component(qml_engine, "data/quickshell/PhoneSettingsPage.qml")
+    page = component.createWithInitialProperties({
+        "ferryTheme": theme, "setup": quickshell_setup,
+        "status": {"contacts_only_notifications": False},
+    })
+    assert page is not None
+    quickshell_setup.setProperty("configured", True)
+    checkbox = page.findChild(QObject, "contactPhotosCheckBox")
+    assert checkbox is not None
+    assert checkbox.property("visible") is False
+
+    page.setProperty("status", {"contacts_only_notifications": False, "contact_photos": False})
+    QGuiApplication.processEvents()
+    assert checkbox.property("visible") is False
+
+    page.setProperty("status", {
+        "contacts_only_notifications": False, "contact_photos": False, "saved_opt_ins": True,
+    })
+    QGuiApplication.processEvents()
+    assert checkbox.property("visible") is True
+    assert checkbox.property("checked") is False
+    calls = []
+    page.operationRequested.connect(
+        lambda method, args: calls.append(
+            (method, args.toVariant() if hasattr(args, "toVariant") else args)
+        )
+    )
+    assert QMetaObject.invokeMethod(checkbox, "toggle")
+    assert QMetaObject.invokeMethod(checkbox, "clicked")
+    assert calls == [("set_contact_photos", {"enabled": True})]
+
+    page.setProperty("busy", {"photos": True})
+    QGuiApplication.processEvents()
+    assert checkbox.property("enabled") is False
+    page.deleteLater()
+    theme.deleteLater()
+
+
+def test_quickshell_offers_the_one_time_code_opt_in_only_when_reported(
+    qml_engine, quickshell_setup,
+):
+    theme_component = _component(qml_engine, "data/quickshell/ThemePalette.qml")
+    theme = theme_component.create()
+    component = _component(qml_engine, "data/quickshell/PhoneSettingsPage.qml")
+    page = component.createWithInitialProperties({
+        "ferryTheme": theme, "setup": quickshell_setup,
+        "status": {"contacts_only_notifications": False},
+    })
+    assert page is not None
+    quickshell_setup.setProperty("configured", True)
+    checkbox = page.findChild(QObject, "otpAutocopyCheckBox")
+    assert checkbox is not None
+    assert checkbox.property("visible") is False
+
+    page.setProperty("status", {"contacts_only_notifications": False, "otp_autocopy": False})
+    QGuiApplication.processEvents()
+    assert checkbox.property("visible") is False
+
+    page.setProperty("status", {
+        "contacts_only_notifications": False, "otp_autocopy": False, "saved_opt_ins": True,
+    })
+    QGuiApplication.processEvents()
+    assert checkbox.property("visible") is True
+    assert checkbox.property("checked") is False
+    calls = []
+    page.operationRequested.connect(
+        lambda method, args: calls.append(
+            (method, args.toVariant() if hasattr(args, "toVariant") else args)
+        )
+    )
+    assert QMetaObject.invokeMethod(checkbox, "toggle")
+    assert QMetaObject.invokeMethod(checkbox, "clicked")
+    assert calls == [("set_otp_autocopy", {"enabled": True})]
+
+    page.setProperty("busy", {"otp": True})
+    QGuiApplication.processEvents()
+    assert checkbox.property("enabled") is False
+    page.deleteLater()
+    theme.deleteLater()
+
+
 @pytest.mark.private_dbus
 def test_quickshell_keeps_the_restart_command_when_the_daemon_is_unavailable(
     tmp_path, quickshell_environment,
@@ -3121,6 +3251,68 @@ def test_now_playing_bar_is_absent_until_media_is_available(
     QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
     QGuiApplication.processEvents()
     assert window.findChild(QObject, "nowPlayingBar") is None
+
+
+def test_contact_photo_opt_in_appears_only_for_supporting_daemons(qml_engine, settings_window):
+    window, bridge = settings_window
+    bridge.setProperty("setupLoaded", True)
+    QGuiApplication.processEvents()
+    loader = _settings_object(window, "contactPhotosLoader")
+    bridge.setProperty("status", {"daemon": True})
+    assert loader.property("active") is False
+
+    bridge.setProperty("status", {"daemon": True, "contact_photos": False})
+    QGuiApplication.processEvents()
+    assert loader.property("active") is False
+
+    bridge.setProperty("status", {"daemon": True, "contact_photos": False, "saved_opt_ins": True})
+    QGuiApplication.processEvents()
+    assert loader.property("active") is True
+    caption = _settings_object(window, "contactPhotosCaption").property("text")
+    assert "next contact sync" in caption and "erases" in caption
+    checkbox = _settings_object(window, "contactPhotosCheckBox")
+    assert checkbox.property("checked") is False
+
+    assert QMetaObject.invokeMethod(checkbox, "toggle")
+    assert QMetaObject.invokeMethod(checkbox, "clicked")
+    assert _evaluate(
+        qml_engine, "testBridge.calls.filter(c => c.method === 'setContactPhotos')"
+    ) == [{"method": "setContactPhotos", "args": [True]}]
+
+    bridge.setProperty("status", {"daemon": True, "contact_photos": True, "saved_opt_ins": True})
+    QGuiApplication.processEvents()
+    assert checkbox.property("checked") is True
+
+
+def test_otp_autocopy_opt_in_appears_only_for_supporting_daemons(qml_engine, settings_window):
+    window, bridge = settings_window
+    bridge.setProperty("setupLoaded", True)
+    QGuiApplication.processEvents()
+    loader = _settings_object(window, "otpAutocopyLoader")
+    bridge.setProperty("status", {"daemon": True})
+    assert loader.property("active") is False
+
+    bridge.setProperty("status", {"daemon": True, "otp_autocopy": False})
+    QGuiApplication.processEvents()
+    assert loader.property("active") is False
+
+    bridge.setProperty("status", {"daemon": True, "otp_autocopy": False, "saved_opt_ins": True})
+    QGuiApplication.processEvents()
+    assert loader.property("active") is True
+    caption = _settings_object(window, "otpAutocopyCaption").property("text")
+    assert "not in your contacts" in caption and "group chats" in caption
+    checkbox = _settings_object(window, "otpAutocopyCheckBox")
+    assert checkbox.property("checked") is False
+
+    assert QMetaObject.invokeMethod(checkbox, "toggle")
+    assert QMetaObject.invokeMethod(checkbox, "clicked")
+    assert _evaluate(
+        qml_engine, "testBridge.calls.filter(c => c.method === 'setOtpAutocopy')"
+    ) == [{"method": "setOtpAutocopy", "args": [True]}]
+
+    bridge.setProperty("status", {"daemon": True, "otp_autocopy": True, "saved_opt_ins": True})
+    QGuiApplication.processEvents()
+    assert checkbox.property("checked") is True
 
 
 def test_phone_calls_opt_in_appears_only_for_supporting_daemons(qml_engine, settings_window):
@@ -3911,3 +4103,85 @@ def _delegate_value(engine, window, list_name, child, expression):
         const item = find(delegate)
         return {expression}
     }})()""")
+
+
+def test_quickshell_now_playing_renders_the_bridge_view(qml_engine) -> None:
+    theme = _component(qml_engine, "data/quickshell/ThemePalette.qml").create()
+    component = _component(qml_engine, "data/quickshell/QuickshellNowPlaying.qml")
+    strip = component.createWithInitialProperties({"ferryTheme": theme})
+    assert strip is not None, component.errors()
+    try:
+        assert strip.property("visible") is False
+        strip.setProperty("view", {
+            "visible": True, "playing": True, "title": "<b>Song</b>", "artist": "Band",
+            "idle": False, "previous": False, "toggle": True, "next": True,
+        })
+        summary = strip.findChild(QObject, "nowPlayingSummary")
+        assert summary.property("text") == "▶  <b>Song</b> — Band"
+        assert strip.findChild(QObject, "nowPlayingPrevious").property("enabled") is False
+        toggle = strip.findChild(QObject, "nowPlayingToggle")
+        assert toggle.property("enabled") is True
+        assert toggle.property("text") == "⏸"
+
+        commands = []
+        strip.commandRequested.connect(commands.append)
+        assert QMetaObject.invokeMethod(toggle, "clicked")
+        assert commands == ["toggle"]
+
+        strip.setProperty("view", {"visible": True, "idle": True})
+        assert summary.property("text") == "⏸  Nothing is playing on the iPhone"
+        strip.setProperty("view", {"visible": True, "title": "", "artist": ""})
+        assert summary.property("text") == "⏸  Unknown title"
+    finally:
+        strip.deleteLater()
+        QGuiApplication.processEvents()
+
+
+def test_quickshell_fetches_now_playing_only_with_the_opt_in(qml_engine) -> None:
+    source = (ROOT / "data/quickshell/shell.qml").read_text()
+    functions = _qml_functions(source, ("refreshNowPlaying",))
+    script = '''(function() {
+        var calls = [];
+        var backendBridge = {
+            requestLatest: function(method) { calls.push("request:" + method); },
+            cancelLatest: function(method) { calls.push("cancel:" + method); }
+        };
+        var root = {backendStatus: {media_control_enabled: "true"}, nowPlaying: {visible: true}};
+    ''' + functions + '''
+        refreshNowPlaying();
+        if (root.nowPlaying.visible) throw new Error("stale strip kept");
+        root.backendStatus = {media_control_enabled: true};
+        refreshNowPlaying();
+        return JSON.stringify(calls);
+    })()'''
+    assert _evaluate(qml_engine, script) == '["cancel:now_playing","request:now_playing"]'
+    assert 'name === "now-playing-changed") root.refreshNowPlaying()' in source
+
+
+def test_quickshell_discards_late_media_after_status_loss(qml_engine) -> None:
+    source = (ROOT / "data/quickshell/shell.qml").read_text()
+    functions = _qml_functions(source, ("markStatusUnavailable", "applyNowPlaying"))
+    script = '''(function() {
+        var calls = [];
+        var backendBridge = {cancelLatest: function(method) { calls.push(method); }};
+        var backendStatus = {media_control_enabled: true};
+        var nowPlaying = {visible: true};
+        var statusErrorText = "";
+        var root = {};
+        Object.defineProperty(root, "backendStatus", {get: function() {return backendStatus;}});
+        Object.defineProperty(root, "nowPlaying", {
+            get: function() {return nowPlaying;}, set: function(value) {nowPlaying = value;}
+        });
+    ''' + functions + '''
+        markStatusUnavailable("gone");
+        applyNowPlaying({visible: true, title: "old"});
+        if (nowPlaying.visible) throw new Error("late media restored after status loss");
+        backendStatus = {media_control_enabled: false};
+        applyNowPlaying({visible: true});
+        if (nowPlaying.visible) throw new Error("late media restored after opt-out");
+        backendStatus = {media_control_enabled: true};
+        applyNowPlaying({visible: true});
+        if (!nowPlaying.visible) throw new Error("fresh media was hidden");
+        return JSON.stringify(calls);
+    })()'''
+    assert _evaluate(qml_engine, script) == '["now_playing"]'

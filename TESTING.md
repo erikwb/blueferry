@@ -27,8 +27,9 @@ dbus-run-session --config-file=tests/dbus-test.conf -- sh -c '
 ```
 
 The repository quality workflow runs the same hermetic suite on Arch Linux,
-along with Ruff, Bandit, mypy, QML linting, and a coverage report. The package
-build remains the final split-package and desktop-metadata integration check.
+along with Ruff, Bandit, mypy, `tools/lint_mainloop.py`, QML linting, and a
+coverage report. The package build remains the final split-package and
+desktop-metadata integration check.
 The native package matrix also runs `packaging/smoke-qt.py` with the system
 Python in isolated mode after installing the artifacts, on every target that
 supports the Qt client. It loads the installed application and its default KDE
@@ -66,6 +67,19 @@ style dependencies fail this check even when CLI/TUI startup still succeeds.
   own thread, because it would fire later on an orphaned object inside an
   unrelated test, or that removes a source id it never armed. Callbacks that
   worker threads post back to the main loop are not attributed to a test.
+- The autouse `sync_dbus_guard` in `tests/conftest.py` fails a test in which
+  code from a daemon module made a blocking dbus-python call on the main
+  thread. It wraps `Connection.call_blocking`, so it sees real connections
+  only, in practice private-bus tests. Test code and worker threads may block;
+  the `ALLOWLIST`, `KNOWN_DEBT` and `RUNTIME_KNOWN_DEBT` of
+  `tools/lint_mainloop.py` apply, and dbus-python's own bus-daemon
+  bookkeeping (`AddMatch`, `RemoveMatch`, `GetNameOwner`, `RequestName`,
+  `ReleaseName`, made from inside dbus-python such as `get_object` or
+  `BusName`) and finalizers are exempt; daemon code calling a bus helper like
+  `bus.get_name_owner()` directly is reported. Fix a report with
+  `reply_handler`/`error_handler` or `dbus_call.call_async`.
+- `tests/test_lint_mainloop.py` runs `tools/lint_mainloop.py` over the source
+  tree: new blocking calls in daemon modules and stale exemptions fail it.
 - `tests/conftest.py` disables libdbus's exit-on-disconnect on every D-Bus
   connection the test process opens, from test code or from the code under
   test. Otherwise a closed private connection that a failing test keeps alive

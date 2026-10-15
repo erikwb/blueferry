@@ -75,7 +75,10 @@ class BackendStatus:
     storage_detail: str = ""
     controller_vendor: str = ""
     ancs_limited_controller: bool = False
-    otp_autocopy: bool = False
+    # Runtime setters for contact photos and OTP copying are available.
+    saved_opt_ins: bool = False
+    # None when the daemon predates the one-time code setting.
+    otp_autocopy: bool | None = None
     # None when the daemon predates the calls setting and does not report it.
     calls_enabled: bool | None = None
     calls_state: str = "disabled"
@@ -91,6 +94,8 @@ class BackendStatus:
     # Where the iPhone's sound plays: "pc", "phone", "none" or "unknown";
     # None when the daemon predates the key.
     phone_audio_playing: str | None = None
+    # None when the daemon predates the contact-photo setting.
+    contact_photos: bool | None = None
     extra: Mapping[str, Any] = field(default_factory=dict, repr=False)
 
     @property
@@ -127,6 +132,7 @@ class BackendStatus:
             "map_connection_refused",
             "controller_vendor",
             "ancs_limited_controller",
+            "saved_opt_ins",
             "otp_autocopy",
             "calls_enabled",
             "calls_state",
@@ -138,6 +144,7 @@ class BackendStatus:
             "phone_network_name",
             "phone_network_status",
             "phone_audio_playing",
+            "contact_photos",
         }
         return cls(
             daemon=_bool(value.get("daemon")),
@@ -168,7 +175,8 @@ class BackendStatus:
             storage_detail=_str(value.get("storage_detail")),
             controller_vendor=_str(value.get("controller_vendor")),
             ancs_limited_controller=_bool(value.get("ancs_limited_controller")),
-            otp_autocopy=_bool(value.get("otp_autocopy")),
+            saved_opt_ins=_bool(value.get("saved_opt_ins")),
+            otp_autocopy=_bool(value["otp_autocopy"]) if "otp_autocopy" in value else None,
             calls_enabled=_bool(value["calls_enabled"]) if "calls_enabled" in value else None,
             calls_state=_str(value.get("calls_state"), "disabled"),
             calls_available=_bool(value.get("calls_available")),
@@ -179,6 +187,9 @@ class BackendStatus:
             phone_network_name=_optional_str(value.get("phone_network_name")),
             phone_network_status=_optional_str(value.get("phone_network_status")),
             phone_audio_playing=_audio_playing(value.get("phone_audio_playing")),
+            contact_photos=(
+                _bool(value["contact_photos"]) if "contact_photos" in value else None
+            ),
             extra={key: item for key, item in value.items() if key not in known},
         )
 
@@ -187,6 +198,14 @@ class BackendStatus:
         reported: dict[str, object] = (
             {} if self.calls_enabled is None else {"calls_enabled": self.calls_enabled}
         )
+        if self.saved_opt_ins:
+            reported["saved_opt_ins"] = True
+        # Likewise the contact-photo opt-in.
+        if self.contact_photos is not None:
+            reported["contact_photos"] = self.contact_photos
+        # Likewise the one-time code opt-in.
+        if self.otp_autocopy is not None:
+            reported["otp_autocopy"] = self.otp_autocopy
         # Absent for daemons that predate it, so clients keep the old wording.
         if self.phone_audio_playing is not None:
             reported["phone_audio_playing"] = self.phone_audio_playing
@@ -216,7 +235,6 @@ class BackendStatus:
             "map_connection_refused": self.map_connection_refused,
             "controller_vendor": self.controller_vendor,
             "ancs_limited_controller": self.ancs_limited_controller,
-            "otp_autocopy": self.otp_autocopy,
             "calls_state": self.calls_state,
             "calls_available": self.calls_available,
             "phone_battery_level": self.phone_battery_level,
