@@ -60,12 +60,14 @@ The file is created with mode 0600 and is never overwritten without `--force`.
 ## Turn it off
 
 Untick the checkbox (or run `blueferry contact-photos disable`). BlueFerry
-deletes the avatar files at once and erases the stored photos right after
-any contact sync that is still running. A backend that starts with the
-option off erases leftovers too.
+stops displaying photos at once and starts deleting avatar files and stored
+photos. Deletion waits for any running contact sync, and failures are retried
+automatically. `blueferry contact-photos status` reports whether cleanup is
+pending or complete. A backend that starts with the option off cleans up
+leftovers too.
 
 **Before going back to an older BlueFerry release**, turn the option off
-first, so the photos are deleted right away. If you forget,
+first and wait until `blueferry contact-photos status` reports cleanup complete. If you forget,
 the older release deletes them together with the contacts at its next
 contact sync or when the storage mode changes.
 

@@ -478,8 +478,9 @@ stays readable for popups already shown, up to 64 files), and deletes it when
 the storage mode changes or the backend stops. Plasma is expected to show that image. Neither Plasma nor any
 other notification server has been tested with it yet, so a server that
 ignores `image-path` just shows the usual icon. Before going back to a
-BlueFerry release without this option, turn it off and start the backend once.
-That start erases the stored photos right away; otherwise the older release
+BlueFerry release without this option, turn it off and wait until
+`blueferry contact-photos status` reports cleanup complete. Cleanup waits for
+active contact downloads and retries storage or file-deletion failures; otherwise the older release
 deletes them with the contacts at its next contact sync. `blueferry contacts-photo NAME -o FILE`
 exports one cached photo. Group conversations keep their group icons, and the
 terminal client does not show photos.

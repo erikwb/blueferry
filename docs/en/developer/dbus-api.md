@@ -90,7 +90,7 @@ package to restart an outdated backend after upgrades.
 | `GetContactsOnlyNotifications` / `SetContactsOnlyNotifications` | `b enabled` |
 | `GetAncsNotificationActions` / `SetAncsNotificationActions` | `b enabled` (saved opt-in for iPhone action buttons) |
 | `SetPhoneBatteryWarning` | `b enabled` → `b selected`; state is `phone_battery_warning` in `GetStatus` |
-| `SetContactPhotos` | `b enabled` → `s status_json`: saves the contact-photo opt-in in `settings.json` and applies it at once (off deletes avatar files and queues stored-photo erasure after any active contact sync; failed erasure is retried); returns the `contact_photo*` status keys. `GetStatus` reports the current value as `contact_photos`; `saved_opt_ins: true` advertises the runtime setter |
+| `SetContactPhotos` | `b enabled` → `s status_json`: saves the contact-photo opt-in in `settings.json` and applies it at once (off stops serving photos and queues erasure after any active contact sync; failed file and database deletions are retried); returns the `contact_photo*` status keys, including `contact_photo_cleanup_pending` (true until both file and database cleanup finish). `GetStatus` reports the current value as `contact_photos`; `saved_opt_ins: true` advertises the runtime setter |
 | `SetOtpAutocopy` | `b enabled` → `s status_json`: saves the one-time code auto-copy opt-in in `settings.json` and applies it at once; returns `{"otp_autocopy": b}`. `GetStatus` reports the current value as `otp_autocopy`; `saved_opt_ins: true` advertises the runtime setter |
 | `GetStoragePolicy` / `SetStoragePolicy` | `s policy`: `encrypted`, `plaintext`, or `none`; `Set` returns `s status_json` |
 | `UnlockStorage` | → `s status_json` |

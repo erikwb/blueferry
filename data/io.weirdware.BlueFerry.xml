@@ -114,7 +114,7 @@
     </method>
     <method name="SetContactPhotos">
       <annotation name="org.freedesktop.DBus.Description"
-                  value="Save the contact-photo opt-in and apply it at once; off erases stored photos"/>
+                  value="Save the contact-photo opt-in; off starts cleanup, with completion reported in contact_photo_cleanup_pending"/>
       <arg name="enabled" type="b" direction="in"/>
       <arg name="status_json" type="s" direction="out"/>
       <annotation name="io.weirdware.BlueFerry.Errors"

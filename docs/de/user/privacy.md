@@ -83,8 +83,9 @@ Kontakt-Cache auch die Bilder deiner Kontakte, im selben Speichermodus. Für
 Popup-Symbole legt das Backend kurzlebige Kopien, die nur dir gehören, in
 `$XDG_RUNTIME_DIR/blueferry` ab. Die Einstellung selbst steht als
 `contact_photos` in `settings.json`. Schaltest du die Option aus, löscht
-BlueFerry die Avatar-Dateien sofort und die gespeicherten Fotos direkt nach
-einer laufenden Kontakt-Synchronisierung.
+BlueFerry die Avatar-Dateien und gespeicherten Fotos. Die Bereinigung wartet
+auf laufende Kontakt-Synchronisierungen und wiederholt fehlgeschlagene
+Löschversuche; `blueferry contact-photos status` zeigt ihren Abschluss an.
 
 Die Verschlüsselung schützt gespeicherte Daten. Andere Programme, die unter
 deinem Benutzer laufen, können trotzdem die D-Bus-API von BlueFerry nutzen

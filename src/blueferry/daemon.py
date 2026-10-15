@@ -954,7 +954,10 @@ class Daemon:
                 self._dbus_service.retry_storage_unlock()
         except Exception:
             log.warning("could not schedule background storage retry", exc_info=True)
+        cleanup_pending = self._avatar_files.cleanup_pending
         self._avatar_files.retry_cleanup()
+        if cleanup_pending != self._avatar_files.cleanup_pending:
+            self._emit_status()
         self._queue_photo_erase()
         if (
             self.photo_settings.enabled
@@ -1682,11 +1685,17 @@ class Daemon:
         }
 
     def _contact_photo_status(self) -> dict[str, object]:
+        status: dict[str, object] = {
+            "contact_photos": self.photo_settings.enabled,
+            "contact_photo_cleanup_pending": (
+                self._photo_erase_pending or self._avatar_files.cleanup_pending
+            ),
+        }
         if not self.photo_settings.enabled:
-            return {"contact_photos": False}
+            return status
         # Content-free counters: clients drop cached avatars on change.
         return {
-            "contact_photos": True,
+            **status,
             "contact_photo_revision": self.contacts.photo_revision,
             "contact_photo_count": self.contacts.photo_count(),
         }

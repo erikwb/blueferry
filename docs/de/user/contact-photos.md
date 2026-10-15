@@ -59,12 +59,15 @@ Die Datei wird mit Modus 0600 angelegt und ohne `--force` nie überschrieben.
 ## Ausschalten
 
 Den Haken entfernen (oder `blueferry contact-photos disable`). BlueFerry
-löscht die Avatar-Dateien sofort und die gespeicherten Fotos direkt nach einer
-noch laufenden Kontakt-Synchronisierung. Ein Backend, das mit ausgeschalteter
-Option startet, löscht Reste ebenfalls.
+zeigt keine Fotos mehr an und beginnt, Avatar-Dateien und gespeicherte Fotos
+zu löschen. Die Bereinigung wartet auf laufende Kontakt-Synchronisierungen
+und wiederholt fehlgeschlagene Löschversuche automatisch.
+`blueferry contact-photos status` zeigt an, ob sie noch aussteht oder
+abgeschlossen ist. Beim Start mit ausgeschalteter Option werden auch Reste bereinigt.
 
 **Bevor du zu einer älteren BlueFerry-Version zurückgehst**, die Option
-zuerst ausschalten, damit die Fotos sofort gelöscht werden. Wenn du das vergisst, löscht die ältere Version sie zusammen mit den
+zuerst ausschalten und warten, bis `blueferry contact-photos status` die
+Bereinigung als abgeschlossen meldet. Wenn du das vergisst, löscht die ältere Version sie zusammen mit den
 Kontakten bei ihrer nächsten Kontakt-Synchronisierung oder wenn sich der
 Speichermodus ändert.
 

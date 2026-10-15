@@ -77,8 +77,10 @@ With the optional [contact photos](contact-photos.md), the contact cache
 also holds your contacts' pictures under the same storage mode, and the
 backend keeps short-lived owner-only copies in `$XDG_RUNTIME_DIR/blueferry`
 for popup icons. The setting itself is saved as `contact_photos` in
-`settings.json`. Turning the option off deletes the avatar files at once and
-erases the stored photos right after any running contact sync.
+`settings.json`. Turning the option off stops photo display immediately and
+starts deleting the avatar files and stored photos. Cleanup waits for active
+contact syncs and retries failures; `blueferry contact-photos status` reports
+when it is complete.
 
 Encryption protects data at rest. Other programs running as your user can
 still use the BlueFerry D-Bus API and, while the wallet is unlocked, may be

@@ -102,7 +102,9 @@ def test_daemon_switches_photos_on_and_off_without_a_restart(make_daemon, monkey
     files = []
     daemon.photo_files.clear = lambda: files.append("clear")
 
-    assert daemon._set_contact_photos(False) == {"contact_photos": False}
+    assert daemon._set_contact_photos(False) == {
+        "contact_photos": False, "contact_photo_cleanup_pending": True,
+    }
     assert json.loads(config.SETTINGS_JSON.read_text())["contact_photos"] is False
     assert daemon.photo_files is None and files == ["clear"]
     assert daemon._status()["contact_photos"] is False
@@ -148,7 +150,9 @@ def test_photo_erasure_retries_a_rejected_worker_queue(queued_photos, monkeypatc
         raise RuntimeError("Bluetooth recovery is in progress")
 
     monkeypatch.setattr(daemon.obex_worker, "submit", refused)
-    assert daemon._set_contact_photos(False) == {"contact_photos": False}
+    assert daemon._set_contact_photos(False) == {
+        "contact_photos": False, "contact_photo_cleanup_pending": True,
+    }
     assert _photo_rows() == 1
     assert daemon.photo_files is None
     assert daemon._photo_erase_pending and not daemon._photo_erase_running
@@ -195,6 +199,85 @@ def test_reenabling_photos_waits_for_pending_erasure(queued_photos, monkeypatch)
     _finish_photo_job(jobs)
     assert syncs == [True]
     assert not daemon._photo_erase_pending
+
+
+def test_failed_avatar_cleanup_survives_opt_out_and_reenable(queued_photos, monkeypatch):
+    from pathlib import Path
+
+    from tests.photo_fixtures import png
+
+    daemon, jobs = queued_photos
+    files = daemon.photo_files
+    monkeypatch.setattr(files, "_photo_ref", lambda _address: 1)
+    monkeypatch.setattr(files, "_load_photo", lambda _ref: png())
+    avatar = Path(files.path_for("a"))
+    unlink = Path.unlink
+
+    def unavailable(path, *args, **kwargs):
+        if path == avatar:
+            raise OSError("temporarily unavailable")
+        return unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", unavailable)
+    daemon._set_contact_photos(False)
+    _finish_photo_job(jobs)
+    assert _photo_rows() == 0 and avatar.exists()
+    assert daemon._contact_photo_status()["contact_photo_cleanup_pending"] is True
+    monkeypatch.setattr(daemon.contact_sync, "photos_changed", lambda: None)
+    daemon._set_contact_photos(True)
+    assert daemon.photo_files is files
+    monkeypatch.setattr(Path, "unlink", unlink)
+    daemon._retry_storage()
+    assert not avatar.exists()
+    assert daemon._contact_photo_status()["contact_photo_cleanup_pending"] is False
+
+
+def test_cli_reports_pending_cleanup_until_both_deletions_finish(
+    queued_photos, monkeypatch, capsys,
+):
+    from types import SimpleNamespace
+
+    from blueferry import cli_contacts
+    from blueferry.models import BackendStatus
+
+    daemon, jobs = queued_photos
+    submit = daemon.obex_worker.submit
+
+    def busy(*_args, **_kwargs):
+        raise RuntimeError("Bluetooth recovery is in progress")
+
+    monkeypatch.setattr(daemon.obex_worker, "submit", busy)
+    monkeypatch.setattr(cli_contacts, "BackendClient", lambda: SimpleNamespace(
+        set_contact_photos=daemon._set_contact_photos,
+        status=lambda: BackendStatus.from_dict(daemon._contact_photo_status()),
+    ))
+    cli_contacts._set_photos(False)
+    output = capsys.readouterr().out
+    assert "cleanup is pending" in output and "are erased" not in output
+    assert _photo_rows() == 1
+    cli_contacts.contact_photos_status()
+    assert "cleanup is pending" in capsys.readouterr().out
+
+    monkeypatch.setattr(daemon.obex_worker, "submit", submit)
+    daemon._retry_storage()
+    _finish_photo_job(jobs)
+    assert _photo_rows() == 0
+    cli_contacts.contact_photos_status()
+    assert "cleanup complete" in capsys.readouterr().out
+
+
+def test_cli_does_not_infer_cleanup_completion_from_an_older_reply(monkeypatch, capsys):
+    from types import SimpleNamespace
+
+    from blueferry import cli_contacts
+
+    monkeypatch.setattr(cli_contacts, "BackendClient", lambda: SimpleNamespace(
+        set_contact_photos=lambda _enabled: {"contact_photos": False},
+    ))
+    cli_contacts._set_photos(False)
+    output = capsys.readouterr().out
+    assert "does not report photo cleanup completion" in output
+    assert "are erased" not in output
 
 
 def test_old_erasure_cannot_satisfy_a_later_opt_out(queued_photos):

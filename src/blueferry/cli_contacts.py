@@ -33,7 +33,17 @@ def _set_photos(enabled: bool) -> None:
     if enabled:
         typer.echo("Photos arrive with the contact sync that starts now.")
     else:
-        typer.echo("Stored photos and avatar files are erased.")
+        _photo_cleanup_status(status)
+
+
+def _photo_cleanup_status(status: dict) -> None:
+    pending = status.get("contact_photo_cleanup_pending")
+    if pending is True:
+        typer.echo("Photo cleanup is pending. BlueFerry will retry automatically.")
+    elif pending is False:
+        typer.echo("Photo cleanup complete: stored photos and avatar files are erased.")
+    else:
+        typer.echo("This backend does not report photo cleanup completion.")
 
 
 @contact_photos_app.command("enable")
@@ -61,6 +71,7 @@ def contact_photos_status() -> None:
         return
     if status.get("contact_photos") is not True:
         typer.echo("Contact photos: disabled")
+        _photo_cleanup_status(status)
         return
     typer.echo("Contact photos: enabled")
     typer.echo(f"Stored photos: {int(status.get('contact_photo_count') or 0)}")
