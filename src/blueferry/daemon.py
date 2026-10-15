@@ -175,10 +175,13 @@ class Daemon:
             storage=self.storage, photos=self._contact_photos_enabled,
         )
         self.photo_files: PhotoFiles | None = None
+        self._photo_erase_pending = False
+        self._photo_erase_running = False
+        self._photo_erase_generation = 0
         if self.photo_settings.enabled:
             self.photo_files = self._new_photo_files()
         else:
-            self._erase_contact_photos()
+            self._photo_erase_pending = not self._erase_contact_photos()
         self.connectivity = Connectivity()
         self.notification_policy = NotificationPolicyStore()
         self.starred_threads = StarredThreadsStore(storage=self.storage)
@@ -945,6 +948,13 @@ class Daemon:
                 self._dbus_service.retry_storage_unlock()
         except Exception:
             log.warning("could not schedule background storage retry", exc_info=True)
+        self._queue_photo_erase()
+        if (
+            self.photo_settings.enabled
+            and not self._photo_erase_pending
+            and self.contact_sync.photo_refresh_pending
+        ):
+            self.contact_sync.refresh()
         return True
 
     def _initialize_storage(self) -> None:
@@ -977,21 +987,54 @@ class Daemon:
         if selected and not was_enabled:
             self.photo_files = self._new_photo_files()
             log.info("contact photos enabled; they arrive with the next contact sync")
-            self.contact_sync.refresh()
-        elif not selected and was_enabled:
+            if not self._photo_erase_pending:
+                self.contact_sync.photos_changed()
+        elif not selected:
             photo_files, self.photo_files = self.photo_files, None
             if photo_files is not None:
                 photo_files.clear()
-            self.obex_worker.submit(
-                self._erase_contact_photos,
-                on_success=lambda _result: self._photos_erased(),
-                on_error=lambda error: log.warning(
-                    "could not erase contact photos: %s", type(error).__name__
-                ),
-            )
+            self._photo_erase_generation += 1
+            self._photo_erase_pending = True
+            self._queue_photo_erase()
             log.info("contact photos disabled")
         self._emit_status()
         return self._contact_photo_status()
+
+    def _queue_photo_erase(self) -> None:
+        """Keep erasure owed across queue rejection, storage errors and toggles.
+
+        The existing storage retry tick retries failures. A newer opt-out
+        needs its own erasure after any intervening photo-enabled pull.
+        """
+        if not self._photo_erase_pending or self._photo_erase_running:
+            return
+        generation = self._photo_erase_generation
+        self._photo_erase_running = True
+
+        def completed(erased: bool) -> None:
+            self._photo_erase_running = False
+            if not erased:
+                return  # _erase_contact_photos logged the failure; retry later
+            if generation == self._photo_erase_generation:
+                self._photo_erase_pending = False
+            self._photos_erased()
+            if self._photo_erase_pending:
+                self._queue_photo_erase()
+            elif self.photo_settings.enabled:
+                # Opted back in while deletion was queued: fetch only after
+                # the old deletion can no longer erase newly downloaded data.
+                self.contact_sync.photos_changed()
+
+        def failed(error: Exception) -> None:
+            self._photo_erase_running = False
+            log.warning("contact photo erasure deferred: %s", type(error).__name__)
+
+        try:
+            self.obex_worker.submit(
+                self._erase_contact_photos, on_success=completed, on_error=failed,
+            )
+        except Exception as error:
+            failed(error)
 
     def _photos_erased(self) -> None:
         # Reload the cache without photo references and tell clients.
@@ -1002,12 +1045,14 @@ class Daemon:
                         type(error).__name__)
         self._emit_status()
 
-    def _erase_contact_photos(self) -> None:
+    def _erase_contact_photos(self) -> bool:
         try:
             if ContactRepository(self.storage).clear_photos():
                 log.info("erased contact photos retained while the option was enabled")
         except Exception as error:
             log.warning("could not erase retained contact photos: %s", type(error).__name__)
+            return False
+        return True
 
     def _clear_photo_files(self) -> None:
         if self.photo_files is not None:
@@ -1624,6 +1669,8 @@ class Daemon:
             ),
             # Configuration only; codes themselves never cross the bus.
             "otp_autocopy": self.otp_settings.enabled,
+            # Older daemons report the values but have no runtime setters.
+            "saved_opt_ins": True,
             "storage_policy": self.storage.status.policy,
             "storage_state": self.storage.status.state,
             "storage_detail": self.storage.status.detail,
@@ -1809,6 +1856,10 @@ class Daemon:
         main_loop.quit()
 
     def _cleanup_bluetooth_worker(self) -> None:
+        # Queued erasures may have been cancelled by shutdown. The worker is
+        # now past every in-flight pull, so the last cleanup cannot be undone.
+        if self._photo_erase_pending or not self.photo_settings.enabled:
+            self._erase_contact_photos()
         # A second daemon still runs stop() when claiming the name fails. It
         # must not replay or clear recovery state belonging to the live owner.
         if self._bus_name is not None:

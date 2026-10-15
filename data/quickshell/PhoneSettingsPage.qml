@@ -522,13 +522,13 @@ Rectangle {
         FerrySectionLabel {
           ferryTheme: root.theme
           text: "Contact photos"
-          visible: root.status.contact_photos !== undefined
+          visible: root.status.saved_opt_ins === true && root.status.contact_photos !== undefined
         }
         FerryCheckBox {
           objectName: "contactPhotosCheckBox"
           ferryTheme: root.theme
           text: "Show contact photos from the iPhone"
-          visible: root.status.contact_photos !== undefined
+          visible: root.status.saved_opt_ins === true && root.status.contact_photos !== undefined
           checked: root.status.contact_photos === true
           enabled: root.setup.configured && !root.busy.photos
           Accessible.description: "Photos are kept with your contacts and arrive with the next contact sync. Turning this off erases them."
@@ -542,13 +542,13 @@ Rectangle {
         FerrySectionLabel {
           ferryTheme: root.theme
           text: "One-time codes"
-          visible: root.status.otp_autocopy !== undefined
+          visible: root.status.saved_opt_ins === true && root.status.otp_autocopy !== undefined
         }
         FerryCheckBox {
           objectName: "otpAutocopyCheckBox"
           ferryTheme: root.theme
           text: "Copy one-time codes to the clipboard"
-          visible: root.status.otp_autocopy !== undefined
+          visible: root.status.saved_opt_ins === true && root.status.otp_autocopy !== undefined
           checked: root.status.otp_autocopy === true
           enabled: root.setup.configured && !root.busy.otp
           Accessible.description: "Only new messages from senders not in your contacts, never group chats. Turning this off clears a copied code still on the clipboard."

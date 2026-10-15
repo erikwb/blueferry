@@ -763,6 +763,11 @@ def test_gtk_contact_photo_row_appears_only_for_supporting_daemons():
     assert page._photos_group.visible is False
 
     page._apply_contact_photos(BackendStatus.from_dict({"contact_photos": True}), reachable=True)
+    assert page._photos_group.visible is False
+
+    page._apply_contact_photos(
+        BackendStatus.from_dict({"contact_photos": True, "saved_opt_ins": True}), reachable=True,
+    )
     assert page._photos_group.visible is True
     assert page._photos_switch.active is True
     assert page._photos_row.sensitive is True
@@ -853,6 +858,11 @@ def test_gtk_one_time_code_row_appears_only_for_supporting_daemons():
     assert page._otp_group.visible is False
 
     page._apply_otp_autocopy(BackendStatus.from_dict({"otp_autocopy": True}), reachable=True)
+    assert page._otp_group.visible is False
+
+    page._apply_otp_autocopy(
+        BackendStatus.from_dict({"otp_autocopy": True, "saved_opt_ins": True}), reachable=True,
+    )
     assert page._otp_group.visible is True
     assert page._otp_switch.active is True
     assert page._otp_row.sensitive is True

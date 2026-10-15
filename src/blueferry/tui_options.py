@@ -127,7 +127,10 @@ class OptionsScreen(ModalScreen[None]):
 
     def _render_state(self) -> None:
         values = self.values or {}
-        offered = [opt_in for opt_in in self.opt_ins if opt_in.key in values]
+        offered = [
+            opt_in for opt_in in self.opt_ins
+            if values.get("saved_opt_ins") is True and opt_in.key in values
+        ]
         note = self.query_one("#options-note", Static)
         if self.values is None:
             note.update("Loading…")
@@ -136,7 +139,7 @@ class OptionsScreen(ModalScreen[None]):
         note.display = self.values is None or not offered
         for opt_in in self.opt_ins:
             checkbox = self.query_one(f"#opt-{opt_in.key}", Checkbox)
-            shown = opt_in.key in values
+            shown = opt_in in offered
             checkbox.display = shown
             self.query_one(f"#opt-{opt_in.key}-caption").display = shown
             checkbox.disabled = opt_in.key in self.pending

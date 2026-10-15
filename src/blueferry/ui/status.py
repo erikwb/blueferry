@@ -1503,7 +1503,9 @@ class IPhonePage(Gtk.Box):
         self._client.set_calls_enabled_async(enabled, saved, failed)
 
     def _apply_contact_photos(self, status, *, reachable: bool) -> None:
-        self._photos_group.set_visible(status.contact_photos is not None)
+        self._photos_group.set_visible(
+            status.saved_opt_ins and status.contact_photos is not None,
+        )
         self._applying_saved_switches = True
         self._show_saved_choice(
             self._photos_switch, self._photos_choice, status.contact_photos is True,
@@ -1523,7 +1525,9 @@ class IPhonePage(Gtk.Box):
         )
 
     def _apply_otp_autocopy(self, status, *, reachable: bool) -> None:
-        self._otp_group.set_visible(status.otp_autocopy is not None)
+        self._otp_group.set_visible(
+            status.saved_opt_ins and status.otp_autocopy is not None,
+        )
         self._applying_saved_switches = True
         self._show_saved_choice(
             self._otp_switch, self._otp_choice, status.otp_autocopy is True,

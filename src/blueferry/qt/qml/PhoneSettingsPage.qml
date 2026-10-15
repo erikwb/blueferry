@@ -474,11 +474,12 @@ Kirigami.ScrollablePage {
             }
         }
 
-        // Only daemons that report otp_autocopy support the setting.
+        // Older daemons report the value without a runtime setter.
         Loader {
             objectName: "otpAutocopyLoader"
             Layout.fillWidth: true
-            active: iphonePage.bridge.status.otp_autocopy !== undefined
+            active: iphonePage.bridge.status.saved_opt_ins === true
+                && iphonePage.bridge.status.otp_autocopy !== undefined
             visible: active
             sourceComponent: OtpAutocopySettings {
                 bridge: iphonePage.bridge
@@ -518,11 +519,12 @@ Kirigami.ScrollablePage {
             }
         }
 
-        // Only daemons that report contact_photos support the setting.
+        // Older daemons report the value without a runtime setter.
         Loader {
             objectName: "contactPhotosLoader"
             Layout.fillWidth: true
-            active: iphonePage.bridge.status.contact_photos !== undefined
+            active: iphonePage.bridge.status.saved_opt_ins === true
+                && iphonePage.bridge.status.contact_photos !== undefined
             visible: active
             sourceComponent: ContactPhotoSettings {
                 bridge: iphonePage.bridge

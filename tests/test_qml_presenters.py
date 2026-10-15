@@ -2466,6 +2466,12 @@ def test_quickshell_offers_the_contact_photo_opt_in_only_when_reported(
 
     page.setProperty("status", {"contacts_only_notifications": False, "contact_photos": False})
     QGuiApplication.processEvents()
+    assert checkbox.property("visible") is False
+
+    page.setProperty("status", {
+        "contacts_only_notifications": False, "contact_photos": False, "saved_opt_ins": True,
+    })
+    QGuiApplication.processEvents()
     assert checkbox.property("visible") is True
     assert checkbox.property("checked") is False
     calls = []
@@ -2502,6 +2508,12 @@ def test_quickshell_offers_the_one_time_code_opt_in_only_when_reported(
     assert checkbox.property("visible") is False
 
     page.setProperty("status", {"contacts_only_notifications": False, "otp_autocopy": False})
+    QGuiApplication.processEvents()
+    assert checkbox.property("visible") is False
+
+    page.setProperty("status", {
+        "contacts_only_notifications": False, "otp_autocopy": False, "saved_opt_ins": True,
+    })
     QGuiApplication.processEvents()
     assert checkbox.property("visible") is True
     assert checkbox.property("checked") is False
@@ -3148,6 +3160,10 @@ def test_contact_photo_opt_in_appears_only_for_supporting_daemons(qml_engine, se
 
     bridge.setProperty("status", {"daemon": True, "contact_photos": False})
     QGuiApplication.processEvents()
+    assert loader.property("active") is False
+
+    bridge.setProperty("status", {"daemon": True, "contact_photos": False, "saved_opt_ins": True})
+    QGuiApplication.processEvents()
     assert loader.property("active") is True
     caption = _settings_object(window, "contactPhotosCaption").property("text")
     assert "next contact sync" in caption and "erases" in caption
@@ -3160,7 +3176,7 @@ def test_contact_photo_opt_in_appears_only_for_supporting_daemons(qml_engine, se
         qml_engine, "testBridge.calls.filter(c => c.method === 'setContactPhotos')"
     ) == [{"method": "setContactPhotos", "args": [True]}]
 
-    bridge.setProperty("status", {"daemon": True, "contact_photos": True})
+    bridge.setProperty("status", {"daemon": True, "contact_photos": True, "saved_opt_ins": True})
     QGuiApplication.processEvents()
     assert checkbox.property("checked") is True
 
@@ -3175,6 +3191,10 @@ def test_otp_autocopy_opt_in_appears_only_for_supporting_daemons(qml_engine, set
 
     bridge.setProperty("status", {"daemon": True, "otp_autocopy": False})
     QGuiApplication.processEvents()
+    assert loader.property("active") is False
+
+    bridge.setProperty("status", {"daemon": True, "otp_autocopy": False, "saved_opt_ins": True})
+    QGuiApplication.processEvents()
     assert loader.property("active") is True
     caption = _settings_object(window, "otpAutocopyCaption").property("text")
     assert "not in your contacts" in caption and "group chats" in caption
@@ -3187,7 +3207,7 @@ def test_otp_autocopy_opt_in_appears_only_for_supporting_daemons(qml_engine, set
         qml_engine, "testBridge.calls.filter(c => c.method === 'setOtpAutocopy')"
     ) == [{"method": "setOtpAutocopy", "args": [True]}]
 
-    bridge.setProperty("status", {"daemon": True, "otp_autocopy": True})
+    bridge.setProperty("status", {"daemon": True, "otp_autocopy": True, "saved_opt_ins": True})
     QGuiApplication.processEvents()
     assert checkbox.property("checked") is True
 

@@ -65,6 +65,8 @@ class BackendStatus:
     storage_detail: str = ""
     controller_vendor: str = ""
     ancs_limited_controller: bool = False
+    # Runtime setters for contact photos and OTP copying are available.
+    saved_opt_ins: bool = False
     # None when the daemon predates the one-time code setting.
     otp_autocopy: bool | None = None
     # None when the daemon predates the calls setting and does not report it.
@@ -117,6 +119,7 @@ class BackendStatus:
             "map_connection_refused",
             "controller_vendor",
             "ancs_limited_controller",
+            "saved_opt_ins",
             "otp_autocopy",
             "calls_enabled",
             "calls_state",
@@ -158,6 +161,7 @@ class BackendStatus:
             storage_detail=_str(value.get("storage_detail")),
             controller_vendor=_str(value.get("controller_vendor")),
             ancs_limited_controller=_bool(value.get("ancs_limited_controller")),
+            saved_opt_ins=_bool(value.get("saved_opt_ins")),
             otp_autocopy=_bool(value["otp_autocopy"]) if "otp_autocopy" in value else None,
             calls_enabled=_bool(value["calls_enabled"]) if "calls_enabled" in value else None,
             calls_state=_str(value.get("calls_state"), "disabled"),
@@ -177,6 +181,8 @@ class BackendStatus:
     def to_dict(self) -> dict[str, Any]:
         # Clients offer the calls opt-in only when the key is present.
         reported = {} if self.calls_enabled is None else {"calls_enabled": self.calls_enabled}
+        if self.saved_opt_ins:
+            reported["saved_opt_ins"] = True
         # Likewise the contact-photo opt-in.
         if self.contact_photos is not None:
             reported["contact_photos"] = self.contact_photos

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
 from textual.widgets import Checkbox, Static
 
 from blueferry.client import BackendError
@@ -14,18 +15,21 @@ from tests.test_tui import _Backend
 
 class _OptionsBackend(_Backend):
     def __init__(
-        self, *, photos: bool | None = False, otp: bool | None = False, fail: bool = False,
+        self, *, photos: bool | None = False, otp: bool | None = False,
+        saved_opt_ins: bool = True, fail: bool = False,
     ) -> None:
         super().__init__()
         self.photos = photos
         self.otp = otp
         self.fail = fail
+        self.saved_opt_ins = saved_opt_ins
         self.saved: list[bool] = []
 
     def status(self) -> BackendStatus:  # type: ignore[override]
         return BackendStatus(
             daemon=True, map=True, pbap=True, ancs=True,
             contact_photos=self.photos, otp_autocopy=self.otp,
+            saved_opt_ins=self.saved_opt_ins,
         )
 
     def set_contact_photos(self, enabled: bool) -> dict:
@@ -99,9 +103,10 @@ def test_options_screen_saves_the_one_time_code_opt_in() -> None:
     asyncio.run(scenario())
 
 
-def test_options_screen_hides_settings_an_older_daemon_lacks() -> None:
+@pytest.mark.parametrize("reported", [None, False, True])
+def test_options_screen_hides_settings_an_older_daemon_lacks(reported) -> None:
     async def scenario() -> None:
-        backend = _OptionsBackend(photos=None, otp=None)
+        backend = _OptionsBackend(photos=reported, otp=reported, saved_opt_ins=False)
         app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
         async with app.run_test(size=(120, 36)) as pilot:
             app.action_options()
