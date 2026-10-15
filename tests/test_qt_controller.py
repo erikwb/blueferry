@@ -1469,3 +1469,65 @@ def test_mpris_setting_is_forwarded_and_merged_into_status(monkeypatch):
     )
     controller.setMprisPlayer(True)
     assert controller.status["media_mpris_enabled"] is True
+
+
+class _AudioBackend(_Backend):
+    def __init__(self):
+        super().__init__()
+        self.routes = []
+
+    def set_phone_audio_route(self, route):
+        self.routes.append(route)
+        return route
+
+
+def test_phone_audio_switch_follows_status_and_sends_only_valid_routes():
+    backend = _AudioBackend()
+    controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+    assert controller.phoneAudio["supported"] is False  # older daemon: no keys
+
+    controller._status = {
+        "phone_audio_route": "unavailable",
+        "phone_audio_reason": "keep_phone_audio_on_phone",
+    }
+    audio = controller.phoneAudio
+    assert audio["available"] is False
+    assert "BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE=false" in audio["hint"]
+
+    controller._status = {"phone_audio_route": "pc", "phone_audio_pending": ""}
+    assert controller.phoneAudio["onPc"] is True and controller.phoneAudio["available"] is True
+
+    controller.setPhoneAudioRoute("speaker")
+    controller.setPhoneAudioRoute("phone")
+    assert controller.busy is False
+    controller._pool.waitForDone(1000)
+    assert backend.routes == ["phone"]
+
+
+def test_phone_audio_hint_follows_the_typed_playing_field_from_a_refresh():
+    """GetStatus → BackendStatus (typed field, not in .extra) → phoneAudio."""
+    reported = {
+        "daemon": True, "storage_state": "ready",
+        "phone_audio_route": "pc", "phone_audio_reason": "",
+        "phone_audio_pending": "", "phone_audio_playing": "pc",
+    }
+
+    class Backend(_Backend):
+        def status(self):
+            return BackendStatus.from_dict(reported)
+
+    controller = BridgeController(
+        backend=Backend(), setup=object(), subscribe=False, autostart=False,
+    )
+    changed: list[int] = []
+    controller.statusChanged.connect(lambda: changed.append(1))
+    controller._apply_snapshot(controller._snapshot())
+    assert controller.phoneAudio["hint"] == "Playing on this computer."
+    # Only where the sound plays changes, e.g. AirPlay picked on the iPhone.
+    reported["phone_audio_playing"] = "phone"
+    changed.clear()
+    controller._apply_snapshot(controller._snapshot())
+    assert changed
+    audio = controller.phoneAudio
+    assert audio["mismatch"] is True and audio["onPc"] is True
+    assert audio["hint"] == "The iPhone is playing on its own speaker (chosen on the iPhone)."

@@ -17,7 +17,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtDBus import QDBusConnection
 
-from blueferry import __version__
+from blueferry import __version__, phone_audio_view
 from blueferry.backend_lifecycle import ensure_backend_current, restart_backend
 from blueferry.bluetooth_devices import iphone_candidates
 from blueferry.client import BackendClient
@@ -187,6 +187,20 @@ class BridgeController(QObject):
     @Property("QVariantMap", notify=statusChanged)
     def status(self):
         return self._status
+
+    @Property("QVariantMap", notify=statusChanged)
+    def phoneAudio(self):
+        """The PC/iPhone sound switch; QML wants camelCase ``onPc``."""
+        audio = phone_audio_view.phone_audio(self._status)
+        return {
+            "supported": audio["supported"],
+            "available": audio["available"],
+            "onPc": audio["on_pc"],
+            "pending": audio["pending"],
+            "hint": audio["hint"],
+            "playing": audio["playing"],
+            "mismatch": audio["mismatch"],
+        }
 
     @Property(int, notify=avatarsChanged)
     def avatarRevision(self) -> int:
@@ -597,6 +611,20 @@ class BridgeController(QObject):
             lambda: self._backend.send_media_command(selected),
             lambda _value: None,
             busy=False,
+        )
+
+    @Slot(str)
+    def setPhoneAudioRoute(self, route: str) -> None:
+        """Explicit user action: move the iPhone's sound here or back."""
+        selected = str(route or "")
+        if selected not in ("pc", "phone"):
+            return
+
+        def done(_value: object) -> None:
+            self._refresh_timer.start()
+
+        self._run(
+            lambda: self._backend.set_phone_audio_route(selected), done, busy=False,
         )
 
     @Slot("QVariantMap")

@@ -757,6 +757,7 @@ def settings_window(qml_engine):
             property var devices: []
             property var contactResults: []
             property var nowPlaying: ({})
+            property var phoneAudio: ({})
             property var compatibility: ({})
             property var onboardingCompatibility: compatibility
             property bool compatibilityLoaded: false
@@ -802,6 +803,7 @@ def settings_window(qml_engine):
             function setCallsEnabled(enabled) { record("setCallsEnabled", [enabled]); }
             function setPhoneBatteryWarning(enabled) { record("setPhoneBatteryWarning", [enabled]); }
             function setMprisPlayer(enabled) { record("setMprisPlayer", [enabled]); }
+            function setPhoneAudioRoute(route) { record("setPhoneAudioRoute", [route]); }
             function forgetDevice(mac) { record("forgetDevice", [mac]); }
             function activateBluetooth() { record("activateBluetooth", []); }
             function filePairingIssue() { record("filePairingIssue", []); }
@@ -1241,6 +1243,41 @@ def test_media_control_setting_appears_only_for_supporting_daemons(qml_engine, s
         "daemon": True, "media_control_enabled": True, "media_control_available": True,
     })
     assert "Connected" in _settings_object(window, "mediaControlStateLabel").property("text")
+
+
+def test_phone_audio_switch_appears_only_for_supporting_daemons(qml_engine, settings_window):
+    window, bridge = settings_window
+    bridge.setProperty("setupLoaded", True)
+    bridge.setProperty("status", {"daemon": True})
+    QGuiApplication.processEvents()
+    loader = _settings_object(window, "phoneAudioLoader")
+    assert loader.property("active") is False
+
+    bridge.setProperty("status", {"daemon": True, "phone_audio_route": "phone"})
+    bridge.setProperty("phoneAudio", {
+        "supported": True, "available": True, "onPc": False, "pending": False,
+        "hint": "Playing on the iPhone.", "playing": "phone", "mismatch": False,
+    })
+    QGuiApplication.processEvents()
+    assert loader.property("active") is True
+    switch = _settings_object(window, "phoneAudioSwitch")
+    assert switch.property("checked") is False and switch.property("enabled") is True
+    assert _settings_object(window, "phoneAudioHint").property("text") == "Playing on the iPhone."
+
+    assert QMetaObject.invokeMethod(switch, "toggle")
+    assert QMetaObject.invokeMethod(switch, "toggled")
+    assert _evaluate(
+        qml_engine, "testBridge.calls.filter(c => c.method === 'setPhoneAudioRoute')"
+    ) == [{"method": "setPhoneAudioRoute", "args": ["pc"]}]
+
+    # Unavailable (policy, disconnected, pending): greyed out with the reason.
+    bridge.setProperty("phoneAudio", {
+        "supported": True, "available": False, "onPc": False, "pending": False,
+        "hint": "Available while the iPhone is connected.", "playing": "", "mismatch": False,
+    })
+    QGuiApplication.processEvents()
+    assert switch.property("enabled") is False
+    assert "connected" in _settings_object(window, "phoneAudioHint").property("text")
 
 
 def test_ancs_actions_checkbox_is_opt_in_and_gated(qml_engine, settings_window):
