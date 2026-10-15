@@ -836,6 +836,9 @@ def test_le_reconnect_refreshes_registrations_only_after_a_silent_probe(
     assert client.authorized is False
     assert client.connected is False
     if stale_registration:
+        # The CCC re-enable that comes first is covered by the
+        # test_silent_transport_* tests; here this link has spent it.
+        client._notify_refreshes = client_module.MAX_NOTIFY_REFRESHES_PER_LINK
         client._request_timed_out()
         assert calls == [("write", "cp"), ("stop", "ns"), ("stop", "ds")]
         assert client._owned_notify_paths == set()
@@ -2396,3 +2399,222 @@ def test_disabled_actions_never_report_an_actions_reset(monkeypatch) -> None:
     client._reset_actions()
 
     assert resets == []
+
+
+class _AsyncNotifyCharacteristic:
+    """GATT characteristic whose notify calls answer through D-Bus handlers.
+
+    ``hold`` keeps the next reply back so a test can act in between.
+    """
+
+    def __init__(self, name: str, calls: list, *, stop_error=None, start_error=None):
+        self.name = name
+        self.calls = calls
+        self.stop_error = stop_error
+        self.start_error = start_error
+        self.held: list = []
+        self.hold = False
+
+    def _answer(self, kwargs, error) -> None:
+        if error is not None:
+            reply = lambda: kwargs["error_handler"](error)  # noqa: E731
+        else:
+            reply = kwargs["reply_handler"]
+        if self.hold:
+            self.held.append(reply)
+        else:
+            reply()
+
+    def StopNotify(self, **kwargs) -> None:
+        assert "reply_handler" in kwargs, "the CCC toggle must not block"
+        self.calls.append(("stop", self.name))
+        self._answer(kwargs, self.stop_error)
+
+    def StartNotify(self, **kwargs) -> None:
+        assert "reply_handler" in kwargs, "the CCC toggle must not block"
+        self.calls.append(("start", self.name))
+        self._answer(kwargs, self.start_error)
+
+    def WriteValue(self, value, _options, **kwargs) -> None:
+        self.calls.append(("write", bytes(value)[0]))
+        kwargs["reply_handler"]()
+
+
+def _silent_transport_client(monkeypatch, *, ns=None, ds=None):
+    """An authorized client on a settled LE link whose probe gets no answer."""
+    calls: list = []
+    scheduled: list = []
+    resets: list = []
+    ns = ns or _AsyncNotifyCharacteristic("ns", calls)
+    ds = ds or _AsyncNotifyCharacteristic("ds", calls)
+    ns.calls = ds.calls = calls
+    cp = _AsyncNotifyCharacteristic("cp", calls)
+    bus = _CharacteristicBus({"/device/ns": ns, "/device/ds": ds, "/device/cp": cp})
+    monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
+    monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
+    client = AncsClient(
+        "/device",
+        lambda _event: None,
+        previously_authorized=True,
+        on_transport_failure=lambda: resets.append(True),
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
+        cancel=lambda _timer: None,
+    )
+    client._started = True
+    client._bearer_connected = True
+    client._bearer_ready = True
+    client._ns_path = "/device/ns"
+    client._ds_path = "/device/ds"
+    client._cp_path = "/device/cp"
+    client._notify_started = True
+    client._owned_notify_paths = {"/device/ns", "/device/ds"}
+    client._queue_authorization_probe()
+    assert calls == [("write", CommandID.GetAppAttributes)]
+    calls.clear()
+    return client, calls, scheduled, resets
+
+
+def _fire(scheduled: list, callback) -> None:
+    entry = next(item for item in scheduled if item[1] == callback)
+    scheduled.remove(entry)
+    entry[1]()
+
+
+def test_silent_transport_reenables_ccc_and_repeats_probe_before_le_reset(
+    monkeypatch, caplog,
+) -> None:
+    client, calls, scheduled, resets = _silent_transport_client(monkeypatch)
+
+    with caplog.at_level(logging.INFO, logger="blueferry.ancs.client"):
+        _fire(scheduled, client._request_timed_out)
+
+    assert calls == [
+        ("stop", "ns"), ("start", "ns"),
+        ("stop", "ds"), ("start", "ds"),
+        ("write", CommandID.GetAppAttributes),
+    ]
+    assert client._owned_notify_paths == {"/device/ns", "/device/ds"}
+    assert client.subscribed is True
+    assert client._transport_blocked is False
+    assert "stopped responding" not in caplog.text
+    _complete_authorization_probe(client)
+
+    assert client.authorized is True
+    assert client.connected is True
+    assert resets == []
+    assert all(
+        callback != client._request_transport_reset for _delay, callback in scheduled
+    )
+
+
+def test_silent_transport_escalates_once_the_refresh_budget_is_spent(
+    monkeypatch,
+) -> None:
+    client, calls, scheduled, resets = _silent_transport_client(monkeypatch)
+    stopped = []
+    _fire(scheduled, client._request_timed_out)
+    calls.clear()
+    monkeypatch.setattr(
+        client, "_stop_bluez_notifications", lambda: stopped.append(True),
+    )
+
+    # The repeated probe stays silent as well: the existing escalation.
+    _fire(scheduled, client._request_timed_out)
+
+    assert calls == []
+    assert stopped == [True]
+    assert client._transport_blocked is True
+    assert client.subscribed is False
+    _fire(scheduled, client._request_transport_reset)
+    assert resets == [True]
+
+
+def test_new_le_link_gets_a_fresh_refresh_budget(monkeypatch) -> None:
+    client, _calls, scheduled, _resets = _silent_transport_client(monkeypatch)
+    _fire(scheduled, client._request_timed_out)
+    assert client._notify_refreshes == client_module.MAX_NOTIFY_REFRESHES_PER_LINK
+
+    client.observe_bearer_state(True)
+    assert client._notify_refreshes == client_module.MAX_NOTIFY_REFRESHES_PER_LINK
+    client.observe_bearer_state(False)
+    client.observe_bearer_state(True)
+    assert client._notify_refreshes == 0
+
+
+def test_failed_ccc_reenable_escalates_like_before(monkeypatch) -> None:
+    calls: list = []
+    ds = _AsyncNotifyCharacteristic(
+        "ds", calls,
+        start_error=client_module.dbus.exceptions.DBusException(
+            "Operation failed", name="org.bluez.Error.Failed",
+        ),
+    )
+    client, calls, scheduled, resets = _silent_transport_client(monkeypatch, ds=ds)
+    stopped = []
+    monkeypatch.setattr(
+        client, "_stop_bluez_notifications", lambda: stopped.append(True),
+    )
+
+    _fire(scheduled, client._request_timed_out)
+
+    assert calls == [
+        ("stop", "ns"), ("start", "ns"), ("stop", "ds"), ("start", "ds"),
+    ]
+    assert stopped == [True]
+    assert client._transport_blocked is True
+    _fire(scheduled, client._request_transport_reset)
+    assert resets == [True]
+
+
+def test_ccc_reenable_without_a_bluez_session_goes_on_to_start_notify(
+    monkeypatch,
+) -> None:
+    calls: list = []
+    ns = _AsyncNotifyCharacteristic(
+        "ns", calls,
+        stop_error=client_module.dbus.exceptions.DBusException(
+            "No notify session started", name="org.bluez.Error.Failed",
+        ),
+    )
+    client, calls, scheduled, resets = _silent_transport_client(monkeypatch, ns=ns)
+
+    _fire(scheduled, client._request_timed_out)
+
+    assert calls[:2] == [("stop", "ns"), ("start", "ns")]
+    assert calls[-1] == ("write", CommandID.GetAppAttributes)
+    assert "/device/ns" in client._owned_notify_paths
+    assert resets == []
+
+
+def test_ccc_reenable_never_starts_notify_after_the_link_dropped(monkeypatch) -> None:
+    calls: list = []
+    ds = _AsyncNotifyCharacteristic("ds", calls)
+    client, calls, scheduled, _resets = _silent_transport_client(monkeypatch, ds=ds)
+    ds.hold = True
+
+    _fire(scheduled, client._request_timed_out)
+    assert calls[-1] == ("stop", "ds")
+    client.observe_bearer_state(False)
+    ds.held.pop()()
+
+    assert ("start", "ds") not in calls
+    assert "/device/ds" not in client._owned_notify_paths
+    assert not any(call[0] == "write" for call in calls)
+    assert client._notify_refresh is None
+
+
+def test_control_point_waits_for_the_ccc_reenable(monkeypatch) -> None:
+    calls: list = []
+    ds = _AsyncNotifyCharacteristic("ds", calls)
+    client, calls, scheduled, _resets = _silent_transport_client(monkeypatch, ds=ds)
+    ds.hold = True
+    _fire(scheduled, client._request_timed_out)
+
+    client._request_attrs(Notification.parse(_notification(42)))
+    assert not any(call[0] == "write" for call in calls)
+
+    ds.held.pop()()  # StopNotify reply → StartNotify
+    ds.held.pop()()  # StartNotify reply → repeated probe goes first
+    writes = [call for call in calls if call[0] == "write"]
+    assert writes == [("write", CommandID.GetAppAttributes)]
+    assert client._active_request.authorization_probe is True
