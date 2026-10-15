@@ -15,4 +15,12 @@ esac
 
 # BlueZ 5.72 requires pollable stdin even for non-interactive commands. Give
 # btmgmt an empty pipe because systemd otherwise connects stdin to /dev/null.
-: | /usr/bin/btmgmt --index "$1" class 4 8
+#
+# Without systemd this runs as root through sudo. btmgmt links readline and
+# keeps a history in $XDG_CACHE_HOME/.btmgmt_history or
+# $HOME/.cache/.btmgmt_history, but only in interactive mode: with a command
+# on its command line, BlueZ's shell skips rl_init() and rl_cleanup(), so it
+# neither reads nor writes history or ~/.inputrc (src/shared/shell.c, BlueZ
+# 5.85 to 5.87). Clear the environment anyway, so a root run never resolves
+# a path from a caller's HOME, XDG_CACHE_HOME or INPUTRC.
+: | /usr/bin/env -i LC_ALL=C /usr/bin/btmgmt --index "$1" class 4 8

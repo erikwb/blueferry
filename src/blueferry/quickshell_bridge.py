@@ -15,6 +15,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import asdict
 from typing import Any, TextIO
 
+from blueferry import phone_overview
 from blueferry.bus import get_session_bus
 from blueferry.client import BackendClient, TetherUnsupportedError
 from blueferry.client_activation import record_client_use
@@ -72,6 +73,32 @@ def _boolean(args: Mapping[str, Any], name: str) -> bool:
     if not isinstance(value, bool):
         raise RequestError(f"{name} must be a boolean")
     return value
+
+
+def now_playing_view(snapshot: object) -> dict[str, Any]:
+    """Reduce GetNowPlaying for the shell without arrays or translated text.
+
+    The buttons are separate booleans, so nothing depends on how a Qt version
+    hands arrays to QML, and the shell, which loads no translation catalog,
+    words the placeholders itself. Track text stays verbatim.
+    """
+    view = phone_overview.now_playing(snapshot)
+
+    def part(key: str) -> Mapping[str, Any]:
+        value = snapshot.get(key) if view.visible and isinstance(snapshot, Mapping) else None
+        return value if isinstance(value, Mapping) else {}
+
+    track, player = part("track"), part("player")
+    title = str(track.get("title") or "")
+    artist = str(track.get("artist") or "")
+    return {
+        "visible": view.visible,
+        "playing": view.playing,
+        "title": title,
+        "artist": artist,
+        "idle": view.visible and not title and not player.get("state"),
+        **{name: name in view.commands for name in phone_overview.MEDIA_BUTTONS},
+    }
 
 
 class QuickshellBridge:
@@ -164,6 +191,14 @@ class QuickshellBridge:
             return self.client.set_ancs_notification_actions(
                 _boolean(args, "enabled")
             )
+        if method == "now_playing":
+            return now_playing_view(self.client.now_playing())
+        if method == "media_command":
+            command = _text(args, "command")
+            if command not in phone_overview.MEDIA_BUTTONS:
+                raise RequestError("unsupported media command")
+            self.client.send_media_command(command)
+            return None
         if method == "set_media_control":
             return self.client.set_media_control(_boolean(args, "enabled"))
         if method == "set_mpris_player":
@@ -180,6 +215,10 @@ class QuickshellBridge:
             )
         if method == "set_calls_enabled":
             return self.client.set_calls_enabled(_boolean(args, "enabled"))
+        if method == "set_contact_photos":
+            return self.client.set_contact_photos(_boolean(args, "enabled"))
+        if method == "set_otp_autocopy":
+            return self.client.set_otp_autocopy(_boolean(args, "enabled"))
         if method == "set_storage_policy":
             return self.client.set_storage_policy(_text(args, "policy"))
         if method == "unlock_storage":
@@ -301,6 +340,12 @@ def _install_signal_receivers(bridge: QuickshellBridge) -> list[object]:
             dbus_interface=TETHER_IFACE,
             bus_name=BUS_NAME,
             path=OBJECT_PATH,
+        ),
+        # Content-free; the shell refetches through now_playing.
+        bus.add_signal_receiver(
+            lambda: bridge.emit_event("now-playing-changed"),
+            signal_name="NowPlayingChanged",
+            **common,
         ),
     ]
 

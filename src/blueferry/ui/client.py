@@ -57,6 +57,9 @@ class DaemonClient(GObject.Object):
         "availability-changed": (GObject.SignalFlags.RUN_FIRST, None, (bool,)),
         "open-message-requested": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
         "tether-invalidated": (GObject.SignalFlags.RUN_FIRST, None, ()),
+        # Content-free invalidations of the opt-in media and call history.
+        "now-playing-changed": (GObject.SignalFlags.RUN_FIRST, None, ()),
+        "call-history-changed": (GObject.SignalFlags.RUN_FIRST, None, ()),
     }
 
     def __init__(self) -> None:
@@ -121,6 +124,19 @@ class DaemonClient(GObject.Object):
                 path=OBJECT_PATH,
             )
         )
+        for signal_name, gobject_signal in (
+            ("NowPlayingChanged", "now-playing-changed"),
+            ("CallHistoryChanged", "call-history-changed"),
+        ):
+            self._matches.append(
+                self._bus.add_signal_receiver(
+                    lambda name=gobject_signal: self.emit(name),
+                    dbus_interface=EVENTS_IFACE,
+                    signal_name=signal_name,
+                    bus_name=BUS_NAME,
+                    path=OBJECT_PATH,
+                )
+            )
 
     def stop(self) -> None:
         self._stopped = True
@@ -470,6 +486,22 @@ class DaemonClient(GObject.Object):
             mutation=True,
         )
 
+    def set_contact_photos_async(self, enabled: bool, on_ok, on_err) -> None:
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.set_contact_photos(enabled)),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
+    def set_otp_autocopy_async(self, enabled: bool, on_ok, on_err) -> None:
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.set_otp_autocopy(enabled)),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
     def set_storage_policy_async(self, policy: str, on_ok, on_err) -> None:
         self._submit(
             lambda: self._call_backend(
@@ -531,4 +563,30 @@ class DaemonClient(GObject.Object):
             on_ok,
             on_err,
             mutation=True,
+        )
+
+    # ---- opt-in iPhone media and call history ---------------------------
+
+    def now_playing_async(self, on_ok, on_err=None) -> None:
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.now_playing()),
+            on_ok,
+            on_err,
+        )
+
+    def send_media_command_async(self, command: str, on_ok, on_err) -> None:
+        self._submit(
+            lambda: self._call_backend(
+                lambda backend: backend.send_media_command(command)
+            ),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
+    def call_history_async(self, limit: int, on_ok, on_err=None) -> None:
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.call_history(limit)),
+            on_ok,
+            on_err,
         )

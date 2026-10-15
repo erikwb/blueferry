@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pathlib
+import subprocess  # nosec B404
 
 import tomllib
 
@@ -201,7 +202,10 @@ def test_native_backends_ship_the_btmgmt_system_unit_template() -> None:
     assert "RestrictAddressFamilies=AF_BLUETOOTH" in unit
     assert "/bin/sh -c" not in unit
     assert "*[!0-9]*" in helper
-    assert ': | /usr/bin/btmgmt --index "$1" class 4 8' in helper
+    assert (
+        ': | /usr/bin/env -i LC_ALL=C /usr/bin/btmgmt --index "$1" class 4 8'
+        in helper
+    )
     assert "org.freedesktop.systemd1.manage-units" in rule
     assert "polkit.Result.YES" in rule
     assert "AUTH_ADMIN" not in rule
@@ -335,3 +339,69 @@ def test_package_workflow_does_not_run_for_each_commit() -> None:
     assert 'tags: ["v*"]' in triggers
     assert "schedule:" in triggers
     assert "workflow_dispatch:" in triggers
+
+
+def test_set_cod_helper_runs_btmgmt_with_an_empty_environment(tmp_path):
+    # Run as root through sudo, btmgmt must not see a caller's HOME or
+    # XDG_CACHE_HOME (readline history, inputrc). Swap in a fake btmgmt.
+    fake = tmp_path / "btmgmt"
+    seen = tmp_path / "seen"
+    fake.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"HOME=${HOME-unset}\" \"XDG=${XDG_CACHE_HOME-unset}\" "
+        "\"INPUTRC=${INPUTRC-unset}\" \"LC_ALL=${LC_ALL-unset}\" "
+        f"\"args:$*\" > {seen}\n"
+    )
+    fake.chmod(0o755)
+    helper = tmp_path / "blueferry-set-cod"
+    helper.write_text(
+        (ROOT / "systemd/blueferry-set-cod").read_text().replace(
+            "/usr/bin/btmgmt", str(fake),
+        )
+    )
+    helper.chmod(0o755)
+
+    subprocess.run(
+        [str(helper), "3"],
+        check=True,
+        env={
+            "PATH": "/usr/bin:/bin",
+            "HOME": "/home/alice",
+            "XDG_CACHE_HOME": "/home/alice/.cache",
+            "INPUTRC": "/home/alice/.inputrc",
+        },
+    )
+
+    assert seen.read_text().splitlines() == [
+        "HOME=unset",
+        "XDG=unset",
+        "INPUTRC=unset",
+        "LC_ALL=C",
+        "args:--index 3 class 4 8",
+    ]
+
+
+def test_qt_packages_ship_the_tray_without_a_system_autostart_entry() -> None:
+    from blueferry import tray_autostart
+
+    launcher = "io.weirdware.BlueFerry.Tray.desktop"
+    project = (ROOT / "pyproject.toml").read_text()
+    deb = (ROOT / "packaging/deb/blueferry-qt.install").read_text()
+    rules = (ROOT / "packaging/deb/rules").read_text()
+    rpm = (ROOT / "packaging/rpm/blueferry.spec").read_text()
+    rpm_qt = rpm.split("%files -n blueferry-qt", 1)[1].split("%changelog", 1)[0]
+    arch = (ROOT / "packaging/arch/PKGBUILD").read_text()
+    arch_qt = arch.split("package_blueferry-qt()", 1)[1].split("package_blueferry-quickshell()", 1)[0]
+
+    assert 'blueferry-tray = "blueferry.qt.tray:main"' in project
+    assert "usr/bin/blueferry-tray" in deb and f"usr/share/applications/{launcher}" in deb
+    assert f"data/{launcher}" in rules
+    assert "%{_bindir}/blueferry-tray" in rpm_qt and launcher in rpm_qt
+    assert f"desktop-file-validate data/{launcher}" in rpm
+    assert "usr/bin/blueferry-tray" in arch_qt and launcher in arch_qt
+    assert f"desktop-file-validate data/{launcher}" in arch
+    # Autostart is the user's choice (tray menu or --autostart on).
+    for recipe in (deb, rules, rpm, arch):
+        assert "xdg/autostart" not in recipe
+    # The tray's autostart copy is the launcher the packages install.
+    assert (ROOT / "data" / launcher).read_text() == tray_autostart.ENTRY_TEXT

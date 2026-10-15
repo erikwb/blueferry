@@ -18,6 +18,8 @@ ShellRoot {
   property string errorText: ""
   property bool phoneSettingsVisible: false
   property var backendStatus: ({})
+  // Opt-in iPhone now playing as reduced by the bridge; empty while off.
+  property var nowPlaying: ({})
   // Host fact from the bridge; kept when backendStatus is reset because the
   // daemon is unavailable. undefined means an older bridge did not send it.
   property var bluetoothRestartCommand: undefined
@@ -48,6 +50,8 @@ ShellRoot {
   property var tether: ({available: false})
   property bool tetherBusy: false
   property bool tetherUnsupported: false
+  readonly property SavedChoice contactPhotos: SavedChoice {}
+  readonly property SavedChoice otpAutocopy: SavedChoice {}
   property bool storagePolicyBusy: false
   property bool storageUnlockBusy: false
 
@@ -81,6 +85,21 @@ ShellRoot {
     // A daemon that answered without Tether1 is not asked again on every
     // reload; TetherChanged covers updates from one that has it.
     if (!tetherUnsupported) backendBridge.requestLatest("tether_state", {})
+  }
+
+  // Like the Qt client: no Media1 call unless the user opted in.
+  function refreshNowPlaying() {
+    if (root.backendStatus.media_control_enabled === true) {
+      backendBridge.requestLatest("now_playing", {})
+    } else {
+      backendBridge.cancelLatest("now_playing")
+      root.nowPlaying = ({})
+    }
+  }
+
+  function applyNowPlaying(result) {
+    root.nowPlaying = root.backendStatus.media_control_enabled === true
+      && typeof result === "object" && result !== null ? result : ({})
   }
 
   function searchContacts(query) {
@@ -185,6 +204,8 @@ ShellRoot {
 
   function markStatusUnavailable(message) {
     backendStatus = ({})
+    backendBridge.cancelLatest("now_playing")
+    nowPlaying = ({})
     statusErrorText = message
   }
 
@@ -252,6 +273,8 @@ ShellRoot {
         root.callsChoice.reported(result.calls_enabled === true)
         root.callHistory.reported(result.call_history_enabled === true)
         root.missedCallPopups.reported(result.missed_call_notifications !== false)
+        root.contactPhotos.reported(result.contact_photos === true)
+        root.otpAutocopy.reported(result.otp_autocopy === true)
         var storagePolicy = result.storage_policy || "encrypted"
         root.storagePolicy = ["encrypted", "plaintext", "none"].indexOf(storagePolicy) >= 0
           ? storagePolicy : "encrypted"
@@ -259,6 +282,7 @@ ShellRoot {
         root.storageDetail = result.storage_detail || "Storage status unavailable"
         root.statusErrorText = ""
         root.maybeUnlockStorage()
+        root.refreshNowPlaying()
       } else if (method === "threads") {
         if (!root.threadsBusy || requestId !== root.threadsRequestId) return
         root.threadsRequestId = 0
@@ -301,6 +325,10 @@ ShellRoot {
         // HistoryChanged reloads the thread list.
       } else if (method === "set_thread_starred") {
         // HistoryChanged reloads the thread list.
+      } else if (method === "now_playing") {
+        root.applyNowPlaying(result)
+      } else if (method === "media_command") {
+        // NowPlayingChanged refreshes the strip.
       } else if (method === "delete_threads") {
         root.deleteThreadsBusy = false
         root.reload()
@@ -355,6 +383,18 @@ ShellRoot {
           root.tether = result
           root.tetherUnsupported = result.available === false
         }
+      } else if (method === "set_contact_photos") {
+        root.contactPhotos.saved(
+          typeof result === "object" && result !== null
+            ? result.contact_photos === true : root.contactPhotos.value,
+          root.statusBusy)
+        root.reload()
+      } else if (method === "set_otp_autocopy") {
+        root.otpAutocopy.saved(
+          typeof result === "object" && result !== null
+            ? result.otp_autocopy === true : root.otpAutocopy.value,
+          root.statusBusy)
+        root.reload()
       } else if (method === "set_storage_policy") {
         root.storagePolicyBusy = false
         if (typeof result === "object" && result !== null) {
@@ -397,6 +437,11 @@ ShellRoot {
         root.errorText = message
       } else if (method === "mark_thread_read") {
         // Keep the conversation open even if MAP write-back fails.
+      } else if (method === "now_playing") {
+        root.nowPlaying = ({})
+      } else if (method === "media_command") {
+        root.errorText = message || "Could not control iPhone playback"
+        root.refreshNowPlaying()
       } else if (method === "set_thread_starred") {
         root.errorText = message || "Could not update starred conversations"
       } else if (method === "delete_threads") {
@@ -442,6 +487,14 @@ ShellRoot {
           root.errorText = message || "Bluetooth tethering request failed"
           backendBridge.requestLatest("tether_state", {})
         }
+      } else if (method === "set_contact_photos") {
+        root.contactPhotos.failed(root.backendStatus.contact_photos === true)
+        root.errorText = message || "Could not save the contact photo preference"
+        root.reload()
+      } else if (method === "set_otp_autocopy") {
+        root.otpAutocopy.failed(root.backendStatus.otp_autocopy === true)
+        root.errorText = message || "Could not save the one-time code preference"
+        root.reload()
       } else if (method === "set_storage_policy") {
         root.storagePolicyBusy = false
         root.errorText = message
@@ -472,6 +525,10 @@ ShellRoot {
           root.callHistory.failed(root.backendStatus.call_history_enabled === true)
         if (root.missedCallPopups.busy)
           root.missedCallPopups.failed(root.backendStatus.missed_call_notifications !== false)
+        if (root.contactPhotos.busy)
+          root.contactPhotos.failed(root.backendStatus.contact_photos === true)
+        if (root.otpAutocopy.busy)
+          root.otpAutocopy.failed(root.backendStatus.otp_autocopy === true)
         root.storagePolicyBusy = false
         root.storageUnlockBusy = false
         root.errorText = message
@@ -482,6 +539,7 @@ ShellRoot {
       data = root.plainValue(data)
       if (name === "open-message") root.openMessage(String(data || ""))
       else if (name === "history-changed" || name === "status-changed") root.reload()
+      else if (name === "now-playing-changed") root.refreshNowPlaying()
       else if (name === "host" && data && typeof data.bluetooth_restart_command === "string")
         root.bluetoothRestartCommand = data.bluetooth_restart_command
       else if (name === "tether-changed") backendBridge.requestLatest("tether_state", {})
@@ -575,6 +633,14 @@ ShellRoot {
             color: theme.muted
             font.pixelSize: theme.captionSize
           }
+        }
+
+        QuickshellNowPlaying {
+          objectName: "nowPlaying"
+          ferryTheme: theme
+          Layout.fillWidth: true
+          view: root.nowPlaying
+          onCommandRequested: command => backendBridge.request("media_command", {command: command})
         }
 
         FerryLabel {
@@ -1108,6 +1174,10 @@ ShellRoot {
           }, root.backendStatus.call_history_enabled === undefined ? {} : {
             call_history_enabled: root.callHistory.value,
             missed_call_notifications: root.missedCallPopups.value
+          }, root.backendStatus.contact_photos === undefined ? {} : {
+            contact_photos: root.contactPhotos.value
+          }, root.backendStatus.otp_autocopy === undefined ? {} : {
+            otp_autocopy: root.otpAutocopy.value
           })
           tether: root.tether
           busy: ({notifications: root.notificationPolicyBusy,
@@ -1119,6 +1189,8 @@ ShellRoot {
                   calls: root.callsChoice.busy,
                   callHistory: root.callHistory.busy || root.missedCallPopups.busy,
                   tether: root.tetherBusy,
+                  photos: root.contactPhotos.busy,
+                  otp: root.otpAutocopy.busy,
                   storage: root.storagePolicyBusy})
           visible: root.phoneSettingsVisible
           Layout.fillWidth: true
@@ -1129,6 +1201,8 @@ ShellRoot {
           onReloadRequested: root.reload()
           onOperationRequested: (method, args) => {
             if (method === "set_notification_policy") root.notificationPolicyBusy = true
+            if (method === "set_contact_photos") root.contactPhotos.request(args.enabled)
+            if (method === "set_otp_autocopy") root.otpAutocopy.request(args.enabled)
             if (method === "set_contacts_only_notifications") {
               root.contactsOnlyNotifications = args.enabled
               root.contactsOnlyNotificationsBusy = true

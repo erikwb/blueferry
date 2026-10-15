@@ -223,6 +223,18 @@ def _bytes(call: _Call) -> bytes:
     return bytes(int(value) for value in call.args[0])
 
 
+def _skip_attribute_refresh(timers, name="_refresh_missing_attributes") -> None:
+    """Most tests deliver no values; the refresh has its own tests."""
+    for source, callback in list(timers.pending.items()):
+        if getattr(callback, "__name__", "") == name:
+            del timers.pending[source]
+            del timers.delays[source]
+
+
+def _skip_reregistration(timers) -> None:
+    _skip_attribute_refresh(timers, "_reregister_entities")
+
+
 def _subscribe(client, bus, timers) -> None:
     client.observe_bearer_state(True)
     client.start()
@@ -234,6 +246,7 @@ def _subscribe(client, bus, timers) -> None:
         call = bus.take("WriteValue", EU)
         assert _bytes(call) == expected
         call.succeed()
+    _skip_attribute_refresh(timers)
 
 
 def test_subscribes_and_registers_all_entities_after_bearer_settles(harness) -> None:
@@ -929,6 +942,7 @@ def test_missing_first_update_resubscribes_with_backoff(harness) -> None:
     for _entity in EntityID:
         bus.take("WriteValue", EU).succeed()
     assert availability == [True, False, True]
+    _skip_attribute_refresh(timers)
     timers.run_all()
     # One resubscribe per link: a second silent registration means an idle
     # Media Source, so availability does not flap and nothing is retried.
@@ -965,6 +979,7 @@ def test_supported_command_list_also_disarms_the_watchdog(harness) -> None:
     client, bus, timers, *_ = harness
     _subscribe(client, bus, timers)
     bus.notify(RC, bytes([0, 1]))
+    _skip_reregistration(timers)
     assert timers.pending == {}
     assert client.available
 
@@ -973,6 +988,10 @@ def test_first_update_disarms_the_watchdog(harness) -> None:
     client, bus, timers, *_ = harness
     _subscribe(client, bus, timers)
     bus.notify(EU, bytes([0, 0, 0]) + b"Music")
+    # Only the command-list check is left, which the list itself disarms.
+    assert list(timers.delays[source] for source in timers.pending) == [3]
+    bus.notify(RC, bytes([0, 1]))
+    _skip_reregistration(timers)
     assert timers.pending == {}
     assert client.available
 
@@ -1041,8 +1060,9 @@ def test_commands_survive_a_reconnect_when_bluez_rewrites_the_ccc(harness) -> No
     client.send_command(RemoteCommandID.Play, lambda: done.append("ok"), done.append)
     bus.take("WriteValue", RC).succeed()
     assert done == ["ok"]
-    # A soft reset never reported an empty list.
+    # A soft reset never reported an empty or unknown list.
     assert frozenset() not in commands
+    assert None not in commands
 
 
 def test_entity_updates_without_a_live_link_are_ignored(harness) -> None:
@@ -1059,7 +1079,8 @@ def test_removing_the_command_characteristic_clears_the_list(harness) -> None:
     bus.notify(RC, bytes([0]))
     removed = [m for m in bus.matches if m.path == "/"][1]
     removed.handler(RC, [GATT])
-    assert commands[-1] == frozenset()
+    # Unknown, not empty: the next characteristic sends a new list.
+    assert commands[-1] is None
     assert all(m.removed for m in bus.matches if m.path == RC)
 
 
@@ -1068,7 +1089,7 @@ def test_owner_change_clears_the_list_and_receivers(harness) -> None:
     _subscribe(client, bus, timers)
     bus.notify(RC, bytes([0]))
     client.observe_bluez_owner(":1.1", "")
-    assert commands[-1] == frozenset()
+    assert commands[-1] is None
     assert all(m.removed for m in bus.matches)
 
 
@@ -1183,3 +1204,658 @@ def test_a_raising_subscription_setup_does_not_stick(harness, monkeypatch) -> No
     monkeypatch.setattr(client, "_run_subscription", original)
     timers.run_all()
     assert bus.pending() == [("StartNotify", RC)]
+
+
+def _reconnect_with_new_characteristics(client, bus, timers) -> None:
+    """Hardware 2026-10-08: BlueZ drops and re-adds the GATT objects."""
+    manager_added, manager_removed = [m for m in bus.matches if m.path == "/"]
+    client.observe_bearer_state(False)
+    for path in (RC, EU, EA):
+        manager_removed.handler(path, [GATT])
+    client.observe_bearer_state(True)
+    for path, interfaces in _objects().items():
+        manager_added.handler(path, interfaces)
+    timers.run_all()  # settle
+    bus.take("StartNotify", RC).succeed()
+    bus.take("StartNotify", EU).succeed()
+    for _entity in EntityID:
+        bus.take("WriteValue", EU).succeed()
+    _skip_attribute_refresh(timers)
+    assert client.available
+
+
+def test_missing_command_list_after_a_reconnect_reenables_its_ccc_once(harness) -> None:
+    """Hardware 2026-10-08: after an LE reconnect iOS sent track values but
+    no command list, so every MPRIS Can* read false until the next opt-in."""
+    client, bus, timers, _updates, commands, availability = harness
+    _subscribe(client, bus, timers)
+    bus.notify(RC, bytes([0, 1, 3]))
+    _reconnect_with_new_characteristics(client, bus, timers)
+    assert commands[-1] is None
+
+    # Entity Updates flow, the command list does not.
+    bus.notify(EU, bytes([2, 2, 0]) + b"Episode")
+    assert bus.pending() == []
+    timers.run_all()
+
+    # One serialized round trip: disable, then enable the Remote Command CCC.
+    assert bus.pending() == [("StopNotify", RC)]
+    bus.take("StopNotify", RC).succeed()
+    assert bus.pending() == [("StartNotify", RC)]
+    bus.take("StartNotify", RC).succeed()
+    bus.notify(RC, bytes([0, 1, 3]))
+    _skip_reregistration(timers)
+    assert commands[-1] == frozenset({
+        RemoteCommandID.Play, RemoteCommandID.Pause, RemoteCommandID.NextTrack,
+    })
+    assert client.available
+    assert availability[-1] is True
+
+    # Once per link: later silence does not toggle the CCC again.
+    bus.notify(RC, b"")  # known and empty is still a list
+    _skip_reregistration(timers)
+    bus.notify(EU, bytes([2, 2, 0]) + b"Next")
+    timers.run_all()
+    assert bus.pending() == []
+
+
+def test_command_list_refresh_needs_entity_updates_and_a_steady_link(harness) -> None:
+    client, bus, timers, *_ = harness
+    _subscribe(client, bus, timers)
+    # No Entity Update yet: the silence watchdog owns this case.
+    assert "StopNotify" not in [call.method for call in bus.calls]
+
+    bus.notify(EU, bytes([2, 2, 0]) + b"Episode")
+    client.observe_bearer_state(False)  # the link drops before the check
+    timers.run_all()
+    assert "StopNotify" not in [call.method for call in bus.calls]
+    assert "StartNotify" not in [call.method for call in bus.calls]
+
+
+def test_a_list_that_arrives_late_cancels_the_refresh(harness) -> None:
+    client, bus, timers, *_ = harness
+    _subscribe(client, bus, timers)
+    bus.notify(EU, bytes([2, 2, 0]) + b"Episode")
+    bus.notify(RC, bytes([0]))
+    _skip_reregistration(timers)
+    timers.run_all()
+    assert bus.pending() == []
+
+
+def test_a_link_drop_during_the_refresh_never_reenables_late(harness) -> None:
+    client, bus, timers, *_ = harness
+    _subscribe(client, bus, timers)
+    bus.notify(EU, bytes([2, 2, 0]) + b"Episode")
+    timers.run_all()
+    stop = bus.take("StopNotify", RC)
+    client.observe_bearer_state(False)
+    stop.succeed()
+    # bluetoothd 5.87 crashes on a CCC enable completing after an LE flap.
+    assert bus.pending() == []
+
+
+def test_a_failed_refresh_resubscribes(harness) -> None:
+    client, bus, timers, _updates, _commands, availability = harness
+    _subscribe(client, bus, timers)
+    bus.notify(EU, bytes([2, 2, 0]) + b"Episode")
+    timers.run_all()
+    bus.take("StopNotify", RC).succeed()
+    bus.take("StartNotify", RC).fail()
+
+    assert availability[-1] is False
+    timers.run_all()  # retry
+    # Commands are subscribed from scratch, not trusted from the cache.
+    assert bus.pending() == [("StartNotify", RC)]
+
+
+def test_a_new_link_restores_the_refresh_budget(harness) -> None:
+    client, bus, timers, *_ = harness
+    _subscribe(client, bus, timers)
+    bus.notify(EU, bytes([2, 2, 0]) + b"Episode")
+    timers.run_all()
+    bus.take("StopNotify", RC).succeed()
+    bus.take("StartNotify", RC).succeed()  # and still no list
+
+    _reconnect_with_new_characteristics(client, bus, timers)
+    bus.notify(EU, bytes([2, 2, 0]) + b"Episode")
+    timers.run_all()
+    assert bus.pending() == [("StopNotify", RC)]
+
+
+def test_values_ios_did_not_resend_after_registering_are_read(harness) -> None:
+    """Hardware 2026-10-08: after LE reconnects iOS sent a new track title
+    but no player name or PlaybackInfo; MPRIS showed a playing audiobook as
+    Stopped and Plasma's play button sent Play."""
+    client, bus, timers, updates, *_ = harness
+    client.observe_bearer_state(True)
+    client.start()
+    bus.take("GetManagedObjects").succeed(_objects())
+    timers.run_all()
+    bus.take("StartNotify", RC).succeed()
+    bus.take("StartNotify", EU).succeed()
+    for _entity in EntityID:
+        bus.take("WriteValue", EU).succeed()
+    bus.notify(EU, bytes([2, 2, 0]) + b"E719")  # Track/Title only
+    bus.notify(RC, bytes([0, 1]))
+
+    refresh = [
+        source for source, callback in timers.pending.items()
+        if callback.__name__ == "_refresh_missing_attributes"
+    ]
+    assert [timers.delays[source] for source in refresh] == [3]
+    timers.pending.pop(refresh[0])()
+
+    # Player Name, PlaybackInfo, Volume, then Track Artist, Album, Duration;
+    # each as an adjacent selector write and read.
+    expected = [(0, 0), (0, 1), (0, 2), (2, 0), (2, 1), (2, 3)]
+    for index, (entity, attribute) in enumerate(expected):
+        write = bus.take("WriteValue", EA)
+        assert _bytes(write) == bytes([entity, attribute])
+        write.succeed()
+        read = bus.take("ReadValue", EA)
+        if index == 2:
+            read.fail(message="Application error 0xA2")  # absent volume
+        else:
+            read.succeed(dbus.Array(list(b"1,1.0,30" if attribute == 1 and entity == 0
+                                         else b"Pocket FM")))
+    assert bus.pending() == []
+    delivered = {(update.entity, update.attribute) for update in updates}
+    assert {(0, 0), (0, 1), (2, 2)} <= delivered
+    assert (0, 2) not in delivered
+
+
+def test_attribute_refresh_skips_what_arrived_and_a_dropped_link(harness) -> None:
+    client, bus, timers, *_ = harness
+    client.observe_bearer_state(True)
+    client.start()
+    bus.take("GetManagedObjects").succeed(_objects())
+    timers.run_all()
+    bus.take("StartNotify", RC).succeed()
+    bus.take("StartNotify", EU).succeed()
+    for _entity in EntityID:
+        bus.take("WriteValue", EU).succeed()
+    for entity, attributes in ((0, (0, 1, 2)), (2, (0, 1, 2, 3))):
+        for attribute in attributes:
+            bus.notify(EU, bytes([entity, attribute, 0]) + b"x")
+    refresh = [
+        callback for callback in timers.pending.values()
+        if callback.__name__ == "_refresh_missing_attributes"
+    ]
+    refresh[0]()
+    assert bus.pending() == []
+
+    # Re-registration on a new link starts from nothing again, but a link
+    # that dropped before the timer reads nothing.
+    client.observe_bearer_state(False)
+    refresh[0]()
+    assert bus.pending() == []
+
+
+def test_a_resent_command_list_registers_the_entities_again(harness) -> None:
+    """btmon 2026-10-08: a 0.5 s LE drop between two bearer polls. BlueZ
+    restored the CCCs, iOS resent its command list, but the Entity Update
+    registrations were never rewritten and AMS stayed silent."""
+    client, bus, timers, updates, _commands, availability = harness
+    _subscribe(client, bus, timers)
+    bus.notify(EU, bytes([2, 2, 0]) + b"Old")
+    _skip_attribute_refresh(timers, "_command_list_missing")
+
+    # The restore: two command lists in a row, no bearer transition seen.
+    bus.notify(RC, bytes([0, 1]))
+    bus.notify(RC, bytes(range(9)))
+    rereg = [s for s, c in timers.pending.items() if c.__name__ == "_reregister_entities"]
+    assert len(rereg) == 1 and timers.delays[rereg[0]] == 1
+    timers.pending.pop(rereg[0])()
+
+    for expected in (b"\x00\x00\x01\x02", b"\x01\x00\x01\x02\x03", b"\x02\x00\x01\x02\x03"):
+        call = bus.take("WriteValue", EU)
+        assert _bytes(call) == expected
+        call.succeed()
+    # Availability never flapped, and the values that follow are delivered.
+    assert availability == [True]
+    bus.notify(EU, bytes([2, 2, 0]) + b"Tricky Disco")
+    assert updates[-1].value == "Tricky Disco"
+    # What iOS does not resend is read afterwards, as after a registration.
+    assert [c.__name__ for c in timers.pending.values()].count(
+        "_refresh_missing_attributes") == 1
+
+
+def test_a_failed_reregistration_resubscribes(harness) -> None:
+    client, bus, timers, _updates, _commands, availability = harness
+    _subscribe(client, bus, timers)
+    bus.notify(RC, bytes([0, 1]))
+    rereg = [s for s, c in timers.pending.items() if c.__name__ == "_reregister_entities"]
+    timers.pending.pop(rereg[0])()
+    bus.take("WriteValue", EU).fail()
+    assert availability == [True, False]
+    timers.run_all()
+    assert bus.pending() == [("StartNotify", RC)]
+
+
+def test_a_reregistration_cancels_the_pending_first_read_at_once(harness) -> None:
+    """Review: the first registration's read stayed armed while the entities
+    were registered again, and could read values that were on their way."""
+    client, bus, timers, *_ = harness
+    client.observe_bearer_state(True)
+    client.start()
+    bus.take("GetManagedObjects").succeed(_objects())
+    timers.run_all()
+    bus.take("StartNotify", RC).succeed()
+    bus.take("StartNotify", EU).succeed()
+    for _entity in EntityID:
+        bus.take("WriteValue", EU).succeed()
+
+    def refreshes() -> list:
+        return [
+            callback for callback in timers.pending.values()
+            if callback.__name__ == "_refresh_missing_attributes"
+        ]
+
+    assert len(refreshes()) == 1
+    bus.notify(RC, bytes([0, 1]))
+    rereg = [s for s, c in timers.pending.items() if c.__name__ == "_reregister_entities"]
+    timers.pending.pop(rereg[0])()
+    # The registrations are in flight; the old read must not fire meanwhile.
+    assert refreshes() == []
+    for _entity in EntityID:
+        bus.take("WriteValue", EU).succeed()
+    assert len(refreshes()) == 1
+    refreshes()[0]()
+    for _ in range(7):
+        bus.take("WriteValue", EA).succeed()
+        bus.take("ReadValue", EA).fail(message="Application error 0xA2")
+    assert bus.pending() == []
+
+
+def test_no_reregistration_while_subscribing_or_without_a_link(harness) -> None:
+    client, bus, timers, *_ = harness
+    client.observe_bearer_state(True)
+    client.start()
+    bus.take("GetManagedObjects").succeed(_objects())
+    # BlueZ restores the CCC at link-up, before BlueFerry subscribes.
+    bus.notify(RC, bytes([0, 1]))
+    assert not any(c.__name__ == "_reregister_entities" for c in timers.pending.values())
+
+    _subscribe_rest = timers.run_all
+    _subscribe_rest()
+    bus.take("StartNotify", RC).succeed()
+    bus.take("StartNotify", EU).succeed()
+    for _entity in EntityID:
+        bus.take("WriteValue", EU).succeed()
+    bus.notify(RC, bytes([0, 1]))
+    client.observe_bearer_state(False)
+    timers.run_all()
+    assert bus.pending() == []
+
+
+def _start_command_list_toggle(client, bus, timers) -> None:
+    _subscribe(client, bus, timers)
+    bus.notify(EU, bytes([2, 2, 0]) + b"Episode")
+    toggle = [s for s, c in timers.pending.items() if c.__name__ == "_command_list_missing"]
+    timers.pending.pop(toggle[0])()
+
+
+def test_a_runtime_opt_out_waits_for_an_in_flight_ccc_toggle(harness) -> None:
+    """Review: an opt-out between StopNotify and StartNotify of the toggle
+    left the Remote Command CCC enabled with media control off."""
+    client, bus, timers, *_ = harness
+    _start_command_list_toggle(client, bus, timers)
+    bus.take("StopNotify", RC).succeed()
+    start = bus.take("StartNotify", RC)  # in flight
+    released = []
+
+    client.stop(release=True, on_released=lambda: released.append(True))
+    # The session tracker holds the release until the StartNotify answers.
+    assert bus.pending() == []
+    assert released == []
+    start.succeed()
+    # The CCC the toggle just enabled is released with the others.
+    assert sorted(bus.pending()) == sorted([("StopNotify", RC), ("StopNotify", EU)])
+    bus.take("StopNotify", RC).succeed()
+    assert released == []
+    bus.take("StopNotify", EU).succeed()
+    assert released == [True]
+
+
+def test_an_opt_out_during_the_toggles_stopnotify_never_enables(harness) -> None:
+    client, bus, timers, *_ = harness
+    _start_command_list_toggle(client, bus, timers)
+    stop = bus.take("StopNotify", RC)
+    released = []
+    client.stop(release=True, on_released=lambda: released.append(True))
+    for call in [c for c in bus.calls if c.method == "StopNotify"]:
+        bus.take("StopNotify", call.path).succeed()
+    stop.succeed()
+    assert "StartNotify" not in [call.method for call in bus.calls]
+    assert released == [True]
+
+
+def test_a_toggle_ending_after_a_link_reset_stays_owned(harness) -> None:
+    client, bus, timers, *_ = harness
+    _start_command_list_toggle(client, bus, timers)
+    bus.take("StopNotify", RC).succeed()
+    start = bus.take("StartNotify", RC)
+    client.observe_bearer_state(False)
+    start.succeed()
+    # BlueZ restores it at link-up; the next subscription asks Notifying.
+    client.observe_bearer_state(True)
+    timers.run_all()
+    assert ("Get", RC) in bus.pending()
+
+
+def test_refresh_reads_log_absent_values_only_at_debug(harness, caplog) -> None:
+    client, bus, timers, *_ = harness
+    client.observe_bearer_state(True)
+    client.start()
+    bus.take("GetManagedObjects").succeed(_objects())
+    timers.run_all()
+    bus.take("StartNotify", RC).succeed()
+    bus.take("StartNotify", EU).succeed()
+    for _entity in EntityID:
+        bus.take("WriteValue", EU).succeed()
+    refresh = [c for c in timers.pending.values() if c.__name__ == "_refresh_missing_attributes"]
+    caplog.set_level("INFO", logger="blueferry.ams.client")
+    refresh[0]()
+    for _ in range(7):
+        bus.take("WriteValue", EA).succeed()
+        bus.take("ReadValue", EA).fail(message="Application error 0xA2")
+    messages = [r.getMessage() for r in caplog.records]
+    assert messages == ["AMS did not resend 7 media values; reading them"]
+
+
+def test_a_toggle_stopped_before_a_reset_owes_no_release(harness) -> None:
+    """Review: the toggle's StopNotify was not reported to the session
+    tracker, so a reset between its StopNotify and StartNotify left the
+    session marked and a later opt-out stopped it a second time."""
+    client, bus, timers, *_ = harness
+    _start_command_list_toggle(client, bus, timers)
+    stop = bus.take("StopNotify", RC)
+    client.observe_bearer_state(False)
+    stop.succeed()
+    assert bus.pending() == []
+    released = []
+    client.stop(release=True, on_released=lambda: released.append(True))
+    client.observe_bearer_state(True)
+    timers.run_all()  # the release waits for a settled link
+    # Only the Entity Update session is still held.
+    assert bus.pending() == [("StopNotify", EU)]
+    bus.take("StopNotify", EU).succeed()
+    assert released == [True]
+
+
+def _moved(path: str) -> str:
+    """The same characteristic after Service Changed moved AMS."""
+    return path.replace("/service0040/", "/service0050/")
+
+
+def _moved_objects():
+    return {_moved(path): value for path, value in _objects().items()}
+
+
+def test_service_changed_moving_ams_registers_on_the_new_handles(harness) -> None:
+    """Hardware, 2026-10-08: the iPhone's GATT database shifted between
+    connections (AMS at service0023, then service002d). BlueZ removes the
+    old objects and adds the new ones on the live link."""
+    client, bus, timers, _updates, commands, availability = harness
+    _subscribe(client, bus, timers)
+    manager_added, manager_removed = [m for m in bus.matches if m.path == "/"]
+
+    for path in (RC, EU, EA):
+        manager_removed.handler(path, [GATT])
+    assert not client.available
+    for path, interfaces in _moved_objects().items():
+        manager_added.handler(path, interfaces)
+
+    # The link did not drop, so no settle: subscribe on the new objects.
+    bus.take("StartNotify", _moved(RC)).succeed()
+    bus.take("StartNotify", _moved(EU)).succeed()
+    for _entity in EntityID:
+        bus.take("WriteValue", _moved(EU)).succeed()
+    assert client.available
+    assert availability == [True, False, True]
+    assert commands[-1] is None
+    assert bus.pending() == []
+    # The values iOS does not resend are read after this registration too.
+    assert any(
+        callback.__name__ == "_refresh_missing_attributes"
+        for callback in timers.pending.values()
+    )
+
+
+def test_service_changed_announcing_the_new_ams_first_still_moves(harness) -> None:
+    client, bus, timers, _updates, commands, _availability = harness
+    _subscribe(client, bus, timers)
+    manager_added, manager_removed = [m for m in bus.matches if m.path == "/"]
+
+    # New objects before the old ones are removed: that removal will not
+    # match any more, so the move itself has to end the old subscription.
+    added = list(_moved_objects().items())
+    manager_added.handler(*added[0])
+    assert not client.available
+    assert commands[-1] is None
+    # Half moved: nothing is written to a mix of old and new handles.
+    assert bus.pending() == []
+    for path, interfaces in added[1:]:
+        manager_added.handler(path, interfaces)
+    for path in (RC, EU, EA):
+        manager_removed.handler(path, [GATT])
+
+    bus.take("StartNotify", _moved(RC)).succeed()
+    bus.take("StartNotify", _moved(EU)).succeed()
+    for _entity in EntityID:
+        bus.take("WriteValue", _moved(EU)).succeed()
+    assert client.available
+    assert bus.pending() == []
+    # The old receivers are gone; the new ones deliver.
+    old = [m for m in bus.matches if m.path in (RC, EU)]
+    assert old and all(m.removed for m in old)
+    bus.notify(_moved(RC), bytes([0, 1]))
+    assert commands[-1] == frozenset({RemoteCommandID(0), RemoteCommandID(1)})
+
+
+INVALID_STATE = "Operation failed with ATT error: 0xa0"
+
+
+def _reconnect_with_surviving_characteristics(client, bus, timers) -> None:
+    """An LE drop and reconnect; BlueZ keeps the objects and sessions."""
+    client.observe_bearer_state(False)
+    client.observe_bearer_state(True)
+    timers.run_all()  # settle
+    bus.take("Get", RC).succeed(True)
+    bus.take("Get", EU).succeed(True)
+
+
+def _retry_delays(timers) -> list[int]:
+    return [
+        timers.delays[source] for source, callback in timers.pending.items()
+        if getattr(callback, "__name__", "") == "_retry"
+    ]
+
+
+def _expect_ccc_toggle(bus, path) -> None:
+    assert bus.pending() == [("StopNotify", path)]
+    bus.take("StopNotify", path).succeed()
+    assert bus.pending() == [("StartNotify", path)]
+    bus.take("StartNotify", path).succeed()
+
+
+def test_invalid_state_registration_reenables_both_cccs_then_registers(harness) -> None:
+    """Hardware 2026-10-15: after ``Bearer.LE1.Disconnect`` every Entity
+    Update registration was refused with 0xA0, and the retries never wrote a
+    CCC because BlueZ still reported ``Notifying``, until the daemon was
+    restarted."""
+    client, bus, timers, _updates, _commands, availability = harness
+    _subscribe(client, bus, timers)
+    _reconnect_with_surviving_characteristics(client, bus, timers)
+    bus.take("WriteValue", EU).fail(message=INVALID_STATE)
+    assert not client.available
+
+    # Retried soon, not after the grown backoff.
+    assert _retry_delays(timers) == [2]
+    timers.run_all()
+    # No Notifying query this time: both CCCs are written again, in order.
+    _expect_ccc_toggle(bus, RC)
+    _expect_ccc_toggle(bus, EU)
+    for expected in (b"\x00\x00\x01\x02", b"\x01\x00\x01\x02\x03", b"\x02\x00\x01\x02\x03"):
+        call = bus.take("WriteValue", EU)
+        assert _bytes(call) == expected
+        call.succeed()
+    assert client.available
+    assert availability[-1] is True
+
+
+def test_invalid_state_toggles_are_bounded_per_link(harness) -> None:
+    client, bus, timers, *_ = harness
+    _subscribe(client, bus, timers)
+    _reconnect_with_surviving_characteristics(client, bus, timers)
+    bus.take("WriteValue", EU).fail(message=INVALID_STATE)
+    for _attempt in range(2):
+        timers.run_all()
+        _expect_ccc_toggle(bus, RC)
+        _expect_ccc_toggle(bus, EU)
+        bus.take("WriteValue", EU).fail(message=INVALID_STATE)
+
+    # The budget is spent: the ordinary backoff, trusting BlueZ's sessions.
+    for delay in (2, 4, 8):
+        assert _retry_delays(timers) == [delay]
+        timers.run_all()
+        assert bus.pending() == [("Get", RC)]
+        bus.take("Get", RC).succeed(True)
+        bus.take("Get", EU).succeed(True)
+        bus.take("WriteValue", EU).fail(message=INVALID_STATE)
+    assert "StopNotify" not in [call.method for call in bus.calls]
+
+
+def test_invalid_state_budget_returns_with_a_new_link(harness) -> None:
+    client, bus, timers, *_ = harness
+    _subscribe(client, bus, timers)
+    _reconnect_with_surviving_characteristics(client, bus, timers)
+    bus.take("WriteValue", EU).fail(message=INVALID_STATE)
+    for _attempt in range(2):
+        timers.run_all()
+        _expect_ccc_toggle(bus, RC)
+        _expect_ccc_toggle(bus, EU)
+        bus.take("WriteValue", EU).fail(message=INVALID_STATE)
+
+    _reconnect_with_surviving_characteristics(client, bus, timers)
+    bus.take("WriteValue", EU).fail(message=INVALID_STATE)
+    timers.run_all()
+    _expect_ccc_toggle(bus, RC)
+
+
+def test_other_registration_failures_do_not_toggle_the_cccs(harness) -> None:
+    client, bus, timers, *_ = harness
+    _subscribe(client, bus, timers)
+    _reconnect_with_surviving_characteristics(client, bus, timers)
+    bus.take("WriteValue", EU).fail(message="Operation failed with ATT error: 0x0e")
+    timers.run_all()
+    assert sorted(bus.pending()) == [("Get", RC)]
+
+
+def test_invalid_state_toggle_starts_notify_without_a_session(harness) -> None:
+    client, bus, timers, *_ = harness
+    _subscribe(client, bus, timers)
+    _reconnect_with_surviving_characteristics(client, bus, timers)
+    bus.take("WriteValue", EU).fail(message=INVALID_STATE)
+    timers.run_all()
+    # BlueZ lost the session already; StartNotify then writes the CCC.
+    bus.take("StopNotify", RC).fail(message="No notify session started")
+    bus.take("StartNotify", RC).succeed()
+    bus.take("StopNotify", EU).fail(message="No notify session started")
+    bus.take("StartNotify", EU).succeed()
+    for _entity in EntityID:
+        bus.take("WriteValue", EU).succeed()
+    assert client.available
+
+
+def test_a_failed_invalid_state_toggle_backs_off(harness) -> None:
+    client, bus, timers, *_ = harness
+    _subscribe(client, bus, timers)
+    _reconnect_with_surviving_characteristics(client, bus, timers)
+    bus.take("WriteValue", EU).fail(message=INVALID_STATE)
+    timers.run_all()
+    bus.take("StopNotify", RC).fail()
+    assert not client.available
+    assert _retry_delays(timers) == [2]
+    timers.run_all()
+    # Not an InvalidState answer: the next attempt asks Notifying as usual.
+    assert bus.pending() == [("Get", RC)]
+
+
+def test_a_link_drop_during_the_invalid_state_toggle_never_enables_late(harness) -> None:
+    client, bus, timers, *_ = harness
+    _subscribe(client, bus, timers)
+    _reconnect_with_surviving_characteristics(client, bus, timers)
+    bus.take("WriteValue", EU).fail(message=INVALID_STATE)
+    timers.run_all()
+    stop = bus.take("StopNotify", RC)
+    client.observe_bearer_state(False)
+    stop.succeed()
+    # bluetoothd 5.87 crashes on a CCC enable completing after an LE flap.
+    assert bus.pending() == []
+
+
+def test_an_opt_out_during_the_invalid_state_toggle_releases_after_it(harness) -> None:
+    client, bus, timers, *_ = harness
+    _subscribe(client, bus, timers)
+    _reconnect_with_surviving_characteristics(client, bus, timers)
+    bus.take("WriteValue", EU).fail(message=INVALID_STATE)
+    timers.run_all()
+    bus.take("StopNotify", RC).succeed()
+    start = bus.take("StartNotify", RC)
+    released = []
+    client.stop(release=True, on_released=lambda: released.append(True))
+    assert bus.pending() == []
+    start.succeed()
+    assert sorted(bus.pending()) == sorted([("StopNotify", RC), ("StopNotify", EU)])
+    bus.take("StopNotify", RC).succeed()
+    bus.take("StopNotify", EU).succeed()
+    assert released == [True]
+
+
+def test_an_invalid_state_reregistration_reenables_the_cccs(harness) -> None:
+    client, bus, timers, *_ = harness
+    _subscribe(client, bus, timers)
+    bus.notify(RC, bytes([0, 1]))
+    rereg = [s for s, c in timers.pending.items() if c.__name__ == "_reregister_entities"]
+    timers.pending.pop(rereg[0])()
+    bus.take("WriteValue", EU).fail(message=INVALID_STATE)
+    assert _retry_delays(timers) == [2]
+    timers.run_all()
+    _expect_ccc_toggle(bus, RC)
+    _expect_ccc_toggle(bus, EU)
+    for _entity in EntityID:
+        bus.take("WriteValue", EU).succeed()
+    assert client.available
+
+
+def test_every_ams_write_forces_a_plain_write_request(harness) -> None:
+    """btmon 2026-10-08: the registration 00 00 01 02 went out as Prepare
+    Write plus Execute Write (reliable-write extended property, no ``type``)
+    and iOS answered every Execute with AMS InvalidState 0xA0."""
+    client, bus, timers, *_ = harness
+    client.observe_bearer_state(True)
+    client.start()
+    bus.take("GetManagedObjects").succeed(_objects())
+    timers.run_all()
+    bus.take("StartNotify", RC).succeed()
+    bus.take("StartNotify", EU).succeed()
+    writes = []
+    for _entity in EntityID:
+        call = bus.take("WriteValue", EU)
+        writes.append(call)
+        call.succeed()
+    bus.notify(EU, bytes([2, 2, 1]) + b"Lo")  # truncated: Entity Attribute
+    selector = bus.take("WriteValue", EA)
+    writes.append(selector)
+    client.send_command(RemoteCommandID.Play, lambda: None, lambda _error: None)
+    selector.succeed()
+    bus.take("ReadValue", EA).succeed(dbus.Array(list(b"Long")))
+    writes.append(bus.take("WriteValue", RC))
+
+    assert len(writes) == 5
+    for call in writes:
+        options = call.args[1]
+        assert options.signature == "sv"
+        assert dict(options) == {"type": "request"}
+        assert isinstance(options["type"], dbus.String)

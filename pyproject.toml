@@ -55,6 +55,7 @@ blueferry-quickshell-bridge = "blueferry.quickshell_bridge:main"
 [project.gui-scripts]
 blueferry-gtk = "blueferry.ui.app:main"
 blueferry-qt = "blueferry.qt.app:main"
+blueferry-tray = "blueferry.qt.tray:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -31,6 +31,7 @@ The quality workflow also runs:
 ruff check .
 bandit -r src/blueferry -q
 mypy src/blueferry
+python tools/lint_mainloop.py
 qmllint src/blueferry/qt/qml/*.qml data/quickshell/*.qml
 ```
 
@@ -47,6 +48,9 @@ qmllint src/blueferry/qt/qml/*.qml data/quickshell/*.qml
 - QML tests load components only with an injected inert controller.
 - Assert observable behavior so a test stays valid when the implementation
   is rewritten.
+- Daemon code never blocks the main loop. `tools/lint_mainloop.py` (also run
+  as a test) and the autouse `sync_dbus_guard` fail new synchronous D-Bus
+  calls, `time.sleep` and blocking `subprocess` calls in daemon modules.
 
 Experiments with a real iPhone are manual development work, never part of the
 automated suite. Record lasting findings in

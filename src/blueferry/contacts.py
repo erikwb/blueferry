@@ -111,53 +111,102 @@ def _parse_vcard_records(
     return out
 
 
-# Content-free size buckets for the per-sync photo summary (decoded bytes).
+# Content-free size buckets for the per-sync photo summary (bytes, decoded or
+# estimated from the base64 length). Each photo lands in the first bucket it
+# fits, so the buckets above the per-photo cap show how far over it photos are.
 _PHOTO_SIZE_BUCKETS = (
+    (16 * 1024, "<=16KiB"),
     (64 * 1024, "<=64KiB"),
     (256 * 1024, "<=256KiB"),
     (1024 * 1024, "<=1MiB"),
+    (2 * 1024 * 1024, "<=2MiB"),
     (4 * 1024 * 1024, "<=4MiB"),
+    (8 * 1024 * 1024, "<=8MiB"),
 )
+_PHOTO_SIZE_OVERFLOW = ">8MiB"
 PHOTO_DROPPED_SHARED = "shared"
 PHOTO_DROPPED_BUDGET = "budget"
 PHOTO_DROPPED_TIME = "time"
 
 
+def _estimated_photo_bytes(prop: str) -> int:
+    """Rough decoded size of a PHOTO property from its base64 length."""
+    return len(prop) * 3 // 4
+
+
 class PhotoStats:
     """Per-sync photo counters for one summary log line.
 
-    Only counts, size buckets and rejection reasons: nothing that identifies
-    a contact. Meant to show, from a real phone's journal, whether the caps
-    in ``limits.py`` fit the photos iOS actually sends.
+    Only counts, size buckets, the largest size and rejection reasons:
+    nothing that identifies a contact. Meant to show, from a real phone's
+    journal, whether the caps in ``limits.py`` fit the photos iOS actually
+    sends, including how far over the cap rejected photos are.
     """
 
     def __init__(self) -> None:
         self.sizes: Counter[str] = Counter()
         self.dropped: Counter[str] = Counter()
+        self.largest = 0
 
     def observe_size(self, size: int) -> None:
         if size <= 0:
             return
         label = next(
             (name for limit, name in _PHOTO_SIZE_BUCKETS if size <= limit),
-            f">{_PHOTO_SIZE_BUCKETS[-1][1].removeprefix('<=')}",
+            _PHOTO_SIZE_OVERFLOW,
         )
         self.sizes[label] += 1
+        self.largest = max(self.largest, size)
 
     def drop(self, reason: str) -> None:
         self.dropped[reason] += 1
 
     def summary(self) -> str:
         labels = [name for _limit, name in _PHOTO_SIZE_BUCKETS]
-        labels.append(f">{labels[-1].removeprefix('<=')}")
+        labels.append(_PHOTO_SIZE_OVERFLOW)
         sizes = " ".join(f"{label}:{self.sizes[label]}" for label in labels)
         dropped = " ".join(
             f"{reason}:{count}" for reason, count in sorted(self.dropped.items())
         ) or "none"
-        return f"sizes {sizes}; not kept {dropped}"
+        return f"sizes {sizes} max:{self.largest}; not kept {dropped}"
 
 
-def _unique_addresses(records: Sequence[ContactRecord]) -> dict[int, list[str]]:
+def _identities(phones: Iterable[str], emails: Iterable[str]) -> list[str]:
+    """Canonical identities of a record's addresses, with both NANP forms."""
+    out: list[str] = []
+    for address in (*phones, *emails):
+        identity = canonical_address(address)
+        if identity is None:
+            continue
+        out.append(identity)
+        if identity.startswith("phone:"):
+            number = identity.removeprefix("phone:")
+            if len(number) == 10:
+                out.append(f"phone:1{number}")
+            elif len(number) == 11 and number.startswith("1"):
+                out.append(f"phone:{number[1:]}")
+    return out
+
+
+def _duplicate_owners(records: Sequence[ContactRecord]) -> list[int]:
+    """Map each record to the first record that is an exact duplicate of it.
+
+    iOS can list one person several times in the unfiltered phonebook pull
+    (linked cards, several accounts). Records with the same name and the
+    same address identities are one owner for photos; anything else, such
+    as two names sharing a number, stays a separate owner.
+    """
+    first: dict[tuple[str | None, frozenset[str]], int] = {}
+    owners: list[int] = []
+    for index, (name, phones, emails) in enumerate(records):
+        identities = frozenset(_identities(phones, emails))
+        owners.append(first.setdefault((name, identities), index) if identities else index)
+    return owners
+
+
+def _unique_addresses(
+    records: Sequence[ContactRecord], owner_of: Sequence[int] | None = None,
+) -> dict[int, list[str]]:
     """Map record index to the address identities only that record owns.
 
     Count record ownership, not names: two people can share a name or
@@ -166,19 +215,9 @@ def _unique_addresses(records: Sequence[ContactRecord]) -> dict[int, list[str]]:
     """
     owners: dict[str, set[int]] = {}
     for index, (_name, phones, emails) in enumerate(records):
-        for address in (*phones, *emails):
-            identity = canonical_address(address)
-            if identity is None:
-                continue
-            identities = [identity]
-            if identity.startswith("phone:"):
-                number = identity.removeprefix("phone:")
-                if len(number) == 10:
-                    identities.append(f"phone:1{number}")
-                elif len(number) == 11 and number.startswith("1"):
-                    identities.append(f"phone:{number[1:]}")
-            for value in identities:
-                owners.setdefault(value, set()).add(index)
+        owner = owner_of[index] if owner_of is not None else index
+        for value in _identities(phones, emails):
+            owners.setdefault(value, set()).add(owner)
     unique: dict[int, list[str]] = {}
     for identity, owning in owners.items():
         if len(owning) == 1:
@@ -191,9 +230,14 @@ def _servable_photo_indices(records: Sequence[ContactRecord]) -> set[int]:
 
     A record without an address of its own (every number and email is shared
     with another record) never gets its photo served, so storing it would
-    only cost budget and disk.
+    only cost budget and disk. Exact duplicates of one person count as one
+    owner (see :func:`_duplicate_owners`); each of them stays servable, since
+    which copy carries the photo is only known after decoding.
     """
-    return set(_unique_addresses([_sanitized(record) for record in records]))
+    sanitized = [_sanitized(record) for record in records]
+    owner_of = _duplicate_owners(sanitized)
+    unique = _unique_addresses(sanitized, owner_of)
+    return {index for index, owner in enumerate(owner_of) if owner in unique}
 
 
 def _parse_vcard_entries(
@@ -243,11 +287,16 @@ def _parse_vcard_entries(
         index = len(out)
         photo = None
         if prop is not None:
+            # Photos that are not decoded are still sized (estimated) so the
+            # histogram covers every photo the phone sent.
             if servable is not None and index not in servable:
+                selected_stats.observe_size(_estimated_photo_bytes(prop))
                 selected_stats.drop(PHOTO_DROPPED_SHARED)
             elif budget <= 0:
+                selected_stats.observe_size(_estimated_photo_bytes(prop))
                 selected_stats.drop(PHOTO_DROPPED_BUDGET)
             elif spent >= MAX_CONTACT_PHOTO_DECODE_SECONDS:
+                selected_stats.observe_size(_estimated_photo_bytes(prop))
                 selected_stats.drop(PHOTO_DROPPED_TIME)
             else:
                 started = clock()
@@ -409,7 +458,12 @@ def pull_phonebook(
     """Pull the iPhone's main phonebook over PBAP and return contact count.
 
     Replaces the local cache atomically (transaction). ``photos`` defaults to
-    ``BLUEFERRY_CONTACT_PHOTOS`` and retains inline photos from the same pull.
+    the ``BLUEFERRY_CONTACT_PHOTOS`` seed; the daemon passes its saved
+    setting (see ``contact_photo_settings``). The
+    request is identical either way: without a PBAP ``Fields`` filter the
+    iPhone already includes PHOTO in this single pull, so enabling photos
+    only stops discarding bytes that were transferred anyway. Photos are
+    retained only with a storage policy object.
     """
     max_contacts = max(1, min(int(max_contacts), MAX_PHONEBOOK_CONTACTS))
     if storage is not None and not storage.status.can_write:
@@ -478,8 +532,17 @@ class ContactsResolver:
     otherwise bound `resolve` methods become stale.
     """
 
-    def __init__(self, *, storage: StorageSecurity | None = None, strict: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        storage: StorageSecurity | None = None,
+        strict: bool = False,
+        photos: Callable[[], bool] | None = None,
+    ) -> None:
         self.storage = storage
+        # Whether to load photo references; the daemon passes its saved
+        # setting, everything else uses the local.env seed.
+        self._photos = photos or (lambda: bool(config.CONTACT_PHOTOS))
         self._repository = ContactRepository(storage)
         self._mem: dict[str, set[str]] = {}
         self._records: list[ContactRecord] = []
@@ -491,7 +554,7 @@ class ContactsResolver:
         # disabled resolver is exactly the photo-blind one.
         entries = (
             self._repository.load_entries(strict=strict)
-            if config.CONTACT_PHOTOS
+            if self._photos()
             else [(record, None) for record in self._repository.load(strict=strict)]
         )
         loaded = [(_sanitized(record), photo) for record, photo in entries]
@@ -508,17 +571,25 @@ class ContactsResolver:
                     self._mem.setdefault(address, set()).add(name)
 
         self._thread_addresses: dict[str, tuple[str, ...]] = {}
-        unique = _unique_addresses(self._records)
-        # Photos follow the same rule as reply routing: an address shared by
-        # two records never shows either person's picture.
-        self._photo_refs: dict[str, int] = {}
-        for index, addresses in unique.items():
+        for addresses in _unique_addresses(self._records).values():
             ordered = tuple(sorted(addresses))
             for identity in ordered:
                 self._thread_addresses[identity] = ordered
+        # Photos follow the same rule as reply routing (an address shared by
+        # two people never shows either picture), except that exact
+        # duplicates of one person, which iOS sends, count as one owner. The
+        # photo comes from whichever duplicate carries one.
+        self._photo_refs: dict[str, int] = {}
+        owner_of = _duplicate_owners(self._records)
+        group_photo: dict[int, int] = {}
+        for index, owner in enumerate(owner_of):
             photo = photos[index] if index < len(photos) else None
             if photo is not None:
-                for identity in ordered:
+                group_photo.setdefault(owner, photo)
+        for owner, addresses in _unique_addresses(self._records, owner_of).items():
+            photo = group_photo.get(owner)
+            if photo is not None:
+                for identity in addresses:
                     self._photo_refs[identity] = photo
 
     def thread_addresses(self, raw: str | None) -> tuple[str, ...]:
@@ -545,7 +616,7 @@ class ContactsResolver:
 
     def refresh(self) -> int:
         """Replace the cache only after a successful read; propagate failures."""
-        prepared = ContactsResolver(storage=self.storage, strict=True)
+        prepared = ContactsResolver(storage=self.storage, strict=True, photos=self._photos)
         self.adopt_cache(prepared)
         return len(self._mem)
 

@@ -59,6 +59,8 @@ class IPhonePage(Gtk.Box):
         self._proximity_lock_choice = SavedChoice()
         self._applying_calls_enabled = False
         self._calls_enabled_choice = SavedChoice()
+        self._photos_choice = SavedChoice()
+        self._otp_choice = SavedChoice()
         self._applying_storage_policy = False
         self._storage_unlock_attempted = False
         self._pairing_issue_report = ""
@@ -510,6 +512,48 @@ class IPhonePage(Gtk.Box):
         ):
             self._tether_group.add(widget)
         page.add(self._tether_group)
+
+        # Shown only for daemons that report the contact-photo opt-in.
+        self._photos_group = Adw.PreferencesGroup(
+            title=_("Contact Photos"),
+            description=_(
+                "Photos are kept with your contacts and arrive with the next "
+                "contact sync. Turning this off erases them."
+            ),
+        )
+        self._photos_row = Adw.ActionRow(
+            title=_("Show Contact Photos"),
+            subtitle=_("Avatars in notifications and conversations"),
+        )
+        self._photos_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
+        self._photos_switch.connect("notify::active", self._contact_photos_changed)
+        self._photos_row.add_suffix(self._photos_switch)
+        self._photos_row.set_activatable_widget(self._photos_switch)
+        self._photos_group.add(self._photos_row)
+        self._photos_group.set_visible(False)
+        page.add(self._photos_group)
+
+        # Shown only for daemons that report the one-time code opt-in.
+        self._otp_group = Adw.PreferencesGroup(
+            title=_("One-Time Codes"),
+            description=_(
+                "Codes are not stored or logged. Turning this off clears a copied "
+                "code that is still on the clipboard."
+            ),
+        )
+        self._otp_row = Adw.ActionRow(
+            title=_("Copy One-Time Codes"),
+            subtitle=_(
+                "From new messages of senders not in your contacts, never group chats"
+            ),
+        )
+        self._otp_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
+        self._otp_switch.connect("notify::active", self._otp_autocopy_changed)
+        self._otp_row.add_suffix(self._otp_switch)
+        self._otp_row.set_activatable_widget(self._otp_switch)
+        self._otp_group.add(self._otp_row)
+        self._otp_group.set_visible(False)
+        page.add(self._otp_group)
 
         data_group = Adw.PreferencesGroup(title=_("Local Data"))
         history_model = Gtk.StringList.new(
@@ -1294,6 +1338,8 @@ class IPhonePage(Gtk.Box):
             reachable and not self._calls_enabled_choice.saving
         )
         self._applying_calls_enabled = False
+        self._apply_contact_photos(status, reachable=reachable)
+        self._apply_otp_autocopy(status, reachable=reachable)
         self._applying_storage_policy = True
         selected_storage = {
             "encrypted": 0,
@@ -1587,6 +1633,50 @@ class IPhonePage(Gtk.Box):
             self._apply_status(self._last_status)
 
         self._client.set_calls_enabled_async(enabled, saved, failed)
+
+    def _apply_contact_photos(self, status, *, reachable: bool) -> None:
+        self._photos_group.set_visible(
+            status.saved_opt_ins and status.contact_photos is not None,
+        )
+        self._applying_saved_switches = True
+        self._show_saved_choice(
+            self._photos_switch, self._photos_choice, status.contact_photos is True,
+        )
+        self._applying_saved_switches = False
+        self._photos_row.set_sensitive(reachable and not self._photos_choice.saving)
+
+    def _contact_photos_changed(self, switch, _property) -> None:
+        self._save_switch(
+            switch,
+            self._photos_row,
+            self._photos_choice,
+            "contact_photos",
+            self._client.set_contact_photos_async,
+            _("Contact photo preference saved"),
+            _("Could not save the contact photo preference: {error}"),
+        )
+
+    def _apply_otp_autocopy(self, status, *, reachable: bool) -> None:
+        self._otp_group.set_visible(
+            status.saved_opt_ins and status.otp_autocopy is not None,
+        )
+        self._applying_saved_switches = True
+        self._show_saved_choice(
+            self._otp_switch, self._otp_choice, status.otp_autocopy is True,
+        )
+        self._applying_saved_switches = False
+        self._otp_row.set_sensitive(reachable and not self._otp_choice.saving)
+
+    def _otp_autocopy_changed(self, switch, _property) -> None:
+        self._save_switch(
+            switch,
+            self._otp_row,
+            self._otp_choice,
+            "otp_autocopy",
+            self._client.set_otp_autocopy_async,
+            _("One-time code preference saved"),
+            _("Could not save the one-time code preference: {error}"),
+        )
 
     def _storage_policy_changed(self, _row, _property) -> None:
         if self._applying_storage_policy:

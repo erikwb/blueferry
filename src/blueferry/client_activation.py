@@ -29,6 +29,8 @@ from blueferry.protocol import BUS_NAME, MESSAGES_IFACE, OBJECT_PATH
 log = logging.getLogger(__name__)
 ACTIVATION_INTERFACE = "io.weirdware.BlueFerry.Client"
 ACTIVATION_PATH = "/io/weirdware/BlueFerry/Client"
+# Owned by the standalone ``blueferry-tray`` item while it runs.
+TRAY_BUS_NAME = f"{ACTIVATION_INTERFACE}.Tray"
 _recency_lock = threading.Lock()
 
 

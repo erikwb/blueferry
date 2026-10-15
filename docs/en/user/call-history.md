@@ -36,8 +36,10 @@ sequenceDiagram
   once are summarized in one popup; calls older than 12 hours are never
   announced. With **All iPhone notifications**, the iPhone's own missed-call
   popup is not repeated.
-- Shows the list with `blueferry call-history` and in **Recent Calls** in
-  the KDE client's menu.
+- Shows the list with `blueferry call-history`, in **Recent Calls** in the
+  KDE client's menu, in the GTK client's **iPhone** dialog (main menu,
+  `Ctrl+I`), and in the terminal client with `h` (`m` shows only missed
+  calls).
 
 ## How to turn it on
 
@@ -83,9 +85,13 @@ previous phone's list.
   `--sync` and **Refresh from iPhone** are never held back.
 - It mirrors the phone; calls you delete on the iPhone disappear on the next
   full refresh.
+- The iPhone hands over at most its 100 most recent calls per list (incoming,
+  dialled, missed), so older calls are not shown even inside the retention
+  window.
 - The list and missed-call popups need stored local data. They don't work
   while the wallet is locked or with **Do not retain local data**.
-- GTK, the terminal client, and Quickshell don't show the list yet.
+- Quickshell doesn't show the list yet, and the terminal client has no
+  switch for it; use the command line there.
 
 ## Privacy
 
@@ -94,8 +100,8 @@ previous phone's list.
   are removed. **Clear history**, changing the storage mode, and turning the
   option off erase it at once.
 - Clients get the records only through the authenticated, rate-limited
-  `ListCallHistory` method. The broadcast signal carries no content. The Qt
-  client fetches them only while **Recent Calls** is open.
+  `ListCallHistory` method. The broadcast signal carries no content. The Qt,
+  GTK and terminal clients fetch them only while their list is open.
 - Popups follow your message popup settings: **No notifications** silences
   them, **Only from contacts** skips unknown callers, and
   `BLUEFERRY_SHOW_NOTIFICATION_CONTENT=false` hides caller and time. They are

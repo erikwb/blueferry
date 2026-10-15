@@ -134,3 +134,60 @@ def test_an_unrestarted_older_backend_gets_a_plain_explanation() -> None:
     ):
         with pytest.raises(BackendError, match="restart it after upgrading"):
             call()
+
+
+class _SyncBackend:
+    def __init__(self, status: dict | None) -> None:
+        self._status = status
+        self.set_calls: list[bool] = []
+
+    def status(self):
+        from blueferry.models import BackendStatus
+
+        if self._status is None:
+            raise BackendError("not running")
+        return BackendStatus.from_dict(self._status)
+
+    def set_mirror_notification_removals(self, enabled: bool) -> bool:
+        self.set_calls.append(enabled)
+        if self._status is None:
+            raise BackendError("not running")
+        self._status["mirror_iphone_removals"] = enabled
+        return enabled
+
+
+def _run_sync(monkeypatch, fake, *args):
+    monkeypatch.setattr(cli_notifications, "_client", lambda: fake)
+    return CliRunner().invoke(app, ["notifications", "sync", *args])
+
+
+def test_sync_enable_disable_and_status(monkeypatch) -> None:
+    fake = _SyncBackend({
+        "daemon": True, "notification_policy": "all", "mirror_iphone_removals": False,
+    })
+    result = _run_sync(monkeypatch, fake)
+    assert result.exit_code == 0
+    assert "Sync notifications with iPhone: off" in result.output
+    result = _run_sync(monkeypatch, fake, "enable")
+    assert result.exit_code == 0
+    assert "Sync notifications with iPhone: on" in result.output
+    assert "All iPhone Notifications" not in result.output
+    assert "off" in _run_sync(monkeypatch, fake, "disable").output
+    assert fake.set_calls == [True, False]
+
+
+def test_sync_status_explains_messages_only_and_old_backends(monkeypatch) -> None:
+    messages = _SyncBackend({
+        "daemon": True, "notification_policy": "messages", "mirror_iphone_removals": True,
+    })
+    assert "All iPhone Notifications" in _run_sync(monkeypatch, messages, "status").output
+    old = _SyncBackend({"daemon": True})
+    assert "does not support" in _run_sync(monkeypatch, old).output
+
+
+def test_sync_reports_a_stopped_service(monkeypatch) -> None:
+    stopped = _SyncBackend(None)
+    assert _run_sync(monkeypatch, stopped).exit_code == 2
+    result = _run_sync(monkeypatch, stopped, "enable")
+    assert result.exit_code == 2
+    assert "Could not change notification sync" in result.output

@@ -68,6 +68,7 @@ from blueferry.ancs.parsers import (
 )
 from blueferry.ancs.sequencer import RequestBacklog
 from blueferry.bus import get_system_bus
+from blueferry.gatt import write_request_options
 from blueferry.limits import (
     MAX_ANCS_ACTIONABLE,
     MAX_ANCS_ACTIONS_IN_FLIGHT,
@@ -141,6 +142,7 @@ class _PendingRequest:
     busy_retries: int = 0
     action_label_ids: tuple[int, ...] = ()
     action: _ActionRequest | None = None
+    discarded: bool = False
 
 
 _APP_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")
@@ -228,6 +230,8 @@ class AncsClient:
         notification_actions: bool | Callable[[], bool] = False,
         on_notification_removed: Callable[[int], None] | None = None,
         on_actions_reset: Callable[[], None] | None = None,
+        on_removed: Callable[[int], None] | None = None,
+        on_session_reset: Callable[[], None] | None = None,
         schedule: Callable[[int, Callable[[], bool]], int] = GLib.timeout_add_seconds,
         cancel: Callable[[int], object] = GLib.source_remove,
         clock: Callable[[], float] = time.monotonic,
@@ -253,6 +257,14 @@ class AncsClient:
         self._notification_actions_setting = notification_actions
         self._on_notification_removed = on_notification_removed
         self._on_actions_reset = on_actions_reset
+        # For clients that follow the iPhone's list: every removal (not only
+        # actionable ones) and the end of a UID session, after which the old
+        # UIDs may name other notifications.
+        self._on_removed = on_removed
+        self._on_session_reset = on_session_reset
+        # Set once the current session delivered a live (not PreExisting)
+        # event; a later PreExisting replay then means a new session.
+        self._live_events_seen = False
 
         # Char path slots — set as InterfacesAdded fires
         self._ns_path: str | None = None
@@ -781,6 +793,7 @@ class AncsClient:
         self._authorized = False
         self._reset_requests()
         self._reset_actions()
+        self._end_session()
 
     def _stop_bluez_notifications(self) -> None:
         """Remove notification ownership created by us while ATT is up."""
@@ -906,6 +919,7 @@ class AncsClient:
         self._notify_started = True
         # A fresh Notification Source subscription starts a new UID session.
         self._reset_actions()
+        self._end_session()
         log.info(
             "ANCS characteristic subscriptions active; requesting notification access"
         )
@@ -1107,6 +1121,8 @@ class AncsClient:
         self._forget_actionable(n.id)
         if n.type == EventID.NotificationRemoved:
             log.debug("ANCS removed uid=%d", n.id)
+            self._discard_notification_requests(n.id)
+            self._session_callback(self._on_removed, n.id)
             return
         # Skip pre-existing (notifications that already existed on the
         # iPhone at our connect time — too noisy on initial subscribe).
@@ -1118,7 +1134,10 @@ class AncsClient:
             if self._actionable:
                 log.info("ANCS session replay seen; retiring notification actions")
                 self._reset_actions()
+            if self._live_events_seen:
+                self._end_session()
             return
+        self._live_events_seen = True
         # Added or Modified → identify the source app without content first.
         self._categories[n.id] = n.category
         self._categories.move_to_end(n.id)
@@ -1270,6 +1289,13 @@ class AncsClient:
                 return
             name = error.get_dbus_name() or type(error).__name__
             detail = error.get_dbus_message() or str(error)
+            if request.discarded:
+                self._finish_active_request()
+                if _connection_was_lost(error):
+                    self._mark_transport_failed()
+                    return
+                self._pump_requests()
+                return
             if (
                 name.endswith(".InProgress")
                 and request.busy_retries < MAX_CONTROL_POINT_BUSY_RETRIES
@@ -1309,9 +1335,10 @@ class AncsClient:
                 "org.bluez.GattCharacteristic1",
             ).WriteValue(
                 [dbus.Byte(value) for value in request.packet],
-                # Without introspection dbus-python cannot infer a{sv} from
-                # an empty dict and raises before sending.
-                dbus.Dictionary({}, signature="sv"),
+                # A plain Write Request: the Control Point has the
+                # reliable-write extended property, and a reliable write's
+                # Execute is rejected by iOS (see blueferry.gatt).
+                write_request_options(),
                 reply_handler=written,
                 error_handler=failed,
                 timeout=DBUS_CALL_TIMEOUT_SECONDS,
@@ -1452,6 +1479,9 @@ class AncsClient:
         if complete is None:
             return
         self._finish_active_request()
+        if request.discarded:
+            self._pump_requests()
+            return
         try:
             ev = DataSourceEvent.parse(complete)
         except ValueError as error:
@@ -1660,6 +1690,45 @@ class AncsClient:
             callback(notification_id)
         except Exception:
             log.exception("ANCS notification-removed callback raised")
+
+    def _end_session(self) -> None:
+        """The UID session ended: its UIDs may name other notifications next."""
+        self._live_events_seen = False
+        self._discard_notification_requests()
+        self._session_callback(self._on_session_reset)
+
+    def _discard_notification_requests(self, uid: int | None = None) -> None:
+        """Retire pending content without interrupting a Control Point write.
+
+        Drain an active response before sending the next request, but never
+        turn its attributes into a popup after removal or a session replay.
+        """
+        def matches(request: _PendingRequest) -> bool:
+            return request.notification is not None and (
+                uid is None or request.notification.id == uid
+            )
+
+        self._request_queue.remove_if(matches)
+        request = self._active_request
+        if request is not None and matches(request) and not request.discarded:
+            request.discarded = True
+            # A reused UID may queue behind the draining response. Releasing
+            # this key must not let the old completion release the new one.
+            self._request_queue.finish(request.key)
+            request.key = f"retired:{request.key}"
+        for app_id, pending in list(self._pending_app_lookups.items()):
+            pending[:] = [attrs for attrs in pending if uid is not None and attrs.id != uid]
+            if not pending:
+                self._pending_app_lookups.pop(app_id, None)
+
+    @staticmethod
+    def _session_callback(callback: Callable[..., None] | None, *args: int) -> None:
+        if callback is None:
+            return
+        try:
+            callback(*args)
+        except Exception:
+            log.exception("ANCS session callback raised")
 
     def _drop_queued_actions(
         self,

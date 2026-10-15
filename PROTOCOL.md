@@ -312,9 +312,11 @@ The iPhone phonebook is available through BlueZ's
   bulk pull whether or not BlueFerry keeps them. gutbash/blue reports iOS
   including photos without a filter. The opt-in contact-photo feature
   therefore reuses the same pull rather than adding a second photo-only pull
-  or per-entry `Pull` calls. BlueFerry itself has not captured a photo-bearing
-  iOS phonebook yet, so how iOS encodes PHOTO (vCard 3.0 `ENCODING=b`,
-  folded base64, JPEG) is expected but unverified.
+  or per-entry `Pull` calls. On one iPhone (iOS 27) the unfiltered pull
+  of 3730 contacts was 726487 bytes and carried 42 inline photos that passed
+  the JPEG/PNG check, all small thumbnails (about 2 to 19 KiB). The exact
+  PHOTO spelling iOS uses (vCard 3.0 `ENCODING=b` with folded base64 is
+  expected) was not recorded.
 - Small or fast BlueZ transfers can disappear from D-Bus with status `gone`
   just before the output file becomes visible. Preserve the initial transfer
   properties and allow a short, bounded file-visibility grace period.
@@ -323,20 +325,35 @@ Contact names are display data, not identities. Phone numbers and email
 addresses are normalized and stored separately; a name that resolves to more
 than one address must remain ambiguous.
 
-### Call history (unverified on hardware)
+### Call history (partly verified on hardware)
 
 BlueFerry's opt-in call history relies on the PBAP call-history phonebooks,
 selected with `Select("int", "ich" | "och" | "mch")` and pulled with the same
-`PullAll` filters as the main phonebook. **This path has not yet been
-exercised against an iPhone**; the following are expectations from the PBAP
-specification and third-party reports, not captured observations:
+`PullAll` filters as the main phonebook.
+
+Observed with an iPhone on iOS 27 and BlueZ 5.87 (2026-10-07/08, daemon log
+only, no call content recorded):
+
+- iOS fills all three lists. Each listing returned exactly 100 entries
+  although BlueFerry asks for up to 1000, so iOS appears to cap every list at
+  100 calls. One listing of 100 entries is 15–17 KB and took 0.7–0.9 s from
+  `PullAll` to the parsed list; a full three-list sync took about 2.5 s.
+- Every entry carried a timestamp BlueFerry could parse; after merging and
+  the retention window, 199 calls were kept (100 outgoing, 80 incoming,
+  19 missed).
+- A call missed while the desktop was off was announced exactly once on the
+  first sync after start; the following syncs did not announce it again.
+
+Still expectations from the PBAP specification and third-party reports, not
+captured observations:
 
 - Entries carry `X-IRMC-CALL-DATETIME;MISSED|RECEIVED|DIALED:<timestamp>`
   plus `TEL` and, for known callers, `N`/`FN`. Timestamps without `Z` or an
-  offset are treated as local time.
-- iOS is reported to fill `ich`, `och`, and `mch`, while the combined `cch`
-  listing is unreliable, so BlueFerry pulls the three lists and merges them.
-  A call present in both `ich` and `mch` is treated as missed.
+  offset are treated as local time. Whether iOS sends them floating or in
+  UTC has not been captured: BlueFerry neither logs nor exposes the raw text.
+- The combined `cch` listing is reported to be unreliable, so BlueFerry pulls
+  the three lists and merges them. A call present in both `ich` and `mch` is
+  treated as missed.
 - An empty listing is a valid answer (for example, no missed calls).
 - PBAP offers no change notification. BlueFerry pulls when the ANCS
   Notification Source reports a new `MissedCall` notification (only `mch`) or
@@ -344,17 +361,31 @@ specification and third-party reports, not captured observations:
   only `mch`. That iOS removes the `IncomingCall` notification when a call is
   answered, declined or missed, and writes its call log within the
   five-second coalescing delay, is assumed, not observed.
+- Under "All iPhone notifications" a PBAP missed call is not announced again
+  when an ANCS `MissedCall` popup covers it. BlueFerry assumes that popup's
+  title names the caller as iOS shows it, a contact name or the number; the
+  subtitle only counts if it is a number, because it is often a label such
+  as "Missed Call" that any caller could share. It pairs one popup with one call, first by caller (name, or the
+  last nine digits of the number) within -2/+30 minutes of the call time,
+  or within 26 hours when the PBAP time had no zone, and only then by time
+  alone within -2/+30 minutes. Caller keys are kept in memory as
+  per-process keyed digests only.
 - Automatic pulls share the single OBEX worker, so they follow the
   contact-sync MAP gating (defer while MAP reconnects, three-minute grace when
   MAP never connected). Each listing is a separate worker job bounded to
   45 seconds of transfer, so a queued MAP send never waits behind a whole
-  sync. A `NoReply` or transfer timeout from these optional pulls is not
-  reported to the session manager (which would drop MAP and PBAP); only
-  "object gone" errors are.
+  sync. No error from these optional pulls (`NoReply`, a transfer
+  timeout, `UnknownObject`) is reported to the session manager, which would
+  drop MAP and PBAP; a session that really vanished is already noticed through
+  `InterfacesRemoved`/`NameOwnerChanged`.
 - When the phone's own time zone or DST changes, iOS is expected to re-render
-  offset-free timestamps of existing calls. A missed call whose text differs
-  from an announced one for the same number by whole quarter hours (at most
-  26 h), while the earlier text is gone from the list, is not announced again.
+  offset-free timestamps of existing calls, all of them at once. Only when no
+  previously retained call of the pulled lists is still listed with the same
+  text is a listing treated as re-rendered; then a missed call whose text
+  differs from an announced one for the same number by the listing's common
+  shift (whole quarter hours, at most 26 h, the shift that explains the most
+  calls), while the earlier text is gone from the list, is not announced
+  again.
 - BlueFerry requests `vcard30`. vCard 3.0 text escapes (`\;`, `\,`, `\\`,
   `\n`) are resolved; vCard 2.1 `QUOTED-PRINTABLE`/`CHARSET` encodings are
   **not** decoded, on the assumption that iOS honors the requested format.
@@ -363,8 +394,8 @@ specification and third-party reports, not captured observations:
 - Offset-free timestamps are interpreted in the desktop's time zone, so the
   "announce only calls younger than 12 hours" rule is measured there too.
 
-Record the phone model, iOS version, and BlueZ version here once the behavior
-has been observed.
+Not yet observed: whether the ANCS removal of an incoming call arrives with
+its category, and how a phone time-zone change renders existing calls.
 
 ## OBEX lifecycle
 
@@ -633,27 +664,74 @@ specification-based expectation, not a captured result.
   the solicitation advertisement and never dials LE for it; it only uses the
   link the ANCS bearer supervision already maintains.
 - Remote Command (`9B3C81D8-…`) notifies the list of currently available
-  command IDs and accepts a one-byte command write. Commands outside that
-  list are not sent.
+  command IDs and accepts a one-byte command write; it is not readable.
+  Observed on hardware (iOS 27, Intel 8087:0033, BlueZ 5.87): iOS sends the
+  list only after a CCC write that enables notifications, so switching media
+  control off and on needs a `StopNotify` first. After an ordinary LE
+  reconnect, with BlueZ re-creating the GATT objects, Entity Updates flowed
+  but no list arrived. BlueFerry therefore treats the list as unknown (not
+  empty) until it arrives, and once per LE link, after an Entity Update with
+  no list within 3 seconds, toggles the Remote Command CCC (`StopNotify`,
+  then `StartNotify`) in the serialized GATT queue on the steady link. While
+  the list is unknown, commands are sent as asked; with a known list,
+  commands outside it are not sent. Whether the toggle brings the list back
+  after a reconnect still needs a hardware run.
 - Entity Update (`2F7CABCE-…`) is registered with one write per entity
   (Player, Queue, Track). Registrations are expected to be forgotten on
   disconnect, so they are rewritten after every LE reconnect. Notifications
   carry entity, attribute, a truncation flag, and a UTF-8 value. The
   specification states that the Media Source answers a registration with the
   current values; BlueFerry resubscribes (without resetting LE) if no update
-  arrives within 10 seconds of a registration.
+  arrives within 10 seconds of a registration. Observed on hardware
+  (2026-10-08, iOS 27, an audiobook playing, LE reconnecting every 1.5 to 2
+  minutes): after re-registration iOS sent a changed track title but neither
+  the player name nor PlaybackInfo, so the cleared state read "nothing
+  playing". Three seconds after each registration BlueFerry therefore reads
+  the Player and Track attributes that did not arrive through Entity
+  Update (read back via Entity Attribute); an absent one (AMS 0xA2) is just
+  logged.
+- Short LE drops can go unseen: the bearer state is polled every 5 seconds,
+  and a btmon capture (2026-10-08) showed a 0.5-second drop (Connection
+  Timeout) between two polls. BlueZ restored the CCCs of the bonded iPhone
+  itself (ANCS Data Source, AMS Remote Command and Entity Update; not the
+  ANCS Notification Source in that capture), iOS answered with its command
+  list, but the Entity Update registrations iOS had dropped with the link
+  were never rewritten, so AMS stayed silent through track changes.
+  BlueFerry therefore registers the entities again (without changing
+  availability) one second after any Remote Command notification on a
+  registered link, then reads the values that did not follow. iOS also
+  resends the list when the playing app changes; registering again then is
+  harmless.
 - A truncated value is completed by writing the entity/attribute selector to
   Entity Attribute (`C6B2F38C-…`) and reading it back; the two steps stay
   adjacent in the serialized GATT queue.
+- Every write to the ANCS Control Point and to the AMS characteristics
+  passes `{"type": "request"}`. iOS marks them with the "reliable-write"
+  extended property, and without a `type` BlueZ 5.87 then sends a reliable
+  write (Prepare Write plus Execute Write). Observed with btmon
+  (2026-10-08): iOS answered the Execute of an AMS registration with ATT
+  error 0xA0 (InvalidState), and every registration failed from then on.
 - The ANCS BlueZ 5.87 constraint applies here too: no `StopNotify` on a
   dropped or flapping link; surviving `Notifying=true` registrations are kept.
+  The deliberate `StopNotify` paths (runtime opt-out, command-list toggle,
+  InvalidState toggle) run only on a steady, subscribed link, and a toggle
+  whose link drops after the `StopNotify` never re-enables late.
+- After an LE drop, iOS can forget the Entity Update subscription while
+  BlueZ keeps its notify session and `Notifying=true` (hardware, 2026-10-15,
+  drop forced with `Bearer.LE1.Disconnect`): every registration is refused
+  with 0xA0 (InvalidState), and a repeated `StartNotify` writes no CCC. On
+  that answer BlueFerry toggles the Remote Command and Entity Update CCCs
+  (`StopNotify`, then `StartNotify`) before registering again, at most twice
+  per LE link; after that the ordinary subscription backoff applies.
 - AMS offers relative volume steps and fixed skips only, so an MPRIS volume
   write becomes one step, MPRIS `CanSeek` is false and `Seek`/`SetPosition`
   have no effect, and MPRIS `Stop` pauses. The skips remain available through
   `Media1`. MPRIS `Rate` follows the PlaybackInfo rate (the last positive one
-  while paused, since MPRIS forbids 0), `Volume` is omitted until the phone
-  reports it, and `mpris:trackid` stays the same when a truncated title is
-  completed.
+  while paused, since MPRIS forbids 0), `Volume` is omitted (from `Get`,
+  `GetAll` and introspection alike) until the phone reports it, the transport
+  `Can*` properties are true while the command list is unknown (a list the
+  phone did send is followed exactly, even when empty), and `mpris:trackid`
+  stays the same when a truncated title is completed.
 - AMS ATT application errors 0xA0 (InvalidState), 0xA1 (InvalidCommand) and
   0xA2 (AbsentAttribute) appear only in BlueZ's error message text; BlueFerry
   logs them by name.

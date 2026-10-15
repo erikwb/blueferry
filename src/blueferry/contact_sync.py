@@ -50,8 +50,11 @@ class ContactSync:
         pull: Pull | None = None,
         schedule: Callable[[int, Callable[[], bool]], int] | None = None,
         cancel: Callable[[int], object] | None = None,
+        photos: Callable[[], bool] | None = None,
     ) -> None:
         self._sessions = sessions
+        # The daemon's contact-photo setting, read when a pull is queued.
+        self._photos = photos
         self._storage = storage
         self._contacts = contacts
         self._submit = submit
@@ -65,6 +68,8 @@ class ContactSync:
         self._pending = False
         self._initial_sync_done = False
         self._generation = 0
+        self._photos_revision = 0
+        self._photos_synced_revision = 0
         self._waiters: list[tuple[Success, Failure]] = []
         self._deferred = False
         self._map_wait_id: int | None = None
@@ -91,9 +96,18 @@ class ContactSync:
 
     def needed(self) -> bool:
         """Whether startup or recovery still owes an automatic contact sync."""
-        return self._deferred or (
+        return self._deferred or self.photo_refresh_pending or (
             not self._initial_sync_done and self._contacts.count() == 0
         )
+
+    @property
+    def photo_refresh_pending(self) -> bool:
+        return self._photos_synced_revision != self._photos_revision
+
+    def photos_changed(self) -> None:
+        """Owe a pull with the new option, even if an older pull is in flight."""
+        self._photos_revision += 1
+        self.refresh()
 
     def profiles_available(self) -> None:
         """Start owed pulls and the daily refresh once PBAP is live."""
@@ -154,10 +168,12 @@ class ContactSync:
         revision = self._storage.revision
         storage = self._storage.snapshot(follow=True)
         pull = self._pull or contacts_module.pull_phonebook
+        options = {} if self._photos is None else {"photos": bool(self._photos())}
+        photos_revision = self._photos_revision
 
         def download() -> int:
             try:
-                return pull(self._sessions, storage=storage)
+                return pull(self._sessions, storage=storage, **options)
             finally:
                 storage.close()
 
@@ -167,6 +183,7 @@ class ContactSync:
             except Exception as error:
                 failed(error)
             else:
+                self._photos_synced_revision = photos_revision
                 self._finished(generation, count=count)
 
         def failed(error: Exception) -> None:
@@ -254,6 +271,10 @@ class ContactSync:
         elif (stale or generation != self._generation) and self.needed():
             # Storage changed while this pull was pending, so its recovery
             # callback could not queue the replacement download yet.
+            self.refresh()
+        elif error is None and self.photo_refresh_pending:
+            # This pull began before the opt-in changed. A successful old
+            # download cannot satisfy the new photo request.
             self.refresh()
 
     def _finish_map_wait(self) -> None:

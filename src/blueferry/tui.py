@@ -28,7 +28,7 @@ from textual.widgets import (
     TextArea,
 )
 
-from blueferry import config
+from blueferry import config, phone_overview
 from blueferry.backend_lifecycle import BackendLifecycleError, ensure_backend_current
 from blueferry.bus import get_session_bus
 from blueferry.client import BackendClient, BackendError, TetherUnsupportedError
@@ -40,6 +40,7 @@ from blueferry.conversation_state import (
 )
 from blueferry.models import (
     BackendStatus,
+    CallHistoryEntry,
     CallsSnapshot,
     Thread,
     ThreadMessage,
@@ -52,6 +53,9 @@ from blueferry.tether_status import TetherStatus
 from blueferry.text_safety import terminal_text
 from blueferry.time_display import format_message_timestamp
 from blueferry.tui_calls import CallsScreen
+from blueferry.tui_notification_rules import REVISION_KEY, NotificationRulesScreen
+from blueferry.tui_options import OptionsScreen
+from blueferry.tui_phone import RecentCallsScreen, now_playing_text
 
 _REFRESH_SECONDS = 15.0
 _SIGNAL_PUMP_SECONDS = 0.2
@@ -99,6 +103,21 @@ class _Client(_TetherClient, Protocol):
     def answer_call(self, call_id: str) -> None: ...
 
     def hangup_call(self, call_id: str) -> None: ...
+
+    # Notification click rules; used only by the rules panel.
+    def notification_open_map(self) -> list[dict[str, str]]: ...
+
+    def set_notification_open_target(
+        self, bundle_id: str, target: str,
+    ) -> list[dict[str, str]]: ...
+
+    def remove_notification_open_target(self, bundle_id: str) -> bool: ...
+    # Opt-in media control (Media1) and call history (CallHistory1).
+    def now_playing(self) -> dict: ...
+
+    def send_media_command(self, command: str) -> None: ...
+
+    def call_history(self, limit: int = 200) -> list[CallHistoryEntry]: ...
 
 
 class _Monitor(Protocol):
@@ -228,6 +247,8 @@ class _EventMonitor:
         self.invalidated = False
         self.calls_changed = False
         self.tether_changed = False
+        self.now_playing_changed = False
+        self.call_history_changed = False
         self._context = GLib.MainContext.default()
         bus = get_session_bus()
         common = {
@@ -265,6 +286,17 @@ class _EventMonitor:
                 bus_name=BUS_NAME,
                 path=OBJECT_PATH,
             ),
+            # Content-free; details come from GetNowPlaying / ListCallHistory.
+            bus.add_signal_receiver(
+                lambda: setattr(self, "now_playing_changed", True),
+                signal_name="NowPlayingChanged",
+                **common,
+            ),
+            bus.add_signal_receiver(
+                lambda: setattr(self, "call_history_changed", True),
+                signal_name="CallHistoryChanged",
+                **common,
+            ),
         ]
 
     def _calls_changed(self) -> None:
@@ -272,6 +304,14 @@ class _EventMonitor:
 
     def take_calls_changed(self) -> bool:
         changed, self.calls_changed = self.calls_changed, False
+        return changed
+
+    def take_now_playing_changed(self) -> bool:
+        changed, self.now_playing_changed = self.now_playing_changed, False
+        return changed
+
+    def take_call_history_changed(self) -> bool:
+        changed, self.call_history_changed = self.call_history_changed, False
         return changed
 
     def _invalidate(self) -> None:
@@ -560,13 +600,25 @@ class HelpScreen(ModalScreen[None]):
         Binding("escape,question_mark", "close", "Close", show=False),
     ]
 
-    def __init__(self, *, calls_enabled: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        calls_enabled: bool = False,
+        media_control: bool = False,
+        call_history: bool = False,
+    ) -> None:
         super().__init__()
         self.calls_enabled = calls_enabled
+        self.media_control = media_control
+        self.call_history = call_history
 
     def compose(self) -> ComposeResult:
-        # The optional calls panel is listed only while calls are switched on.
+        # Opt-in features are listed only while they are switched on.
         calls_line = "[bold #7dd3fc]Phone calls[/]  c\n" if self.calls_enabled else ""
+        if self.call_history:
+            calls_line += "[bold #7dd3fc]Recent calls[/]  h\n"
+        if self.media_control:
+            calls_line += "[bold #7dd3fc]iPhone play/pause · previous · next[/]  p \\[ ]\n"
         help_text = Text.from_markup(
             "[bold #7dd3fc]Move[/]  ↑ ↓ or j k\n"
             "[bold #7dd3fc]Open / reply[/]  Enter\n"
@@ -578,6 +630,8 @@ class HelpScreen(ModalScreen[None]):
             "[bold #7dd3fc]Delete conversation[/]  Delete\n"
             f"{calls_line}"
             "[bold #7dd3fc]Internet sharing[/]  t\n"
+            "[bold #7dd3fc]Options[/]  o\n"
+            "[bold #7dd3fc]Notification click rules[/]  l\n"
             "[bold #7dd3fc]Commands[/]  Ctrl+P\n"
             "[bold #7dd3fc]Refresh[/]  r\n"
             "[bold #7dd3fc]Back[/]  Esc\n"
@@ -766,6 +820,12 @@ class BlueFerryApp(App[None]):
         Binding("delete", "delete_thread", "Delete"),
         Binding("c", "calls", "Calls", show=False),
         Binding("t", "tethering", "Tethering"),
+        Binding("o", "options", "Options"),
+        Binding("l", "click_rules", "Click rules", show=False),
+        Binding("h", "recent_calls", "Recent calls", show=False),
+        Binding("p", "media('toggle')", "Play/Pause", show=False),
+        Binding("left_square_bracket", "media('previous')", "Previous track", show=False),
+        Binding("right_square_bracket", "media('next')", "Next track", show=False),
         Binding("escape", "return_to_list", "Back", show=False),
     ]
 
@@ -783,6 +843,11 @@ class BlueFerryApp(App[None]):
         self._sending = False
         self._deleting = False
         self._announced_calls: set[str] = set()
+        self.now_playing = phone_overview.now_playing(None)
+        self._now_playing_key: tuple[bool, bool] | None = None
+        self._media_generation = 0
+        self._media_loading = False
+        self._media_again = False
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="masthead"):
@@ -794,6 +859,8 @@ class BlueFerryApp(App[None]):
             yield Static("CONTACTS  …", id="pbap-status", classes="status-pill")
             yield Static("NOTIFICATIONS  …", id="ancs-status", classes="status-pill")
             yield Static("STORAGE  …", id="storage-status", classes="status-pill")
+        # Opt-in iPhone media control; hidden unless something can be shown.
+        yield Static("", id="now-playing")
         with Horizontal(id="workspace"):
             with Vertical(id="sidebar"):
                 with Horizontal(id="sidebar-heading"):
@@ -869,6 +936,14 @@ class BlueFerryApp(App[None]):
             self._calls_changed()
         if self._monitor.take_tether_changed() and isinstance(self.screen, TetherScreen):
             self.screen.refresh_state()
+        take_media = getattr(self._monitor, "take_now_playing_changed", None)
+        if take_media is not None and take_media():
+            self._load_now_playing()
+        take_history = getattr(self._monitor, "take_call_history_changed", None)
+        if take_history is not None and take_history() and isinstance(
+            self.screen, RecentCallsScreen,
+        ):
+            self.screen.refresh_calls()
         if handle:
             self._pending_open_handle = handle
             if self.state.select_message(handle):
@@ -1099,6 +1174,17 @@ class BlueFerryApp(App[None]):
         storage = self.query_one("#storage-status", Static)
         storage.update(f"STORAGE  {status.storage_state.upper()}")
         storage.set_classes(f"status-pill {'ok' if storage_ok else 'warn'}")
+        # NowPlayingChanged covers track and player changes. Fetch here only
+        # when there is nothing to have signalled yet: the first status, the
+        # media opt-in switching, or the daemon coming (back) up.
+        media_key = (status.daemon, phone_overview.media_control_enabled(status.to_dict()))
+        if media_key != self._now_playing_key:
+            self._now_playing_key = media_key
+            self._load_now_playing()
+        if isinstance(self.screen, RecentCallsScreen) and (
+            not status.daemon or not phone_overview.call_history_enabled(status.to_dict())
+        ):
+            self.screen.dismiss(None)
 
     def _set_pill(self, selector: str, label: str, active: bool) -> None:
         pill = self.query_one(selector, Static)
@@ -1249,7 +1335,19 @@ class BlueFerryApp(App[None]):
         self.query_one("#thread-list", ListView).focus()
 
     def action_help(self) -> None:
-        self.push_screen(HelpScreen(calls_enabled=bool(self.state.status.calls_enabled)))
+        status = self.state.status
+        values = status.to_dict()
+        self.push_screen(HelpScreen(
+            calls_enabled=bool(status.calls_enabled),
+            media_control=phone_overview.media_control_enabled(values),
+            call_history=phone_overview.call_history_enabled(values),
+        ))
+
+    def action_options(self) -> None:
+        focused = self.focused
+        if isinstance(focused, Input | TextArea) or isinstance(self.screen, OptionsScreen):
+            return
+        self.push_screen(OptionsScreen(self.state.client))
 
     def action_tethering(self) -> None:
         focused = self.focused
@@ -1271,6 +1369,107 @@ class BlueFerryApp(App[None]):
             )
             return
         self.push_screen(CallsScreen(self.state.client))
+
+    def action_click_rules(self) -> None:
+        focused = self.focused
+        if isinstance(focused, Input | TextArea) or isinstance(
+            self.screen, NotificationRulesScreen,
+        ):
+            return
+        status = self.state.status
+        # Older, not yet restarted backends lack the methods and the key.
+        if status.extra.get(REVISION_KEY) is None:
+            self.notify(
+                "The running backend does not support notification click rules; "
+                "restart it after upgrading",
+                severity="warning",
+            )
+            return
+        self.push_screen(NotificationRulesScreen(
+            self.state.client, policy_all=status.notification_policy == "all",
+        ))
+
+    def _load_now_playing(self) -> None:
+        self._media_generation += 1
+        status = self.state.status
+        if not status.daemon or not phone_overview.media_control_enabled(status.to_dict()):
+            self._media_again = False
+            self._show_now_playing(phone_overview.now_playing(None))
+            return
+        if self._media_loading:
+            self._media_again = True
+            return
+        self._media_loading = True
+        self._fetch_now_playing(self._media_generation)
+
+    @work(thread=True, group="now-playing", exit_on_error=False)
+    def _fetch_now_playing(self, generation: int) -> None:
+        snapshot: dict = {}
+        try:
+            snapshot = self.state.client.now_playing()
+        except BackendError:
+            pass
+        self.call_from_thread(self._media_loaded, phone_overview.now_playing(snapshot), generation)
+
+    def _media_loaded(self, view: phone_overview.NowPlaying, generation: int) -> None:
+        self._media_loading = False
+        if generation == self._media_generation:
+            self._show_now_playing(view)
+        if self._media_again:
+            self._media_again = False
+            self._load_now_playing()
+
+    def _show_now_playing(self, view: phone_overview.NowPlaying) -> None:
+        self.now_playing = view
+        if not self.is_running:
+            return
+        try:
+            line = self.query_one("#now-playing", Static)
+        except NoMatches:
+            return
+        line.update(now_playing_text(view))
+        line.display = view.visible
+
+    def action_media(self, command: str) -> None:
+        if isinstance(self.focused, Input | TextArea):
+            return
+        view = self.now_playing
+        if not view.visible:
+            if not phone_overview.media_control_enabled(self.state.status.to_dict()):
+                self.notify(
+                    "iPhone media control is off; enable it with 'blueferry media enable'",
+                    severity="warning",
+                )
+            else:
+                self.notify("iPhone media control is not connected", severity="warning")
+            return
+        if command not in view.commands:
+            self.notify("The iPhone player does not offer this right now", severity="warning")
+            return
+        self._send_media_command(command)
+
+    @work(thread=True, group="media-command", exit_on_error=False)
+    def _send_media_command(self, command: str) -> None:
+        try:
+            self.state.client.send_media_command(command)
+        except BackendError as error:
+            message = _one_line(error)
+            self.call_from_thread(
+                lambda: self.notify(message, severity="error", markup=False)
+            )
+
+    def action_recent_calls(self) -> None:
+        if isinstance(self.focused, Input | TextArea) or isinstance(
+            self.screen, RecentCallsScreen,
+        ):
+            return
+        if not phone_overview.call_history_enabled(self.state.status.to_dict()):
+            self.notify(
+                "Recent calls are off; enable them with 'blueferry call-history enable'",
+                severity="warning",
+            )
+            return
+        self.push_screen(RecentCallsScreen(self.state.client))
 
     def action_toggle_star(self) -> None:
         focused = self.focused

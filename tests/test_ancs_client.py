@@ -2396,3 +2396,161 @@ def test_disabled_actions_never_report_an_actions_reset(monkeypatch) -> None:
     client._reset_actions()
 
     assert resets == []
+
+
+def test_control_point_writes_force_a_plain_write_request(monkeypatch) -> None:
+    """btmon 2026-10-08: with the reliable-write extended property and no
+    ``type``, BlueZ sent Prepare/Execute Write and iOS answered 0xA0."""
+    options_seen = []
+
+    class _Characteristic:
+        def StartNotify(self, **_kwargs) -> None:
+            pass
+
+        def StopNotify(self, **_kwargs) -> None:
+            pass
+
+        def WriteValue(self, _value, options, **kwargs) -> None:
+            options_seen.append(options)
+            kwargs["reply_handler"]()
+
+    bus = _CharacteristicBus({
+        "/device/ns": _Characteristic(),
+        "/device/ds": _Characteristic(),
+        "/device/cp": _Characteristic(),
+    })
+    monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
+    monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
+    client = AncsClient(
+        "/device", lambda _event: None,
+        schedule=lambda _delay, _callback: 7, cancel=lambda _timer: None,
+    )
+    client._started = True
+    client._bearer_connected = True
+    client._bearer_ready = True
+    client._ns_path = "/device/ns"
+    client._ds_path = "/device/ds"
+    client._cp_path = "/device/cp"
+
+    client._try_subscribe()
+
+    assert options_seen
+    for options in options_seen:
+        assert options.signature == "sv"
+        assert dict(options) == {"type": "request"}
+        assert isinstance(options["type"], client_module.dbus.String)
+
+
+def _removal(uid: int) -> bytes:
+    return struct.pack("<BBBBI", EventID.NotificationRemoved, 0, 4, 1, uid)
+
+
+def test_every_removal_and_session_end_is_reported(monkeypatch) -> None:
+    seen: list[tuple] = []
+    client, _cp, _emitted = _action_client(monkeypatch, enabled=False)
+    client._on_removed = lambda uid: seen.append(("removed", uid))
+    client._on_session_reset = lambda: seen.append(("reset",))
+    client._pump_requests = lambda: None
+
+    # Not only actionable notifications: every removal is reported.
+    client._on_ns_changed("org.bluez.GattCharacteristic1", {"Value": _removal(5)}, [])
+    # A PreExisting replay at the start of a session is not a new session.
+    client._on_ns_changed(
+        "org.bluez.GattCharacteristic1",
+        {"Value": _notification(7, flags=EventFlag.PreExisting)}, [],
+    )
+    assert seen == [("removed", 5)]
+    # After a live event, a PreExisting replay means iOS started a new
+    # session without an LE transition we observed.
+    client._on_ns_changed("org.bluez.GattCharacteristic1", {"Value": _notification(8)}, [])
+    client._on_ns_changed(
+        "org.bluez.GattCharacteristic1",
+        {"Value": _notification(9, flags=EventFlag.PreExisting)}, [],
+    )
+    client._on_ns_changed(
+        "org.bluez.GattCharacteristic1",
+        {"Value": _notification(10, flags=EventFlag.PreExisting)}, [],
+    )
+    assert seen == [("removed", 5), ("reset",)]
+    # Tearing the subscription down ends the session too.
+    client._clear_characteristic_subscription(stop_notify=False)
+    assert seen == [("removed", 5), ("reset",), ("reset",)]
+
+
+def test_failing_session_callbacks_never_break_the_ancs_client(monkeypatch) -> None:
+    client, _cp, _emitted = _action_client(monkeypatch, enabled=False)
+
+    def boom(*_args):
+        raise RuntimeError("sink broke")
+
+    client._on_removed = boom
+    client._on_session_reset = boom
+    client._on_ns_changed("org.bluez.GattCharacteristic1", {"Value": _removal(3)}, [])
+    client._clear_characteristic_subscription(stop_notify=False)
+    assert not client._authorized
+
+
+@pytest.mark.parametrize("stage", ["queued", "probe", "content", "app_name"])
+@pytest.mark.parametrize("retire", ["removed", "replay"])
+def test_retired_notifications_cannot_be_emitted_by_late_replies(stage, retire):
+    emitted = []
+    client = AncsClient("/device", emitted.append, include_non_message_notifications=lambda: True)
+    iface = "org.bluez.GattCharacteristic1"
+    app_id = "com.example.Test"
+    client._on_ns_changed(iface, {"Value": _notification(42)}, [])
+    if stage in ("content", "app_name"):
+        _complete_app_probe(client, 42, app_id)
+    if stage == "app_name":
+        _complete_full_response(client, 42, app_id)
+    if stage != "queued":
+        client._active_request = client._request_queue.popleft()
+    packet = _removal(42) if retire == "removed" else _notification(99, flags=EventFlag.PreExisting)
+    client._on_ns_changed(iface, {"Value": packet}, [])
+
+    if stage == "queued":
+        assert not client._request_queue
+    elif stage == "app_name":
+        response = bytes([CommandID.GetAppAttributes]) + app_id.encode() + b"\0" + _attribute(0, "Test")
+        client._on_ds_changed(iface, {"Value": response}, [])
+    else:
+        response = bytes([CommandID.GetNotificationAttributes]) + struct.pack("<I", 42) + _attribute(0, app_id)
+        if stage == "content":
+            response += _attribute(1, "Alice") + _attribute(2, "") + _attribute(3, "old content")
+        client._on_ds_changed(iface, {"Value": response}, [])
+    assert not emitted
+    assert not client._pending_app_lookups
+    assert not client._request_queue
+
+
+def test_a_reused_uid_can_queue_while_its_retired_response_drains():
+    client = AncsClient("/device", lambda event: None)
+    iface = "org.bluez.GattCharacteristic1"
+    client._on_ns_changed(iface, {"Value": _notification(42)}, [])
+    old = client._active_request = client._request_queue.popleft()
+    client._on_ns_changed(iface, {"Value": _removal(42)}, [])
+    client._on_ns_changed(iface, {"Value": _notification(42)}, [])
+    assert client._active_request is old  # keep the wire serialized
+    assert len(client._request_queue) == 1
+    response = bytes([CommandID.GetNotificationAttributes]) + struct.pack("<I", 42) + _attribute(0, MESSAGES_APP_ID)
+    client._on_ds_changed(iface, {"Value": response}, [])
+    assert len(client._request_queue) == 1
+    _complete_app_probe(client, 42, MESSAGES_APP_ID)
+    assert len(client._request_queue) == 1
+
+
+@pytest.mark.parametrize("error_name", ["org.bluez.Error.InProgress", "org.bluez.Error.NotConnected"])
+def test_retired_write_failure_does_not_retry_old_content(monkeypatch, error_name):
+    cp = _PendingControlPoint()
+    client, _timers = _async_write_client(monkeypatch, cp)
+    client._on_ns_changed("org.bluez.GattCharacteristic1", {"Value": _notification(42)}, [])
+    client._on_ns_changed("org.bluez.GattCharacteristic1", {"Value": _removal(42)}, [])
+    cp.writes[0]["error_handler"](client_module.dbus.exceptions.DBusException(
+        "retired write failed", name=error_name,
+    ))
+    assert len(cp.writes) == 1
+    assert client._active_request is None
+    assert client._cp_write_token is None
+    assert not client._request_queue
+    assert client._cp_busy_retry_id is None
+    if error_name.endswith("NotConnected"):
+        assert not client.connected

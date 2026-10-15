@@ -16,8 +16,18 @@ def _idle_recovery():
     )
 
 
-def test_start_publishes_dbus_before_scheduling_bluetooth(make_daemon, monkeypatch):
+@pytest.mark.parametrize("photos", [False, True])
+def test_start_publishes_dbus_before_scheduling_bluetooth(make_daemon, monkeypatch, photos):
+    import os
+    from pathlib import Path
+
+    monkeypatch.setattr(daemon_mod.config, "CONTACT_PHOTOS", photos)
+    directory = Path(os.environ["XDG_RUNTIME_DIR"]) / "blueferry"
+    directory.mkdir(mode=0o700)
+    orphan = directory / "avatar-crashed.jpg"
+    orphan.write_bytes(b"private avatar")
     instance = make_daemon()
+    assert orphan.exists()  # A competing launch must not sweep the live owner's files.
     order = []
     scheduled = []
     periodic = []
@@ -58,6 +68,7 @@ def test_start_publishes_dbus_before_scheduling_bluetooth(make_daemon, monkeypat
 
     instance.start()
 
+    assert not orphan.exists()  # Sweep after claiming the name, even with photos off.
     assert order == ["dirs", "claim", "recovery", "service", "storage"]
     assert len(scheduled) == 1
     storage_ticks = [tick for delay, tick in periodic if delay == daemon_mod.STORAGE_RETRY_SEC]
@@ -71,6 +82,28 @@ def test_start_publishes_dbus_before_scheduling_bluetooth(make_daemon, monkeypat
 
     assert order == ["dirs", "claim", "recovery", "service", "storage", "bluetooth"]
     assert instance._initializing is False
+
+
+@pytest.mark.parametrize("photos", [False, True])
+def test_photo_cleanup_retries_on_the_storage_tick(make_daemon, monkeypatch, photos):
+    import os
+    from pathlib import Path
+
+    monkeypatch.setattr(daemon_mod.config, "CONTACT_PHOTOS", photos)
+    directory = Path(os.environ["XDG_RUNTIME_DIR"]) / "blueferry"
+    directory.mkdir(mode=0o700)
+    orphan = directory / "avatar-crashed.jpg"
+    orphan.write_bytes(b"private avatar")
+    instance = make_daemon()
+    unlink = Path.unlink
+    monkeypatch.setattr(Path, "unlink", lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        OSError("temporarily unavailable"),
+    ))
+    instance._avatar_files.sweep_orphans()
+    assert orphan.exists() and instance._avatar_files.cleanup_pending
+    monkeypatch.setattr(Path, "unlink", unlink)
+    instance._retry_storage()
+    assert not orphan.exists() and not instance._avatar_files.cleanup_pending
 
 
 def test_stop_does_not_ask_obexd_to_remove_sessions(make_daemon, monkeypatch):
@@ -298,6 +331,44 @@ def test_bonded_start_reconciles_phone_audio_before_adapter_class(make_daemon, m
         instance._initialize_bluetooth()
 
     assert order == [("audio", True), "class"]
+
+
+def test_busy_adapter_during_root_start_leaves_repair_to_supervisor(
+    make_daemon, monkeypatch, caplog,
+):
+    """btmgmt Busy right after a bluetoothd restart must not degrade startup."""
+    instance = make_daemon()
+    instance.recovery = _idle_recovery()
+    order = []
+    monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args, **_kwargs: True)
+    instance.phone_audio = SimpleNamespace(reconcile=lambda **_kwargs: None)
+    instance.adapter_class = SimpleNamespace(start=lambda: order.append("class"))
+
+    # The real root path: class differs, btmgmt runs directly and says Busy.
+    bluez_setup = daemon_mod.bluez_setup
+    monkeypatch.setattr(bluez_setup, "current_cod", lambda _adapter: 0)
+    monkeypatch.setattr(bluez_setup.os, "geteuid", lambda: 0)
+
+    def busy(_args, **_kwargs):
+        order.append("btmgmt")
+        return SimpleNamespace(
+            returncode=1, stdout="Set Dev Class failed, status 0x0a (Busy)", stderr="",
+        )
+
+    monkeypatch.setattr(bluez_setup, "run_command", busy)
+    monkeypatch.setattr(instance, "_watch_bluez_owner", lambda: order.append("owner"))
+    instance.solicitation = SimpleNamespace(start=lambda: order.append("solicitation"))
+    instance.bearers = SimpleNamespace(
+        start=lambda: order.append("bearers") or (_ for _ in ()).throw(RuntimeError("stop"))
+    )
+    caplog.set_level("INFO", logger=daemon_mod.log.name)
+
+    with pytest.raises(RuntimeError, match="stop"):
+        instance._initialize_bluetooth()
+
+    assert order == ["class", "btmgmt", "owner", "solicitation", "bearers"]
+    assert "adapter-class supervisor retries" in caplog.text
+    assert "adapter preparation reported issues" not in caplog.text
 
 
 def test_transient_missing_release_marker_does_not_stop_daemon(make_daemon, monkeypatch):
@@ -696,3 +767,20 @@ def test_ancs_action_timeout_is_a_bounded_local_setting(monkeypatch):
         assert config._env_int(
             "BLUEFERRY_ANCS_ACTION_TIMEOUT_MS", 30_000, 1_000, 120_000
         ) == expected
+
+
+def test_iphone_removals_close_popups_only_when_opted_in(make_daemon):
+    instance = make_daemon()
+    calls = []
+    instance.events = SimpleNamespace(
+        ancs_mirror_removed=lambda uid: calls.append(("close", uid)),
+        ancs_session_reset=lambda: calls.append(("forget",)),
+    )
+    assert instance.notification_policy.mirror_removals is False  # opt-in
+    instance._ancs_removed_on_iphone(5)
+    instance.notification_policy.set_mirror_removals(True)
+    instance._ancs_removed_on_iphone(6)
+    # Session bookkeeping happens either way, so UIDs never cross sessions.
+    instance.notification_policy.set_mirror_removals(False)
+    instance._ancs_session_reset()
+    assert calls == [("close", 6), ("forget",)]

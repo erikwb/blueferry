@@ -32,8 +32,11 @@ class _FakeNotifications:
         self.calls.append(args)
         return 1
 
-    def CloseNotification(self, notification_id):
+    def CloseNotification(self, notification_id, **kwargs):
+        # Closing must never block the daemon's main loop.
+        assert "reply_handler" in kwargs and "error_handler" in kwargs
         self.calls.append(("close", int(notification_id)))
+        kwargs["reply_handler"]()
 
 
 class _Match:
@@ -1385,3 +1388,95 @@ def test_ancs_popup_shows_the_full_requested_subtitle_and_message(
         monkeypatch, title="t", subtitle=subtitle, body=message,
     )
     assert body == f"{subtitle}\n{message}"
+
+
+def test_click_rule_and_iphone_actions_share_one_popup(monkeypatch) -> None:
+    invoked = []
+    opened = []
+    sink, server = _action_sink(
+        monkeypatch, enabled=True,
+        callback=lambda uid, positive, token, _done: invoked.append((uid, positive, token)),
+    )
+    rules = {"com.apple.mobilephone": "https://calls.example.com/"}
+    sink._open_target = lambda app_id: resolve_open_target(rules, app_id)
+    sink._on_open_target = lambda target, token: opened.append(target) or True
+
+    sink.handle_ancs(_call_event())
+
+    (_, nid, args), = _notify_calls(server)
+    # The body click opens the rule's target instead of the no-op default;
+    # the iPhone buttons stay, with the longer action timeout.
+    assert list(args[5]) == [
+        "default", "Open", "ancs-positive", "Accept", "ancs-negative", "Decline",
+    ]
+    assert int(args[7]) == libnotify_mod._ANCS_ACTION_EXPIRE_MS
+    assert "omarchy-exec-argv" in args[6]
+
+    server.signals["ActionInvoked"](nid, "default")
+    assert opened == [OpenTarget("url", "https://calls.example.com/")]
+    assert invoked == []
+
+    server.signals["ActionInvoked"](nid, "ancs-negative")
+    assert invoked == [(42, False, 5)]
+    assert opened == [OpenTarget("url", "https://calls.example.com/")]
+
+
+def test_mirrored_removal_closes_any_ancs_popup_of_the_session(monkeypatch) -> None:
+    # Without action buttons, so only the new popup tracker knows the UID.
+    sink, server = _action_sink(monkeypatch, enabled=False, callback=None)
+    sink.handle_ancs(_call_event())
+    nid = _notify_calls(server)[0][1]
+
+    sink.close_removed_ancs_popup(999)
+    assert ("close", nid) not in server.calls
+    sink.close_removed_ancs_popup(42)
+    assert ("close", nid) in server.calls
+
+    # After a session reset the UID may belong to another notification.
+    sink.handle_ancs(_call_event())
+    sink.forget_ancs_popups()
+    server.calls.clear()
+    sink.close_removed_ancs_popup(42)
+    assert server.calls == []
+
+
+def test_ancs_popup_tracker_is_bounded_and_released_on_close(monkeypatch) -> None:
+    sink, server = _action_sink(monkeypatch, enabled=False, callback=None)
+    for uid in range(libnotify_mod.MAX_ANCS_ACTION_POPUPS + 5):
+        sink.handle_ancs(_call_event(notification_id=uid))
+    assert len(sink._ancs_popups) == libnotify_mod.MAX_ANCS_ACTION_POPUPS
+    newest = _notify_calls(server)[-1][1]
+    server.signals["NotificationClosed"](newest, 2)
+    assert newest not in sink._ancs_popups
+
+
+def test_action_popup_removal_closes_it_once_when_both_paths_run(
+    monkeypatch,
+) -> None:
+    # An actionable notification removed on the iPhone reaches the sink twice:
+    # the action path and the opt-in removal mirror. One close is enough.
+    sink, server = _action_sink(monkeypatch, enabled=True, callback=lambda *a: None)
+    sink.handle_ancs(_call_event())
+    nid = _notify_calls(server)[0][1]
+
+    sink.close_ancs_notification(42)
+    sink.close_removed_ancs_popup(42)
+    assert server.calls.count(("close", nid)) == 1
+
+    sink.handle_ancs(_call_event())
+    nid = _notify_calls(server)[-1][1]
+    sink.close_removed_ancs_popup(42)
+    sink.close_ancs_notification(42)
+    assert server.calls.count(("close", nid)) == 1
+
+
+def test_ancs_popup_without_a_uid_is_not_tracked(monkeypatch) -> None:
+    sink = LibnotifySink.__new__(LibnotifySink)
+    sink._notification_policy = lambda: "all"
+    sink._notif = _FakeNotifications()
+    monkeypatch.setattr(libnotify_mod.config, "SHOW_NOTIFICATION_CONTENT", True)
+    sink.handle_ancs(SimpleNamespace(
+        app_name="GitHub", app_id="com.github", title="t", subtitle="", body="b",
+    ))
+    assert sink._notif.calls
+    assert getattr(sink, "_ancs_popups", {}) == {}

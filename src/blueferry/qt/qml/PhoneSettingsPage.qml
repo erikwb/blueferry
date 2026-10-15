@@ -455,6 +455,18 @@ Kirigami.ScrollablePage {
                     ? qsTr("Unavailable while notification content is hidden.")
                     : qsTr("Clicking a button runs that action on the iPhone, for example answering or declining a call. Applies to All iPhone Notifications.")
             }
+            // Opt-in; only daemons that report mirror_iphone_removals support it.
+            Controls.CheckBox {
+                objectName: "mirrorRemovalsCheckBox"
+                Layout.fillWidth: true
+                visible: iphonePage.bridge.status.mirror_iphone_removals !== undefined
+                text: qsTr("Sync notifications with iPhone")
+                checked: iphonePage.bridge.status.mirror_iphone_removals === true
+                enabled: iphonePage.bridge.status.daemon === true
+                    && !iphonePage.bridge.busy
+                onClicked: iphonePage.bridge.setMirrorNotificationRemovals(checked)
+                Accessible.description: qsTr("A notification removed or dismissed on the iPhone also closes its popup here. Applies to All iPhone Notifications.")
+            }
         }
         // Click rules only apply to non-Messages popups, which exist only in
         // the "all" policy. Load the editor (and its backend read) on demand,
@@ -471,6 +483,18 @@ Kirigami.ScrollablePage {
                 NotificationOpenMapEditor {
                     bridge: iphonePage.bridge
                 }
+            }
+        }
+
+        // Older daemons report the value without a runtime setter.
+        Loader {
+            objectName: "otpAutocopyLoader"
+            Layout.fillWidth: true
+            active: iphonePage.bridge.status.saved_opt_ins === true
+                && iphonePage.bridge.status.otp_autocopy !== undefined
+            visible: active
+            sourceComponent: OtpAutocopySettings {
+                bridge: iphonePage.bridge
             }
         }
 
@@ -503,6 +527,18 @@ Kirigami.ScrollablePage {
             active: iphonePage.bridge.status.media_control_enabled !== undefined
             visible: active
             sourceComponent: MediaControlSettings {
+                bridge: iphonePage.bridge
+            }
+        }
+
+        // Older daemons report the value without a runtime setter.
+        Loader {
+            objectName: "contactPhotosLoader"
+            Layout.fillWidth: true
+            active: iphonePage.bridge.status.saved_opt_ins === true
+                && iphonePage.bridge.status.contact_photos !== undefined
+            visible: active
+            sourceComponent: ContactPhotoSettings {
                 bridge: iphonePage.bridge
             }
         }

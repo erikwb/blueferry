@@ -171,7 +171,9 @@ Notes and trade-offs:
   cache, not from BlueFerry.
 - After sudo refuses, the daemon backs off instead of retrying every minute:
   15 minutes, then doubling up to six hours, and immediately after a BlueZ
-  restart. Other failures back off from one minute. A rule added later takes
+  restart. Other failures on the sudo path back off from one minute to at
+  most five minutes. On systemd, failed repairs are still retried every
+  minute. A rule added later takes
   effect without a restart, and a missing rule does not fill the
   authentication log.
 - The optional OpenRC user service sets `no_new_privs`, which makes sudo
