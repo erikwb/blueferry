@@ -13,7 +13,13 @@ from blueferry import config
 from blueferry.event_dispatcher import EventDispatcher
 from blueferry.plugin_api.surfaces import Notification
 from blueferry.plugin_api.testing import manifest
-from blueferry.plugin_notify import POPUPS_PER_MINUTE, PluginPopup, PluginPopups
+from blueferry.plugin_notify import (
+    FETCHES_PER_MINUTE,
+    MAX_PENDING_SENDERS,
+    POPUPS_PER_MINUTE,
+    PluginPopup,
+    PluginPopups,
+)
 from blueferry.sinks.libnotify import LibnotifySink
 
 CALENDAR = manifest("io.example.calendar", capabilities="notify;", api_version="1.5")
@@ -54,6 +60,31 @@ class _Bus:
                 return reply(entry)
             return reply(json.dumps({"notification": entry, "more": bool(queue)}))
         raise AssertionError(method)
+
+
+class _DeferredBus(_Bus):
+    """Keep selected replies pending, like a real asynchronous bus."""
+
+    def __init__(self, *methods, **kwargs):
+        super().__init__(**kwargs)
+        self.deferred = set(methods)
+        self.waiting = []
+
+    def call_async(self, bus_name, path, interface, method, signature, args,
+                   reply, error, timeout=-1.0):
+        if method not in self.deferred:
+            return super().call_async(bus_name, path, interface, method, signature, args,
+                                      reply, error, timeout)
+        self.calls.append((bus_name, interface, method, tuple(args)))
+        self.waiting.append((method, reply, error))
+
+    def answer(self, method, value):
+        for index, (name, reply, _error) in enumerate(self.waiting):
+            if name == method:
+                self.waiting.pop(index)
+                reply(value)
+                return
+        raise AssertionError(f"no pending {method}")
 
 
 def _popups(bus, shown, **kwargs):
@@ -188,6 +219,122 @@ def test_a_click_invokes_the_plugin_and_opens_only_safe_uris(tmp_path, monkeypat
     count = len(bus.calls)
     popups.invoke(PluginPopup(CALENDAR.id, "Calendar", CALENDAR.bus_name, Notification("T", "B")))
     assert len(bus.calls) == count
+
+
+@pytest.mark.parametrize("phase", ["click", "action-reply", "owner-reply"])
+def test_disabling_blocks_old_popup_actions_and_late_results(phase) -> None:
+    disabled = set()
+    bus = _DeferredBus("InvokeAction", "GetConnectionUnixUser")
+    opened = []
+    popups = PluginPopups(bus, show=lambda _p: None, plugins=lambda: [CALENDAR],
+                          uid=1000, open_uri=opened.append,
+                          disabled=lambda: frozenset(disabled))
+    popup = PluginPopup(CALENDAR.id, "Calendar", CALENDAR.bus_name,
+                        Notification("T", "B", "", "Open", "open"))
+    if phase == "click":
+        disabled.add(CALENDAR.id)
+    popups.invoke(popup)
+    if phase == "click":
+        assert bus.calls == []
+    else:
+        if phase == "action-reply":
+            disabled.add(CALENDAR.id)
+        bus.answer("InvokeAction", json.dumps({"ok": True, "open_uri": "https://example.org"}))
+        if phase == "owner-reply":
+            disabled.add(CALENDAR.id)
+            bus.answer("GetConnectionUnixUser", 1000)
+        else:
+            assert [call[2] for call in bus.calls] == ["InvokeAction"]
+    assert opened == []
+
+
+def test_notification_bursts_share_pending_lookups_and_fetches() -> None:
+    bus = _DeferredBus("GetNameOwner", "GetPendingNotification")
+    shown = []
+    popups = PluginPopups(bus, show=shown.append, plugins=lambda: [CALENDAR],
+                          uid=1000, disabled=frozenset)
+    popups.start()
+    for _ in range(1000):
+        _emit(bus)
+    assert [call[2] for call in bus.calls] == ["GetNameOwner"]
+    bus.answer("GetNameOwner", ":1.7")
+    for _ in range(1000):
+        _emit(bus)
+    assert [entry[0] for entry in bus.waiting] == ["GetPendingNotification"]
+    # A signal after the first request needs one follow-up, even if that
+    # request's earlier snapshot said the queue was empty.
+    bus.answer("GetPendingNotification", json.dumps({"notification": None, "more": False}))
+    assert [entry[0] for entry in bus.waiting] == ["GetPendingNotification"]
+    bus.answer("GetPendingNotification", json.dumps({"notification": {"title": "New"}, "more": False}))
+    assert [popup.note.title for popup in shown] == ["New"]
+    assert not bus.waiting and not popups._pending and not popups._fetch_again
+    assert sum(call[2] == "GetPendingNotification" for call in bus.calls) == 2
+
+
+def test_many_senders_cannot_start_unbounded_owner_lookups() -> None:
+    bus = _DeferredBus("GetNameOwner")
+    popups = PluginPopups(bus, show=lambda _p: None, plugins=lambda: [CALENDAR],
+                          uid=1000, disabled=frozenset)
+    popups.start()
+    for n in range(1000):
+        _emit(bus, sender=f":1.{n}")
+    assert len(bus.waiting) == MAX_PENDING_SENDERS
+    for _ in range(MAX_PENDING_SENDERS):
+        bus.answer("GetNameOwner", ":2.1")
+    assert not popups._pending
+    _emit(bus, sender=":3.1")
+    assert len(bus.waiting) == 1
+
+
+def test_empty_fetches_also_have_a_rate_limit() -> None:
+    now = [0.0]
+    bus = _Bus(owners={CALENDAR.bus_name: ":1.7"})
+    popups = _popups(bus, [], clock=lambda: now[0])
+    for _ in range(1000):
+        _emit(bus)
+    assert sum(call[2] == "GetPendingNotification" for call in bus.calls) == FETCHES_PER_MINUTE
+    assert not popups._pending
+    now[0] = 61.0
+    _emit(bus)
+    assert sum(call[2] == "GetPendingNotification" for call in bus.calls) == FETCHES_PER_MINUTE + 1
+
+
+@pytest.mark.parametrize("outcome", ["invalid", "error", "disabled", "stopped"])
+def test_pending_fetch_releases_its_slot_and_obeys_disable_or_stop(outcome) -> None:
+    disabled = set()
+    bus = _DeferredBus("GetPendingNotification", owners={CALENDAR.bus_name: ":1.7"})
+    shown = []
+    popups = _popups(bus, shown, disabled=lambda: frozenset(disabled))
+    _emit(bus)
+    if outcome == "invalid":
+        bus.answer("GetPendingNotification", "invalid json")
+    elif outcome == "error":
+        _method, _reply, failure = bus.waiting.pop()
+        failure(RuntimeError("timeout"))
+    else:
+        if outcome == "disabled":
+            disabled.add(CALENDAR.id)
+        else:
+            popups.stop()
+        bus.answer("GetPendingNotification", json.dumps({"notification": {"title": "Late"}, "more": True}))
+    assert not popups._pending and not popups._fetch_again
+    assert not shown and not bus.waiting
+    disabled.clear()
+    if outcome == "stopped":
+        popups.start()
+    _emit(bus)
+    assert len(bus.waiting) == 1
+
+
+def test_a_dispatch_exception_does_not_leave_a_sender_busy() -> None:
+    class BrokenBus(_Bus):
+        def call_async(self, *_args, **_kwargs):
+            raise RuntimeError("bus disconnected")
+
+    bus = BrokenBus()
+    popups = _popups(bus, [])
+    _emit(bus)
+    assert not popups._pending
 
 
 class _Notifications:
