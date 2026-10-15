@@ -71,13 +71,14 @@ class NotificationLog:
         if self._show_content:
             for key in ("title", "subtitle", "body"):
                 record[key] = _bounded(getattr(event, key, ""))
-        # ANCS reports a modified notification again with the same uid.
-        for index, existing in enumerate(self._records):
+        # ANCS reports a modified notification again with the same uid. The
+        # update replaces the old record and moves to the top, so the
+        # newest-first list stays ordered by the time it shows.
+        for existing in self._records:
             if existing["id"] == record["id"] and existing["app_id"] == record["app_id"]:
-                self._records[index] = record
+                self._records.remove(existing)
                 break
-        else:
-            self._records.append(record)
+        self._records.append(record)
         self._notify()
 
     def clear(self) -> None:

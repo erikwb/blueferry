@@ -39,7 +39,8 @@ blueferry notifications recent --limit 100
   every restart of the background service, and **Clear History** empties it.
 - Titles, subtitles and text only while **Show message content in popups**
   is on; otherwise just the app and the time.
-- A notification the iPhone updates replaces its entry.
+- A notification the iPhone updates replaces its entry and moves to the top
+  of the list, like a new one.
 - It is a recent history, not a mirror of the iPhone's Notification Center:
   notifications you dismiss on the iPhone stay in the list.
 - While encrypted local data is locked, the list is refused.
