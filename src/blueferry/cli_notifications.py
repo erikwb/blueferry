@@ -20,6 +20,15 @@ open_map_app = typer.Typer(
     ),
 )
 notifications_app.add_typer(open_map_app, name="open-map")
+sync_app = typer.Typer(
+    add_completion=False,
+    help=(
+        "Close a desktop popup when its notification is removed or "
+        "dismissed on the iPhone (opt-in). Without a command, shows the "
+        "setting."
+    ),
+)
+notifications_app.add_typer(sync_app, name="sync")
 
 
 @open_map_app.callback(invoke_without_command=True)
@@ -33,6 +42,64 @@ def _client():
     from blueferry.client import BackendClient
 
     return BackendClient()
+
+
+def describe_sync(status: dict) -> list[str]:
+    if "mirror_iphone_removals" not in status:
+        return ["The running BlueFerry service does not support this setting yet."]
+    enabled = status.get("mirror_iphone_removals") is True
+    lines = [f"Sync notifications with iPhone: {'on' if enabled else 'off'}"]
+    if enabled and status.get("notification_policy") != "all":
+        lines.append(
+            "Only iPhone app popups are closed; they are shown while desktop "
+            "popups are set to All iPhone Notifications."
+        )
+    return lines
+
+
+@sync_app.callback(invoke_without_command=True)
+def _sync_default(context: typer.Context) -> None:
+    if context.invoked_subcommand is None:
+        sync_status()
+
+
+@sync_app.command("status")
+def sync_status() -> None:
+    """Show whether removals on the iPhone close the desktop popup."""
+    from blueferry.client import BackendError
+
+    try:
+        status = _client().status().to_dict()
+    except BackendError:
+        typer.echo("BlueFerry service is not running.", err=True)
+        raise typer.Exit(code=2) from None
+    for line in describe_sync(status):
+        typer.echo(line)
+
+
+def _set_sync(enabled: bool) -> None:
+    from blueferry.client import BackendError
+
+    try:
+        _client().set_mirror_notification_removals(enabled)
+    except BackendError as error:
+        typer.echo(
+            f"Could not change notification sync: {terminal_text(error)}", err=True
+        )
+        raise typer.Exit(code=2) from None
+    sync_status()
+
+
+@sync_app.command("enable")
+def sync_enable() -> None:
+    """Close popups whose notification was removed on the iPhone."""
+    _set_sync(True)
+
+
+@sync_app.command("disable")
+def sync_disable() -> None:
+    """Leave popups until they expire, as before."""
+    _set_sync(False)
 
 
 def _print_rules(rules: list[dict[str, str]]) -> None:

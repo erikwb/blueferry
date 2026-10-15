@@ -19,9 +19,11 @@ Bluetooth-Verkehr und liegt außerhalb von BlueFerrys Schwerpunkt Nachrichten.
   5.86 oder neuer mit der Bearer-API, wie heute auch für Mitteilungen). Ohne
   sie meldet `blueferry media`, dass der Zustand der LE-Verbindung unbekannt
   ist.
-- Die Kommandozeile funktioniert überall. Der KDE/Kirigami-Client zeigt eine
-  „Wird gespielt“-Leiste. GTK- und Quickshell-Client haben die Schalter, aber
-  noch keine Medienansicht; der Terminal-Client hat beides nicht.
+- Die Kommandozeile funktioniert überall. Jeder Client zeigt bei
+  eingeschalteter Mediensteuerung, was gerade läuft, mit Zurück/
+  Wiedergabe-Pause/Weiter (siehe unten). Kirigami-, GTK- und
+  Quickshell-Client haben auch den Schalter; im Terminal-Client schaltet man
+  sie über die Kommandozeile ein.
 
 ## Einschalten
 
@@ -66,13 +68,18 @@ iPhone ignoriert oder verweigert einen, den die App nicht kennt.
 
 Im Kirigami-Client erscheint über den Unterhaltungen eine kleine Leiste mit
 Titel, Interpret und den Tasten Zurück/Wiedergabe-Pause/Weiter, solange etwas
-läuft. Ist die Option aus, wird sie gar nicht angezeigt.
+läuft. Der Quickshell-Client zeigt dieselbe Leiste unter seiner Kopfzeile,
+der GTK-Client im Dialog **iPhone** (Hauptmenü, `Strg+I`) und der
+Terminal-Client in einer Zeile unter den Statusanzeigen; dort steuern `p`,
+`[` und `]` Wiedergabe/Pause, Zurück und Weiter. Ist die Option aus, zeigt
+keiner davon etwas an und kein Client fragt das Backend.
 
 ```mermaid
 flowchart LR
     iPhone["iPhone (AMS)"] -- "Bluetooth LE<br>(dieselbe Verbindung wie Mitteilungen)" --> Backend["BlueFerry-Backend"]
     Backend -- "authentifiziertes D-Bus (Media1)" --> CLI["blueferry media"]
     Backend -- "authentifiziertes D-Bus (Media1)" --> Kirigami["Kirigami-Leiste"]
+    Backend -- "authentifiziertes D-Bus (Media1)" --> Others["GTK-, Quickshell- und Terminal-Client"]
 ```
 
 ## Medientasten, Plasma und playerctl (MPRIS, optional)

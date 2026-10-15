@@ -2,12 +2,17 @@ src/blueferry/conversation_state.py
 src/blueferry/onboarding.py
 src/blueferry/models.py
 src/blueferry/reconnect_view.py
+src/blueferry/phone_overview.py
 src/blueferry/ui/app.py
 src/blueferry/ui/window.py
 src/blueferry/ui/conversations.py
 src/blueferry/ui/status.py
 src/blueferry/ui/status_presenter.py
+src/blueferry/ui/phone.py
+src/blueferry/ui/phone_presenter.py
 src/blueferry/qt/controller.py
+src/blueferry/qt/tray.py
+src/blueferry/qt/tray_presenter.py
 src/blueferry/qt/qml/Main.qml
 src/blueferry/qt/qml/PhoneSettingsPage.qml
 src/blueferry/qt/qml/PhoneSettingsDialogs.qml
@@ -22,5 +27,7 @@ src/blueferry/qt/qml/CallHistorySettings.qml
 src/blueferry/qt/qml/NowPlayingBar.qml
 src/blueferry/qt/qml/MediaControlSettings.qml
 src/blueferry/qt/qml/CallsDialog.qml
+src/blueferry/qt/qml/ContactPhotoSettings.qml
+src/blueferry/qt/qml/OtpAutocopySettings.qml
 src/blueferry/qt/qml/PhoneCallsSettings.qml
 src/blueferry/qt/qml/PhoneStatusIndicator.qml

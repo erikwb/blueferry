@@ -222,3 +222,57 @@ def test_notification_actions_preference_uses_mutation_worker(monkeypatch) -> No
     assert observed == [True]
     assert completed == [True]
     assert submitted == {"mutation": True}
+
+
+def test_contact_photos_are_saved_on_the_mutation_worker(monkeypatch) -> None:
+    monkeypatch.setattr(client_module, "get_session_bus", _Bus)
+    monkeypatch.setattr(client_module, "SetupClient", _UnconfiguredSetup)
+    client = client_module.DaemonClient()
+
+    class Backend:
+        def set_contact_photos(self, enabled):
+            return {"contact_photos": enabled}
+
+    monkeypatch.setattr(client, "_call_backend", lambda operation: operation(Backend()))
+    submitted = {}
+
+    def submit(operation, on_ok, _on_err=None, *, mutation=False):
+        submitted["mutation"] = mutation
+        on_ok(operation())
+
+    monkeypatch.setattr(client, "_submit", submit)
+    completed = []
+    try:
+        client.set_contact_photos_async(True, completed.append, None)
+    finally:
+        client.stop()
+
+    assert completed == [{"contact_photos": True}]
+    assert submitted == {"mutation": True}
+
+
+def test_otp_autocopy_is_saved_on_the_mutation_worker(monkeypatch) -> None:
+    monkeypatch.setattr(client_module, "get_session_bus", _Bus)
+    monkeypatch.setattr(client_module, "SetupClient", _UnconfiguredSetup)
+    client = client_module.DaemonClient()
+
+    class Backend:
+        def set_otp_autocopy(self, enabled):
+            return {"otp_autocopy": enabled}
+
+    monkeypatch.setattr(client, "_call_backend", lambda operation: operation(Backend()))
+    submitted = {}
+
+    def submit(operation, on_ok, _on_err=None, *, mutation=False):
+        submitted["mutation"] = mutation
+        on_ok(operation())
+
+    monkeypatch.setattr(client, "_submit", submit)
+    completed = []
+    try:
+        client.set_otp_autocopy_async(True, completed.append, None)
+    finally:
+        client.stop()
+
+    assert completed == [{"otp_autocopy": True}]
+    assert submitted == {"mutation": True}

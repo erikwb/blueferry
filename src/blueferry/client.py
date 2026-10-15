@@ -267,6 +267,19 @@ class BackendClient:
         except (dbus.exceptions.DBusException, ValueError) as error:
             raise BackendError(str(error)) from error
 
+    def set_contact_photos(self, enabled: bool) -> dict:
+        """Save the contact-photo opt-in; returns the ``contact_photos`` keys."""
+        try:
+            return decode_mapping(self._iface(MESSAGES_IFACE).SetContactPhotos(
+                dbus.Boolean(enabled), timeout=POLICY_CALL_TIMEOUT_SEC,
+            ))
+        except (dbus.exceptions.DBusException, ValueError) as error:
+            raise BackendError(
+                error.get_dbus_message()
+                if isinstance(error, dbus.exceptions.DBusException)
+                else str(error)
+            ) from error
+
     def contact_photo(self, address: str) -> bytes:
         """Raw avatar bytes for one address, or ``b""`` when none is available.
 
@@ -432,6 +445,16 @@ class BackendClient:
         except dbus.exceptions.DBusException as error:
             raise BackendError(_dbus_message(error)) from error
 
+    def set_mirror_notification_removals(self, enabled: bool) -> bool:
+        try:
+            return bool(
+                self._iface(MESSAGES_IFACE).SetMirrorNotificationRemovals(
+                    dbus.Boolean(enabled), timeout=POLICY_CALL_TIMEOUT_SEC
+                )
+            )
+        except dbus.exceptions.DBusException as error:
+            raise BackendError(error.get_dbus_message() or str(error)) from error
+
     def set_phone_battery_warning(self, enabled: bool) -> bool:
         try:
             return bool(
@@ -462,6 +485,19 @@ class BackendClient:
             )
         except dbus.exceptions.DBusException as error:
             raise BackendError(_dbus_message(error)) from error
+
+    def set_otp_autocopy(self, enabled: bool) -> dict:
+        """Save the one-time code auto-copy opt-in; returns ``otp_autocopy``."""
+        try:
+            return decode_mapping(self._iface(MESSAGES_IFACE).SetOtpAutocopy(
+                dbus.Boolean(enabled), timeout=POLICY_CALL_TIMEOUT_SEC,
+            ))
+        except (dbus.exceptions.DBusException, ValueError) as error:
+            raise BackendError(
+                error.get_dbus_message()
+                if isinstance(error, dbus.exceptions.DBusException)
+                else str(error)
+            ) from error
 
     def _presence_iface(self) -> dbus.Interface:
         # Presence1 has no GetStatus; check compatibility through Messages1

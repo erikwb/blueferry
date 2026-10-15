@@ -151,6 +151,35 @@ def test_rules_panel_notes_when_rules_do_not_apply() -> None:
     _run(scenario())
 
 
+def test_a_pending_save_preserves_a_new_draft(monkeypatch) -> None:
+    async def scenario() -> None:
+        backend = _Backend()
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _until(pilot, lambda: app.state.status.daemon)
+            app.set_focus(None)
+            app.action_click_rules()
+            await _until(pilot, lambda: isinstance(app.screen, NotificationRulesScreen))
+            screen = app.screen
+            await _until(pilot, lambda: screen.rules == backend.rules)
+            pending = []
+            monkeypatch.setattr(screen, "_run", lambda action, done: pending.append((action, done)))
+            bundle = screen.query_one("#rules-bundle", Input)
+            target = screen.query_one("#rules-target", Input)
+            bundle.value, target.value = "com.example.first", "https://first.example/"
+            screen.save_rule()
+
+            bundle.value, target.value = "com.example.second", "https://second.example/"
+            action, done = pending.pop()
+            done(action())
+
+            assert ("set", "com.example.first", "https://first.example/") in backend.requests
+            assert bundle.value == "com.example.second"
+            assert target.value == "https://second.example/"
+
+    _run(scenario())
+
+
 def test_rules_key_explains_an_older_backend() -> None:
     async def scenario() -> None:
         backend = _Backend(supported=False)

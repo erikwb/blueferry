@@ -186,6 +186,10 @@ def test_rejects_codes_people_share(body: str) -> None:
     ("body", "expected"),
     [
         ("WhatsApp code 123-456", "123456"),
+        ("eBay code 58291", "58291"),
+        ("telegram code 58291", "58291"),
+        ("TELEGRAM code 58291", "58291"),
+        ("whatsapp code 123-456", "123456"),
         ("Your Uber code is 4821", "4821"),
         ("Code: 4821", "4821"),
         ("Code 2024 is your login code", "2024"),
@@ -193,6 +197,12 @@ def test_rejects_codes_people_share(body: str) -> None:
 )
 def test_still_detects_service_codes_next_to_a_plain_noun(body: str, expected: str) -> None:
     assert extract_otp(body) == expected
+
+
+@pytest.mark.parametrize("prefix", ["Hello", "Sorry", "Thanks", "My", "Our alarm", "The safe"])
+@pytest.mark.parametrize("change_case", [str.lower, str.upper, str.swapcase])
+def test_greetings_and_shared_codes_stay_rejected_in_any_case(prefix, change_case) -> None:
+    assert extract_otp(f"{change_case(prefix)} code 4821") is None
 
 
 def test_dates_need_the_keyword_right_before_them() -> None:

@@ -26,15 +26,25 @@ desktop clients and in your notification server.
 
 ## Turn it on
 
-1. Add this line to `~/.config/blueferry/local.env`:
+Tick **Show contact photos from the iPhone** in the iPhone settings of any
+client:
 
-   ```bash
-   BLUEFERRY_CONTACT_PHOTOS=true
-   ```
+| Client | Where |
+| --- | --- |
+| Qt (KDE) | iPhone settings, "Contact Photos" |
+| GTK | iPhone page, "Contact Photos" |
+| Quickshell | iPhone settings, "Contact photos" |
+| Terminal (TUI) | press `o` for Options |
+| CLI | `blueferry contact-photos enable` (`disable`, `status`) |
 
-2. Restart the backend: `systemctl --user restart blueferry`.
-3. Sync contacts: `blueferry contacts-sync`, or wait for the next automatic
-   sync.
+The backend saves the choice in `~/.config/blueferry/settings.json`,
+applies it at once and starts a contact sync; the photos arrive with it.
+No restart is needed.
+
+Earlier versions used `BLUEFERRY_CONTACT_PHOTOS=true` in
+`~/.config/blueferry/local.env`. That line still works as the starting
+value until you change the setting in a client; from then on the saved
+choice wins, and the log says so at startup.
 
 Conversations with a known contact now show the photo. Groups and unknown
 numbers keep the usual icon.
@@ -49,11 +59,15 @@ The file is created with mode 0600 and is never overwritten without `--force`.
 
 ## Turn it off
 
-Remove the line (or set it to `false`) and restart the backend. On that start,
-BlueFerry deletes all stored photos.
+Untick the checkbox (or run `blueferry contact-photos disable`). BlueFerry
+stops displaying photos at once and starts deleting avatar files and stored
+photos. Deletion waits for any running contact sync, and failures are retried
+automatically. `blueferry contact-photos status` reports whether cleanup is
+pending or complete. A backend that starts with the option off cleans up
+leftovers too.
 
-**Before going back to an older BlueFerry release**, turn the option off and
-start the backend once, so the photos are deleted right away. If you forget,
+**Before going back to an older BlueFerry release**, turn the option off
+first and wait until `blueferry contact-photos status` reports cleanup complete. If you forget,
 the older release deletes them together with the contacts at its next
 contact sync or when the storage mode changes.
 

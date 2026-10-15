@@ -458,7 +458,12 @@ def pull_phonebook(
     """Pull the iPhone's main phonebook over PBAP and return contact count.
 
     Replaces the local cache atomically (transaction). ``photos`` defaults to
-    ``BLUEFERRY_CONTACT_PHOTOS`` and retains inline photos from the same pull.
+    the ``BLUEFERRY_CONTACT_PHOTOS`` seed; the daemon passes its saved
+    setting (see ``contact_photo_settings``). The
+    request is identical either way: without a PBAP ``Fields`` filter the
+    iPhone already includes PHOTO in this single pull, so enabling photos
+    only stops discarding bytes that were transferred anyway. Photos are
+    retained only with a storage policy object.
     """
     max_contacts = max(1, min(int(max_contacts), MAX_PHONEBOOK_CONTACTS))
     if storage is not None and not storage.status.can_write:
@@ -527,8 +532,17 @@ class ContactsResolver:
     otherwise bound `resolve` methods become stale.
     """
 
-    def __init__(self, *, storage: StorageSecurity | None = None, strict: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        storage: StorageSecurity | None = None,
+        strict: bool = False,
+        photos: Callable[[], bool] | None = None,
+    ) -> None:
         self.storage = storage
+        # Whether to load photo references; the daemon passes its saved
+        # setting, everything else uses the local.env seed.
+        self._photos = photos or (lambda: bool(config.CONTACT_PHOTOS))
         self._repository = ContactRepository(storage)
         self._mem: dict[str, set[str]] = {}
         self._records: list[ContactRecord] = []
@@ -540,7 +554,7 @@ class ContactsResolver:
         # disabled resolver is exactly the photo-blind one.
         entries = (
             self._repository.load_entries(strict=strict)
-            if config.CONTACT_PHOTOS
+            if self._photos()
             else [(record, None) for record in self._repository.load(strict=strict)]
         )
         loaded = [(_sanitized(record), photo) for record, photo in entries]
@@ -602,7 +616,7 @@ class ContactsResolver:
 
     def refresh(self) -> int:
         """Replace the cache only after a successful read; propagate failures."""
-        prepared = ContactsResolver(storage=self.storage, strict=True)
+        prepared = ContactsResolver(storage=self.storage, strict=True, photos=self._photos)
         self.adopt_cache(prepared)
         return len(self._mem)
 

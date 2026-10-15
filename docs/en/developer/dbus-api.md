@@ -92,6 +92,9 @@ package to restart an outdated backend after upgrades.
 | `GetAncsNotificationActions` / `SetAncsNotificationActions` | `b enabled` (saved opt-in for iPhone action buttons) |
 | `SetAutoProfileReset` | `b enabled` → `b selected`; saved as `auto_profile_reset` in settings.json (wins over `BLUEFERRY_AUTO_PROFILE_RESET`), effective at once; state is `profile_reset_auto` in `GetStatus`. Does not affect the manual reset through `ReconnectPhone` |
 | `SetPhoneBatteryWarning` | `b enabled` → `b selected`; state is `phone_battery_warning` in `GetStatus` |
+| `SetMirrorNotificationRemovals` | `b enabled` → `b selected` (saved opt-in: a removal on the iPhone closes the popup); state is `mirror_iphone_removals` in `GetStatus` |
+| `SetContactPhotos` | `b enabled` → `s status_json`: saves the contact-photo opt-in in `settings.json` and applies it at once (off stops serving photos and queues erasure after any active contact sync; failed file and database deletions are retried); returns the `contact_photo*` status keys, including `contact_photo_cleanup_pending` (true until both file and database cleanup finish). `GetStatus` reports the current value as `contact_photos`; `saved_opt_ins: true` advertises the runtime setter |
+| `SetOtpAutocopy` | `b enabled` → `s status_json`: saves the one-time code auto-copy opt-in in `settings.json` and applies it at once; returns `{"otp_autocopy": b}`. `GetStatus` reports the current value as `otp_autocopy`; `saved_opt_ins: true` advertises the runtime setter |
 | `GetStoragePolicy` / `SetStoragePolicy` | `s policy`: `encrypted`, `plaintext`, or `none`; `Set` returns `s status_json` |
 | `UnlockStorage` | → `s status_json` |
 | `GetNotificationOpenMap` | → `s rules_json` (list of `bundle_id`, `target`, `kind`) |

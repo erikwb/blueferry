@@ -1113,6 +1113,24 @@ class BridgeController(QObject):
             failed,
         )
 
+    @Slot(bool)
+    def setMirrorNotificationRemovals(self, enabled: bool) -> None:
+        """Whether a removal on the iPhone also closes the desktop popup."""
+        def completed(value: object) -> None:
+            self._status["mirror_iphone_removals"] = bool(value)
+            self.statusChanged.emit()
+
+        def failed(message: str) -> None:
+            # Put the saved value back on screen after a failed save.
+            self._operation_failed(message)
+            self.statusChanged.emit()
+
+        self._run(
+            lambda: self._backend.set_mirror_notification_removals(bool(enabled)),
+            completed,
+            failed,
+        )
+
     @Slot(bool, int)
     def setProximityLock(self, enabled: bool, grace_seconds: int) -> None:
         def completed(value: object) -> None:
@@ -1198,6 +1216,28 @@ class BridgeController(QObject):
             self.statusChanged.emit()
 
         self._run(lambda: self._backend.set_auto_profile_reset(bool(enabled)), completed)
+
+    @Slot(bool)
+    def setContactPhotos(self, enabled: bool) -> None:
+        def completed(value: object) -> None:
+            if isinstance(value, dict):
+                if value.get("contact_photos") is not True:
+                    for key in ("contact_photo_revision", "contact_photo_count"):
+                        self._status.pop(key, None)
+                self._status.update(value)
+                self.statusChanged.emit()
+                self._sync_avatars()
+
+        self._run(lambda: self._backend.set_contact_photos(bool(enabled)), completed)
+
+    @Slot(bool)
+    def setOtpAutocopy(self, enabled: bool) -> None:
+        def completed(value: object) -> None:
+            if isinstance(value, dict):
+                self._status.update(value)
+                self.statusChanged.emit()
+
+        self._run(lambda: self._backend.set_otp_autocopy(bool(enabled)), completed)
 
     @Slot(bool)
     def setCallsEnabled(self, enabled: bool) -> None:
