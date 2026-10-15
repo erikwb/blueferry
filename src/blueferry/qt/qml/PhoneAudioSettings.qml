@@ -24,7 +24,11 @@ ColumnLayout {
             text: qsTr("Play the iPhone's sound on this computer")
             checked: phoneAudio.info.onPc === true
             enabled: phoneAudio.info.available === true && phoneAudio.bridge.status.daemon === true
-            onToggled: phoneAudio.bridge.setPhoneAudioRoute(checked ? "pc" : "phone")
+            onToggled: {
+                phoneAudio.bridge.setPhoneAudioRoute(checked ? "pc" : "phone")
+                // Follow the route BlueZ reports, not the click.
+                checked = Qt.binding(function() { return phoneAudio.info.onPc === true })
+            }
             Accessible.description: hint.text
         }
         Controls.Label {

@@ -1269,6 +1269,8 @@ def test_phone_audio_switch_appears_only_for_supporting_daemons(qml_engine, sett
     assert _evaluate(
         qml_engine, "testBridge.calls.filter(c => c.method === 'setPhoneAudioRoute')"
     ) == [{"method": "setPhoneAudioRoute", "args": ["pc"]}]
+    # The switch follows the reported route, not the click.
+    assert switch.property("checked") is False
 
     # Unavailable (policy, disconnected, pending): greyed out with the reason.
     bridge.setProperty("phoneAudio", {
