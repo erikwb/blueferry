@@ -114,6 +114,10 @@ ihn auf der
 der Ausgabe von `dmesg` und `sudo cat /proc/<pid>/stack`, erfasst vor dem
 Neustart.
 
+BlueFerry erkennt so einen Hänger selbst, pausiert seine eigene
+Bluetooth-Arbeit und meldet das in jedem Client; siehe
+[Neu verbinden und Selbstheilung](reconnect.md).
+
 ## Mitteilungen funktionierten, jetzt nicht mehr
 
 Haben iPhone-Mitteilungen mit demselben Telefon und Adapter schon

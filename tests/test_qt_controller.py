@@ -1560,6 +1560,22 @@ def test_battery_warning_is_forwarded_and_merged_into_status(monkeypatch):
     assert controller.status["phone_battery_warning"] is True
 
 
+def test_auto_profile_reset_is_forwarded_and_merged_into_status(monkeypatch):
+    backend = _Backend()
+    saved = []
+    backend.set_auto_profile_reset = lambda enabled: saved.append(enabled) or enabled
+    controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+    monkeypatch.setattr(
+        controller, "_run",
+        lambda operation, on_done=None, *_args, **_kwargs: on_done(operation()),
+    )
+
+    controller.setAutoProfileReset(False)
+
+    assert saved == [False]
+    assert controller.status["profile_reset_auto"] is False
+
+
 def test_mpris_setting_is_forwarded_and_merged_into_status(monkeypatch):
     backend = _MediaBackend()
     backend.set_mpris_player = lambda enabled: {"media_mpris_enabled": enabled}
@@ -1573,3 +1589,52 @@ def test_mpris_setting_is_forwarded_and_merged_into_status(monkeypatch):
     )
     controller.setMprisPlayer(True)
     assert controller.status["media_mpris_enabled"] is True
+
+
+def test_manual_reconnect_reports_an_unreachable_phone(monkeypatch):
+    from blueferry.reconnect_view import UNREACHABLE_TEXT
+
+    backend = _Backend()
+    results = iter(["unreachable", "started"])
+    backend.reconnect_phone = lambda: next(results)
+    controller = BridgeController(
+        backend=backend, setup=object(), subscribe=False, autostart=False,
+    )
+    monkeypatch.setattr(
+        controller, "_run",
+        lambda operation, on_done=None, *_args, **_kwargs: on_done(operation()),
+    )
+    monkeypatch.setattr(controller, "refresh", lambda: None)
+    controller._status = {
+        "daemon": True, "phone_reconnect_state": "waiting",
+        "phone_reconnect_next_in_sec": 120,
+    }
+    assert controller.reconnect["offered"] is True
+    assert controller.reconnect["attention"] is False
+    controller.reconnectPhone()
+    assert controller.errorText == UNREACHABLE_TEXT
+    controller._set_error("")
+    controller.reconnectPhone()
+    assert controller.reconnect["hint"].startswith("Reconnecting")
+    # The started attempt later fails: the same clear message, once.
+    controller._status["phone_reconnect_state"] = "unreachable"
+    controller._follow_manual_reconnect()
+    assert controller.errorText == UNREACHABLE_TEXT
+
+
+def test_reconnect_banner_names_a_stuck_profile_and_a_hung_bluez():
+    controller = BridgeController(
+        backend=_Backend(), setup=object(), subscribe=False, autostart=False,
+    )
+    controller._status = {
+        "daemon": True, "phone_reconnect_state": "connected",
+        "profile_reset_suggested": "hfp_powered_timeout",
+    }
+    assert controller.reconnect["attention"] is True
+    assert "HFP" in controller.reconnect["hint"]
+    controller._status = {
+        "daemon": True, "phone_reconnect_state": "waiting",
+        "bluez_unresponsive": True, "bluez_unresponsive_reason": "kernel",
+    }
+    assert controller.reconnect["attention"] is True
+    assert "Restart the computer" in controller.reconnect["hint"]

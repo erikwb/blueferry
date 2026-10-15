@@ -709,6 +709,40 @@ def test_gtk_call_history_switches_save_both_values_together():
     )
 
 
+def test_gtk_auto_profile_reset_switch_follows_the_daemon_and_saves():
+    from blueferry.ui.saved_choice import SavedChoice
+    from blueferry.ui.status import IPhonePage
+
+    page = _media_switch_page()
+    page._auto_profile_reset_choice = SavedChoice()
+    page._auto_profile_reset_switch = type(page._media_control_switch)()
+    page._auto_profile_reset_row = type(page._media_control_row)()
+    page._connection_group = type(page._media_control_row)()
+    page._client.set_auto_profile_reset_async = lambda enabled, ok, err: page.saves.append(
+        ("reset", enabled, ok, err))
+    apply = lambda values, reachable=True: IPhonePage._apply_connection_switches(  # noqa: E731
+        page, BackendStatus.from_dict(values), reachable)
+
+    # Daemons without the profile reset do not show the setting.
+    apply({})
+    assert page._connection_group.visible is False
+
+    apply({"profile_reset_auto": True})
+    assert page._connection_group.visible is True
+    assert page._auto_profile_reset_switch.active is True
+    assert page._auto_profile_reset_row.sensitive is True
+    apply({"profile_reset_auto": True}, reachable=False)
+    assert page._auto_profile_reset_row.sensitive is False
+
+    page._auto_profile_reset_switch.set_active(False)
+    IPhonePage._auto_profile_reset_changed(page, page._auto_profile_reset_switch, None)
+    kind, enabled, ok, _err = page.saves[-1]
+    assert (kind, enabled) == ("reset", False)
+    ok({"profile_reset_auto": False})
+    assert page.toasts[-1] == "Connection reset preference saved"
+    assert page.refreshes
+
+
 class _PhotosWidget:
     def __init__(self, active: bool = False) -> None:
         self.visible = None
