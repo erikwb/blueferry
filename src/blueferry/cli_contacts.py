@@ -1,4 +1,4 @@
-"""Contact CLI commands beyond sync: opt-in photo export."""
+"""Contact CLI commands beyond sync: the photo opt-in and photo export."""
 from __future__ import annotations
 
 import errno
@@ -14,6 +14,67 @@ from blueferry.client import BackendClient, BackendError
 from blueferry.contact_photos import image_type
 from blueferry.events import canonical_address
 from blueferry.text_safety import terminal_text
+
+contact_photos_app = typer.Typer(
+    help="Show the iPhone's contact photos as avatars (opt-in).",
+    no_args_is_help=True,
+)
+
+
+def _set_photos(enabled: bool) -> None:
+    try:
+        status = BackendClient().set_contact_photos(enabled)
+    except BackendError as error:
+        typer.echo(typer.style(f"Could not change the setting: {error}", fg=typer.colors.RED),
+                   err=True)
+        raise typer.Exit(code=3) from None
+    word = "enabled" if status.get("contact_photos") is True else "disabled"
+    typer.echo(typer.style(f"Contact photos {word}.", fg=typer.colors.GREEN))
+    if enabled:
+        typer.echo("Photos arrive with the contact sync that starts now.")
+    else:
+        _photo_cleanup_status(status)
+
+
+def _photo_cleanup_status(status: dict) -> None:
+    pending = status.get("contact_photo_cleanup_pending")
+    if pending is True:
+        typer.echo("Photo cleanup is pending. BlueFerry will retry automatically.")
+    elif pending is False:
+        typer.echo("Photo cleanup complete: stored photos and avatar files are erased.")
+    else:
+        typer.echo("This backend does not report photo cleanup completion.")
+
+
+@contact_photos_app.command("enable")
+def contact_photos_enable() -> None:
+    """Keep photos from the next contact sync and show them as avatars."""
+    _set_photos(True)
+
+
+@contact_photos_app.command("disable")
+def contact_photos_disable() -> None:
+    """Stop using contact photos and erase the stored ones."""
+    _set_photos(False)
+
+
+@contact_photos_app.command("status")
+def contact_photos_status() -> None:
+    """Show whether contact photos are on and how many are stored."""
+    try:
+        status = BackendClient().status().to_dict()
+    except BackendError as error:
+        typer.echo(typer.style(f"Backend unavailable: {error}", fg=typer.colors.RED), err=True)
+        raise typer.Exit(code=3) from None
+    if "contact_photos" not in status:
+        typer.echo("This backend does not offer contact photos.")
+        return
+    if status.get("contact_photos") is not True:
+        typer.echo("Contact photos: disabled")
+        _photo_cleanup_status(status)
+        return
+    typer.echo("Contact photos: enabled")
+    typer.echo(f"Stored photos: {int(status.get('contact_photo_count') or 0)}")
 
 
 def _one_line(value: str) -> str:
@@ -81,7 +142,7 @@ def contacts_photo(
     force: bool = typer.Option(False, "--force", help="Replace an existing file"),
     verbose: bool = typer.Option(False, "-v", "--verbose"),
 ) -> None:
-    """Export one contact's cached photo (needs BLUEFERRY_CONTACT_PHOTOS=true)."""
+    """Export one contact's cached photo (needs 'blueferry contact-photos enable')."""
     setup_logging(verbose)
     client = BackendClient()
     try:
@@ -91,8 +152,8 @@ def contacts_photo(
         raise typer.Exit(code=3) from None
     if not enabled:
         typer.echo(
-            "Contact photos are off. Set BLUEFERRY_CONTACT_PHOTOS=true in "
-            "~/.config/blueferry/local.env, restart the backend, and sync contacts.",
+            "Contact photos are off. Turn them on with 'blueferry contact-photos "
+            "enable' or the clients' settings; they arrive with the next contact sync.",
             err=True,
         )
         raise typer.Exit(code=2)

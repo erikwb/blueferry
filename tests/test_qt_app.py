@@ -430,3 +430,21 @@ def test_terminal_signals_quit_qt_and_restore_previous_handlers(monkeypatch):
 
     application.aboutToQuit.emit()
     assert installed == previous
+
+
+def test_own_tray_icon_steps_aside_while_the_standalone_tray_runs():
+    class Recorder:
+        def __init__(self):
+            self.calls = []
+
+        def setVisible(self, visible):
+            self.calls.append(("visible", visible))
+
+        def setQuitOnLastWindowClosed(self, quit_):
+            self.calls.append(("quit", quit_))
+
+    tray, application = Recorder(), Recorder()
+    app_module._show_own_tray(application, tray, True)
+    app_module._show_own_tray(application, tray, False)
+    assert tray.calls == [("visible", False), ("visible", True)]
+    assert application.calls == [("quit", True), ("quit", False)]

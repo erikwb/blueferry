@@ -14,12 +14,12 @@ from blueferry.cli_audio import audio
 from blueferry.cli_call_history import call_history_app
 from blueferry.cli_calls import calls_app, phone_status
 from blueferry.cli_common import setup_logging as _setup_logging
-from blueferry.cli_contacts import contacts_photo
+from blueferry.cli_contacts import contact_photos_app, contacts_photo
 from blueferry.cli_media import media
 from blueferry.cli_messages import sms_list, sms_send
 from blueferry.cli_notification_actions import notification_actions_app
 from blueferry.cli_notifications import notifications_app
-from blueferry.cli_otp import otp_check, otp_status
+from blueferry.cli_otp import otp_app, otp_check, otp_status
 from blueferry.cli_proximity import proximity_app
 from blueferry.notification_policy import NotificationPolicyStore
 
@@ -148,7 +148,9 @@ def doctor(verbose: bool = typer.Option(False, "-v", "--verbose")):
         ok = False
 
     # Optional one-time code auto-copy needs a clipboard helper.
-    if config.OTP_AUTOCOPY:
+    from blueferry.otp_settings import OtpSettings
+
+    if OtpSettings().enabled:
         from blueferry.cli_otp import status_lines
 
         lines, otp_warning = status_lines(
@@ -610,9 +612,11 @@ def history_clear(
 app.command("contacts-photo")(contacts_photo)
 app.command("sms-list")(sms_list)
 app.command("sms-send")(sms_send)
+app.add_typer(contact_photos_app, name="contact-photos")
 app.add_typer(proximity_app, name="proximity-lock")
-app.command("otp-status")(otp_status)
-app.command("otp-check")(otp_check)
+# Earlier names of "otp status" and "otp check", kept for scripts.
+app.command("otp-status", hidden=True)(otp_status)
+app.command("otp-check", hidden=True)(otp_check)
 app.add_typer(call_history_app, name="call-history")
 app.add_typer(notifications_app, name="notifications")
 app.command("media")(media)
@@ -620,6 +624,7 @@ app.command("audio")(audio)
 app.add_typer(notification_actions_app, name="notification-actions")
 app.add_typer(calls_app, name="calls")
 app.command("phone-status")(phone_status)
+app.add_typer(otp_app, name="otp")
 
 
 @app.command()

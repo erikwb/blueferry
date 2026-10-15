@@ -7,6 +7,7 @@ from gi.repository import Adw, Gio, Gtk
 from blueferry.i18n import _
 from blueferry.setup_client import SetupClient
 from blueferry.ui.conversations import ConversationsPage
+from blueferry.ui.phone import PhonePage
 from blueferry.ui.status import IPhonePage
 
 
@@ -29,6 +30,7 @@ class MainWindow(Adw.ApplicationWindow):
         )
 
         menu = Gio.Menu()
+        menu.append(_("iPhone"), "win.phone-overview")
         menu.append(_("iPhone Settings"), "win.phone")
         menu.append(_("Keyboard Shortcuts"), "app.shortcuts")
         menu.append(_("About BlueFerry"), "app.about")
@@ -43,6 +45,27 @@ class MainWindow(Adw.ApplicationWindow):
         phone_action = Gio.SimpleAction.new("phone", None)
         phone_action.connect("activate", lambda *_args: self.present_phone_settings())
         self.add_action(phone_action)
+
+        overview_action = Gio.SimpleAction.new("phone-overview", None)
+        overview_action.connect("activate", lambda *_args: self.present_phone_overview())
+        self.add_action(overview_action)
+        self._overview_toasts = Adw.ToastOverlay()
+        self.phone_overview = PhonePage(client, self.overview_toast)
+        self._overview_toasts.set_child(self.phone_overview)
+        overview_toolbar = Adw.ToolbarView()
+        overview_toolbar.add_top_bar(
+            Adw.HeaderBar(title_widget=Adw.WindowTitle(title=_("iPhone")))
+        )
+        overview_toolbar.set_content(self._overview_toasts)
+        self._overview_dialog = Adw.Dialog(
+            title=_("iPhone"),
+            content_width=560,
+            content_height=600,
+            child=overview_toolbar,
+        )
+        self._overview_dialog.connect(
+            "closed", lambda _dialog: self.phone_overview.set_watching(False)
+        )
 
         self._phone_toasts = Adw.ToastOverlay()
         self.iphone = IPhonePage(client, self.phone_toast)
@@ -93,6 +116,13 @@ class MainWindow(Adw.ApplicationWindow):
     def phone_toast(self, text: str) -> None:
         self._phone_toasts.add_toast(Adw.Toast(title=text, use_markup=False))
 
+    def overview_toast(self, text: str) -> None:
+        self._overview_toasts.add_toast(Adw.Toast(title=text, use_markup=False))
+
+    def present_phone_overview(self) -> None:
+        self.phone_overview.set_watching(True)
+        self._overview_dialog.present(self)
+
     def present_phone_settings(self) -> None:
         self._phone_dialog.present(self)
 
@@ -107,6 +137,7 @@ class MainWindow(Adw.ApplicationWindow):
 
     def open_message(self, handle: str) -> None:
         self._phone_dialog.close()
+        self._overview_dialog.close()
         self.present()
         self.messages.open_message(handle)
 

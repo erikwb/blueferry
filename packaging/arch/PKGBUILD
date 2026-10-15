@@ -88,6 +88,7 @@ check() {
   '
   desktop-file-validate data/io.weirdware.BlueFerry.Gtk.desktop
   desktop-file-validate data/io.weirdware.BlueFerry.Qt.desktop
+  desktop-file-validate data/io.weirdware.BlueFerry.Tray.desktop
   desktop-file-validate data/io.weirdware.BlueFerry.Quickshell.desktop
   appstreamcli validate --no-net data/io.weirdware.BlueFerry.Gtk.metainfo.xml
   appstreamcli validate --no-net data/io.weirdware.BlueFerry.Qt.metainfo.xml
@@ -204,8 +205,11 @@ package_blueferry-qt() {
   install -d "$pkgdir/$_site/blueferry"
   cp -a "$srcdir/$_stage/$_site/blueferry/qt" "$pkgdir/$_site/blueferry/"
   install -Dm755 "$srcdir/$_stage/usr/bin/blueferry-qt" "$pkgdir/usr/bin/blueferry-qt"
+  install -Dm755 "$srcdir/$_stage/usr/bin/blueferry-tray" "$pkgdir/usr/bin/blueferry-tray"
   install -Dm644 data/io.weirdware.BlueFerry.Qt.desktop \
     "$pkgdir/usr/share/applications/io.weirdware.BlueFerry.Qt.desktop"
+  install -Dm644 data/io.weirdware.BlueFerry.Tray.desktop \
+    "$pkgdir/usr/share/applications/io.weirdware.BlueFerry.Tray.desktop"
   install -Dm644 data/io.weirdware.BlueFerry.Qt.metainfo.xml \
     "$pkgdir/usr/share/metainfo/io.weirdware.BlueFerry.Qt.metainfo.xml"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
