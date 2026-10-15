@@ -90,6 +90,8 @@ package to restart an outdated backend after upgrades.
 | `GetContactsOnlyNotifications` / `SetContactsOnlyNotifications` | `b enabled` |
 | `GetAncsNotificationActions` / `SetAncsNotificationActions` | `b enabled` (saved opt-in for iPhone action buttons) |
 | `SetPhoneBatteryWarning` | `b enabled` → `b selected`; state is `phone_battery_warning` in `GetStatus` |
+| `GetFeatures` | → `s json`: per switch (`show_notification_content`, `mark_read_on_dismiss`, `keep_phone_audio_on_phone`) `value`, `running`, `source` (`environment`, `settings`, `local.env`, `default`), `variable`, `restart_required` |
+| `SetFeature` | `s name, b enabled` → `s result`: `active`, `restart-required` or `environment`; stored in settings.json, applied at the next daemon start; own rate bucket |
 | `GetStoragePolicy` / `SetStoragePolicy` | `s policy`: `encrypted`, `plaintext`, or `none`; `Set` returns `s status_json` |
 | `UnlockStorage` | → `s status_json` |
 | `GetNotificationOpenMap` | → `s rules_json` (list of `bundle_id`, `target`, `kind`) |

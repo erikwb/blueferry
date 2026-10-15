@@ -20,6 +20,35 @@ Linux Mint 22.3 und Pop!_OS 24.04 gibt es sie nicht.
 
 ![KDE-Client](../../images/qt.png)
 
+**Settings** (im Menü) hat links Kategorien, wie KDEs Systemeinstellungen:
+
+| Kategorie | Inhalt |
+| --- | --- |
+| Phone | Kopplung, Verbindungszustand, **Run Diagnostics** (dieselben Prüfungen wie `blueferry doctor`, im Fenster angezeigt), Kontaktabgleich |
+| Notifications | Welche Ereignisse Popups erzeugen, nur Kontakte, Klickregeln, Mitteilungsinhalt, Aktionsknöpfe, beim Wegklicken als gelesen markieren |
+| Calls & Audio | Anrufe, Anrufliste, Akku-Warnung, [iPhone-Ton am Computer](phone-audio.md), Mediensteuerung |
+| Security | Abwesenheitssperre, lokale Daten und ihre Verschlüsselung, Verlauf löschen |
+| About | Version, Hintergrunddienst, Tastenkürzel, Beenden |
+
+In einem schmalen Fenster werden die Kategorien zur Liste; eine Kategorie
+öffnet sich einzeln, **All Settings** führt zurück.
+
+### Schalter, die einen Neustart brauchen
+
+Einige Ein/Aus-Einstellungen brauchten bisher eine Änderung in
+`~/.config/blueferry/local.env`: Mitteilungsinhalt anzeigen, eine Nachricht
+beim Wegklicken des Popups als gelesen markieren und den iPhone-Ton auf dem
+iPhone lassen. Die Einstellungsseite und `blueferry features` speichern sie
+jetzt in `~/.config/blueferry/settings.json`, wo sie `local.env`
+überschreiben. Sie gelten nach einem Neustart des Hintergrunddienstes; die
+Seite sagt das und bietet **Restart Service** an. Eine Variable aus der
+Umgebung des Dienstes gewinnt weiterhin, der Schalter sagt dann das.
+
+```bash
+blueferry features                                 # alle Schalter mit Wert und Quelle
+blueferry features off keep_phone_audio_on_phone   # gilt nach einem Neustart
+```
+
 ## Quickshell
 
 `blueferry-quickshell` übernimmt die aktive Farbpalette und die
