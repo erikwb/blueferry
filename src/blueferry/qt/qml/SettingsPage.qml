@@ -32,6 +32,7 @@ Kirigami.Page {
         { "key": "notifications", "name": qsTr("Notifications"), "icon": "preferences-desktop-notification" },
         { "key": "calls", "name": qsTr("Calls & Audio"), "icon": "call-start" },
         { "key": "security", "name": qsTr("Security"), "icon": "preferences-security" },
+        { "key": "plugins", "name": qsTr("Plugins"), "icon": "preferences-plugin" },
         { "key": "about", "name": qsTr("About"), "icon": "help-about" }
     ]
     readonly property var features: (settingsPage.bridge.features || ({})).items || ({})
@@ -162,6 +163,7 @@ Kirigami.Page {
                         sourceComponent: settingsPage.category === "notifications" ? notificationsComponent
                             : settingsPage.category === "calls" ? callsComponent
                             : settingsPage.category === "security" ? securityComponent
+                            : settingsPage.category === "plugins" ? pluginsComponent
                             : settingsPage.category === "about" ? aboutComponent
                             : phoneComponent
                     }
@@ -196,6 +198,10 @@ Kirigami.Page {
             onStoragePolicyRequested: policy => settingsPage.storagePolicyRequested(policy)
             onClearHistoryRequested: settingsPage.clearHistoryRequested()
         }
+    }
+    Component {
+        id: pluginsComponent
+        SettingsPlugins { bridge: settingsPage.bridge }
     }
     Component {
         id: aboutComponent

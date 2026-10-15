@@ -34,6 +34,7 @@ from blueferry.onboarding import OnboardingState, effective_compatibility
 from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH
 from blueferry.qt import phone_link
 from blueferry.qt.avatars import avatar_url
+from blueferry.qt.plugin_settings import PluginSettings
 from blueferry.qt.tasks import Task
 from blueferry.quirks_report import issue_report, issue_url
 from blueferry.service_manager import bluetooth_restart_command
@@ -78,6 +79,7 @@ class BridgeController(QObject):
     callHistoryChanged = Signal()
     nowPlayingChanged = Signal()
     notificationsChanged = Signal()
+    pluginSettingsChanged = Signal()
     phoneIdentityChanged = Signal()
     featuresChanged = Signal()
     doctorChanged = Signal()
@@ -91,6 +93,7 @@ class BridgeController(QObject):
         subscribe: bool = True,
         autostart: bool = True,
         parent: QObject | None = None,
+        plugin_settings: PluginSettings | None = None,
         doctor: Callable[[], DoctorReport] = run_doctor,
     ) -> None:
         super().__init__(parent)
@@ -191,6 +194,9 @@ class BridgeController(QObject):
         self._notifications_timer.timeout.connect(self.refreshNotifications)
         self.devicesChanged.connect(self.phoneIdentityChanged)
         self.configuredChanged.connect(self.phoneIdentityChanged)
+        # Plugin management runs git, pip and plugin calls on its own queue.
+        self._plugin_settings = plugin_settings or PluginSettings(parent=self)
+        self._plugin_settings.changed.connect(self.pluginSettingsChanged)
         self._bus = QDBusConnection.sessionBus() if subscribe else None
         if subscribe:
             self._subscribe()
@@ -409,6 +415,90 @@ class BridgeController(QObject):
             if mac and device.get("mac") == mac and device.get("name"):
                 return str(device["name"])
         return "iPhone"
+
+    @Property("QVariantMap", notify=pluginSettingsChanged)
+    def pluginSettings(self):
+        return self._plugin_settings.state()
+
+    @Slot()
+    def loadPlugins(self) -> None:
+        self._plugin_settings.load()
+
+    @Slot(str, bool)
+    def setPluginEnabled(self, plugin_id: str, enabled: bool) -> None:
+        self._plugin_settings.set_enabled(str(plugin_id), bool(enabled))
+
+    @Slot(str, str)
+    def preparePluginInstall(self, url: str, ref: str) -> None:
+        self._plugin_settings.prepare_install(str(url), str(ref))
+
+    @Slot(str)
+    def installStorePlugin(self, plugin_id: str) -> None:
+        self._plugin_settings.install_from_store(str(plugin_id))
+
+    @Slot(str)
+    def preparePluginUpdate(self, plugin_id: str) -> None:
+        self._plugin_settings.prepare_update(str(plugin_id))
+
+    @Slot()
+    def confirmPluginInstall(self) -> None:
+        self._plugin_settings.confirm_install()
+
+    @Slot()
+    def cancelPluginInstall(self) -> None:
+        self._plugin_settings.cancel_install()
+
+    @Slot(str)
+    def removePlugin(self, plugin_id: str) -> None:
+        self._plugin_settings.remove(str(plugin_id))
+
+    @Slot(str)
+    def loadPluginConfig(self, plugin_id: str) -> None:
+        self._plugin_settings.load_config(str(plugin_id))
+
+    @Slot(str, "QVariantMap")
+    def savePluginConfig(self, plugin_id: str, values: dict) -> None:
+        self._plugin_settings.save_config(str(plugin_id), dict(values or {}))
+
+    @Slot()
+    def closePluginConfig(self) -> None:
+        self._plugin_settings.close_config()
+
+    @Slot(str, "QVariantMap", result="QVariantMap")
+    def checkPluginConfig(self, plugin_id: str, values: dict) -> dict:
+        return self._plugin_settings.check_config(str(plugin_id), dict(values or {}))
+
+    @Slot(str, "QVariantMap")
+    def testPluginConfig(self, plugin_id: str, values: dict) -> None:
+        self._plugin_settings.test_config(str(plugin_id), dict(values or {}))
+
+    @Slot(str, "QVariantMap")
+    def signInPlugin(self, plugin_id: str, values: dict) -> None:
+        self._plugin_settings.sign_in(str(plugin_id), dict(values or {}))
+
+    @Slot()
+    def cancelPluginSignIn(self) -> None:
+        self._plugin_settings.cancel_sign_in()
+
+    @Slot(str)
+    def openPluginLog(self, plugin_id: str) -> None:
+        self._plugin_settings.open_log(str(plugin_id))
+
+    @Slot(str, str)
+    def openPluginHelp(self, plugin_id: str, key: str) -> None:
+        self._plugin_settings.open_help(str(plugin_id), str(key))
+
+    @Slot(bool)
+    def loadPluginStore(self, refresh: bool) -> None:
+        self._plugin_settings.load_store(bool(refresh))
+
+    @Slot("QVariantList")
+    def setPluginIndexes(self, urls: list) -> None:
+        self._plugin_settings.set_indexes([str(url) for url in urls or []])
+
+    @Slot()
+    def clearPluginMessage(self) -> None:
+        self._plugin_settings.clear_message()
 
     @Property("QVariantList", notify=notificationsChanged)
     def notifications(self):
