@@ -379,3 +379,29 @@ def test_set_cod_helper_runs_btmgmt_with_an_empty_environment(tmp_path):
         "LC_ALL=C",
         "args:--index 3 class 4 8",
     ]
+
+
+def test_qt_packages_ship_the_tray_without_a_system_autostart_entry() -> None:
+    from blueferry import tray_autostart
+
+    launcher = "io.weirdware.BlueFerry.Tray.desktop"
+    project = (ROOT / "pyproject.toml").read_text()
+    deb = (ROOT / "packaging/deb/blueferry-qt.install").read_text()
+    rules = (ROOT / "packaging/deb/rules").read_text()
+    rpm = (ROOT / "packaging/rpm/blueferry.spec").read_text()
+    rpm_qt = rpm.split("%files -n blueferry-qt", 1)[1].split("%changelog", 1)[0]
+    arch = (ROOT / "packaging/arch/PKGBUILD").read_text()
+    arch_qt = arch.split("package_blueferry-qt()", 1)[1].split("package_blueferry-quickshell()", 1)[0]
+
+    assert 'blueferry-tray = "blueferry.qt.tray:main"' in project
+    assert "usr/bin/blueferry-tray" in deb and f"usr/share/applications/{launcher}" in deb
+    assert f"data/{launcher}" in rules
+    assert "%{_bindir}/blueferry-tray" in rpm_qt and launcher in rpm_qt
+    assert f"desktop-file-validate data/{launcher}" in rpm
+    assert "usr/bin/blueferry-tray" in arch_qt and launcher in arch_qt
+    assert f"desktop-file-validate data/{launcher}" in arch
+    # Autostart is the user's choice (tray menu or --autostart on).
+    for recipe in (deb, rules, rpm, arch):
+        assert "xdg/autostart" not in recipe
+    # The tray's autostart copy is the launcher the packages install.
+    assert (ROOT / "data" / launcher).read_text() == tray_autostart.ENTRY_TEXT

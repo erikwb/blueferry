@@ -112,6 +112,22 @@
     <method name="GetContactsOnlyNotifications">
       <arg name="enabled" type="b" direction="out"/>
     </method>
+    <method name="SetContactPhotos">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Save the contact-photo opt-in; off starts cleanup, with completion reported in contact_photo_cleanup_pending"/>
+      <arg name="enabled" type="b" direction="in"/>
+      <arg name="status_json" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady"/>
+    </method>
+    <method name="SetOtpAutocopy">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Save the one-time code auto-copy opt-in and apply it at once"/>
+      <arg name="enabled" type="b" direction="in"/>
+      <arg name="status_json" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady"/>
+    </method>
     <method name="SetContactsOnlyNotifications">
       <arg name="enabled" type="b" direction="in"/>
       <arg name="selected" type="b" direction="out"/>
@@ -161,6 +177,14 @@
       <arg name="enabled" type="b" direction="out"/>
     </method>
     <method name="SetAncsNotificationActions">
+      <arg name="enabled" type="b" direction="in"/>
+      <arg name="selected" type="b" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady"/>
+    </method>
+    <method name="SetMirrorNotificationRemovals">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Opt in or out of closing the desktop popup of an iPhone notification once it is removed on the iPhone (default off); persisted in settings.json, state is mirror_iphone_removals in GetStatus"/>
       <arg name="enabled" type="b" direction="in"/>
       <arg name="selected" type="b" direction="out"/>
       <annotation name="io.weirdware.BlueFerry.Errors"

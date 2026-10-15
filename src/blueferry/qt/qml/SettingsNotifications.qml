@@ -94,6 +94,18 @@ ColumnLayout {
             ? qsTr("Unavailable while notification content is hidden.")
             : qsTr("Clicking a button runs that action on the iPhone, for example answering or declining a call. Applies to All iPhone Notifications.")
     }
+    // Opt-in; only daemons that report mirror_iphone_removals support it.
+    Controls.CheckBox {
+        objectName: "mirrorRemovalsCheckBox"
+        Layout.fillWidth: true
+        visible: section.bridge.status.mirror_iphone_removals !== undefined
+        text: qsTr("Sync notifications with iPhone")
+        checked: section.bridge.status.mirror_iphone_removals === true
+        enabled: section.bridge.status.daemon === true
+            && !section.bridge.busy
+        onClicked: section.bridge.setMirrorNotificationRemovals(checked)
+        Accessible.description: qsTr("A notification removed or dismissed on the iPhone also closes its popup here. Applies to All iPhone Notifications.")
+    }
     FeatureSwitch {
         Layout.fillWidth: true
         bridge: section.bridge

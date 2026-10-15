@@ -194,8 +194,11 @@ class NotificationRulesScreen(ModalScreen[None]):
     @on(Button.Pressed, "#rules-save")
     @on(Input.Submitted, "#rules-target")
     def save_rule(self) -> None:
-        bundle = self.query_one("#rules-bundle", Input).value.strip()
-        target = self.query_one("#rules-target", Input).value.strip()
+        draft = (
+            self.query_one("#rules-bundle", Input).value,
+            self.query_one("#rules-target", Input).value,
+        )
+        bundle, target = (value.strip() for value in draft)
         problem = validate_rule(bundle, target)
         if problem is not None:
             self.notify(terminal_text(problem), severity="warning", markup=False)
@@ -204,9 +207,13 @@ class NotificationRulesScreen(ModalScreen[None]):
         def saved(result: object) -> None:
             if isinstance(result, list):
                 self._show(result)
-            # Clear the form only once the backend has accepted the rule.
-            self.query_one("#rules-bundle", Input).value = ""
-            self.query_one("#rules-target", Input).value = ""
+            # A save runs in a worker; the user may already be editing the
+            # next rule when it finishes. Clear only the submitted draft.
+            bundle_input = self.query_one("#rules-bundle", Input)
+            target_input = self.query_one("#rules-target", Input)
+            if (bundle_input.value, target_input.value) == draft:
+                bundle_input.value = ""
+                target_input.value = ""
             self.notify("Click rule saved")
 
         self._run(

@@ -702,6 +702,58 @@ def test_orphaned_avatar_files_from_a_crash_are_swept(isolated_state) -> None:
     assert (runtime / "avatar-link.jpg").is_symlink()  # only regular files are removed
 
 
+def test_failed_avatar_deletions_are_retained_and_retried(isolated_state, monkeypatch):
+    files = PhotoFiles(photo_ref=lambda _address: 1, load_photo=lambda _ref: PNG)
+    avatar = Path(files.path_for("a"))
+    unlink = Path.unlink
+
+    def unavailable(path, *args, **kwargs):
+        if path == avatar:
+            raise OSError("temporarily unavailable")
+        return unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", unavailable)
+    files.clear()
+    assert avatar.exists() and files.cleanup_pending
+    assert len(files) == 1
+    monkeypatch.setattr(Path, "unlink", unlink)
+    files.clear()
+    assert not avatar.exists() and not files.cleanup_pending
+    assert len(files) == 0
+
+
+def test_failed_evictions_bound_plaintext_files(isolated_state, monkeypatch):
+    monkeypatch.setattr(contact_photos, "MAX_CONTACT_PHOTO_FILES", 2)
+    files = PhotoFiles(photo_ref=int, load_photo=lambda _ref: PNG)
+    first = Path(files.path_for("1"))
+    second = Path(files.path_for("2"))
+    unlink = Path.unlink
+    monkeypatch.setattr(Path, "unlink", lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        OSError("temporarily unavailable"),
+    ))
+    assert files.path_for("3") is None
+    assert files.path_for("4") is None
+    assert len(files) == 2 and files.cleanup_pending
+    assert len(list(first.parent.glob("avatar-*"))) == 2
+    monkeypatch.setattr(Path, "unlink", unlink)
+    files.retry_cleanup()
+    assert not first.exists() and not second.exists()
+    assert files.path_for("3") is not None
+
+
+def test_retrying_an_orphan_scan_preserves_current_avatars(isolated_state, monkeypatch):
+    directory = contact_photos.runtime_private_directory
+    monkeypatch.setattr(contact_photos, "runtime_private_directory", lambda: (_ for _ in ()).throw(
+        OSError("temporarily unavailable"),
+    ))
+    files = PhotoFiles(photo_ref=lambda _address: 1, load_photo=lambda _ref: PNG)
+    assert files.cleanup_pending
+    monkeypatch.setattr(contact_photos, "runtime_private_directory", directory)
+    avatar = Path(files.path_for("a"))
+    files.retry_cleanup()
+    assert avatar.exists() and not files.cleanup_pending
+
+
 def test_photo_read_reports_busy_instead_of_missing_while_a_sync_writes(storage) -> None:
     from blueferry.contact_repository import PhotoStoreBusy
 

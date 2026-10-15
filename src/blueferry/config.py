@@ -331,16 +331,20 @@ seeing it.
 OTP_AUTOCOPY: bool = _env_bool("BLUEFERRY_OTP_AUTOCOPY", False)
 """Copy one-time codes from newly received messages to the clipboard.
 
-Off by default: it changes the clipboard without a user action. The code is
+Only the starting value: once a client saves ``otp_autocopy`` in
+settings.json (see ``otp_settings``), the saved choice wins. Off by
+default: it changes the clipboard without a user action. The code is
 never logged or broadcast, and the confirmation popup shows it only when
 ``SHOW_NOTIFICATION_CONTENT`` is enabled.
 """
 OTP_CLEAR_SECONDS: int = _env_int("BLUEFERRY_OTP_CLEAR_SECONDS", 0, 0, 600)
 """Clear a copied code after this many seconds if nothing replaced it (0 = keep)."""
 CONTACT_PHOTOS: bool = _env_bool("BLUEFERRY_CONTACT_PHOTOS", False)
-"""Opt-in: keep PBAP contact photos and offer them as avatars.
+"""Starting value for the contact-photo opt-in (keep PBAP photos as avatars).
 
-Off by default. Photos enlarge the private contact cache and put more
+Only a seed: the saved ``contact_photos`` in settings.json (the clients'
+checkbox, ``blueferry contact-photos enable``) wins once it exists. Off by
+default. Photos enlarge the private contact cache and put more
 remote-controlled bytes in front of client image decoders; see
 ``blueferry.contact_photos`` for the threat model.
 """

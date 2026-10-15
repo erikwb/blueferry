@@ -13,7 +13,7 @@ from PySide6.QtGui import QAction, QGuiApplication, QIcon, QWindow
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
-from blueferry.client_activation import record_client_use
+from blueferry.client_activation import TRAY_BUS_NAME, record_client_use
 from blueferry.qt.activation import ClientActivation
 from blueferry.qt.avatars import AVATAR_PROVIDER, AvatarImageProvider
 from blueferry.qt.controller import BridgeController
@@ -245,11 +245,24 @@ def _present_window(window: QWindow, token: str | None = None) -> None:
     record_client_use("qt")
 
 
+def _standalone_tray_running() -> bool:
+    from PySide6.QtDBus import QDBusConnection
+
+    from blueferry.qt.tray import name_registered
+
+    return name_registered(QDBusConnection.sessionBus(), TRAY_BUS_NAME)
+
+
 def _create_system_tray(
         application: QApplication,
         window: QWindow,
         ) -> QSystemTrayIcon | None:
-    """Expose the KDE/desktop status-notifier item for the Qt client."""
+    """Expose the KDE/desktop status-notifier item for the Qt client.
+
+    The standalone ``blueferry-tray`` item replaces it while it runs, so the
+    panel never shows two phones; closing the window then quits the client.
+    A service watcher follows the standalone tray starting or quitting later.
+    """
     if not QSystemTrayIcon.isSystemTrayAvailable():
         return None
 
@@ -281,9 +294,29 @@ def _create_system_tray(
             _present_window(window)
 
     tray.activated.connect(activated)
-    tray.show()
-    application.setQuitOnLastWindowClosed(False)
+    _follow_standalone_tray(application, tray)
     return tray
+
+
+def _show_own_tray(application: QApplication, tray: QSystemTrayIcon, standalone: bool) -> None:
+    """Hide this client's icon while ``blueferry-tray`` runs, show it otherwise."""
+    tray.setVisible(not standalone)
+    # Without an own icon a closed window would leave nothing to reopen it.
+    application.setQuitOnLastWindowClosed(standalone)
+
+
+def _follow_standalone_tray(application: QApplication, tray: QSystemTrayIcon) -> None:
+    from PySide6.QtDBus import QDBusConnection, QDBusServiceWatcher
+
+    bus = QDBusConnection.sessionBus()
+    watcher = QDBusServiceWatcher(
+        TRAY_BUS_NAME, bus, QDBusServiceWatcher.WatchModeFlag.WatchForOwnerChange, tray,
+    )
+    watcher.serviceOwnerChanged.connect(
+        lambda _name, _old, new: _show_own_tray(application, tray, bool(new))
+    )
+    tray._blueferry_tray_watcher = watcher
+    _show_own_tray(application, tray, _standalone_tray_running())
 
 
 def main() -> int:
