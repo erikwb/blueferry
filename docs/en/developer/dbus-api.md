@@ -90,7 +90,8 @@ package to restart an outdated backend after upgrades.
 | `GetContactsOnlyNotifications` / `SetContactsOnlyNotifications` | `b enabled` |
 | `GetAncsNotificationActions` / `SetAncsNotificationActions` | `b enabled` (saved opt-in for iPhone action buttons) |
 | `SetPhoneBatteryWarning` | `b enabled` → `b selected`; state is `phone_battery_warning` in `GetStatus` |
-| `GetFeatures` | → `s json`: per switch (`show_notification_content`, `mark_read_on_dismiss`, `keep_phone_audio_on_phone`) `value`, `running`, `source` (`environment`, `settings`, `local.env`, `default`), `variable`, `restart_required` |
+| `ListNotifications` | `u limit` → `s json`: `enabled`, `content`, `notifications` (newest first: `id`, `app_id`, `app_name`, `time`; `title`, `subtitle`, `body` only with notification content shown); empty unless `BLUEFERRY_NOTIFICATION_HISTORY` is on; `NotReady` while storage is locked; own rate bucket |
+| `GetFeatures` | → `s json`: per switch (`show_notification_content`, `mark_read_on_dismiss`, `notification_history`, `keep_phone_audio_on_phone`) `value`, `running`, `source` (`environment`, `settings`, `local.env`, `default`), `variable`, `restart_required` |
 | `SetFeature` | `s name, b enabled` → `s result`: `active`, `restart-required` or `environment`; stored in settings.json, applied at the next daemon start; own rate bucket |
 | `GetStoragePolicy` / `SetStoragePolicy` | `s policy`: `encrypted`, `plaintext`, or `none`; `Set` returns `s status_json` |
 | `UnlockStorage` | → `s status_json` |
@@ -186,6 +187,7 @@ adds `calls_state` (`unavailable`, `searching`, `connecting`, `ready`,
 | `OpenMessageRequested` | `s handle` | A notification was clicked; the handle is a bounded, opaque MAP handle |
 | `CallHistoryChanged` | none | Retained call history changed; call `ListCallHistory` again |
 | `NowPlayingChanged` | none | Fetch `Media1.GetNowPlaying` again |
+| `NotificationsChanged` | none | Fetch `Messages1.ListNotifications` again (opt-in list) |
 | `CallsChanged` | none | Optional calls changed; fetch `Calls1.ListCalls`. Never emitted while calls are off |
 
 ## Errors

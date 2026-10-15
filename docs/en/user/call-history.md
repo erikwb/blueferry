@@ -36,8 +36,8 @@ sequenceDiagram
   once are summarized in one popup; calls older than 12 hours are never
   announced. With **All iPhone notifications**, the iPhone's own missed-call
   popup is not repeated.
-- Shows the list with `blueferry call-history` and in **Recent Calls** in
-  the KDE client's menu.
+- Shows the list with `blueferry call-history` and in the KDE client's
+  **Calls** tab, grouped by day.
 
 ## How to turn it on
 
@@ -98,7 +98,7 @@ previous phone's list.
   option off erase it at once.
 - Clients get the records only through the authenticated, rate-limited
   `ListCallHistory` method. The broadcast signal carries no content. The Qt
-  client fetches them only while **Recent Calls** is open.
+  client fetches them only while the **Calls** tab is shown.
 - Popups follow your message popup settings: **No notifications** silences
   them, **Only from contacts** skips unknown callers, and
   `BLUEFERRY_SHOW_NOTIFICATION_CONTENT=false` hides caller and time. They are

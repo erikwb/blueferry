@@ -37,8 +37,8 @@ sequenceDiagram
   drei auf einmal werden zusammengefasst; Anrufe, die älter als 12 Stunden
   sind, werden nie gemeldet. Mit **All iPhone notifications** wird die eigene
   Mitteilung des iPhones über den verpassten Anruf nicht wiederholt.
-- Zeigt die Liste mit `blueferry call-history` und unter **Recent Calls** im
-  Menü des KDE-Clients.
+- Zeigt die Liste mit `blueferry call-history` und im Reiter **Calls** des
+  KDE-Clients, nach Tagen gruppiert.
 
 ## Einschalten
 
@@ -101,7 +101,7 @@ Koppeln eines anderen iPhones wird außerdem die Liste des bisherigen gelöscht.
   ein Wechsel des Speichermodus und das Abschalten löschen sie sofort.
 - Clients bekommen die Einträge nur über die authentifizierte,
   ratenbegrenzte Methode `ListCallHistory`. Das verteilte Signal enthält
-  nichts. Der Qt-Client holt sie nur, solange **Recent Calls** offen ist.
+  nichts. Der Qt-Client holt sie nur, solange der Reiter **Calls** offen ist.
 - Mitteilungen folgen deinen Einstellungen für Nachrichtenmitteilungen:
   **No notifications** schaltet sie ab, **Only from contacts** überspringt
   unbekannte Anrufer, und `BLUEFERRY_SHOW_NOTIFICATION_CONTENT=false`

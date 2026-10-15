@@ -40,6 +40,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `group_routes.py` | Saved named-group reply rosters in the settings document, outside history retention. |
 | `starred_threads.py` | Persistent starred-conversation keys in the settings document. |
 | `notification_policy.py` | Persistent desktop notification preferences, including per-app click rules. |
+| `notification_log.py` | Opt-in, memory-only ring of recent non-Messages ANCS notifications for `ListNotifications` (content-gated, never on disk). |
 | `notification_open_map.py` | Strict validation and exact-match resolution of notification click rules (bundle ID to http(s) URL or desktop-entry ID). |
 | `private_preferences.py` | Encrypts a whole preference collection under the storage policy. |
 | `settings_store.py` | Small atomic store shared by daemon-owned preferences. |
@@ -175,7 +176,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `cli_common.py` | Small CLI presentation helpers. |
 | `cli_proximity.py` | `proximity-lock` status, dry run, enable, and disable. |
 | `cli_otp.py` | `otp-status` and `otp-check` for one-time code auto-copy. |
-| `cli_notifications.py` | `notifications open-map` rule editing. |
+| `cli_notifications.py` | `notifications open-map` rule editing and `notifications recent`. |
 | `cli_media.py` | `blueferry media` now-playing status, commands, and `enable`/`disable`. |
 | `cli_audio.py` | `blueferry audio [status\|pc\|phone]`. |
 | `cli_features.py` | `blueferry features [on\|off NAME]`. |
@@ -197,6 +198,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `ui/util.py` | Small UI helpers. |
 | `qt/app.py` | PySide6/Kirigami entry point. |
 | `qt/controller.py` | Asynchronous `BridgeController` exposed to QML. |
+| `phone_overview.py`, `qt/phone_link.py` | Toolkit-free rules behind the phone card and the Calls and Notifications tabs: opt-in hints that name the setting, day-grouped recent calls, notification rows. |
 | `qt/tasks.py` | Qt worker primitive. |
 | `qt/avatars.py` | Image provider that decodes opt-in contact photos with `QImageReader` after header and size checks. |
 | `qt/activation.py` | Qt adapter for client activation. |
@@ -212,13 +214,16 @@ All paths are relative to `src/blueferry/` unless noted.
 | `qt/qml/ProximityLockSettings.qml` | Away-lock toggle, grace period, and warning; loaded only for daemons that report it. |
 | `qt/qml/GroupConfirmationDialog.qml` | Group recipient confirmation before sending. |
 | `qt/qml/NewMessageDialog.qml` | New message composition. |
-| `qt/qml/CallsDialog.qml` | Optional phone-calls dialog (list, dial with confirmation, answer, hang up). |
+| `qt/qml/PhoneCard.qml` | The phone card left of the tabs: name, connection, battery/signal, now playing and quick switches (sound, away lock); opt-ins that are off stay greyed out with a hint. Folds behind a header button in a narrow window. |
+| `qt/qml/CallsTab.qml` | Calls tab: running calls as cards (answer, hold, hang up), dial pad, and the day-grouped recent calls (`RecentCallsPage.qml`). |
+| `qt/qml/NotificationsTab.qml` | Notifications tab: the opt-in recent-notification list, loaded only while shown. |
+| `qt/qml/ui/` | Shared building blocks of the design: `SectionHeader`, `ListRow`, `CardFrame`, `FilterBar`, `EmptyState`, `Notice`. |
 | `qt/qml/PhoneCallsSettings.qml` | Phone-calls opt-in checkbox; loaded only for daemons that report `calls_enabled`. |
 | `qt/qml/PhoneStatusIndicator.qml` | Optional iPhone battery/signal indicator (loaded only when values are known; plain-text tooltip). |
 | `qt/qml/ExpandingMessageComposer.qml` | Growing message editor. |
 | `qt/qml/MessageBubble.qml` | Message bubble. |
 | `qt/qml/ContactAvatar.qml` | Conversation icon, replaced by the contact photo when the option is on. |
-| `qt/qml/RecentCallsPage.qml` | Opt-in recent-calls list, created through a `Loader`. |
+| `qt/qml/RecentCallsPage.qml` | Opt-in, day-grouped recent-calls list with All/Missed inside the Calls tab, created through a `Loader`. |
 | `qt/qml/CallHistorySettings.qml` | Call-history opt-in checkboxes in the iPhone settings. |
 | `qt/qml/NowPlayingBar.qml` | Opt-in iPhone now-playing bar with transport buttons. |
 | `qt/qml/MediaControlSettings.qml` | Media-control opt-in checkbox and state; loaded only for daemons that report it. |
