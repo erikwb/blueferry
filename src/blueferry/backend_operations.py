@@ -146,6 +146,11 @@ class NotificationPolicy(Protocol):
 
     def set_ancs_actions(self, enabled: bool) -> bool: ...
 
+    @property
+    def mirror_removals(self) -> bool: ...
+
+    def set_mirror_removals(self, enabled: bool) -> bool: ...
+
 
 class StarredThreads(Protocol):
     def keys(self) -> Sequence[str]: ...
@@ -246,7 +251,6 @@ class BackendDependencies:
     on_storage_prepared: Callable[[Any], None] | None = None
     on_storage_changed: Callable[[], None] | None = None
     set_proximity_lock: Callable[[bool, int], dict[str, Any]] | None = None
-    contact_photos: bool = False
     # Returns the live call-history component, or None while the user has not
     # opted in. A callable because the opt-in can change at runtime.
     call_history: Callable[[], CallHistory | None] | None = None
@@ -259,6 +263,10 @@ class BackendDependencies:
     set_calls_enabled: Callable[[bool], dict[str, Any]] | None = None
     set_phone_battery_warning: Callable[[bool], dict[str, Any]] | None = None
     set_media_mpris: Callable[[bool], dict[str, Any]] | None = None
+    # The contact-photo opt-in: a fixed value or the daemon's live setting.
+    contact_photos: bool | Callable[[], bool] = False
+    set_contact_photos: Callable[[bool], dict[str, Any]] | None = None
+    set_otp_autocopy: Callable[[bool], dict[str, Any]] | None = None
 
 
 class BackendOperations:
@@ -673,7 +681,7 @@ class BackendOperations:
         selected = str(address).strip()
         if not selected or len(selected) > MAX_CONTACT_ADDRESS_CHARS:
             raise InvalidArgumentsError("contact address is empty or too long")
-        if not self.dependencies.contact_photos:
+        if not self._contact_photos_enabled():
             return b""
         contacts = self.dependencies.contacts
         if contacts is None:
@@ -779,7 +787,8 @@ class BackendOperations:
             "contacts_only_notifications": (
                 self.get_contacts_only_notifications()
             ),
-            "contact_photos": bool(self.dependencies.contact_photos),
+            "mirror_iphone_removals": self.get_mirror_notification_removals(),
+            "contact_photos": self._contact_photos_enabled(),
         }
         if self.dependencies.notification_policy is not None:
             # Also the capability marker: daemons without click rules lack it.
@@ -1154,6 +1163,25 @@ class BackendOperations:
             self.dependencies.on_notification_policy_changed()
         return selected
 
+    def get_mirror_notification_removals(self) -> bool:
+        """Return the saved opt-in for closing popups removed on the iPhone."""
+        policy = self.dependencies.notification_policy
+        return False if policy is None else bool(policy.mirror_removals)
+
+    def set_mirror_notification_removals(self, enabled: bool) -> bool:
+        """Opt in or out of closing popups removed on the iPhone."""
+        if self.dependencies.notification_policy is None:
+            raise NotReadyError("notification policy storage is unavailable")
+        try:
+            selected = self.dependencies.notification_policy.set_mirror_removals(
+                enabled
+            )
+        except ValueError as error:
+            raise InvalidArgumentsError(str(error)) from error
+        if self.dependencies.on_notification_policy_changed is not None:
+            self.dependencies.on_notification_policy_changed()
+        return selected
+
     def set_proximity_lock(self, enabled: bool, grace_sec: int) -> dict[str, Any]:
         """Opt in or out of locking the desktop when the iPhone goes away."""
         configure = self.dependencies.set_proximity_lock
@@ -1421,6 +1449,36 @@ class BackendOperations:
         except OSError as error:
             log.error("could not save the phone-calls preference: %s", error)
             raise NotReadyError("could not save the phone-calls preference") from error
+
+    def _contact_photos_enabled(self) -> bool:
+        value = self.dependencies.contact_photos
+        return bool(value() if callable(value) else value)
+
+    def set_contact_photos(self, enabled: bool) -> dict[str, Any]:
+        """Save the contact-photo opt-in and apply it at once."""
+        configure = self.dependencies.set_contact_photos
+        if configure is None:
+            raise NotReadyError("contact photo settings are unavailable")
+        try:
+            return dict(configure(bool(enabled)))
+        except ValueError as error:
+            raise InvalidArgumentsError(str(error)) from error
+        except OSError as error:
+            log.error("could not save the contact-photo preference: %s", error)
+            raise NotReadyError("could not save the contact-photo preference") from error
+
+    def set_otp_autocopy(self, enabled: bool) -> dict[str, Any]:
+        """Save the one-time code auto-copy opt-in and apply it at once."""
+        configure = self.dependencies.set_otp_autocopy
+        if configure is None:
+            raise NotReadyError("one-time code settings are unavailable")
+        try:
+            return dict(configure(bool(enabled)))
+        except ValueError as error:
+            raise InvalidArgumentsError(str(error)) from error
+        except OSError as error:
+            log.error("could not save the one-time code preference: %s", error)
+            raise NotReadyError("could not save the one-time code preference") from error
 
     def list_calls(self) -> dict[str, object]:
         return self._call_control().list_calls()

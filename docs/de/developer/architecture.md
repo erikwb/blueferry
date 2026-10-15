@@ -117,6 +117,9 @@ Kopplung existiert. Das Verhalten hinter jedem Schritt beschreibt
 - Versionierte Schnittstellen nur kompatibel ändern und XML und Client-Modelle
   im selben Patch anpassen.
 - Signale auf `Events1` bleiben inhaltsfrei.
+- Die Hauptschleife des Daemons wird nie blockiert: D-Bus-Aufrufe nur
+  asynchron, blockierende Arbeit im OBEX-Worker. `tools/lint_mainloop.py`
+  prüft das.
 
 Jede Regel ist in
 [ARCHITECTURE.md](https://github.com/erikwb/blueferry/blob/main/ARCHITECTURE.md#growth-rules)

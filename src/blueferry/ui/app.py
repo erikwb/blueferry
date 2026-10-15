@@ -68,6 +68,7 @@ class BlueFerryApp(Adw.Application):
         self.set_accels_for_action("app.close", ["<primary>w"])
         self.set_accels_for_action("app.shortcuts", ["<primary>question"])
         self.set_accels_for_action("win.phone", ["<primary>comma"])
+        self.set_accels_for_action("win.phone-overview", ["<primary>i"])
 
         provider = Gtk.CssProvider()
         provider.load_from_string(_CSS)
@@ -104,6 +105,7 @@ class BlueFerryApp(Adw.Application):
                 "Ctrl+W  Close Window\n"
                 "Ctrl+Q  Quit\n"
                 "Ctrl+,  iPhone Settings\n"
+                "Ctrl+I  iPhone\n"
                 "Ctrl+?  Keyboard Shortcuts\n"
                 "Enter   Send Message"
             ),

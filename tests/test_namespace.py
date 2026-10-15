@@ -175,7 +175,7 @@ def test_qt_package_ships_the_kirigami_ui_and_dependencies() -> None:
     assert "setWindowIcon(QIcon.fromTheme(APP_ICON))" in qt_app
     assert "QSystemTrayIcon" in qt_app
     assert 'QIcon.fromTheme("smartphone-symbolic")' in qt_app
-    assert "setQuitOnLastWindowClosed(False)" in qt_app
+    assert "setQuitOnLastWindowClosed(standalone)" in qt_app
 
 
 def test_gui_pairing_requires_confirmation_before_replacing_saved_target() -> None:

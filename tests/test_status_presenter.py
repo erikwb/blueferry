@@ -707,3 +707,193 @@ def test_gtk_call_history_switches_save_both_values_together():
     assert page.toasts[-1] == (
         "Could not save missed call notification preference: storage is locked"
     )
+
+
+class _PhotosWidget:
+    def __init__(self, active: bool = False) -> None:
+        self.visible = None
+        self.active = active
+        self.sensitive = None
+
+    def set_visible(self, value) -> None:
+        self.visible = value
+
+    def set_active(self, value) -> None:
+        self.active = value
+
+    def get_active(self) -> bool:
+        return self.active
+
+    def set_sensitive(self, value) -> None:
+        self.sensitive = value
+
+
+def _photos_page():
+    from types import SimpleNamespace
+
+    from blueferry.ui.saved_choice import SavedChoice
+    from blueferry.ui.status import IPhonePage
+
+    calls = []
+    page = SimpleNamespace(
+        _applying_saved_switches=False,
+        _photos_choice=SavedChoice(),
+        _photos_group=_PhotosWidget(), _photos_switch=_PhotosWidget(), _photos_row=_PhotosWidget(),
+        _client=SimpleNamespace(
+            set_contact_photos_async=lambda enabled, ok, err: calls.append((enabled, ok, err))
+        ),
+        toasts=[], refreshes=[],
+        _apply_status=lambda _status: None, _last_status=BackendStatus(),
+    )
+    page._toast = page.toasts.append
+    page._refresh = lambda: page.refreshes.append(True)
+    for name in ("_show_saved_choice", "_save_switch"):
+        setattr(page, name, getattr(IPhonePage, name).__get__(page))
+    page._apply_contact_photos = lambda status, *, reachable: IPhonePage._apply_contact_photos(
+        page, status, reachable=reachable,
+    )
+    page._contact_photos_changed = lambda *args: IPhonePage._contact_photos_changed(page, *args)
+    return page, calls
+
+
+def test_gtk_contact_photo_row_appears_only_for_supporting_daemons():
+    page, calls = _photos_page()
+
+    page._apply_contact_photos(BackendStatus.from_dict({}), reachable=True)
+    assert page._photos_group.visible is False
+
+    page._apply_contact_photos(BackendStatus.from_dict({"contact_photos": True}), reachable=True)
+    assert page._photos_group.visible is False
+
+    page._apply_contact_photos(
+        BackendStatus.from_dict({"contact_photos": True, "saved_opt_ins": True}), reachable=True,
+    )
+    assert page._photos_group.visible is True
+    assert page._photos_switch.active is True
+    assert page._photos_row.sensitive is True
+    # Reflecting the daemon's state never saves it back.
+    assert calls == []
+
+
+def test_gtk_contact_photo_switch_saves_through_the_client():
+    page, calls = _photos_page()
+    page._photos_switch.active = True
+
+    page._contact_photos_changed(page._photos_switch, None)
+
+    [(enabled, _ok, _err)] = calls
+    assert enabled is True
+    assert page._photos_row.sensitive is False
+
+
+def test_gtk_contact_photo_switch_is_not_undone_by_a_late_status():
+    page, calls = _photos_page()
+    page._apply_contact_photos(BackendStatus.from_dict({"contact_photos": False}), reachable=True)
+    page._photos_switch.active = True
+    page._contact_photos_changed(page._photos_switch, None)
+    [(_enabled, saved, _failed)] = calls
+
+    # A status requested before the save finished still says off.
+    page._apply_contact_photos(BackendStatus.from_dict({"contact_photos": False}), reachable=True)
+    assert page._photos_switch.active is True and page._photos_row.sensitive is False
+    saved({"contact_photos": True})
+    page._apply_contact_photos(BackendStatus.from_dict({"contact_photos": False}), reachable=True)
+    assert page._photos_switch.active is True
+    assert page.refreshes  # asks again instead of trusting the stale status
+    page._apply_contact_photos(BackendStatus.from_dict({"contact_photos": True}), reachable=True)
+    assert page._photos_switch.active is True and page._photos_row.sensitive is True
+
+
+class _Widget:
+    def __init__(self, active: bool = False) -> None:
+        self.visible = None
+        self.active = active
+        self.sensitive = None
+
+    def set_visible(self, value) -> None:
+        self.visible = value
+
+    def set_active(self, value) -> None:
+        self.active = value
+
+    def get_active(self) -> bool:
+        return self.active
+
+    def set_sensitive(self, value) -> None:
+        self.sensitive = value
+
+
+def _otp_page():
+    from types import SimpleNamespace
+
+    from blueferry.ui.saved_choice import SavedChoice
+    from blueferry.ui.status import IPhonePage
+
+    calls = []
+    page = SimpleNamespace(
+        _applying_saved_switches=False,
+        _otp_choice=SavedChoice(),
+        _otp_group=_Widget(), _otp_switch=_Widget(), _otp_row=_Widget(),
+        _client=SimpleNamespace(
+            set_otp_autocopy_async=lambda enabled, ok, err: calls.append((enabled, ok, err))
+        ),
+        toasts=[], refreshes=[],
+        _apply_status=lambda _status: None, _last_status=BackendStatus(),
+    )
+    page._toast = page.toasts.append
+    page._refresh = lambda: page.refreshes.append(True)
+    for name in ("_show_saved_choice", "_save_switch"):
+        setattr(page, name, getattr(IPhonePage, name).__get__(page))
+    page._apply_otp_autocopy = lambda status, *, reachable: IPhonePage._apply_otp_autocopy(
+        page, status, reachable=reachable,
+    )
+    page._otp_autocopy_changed = lambda *args: IPhonePage._otp_autocopy_changed(page, *args)
+    return page, calls
+
+
+def test_gtk_one_time_code_row_appears_only_for_supporting_daemons():
+    page, calls = _otp_page()
+
+    page._apply_otp_autocopy(BackendStatus.from_dict({}), reachable=True)
+    assert page._otp_group.visible is False
+
+    page._apply_otp_autocopy(BackendStatus.from_dict({"otp_autocopy": True}), reachable=True)
+    assert page._otp_group.visible is False
+
+    page._apply_otp_autocopy(
+        BackendStatus.from_dict({"otp_autocopy": True, "saved_opt_ins": True}), reachable=True,
+    )
+    assert page._otp_group.visible is True
+    assert page._otp_switch.active is True
+    assert page._otp_row.sensitive is True
+    # Reflecting the daemon's state never saves it back.
+    assert calls == []
+
+
+def test_gtk_one_time_code_switch_saves_through_the_client():
+    page, calls = _otp_page()
+    page._otp_switch.active = True
+
+    page._otp_autocopy_changed(page._otp_switch, None)
+
+    [(enabled, _ok, _err)] = calls
+    assert enabled is True
+    assert page._otp_row.sensitive is False
+
+
+def test_gtk_one_time_code_switch_is_not_undone_by_a_late_status():
+    page, calls = _otp_page()
+    page._apply_otp_autocopy(BackendStatus.from_dict({"otp_autocopy": False}), reachable=True)
+    page._otp_switch.active = True
+    page._otp_autocopy_changed(page._otp_switch, None)
+    [(_enabled, saved, _failed)] = calls
+
+    # A status requested before the save finished still says off.
+    page._apply_otp_autocopy(BackendStatus.from_dict({"otp_autocopy": False}), reachable=True)
+    assert page._otp_switch.active is True and page._otp_row.sensitive is False
+    saved({"otp_autocopy": True})
+    page._apply_otp_autocopy(BackendStatus.from_dict({"otp_autocopy": False}), reachable=True)
+    assert page._otp_switch.active is True
+    assert page.refreshes  # asks again instead of trusting the stale status
+    page._apply_otp_autocopy(BackendStatus.from_dict({"otp_autocopy": True}), reachable=True)
+    assert page._otp_switch.active is True and page._otp_row.sensitive is True
