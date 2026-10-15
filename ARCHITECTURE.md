@@ -186,9 +186,10 @@ All paths are relative to `src/blueferry/` unless noted.
 | `plugin_index.py` | Plugin store: fetches (https on every redirect hop), validates and caches curated index files. |
 | `plugin_prefs.py` | Reads which plugins are disabled without the plugin manager. |
 | `plugin_logs.py` | Finds a plugin's standard log file and reads its tail without following symlinks. |
-| `plugin_surfaces.py`, `cli_surfaces.py` | Host side of the `card` and `share` surfaces: card rows, actions, "Send to…" targets, card actions that take files; `blueferry cards`/`blueferry send`. Plugin calls run on worker threads with timeouts. |
+| `plugin_settings_view.py` | Toolkit-free plugin rows, store cards and settings forms for the Qt client (`qt/plugin_settings.py`, `qt/qml/SettingsPlugins.qml`, `qt/qml/PluginConfigForm.qml`, `qt/qml/PluginStoreCard.qml`). |
+| `plugin_surfaces.py`, `cli_surfaces.py`, `qt/plugin_surfaces.py`, `qt/qml/PluginCardSection.qml` | Host side of the `card` and `share` surfaces: card rows, actions, "Send to…" targets, card actions that take files; `blueferry cards`/`blueferry send` and the Qt "From Plugins" section (which hears `CardChanged` only from enabled card plugins). Plugin calls run on worker threads with timeouts. |
 | `plugin_notify.py` | Daemon side of the `notify` capability: watches the content-free `Plugin1.NotifyChanged`, accepts it only from the owner of an enabled notify plugin's bus name running as the same user, fetches the popup with `GetPendingNotification` from that connection, rate-limits, and hands it to the libnotify sink; the popup button calls `InvokeAction` asynchronously. |
-| `photos_view.py`, `cli_photos.py` | Client side of the `photos` capability: plugin lookup, loads for worker threads, plain-text labels; `blueferry photos`. |
+| `photos_view.py`, `cli_photos.py`, `qt/qml/PhotosTab.qml` | Client side of the `photos` capability: plugin lookup, loads for worker threads, plain-text labels; `blueferry photos` and the Qt Photos tab (loaded only while shown). |
 | `cli_plugins.py` | `blueferry plugins …` and `blueferry plugins ALIAS …` (exec of the plugin's own CLI; refused for a disabled plugin). |
 | `desktop_open.py` | Opens a checked URI with the desktop's default handler for the CLIs. |
 | `cli_notification_actions.py` | `notification-actions` status, enable, and disable for the opt-in iPhone action buttons. |
