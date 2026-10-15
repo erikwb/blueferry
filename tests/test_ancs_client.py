@@ -2676,3 +2676,46 @@ def test_blocked_transport_resubscribes_after_an_unknown_bearer_state(
     assert client._transport_blocked is False
     assert calls == [("start", "ns"), ("start", "ds"), ("write", "cp")]
     assert client.subscribed is True
+
+
+def test_control_point_writes_force_a_plain_write_request(monkeypatch) -> None:
+    """btmon 2026-10-08: with the reliable-write extended property and no
+    ``type``, BlueZ sent Prepare/Execute Write and iOS answered 0xA0."""
+    options_seen = []
+
+    class _Characteristic:
+        def StartNotify(self, **_kwargs) -> None:
+            pass
+
+        def StopNotify(self, **_kwargs) -> None:
+            pass
+
+        def WriteValue(self, _value, options, **kwargs) -> None:
+            options_seen.append(options)
+            kwargs["reply_handler"]()
+
+    bus = _CharacteristicBus({
+        "/device/ns": _Characteristic(),
+        "/device/ds": _Characteristic(),
+        "/device/cp": _Characteristic(),
+    })
+    monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
+    monkeypatch.setattr(client_module.dbus, "Interface", lambda value, _iface: value)
+    client = AncsClient(
+        "/device", lambda _event: None,
+        schedule=lambda _delay, _callback: 7, cancel=lambda _timer: None,
+    )
+    client._started = True
+    client._bearer_connected = True
+    client._bearer_ready = True
+    client._ns_path = "/device/ns"
+    client._ds_path = "/device/ds"
+    client._cp_path = "/device/cp"
+
+    client._try_subscribe()
+
+    assert options_seen
+    for options in options_seen:
+        assert options.signature == "sv"
+        assert dict(options) == {"type": "request"}
+        assert isinstance(options["type"], client_module.dbus.String)

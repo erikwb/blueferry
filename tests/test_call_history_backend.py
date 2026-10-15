@@ -442,6 +442,83 @@ def test_each_ancs_popup_covers_only_one_call(monkeypatch) -> None:
     assert len(sink._notif.calls) == 2
 
 
+def _keyed_notice(caller, occurred_at, *, number=None, floating=False):
+    from blueferry.call_history import caller_match_keys
+
+    return MissedCallNotice(
+        caller=caller, known_contact=True, occurred_at=occurred_at,
+        match_keys=caller_match_keys(caller, number), floating_time=floating,
+    )
+
+
+def test_ancs_popup_pairs_with_the_same_caller_first(monkeypatch) -> None:
+    """Review case: time-only matching let another caller take the popup."""
+    monkeypatch.setattr("blueferry.sinks.libnotify.config.SHOW_NOTIFICATION_CONTENT", True)
+    sink = _sink("all")
+    call_time = NOW - timedelta(minutes=10)
+    sink.handle_ancs(_ancs_missed_call(call_time + timedelta(seconds=30)))
+
+    sink.handle_missed_calls([
+        # Bob's call had no ANCS popup (e.g. LE was down) and is listed first.
+        _keyed_notice("Bob", call_time - timedelta(minutes=1)),
+        _keyed_notice("Anna", call_time),
+    ])
+
+    assert len(sink._notif.calls) == 2
+    assert "Bob" in sink._notif.calls[1][3]
+
+
+def test_ancs_popup_matches_a_number_in_another_spelling(monkeypatch) -> None:
+    from blueferry.ancs.constants import CategoryID
+    from blueferry.ancs.events import AncsEvent
+
+    monkeypatch.setattr("blueferry.sinks.libnotify.config.SHOW_NOTIFICATION_CONTENT", True)
+    sink = _sink("all")
+    call_time = NOW - timedelta(minutes=10)
+    sink.handle_ancs(AncsEvent(
+        notification_id=2, app_id="com.apple.mobilephone", app_name="Phone",
+        title="+41 79 555 01 23", subtitle="", body="Missed Call",
+        seen_at=call_time, category=CategoryID.MissedCall,
+    ))
+
+    sink.handle_missed_calls([
+        _keyed_notice("Carol", call_time - timedelta(minutes=1), number="0041795550999"),
+        _keyed_notice(None, call_time, number="0041795550123"),
+    ])
+
+    assert len(sink._notif.calls) == 2
+    assert "Carol" in sink._notif.calls[1][3]
+
+
+@pytest.mark.parametrize(("floating", "popups"), [(True, 1), (False, 2)])
+def test_floating_time_in_another_zone_still_pairs_with_the_same_caller(
+    monkeypatch, floating, popups,
+) -> None:
+    monkeypatch.setattr("blueferry.sinks.libnotify.config.SHOW_NOTIFICATION_CONTENT", True)
+    sink = _sink("all")
+    sink.handle_ancs(_ancs_missed_call(NOW - timedelta(minutes=1)))
+
+    # The phone is five hours ahead of the desktop; its floating time was
+    # read in the desktop's zone.
+    sink.handle_missed_calls([
+        _keyed_notice("Anna", NOW - timedelta(hours=5), floating=floating),
+    ])
+
+    assert len(sink._notif.calls) == popups
+
+
+def test_floating_slack_never_pairs_a_different_caller(monkeypatch) -> None:
+    monkeypatch.setattr("blueferry.sinks.libnotify.config.SHOW_NOTIFICATION_CONTENT", True)
+    sink = _sink("all")
+    sink.handle_ancs(_ancs_missed_call(NOW - timedelta(minutes=1)))
+
+    sink.handle_missed_calls([
+        _keyed_notice("Bob", NOW - timedelta(hours=5), floating=True),
+    ])
+
+    assert len(sink._notif.calls) == 2
+
+
 def test_other_ancs_categories_do_not_suppress_missed_call_popups(monkeypatch) -> None:
     from blueferry.ancs.constants import CategoryID
 
@@ -563,3 +640,43 @@ def test_storage_preparation_follows_the_saved_opt_out(storage, monkeypatch) -> 
 
     assert prepare_storage(storage).call_history == []
     assert CallHistoryRepository(storage).load() == []
+
+
+def test_contacts_only_with_only_unknown_callers_leaves_ancs_marks_alone(monkeypatch) -> None:
+    """Review case: an empty list after the contacts-only filter raised."""
+    monkeypatch.setattr("blueferry.sinks.libnotify.config.SHOW_NOTIFICATION_CONTENT", True)
+    sink = _sink("all", contacts_only=True)
+    call_time = NOW - timedelta(minutes=10)
+    sink.handle_ancs(_ancs_missed_call(call_time))
+    assert len(sink._notif.calls) == 1
+
+    sink.handle_missed_calls([
+        MissedCallNotice(caller=None, known_contact=False, occurred_at=call_time),
+    ])
+
+    assert len(sink._notif.calls) == 1
+    assert len(sink._ancs_missed_call_marks()) == 1
+
+
+def test_ancs_subtitle_label_is_no_caller_key(monkeypatch) -> None:
+    """A "Missed Call" subtitle must not pair a PBAP caller who shares it."""
+    from blueferry.ancs.constants import CategoryID
+    from blueferry.ancs.events import AncsEvent
+
+    monkeypatch.setattr("blueferry.sinks.libnotify.config.SHOW_NOTIFICATION_CONTENT", True)
+    sink = _sink("all")
+    call_time = NOW - timedelta(minutes=10)
+    sink.handle_ancs(AncsEvent(
+        notification_id=3, app_id="com.apple.mobilephone", app_name="Phone",
+        title="Anna", subtitle="Missed Call", body="",
+        seen_at=call_time, category=CategoryID.MissedCall,
+    ))
+
+    # Listed first: without the fix its name key equalled the subtitle's.
+    sink.handle_missed_calls([
+        _keyed_notice("Missed Call", call_time - timedelta(minutes=1)),
+        _keyed_notice("Anna", call_time),
+    ])
+
+    assert len(sink._notif.calls) == 2
+    assert "Missed Call" in sink._notif.calls[1][3]

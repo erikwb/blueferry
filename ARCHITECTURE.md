@@ -88,6 +88,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `ancs/constants.py` | ANCS spec constants. |
 | `ancs/events.py` | `AncsEvent`, the normalized per-app notification. |
 | `ancs/sequencer.py` | Bounded, duplicate-aware backlog of serialized ANCS requests. |
+| `gatt.py` | BlueZ GATT call options for the Apple services (plain Write Request, never a reliable write). |
 | `ams/client.py` | Opt-in Apple Media Service GATT client on the ANCS LE link; asynchronous, serialized, bounded. |
 | `ams/parsers.py` | Pure AMS wire-format parsers and command/registration builders. |
 | `ams/state.py` | `NowPlaying` projection of Player, Queue, and Track attributes. |
@@ -176,6 +177,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `tui.py` | Textual terminal client. |
 | `tui_launcher.py` | Launches the TUI with the package-private Textual bundle when present. |
 | `tui_calls.py` | Optional Textual calls panel. |
+| `tui_notification_rules.py` | Textual editor for notification click rules. |
 | `ui/app.py` | GTK4/libadwaita application entry point. |
 | `ui/window.py` | Main GTK window. |
 | `ui/conversations.py` | GTK conversations page: history, group confirmation, replies. |
@@ -473,8 +475,12 @@ A change to these rules has to be made in both places.
   exposed. Without systemd, the same helper runs through `sudo -n`; an
   administrator can authorize it with a narrow sudoers rule. BlueFerry never prompts for or stores
   credentials, skips sudo under `no_new_privs`, refuses a helper that anyone
-  but root could replace, and backs off failed repairs exponentially (from
-  15 minutes after a refusal, at most six hours; a BlueZ restart resets it).
+  but root could replace, and backs off failed sudo repairs (from 15 minutes
+  after a refusal up to six hours, other failures from one up to five
+  minutes; a BlueZ restart resets it). On systemd a failed repair is retried
+  every minute. When `btmgmt` reports the adapter busy (status 0x0a, common
+  right after bluetoothd restarts), the repair is retried after 3 seconds,
+  up to five times in a row, before it counts as a failure.
 - **Bluetooth LE switched off:** when the controller supports LE but runs
   without it, setup detects it, stops full-mode pairing early (after two
   re-probes, since bluetoothd switches LE on asynchronously) and explains the

@@ -44,9 +44,10 @@ from blueferry.setup_client import (
 # Bounds on the per-window avatar cache (least recently used entries are
 # dropped). The count covers a long list of small photos; the byte bound
 # keeps large ones (up to limits.MAX_CONTACT_PHOTO_BYTES each) from holding
-# hundreds of MiB of encoded images.
+# hundreds of MiB of encoded images. It matches the daemon's per-sync photo
+# budget (limits.MAX_CONTACT_PHOTOS_TOTAL_BYTES), so every stored photo fits.
 MAX_CACHED_AVATARS = 512
-MAX_CACHED_AVATAR_BYTES = 32 * 1024 * 1024
+MAX_CACHED_AVATAR_BYTES = 16 * 1024 * 1024
 MAX_PENDING_AVATARS = 32
 AVATAR_RETRY_SECONDS = 30
 AVATAR_RETRY_MAX_SECONDS = 600
@@ -130,6 +131,10 @@ class BridgeController(QObject):
         self._avatar_pending: set[str] = set()
         self._avatar_backoff: OrderedDict[str, None] = OrderedDict()
         self._avatar_failures: OrderedDict[str, int] = OrderedDict()
+        # Addresses QML asked for since the last avatarsChanged: those are on
+        # screen, so a new arrival never evicts them (that would blank and
+        # refetch a shown avatar, and its arrival would evict the next one).
+        self._avatar_pinned: set[str] = set()
         # Generation: changes only when the daemon's photo cache changes and
         # is part of every avatar URL. Revision: bumped on each arrival so
         # QML re-reads avatarSource(); it never changes a shown avatar's URL.
@@ -201,6 +206,8 @@ class BridgeController(QObject):
         key = str(address or "").strip()
         if not key or not self._status.get("contact_photos"):
             return ""
+        if len(self._avatar_pinned) < MAX_CACHED_AVATARS:
+            self._avatar_pinned.add(key)
         with self._avatar_lock:
             if key in self._avatars:
                 self._avatars.move_to_end(key)
@@ -228,18 +235,17 @@ class BridgeController(QObject):
                     self._avatar_missing.popitem(last=False)
                 self._notify_avatar_slot_released()
                 return
-            with self._avatar_lock:
-                self._avatars[key] = data
-                cached = sum(len(item) for item in self._avatars.values())
-                # The newest avatar always stays, even above the byte bound.
-                while len(self._avatars) > 1 and (
-                    len(self._avatars) > MAX_CACHED_AVATARS
-                    or cached > MAX_CACHED_AVATAR_BYTES
-                ):
-                    _old, dropped = self._avatars.popitem(last=False)
-                    cached -= len(dropped)
-            self._avatar_revision += 1
-            self.avatarsChanged.emit()
+            if not self._cache_avatar(key, data):
+                # Everything else in the cache is on screen: keep the shown
+                # avatars and try this one again later instead of evicting
+                # one, which would only be refetched at once.
+                self._avatar_backoff[key] = None
+                while len(self._avatar_backoff) > MAX_CACHED_AVATARS:
+                    self._avatar_backoff.popitem(last=False)
+                self._schedule_avatar_retry(AVATAR_RETRY_SECONDS * 1000, key, generation)
+                self._notify_avatar_slot_released()
+                return
+            self._avatars_changed()
 
         def failed(_message: str) -> None:
             # Avatars are decoration: never surface a lookup, busy-store, or
@@ -268,6 +274,39 @@ class BridgeController(QObject):
     def _notify_avatar_slot_released(self) -> None:
         # QML may have tried other visible addresses while every fetch slot
         # was occupied. Empty, stale, and failed replies free a slot too.
+        self._avatars_changed()
+
+    def _cache_avatar(self, key: str, data: bytes) -> bool:
+        """Store an arrival within the bounds; ``False`` if it did not fit.
+
+        Least recently used entries go first, but never one that is on
+        screen (pinned). A single avatar above the byte bound is still kept
+        when nothing else is cached.
+        """
+        with self._avatar_lock:
+            self._avatars[key] = data
+            cached = sum(len(item) for item in self._avatars.values())
+
+            def over() -> bool:
+                return (
+                    len(self._avatars) > MAX_CACHED_AVATARS
+                    or cached > MAX_CACHED_AVATAR_BYTES
+                )
+
+            for old in list(self._avatars):
+                if not over() or len(self._avatars) == 1:
+                    break
+                if old == key or old in self._avatar_pinned:
+                    continue
+                cached -= len(self._avatars.pop(old))
+            if over() and len(self._avatars) > 1:
+                del self._avatars[key]
+                return False
+        return True
+
+    def _avatars_changed(self) -> None:
+        """Tell QML to re-read avatarSource(); its reads pin what is shown."""
+        self._avatar_pinned.clear()
         self._avatar_revision += 1
         self.avatarsChanged.emit()
 
@@ -277,8 +316,7 @@ class BridgeController(QObject):
                 return
             self._avatar_backoff.pop(key, None)
             # Let QML ask again; the binding re-reads avatarSource().
-            self._avatar_revision += 1
-            self.avatarsChanged.emit()
+            self._avatars_changed()
 
         QTimer.singleShot(delay_ms, self, release)
 
@@ -302,8 +340,7 @@ class BridgeController(QObject):
         self._avatar_backoff.clear()
         self._avatar_failures.clear()
         self._avatar_generation += 1
-        self._avatar_revision += 1
-        self.avatarsChanged.emit()
+        self._avatars_changed()
 
     @Property(bool, notify=statusChanged)
     def callHistoryEnabled(self) -> bool:

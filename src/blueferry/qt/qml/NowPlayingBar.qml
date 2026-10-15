@@ -19,7 +19,14 @@ Controls.ToolBar {
 
     readonly property string stateIcon: playing ? "media-playback-start" : "media-playback-pause"
 
+    // An unknown list (the phone has not sent it yet) is not an empty one:
+    // offer the transport buttons and let the phone refuse what it lacks.
+    // Older backends do not report the key and always mean a known list.
+    readonly property bool commandsKnown: nowPlaying.supported_commands_known !== false
+
     function supports(name) {
+        if (!commandsKnown)
+            return ["previous", "next", "toggle", "play", "pause"].indexOf(name) >= 0
         return commands.indexOf(name) >= 0
     }
 

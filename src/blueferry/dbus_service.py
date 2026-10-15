@@ -411,7 +411,7 @@ class MessagesService(dbus.service.Object):
         self, click_id: str, activation_token: str, sender=None,
     ) -> bool:
         return self._sync(lambda: self._authorized(
-            sender, "settings",
+            sender, "notification-click",
             lambda: self.operations.open_notification_click(
                 str(click_id), str(activation_token)
             ),

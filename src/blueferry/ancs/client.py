@@ -68,6 +68,7 @@ from blueferry.ancs.parsers import (
 )
 from blueferry.ancs.sequencer import RequestBacklog
 from blueferry.bus import get_system_bus
+from blueferry.gatt import write_request_options
 from blueferry.limits import (
     MAX_ANCS_ACTIONABLE,
     MAX_ANCS_ACTIONS_IN_FLIGHT,
@@ -1331,9 +1332,10 @@ class AncsClient:
                 "org.bluez.GattCharacteristic1",
             ).WriteValue(
                 [dbus.Byte(value) for value in request.packet],
-                # Without introspection dbus-python cannot infer a{sv} from
-                # an empty dict and raises before sending.
-                dbus.Dictionary({}, signature="sv"),
+                # A plain Write Request: the Control Point has the
+                # reliable-write extended property, and a reliable write's
+                # Execute is rejected by iOS (see blueferry.gatt).
+                write_request_options(),
                 reply_handler=written,
                 error_handler=failed,
                 timeout=DBUS_CALL_TIMEOUT_SECONDS,

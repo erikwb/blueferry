@@ -85,6 +85,9 @@ Koppeln eines anderen iPhones wird außerdem die Liste des bisherigen gelöscht.
   iPhone** werden nie zurückgehalten.
 - Es ist ein Spiegel des Telefons; auf dem iPhone gelöschte Anrufe
   verschwinden beim nächsten vollständigen Abgleich.
+- Das iPhone gibt je Liste (eingehend, gewählt, verpasst) höchstens die
+  100 neuesten Anrufe heraus; ältere Anrufe fehlen also auch innerhalb der
+  Aufbewahrungsdauer.
 - Liste und Mitteilungen brauchen gespeicherte lokale Daten. Bei gesperrter
   Brieftasche (Wallet) oder mit **Do not retain local data** funktionieren
   sie nicht.
