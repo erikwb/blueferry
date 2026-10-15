@@ -707,3 +707,90 @@ def test_gtk_call_history_switches_save_both_values_together():
     assert page.toasts[-1] == (
         "Could not save missed call notification preference: storage is locked"
     )
+
+
+def _phone_audio_page():
+    from types import SimpleNamespace
+
+    class Switch:
+        active = False
+
+        def get_active(self):
+            return self.active
+
+        def set_active(self, active):
+            self.active = active
+
+    class Row:
+        sensitive = visible = subtitle = None
+
+        def set_sensitive(self, value):
+            self.sensitive = value
+
+        def set_visible(self, value):
+            self.visible = value
+
+        def set_subtitle(self, value):
+            self.subtitle = value
+
+    page = SimpleNamespace(
+        _applying_phone_audio=False,
+        _phone_audio_group=Row(),
+        _phone_audio_row=Row(),
+        _phone_audio_switch=Switch(),
+        _last_status=None,
+        toasts=[], refreshes=[], applied=[], routes=[],
+    )
+    page._toast = page.toasts.append
+    page._refresh = lambda: page.refreshes.append(True)
+    page._apply_status = page.applied.append
+    page._client = SimpleNamespace(
+        set_phone_audio_route_async=lambda route, ok, err: page.routes.append((route, ok, err)),
+    )
+    return page
+
+
+def test_gtk_phone_audio_switch_follows_the_reported_route():
+    from blueferry.ui.status import IPhonePage
+
+    page = _phone_audio_page()
+    apply = lambda values, reachable=True: IPhonePage._apply_phone_audio(  # noqa: E731
+        page, BackendStatus.from_dict(values), reachable)
+
+    apply({})
+    assert page._phone_audio_group.visible is False
+
+    apply({"phone_audio_route": "unavailable", "phone_audio_reason": "keep_phone_audio_on_phone"})
+    assert page._phone_audio_group.visible is True
+    assert page._phone_audio_row.sensitive is False
+    assert "BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE=false" in page._phone_audio_row.subtitle
+
+    # The typed playing field reaches the hint (AirPlay picked on the iPhone).
+    apply({"phone_audio_route": "pc", "phone_audio_playing": "phone"})
+    assert page._phone_audio_switch.active is True
+    assert page._phone_audio_row.sensitive is True
+    assert "own speaker" in page._phone_audio_row.subtitle
+    apply({"phone_audio_route": "pc"}, reachable=False)
+    assert page._phone_audio_row.sensitive is False
+    # Showing a status never switches anything.
+    assert page.routes == [] and page._applying_phone_audio is False
+
+
+def test_gtk_phone_audio_switch_sends_the_route_and_restores_on_failure():
+    from blueferry.ui.status import IPhonePage
+
+    page = _phone_audio_page()
+    page._applying_phone_audio = True
+    IPhonePage._phone_audio_changed(page, page._phone_audio_switch, None)
+    assert page.routes == []
+
+    page._applying_phone_audio = False
+    page._phone_audio_switch.active = True
+    IPhonePage._phone_audio_changed(page, page._phone_audio_switch, None)
+    route, ok, err = page.routes[0]
+    assert route == "pc" and page._phone_audio_row.sensitive is False
+    ok("pc")
+    assert page.refreshes == [True]
+    err("busy")
+    assert page.toasts == ["Could not switch the iPhone's sound: busy"]
+    assert page.applied == [None]
