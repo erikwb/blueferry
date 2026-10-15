@@ -23,9 +23,9 @@ def phone_audio(status: Mapping[str, Any]) -> dict[str, Any]:
     is where the sound actually plays (``pc``, ``phone``, ``none``,
     ``unknown``; empty for older backends). ``mismatch`` is True when the
     switch says this computer but the iPhone plays on its own, for example
-    after the user picked the iPhone in its AirPlay menu. While the location
-    is ``unknown`` (media control off or not ready) the hint keeps the route
-    wording instead of going blank.
+    after the user picked the iPhone in its AirPlay menu. While nothing plays
+    (``none``) or the location is ``unknown`` (media control off or not
+    ready) the hint keeps the route wording, so it never goes blank.
     """
     route = status.get("phone_audio_route")
     if route is None:
@@ -41,7 +41,7 @@ def phone_audio(status: Mapping[str, Any]) -> dict[str, Any]:
     mismatch = route == "pc" and playing == "phone"
     if pending:
         hint = _("Switching the iPhone's sound…")
-    elif route in ("pc", "phone") and playing and playing != "unknown":
+    elif route in ("pc", "phone") and playing in ("pc", "phone"):
         hint = _playing_hint(playing, mismatch=mismatch)
     elif route == "pc":
         hint = _("iPhone sound plays on this computer.")
@@ -66,11 +66,9 @@ def phone_audio(status: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _playing_hint(playing: str, *, mismatch: bool) -> str:
-    """Where the sound plays right now; empty while nothing plays."""
+    """Where the sound plays right now (``playing`` is ``pc`` or ``phone``)."""
     if mismatch:
         return _("The iPhone is playing on its own speaker (chosen on the iPhone).")
     if playing == "pc":
         return _("Playing on this computer.")
-    if playing == "phone":
-        return _("Playing on the iPhone.")
-    return ""
+    return _("Playing on the iPhone.")

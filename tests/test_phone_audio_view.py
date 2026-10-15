@@ -37,9 +37,10 @@ def test_unavailable_reasons_have_their_own_hint(reason, fragment) -> None:
     ("pc", "pc", "Playing on this computer.", False),
     ("pc", "phone", "The iPhone is playing on its own speaker (chosen on the iPhone).", True),
     ("phone", "phone", "Playing on the iPhone.", False),
-    ("pc", "none", "", False),
-    ("phone", "none", "", False),
-    # Unknown (media control off or not ready) keeps the route wording.
+    # Paused or unknown (media control off or not ready) keeps the route
+    # wording, so the hint line never goes blank.
+    ("pc", "none", "iPhone sound plays on this computer.", False),
+    ("phone", "none", "iPhone sound plays on the iPhone.", False),
     ("pc", "unknown", "iPhone sound plays on this computer.", False),
     ("phone", "unknown", "iPhone sound plays on the iPhone.", False),
 ])
