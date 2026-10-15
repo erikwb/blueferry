@@ -246,6 +246,7 @@ class BackendDependencies:
     on_storage_prepared: Callable[[Any], None] | None = None
     on_storage_changed: Callable[[], None] | None = None
     set_proximity_lock: Callable[[bool, int], dict[str, Any]] | None = None
+    reconnect_phone: Callable[[], str] | None = None
     contact_photos: bool = False
     # Returns the live call-history component, or None while the user has not
     # opted in. A callable because the opt-in can change at runtime.
@@ -1153,6 +1154,13 @@ class BackendOperations:
         if self.dependencies.on_notification_policy_changed is not None:
             self.dependencies.on_notification_policy_changed()
         return selected
+
+    def reconnect_phone(self) -> str:
+        """Clear the Classic backoff and page the iPhone once now."""
+        reconnect = self.dependencies.reconnect_phone
+        if reconnect is None:
+            raise NotReadyError("manual reconnect is unavailable in this backend")
+        return reconnect()
 
     def set_proximity_lock(self, enabled: bool, grace_sec: int) -> dict[str, Any]:
         """Opt in or out of locking the desktop when the iPhone goes away."""

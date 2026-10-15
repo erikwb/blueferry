@@ -439,6 +439,17 @@ class BackendClient:
         except dbus.exceptions.DBusException as error:
             raise BackendError(error.get_dbus_message() or str(error)) from error
 
+    def reconnect_phone(self) -> str:
+        """Clear the Classic backoff and page the iPhone once now."""
+        try:
+            return str(
+                self._iface(MESSAGES_IFACE).ReconnectPhone(
+                    timeout=POLICY_CALL_TIMEOUT_SEC
+                )
+            )
+        except dbus.exceptions.DBusException as error:
+            raise BackendError(_dbus_message(error)) from error
+
     def _presence_iface(self) -> dbus.Interface:
         # Presence1 has no GetStatus; check compatibility through Messages1
         # and address Presence1 on that same owner-bound object.

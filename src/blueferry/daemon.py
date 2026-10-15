@@ -63,7 +63,7 @@ from blueferry.contact_repository import ContactRepository
 from blueferry.contact_sync import ContactSync
 from blueferry.contacts import ContactsResolver
 from blueferry.dbus_service import MessagesService, claim_bus_name
-from blueferry.errors import BlueFerryError
+from blueferry.errors import BlueFerryError, NotReadyError
 from blueferry.event_dispatcher import EventDispatcher
 from blueferry.events import SmsEvent
 from blueferry.glib_timers import schedule_periodic
@@ -263,6 +263,7 @@ class Daemon:
             on_status=self._bearer_status_changed,
             on_le_state=self._observe_le_state,
             on_le_dial=self.solicitation.set_dialing,
+            on_reconnect_state=self._emit_status,
             inbound_le_primed=self.solicitation.active,
             le_bond_detection=self._le_bond_detection_applies,
             # Publish the report only; a flip is not a bearer transition.
@@ -432,6 +433,21 @@ class Daemon:
         emit = getattr(self._dbus_service, "emit_status", None)
         if emit is not None:
             emit()
+
+    def _reconnect_phone(self) -> str:
+        result = self.bearers.reconnect_now()
+        log.info("manual iPhone reconnect: %s", result)
+        if result == "unavailable":
+            raise NotReadyError("no iPhone is being supervised")
+        return result
+
+    def _reconnect_status(self) -> dict[str, object]:
+        reconnect = self.bearers.reconnect_snapshot()
+        return {
+            "phone_reconnect_state": reconnect["state"],
+            "phone_reconnect_paused": reconnect["paused"],
+            "phone_reconnect_next_in_sec": reconnect["next_in_sec"],
+        }
 
     def _bearer_status_changed(self) -> None:
         self.proximity.bearer_changed()
@@ -722,6 +738,7 @@ class Daemon:
                 on_storage_prepared=self._apply_storage_preparation,
                 on_storage_changed=self._on_storage_changed,
                 set_proximity_lock=self._set_proximity_lock,
+                reconnect_phone=self._reconnect_phone,
                 contact_photos=config.CONTACT_PHOTOS,
                 call_history=lambda: self.call_history,
                 set_call_history=self._set_call_history,
@@ -1532,6 +1549,7 @@ class Daemon:
             "ancs_actions_preference": self.notification_policy.ancs_actions,
             "notification_content_shown": config.SHOW_NOTIFICATION_CONTENT,
             **bearers,
+            **self._reconnect_status(),
             # Without an LE bearer state, an ANCS round trip is the only
             # proof that LE is up.
             "le": bool(bearers.get("le")) or bool(

@@ -62,6 +62,8 @@ _RULES: dict[str, tuple[RateRule, ...]] = {
     "calls-dial": (RateRule(6, 60), RateRule(60, 3_600)),
     "calls-answer": (RateRule(10, 60), RateRule(120, 3_600)),
     "calls-control": (RateRule(60, 60), RateRule(600, 3_600)),
+    # A manual reconnect pages the phone; a held button must not hammer it.
+    "reconnect": (RateRule(6, 60), RateRule(60, 3_600)),
 }
 
 

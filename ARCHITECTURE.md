@@ -169,6 +169,8 @@ All paths are relative to `src/blueferry/` unless noted.
 | `cli_call_history.py` | Opt-in `call-history` listing, enable, and disable. |
 | `cli_common.py` | Small CLI presentation helpers. |
 | `cli_proximity.py` | `proximity-lock` status, dry run, enable, and disable. |
+| `cli_reconnect.py` | `reconnect`: manual Classic reconnect that waits for the outcome. |
+| `reconnect_view.py` | Toolkit-neutral texts for the manual reconnect (Qt, TUI, CLI). |
 | `cli_otp.py` | `otp-status` and `otp-check` for one-time code auto-copy. |
 | `cli_notifications.py` | `notifications open-map` rule editing. |
 | `cli_media.py` | `blueferry media` now-playing status, commands, and `enable`/`disable`. |
@@ -450,6 +452,12 @@ A change to these rules has to be made in both places.
   until an inbound link, LE or a discovery sighting shows the phone again.
   Paging an absent phone once hung bluetoothd in `l2cap_chan_connect`
   (kernel 7.2.8), so fewer pages matter.
+  `Messages1.ReconnectPhone()` (own `reconnect` rate bucket, 6/min) clears
+  the backoff and pages once on the next main-loop iteration; it never starts
+  a second attempt while one is running. GetStatus reports
+  `phone_reconnect_state` (`connected`/`connecting`/`waiting`/`unreachable`),
+  `phone_reconnect_paused` and `phone_reconnect_next_in_sec`;
+  `reconnect_view.py` turns them into the same texts for every client.
 - **Media (opt-in):** `ams/client` never dials. It follows the bearer
   supervisor's LE observations and BlueZ owner changes, subscribes after the
   link settles, and resets without `StopNotify` on loss. `media` owns the

@@ -370,6 +370,15 @@ class MessagesService(dbus.service.Object):
         ))
 
     @dbus.service.method(
+        IFACE, in_signature="", out_signature="s", sender_keyword="sender"
+    )
+    def ReconnectPhone(self, sender=None) -> str:
+        """Clear the Classic backoff and page the iPhone once now."""
+        return self._sync(lambda: self._authorized(
+            sender, "reconnect", self.operations.reconnect_phone,
+        ))
+
+    @dbus.service.method(
         PRESENCE_IFACE, in_signature="bu", out_signature="s", sender_keyword="sender"
     )
     def SetProximityLock(self, enabled: bool, grace_seconds: int, sender=None) -> str:
