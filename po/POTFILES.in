@@ -41,5 +41,4 @@ src/blueferry/qt/qml/PhoneCard.qml
 src/blueferry/qt/qml/CallsTab.qml
 src/blueferry/qt/qml/NotificationsTab.qml
 src/blueferry/qt/qml/ui/ListRow.qml
-src/blueferry/phone_overview.py
 src/blueferry/qt/phone_link.py
