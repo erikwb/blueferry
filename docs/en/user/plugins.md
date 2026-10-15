@@ -1,8 +1,28 @@
-# Plugins
+# Plugins and companion tools
 
 BlueFerry stays a messaging bridge. Everything else runs as a **plugin**,
-a separate process on your session bus. None of it runs inside the
+a separate process on your session bus, or is a **companion tool**, a
+program BlueFerry only starts for you. None of it runs inside the
 background service, and nothing is installed by default.
+
+## Companion tools
+
+The **Tools** section of the KDE client's phone card and `blueferry tools`
+start three programs BlueFerry does not ship. Each is greyed out, with what
+to install, until its tool is there.
+
+| Entry | Needs | What it does |
+| --- | --- | --- |
+| Mirror iPhone screen | [UxPlay](https://github.com/FDH2/UxPlay) | Starts an AirPlay receiver; on the iPhone open Control Center › Screen Mirroring and pick this computer. The same entry stops it. A `uxplay.desktop` entry with your own options is used when present. |
+| Send a file (LocalSend) | LocalSend (Flathub or `localsend`) | Opens LocalSend. Hidden while the LocalSend plugin is enabled. |
+| iPhone photos (USB) | `ifuse`, libimobiledevice, a USB cable | Mounts the camera roll in a private folder and opens it; **Eject** unmounts it. If the iPhone asks, confirm "Trust This Computer". |
+
+```bash
+blueferry tools            # which tools are ready
+blueferry tools mirror
+blueferry tools photos
+blueferry tools eject
+```
 
 ## Installing a plugin
 
