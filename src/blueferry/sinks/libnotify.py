@@ -115,6 +115,10 @@ _DISMISSED_CLICK_GRACE_S = 10.0
 _ANCS_POSITIVE_ACTION = "ancs-positive"
 _ANCS_NEGATIVE_ACTION = "ancs-negative"
 _ANCS_RETRY_ACTION = "ancs-retry"
+# The single button of a plugin popup (PLUGINS.md, capability notify).
+_PLUGIN_ACTION = "plugin-action"
+_PLUGIN_ICON = "preferences-plugin"
+_MAX_PLUGIN_POPUPS = 32
 # Action labels are plain strings, but some notification servers interpret
 # markup in them. Remove only things shaped like real tags (``<b>``,
 # ``</i>``, ``<a href=...>``), then drop the remaining markup-significant
@@ -171,11 +175,16 @@ class LibnotifySink:
         on_ancs_action=None,
         ancs_actions_enabled=None,
         on_call_action=None,
+        on_plugin_action=None,
     ) -> None:
         self._defer_mark_read = defer_mark_read
         self._contact_photo = contact_photo
         # (call_id, "answer" | "decline") from an incoming-call popup button.
         self._on_call_action = on_call_action
+        # PluginPopup -> None: a click on a plugin popup's button.
+        self._on_plugin_action = on_plugin_action
+        # desktop notification id -> PluginPopup with an action button.
+        self._plugin_popups: dict[int, object] = {}
         # notification_id <-> call_id for ringing-call popups.
         self._call_notifications: dict[int, str] = {}
         self._call_popups: dict[str, int] = {}
@@ -290,6 +299,7 @@ class LibnotifySink:
         getattr(self, "_ancs_retries", {}).clear()
         getattr(self, "_call_notifications", {}).clear()
         getattr(self, "_call_popups", {}).clear()
+        getattr(self, "_plugin_popups", {}).clear()
 
     def _policy(self) -> str:
         provider = getattr(self, "_notification_policy", None)
@@ -887,6 +897,76 @@ class LibnotifySink:
         except dbus.exceptions.DBusException as error:
             log.error("libnotify Notify (battery) failed: %s", error.get_dbus_name())
 
+    # ---- plugin popups (capability notify) --------------------------------
+
+    def handle_plugin_notification(self, popup) -> None:
+        """A verified Plugin1.Notify popup from a plugin, under the user's policy.
+
+        Like the battery warning it shows under ``messages`` and ``all``;
+        ``none`` silences it. Without SHOW_NOTIFICATION_CONTENT only the
+        plugin's name appears. Text is plain: escaped for the server.
+        """
+        if self._policy() == NO_NOTIFICATIONS:
+            return
+        note = popup.note
+        if config.SHOW_NOTIFICATION_CONTENT:
+            title = note.title or popup.plugin_name
+            body = note.body
+        else:
+            title = popup.plugin_name
+            body = "New notification"
+        if len(body) > _BODY_LIMIT:
+            body = body[:_BODY_LIMIT - 1] + "…"
+        title = escape(terminal_text(title).replace("\n", " "))
+        body = escape(terminal_text(body))
+        actions: list[str] = []
+        callback = getattr(self, "_on_plugin_action", None)
+        if note.has_action and callback is not None:
+            # The label is plugin text too: neutral while content is hidden.
+            label = _LABEL_MARKUP_RE.sub("", _LABEL_TAG_RE.sub("", note.action_label))
+            if not config.SHOW_NOTIFICATION_CONTENT:
+                label = "Open"
+            actions = [_PLUGIN_ACTION, label or "Open"]
+
+        def shown(nid) -> None:
+            if not actions:
+                return
+            popups = self._plugin_popups
+            popups[int(nid)] = popup
+            while len(popups) > _MAX_PLUGIN_POPUPS:
+                popups.pop(next(iter(popups)))
+
+        def failed(error) -> None:
+            name = getattr(error, "get_dbus_name", lambda: None)()
+            log.error("libnotify Notify (plugin) failed: %s", name or type(error).__name__)
+
+        try:
+            self._notif.Notify(
+                _APP_NAME,
+                dbus.UInt32(0),
+                note.icon or _PLUGIN_ICON,
+                title,
+                body,
+                dbus.Array(actions, signature="s"),
+                dbus.Dictionary({"urgency": dbus.Byte(1)}, signature="sv"),
+                dbus.Int32(_MESSAGE_EXPIRE_MS),
+                reply_handler=shown,
+                error_handler=failed,
+            )
+        except dbus.exceptions.DBusException as error:
+            failed(error)
+
+    def _invoke_plugin_action(self, nid: int) -> None:
+        # Single-use, like ANCS actions.
+        popup = getattr(self, "_plugin_popups", {}).pop(nid, None)
+        callback = getattr(self, "_on_plugin_action", None)
+        if popup is None or callback is None:
+            return
+        try:
+            callback(popup)
+        except Exception:
+            log.exception("plugin popup action callback raised")
+
     # ---- iPhone marks read → close our popup ----------------------------
 
     def _on_msg_props(self, nid: int, iface: str, changed) -> None:
@@ -936,6 +1016,9 @@ class LibnotifySink:
             callback = getattr(self, "_on_call_action", None)
             if str(action) in _CALL_ACTIONS and callback is not None:
                 callback(call_id, str(action))
+            return
+        if str(action) == _PLUGIN_ACTION:
+            self._invoke_plugin_action(nid_i)
             return
         if str(action) != "default":
             return
@@ -1047,6 +1130,8 @@ class LibnotifySink:
         call_id = getattr(self, "_call_notifications", {}).pop(nid_i, None)
         if call_id is not None:
             getattr(self, "_call_popups", {}).pop(call_id, None)
+        # Nor does closing a plugin popup run the plugin's action.
+        getattr(self, "_plugin_popups", {}).pop(nid_i, None)
         message_path = self._pending.pop(nid_i, None)
 
         # Always remove the per-message subscription, no matter the reason
