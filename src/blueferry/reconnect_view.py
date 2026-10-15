@@ -1,4 +1,8 @@
-"""Toolkit-neutral texts for the manual iPhone reconnect (all clients)."""
+"""Toolkit-neutral texts for the manual iPhone reconnect (all clients).
+
+Also the shared wording for a daemon rate limit (``*.RateLimited``), so no
+client shows the bare "too many requests".
+"""
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -20,11 +24,16 @@ BLUEZ_UNRESPONSIVE_TEXT = _(
 )
 UNSUPPORTED_TEXT = _("The running BlueFerry service cannot reconnect on request.")
 PROFILE_RESET_TEXT = _("Resetting the iPhone's Bluetooth connection…")
+RATE_LIMITED_TEXT = _("Please wait a moment, then try again.")
 # profile_reset reason tokens (GetStatus profile_reset_suggested/_last).
 _PROFILE_REASONS = {
     "hfp_powered_timeout": _("Call audio (HFP) is stuck."),
     "manual": _("Reset on request."),
 }
+
+
+def is_rate_limited(error_name: str) -> bool:
+    return str(error_name or "").endswith(".RateLimited")
 
 
 def profile_reason_text(reason: object) -> str:
@@ -94,6 +103,8 @@ def reconnect_error_text(error_name: str) -> str:
     """Text for a failed ReconnectPhone() call, by D-Bus error name."""
     if error_name.endswith((".UnknownMethod", ".UnknownInterface")):
         return UNSUPPORTED_TEXT
+    if is_rate_limited(error_name):
+        return RATE_LIMITED_TEXT
     if error_name.endswith(".NotReady"):
         return _("BlueFerry is not supervising an iPhone yet.")
     return _("The reconnect request failed.")

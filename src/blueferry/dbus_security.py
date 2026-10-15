@@ -170,7 +170,7 @@ class CallerGuard:
                     attempts.popleft()
                 if len(attempts) >= rule.attempts:
                     raise RateLimitError(
-                        "too many requests; wait before trying again"
+                        "please wait a moment, then try again"
                     )
         for scope, selected in scoped:
             for rule in selected:

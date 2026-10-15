@@ -95,3 +95,19 @@ def test_reconnect_error_texts_follow_the_dbus_error() -> None:
 
     assert reconnect_error_text("org.freedesktop.DBus.Error.UnknownMethod") == UNSUPPORTED_TEXT
     assert "failed" in reconnect_error_text("")
+
+
+def test_rate_limits_read_as_a_request_to_wait() -> None:
+    import dbus
+
+    from blueferry.client import _dbus_message
+    from blueferry.reconnect_view import RATE_LIMITED_TEXT, reconnect_error_text
+
+    assert reconnect_error_text("io.weirdware.BlueFerry.Error.RateLimited") == RATE_LIMITED_TEXT
+    assert "too many" not in RATE_LIMITED_TEXT.casefold()
+    error = dbus.exceptions.DBusException(
+        "too many requests", name="io.weirdware.BlueFerry.Error.RateLimited",
+    )
+    assert _dbus_message(error) == RATE_LIMITED_TEXT
+    other = dbus.exceptions.DBusException("no phone", name="io.weirdware.BlueFerry.Error.NotReady")
+    assert _dbus_message(other) == "no phone"
