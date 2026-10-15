@@ -167,19 +167,24 @@ class Daemon:
         self.storage = StorageSecurity(initialize=False)
         self.storage.require_preparation()
         # Opt-in avatars, saved in settings.json (local.env only seeds it).
-        # Disabled means inert: nothing is parsed, served, or written, and
-        # photos kept by an earlier opt-in are erased. The cache, the sync
-        # and storage preparation read the live setting through a callable.
+        # The cache, sync and storage preparation follow the live setting.
         self.photo_settings = ContactPhotoSettings(log_overrides=True)
         self.contacts = ContactsResolver(
             storage=self.storage, photos=self._contact_photos_enabled,
+        )
+        # Keep cleanup ownership across opt-outs. Sweep only after claiming
+        # the bus name, so another launch cannot delete the live owner's files.
+        self._avatar_files = PhotoFiles(
+            photo_ref=self.contacts.photo_ref,
+            load_photo=self.contacts.load_photo,
+            sweep_orphans=False,
         )
         self.photo_files: PhotoFiles | None = None
         self._photo_erase_pending = False
         self._photo_erase_running = False
         self._photo_erase_generation = 0
         if self.photo_settings.enabled:
-            self.photo_files = self._new_photo_files()
+            self.photo_files = self._avatar_files
         else:
             self._photo_erase_pending = not self._erase_contact_photos()
         self.connectivity = Connectivity()
@@ -717,6 +722,7 @@ class Daemon:
         # the control surface before any Bluetooth operation that can wait on
         # hardware or the phone.
         self._bus_name = claim_bus_name()
+        self._avatar_files.sweep_orphans()
         # Construction may overlap the previous daemon finishing recovery.
         # Only its successor may refresh or act on the persisted obligation.
         self.recovery.adapter.reload_journal()
@@ -948,6 +954,7 @@ class Daemon:
                 self._dbus_service.retry_storage_unlock()
         except Exception:
             log.warning("could not schedule background storage retry", exc_info=True)
+        self._avatar_files.retry_cleanup()
         self._queue_photo_erase()
         if (
             self.photo_settings.enabled
@@ -964,12 +971,6 @@ class Daemon:
     def _contact_photos_enabled(self) -> bool:
         return self.photo_settings.enabled
 
-    def _new_photo_files(self) -> PhotoFiles:
-        return PhotoFiles(
-            photo_ref=self.contacts.photo_ref,
-            load_photo=self.contacts.load_photo,
-        )
-
     def _contact_photo_path(self, address: str | None) -> str | None:
         photo_files = self.photo_files
         return photo_files.path_for(address) if photo_files is not None else None
@@ -985,7 +986,7 @@ class Daemon:
         was_enabled = self.photo_settings.enabled
         selected = self.photo_settings.set(enabled)
         if selected and not was_enabled:
-            self.photo_files = self._new_photo_files()
+            self.photo_files = self._avatar_files
             log.info("contact photos enabled; they arrive with the next contact sync")
             if not self._photo_erase_pending:
                 self.contact_sync.photos_changed()
@@ -1057,6 +1058,7 @@ class Daemon:
     def _clear_photo_files(self) -> None:
         if self.photo_files is not None:
             self.photo_files.clear()
+        self._avatar_files.retry_cleanup()
 
     def _retire_photo_files(self) -> None:
         # A refreshed cache must not reuse old files, but popups already
