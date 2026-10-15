@@ -252,6 +252,11 @@ class PluginManager:
                             raise InstallError(
                                 "another plugin install or change is running; try again "
                                 "when it has finished") from None
+                        # Blocking wait is fine here: the manager runs in the
+                        # CLI or on a client's worker pool, never on the
+                        # daemon's or a UI's main loop (the daemon does not
+                        # import this module; tools/lint_mainloop.py on
+                        # chore/mainloop-guard would flag it if it did).
                         time.sleep(0.1)
                 self._lock_depth = 1
                 try:
