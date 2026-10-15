@@ -39,6 +39,7 @@ ShellRoot {
   property bool notificationPolicyBusy: false
   property bool contactsOnlyNotificationsBusy: false
   property bool ancsActionsBusy: false
+  property bool phoneAudioBusy: false
   readonly property SavedChoice mediaControl: SavedChoice {}
   readonly property SavedChoice mprisPlayer: SavedChoice {}
   readonly property SavedChoice proximityLock: SavedChoice {}
@@ -309,6 +310,9 @@ ShellRoot {
       } else if (method === "set_ancs_notification_actions") {
         root.ancsActionsBusy = false
         root.reload()
+      } else if (method === "set_phone_audio_route") {
+        root.phoneAudioBusy = false
+        root.reload()
       } else if (method === "set_media_control") {
         root.mediaControl.saved(
           typeof result === "object" && result !== null
@@ -401,6 +405,10 @@ ShellRoot {
         root.ancsActionsBusy = false
         root.errorText = message || "Could not save action button preference"
         root.reload()
+      } else if (method === "set_phone_audio_route") {
+        root.phoneAudioBusy = false
+        root.errorText = message || "Could not switch the iPhone's sound"
+        root.reload()
       } else if (method === "set_media_control") {
         root.mediaControl.failed(root.backendStatus.media_control_enabled === true)
         root.errorText = message || "Could not save media control preference"
@@ -440,6 +448,7 @@ ShellRoot {
         root.notificationPolicyBusy = false
         root.contactsOnlyNotificationsBusy = false
         root.ancsActionsBusy = false
+        root.phoneAudioBusy = false
         if (root.mediaControl.busy)
           root.mediaControl.failed(root.backendStatus.media_control_enabled === true)
         if (root.mprisPlayer.busy)
@@ -1093,6 +1102,7 @@ ShellRoot {
                   ancsActions: root.ancsActionsBusy,
                   mediaControl: root.mediaControl.busy,
                   mprisPlayer: root.mprisPlayer.busy,
+                  phoneAudio: root.phoneAudioBusy,
                   proximityLock: root.proximityLock.busy,
                   calls: root.callsChoice.busy,
                   callHistory: root.callHistory.busy || root.missedCallPopups.busy,
@@ -1111,6 +1121,7 @@ ShellRoot {
               root.contactsOnlyNotificationsBusy = true
             }
             if (method === "set_ancs_notification_actions") root.ancsActionsBusy = true
+            if (method === "set_phone_audio_route") root.phoneAudioBusy = true
             if (method === "set_media_control") root.mediaControl.request(args.enabled)
             if (method === "set_mpris_player") root.mprisPlayer.request(args.enabled)
             if (method === "set_proximity_lock") root.proximityLock.request(args.enabled)

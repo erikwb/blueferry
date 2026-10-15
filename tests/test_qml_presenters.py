@@ -3149,6 +3149,39 @@ def test_battery_warning_checkbox_follows_the_daemon(qml_engine, settings_window
     ) == [{"method": "setPhoneBatteryWarning", "args": [True]}]
 
 
+def test_quickshell_sound_switch_follows_the_route_and_sends_it(qml_engine, quickshell_setup):
+    base = {"notification_policy": "all", "contacts_only_notifications": False}
+    page, calls, close = _quickshell_settings_page(qml_engine, quickshell_setup, base)
+    switch = page.findChild(QObject, "phoneAudioCheckBox")
+    hint = page.findChild(QObject, "phoneAudioHint")
+    assert switch is not None and hint is not None
+    assert switch.property("visible") is False and hint.property("visible") is False
+
+    page.setProperty("status", {
+        **base, "phone_audio_route": "unavailable",
+        "phone_audio_view": {"available": False, "hint": "Available while the iPhone is connected."},
+    })
+    QGuiApplication.processEvents()
+    assert switch.property("visible") is True and switch.property("enabled") is False
+    assert hint.property("text") == "Available while the iPhone is connected."
+
+    page.setProperty("status", {
+        **base, "phone_audio_route": "phone",
+        "phone_audio_view": {"available": True, "hint": "Playing on the iPhone."},
+    })
+    QGuiApplication.processEvents()
+    assert switch.property("checked") is False and switch.property("enabled") is True
+    page.setProperty("busy", {"phoneAudio": True})
+    QGuiApplication.processEvents()
+    assert switch.property("enabled") is False
+    page.setProperty("busy", {})
+    QGuiApplication.processEvents()
+    assert QMetaObject.invokeMethod(switch, "toggle")
+    assert QMetaObject.invokeMethod(switch, "clicked")
+    assert calls == [("set_phone_audio_route", {"route": "pc"})]
+    close()
+
+
 def test_quickshell_media_checkboxes_are_opt_in_and_the_player_needs_media_control(
     qml_engine, quickshell_setup,
 ):
