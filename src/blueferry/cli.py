@@ -21,6 +21,7 @@ from blueferry.cli_messages import sms_list, sms_send
 from blueferry.cli_notification_actions import notification_actions_app
 from blueferry.cli_notifications import notifications_app
 from blueferry.cli_otp import otp_check, otp_status
+from blueferry.cli_photos import photos_app
 from blueferry.cli_plugins import PLUGINS_CONTEXT, plugins
 from blueferry.cli_proximity import proximity_app
 from blueferry.cli_surfaces import cards as plugin_cards
@@ -625,6 +626,7 @@ app.add_typer(features_app, name="features")
 app.command("plugins", context_settings=PLUGINS_CONTEXT)(plugins)
 app.command("send")(send_files)
 app.command("cards")(plugin_cards)
+app.add_typer(photos_app, name="photos")
 app.add_typer(notification_actions_app, name="notification-actions")
 app.add_typer(calls_app, name="calls")
 app.command("phone-status")(phone_status)

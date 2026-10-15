@@ -38,3 +38,4 @@ src/blueferry/phone_overview.py
 src/blueferry/qt/phone_link.py
 src/blueferry/plugin_stopper.py
 src/blueferry/plugin_surfaces.py
+src/blueferry/photos_view.py
