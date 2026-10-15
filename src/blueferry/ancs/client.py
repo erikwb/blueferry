@@ -274,6 +274,7 @@ class AncsClient:
         # evidence that the rebuilt GATT transport is stale.
         self._was_authorized = previously_authorized
         self._bearer_connected: bool | None = None
+        self._subscription_generation = 0
         # The device is connected and BlueZ cannot report its LE bearer.
         self._legacy_connected = False
         self._legacy_retry_delay = SUBSCRIBE_RETRY_SECONDS
@@ -437,6 +438,7 @@ class AncsClient:
             return
         self._bluez_owner_generation += 1
         self._bluez_owner_available = bool(new_owner)
+        self._notify_refreshes = 0
         # The old bluetoothd took its pending write_op with it; its late
         # callback (if any) no longer gates the new owner's Control Point.
         self._cp_write_token = None
@@ -584,10 +586,13 @@ class AncsClient:
             return
         previous = self._bearer_connected
         self._bearer_connected = connected
-        if connected and previous is not True:
-            # A new LE link gets its own CCC re-enable budget.
-            self._notify_refreshes = 0
         if not connected:
+            # Only a confirmed link boundary renews the CCC refresh budget.
+            self._notify_refreshes = 0
+            # A confirmed disconnect retires the failed transport. An
+            # intervening unknown cache read must not erase that boundary;
+            # unknown alone must never unblock a failed live transport.
+            self._transport_blocked = False
             self._bearer_ready = False
             self._cancel_bearer_settle()
             self._cancel_transport_reset()
@@ -600,6 +605,9 @@ class AncsClient:
                 or self._request_queue
             )
             if not had_state:
+                # A StartNotify call may still be awaiting its reply before
+                # any ownership or signal matches have been committed.
+                self._subscription_generation += 1
                 return
             self._log_bearer_cycle(
                 "disconnected",
@@ -617,19 +625,16 @@ class AncsClient:
 
         if previous is True:
             return
+        if self._transport_blocked:
+            # The reset timer may have elapsed while the bearer was unknown.
+            # Wait for a real reset, but do not lose the recovery request.
+            self._schedule_transport_reset()
+            return
         if previous is False:
             self._log_bearer_cycle(
                 "reconnected",
                 "iPhone LE bearer reconnected; rebuilding ANCS subscription",
             )
-        # Also after an unknown state: a reset can reach this client as
-        # False, unknown, True, and once the reset timer has expired nothing
-        # else clears the latch. On hardware (2026-10-15) ANCS then stayed
-        # unsubscribed on a working link until the next LE reset, minutes
-        # later; the debug-level bearer states were not logged, so the
-        # unknown step is inferred.
-        self._transport_blocked = False
-        self._cancel_transport_reset()
         if self._started:
             self._schedule_bearer_settle()
 
@@ -686,7 +691,13 @@ class AncsClient:
             # Keep the notify registrations, which bluetoothd completes when
             # the phone's LE link arrives, and probe again with backoff.
             self._schedule_subscribe_retry()
-        elif (
+        else:
+            self._schedule_transport_reset()
+        if was_connected and self.on_status is not None:
+            self.on_status()
+
+    def _schedule_transport_reset(self) -> None:
+        if (
             self._started
             and self._bearer_connected is True
             and self._on_transport_failure is not None
@@ -696,8 +707,6 @@ class AncsClient:
                 TRANSPORT_RESET_SECONDS,
                 self._request_transport_reset,
             )
-        if was_connected and self.on_status is not None:
-            self.on_status()
 
     def _request_transport_reset(self) -> bool:
         self._transport_reset_id = None
@@ -786,6 +795,7 @@ class AncsClient:
 
     def _clear_characteristic_subscription(self, *, stop_notify: bool = True) -> None:
         """Remove receivers and notification ownership before rediscovery."""
+        self._subscription_generation += 1
         self._cancel_authorization_retry()
         self._cancel_legacy_health()
         for match in self._characteristic_signal_matches:
@@ -844,11 +854,24 @@ class AncsClient:
         if not (self._ns_path and self._ds_path and self._cp_path):
             return
         generation = self._bluez_owner_generation
+        subscription_generation = self._subscription_generation
         ns_path = self._ns_path
         ds_path = self._ds_path
 
         def current_attempt() -> bool:
-            return self._started and generation == self._bluez_owner_generation
+            return (
+                self._started
+                and generation == self._bluez_owner_generation
+                and subscription_generation == self._subscription_generation
+            )
+
+        def on_ns_changed(*args) -> None:
+            if current_attempt():
+                self._on_ns_changed(*args)
+
+        def on_ds_changed(*args) -> None:
+            if current_attempt():
+                self._on_ds_changed(*args)
 
         def remove_attempt_matches(matches) -> None:
             for match in matches:
@@ -863,14 +886,14 @@ class AncsClient:
         try:
             bus = get_system_bus()
             matches.append(bus.add_signal_receiver(
-                self._on_ns_changed,
+                on_ns_changed,
                 dbus_interface="org.freedesktop.DBus.Properties",
                 signal_name="PropertiesChanged",
                 bus_name="org.bluez",
                 path=ns_path,
             ))
             matches.append(bus.add_signal_receiver(
-                self._on_ds_changed,
+                on_ds_changed,
                 dbus_interface="org.freedesktop.DBus.Properties",
                 signal_name="PropertiesChanged",
                 bus_name="org.bluez",
@@ -887,21 +910,29 @@ class AncsClient:
                 bus.get_object("org.bluez", ds_path),
                 "org.bluez.GattCharacteristic1",
             )
-            if self._should_start_notify(ns_path):
+            start_ns = self._should_start_notify(ns_path)
+            if not current_attempt():
+                remove_attempt_matches(matches)
+                return
+            if start_ns:
                 self._start_notify(ns)
                 if current_attempt():
                     self._owned_notify_paths.add(ns_path)
             if not current_attempt():
                 remove_attempt_matches(matches)
                 return
-            if self._should_start_notify(ds_path):
+            start_ds = self._should_start_notify(ds_path)
+            if not current_attempt():
+                remove_attempt_matches(matches)
+                return
+            if start_ds:
                 self._start_notify(ds)
                 if current_attempt():
                     self._owned_notify_paths.add(ds_path)
         except dbus.exceptions.DBusException as e:
             if not current_attempt():
                 remove_attempt_matches(matches)
-                log.debug("discarded stale ANCS subscribe attempt after BlueZ changed owner")
+                log.debug("discarded stale ANCS subscribe attempt after the session changed")
                 return
             log.warning("ANCS StartNotify failed: %s", e.get_dbus_name())
             self._observe_permission_error(e)
@@ -1528,11 +1559,13 @@ class AncsClient:
     ) -> None:
         """StopNotify, then StartNotify, asynchronously: BlueZ rewrites the CCC.
 
-        Notify ownership follows every reply, also a late one. StartNotify is
+        Notify ownership follows every reply from the same bluetoothd, also
+        a late one. StartNotify is
         never sent once the attempt is no longer current, so a reset cannot
         be followed by a late CCC enable. A StopNotify refused because no
         session exists goes on to StartNotify.
         """
+        owner_generation = self._bluez_owner_generation
 
         def characteristic():
             return dbus.Interface(
@@ -1541,13 +1574,15 @@ class AncsClient:
             )
 
         def stopped(*_args) -> None:
-            self._owned_notify_paths.discard(path)
+            if owner_generation == self._bluez_owner_generation:
+                self._owned_notify_paths.discard(path)
             if not current():
                 return
 
             def started(*_args) -> None:
-                # BlueZ holds this session now, whatever happened meanwhile.
-                self._owned_notify_paths.add(path)
+                # A replaced bluetoothd cannot own the new owner's session.
+                if owner_generation == self._bluez_owner_generation:
+                    self._owned_notify_paths.add(path)
                 if current():
                     done()
 

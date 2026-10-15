@@ -445,16 +445,18 @@ def test_a_stale_bond_report_flip_only_publishes_status(make_daemon) -> None:
     statuses.clear()
     transitions.clear()
 
-    # Short drops raise the report. BlueZ signals each link up and down,
-    # and those are bearer transitions of their own; the report on top of
-    # them only publishes status.
+    # Short drops raise the report, but presence consumers wait for a complete
+    # poll. The report itself must not trigger proximity or calls work.
     h.flap(reason=TIMEOUT)
     h.flap(reason=TIMEOUT)
 
     assert h.supervisor.le_bond_suspect
-    assert len(transitions) == 4
-    assert len(statuses) == len(transitions) + 1
-    assert acted == ["proximity", "calls"] * len(transitions)
+    assert transitions == []
+    assert statuses == [True]
+    assert acted == []
+    h.poll()
+    assert len(transitions) == 1
+    assert acted == ["proximity", "calls"]
 
     # The user disconnects the phone from the desktop; the supervisor's
     # cache still says connected until its next poll.

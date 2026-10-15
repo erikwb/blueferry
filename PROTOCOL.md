@@ -561,6 +561,16 @@ silent too, or the re-enable fails, does the LE reset above follow. The toggle
 runs only after a completed Control Point write on a settled link, never on a
 dropped or flapping one, and never sends `StartNotify` once the link was
 reset meanwhile.
+Bearer signals are session boundaries, even when an LE disconnect and return
+both occur between the five-second health polls. They are delivered immediately
+to the notification clients; polling remains a fallback. An unavailable cached
+read is not proof of a disconnect, and cannot by itself unblock a failed ANCS
+transport. A confirmed disconnect does unblock it, even if an unavailable read
+intervenes before reconnection. Successful cached reads are refreshed ahead of
+the poll interval so ordinary reply latency and timer jitter do not produce
+false unknown states. Expired or failed reads still provide no health evidence.
+Subscription replies and notification receivers are tied to their ANCS session;
+callbacks from a retired session cannot authorize or enqueue work in its successor.
 
 A stale LE bond looks different from an absent phone. Observed with
 btmon on an Intel AX200, BlueZ 5.87, Linux 7.2.8 and iOS 27: after the bond

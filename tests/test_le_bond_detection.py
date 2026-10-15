@@ -142,15 +142,16 @@ def test_persistent_burst_of_short_le_links_marks_the_bond_suspect_once(caplog) 
     _burst(h, LE_FLAP_PERSIST_SECONDS - 20)
     assert not h.supervisor.le_bond_suspect
     statuses = h.statuses
-    flaps = h.flaps
 
     _burst(h, 30)
 
     assert h.supervisor.le_bond_suspect
     assert h.reports == 1
-    # The report is not a bearer transition: on_status hears only the two
-    # signalled transitions of each flap.
-    assert h.statuses == statuses + 2 * (h.flaps - flaps)
+    # LE clients see the edges immediately, but presence waits for a complete
+    # poll so it cannot combine them with stale Classic state.
+    assert h.statuses == statuses
+    h.poll()
+    assert h.statuses == statuses + 1
     statuses = h.statuses
     snapshot = h.supervisor.snapshot()
     assert snapshot["le_bond_suspect"] is True
@@ -171,7 +172,7 @@ def test_persistent_burst_of_short_le_links_marks_the_bond_suspect_once(caplog) 
     assert h.supervisor.snapshot()["le_flap_count"] == count + 20
     assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 1
     assert h.reports == 1
-    assert h.statuses == statuses + 2 * 20
+    assert h.statuses == statuses
 
 
 @pytest.mark.parametrize("reason", [TIMEOUT, "org.bluez.Reason.Remote",
