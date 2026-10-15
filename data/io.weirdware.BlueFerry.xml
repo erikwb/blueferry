@@ -189,7 +189,7 @@
     </method>
     <method name="ReconnectPhone">
       <annotation name="org.freedesktop.DBus.Description"
-                  value="Clear the BR/EDR reconnect backoff and page the iPhone once now. Returns started, in-progress (no second attempt is started) or connected; GetStatus phone_reconnect_state/phone_reconnect_paused/phone_reconnect_next_in_sec report the outcome"/>
+                  value="Clear the BR/EDR reconnect backoff and page the iPhone once now. Returns started, in-progress (no second attempt is started), connected, or bluez-unresponsive/bluez-kernel while bluetoothd does not answer D-Bus; GetStatus phone_reconnect_state/phone_reconnect_paused/phone_reconnect_next_in_sec report the outcome"/>
       <arg name="result" type="s" direction="out"/>
       <annotation name="io.weirdware.BlueFerry.Errors"
                   value="NotReady"/>

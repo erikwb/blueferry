@@ -234,6 +234,15 @@ def test_manual_reconnect_is_forwarded_to_the_bearer_supervisor(make_daemon):
         instance._reconnect_phone()
 
 
+def test_manual_reconnect_names_a_stuck_kernel(make_daemon):
+    instance = make_daemon()
+    instance.bearers = SimpleNamespace(reconnect_now=lambda: "bluez-unresponsive")
+    instance.bluez_health = SimpleNamespace(
+        snapshot=lambda: {"bluez_unresponsive": True, "bluez_unresponsive_reason": "kernel"},
+    )
+    assert instance._reconnect_phone() == "bluez-kernel"
+
+
 @pytest.mark.parametrize("ancs_connected", [False, True])
 def test_status_takes_le_from_ancs_when_bluez_cannot_report_it(
     make_daemon, monkeypatch, ancs_connected,

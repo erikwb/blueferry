@@ -51,6 +51,9 @@ def test_reconnect_explains_an_unreachable_phone(monkeypatch) -> None:
     result = _run(monkeypatch, _Backend("unreachable", ["unreachable"]))
     assert result.exit_code == 1
     assert "Bluetooth switched on on the iPhone" in result.output
+    result = _run(monkeypatch, _Backend("bluez-kernel", ["waiting"]))
+    assert result.exit_code == 1
+    assert "Restart the computer" in result.output
 
 
 def test_reconnect_in_progress_and_no_wait(monkeypatch) -> None:

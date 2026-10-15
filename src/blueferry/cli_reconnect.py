@@ -18,7 +18,7 @@ from blueferry.text_safety import terminal_text
 # A BlueZ Connect may take its full 45 s method timeout before it fails.
 WAIT_SECONDS = 60
 # Replies that end the command at once with an error.
-_FAILED = frozenset({"unreachable"})
+_FAILED = frozenset({"unreachable", "bluez-kernel", "bluez-unresponsive"})
 
 
 def _client() -> BackendClient:

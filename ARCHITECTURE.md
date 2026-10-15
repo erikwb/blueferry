@@ -97,6 +97,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `solicitation_supervisor.py` | Keeps the ANCS solicitation advertisement on air until ANCS is proven healthy. |
 | `adapter_class_supervisor.py` | Detects Class-of-Device drift and repairs it through the constrained system helper. |
 | `bluetooth_recovery.py` | Last-resort, rate-limited adapter power cycle for persistent ANCS outages. |
+| `bluez_health.py` | Detects a bluetoothd that no longer answers D-Bus (unanswered `Peer.Ping`s, `/proc` state) and pauses BlueFerry's own Bluetooth work. |
 | `bluez_setup.py` | Adapter preparation: Class-of-Device and the ANCS solicitation advertisement. |
 | `bluetooth_capabilities.py` | Controller capability probing and packaged BlueZ activation. |
 | `bluetooth_devices.py` | Typed BlueZ device projection for setup and clients. |
@@ -458,6 +459,16 @@ A change to these rules has to be made in both places.
   `phone_reconnect_state` (`connected`/`connecting`/`waiting`/`unreachable`),
   `phone_reconnect_paused` and `phone_reconnect_next_in_sec`;
   `reconnect_view.py` turns them into the same texts for every client.
+- **BlueZ health:** `bluez_health` marks bluetoothd unresponsive after two
+  unanswered asynchronous `Peer.Ping`s 15 s apart (pinged every 30 s; a
+  NoReply from a bearer read only triggers an early ping). While
+  unresponsive the bearer supervisor and the power-cycle recovery stay idle,
+  `ReconnectPhone` answers `bluez-unresponsive`/`bluez-kernel`, GetStatus
+  carries `bluez_unresponsive` and `bluez_unresponsive_reason` (`kernel` when
+  `/proc/<pid>/status` of the `org.bluez` owner shows state D), one WARNING is
+  logged and dbus-python's "Introspect error … NoReply" lines are throttled
+  to one per 10 min. A successful ping or a new `org.bluez` owner resumes
+  normal operation.
 - **Media (opt-in):** `ams/client` never dials. It follows the bearer
   supervisor's LE observations and BlueZ owner changes, subscribes after the
   link settles, and resets without `StopNotify` on loss. `media` owns the

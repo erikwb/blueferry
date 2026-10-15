@@ -275,6 +275,9 @@ class BearerSupervisor:
         on_le_state: ObserveLeState | None = None,
         on_le_dial: ObserveLeDial | None = None,
         on_reconnect_state: Callable[[], None] | None = None,
+        bluez_blocked: Callable[[], bool] | None = None,
+        on_bluez_error: Callable[[Exception], None] | None = None,
+        on_bluez_ok: Callable[[], None] | None = None,
         read_connected: ReadConnected | None = None,
         connect: Connect | None = None,
         disconnect: Disconnect | None = None,
@@ -295,6 +298,12 @@ class BearerSupervisor:
         # Content-free Classic reconnect state for GetStatus changed.
         self._on_reconnect_state = on_reconnect_state
         self._published_reconnect: tuple[object, object] | None = None
+        # BlueZ health (bluez_health.BluezHealth): while bluetoothd does not
+        # answer, every read waits for its timeout and every dial queues more
+        # kernel work, so the supervisor stays idle.
+        self._bluez_blocked = bluez_blocked or (lambda: False)
+        self._on_bluez_error = on_bluez_error
+        self._on_bluez_ok = on_bluez_ok
         self._read_connected = read_connected or self._read_cached_connected
         self._connect = connect or self._connect_bluez
         self._disconnect = disconnect or self._disconnect_bluez
@@ -614,12 +623,14 @@ class BearerSupervisor:
         """Forget the Classic backoff and page the phone once, right now.
 
         Returns ``connected``, ``in-progress`` (an attempt is already
-        running; no second one is started), ``started`` or ``unavailable``
-        (nothing is supervised). A started attempt can still end unreachable;
-        GetStatus reports that afterwards.
+        running; no second one is started), ``started``, ``unavailable``
+        (nothing is supervised) or ``bluez-unresponsive``. A started attempt
+        can still end unreachable; GetStatus reports that afterwards.
         """
         if not self._running:
             return "unavailable"
+        if self._bluez_blocked():
+            return "bluez-unresponsive"
         if self._states["bredr"] is True:
             return "connected"
         if self._connecting & {"bredr", "le"} or self._manual_dial_id is not None:
@@ -639,7 +650,7 @@ class BearerSupervisor:
 
     def _manual_dial(self) -> bool:
         self._manual_dial_id = None
-        if not self._running or self._states["bredr"] is True:
+        if not self._running or self._bluez_blocked() or self._states["bredr"] is True:
             return False
         self._request_connect("bredr", manual=True)
         self._publish_reconnect()
@@ -918,6 +929,8 @@ class BearerSupervisor:
     def _tick(self) -> bool:
         if not self._running:
             return False
+        if self._bluez_blocked():
+            return True
 
         log.debug("probing iPhone BR/EDR and LE bearer state")
         # The profile gate controls BlueFerry's outbound LE requests, not links
@@ -1027,14 +1040,19 @@ class BearerSupervisor:
 
     def _read(self, kind: str) -> bool | None:
         try:
-            return self._read_connected(kind)
+            value = self._read_connected(kind)
         except dbus.exceptions.DBusException as error:
+            if self._on_bluez_error is not None:
+                self._on_bluez_error(error)
             log.debug(
                 "%s bearer state unavailable: %s",
                 kind.upper(),
                 error.get_dbus_name() or str(error),
             )
             return None
+        if self._on_bluez_ok is not None:
+            self._on_bluez_ok()
+        return value
 
     def _update_state(
         self,
