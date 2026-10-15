@@ -37,11 +37,29 @@ veröffentlichten Plugins nutzen den Schlüsselbund des Desktops).
 blueferry plugins config immich --set url=https://photos.example.org --secret api_key --test
 ```
 
+## Was Plugins hinzufügen
+
+- **Karteneinträge und Send to** auf der Kommandozeile: `blueferry cards`
+  und `blueferry send`.
+- **Popups**, die deinen Mitteilungseinstellungen folgen.
+- **Photos**: ein Plugin mit Fotos, etwa das Immich-Plugin, listet die
+  neuesten.
+
+```bash
+blueferry cards
+blueferry send photo.jpg --to localsend
+blueferry photos recent
+```
+
 ## Protokolle und Datenschutz
 
 Plugins schreiben `~/.local/state/blueferry/plugins/<id>.log` (nur für dich
 lesbar, Geheimnisse maskiert); `blueferry plugins log ID` öffnet es.
 BlueFerry zeigt Plugin-Text als reinen Text und lässt ein Plugin nur
-Weblinks oder Dateien aus seinem eigenen Cache öffnen.
+Weblinks oder Dateien aus seinem eigenen Cache öffnen. Popups eines Plugins
+folgen deinen Mitteilungseinstellungen: keine bei **None**, nur der Name
+des Plugins, solange Mitteilungsinhalte verborgen sind. Ihr Text läuft nie
+über ein D-Bus-Signal, das andere Programme lesen könnten: BlueFerry holt
+ihn beim geprüften Plugin ab.
 
 Ein Plugin schreiben: siehe [PLUGINS.md](https://github.com/erikwb/blueferry/blob/main/PLUGINS.md).
