@@ -213,3 +213,34 @@ def test_stop_cancels_a_registration_that_has_not_finished():
     )
     supervisor.stop()
     assert removed == ['hci7']
+
+
+def test_startup_advert_survives_outbound_connect_and_failure():
+    from blueferry.bearer_supervisor import BearerSupervisor
+
+    calls, scheduled = [], []
+    state = {"registered": False}
+    advert = _supervisor(calls, state, scheduled, minimum_on_seconds=180)
+    advert.start()
+    failures = []
+
+    def connect(kind, _success, failure):
+        assert kind == "le"
+        assert state["registered"]
+        calls.append(("connect", kind))
+        failures.append(failure)
+
+    bearers = BearerSupervisor(
+        "/device", read_connected=lambda kind: kind == "bredr",
+        connect=connect, on_le_dial=advert.set_dialing,
+        inbound_le_primed=advert.active,
+        schedule=lambda _delay, _callback: 7, cancel=lambda _timer: None,
+    )
+    bearers.start()
+    bearers._connect_le_after_settle()
+    assert calls == [("register", "hci7"), ("connect", "le")]
+    failures[0](RuntimeError("connection failed"))
+    assert calls == [("register", "hci7"), ("connect", "le")]
+    assert advert.active()
+    bearers.stop()
+    advert.stop()

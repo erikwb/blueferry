@@ -412,3 +412,51 @@ def test_failure_bookkeeping_is_bounded(application, monkeypatch) -> None:
         controller.avatarSource(f"+{index}")
     assert list(controller._avatar_backoff) == ["+7", "+8", "+9"]
     assert list(controller._avatar_failures) == ["+7", "+8", "+9"]
+
+
+@pytest.mark.parametrize('first_result', [b'', BackendError('busy')])
+def test_empty_or_failed_fetches_release_slots_for_visible_avatars(
+    application, monkeypatch, first_result,
+) -> None:
+    from blueferry.qt import controller as controller_module
+
+    monkeypatch.setattr(controller_module, 'MAX_PENDING_AVATARS', 2)
+    png = _encoded(8, 8, 'PNG')
+    controller, backend, worker = _queued_controller({
+        '+1': first_result, '+2': first_result, '+3': png,
+    })
+    controller._schedule_avatar_retry = lambda *_args: None
+
+    def binding_pass():
+        return [controller.avatarSource(address) for address in ('+1', '+2', '+3')]
+
+    controller.avatarsChanged.connect(binding_pass)
+    binding_pass()
+    assert len(worker.jobs) == 2
+    worker.drain()
+
+    assert backend.requests == ['+1', '+2', '+3']
+    assert controller.avatar_bytes('+3') == png
+    assert binding_pass()[2]
+
+
+@pytest.mark.parametrize('failed', [False, True])
+def test_contact_refresh_retries_visible_avatar_after_stale_completion(application, failed):
+    png = _encoded(8, 8, 'PNG')
+    controller, backend, worker = _queued_controller({'+1': png})
+    controller.avatarsChanged.connect(lambda: controller.avatarSource('+1'))
+    controller.avatarSource('+1')
+    operation, done, on_failed = worker.jobs.pop(0)
+    controller._status['contact_photo_revision'] = 2
+    controller._sync_avatars()
+    assert worker.jobs == []
+
+    if failed:
+        on_failed('old failure')
+    else:
+        done(operation())
+    worker.drain()
+
+    assert controller.avatar_bytes('+1') == png
+    assert controller.avatarSource('+1')
+    assert len(backend.requests) == (1 if failed else 2)

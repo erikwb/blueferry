@@ -228,3 +228,43 @@ def test_supervisor_restart_does_not_reuse_an_old_authorization_backoff() -> Non
     supervisor.stop()
     supervisor.start()
     assert attempts == ["hci7", "hci7"]
+
+
+def test_async_class_reply_is_consumed_without_refunding_repair_backoff():
+    from types import SimpleNamespace
+
+    from blueferry.bluez_reads import BluezReadCache
+
+    now = 0.0
+    replies, repairs = [], []
+    cache = BluezReadCache(lambda: SimpleNamespace(
+        call_async=lambda *args, **_kwargs: replies.append(args[-2]),
+    ), lambda: now)
+    supervisor = AdapterClassSupervisor(
+        "hci7",
+        read_class=lambda adapter: cache.property(
+            f"/org/bluez/{adapter}", "org.bluez.Adapter1", "Class",
+            on_ready=supervisor.recheck,
+        ),
+        matches=lambda value: value == 0x408,
+        repair=lambda adapter: repairs.append(adapter) or False,
+        schedule=lambda _delay, _callback: 7, cancel=lambda _source: None,
+        clock=lambda: now,
+    )
+    supervisor.start()
+    assert not repairs
+    replies[-1](0x104)
+    assert repairs == ["hci7"]
+    now = 20
+    supervisor.recheck()
+    replies[-1](0x104)
+    assert repairs == ["hci7"]  # Async completion did not clear the 60s backoff.
+    now = 60
+    supervisor.recheck()
+    replies[-1](0x104)
+    assert repairs == ["hci7", "hci7"]
+    now = 200
+    supervisor.recheck()
+    supervisor.stop()
+    replies[-1](0x104)
+    assert len(repairs) == 2  # A reply after shutdown cannot run the helper.

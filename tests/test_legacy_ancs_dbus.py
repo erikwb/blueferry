@@ -14,6 +14,7 @@ from blueferry import bearer_supervisor
 from blueferry.ancs import client as client_module
 from blueferry.ancs.client import AncsClient
 from blueferry.bearer_supervisor import BearerSupervisor
+from blueferry.bluez_reads import BluezReadCache
 
 pytestmark = pytest.mark.private_dbus
 
@@ -30,10 +31,18 @@ def _dispatch_until(done, seconds: float = 5) -> None:
     assert done(), "the legacy BlueZ peer did not respond"
 
 
+def _poll_until(supervisor, done):
+    def ready():
+        supervisor.poke()
+        return done()
+    _dispatch_until(ready)
+
+
 class _Timers:
     def __init__(self) -> None:
         self.pending: dict[int, tuple[int, object]] = {}
         self.serial = 0
+        self.now = 0.0
 
     def schedule(self, delay, callback) -> int:
         self.serial += 1
@@ -55,6 +64,7 @@ class _Timers:
             if callback.__name__ == name
         ]
         delay, callback = self.pending.pop(source)
+        self.now += delay
         if callback():  # A GLib source repeats while its callback is true.
             self.pending[source] = (delay, callback)
 
@@ -76,6 +86,8 @@ def legacy(monkeypatch):
             "io.weirdware.BlueFerry.TestPeer",
         )
         monkeypatch.setattr(bearer_supervisor, "get_system_bus", lambda: bus)
+        monkeypatch.setattr(bearer_supervisor, "observations",
+                            BluezReadCache(lambda: bus, lambda: timers.now))
         monkeypatch.setattr(client_module, "get_system_bus", lambda: bus)
         monkeypatch.setattr(client_module.GLib, "timeout_add_seconds", timers.schedule)
         monkeypatch.setattr(client_module.GLib, "source_remove", timers.cancel)
@@ -113,6 +125,7 @@ def test_ancs_follows_an_le_link_that_bluez_cannot_report(legacy):
 
     supervisor.start()
     client.start()
+    _poll_until(supervisor, lambda: supervisor._legacy_observation == (True, False))
     assert supervisor.le_state is None and supervisor.legacy_connected
     timers.fire("_finish_bearer_settle")
 
@@ -130,6 +143,7 @@ def test_ancs_follows_an_le_link_that_bluez_cannot_report(legacy):
     # ServicesResolved change and probes without waiting out the backoff.
     peer.SetLe(True)
     timers.fire("_tick")
+    _poll_until(supervisor, lambda: supervisor._legacy_observation == (True, True))
     assert timers.delays("_retry_subscribe") == [client_module.SUBSCRIBE_RETRY_SECONDS]
     timers.fire("_retry_subscribe")
     _dispatch_until(lambda: client.connected)
@@ -138,12 +152,14 @@ def test_ancs_follows_an_le_link_that_bluez_cannot_report(legacy):
     # LE drops while Classic keeps Device1.Connected true.
     peer.SetLe(False)
     timers.fire("_tick")
+    _poll_until(supervisor, lambda: supervisor._legacy_observation == (True, False))
     _dispatch_until(lambda: not client.connected)
     assert statuses == [True, False]
     assert supervisor.le_state is None and supervisor.legacy_connected
 
     peer.SetLe(True)
     timers.fire("_tick")
+    _poll_until(supervisor, lambda: supervisor._legacy_observation == (True, True))
     _dispatch_until(lambda: timers.delays("_retry_subscribe"))
     timers.fire("_retry_subscribe")
     _dispatch_until(lambda: client.connected)
@@ -160,6 +176,7 @@ def test_unanswered_ancs_keeps_asking_for_permission(legacy):
 
     supervisor.start()
     client.start()
+    _poll_until(supervisor, lambda: supervisor._legacy_observation == (True, True))
     timers.fire("_finish_bearer_settle")
 
     assert client.subscribed and not client.connected

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 
+import pytest
+
 from blueferry import bearer_supervisor
 from blueferry.bearer_supervisor import BearerSupervisor
 
@@ -564,17 +566,18 @@ def test_bluez_preference_selects_requested_bearer(monkeypatch) -> None:
 
     class Properties:
         @staticmethod
-        def Get(interface, name, *, timeout):
+        def Get(interface, name, *, signature, timeout):
             calls.append(("get", interface, name, timeout))
             return "bredr"
 
         @staticmethod
-        def Set(interface, name, value, *, timeout):
+        def Set(interface, name, value, *, signature, timeout):
             calls.append((interface, name, str(value), timeout))
 
     class Bus:
         @staticmethod
-        def get_object(service, path):
+        def get_object(service, path, *, introspect):
+            assert introspect is False
             calls.append((service, path))
             return object()
 
@@ -606,7 +609,8 @@ def test_bluez_targets_classic_bearer_when_le_is_live(monkeypatch) -> None:
 
     class Bus:
         @staticmethod
-        def get_object(service, path):
+        def get_object(service, path, *, introspect):
+            assert introspect is False
             calls.append((service, path))
             return object()
 
@@ -645,7 +649,8 @@ def test_bluez_reads_classic_bearer_instead_of_aggregate_device_state(
 
     class Bus:
         @staticmethod
-        def get_object(service, path):
+        def get_object(service, path, *, introspect):
+            assert introspect is False
             calls.append((service, path))
             return object()
 
@@ -679,7 +684,8 @@ def test_bluez_falls_back_when_classic_bearer_is_marker_only(monkeypatch) -> Non
 
     class Bus:
         @staticmethod
-        def get_object(_service, _path):
+        def get_object(_service, _path, *, introspect):
+            assert introspect is False
             return object()
 
     monkeypatch.setattr(bearer_supervisor, "get_system_bus", Bus)
@@ -701,14 +707,14 @@ def test_bluez_falls_back_when_classic_bearer_is_marker_only(monkeypatch) -> Non
 def test_bluez_preference_ignores_a_missing_preferred_bearer_property(monkeypatch) -> None:
     class Properties:
         @staticmethod
-        def Get(_interface, _name, *, timeout):
+        def Get(_interface, _name, *, signature, timeout):
             raise bearer_supervisor.dbus.exceptions.DBusException(
                 "No such property 'PreferredBearer'",
                 name="org.bluez.Error.InvalidArguments",
             )
 
         @staticmethod
-        def Set(_interface, _name, _value, *, timeout):
+        def Set(_interface, _name, _value, *, signature, timeout):
             raise bearer_supervisor.dbus.exceptions.DBusException(
                 "No such property 'PreferredBearer'",
                 name="org.bluez.Error.InvalidArguments",
@@ -716,7 +722,8 @@ def test_bluez_preference_ignores_a_missing_preferred_bearer_property(monkeypatc
 
     class Bus:
         @staticmethod
-        def get_object(_service, _path):
+        def get_object(_service, _path, *, introspect):
+            assert introspect is False
             return object()
 
     monkeypatch.setattr(bearer_supervisor, "get_system_bus", Bus)
@@ -734,17 +741,18 @@ def test_bluez_preference_skips_set_when_already_selected(monkeypatch) -> None:
 
     class Properties:
         @staticmethod
-        def Get(_interface, _name, *, timeout):
+        def Get(_interface, _name, *, signature, timeout):
             calls.append("get")
             return "le"
 
         @staticmethod
-        def Set(_interface, _name, _value, *, timeout):
+        def Set(_interface, _name, _value, *, signature, timeout):
             calls.append("set")
 
     class Bus:
         @staticmethod
-        def get_object(_service, _path):
+        def get_object(_service, _path, *, introspect):
+            assert introspect is False
             return object()
 
     monkeypatch.setattr(bearer_supervisor, "get_system_bus", Bus)
@@ -980,7 +988,8 @@ def test_le_dial_restores_solicitation_after_failure() -> None:
     assert dial_states == [True, False]
 
 
-def test_le_in_progress_keeps_solicitation_paused_until_connected() -> None:
+@pytest.mark.parametrize("error_name", ["org.bluez.Error.InProgress", "org.bluez.Error.Failed"])
+def test_le_in_progress_keeps_solicitation_paused_until_connected(error_name) -> None:
     import dbus
 
     state = {"bredr": True, "le": False}
@@ -1013,7 +1022,7 @@ def test_le_in_progress_keeps_solicitation_paused_until_connected() -> None:
     connect_callbacks[0][2](
         dbus.exceptions.DBusException(
             "Operation already in progress",
-            name="org.bluez.Error.InProgress",
+            name=error_name,
         )
     )
 
@@ -1034,7 +1043,8 @@ def test_le_in_progress_keeps_solicitation_paused_until_connected() -> None:
     assert "le" not in supervisor._connecting
 
 
-def test_le_in_progress_times_out_to_solicitation_without_another_dial() -> None:
+@pytest.mark.parametrize("error_name", ["org.bluez.Error.InProgress", "org.bluez.Error.Failed"])
+def test_le_in_progress_times_out_to_solicitation_without_another_dial(error_name) -> None:
     import dbus
 
     state = {"bredr": True, "le": False}
@@ -1069,7 +1079,7 @@ def test_le_in_progress_times_out_to_solicitation_without_another_dial() -> None
     connect_callbacks[0][2](
         dbus.exceptions.DBusException(
             "Operation already in progress",
-            name="org.bluez.Error.InProgress",
+            name=error_name,
         )
     )
     health_check()
@@ -1096,7 +1106,8 @@ def test_le_in_progress_times_out_to_solicitation_without_another_dial() -> None
     assert dial_states == [True, False]
 
 
-def test_classic_in_progress_times_out_with_exponential_backoff() -> None:
+@pytest.mark.parametrize("error_name", ["org.bluez.Error.InProgress", "org.bluez.Error.Failed"])
+def test_classic_in_progress_times_out_with_exponential_backoff(error_name) -> None:
     import dbus
 
     state = {"bredr": False, "le": False}
@@ -1123,7 +1134,7 @@ def test_classic_in_progress_times_out_with_exponential_backoff() -> None:
     connect_callbacks[0][2](
         dbus.exceptions.DBusException(
             "Operation already in progress",
-            name="org.bluez.Error.InProgress",
+            name=error_name,
         )
     )
 
@@ -1213,10 +1224,12 @@ def test_real_le_disconnect_refunds_one_outbound_dial() -> None:
     state = {"bredr": True, "le": False}
     connections = []
     scheduled = []
+    now = 0.0
 
     supervisor = BearerSupervisor(
         "/device",
         read_connected=state.get,
+        clock=lambda: now,
         connect=lambda kind, on_success, _on_error: (
             connections.append(kind),
             on_success(),
@@ -1241,6 +1254,10 @@ def test_real_le_disconnect_refunds_one_outbound_dial() -> None:
     )
     settle()
 
+    assert connections == ["le"]
+    now = 30.0
+    health_check()
+    scheduled[-1][1]()
     assert connections == ["le", "le"]
 
     # The lifecycle event grants exactly one attempt. A phone that remains
@@ -1253,6 +1270,7 @@ def test_classic_return_refunds_le_dial_spent_while_phone_was_absent() -> None:
     state = {"bredr": True, "le": True}
     le_connections = []
     scheduled = []
+    now = 0.0
 
     def connect(kind, on_success, _on_error):
         if kind == "le":
@@ -1262,6 +1280,7 @@ def test_classic_return_refunds_le_dial_spent_while_phone_was_absent() -> None:
     supervisor = BearerSupervisor(
         "/device",
         read_connected=state.get,
+        clock=lambda: now,
         connect=connect,
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
         cancel=lambda _timer: None,
@@ -1290,6 +1309,10 @@ def test_classic_return_refunds_le_dial_spent_while_phone_was_absent() -> None:
     )
     return_settle()
 
+    assert le_connections == ["le"]
+    now = 30.0
+    health_check()
+    scheduled[-1][1]()
     assert le_connections == ["le", "le"]
 
 
@@ -1320,7 +1343,7 @@ def test_le_outbound_dial_retries_when_solicitation_is_unavailable() -> None:
 
     # If BlueZ cannot keep the solicitation advertisement registered, retain
     # the ordinary bounded outbound fallback instead of stranding ANCS.
-    now = 11.0
+    now = 30.0
     health_check()
     scheduled[-1][1]()
     assert connections == ["le", "le"]
@@ -1331,10 +1354,12 @@ def test_ancs_transport_reset_refunds_one_le_dial() -> None:
     connections = []
     disconnects = []
     scheduled = []
+    now = 0.0
 
     supervisor = BearerSupervisor(
         "/device",
         read_connected=state.get,
+        clock=lambda: now,
         connect=lambda kind, on_success, _on_error: (
             connections.append(kind),
             on_success(),
@@ -1353,6 +1378,9 @@ def test_ancs_transport_reset_refunds_one_le_dial() -> None:
     state["le"] = True
     scheduled[1][1]()
     supervisor.recover_le_transport()
+    assert disconnects == []  # The preceding dial still owns the cooldown.
+    now = 30.0
+    supervisor.recover_le_transport()
     assert disconnects == ["le"]
 
     state["le"] = False
@@ -1364,6 +1392,10 @@ def test_ancs_transport_reset_refunds_one_le_dial() -> None:
     )
     next_settle()
 
+    assert connections == ["le"]
+    now = 90.0
+    scheduled[1][1]()
+    scheduled[-1][1]()
     assert connections == ["le", "le"]
 
 
@@ -1432,6 +1464,10 @@ def test_gatt_transport_failure_cycles_le_once_before_reconnecting() -> None:
     assert observed == [True, False]
     assert scheduled[-1][0] == bearer_supervisor.CLASSIC_SETTLE_SECONDS
 
+    scheduled[-1][1]()
+    assert connections == []
+    now = 30.0
+    scheduled[0][1]()
     scheduled[-1][1]()
     assert connections == ["le"]
 
@@ -1889,7 +1925,8 @@ def _legacy_bluez(monkeypatch, device: dict) -> list:
 
     class Bus:
         @staticmethod
-        def get_object(_service, _path):
+        def get_object(_service, _path, *, introspect):
+            assert introspect is False
             return object()
 
     monkeypatch.setattr(bearer_supervisor, "get_system_bus", Bus)
@@ -1911,6 +1948,8 @@ def _legacy_supervisor(**overrides):
         schedule=lambda delay, callback: scheduled.append((delay, callback)) or 7,
         **overrides,
     )
+    # Exercise legacy decoding directly; asynchronous transport has its own tests.
+    supervisor._read_connected = supervisor._read_bluez_connected
     return supervisor, scheduled, connections, disconnections, observed
 
 
@@ -2039,7 +2078,8 @@ def test_bearer_interface_without_properties_is_not_treated_as_legacy(
 
     class Bus:
         @staticmethod
-        def get_object(_service, _path):
+        def get_object(_service, _path, *, introspect):
+            assert introspect is False
             return object()
 
     monkeypatch.setattr(bearer_supervisor, "get_system_bus", Bus)
@@ -2052,3 +2092,95 @@ def test_bearer_interface_without_properties_is_not_treated_as_legacy(
 
     assert supervisor.le_state is None and not supervisor.legacy_connected
     assert observed == []
+
+
+def test_flapping_cannot_refund_the_shared_dial_and_reset_budget():
+    state = {"bredr": True, "le": True}
+    now = 0.0
+    calls = []
+    supervisor = BearerSupervisor(
+        "/device", read_connected=state.get, clock=lambda: now,
+        connect=lambda kind, success, _error: (calls.append(("connect", kind)), success()),
+        disconnect=lambda kind, success, _error: (calls.append(("disconnect", kind)), success()),
+        schedule=lambda _delay, _callback: 7, cancel=lambda _timer: None,
+    )
+    supervisor.start()
+    # Both callers (ANCS's short recovery and the longer recovery watchdog)
+    # converge here; neither can get a separate allowance.
+    for now in range(600):  # noqa: B007 - read through the injected clock
+        state["le"] = True
+        supervisor.poke()
+        supervisor.recover_le_transport()
+        supervisor.recover_le_transport(allow_disconnected=True)
+        state["le"] = False
+        supervisor.poke()
+        supervisor._request_connect("le")
+    assert len(calls) == 4
+    now = 600
+    supervisor._request_connect("le")
+    assert len(calls) == 5
+
+
+def test_transport_reset_waits_for_pending_connect_to_finish():
+    state = {"bredr": True, "le": False}
+    now = 0.0
+    connects, disconnects = [], []
+    supervisor = BearerSupervisor(
+        "/device", read_connected=state.get, clock=lambda: now,
+        connect=lambda _kind, success, _error: connects.append(success),
+        disconnect=lambda _kind, success, _error: disconnects.append(success),
+        schedule=lambda _delay, _callback: 7, cancel=lambda _timer: None,
+    )
+    supervisor.start()
+    supervisor._request_connect("le")
+    now = 30
+    state["le"] = True
+    supervisor.poke()
+    supervisor.recover_le_transport()
+    assert not disconnects
+    connects[0]()
+    supervisor.poke()
+    assert len(disconnects) == 1
+    supervisor.recover_le_transport()
+    assert len(disconnects) == 1
+
+
+@pytest.mark.parametrize("reject_valid_set", [False, True])
+def test_preference_write_uses_variant_on_the_wire_and_surfaces_method_errors(monkeypatch, reject_valid_set):
+    import dbus
+    from dbus.lowlevel import MethodCallMessage
+    from dbus.proxies import ProxyObject
+
+    class Bus:
+        def __init__(self):
+            self.preference = "bredr"
+            self.signatures = []
+
+        def activate_name_owner(self, _name):
+            return ":1.42"
+
+        def get_object(self, name, path, **kwargs):
+            return ProxyObject(self, name, path, **kwargs)
+
+        def call_blocking(self, name, path, interface, method, signature, args, **kwargs):
+            message = MethodCallMessage(name, path, interface, method)
+            message.append(*args, **({"signature": signature} if signature else {}))
+            wire_signature = str(message.get_signature())
+            self.signatures.append((method, wire_signature))
+            if wire_signature != {"Get": "ss", "Set": "ssv"}[method] or (method == "Set" and reject_valid_set):
+                raise dbus.exceptions.DBusException("No matching method", name="org.freedesktop.DBus.Error.UnknownMethod")
+            if method == "Get":
+                return self.preference
+            self.preference = str(message.get_args_list()[2])
+
+    bus = Bus()
+    monkeypatch.setattr(bearer_supervisor, "get_system_bus", lambda: bus)
+    supervisor = BearerSupervisor("/device")
+    if reject_valid_set:
+        with pytest.raises(dbus.exceptions.DBusException):
+            supervisor._prefer_bluez("le")
+        assert bus.preference == "bredr"
+    else:
+        supervisor._prefer_bluez("le")
+        assert bus.preference == "le"
+    assert bus.signatures == [("Get", "ss"), ("Set", "ssv")]

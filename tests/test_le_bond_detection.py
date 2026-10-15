@@ -338,6 +338,7 @@ def test_suspect_bond_does_not_change_connection_behaviour() -> None:
 
     h.state["le"] = True
     h.poll()
+    h.clock.now += 30  # The shared cooldown applies even when the bond is suspect.
     h.supervisor.recover_le_transport(allow_disconnected=True)
     assert h.disconnections == ["le"]
 

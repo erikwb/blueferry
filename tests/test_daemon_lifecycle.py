@@ -381,7 +381,11 @@ def test_transient_bond_inspection_failure_keeps_daemon_running(make_daemon, mon
     )
     monkeypatch.setattr(daemon_mod.config, "IPHONE_MAC", "02:00:00:00:00:01")
     monkeypatch.setattr(daemon_mod.config, "ADAPTER", "hci0")
-    monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args, **_kwargs: None)
+    def unavailable(_mac, _adapter, *, cached):
+        assert cached is True
+        return None
+
+    monkeypatch.setattr(daemon_mod, "bond_status", unavailable)
     monkeypatch.setattr(daemon_mod.main_loop, "quit", lambda: stopped.append(True))
 
     assert instance._check_target_config() is True

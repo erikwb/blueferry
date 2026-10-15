@@ -22,6 +22,7 @@ QtObject {
   property string pairingStatus: ""
   property var pairingTransports: ({map: false, pbap: false, ancs: false})
   property string configurationError: ""
+  property bool configurationStarted: false
   property bool bluezActive: false
   property bool hardwareSupported: false
   property bool pairingReady: true
@@ -98,7 +99,13 @@ QtObject {
 
   function refreshConfiguration() {
     if (changingPhone || pending.configuration) return
-    request("configuration", ["/usr/bin/blueferry", "pairing-configuration-json"])
+    // Loading local history must not wait for BlueZ's live bond check. The
+    // regular refresh still detects a removed bond after this initial read.
+    const savedOnly = !configurationStarted
+    configurationStarted = true
+    const command = ["/usr/bin/blueferry", "pairing-configuration-json"]
+    if (savedOnly) command.push("--saved-only")
+    request("configuration", command, false, {savedOnly: savedOnly})
   }
 
   function loadCompatibility(adapter) {
@@ -227,7 +234,9 @@ QtObject {
   function fail(kind, message) {
     if (kind === "configuration") {
       configurationError = message
-      configurationUpdated(false)
+      // A failed check is not evidence that the saved phone was removed.
+      // Keep an open conversation visible while a later refresh retries.
+      configurationUpdated(configured)
       return
     }
     pairingStatus = message
@@ -340,6 +349,12 @@ QtObject {
         pairingStatus = "Local bond removed. Also forget this computer on the iPhone."
       }
     } catch (error) {
+      // Older backends may not know --saved-only. Fall back to their normal
+      // configuration check without getting stuck retrying the new option.
+      if (kind === "configuration" && active.context.savedOnly) {
+        refreshConfiguration()
+        return
+      }
       fail(kind, String(error.message || error))
     }
     if (kind === "pair" || kind === "forget") refreshConfiguration()

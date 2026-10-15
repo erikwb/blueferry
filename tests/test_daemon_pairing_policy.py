@@ -24,6 +24,9 @@ class _Bearer:
     def reset_after_bluez_restart(self):
         self.calls.append("bearers-reset")
 
+    def observe_ancs_health(self, healthy, proof):
+        self.health = (healthy, proof)
+
     def recover_le_transport(self):
         self.calls.append("bearers-recover-le")
 

@@ -51,7 +51,7 @@ class Harness:
     def __init__(self, tmp_path):
         self.now = 10000.0
         self.wall = 100000.0
-        self.state = mod.AdapterState(":1.2", RADIO, True, True)
+        self.state = mod.AdapterState(":1.2", RADIO, True, True, le_reset_safe=True)
         self.observed = mod.RecoveryObservation(False, None, True)
         self.settings = SettingsStore(tmp_path / "settings.json")
         self.settings.update(**{mod.SETTINGS_KEY: {
@@ -63,7 +63,7 @@ class Harness:
         self.idles = []
         self.create()
 
-    def create(self, adapter=None):
+    def create(self, adapter=None, read_async=None):
         self.recovery = mod.BluetoothRecovery(
             PHONE,
             adapter or SimpleNamespace(read=lambda: self.state, cycle=self.cycle,
@@ -71,6 +71,7 @@ class Harness:
                             cleanup_pending=False, cleanup_journal=lambda: None,
                             start_monitoring=lambda: None, stop_monitoring=lambda: None),
             self.worker,
+            read_async=read_async,
             observe=lambda: self.observed,
             probe=lambda: self.calls.append("probe"),
             probe_health=lambda: self.calls.append("probe-health"),
@@ -1218,3 +1219,202 @@ def test_shutdown_retries_journal_cleanup_without_waiting_for_it(bluez, monkeypa
     assert adapter.cleanup_pending is not disk_recovers
     assert fake.writes == [False, True]
     assert not fake.props["Powered"]
+
+
+@pytest.mark.parametrize("reason", ["discovery", "other-device", "spent", "cooldown"])
+def test_phone_only_recovery_does_not_need_adapter_cycle_permission(h, reason):
+    if reason in ("discovery", "other-device"):
+        h.state = replace(h.state, safe=False)
+    elif reason == "spent":
+        h.recovery._record["spent"] = True
+    else:
+        h.recovery._record["last_attempt"] = h.wall
+    h.tick()
+    h.tick(mod.SOFT_RESET_SECONDS - 1)
+    assert h.calls == []
+    h.tick(1)
+    assert h.calls == ["reset-le"]
+    h.tick(mod.OUTAGE_SECONDS * 2)
+    assert h.calls == ["reset-le"]
+    assert not h.worker.jobs
+
+
+def test_cycle_still_requires_fresh_safe_window_after_scanning(h):
+    h.state = replace(h.state, safe=False)
+    h.tick(mod.OUTAGE_SECONDS * 2)
+    assert h.calls == ["reset-le"]
+    h.state = replace(h.state, safe=True)
+    h.tick()
+    h.tick(mod.OUTAGE_SECONDS - 1)
+    assert not h.worker.jobs
+    h.tick(1)
+    assert len(h.worker.jobs) == 1
+    assert h.calls == ["reset-le"]
+
+
+@pytest.mark.parametrize("reason", ["blocked", "unpaired", "power-transition", "missing-power"])
+def test_phone_only_recovery_rejects_unsafe_phone_state(bluez, h, reason):
+    adapter, fake = bluez
+    phone = fake.objects[adapter.device_path]["org.bluez.Device1"]
+    if reason == "blocked":
+        phone["Blocked"] = True
+    elif reason == "unpaired":
+        phone["Paired"] = False
+    elif reason == "power-transition":
+        fake.props["PowerState"] = "on-disabling"
+    else:
+        del fake.props["PowerState"]
+    h.state = adapter.read()
+    assert not h.state.le_reset_safe
+    h.tick(mod.OUTAGE_SECONDS * 2)
+    assert not h.calls and not h.worker.jobs
+
+
+@pytest.mark.parametrize("reason", ["discovery", "discoverable", "other-device"])
+def test_inspection_separates_phone_reset_from_adapter_cycle(bluez, reason):
+    adapter, fake = bluez
+    if reason == "discovery":
+        fake.props["Discovering"] = True
+    elif reason == "discoverable":
+        fake.props["Discoverable"] = True
+    else:
+        fake.objects[adapter.path + "/dev_00_00_00_00_00_01"] = {
+            "org.bluez.Device1": {"Connected": True, "Paired": True},
+        }
+    state = adapter.read()
+    assert state.le_reset_safe
+    assert not state.safe
+
+
+@pytest.mark.parametrize("change", ["blocked", "owner", "removed"])
+def test_async_snapshot_rejects_topology_changes_while_reply_is_pending(bluez, monkeypatch, change):
+    from copy import deepcopy
+
+    adapter, fake = bluez
+    bus = mod.get_system_bus()
+    calls, states, errors = [], [], []
+    bus.call_async = lambda *args, **_kwargs: calls.append(args)
+    monkeypatch.setattr(mod, "get_system_bus", lambda: bus)
+    fake.GetManagedObjects = lambda **_kwargs: pytest.fail("synchronous BlueZ read")
+    adapter.read_async(states.append, errors.append)
+    old = deepcopy(fake.objects)
+    if change == "blocked":
+        fake.objects[adapter.device_path]["org.bluez.Device1"]["Blocked"] = True
+        adapter._properties_changed("org.bluez.Device1", {"Blocked": True}, [], path=adapter.device_path)
+    elif change == "owner":
+        adapter._owner_changed("org.bluez", ":1.2", ":1.3")
+    else:
+        adapter._interfaces_changed(adapter.path, ["org.bluez.Adapter1"])
+    calls[-1][-2](old)
+    assert not states and len(errors) == 1
+    adapter.read_async(states.append, errors.append)
+    calls[-1][-2](deepcopy(fake.objects))
+    assert len(states) == 1
+    assert states[0].le_reset_safe is (change != "blocked")
+    assert fake.writes == []
+
+
+def test_returning_phone_recovers_with_poll_jitter_and_prompt_async_replies(h, bluez, monkeypatch):
+    from copy import deepcopy
+
+    adapter, fake = bluez
+    # Phone-only recovery remains allowed while desktop discovery is active.
+    fake.props["Discovering"] = True
+    bus = mod.get_system_bus()
+    pending = []
+
+    def request(*args, **kwargs):
+        assert kwargs == {"timeout": 5.0}
+        pending.append(args[-2])
+
+    bus.call_async = request
+    monkeypatch.setattr(mod, "get_system_bus", lambda: bus)
+    fake.GetManagedObjects = lambda **_kwargs: pytest.fail("synchronous BlueZ read")
+    h.recovery.stop()
+    h.create(adapter, read_async=adapter.read_async)
+
+    def poll():
+        h.now += 10.001
+        h.recovery._tick()
+        assert len(pending) == 1
+        h.now += 0.0001
+        pending.pop()(deepcopy(fake.objects))
+
+    h.observed = mod.RecoveryObservation(True, h.now, True)
+    poll()
+    h.observed = mod.RecoveryObservation(False, None, False)  # Phone walked away.
+    for _ in range(20):
+        poll()
+    assert not h.calls
+    h.observed = mod.RecoveryObservation(False, None, True)  # Classic returned, LE did not.
+    for _ in range(18):
+        poll()
+    assert not h.calls
+    for _ in range(3):
+        poll()
+    assert h.calls == ["reset-le"]
+    for _ in range(45):
+        poll()
+    assert h.calls == ["reset-le"]  # Same outage cannot keep resetting the phone.
+    assert fake.writes == []  # No adapter power cycle during discovery.
+
+
+@pytest.mark.parametrize("event", ["timeout", "stop", "suspend", "invalidate"])
+def test_async_recovery_coalesces_reads_and_rejects_late_replies(h, event):
+    pending = []
+    h.recovery.stop()
+    h.create(read_async=lambda ready, failed: pending.append((ready, failed)))
+    h.recovery._tick()
+    h.recovery._tick()
+    assert len(pending) == 1
+    ready, failed = pending.pop()
+    ready(h.state)
+    assert h.recovery._le_outage_since == h.now
+    h.now += 170
+    h.recovery._tick()
+    ready, failed = pending.pop()
+    if event == "timeout":
+        failed(RuntimeError("NoReply"))
+    elif event == "stop":
+        h.recovery.stop()
+    elif event == "suspend":
+        h.recovery.invalidate(suspended=True)
+    else:
+        h.recovery.invalidate()
+    h.now += 20
+    ready(h.state)
+    assert h.recovery._le_outage_since is None
+    assert not h.calls
+    if event == "timeout":
+        h.recovery._tick()
+        pending.pop()[0](h.state)
+        assert h.recovery._le_outage_since == h.now  # A real error starts a new dwell.
+
+
+@pytest.mark.parametrize("result", ["safe", "changed", "late", "error", "stopped"])
+def test_final_power_cycle_recheck_is_async_and_fails_closed(h, result):
+    h.ready_to_probe()
+    h.worker.finish()
+    pending = []
+    h.recovery._read_async = lambda ready, failed: pending.append((ready, failed))
+    h.recovery.adapter.read = lambda: pytest.fail("main loop used synchronous snapshot")
+    h.dispatch()
+    assert len(pending) == 1
+    assert not h.recovery.active and not h.worker.reserved
+    assert h.recovery._probing
+    ready, failed = pending.pop()
+    if result == "error":
+        failed(RuntimeError("NoReply"))
+    else:
+        if result == "late":
+            h.now += 31
+        elif result == "stopped":
+            h.recovery.stop()
+        ready(replace(h.state, safe=False) if result == "changed" else h.state)
+    if result == "safe":
+        assert h.recovery.active and h.worker.reserved
+        h.worker.finish()
+        assert h.calls[-2:] == ["cycle", "resume"]
+    else:
+        assert not h.recovery.active and not h.worker.reserved
+        assert "pause" not in h.calls

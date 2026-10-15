@@ -13,6 +13,38 @@ from blueferry import cli, pairing_cli, quirks_report, setup_client
 from blueferry.pairing_types import PairingTransports
 
 
+@pytest.mark.parametrize("saved_only", [False, True])
+@pytest.mark.parametrize("mac", ["02:00:00:00:00:01", "", "AA:BB:CC:DD:EE:FF"])
+def test_configuration_can_read_saved_target_without_bluetooth(
+    tmp_path, monkeypatch, saved_only, mac,
+):
+    setup = setup_client.pair_setup
+    destination = tmp_path / "local.env"
+    destination.write_text(f"BLUEFERRY_MAC={mac}\nBLUEFERRY_ADAPTER=hci7\n")
+    monkeypatch.setattr(setup, "LOCAL_ENV_PATH", destination)
+    monkeypatch.setattr(setup_client.quirks_report, "issue_report", lambda: None)
+    probes = []
+
+    def bond_status(*args):
+        assert not saved_only, "saved configuration must not wait for Bluetooth"
+        probes.append(args)
+        return False
+
+    monkeypatch.setattr(setup, "bond_status", bond_status)
+    command = ["pairing-configuration-json"]
+    if saved_only:
+        command.append("--saved-only")
+    result = CliRunner().invoke(cli.app, command)
+
+    assert result.exit_code == 0, result.output
+    status = json.loads(result.stdout)
+    saved = mac == "02:00:00:00:00:01"
+    assert status["configured"] is (saved and saved_only)
+    assert status["saved"] is saved
+    assert status["bonded"] is (None if saved and saved_only else False)
+    assert probes == ([(mac, "hci7")] if saved and not saved_only else [])
+
+
 def test_pair_setup_debug_enables_diagnostic_logging(monkeypatch):
     calls = []
     monkeypatch.setattr(cli, "_setup_logging", lambda enabled: calls.append(("debug", enabled)))

@@ -12,7 +12,9 @@ import dbus
 import dbus.exceptions
 from gi.repository import GLib
 
+from blueferry.bluez_reads import observations
 from blueferry.bus import get_system_bus
+from blueferry.le_recovery_budget import LeRecoveryBudget
 
 log = logging.getLogger(__name__)
 
@@ -250,7 +252,7 @@ class BearerSupervisor:
         self._on_status = on_status
         self._on_le_state = on_le_state
         self._on_le_dial = on_le_dial
-        self._read_connected = read_connected or self._read_bluez_connected
+        self._read_connected = read_connected or self._read_cached_connected
         self._connect = connect or self._connect_bluez
         self._disconnect = disconnect or self._disconnect_bluez
         self._prefer = prefer or (
@@ -278,6 +280,7 @@ class BearerSupervisor:
         self._schedule = schedule
         self._cancel = cancel
         self._clock = clock
+        self._le_recovery_budget = LeRecoveryBudget(clock)
         self._le_enabled = le_enabled
         # A missing LE bearer API is different from a transient failed read:
         # BlueZ can then report only the aggregate Device1 state. Recheck it,
@@ -467,6 +470,9 @@ class BearerSupervisor:
     def busy(self) -> bool:
         return bool(self._connecting or self._disconnecting)
 
+    def observe_ancs_health(self, healthy: bool, proof: float | None) -> None:
+        self._le_recovery_budget.observe_health(healthy, proof)
+
     def recover_le_transport(self, *, allow_disconnected: bool = False) -> None:
         """Request one serialized LE reset after GATT and bearer state diverge."""
         if not self._running or self._le_api_available is False:
@@ -476,6 +482,8 @@ class BearerSupervisor:
         # polling source can see a replacement inbound link. Ignore duplicate
         # failure reports during that synthetic down-state.
         if self._states["le"] is False and not allow_disconnected:
+            return
+        if not self._le_reset_pending and not self._le_recovery_budget.take():
             return
         if not self._le_reset_pending:
             log.warning(
@@ -608,6 +616,7 @@ class BearerSupervisor:
         if not self._running:
             return
         interface = str(interface)
+        observations.properties_changed(self.device_path, interface, changed, _invalidated)
         if interface == _INTERFACES["le"] and "Connected" in changed:
             if bool(changed["Connected"]):
                 self._le_link_up_at = self._clock()
@@ -903,6 +912,8 @@ class BearerSupervisor:
         previous = self._states[kind]
         self._states[kind] = value
         if kind == "le":
+            if value is not True:
+                self._le_recovery_budget.observe_health(False, None)
             if value is True:
                 self._le_targeting_hint = True
             elif value is False:
@@ -923,7 +934,8 @@ class BearerSupervisor:
             self._rearm_le_dial("iPhone BR/EDR returned")
         if kind == "le" and previous is True and value is False:
             # A real bearer lifecycle transition invalidates the previous
-            # one-shot budget. This is deliberately transition-driven: a
+            # one-shot eligibility, but never refunds the rolling recovery
+            # budget. This is deliberately transition-driven: a
             # device that remains absent still receives only one attempt.
             self._rearm_le_dial("iPhone LE disconnected")
             if not deliberate and not self._le_disconnect_signal_seen:
@@ -1009,6 +1021,8 @@ class BearerSupervisor:
         if self._clock() < self._next_attempt[kind]:
             return
         if kind == "le":
+            if not self._le_recovery_budget.take():
+                return
             self._le_dial_spent = True
         targeted = kind == "bredr" and self._classic_connect_should_be_targeted()
         self._connecting.add(kind)
@@ -1085,7 +1099,9 @@ class BearerSupervisor:
         if not self._connect_request_is_current(kind, generation, request_id):
             return
         name, message = _connect_error_parts(error)
-        if name == "org.bluez.Error.InProgress":
+        if (name == "org.bluez.Error.InProgress"
+                or (name == "org.bluez.Error.Failed"
+                    and message.strip().casefold() == "operation already in progress")):
             # BlueZ still owns a connect attempt. Keep solicitation withdrawn
             # and keep this bearer in _connecting until Connected=true or a
             # full Connect-sized timeout. Connected=false is normal while the
@@ -1259,9 +1275,11 @@ class BearerSupervisor:
     def _request_le_disconnect(self, *, force: bool = False) -> None:
         if self._le_api_available is False:
             return
-        if "le" in self._disconnecting:
+        if "le" in self._disconnecting or ("le" in self._connecting and not force):
             return
         if not force and self._clock() < self._next_le_reset_attempt:
+            return
+        if not force and self._le_reset_failures and not self._le_recovery_budget.take():
             return
         self._disconnecting.add("le")
         self._own_le_disconnect_at = self._clock()
@@ -1291,6 +1309,9 @@ class BearerSupervisor:
         self._le_reset_pending = False
         self._le_reset_failures = 0
         self._next_le_reset_attempt = 0.0
+        observations.properties_changed(
+            self.device_path, _INTERFACES["le"], {}, ["Connected"],
+        )
         self._update_state("le", False, deliberate=True)
         if self.bredr_connected and self._le_enabled:
             self._schedule_le_connect()
@@ -1319,9 +1340,18 @@ class BearerSupervisor:
             delay,
         )
 
+    def _read_cached_connected(self, kind: str) -> bool | None:
+        class Properties:
+            def Get(_self, interface, name, **_kwargs):
+                return observations.property(self.device_path, interface, name)
+        return self._connected_property(kind, Properties())
+
     def _read_bluez_connected(self, kind: str) -> bool | None:
-        obj = get_system_bus().get_object("org.bluez", self.device_path)
+        obj = get_system_bus().get_object("org.bluez", self.device_path, introspect=False)
         properties = dbus.Interface(obj, "org.freedesktop.DBus.Properties")
+        return self._connected_property(kind, properties)
+
+    def _connected_property(self, kind: str, properties) -> bool | None:
         if kind == "bredr":
             # Device1.Connected is true when *either* bearer is up. Prefer the
             # bearer-specific property so an LE-only link is not mistaken for
@@ -1401,10 +1431,11 @@ class BearerSupervisor:
         else:
             interface = _INTERFACES[kind]
         bearer = dbus.Interface(
-            get_system_bus().get_object("org.bluez", self.device_path),
+            get_system_bus().get_object("org.bluez", self.device_path, introspect=False),
             interface,
         )
         bearer.Connect(
+            signature="",
             reply_handler=on_success,
             error_handler=on_error,
             timeout=float(CONNECT_TIMEOUT_SECONDS),
@@ -1417,10 +1448,11 @@ class BearerSupervisor:
         on_error: Callable[[Exception], None],
     ) -> None:
         bearer = dbus.Interface(
-            get_system_bus().get_object("org.bluez", self.device_path),
+            get_system_bus().get_object("org.bluez", self.device_path, introspect=False),
             _INTERFACES[kind],
         )
         bearer.Disconnect(
+            signature="",
             reply_handler=on_success,
             error_handler=on_error,
             timeout=45.0,
@@ -1428,7 +1460,7 @@ class BearerSupervisor:
 
     def _prefer_bluez(self, kind: str) -> None:
         properties = dbus.Interface(
-            get_system_bus().get_object("org.bluez", self.device_path),
+            get_system_bus().get_object("org.bluez", self.device_path, introspect=False),
             "org.freedesktop.DBus.Properties",
         )
         try:
@@ -1436,6 +1468,7 @@ class BearerSupervisor:
                 properties.Get(
                     "org.bluez.Device1",
                     "PreferredBearer",
+                    signature="ss",
                     timeout=5.0,
                 )
             )
@@ -1454,11 +1487,15 @@ class BearerSupervisor:
                 "org.bluez.Device1",
                 "PreferredBearer",
                 dbus.String(kind),
+                signature="ssv",
                 timeout=5.0,
             )
             log.debug("set iPhone PreferredBearer=%s", kind)
         except dbus.exceptions.DBusException as error:
-            if preferred_bearer_unavailable(error):
+            # Get succeeded (or failed transiently), so an UnknownMethod
+            # from Set may be a malformed request, not a missing property.
+            if (preferred_bearer_unavailable(error)
+                    and error.get_dbus_name() != "org.freedesktop.DBus.Error.UnknownMethod"):
                 log.debug("PreferredBearer is unavailable on this BlueZ build")
                 return
             raise

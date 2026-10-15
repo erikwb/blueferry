@@ -68,7 +68,7 @@ def test_compatibility_and_configuration_are_typed(monkeypatch):
     monkeypatch.setattr(
         setup_client.pair_setup,
         "configuration_status",
-        lambda: {
+        lambda **_kwargs: {
             "configured": False,
             "mac": "",
             "adapter": "hci2",

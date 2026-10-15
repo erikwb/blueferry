@@ -290,13 +290,15 @@ def pairing_compatibility_json(
 
 
 @app.command("pairing-configuration-json", hidden=True)
-def pairing_configuration_json() -> None:
+def pairing_configuration_json(
+    saved_only: bool = typer.Option(False, "--saved-only"),
+) -> None:
     """Report whether first-run configuration exists without activation."""
     import json
 
     from blueferry.setup_client import SetupClient
 
-    typer.echo(json.dumps(SetupClient().configuration().to_dict()))
+    typer.echo(json.dumps(SetupClient().configuration(check_bond=not saved_only).to_dict()))
 
 
 @app.command("pairing-activate-bluez", hidden=True)

@@ -346,8 +346,8 @@ class SetupClient:
             pair_setup.bluetooth_compatibility(adapter)
         )
 
-    def configuration(self) -> ConfigurationState:
-        value = dict(pair_setup.configuration_status())
+    def configuration(self, *, check_bond: bool = True) -> ConfigurationState:
+        value = dict(pair_setup.configuration_status(check_bond=check_bond))
         report = quirks_report.issue_report()
         value["pairing_issue_report"] = str(report) if report is not None else ""
         return ConfigurationState.from_dict(value)

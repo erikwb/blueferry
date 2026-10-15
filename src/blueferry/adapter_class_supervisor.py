@@ -94,6 +94,11 @@ class AdapterClassSupervisor:
             log.debug("could not remove adapter-class health timer", exc_info=True)
         self._timer_id = None
 
+    def recheck(self) -> None:
+        """Consume a completed asynchronous class read without refunding backoff."""
+        if self._running:
+            self._reconcile()
+
     def _tick(self) -> bool:
         if not self._running:
             return False

@@ -1835,6 +1835,25 @@ def test_quickshell_pairing_checkbox_reaches_the_helper(
 
 
 @pytest.mark.parametrize("scenario", [
+    # A timer may request configuration before Component.onCompleted calls
+    # start(). Either order must start locally, then resume live bond checks.
+    '''setup.refreshConfiguration(); const first = setup.pending.configuration.id;
+       setup.start();
+       check(setup.pending.configuration.id === first, "startup replaced initial read");
+       check(requests[0].argv.includes("--saved-only"), "startup waits for Bluetooth");
+       reply("configuration", {configured:true,saved:true,bonded:null,mac:"SAVED"});
+       check(setup.configured && !setup.bondStateKnown, "unknown bond treated as lost");
+       setup.refreshConfiguration();
+       check(!requests[requests.length-1].argv.includes("--saved-only"), "live bond never checked");
+       reply("configuration", {configured:false,saved:true,bonded:false,mac:"SAVED"});
+       check(!setup.configured && setup.bondStateKnown, "removed bond ignored");''',
+    # A separately upgraded Quickshell must work with an older backend too.
+    '''setup.start(); const old = setup.pending.configuration.id;
+       setup.finish(old,"configuration",2,"","No such option: --saved-only");
+       check(setup.pending.configuration.id !== old, "missing fallback");
+       check(!requests[requests.length-1].argv.includes("--saved-only"), "fallback repeats unknown option");
+       reply("configuration", {configured:true,saved:true,bonded:true,mac:"SAVED"});
+       check(setup.configured && !setup.configurationError, "older backend left unusable");''',
     # First install: missing saved target must still allow explicit pairing on
     # an unverified controller; empty/failed discovery must not enable Pair.
     '''setup.start();
@@ -1908,6 +1927,7 @@ def test_quickshell_pairing_checkbox_reaches_the_helper(
        check(setup.pending.compatibility, "activation did not refresh capabilities");''',
     '''setup.refreshConfiguration();
        setup.finish(setup.pending.configuration.id,"configuration",-1,"","Could not start");
+       setup.finish(setup.pending.configuration.id,"configuration",-1,"","Could not start");
        check(configuration.join() === "false" && setup.configurationError === "Could not start", "missing helper hidden");
        setup.refreshConfiguration(); reply("configuration",{configured:false,saved:false});
        check(!setup.configurationError, "configuration recovery retained error");
@@ -1954,7 +1974,8 @@ def test_quickshell_pairing_checkbox_reaches_the_helper(
        setup.receiveLine(setup.pending.pair.id, "pair", connected);
        setup.receiveLine(setup.pending.pair.id, "pair", '{"event":"transports","map":false,"pbap":false,"ancs":false}');
        check(!setup.pairingTransports.map && !setup.pairingTransports.pbap, "lost services stayed connected");''',
-], ids=["first-install", "adapter-switch", "cancel-scan", "failed-pair", "replacement-snapshot",
+], ids=["saved-startup", "older-backend", "first-install", "adapter-switch", "cancel-scan",
+        "failed-pair", "replacement-snapshot",
         "forget-confirmation", "pair-success", "failed-helpers", "missing-helper", "explicit-default",
         "live-transports"])
 def test_quickshell_setup_responses(qml_engine, quickshell_setup, scenario):
@@ -2504,6 +2525,117 @@ Item {
     )
     log = result.stdout + result.stderr
     assert result.returncode == 0 and "BLUEFERRY_RESTART_HINT_OK" in log, log
+    assert "ReferenceError" not in log and "TypeError" not in log, log
+
+
+@pytest.mark.private_dbus
+def test_quickshell_opens_thread_while_bluetooth_setup_is_pending(
+    tmp_path, quickshell_environment,
+):
+    import shutil
+    import subprocess
+
+    executable = shutil.which("quickshell")
+    if executable is None:
+        pytest.skip("Quickshell is not installed")
+    for source in (ROOT / "data/quickshell").glob("*.qml"):
+        shutil.copyfile(source, tmp_path / source.name)
+    shutil.copyfile(
+        ROOT / "src/blueferry/qt/qml/ConversationLogic.qml", tmp_path / "ConversationLogic.qml",
+    )
+    (tmp_path / "Theme.qml").write_text("import QtQuick\nThemePalette {}\n")
+    # Only the local read returns. All live Bluetooth checks remain pending;
+    # neither transport can launch helpers or reach the operator's daemon.
+    (tmp_path / "SetupTransport.qml").write_text('''import QtQuick
+Item {
+  id: transport
+  signal lineReceived(int id, string kind, string line)
+  signal finished(int id, string kind, int code, string output, string diagnostic)
+  function execute(id, kind, command, interactive) {
+    if (kind === "configuration" && command.indexOf("--saved-only") >= 0)
+      Qt.callLater(function() {
+        transport.finished(id, kind, 0,
+          JSON.stringify({configured:true, saved:true, bonded:null, mac:"SAVED"}), "");
+      });
+  }
+  function cancel(id) {}
+  function write(id, text) {}
+}
+''')
+    (tmp_path / "BackendBridge.qml").write_text('''import QtQuick
+Item {
+  id: bridge
+  property bool desktopClient: false
+  property int nextId: 1
+  signal response(string method, int requestId, var result)
+  signal failure(string method, int requestId, string message)
+  signal eventReceived(string name, var data)
+  function request(method, args) {
+    const id = nextId++;
+    if (method === "threads") Qt.callLater(function() {
+      bridge.response(method, id, [{key:"direct:alice", name:"Alice", unread:false,
+        is_group:false, recipients:["alice@example.com"], messages:[]}]);
+    });
+    else if (method === "status") Qt.callLater(function() {
+      bridge.response(method, id, {daemon:true, storage_state:"ready"});
+    });
+    return id;
+  }
+  function requestLatest(method, args) {}
+  function cancelLatest(method) {}
+}
+''')
+    config = tmp_path / "shell.qml"
+    source = config.read_text()
+    probe = r'''
+  Timer {
+    interval: 300; running: true
+    onTriggered: {
+      function check(value, message) { if (!value) throw new Error(message); }
+      try {
+        check(root.threads.length === 1, "history blocked on Bluetooth");
+        check(root.selectedThreadKey === "direct:alice", "requested thread not selected");
+        check(root.pendingThreadKey === "", "requested thread not resolved");
+        check(!root.phoneSettingsVisible, "conversation hidden by setup");
+        check(setupController.pending.compatibility, "live Bluetooth was not pending");
+        check(!setupController.bondStateKnown, "unchecked bond reported as verified");
+        setupController.refreshConfiguration();
+        check(setupController.pending.configuration, "live bond refresh not scheduled");
+        root.reload();
+        check(root.threadsBusy, "pending live check blocked refresh");
+        const background = setupController.pending.configuration.id;
+        setupController.finish(background, "configuration", -1, "", "Setup helper timed out");
+        check(!root.phoneSettingsVisible, "failed background check hid the conversation");
+        check(setupController.configured && setupController.configuredMac === "SAVED",
+          "failed background check discarded the saved phone");
+        check(setupController.configurationError === "Setup helper timed out",
+          "failed background check lost its diagnostic");
+        setupController.refreshConfiguration();
+        setupController.finish(setupController.pending.configuration.id, "configuration", 0,
+          JSON.stringify({configured:true, saved:true, bonded:true, mac:"SAVED"}), "");
+        check(!root.phoneSettingsVisible && root.selectedThreadKey === "direct:alice",
+          "recovery did not preserve the conversation");
+        check(setupController.configurationError === "", "recovery kept an old diagnostic");
+        setupController.refreshConfiguration();
+        setupController.finish(setupController.pending.configuration.id, "configuration", 0,
+          JSON.stringify({configured:false, saved:true, bonded:false, mac:"SAVED"}), "");
+        check(root.phoneSettingsVisible && !setupController.configured,
+          "a confirmed removed bond did not open setup");
+        console.log("BLUEFERRY_OFFLINE_HISTORY_OK");
+      } catch (error) { console.error(error); }
+      Qt.quit();
+    }
+  }
+'''
+    config.write_text(source[:source.rfind("}")] + probe + "}\n")
+    environment = quickshell_environment | {"BLUEFERRY_OPEN_THREAD_KEY": "direct:alice"}
+    environment.pop("BLUEFERRY_OPEN_MESSAGE_HANDLE", None)
+    result = subprocess.run(
+        [executable, "--path", str(config)], env=environment,
+        capture_output=True, text=True, timeout=10, check=False,
+    )
+    log = result.stdout + result.stderr
+    assert result.returncode == 0 and "BLUEFERRY_OFFLINE_HISTORY_OK" in log, log
     assert "ReferenceError" not in log and "TypeError" not in log, log
 
 
