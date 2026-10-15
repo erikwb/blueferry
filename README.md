@@ -462,6 +462,15 @@ physical iPhone.
 
 Restart the user service after editing `local.env` settings.
 
+Three on/off switches without a setting of their own
+(`BLUEFERRY_SHOW_NOTIFICATION_CONTENT`, `BLUEFERRY_MARK_READ_ON_DISMISS`,
+`BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE`) can also be changed in the Qt settings
+or with `blueferry features` (`blueferry features off
+keep_phone_audio_on_phone`). They are stored in
+`~/.config/blueferry/settings.json`, override `local.env`, and apply after
+the service restarts; a variable set in the service's own environment still
+wins.
+
 ### Sync notifications with iPhone (opt-in)
 
 With **All iPhone Notifications** selected, an iPhone app popup normally
@@ -913,6 +922,28 @@ of waiting forever.
 BlueFerry deliberately does not use AVRCP for this: acting as an AVRCP
 controller could make the iPhone route its audio to this computer.
 
+### iPhone sound on this computer (optional)
+
+With `BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE=false` in `local.env` (backend
+restart needed), this computer keeps the Bluetooth audio sink role and
+BlueFerry can move the iPhone's media playback here and back, without
+touching PipeWire:
+
+```bash
+blueferry audio            # where the sound goes and where it plays
+blueferry audio pc         # play the iPhone's sound on this computer
+blueferry audio phone      # back to the iPhone
+```
+
+The Qt, GTK and Quickshell clients show the same switch as **iPhone Sound**
+in the iPhone settings; the terminal client toggles it with `a`. `pc` opens
+the iPhone's A2DP stream through BlueZ (`ConnectProfile`), `phone` closes it.
+iOS pauses playback when its Bluetooth output goes away, so BlueFerry sends
+Play once after handing a playing stream back (needs media control). With
+media control on, the switch also says where the sound actually plays: iOS
+keeps the stream open when you pick the iPhone in its AirPlay menu, and the
+clients then say the iPhone plays on its own speaker.
+
 ## Command line
 
 The graphical clients cover normal use, but the CLI is useful for diagnostics
@@ -928,6 +959,7 @@ blueferry contact-photos enable                     # opt in; disable / status
 blueferry contacts-photo Alice --output alice.jpg   # needs contact photos on
 blueferry call-history --missed   # after `blueferry call-history enable`
 blueferry media status
+blueferry audio            # with BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE=false
 blueferry history-clear
 blueferry otp status
 blueferry notifications open-map list

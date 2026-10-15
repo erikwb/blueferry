@@ -85,6 +85,9 @@ ALLOWLIST: dict[tuple[str, str, str], str] = {
     ("blueferry.notification_open", "open_target", "sync-dbus"):
         "runs in the blueferry-open-notification helper process (its main), on a private bus",
     ("blueferry.contacts", "open_vcard_listing", "sync-dbus"): _WORKER,
+    ("blueferry.gio_dbus", "system_bus", "blocking"):
+        "connects to the local system bus once, on first use; GDBus caches the "
+        "shared connection, so later calls return it without a round trip",
     ("blueferry.obex.map_events", "_fetch_bmessage", "blocking"): _WORKER,
     ("blueferry.obex.map_events", "_fetch_bmessage", "sync-dbus"): _WORKER,
     ("blueferry.obex.map_query", "_navigate_to_folder", "sync-dbus"): _WORKER,

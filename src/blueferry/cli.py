@@ -10,10 +10,12 @@ from typing import Optional
 import typer
 
 from blueferry import bluez_setup, config
+from blueferry.cli_audio import audio
 from blueferry.cli_call_history import call_history_app
 from blueferry.cli_calls import calls_app, phone_status
 from blueferry.cli_common import setup_logging as _setup_logging
 from blueferry.cli_contacts import contact_photos_app, contacts_photo
+from blueferry.cli_features import features_app
 from blueferry.cli_media import media
 from blueferry.cli_messages import sms_list, sms_send
 from blueferry.cli_notification_actions import notification_actions_app
@@ -619,6 +621,8 @@ app.command("otp-check", hidden=True)(otp_check)
 app.add_typer(call_history_app, name="call-history")
 app.add_typer(notifications_app, name="notifications")
 app.command("media")(media)
+app.command("audio")(audio)
+app.add_typer(features_app, name="features")
 app.add_typer(notification_actions_app, name="notification-actions")
 app.add_typer(calls_app, name="calls")
 app.command("phone-status")(phone_status)

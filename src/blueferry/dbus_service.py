@@ -362,6 +362,25 @@ class MessagesService(dbus.service.Object):
         ))
 
     @dbus.service.method(
+        IFACE, in_signature="", out_signature="s", sender_keyword="sender"
+    )
+    def GetFeatures(self, sender=None) -> str:
+        """Allowlisted local.env switches with value, source and restart need."""
+        return self._sync(lambda: self._authorized(
+            sender, "status", lambda: self._json_response(self.operations.get_features()),
+        ))
+
+    @dbus.service.method(
+        IFACE, in_signature="sb", out_signature="s", sender_keyword="sender"
+    )
+    def SetFeature(self, name: str, enabled: bool, sender=None) -> str:
+        """Store one allowlisted switch in settings.json (applies after restart)."""
+        return self._sync(lambda: self._authorized(
+            sender, "feature",
+            lambda: self.operations.set_feature(str(name), bool(enabled)),
+        ))
+
+    @dbus.service.method(
         IFACE, in_signature="", out_signature="b", sender_keyword="sender"
     )
     def GetAncsNotificationActions(self, sender=None) -> bool:
@@ -696,6 +715,26 @@ class MessagesService(dbus.service.Object):
                 sender, "media-command",
                 lambda: self.operations.send_media_command(
                     str(command), reply_handler,
+                    lambda error: error_handler(self._dbus_error(error)),
+                ),
+            ),
+            error_handler,
+        )
+
+    @dbus.service.method(
+        MEDIA_IFACE, in_signature="s", out_signature="s",
+        async_callbacks=("reply_handler", "error_handler"),
+        sender_keyword="sender",
+    )
+    def SetPhoneAudioRoute(
+        self, route: str, reply_handler, error_handler, sender=None,
+    ) -> None:
+        """Move the iPhone's media playback to this computer or the phone."""
+        self._async(
+            lambda: self._authorized(
+                sender, "audio-route",
+                lambda: self.operations.set_phone_audio_route(
+                    str(route), reply_handler,
                     lambda error: error_handler(self._dbus_error(error)),
                 ),
             ),

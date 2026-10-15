@@ -29,6 +29,7 @@ from blueferry.errors import (
     SendOutcomeUnknownError,
 )
 from blueferry.events import canonical_address
+from blueferry.features import FeatureSettings
 from blueferry.grouping import (
     CORRELATED_ANCS_ROW_IDS_FIELD,
     HISTORY_ROW_ID_FIELD,
@@ -230,6 +231,14 @@ class CallControl(Protocol):
     def hold_and_answer(self, success: Success, failure: Failure) -> None: ...
 
 
+class PhoneAudioControl(Protocol):
+    def snapshot(self) -> dict[str, object]: ...
+
+    def set_route(
+        self, route: str, success: Callable[[str], None], failure: Failure,
+    ) -> None: ...
+
+
 @dataclass(frozen=True, slots=True)
 class BackendDependencies:
     """Explicit optional capabilities supplied by the daemon composition root."""
@@ -263,6 +272,8 @@ class BackendDependencies:
     set_calls_enabled: Callable[[bool], dict[str, Any]] | None = None
     set_phone_battery_warning: Callable[[bool], dict[str, Any]] | None = None
     set_media_mpris: Callable[[bool], dict[str, Any]] | None = None
+    phone_audio: PhoneAudioControl | None = None
+    features: FeatureSettings | None = None
     # The contact-photo opt-in: a fixed value or the daemon's live setting.
     contact_photos: bool | Callable[[], bool] = False
     set_contact_photos: Callable[[bool], dict[str, Any]] | None = None
@@ -1388,6 +1399,39 @@ class BackendOperations:
                 "settings or with 'blueferry media enable'"
             )
         media.send_command(name, on_success, on_failure)
+
+    def get_features(self) -> dict[str, dict[str, Any]]:
+        """The allowlisted local.env switches and where each value comes from."""
+        features = self.dependencies.features
+        if features is None:
+            raise NotReadyError("feature settings are unavailable in this backend")
+        return features.snapshot()
+
+    def set_feature(self, name: str, enabled: bool) -> str:
+        """Store one switch in settings.json; it applies after a restart."""
+        features = self.dependencies.features
+        if features is None:
+            raise NotReadyError("feature settings are unavailable in this backend")
+        try:
+            return features.set(str(name), bool(enabled))
+        except KeyError:
+            raise InvalidArgumentsError("unknown feature") from None
+        except (OSError, ValueError) as error:
+            raise NotReadyError(f"could not store the setting: {type(error).__name__}") from None
+
+    def set_phone_audio_route(
+        self, route: str, success: Callable[[str], None], failure: Failure,
+    ) -> None:
+        audio = self.dependencies.phone_audio
+        if audio is None:
+            raise NotReadyError("phone audio routing is unavailable in this backend")
+        audio.set_route(
+            route, success,
+            lambda error: failure(
+                error if isinstance(error, NotReadyError)
+                else OperationFailedError("AudioRoute", error)
+            ),
+        )
 
     def set_media_control(self, enabled: bool) -> dict[str, Any]:
         """Opt in or out of iPhone media control without a restart."""

@@ -190,6 +190,15 @@ class BackendClient:
         except dbus.exceptions.DBusException as error:
             raise self._media_error(error) from error
 
+    def set_phone_audio_route(self, route: str) -> str:
+        """Move iPhone media playback to ``pc`` or back to the ``phone``."""
+        try:
+            return str(self._media_iface().SetPhoneAudioRoute(
+                route, timeout=MEDIA_CALL_TIMEOUT_SEC + 10,
+            ))
+        except dbus.exceptions.DBusException as error:
+            raise self._media_error(error) from error
+
     def is_healthy(self) -> bool:
         try:
             return bool(self._iface(MESSAGES_IFACE).IsHealthy(timeout=5))
@@ -431,6 +440,24 @@ class BackendClient:
             )
         except dbus.exceptions.DBusException as error:
             raise BackendError(error.get_dbus_message() or str(error)) from error
+
+    def features(self) -> dict:
+        """Allowlisted local.env switches (Messages1.GetFeatures)."""
+        try:
+            return decode_mapping(self._iface(MESSAGES_IFACE).GetFeatures(
+                timeout=STATUS_CALL_TIMEOUT_SEC,
+            ))
+        except (dbus.exceptions.DBusException, ValueError) as error:
+            raise BackendError(_dbus_message(error)) from error
+
+    def set_feature(self, name: str, enabled: bool) -> str:
+        """Store one switch; ``active``, ``restart-required`` or ``environment``."""
+        try:
+            return str(self._iface(MESSAGES_IFACE).SetFeature(
+                str(name), dbus.Boolean(enabled), timeout=POLICY_CALL_TIMEOUT_SEC,
+            ))
+        except dbus.exceptions.DBusException as error:
+            raise BackendError(_dbus_message(error)) from error
 
     def set_ancs_notification_actions(self, enabled: bool) -> bool:
         try:
