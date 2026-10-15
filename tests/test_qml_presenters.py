@@ -802,6 +802,7 @@ def settings_window(qml_engine):
             function setAncsNotificationActions(enabled) { record("setAncsNotificationActions", [enabled]); }
             function setCallsEnabled(enabled) { record("setCallsEnabled", [enabled]); }
             function setPhoneBatteryWarning(enabled) { record("setPhoneBatteryWarning", [enabled]); }
+            function setAutoProfileReset(enabled) { record("setAutoProfileReset", [enabled]); }
             function setMprisPlayer(enabled) { record("setMprisPlayer", [enabled]); }
             function forgetDevice(mac) { record("forgetDevice", [mac]); }
             function activateBluetooth() { record("activateBluetooth", []); }
@@ -3138,6 +3139,49 @@ def test_battery_warning_checkbox_follows_the_daemon(qml_engine, settings_window
     assert _evaluate(
         qml_engine, "testBridge.calls.filter(c => c.method === 'setPhoneBatteryWarning')"
     ) == [{"method": "setPhoneBatteryWarning", "args": [True]}]
+
+
+def test_auto_profile_reset_checkbox_follows_the_daemon(qml_engine, settings_window):
+    window, bridge = settings_window
+    bridge.setProperty("setupLoaded", True)
+    QGuiApplication.processEvents()
+    checkbox = _settings_object(window, "autoProfileResetCheckBox")
+    bridge.setProperty("status", {"daemon": True})
+    QGuiApplication.processEvents()
+    assert checkbox.property("visible") is False
+
+    bridge.setProperty("status", {"daemon": True, "profile_reset_auto": True})
+    QGuiApplication.processEvents()
+    assert checkbox.property("checked") is True
+    assert QMetaObject.invokeMethod(checkbox, "toggle")
+    assert QMetaObject.invokeMethod(checkbox, "clicked")
+    assert _evaluate(
+        qml_engine, "testBridge.calls.filter(c => c.method === 'setAutoProfileReset')"
+    ) == [{"method": "setAutoProfileReset", "args": [False]}]
+
+
+def test_quickshell_auto_profile_reset_checkbox_is_shown_when_reported(
+    qml_engine, quickshell_setup,
+):
+    base = {"notification_policy": "all", "contacts_only_notifications": False}
+    page, calls, close = _quickshell_settings_page(qml_engine, quickshell_setup, base)
+    checkbox = page.findChild(QObject, "autoProfileResetCheckBox")
+    assert checkbox is not None
+    assert checkbox.property("visible") is False
+
+    page.setProperty("status", {**base, "profile_reset_auto": True})
+    QGuiApplication.processEvents()
+    assert checkbox.property("visible") is True
+    assert checkbox.property("checked") is True
+    page.setProperty("busy", {"autoProfileReset": True})
+    QGuiApplication.processEvents()
+    assert checkbox.property("enabled") is False
+    page.setProperty("busy", {})
+    QGuiApplication.processEvents()
+    assert QMetaObject.invokeMethod(checkbox, "toggle")
+    assert QMetaObject.invokeMethod(checkbox, "clicked")
+    assert calls == [("set_auto_profile_reset", {"enabled": False})]
+    close()
 
 
 def test_quickshell_media_checkboxes_are_opt_in_and_the_player_needs_media_control(

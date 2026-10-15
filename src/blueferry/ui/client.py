@@ -411,6 +411,18 @@ class DaemonClient(GObject.Object):
             mutation=True,
         )
 
+    def set_auto_profile_reset_async(self, enabled: bool, on_ok, on_err) -> None:
+        self._submit(
+            lambda: self._call_backend(
+                lambda backend: {
+                    "profile_reset_auto": backend.set_auto_profile_reset(enabled)
+                }
+            ),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
     def set_mpris_player_async(self, enabled: bool, on_ok, on_err) -> None:
         self._submit(
             lambda: self._call_backend(

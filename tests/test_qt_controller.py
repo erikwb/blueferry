@@ -1456,6 +1456,22 @@ def test_battery_warning_is_forwarded_and_merged_into_status(monkeypatch):
     assert controller.status["phone_battery_warning"] is True
 
 
+def test_auto_profile_reset_is_forwarded_and_merged_into_status(monkeypatch):
+    backend = _Backend()
+    saved = []
+    backend.set_auto_profile_reset = lambda enabled: saved.append(enabled) or enabled
+    controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+    monkeypatch.setattr(
+        controller, "_run",
+        lambda operation, on_done=None, *_args, **_kwargs: on_done(operation()),
+    )
+
+    controller.setAutoProfileReset(False)
+
+    assert saved == [False]
+    assert controller.status["profile_reset_auto"] is False
+
+
 def test_mpris_setting_is_forwarded_and_merged_into_status(monkeypatch):
     backend = _MediaBackend()
     backend.set_mpris_player = lambda enabled: {"media_mpris_enabled": enabled}

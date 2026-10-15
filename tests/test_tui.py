@@ -839,3 +839,45 @@ def test_b_reconnects_the_iphone_and_reports_the_result() -> None:
             assert notes and notes[-1].startswith("Reconnecting")
 
     _run_headless(scenario())
+
+
+def test_shift_b_toggles_the_automatic_profile_reset() -> None:
+    class ResetBackend(_Backend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.saved: list[bool] = []
+
+        @staticmethod
+        def status() -> BackendStatus:
+            return BackendStatus.from_dict({
+                "daemon": True, "map": False, "pbap": False, "ancs": False,
+                "profile_reset_auto": True,
+            })
+
+        def set_auto_profile_reset(self, enabled: bool) -> bool:
+            self.saved.append(enabled)
+            return enabled
+
+    async def scenario() -> None:
+        backend = ResetBackend()
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
+        notes: list[str] = []
+        original = app.notify
+
+        def notify(message, *args, **kwargs):
+            notes.append(str(message))
+            return original(message, *args, **kwargs)
+
+        app.notify = notify  # type: ignore[method-assign]
+        async with app.run_test(size=(120, 36)) as pilot:
+            await _wait_for_threads(app, pilot, 2)
+            app.set_focus(None)
+            await pilot.press("B")
+            for _ in range(50):
+                if notes:
+                    break
+                await pilot.pause(0.02)
+            assert backend.saved == [False]
+            assert notes and "no longer reset automatically" in notes[-1]
+
+    _run_headless(scenario())

@@ -415,6 +415,22 @@ Rectangle {
           wrapMode: Text.Wrap
           text: "Like any desktop music player, every application in your session can then read the title, artist and album."
         }
+        // Only daemons with the profile reset report its state.
+        FerrySectionLabel {
+          ferryTheme: root.theme
+          visible: root.status.profile_reset_auto !== undefined
+          text: "iPhone connection"
+        }
+        FerryCheckBox {
+          objectName: "autoProfileResetCheckBox"
+          ferryTheme: root.theme
+          visible: root.status.profile_reset_auto !== undefined
+          text: "Reset a stuck iPhone connection automatically"
+          checked: root.status.profile_reset_auto === true
+          enabled: root.setup.configured && !root.busy.autoProfileReset
+          Accessible.description: "Briefly disconnects the iPhone when call audio stays stuck, at most every ten minutes."
+          onClicked: root.operationRequested("set_auto_profile_reset", {enabled: checked})
+        }
         // Only daemons that report the away-lock keys support the setting.
         FerrySectionLabel {
           ferryTheme: root.theme

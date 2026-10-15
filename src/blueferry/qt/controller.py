@@ -1192,6 +1192,14 @@ class BridgeController(QObject):
         self._run(lambda: self._backend.set_phone_battery_warning(bool(enabled)), completed)
 
     @Slot(bool)
+    def setAutoProfileReset(self, enabled: bool) -> None:
+        def completed(value: object) -> None:
+            self._status["profile_reset_auto"] = bool(value)
+            self.statusChanged.emit()
+
+        self._run(lambda: self._backend.set_auto_profile_reset(bool(enabled)), completed)
+
+    @Slot(bool)
     def setCallsEnabled(self, enabled: bool) -> None:
         def completed(value: object) -> None:
             if isinstance(value, dict):

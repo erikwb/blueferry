@@ -401,6 +401,17 @@ Kirigami.ScrollablePage {
                     onClicked: iphonePage.bridge.reconnectPhone()
                 }
             }
+            // Only daemons with the profile reset report its state.
+            Controls.CheckBox {
+                objectName: "autoProfileResetCheckBox"
+                Layout.fillWidth: true
+                visible: iphonePage.bridge.status.profile_reset_auto !== undefined
+                text: qsTr("Reset a stuck iPhone connection automatically")
+                checked: iphonePage.bridge.status.profile_reset_auto === true
+                enabled: iphonePage.bridge.status.daemon === true && !iphonePage.bridge.busy
+                onClicked: iphonePage.bridge.setAutoProfileReset(checked)
+                Accessible.description: qsTr("Briefly disconnects the iPhone when call audio stays stuck, at most every ten minutes. Reconnect still resets it on request.")
+            }
         }
         Kirigami.InlineMessage {
             Layout.fillWidth: true

@@ -38,7 +38,12 @@ from blueferry.models import (
 from blueferry.onboarding import ancs_unavailable_detail
 from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH
 from blueferry.recipients import participant_lines
-from blueferry.reconnect_view import reconnect_view, result_text
+from blueferry.reconnect_view import (
+    UNSUPPORTED_AUTO_RESET_TEXT,
+    auto_reset_text,
+    reconnect_view,
+    result_text,
+)
 from blueferry.text_safety import terminal_text
 from blueferry.time_display import format_message_timestamp
 from blueferry.tui_calls import CallsScreen
@@ -91,6 +96,9 @@ class _Client(Protocol):
     def remove_notification_open_target(self, bundle_id: str) -> bool: ...
     # Manual Classic reconnect (Messages1.ReconnectPhone).
     def reconnect_phone(self) -> str: ...
+
+    # Messages1.SetAutoProfileReset; returns the saved value.
+    def set_auto_profile_reset(self, enabled: bool) -> bool: ...
 
 
 class _Monitor(Protocol):
@@ -556,6 +564,7 @@ class HelpScreen(ModalScreen[None]):
             f"{calls_line}"
             "[bold #7dd3fc]Notification click rules[/]  l\n"
             "[bold #7dd3fc]Reconnect iPhone[/]  b\n"
+            "[bold #7dd3fc]Automatic connection reset on/off[/]  B\n"
             "[bold #7dd3fc]Commands[/]  Ctrl+P\n"
             "[bold #7dd3fc]Refresh[/]  r\n"
             "[bold #7dd3fc]Back[/]  Esc\n"
@@ -594,6 +603,7 @@ class BlueFerryApp(App[None]):
         # contact-photo PRs; once one of them lands, the rules move there.
         Binding("l", "click_rules", "Click rules", show=False),
         Binding("b", "reconnect", "Reconnect iPhone", show=False),
+        Binding("B", "toggle_auto_reset", "Automatic connection reset", show=False),
         Binding("escape", "return_to_list", "Back", show=False),
     ]
 
@@ -1129,10 +1139,35 @@ class BlueFerryApp(App[None]):
                 self.notify, terminal_text(error), severity="error", markup=False,
             )
             return
-        failed = result in ("unreachable", "bluez-kernel", "bluez-unresponsive")
+        failed = result in (
+            "unreachable", "bluez-kernel", "bluez-unresponsive", "call-active",
+        )
         self.call_from_thread(
             self.notify, result_text(result),
             severity="error" if failed else "information", markup=False,
+        )
+        self.call_from_thread(self.action_refresh)
+
+    def action_toggle_auto_reset(self) -> None:
+        if isinstance(self.focused, Input | TextArea):
+            return
+        current = self.state.status.to_dict().get("profile_reset_auto")
+        if not isinstance(current, bool):
+            self.notify(UNSUPPORTED_AUTO_RESET_TEXT, severity="warning", markup=False)
+            return
+        self._set_auto_reset(not current)
+
+    @work(thread=True, group="auto-reset", exclusive=True, exit_on_error=False)
+    def _set_auto_reset(self, enabled: bool) -> None:
+        try:
+            selected = self.state.client.set_auto_profile_reset(enabled)
+        except BackendError as error:
+            self.call_from_thread(
+                self.notify, terminal_text(error), severity="error", markup=False,
+            )
+            return
+        self.call_from_thread(
+            self.notify, auto_reset_text(selected), severity="information", markup=False,
         )
         self.call_from_thread(self.action_refresh)
 
