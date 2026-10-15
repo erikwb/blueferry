@@ -172,7 +172,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `cli_common.py` | Small CLI presentation helpers. |
 | `cli_proximity.py` | `proximity-lock` status, dry run, enable, and disable. |
 | `cli_reconnect.py` | `reconnect`: manual Classic reconnect that waits for the outcome. |
-| `reconnect_view.py` | Toolkit-neutral texts for the manual reconnect (Qt, TUI, CLI). |
+| `reconnect_view.py` | Toolkit-neutral texts for the manual reconnect and rate limits (Qt banner and iPhone page, TUI key `b`, CLI). |
 | `cli_otp.py` | `otp-status` and `otp-check` for one-time code auto-copy. |
 | `cli_notifications.py` | `notifications open-map` rule editing. |
 | `cli_media.py` | `blueferry media` now-playing status, commands, and `enable`/`disable`. |

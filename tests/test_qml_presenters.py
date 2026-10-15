@@ -757,6 +757,7 @@ def settings_window(qml_engine):
             property var devices: []
             property var contactResults: []
             property var nowPlaying: ({})
+            property var reconnect: ({})
             property var compatibility: ({})
             property var onboardingCompatibility: compatibility
             property bool compatibilityLoaded: false
@@ -814,6 +815,7 @@ def settings_window(qml_engine):
             function answerCall(callId) { record("answerCall", [callId]); }
             function hangupCall(callId) { record("hangupCall", [callId]); }
             function hangupAllCalls() { record("hangupAllCalls", []); }
+            function reconnectPhone() { record("reconnectPhone", []); }
         }
     ''', QUrl())
     assert not component.isError(), [error.toString() for error in component.errors()]
@@ -972,6 +974,32 @@ def test_qt_warns_about_a_suspect_le_bond_only_when_the_backend_reports_it(
         BackendStatus.from_dict({"daemon": True, "le_bond_suspect": "true"}).to_dict(),
     )
     assert _evaluate(qml_engine, "testWindow.leBondSuspect()") is False
+
+
+def test_reconnect_banner_shows_only_states_that_need_attention(
+    qml_engine, settings_window,
+):
+    from PySide6.QtCore import QMetaObject
+
+    window, bridge = settings_window
+    message = _settings_object(window, "reconnectMessage")
+    bridge.setProperty("configured", True)
+    bridge.setProperty("reconnect", {
+        "available": True, "offered": True, "attention": False,
+        "hint": "Reconnecting automatically.",
+    })
+    QGuiApplication.processEvents()
+    assert message.property("visible") is False
+    bridge.setProperty("reconnect", {
+        "available": True, "offered": True, "attention": True,
+        "hint": "Waiting for the iPhone; next automatic try in 9 min.",
+    })
+    QGuiApplication.processEvents()
+    assert message.property("visible") is True
+    assert "9 min" in message.property("text")
+    action = _settings_object(window, "reconnectAction")
+    QMetaObject.invokeMethod(action, "trigger")
+    assert _evaluate(qml_engine, "testBridge.calls.map(c => c.method)")[-1] == "reconnectPhone"
 
 
 def test_optional_calls_dialog_lists_calls_and_dials_through_the_bridge(

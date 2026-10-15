@@ -485,6 +485,30 @@ Kirigami.ApplicationWindow {
                 }
 
                 Kirigami.InlineMessage {
+                    // The iPhone is out of reach, a profile is stuck, or
+                    // bluetoothd does not answer; plain automatic
+                    // reconnecting does not get a banner.
+                    objectName: "reconnectMessage"
+                    Layout.fillWidth: true
+                    visible: root.bridge.configured === true
+                        && (root.bridge.reconnect || ({})).attention === true
+                    text: root.htmlEscape((root.bridge.reconnect || ({})).hint || "")
+                    type: root.bridge.status.bluez_unresponsive === true
+                        ? Kirigami.MessageType.Error
+                        : Kirigami.MessageType.Warning
+                    position: Kirigami.InlineMessage.Position.Header
+                    actions: [
+                        Kirigami.Action {
+                            objectName: "reconnectAction"
+                            visible: root.bridge.status.bluez_unresponsive !== true
+                            text: qsTr("Reconnect")
+                            icon.name: "view-refresh"
+                            onTriggered: root.bridge.reconnectPhone()
+                        }
+                    ]
+                }
+
+                Kirigami.InlineMessage {
                     objectName: "leBondSuspectMessage"
                     Layout.fillWidth: true
                     visible: root.leBondSuspect()

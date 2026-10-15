@@ -377,6 +377,30 @@ Kirigami.ScrollablePage {
                 Kirigami.FormData.label: qsTr("Contact Destinations:")
                 text: iphonePage.bridge.status.contacts || "0"
             }
+            // Manual reconnect: the automatic Classic backoff can wait up to
+            // ten minutes, and a stuck profile needs a device reset.
+            RowLayout {
+                objectName: "reconnectRow"
+                Kirigami.FormData.label: qsTr("iPhone Link:")
+                Layout.fillWidth: true
+                visible: (iphonePage.bridge.reconnect || ({})).available === true
+                spacing: Kirigami.Units.smallSpacing
+                Controls.Label {
+                    objectName: "reconnectHint"
+                    Layout.fillWidth: true
+                    text: (iphonePage.bridge.reconnect || ({})).hint || ""
+                    textFormat: Text.PlainText
+                    wrapMode: Text.Wrap
+                }
+                Controls.Button {
+                    objectName: "reconnectButton"
+                    visible: (iphonePage.bridge.reconnect || ({})).offered === true
+                        && iphonePage.bridge.status.bluez_unresponsive !== true
+                    text: qsTr("Reconnect")
+                    icon.name: "view-refresh"
+                    onClicked: iphonePage.bridge.reconnectPhone()
+                }
+            }
         }
         Kirigami.InlineMessage {
             Layout.fillWidth: true

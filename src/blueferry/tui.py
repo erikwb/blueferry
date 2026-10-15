@@ -38,6 +38,7 @@ from blueferry.models import (
 from blueferry.onboarding import ancs_unavailable_detail
 from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH
 from blueferry.recipients import participant_lines
+from blueferry.reconnect_view import reconnect_view, result_text
 from blueferry.text_safety import terminal_text
 from blueferry.time_display import format_message_timestamp
 from blueferry.tui_calls import CallsScreen
@@ -88,6 +89,8 @@ class _Client(Protocol):
     ) -> list[dict[str, str]]: ...
 
     def remove_notification_open_target(self, bundle_id: str) -> bool: ...
+    # Manual Classic reconnect (Messages1.ReconnectPhone).
+    def reconnect_phone(self) -> str: ...
 
 
 class _Monitor(Protocol):
@@ -552,6 +555,7 @@ class HelpScreen(ModalScreen[None]):
             "[bold #7dd3fc]Delete conversation[/]  Delete\n"
             f"{calls_line}"
             "[bold #7dd3fc]Notification click rules[/]  l\n"
+            "[bold #7dd3fc]Reconnect iPhone[/]  b\n"
             "[bold #7dd3fc]Commands[/]  Ctrl+P\n"
             "[bold #7dd3fc]Refresh[/]  r\n"
             "[bold #7dd3fc]Back[/]  Esc\n"
@@ -589,6 +593,7 @@ class BlueFerryApp(App[None]):
         # "o" belongs to the Options screen of the one-time code and
         # contact-photo PRs; once one of them lands, the rules move there.
         Binding("l", "click_rules", "Click rules", show=False),
+        Binding("b", "reconnect", "Reconnect iPhone", show=False),
         Binding("escape", "return_to_list", "Back", show=False),
     ]
 
@@ -1105,6 +1110,31 @@ class BlueFerryApp(App[None]):
         self.push_screen(NotificationRulesScreen(
             self.state.client, policy_all=status.notification_policy == "all",
         ))
+
+    def action_reconnect(self) -> None:
+        if isinstance(self.focused, Input | TextArea):
+            return
+        view = reconnect_view(self.state.status.to_dict())
+        if not view.offered:
+            self.notify(view.hint, severity="information", markup=False)
+            return
+        self._reconnect()
+
+    @work(thread=True, group="reconnect", exclusive=True, exit_on_error=False)
+    def _reconnect(self) -> None:
+        try:
+            result = self.state.client.reconnect_phone()
+        except BackendError as error:
+            self.call_from_thread(
+                self.notify, terminal_text(error), severity="error", markup=False,
+            )
+            return
+        failed = result in ("unreachable", "bluez-kernel", "bluez-unresponsive")
+        self.call_from_thread(
+            self.notify, result_text(result),
+            severity="error" if failed else "information", markup=False,
+        )
+        self.call_from_thread(self.action_refresh)
 
     def action_toggle_star(self) -> None:
         focused = self.focused
