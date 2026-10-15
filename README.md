@@ -730,6 +730,18 @@ installed by default.
   (the published plugins use the desktop keyring).
 - **Disable** stops BlueFerry from calling a plugin at once and stops a
   plugin process it installed; `blueferry plugins disable ID`.
+- **Card and Send to**: `blueferry cards` lists what plugins offer, for
+  example the next calendar entry or a running transfer, with their
+  actions; `blueferry send FILE --to TARGET` hands files to a plugin target
+  such as "iPhone (LocalSend)".
+- **Popups** from plugins follow BlueFerry's notification setting: off with
+  "None", only the plugin name while notification content is hidden, at most
+  six a minute per plugin. The popup's text never travels on a D-Bus
+  signal: the daemon fetches it from the plugin it checked.
+- **Photos**: with a plugin that has the `photos` capability, such as
+  [blueferry-plugin-immich](https://github.com/joshii-h/blueferry-plugin-immich)
+  for a self-hosted Immich server, `blueferry photos recent` lists the newest
+  photos and videos.
 - **Logs**: plugins write `~/.local/state/blueferry/plugins/<id>.log`
   (owner-only, rotated, secrets masked); `blueferry plugins log ID`.
 
@@ -738,6 +750,10 @@ blueferry plugins list
 blueferry plugins available                 # the store
 blueferry plugins install https://github.com/joshii-h/blueferry-plugin-immich
 blueferry plugins config immich --set url=https://photos.example.org --secret api_key --test
+blueferry cards                             # what plugins show on the card
+blueferry send --list
+blueferry send photo.jpg --to localsend
+blueferry photos recent
 ```
 
 Plugin text is plain text, and a plugin may only ask BlueFerry to open web
