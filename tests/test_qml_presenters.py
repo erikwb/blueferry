@@ -2470,7 +2470,9 @@ def test_quickshell_offers_the_contact_photo_opt_in_only_when_reported(
     assert checkbox.property("checked") is False
     calls = []
     page.operationRequested.connect(
-        lambda method, args: calls.append((method, args.toVariant()))
+        lambda method, args: calls.append(
+            (method, args.toVariant() if hasattr(args, "toVariant") else args)
+        )
     )
     assert QMetaObject.invokeMethod(checkbox, "toggle")
     assert QMetaObject.invokeMethod(checkbox, "clicked")
@@ -2505,7 +2507,9 @@ def test_quickshell_offers_the_one_time_code_opt_in_only_when_reported(
     assert checkbox.property("checked") is False
     calls = []
     page.operationRequested.connect(
-        lambda method, args: calls.append((method, args.toVariant()))
+        lambda method, args: calls.append(
+            (method, args.toVariant() if hasattr(args, "toVariant") else args)
+        )
     )
     assert QMetaObject.invokeMethod(checkbox, "toggle")
     assert QMetaObject.invokeMethod(checkbox, "clicked")
