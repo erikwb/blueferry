@@ -239,10 +239,10 @@ def test_remote_qml_text_is_rendered_as_plain_text() -> None:
     qt_qml = _qml_bundle(ROOT / "src/blueferry/qt/qml")
     quickshell = (ROOT / "data/quickshell/shell.qml").read_text()
 
-    assert (
-        "text: contactDelegate.text\n"
-        "textFormat: Text.PlainText"
-    ) in "\n".join(line.strip() for line in qt_qml.splitlines())
+    # Contact suggestions are ListRows, whose labels are all plain text.
+    assert "title: contactDelegate.modelData.name" in qt_qml
+    list_row = (ROOT / "src/blueferry/qt/qml/ui/ListRow.qml").read_text()
+    assert list_row.count("textFormat: Text.PlainText") == 4
     assert "text: deviceCombo.displayText" not in qt_qml
     assert (
         "text: deviceOption.modelData.display_name\n"
