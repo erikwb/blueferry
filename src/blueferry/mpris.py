@@ -564,11 +564,7 @@ class MprisPlayer(dbus.service.Object):
     def _pause(self, sender) -> None:
         self._authorize(sender, "media-command")
         state = self._media.state
-        if state.playback_state is None:
-            # Shown as Paused but really unknown: the toggle does what the
-            # user sees the button offer, whatever the phone is doing.
-            self._command("toggle")
-        elif state.playing:
+        if state.playback_state is None or state.playing:
             self._command("pause")
         # Already paused: MPRIS says no effect.
 
@@ -583,15 +579,11 @@ class MprisPlayer(dbus.service.Object):
 
     @dbus.service.method(PLAYER_IFACE, in_signature="", out_signature="", sender_keyword="sender")
     def Play(self, sender=None) -> None:
-        # On hardware, with the playback state lost after an LE reconnect,
-        # MPRIS said Stopped and Play from the Plasma widget had no visible
-        # effect on a phone that was playing. With an unknown state, send
-        # the toggle (the state is shown as Paused); otherwise Play as asked.
+        # Unknown playback must not turn an explicit Play into a toggle:
+        # the phone may already be playing while PlaybackInfo catches up.
         self._authorize(sender, "media-command")
         state = self._media.state
-        if state.playback_state is None:
-            self._command("toggle")
-        elif not state.playing:
+        if not state.playing:
             self._command("play")
         # Already playing: MPRIS says no effect.
 

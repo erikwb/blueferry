@@ -499,7 +499,7 @@ def test_set_mpris_player_round_trip(service_factory) -> None:
     assert calls == [True]
 
 
-def test_mpris_unknown_playback_state_is_paused_and_play_toggles(mpris_factory) -> None:
+def test_mpris_unknown_playback_state_does_not_guess_toggle_direction(mpris_factory) -> None:
     """Hardware 2026-10-08: a playing audiobook without PlaybackInfo showed as
     Stopped and Play from the Plasma widget had no visible effect, while next,
     previous and the Kirigami client's TogglePlayPause worked."""
@@ -510,7 +510,7 @@ def test_mpris_unknown_playback_state_is_paused_and_play_toggles(mpris_factory) 
     assert _player_props(name)["PlaybackStatus"] == "Paused"
 
     assert "error" not in _call(name, MPRIS_PATH, PLAYER_IFACE, "Play")
-    assert writer.sent == [RemoteCommandID.TogglePlayPause]
+    assert writer.sent == []
 
     # Known states: Play when paused plays, Pause when paused does nothing,
     # Stop while playing pauses.
@@ -524,7 +524,40 @@ def test_mpris_unknown_playback_state_is_paused_and_play_toggles(mpris_factory) 
     assert _player_props(name)["PlaybackStatus"] == "Playing"
     assert "error" not in _call(name, MPRIS_PATH, PLAYER_IFACE, "Stop")
     # _media() advertises only the toggle, so play and pause fall back to it.
-    assert writer.sent == [RemoteCommandID.TogglePlayPause] * 3
+    assert writer.sent == [RemoteCommandID.TogglePlayPause] * 2
+
+
+@pytest.mark.parametrize(("method", "expected"), [
+    ("Pause", RemoteCommandID.Pause),
+    ("Stop", RemoteCommandID.Pause),
+    ("Play", RemoteCommandID.Play),
+])
+@pytest.mark.parametrize("commands_known", [False, True])
+def test_unknown_playback_preserves_explicit_commands(
+    mpris_factory, method, expected, commands_known,
+) -> None:
+    media, writer = _media()
+    media.handle_supported_commands(frozenset({
+        RemoteCommandID.Play, RemoteCommandID.Pause, RemoteCommandID.TogglePlayPause,
+    }) if commands_known else None)
+    _bus, name, player = mpris_factory(media)
+    media.handle_update(EntityUpdate(EntityID.Track, 2, False, "Review track"))
+    _dispatch_until(lambda: player.owned)
+    assert media.state.playback_state is None
+    assert "error" not in _call(name, MPRIS_PATH, PLAYER_IFACE, method)
+    assert writer.sent == [expected]
+
+
+def test_unknown_playback_with_toggle_only_never_guesses_explicit_commands(mpris_factory):
+    media, writer = _media()
+    _bus, name, player = mpris_factory(media)
+    media.handle_update(EntityUpdate(EntityID.Track, 2, False, "Review track"))
+    _dispatch_until(lambda: player.owned)
+    for method in ("Pause", "Stop", "Play"):
+        assert "error" not in _call(name, MPRIS_PATH, PLAYER_IFACE, method)
+    assert writer.sent == []
+    assert "error" not in _call(name, MPRIS_PATH, PLAYER_IFACE, "PlayPause")
+    assert writer.sent == [RemoteCommandID.TogglePlayPause]
 
 
 def test_mpris_keeps_transport_usable_while_the_command_list_is_unknown(

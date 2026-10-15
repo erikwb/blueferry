@@ -125,6 +125,10 @@ def test_toggle_and_play_pause_fall_back_to_the_advertised_variant() -> None:
     assert media.resolve_command("toggle") == RemoteCommandID.Pause
 
     media, _, _ = _controller(supported=[RemoteCommandID.TogglePlayPause])
+    for command in ("play", "pause"):
+        with pytest.raises(NotReadyError):
+            media.resolve_command(command)
+    media.handle_update(_update(EntityID.Player, 1, "0,0.0,0"))
     assert media.resolve_command("play") == RemoteCommandID.TogglePlayPause
     with pytest.raises(NotReadyError):
         media.resolve_command("pause")  # already paused: toggling would play

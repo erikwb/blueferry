@@ -727,9 +727,11 @@ specification-based expectation, not a captured result.
   write becomes one step, MPRIS `CanSeek` is false and `Seek`/`SetPosition`
   have no effect, and MPRIS `Stop` pauses. A track whose PlaybackInfo is not
   known yet reports `Paused`, not `Stopped` (desktops answer Stopped with
-  Play), and `Play`, `Pause` and `Stop` are then sent as TogglePlayPause;
-  with a known state they are sent as asked, or have no effect if the phone
-  is already in that state. The skips remain available through
+  Play). Explicit `Play`, `Pause` and `Stop` retain their direction while
+  playback is unknown; a toggle-only command list cannot safely satisfy
+  them. With a known state, a toggle can supply the requested transition,
+  or the call has no effect if the phone is already in that state. Only
+  `PlayPause` always requests a toggle. The skips remain available through
   `Media1`. MPRIS `Rate` follows the PlaybackInfo rate (the last positive one
   while paused, since MPRIS forbids 0), `Volume` is omitted (from `Get`,
   `GetAll` and introspection alike) until the phone reports it, the transport
