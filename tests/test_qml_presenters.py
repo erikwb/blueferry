@@ -31,7 +31,7 @@ from PySide6.QtCore import (
     Slot,
 )
 from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication, QImage
-from PySide6.QtQml import QQmlComponent, QQmlEngine
+from PySide6.QtQml import QQmlComponent, QQmlEngine, qmlEngine
 from PySide6.QtQuick import QQuickWindow
 from PySide6.QtTest import QTest
 
@@ -758,6 +758,8 @@ def settings_window(qml_engine):
             property var contactResults: []
             property var nowPlaying: ({})
             property var phoneAudio: ({})
+            property var features: ({})
+            property var doctor: ({})
             property var compatibility: ({})
             property var onboardingCompatibility: compatibility
             property bool compatibilityLoaded: false
@@ -804,6 +806,12 @@ def settings_window(qml_engine):
             function setPhoneBatteryWarning(enabled) { record("setPhoneBatteryWarning", [enabled]); }
             function setMprisPlayer(enabled) { record("setMprisPlayer", [enabled]); }
             function setPhoneAudioRoute(route) { record("setPhoneAudioRoute", [route]); }
+            property int featureLoads: 0
+            function loadFeatures() { featureLoads += 1; }
+            function setFeature(name, enabled) { record("setFeature", [name, enabled]); }
+            function runDoctor() { record("runDoctor", []); }
+            function restartBackend() { record("restartBackend", []); }
+            function syncContacts() { record("syncContacts", []); }
             function forgetDevice(mac) { record("forgetDevice", [mac]); }
             function activateBluetooth() { record("activateBluetooth", []); }
             function filePairingIssue() { record("filePairingIssue", []); }
@@ -851,8 +859,49 @@ def _evaluate(engine, script):
     return result.toVariant()
 
 
-def _settings_object(window, name):
+SETTINGS_CATEGORIES = ("phone", "notifications", "calls", "security", "about")
+
+
+_FIND_JS = """(function find(item, name) {
+    const children = item.children || [];
+    for (let index = 0; index < children.length; ++index) {
+        const child = children[index];
+        if (child.objectName === name) return child;
+        const found = find(child, name);
+        if (found) return found;
+    }
+    return null;
+})"""
+
+
+def _visual_find(root, name, engine=None):
+    """Search the visual tree in QML: Repeater delegates are not QObject
+    children, and walking it from Python trips over unwrappable types."""
+    engine = engine or qmlEngine(root)
+    finder = engine.evaluate(_FIND_JS)
+    found = finder.call([engine.newQObject(root), name])
+    return found.toQObject() if found.isQObject() else None
+
+
+def _find(window, name):
     obj = window.findChild(QObject, name)
+    page = window.findChild(QObject, "phoneSettingsPage")
+    if obj is None and page is not None:
+        obj = _visual_find(page, name)
+    return obj
+
+
+def _settings_object(window, name):
+    """Find a control on the settings page, opening the category that holds it."""
+    obj = _find(window, name)
+    page = window.findChild(QObject, "phoneSettingsPage")
+    if obj is None and page is not None:
+        for category in SETTINGS_CATEGORIES:
+            page.setProperty("category", category)
+            QGuiApplication.processEvents()
+            obj = _find(window, name)
+            if obj is not None:
+                break
     assert obj is not None, name
     return obj
 
@@ -907,14 +956,16 @@ def test_qt_pairing_checkbox_reaches_the_helper(
         bridge._compatibility = {**bridge._compatibility, "powered": True}
         bridge.compatibilityChanged.emit()
         assert checkbox.property("checked") is explicit
+        # Opening the settings page also asks for the feature switches.
+        before = len(operations)
         _click_control(window, _settings_object(window, "pairPhoneButton"))
         if replace:
             dialog = _settings_object(window, "replaceTargetDialog")
             assert dialog.property("visible")
             qml_engine.globalObject().setProperty("pairingDialog", qml_engine.newQObject(dialog))
             _evaluate(qml_engine, "pairingDialog.customFooterActions[0].trigger()")
-        assert len(operations) == 1
-        operations[0]()
+        assert len(operations) == before + 1
+        operations[-1]()
         assert len(calls) == 1
         mac, options = calls[0]
         assert mac == "NEW"
@@ -1262,7 +1313,7 @@ def test_phone_audio_switch_appears_only_for_supporting_daemons(qml_engine, sett
     assert loader.property("active") is True
     switch = _settings_object(window, "phoneAudioSwitch")
     assert switch.property("checked") is False and switch.property("enabled") is True
-    assert _settings_object(window, "phoneAudioHint").property("text") == "Playing on the iPhone."
+    assert switch.property("subtitle") == "Playing on the iPhone."
 
     assert QMetaObject.invokeMethod(switch, "toggle")
     assert QMetaObject.invokeMethod(switch, "toggled")
@@ -1279,7 +1330,9 @@ def test_phone_audio_switch_appears_only_for_supporting_daemons(qml_engine, sett
     })
     QGuiApplication.processEvents()
     assert switch.property("enabled") is False
-    assert "connected" in _settings_object(window, "phoneAudioHint").property("text")
+    assert "connected" in switch.property("subtitle")
+    # Checked follows the reported route, not the click.
+    assert switch.property("checked") is False
 
 
 def test_ancs_actions_checkbox_is_opt_in_and_gated(qml_engine, settings_window):
@@ -3556,3 +3609,95 @@ Item {
     log = result.stdout + result.stderr
     assert result.returncode == 0 and "BLUEFERRY_AVATARS_OK" in log, log
     assert "WARN scene:" not in log and "ReferenceError" not in log and "TypeError" not in log, log
+
+
+def _open_category(qml_engine, window, category):
+    _evaluate(qml_engine, "testWindow.openPhoneSettings()")
+    QGuiApplication.processEvents()
+    page = window.findChild(QObject, "phoneSettingsPage")
+    QMetaObject.invokeMethod(page, "open", Q_ARG("QVariant", category))
+    QGuiApplication.processEvents()
+    return page
+
+
+def test_settings_categories_switch_features_and_ask_for_a_restart(qml_engine, settings_window):
+    window, bridge = settings_window
+    bridge.setProperty("status", {"daemon": True})
+    bridge.setProperty("features", {"loaded": True, "available": True, "items": {
+        "keep_phone_audio_on_phone": {
+            "value": False, "running": False, "source": "default",
+            "variable": "BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE", "restart_required": False,
+        },
+        "show_notification_content": {
+            "value": True, "running": False, "source": "environment",
+            "variable": "BLUEFERRY_SHOW_NOTIFICATION_CONTENT", "restart_required": False,
+        },
+    }})
+    page = _open_category(qml_engine, window, "calls")
+    assert bridge.property("featureLoads") >= 1
+    switch = _settings_object(window, "feature_keep_phone_audio_on_phone")
+    assert switch.property("enabled") is True and switch.property("checked") is False
+    QMetaObject.invokeMethod(switch, "toggle")
+    QMetaObject.invokeMethod(switch, "toggled")
+    assert _evaluate(qml_engine, "testBridge.calls")[-1] == {
+        "method": "setFeature", "args": ["keep_phone_audio_on_phone", True],
+    }
+    # A switch the daemon does not report (older daemon) names the variable;
+    # one the service environment sets cannot be changed here.
+    page.setProperty("category", "notifications")
+    QGuiApplication.processEvents()
+    unknown = _settings_object(window, "feature_mark_read_on_dismiss")
+    assert unknown.property("enabled") is False
+    assert "BLUEFERRY_MARK_READ_ON_DISMISS" in unknown.property("subtitle")
+    pinned = _settings_object(window, "feature_show_notification_content")
+    assert pinned.property("enabled") is False and "environment" in pinned.property("subtitle")
+    notice = _settings_object(window, "restartNotice")
+    assert notice.property("visible") is False
+    bridge.setProperty("features", {"loaded": True, "available": True, "items": {
+        "keep_phone_audio_on_phone": {
+            "value": True, "running": False, "source": "settings",
+            "variable": "BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE", "restart_required": True,
+        },
+    }})
+    QGuiApplication.processEvents()
+    assert notice.property("visible") is True
+    _evaluate(qml_engine, "testWindow.closePhoneSettings()")
+
+
+def test_settings_drill_down_in_a_narrow_window(qml_engine, settings_window):
+    window, _bridge = settings_window
+    page = _open_category(qml_engine, window, "phone")
+    page.setProperty("drilled", False)
+    window.resize(440, window.height())
+    QGuiApplication.processEvents()
+    assert page.property("narrow") is True
+    categories = window.findChild(QObject, "settingsCategories")
+    detail = window.findChild(QObject, "settingsDetail")
+    assert categories.property("visible") is True and detail.property("visible") is False
+    QMetaObject.invokeMethod(page, "open", Q_ARG("QVariant", "about"))
+    QGuiApplication.processEvents()
+    assert categories.property("visible") is False and detail.property("visible") is True
+    assert _settings_object(window, "aboutButton") is not None
+    assert _settings_object(window, "shortcutsButton") is not None
+    _evaluate(qml_engine, "testWindow.closePhoneSettings()")
+
+
+def test_settings_run_the_doctor_and_show_its_report_as_plain_text(qml_engine, settings_window):
+    window, bridge = settings_window
+    bridge.setProperty("status", {"daemon": True})
+    _open_category(qml_engine, window, "phone")
+    button = _settings_object(window, "runDoctorButton")
+    summary = _settings_object(window, "doctorSummary")
+    report = _settings_object(window, "doctorReport")
+    assert summary.property("visible") is False and report.property("visible") is False
+    QMetaObject.invokeMethod(button, "clicked")
+    assert _evaluate(qml_engine, "testBridge.calls")[-1] == {"method": "runDoctor", "args": []}
+    bridge.setProperty("doctor", {"running": False, "ran": True, "ok": True, "warnings": True,
+                                  "text": "WARNING doctor: <b>Adapter</b> CoD"})
+    QGuiApplication.processEvents()
+    assert summary.property("visible") is True
+    assert "warnings" in summary.property("text")
+    qml_engine.globalObject().setProperty("doctorReport", qml_engine.newQObject(report))
+    assert _evaluate(qml_engine, "Number(doctorReport.textFormat)") == 0  # PlainText
+    assert report.property("text") == "WARNING doctor: <b>Adapter</b> CoD"
+    _evaluate(qml_engine, "testWindow.closePhoneSettings()")

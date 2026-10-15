@@ -201,8 +201,8 @@ Kirigami.ApplicationWindow {
     globalDrawer: Kirigami.GlobalDrawer {
         actions: [
             Kirigami.Action {
-                text: qsTr("iPhone Settings")
-                icon.name: "phone"
+                text: qsTr("Settings")
+                icon.name: "configure"
                 onTriggered: root.openPhoneSettings()
             },
             Kirigami.Action {
@@ -940,10 +940,15 @@ Kirigami.ApplicationWindow {
     Component {
         id: iphonePageComponent
 
-        PhoneSettingsPage {
+        SettingsPage {
             bridge: root.bridge
             onCloseRequested: root.closePhoneSettings()
             onClearHistoryRequested: clearDialog.open()
+            onShortcutsRequested: shortcutsDialog.open()
+            onAboutRequested: {
+                root.closePhoneSettings()
+                root.pageStack.layers.push(aboutPage)
+            }
             onBluetoothRestartRequested: phoneSettingsDialogs.requestBluetoothRestart()
             onPairingIssueRequested: phoneSettingsDialogs.showPairingIssue()
             onForgetRequested: mac => phoneSettingsDialogs.requestForget(mac)
