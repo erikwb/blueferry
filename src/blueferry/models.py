@@ -41,6 +41,16 @@ def _optional_str(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+PHONE_AUDIO_PLAYING = frozenset({"pc", "phone", "none", "unknown"})
+
+
+def _audio_playing(value: Any) -> str | None:
+    """A known ``phone_audio_playing`` value; a newer one reads as unknown."""
+    if value is None:
+        return None
+    return value if value in PHONE_AUDIO_PLAYING else "unknown"
+
+
 @dataclass(frozen=True, slots=True)
 class BackendStatus:
     daemon: bool = False
@@ -78,6 +88,9 @@ class BackendStatus:
     phone_signal_strength: int | None = None
     phone_network_name: str | None = None
     phone_network_status: str | None = None
+    # Where the iPhone's sound plays: "pc", "phone", "none" or "unknown";
+    # None when the daemon predates the key.
+    phone_audio_playing: str | None = None
     extra: Mapping[str, Any] = field(default_factory=dict, repr=False)
 
     @property
@@ -124,6 +137,7 @@ class BackendStatus:
             "phone_signal_strength",
             "phone_network_name",
             "phone_network_status",
+            "phone_audio_playing",
         }
         return cls(
             daemon=_bool(value.get("daemon")),
@@ -164,12 +178,18 @@ class BackendStatus:
             phone_signal_strength=_percent(value.get("phone_signal_strength")),
             phone_network_name=_optional_str(value.get("phone_network_name")),
             phone_network_status=_optional_str(value.get("phone_network_status")),
+            phone_audio_playing=_audio_playing(value.get("phone_audio_playing")),
             extra={key: item for key, item in value.items() if key not in known},
         )
 
     def to_dict(self) -> dict[str, Any]:
         # Clients offer the calls opt-in only when the key is present.
-        reported = {} if self.calls_enabled is None else {"calls_enabled": self.calls_enabled}
+        reported: dict[str, object] = (
+            {} if self.calls_enabled is None else {"calls_enabled": self.calls_enabled}
+        )
+        # Absent for daemons that predate it, so clients keep the old wording.
+        if self.phone_audio_playing is not None:
+            reported["phone_audio_playing"] = self.phone_audio_playing
         return {
             **self.extra,
             **reported,
