@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from blueferry import daemon as daemon_mod
+from blueferry.bluez_health import BluezHealth
 
 
 def _idle_recovery():
@@ -367,6 +368,10 @@ def test_busy_adapter_during_root_start_leaves_repair_to_supervisor(
     monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args, **_kwargs: True)
     instance.phone_audio = SimpleNamespace(reconcile=lambda **_kwargs: None)
     instance.adapter_class = SimpleNamespace(start=lambda: order.append("class"))
+    # The BlueZ ping has its own tests; keep its timer and bus calls inert.
+    instance.bluez_health = BluezHealth(
+        ping=lambda _ok, _err: None, schedule=lambda *_args: 1, cancel=lambda _id: None,
+    )
 
     # The real root path: class differs, btmgmt runs directly and says Busy.
     bluez_setup = daemon_mod.bluez_setup
