@@ -497,3 +497,28 @@ def test_set_mpris_player_round_trip(service_factory) -> None:
     result = _call(name, OBJECT_PATH, MEDIA_IFACE, "SetMprisPlayer", dbus.Boolean(True))
     assert json.loads(result["value"]) == {"media_mpris_enabled": True}
     assert calls == [True]
+
+
+def test_mpris_keeps_transport_usable_while_the_command_list_is_unknown(
+    mpris_factory,
+) -> None:
+    """Hardware 2026-10-08: after an LE reconnect iOS sent no command list,
+    and Plasma showed the player with every Can* false."""
+    media, writer = _media()
+    _bus, name, player = mpris_factory(media)
+    _play(media)
+    _dispatch_until(lambda: player.owned)
+
+    media.handle_supported_commands(None)
+    _dispatch_until(lambda: _player_props(name)["CanGoPrevious"])
+    props = _player_props(name)
+    assert props["CanGoNext"] and props["CanPlay"] and props["CanPause"]
+    assert props["CanControl"] and not props["CanSeek"]
+    assert "error" not in _call(name, MPRIS_PATH, PLAYER_IFACE, "Previous")
+    assert writer.sent[-1] == RemoteCommandID.PreviousTrack
+
+    # A list the phone did send is followed exactly, even when empty.
+    media.handle_supported_commands(frozenset())
+    _dispatch_until(lambda: not _player_props(name)["CanGoNext"])
+    props = _player_props(name)
+    assert not (props["CanGoPrevious"] or props["CanPlay"] or props["CanPause"])

@@ -3111,6 +3111,18 @@ def test_now_playing_bar_is_absent_until_media_is_available(
         {}, testBridge.nowPlaying, {player: {state: "playing"}})""")
     QGuiApplication.processEvents()
 
+    # An unknown list (not sent after a reconnect) keeps the transport usable;
+    # a known list without "previous" disables it again.
+    _evaluate(qml_engine, """testBridge.nowPlaying = Object.assign(
+        {}, testBridge.nowPlaying, {supported_commands: [], supported_commands_known: false})""")
+    QGuiApplication.processEvents()
+    assert window.findChild(QObject, "nowPlayingPrevious").property("enabled")
+    _evaluate(qml_engine, """testBridge.nowPlaying = Object.assign(
+        {}, testBridge.nowPlaying,
+        {supported_commands: ["next", "toggle"], supported_commands_known: true})""")
+    QGuiApplication.processEvents()
+    assert not window.findChild(QObject, "nowPlayingPrevious").property("enabled")
+
     _click_control(window, window.findChild(QObject, "nowPlayingNext"))
     _click_control(window, window.findChild(QObject, "nowPlayingToggle"))
     assert _evaluate(

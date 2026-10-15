@@ -257,6 +257,58 @@ def test_new_call_from_the_same_number_is_still_announced(storage) -> None:
     assert result.new_missed == [second]
 
 
+def test_new_call_after_one_deleted_on_the_phone_is_still_announced(storage) -> None:
+    """Review case: a deleted entry plus a call a whole 15 min later."""
+    repository = CallHistoryRepository(storage)
+    other = _floating(INCOMING, "20260928T080000", "15551230009")
+    repository.replace([other], now=NOW)
+    deleted = _floating(MISSED, "20260928T100000")
+    assert repository.replace([deleted, other], now=NOW).new_missed == [deleted]
+    # The user deleted that entry on the phone; the same number calls again
+    # exactly two hours later. The untouched entry shows nothing was
+    # re-rendered, so the new call must pop.
+    second = _floating(MISSED, "20260928T120000")
+
+    result = repository.replace([second, other], now=NOW)
+
+    assert result.new_missed == [second]
+
+
+def test_partial_poll_with_an_unchanged_missed_call_is_no_rerender(storage) -> None:
+    repository = CallHistoryRepository(storage)
+    kept = _floating(MISSED, "20260928T090000", "15551230009")
+    deleted = _floating(MISSED, "20260928T100000")
+    repository.replace([_floating(INCOMING, "20260928T080000")], now=NOW)
+    repository.replace([deleted, kept], now=NOW, directions=frozenset({MISSED}))
+    second = _floating(MISSED, "20260928T113000")
+
+    result = repository.replace(
+        [second, kept], now=NOW, directions=frozenset({MISSED}),
+    )
+
+    assert result.new_missed == [second]
+
+
+def test_rerender_needs_one_common_shift(storage) -> None:
+    repository = CallHistoryRepository(storage)
+    repository.replace([_floating(INCOMING, "20260928T080000", "15551230009")], now=NOW)
+    before = [
+        _floating(MISSED, "20260928T100000"),
+        _floating(MISSED, "20260928T103000", "15551230002"),
+    ]
+    repository.replace(before, now=NOW)
+    # Every entry changed, but by different amounts: only the shift that
+    # explains the most calls (ties: the smaller) counts as a re-render.
+    after = [
+        _floating(MISSED, "20260928T090000"),
+        _floating(MISSED, "20260928T123000", "15551230002"),
+    ]
+
+    result = repository.replace(after, now=NOW)
+
+    assert [record.raw_time for record in result.new_missed] == ["20260928T123000"]
+
+
 def test_a_different_phone_resets_the_mirror_and_seeds_silently(storage) -> None:
     repository = CallHistoryRepository(storage)
     repository.replace([_call(MISSED, 30)], now=NOW, phone="AA:BB:CC:DD:EE:01")
@@ -387,7 +439,7 @@ def test_manual_callers_join_one_pull(harness) -> None:
     assert harness.phone.pulls == 1
 
 
-def test_pull_failure_keeps_the_previous_list_and_reports_the_transport(harness) -> None:
+def test_pull_failure_keeps_the_previous_list_and_leaves_the_sessions_alone(harness) -> None:
     harness.phone.calls = [_call(OUTGOING, 1)]
     harness.sync.sync()
     harness.run()
@@ -403,7 +455,7 @@ def test_pull_failure_keeps_the_previous_list_and_reports_the_transport(harness)
     assert [str(error) for error in failures] == [
         "org.freedesktop.DBus.Error.UnknownObject: transfer gone"
     ]
-    assert len(harness.errors) == 1
+    assert harness.errors == []
     assert harness.sync.records() == [_call(OUTGOING, 1)]
 
 
@@ -870,15 +922,14 @@ def test_requests_coalesce_to_a_full_pull_if_any_asked_for_one(gated) -> None:
     assert gated.phone.listings == ["ich", "och", "mch", "mch"]
 
 
-@pytest.mark.parametrize(("message", "reported"), [
-    ("org.freedesktop.DBus.Error.NoReply: Did not receive a reply", False),
-    ("transfer timed out", False),
-    ("org.freedesktop.DBus.Error.UnknownObject: no such session", True),
-    ("org.freedesktop.DBus.Error.ServiceUnknown: obexd is gone", True),
+@pytest.mark.parametrize("message", [
+    "org.freedesktop.DBus.Error.NoReply: Did not receive a reply",
+    "transfer timed out",
+    "org.freedesktop.DBus.Error.UnknownObject: no such session",
+    "org.freedesktop.DBus.Error.ServiceUnknown: obexd is gone",
 ])
-def test_only_a_vanished_session_is_reported_never_a_timeout(
-    harness, message, reported,
-) -> None:
+def test_call_history_failures_never_drop_the_obex_sessions(harness, message) -> None:
+    """Vanished sessions are seen by the session manager's own watch."""
     def broken(_sessions, _phonebook, _direction):
         raise RuntimeError(message)
 
@@ -886,7 +937,7 @@ def test_only_a_vanished_session_is_reported_never_a_timeout(
     harness.sync.sync()
     harness.run()
 
-    assert bool(harness.errors) is reported
+    assert harness.errors == []
     assert not harness.sync.pending
 
 

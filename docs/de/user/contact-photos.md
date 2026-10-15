@@ -20,7 +20,7 @@ flowchart LR
 ```
 
 Das Backend dekodiert selbst nie ein Bild. Es prüft nur, ob ein Foto ein JPEG
-oder PNG mit höchstens 1 MiB und 2048×2048 Pixeln ist. Dekodiert wird in
+oder PNG mit höchstens 256 KiB und 2048×2048 Pixeln ist. Dekodiert wird in
 den Desktop-Clients und in deinem Mitteilungsdienst.
 
 ## Einschalten
@@ -72,9 +72,11 @@ Speichermodus ändert.
 
 - Nur JPEG- und PNG-Fotos werden behalten. Fotos, die nur als Link angegeben
   sind, werden nie heruntergeladen.
-- Ein Foto pro Kontakt, höchstens 1 MiB pro Foto und 32 MiB pro
+- Ein Foto pro Kontakt, höchstens 256 KiB pro Foto und 16 MiB pro
   Synchronisierung. Ist das Budget einer Synchronisierung aufgebraucht,
-  werden spätere Fotos übersprungen, und das Log nennt ihre Anzahl.
+  werden spätere Fotos übersprungen, und das Log nennt ihre Anzahl. Zum
+  Vergleich: Ein iPhone mit iOS 27 schickte bei 3730 Kontakten 42 Fotos,
+  alles kleine Vorschaubilder (2 bis 19 KiB, im Schnitt etwa 5 KiB).
 - Ein Foto erscheint nur, wenn die Adresse genau einem Kontakt gehört. Eine
   Nummer, die zwei Kontakte teilen, zeigt keines der beiden Fotos, und von
   einem Kontakt, dessen Nummern alle geteilt sind, wird das Foto gar nicht
@@ -98,11 +100,12 @@ Zahlen enthält, nie einen Namen, eine Nummer oder ein Bild:
 journalctl --user -u blueferry | grep "with photos"
 ```
 
-Sie zeigt, wie viele Fotos in welchen Größenbereich fielen und warum Fotos
-nicht behalten wurden (`too-large`, `dimensions`, `format`, `not-inline`,
-`shared`, `budget`, `time`). Wenn viele Fotos `too-large` oder `dimensions`
-sind, melde die Zeile bitte; die Grenzen sind Schätzungen, die noch nicht mit
-einem echten iPhone geprüft wurden.
+Sie zeigt, wie viele Fotos in welchen Größenbereich fielen (`<=16KiB` bis
+`>8MiB`, Fotos über der Grenze zeigen also, wie weit darüber sie liegen), das
+größte Foto in Bytes (`max:`) und warum Fotos nicht behalten wurden
+(`too-large`, `dimensions`, `format`, `not-inline`, `shared`, `budget`,
+`time`). Die Grenzen beruhen auf einem iPhone; wenn bei deinem viele Fotos
+`too-large` oder `dimensions` sind, melde die Zeile bitte.
 
 ## Datenschutz
 

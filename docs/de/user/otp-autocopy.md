@@ -46,13 +46,14 @@ flowchart LR
     „verification code", „Steam Guard code", …;
   - „Code" direkt vor der Zahl: „Code: 123456", „Code lautet 123456";
   - „123456 ist Ihr … Code";
-  - „Code" unmittelbar vor der Zahl, etwa „Telegram code 58291";
+  - ein Dienstname, dann „Code" und die Zahl, etwa „Telegram code 58291"
+    (ein Gruss wie „Hallo Code 4821" ist kein Dienstname);
   - „geben Sie 123456 ein" oder „enter 123456" in einem Satz über
     Authentifizierung oder das Zurücksetzen eines Passworts.
 
-  Einfache PINs und Passwörter brauchen Authentifizierungskontext. Tür- und
-  WLAN-Codes sowie Zahlen mit Einheiten wie Schritten oder Nachrichten
-  werden ausgeschlossen. Ein Code-Wort in einem anderen Satz bindet keine
+  Einfache PINs und Passwörter brauchen Authentifizierungskontext. Codes,
+  die Menschen teilen („mein Code", Tür-, Alarm- und WLAN-Codes), sowie
+  Zahlen mit Einheiten wie Schritten oder Nachrichten werden ausgeschlossen. Ein Code-Wort in einem anderen Satz bindet keine
   unzusammenhängende Zahl.
 
   Wörter wie „Einmal", „verify" oder „one-time" allein binden keine Zahl;

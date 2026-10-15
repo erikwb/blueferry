@@ -73,6 +73,14 @@ solange **All iPhone Notifications** ausgewählt ist. Dort lassen sich Regeln
 hinzufügen, ändern und entfernen. Änderungen per CLI erscheinen im Editor und
 umgekehrt.
 
+### Terminal-Client
+
+In `blueferry-tui` öffnet `l` das Fenster für Klickregeln. Es listet die
+Regeln auf; Enter auf einer Regel übernimmt sie ins Formular, **Save** legt
+eine Regel an oder ändert sie, **Remove** löscht die markierte. Meldet das
+Fenster, dass Regeln nicht greifen, wähle in den Einstellungen eines
+grafischen Clients **All iPhone Notifications**.
+
 Regeln wirken sofort, ein Neustart des Dienstes ist nicht nötig.
 
 ### IDs finden
@@ -104,8 +112,8 @@ Regeln wirken sofort, ein Neustart des Dienstes ist nicht nötig.
   Pfade, Argumente oder Befehle. Die CLI warnt, wenn der Eintrag nicht
   installiert ist; ein fehlender Eintrag bewirkt beim Klick nichts.
 - Höchstens 64 Regeln.
-- GTK, Quickshell und der Terminal-Client haben keinen Editor; dort hilft die
-  CLI.
+- GTK und Quickshell haben keinen Editor; dort helfen die CLI, der Qt-Client
+  oder der Terminal-Client.
 - Mit systemd startet das Ziel in einer eigenen, kurzlebigen User-Unit
   (`app-blueferry-open-*.service`), weil die Sandbox des BlueFerry-Dienstes
   einen Browser behindern würde. Ohne systemd (zum Beispiel OpenRC) wird es

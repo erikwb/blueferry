@@ -715,3 +715,86 @@ def test_user_replaceable_symlink_never_reaches_sudo(monkeypatch, tmp_path):
     with pytest.raises(bluez_setup.CodAuthorizationRefused):
         bluez_setup.set_cod(adapter="hci0", authorize=True)
     assert calls == []
+
+
+# btmgmt's real failure line right after `rc-service bluetooth restart`,
+# coloured and wrapped in readline prompt markers.
+_BUSY_STDOUT = (
+    "\x01\x1b[0;91m\x02Set Dev Class failed, status 0x0a (Busy)"
+    "\x01\x1b[0m\x02\n"
+)
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        _BUSY_STDOUT,
+        "\x1b[0;91mSet Dev Class failed, status 0x0a (Busy)\x1b[0m",
+        "Set Dev Class failed, status 0x0A",
+        "Set Dev Class failed (BUSY)",
+    ],
+)
+def test_btmgmt_busy_is_recognised_through_terminal_colours(output):
+    assert bluez_setup._btmgmt_busy(output) is True
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        "Set Dev Class failed, status 0x11 (Invalid Index)",
+        "Set Dev Class failed, status 0x0a1",
+        "Invalid index",
+        "",
+    ],
+)
+def test_other_btmgmt_failures_are_not_busy(output):
+    assert bluez_setup._btmgmt_busy(output) is False
+
+
+def test_busy_adapter_under_sudo_raises_adapter_busy(monkeypatch):
+    _without_systemd(
+        monkeypatch,
+        executables={bluez_setup.SET_COD_HELPER, bluez_setup.SUDO},
+        result=SimpleNamespace(returncode=1, stdout=_BUSY_STDOUT, stderr=""),
+    )
+
+    with pytest.raises(bluez_setup.CodAdapterBusy) as failure:
+        bluez_setup.set_cod(adapter="hci0", authorize=True)
+
+    assert isinstance(failure.value, bluez_setup.PairingError)
+    assert not isinstance(failure.value, bluez_setup.CodAuthorizationRefused)
+    assert str(failure.value) == bluez_setup.COD_ADAPTER_BUSY_MESSAGE
+
+
+def test_busy_adapter_as_root_raises_adapter_busy(monkeypatch):
+    monkeypatch.setattr(bluez_setup.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        bluez_setup,
+        "run_command",
+        lambda _args, **_kwargs: SimpleNamespace(
+            returncode=1, stdout=_BUSY_STDOUT, stderr="",
+        ),
+    )
+
+    with pytest.raises(bluez_setup.CodAdapterBusy):
+        bluez_setup.set_cod(adapter="hci0")
+
+
+def test_systemd_failure_without_visible_busy_status_is_unchanged(monkeypatch):
+    monkeypatch.setattr(bluez_setup.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(bluez_setup.os.path, "isfile", lambda _path: True)
+    monkeypatch.setattr(bluez_setup.os, "access", lambda _path, _mode: True)
+    monkeypatch.setattr(
+        bluez_setup,
+        "run_command",
+        lambda _args, **_kwargs: SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr=(
+                "Job for blueferry-btmgmt-set-class@0.service failed because "
+                "the control process exited with error code.\n"
+            ),
+        ),
+    )
+
+    assert bluez_setup.set_cod(adapter="hci0", authorize=True) is False

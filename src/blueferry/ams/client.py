@@ -20,6 +20,20 @@ list only on a CCC write, so a later opt-in must find the CCC disabled.
 ``AmsNotifySessions`` owns that release and defers it until the LE link is up
 and settled with no ``StartNotify`` outstanding. Otherwise registrations are
 released when the daemon's D-Bus connection closes.
+
+The same iOS behaviour bites after an ordinary LE reconnect: the CCC state is
+kept for the bond, the Remote Command characteristic is not readable, and
+iOS may answer the re-enable with no command list at all while Entity
+Updates flow. When the Media Source is demonstrably talking (an Entity Update
+arrived) but no command list followed, the client toggles the Remote Command
+CCC once per link (StopNotify, then StartNotify), serialized in the GATT
+queue on the steady, subscribed link, so iOS sees a fresh subscription.
+
+An LE drop can also leave iOS without the Entity Update subscription while
+BlueZ keeps its notify session (and ``Notifying``): every registration is
+then refused with InvalidState (0xA0), and a repeated ``StartNotify`` writes
+no CCC. On that answer the next subscription toggles both CCCs the same way
+before registering, a bounded number of times per link.
 """
 from __future__ import annotations
 
@@ -36,6 +50,7 @@ from gi.repository import GLib
 
 from blueferry.ams.constants import (
     AMS_CHAR_UUIDS,
+    AMS_ERROR_INVALID_STATE,
     AMS_ERROR_NAMES,
     ENTITY_ATTRIBUTE_CHAR,
     ENTITY_ATTRIBUTES,
@@ -53,6 +68,7 @@ from blueferry.ams.parsers import (
     parse_supported_commands,
 )
 from blueferry.bus import get_system_bus
+from blueferry.gatt import write_request_options
 from blueferry.limits import MAX_AMS_PENDING_OPERATIONS
 
 log = logging.getLogger(__name__)
@@ -69,6 +85,25 @@ FIRST_UPDATE_TIMEOUT_SECONDS = 10
 # has nothing to report (no player has ever run), more attempts would only
 # flap availability; a new link starts a new budget.
 SILENT_RESUBSCRIBES_PER_LINK = 1
+# After the first Entity Update, how long the Remote Command list may lag
+# before the client re-enables its notifications to ask for it again.
+COMMAND_LIST_GRACE_SECONDS = 3
+COMMAND_LIST_REFRESHES_PER_LINK = 1
+# After registering, how long to wait for the current Player and Track
+# values before reading the ones that did not arrive through Entity Update
+# (read back via Entity Attribute).
+ATTRIBUTE_REFRESH_SECONDS = 3
+# The entities whose values a reconnect must not lose; Queue is cosmetic.
+REFRESHED_ENTITIES = (EntityID.Player, EntityID.Track)
+# A Remote Command notification while registered: wait this long for the
+# rest of a CCC restore before registering the entities again.
+REREGISTER_SETTLE_SECONDS = 1
+# iOS refused an Entity Update registration with InvalidState (0xA0): it
+# holds no Entity Update subscription for this link while BlueZ still keeps
+# its notify session. How often per LE link the client disables and
+# re-enables both CCCs before registering again; after that the ordinary
+# backoff takes over.
+NOTIFY_REFRESHES_PER_LINK = 2
 MANAGER_RETRY_INITIAL_SECONDS = 2
 MANAGER_RETRY_MAX_SECONDS = 60
 # A failed StopNotify is retried this often per settled LE link, with a
@@ -122,6 +157,17 @@ def _char_path_to_device_path(char_path: str) -> str:
 _ATT_CODE_RE = re.compile(r"0x([0-9a-f]{2})\b", re.IGNORECASE)
 
 
+def _att_code(error: Exception) -> int | None:
+    """The AMS ATT code in a BlueZ error, if it reports a known one."""
+    if not isinstance(error, dbus.exceptions.DBusException):
+        return None
+    for match in _ATT_CODE_RE.finditer(error.get_dbus_message() or ""):
+        code = int(match.group(1), 16)
+        if code in AMS_ERROR_NAMES:
+            return code
+    return None
+
+
 def _error_name(error: Exception) -> str:
     """D-Bus error name plus a named AMS ATT code when BlueZ reports one.
 
@@ -131,10 +177,9 @@ def _error_name(error: Exception) -> str:
     if not isinstance(error, dbus.exceptions.DBusException):
         return type(error).__name__
     name = error.get_dbus_name() or type(error).__name__
-    for match in _ATT_CODE_RE.finditer(error.get_dbus_message() or ""):
-        code = int(match.group(1), 16)
-        if code in AMS_ERROR_NAMES:
-            return f"{name} (AMS {AMS_ERROR_NAMES[code]} 0x{code:02X})"
+    code = _att_code(error)
+    if code is not None:
+        return f"{name} (AMS {AMS_ERROR_NAMES[code]} 0x{code:02X})"
     return name
 
 
@@ -235,6 +280,11 @@ class AmsNotifySessions:
         if path is None:
             return
         self._alive.add(path)
+        self._advance()
+
+    def stopped(self, path: str) -> None:
+        """A client's own StopNotify succeeded: that session is gone."""
+        self._alive.discard(path)
         self._advance()
 
     def start_failed(self, token: int, error: Exception) -> None:
@@ -400,7 +450,7 @@ class AmsClient:
         device_path: str,
         *,
         on_update: Callable[[EntityUpdate], None],
-        on_supported_commands: Callable[[frozenset[RemoteCommandID]], None],
+        on_supported_commands: Callable[[frozenset[RemoteCommandID] | None], None],
         on_availability: Callable[[bool], None] | None = None,
         sessions: AmsNotifySessions | None = None,
         bus_factory: Callable[[], Any] = get_system_bus,
@@ -445,6 +495,19 @@ class AmsClient:
         self._retry_delay = SUBSCRIBE_RETRY_INITIAL_SECONDS
         self._manager_retry_delay = MANAGER_RETRY_INITIAL_SECONDS
         self._silent_resubscribes_left = SILENT_RESUBSCRIBES_PER_LINK
+        # Whether the current Remote Command characteristic object has sent
+        # its command list (an empty list counts: it is known to be empty).
+        self._commands_seen = False
+        self._command_list_id: int | None = None
+        # (entity, attribute) pairs notified since the last registration.
+        self._seen_attributes: set[tuple[int, int]] = set()
+        self._attribute_refresh_id: int | None = None
+        self._reregister_id: int | None = None
+        self._command_refreshes_left = COMMAND_LIST_REFRESHES_PER_LINK
+        # Set by an InvalidState answer: the next subscription disables and
+        # re-enables both CCCs instead of trusting BlueZ's notify sessions.
+        self._notify_refresh_due = False
+        self._notify_refreshes_left = NOTIFY_REFRESHES_PER_LINK
 
     # ---- public state ---------------------------------------------------
 
@@ -510,6 +573,8 @@ class AmsClient:
         if previous is True:
             return
         self._silent_resubscribes_left = SILENT_RESUBSCRIBES_PER_LINK
+        self._command_refreshes_left = COMMAND_LIST_REFRESHES_PER_LINK
+        self._notify_refreshes_left = NOTIFY_REFRESHES_PER_LINK
         if self._started:
             self._schedule_settle()
 
@@ -539,8 +604,10 @@ class AmsClient:
             self._remove_characteristic_match(path)
         self._paths.clear()
         self._owned_notify_paths.clear()
+        self._commands_seen = False
         if had_commands:
-            self._report_supported_commands(frozenset())
+            # Unknown, not empty: a new characteristic starts a new list.
+            self._report_supported_commands(None)
 
     # ---- discovery ------------------------------------------------------
 
@@ -627,10 +694,23 @@ class AmsClient:
             return
         previous = self._paths.get(uuid)
         if previous is not None:
+            # Service Changed moved the characteristic: the iPhone's GATT
+            # database shifts between connections (AMS at service0023, then
+            # service002d), and BlueZ may announce the new object before it
+            # removes the old one. That removal then no longer matches, so
+            # the subscription on the old handles ends here; the new
+            # characteristic is registered from scratch.
+            log.info("AMS characteristic moved: %s", uuid)
             self._remove_characteristic_match(previous)
             self._owned_notify_paths.discard(previous)
             self._sessions.forget(previous)
+            self._reset_subscription()
         self._paths[uuid] = path_s
+        if uuid == REMOTE_COMMAND_CHAR:
+            self._commands_seen = False
+            if previous is not None:
+                # As on removal: a new characteristic starts a new list.
+                self._report_supported_commands(None)
         log.info("AMS characteristic found: %s", uuid)
         self._watch_characteristic(uuid, path_s)
         self._try_subscribe()
@@ -677,8 +757,10 @@ class AmsClient:
                 self._remove_characteristic_match(path_s)
                 self._reset_subscription()
                 if uuid == REMOTE_COMMAND_CHAR:
-                    # A new characteristic object starts a new command list.
-                    self._report_supported_commands(frozenset())
+                    # A new characteristic object starts a new command list;
+                    # until it arrives the list is unknown, not empty.
+                    self._commands_seen = False
+                    self._report_supported_commands(None)
                 return
 
     # ---- subscription ---------------------------------------------------
@@ -714,6 +796,7 @@ class AmsClient:
             or self._bearer_connected is not True
             or not self._bearer_ready
             or not self.characteristics_found
+            or not self._one_service()
         ):
             return
         self._subscribing = True
@@ -726,16 +809,40 @@ class AmsClient:
             self._reset_subscription()
             self._schedule_retry()
 
+    def _one_service(self) -> bool:
+        """All known AMS characteristics belong to one service object.
+
+        While Service Changed moves AMS, the client can briefly know some
+        characteristics at their new path and others at the old one; it
+        subscribes only once they agree.
+        """
+        return len({path.rsplit("/", 1)[0] for path in self._paths.values()}) == 1
+
     def _run_subscription(self) -> None:
         generation = self._generation
+        self._seen_attributes.clear()
         rc_path = self._paths[REMOTE_COMMAND_CHAR]
         eu_path = self._paths[ENTITY_UPDATE_CHAR]
         # The value receivers were installed when the characteristics were
         # found (see _watch_characteristic), before any StartNotify.
-        steps: list[tuple[str, Callable[[Success, Failure], None]]] = [
-            ("start-notify remote-command", lambda ok, fail: self._start_notify(rc_path, ok, fail)),
-            ("start-notify entity-update", lambda ok, fail: self._start_notify(eu_path, ok, fail)),
-        ]
+        steps: list[tuple[str, Callable[[Success, Failure], None]]]
+        if self._notify_refresh_due:
+            # iOS refused a registration with InvalidState: write both CCCs
+            # again (disable, enable) so it sees fresh subscriptions.
+            self._notify_refresh_due = False
+            steps = [
+                ("refresh-notify remote-command",
+                 lambda ok, fail: self._toggle_notify(rc_path, generation, ok, fail)),
+                ("refresh-notify entity-update",
+                 lambda ok, fail: self._toggle_notify(eu_path, generation, ok, fail)),
+            ]
+        else:
+            steps = [
+                ("start-notify remote-command",
+                 lambda ok, fail: self._start_notify(rc_path, ok, fail)),
+                ("start-notify entity-update",
+                 lambda ok, fail: self._start_notify(eu_path, ok, fail)),
+            ]
         def register(packet: bytes) -> Callable[[Success, Failure], None]:
             return lambda ok, fail: self._write(eu_path, packet, ok, fail)
 
@@ -756,22 +863,47 @@ class AmsClient:
                 self._first_update_id = self._schedule(
                     FIRST_UPDATE_TIMEOUT_SECONDS, self._first_update_missing,
                 )
+                self._attribute_refresh_id = self._schedule(
+                    ATTRIBUTE_REFRESH_SECONDS, self._refresh_missing_attributes,
+                )
                 return
             label, run = remaining.popleft()
-            if not self._enqueue(_Operation(label, run, next_step, failed, generation)):
-                failed(AmsQueueFullError("AMS operation queue is full"))
 
-        def failed(error: Exception) -> None:
+            def step_failed(error: Exception, label: str = label) -> None:
+                failed(error, registering=label.startswith("register"))
+
+            if not self._enqueue(_Operation(label, run, next_step, step_failed, generation)):
+                step_failed(AmsQueueFullError("AMS operation queue is full"))
+
+        def failed(error: Exception, *, registering: bool) -> None:
             if generation != self._generation:
                 return
             log.warning("AMS subscription step failed: %s", _error_name(error))
+            refresh = registering and self._request_notify_refresh(error)
             self._reset_subscription()
             # A lost ATT transport normally comes with a bearer transition
             # that restarts subscription; the bounded retry also covers a
             # bearer observation that has not caught up yet.
-            self._schedule_retry()
+            self._schedule_retry(prompt=refresh)
 
         next_step()
+
+    def _request_notify_refresh(self, error: Exception) -> bool:
+        """An InvalidState registration: re-enable both CCCs next time.
+
+        Hardware 2026-10-15: after an LE drop (``Bearer.LE1.Disconnect``) the
+        characteristic objects survived, BlueZ still reported ``Notifying``,
+        and every Entity Update registration was refused with 0xA0, the AMS
+        answer to a registration without an Entity Update subscription. A
+        repeated ``StartNotify`` writes no CCC, so the retries never changed
+        anything until the daemon restarted. Bounded per LE link.
+        """
+        if _att_code(error) != AMS_ERROR_INVALID_STATE or self._notify_refreshes_left <= 0:
+            return False
+        self._notify_refreshes_left -= 1
+        self._notify_refresh_due = True
+        log.info("iPhone refused the media registration; re-enabling its media notifications")
+        return True
 
     def _start_notify(self, path: str, ok: Success, fail: Failure) -> None:
         characteristic = self._characteristic(path)
@@ -823,11 +955,15 @@ class AmsClient:
             timeout=DBUS_CALL_TIMEOUT_SECONDS,
         )
 
-    def _schedule_retry(self) -> None:
+    def _schedule_retry(self, *, prompt: bool = False) -> None:
+        """Retry with backoff; ``prompt`` retries soon without growing it."""
         if not self._started or self._retry_id is not None:
             return
-        delay = self._retry_delay
-        self._retry_delay = min(self._retry_delay * 2, SUBSCRIBE_RETRY_MAX_SECONDS)
+        if prompt:
+            delay = SUBSCRIBE_RETRY_INITIAL_SECONDS
+        else:
+            delay = self._retry_delay
+            self._retry_delay = min(self._retry_delay * 2, SUBSCRIBE_RETRY_MAX_SECONDS)
         log.info("retrying AMS subscription in %ds", delay)
         self._retry_id = self._schedule(delay, self._retry)
 
@@ -873,7 +1009,10 @@ class AmsClient:
         self._subscribing = False
         # The settle timer belongs to the bearer, not to this subscription:
         # a characteristic can vanish and return while the link settles.
-        for attribute in ("_retry_id", "_first_update_id"):
+        for attribute in (
+            "_retry_id", "_first_update_id", "_command_list_id", "_attribute_refresh_id",
+            "_reregister_id",
+        ):
             source = getattr(self, attribute)
             if source is not None:
                 try:
@@ -912,7 +1051,8 @@ class AmsClient:
     def _write(self, path: str, packet: bytes, ok: Success, fail: Failure) -> None:
         self._characteristic(path).WriteValue(
             dbus.Array([dbus.Byte(value) for value in packet], signature="y"),
-            dbus.Dictionary({}, signature="sv"),
+            # Never a reliable write: iOS rejects its Execute with 0xA0.
+            write_request_options(),
             dbus_interface=_GATT_CHAR,
             reply_handler=ok,
             error_handler=fail,
@@ -975,10 +1115,211 @@ class AmsClient:
         # Accepted even during the bearer settle window: BlueZ re-enables the
         # CCC at link-up and iOS answers with its list before BlueFerry
         # subscribes again. It is metadata, not track content.
+        self._commands_seen = True
+        self._cancel_command_list_check()
         self._notifications_flow()
         self._report_supported_commands(commands)
+        self._schedule_reregistration()
 
-    def _report_supported_commands(self, commands: frozenset[RemoteCommandID]) -> None:
+    def _schedule_reregistration(self) -> None:
+        """iOS sent its command list again: the CCC may have been restored.
+
+        On hardware (btmon, 2026-10-08) an LE drop of 0.5 s fell between two
+        bearer polls. BlueZ re-enabled the CCCs of the bonded iPhone by
+        itself, iOS answered with its command list, but the Entity Update
+        registrations it had forgotten with the link were never rewritten,
+        so AMS stayed silent through track changes. iOS also resends the
+        list when the playing app changes; registering again then is
+        harmless, and iOS answers with the current values.
+        """
+        if (
+            not self._available
+            or self._subscribing
+            or self._reregister_id is not None
+            or self._bearer_connected is not True
+        ):
+            return
+        self._reregister_id = self._schedule(
+            REREGISTER_SETTLE_SECONDS, self._reregister_entities,
+        )
+
+    def _reregister_entities(self) -> bool:
+        self._reregister_id = None
+        eu_path = self._paths.get(ENTITY_UPDATE_CHAR)
+        if (
+            not self._available
+            or self._subscribing
+            or self._bearer_connected is not True
+            or eu_path is None
+        ):
+            return False
+        log.info("iPhone resent its media command list; registering media updates again")
+        generation = self._generation
+        # The first registration's read is moot now: what it would read is
+        # answered (or read) after the registrations below.
+        self._cancel_attribute_refresh()
+        self._seen_attributes.clear()
+        remaining = deque(EntityID)
+
+        def next_step() -> None:
+            if generation != self._generation:
+                return
+            if not remaining:
+                # A second re-registration may have overlapped this one.
+                self._cancel_attribute_refresh()
+                self._attribute_refresh_id = self._schedule(
+                    ATTRIBUTE_REFRESH_SECONDS, self._refresh_missing_attributes,
+                )
+                return
+            entity = remaining.popleft()
+            packet = build_entity_update_registration(entity, ENTITY_ATTRIBUTES[entity])
+            if not self._enqueue(_Operation(
+                f"reregister {entity.name}",
+                lambda ok, fail: self._write(eu_path, packet, ok, fail),
+                next_step, failed, generation,
+            )):
+                failed(AmsQueueFullError("AMS operation queue is full"))
+
+        def failed(error: Exception) -> None:
+            if generation != self._generation:
+                return
+            log.warning("AMS re-registration failed: %s", _error_name(error))
+            refresh = self._request_notify_refresh(error)
+            # Start over: Notifying is asked again (or, after InvalidState,
+            # both CCCs re-enabled), the entities rewritten.
+            self._owned_notify_paths.clear()
+            self._reset_subscription()
+            self._schedule_retry(prompt=refresh)
+
+        next_step()
+        return False
+
+    def _cancel_attribute_refresh(self) -> None:
+        if self._attribute_refresh_id is None:
+            return
+        try:
+            self._cancel(self._attribute_refresh_id)
+        except Exception:
+            log.debug("could not remove AMS attribute refresh timer", exc_info=True)
+        self._attribute_refresh_id = None
+
+    def _cancel_command_list_check(self) -> None:
+        if self._command_list_id is None:
+            return
+        try:
+            self._cancel(self._command_list_id)
+        except Exception:
+            log.debug("could not remove AMS command-list timer", exc_info=True)
+        self._command_list_id = None
+
+    def _arm_command_list_check(self) -> None:
+        """Entity Updates flow; expect the command list shortly as well."""
+        if (
+            self._commands_seen
+            or self._command_list_id is not None
+            or self._command_refreshes_left <= 0
+            or not self._available
+        ):
+            return
+        self._command_list_id = self._schedule(
+            COMMAND_LIST_GRACE_SECONDS, self._command_list_missing,
+        )
+
+    def _command_list_missing(self) -> bool:
+        self._command_list_id = None
+        path = self._paths.get(REMOTE_COMMAND_CHAR)
+        if (
+            self._commands_seen
+            or not self._available
+            or self._subscribing
+            or self._bearer_connected is not True
+            or self._command_refreshes_left <= 0
+            or path is None
+            or path not in self._owned_notify_paths
+        ):
+            return False
+        self._command_refreshes_left -= 1
+        log.info("iPhone sent no media command list; re-enabling its notifications")
+        generation = self._generation
+
+        def run(ok: Success, fail: Failure) -> None:
+            self._toggle_notify(path, generation, ok, fail)
+
+        def failed(error: Exception) -> None:
+            if generation != self._generation:
+                return
+            log.warning(
+                "could not re-enable AMS command notifications: %s", _error_name(error),
+            )
+            # Commands may no longer be subscribed; start them afresh.
+            self._owned_notify_paths.discard(path)
+            self._reset_subscription()
+            self._schedule_retry()
+
+        if not self._enqueue(_Operation(
+            "refresh remote-command", run, lambda: None, failed, generation,
+        )):
+            log.warning("AMS operation queue full; not refreshing the command list")
+        return False
+
+    def _toggle_notify(
+        self, path: str, generation: int, ok: Success, fail: Failure,
+    ) -> None:
+        """StopNotify, then StartNotify: make BlueZ write the CCC again.
+
+        Runs as one queued operation on a steady, subscribed link. A
+        StopNotify refused because no session exists goes on to the
+        StartNotify, which then writes the CCC by itself.
+        """
+        characteristic = self._characteristic(path)
+
+        def stopped() -> None:
+            self._owned_notify_paths.discard(path)
+            # Reported even after a reset, so a later opt-out does not
+            # stop a session that is already gone.
+            self._sessions.stopped(path)
+            if generation != self._generation:
+                return  # reset meanwhile; the next subscription starts it
+            # Tracked like every StartNotify, so a runtime opt-out that
+            # arrives meanwhile waits for this reply and then releases
+            # the session instead of leaving the CCC enabled.
+            token = self._sessions.starting(path)
+
+            def started() -> None:
+                self._sessions.started(token)
+                self._owned_notify_paths.add(path)
+                ok()
+
+            def start_failed(error: Exception) -> None:
+                self._sessions.start_failed(token, error)
+                fail(error)
+
+            try:
+                characteristic.StartNotify(
+                    dbus_interface=_GATT_CHAR,
+                    reply_handler=started,
+                    error_handler=start_failed,
+                    timeout=DBUS_CALL_TIMEOUT_SECONDS,
+                )
+            except Exception as error:
+                start_failed(error)
+
+        def stop_failed(error: Exception) -> None:
+            if _session_is_gone(error):
+                stopped()
+            else:
+                fail(error)
+
+        characteristic.StopNotify(
+            dbus_interface=_GATT_CHAR,
+            reply_handler=stopped,
+            error_handler=stop_failed,
+            timeout=DBUS_CALL_TIMEOUT_SECONDS,
+        )
+
+    def _report_supported_commands(
+        self, commands: frozenset[RemoteCommandID] | None,
+    ) -> None:
         try:
             self._on_supported_commands(commands)
         except Exception:
@@ -1012,9 +1353,37 @@ class AmsClient:
         key = (update.entity, update.attribute)
         if self._attribute_updates.get(key) != update:
             self._attribute_updates[key] = update
+        self._seen_attributes.add((update.entity, update.attribute))
         self._deliver(update)
+        self._arm_command_list_check()
         if update.truncated:
             self._fetch_full_value(update.entity, update.attribute)
+
+    def _refresh_missing_attributes(self) -> bool:
+        """Read the Player and Track values iOS did not resend.
+
+        On hardware, after an LE reconnect iOS sent a changed track title but
+        neither the player name nor PlaybackInfo, although the specification
+        says a registration is answered with the current values. The media
+        state was cleared with the link, so MPRIS reported "Stopped" for a
+        playing audiobook. Entity Attribute reads any registered attribute.
+        """
+        self._attribute_refresh_id = None
+        if not self._available or self._subscribing or self._bearer_connected is not True:
+            return False
+        missing = [
+            (entity, attribute)
+            for entity in REFRESHED_ENTITIES
+            for attribute in ENTITY_ATTRIBUTES[entity]
+            if (entity, attribute) not in self._seen_attributes
+        ]
+        if missing:
+            log.info("AMS did not resend %d media values; reading them", len(missing))
+        for entity, attribute in missing:
+            # Up to seven reads per registration; an absent value (0xA2) is
+            # normal (no album for a podcast), so one summary line suffices.
+            self._fetch_full_value(entity, attribute, quiet=True)
+        return False
 
     def _deliver(self, update: EntityUpdate) -> None:
         try:
@@ -1022,7 +1391,7 @@ class AmsClient:
         except Exception:
             log.exception("AMS update callback failed")
 
-    def _fetch_full_value(self, entity: int, attribute: int) -> None:
+    def _fetch_full_value(self, entity: int, attribute: int, *, quiet: bool = False) -> None:
         """Read the complete value of a truncated attribute exactly once."""
         key = (entity, attribute)
         path = self._paths.get(ENTITY_ATTRIBUTE_CHAR)
@@ -1074,7 +1443,8 @@ class AmsClient:
 
         def failed(error: Exception) -> None:
             finished()
-            log.info(
+            log.log(
+                logging.DEBUG if quiet else logging.INFO,
                 "AMS full attribute read failed (entity=%d attribute=%d): %s",
                 entity, attribute, _error_name(error),
             )

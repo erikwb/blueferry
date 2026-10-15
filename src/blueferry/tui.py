@@ -41,6 +41,7 @@ from blueferry.recipients import participant_lines
 from blueferry.text_safety import terminal_text
 from blueferry.time_display import format_message_timestamp
 from blueferry.tui_calls import CallsScreen
+from blueferry.tui_notification_rules import REVISION_KEY, NotificationRulesScreen
 from blueferry.tui_options import OptionsScreen
 
 _REFRESH_SECONDS = 15.0
@@ -79,6 +80,15 @@ class _Client(Protocol):
     def answer_call(self, call_id: str) -> None: ...
 
     def hangup_call(self, call_id: str) -> None: ...
+
+    # Notification click rules; used only by the rules panel.
+    def notification_open_map(self) -> list[dict[str, str]]: ...
+
+    def set_notification_open_target(
+        self, bundle_id: str, target: str,
+    ) -> list[dict[str, str]]: ...
+
+    def remove_notification_open_target(self, bundle_id: str) -> bool: ...
 
 
 class _Monitor(Protocol):
@@ -543,6 +553,7 @@ class HelpScreen(ModalScreen[None]):
             "[bold #7dd3fc]Delete conversation[/]  Delete\n"
             f"{calls_line}"
             "[bold #7dd3fc]Options[/]  o\n"
+            "[bold #7dd3fc]Notification click rules[/]  l\n"
             "[bold #7dd3fc]Commands[/]  Ctrl+P\n"
             "[bold #7dd3fc]Refresh[/]  r\n"
             "[bold #7dd3fc]Back[/]  Esc\n"
@@ -578,6 +589,7 @@ class BlueFerryApp(App[None]):
         Binding("delete", "delete_thread", "Delete"),
         Binding("c", "calls", "Calls", show=False),
         Binding("o", "options", "Options"),
+        Binding("l", "click_rules", "Click rules", show=False),
         Binding("escape", "return_to_list", "Back", show=False),
     ]
 
@@ -1081,6 +1093,25 @@ class BlueFerryApp(App[None]):
             )
             return
         self.push_screen(CallsScreen(self.state.client))
+
+    def action_click_rules(self) -> None:
+        focused = self.focused
+        if isinstance(focused, Input | TextArea) or isinstance(
+            self.screen, NotificationRulesScreen,
+        ):
+            return
+        status = self.state.status
+        # Older, not yet restarted backends lack the methods and the key.
+        if status.extra.get(REVISION_KEY) is None:
+            self.notify(
+                "The running backend does not support notification click rules; "
+                "restart it after upgrading",
+                severity="warning",
+            )
+            return
+        self.push_screen(NotificationRulesScreen(
+            self.state.client, policy_all=status.notification_policy == "all",
+        ))
 
     def action_toggle_star(self) -> None:
         focused = self.focused

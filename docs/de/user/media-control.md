@@ -58,6 +58,11 @@ blueferry media --json         # Rohstatus für Skripte
 BlueFerry sendet nur Befehle, die das iPhone gerade anbietet. Welche das sind,
 hängt von der spielenden App ab; `blueferry media` listet sie auf. Ein Befehl,
 den die App nicht anbietet, wird lokal abgelehnt und nicht gesendet.
+Diese Liste schickt das iPhone nur, wenn BlueFerry sich anmeldet, und nach
+einer Wiederverbindung manchmal gar nicht. BlueFerry fragt dann auf dieser
+Verbindung einmal nach. Bis die Liste da ist, zeigt `blueferry media` die
+Befehle als unbekannt, und BlueFerry sendet einen Befehl wie gewünscht; das
+iPhone ignoriert oder verweigert einen, den die App nicht kennt.
 
 Im Kirigami-Client erscheint über den Unterhaltungen eine kleine Leiste mit
 Titel, Interpret und den Tasten Zurück/Wiedergabe-Pause/Weiter, solange etwas
@@ -118,9 +123,11 @@ nicht BlueFerrys Nachrichten-Schnittstelle.
 - BlueFerry nutzt bewusst kein AVRCP. Als AVRCP-Fernbedienung könnte der
   Computer das iPhone dazu bringen, seinen Ton an den Computer zu schicken,
   was BlueFerry verhindert.
-- Auf echter Hardware geprüft ist bisher die „Wird gespielt“-Anzeige.
-  Befehle, das Vervollständigen langer Titel und Wiederverbindungen sind nur
-  mit simuliertem Bluetooth getestet. Rückmeldungen sind willkommen.
+- Auf echter Hardware geprüft sind bisher die „Wird gespielt“-Anzeige,
+  Befehle und das Aus- und Wiedereinschalten der Mediensteuerung. Das erneute
+  Anfordern der Befehlsliste nach einer Wiederverbindung und das
+  Vervollständigen langer Titel sind nur mit simuliertem Bluetooth getestet.
+  Rückmeldungen sind willkommen.
 
 ## Datenschutz
 
