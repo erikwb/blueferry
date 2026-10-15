@@ -5,7 +5,7 @@ Layout below ``$XDG_DATA_HOME/blueferry/plugins/`` (default
 
     <id>.plugin               manifest that clients discover (Exec rewritten)
     src/<id>/                 checkout of the pinned ref
-    venvs/<id>-<commit>/      the plugin's own virtual environment
+    venvs/<id>-<commit>[-<install>]/  the plugin's own virtual environment
     installs.json             url, ref and commit of every managed plugin
 
 plus ``$XDG_DATA_HOME/dbus-1/services/<bus name>.service`` for activation.
@@ -45,6 +45,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
@@ -315,13 +316,29 @@ class PluginManager:
         if not (_COMMIT.fullmatch(record.ref) or (_TAG.fullmatch(record.ref)
                                                   and ".." not in record.ref)):
             return None
-        # Only the venv commit() would have made; a removal deletes it.
-        if record.venv != str(self.venv_path(record.id, record.commit)):
+        # Only a venv commit() could have made; reinstalling may need a new
+        # path so the currently installed runtime remains usable on failure.
+        base = str(self.venv_path(record.id, record.commit))
+        if not re.fullmatch(re.escape(base) + r"(?:-[0-9a-f]{32})?", record.venv):
             return None
         return record
 
     def venv_path(self, plugin_id: str, commit: str) -> Path:
         return self.root / "venvs" / f"{plugin_id}-{short(commit)}"
+
+    def _plugin_venvs(self, plugin_id: str) -> list[Path]:
+        # IDs may contain hyphens: id-* also matches another plugin named
+        # id-extra. Require the complete runtime suffix, not just a prefix.
+        pattern = re.compile(re.escape(plugin_id) + r"-[0-9a-f]{12}(?:-[0-9a-f]{32})?")
+        return sorted(path for path in (self.root / "venvs").glob(f"{plugin_id}-*")
+                      if pattern.fullmatch(path.name))
+
+    def _new_venv_path(self, plugin_id: str, commit: str) -> Path:
+        path = self.venv_path(plugin_id, commit)
+        while path.exists() or path.is_symlink():
+            path = self.venv_path(plugin_id, commit).with_name(
+                f"{plugin_id}-{short(commit)}-{uuid.uuid4().hex}")
+        return path
 
     def _save_records(self, records: Mapping[str, InstallRecord]) -> None:
         _write_json(self.root / "installs.json", {
@@ -480,8 +497,7 @@ class PluginManager:
     def _commit(self, prepared: PreparedInstall) -> InstallRecord:
         plugin = prepared.manifest
         target = self.source_dir(plugin.id)
-        venvs_dir = self.root / "venvs"
-        old_venvs = sorted(venvs_dir.glob(f"{plugin.id}-*"))
+        old_venvs = self._plugin_venvs(plugin.id)
         if prepared.previous is not None and Path(prepared.previous.venv) not in old_venvs:
             old_venvs.append(Path(prepared.previous.venv))
         backup = None
@@ -490,9 +506,10 @@ class PluginManager:
             shutil.rmtree(backup, ignore_errors=True)
             os.replace(target, backup)
         os.replace(prepared.staging, target)
-        venv = self.venv_path(plugin.id, prepared.commit)
+        # Venv scripts embed absolute paths, so build at a fresh final path
+        # instead of moving a staging venv or overwriting a working install.
+        venv = self._new_venv_path(plugin.id, prepared.commit)
         try:
-            shutil.rmtree(venv, ignore_errors=True)
             venv.parent.mkdir(parents=True, exist_ok=True)
             # PyGObject and dbus-python come from the distribution.
             self.runner.run([self.python, "-m", "venv", "--system-site-packages", str(venv)],
@@ -509,11 +526,22 @@ class PluginManager:
                 parse_manifest(text, blueferry_version=self.blueferry_version)
             except ManifestError as error:
                 raise InstallError(f"the rewritten manifest is unusable: {error}") from None
-            _write_text(self.manifest_path(plugin.id), text)
-            _write_text(
-                self.service_path(plugin),
-                f"[D-BUS Service]\nName={plugin.bus_name}\nExec={shlex.join(exec_argv)}\n",
-            )
+            record = InstallRecord(plugin.id, prepared.url, prepared.ref, prepared.commit,
+                                   str(venv), self.clock())
+            records = self.records()
+            records[plugin.id] = record
+            # Keep the previous manifest/service/record together if any
+            # publication fails after the package has been built.
+            with _restore_on_failure([
+                self.manifest_path(plugin.id), self.service_path(plugin),
+                self.root / "installs.json",
+            ]):
+                _write_text(self.manifest_path(plugin.id), text)
+                _write_text(
+                    self.service_path(plugin),
+                    f"[D-BUS Service]\nName={plugin.bus_name}\nExec={shlex.join(exec_argv)}\n",
+                )
+                self._save_records(records)
         except BaseException:
             shutil.rmtree(venv, ignore_errors=True)
             shutil.rmtree(target, ignore_errors=True)
@@ -522,15 +550,9 @@ class PluginManager:
             raise
         if backup is not None:
             shutil.rmtree(backup, ignore_errors=True)
-        for old in venvs_dir.glob(f"{plugin.id}-*"):
+        for old in old_venvs:
             if old != venv:
                 shutil.rmtree(old, ignore_errors=True)
-        record = InstallRecord(plugin.id, prepared.url, prepared.ref, prepared.commit,
-                               str(venv), self.clock())
-        records = self.records()
-        records[plugin.id] = record
-        self._save_records(records)
-        # A reinstall of the same commit rebuilt ``venv`` too, so it counts as old.
         prepared.stop = self._stop_old(plugin.id, old_venvs)
         return record
 
@@ -591,7 +613,7 @@ class PluginManager:
         paths = [manifest_file, self.source_dir(plugin_id)]
         if manifest is not None:
             paths.append(self.service_path(manifest))
-        venvs = sorted((self.root / "venvs").glob(f"{plugin_id}-*"))
+        venvs = self._plugin_venvs(plugin_id)
         if Path(record.venv) not in venvs:
             venvs.append(Path(record.venv))
         paths.extend(venvs)
@@ -613,6 +635,37 @@ class PluginManager:
 
 
 MAX_MANIFEST_BYTES = 16 * 1024
+
+
+@contextmanager
+def _restore_on_failure(paths: Sequence[Path]) -> Iterator[None]:
+    """Retain metadata backups until the complete install is published."""
+    backups: list[tuple[Path, Path | None]] = []
+    try:
+        for path in paths:
+            backup = None
+            if path.exists():
+                fd, name = tempfile.mkstemp(prefix=f".{path.name}.backup-", dir=path.parent)
+                os.close(fd)
+                backup = Path(name)
+                try:
+                    shutil.copy2(path, backup)
+                except BaseException:
+                    backup.unlink(missing_ok=True)
+                    raise
+            backups.append((path, backup))
+        yield
+    except BaseException:
+        for path, backup in reversed(backups):
+            if backup is None:
+                path.unlink(missing_ok=True)
+            else:
+                os.replace(backup, path)
+        raise
+    finally:
+        for _path, backup in backups:
+            if backup is not None:
+                backup.unlink(missing_ok=True)
 
 
 def _manifest_text(checkout: Path) -> str:
