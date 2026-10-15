@@ -66,7 +66,6 @@ def test_precedence_environment_then_settings_then_local_env(tmp_path, monkeypat
     monkeypatch.setattr(
         config, "EXPLICIT_ENV_KEYS", frozenset({"BLUEFERRY_SHOW_NOTIFICATION_CONTENT"}),
     )
-    monkeypatch.setattr(config, "SETTINGS_FEATURE_KEYS", frozenset())
     for key in (
         "BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE", "BLUEFERRY_MARK_READ_ON_DISMISS",
         "BLUEFERRY_ANCS_ACTIONS",
@@ -78,9 +77,6 @@ def test_precedence_environment_then_settings_then_local_env(tmp_path, monkeypat
     assert os.environ["BLUEFERRY_MARK_READ_ON_DISMISS"] == "false"
     assert os.environ["BLUEFERRY_ANCS_ACTIONS"] == "true"                # local.env alone
     assert os.environ["BLUEFERRY_SHOW_NOTIFICATION_CONTENT"] == "false"  # explicit env wins
-    assert config.SETTINGS_FEATURE_KEYS == {
-        "BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE", "BLUEFERRY_MARK_READ_ON_DISMISS",
-    }
 
 
 def _running(**overrides):

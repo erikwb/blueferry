@@ -27,11 +27,10 @@ class Feature:
 
 # Only switches without a runtime setter of their own: calls, call history,
 # media, the away lock, the battery warning and the ANCS action buttons
-# already have one (settings.json via their own D-Bus methods).
-FEATURES: tuple[Feature, ...] = (
-    Feature("show_notification_content", "BLUEFERRY_SHOW_NOTIFICATION_CONTENT", True),
-    Feature("mark_read_on_dismiss", "BLUEFERRY_MARK_READ_ON_DISMISS", True),
-    Feature("keep_phone_audio_on_phone", "BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE", True),
+# already have one (settings.json via their own D-Bus methods). The list
+# itself lives in config.FEATURE_SWITCHES, which config needs at import time.
+FEATURES: tuple[Feature, ...] = tuple(
+    Feature(name, variable, default) for name, variable, default in config.FEATURE_SWITCHES
 )
 BY_NAME: Mapping[str, Feature] = {feature.name: feature for feature in FEATURES}
 

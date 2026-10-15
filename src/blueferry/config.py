@@ -45,11 +45,14 @@ LOCAL_ENV_PATH: Path = CONFIG_DIR / "local.env"
 # Boolean switches the settings UIs may store in settings.json ("features")
 # through Messages1.SetFeature. Stored values override local.env; an
 # explicit process environment still wins over both.
-FEATURE_ENV_KEYS = frozenset({
-    "BLUEFERRY_SHOW_NOTIFICATION_CONTENT",
-    "BLUEFERRY_MARK_READ_ON_DISMISS",
-    "BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE",
-})
+# The single source of the allowlist: (feature name, variable, default).
+# blueferry.features builds its table from this tuple.
+FEATURE_SWITCHES: tuple[tuple[str, str, bool], ...] = (
+    ("show_notification_content", "BLUEFERRY_SHOW_NOTIFICATION_CONTENT", True),
+    ("mark_read_on_dismiss", "BLUEFERRY_MARK_READ_ON_DISMISS", True),
+    ("keep_phone_audio_on_phone", "BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE", True),
+)
+FEATURE_ENV_KEYS = frozenset(variable for _, variable, _ in FEATURE_SWITCHES)
 FEATURES_SETTINGS_KEY = "features"
 MAX_SETTINGS_BYTES = 4 * 1024 * 1024
 # Preserve which values genuinely came from the process environment before
@@ -97,10 +100,6 @@ def read_feature_settings(path: Path | None = None) -> dict[str, bool]:
     }
 
 
-# Feature switches whose running value came from settings.json.
-SETTINGS_FEATURE_KEYS: frozenset[str] = frozenset()
-
-
 def _load_local_env() -> None:
     """Load supported local settings before reading module-level values.
 
@@ -108,13 +107,9 @@ def _load_local_env() -> None:
     deliberately does not source it into the process environment.
 
     Precedence: explicit env > settings.json switches > local.env."""
-    global SETTINGS_FEATURE_KEYS
-    applied = []
     for key, enabled in read_feature_settings().items():
         if key not in EXPLICIT_ENV_KEYS:
             os.environ[key] = "true" if enabled else "false"
-            applied.append(key)
-    SETTINGS_FEATURE_KEYS = frozenset(applied)
     for key, value in read_local_env().items():
         os.environ.setdefault(key, value)
 
