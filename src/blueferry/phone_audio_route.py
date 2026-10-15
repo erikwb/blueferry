@@ -127,6 +127,12 @@ class PhoneAudioRoute:
         self._transports: dict[str, str] = {}
         self._known = False
         self._pending: str | None = None
+        # Bumped by every probe and by stop(); only the reply of the latest
+        # probe is applied. Live signals do not bump it: bluetoothd sends its
+        # signals and the GetManagedObjects reply over one connection, and
+        # the bus and GDBus keep that order, so a signal that arrives before
+        # the reply is already contained in it. Dropping the reply for such a
+        # signal left the route "unknown" until the next probe.
         self._generation = 0
         self._settle_id: int | None = None
         self._resume_id: int | None = None
@@ -274,21 +280,26 @@ class PhoneAudioRoute:
             failed(error)
 
     def _apply_tree(self, objects: Mapping) -> None:
-        device = objects.get(self._device_path, {}).get(DEVICE_IFACE)
+        device = objects.get(self._device_path, {}).get(DEVICE_IFACE) or {}
         self._known = True
-        self._apply_device(device or {}, replace=True)
+        self._connected = bool(device.get("Connected", False))
+        self._has_source = self._offers_source(device)
         self._transports = {
             str(path): str(interfaces[TRANSPORT_IFACE].get("State", ""))
             for path, interfaces in objects.items()
             if self._is_phone_sink(interfaces.get(TRANSPORT_IFACE))
-        }
+        } if self._connected else {}
 
-    def _apply_device(self, properties: Mapping, *, replace: bool = False) -> None:
-        if replace or "Connected" in properties:
+    @staticmethod
+    def _offers_source(device: Mapping) -> bool:
+        uuids = {str(uuid).casefold() for uuid in device.get("UUIDs", ())}
+        return A2DP_SOURCE_UUID in uuids
+
+    def _apply_device(self, properties: Mapping) -> None:
+        if "Connected" in properties:
             self._connected = bool(properties.get("Connected", False))
-        if replace or "UUIDs" in properties:
-            uuids = {str(uuid).casefold() for uuid in properties.get("UUIDs", ())}
-            self._has_source = A2DP_SOURCE_UUID in uuids
+        if "UUIDs" in properties:
+            self._has_source = self._offers_source(properties)
         if not self._connected:
             self._transports.clear()
 
@@ -303,7 +314,6 @@ class PhoneAudioRoute:
     def _interfaces_added(self, path, interfaces) -> None:
         if not self._is_phone_sink(interfaces.get(TRANSPORT_IFACE)):
             return
-        self._generation += 1  # a live signal supersedes an older probe
         before = self.snapshot()
         self._transports[str(path)] = str(
             interfaces[TRANSPORT_IFACE].get("State", ""))
@@ -312,7 +322,6 @@ class PhoneAudioRoute:
     def _interfaces_removed(self, path, interfaces) -> None:
         if TRANSPORT_IFACE not in interfaces or str(path) not in self._transports:
             return
-        self._generation += 1
         before = self.snapshot()
         self._transports.pop(str(path), None)
         self._changed(before)
@@ -323,7 +332,6 @@ class PhoneAudioRoute:
         key = str(path)
         if key not in self._transports:
             return
-        self._generation += 1
         before = self.snapshot()
         self._transports[key] = str(changed["State"])
         self._changed(before)
@@ -333,7 +341,6 @@ class PhoneAudioRoute:
             return
         if "Connected" not in changed and "UUIDs" not in changed:
             return
-        self._generation += 1
         before = self.snapshot()
         self._known = True
         self._apply_device(changed)

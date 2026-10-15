@@ -47,6 +47,8 @@ class Bus:
         self.receivers: dict[str, object] = {}
         self.removed = 0
         self.types: list[tuple[str, str]] = []
+        self.hold_probe = False
+        self.held_probes: list[tuple] = []
 
     def call(self, bus_name, path, interface, method, signature, args,
              reply_type, on_reply, on_error, *, timeout):
@@ -56,7 +58,9 @@ class Bus:
         assert GLib.VariantType.string_is_valid(reply_type)
         self.calls.append((path, interface, method, args))
         self.types.append((signature, reply_type))
-        if method == "GetManagedObjects":
+        if method == "GetManagedObjects" and self.hold_probe:
+            self.held_probes.append((on_reply, on_error))
+        elif method == "GetManagedObjects":
             on_reply(self.tree)
         else:
             self.held.append((on_reply, on_error))
@@ -153,6 +157,39 @@ def test_signals_follow_transport_and_disconnects() -> None:
     assert len(changes) == 3
     subject.stop()
     assert bus.removed == 4
+
+
+def test_live_signals_during_the_first_probe_do_not_discard_its_reply() -> None:
+    # Review repro: the transport turns active while GetManagedObjects is
+    # still out. The late reply must still set the device fields, otherwise
+    # the route stays "unavailable/unknown" while the sound plays here.
+    bus = Bus(tree(transport=True, state="active"))
+    bus.hold_probe = True
+    subject, _timers, _changes = route(bus)
+    subject.start()
+    bus.receivers["InterfacesAdded"](FD, {"org.bluez.MediaTransport1": {
+        "Device": DEV, "UUID": A2DP_SINK_UUID, "State": "pending"}})
+    transport_state(bus, "active")
+    bus.receivers["PropertiesChanged"]("org.bluez.Device1", {"Connected": True}, [])
+    assert subject.snapshot()["phone_audio_route"] == "unavailable"
+    on_reply, _on_error = bus.held_probes.pop()
+    on_reply(bus.tree)
+    snap = subject.snapshot()
+    assert (snap["phone_audio_route"], snap["phone_audio_reason"]) == ("pc", "")
+    assert snap["phone_audio_playing"] == "pc"
+
+
+def test_reply_of_a_superseded_probe_is_dropped() -> None:
+    bus = Bus(tree())
+    bus.hold_probe = True
+    subject, _timers, _changes = route(bus)
+    subject.start()
+    subject.probe()
+    newer_reply, _ = bus.held_probes.pop()
+    older_reply, _ = bus.held_probes.pop()
+    newer_reply(tree(transport=True))
+    older_reply(tree(connected=False))
+    assert subject.snapshot()["phone_audio_route"] == "pc"
 
 
 def test_switch_to_pc_calls_connect_profile_and_settles_with_a_reprobe() -> None:
