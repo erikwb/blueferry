@@ -298,7 +298,7 @@ def test_keyring_recovery_resumes_initial_phonebook_sync(recovery, monkeypatch, 
     assert not r.daemon.obex_worker.jobs  # Defer pulls while persistence is unavailable.
     assert CONTACTS_REFRESH_SEC in r.scheduled  # The daily refresh is armed regardless.
 
-    def pull(_sessions, *, storage):
+    def pull(_sessions, *, storage, **_options):
         assert storage.status.can_write
         return ContactRepository(storage).replace([("Alice", ["15551111111"], [])])
 
@@ -326,7 +326,7 @@ def test_policy_change_resyncs_an_empty_cache_despite_an_older_pull(
     r.daemon.listener = object()
     records = [('Alice', [], [])]  # Valid contact, but zero usable destinations.
 
-    def pull(_sessions, *, storage):
+    def pull(_sessions, *, storage, **_options):
         return ContactRepository(storage).replace(records)
 
     monkeypatch.setattr(contacts_mod, 'pull_phonebook', pull)

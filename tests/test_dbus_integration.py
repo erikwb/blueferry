@@ -58,6 +58,14 @@ class _Policy:
         self.ancs_actions = enabled
         return enabled
 
+    mirror_removals = False
+
+    def set_mirror_removals(self, enabled: bool) -> bool:
+        if not isinstance(enabled, bool):
+            raise ValueError("mirroring iPhone removals must be a boolean")
+        self.mirror_removals = enabled
+        return enabled
+
     def set(self, value: str) -> str:
         self.value = value
         return value
@@ -1017,3 +1025,30 @@ def test_feature_switches_round_trip(public_service, tmp_path, monkeypatch) -> N
     assert outcome["features"]["value"] is False
     assert outcome["features"]["source"] == "settings"
     assert "unknown feature" in outcome["bad"]
+
+
+def test_mirror_removals_setter_round_trips_and_reports_status(public_service) -> None:
+    name, _pending, policy, changes, _service = public_service
+    outcome = {}
+
+    def change() -> None:
+        connection, interface = _client(name)
+        try:
+            client = BackendClient(
+                interface_factory=lambda iface: dbus.Interface(interface.proxy_object, iface)
+            )
+            outcome["before"] = client.status().extra.get("mirror_iphone_removals")
+            outcome["on"] = client.set_mirror_notification_removals(True)
+            outcome["status"] = client.status().extra.get("mirror_iphone_removals")
+            outcome["off"] = bool(interface.SetMirrorNotificationRemovals(False, timeout=5))
+        finally:
+            connection.close()
+
+    client_thread = threading.Thread(target=change)
+    client_thread.start()
+    _dispatch_until(lambda: not client_thread.is_alive())
+    client_thread.join(timeout=1)
+
+    assert outcome == {"before": False, "on": True, "status": True, "off": False}
+    assert policy.mirror_removals is False
+    assert len(changes) == 2

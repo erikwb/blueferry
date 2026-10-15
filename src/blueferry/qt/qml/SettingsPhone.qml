@@ -395,4 +395,16 @@ ColumnLayout {
             onClicked: iphonePage.bridge.syncContacts()
         }
     }
+
+    // Older daemons report the value without a runtime setter.
+    Loader {
+        objectName: "contactPhotosLoader"
+        Layout.fillWidth: true
+        active: iphonePage.bridge.status.saved_opt_ins === true
+            && iphonePage.bridge.status.contact_photos !== undefined
+        visible: active
+        sourceComponent: ContactPhotoSettings {
+            bridge: iphonePage.bridge
+        }
+    }
 }

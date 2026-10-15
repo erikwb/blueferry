@@ -81,8 +81,11 @@ Unterhaltungen einen Neustart überstehen. Du entscheidest, wie:
 Mit den optionalen [Kontaktfotos](contact-photos.md) enthält der
 Kontakt-Cache auch die Bilder deiner Kontakte, im selben Speichermodus. Für
 Popup-Symbole legt das Backend kurzlebige Kopien, die nur dir gehören, in
-`$XDG_RUNTIME_DIR/blueferry` ab. Schaltest du die Option aus, löscht der
-nächste Backend-Start die gespeicherten Fotos.
+`$XDG_RUNTIME_DIR/blueferry` ab. Die Einstellung selbst steht als
+`contact_photos` in `settings.json`. Schaltest du die Option aus, löscht
+BlueFerry die Avatar-Dateien und gespeicherten Fotos. Die Bereinigung wartet
+auf laufende Kontakt-Synchronisierungen und wiederholt fehlgeschlagene
+Löschversuche; `blueferry contact-photos status` zeigt ihren Abschluss an.
 
 Die Verschlüsselung schützt gespeicherte Daten. Andere Programme, die unter
 deinem Benutzer laufen, können trotzdem die D-Bus-API von BlueFerry nutzen
@@ -128,9 +131,9 @@ Bearbeite `~/.config/blueferry/local.env` und starte den Dienst danach mit
 | `BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE` | `true` | Anrufe und Musik auf dem iPhone lassen |
 | `BLUEFERRY_ANCS_APP_ALLOWLIST` | nicht gesetzt | Siehe [Apps filtern](#apps-filtern) |
 | `BLUEFERRY_ANCS_APP_BLOCKLIST` | nicht gesetzt | Siehe [Apps filtern](#apps-filtern) |
-| `BLUEFERRY_OTP_AUTOCOPY` | `false` | Einmalcodes in die Zwischenablage kopieren, siehe [Einmalcodes](#einmalcodes) |
+| `BLUEFERRY_OTP_AUTOCOPY` | `false` | Startwert für das Kopieren von Einmalcodes, bis ein Client die Einstellung speichert, siehe [Einmalcodes](#einmalcodes) |
 | `BLUEFERRY_OTP_CLEAR_SECONDS` | `0` | Kopierten Code nach so vielen Sekunden entfernen (0 = behalten, max. 600) |
-| `BLUEFERRY_CONTACT_PHOTOS` | `false` | Kontaktfotos für Avatare und Popup-Symbole behalten; siehe [Kontaktfotos](contact-photos.md) |
+| `BLUEFERRY_CONTACT_PHOTOS` | `false` | Startwert für Kontaktfotos, bis ein Client die Einstellung speichert; siehe [Kontaktfotos](contact-photos.md) |
 
 Die Kopplung schreibt Telefon- und Adapter-Einstellungen in dieselbe Datei.
 Ändere diese durch eine neue Kopplung statt von Hand.

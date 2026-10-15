@@ -259,6 +259,7 @@ class PhotoFiles:
         photo_ref: Callable[[str | None], int | None],
         load_photo: Callable[[int], bytes | None],
         create_file: Callable[..., tuple[int, Path]] = create_runtime_private_file,
+        sweep_orphans: bool = True,
     ) -> None:
         self._photo_ref = photo_ref
         self._load_photo = load_photo
@@ -270,22 +271,42 @@ class PhotoFiles:
         # References that resolved to no usable photo (dangling or invalid)
         # are not reloaded for every popup until the cache changes.
         self._unavailable: set[int] = set()
-        self._remove_orphans()
+        self._pending_unlinks: set[Path] = set()
+        self._sweep_pending = False
+        if sweep_orphans:
+            self.sweep_orphans()
 
-    @staticmethod
-    def _remove_orphans() -> None:
+    def sweep_orphans(self) -> None:
         """Delete copies a crashed daemon left behind (regular files we own)."""
+        self._sweep_pending = False
+        retained = set(self._files.values()) | set(self._retired)
         try:
             directory = runtime_private_directory()
-            for path in directory.glob("avatar-*"):
+            for path in directory.iterdir():
+                if not path.name.startswith("avatar-") or path in retained:
+                    continue
                 try:
                     current = os.lstat(path)
                     if stat.S_ISREG(current.st_mode) and current.st_uid == os.getuid():
-                        path.unlink()
+                        self._unlink(path)
+                except FileNotFoundError:
+                    pass
                 except OSError:
-                    continue
+                    self._sweep_pending = True
         except Exception as error:
+            self._sweep_pending = True
             log.debug("could not sweep volatile avatar files: %s", type(error).__name__)
+
+    @property
+    def cleanup_pending(self) -> bool:
+        return bool(self._pending_unlinks) or self._sweep_pending
+
+    def retry_cleanup(self) -> None:
+        """Retry failed deletions without retiring files still used by popups."""
+        for path in tuple(self._pending_unlinks):
+            self._unlink(path)
+        if self._sweep_pending:
+            self.sweep_orphans()
 
     def path_for(self, address: str | None) -> str | None:
         """Return a file path holding the unique contact's photo, if any."""
@@ -302,13 +323,18 @@ class PhotoFiles:
                 if len(self._unavailable) < 4 * MAX_CONTACT_PHOTO_FILES:
                     self._unavailable.add(ref)
                 return None
+            # Failed deletions count against the file budget. Do not keep
+            # creating plaintext copies while the filesystem refuses cleanup.
+            self._evict(limit=MAX_CONTACT_PHOTO_FILES - 1)
+            if len(self) >= MAX_CONTACT_PHOTO_FILES:
+                return None
             suffix = ".png" if image_type(data) == "image/png" else ".jpg"
             descriptor, path = self._create_file(prefix="avatar-", suffix=suffix)
             try:
                 with os.fdopen(descriptor, "wb") as stream:
                     stream.write(data)
             except Exception:
-                path.unlink(missing_ok=True)
+                self._unlink(path)
                 raise
             self._files[ref] = path
             self._evict()
@@ -318,20 +344,24 @@ class PhotoFiles:
             log.debug("contact photo unavailable for a notification: %s", type(error).__name__)
             return None
 
-    def _evict(self) -> None:
-        while len(self._files) + len(self._retired) > MAX_CONTACT_PHOTO_FILES:
+    def _evict(self, *, limit: int | None = None) -> None:
+        if limit is None:
+            limit = MAX_CONTACT_PHOTO_FILES
+        while len(self) > limit and (self._files or self._retired):
             if self._retired:
                 path, _ = self._retired.popitem(last=False)
             else:
                 _ref, path = self._files.popitem(last=False)
             self._unlink(path)
 
-    @staticmethod
-    def _unlink(path: Path) -> None:
+    def _unlink(self, path: Path) -> None:
         try:
             path.unlink(missing_ok=True)
         except OSError:
+            self._pending_unlinks.add(path)
             log.debug("could not remove a volatile avatar file", exc_info=True)
+        else:
+            self._pending_unlinks.discard(path)
 
     def retire(self) -> None:
         """Forget the current contact cache's files without deleting them.
@@ -347,7 +377,8 @@ class PhotoFiles:
         self._evict()
 
     def clear(self) -> None:
-        """Delete every volatile avatar copy, current and retired."""
+        """Delete all copies, retaining failed deletions for a later retry."""
+        self.retry_cleanup()
         files, self._files = self._files, OrderedDict()
         retired, self._retired = self._retired, OrderedDict()
         self._unavailable.clear()
@@ -355,4 +386,4 @@ class PhotoFiles:
             self._unlink(path)
 
     def __len__(self) -> int:
-        return len(self._files) + len(self._retired)
+        return len(self._files) + len(self._retired) + len(self._pending_unlinks)

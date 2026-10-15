@@ -25,15 +25,25 @@ den Desktop-Clients und in deinem Mitteilungsdienst.
 
 ## Einschalten
 
-1. Diese Zeile in `~/.config/blueferry/local.env` eintragen:
+Setze in den iPhone-Einstellungen eines beliebigen Clients den Haken bei
+**Kontaktfotos vom iPhone anzeigen**:
 
-   ```bash
-   BLUEFERRY_CONTACT_PHOTOS=true
-   ```
+| Client | Wo |
+| --- | --- |
+| Qt (KDE) | iPhone-Einstellungen, „Kontaktfotos“ |
+| GTK | iPhone-Seite, „Kontaktfotos“ |
+| Quickshell | iPhone-Einstellungen, „Kontaktfotos“ |
+| Terminal (TUI) | `o` für Optionen |
+| CLI | `blueferry contact-photos enable` (`disable`, `status`) |
 
-2. Backend neu starten: `systemctl --user restart blueferry`.
-3. Kontakte synchronisieren: `blueferry contacts-sync`, oder auf die nächste
-   automatische Synchronisierung warten.
+Das Backend speichert die Wahl in `~/.config/blueferry/settings.json`,
+übernimmt sie sofort und startet eine Kontakt-Synchronisierung, mit der die
+Fotos kommen. Ein Neustart ist nicht nötig.
+
+Frühere Versionen nutzten `BLUEFERRY_CONTACT_PHOTOS=true` in
+`~/.config/blueferry/local.env`. Die Zeile gilt weiterhin als Startwert, bis
+du die Einstellung in einem Client änderst; danach gilt die gespeicherte
+Wahl, und das Log sagt das beim Start.
 
 Gespräche mit bekannten Kontakten zeigen jetzt das Foto. Gruppen und
 unbekannte Nummern behalten das übliche Symbol.
@@ -48,12 +58,16 @@ Die Datei wird mit Modus 0600 angelegt und ohne `--force` nie überschrieben.
 
 ## Ausschalten
 
-Die Zeile entfernen (oder auf `false` setzen) und das Backend neu starten. Bei
-diesem Start löscht BlueFerry alle gespeicherten Fotos.
+Den Haken entfernen (oder `blueferry contact-photos disable`). BlueFerry
+zeigt keine Fotos mehr an und beginnt, Avatar-Dateien und gespeicherte Fotos
+zu löschen. Die Bereinigung wartet auf laufende Kontakt-Synchronisierungen
+und wiederholt fehlgeschlagene Löschversuche automatisch.
+`blueferry contact-photos status` zeigt an, ob sie noch aussteht oder
+abgeschlossen ist. Beim Start mit ausgeschalteter Option werden auch Reste bereinigt.
 
 **Bevor du zu einer älteren BlueFerry-Version zurückgehst**, die Option
-ausschalten und das Backend einmal starten, damit die Fotos sofort gelöscht
-werden. Wenn du das vergisst, löscht die ältere Version sie zusammen mit den
+zuerst ausschalten und warten, bis `blueferry contact-photos status` die
+Bereinigung als abgeschlossen meldet. Wenn du das vergisst, löscht die ältere Version sie zusammen mit den
 Kontakten bei ihrer nächsten Kontakt-Synchronisierung oder wenn sich der
 Speichermodus ändert.
 

@@ -43,10 +43,10 @@ Systemeinstellungen:
 
 | Kategorie | Inhalt |
 | --- | --- |
-| Phone | Kopplung, Verbindungszustand, **Run Diagnostics** (dieselben Prüfungen wie `blueferry doctor`, im Fenster angezeigt), Kontaktabgleich |
-| Notifications | Welche Ereignisse Popups erzeugen, nur Kontakte, Klickregeln, Mitteilungsinhalt, Aktionsknöpfe, beim Wegklicken als gelesen markieren |
+| Phone | Kopplung, Verbindungszustand, **Run Diagnostics** (dieselben Prüfungen wie `blueferry doctor`, im Fenster angezeigt), Kontaktabgleich, Kontaktfotos |
+| Notifications | Welche Ereignisse Popups erzeugen, nur Kontakte, Klickregeln, Mitteilungsinhalt, Aktionsknöpfe, Mitteilungen mit dem iPhone abgleichen, beim Wegklicken als gelesen markieren |
 | Calls & Audio | Anrufe, Anrufliste, Akku-Warnung, [iPhone-Ton am Computer](phone-audio.md), Mediensteuerung |
-| Security | Abwesenheitssperre, lokale Daten und ihre Verschlüsselung, Verlauf löschen |
+| Security | Einmalcodes, Abwesenheitssperre, lokale Daten und ihre Verschlüsselung, Verlauf löschen |
 | About | Version, Hintergrunddienst, Tastenkürzel, Beenden |
 
 In einem schmalen Fenster werden die Kategorien zur Liste; eine Kategorie
@@ -67,6 +67,30 @@ Umgebung des Dienstes gewinnt weiterhin, der Schalter sagt dann das.
 blueferry features                                 # alle Schalter mit Wert und Quelle
 blueferry features off keep_phone_audio_on_phone   # gilt nach einem Neustart
 ```
+
+### Symbol im Systemabschnitt der Kontrollleiste
+
+`blueferry-tray` kommt mit `blueferry-qt` und legt ein Telefon-Symbol in den
+Systemabschnitt der Kontrollleiste (unter KDE Plasma ein
+StatusNotifierItem). Das Symbol zeigt die Zahl der ungelesenen Nachrichten,
+der Tooltip die Verbindung, den Akku, den Empfang und das Netz. Ein Klick
+öffnet BlueFerry oder holt ein offenes Fenster nach vorne.
+
+Starte es im Anwendungsmenü als **BlueFerry Tray**. Beim Anmelden startet es
+nur, wenn du das willst: Hake im Menü des Symbols **Start at login** an, oder
+führe aus:
+
+```bash
+blueferry-tray --autostart on     # off oder status
+```
+
+Das legt `~/.config/autostart/io.weirdware.BlueFerry.Tray.desktop` an, also
+dieselbe Datei, die auch die Autostart-Einstellungen des Desktops anzeigen.
+
+Das Symbol folgt nur einem laufenden Hintergrunddienst und startet ihn nie
+selbst. Ohne eingerichtetes BlueFerry bleibt es ausgeblendet. Solange es
+läuft, verzichtet `blueferry-qt` auf sein eigenes Symbol und beendet sich,
+wenn du sein Fenster schließt; das Symbol öffnet es wieder.
 
 ## Quickshell
 

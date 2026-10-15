@@ -112,6 +112,8 @@ behavior behind each step is documented in
 - Change versioned interfaces only compatibly and update the XML and client
   models in the same patch.
 - Keep `Events1` signals content-free.
+- Never block the daemon's main loop: asynchronous D-Bus calls only, and
+  blocking work on the OBEX worker. `tools/lint_mainloop.py` checks this.
 
 Each rule is explained in
 [ARCHITECTURE.md](https://github.com/erikwb/blueferry/blob/main/ARCHITECTURE.md#growth-rules).

@@ -30,6 +30,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `backend_operations.py` | Toolkit- and transport-neutral application operations: validation, thread routing, and policy. |
 | `dbus_service.py` | Session D-Bus adapter (`Messages1`/`Events1`/`Presence1`/`CallHistory1`) that maps operations to wire types; claims the bus name. |
 | `dbus_security.py` | Caller UID validation and per-connection/daemon-wide rate limits. |
+| `dbus_call.py` | Asynchronous dbus-python calls with an explicit input signature (`call_async`), plus typed `ay`/`a{sv}` builders. |
 | `protocol.py` | Stable D-Bus identifiers and the API-generation compatibility check. |
 | `event_dispatcher.py` | Builds messages from MAP/ANCS events and fans them out to persistence, desktop, and D-Bus sinks. |
 | `events.py` | Normalized MAP event dataclasses (`SmsEvent`) and address/timestamp normalization. |
@@ -89,6 +90,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `call_history_settings.py` | The saved call-history opt-in (`settings.json`, seeded from `local.env`). |
 | `vcard.py` | Linear, resource-bounded vCard block extraction; the photo-aware variant splits PHOTO out under its own budget. |
 | `contact_photos.py` | Opt-in contact photos: bounded base64 PHOTO decoding and volatile owner-only copies for notification icons. |
+| `contact_photo_settings.py` | The saved contact-photo opt-in (`settings.json`, seeded by `BLUEFERRY_CONTACT_PHOTOS`); the daemon passes it as a callable to the contact cache, sync and storage preparation. |
 | `ancs/client.py` | ANCS GATT client: subscribes to characteristics, requests attributes, emits `AncsEvent`s, and sends opt-in `PerformNotificationAction` writes. |
 | `ancs/parsers.py` | Pure ANCS wire-format parsers and command builders. |
 | `ancs/constants.py` | ANCS spec constants. |
@@ -124,6 +126,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `otp_context.py` | Bounded, transient MAP/ANCS context for live group correlation and read-state changes; works without history storage. |
 | `otp_clipboard.py` | Chooses wl-copy/xclip/xsel and owns one foreground clipboard helper; first copy waits for the worker capability probe; reaps through a GLib child watch. Cleanup only stops its own source, preserving selections owned by other programs. |
 | `sinks/libnotify.py` | Desktop notifications via `org.freedesktop.Notifications`, including open and dismiss actions, optional incoming-call Answer/Decline, opt-in iPhone action buttons, and the optional phone low-battery warning. |
+| `otp_settings.py` | The saved one-time code opt-in (`otp_autocopy` in `settings.json`, seeded by `BLUEFERRY_OTP_AUTOCOPY`). |
 
 ### Storage and privacy
 
@@ -171,11 +174,10 @@ All paths are relative to `src/blueferry/` unless noted.
 | --- | --- |
 | `cli.py`, `__main__.py` | Typer CLI (`run`, `doctor`, sync, setup, and hidden `pairing-*` JSON helpers). |
 | `cli_messages.py` | CLI message listing, recipient selection, and send. |
-| `cli_contacts.py` | `contacts-photo` export of one cached contact photo. |
+| `cli_contacts.py` | `contact-photos enable`/`disable`/`status` and `contacts-photo` export of one cached contact photo. |
 | `cli_call_history.py` | Opt-in `call-history` listing, enable, and disable. |
 | `cli_common.py` | Small CLI presentation helpers. |
 | `cli_proximity.py` | `proximity-lock` status, dry run, enable, and disable. |
-| `cli_otp.py` | `otp-status` and `otp-check` for one-time code auto-copy. |
 | `cli_notifications.py` | `notifications open-map` rule editing and `notifications recent`. |
 | `cli_media.py` | `blueferry media` now-playing status, commands, and `enable`/`disable`. |
 | `cli_audio.py` | `blueferry audio [status\|pc\|phone]`. |
@@ -194,15 +196,21 @@ All paths are relative to `src/blueferry/` unless noted.
 | `desktop_open.py` | Opens a checked URI with the desktop's default handler for the CLIs. |
 | `cli_notification_actions.py` | `notification-actions` status, enable, and disable for the opt-in iPhone action buttons. |
 | `cli_calls.py` | Optional `blueferry calls` commands over `Calls1` and `blueferry phone-status` (battery, signal, network from `GetStatus`). |
+| `cli_otp.py` | `blueferry otp status`, `enable`, `disable` and `check` for one-time code auto-copy (`otp-status` and `otp-check` stay as aliases). |
 | `tui.py` | Textual terminal client. |
 | `tui_launcher.py` | Launches the TUI with the package-private Textual bundle when present. |
 | `tui_calls.py` | Optional Textual calls panel. |
+| `tui_options.py` | Textual "Options" screen (`o`): one checkbox per opt-in the daemon reports. |
 | `tui_notification_rules.py` | Textual editor for notification click rules. |
+| `tui_phone.py` | Opt-in Textual now-playing line and read-only recent-calls screen. |
+| `phone_overview.py` | Toolkit-free now-playing and recent-call rules shared by the GTK, TUI and Quickshell clients (mirrors the Qt QML rules). |
 | `ui/app.py` | GTK4/libadwaita application entry point. |
 | `ui/window.py` | Main GTK window. |
 | `ui/conversations.py` | GTK conversations page: history, group confirmation, replies. |
 | `ui/status.py` | GTK iPhone page: setup, health, preferences, maintenance. |
 | `ui/status_presenter.py` | Pure presentation rules for the status page (including the optional phone battery/signal suffix). |
+| `ui/phone.py` | GTK iPhone dialog: battery/signal/network, opt-in now playing and recent calls; fetches only while open. |
+| `ui/phone_presenter.py` | Pure presentation rules for the iPhone dialog. |
 | `ui/saved_choice.py` | Keeps a settings switch on the user's choice while its save and the next status settle. |
 | `ui/client.py` | Asynchronous GTK backend calls and D-Bus invalidations. |
 | `ui/avatars.py` | Bounded GTK photo cache and worker-side thumbnail decoding; late results from earlier contact generations are discarded. |
@@ -211,6 +219,8 @@ All paths are relative to `src/blueferry/` unless noted.
 | `qt/app.py` | PySide6/Kirigami entry point. |
 | `qt/controller.py` | Asynchronous `BridgeController` exposed to QML. |
 | `phone_overview.py`, `qt/phone_link.py` | Toolkit-free rules behind the phone card and the Calls and Notifications tabs: opt-in hints that name the setting, day-grouped recent calls, notification rows. |
+| `qt/tray.py`, `qt/tray_presenter.py` | `blueferry-tray`: standalone StatusNotifierItem (unread badge, battery/signal tooltip); asynchronous QtDBus calls with auto-start disabled, so it never starts the daemon; owns `io.weirdware.BlueFerry.Client.Tray`, which `qt/app.py` watches to hide its own icon; pure presenters. |
+| `tray_autostart.py` | The tray's opt-in per-user XDG autostart entry. |
 | `qt/tasks.py` | Qt worker primitive. |
 | `qt/avatars.py` | Image provider that decodes opt-in contact photos with `QImageReader` after header and size checks. |
 | `qt/activation.py` | Qt adapter for client activation. |
@@ -230,6 +240,8 @@ All paths are relative to `src/blueferry/` unless noted.
 | `qt/qml/CallsTab.qml` | Calls tab: running calls as cards (answer, hold, hang up), dial pad, and the day-grouped recent calls (`RecentCallsPage.qml`). |
 | `qt/qml/NotificationsTab.qml` | Notifications tab: the opt-in recent-notification list, loaded only while shown. |
 | `qt/qml/ui/` | Shared building blocks of the design: `SectionHeader`, `ListRow`, `CardFrame`, `FilterBar`, `EmptyState`, `Notice`. |
+| `qt/qml/ContactPhotoSettings.qml` | Contact-photo checkbox; loaded only for daemons that report `contact_photos`. |
+| `qt/qml/OtpAutocopySettings.qml` | One-time code auto-copy checkbox; loaded only for daemons that report `otp_autocopy`. |
 | `qt/qml/PhoneCallsSettings.qml` | Phone-calls opt-in checkbox; loaded only for daemons that report `calls_enabled`. |
 | `qt/qml/PhoneStatusIndicator.qml` | Optional iPhone battery/signal indicator (loaded only when values are known; plain-text tooltip). |
 | `qt/qml/ExpandingMessageComposer.qml` | Growing message editor. |
@@ -260,6 +272,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `AvatarCache.qml`, `ContactAvatar.qml` | Bounded asynchronous contact photos in the conversation list and header; the bridge delivers validated bytes as data URLs without writing avatar files. |
 | `SavedChoice.qml` | The same for Quickshell checkboxes that save through the daemon. |
 | `QuickshellPhoneStatus.qml` | Optional iPhone battery/signal caption in the header (hidden when unknown). |
+| `QuickshellNowPlaying.qml` | Opt-in now-playing strip with transport buttons; renders the bridge's array-free `now_playing` view. |
 
 `data/blueferry-quickshell` is the launcher script, and
 `data/io.weirdware.BlueFerry.xml` is the canonical D-Bus introspection
@@ -282,6 +295,36 @@ contract.
   (`call_history`, `call_history_repository`, `call_history_sync`) and exists
   in the daemon only while the user has opted in (`CallHistory1.SetCallHistory`,
   seeded from `BLUEFERRY_CALL_HISTORY_ENABLED`).
+
+## D-Bus calls inside the daemon
+
+Everything in the daemon shares one GLib main loop, so a call that waits for
+a reply stalls BlueZ signals, timers, and every client meanwhile.
+
+- Calls from loop code are asynchronous: `reply_handler`/`error_handler` on
+  dbus-python proxies. `dbus_call.call_async` does that and always passes the
+  input signature. Never pass a bare `{}`/`[]` to a proxy fetched with
+  `introspect=False`: dbus-python cannot type it and raises `ValueError`
+  before sending.
+- Blocking work (`time.sleep`, `subprocess.run`, OBEX transfers, slow SQLite
+  opens) runs on the OBEX worker or in a helper process, never on the loop.
+- `tools/lint_mainloop.py` enforces this for modules the daemon imports at
+  import time (run in CI and by `tests/test_lint_mainloop.py`). Deliberate,
+  safe exceptions (worker-thread, CLI and helper-process code) go in its
+  `ALLOWLIST` with a reason. Existing calls that do block the loop are
+  tracked in `KNOWN_DEBT` and leave it only with their fix; never add to it.
+- The autouse `sync_dbus_guard` in `tests/conftest.py` catches blocking
+  calls the AST cannot see. Those that predate it are in the lint's
+  `RUNTIME_KNOWN_DEBT`.
+
+Suggested order for paying off `KNOWN_DEBT`, one module per change:
+`sinks/libnotify.py` (`Notify`, with the popup id recorded in the reply
+handler), `bearer_supervisor.py` and `bluez_setup.current_cod`, then
+`ancs/client.py` (its subscribe path needs an asynchronous state machine like
+AMS), and last `dbus_security.CallerGuard` and `dbus_service`, where caller
+credentials become an asynchronous lookup before dispatch. Signal watches
+(`add_signal_receiver`) still make one blocking `AddMatch` each in
+dbus-python; the guard tolerates that.
 
 ## D-Bus API and compatibility
 
@@ -619,11 +662,14 @@ A change to these rules has to be made in both places.
   delivery continues. Only an explicit client action may create or unlock the
   key. History writes are transactional, and a monotonic revision invalidates
   the projection.
-- **Contact photos** are opt-in (`BLUEFERRY_CONTACT_PHOTOS`). The daemon keeps
+- **Contact photos** are opt-in (`contact_photos` in `settings.json`, set
+  through `Messages1.SetContactPhotos` and seeded by
+  `BLUEFERRY_CONTACT_PHOTOS`; switching applies without a restart). The daemon keeps
   inline JPEG/PNG bytes within size limits. It checks the declared canvas by
   reading the header and never decodes pixels. It stores the raw bytes
   AES-GCM-sealed in a BLOB next to the contact records, in the same
-  transaction, and erases them at startup when the option is off. The photo
+  transaction, and erases them when the option is turned off (on the OBEX
+  worker, after any queued pull) or at startup when it is off. The photo
   table is created only when a sync stores a photo, and the off-path check is
   read-only, so a profile that never opted in keeps the upstream schema.
   A trigger created with the table deletes all photos whenever
@@ -687,6 +733,14 @@ A change to these rules has to be made in both places.
   the serialized Control Point queue. Clients only toggle the preference
   (`SetAncsNotificationActions`); no D-Bus method performs an action, because
   clients never see ANCS notifications or UIDs.
+- **Following removals on the iPhone** (off by default; `mirror_iphone_removals`
+  in `settings.json`, `Messages1.SetMirrorNotificationRemovals`): when the
+  iPhone reports an ANCS NotificationRemoved, the libnotify sink closes every
+  popup it showed for that UID, with or without action buttons. The sink
+  keeps a bounded desktop-id to UID map that is dropped whenever the UID
+  session ends (subscription torn down or renewed, or a PreExisting replay
+  after live events), because iOS may reuse the UIDs; those popups then just
+  expire. Only UIDs and desktop ids are kept; nothing is broadcast.
 - **Configuration** files are owner-only, size-bounded, opened without
   following final symlinks, and restricted to named settings. systemd never
   sources them as a process environment.
@@ -748,5 +802,7 @@ only on findings that stay reproducible in `PROTOCOL.md`.
 - Keep toolkit root files focused on navigation and composition. Put cohesive
   state derivation and presentation in loadable QML components with behavioral
   tests rather than growing root-level functions.
+- Never block the daemon's main loop; see
+  [D-Bus calls inside the daemon](#d-bus-calls-inside-the-daemon).
 - Prefer narrowly tested helpers over broad exception handling. Best-effort
   cleanup may catch broadly, but command paths must return actionable errors.

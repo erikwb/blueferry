@@ -28,6 +28,18 @@ ColumnLayout {
         return qsTr("Unavailable")
     }
 
+    // Older daemons report the value without a runtime setter.
+    Loader {
+        objectName: "otpAutocopyLoader"
+        Layout.fillWidth: true
+        active: section.bridge.status.saved_opt_ins === true
+            && section.bridge.status.otp_autocopy !== undefined
+        visible: active
+        sourceComponent: OtpAutocopySettings {
+            bridge: section.bridge
+        }
+    }
+
     // Only daemons that report the proximity keys support the setting.
     Loader {
         objectName: "proximityLockLoader"

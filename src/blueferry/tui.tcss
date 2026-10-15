@@ -516,6 +516,18 @@ ModalScreen {
     width: 76;
 }
 
+#options-dialog {
+    width: 72;
+}
+
+#options-dialog Checkbox {
+    margin-top: 1;
+}
+
+#options-error {
+    color: #fca5a5;
+}
+
 #calls-confirm-dialog {
     width: 60;
 }
@@ -584,4 +596,23 @@ ModalScreen {
 
 #workspace.narrow .message-bubble {
     max-width: 92%;
+}
+
+#now-playing {
+    display: none;
+    height: 1;
+    padding: 0 2;
+    background: #0d1425;
+    color: #cbd5e1;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+
+#recent-calls-dialog {
+    width: 84;
+}
+
+#recent-calls-body {
+    height: auto;
+    max-height: 24;
 }

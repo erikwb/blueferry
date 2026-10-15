@@ -1,6 +1,7 @@
 """Worker-side storage validation and the cache data committed after it succeeds."""
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from blueferry.call_history import CallRecord
@@ -30,8 +31,13 @@ class PreparedStorage:
     call_history: list[CallRecord] = field(default_factory=list)
 
 
-def prepare_storage(storage: StorageSecurity) -> PreparedStorage:
-    """Use only the request's private key snapshot, never the live daemon state."""
+def prepare_storage(
+    storage: StorageSecurity, *, photos: Callable[[], bool] | None = None,
+) -> PreparedStorage:
+    """Use only the request's private key snapshot, never the live daemon state.
+
+    ``photos`` is the daemon's contact-photo setting for the prepared cache.
+    """
     StarredThreadsStore(storage.settings_path, storage=storage).migrate()
     ConfirmedGroupsStore(storage.settings_path, storage=storage).migrate()
     routes = GroupRoutesStore(storage.settings_path, storage=storage)
@@ -48,7 +54,7 @@ def prepare_storage(storage: StorageSecurity) -> PreparedStorage:
         prune_events(storage=storage)
         minimize_ancs_history(storage=storage)
         calls = _prepare_call_history(storage)
-    contacts = ContactsResolver(storage=storage, strict=True)
+    contacts = ContactsResolver(storage=storage, strict=True, photos=photos)
     historical = read_events(kinds={"ancs_notification"}, limit=2_000, storage=storage)
     has_messages = bool(read_events(kinds={"sms_received"}, limit=1, storage=storage))
     if storage.status.state == "error":

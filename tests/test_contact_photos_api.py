@@ -281,7 +281,8 @@ def test_disabled_daemon_erases_old_photos_and_wires_nothing(make_daemon, monkey
     daemon = make_daemon()
     assert _photo_rows() == 0
     assert daemon.photo_files is None
-    assert daemon.events.contact_photo is None
+    # Wired so the opt-in can be switched on at runtime, but serves nothing.
+    assert daemon.events.contact_photo("+15551112222") is None
     monkeypatch.setattr(daemon, "_controller_identity", lambda: {})
     status = daemon._status()
     assert status["contact_photos"] is False
@@ -312,7 +313,7 @@ def test_enabled_daemon_keeps_photos_and_reports_content_free_status(
     daemon = make_daemon()
     assert _photo_rows() == 1
     assert daemon.photo_files is not None
-    assert daemon.events.contact_photo == daemon.photo_files.path_for
+    assert daemon.events.contact_photo == daemon._contact_photo_path
     monkeypatch.setattr(daemon, "_controller_identity", lambda: {})
     status = daemon._status()
     assert status["contact_photos"] is True
@@ -429,7 +430,7 @@ def test_cli_reports_disabled_ambiguous_and_missing(cli_backend, tmp_path) -> No
     target = tmp_path / "out.jpg"
     cli_backend.enabled = False
     result = runner.invoke(app, ["contacts-photo", "Alice", "-o", str(target)])
-    assert result.exit_code == 2 and "BLUEFERRY_CONTACT_PHOTOS" in result.output
+    assert result.exit_code == 2 and "contact-photos enable" in result.output
     cli_backend.enabled = True
 
     cli_backend.matches = [("Alice", "+1"), ("Alicia", "+2")]
