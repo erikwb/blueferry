@@ -165,7 +165,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | --- | --- |
 | `cli.py`, `__main__.py` | Typer CLI (`run`, `doctor`, sync, setup, and hidden `pairing-*` JSON helpers). |
 | `cli_messages.py` | CLI message listing, recipient selection, and send. |
-| `cli_contacts.py` | `contacts-photo` export of one cached contact photo. |
+| `cli_contacts.py` | `contact-photos enable`/`disable`/`status` and `contacts-photo` export of one cached contact photo. |
 | `cli_call_history.py` | Opt-in `call-history` listing, enable, and disable. |
 | `cli_common.py` | Small CLI presentation helpers. |
 | `cli_proximity.py` | `proximity-lock` status, dry run, enable, and disable. |
@@ -589,11 +589,14 @@ A change to these rules has to be made in both places.
   delivery continues. Only an explicit client action may create or unlock the
   key. History writes are transactional, and a monotonic revision invalidates
   the projection.
-- **Contact photos** are opt-in (`BLUEFERRY_CONTACT_PHOTOS`). The daemon keeps
+- **Contact photos** are opt-in (`contact_photos` in `settings.json`, set
+  through `Messages1.SetContactPhotos` and seeded by
+  `BLUEFERRY_CONTACT_PHOTOS`; switching applies without a restart). The daemon keeps
   inline JPEG/PNG bytes within size limits. It checks the declared canvas by
   reading the header and never decodes pixels. It stores the raw bytes
   AES-GCM-sealed in a BLOB next to the contact records, in the same
-  transaction, and erases them at startup when the option is off. The photo
+  transaction, and erases them when the option is turned off (on the OBEX
+  worker, after any queued pull) or at startup when it is off. The photo
   table is created only when a sync stores a photo, and the off-path check is
   read-only, so a profile that never opted in keeps the upstream schema.
   A trigger created with the table deletes all photos whenever

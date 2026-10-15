@@ -449,18 +449,18 @@ Restart the user service after editing `local.env` settings.
 
 Contact photos are off by default. To show the iPhone's contact pictures as
 avatars in the GTK, Qt and Quickshell conversation lists and headers and as
-desktop notification icons, add
-this to `local.env`, restart the user service, and sync contacts:
-
-```bash
-BLUEFERRY_CONTACT_PHOTOS=true
-```
+desktop notification icons, tick "Show contact photos from the iPhone" in
+the Qt, GTK or Quickshell iPhone settings or the terminal client's Options
+(`o`), or run `blueferry contact-photos enable`. The choice is saved in
+`settings.json` and applies at once, starting a contact sync that brings the
+photos; `BLUEFERRY_CONTACT_PHOTOS=true` in `local.env` still works as the
+starting value until a client changes it.
 
 The iPhone already sends photos in the normal contact download, so this
 doesn't add a second Bluetooth transfer. BlueFerry just stops throwing them
 away. Photos are stored in the contact cache with the same encryption, storage
-mode, and replacement as the contacts, and are deleted the next time the
-backend starts with the option off. Only JPEG and PNG photos up to 1 MiB and
+mode, and replacement as the contacts, and are erased as soon as the option
+is turned off (or when the backend starts with it off). Only JPEG and PNG photos up to 1 MiB and
 2048×2048 pixels are kept, at most 32 MiB per sync. A photo shows only when
 its address belongs to exactly one contact. One log line per sync (`grep
 "with photos"`) counts photo sizes and why photos were dropped, with no
@@ -885,7 +885,8 @@ blueferry sms-send '+15551234567' 'on my way'
 blueferry sms-send person@icloud.com 'hello from Linux'
 blueferry sms-send Alice 'running late'
 blueferry contacts-sync
-blueferry contacts-photo Alice --output alice.jpg   # needs BLUEFERRY_CONTACT_PHOTOS
+blueferry contact-photos enable                     # opt in; disable / status
+blueferry contacts-photo Alice --output alice.jpg   # needs contact photos on
 blueferry call-history --missed   # after `blueferry call-history enable`
 blueferry media status
 blueferry history-clear
