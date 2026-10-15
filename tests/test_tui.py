@@ -796,3 +796,164 @@ def test_search_finds_other_addresses_in_a_merged_contact(monkeypatch):
         assert merged in app._filtered_threads()
     search.value = "address:email:"
     assert app._filtered_threads() == []
+
+
+class _TetherBackend(_Backend):
+    """Records tethering calls; tethering starts out disabled."""
+
+    def __init__(self, *, unsupported: bool = False) -> None:
+        super().__init__()
+        self.unsupported = unsupported
+        self.tether_calls: list[str] = []
+        self.tether = {"state": "off", "enabled": False, "autoconnect": False}
+
+    def _reply(self, name: str):
+        from blueferry.client import TetherUnsupportedError
+        from blueferry.tether_status import TetherStatus
+
+        self.tether_calls.append(name)
+        if self.unsupported:
+            raise TetherUnsupportedError("no Tether1")
+        return TetherStatus.from_dict(self.tether)
+
+    def tether_state(self):
+        return self._reply("state")
+
+    def tether_connect(self):
+        self.tether = {**self.tether, "state": "connecting"}
+        return self._reply("connect")
+
+    def tether_disconnect(self):
+        self.tether = {**self.tether, "state": "disconnecting"}
+        return self._reply("disconnect")
+
+    def tether_configure(self, enabled: bool, autoconnect: bool):
+        self.tether = {**self.tether, "enabled": enabled, "autoconnect": autoconnect}
+        return self._reply(f"configure:{enabled}:{autoconnect}")
+
+
+async def _open_tethering(app: BlueFerryApp, pilot, backend: _TetherBackend):
+    from blueferry.tui import TetherScreen
+
+    await _wait_for_threads(app, pilot, 2)
+    app.query_one("#thread-list").focus()
+    await pilot.press("t")
+    assert isinstance(app.screen, TetherScreen)
+    for _attempt in range(40):
+        if app.screen.status is not None or app.screen.unsupported:
+            break
+        await pilot.pause(0.05)
+    return app.screen
+
+
+async def _settle(pilot, screen, backend: _TetherBackend, count: int) -> None:
+    for _attempt in range(40):
+        if len(backend.tether_calls) >= count and not screen.pending:
+            break
+        await pilot.pause(0.05)
+    await pilot.pause()
+
+
+def test_tethering_dialog_shows_only_the_opt_in_while_disabled() -> None:
+    async def scenario() -> None:
+        backend = _TetherBackend()
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = await _open_tethering(app, pilot, backend)
+            assert screen.query_one("#tether-enable").display is True
+            assert screen.query_one("#tether-enable").value is False
+            assert screen.query_one("#tether-connect-row").display is False
+            assert screen.query_one("#tether-autoconnect").display is False
+            assert backend.tether_calls == ["state"]
+
+            await pilot.click("#tether-enable")
+            await _settle(pilot, screen, backend, 2)
+
+            # Enabling saves the opt-in and never connects by itself.
+            assert backend.tether_calls == ["state", "configure:True:False"]
+            assert screen.query_one("#tether-connect-row").display is True
+            assert screen.query_one("#tether-autoconnect").display is True
+            assert screen.query_one("#tether-enable").value is True
+            await pilot.pause(0.2)
+            assert backend.tether_calls == ["state", "configure:True:False"]
+
+    _run_headless(scenario())
+
+
+def test_tethering_switch_sends_one_explicit_connect() -> None:
+    async def scenario() -> None:
+        backend = _TetherBackend()
+        backend.tether["enabled"] = True
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = await _open_tethering(app, pilot, backend)
+            await pilot.click("#tether-connect")
+            await _settle(pilot, screen, backend, 2)
+            await pilot.pause(0.2)
+
+            assert backend.tether_calls == ["state", "connect"]
+            assert screen.query_one("#tether-connect").value is True
+            # Still connecting: the switch waits for the daemon.
+            assert screen.query_one("#tether-connect").disabled is True
+            assert "Connecting" in screen.query_one("#tether-summary").render().plain
+
+    _run_headless(scenario())
+
+
+def test_tethering_autoconnect_checkbox_keeps_the_feature_on() -> None:
+    async def scenario() -> None:
+        backend = _TetherBackend()
+        backend.tether["enabled"] = True
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = await _open_tethering(app, pilot, backend)
+            await pilot.click("#tether-autoconnect")
+            await _settle(pilot, screen, backend, 2)
+            assert backend.tether_calls == ["state", "configure:True:True"]
+            assert screen.query_one("#tether-autoconnect").value is True
+
+    _run_headless(scenario())
+
+
+def test_tethering_dialog_explains_an_older_backend() -> None:
+    async def scenario() -> None:
+        backend = _TetherBackend(unsupported=True)
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = await _open_tethering(app, pilot, backend)
+            await pilot.pause()
+            note = screen.query_one("#tether-unsupported")
+            assert note.display is True
+            assert "not offered" in note.render().plain
+            assert screen.query_one("#tether-enable").display is False
+
+    _run_headless(scenario())
+
+
+def test_tether_changed_signal_refreshes_the_open_dialog() -> None:
+    class _Monitor:
+        changed = False
+
+        def pump(self):
+            return False, None
+
+        def take_tether_changed(self) -> bool:
+            changed, self.changed = self.changed, False
+            return changed
+
+        def close(self) -> None:
+            pass
+
+    async def scenario() -> None:
+        backend = _TetherBackend()
+        monitor = _Monitor()
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: monitor)
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = await _open_tethering(app, pilot, backend)
+            backend.tether["enabled"] = True  # e.g. enabled from the CLI
+            monitor.changed = True
+            await _settle(pilot, screen, backend, 2)
+            assert backend.tether_calls == ["state", "state"]
+            assert screen.query_one("#tether-connect-row").display is True
+
+    _run_headless(scenario())
