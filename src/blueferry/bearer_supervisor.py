@@ -39,8 +39,8 @@ BACKOFF_CAP_SECONDS = 300
 LE_CONNECTED_CLASSIC_BACKOFF_CAP_SECONDS = 30
 # Paging an absent phone over BR/EDR is not free: on 2026-10-06 a Classic
 # reconnect after the iPhone had switched Bluetooth off left bluetoothd in
-# uninterruptible sleep in l2cap_chan_connect (a kernel bug, but BlueFerry's
-# dial triggered it). Classic without any sign of the phone therefore backs
+# uninterruptible sleep in l2cap_chan_connect (a kernel bug that coincided
+# with BlueFerry's dial). Classic without any sign of the phone therefore backs
 # off further than LE, up to ten minutes.
 CLASSIC_BACKOFF_CAP_SECONDS = 600
 # After this many consecutive Classic attempts without a connection, and with

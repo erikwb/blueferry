@@ -1023,10 +1023,12 @@ seconds and connects it again, only while the Classic link is up, never during
 a call, while bluetoothd does not answer or during an adapter recovery, and at
 most once every ten minutes (longer while the reset does not help). Otherwise
 **Reconnect** performs the same reset on request, and `blueferry doctor` shows
-the last one. To switch the automatic reset off, set
-`BLUEFERRY_AUTO_PROFILE_RESET=false` in `~/.config/blueferry/local.env`, or
-`"auto_profile_reset": false` in `~/.config/blueferry/settings.json` (which
-takes precedence), and restart the backend. Details:
+the last one. To switch the automatic reset off, untick **Reset a stuck
+iPhone connection automatically** in the settings, press `B` in the terminal
+client or run `blueferry reconnect --no-auto-reset` (saved in
+`~/.config/blueferry/settings.json`, effective at once and taking precedence
+over `BLUEFERRY_AUTO_PROFILE_RESET=false` in `~/.config/blueferry/local.env`).
+Details:
 [Reconnect and self-healing](docs/en/user/reconnect.md).
 
 If an action answers "Please wait a moment, then try again", BlueFerry's

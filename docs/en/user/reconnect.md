@@ -63,10 +63,15 @@ Otherwise **Reconnect** is offered, and `blueferry reconnect` performs the
 same reset on request. `blueferry doctor` shows the setting and the last
 reset.
 
-To switch the automatic reset off, set `BLUEFERRY_AUTO_PROFILE_RESET=false`
-in `~/.config/blueferry/local.env`, or `"auto_profile_reset": false` in
-`~/.config/blueferry/settings.json` (which takes precedence), and restart
-the backend.
+During a call, **Reconnect** does not reset anything and says that a call is
+active; try again after the call.
+
+To switch the automatic reset off, untick **Reset a stuck iPhone connection
+automatically** in the settings (Qt, GTK, Quickshell), press `B` in the
+terminal client, or run `blueferry reconnect --no-auto-reset`. The choice is
+saved as `"auto_profile_reset"` in `~/.config/blueferry/settings.json`, takes
+effect at once and takes precedence over `BLUEFERRY_AUTO_PROFILE_RESET=false`
+in `~/.config/blueferry/local.env` (which needs a backend restart).
 
 ## "Please wait a moment, then try again"
 

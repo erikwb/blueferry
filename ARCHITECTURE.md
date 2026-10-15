@@ -452,8 +452,10 @@ A change to these rules has to be made in both places.
   be down and solicitation can bring the phone back, otherwise after one
   failed attempt), the supervisor stops paging and probes only every 10 min
   until an inbound link, LE or a discovery sighting shows the phone again.
-  Paging an absent phone once hung bluetoothd in `l2cap_chan_connect`
-  (kernel 7.2.8), so fewer pages matter.
+  On 2026-10-06 (kernel 7.2.8) a BR/EDR reconnect after Bluetooth was
+  switched off on the iPhone coincided with bluetoothd stuck in D state in
+  `l2cap_chan_connect` (via `rfcomm_dlc_open`, kernel hung-task trace), so
+  fewer pages matter.
   `Messages1.ReconnectPhone()` (own `reconnect` rate bucket, 6/min) clears
   the backoff and pages once on the next main-loop iteration; it never starts
   a second attempt while one is running. GetStatus reports
@@ -470,10 +472,11 @@ A change to these rules has to be made in both places.
   unresponsive, during a call (oFono reports one) or during the adapter
   recovery; at most one automatic reset per 10 min, doubling up to 60 min
   until a profile works again. The symptom only exists with the opt-in
-  calls, so nothing is reset without them. Opt-out:
-  `BLUEFERRY_AUTO_PROFILE_RESET=false`, or `auto_profile_reset` in
-  settings.json (wins). While a profile stays stuck on a live link,
-  `ReconnectPhone` performs the reset and answers `profile-reset`.
+  calls, so nothing is reset without them. Opt-out at runtime through
+  `Messages1.SetAutoProfileReset` (saved as `auto_profile_reset` in
+  settings.json, which wins over `BLUEFERRY_AUTO_PROFILE_RESET=false`). While
+  a profile stays stuck on a live link, `ReconnectPhone` performs the reset
+  and answers `profile-reset`, or `call-active` during a call.
   GetStatus: `profile_reset_auto`, `profile_reset_suggested` (reason token),
   `profile_reset_last` (`hfp_powered_timeout`/`manual`),
   `profile_reset_last_at` (Unix time) and `profile_reset_last_auto`. With calls on,

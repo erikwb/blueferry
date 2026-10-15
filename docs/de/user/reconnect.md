@@ -66,10 +66,16 @@ hilft). Der Reset unterbricht kurz auch die iPhone-Mitteilungen. Sonst wird **Re
 `blueferry reconnect` führt denselben Reset auf Wunsch aus. `blueferry doctor`
 zeigt die Einstellung und den letzten Reset.
 
-Um den automatischen Reset auszuschalten, setze
-`BLUEFERRY_AUTO_PROFILE_RESET=false` in `~/.config/blueferry/local.env` oder
-`"auto_profile_reset": false` in `~/.config/blueferry/settings.json` (hat
-Vorrang) und starte das Backend neu.
+Während eines Anrufs setzt **Reconnect** nichts zurück und meldet, dass ein
+Anruf läuft; versuche es nach dem Anruf erneut.
+
+Um den automatischen Reset auszuschalten, entferne in den Einstellungen (Qt,
+GTK, Quickshell) das Häkchen bei **Reset a stuck iPhone connection
+automatically**, drücke `B` im Terminal-Client oder führe
+`blueferry reconnect --no-auto-reset` aus. Die Wahl wird als
+`"auto_profile_reset"` in `~/.config/blueferry/settings.json` gespeichert,
+gilt sofort und hat Vorrang vor `BLUEFERRY_AUTO_PROFILE_RESET=false` in
+`~/.config/blueferry/local.env` (das einen Backend-Neustart braucht).
 
 ## „Please wait a moment, then try again“
 

@@ -532,7 +532,12 @@ def _doctor_profile_reset(log: logging.Logger) -> None:
     if status is None or "profile_reset_auto" not in status:
         return
     state = "on" if status.get("profile_reset_auto") else "off"
-    log.info("Automatic profile reset: %s (BLUEFERRY_AUTO_PROFILE_RESET)", state)
+    log.info(
+        "Automatic profile reset: %s (settings.json auto_profile_reset, set by "
+        "'blueferry reconnect --[no-]auto-reset' or the app, wins over "
+        "BLUEFERRY_AUTO_PROFILE_RESET)",
+        state,
+    )
     stuck = profile_reason_text(status.get("profile_reset_suggested"))
     if stuck:
         log.warning("    %s Run 'blueferry reconnect' to reset it.", stuck)
