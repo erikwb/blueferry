@@ -217,6 +217,71 @@ def test_a_failed_install_restores_the_previous_one(setup) -> None:
     assert not (manager.root / "venvs" / "io.example.demo-bbbbbbbbbbbb").exists()
 
 
+def test_a_failed_reinstall_preserves_the_working_runtime(setup) -> None:
+    manager, runner = setup
+    original = manager.commit(manager.prepare(URL))
+    program = Path(original.venv) / "bin" / "blueferry-demo"
+    program.write_text("working installation")
+    manifest = manager.manifest_path(original.id)
+    service = manager.service_path(parse_manifest(manifest.read_text()))
+    before = manifest.read_text(), service.read_text()
+    prepared = manager.prepare(URL)
+    runner.fail_pip = True
+    with pytest.raises(InstallError, match="pip failed"):
+        manager.commit(prepared)
+    assert program.read_text() == "working installation"
+    assert (manifest.read_text(), service.read_text()) == before
+    assert manager.records()[original.id] == original
+    assert manager.stopper.calls == []
+    assert list((manager.root / "venvs").iterdir()) == [Path(original.venv)]
+
+
+@pytest.mark.parametrize("publication", ["service", "record"])
+def test_a_failed_reinstall_publication_restores_all_metadata(setup, monkeypatch, publication) -> None:
+    manager, _runner = setup
+    original = manager.commit(manager.prepare(URL))
+    program = Path(original.venv) / "bin" / "blueferry-demo"
+    program.write_text("working installation")
+    manifest = manager.manifest_path(original.id)
+    service = manager.service_path(parse_manifest(manifest.read_text()))
+    before = manifest.read_text(), service.read_text()
+    write = plugin_manager._write_text
+    failing_path = service if publication == "service" else manager.root / "installs.json"
+
+    def fail(path, text, mode=0o644):
+        if path == failing_path:
+            raise OSError("publication failed")
+        return write(path, text, mode)
+
+    monkeypatch.setattr(plugin_manager, "_write_text", fail)
+    with pytest.raises(OSError, match="publication failed"):
+        manager.commit(manager.prepare(URL))
+    assert program.read_text() == "working installation"
+    assert (manifest.read_text(), service.read_text()) == before
+    assert manager.records()[original.id] == original
+    assert manager.stopper.calls == []
+    assert list((manager.root / "venvs").iterdir()) == [Path(original.venv)]
+
+
+@pytest.mark.parametrize("operation", ["install", "update", "remove"])
+def test_cleanup_does_not_delete_another_plugin_with_a_similar_id(setup, operation) -> None:
+    manager, runner = setup
+    original_files = runner.files[OLD]
+    runner.files[OLD] = {"data/extra.plugin": MANIFEST.format(version="0.1.0").replace(
+        "Id=io.example.demo", "Id=io.example.demo-extra")}
+    other = manager.commit(manager.prepare(URL))
+    runner.files[OLD] = original_files
+    manager.commit(manager.prepare(URL))
+    if operation == "update":
+        runner.tags["v0.2.0"] = NEW
+        manager.commit(manager.prepare_update("io.example.demo"))
+    elif operation == "remove":
+        manager.remove("io.example.demo")
+    assert (Path(other.venv) / "bin" / "blueferry-demo").is_file()
+    assert manager.records()[other.id] == other
+    assert all(Path(other.venv) not in paths for _name, paths in manager.stopper.calls)
+
+
 def test_update_shows_the_change_and_replaces_the_venv(setup) -> None:
     manager, runner = setup
     manager.commit(manager.prepare(URL))
@@ -323,9 +388,15 @@ def test_reinstalling_the_same_commit_stops_the_process_of_the_rebuilt_venv(setu
     manager, _runner = setup
     manager.commit(manager.prepare(URL))
     prepared = manager.prepare(URL)
-    manager.commit(prepared)
+    replacement = manager.commit(prepared)
     venv = manager.root / "venvs" / "io.example.demo-aaaaaaaaaaaa"
     assert manager.stopper.calls == [(BUS, [venv])] and prepared.stop.state == NOT_RUNNING
+    assert Path(replacement.venv) != venv
+    assert (Path(replacement.venv) / "bin" / "blueferry-demo").is_file()
+    assert not venv.exists()
+    assert manager.records()[replacement.id] == replacement
+    manager.remove(replacement.id)
+    assert not Path(replacement.venv).exists()
 
 
 def test_a_failed_update_stops_nothing(setup) -> None:
