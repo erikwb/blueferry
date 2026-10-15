@@ -43,13 +43,15 @@ flowchart LR
     "Bestätigungsnummer", "code de vérification", ...;
   - "code" followed by the number: "code: 123456", "Code lautet 123456";
   - "123456 is your ... code";
-  - "code" immediately followed by the number, as in "Telegram code 58291";
+  - a service name, then "code" and the number, as in "Telegram code
+    58291" (a greeting such as "Hello code 4821" is not a service name);
   - "enter 123456" or "geben Sie 123456 ein" in a sentence about
     authentication, including resetting a password.
 
-  Plain PINs and passwords require authentication context. Door and Wi-Fi
-  codes are excluded, as are numbers followed by units such as steps or
-  messages. A code noun in another sentence never binds an unrelated number.
+  Plain PINs and passwords require authentication context. Codes people
+  share, such as "my code", door, alarm and Wi-Fi codes, are excluded, as
+  are numbers followed by units such as steps or messages. A code noun in
+  another sentence never binds an unrelated number.
 
   Words like "verify", "one-time" or "Einmal" alone never pick a number,
   so "Verify your email to get 5000 points" or "Einmalzahlung von 1500"
