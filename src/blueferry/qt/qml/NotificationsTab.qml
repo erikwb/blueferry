@@ -41,7 +41,7 @@ ColumnLayout {
         Layout.bottomMargin: Kirigami.Units.smallSpacing
         visible: tab.info.enabled === true && tab.info.content !== true
         type: Kirigami.MessageType.Information
-        text: qsTr("Only app names and times are shown. Set BLUEFERRY_SHOW_NOTIFICATION_CONTENT=true in local.env to see titles and text.")
+        text: qsTr("Only app names and times are shown. Turn on “Show message content in popups” in Settings › Notifications to see titles and text.")
     }
 
     Controls.ScrollView {

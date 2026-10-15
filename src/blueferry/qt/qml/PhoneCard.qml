@@ -8,7 +8,7 @@ import "ui"
 
 // Fixed overview of the paired iPhone on the left of the main window: name,
 // battery/signal, now playing and quick switches. Opt-in features that are
-// off stay visible but disabled, with the local.env setting that enables
+// off stay visible but disabled, with the setting that enables
 // them. Everything goes through the bridge; no I/O happens here.
 Controls.ScrollView {
     id: card
