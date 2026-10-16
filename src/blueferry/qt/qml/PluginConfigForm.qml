@@ -173,11 +173,23 @@ ColumnLayout {
             color: Kirigami.Theme.disabledTextColor
             text: qsTr("These buttons use the saved settings: save your changes first.")
         }
-        Notice {
-            objectName: "pluginConfigActionStatus"
-            type: form.status.pending === true ? Kirigami.MessageType.Information
-                : (form.status.ok === true ? Kirigami.MessageType.Positive : Kirigami.MessageType.Error)
-            plainText: form.status.kind === "action" ? form.status.text || "" : ""
+        RowLayout {
+            Layout.fillWidth: true
+            visible: form.status.kind === "action" && (form.status.text || "") !== ""
+            spacing: Kirigami.Units.smallSpacing
+            Controls.BusyIndicator {
+                objectName: "pluginConfigActionBusy"
+                running: form.status.kind === "action" && form.status.pending === true
+                visible: running
+                Layout.preferredHeight: Kirigami.Units.iconSizes.smallMedium
+                Layout.preferredWidth: Kirigami.Units.iconSizes.smallMedium
+            }
+            Notice {
+                objectName: "pluginConfigActionStatus"
+                type: form.status.pending === true ? Kirigami.MessageType.Information
+                    : (form.status.ok === true ? Kirigami.MessageType.Positive : Kirigami.MessageType.Error)
+                plainText: form.status.kind === "action" ? form.status.text || "" : ""
+            }
         }
     }
 

@@ -4414,11 +4414,13 @@ def test_plugin_form_buttons_need_saved_settings_and_links_carry_names(
     QGuiApplication.processEvents()
     status = _visual_find(form, "pluginConfigActionStatus")
     assert status.property("visible") and "&lt;b&gt;" in status.property("text")
+    assert _visual_find(form, "pluginConfigActionBusy").property("visible") is False
     assert _visual_find(form, "pluginConfigStatus").property("visible") is False
     # While an action runs, no second one starts.
     bridge.setProperty("pluginSettings", {**state, "config": {**config, "status": {
         "kind": "action", "ok": True, "pending": True, "text": "Working…"}}})
     QGuiApplication.processEvents()
+    assert _visual_find(form, "pluginConfigActionBusy").property("visible") is True
     assert _visual_find(form, "configAction_approve").property("enabled") is False
     _evaluate(qml_engine, "testWindow.closePhoneSettings()")
 
