@@ -580,19 +580,25 @@ class NotifyService(_ActionMixin):
     """
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
+        # Set before the base class runs: it calls add_to_connection when
+        # it gets a bus. Unique name owning HOST_BUS_NAME: None until the
+        # bus answered, "" while nobody owns it. Main loop only.
+        self._host_owner: str | None = None
+        self._host_watch: Any = None
         super().__init__(*args, **kwargs)
         self._pending: deque[tuple[float, surfaces.Notification]] = deque(
             maxlen=surfaces.MAX_PENDING_NOTIFICATIONS,
         )
         self._pending_lock = threading.Lock()
-        # Unique name owning HOST_BUS_NAME: None until the bus answered,
-        # "" while nobody owns it. Read and written on the main loop only.
-        self._host_owner: str | None = None
-        self._host_watch: Any = None
-        connection = getattr(self, "_connection", None)
-        if connection is not None and hasattr(connection, "watch_name_owner"):
-            # AddMatch for NameOwnerChanged is one synchronous round trip
-            # here, before the main loop runs; GetNameOwner is asynchronous.
+
+    def add_to_connection(self, connection: Any, path: Any) -> None:
+        """Export the service and start following the daemon's name, also
+        when the service was built without a bus and exported later."""
+        super().add_to_connection(connection, path)
+        if self._host_watch is None and hasattr(connection, "watch_name_owner"):
+            # AddMatch for NameOwnerChanged is one synchronous round trip,
+            # once per export (in run(): before the main loop starts);
+            # GetNameOwner is asynchronous.
             # Its answer and every NameOwnerChanged arrive through the main
             # loop before any call the new owner can make (the bus keeps
             # the order).
