@@ -30,6 +30,7 @@ import dbus.service
 from . import (
     API_MINOR,
     API_VERSION,
+    HOST_BUS_NAME,
     LOGIN_PROVIDERS,
     MAX_RECENT_PHOTOS,
     MAX_REPLY_BYTES,
@@ -63,6 +64,10 @@ class PluginCallError(dbus.exceptions.DBusException):
 
 class RateLimitedError(dbus.exceptions.DBusException):
     _dbus_error_name = "io.weirdware.BlueFerry.Plugin.Error.RateLimited"
+
+
+class AccessDeniedError(dbus.exceptions.DBusException):
+    _dbus_error_name = "org.freedesktop.DBus.Error.AccessDenied"
 
 
 def _idle_add(callback: Callable[[], object]) -> object:
@@ -562,15 +567,62 @@ class NotifyService(_ActionMixin):
     ApiVersion 1.5: the popup waits in the plugin. The content-free signal
     ``NotifyChanged()`` tells BlueFerry to fetch it with
     ``GetPendingNotification()``, so nothing personal travels on the bus
-    for other processes to read.
+    for other processes to read. Only the connection that currently owns
+    the daemon's name :data:`~blueferry.plugin_api.HOST_BUS_NAME` may fetch;
+    any other caller gets ``AccessDenied`` and the popup stays queued. The
+    owner is followed with an asynchronous ``GetNameOwner`` and then
+    ``NameOwnerChanged``; only the match rule for that signal (AddMatch) is
+    a synchronous round trip, done once when the service is put on the bus,
+    before :func:`run` starts the main loop. While the owner is unknown or
+    the name has no owner, every fetch is refused. A service that is not on a bus (in-process
+    tests, :class:`~blueferry.plugin_api.testing.FakeHost`) has no other
+    callers and answers anyone.
     """
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
+        # Set before the base class runs: it calls add_to_connection when
+        # it gets a bus. Unique name owning HOST_BUS_NAME: None until the
+        # bus answered, "" while nobody owns it. Main loop only.
+        self._host_owner: str | None = None
+        self._host_watch: Any = None
         super().__init__(*args, **kwargs)
         self._pending: deque[tuple[float, surfaces.Notification]] = deque(
             maxlen=surfaces.MAX_PENDING_NOTIFICATIONS,
         )
         self._pending_lock = threading.Lock()
+
+    def add_to_connection(self, connection: Any, path: Any) -> None:
+        """Export the service and start following the daemon's name, also
+        when the service was built without a bus and exported later."""
+        super().add_to_connection(connection, path)
+        if self._host_watch is None and hasattr(connection, "watch_name_owner"):
+            # AddMatch for NameOwnerChanged is one synchronous round trip,
+            # once per export (in run(): before the main loop starts);
+            # GetNameOwner is asynchronous.
+            # Its answer and every NameOwnerChanged arrive through the main
+            # loop before any call the new owner can make (the bus keeps
+            # the order).
+            self._host_watch = connection.watch_name_owner(
+                HOST_BUS_NAME, self._host_owner_changed,
+            )
+
+    def _host_owner_changed(self, owner: str) -> None:
+        self._host_owner = str(owner)
+
+    def remove_from_connection(self, *args: Any, **kwargs: Any) -> None:
+        """Also stop following the daemon's name; nothing is fetched after."""
+        if self._host_watch is not None:
+            self._host_watch.cancel()
+            self._host_watch = None
+        self._host_owner = None
+        super().remove_from_connection(*args, **kwargs)
+
+    def _may_fetch(self, sender: str | None) -> bool:
+        """Only BlueFerry's daemon takes popups out of the queue."""
+        if getattr(self, "_connection", None) is None:
+            return True  # not exported: only in-process callers exist
+        owner = self._host_owner
+        return bool(owner) and sender is not None and str(sender) == owner
 
     def emit_notify(
         self, title: str, body: str, icon: str = "", action_label: str = "",
@@ -598,8 +650,14 @@ class NotifyService(_ActionMixin):
         PLUGIN_INTERFACE, in_signature="", out_signature="s", sender_keyword="sender",
     )
     def GetPendingNotification(self, sender=None) -> str:
-        """The oldest waiting popup (removed from the queue), or null."""
+        """The oldest waiting popup (removed from the queue), or null.
+
+        Only the current owner of the BlueFerry daemon's bus name may call
+        this; anyone else gets AccessDenied and the queue stays untouched.
+        """
         self.admit(sender)
+        if not self._may_fetch(sender):
+            raise AccessDeniedError("only BlueFerry may fetch popups")
         note, more = self._next_pending()
         return surfaces.pending_json(note, more=more)
 
