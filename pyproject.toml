@@ -62,7 +62,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "blueferry" = ["tui.tcss"]
-"blueferry.qt" = ["qml/*.qml"]
+"blueferry.qt" = ["qml/*.qml", "qml/ui/*.qml"]
 
 [tool.pytest.ini_options]
 # Without this, a bare `pytest` from the repo root recurses the whole tree

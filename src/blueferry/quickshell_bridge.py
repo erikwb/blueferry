@@ -19,6 +19,7 @@ from blueferry.bus import get_session_bus
 from blueferry.client import BackendClient
 from blueferry.client_activation import record_client_use
 from blueferry.contact_photos import image_type, valid_photo
+from blueferry.phone_audio_view import phone_audio
 from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH
 from blueferry.service_manager import bluetooth_restart_command
 
@@ -121,7 +122,11 @@ class QuickshellBridge:
             record_client_use("quickshell")
             return None
         if method == "status":
-            return self.client.status().to_dict() | self.host_info()
+            status = self.client.status().to_dict()
+            if "phone_audio_route" in status:
+                # Quickshell has no gettext; it shows the shared wording.
+                status["phone_audio_view"] = phone_audio(status)
+            return status | self.host_info()
         if method == "threads":
             limit = args.get("limit", 200)
             if isinstance(limit, bool) or not isinstance(limit, int):
@@ -186,6 +191,11 @@ class QuickshellBridge:
             return self.client.set_media_control(_boolean(args, "enabled"))
         if method == "set_mpris_player":
             return self.client.set_mpris_player(_boolean(args, "enabled"))
+        if method == "set_phone_audio_route":
+            route = _text(args, "route")
+            if route not in ("pc", "phone"):
+                raise RequestError("route must be pc or phone")
+            return self.client.set_phone_audio_route(route)
         if method == "set_proximity_lock":
             grace = args.get("grace_seconds")
             if isinstance(grace, bool) or not isinstance(grace, int):

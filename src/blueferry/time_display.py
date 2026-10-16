@@ -91,3 +91,34 @@ def format_message_timestamp(
     else:
         day = f"{_MONTHS[local.month - 1]} {local.day}, {local.year}"
     return f"{day} at {_clock_time(local)}"
+
+
+def day_and_clock(
+    value: str | None,
+    *,
+    now: datetime | None = None,
+) -> tuple[str, str]:
+    """``("Today", "2:36 PM")``: a section label and the time of day.
+
+    The day is Today, Yesterday, a weekday within the last week, else the
+    date; unparseable values give ``("", "")``.
+    """
+    parsed = _parse(str(value or "").strip()) if value else None
+    if parsed is None:
+        return "", ""
+    reference = now or datetime.now()
+    local = _in_reference_timezone(parsed, reference)
+    if reference.tzinfo is not None:
+        reference = reference.replace(tzinfo=None)
+    days_ago = (reference.date() - local.date()).days
+    if days_ago == 0:
+        day = "Today"
+    elif days_ago == 1:
+        day = "Yesterday"
+    elif 1 < days_ago < 7:
+        day = _WEEKDAYS[local.weekday()]
+    elif local.year == reference.year:
+        day = f"{_MONTHS[local.month - 1]} {local.day}"
+    else:
+        day = f"{_MONTHS[local.month - 1]} {local.day}, {local.year}"
+    return day, _clock_time(local)

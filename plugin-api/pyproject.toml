@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+# The plugin contract as its own distribution, for plugins that live in
+# their own repository. BlueFerry ships the same files: its
+# src/blueferry/plugin_api is a symlink to this tree.
+#
+# Plugins depend on it with
+#   blueferry-plugin-api @ git+https://github.com/erikwb/blueferry@plugin-api-v1.6.0#subdirectory=plugin-api
+#
+# pinned to a plugin-api-v<version> tag, never to a branch.
+#
+# It installs the package blueferry.plugin_api without a blueferry/__init__.py,
+# so it can sit next to a full BlueFerry installation. dbus-python and
+# PyGObject come from the distribution (create plugin venvs with
+# --system-site-packages).
+[project]
+name = "blueferry-plugin-api"
+version = "1.6.0"
+description = "Contract between BlueFerry clients and out-of-process plugins"
+license = "GPL-2.0-or-later"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/erikwb/blueferry/blob/main/PLUGINS.md"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["blueferry.plugin_api*"]
+namespaces = true
