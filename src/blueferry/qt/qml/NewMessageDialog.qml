@@ -4,6 +4,7 @@ import QtQuick
 import QtQuick.Controls as Controls
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
+import "ui"
 
 Kirigami.Dialog {
     id: dialog
@@ -49,9 +50,9 @@ Kirigami.Dialog {
     ColumnLayout {
         spacing: Kirigami.Units.smallSpacing
 
-        Controls.Label {
+        Kirigami.Heading {
+            level: 4
             text: qsTr("To")
-            font.bold: true
         }
         Controls.TextField {
             id: newRecipient
@@ -69,29 +70,30 @@ Kirigami.Dialog {
             clip: true
             model: dialog.bridge.contactResults
 
-            delegate: Controls.ItemDelegate {
+            delegate: ListRow {
                 id: contactDelegate
                 required property var modelData
-                width: contactResults.width
-                text: modelData.name + "\n" + (
-                    modelData.address.indexOf("@") >= 0
-                        ? modelData.address : "+" + modelData.address
-                )
-                contentItem: Controls.Label {
-                    text: contactDelegate.text
-                    textFormat: Text.PlainText
-                    elide: Text.ElideRight
+                density: "compact"
+                title: contactDelegate.modelData.name
+                subtitle: contactDelegate.modelData.address.indexOf("@") >= 0
+                    ? contactDelegate.modelData.address : "+" + contactDelegate.modelData.address
+                leading: Component {
+                    ContactAvatar {
+                        bridge: dialog.bridge
+                        address: contactDelegate.modelData.address
+                    }
                 }
                 onClicked: {
-                    newRecipient.text = modelData.address
+                    newRecipient.text = contactDelegate.modelData.address
                     dialog.bridge.findContacts("")
                     newMessageBody.forceActiveFocus()
                 }
             }
         }
-        Controls.Label {
+        Kirigami.Heading {
+            Layout.topMargin: Kirigami.Units.smallSpacing
+            level: 4
             text: qsTr("Message")
-            font.bold: true
         }
         ExpandingMessageComposer {
             id: newMessageBody

@@ -41,6 +41,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `group_routes.py` | Saved named-group reply rosters in the settings document, outside history retention. |
 | `starred_threads.py` | Persistent starred-conversation keys in the settings document. |
 | `notification_policy.py` | Persistent desktop notification preferences, including per-app click rules. |
+| `notification_log.py` | Opt-in, memory-only ring of recent non-Messages ANCS notifications for `ListNotifications` (content-gated, never on disk). |
 | `notification_open_map.py` | Strict validation and exact-match resolution of notification click rules (bundle ID to http(s) URL or desktop-entry ID). |
 | `private_preferences.py` | Encrypts a whole preference collection under the storage policy. |
 | `settings_store.py` | Small atomic store shared by daemon-owned preferences. |
@@ -61,6 +62,11 @@ All paths are relative to `src/blueferry/` unless noted.
 | `wireplumber_policy.py` | Manages one WirePlumber fragment that keeps iPhone audio on the phone (keeps the hands-free roles when calls are enabled). |
 | `proximity_lock.py` | Opt-in lock-only desktop lock after the iPhone's bearers stay down for a grace period; lock dispatch via ScreenSaver, then logind. |
 | `media.py` | Opt-in now-playing projection, media command policy, coalesced change listeners, and the persisted opt-in (`MediaControlSettings`). |
+| `phone_audio_route.py` | Content-free iPhone A2DP route (`pc`/`phone`/`unavailable`) from BlueZ `MediaTransport1`/`Device1` over GDBus, switched through `ConnectProfile`/`DisconnectProfile`; also where the sound plays (`phone_audio_playing`) from `MediaTransport1.State` and the AMS playback state, debounced. |
+| `gio_dbus.py` | `GioBus`: a two-method seam (typed asynchronous `call`, `subscribe`) over a `Gio.DBusConnection`, with dbus-python-compatible error names; used by `phone_audio_route.py`. |
+| `phone_audio_view.py` | Toolkit-free wording of the PC/iPhone sound switch for every client. |
+| `features.py` | The `local.env` switches without a runtime setter of their own that clients may store in settings.json (`Messages1.GetFeatures/SetFeature`): notification content, mark read on dismiss, keeping iPhone audio on the phone. |
+| `doctor_report.py` | Runs `blueferry doctor` in a child process for the settings UIs and returns a plain-text report. |
 | `mpris.py` | Optional MPRIS2 player (`org.mpris.MediaPlayer2.blueferry_iphone`) over `media.py`, exported on its own private session-bus connection so the MPRIS name never addresses the BlueFerry object. |
 
 ### Bluetooth transports and supervision
@@ -172,8 +178,23 @@ All paths are relative to `src/blueferry/` unless noted.
 | `cli_call_history.py` | Opt-in `call-history` listing, enable, and disable. |
 | `cli_common.py` | Small CLI presentation helpers. |
 | `cli_proximity.py` | `proximity-lock` status, dry run, enable, and disable. |
-| `cli_notifications.py` | `notifications open-map` rule editing. |
+| `cli_notifications.py` | `notifications open-map` rule editing and `notifications recent`. |
 | `cli_media.py` | `blueferry media` now-playing status, commands, and `enable`/`disable`. |
+| `cli_audio.py` | `blueferry audio [status\|pc\|phone]`. |
+| `cli_features.py` | `blueferry features [on\|off NAME]`. |
+| `plugin_api/` | Plugin contract: manifest parser and discovery, settings schema (`config.py`, with groups, a pre-check and `ShowIf`), `TestConfig`/`ConfigLogin` replies (`config_flow.py`), surfaces (`card`, `share`, content-free `notify`) with checked `open_uri`, the standard log file, a validating `PluginClient`, `PluginService`/`PhotosService` bases (bounded worker pool, per-caller budget) and a test harness (`FakeHost`). Imports nothing else from `blueferry`. A symlink to `plugin-api/src/blueferry/plugin_api`, which `plugin-api/pyproject.toml` also builds as the distribution `blueferry-plugin-api` for plugins in their own repositories. |
+| `plugin_manager.py` | Installs plugins from https Git URLs: pinned ref, clone, confirmation, own venv, manifest and D-Bus service file; update, remove, enable/disable under a `flock`; validates `installs.json` on every read. |
+| `plugin_stopper.py` | After an update, removal or disabling, SIGTERMs the owner of the plugin's bus name if it runs as the user from the plugin's old venv (pidfd, never SIGKILL, never BlueFerry itself); blocking, worker thread or CLI only. |
+| `plugin_index.py` | Plugin store: fetches (https on every redirect hop), validates and caches curated index files. |
+| `plugin_prefs.py` | Reads which plugins are disabled without the plugin manager. |
+| `plugin_logs.py` | Finds a plugin's standard log file and reads its tail without following symlinks. |
+| `plugin_settings_view.py` | Toolkit-free plugin rows, store cards and settings forms for the Qt client (`qt/plugin_settings.py`, `qt/qml/SettingsPlugins.qml`, `qt/qml/PluginConfigForm.qml`, `qt/qml/PluginStoreCard.qml`). |
+| `plugin_surfaces.py`, `cli_surfaces.py`, `qt/plugin_surfaces.py`, `qt/qml/PluginCardSection.qml` | Host side of the `card` and `share` surfaces: card rows, actions, "Send to…" targets, card actions that take files; `blueferry cards`/`blueferry send` and the Qt "From Plugins" section (which hears `CardChanged` only from enabled card plugins). Plugin calls run on worker threads with timeouts. |
+| `plugin_notify.py` | Daemon side of the `notify` capability: watches the content-free `Plugin1.NotifyChanged`, accepts it only from the owner of an enabled notify plugin's bus name running as the same user, fetches the popup with `GetPendingNotification` from that connection, rate-limits, and hands it to the libnotify sink; the popup button calls `InvokeAction` asynchronously. |
+| `photos_view.py`, `cli_photos.py`, `qt/qml/PhotosTab.qml` | Client side of the `photos` capability: plugin lookup, loads for worker threads, plain-text labels; `blueferry photos` and the Qt Photos tab (loaded only while shown). |
+| `cli_plugins.py` | `blueferry plugins …` and `blueferry plugins ALIAS …` (exec of the plugin's own CLI; refused for a disabled plugin). |
+| `desktop_open.py` | Opens a checked URI with the desktop's default handler for the CLIs. |
+| `companion_tools.py`, `cli_tools.py`, `qt/companion.py`, `qt/qml/CompanionToolsSection.qml` | Client-only launchers for UxPlay screen mirroring, LocalSend and the iPhone camera roll over USB (ifuse); `blueferry tools` and the Qt card's Tools section. Not part of the daemon or its D-Bus API. |
 | `cli_notification_actions.py` | `notification-actions` status, enable, and disable for the opt-in iPhone action buttons. |
 | `cli_calls.py` | Optional `blueferry calls` commands over `Calls1` and `blueferry phone-status` (battery, signal, network from `GetStatus`). |
 | `cli_otp.py` | `blueferry otp status`, `enable`, `disable` and `check` for one-time code auto-copy (`otp-status` and `otp-check` stay as aliases). |
@@ -198,6 +219,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `ui/util.py` | Small UI helpers. |
 | `qt/app.py` | PySide6/Kirigami entry point. |
 | `qt/controller.py` | Asynchronous `BridgeController` exposed to QML. |
+| `phone_overview.py`, `qt/phone_link.py` | Toolkit-free rules behind the phone card and the Calls and Notifications tabs: opt-in hints that name the setting, day-grouped recent calls, notification rows. |
 | `qt/tray.py`, `qt/tray_presenter.py` | `blueferry-tray`: standalone StatusNotifierItem (unread badge, battery/signal tooltip); asynchronous QtDBus calls with auto-start disabled, so it never starts the daemon; owns `io.weirdware.BlueFerry.Client.Tray`, which `qt/app.py` watches to hide its own icon; pure presenters. |
 | `tray_autostart.py` | The tray's opt-in per-user XDG autostart entry. |
 | `qt/tasks.py` | Qt worker primitive. |
@@ -205,14 +227,20 @@ All paths are relative to `src/blueferry/` unless noted.
 | `qt/activation.py` | Qt adapter for client activation. |
 | `qt/qml/Main.qml` | Kirigami window: navigation and composition. |
 | `qt/qml/ConversationLogic.qml` | Thread lookup, roster-warning dedup, participant parsing (also used by Quickshell). |
-| `qt/qml/PhoneSettingsPage.qml` | Qt setup and preferences page. |
+| `qt/qml/SettingsPage.qml` | Settings with categories on the left (Phone, Notifications, Calls & Audio, Security, About), a drill-down list in a narrow window, and the restart notice for feature switches. |
+| `qt/qml/Settings*.qml` | One page per category; every control of the former single iPhone settings page lives in one of them. `SettingsPhone` also runs `blueferry doctor` (`doctor_report.py`, child process on its own pool) and shows the report as plain text. |
+| `qt/qml/SubtitleSwitch.qml`, `qt/qml/FeatureSwitch.qml` | A switch row with a wrapped explanation; `FeatureSwitch` binds one `GetFeatures`/`SetFeature` switch and falls back to the `local.env` hint on older daemons. |
+| `qt/qml/PhoneAudioSettings.qml` | The PC/iPhone sound switch in Calls & Audio; loaded only for daemons that report `phone_audio_route`. |
 | `qt/qml/PhoneSettingsDialogs.qml` | Window-owned settings/pairing dialogs that outlive the page. |
 | `qt/qml/NotificationOpenMapEditor.qml` | Loaded editor for notification click rules (shown with the "all" policy). |
 | `qt/qml/OnboardingSummary.qml` | Renders the onboarding stage message. |
 | `qt/qml/ProximityLockSettings.qml` | Away-lock toggle, grace period, and warning; loaded only for daemons that report it. |
 | `qt/qml/GroupConfirmationDialog.qml` | Group recipient confirmation before sending. |
 | `qt/qml/NewMessageDialog.qml` | New message composition. |
-| `qt/qml/CallsDialog.qml` | Optional phone-calls dialog (list, dial with confirmation, answer, hang up). |
+| `qt/qml/PhoneCard.qml` | The phone card left of the tabs: name, connection, battery/signal, now playing and quick switches (sound, away lock); opt-ins that are off stay greyed out with a hint. Folds behind a header button in a narrow window. |
+| `qt/qml/CallsTab.qml` | Calls tab: running calls as cards (answer, hold, hang up), dial pad, and the day-grouped recent calls (`RecentCallsPage.qml`). |
+| `qt/qml/NotificationsTab.qml` | Notifications tab: the opt-in recent-notification list, loaded only while shown. |
+| `qt/qml/ui/` | Shared building blocks of the design: `SectionHeader`, `ListRow`, `CardFrame`, `FilterBar`, `EmptyState`, `Notice`. |
 | `qt/qml/ContactPhotoSettings.qml` | Contact-photo checkbox; loaded only for daemons that report `contact_photos`. |
 | `qt/qml/OtpAutocopySettings.qml` | One-time code auto-copy checkbox; loaded only for daemons that report `otp_autocopy`. |
 | `qt/qml/PhoneCallsSettings.qml` | Phone-calls opt-in checkbox; loaded only for daemons that report `calls_enabled`. |
@@ -220,7 +248,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `qt/qml/ExpandingMessageComposer.qml` | Growing message editor. |
 | `qt/qml/MessageBubble.qml` | Message bubble. |
 | `qt/qml/ContactAvatar.qml` | Conversation icon, replaced by the contact photo when the option is on. |
-| `qt/qml/RecentCallsPage.qml` | Opt-in recent-calls list, created through a `Loader`. |
+| `qt/qml/RecentCallsPage.qml` | Opt-in, day-grouped recent-calls list with All/Missed inside the Calls tab, created through a `Loader`. |
 | `qt/qml/CallHistorySettings.qml` | Call-history opt-in checkboxes in the iPhone settings. |
 | `qt/qml/NowPlayingBar.qml` | Opt-in iPhone now-playing bar with transport buttons. |
 | `qt/qml/MediaControlSettings.qml` | Media-control opt-in checkbox and state; loaded only for daemons that report it. |

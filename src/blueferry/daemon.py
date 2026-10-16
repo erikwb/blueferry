@@ -20,6 +20,7 @@ from gi.repository import GLib
 from blueferry import __version__, bluez_setup, config
 from blueferry.adapter_class_supervisor import AdapterClassSupervisor
 from blueferry.ams.client import AmsClient, AmsNotifySessions
+from blueferry.ams.constants import RemoteCommandID
 from blueferry.ancs.client import ACTION_DISCONNECTED, AncsClient
 from blueferry.backend_lifecycle import installed_release
 from blueferry.backend_operations import BackendDependencies
@@ -67,6 +68,9 @@ from blueferry.dbus_service import MessagesService, claim_bus_name
 from blueferry.errors import BlueFerryError
 from blueferry.event_dispatcher import EventDispatcher
 from blueferry.events import SmsEvent
+from blueferry.features import FeatureSettings
+from blueferry.gio_dbus import GioDBus
+from blueferry.gio_dbus import system_bus as gio_system_bus
 from blueferry.glib_timers import schedule_periodic
 from blueferry.group_routes import GroupRoutesStore
 from blueferry.history import (
@@ -74,6 +78,7 @@ from blueferry.history import (
     mark_event_handles_read,
 )
 from blueferry.media import MediaController, MediaControlSettings
+from blueferry.notification_log import NotificationLog
 from blueferry.notification_policy import (
     ALL_NOTIFICATIONS,
     NotificationPolicyStore,
@@ -86,7 +91,9 @@ from blueferry.obex.worker import ObexWorker
 from blueferry.otp_context import OtpMetadata
 from blueferry.otp_settings import OtpSettings
 from blueferry.pair_setup import bond_status
+from blueferry.phone_audio_route import PhoneAudioRoute
 from blueferry.phone_battery import BatteryWarningSettings, PhoneBattery
+from blueferry.plugin_notify import PluginPopup, PluginPopups
 from blueferry.profile_supervisor import ProfileSessions, ProfileSupervisor
 from blueferry.protocol import BUS_NAME
 from blueferry.proximity_lock import (
@@ -145,6 +152,9 @@ class PairingRequiredError(RuntimeError):
 PHONE_STATUS_MIN_INTERVAL_SEC = 10
 # A failed MPRIS bus connection is retried while the player is wanted.
 MPRIS_RETRY_SEC = 30
+# Waiting for iOS to report the handback pause before toggling play.
+_RESUME_RETRIES = 4
+_RESUME_RETRY_MS = 750
 
 
 def _in_background(target: Callable[[], None], name: str) -> None:
@@ -212,8 +222,12 @@ class Daemon:
             # returns no icon while photos are off.
             contact_photo=self._contact_photo_path,
             resolve_otp_metadata=self._resolve_otp_metadata,
+            plugin_action=self._plugin_popup_action,
             otp_autocopy=lambda: self.otp_settings.enabled,
         )
+        # Popups from plugins with the notify capability; watched once the
+        # sinks exist. Inert while no such plugin is installed and enabled.
+        self.plugin_popups: PluginPopups | None = None
         self.listener: MapEventListener | None = None
         self.mns_watch: MnsWatch | None = None
         # One MAP reconnect per MNS outage; seeing MNS again rearms it.
@@ -302,6 +316,26 @@ class Daemon:
             phone_reachable=lambda: self.bearers.bredr_connected,
             hfp_conflict=self._bluez_hfp_conflict,
             on_phone_status=lambda _status: self._phone_status_changed(),
+        )
+        # Opt-in, memory-only list of recent iPhone app notifications.
+        self.notification_log: NotificationLog | None = (
+            NotificationLog(
+                show_content=config.SHOW_NOTIFICATION_CONTENT, idle=GLib.idle_add,
+            )
+            if config.NOTIFICATION_HISTORY else None
+        )
+        # Where the iPhone's media playback goes. Only offered when the
+        # WirePlumber policy does not strip the A2DP sink role.
+        self.phone_audio_route = PhoneAudioRoute(
+            GioDBus(gio_system_bus),
+            device_path,
+            allowed=not config.KEEP_PHONE_AUDIO_ON_PHONE,
+            on_changed=self._emit_status_soon,
+            schedule=GLib.timeout_add_seconds,
+            cancel=GLib.source_remove,
+            was_playing=self._iphone_playing,
+            resume_playback=self._resume_iphone_playback,
+            media_state=self._iphone_playback_state,
         )
         # The phone's battery over LE (GATT Battery Service or BlueZ's
         # Battery1), independent of calls and HFP. Construction does no I/O.
@@ -758,11 +792,19 @@ class Daemon:
                 set_calls_enabled=self._set_calls_enabled,
                 set_phone_battery_warning=self._set_battery_warning,
                 set_media_mpris=self._set_media_mpris,
+                phone_audio=self.phone_audio_route,
+                notification_log=self.notification_log,
+                notification_content=config.SHOW_NOTIFICATION_CONTENT,
+                features=FeatureSettings(),
                 contact_photos=self._contact_photos_enabled,
                 set_contact_photos=self._set_contact_photos,
                 set_otp_autocopy=self._set_otp_autocopy,
             ),
         )
+        if self.notification_log is not None:
+            self.notification_log.set_listener(
+                self._dbus_service.emit_notifications_changed
+            )
         self.events.set_dbus_service(self._dbus_service)
         self._publish_media()
         self._initialize_storage()
@@ -802,6 +844,8 @@ class Daemon:
         if self.media is None or self._dbus_service is None:
             return
         self.media.add_listener(self._dbus_service.emit_now_playing_changed)
+        # Where the sound plays also depends on the AMS playback state.
+        self.media.add_listener(self.phone_audio_route.media_changed)
         if self.media_settings.mpris:
             self._start_mpris()
 
@@ -893,6 +937,7 @@ class Daemon:
                 self.media_sessions.release()
             media, self.media = self.media, None
             media.close()
+            self.phone_audio_route.media_changed()
         log.info("iPhone media control %s", "enabled" if selected else "disabled")
         self._emit_status()
         if self._dbus_service is not None:
@@ -1201,10 +1246,14 @@ class Daemon:
         # Sinks don't need the OBEX sessions — set them up now so ANCS events
         # still reach the desktop while MAP/PBAP are degraded.
         self.events.setup()
+        if self.notification_log is not None and self.notification_log not in self.events.sinks:
+            self.events.sinks.append(self.notification_log)
+        self._start_plugin_popups()
         # Optional calls only observe oFono; failures there never degrade
         # messaging, and a missing oFono is retried in the background.
         self.calls.start()
         self.phone_battery.start()
+        self.phone_audio_route.start()
 
         # Signal subscriptions belong to the GLib thread; the blocking session
         # creation itself belongs to the serialized OBEX worker.
@@ -1218,6 +1267,28 @@ class Daemon:
             log.warning("    No MAP/PBAP session yet; retry is automatic.")
         # The "ready" line in the happy path is emitted by
         # _post_sessions_setup, so we don't duplicate it here.
+
+    def _start_plugin_popups(self) -> None:
+        """Watch for content-free plugin popups (PLUGINS.md, capability notify)."""
+        if self.plugin_popups is not None:
+            return
+        if self._bus_name is None:
+            log.warning("plugin popups need the daemon's bus name; they stay off")
+            return
+        try:
+            # Plugins hand popups only to the owner of io.weirdware.BlueFerry,
+            # so fetch on exactly the connection that holds that name.
+            self.plugin_popups = PluginPopups(
+                self._bus_name.get_bus(), show=self.events.plugin_notification,
+            )
+        except Exception:
+            log.warning("plugin popups are unavailable without a session bus")
+            return
+        self.plugin_popups.start()
+
+    def _plugin_popup_action(self, popup: PluginPopup) -> None:
+        if self.plugin_popups is not None:
+            self.plugin_popups.invoke(popup)
 
     def _watch_bluez_owner(self) -> None:
         """Supervise bluetoothd even when compatibility mode disables ANCS."""
@@ -1697,6 +1768,8 @@ class Daemon:
             "storage_state": self.storage.status.state,
             "storage_detail": self.storage.status.detail,
             **self._media_status(),
+            **self.phone_audio_route.snapshot(),
+            "notification_history_enabled": self.notification_log is not None,
             **self._controller_identity(),
             **self.connectivity.snapshot(),
         }
@@ -1797,6 +1870,46 @@ class Daemon:
         main_loop.quit()
         return False
 
+    def _iphone_playing(self) -> bool:
+        media = self.media
+        return bool(media is not None and media.available and media.state.playing)
+
+    def _iphone_playback_state(self) -> str:
+        """``playing``, ``paused`` or ``unknown`` as reported over AMS."""
+        media = self.media
+        if media is None or not media.available or media.state.playback_state is None:
+            return "unknown"
+        return "playing" if media.state.playing else "paused"
+
+    def _resume_iphone_playback(self, attempt: int = 0) -> None:
+        """Resume after iOS paused on losing its A2DP output.
+
+        iOS reports the pause over AMS with a delay, so the cached state may
+        still say "playing" when this runs. An explicit Play is safe at any
+        time; only a toggle has to wait until the pause has been observed.
+        """
+        media = self.media
+        if media is None or not media.available:
+            return
+        supported = media.state.supported_commands
+        if RemoteCommandID.Play not in supported and media.state.playing:
+            if attempt < _RESUME_RETRIES:
+                def retry() -> bool:
+                    self._resume_iphone_playback(attempt + 1)
+                    return False
+
+                GLib.timeout_add(_RESUME_RETRY_MS, retry)
+            return
+        try:
+            media.send_command(
+                "play",
+                lambda *_: log.info("resumed iPhone playback after audio handback"),
+                lambda error: log.info(
+                    "iPhone playback resume failed: %s", type(error).__name__),
+            )
+        except Exception as error:  # media control may have gone away
+            log.info("iPhone playback resume failed: %s", type(error).__name__)
+
     def stop(self) -> None:
         log.info("=== BlueFerry stopping ===")
         owner_match, self._bluez_owner_match = self._bluez_owner_match, None
@@ -1809,6 +1922,7 @@ class Daemon:
         self.recovery.stop()
         self.calls.stop()
         self.phone_battery.stop()
+        self.phone_audio_route.stop()
         if self._phone_emit_id is not None:
             try:
                 GLib.source_remove(self._phone_emit_id)
@@ -1850,6 +1964,8 @@ class Daemon:
         if self.media is not None:
             self.media.close()
         self.solicitation.stop()
+        if self.plugin_popups is not None:
+            self.plugin_popups.stop()
         self.events.stop()
         self._clear_photo_files()
         if self._sleep_match is not None:

@@ -94,7 +94,7 @@ check() {
   appstreamcli validate --no-net data/io.weirdware.BlueFerry.Qt.metainfo.xml
   appstreamcli validate --no-net data/io.weirdware.BlueFerry.Quickshell.metainfo.xml
   PYTHONPATH="$PWD/src" python -c 'from blueferry.qt.app import main'
-  /usr/lib/qt6/bin/qmllint src/blueferry/qt/qml/*.qml
+  /usr/lib/qt6/bin/qmllint src/blueferry/qt/qml/*.qml src/blueferry/qt/qml/ui/*.qml
   /usr/lib/qt6/bin/qmllint data/quickshell/*.qml
 }
 

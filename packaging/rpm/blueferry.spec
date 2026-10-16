@@ -177,6 +177,7 @@ fi
 %{python3_sitelib}/blueferry/ancs
 %{python3_sitelib}/blueferry/calls
 %{python3_sitelib}/blueferry/obex
+%{python3_sitelib}/blueferry/plugin_api
 %{python3_sitelib}/blueferry/sinks
 %{python3_sitelib}/blueferry-*.dist-info
 %{_prefix}/lib/blueferry/vendor
