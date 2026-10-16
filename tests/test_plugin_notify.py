@@ -505,3 +505,70 @@ def test_daemon_wires_plugin_popups_to_the_sinks_and_back(make_daemon, monkeypat
     assert popups.invoked == ["popup"]
     instance.plugin_popups.stop()
     instance.plugin_popups = None
+
+
+def _run_until(condition, seconds: float = 5.0) -> None:
+    import time
+
+    from gi.repository import GLib
+
+    context = GLib.MainContext.default()
+    deadline = time.monotonic() + seconds
+    while not condition() and time.monotonic() < deadline:
+        while context.pending():
+            context.iteration(False)
+        time.sleep(0.001)
+
+
+@pytest.mark.private_dbus
+@pytest.mark.parametrize("owns_daemon_name", [True, False])
+def test_on_the_bus_the_daemon_fetches_and_a_stranger_cannot(owns_daemon_name) -> None:
+    """End to end on the private bus: a real NotifyService and PluginPopups.
+
+    The plugin hands its popup only to the owner of io.weirdware.BlueFerry;
+    the daemon fetches from the connection that owns that name.
+    """
+    import os
+
+    import dbus
+    import dbus.service
+    from dbus.mainloop.glib import DBusGMainLoop
+
+    from blueferry.plugin_api import HOST_BUS_NAME
+    from blueferry.plugin_api.service import NotifyService
+    from blueferry.protocol import BUS_NAME
+    from tests.private_bus import open_private_bus
+
+    assert HOST_BUS_NAME == BUS_NAME
+    plugin = manifest(f"io.example.e{os.getpid()}{int(owns_daemon_name)}",
+                      capabilities="notify;", api_version="1.5")
+    plugin_bus = open_private_bus(mainloop=DBusGMainLoop())
+    daemon_bus = open_private_bus(mainloop=DBusGMainLoop())
+    plugin_bus.request_name(plugin.bus_name, dbus.bus.NAME_FLAG_DO_NOT_QUEUE)
+    if owns_daemon_name:
+        daemon_bus.request_name(BUS_NAME, dbus.bus.NAME_FLAG_DO_NOT_QUEUE)
+    service = NotifyService(plugin, plugin_bus, start_worker=lambda work: work())
+    shown: list[PluginPopup] = []
+    popups = PluginPopups(daemon_bus, show=shown.append, plugins=lambda: [plugin],
+                          disabled=frozenset, open_uri=lambda _uri: None)
+    popups.start()
+    try:
+        # Let the plugin learn the daemon name's owner (or that it has none).
+        _run_until(lambda: service._host_owner is not None)
+        service.emit_notify("Reminder", "Dentist")
+        _run_until(lambda: bool(shown) or not service._pending, 3.0)
+        _run_until(lambda: False, 0.2)  # any late fetch has had its chance
+        if owns_daemon_name:
+            assert [popup.note.title for popup in shown] == ["Reminder"]
+            assert not service._pending
+        else:
+            assert shown == []
+            assert len(service._pending) == 1  # still waiting for BlueFerry
+    finally:
+        popups.stop()
+        service.remove_from_connection()
+        if owns_daemon_name:
+            daemon_bus.release_name(BUS_NAME)
+        plugin_bus.release_name(plugin.bus_name)
+        daemon_bus.close()
+        plugin_bus.close()
