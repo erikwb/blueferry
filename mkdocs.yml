@@ -103,6 +103,7 @@ nav:
           - Call history: en/user/call-history.md
           - Notification click rules: en/user/notification-click-rules.md
           - Media control: en/user/media-control.md
+          - Plugins: en/user/plugins.md
           - Away lock: en/user/proximity-lock.md
           - Phone calls (experimental): en/user/calls.md
           - Phone battery and signal: en/user/phone-status.md
@@ -130,6 +131,7 @@ nav:
           - Anrufliste: de/user/call-history.md
           - Klickregeln für Mitteilungen: de/user/notification-click-rules.md
           - Mediensteuerung: de/user/media-control.md
+          - Plugins: de/user/plugins.md
           - Abwesenheitssperre: de/user/proximity-lock.md
           - Anrufe (experimentell): de/user/calls.md
           - Akku und Empfang: de/user/phone-status.md
