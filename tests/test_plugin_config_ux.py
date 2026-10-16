@@ -366,7 +366,9 @@ def test_form_rows_groups_and_actions() -> None:
     assert groups[-1]["collapsed"] is True
     assert view.form_actions(parsed) == {
         "test": True, "login": "nextcloud", "loginLabel": "Sign in with Nextcloud",
+        "custom": [],
     }
+    assert rows["url"]["helpUrlLabel"] == ""
     assert view.help_link(parsed, "url").startswith("https://")
     assert view.help_link(parsed, "token") == "" and view.help_link(parsed, "nope") == ""
 

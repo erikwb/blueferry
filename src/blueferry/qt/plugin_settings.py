@@ -13,6 +13,10 @@ line. ``check_config`` is the synchronous pre-check the form runs on every
 edit; it never touches the state, so typing does not rebuild the form. A
 browser sign-in polls ConfigLoginStatus on the pool with a timer until a
 final state, :data:`LOGIN_TIMEOUT_SECONDS` or until the form closes.
+
+ApiVersion 1.6 adds the plugin's own buttons (``[ConfigAction …]``): they
+run ``RunConfigAction`` on the pool with the stored settings, open a
+checked ``open_uri`` and then read the settings again.
 """
 from __future__ import annotations
 
@@ -435,6 +439,29 @@ class PluginSettings(QObject):
                 client = self._client(manifest)
                 self._start(lambda: client.config_login_cancel(login[1]))
         return login
+
+    def run_action(self, plugin_id: str, action_id: str) -> None:
+        """A ``[ConfigAction …]`` button: the plugin works with its stored
+        settings, so the form offers it only without unsaved edits."""
+        manifest = self._current(plugin_id)
+        if manifest is None or manifest.config_action(action_id) is None:
+            return
+        if self._state["config"].get("status", {}).get("pending"):
+            return
+        self._set_status("action", True, _("Working…"), pending=True)
+
+        def done(result: Any) -> None:
+            self._set_status("action", result.ok,
+                             view.config_action_text(result.ok, result.message, manifest.name))
+            if result.ok and result.open_uri:
+                self._open(result.open_uri)
+            # The action may have changed settings or the plugin's status.
+            if self._current(plugin_id) is not None:
+                self.load_config(plugin_id, keep_status=True)
+                self._reload()
+
+        self._work("action", lambda: self._client(manifest).run_config_action(action_id), done,
+                   on_error=lambda text: self._set_status("action", False, text))
 
     def open_help(self, plugin_id: str, key: str) -> None:
         """"Where do I find this?": the field's https HelpUrl, nothing else."""

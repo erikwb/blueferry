@@ -330,3 +330,122 @@ def test_show_log_opens_the_plugin_log_or_explains(app, tmp_path, monkeypatch) -
     _wait(lambda: bool(opened))
     assert opened == [path.as_uri()]
     _settle(settings)
+
+
+class _ActionClient:
+    """A 1.6 plugin with two settings buttons."""
+
+    ran: ClassVar[list[str]] = []
+    port: ClassVar[int] = 47801
+
+    def __init__(self, manifest) -> None:
+        self.manifest = manifest
+
+    def get_config(self):
+        return {"port": _ActionClient.port}
+
+    def status(self):
+        return PluginStatus("ok")
+
+    def run_config_action(self, action_id):
+        from blueferry.plugin_api.client import PluginError
+        from blueferry.plugin_api.surfaces import ActionResult
+
+        _ActionClient.ran.append(action_id)
+        if action_id == "setup_iphone":
+            return ActionResult(True, None, "http://127.0.0.1:4711/abc/")
+        if action_id == "broken":
+            raise PluginError("the plugin did not answer in time")
+        _ActionClient.port += 1
+        return ActionResult(False, "No network to approve.")
+
+
+ACTIONS = """
+[Config port]
+Label=Port
+Type=int
+HelpUrl=https://docs.example.com/port
+HelpUrlLabel=Which port?
+
+[ConfigAction setup_iphone]
+Label=Set up <b>iPhone</b>
+Icon=smartphone
+Primary=true
+Help=Shows a QR code.
+
+[ConfigAction approve]
+Label=Approve this network
+
+[ConfigAction broken]
+Label=Broken
+"""
+
+
+class _OneManager(_NoManager):
+    def __init__(self, plugin) -> None:
+        self.plugin = plugin
+
+    def entries(self):
+        from blueferry.plugin_manager import PluginEntry
+
+        return [PluginEntry(self.plugin, None, True)], []
+
+
+@pytest.fixture
+def with_actions(app):
+    from blueferry.plugin_api.testing import manifest
+
+    plugin = manifest("io.example.setup", capabilities="card;", api_version="1.6",
+                      extra=ACTIONS)
+    opened: list[str] = []
+    _ActionClient.ran, _ActionClient.port = [], 47801
+    settings = PluginSettings(manager=lambda: _OneManager(plugin), index=lambda: None,
+                              client=_ActionClient, opener=opened.append)
+    settings._manifests = {plugin.id: plugin}
+    yield settings, opened
+    _settle(settings)
+
+
+def test_settings_buttons_run_open_and_reload_the_form(with_actions) -> None:
+    settings, opened = with_actions
+    settings.load_config("io.example.setup")
+    _wait(lambda: settings.state()["config"].get("loaded"))
+    config = settings.state()["config"]
+    assert config["actions"]["custom"] == [
+        {"id": "setup_iphone", "label": "Set up &lt;b&gt;iPhone&lt;/b&gt;", "icon": "smartphone",
+         "help": "Shows a QR code.", "primary": True},
+        {"id": "approve", "label": "Approve this network", "icon": "", "help": "",
+         "primary": False},
+        {"id": "broken", "label": "Broken", "icon": "", "help": "", "primary": False},
+    ]
+    assert config["fields"][0]["helpUrlLabel"] == "Which port?"
+    settings.run_action("io.example.setup", "setup_iphone")
+    _wait(lambda: settings.state()["config"]["status"].get("pending") is False and _idle(settings))
+    assert settings.state()["config"]["status"] == {
+        "kind": "action", "ok": True, "text": "Done.", "pending": False}
+    assert opened == ["http://127.0.0.1:4711/abc/"]
+    settings.run_action("io.example.setup", "approve")
+    _wait(lambda: settings.state()["config"]["fields"][0]["value"] == 47802)
+    status = settings.state()["config"]["status"]
+    assert (status["ok"], status["text"]) == (False, "No network to approve.")
+    assert opened == ["http://127.0.0.1:4711/abc/"]  # nothing to open on failure
+    _wait(lambda: _idle(settings))
+    settings.run_action("io.example.setup", "broken")
+    _wait(lambda: settings.state()["config"]["status"].get("pending") is False)
+    assert settings.state()["config"]["status"]["text"] == "the plugin did not answer in time"
+    # Undeclared ids, other forms and disabled plugins are never called.
+    _wait(lambda: _idle(settings))
+    settings.run_action("io.example.setup", "nope")
+    settings.run_action("io.example.other", "setup_iphone")
+    settings._disabled.add("io.example.setup")
+    settings.run_action("io.example.setup", "setup_iphone")
+    assert _ActionClient.ran == ["setup_iphone", "approve", "broken"]
+
+
+def test_a_second_press_waits_for_the_first(with_actions) -> None:
+    settings, _opened = with_actions
+    settings.load_config("io.example.setup")
+    _wait(lambda: settings.state()["config"].get("loaded"))
+    settings._set_status("action", True, "Working…", pending=True)
+    settings.run_action("io.example.setup", "approve")
+    assert _ActionClient.ran == []
