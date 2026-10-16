@@ -27,6 +27,7 @@ from . import (
     METHOD_GET_CARD_ITEMS,
     METHOD_GET_PENDING_NOTIFICATION,
     METHOD_INVOKE_ACTION,
+    METHOD_RUN_CONFIG_ACTION,
     METHOD_SEND_FILES,
     METHOD_SHARE_TARGETS,
     METHOD_TEST_CONFIG,
@@ -316,6 +317,23 @@ class PluginClient:
             raise PluginError("not a sign-in id")
         self._call(PLUGIN_INTERFACE, METHOD_CONFIG_LOGIN_CANCEL, "s", (login_id,),
                    LOGIN_TIMEOUT_SEC)
+
+    def run_config_action(self, action_id: str) -> surfaces.ActionResult:
+        """RunConfigAction (ApiVersion 1.6): a button of the settings form.
+
+        Only ids the manifest declares as ``[ConfigAction <id>]``; a running
+        plugin owned by another user is refused before the call, as for a
+        card action. An ``open_uri`` that is neither http(s) nor a file in
+        the plugin cache is dropped.
+        """
+        if not self.manifest.config or self.manifest.config_action(action_id) is None:
+            raise PluginError("this plugin has no such settings action")
+        result = self._surface(
+            surfaces.parse_action_result, PLUGIN_INTERFACE, METHOD_RUN_CONFIG_ACTION, "s",
+            (action_id,), ACTION_TIMEOUT_SEC, precheck=True,
+        )
+        uri = self.checked_open_uri(result.open_uri) if result.open_uri else None
+        return surfaces.ActionResult(result.ok, result.message, uri)
 
     def _flow(self, parse: Callable[[object], Any], method: str, signature: str, args: tuple,
               timeout: float, *, precheck: bool = False) -> Any:
