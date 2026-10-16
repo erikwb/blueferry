@@ -570,28 +570,38 @@ class NotifyService(_ActionMixin):
     for other processes to read. Only the connection that currently owns
     the daemon's name :data:`~blueferry.plugin_api.HOST_BUS_NAME` may fetch;
     any other caller gets ``AccessDenied`` and the popup stays queued. The
-    owner is followed without blocking (``GetNameOwner`` once, then
-    ``NameOwnerChanged``); while it is unknown or the name has no owner,
-    every fetch is refused. A service that is not on a bus (in-process
+    owner is followed with an asynchronous ``GetNameOwner`` and then
+    ``NameOwnerChanged``; only the match rule for that signal (AddMatch) is
+    a synchronous round trip, done once when the service is put on the bus,
+    before :func:`run` starts the main loop. While the owner is unknown or
+    the name has no owner, every fetch is refused. A service that is not on a bus (in-process
     tests, :class:`~blueferry.plugin_api.testing.FakeHost`) has no other
     callers and answers anyone.
     """
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
+        # Set before the base class runs: it calls add_to_connection when
+        # it gets a bus. Unique name owning HOST_BUS_NAME: None until the
+        # bus answered, "" while nobody owns it. Main loop only.
+        self._host_owner: str | None = None
+        self._host_watch: Any = None
         super().__init__(*args, **kwargs)
         self._pending: deque[tuple[float, surfaces.Notification]] = deque(
             maxlen=surfaces.MAX_PENDING_NOTIFICATIONS,
         )
         self._pending_lock = threading.Lock()
-        # Unique name owning HOST_BUS_NAME: None until the bus answered,
-        # "" while nobody owns it. Read and written on the main loop only.
-        self._host_owner: str | None = None
-        self._host_watch: Any = None
-        connection = getattr(self, "_connection", None)
-        if connection is not None and hasattr(connection, "watch_name_owner"):
-            # Asynchronous: GetNameOwner is sent now, the answer and every
-            # NameOwnerChanged arrive through the main loop before any call
-            # the new owner can make (the bus keeps the order).
+
+    def add_to_connection(self, connection: Any, path: Any) -> None:
+        """Export the service and start following the daemon's name, also
+        when the service was built without a bus and exported later."""
+        super().add_to_connection(connection, path)
+        if self._host_watch is None and hasattr(connection, "watch_name_owner"):
+            # AddMatch for NameOwnerChanged is one synchronous round trip,
+            # once per export (in run(): before the main loop starts);
+            # GetNameOwner is asynchronous.
+            # Its answer and every NameOwnerChanged arrive through the main
+            # loop before any call the new owner can make (the bus keeps
+            # the order).
             self._host_watch = connection.watch_name_owner(
                 HOST_BUS_NAME, self._host_owner_changed,
             )

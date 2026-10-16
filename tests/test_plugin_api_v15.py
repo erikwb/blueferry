@@ -209,7 +209,8 @@ def test_a_service_off_the_bus_answers_in_process_callers() -> None:
 
 
 @pytest.mark.private_dbus
-def test_on_the_bus_only_the_owner_of_the_daemon_name_fetches() -> None:
+@pytest.mark.parametrize("exported_later", [False, True])
+def test_on_the_bus_only_the_owner_of_the_daemon_name_fetches(exported_later) -> None:
     import dbus
     import dbus.mainloop
     import dbus.service
@@ -217,11 +218,18 @@ def test_on_the_bus_only_the_owner_of_the_daemon_name_fetches() -> None:
 
     from tests.private_bus import open_private_bus
 
-    plugin = manifest(f"io.example.n{os.getpid()}", capabilities="notify;",
-                      api_version="1.5")
+    plugin = manifest(f"io.example.n{os.getpid()}{int(exported_later)}",
+                      capabilities="notify;", api_version="1.5")
     bus = dbus.SessionBus()
     name = dbus.service.BusName(plugin.bus_name, bus=bus, do_not_queue=True)
-    service = NotifyService(plugin, bus, start_worker=lambda work: work())
+    if exported_later:
+        # Built off the bus, exported afterwards: the watch starts then.
+        service = NotifyService(plugin, start_worker=lambda work: work())
+        assert service._host_watch is None
+        service.add_to_connection(bus, "/io/weirdware/BlueFerry/Plugin")
+        assert service._host_watch is not None
+    else:
+        service = NotifyService(plugin, bus, start_worker=lambda work: work())
     service.NotifyChanged = lambda: None
     service.emit_notify("One", "first")
     service.emit_notify("Two", "second")

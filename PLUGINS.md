@@ -301,8 +301,10 @@ Where it shows up:
   `GetPendingNotification()` from that same connection, so the text never
   travels on a signal other processes can read. `NotifyService` hands a
   popup out only to the connection that currently owns the daemon's name
-  `io.weirdware.BlueFerry` (it follows the owner with `GetNameOwner` and
-  `NameOwnerChanged`, without blocking); every other caller gets
+  `io.weirdware.BlueFerry` (it asks `GetNameOwner` asynchronously and then
+  follows `NameOwnerChanged`; only adding that signal's match rule is one
+  synchronous call, made once when the service goes on the bus, before the
+  main loop runs); every other caller gets
   `org.freedesktop.DBus.Error.AccessDenied` and the queue stays as it was,
   so other processes on the session bus can at most see that something
   waits, never read it or take it away. While the name has no owner (the
