@@ -787,8 +787,8 @@ installed by default.
   help links, **Test connection**, where offered a browser sign-in and the
   plugin's own buttons (such as "Set up iPhone"), or
   `blueferry plugins config ID --set KEY=VALUE --secret KEY` (`--test`,
-  `--login`, `--action ACTION`). BlueFerry stores no plugin secrets; each plugin keeps its own
-  (the published plugins use the desktop keyring).
+  `--login`, `--action ACTION`). BlueFerry stores no plugin secrets; each
+  plugin keeps its own (the published plugins use the desktop keyring).
 - **Disable** stops BlueFerry from calling a plugin at once and stops a
   plugin process it installed; `blueferry plugins disable ID`.
 - **Card and Send to**: `blueferry cards` lists what plugins offer, for

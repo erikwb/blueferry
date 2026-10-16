@@ -35,13 +35,13 @@ manchen Diensten eine Anmeldung im Browser. Manche Plugins setzen eigene
 Knöpfe über die Felder, etwa **Set up iPhone**; sie arbeiten mit den
 gespeicherten Einstellungen, also Änderungen vorher speichern. Speichern
 geht erst, wenn die Pflichtfelder gültig sind. Passwörter und Schlüssel
-werden nie wieder angezeigt, nur neu eingegeben. BlueFerry speichert keine Geheimnisse von
-Plugins: sie gehen ins Plugin, das sie selbst aufbewahrt (die
-veröffentlichten Plugins nutzen den Schlüsselbund des Desktops).
+werden nie wieder angezeigt, nur neu eingegeben. BlueFerry speichert keine
+Geheimnisse von Plugins: sie gehen ins Plugin, das sie selbst aufbewahrt
+(die veröffentlichten Plugins nutzen den Schlüsselbund des Desktops).
 
 ```bash
 blueferry plugins config immich --set url=https://photos.example.org --secret api_key --test
-blueferry plugins config ID                  # Einstellungen und die eigenen Knöpfe des Plugins
+blueferry plugins config ID                  # Einstellungen, eigene Knöpfe
 blueferry plugins config ID --action ACTION  # einen davon drücken
 ```
 
