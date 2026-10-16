@@ -23,4 +23,3 @@ def test_control_text_escapes_only_text_qt_would_read_as_markup() -> None:
     assert control_text("Tom & Jerry") == "Tom & Jerry"
     assert control_text("<b>x</b> & y") == "&lt;b&gt;x&lt;/b&gt; &amp; y"
     assert control_text(None) == ""
-
