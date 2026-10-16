@@ -570,9 +570,11 @@ class NotifyService(_ActionMixin):
     for other processes to read. Only the connection that currently owns
     the daemon's name :data:`~blueferry.plugin_api.HOST_BUS_NAME` may fetch;
     any other caller gets ``AccessDenied`` and the popup stays queued. The
-    owner is followed without blocking (``GetNameOwner`` once, then
-    ``NameOwnerChanged``); while it is unknown or the name has no owner,
-    every fetch is refused. A service that is not on a bus (in-process
+    owner is followed with an asynchronous ``GetNameOwner`` and then
+    ``NameOwnerChanged``; only the match rule for that signal (AddMatch) is
+    a synchronous round trip, done once when the service is put on the bus,
+    before :func:`run` starts the main loop. While the owner is unknown or
+    the name has no owner, every fetch is refused. A service that is not on a bus (in-process
     tests, :class:`~blueferry.plugin_api.testing.FakeHost`) has no other
     callers and answers anyone.
     """
@@ -589,9 +591,11 @@ class NotifyService(_ActionMixin):
         self._host_watch: Any = None
         connection = getattr(self, "_connection", None)
         if connection is not None and hasattr(connection, "watch_name_owner"):
-            # Asynchronous: GetNameOwner is sent now, the answer and every
-            # NameOwnerChanged arrive through the main loop before any call
-            # the new owner can make (the bus keeps the order).
+            # AddMatch for NameOwnerChanged is one synchronous round trip
+            # here, before the main loop runs; GetNameOwner is asynchronous.
+            # Its answer and every NameOwnerChanged arrive through the main
+            # loop before any call the new owner can make (the bus keeps
+            # the order).
             self._host_watch = connection.watch_name_owner(
                 HOST_BUS_NAME, self._host_owner_changed,
             )
