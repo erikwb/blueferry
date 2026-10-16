@@ -54,14 +54,17 @@ build loads Mermaid in the browser.
 
 ### Publishing
 
-Nothing builds or publishes these pages yet: no workflow runs the build, and
-the landing page does not link to `/docs/`. The configuration assumes the site
-is served at `https://blueferry.weirdware.io/docs/`; the language switcher and
-some German navigation entries use absolute `/docs/...` paths.
+The Docs workflow (`.github/workflows/docs.yml`) runs both builds with
+`--strict` whenever `docs/` or `mkdocs.yml` change, so a broken link fails the
+pull request that introduces it. It only checks the build and publishes
+nothing.
 
-Publishing it there needs two changes outside this folder. The host has to run
-the build command above before it serves `website/public/`, and
-`website/public/_headers` needs a separate Content-Security-Policy for
-`/docs/*`. The current policy allows scripts and styles from the site itself
-only, while the documentation theme uses inline scripts and loads Mermaid from
-`unpkg.com`.
+The site is meant to be served at `https://blueferry.weirdware.io/docs/`; the
+language switcher and some German navigation entries use absolute `/docs/...`
+paths. The landing page links there, and `website/public/_headers` gives
+`/docs/*` its own Content-Security-Policy, because the documentation theme uses
+inline scripts, fetches its search index and loads Mermaid from `unpkg.com`,
+which the landing page's policy forbids.
+
+The one step left is on the host: it has to run the build command above before
+it serves `website/public/`. Until it does, `/docs/` returns 404.
