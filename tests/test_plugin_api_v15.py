@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
+import time
 
 import pytest
 
 from blueferry.plugin_api import (
+    HOST_BUS_NAME,
     METHOD_GET_PENDING_NOTIFICATION,
     SIGNAL_NOTIFY_CHANGED,
 )
@@ -16,6 +19,7 @@ from blueferry.plugin_api.service import (
     MAX_CALLERS,
     MAX_IN_FLIGHT,
     MAX_WORKERS,
+    AccessDeniedError,
     NotifyService,
     PluginService,
     RateLimitedError,
@@ -153,3 +157,121 @@ def test_the_default_worker_pool_is_bounded() -> None:
         assert done.acquire(timeout=5)
     assert peak[0] == MAX_WORKERS
     service._executor.shutdown(wait=True)
+
+
+def test_the_host_bus_name_is_the_daemons() -> None:
+    from blueferry.protocol import BUS_NAME
+
+    assert HOST_BUS_NAME == BUS_NAME
+
+
+def _on_a_bus(owner: str | None) -> NotifyService:
+    """A service that believes it is exported, with a known daemon owner."""
+    service = inline_service(NotifyService, NOTIFY)
+    service.NotifyChanged = lambda: None
+    service._connection = object()  # exported, but no watch: owner stays as set
+    service._host_owner = owner
+    return service
+
+
+@pytest.mark.parametrize("owner", [None, ""])
+def test_no_known_daemon_means_nobody_fetches(owner) -> None:
+    service = _on_a_bus(owner)
+    service.emit_notify("Reminder", "Dentist")
+    with pytest.raises(AccessDeniedError):
+        service.GetPendingNotification(sender=":1.2")
+    assert len(service._pending) == 1  # still waiting for BlueFerry
+
+
+def test_only_the_daemon_takes_popups() -> None:
+    service = _on_a_bus(":1.7")
+    service.emit_notify("Reminder", "Dentist")
+    with pytest.raises(AccessDeniedError) as denied:
+        service.GetPendingNotification(sender=":1.8")
+    assert denied.value.get_dbus_name() == "org.freedesktop.DBus.Error.AccessDenied"
+    assert len(service._pending) == 1
+    reply = json.loads(service.GetPendingNotification(sender=":1.7"))
+    assert reply["notification"]["title"] == "Reminder"
+    # The daemon restarted under a new connection: the old one is a stranger.
+    service._host_owner_changed(":1.9")
+    service.emit_notify("Again", "x")
+    with pytest.raises(AccessDeniedError):
+        service.GetPendingNotification(sender=":1.7")
+    assert json.loads(service.GetPendingNotification(sender=":1.9"))["notification"]
+
+
+def test_a_service_off_the_bus_answers_in_process_callers() -> None:
+    service = inline_service(NotifyService, NOTIFY)
+    service.NotifyChanged = lambda: None
+    service.emit_notify("Reminder", "Dentist")
+    assert service._host_watch is None
+    assert json.loads(service.GetPendingNotification(sender=":1.test"))["notification"]
+
+
+@pytest.mark.private_dbus
+def test_on_the_bus_only_the_owner_of_the_daemon_name_fetches() -> None:
+    import dbus
+    import dbus.mainloop
+    import dbus.service
+    from gi.repository import GLib
+
+    from tests.private_bus import open_private_bus
+
+    plugin = manifest(f"io.example.n{os.getpid()}", capabilities="notify;",
+                      api_version="1.5")
+    bus = dbus.SessionBus()
+    name = dbus.service.BusName(plugin.bus_name, bus=bus, do_not_queue=True)
+    service = NotifyService(plugin, bus, start_worker=lambda work: work())
+    service.NotifyChanged = lambda: None
+    service.emit_notify("One", "first")
+    service.emit_notify("Two", "second")
+    outcome: dict = {}
+
+    def fetch(connection) -> object:
+        try:
+            return str(connection.call_blocking(
+                plugin.bus_name, "/io/weirdware/BlueFerry/Plugin",
+                "io.weirdware.BlueFerry.Plugin1", "GetPendingNotification", "", (),
+                timeout=5,
+            ))
+        except dbus.exceptions.DBusException as error:
+            return error.get_dbus_name()
+
+    def request() -> None:
+        stranger = open_private_bus(mainloop=dbus.mainloop.NULL_MAIN_LOOP)
+        daemon = open_private_bus(mainloop=dbus.mainloop.NULL_MAIN_LOOP)
+        try:
+            outcome["before"] = fetch(daemon)  # nobody owns the name yet
+            daemon.request_name(HOST_BUS_NAME, dbus.bus.NAME_FLAG_DO_NOT_QUEUE)
+            outcome["stranger"] = fetch(stranger)
+            outcome["daemon"] = fetch(daemon)
+            daemon.release_name(HOST_BUS_NAME)
+            outcome["released"] = fetch(daemon)
+        except Exception as error:
+            outcome["error"] = error
+        finally:
+            stranger.close()
+            daemon.close()
+
+    thread = threading.Thread(target=request)
+    thread.start()
+    context = GLib.MainContext.default()
+    deadline = time.monotonic() + 5
+    while thread.is_alive() and time.monotonic() < deadline:
+        while context.pending():
+            context.iteration(False)
+        time.sleep(0.001)
+    thread.join(1)
+    try:
+        assert "error" not in outcome, outcome
+        denied = "org.freedesktop.DBus.Error.AccessDenied"
+        assert outcome["before"] == denied
+        assert outcome["stranger"] == denied
+        assert json.loads(outcome["daemon"])["notification"]["title"] == "One"
+        assert outcome["released"] == denied
+        assert len(service._pending) == 1  # "Two" still waits for BlueFerry
+    finally:
+        service.remove_from_connection()
+        assert service._host_watch is None
+        del name
+        bus.release_name(plugin.bus_name)

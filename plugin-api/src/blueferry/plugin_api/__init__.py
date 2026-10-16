@@ -25,6 +25,9 @@ API_MINOR = 5
 SUPPORTED_API_VERSIONS = frozenset({1})
 
 BUS_NAME_PREFIX = "io.weirdware.BlueFerry.Plugin."
+# The BlueFerry daemon's well-known session-bus name. Only its owner may
+# take waiting popups (``GetPendingNotification``, ApiVersion 1.5).
+HOST_BUS_NAME = "io.weirdware.BlueFerry"
 OBJECT_PATH = "/io/weirdware/BlueFerry/Plugin"
 PLUGIN_INTERFACE = "io.weirdware.BlueFerry.Plugin1"
 PHOTOS_INTERFACE = "io.weirdware.BlueFerry.Photos1"
@@ -77,6 +80,7 @@ __all__ = [
     "CAPABILITY_NOTIFY",
     "CAPABILITY_PHOTOS",
     "CAPABILITY_SHARE",
+    "HOST_BUS_NAME",
     "KNOWN_CAPABILITIES",
     "KNOWN_TOOLS",
     "LOGIN_NEXTCLOUD",
