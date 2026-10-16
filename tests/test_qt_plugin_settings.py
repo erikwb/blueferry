@@ -468,3 +468,27 @@ def test_an_answer_never_lands_in_another_form(with_actions) -> None:
     assert settings.state()["config"]["id"] == "io.example.other"
     assert settings.state()["config"]["status"] == {}
     assert opened == ["http://127.0.0.1:4711/abc/"]  # the page the user asked for still opens
+
+
+def test_a_test_result_never_lands_in_another_or_a_closed_form(guided) -> None:
+    from blueferry.plugin_api.testing import manifest
+
+    settings, _opened = guided
+    other = manifest("io.example.other", capabilities="card;", api_version="1.3",
+                     extra="[Config port]\nLabel=Port\nType=int\n")
+    settings._manifests[other.id] = other
+    settings.load_config("io.example.cloud")
+    _wait(lambda: settings.state()["config"].get("loaded"))
+    settings.test_config("io.example.cloud", {"url": "https://down.example"})
+    settings._update(config=settings._form(other, other.id, {}, loaded=True))
+    _wait(lambda: _idle(settings))
+    config = settings.state()["config"]
+    assert config["id"] == "io.example.other"
+    assert config["status"] == {} and config["errors"] == {}
+    # Closed meanwhile: the answer does not bring a form back.
+    settings.load_config("io.example.cloud")
+    _wait(lambda: settings.state()["config"].get("loaded") and _idle(settings))
+    settings.test_config("io.example.cloud", {"url": "https://down.example"})
+    settings.close_config()
+    _wait(lambda: _idle(settings))
+    assert settings.state()["config"] == {}

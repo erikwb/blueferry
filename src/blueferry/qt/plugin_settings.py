@@ -355,14 +355,22 @@ class PluginSettings(QObject):
         self._set_status("test", True, _("Testing the connection…"), pending=True)
 
         def done(result: Any) -> None:
+            # Only into the form that asked: not into another plugin's form
+            # opened meanwhile, and not as a new form after closing it.
+            if self._current(plugin_id) is None:
+                return
             self._update(config={
                 **self._state["config"], "errors": dict(result.errors),
                 "status": {"kind": "test", "ok": result.ok, "text": result.message,
                            "pending": False},
             })
 
+        def failed(text: str) -> None:
+            if self._current(plugin_id) is not None:
+                self._set_status("test", False, text)
+
         self._work("test", lambda: self._client(manifest).test_config(values), done,
-                   on_error=lambda text: self._set_status("test", False, text))
+                   on_error=failed)
 
     def sign_in(self, plugin_id: str, raw: Mapping[str, object]) -> None:
         """"Sign in with …": start the plugin's browser flow and poll it."""
