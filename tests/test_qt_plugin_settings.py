@@ -442,7 +442,7 @@ def test_settings_buttons_run_open_and_reload_the_form(with_actions) -> None:
     assert _ActionClient.ran == ["setup_iphone", "approve", "broken"]
 
 
-def test_a_second_press_waits_for_the_first(with_actions) -> None:
+def test_a_second_press_is_dropped_while_one_runs(with_actions) -> None:
     settings, _opened = with_actions
     settings.load_config("io.example.setup")
     _wait(lambda: settings.state()["config"].get("loaded"))
