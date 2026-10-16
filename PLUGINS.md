@@ -281,7 +281,7 @@ are freedesktop icon names (no paths).
 | `ShareTargets()` | `share` | `→ s` | JSON `{"targets": [{"id", "label", "icon"}]}`, at most 16. |
 | `SendFiles(s target_id, as paths)` | `share` | `→ s` | JSON `{"ok", "message"?, "job"?}`. Absolute paths of existing regular files, 1 to 64. Return quickly; report a long transfer as a card item (progress in the subtitle) and `CardChanged()`. |
 | `NotifyChanged()` | `notify` | signal | Since 1.5. Content-free: a popup waits in the plugin. |
-| `GetPendingNotification()` | `notify` | `→ s` | Since 1.5. JSON `{"notification": {"title", "body", "icon", "action_label", "action_id"} \| null, "more": bool}`: the oldest waiting popup, removed from the plugin's queue. Empty `action_label`/`action_id` means no button. |
+| `GetPendingNotification()` | `notify` | `→ s` | Since 1.5. JSON `{"notification": {"title", "body", "icon", "action_label", "action_id"} \| null, "more": bool}`: the oldest waiting popup, removed from the plugin's queue. Empty `action_label`/`action_id` means no button. Only the owner of `io.weirdware.BlueFerry` may call it; anyone else gets `AccessDenied`. |
 
 Where it shows up:
 
@@ -299,7 +299,15 @@ Where it shows up:
   8, each for at most a minute) and emits `NotifyChanged()`; the BlueFerry
   daemon checks the sender and then fetches the popup with
   `GetPendingNotification()` from that same connection, so the text never
-  travels on a signal other processes can read. The daemon reads manifests
+  travels on a signal other processes can read. `NotifyService` hands a
+  popup out only to the connection that currently owns the daemon's name
+  `io.weirdware.BlueFerry` (it follows the owner with `GetNameOwner` and
+  `NameOwnerChanged`, without blocking); every other caller gets
+  `org.freedesktop.DBus.Error.AccessDenied` and the queue stays as it was,
+  so other processes on the session bus can at most see that something
+  waits, never read it or take it away. While the name has no owner (the
+  daemon is not running) nobody can fetch, and the popups expire in the
+  plugin. The daemon reads manifests
   (it still runs no plugin code) and accepts the signal only from the owner
   of an enabled `notify` plugin's bus name running as the same user (an
   unverified sender gets at most twelve lookups a minute); it re-reads the
@@ -576,7 +584,11 @@ dependencies = [
 ```
 
 Pin the dependency to a `plugin-api-v<version>` tag (the `version` in
-`plugin-api/pyproject.toml`), never to a branch. Declare a
+`plugin-api/pyproject.toml`), never to a branch. Until the plugin API is
+released upstream, the `plugin-api-v*` tags live in the fork
+`joshii-h/blueferry`; pin
+`git+https://github.com/joshii-h/blueferry@plugin-api-v1.5.0#subdirectory=plugin-api`
+there instead. Declare a
 `[project.scripts]` entry point that serves the plugin and name it in `Exec=`
 (and `Cli=`). Ship exactly one manifest, in `data/` or as package data in
 `src/<package>/`.
