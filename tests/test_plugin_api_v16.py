@@ -158,3 +158,16 @@ def test_the_client_refuses_a_plugin_of_another_user_before_the_click() -> None:
     with pytest.raises(PluginError, match="different user"):
         client.run_config_action("setup_iphone")
     assert transport.calls == []
+
+
+def test_the_settings_button_example_in_plugins_md_parses() -> None:
+    from pathlib import Path
+
+    text = (Path(__file__).resolve().parents[1] / "PLUGINS.md").read_text(encoding="utf-8")
+    start = text.index("### Settings buttons")
+    block = text[text.index("```\n", start) + 4:]
+    block = block[:block.index("```")]
+    parsed = _manifest(extra="[Config port]\nLabel=Port\nType=int\n" + block)
+    (button,) = parsed.config_actions
+    assert (button.id, button.label, button.icon, button.primary) == (
+        "setup_iphone", "Set up iPhone", "smartphone", True)
