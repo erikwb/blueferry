@@ -451,17 +451,24 @@ class PluginSettings(QObject):
         self._set_status("action", True, _("Working…"), pending=True)
 
         def done(result: Any) -> None:
-            self._set_status("action", result.ok,
-                             view.config_action_text(result.ok, result.message, manifest.name))
             if result.ok and result.open_uri:
                 self._open(result.open_uri)
+            # The user may have closed this form or opened another one
+            # meanwhile: the answer belongs to this form only.
+            if self._current(plugin_id) is None:
+                return
+            self._set_status("action", result.ok,
+                             view.config_action_text(result.ok, result.message, manifest.name))
             # The action may have changed settings or the plugin's status.
+            self.load_config(plugin_id, keep_status=True)
+            self._reload()
+
+        def failed(text: str) -> None:
             if self._current(plugin_id) is not None:
-                self.load_config(plugin_id, keep_status=True)
-                self._reload()
+                self._set_status("action", False, text)
 
         self._work("action", lambda: self._client(manifest).run_config_action(action_id), done,
-                   on_error=lambda text: self._set_status("action", False, text))
+                   on_error=failed)
 
     def open_help(self, plugin_id: str, key: str) -> None:
         """"Where do I find this?": the field's https HelpUrl, nothing else."""

@@ -449,3 +449,22 @@ def test_a_second_press_waits_for_the_first(with_actions) -> None:
     settings._set_status("action", True, "Working…", pending=True)
     settings.run_action("io.example.setup", "approve")
     assert _ActionClient.ran == []
+
+
+def test_an_answer_never_lands_in_another_form(with_actions) -> None:
+    from blueferry.plugin_api.testing import manifest
+
+    settings, opened = with_actions
+    other = manifest("io.example.other", capabilities="card;", api_version="1.6",
+                     extra="[Config port]\nLabel=Port\nType=int\n")
+    settings._manifests[other.id] = other
+    settings.load_config("io.example.setup")
+    _wait(lambda: settings.state()["config"].get("loaded"))
+    settings.run_action("io.example.setup", "setup_iphone")
+    # The user switches to another plugin's form before the answer arrives.
+    settings._update(config=settings._form(other, other.id, {}, loaded=True))
+    _wait(lambda: _idle(settings) and _ActionClient.ran == ["setup_iphone"])
+    _wait(lambda: _idle(settings))
+    assert settings.state()["config"]["id"] == "io.example.other"
+    assert settings.state()["config"]["status"] == {}
+    assert opened == ["http://127.0.0.1:4711/abc/"]  # the page the user asked for still opens
