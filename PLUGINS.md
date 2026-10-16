@@ -233,10 +233,10 @@ values. The answer is the one `InvokeAction` gives, `{ok, message?,
 open_uri?}`, checked by the same rules (one line of plain text; `open_uri`
 only http(s) or a file in the plugin's cache, e.g. a QR page on
 `http://127.0.0.1:<port>/<secret>/`). Clients show the message under the
-buttons, open the URI and then read the settings and the status again, so
-an action may change them (a new token, an approved network). One action
-runs at a time. A 1.5 BlueFerry skips the sections; the plugin then still
-works, only without the buttons.
+buttons, open the URI only when `ok` is true, and then read the settings
+and the status again, so an action may change them (a new token, an
+approved network). One action runs at a time. A 1.5 BlueFerry skips the
+sections; the plugin then still works, only without the buttons.
 
 ```python
 from blueferry.plugin_api.service import PluginService
@@ -304,7 +304,7 @@ class Shortcuts(PluginService):
 | `ConfigLogin(s provider, s values)` | `→ s` | Since 1.3, with `ConfigLogin=<provider>`. Starts a browser sign-in. `values` is a JSON object with the form's typed **non-secret** values (not saved yet), so the plugin knows the server. Answers `{state: "open", login_id, open_uri, message?}`, `{state: "done", message}` (signed in without a browser) or `{state: "error", message}`. `login_id` matches `[A-Za-z0-9_.-]{1,64}`, `open_uri` is https (http only on localhost); clients refuse anything else. |
 | `ConfigLoginStatus(s login_id)` | `→ s` | `{state, message?}` with `state` `pending`, `done`, `error`, `expired` or `cancelled`. Clients poll every 2 s for at most 20 minutes. On `done` the plugin has already stored the credentials; `message` says "Connected as …". |
 | `ConfigLoginCancel(s login_id)` | `→ s` | The user cancelled or closed the form; stop polling the provider. Answers `{ok: true}`. |
-| `RunConfigAction(s action_id)` | `→ s` | Since 1.6, with `[ConfigAction <action_id>]`. The user pressed that settings button; the plugin works with its stored settings. Answers `{ok, message?, open_uri?}` like `InvokeAction`. Ids the manifest does not declare fail with `Failed`. Clients wait up to 60 s and, as before a card action, refuse a running plugin owned by another user. |
+| `RunConfigAction(s action_id)` | `→ s` | Since 1.6, with `[ConfigAction <action_id>]`. The user pressed that settings button; the plugin works with its stored settings. Answers `{ok, message?, open_uri?}` like `InvokeAction`; clients open `open_uri` only with `ok: true`. Ids the manifest does not declare fail with `Failed`. Clients wait up to 60 s and, as before a card action, refuse a running plugin owned by another user. |
 
 `io.weirdware.BlueFerry.Photos1` (capability `photos`):
 
