@@ -34,6 +34,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
+          cache: pip
+          cache-dependency-path: ${{ matrix.requirements }}
       - name: Install pinned documentation tools
         run: python -m pip install -r ${{ matrix.requirements }}
       - name: Build and check links
