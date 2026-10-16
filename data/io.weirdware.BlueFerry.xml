@@ -134,6 +134,29 @@
       <annotation name="io.weirdware.BlueFerry.Errors"
                   value="InvalidArgs,NotReady"/>
     </method>
+    <method name="ListNotifications">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Recent iPhone app notifications, newest first, as JSON {enabled, content, notifications}; memory only and empty unless BLUEFERRY_NOTIFICATION_HISTORY is set; title/subtitle/body only with BLUEFERRY_SHOW_NOTIFICATION_CONTENT"/>
+      <arg name="limit" type="u" direction="in"/>
+      <arg name="json" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors" value="NotReady,ResponseTooLarge"/>
+    </method>
+    <method name="GetFeatures">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="JSON object keyed by feature name (show_notification_content, mark_read_on_dismiss, notification_history, keep_phone_audio_on_phone): {value, running, source (environment, settings, local.env or default), variable, restart_required}"/>
+      <arg name="features" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="NotReady"/>
+    </method>
+    <method name="SetFeature">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Store one allowlisted boolean switch in settings.json, where it overrides local.env from the next daemon start; an explicit process environment still wins. Returns active, restart-required or environment"/>
+      <arg name="name" type="s" direction="in"/>
+      <arg name="enabled" type="b" direction="in"/>
+      <arg name="result" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady"/>
+    </method>
     <method name="GetNotificationOpenMap">
       <arg name="rules_json" type="s" direction="out"/>
     </method>
@@ -292,6 +315,14 @@
       <annotation name="io.weirdware.BlueFerry.Errors"
                   value="InvalidArgs,NotReady,MediaCommandFailed"/>
     </method>
+    <method name="SetPhoneAudioRoute">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="pc or phone: open or close the iPhone's A2DP stream; the confirmed route is the phone_audio_route GetStatus key; phone_audio_playing tells where the sound actually plays. Unavailable while BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE is true"/>
+      <arg name="route" type="s" direction="in"/>
+      <arg name="accepted" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady,AudioRouteFailed"/>
+    </method>
   </interface>
   <interface name="io.weirdware.BlueFerry.Calls1">
     <annotation name="org.freedesktop.DBus.Description"
@@ -359,6 +390,10 @@
       <arg name="handle" type="s"/>
     </signal>
     <signal name="CallHistoryChanged"/>
+    <signal name="NotificationsChanged">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Content-free; fetch details with Messages1.ListNotifications"/>
+    </signal>
     <signal name="NowPlayingChanged">
       <annotation name="org.freedesktop.DBus.Description"
                   value="Content-free; fetch details with Media1.GetNowPlaying"/>
