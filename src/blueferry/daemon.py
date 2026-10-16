@@ -40,7 +40,7 @@ from blueferry.bluetooth_recovery import (
 )
 from blueferry.bluez_reads import observations
 from blueferry.build_info import build_id, installed_build_sha, running_build_sha
-from blueferry.bus import get_session_bus, get_system_bus, main_loop
+from blueferry.bus import get_system_bus, main_loop
 from blueferry.call_history import (
     CallRecord,
     MissedCallNotice,
@@ -1227,9 +1227,14 @@ class Daemon:
         """Watch for content-free plugin popups (PLUGINS.md, capability notify)."""
         if self.plugin_popups is not None:
             return
+        if self._bus_name is None:
+            log.warning("plugin popups need the daemon's bus name; they stay off")
+            return
         try:
+            # Plugins hand popups only to the owner of io.weirdware.BlueFerry,
+            # so fetch on exactly the connection that holds that name.
             self.plugin_popups = PluginPopups(
-                get_session_bus(), show=self.events.plugin_notification,
+                self._bus_name.get_bus(), show=self.events.plugin_notification,
             )
         except Exception:
             log.warning("plugin popups are unavailable without a session bus")

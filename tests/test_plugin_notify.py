@@ -484,7 +484,7 @@ def test_daemon_wires_plugin_popups_to_the_sinks_and_back(make_daemon, monkeypat
 
     class Popups:
         def __init__(self, bus, *, show) -> None:
-            self.show, self.invoked = show, []
+            self.bus, self.show, self.invoked = bus, show, []
 
         def start(self) -> None:
             started.append(self)
@@ -495,16 +495,27 @@ def test_daemon_wires_plugin_popups_to_the_sinks_and_back(make_daemon, monkeypat
         def stop(self) -> None:
             started.remove(self)
 
-    monkeypatch.setattr(daemon_mod, "get_session_bus", lambda: object())
     monkeypatch.setattr(daemon_mod, "PluginPopups", Popups)
+    instance._start_plugin_popups()  # no bus name yet: popups stay off
+    assert started == []
+    named = object()
+
+    class BusName:
+        def get_bus(self):
+            return named
+
+    instance._bus_name = BusName()
     instance._start_plugin_popups()
     instance._start_plugin_popups()  # idempotent
     (popups,) = started
+    # The connection that owns io.weirdware.BlueFerry, nothing else.
+    assert popups.bus is named
     assert popups.show == instance.events.plugin_notification
     instance._plugin_popup_action("popup")
     assert popups.invoked == ["popup"]
     instance.plugin_popups.stop()
     instance.plugin_popups = None
+    instance._bus_name = None
 
 
 def _run_until(condition, seconds: float = 5.0) -> None:
