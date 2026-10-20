@@ -1071,6 +1071,12 @@ class BearerSupervisor:
             # reset_profiles owns the next Connect; do not dial underneath it.
             return True
 
+        # Connected=false can arrive before our Disconnect call completes.
+        # Keep publishing link changes, but let the reply/error callback finish
+        # the operation before completing a reset or starting either bearer.
+        if self._disconnecting:
+            return True
+
         if self._le_reset_pending and self._le_enabled:
             if le is False:
                 self._complete_le_reset()
@@ -1099,6 +1105,7 @@ class BearerSupervisor:
         if (
             self._le_api_available is False
             or self._le_settle_id is not None
+            or self._disconnecting
             or self._le_dial_exhausted()
         ):
             return
@@ -1295,6 +1302,10 @@ class BearerSupervisor:
         self._request_connect("bredr")
 
     def _request_connect(self, kind: str, *, manual: bool = False) -> None:
+        # Also guard callbacks already queued before a disconnect began. A
+        # state change or elapsed settle timer cannot release this operation.
+        if self._disconnecting:
+            return
         if kind in self._connecting:
             return
         if kind == "bredr" and "le" in self._connecting:
@@ -1517,6 +1528,7 @@ class BearerSupervisor:
             or not self._le_enabled
             or self._classic_connect_should_be_targeted()
             or self._connecting
+            or self._disconnecting
         ):
             return
         try:
