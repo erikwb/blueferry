@@ -6,7 +6,9 @@ from gi.repository import Adw, Gio, Gtk
 
 from blueferry.i18n import _
 from blueferry.setup_client import SetupClient
+from blueferry.tel_links import dial_request
 from blueferry.ui.conversations import ConversationsPage
+from blueferry.ui.dial_presenter import dial_prompt
 from blueferry.ui.phone import PhonePage
 from blueferry.ui.status import IPhonePage
 
@@ -140,6 +142,49 @@ class MainWindow(Adw.ApplicationWindow):
         self._overview_dialog.close()
         self.present()
         self.messages.open_message(handle)
+
+    def request_dial(self, link: str) -> None:
+        """Confirm a clicked phone link; only the Call response dials."""
+        number, problem = dial_request(link)
+        if problem:
+            self._show_dial_prompt(number, problem, None)
+            return
+        self._client.get_status_async(
+            lambda status: self._show_dial_prompt(number, problem, status),
+            lambda _message: self._show_dial_prompt(number, problem, None),
+        )
+
+    def _show_dial_prompt(self, number: str, problem: str, status) -> None:
+        name = self.messages.contact_name_for(number) if number else ""
+        prompt = dial_prompt(number, problem, name, status)
+        dialog = Adw.AlertDialog(heading=prompt.heading, body=prompt.body)
+        if prompt.offer == "none":
+            dialog.add_response("close", _("Close"))
+            dialog.set_default_response("close")
+            dialog.set_close_response("close")
+        else:
+            dialog.add_response("cancel", _("Cancel"))
+            dialog.set_close_response("cancel")
+            if prompt.offer == "call":
+                dialog.add_response("call", _("Call"))
+                dialog.set_response_appearance("call", Adw.ResponseAppearance.SUGGESTED)
+            else:
+                dialog.add_response("settings", _("Open iPhone Settings"))
+            # Enter must not place a call on its own.
+            dialog.set_default_response("cancel")
+
+        def responded(_dialog, response: str) -> None:
+            if response == "call":
+                self._client.dial_async(
+                    number,
+                    lambda _call_id: self.toast(_("Calling {number}…").format(number=number)),
+                    lambda message: self.toast(message),
+                )
+            elif response == "settings":
+                self.present_phone_settings()
+
+        dialog.connect("response", responded)
+        dialog.present(self)
 
     def _on_availability(self, _client, available: bool) -> None:
         if available:
