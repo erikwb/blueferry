@@ -166,6 +166,21 @@ class TestEdgeCases:
         assert parsed.sender_address == "+15551234567"
         assert parsed.sender_name == "Alice"
 
+    def test_name_properties_with_parameters_are_read(self):
+        # The iPhone's originator card for an alphanumeric sender ID.
+        blob = (
+            "BEGIN:BMSG\nVERSION:1.0\nBEGIN:VCARD\nVERSION:3.0\n"
+            "FN;CHARSET=UTF-8:mbna\nN;CHARSET=UTF-8:mbna\nTEL:6262\n"
+            "END:VCARD\nBEGIN:BENV\nBEGIN:BBODY\nBEGIN:MSG\nhello\n"
+            "END:MSG\nEND:BBODY\nEND:BENV\nEND:BMSG\n"
+        )
+
+        parsed = parse(blob)
+
+        assert parsed.sender_address == "6262"
+        assert parsed.sender_name == "mbna"
+        assert parse(blob.replace("FN;CHARSET=UTF-8:mbna\n", "")).sender_name == "mbna"
+
     def test_remote_metadata_is_bounded(self):
         blob = _bmsg("1" * (MAX_CONTACT_ADDRESS_CHARS + 1), "hello")
         blob = blob.replace(

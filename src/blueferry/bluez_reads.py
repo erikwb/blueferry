@@ -48,7 +48,11 @@ class BluezReadCache:
         key = (owner, path, interface, method, signature, args)
         now = self._clock()
         entry = self._entries.get(key)
-        if key not in self._pending and (entry is None or now - entry[0] >= 5):
+        # Bearer polling runs every five seconds, and replies arrive just
+        # after a poll. Refresh before that cadence so a prompt reply does
+        # not narrowly miss the next refresh and expire at the ten-second
+        # limit on the following poll. The expiry/error rules stay strict.
+        if key not in self._pending and (entry is None or now - entry[0] >= 4):
             generation = self._generation
             token = object()
             self._pending[key] = token

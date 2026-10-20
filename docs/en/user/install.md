@@ -46,6 +46,12 @@ Replace `blueferry-gtk` with `blueferry-qt` for KDE Plasma.
 There are no packages for these yet. BlueFerry runs there from a source
 install; see [Running without systemd](openrc.md).
 
+## WSL2 on Windows
+
+The Debian packages work in a WSL2 distribution once a USB Bluetooth adapter
+is passed in from Windows and a few WSL2 differences are handled; see
+[Running under WSL2](wsl2.md).
+
 ## Bluetooth changes made by the packages
 
 - **Arch and Fedora** packages require BlueZ 5.86 or newer and add a

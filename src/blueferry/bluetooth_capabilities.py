@@ -42,6 +42,7 @@ ANCS_LIMITED_VENDORS = frozenset({"realtek", "broadcom", "cypress"})
 # Adapter-specific client defaults; users can still select Connect-first explicitly.
 _EXPLICIT_PAIRING_USB_IDS = frozenset({
     "0bda:8771",  # RTL8761BU: Connect can abort before authentication (#144).
+    "2357:0604",  # TP-Link UB500: RTL8761BU under TP-Link's USB ID.
     "0bda:8922",  # Realtek: MAP/PBAP success with explicit pairing (#68).
     "13d3:3586",  # AzureWave RTL8852CE: explicit pairing restored ANCS (#58).
 })
