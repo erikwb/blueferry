@@ -102,6 +102,20 @@ def test_ambiguous_trunk_prefixes_are_refused_instead_of_rewriting_digits(link):
     assert dial_request(link) == ("", "invalid")
 
 
+@pytest.mark.parametrize("separator", ["-", ".", "/", " - ", "%2D", "%2E", "%2F"])
+@pytest.mark.parametrize("prefix", ["+41", "+4-1", "(+41)"])
+def test_visual_separators_cannot_hide_an_ambiguous_trunk_prefix(separator, prefix):
+    assert dial_request(f"tel:{prefix}{separator}(0)79-000-00-00") == ("", "invalid")
+
+
+@pytest.mark.parametrize("link", [
+    "tel:+41-( 0 )79-000-00-00", "callto:+41.%280%29.79.000.00.00",
+    "tel:+39/(0)/6/6982", "+4 4 / (0)20 0000 0000",
+])
+def test_formatted_trunk_zeroes_are_rejected_without_removing_any_digits(link):
+    assert dial_request(link) == ("", "invalid")
+
+
 @pytest.mark.parametrize("scheme", ["tel:", "CALLTO://", ""])
 @pytest.mark.parametrize("subscriber", [
     # A context identifies a numbering plan; it is not a dialable prefix.

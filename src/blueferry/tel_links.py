@@ -32,11 +32,12 @@ _PARAMETER_RE = re.compile(
     r"([a-zA-Z0-9-]+)(?:=(?:[a-zA-Z0-9\[\]/:&+$_.!~*'()-]|%[0-9a-fA-F]{2})+)?"
 )
 _UNSUPPORTED_PARAMETERS = frozenset({"phone-context", "ext", "isub", "postd"})
-# Visual separators RFC 3966 allows, plus spaces and slashes seen in print.
-_SEPARATORS_RE = re.compile(r"[ \u00a0\-.()/]")
+# Strip spacing first, keeping parentheses until optional trunk zeroes have
+# been checked. Other visual separators must not hide printed "(0)" notation.
+_SPACING_RE = re.compile(r"[ \u00a0\-./]")
 # In printed "+CC (0)…" notation, the zero may be a trunk prefix or a
 # significant digit (e.g. Italy). Without numbering-plan data, refuse to guess.
-_AMBIGUOUS_TRUNK_RE = re.compile(r"^\+[0-9]{1,3}[ \u00a0]*\(0\)")
+_COUNTRY_PREFIX_RE = re.compile(r"\+[0-9]{1,3}")
 _NUMBER_RE = re.compile(rf"^\+?[0-9]{{1,{MAX_DIAL_DIGITS}}}$")
 
 DialProblem = Literal["", "invalid", "emergency"]
@@ -74,9 +75,12 @@ def parse_phone_link(value: object) -> str | None:
     # Decode exactly once; an encoded ";", a control character or invalid
     # UTF-8 (decoded to U+FFFD) stays invalid.
     decoded = unquote(text, errors="replace").strip()
-    if _AMBIGUOUS_TRUNK_RE.match(decoded):
+    spaced = _SPACING_RE.sub("", decoded)
+    prefix, trunk_zero, _rest = spaced.partition("(0)")
+    prefix = prefix.replace("(", "").replace(")", "")
+    if trunk_zero and _COUNTRY_PREFIX_RE.fullmatch(prefix):
         return None
-    number = _SEPARATORS_RE.sub("", decoded)
+    number = spaced.replace("(", "").replace(")", "")
     return number if _NUMBER_RE.fullmatch(number) else None
 
 
