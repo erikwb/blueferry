@@ -546,6 +546,32 @@ write keeps solicitation on. A previously authorized Control Point failure or
 timeout escalates to one serialized `Bearer.LE1.Disconnect`; MAP/PBAP stay
 available and LE rebuilds behind the profile-ordering gate.
 
+`Notifying=true` does not prove that iOS has the CCC on the current link.
+Observed with btmon on 2026-10-15 (Intel AX200, BlueZ 5.87, iOS 27, LE drop
+forced with `Bearer.LE1.Disconnect`): while LE was down, bluetoothd restored
+the Notification Source CCC over a BR/EDR ATT channel (PSM 31) that iOS closed
+about 90 ms later, and on the new LE link it wrote neither the Notification
+Source nor the Data Source CCC. iOS acknowledged the authorization probe on the
+Control Point, but no Data Source response followed. Before escalating, a
+silent probe of a previously authorized transport on a settled LE link
+therefore re-enables both CCCs once per LE link (`StopNotify`, then
+`StartNotify`, asynchronously; a `StopNotify` refused because no session exists
+goes on to `StartNotify`) and repeats the probe. Only when that probe stays
+silent too, or the re-enable fails, does the LE reset above follow. The toggle
+runs only after a completed Control Point write on a settled link, never on a
+dropped or flapping one, and never sends `StartNotify` once the link was
+reset meanwhile.
+Bearer signals are session boundaries, even when an LE disconnect and return
+both occur between the five-second health polls. They are delivered immediately
+to the notification clients; polling remains a fallback. An unavailable cached
+read is not proof of a disconnect, and cannot by itself unblock a failed ANCS
+transport. A confirmed disconnect does unblock it, even if an unavailable read
+intervenes before reconnection. Successful cached reads are refreshed ahead of
+the poll interval so ordinary reply latency and timer jitter do not produce
+false unknown states. Expired or failed reads still provide no health evidence.
+Subscription replies and notification receivers are tied to their ANCS session;
+callbacks from a retired session cannot authorize or enqueue work in its successor.
+
 A stale LE bond looks different from an absent phone. Observed with
 btmon on an Intel AX200, BlueZ 5.87, Linux 7.2.8 and iOS 27: after the bond
 had been removed on only one side, the iPhone still connected over LE about
