@@ -228,7 +228,9 @@ CI-Paketmatrix.
   erhalten. Um die Firmware kümmert sich der Dienst, egal ob der Adapter vor
   oder nach ihm angehängt wird. Der Schlüsselbund startet gesperrt, also
   führe `blueferry storage-unlock` aus und gib sein Passwort ein; bis dahin
-  sendet BlueFerry Nachrichten, speichert aber keinen Verlauf.
+  sendet BlueFerry Nachrichten, speichert aber keinen Verlauf. Das
+  Passwortfenster öffnet sich oft hinter dem Terminal; scheint
+  `storage-unlock` zu hängen, sieh in der Windows-Taskleiste nach.
 - **ANCS kommt nach einem Verlassen der Reichweite womöglich nicht zurück.**
   BlueZ 5.82 aus Debian 13 ist älter als die Bearer-API, daher kann
   BlueFerry die LE-Verbindung nicht selbst aufbauen und wartet, bis sich das

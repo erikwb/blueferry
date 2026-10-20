@@ -215,7 +215,8 @@ with a TP-Link UB500 (RTL8761BU). WSL2 is not part of the CI package matrix.
   handles the firmware, whether the adapter is attached before or after it
   runs. The keyring starts locked, so run `blueferry storage-unlock` and
   enter its password; until then BlueFerry sends messages but keeps no
-  history.
+  history. The password window often opens behind the terminal, so if
+  `storage-unlock` seems to hang, look for it in the Windows taskbar.
 - **ANCS may not return after the iPhone leaves range.** Debian 13's BlueZ
   5.82 predates the bearer API, so BlueFerry cannot dial the LE link itself
   and waits for the iPhone to reconnect to its advertisement. On the setup
