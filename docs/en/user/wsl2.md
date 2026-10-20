@@ -1,9 +1,10 @@
 # Running under WSL2
 
 BlueFerry runs in a WSL2 distribution on Windows, but WSL2 has no Bluetooth
-of its own. The adapter is passed in from Windows over USB/IP, and three
+of its own. The adapter is passed in from Windows over USB/IP, and several
 parts of the Linux stack behave differently from a desktop install: firmware
-loading, WirePlumber's Bluetooth monitor, and polkit.
+loading, WirePlumber's Bluetooth monitor, polkit, the desktop keyring, and
+obexd's message notification service.
 
 This was set up on Debian 13 (BlueZ 5.82, WirePlumber 0.5.8) under WSL 3.0.3
 with a TP-Link UB500 (RTL8761BU). WSL2 is not part of the CI package matrix.
@@ -31,6 +32,20 @@ with a TP-Link UB500 (RTL8761BU). WSL2 is not part of the CI package matrix.
 - **Polkit sees no active local session.** The packaged rule that lets
   BlueFerry set the adapter class requires `subject.active` and
   `subject.local`, which are false for processes outside a session.
+- **No keyring exists and nothing unlocks one.** Encrypted history needs a
+  default keyring. A distribution that never had a graphical login has none,
+  the keyring prompt cannot open a window because user services do not get
+  WSLg's `DISPLAY`, and without a PAM login the keyring is never unlocked
+  automatically. Until it is set up, BlueFerry sends messages but keeps no
+  history, so clients show no conversations.
+- **obexd may register no profiles.** Without `evolution-data-server`,
+  obexd's PBAP and IrMC server plugins make a failing registry lookup during
+  startup that runs obexd's BlueZ watch before its MAP servers exist. obexd
+  registers its profiles only in that watch, so none are registered, among
+  them the Message Notification Server (`0x1133`) the iPhone needs to push
+  new messages. Reading and sending still work, but new messages never
+  arrive, and the daemon logs "the iPhone did not open MAP notifications".
+  This is not specific to WSL2.
 
 ## How to set it up
 
@@ -49,19 +64,54 @@ with a TP-Link UB500 (RTL8761BU). WSL2 is not part of the CI package matrix.
 2. Install the adapter's firmware package in the distribution, for Realtek
    `sudo apt install firmware-realtek` on Debian. Then copy the firmware to
    `/mnt/wsl`, which the WSL2 kernel can read, and add it to the kernel's
-   firmware search path. For an RTL8761BU:
+   firmware search path. Both are lost on every restart, so do it from a
+   boot service. Save this as `/usr/local/sbin/wsl-bt-firmware`:
 
    ```sh
-   sudo mkdir -p /mnt/wsl/firmware/rtl_bt
-   sudo cp /lib/firmware/rtl_bt/rtl8761bu_fw.bin \
-     /lib/firmware/rtl_bt/rtl8761bu_config.bin /mnt/wsl/firmware/rtl_bt/
-   echo -n /mnt/wsl/firmware | sudo tee /sys/module/firmware_class/parameters/path
-   sudo modprobe -r btusb && sudo modprobe btusb
+   #!/bin/sh
+   set -eu
+   src=/lib/firmware
+   dst=/mnt/wsl/firmware
+   mkdir -p "$dst/rtl_bt"
+   cp -p "$src"/rtl_bt/* "$dst/rtl_bt/"
+   printf '%s' "$dst" > /sys/module/firmware_class/parameters/path
+   # An adapter attached before this ran has already failed its firmware
+   # load; reload btusb so it probes again with the new search path.
+   if grep -q '^btusb ' /proc/modules; then
+       modprobe -r btusb
+       modprobe btusb
+   fi
+   ```
+
+   and this as `/etc/systemd/system/wsl-bt-firmware.service`:
+
+   ```ini
+   [Unit]
+   Description=Expose Bluetooth firmware to the WSL2 kernel
+   ConditionVirtualization=wsl
+   ConditionPathIsDirectory=/mnt/wsl
+   Before=bluetooth.service
+
+   [Service]
+   Type=oneshot
+   RemainAfterExit=yes
+   ExecStart=/usr/local/sbin/wsl-bt-firmware
+
+   [Install]
+   WantedBy=multi-user.target
+   ```
+
+   Then enable it:
+
+   ```sh
+   sudo chmod 755 /usr/local/sbin/wsl-bt-firmware
+   sudo systemctl enable --now wsl-bt-firmware.service
    sudo systemctl restart bluetooth
    ```
 
    `sudo dmesg | grep -i rtl` should show the firmware and config files
-   loading, and `bluetoothctl show` a powered controller.
+   loading, and `bluetoothctl show` a powered controller. For an adapter
+   from another vendor, copy its firmware directory instead of `rtl_bt`.
 
 3. Let WirePlumber start its Bluetooth monitor without an active seat.
    Create `~/.config/wireplumber/wireplumber.conf.d/50-wsl2-no-seat-monitoring.conf`:
@@ -98,19 +148,74 @@ with a TP-Link UB500 (RTL8761BU). WSL2 is not part of the CI package matrix.
 
    It grants the same single sandboxed unit as the packaged rule.
 
-5. Pair as usual. With an adapter that does not default to explicit pairing,
+5. Start obexd without its PBAP and IrMC server plugins, so it registers the
+   Message Notification Server. BlueFerry uses only obexd's PBAP client,
+   which is unaffected. Create
+   `~/.config/systemd/user/obex.service.d/50-no-pbap-server.conf`:
+
+   ```ini
+   [Service]
+   ExecStart=
+   ExecStart=/usr/libexec/bluetooth/obexd -P pbap,irmc
+   ```
+
+   Then run `systemctl --user daemon-reload` and
+   `systemctl --user restart obex`. `bluetoothctl show` now lists
+   `Message Notification Se..` (`00001133-…`). Skip this step if
+   `evolution-data-server` is installed and that UUID already appears.
+
+6. Pair as usual. With an adapter that does not default to explicit pairing,
    pass `--explicit-pairing` if Connect-first fails:
 
    ```sh
    blueferry pair-setup --explicit-pairing
    ```
 
+7. Set up the keyring for encrypted history. Give user services WSLg's
+   display, so the keyring prompt can open a window. Create
+   `~/.config/environment.d/50-wslg.conf`:
+
+   ```
+   DISPLAY=:0
+   WAYLAND_DISPLAY=wayland-0
+   ```
+
+   Apply it to the running session:
+
+   ```sh
+   systemctl --user import-environment DISPLAY WAYLAND_DISPLAY
+   dbus-update-activation-environment --systemd DISPLAY WAYLAND_DISPLAY
+   ```
+
+   If `~/.local/share/keyrings/` does not exist, create a default keyring.
+   Save this as `create-keyring.py` and run it with
+   `/usr/bin/python3 create-keyring.py`; a window asks for the new keyring's
+   password:
+
+   ```python
+   import gi
+   gi.require_version("Secret", "1")
+   from gi.repository import Secret
+
+   service = Secret.Service.get_sync(Secret.ServiceFlags.NONE, None)
+   Secret.Collection.create_sync(
+       service, "Login", "default", Secret.CollectionCreateFlags.NONE, None
+   )
+   ```
+
+   If no window appears, run `systemctl --user restart gnome-keyring-daemon`
+   and try again. Then `blueferry storage-unlock` should report
+   `"storage_state": "ready"`. Alternatively, choose unencrypted history with
+   `blueferry storage-policy-set unencrypted`.
+
 ## Limits
 
-- **Nothing in steps 1 and 2 survives a restart.** After `wsl --shutdown` or
-  a Windows reboot, run `usbipd attach` again and repeat the firmware copy,
-  search path and `btusb` reload. `/mnt/wsl` is a tmpfs and the search path
-  resets with the kernel. `usbipd bind` persists.
+- **After every restart**, `wsl --shutdown` or a Windows reboot, run
+  `usbipd attach` again; `usbipd bind` persists. The firmware service
+  handles the firmware, whether the adapter is attached before or after it
+  runs. The keyring starts locked, so run `blueferry storage-unlock` and
+  enter its password; until then BlueFerry sends messages but keeps no
+  history.
 - **Polkit rule scope.** The WSL2 rule matches a user name instead of an
   active local session, so it also applies to that user's SSH and background
   sessions. It can still only start the class-setting unit.
