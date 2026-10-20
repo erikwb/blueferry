@@ -6,6 +6,7 @@ import logging
 import os
 import signal
 import sys
+from collections.abc import Callable
 from importlib.resources import files
 
 from PySide6.QtCore import QLibraryInfo, QLocale, QTimer, QTranslator, QUrl
@@ -320,6 +321,31 @@ def _follow_standalone_tray(application: QApplication, tray: QSystemTrayIcon) ->
     _show_own_tray(application, tray, _standalone_tray_running())
 
 
+def _dial_activation(controller, window: QWindow) -> Callable[[str, str], None]:
+    """Show the confirmation for a phone link, then raise the window."""
+
+    def activate_dial(link: str, token: str) -> None:
+        # Only asks for confirmation; BridgeController never dials a link.
+        controller.requestDialLink(link)
+        _present_window(window, token)
+
+    return activate_dial
+
+
+def _first_activation(
+        dial_link: str,
+        message: str,
+        token: str,
+        activate_dial: Callable[[str, str], None],
+        activate_message: Callable[[str, str], None],
+        ) -> None:
+    """Handle the launching command line once the window exists."""
+    if dial_link:
+        activate_dial(dial_link, token)
+    else:
+        activate_message(message, token)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     parser.add_argument("--message", default="")
@@ -351,7 +377,11 @@ def main() -> int:
     if not activation.primary:
         quick_style.release_environment()
         if dial_link:
-            return 0 if activation.forward_dial(dial_link, token) else 1
+            if activation.forward_dial(dial_link, token):
+                return 0
+            print("blueferry-qt: could not pass the phone link to the running window",
+                  file=sys.stderr)
+            return 1
         return 0 if activation.forward(args.message, token) else 1
 
     controller = BridgeController(parent=application)
@@ -381,20 +411,14 @@ def main() -> int:
         else:
             present_message("")
 
-    def activate_dial(dial: str, activation_token: str) -> None:
-        # Only asks for confirmation; BridgeController never dials a link.
-        controller.requestDialLink(dial)
-        _present_window(window, activation_token)
+    activate_dial = _dial_activation(controller, window)
 
     activation.requested.connect(activate_message)
     activation.dialRequested.connect(activate_dial)
     controller.messageOpenRequested.connect(present_message)
     window.activeChanged.connect(lambda: record_client_use("qt") if window.isActive() else None)
     def ready() -> None:
-        if dial_link:
-            activate_dial(dial_link, token)
-        else:
-            activate_message(args.message, token)
+        _first_activation(dial_link, args.message, token, activate_dial, activate_message)
         activation.ready()
 
     QTimer.singleShot(0, ready)

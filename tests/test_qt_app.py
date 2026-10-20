@@ -499,3 +499,54 @@ def test_second_instance_forwards_phone_links_to_the_running_client(monkeypatch,
     assert _SecondaryActivation.calls == [expected]
     # The link never reaches Qt's own argument parsing.
     assert not any(argument.lower().startswith(("tel:", "callto:")) for argument in created[0])
+
+
+def test_second_instance_reports_a_link_the_running_client_would_drop(monkeypatch, capsys):
+    from blueferry.qt.activation import ClientActivation, dial_request_fits
+
+    sent = []
+    fake = types.SimpleNamespace(_call=lambda *args: sent.append(args) or True)
+    oversized = "tel:" + "1" * 1021
+    assert dial_request_fits("tel:1", "t" * 4096)
+    assert not dial_request_fits("", "")
+    assert not dial_request_fits(oversized, "")
+    assert not dial_request_fits("tel:1", "t" * 4097)
+    # Dial ignores these without an error reply; they are never sent.
+    assert ClientActivation.forward_dial(fake, oversized, "") is False
+    assert ClientActivation.forward_dial(fake, "tel:1", "t" * 4097) is False
+    assert sent == []
+    assert ClientActivation.forward_dial(fake, "tel:+15550100000", "token") is True
+    assert sent == [("Dial", "tel:+15550100000", "token")]
+
+    class Refusing(_SecondaryActivation):
+        def forward_dial(self, link, token):
+            return False
+
+    monkeypatch.setattr(app_module, "QApplication", lambda _arguments: types.SimpleNamespace(
+        setApplicationName=lambda *_a: None, setApplicationDisplayName=lambda *_a: None,
+        setOrganizationDomain=lambda *_a: None, setDesktopFileName=lambda *_a: None,
+        setWindowIcon=lambda *_a: None,
+    ))
+    monkeypatch.setattr(app_module, "ClientActivation", Refusing)
+    monkeypatch.setattr(app_module, "_install_translation", lambda _application: None)
+    monkeypatch.setattr(sys, "argv", ["blueferry-qt", f"--dial={oversized}"])
+    assert app_module.main() == 1
+    assert "could not pass the phone link" in capsys.readouterr().err
+
+
+def test_first_launch_with_a_link_asks_and_then_raises_the_window(monkeypatch):
+    order = []
+    monkeypatch.setattr(
+        app_module, "_present_window", lambda window, token=None: order.append(("present", token)),
+    )
+    controller = types.SimpleNamespace(requestDialLink=lambda link: order.append(("ask", link)))
+    activate_dial = app_module._dial_activation(controller, object())
+
+    def activate_message(handle, token):
+        order.append(("message", handle, token))
+
+    app_module._first_activation("tel:+15550100000", "", "token", activate_dial, activate_message)
+    assert order == [("ask", "tel:+15550100000"), ("present", "token")]
+    order.clear()
+    app_module._first_activation("", "handle-1", "token", activate_dial, activate_message)
+    assert order == [("message", "handle-1", "token")]

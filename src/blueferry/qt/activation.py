@@ -10,6 +10,11 @@ from blueferry.tel_links import MAX_PHONE_LINK_CHARS
 QT_CLIENT = next(client for client in CLIENTS if client.key == "qt")
 
 
+def dial_request_fits(link: str, token: str) -> bool:
+    """The bounds ``Dial`` accepts; anything else is never forwarded."""
+    return bool(link) and len(link) <= MAX_PHONE_LINK_CHARS and len(token) <= 4096
+
+
 class ClientActivation(QObject):
     requested = Signal(str, str)
     # A phone link to confirm; any session process can send one, so the
@@ -40,7 +45,7 @@ class ClientActivation(QObject):
 
     @Slot(str, str)
     def Dial(self, link: str, token: str) -> None:
-        if link and len(link) <= MAX_PHONE_LINK_CHARS and len(token) <= 4096:
+        if dial_request_fits(link, token):
             if self._ready:
                 self.dialRequested.emit(link, token)
             else:
@@ -68,7 +73,9 @@ class ClientActivation(QObject):
         return self._call("OpenMessage", handle, token)
 
     def forward_dial(self, link: str, token: str) -> bool:
-        return self._call("Dial", link, token)
+        # Dial drops what does not fit without an error reply; refuse it here
+        # so the second instance reports the failure.
+        return dial_request_fits(link, token) and self._call("Dial", link, token)
 
     def close(self) -> None:
         if self.primary:
