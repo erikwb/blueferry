@@ -17,6 +17,8 @@ class MainWindow(Adw.ApplicationWindow):
     def __init__(self, application, client) -> None:
         super().__init__(application=application, title=_("BlueFerry"))
         self._client = client
+        self._dial_request_serial = 0
+        self._dial_dialog: Adw.AlertDialog | None = None
         self.set_default_size(940, 660)
 
         self._toasts = Adw.ToastOverlay()
@@ -145,19 +147,31 @@ class MainWindow(Adw.ApplicationWindow):
 
     def request_dial(self, link: str) -> None:
         """Confirm a clicked phone link; only the Call response dials."""
+        self._dial_request_serial += 1
+        serial = self._dial_request_serial
+        if self._dial_dialog is not None:
+            old_dialog, self._dial_dialog = self._dial_dialog, None
+            old_dialog.force_close()
         number, problem = dial_request(link)
+
+        def present(status) -> None:
+            # A second link supersedes both an open dialog and an outstanding
+            # status read. Late success/error replies must not revive it.
+            if serial == self._dial_request_serial:
+                self._show_dial_prompt(number, problem, status)
+
         if problem:
-            self._show_dial_prompt(number, problem, None)
+            present(None)
             return
         self._client.get_status_async(
-            lambda status: self._show_dial_prompt(number, problem, status),
-            lambda _message: self._show_dial_prompt(number, problem, None),
+            present, lambda _message: present(None),
         )
 
     def _show_dial_prompt(self, number: str, problem: str, status) -> None:
         name = self.messages.contact_name_for(number) if number else ""
         prompt = dial_prompt(number, problem, name, status)
         dialog = Adw.AlertDialog(heading=prompt.heading, body=prompt.body)
+        self._dial_dialog = dialog
         if prompt.offer == "none":
             dialog.add_response("close", _("Close"))
             dialog.set_default_response("close")
@@ -174,13 +188,16 @@ class MainWindow(Adw.ApplicationWindow):
             dialog.set_default_response("cancel")
 
         def responded(_dialog, response: str) -> None:
-            if response == "call":
+            if self._dial_dialog is not dialog:
+                return
+            self._dial_dialog = None
+            if response == "call" and prompt.offer == "call":
                 self._client.dial_async(
                     number,
                     lambda _call_id: self.toast(_("Calling {number}…").format(number=number)),
                     lambda message: self.toast(message),
                 )
-            elif response == "settings":
+            elif response == "settings" and prompt.offer == "settings":
                 self.present_phone_settings()
 
         dialog.connect("response", responded)

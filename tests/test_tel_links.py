@@ -30,19 +30,16 @@ from blueferry.tel_links import (
     ("tel:+41%2079%20000%2000%2000", "+41790000000"),
     ("tel:%2B41790000000", "+41790000000"),
     ("tel:+41\u00a079\u00a0000", "+4179000"),
-    # The European "+CC (0)" notation: the trunk 0 is not dialed from abroad.
-    ("tel:+41 (0)79 000 00 00", "+41790000000"),
-    ("tel:+41(0)790000000", "+41790000000"),
-    ("tel:+49 (0) 30 0000000", "+49300000000"),
-    ("tel:+41%20(0)79%20000%2000%2000", "+41790000000"),
-    ("+1 (0) 555 010 0000", "+15550100000"),
-    # Only right after the country code; elsewhere "(0)" is part of the number.
+    # Significant zeroes must be preserved, including Italy's leading zero.
+    ("tel:+39 06 6982", "+39066982"),
+    ("tel:+39 (06) 6982", "+39066982"),
+    # Away from a possible country code, "(0)" is part of the number.
     ("tel:+41 79 (0) 000", "+41790000"),
     ("tel:044 (0) 000", "0440000"),
-    # RFC 3966 parameters are dropped, the number is kept.
-    ("tel:+41790000000;ext=123", "+41790000000"),
-    ("tel:0790000000;phone-context=example.com", "0790000000"),
-    ("tel:+1-555-010-0000;isub=1;postd=pp22", "+15550100000"),
+    # Unknown optional parameters may be ignored (RFC 3966 section 5.4).
+    ("tel:+41790000000;label=office", "+41790000000"),
+    ("tel:+41790000000;label=office%20phone;flag", "+41790000000"),
+    ("callto:+41790000000;label=office", "+41790000000"),
     ("callto:+41790000000?call", "+41790000000"),
     ("  tel:+41790000000\n", "+41790000000"),
     # Plain numbers, as for ``--dial``.
@@ -94,6 +91,48 @@ def test_valid_links_yield_the_dialable_number(link, number):
 def test_anything_else_is_refused(link):
     assert parse_phone_link(link) is None
     assert dial_request(link) == ("", "invalid")
+
+
+@pytest.mark.parametrize("link", [
+    "tel:+41 (0)79 000 00 00", "tel:+41(0)790000000", "tel:+49 (0) 30 0000000",
+    "tel:+41%20(0)79%20000%2000%2000", "tel:+41%28%30%29790000000",
+    "+1 (0) 555 010 0000", "callto:+39(0)66982", "tel:+39 (0)6 6982",
+])
+def test_ambiguous_trunk_prefixes_are_refused_instead_of_rewriting_digits(link):
+    assert dial_request(link) == ("", "invalid")
+
+
+@pytest.mark.parametrize("scheme", ["tel:", "CALLTO://", ""])
+@pytest.mark.parametrize("subscriber", [
+    # A context identifies a numbering plan; it is not a dialable prefix.
+    "7042;phone-context=example.com",
+    "863-1234;phone-context=+1-914-555",
+    "+15550100000;PHONE-CONTEXT=example.com",
+    # Silently dropping an extension or subaddress changes the destination.
+    "+15550100000;ext=123",
+    "+15550100000;EXT=123",
+    "+15550100000;isub=1",
+    "+15550100000;postd=pp22",
+    "+15550100000;m-routing=private",
+    "+15550100000;M-routing=private",
+    "+15550100000;label=office;m-routing=private",
+    "+15550100000?phone-context=example.com",
+    "+15550100000?call;phone-context=example.com",
+    "+15550100000?call&ext=123",
+    "+15550100000;phone-context=example.com?call",
+])
+def test_unsupported_dialing_instructions_are_refused(scheme, subscriber):
+    assert dial_request(scheme + subscriber) == ("", "invalid")
+
+
+@pytest.mark.parametrize("suffix", [
+    ";", ";;label=office", ";label=", ";=office", ";label=office;LABEL=home",
+    ";phone%2Dcontext=example.com", ";%6d-routing=private", ";label=%",
+    ";label=%GG", ";label=office#fragment", ";label=office\nphone",
+    ";label=office?ignored", "?call", "?", "?ignored",
+])
+def test_malformed_parameters_and_tel_queries_are_refused(suffix):
+    assert dial_request("tel:+15550100000" + suffix) == ("", "invalid")
 
 
 @pytest.mark.parametrize("value", [None, 41790000000, b"tel:+41790000000", ["tel:1"]])

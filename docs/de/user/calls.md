@@ -129,11 +129,16 @@ Link lässt sich auch von Hand übergeben, etwa
 `blueferry-qt tel:+41790000000` oder `blueferry-gtk --dial '079 000 00 00'`;
 ein bereits offenes Fenster zeigt dann den Dialog.
 
-Die Nummer wird ohne die Parameter des Links übernommen: Eine Durchwahl wie
-`;ext=12` fällt weg, weil sie sich nicht zuverlässig wählen lässt, und `*`
-und `#` werden wie bei `dial` abgelehnt. In der Schreibweise `+41 (0)79 …`
-fällt die eingeklammerte `0` weg, weil sie mit der Landesvorwahl nicht
-gewählt wird.
+Links mit einem Telefonkontext (`;phone-context=`), einer Durchwahl (`;ext=`),
+einer ISDN-Unteradresse (`;isub=`), einer Nachwahl (`;postd=`) oder einem
+unbekannten Pflichtparameter (`;m-…`) werden abgelehnt. Ohne diese Angaben
+könnte der Anruf ein anderes Ziel erreichen. Unbekannte optionale Parameter
+können ignoriert werden. Query-Strings werden außer dem Suffix `?call` bei
+`callto:`-Links abgelehnt. `*` und `#` werden wie bei `dial` abgelehnt.
+Auch die gedruckte Schreibweise `+41 (0)79 …` wird abgelehnt: Ob die
+eingeklammerte Null gewählt wird, hängt vom Nummerierungsplan ab. Verwende
+stattdessen eine eindeutige internationale Nummer, etwa `+4179…` für die
+Schweiz oder `+3906…` für Rom.
 
 ## Grenzen
 

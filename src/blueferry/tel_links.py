@@ -5,9 +5,10 @@ Desktop applications hand a clicked phone link to the client registered for
 or a PDF, so it is parsed here without I/O and only ever opens a confirmation
 dialog; nothing in this module dials. The result follows the daemon's own
 dial rules (``calls.model.normalize_dial_number``): an optional leading ``+``
-and digits. RFC 3966 parameters such as ``;ext=`` or ``;phone-context=`` are
-dropped because an extension cannot be dialed reliably over HFP; the number
-itself is kept. ``*`` and ``#`` are refused like everywhere else in
+and digits. Links requiring a phone context, extension, subaddress, post-dial
+sequence or unknown mandatory parameter are refused: dropping these could
+change the destination. Unknown optional RFC 3966 parameters may be ignored.
+``*`` and ``#`` are refused like everywhere else in
 BlueFerry: dialed, they form service codes that reconfigure the phone.
 """
 from __future__ import annotations
@@ -24,11 +25,18 @@ from blueferry.events import canonical_address
 # method, before any parsing.
 MAX_PHONE_LINK_CHARS = 1024
 
-_SCHEME_RE = re.compile(r"^(?:tel|callto):(?://)?", re.IGNORECASE)
+_SCHEME_RE = re.compile(r"^(tel|callto):(?://)?", re.IGNORECASE)
+# RFC 3966 section 3: parameter names are ASCII, and reserved characters in
+# values must be percent-encoded. Never decode names into new delimiters.
+_PARAMETER_RE = re.compile(
+    r"([a-zA-Z0-9-]+)(?:=(?:[a-zA-Z0-9\[\]/:&+$_.!~*'()-]|%[0-9a-fA-F]{2})+)?"
+)
+_UNSUPPORTED_PARAMETERS = frozenset({"phone-context", "ext", "isub", "postd"})
 # Visual separators RFC 3966 allows, plus spaces and slashes seen in print.
 _SEPARATORS_RE = re.compile(r"[ \u00a0\-.()/]")
-# "+41 (0)79 …": the bracketed trunk prefix is dialed only within the country.
-_TRUNK_PREFIX_RE = re.compile(r"^(\+[0-9]{1,3})[ \u00a0]*\(0\)")
+# In printed "+CC (0)…" notation, the zero may be a trunk prefix or a
+# significant digit (e.g. Italy). Without numbering-plan data, refuse to guess.
+_AMBIGUOUS_TRUNK_RE = re.compile(r"^\+[0-9]{1,3}[ \u00a0]*\(0\)")
 _NUMBER_RE = re.compile(rf"^\+?[0-9]{{1,{MAX_DIAL_DIGITS}}}$")
 
 DialProblem = Literal["", "invalid", "emergency"]
@@ -44,11 +52,30 @@ def parse_phone_link(value: object) -> str | None:
         text = text[scheme.end():]
     elif ":" in text:
         return None  # another scheme, e.g. sms: or https:
-    # Parameters and a query follow the number; neither can be dialed.
-    text = re.split(r"[;?]", text, maxsplit=1)[0]
+    # Preserve the common callto:number?call form, but never silently discard
+    # an arbitrary query that could contain additional dialing instructions.
+    if "?" in text:
+        text, query = text.split("?", 1)
+        if scheme is None or scheme[1].lower() != "callto" or query != "call":
+            return None
+    text, *parameters = text.split(";")
+    seen = set()
+    for parameter in parameters:
+        match = _PARAMETER_RE.fullmatch(parameter)
+        if match is None or scheme is None:
+            return None
+        name = match[1].lower()
+        # A phone-context identifies a numbering plan, not a prefix we can
+        # prepend (RFC 3966 section 5.1.5). Unknown m-* parameters are required
+        # to be understood before dialing (section 5.4).
+        if name in seen or name in _UNSUPPORTED_PARAMETERS or name.startswith("m-"):
+            return None
+        seen.add(name)
     # Decode exactly once; an encoded ";", a control character or invalid
     # UTF-8 (decoded to U+FFFD) stays invalid.
-    decoded = _TRUNK_PREFIX_RE.sub(r"\1", unquote(text, errors="replace").strip())
+    decoded = unquote(text, errors="replace").strip()
+    if _AMBIGUOUS_TRUNK_RE.match(decoded):
+        return None
     number = _SEPARATORS_RE.sub("", decoded)
     return number if _NUMBER_RE.fullmatch(number) else None
 

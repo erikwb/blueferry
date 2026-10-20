@@ -121,10 +121,15 @@ A link can also be passed by hand, for example
 `blueferry-qt tel:+41790000000` or `blueferry-gtk --dial '079 000 00 00'`;
 an already running window shows the dialog.
 
-The number is taken from the link without its parameters: an extension such
-as `;ext=12` is dropped, because it can't be dialed reliably, and `*` and `#`
-are refused as with `dial`. In the notation `+41 (0)79 …` the bracketed
-trunk `0` is dropped, as it is not dialed together with the country code.
+Links requiring a phone context (`;phone-context=`), extension (`;ext=`),
+ISDN subaddress (`;isub=`), post-dial sequence (`;postd=`), or an unknown
+mandatory parameter (`;m-…`) are refused. Dropping these could call a
+different destination. Unknown optional parameters may be ignored. Queries
+are refused except for the `?call` suffix on `callto:` links.
+`*` and `#` are refused as with `dial`.
+Printed notation such as `+41 (0)79 …` is also refused: whether the bracketed
+zero is dialed depends on the numbering plan. Use an unambiguous international
+number instead, such as `+4179…` for Switzerland or `+3906…` for Rome.
 
 ## Limits
 

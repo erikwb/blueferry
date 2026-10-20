@@ -50,6 +50,7 @@ class _AlertDialog:
         self.responses = []
         self.default = self.close = None
         self.handlers = []
+        self.closed = False
         self.shown.append(self)
 
     def add_response(self, response_id, _label):
@@ -70,6 +71,10 @@ class _AlertDialog:
     def present(self, _parent):
         pass
 
+    def force_close(self):
+        self.closed = True
+        self.respond(self.close)
+
     def respond(self, response_id):
         for handler in self.handlers:
             handler(self, response_id)
@@ -88,6 +93,8 @@ def window(monkeypatch):
         requests["settings"] += 1
 
     win = SimpleNamespace(
+        _dial_request_serial=0,
+        _dial_dialog=None,
         _client=SimpleNamespace(
             get_status_async=lambda ok, err: requests["status"].append((ok, err)),
             dial_async=lambda number, ok, err: requests["dial"].append((number, ok, err)),
@@ -105,7 +112,7 @@ def window(monkeypatch):
 
 def test_ready_calls_dial_only_after_the_call_response(window):
     win, requests = window
-    win.request_dial("tel:+1-555-010-0000;ext=9")
+    win.request_dial("tel:+1-555-010-0000")
     assert requests["dial"] == [] and _AlertDialog.shown == []
     requests["status"].pop()[0](READY)
     dialog = _AlertDialog.shown[-1]
@@ -115,6 +122,12 @@ def test_ready_calls_dial_only_after_the_call_response(window):
     assert "Test Contact" in dialog.body and "+15550100000" in dialog.body
     dialog.respond("cancel")
     assert requests["dial"] == []
+    # A cancelled dialog cannot be reused; open a new confirmation.
+    dialog.respond("call")
+    assert requests["dial"] == []
+    win.request_dial("tel:+1-555-010-0000")
+    requests["status"].pop()[0](READY)
+    dialog = _AlertDialog.shown[-1]
     dialog.respond("call")
     number, ok, err = requests["dial"].pop()
     assert number == "+15550100000"
@@ -138,7 +151,54 @@ def test_disabled_or_unreachable_calls_offer_the_settings(window, reply):
     assert requests["settings"] == 1 and requests["dial"] == []
 
 
-@pytest.mark.parametrize("link", ["tel:*21#", "tel:112", "https://example.com"])
+@pytest.mark.parametrize("stale_reply", ["success", "error"])
+def test_a_late_status_reply_cannot_reopen_an_older_phone_link(window, stale_reply):
+    win, requests = window
+    win.request_dial("tel:+15550100000")
+    old_ok, old_err = requests["status"].pop()
+    win.request_dial("tel:+15550100001")
+    requests["status"].pop()[0](READY)
+    if stale_reply == "success":
+        old_ok(READY)
+    else:
+        old_err("no backend")
+    assert len(_AlertDialog.shown) == 1
+    dialog = _AlertDialog.shown[-1]
+    assert "+15550100001" in dialog.body
+    dialog.respond("call")
+    assert [request[0] for request in requests["dial"]] == ["+15550100001"]
+
+
+def test_an_invalid_new_link_also_supersedes_pending_status(window):
+    win, requests = window
+    win.request_dial("tel:+15550100000")
+    old_ok, _old_err = requests["status"].pop()
+    win.request_dial("tel:7042;phone-context=example.com")
+    old_ok(READY)
+    assert len(_AlertDialog.shown) == 1
+    assert _AlertDialog.shown[-1].responses == ["close"]
+    assert requests["dial"] == []
+
+
+def test_a_new_phone_link_closes_the_old_dialog_and_ignores_its_response(window):
+    win, requests = window
+    win.request_dial("tel:+15550100000")
+    requests["status"].pop()[0](READY)
+    old_dialog = _AlertDialog.shown[-1]
+    win.request_dial("tel:+15550100001")
+    assert old_dialog.closed
+    old_dialog.respond("call")
+    assert requests["dial"] == []
+    requests["status"].pop()[0](READY)
+    _AlertDialog.shown[-1].respond("call")
+    assert [request[0] for request in requests["dial"]] == ["+15550100001"]
+
+
+@pytest.mark.parametrize("link", [
+    "tel:*21#", "tel:112", "https://example.com",
+    "tel:7042;phone-context=example.com", "tel:+15550100000;ext=9",
+    "tel:+15550100000;m-routing=private",
+])
 def test_invalid_and_emergency_links_only_explain(window, link):
     win, requests = window
     win.request_dial(link)
