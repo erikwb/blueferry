@@ -17,6 +17,7 @@ from blueferry.client_activation import TRAY_BUS_NAME, record_client_use
 from blueferry.qt.activation import ClientActivation
 from blueferry.qt.avatars import AVATAR_PROVIDER, AvatarImageProvider
 from blueferry.qt.controller import BridgeController
+from blueferry.tel_links import phone_link_argument
 
 APP_ID = "io.weirdware.BlueFerry.Qt"
 APP_ICON = "io.weirdware.BlueFerry"
@@ -322,8 +323,13 @@ def _follow_standalone_tray(application: QApplication, tray: QSystemTrayIcon) ->
 def main() -> int:
     parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     parser.add_argument("--message", default="")
+    # A phone link or number to confirm; desktop files pass a clicked
+    # tel:/callto: link as a bare argument (%u) instead.
+    parser.add_argument("--dial", default="")
     parser.add_argument("--diagnose-style", action="store_true")
     args, qt_args = parser.parse_known_args(sys.argv[1:])
+    link, qt_args = phone_link_argument(qt_args)
+    dial_link = args.dial or link
     if args.diagnose_style:
         print(_select_quick_controls_style(qt_args).describe())
         return 0
@@ -344,6 +350,8 @@ def main() -> int:
     activation = ClientActivation(application)
     if not activation.primary:
         quick_style.release_environment()
+        if dial_link:
+            return 0 if activation.forward_dial(dial_link, token) else 1
         return 0 if activation.forward(args.message, token) else 1
 
     controller = BridgeController(parent=application)
@@ -373,11 +381,20 @@ def main() -> int:
         else:
             present_message("")
 
+    def activate_dial(dial: str, activation_token: str) -> None:
+        # Only asks for confirmation; BridgeController never dials a link.
+        controller.requestDialLink(dial)
+        _present_window(window, activation_token)
+
     activation.requested.connect(activate_message)
+    activation.dialRequested.connect(activate_dial)
     controller.messageOpenRequested.connect(present_message)
     window.activeChanged.connect(lambda: record_client_use("qt") if window.isActive() else None)
     def ready() -> None:
-        activate_message(args.message, token)
+        if dial_link:
+            activate_dial(dial_link, token)
+        else:
+            activate_message(args.message, token)
         activation.ready()
 
     QTimer.singleShot(0, ready)

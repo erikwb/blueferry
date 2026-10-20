@@ -7,6 +7,7 @@ import subprocess
 import sys
 import textwrap
 import types
+from typing import ClassVar
 
 import pytest
 
@@ -448,3 +449,53 @@ def test_own_tray_icon_steps_aside_while_the_standalone_tray_runs():
     app_module._show_own_tray(application, tray, False)
     assert tray.calls == [("visible", False), ("visible", True)]
     assert application.calls == [("quit", True), ("quit", False)]
+
+
+class _SecondaryActivation:
+    """A Qt client that finds another instance owning the activation name."""
+
+    primary = False
+    calls: ClassVar[list] = []
+
+    def __init__(self, _parent):
+        pass
+
+    def forward(self, handle, token):
+        self.calls.append(("message", handle, token))
+        return True
+
+    def forward_dial(self, link, token):
+        self.calls.append(("dial", link, token))
+        return True
+
+
+@pytest.mark.parametrize(("argv", "expected"), [
+    # A desktop file passes the clicked link as a bare %u argument.
+    (["tel:+41%2079%20000%2000%2000"], ("dial", "tel:+41%2079%20000%2000%2000", "token")),
+    (["-platform", "offscreen", "CALLTO:+15550100000"], ("dial", "CALLTO:+15550100000", "token")),
+    (["--dial", "079 000 00 00"], ("dial", "079 000 00 00", "token")),
+    (["--dial=tel:+15550100000", "tel:+15550100001"], ("dial", "tel:+15550100000", "token")),
+    # Launching without a link is unchanged, including toolkit arguments.
+    ([], ("message", "", "token")),
+    (["--message=handle-1", "-platform", "wayland"], ("message", "handle-1", "token")),
+])
+def test_second_instance_forwards_phone_links_to_the_running_client(monkeypatch, argv, expected):
+    created = []
+
+    class Application:
+        def __init__(self, arguments):
+            created.append(arguments)
+
+        def __getattr__(self, _name):
+            return lambda *_args, **_kwargs: None
+
+    _SecondaryActivation.calls = []
+    monkeypatch.setattr(app_module, "QApplication", Application)
+    monkeypatch.setattr(app_module, "ClientActivation", _SecondaryActivation)
+    monkeypatch.setattr(app_module, "_install_translation", lambda _application: None)
+    monkeypatch.setattr(sys, "argv", ["blueferry-qt", *argv])
+    monkeypatch.setenv("XDG_ACTIVATION_TOKEN", "token")
+    assert app_module.main() == 0
+    assert _SecondaryActivation.calls == [expected]
+    # The link never reaches Qt's own argument parsing.
+    assert not any(argument.lower().startswith(("tel:", "callto:")) for argument in created[0])

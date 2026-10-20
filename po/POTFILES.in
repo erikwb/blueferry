@@ -26,6 +26,7 @@ src/blueferry/qt/qml/CallHistorySettings.qml
 src/blueferry/qt/qml/NowPlayingBar.qml
 src/blueferry/qt/qml/MediaControlSettings.qml
 src/blueferry/qt/qml/CallsDialog.qml
+src/blueferry/qt/qml/DialLinkDialog.qml
 src/blueferry/qt/qml/ContactPhotoSettings.qml
 src/blueferry/qt/qml/OtpAutocopySettings.qml
 src/blueferry/qt/qml/PhoneCallsSettings.qml

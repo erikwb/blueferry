@@ -1573,3 +1573,32 @@ def test_mpris_setting_is_forwarded_and_merged_into_status(monkeypatch):
     )
     controller.setMprisPlayer(True)
     assert controller.status["media_mpris_enabled"] is True
+
+
+def test_phone_links_only_ask_for_confirmation():
+    class DialBackend(_Backend):
+        def __init__(self):
+            super().__init__()
+            self.dialed = []
+
+        def dial(self, number):
+            self.dialed.append(number)
+            return "voicecall01"
+
+    backend = DialBackend()
+    controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+    _apply_threads(controller, [Thread(
+        key="address:phone:15550100000", name="Test Contact", is_group=False,
+        recipients=("+15550100000",), reply_ready=True, messages=(), last_ts="",
+    )])
+    requested = []
+    controller.dialLinkRequested.connect(lambda number, problem: requested.append((number, problem)))
+
+    controller.requestDialLink("tel:+1-555-010-0000;ext=7")
+    controller.requestDialLink("tel:*21#")
+    controller.requestDialLink("callto:112")
+    controller._pool.waitForDone(1000)
+    assert requested == [("+15550100000", ""), ("", "invalid"), ("112", "emergency")]
+    assert backend.dialed == []
+    assert controller.contactNameForNumber("+15550100000") == "Test Contact"
+    assert controller.contactNameForNumber("+15550100009") == ""
