@@ -504,10 +504,9 @@ class ConversationsPage(Gtk.Box):
                         ellipsize=_ELLIPSIZE_END,
                     )
                 )
-                display_address = address if "@" in address else f"+{address}"
                 item.append(
                     Gtk.Label(
-                        label=display_address,
+                        label=address,
                         xalign=0,
                         ellipsize=_ELLIPSIZE_END,
                         css_classes=["dim-label", "caption"],

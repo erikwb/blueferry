@@ -37,6 +37,7 @@ from blueferry.limits import (
 )
 from blueferry.obex.sessions import SessionManager
 from blueferry.obex.transfer import wait_for_transfer
+from blueferry.phone_numbers import address_identities
 from blueferry.private_files import runtime_private_directory
 from blueferry.vcard import iter_bounded_lines, iter_vcard_bodies, iter_vcard_cards
 
@@ -83,7 +84,7 @@ def _parse_card(body: str) -> tuple[str | None, list[str], list[str]] | None:
                 continue
             norm = normalize_phone(val)
             if norm and len(phones) < MAX_CONTACT_ADDRESSES_PER_CARD:
-                phones.append(norm)
+                phones.append(("+" if val.strip().startswith("+") else "") + norm)
         elif line.upper().startswith("EMAIL"):
             _, _, value = line.partition(":")
             value = value.strip()
@@ -172,20 +173,11 @@ class PhotoStats:
 
 
 def _identities(phones: Iterable[str], emails: Iterable[str]) -> list[str]:
-    """Canonical identities of a record's addresses, with both NANP forms."""
+    """Canonical identities, including forms in the configured numbering plan."""
     out: list[str] = []
     for address in (*phones, *emails):
-        identity = canonical_address(address)
-        if identity is None:
-            continue
-        out.append(identity)
-        if identity.startswith("phone:"):
-            number = identity.removeprefix("phone:")
-            if len(number) == 10:
-                out.append(f"phone:1{number}")
-            elif len(number) == 11 and number.startswith("1"):
-                out.append(f"phone:{number[1:]}")
-    return out
+        out.extend(address_identities(address, config.PHONE_REGION))
+    return list(dict.fromkeys(out))
 
 
 def _duplicate_owners(records: Sequence[ContactRecord]) -> list[int]:
@@ -210,8 +202,8 @@ def _unique_addresses(
     """Map record index to the address identities only that record owns.
 
     Count record ownership, not names: two people can share a name or
-    number. A 10-digit and an 11-digit NANP form of one number are the same
-    identity. Reply routing and photos both rely on this rule.
+    number. National and international forms of one number are the same
+    identity in the configured region. Reply routing and photos rely on this.
     """
     owners: dict[str, set[int]] = {}
     for index, (_name, phones, emails) in enumerate(records):
@@ -567,8 +559,12 @@ class ContactsResolver:
         photos = [photo for _record, photo in loaded]
         for name, phones, emails in self._records:
             if name:
-                for address in (*phones, *emails):
+                for address in _identities(phones, emails):
                     self._mem.setdefault(address, set()).add(name)
+        # Generated aliases must not inflate the number of cached addresses.
+        self._address_count = len({canonical_address(address)
+                                   for name, phones, emails in self._records if name
+                                   for address in (*phones, *emails)})
 
         self._thread_addresses: dict[str, tuple[str, ...]] = {}
         for addresses in _unique_addresses(self._records).values():
@@ -609,6 +605,7 @@ class ContactsResolver:
         """Install a worker-built cache while keeping this resolver's live repository."""
         self._mem = prepared._mem
         self._records = prepared._records
+        self._address_count = prepared._address_count
         self._thread_addresses = prepared._thread_addresses
         self._photo_refs = prepared._photo_refs
         # Content-free: lets clients drop cached avatars after any reload.
@@ -618,7 +615,7 @@ class ContactsResolver:
         """Replace the cache only after a successful read; propagate failures."""
         prepared = ContactsResolver(storage=self.storage, strict=True, photos=self._photos)
         self.adopt_cache(prepared)
-        return len(self._mem)
+        return self.count()
 
     def find_by_name(self, query: str) -> list[tuple[str, str]]:
         """Reverse lookup — name substring → (display_name, destination).
@@ -652,32 +649,13 @@ class ContactsResolver:
         return self._records[start:start + max(0, int(limit))]
 
     def resolve(self, raw: str | None) -> str | None:
-        def unique_name(address: str) -> str | None:
-            names = self._mem.get(address, set())
-            return next(iter(names)) if len(names) == 1 else None
-
-        value = (raw or "").strip()
-        if is_email_shaped(value):
-            return unique_name(value.casefold())
-        norm = normalize_phone(raw)
-        if not norm:
-            return None
-        if norm in self._mem:
-            return unique_name(norm)
-        # NANP numbers are commonly stored both with and without country code
-        # 1. Never generalize this to suffix matching: a longer international
-        # number can share its last ten digits with an unrelated NANP contact.
-        alternate = (
-            f"1{norm}"
-            if len(norm) == 10
-            else norm[1:]
-            if len(norm) == 11 and norm.startswith("1")
-            else ""
-        )
-        return unique_name(alternate) if alternate else None
+        names: set[str] = set()
+        for identity in address_identities(raw, config.PHONE_REGION):
+            names.update(self._mem.get(identity, ()))
+        return next(iter(names)) if len(names) == 1 else None
 
     def count(self) -> int:
-        return len(self._mem)
+        return self._address_count
 
     def photo_ref(self, raw: str | None) -> int | None:
         """Stored photo id for the one record that owns ``raw``, if any."""

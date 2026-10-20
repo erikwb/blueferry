@@ -17,6 +17,17 @@ Use **Sync Contacts** in the client or run `blueferry contacts-sync`. Make sure
 **Sync Contacts** (German: **Kontakte synchronisieren**) is on in the iPhone's
 Bluetooth settings for the computer.
 
+If a local number such as Australian `0412345678` does not match a reply
+from `+61412345678`, check the numbering region. BlueFerry uses the territory
+in `LC_ALL`, then `LC_TELEPHONE`, then `LANG`. To override it, add
+`BLUEFERRY_PHONE_REGION=AU` (a two-letter country code) to
+`~/.config/blueferry/local.env`, then run `systemctl --user restart blueferry`.
+With no recognized region, BlueFerry does not guess a country for local numbers.
+
+If contact selections lost their `+` prefix in an earlier version, run
+`blueferry contacts-sync` after upgrading. The cache needs a fresh copy from
+the iPhone to recover the original international prefixes.
+
 ## The switches don't appear on the iPhone
 
 The **Show Message Notifications** and **Sync Contacts** switches can take a

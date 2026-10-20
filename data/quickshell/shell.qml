@@ -1505,9 +1505,7 @@ ShellRoot {
                   font.pixelSize: theme.baseFontSize
                 }
                 Text {
-                  text: newContactDelegate.modelData.address.indexOf("@") >= 0
-                    ? newContactDelegate.modelData.address
-                    : "+" + newContactDelegate.modelData.address
+                  text: newContactDelegate.modelData.address
                   textFormat: Text.PlainText
                   color: theme.muted
                   font.family: theme.fontFamily

@@ -7,6 +7,27 @@ from blueferry import cli_messages
 from blueferry.models import EventRecord
 
 
+@pytest.mark.parametrize("address", ["+12025550123", "0412345678", "friend@example.com"])
+@pytest.mark.parametrize("multiple", [False, True])
+def test_contact_message_preserves_the_saved_destination(monkeypatch, address, multiple):
+    sent = []
+
+    class Backend:
+        def find_contacts(self, _query):
+            matches = [("Friend", address)]
+            return matches + [("Other Friend", "+61423456789")] if multiple else matches
+
+        def send(self, destination, body):
+            sent.append((destination, body))
+            return "/fake/transfer"
+
+    monkeypatch.setattr(cli_messages, "BackendClient", Backend)
+    monkeypatch.setattr(cli_messages, "setup_logging", lambda _verbose: None)
+    monkeypatch.setattr(cli_messages.typer, "prompt", lambda *_a, **_k: 1)
+    cli_messages.sms_send("Friend", "hello", verbose=False)
+    assert sent == [(address, "hello")]
+
+
 def test_email_only_contact_filter_matches_live_sender(monkeypatch) -> None:
     class _Backend:
         @staticmethod
