@@ -779,6 +779,9 @@ def settings_window(qml_engine):
             signal messageSendSucceeded(string recipient, string body)
             signal threadSendSucceeded(string key, string body)
             signal groupConfirmationRequested(string key, string body, string recipients)
+            signal dialLinkRequested(string number, string problem)
+            property var contactNames: ({})
+            function contactNameForNumber(number) { return contactNames[number] || ""; }
             function record(method, args) { calls = calls.concat([{method: method, args: args}]); }
             function refresh() { record("refresh", []); }
             function findContacts(query) { record("findContacts", [query]); }
@@ -1017,6 +1020,170 @@ def test_optional_calls_dialog_lists_calls_and_dials_through_the_bridge(
     }
     assert QMetaObject.invokeMethod(dialog, "close")
     QGuiApplication.processEvents()
+
+
+def _dial_dialog(qml_engine, window):
+    dialog = _settings_object(window, "dialLinkDialog")
+    qml_engine.globalObject().setProperty("dialLinkDialog", qml_engine.newQObject(dialog))
+    text = _settings_object(window, "dialLinkText")
+    qml_engine.globalObject().setProperty("dialLinkText", qml_engine.newQObject(text))
+    return dialog, text
+
+
+def _visible_dial_actions(qml_engine):
+    return _evaluate(qml_engine, '''dialLinkDialog.customFooterActions
+        .filter(action => action.visible).map(action => action.text)''')
+
+
+def _bridge_methods(qml_engine):
+    return _evaluate(qml_engine, "testBridge.calls.map(call => call.method)")
+
+
+def _wait_closed(dialog):
+    for _ in range(100):
+        if not dialog.property("visible"):
+            return
+        QTest.qWait(20)
+    raise AssertionError("dialog did not close")
+
+
+def _close_dial_dialog(dialog):
+    assert QMetaObject.invokeMethod(dialog, "close")
+    _wait_closed(dialog)
+
+
+def test_phone_link_dialog_asks_before_dialing_and_explains_disabled_calls(
+    qml_engine, settings_window,
+):
+    window, bridge = settings_window
+    dialog, text = _dial_dialog(qml_engine, window)
+    number_label = _settings_object(window, "dialLinkNumber")
+
+    # Calls off: say so and offer the settings instead of a Call button.
+    bridge.setProperty("status", {"daemon": True, "calls_enabled": False})
+    _evaluate(qml_engine, "testBridge.dialLinkRequested('+15550100000', '')")
+    QGuiApplication.processEvents()
+    assert dialog.property("visible") is True
+    assert dialog.property("canCall") is False
+    assert "turned off" in text.property("text")
+    assert "+15550100000" in text.property("text")
+    assert _visible_dial_actions(qml_engine) == ["Open iPhone Settings"]
+    _evaluate(qml_engine, "dialLinkDialog.customFooterActions[0].trigger()")
+    QGuiApplication.processEvents()
+    assert _evaluate(qml_engine, "testWindow.iphoneSettingsPage !== null") is True
+    _evaluate(qml_engine, "testWindow.closePhoneSettings()")
+    _wait_closed(dialog)
+
+    # Calls ready: a known contact is named, the number is shown, and only
+    # the Call action dials.
+    bridge.setProperty("contactNames", {"+15550100000": "<b>Test Contact</b>"})
+    bridge.setProperty("status", {"daemon": True, "calls_enabled": True, "calls_state": "ready"})
+    _evaluate(qml_engine, "testBridge.dialLinkRequested('+15550100000', '')")
+    QGuiApplication.processEvents()
+    assert dialog.property("canCall") is True
+    assert dialog.property("title") == "Place Call?"
+    assert text.property("text") == "Call <b>Test Contact</b> from your iPhone?"
+    assert _evaluate(qml_engine, "dialLinkText.textFormat") == 0  # Text.PlainText
+    assert number_label.property("visible") is True
+    assert number_label.property("text") == "+15550100000"
+    assert _visible_dial_actions(qml_engine) == ["Call"]
+    assert "dialCall" not in _bridge_methods(qml_engine)
+    _evaluate(qml_engine, "dialLinkDialog.customFooterActions[1].trigger()")
+    assert _evaluate(qml_engine, "testBridge.calls[testBridge.calls.length - 1]") == {
+        "method": "dialCall", "args": ["+15550100000"],
+    }
+    _wait_closed(dialog)
+
+    # Invalid and emergency links never offer a call.
+    for number, problem, expected in (
+        ("", "invalid", "does not contain"), ("112", "emergency", "Emergency"),
+    ):
+        _evaluate(qml_engine, f"testBridge.dialLinkRequested('{number}', '{problem}')")
+        QGuiApplication.processEvents()
+        assert expected in text.property("text")
+        assert _visible_dial_actions(qml_engine) == []
+        assert dialog.property("canCall") is False
+        _close_dial_dialog(dialog)
+    assert _bridge_methods(qml_engine).count("dialCall") == 1
+
+
+def test_phone_link_dialog_waits_for_the_first_status(qml_engine, settings_window):
+    window, bridge = settings_window
+    dialog, text = _dial_dialog(qml_engine, window)
+    # A link that started the client arrives before the status: no flash of
+    # "turned off" with a settings button that then becomes Call.
+    _evaluate(qml_engine, "testBridge.dialLinkRequested('+15550100000', '')")
+    QGuiApplication.processEvents()
+    assert dialog.property("visible") is False
+    bridge.setProperty("status", {"daemon": True, "calls_enabled": True, "calls_state": "ready"})
+    QGuiApplication.processEvents()
+    assert dialog.property("visible") is True
+    assert _visible_dial_actions(qml_engine) == ["Call"]
+    _close_dial_dialog(dialog)
+
+    # A failed status read still answers, as unreachable.
+    bridge.setProperty("status", {})
+    _evaluate(qml_engine, "testBridge.dialLinkRequested('+15550100000', '')")
+    QGuiApplication.processEvents()
+    assert dialog.property("visible") is False
+    bridge.setProperty("status", {"daemon": False})
+    QGuiApplication.processEvents()
+    assert "not reachable" in text.property("text")
+    assert _visible_dial_actions(qml_engine) == ["Open iPhone Settings"]
+    _close_dial_dialog(dialog)
+
+
+def test_phone_link_dialog_never_turns_a_button_into_call(qml_engine, settings_window):
+    window, bridge = settings_window
+    dialog, text = _dial_dialog(qml_engine, window)
+    bridge.setProperty("status", {"daemon": True, "calls_enabled": True, "calls_state": "connecting"})
+    _evaluate(qml_engine, "testBridge.dialLinkRequested('+15550100000', '')")
+    QGuiApplication.processEvents()
+    assert "still connecting" in text.property("text")
+    assert _visible_dial_actions(qml_engine) == ["Open iPhone Settings"]
+    # Calls become ready while the dialog is open: the offer stays as shown.
+    bridge.setProperty("status", {"daemon": True, "calls_enabled": True, "calls_state": "ready"})
+    QGuiApplication.processEvents()
+    assert _visible_dial_actions(qml_engine) == ["Open iPhone Settings"]
+    assert dialog.property("canCall") is False
+    _close_dial_dialog(dialog)
+
+    # The reverse only takes Call away.
+    _evaluate(qml_engine, "testBridge.dialLinkRequested('+15550100000', '')")
+    QGuiApplication.processEvents()
+    assert _visible_dial_actions(qml_engine) == ["Call"]
+    bridge.setProperty("status", {"daemon": True, "calls_enabled": True, "calls_state": "bluez_conflict"})
+    QGuiApplication.processEvents()
+    assert _visible_dial_actions(qml_engine) == []
+    assert "(bluez_conflict)" in text.property("text")
+    # A stale trigger cannot dial either.
+    _evaluate(qml_engine, "dialLinkDialog.customFooterActions[1].trigger()")
+    assert "dialCall" not in _bridge_methods(qml_engine)
+    _wait_closed(dialog)
+
+
+def test_a_second_phone_link_never_replaces_the_number_in_an_open_dialog(
+    qml_engine, settings_window,
+):
+    window, bridge = settings_window
+    dialog, text = _dial_dialog(qml_engine, window)
+    bridge.setProperty("status", {"daemon": True, "calls_enabled": True, "calls_state": "ready"})
+    _evaluate(qml_engine, "testBridge.dialLinkRequested('+15550100000', '')")
+    QGuiApplication.processEvents()
+    assert dialog.property("number") == "+15550100000"
+    # Any session process can send a link; the open dialog is closed first.
+    _evaluate(qml_engine, "testBridge.dialLinkRequested('+15550100001', '')")
+    QGuiApplication.processEvents()
+    assert dialog.property("number") == "+15550100000"
+    for _ in range(100):
+        if dialog.property("number") == "+15550100001" and dialog.property("visible"):
+            break
+        QTest.qWait(20)
+    assert dialog.property("number") == "+15550100001"
+    assert "+15550100001" in text.property("text")
+    assert dialog.property("visible") is True
+    assert "dialCall" not in _bridge_methods(qml_engine)
+    _close_dial_dialog(dialog)
 
 
 def test_optional_phone_status_indicator_appears_only_with_known_values(
