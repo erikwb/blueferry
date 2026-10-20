@@ -149,21 +149,32 @@ def test_foreign_numbers_do_not_acquire_local_aliases(region):
         assert address_identities(international, region) == (canonical_address(international),)
 
 
-def test_alphanumeric_sender_cannot_join_a_short_national_number(monkeypatch, resolver_for):
-    monkeypatch.setattr(config, "PHONE_REGION", "NU")
-    resolver = resolver_for([("Person", ["+6837467"], [])])
-    # In Niue, 7467 is a full national number. It is also SHOP on a keypad.
+@pytest.mark.parametrize("region, number, digits, sender", [
+    ("NU", "+6837467", "7467", "Shop"),
+    ("DK", "+4532232665", "32232665", "Facebook"),
+])
+@pytest.mark.parametrize("national", [False, True])
+def test_alphanumeric_sender_cannot_join_a_national_number(
+    monkeypatch, resolver_for, region, number, digits, sender, national,
+):
+    monkeypatch.setattr(config, "PHONE_REGION", region)
+    resolver = resolver_for([("Person", [number], [])])
+    address = digits if national else number
     events = [
-        _message("+6837467", 0),
-        _message("7467", 1, sender_alphanumeric="Shop"),
+        _message(address, 0),
+        _message(digits, 1, sender_alphanumeric=sender),
     ]
     service, person = build_threads(events, resolver)
-    assert service["name"] == "Shop"
-    assert service["key"] == "address:short:7467"
+    assert service["name"] == sender
+    assert service["key"] == f"alphanumeric:{canonical_address(digits)}"
     assert service["aliases"] == []
     assert not service["reply_ready"]
     assert person["name"] == "Person"
     assert person["reply_ready"]
-    assert person["recipients"] == ["+6837467"]
+    assert person["recipients"] == [address]
+    assert len(service["messages"]) == len(person["messages"]) == 1
     assert conversation_keys(service).isdisjoint(conversation_keys(person))
     assert build_threads(list(reversed(events)), resolver) == [service, person]
+    [service_alone] = build_threads(events[1:], resolver)
+    assert service_alone["key"] == service["key"]
+    assert service_alone["aliases"] == []
