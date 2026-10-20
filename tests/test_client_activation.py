@@ -206,9 +206,72 @@ def test_real_client_dbus_activation(tmp_path, monkeypatch, key):
         process.communicate(timeout=5)
 
 
+@pytest.mark.private_dbus
+@pytest.mark.parametrize("key", ["gtk", "qt", "quickshell"])
+def test_real_client_dial_activation_only_requests_confirmation(tmp_path, key):
+    """``Dial`` is open to every session process: it validates and only asks."""
+    if key == "qt":
+        pytest.importorskip("PySide6")
+    environment = dict(os.environ, XDG_CONFIG_HOME=str(tmp_path))
+    process = subprocess.Popen(
+        [sys.executable, str(Path(__file__).resolve()), f"{key}-dial"], env=environment,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0,
+    )
+
+    def read_line():
+        ready, _, _ = select.select([process.stdout], [], [], 5)
+        assert ready, "client activation timed out"
+        line = process.stdout.readline()
+        assert line, process.stderr.read()
+        return line.decode().strip()
+
+    client = next(client for client in activation.CLIENTS if client.key == key)
+    bus = dbus.SessionBus(private=True)
+    try:
+        if key == "qt":
+            # Requests that arrive while QML loads wait for the window.
+            assert json.loads(read_line()) == ["dial", "tel:early", "early-token"]
+        assert read_line() == "ready"
+        service = bus.get_object(client.bus_name, activation.ACTIVATION_PATH, introspect=False)
+
+        def dial(link, token=""):
+            service.Dial(link, token, dbus_interface=activation.ACTIVATION_INTERFACE, timeout=3)
+
+        if key == "quickshell":
+            with pytest.raises(dbus.DBusException, match="cannot place calls"):
+                dial("tel:+15550100000")
+            return
+        oversized = "tel:" + "1" * 1021
+        if key == "gtk":
+            for link, token in (("", ""), (oversized, ""), ("tel:1", "t" * 4097)):
+                with pytest.raises(dbus.DBusException, match="invalid activation request"):
+                    dial(link, token)
+        else:
+            # Qt ignores invalid requests without an error reply.
+            dial("")
+            dial(oversized)
+        # The raw link is passed on; the window parses it again and asks.
+        dial("tel:+1 555 010 0000;ext=1", "focus-token")
+        assert json.loads(read_line()) == ["dial", "tel:+1 555 010 0000;ext=1", "focus-token"]
+        if key == "qt":
+            result = subprocess.run(
+                [sys.executable, str(Path(__file__).resolve()), "qt-dial-forward"],
+                env=environment, capture_output=True, text=True, timeout=10,
+            )
+            assert result.returncode == 0, result.stdout + result.stderr
+            assert json.loads(read_line()) == ["dial", "callto:+15550100001", "second-token"]
+    finally:
+        bus.close()
+        process.terminate()
+        process.communicate(timeout=5)
+
+
 def _serve(key):
     def received(handle, token):
         print(json.dumps([handle, token]), flush=True)
+
+    def dial_received(link, token):
+        print(json.dumps(["dial", link, token]), flush=True)
 
     if key.startswith("qt"):
         from PySide6.QtCore import QCoreApplication
@@ -217,6 +280,19 @@ def _serve(key):
 
         app = QCoreApplication([])
         service = ClientActivation(app)
+        if key == "qt-dial-forward":
+            assert not service.primary
+            assert service.forward_dial("callto:+15550100001", "second-token")
+            return
+        if key == "qt-dial":
+            assert service.primary
+            service.Dial("tel:early", "early-token")
+            service.dialRequested.connect(dial_received)
+            service.requested.connect(received)
+            service.ready()
+            print("ready", flush=True)
+            app.exec()
+            return
         if key == "qt-forward":
             assert not service.primary
             assert service.forward("second", "second-token")
@@ -248,6 +324,10 @@ def _serve(key):
 
             name = dbus.service.BusName("org.freedesktop.systemd1", get_session_bus())
             service = Manager(name, "/org/freedesktop/systemd1")
+        elif key == "gtk-dial":
+            service = ClientActivation("gtk", received, dial_received)
+        elif key == "quickshell-dial":
+            service = ClientActivation("quickshell", received)
         else:
             service = ClientActivation(key, received)
         print("ready", flush=True)
