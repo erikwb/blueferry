@@ -3948,6 +3948,12 @@ def test_quickshell_avatar_renders_a_photo_and_preserves_group_fallback(qml_engi
         QTest.qWait(10)
     assert avatar.property("photoReady") is True
     avatar.setProperty("thread", {
+        "name": "Service", "is_group": False, "reply_ready": False,
+        "recipients": ["alice@example.com"],
+    })
+    QGuiApplication.processEvents()
+    assert avatar.property("photoSource") == ""
+    avatar.setProperty("thread", {
         "name": "Crew", "is_group": True, "recipients": ["alice@example.com"],
     })
     QGuiApplication.processEvents()

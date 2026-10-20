@@ -714,7 +714,8 @@ class ConversationsPage(Gtk.Box):
             image.clear()
             return
         address = (
-            thread.recipients[0] if not thread.is_group and len(thread.recipients) == 1 else ""
+            thread.recipients[0]
+            if thread.reply_ready and not thread.is_group and len(thread.recipients) == 1 else ""
         )
         texture = self._avatars.get(address)
         if texture is not None:

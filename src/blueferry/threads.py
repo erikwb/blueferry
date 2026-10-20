@@ -177,7 +177,7 @@ def thread_key(event: dict, resolver=None) -> str | None:
     if event.get("group_key"):
         return str(event["group_key"])
     address = safe_event_address(event)
-    addresses = _contact_addresses(resolver, address)
+    addresses = () if event.get("sender_alphanumeric") else _contact_addresses(resolver, address)
     identity = addresses[0] if addresses else canonical_address(address)
     return f"address:{identity}" if identity else None
 
@@ -210,7 +210,7 @@ def build_threads(events: list[dict], resolver=None) -> list[dict]:
                 "key": key,
                 "aliases": list(event.get("group_aliases", [])) if is_group else [
                     f"address:{value}" for value in _contact_addresses(resolver, address)
-                ],
+                ] if not event.get("sender_alphanumeric") else [],
                 "name": _thread_name(event, address, resolver),
                 "is_group": is_group,
                 "members": [
@@ -285,6 +285,14 @@ def build_threads(events: list[dict], resolver=None) -> list[dict]:
             if not name.islower() or name.casefold() != thread["name"].casefold():
                 thread["name"] = name
 
+        if not is_group and thread["aliases"]:
+            # A newly recognized dialling spelling may have been a separate
+            # conversation before contacts loaded. Keep its old key usable for
+            # stars, selection and actions, regardless of event ordering.
+            identity = canonical_address(address)
+            if identity:
+                thread["aliases"] = sorted({*thread["aliases"], f"address:{identity}"})
+
         message = {
             "handle": str(event.get("handle") or ""),
             "address": address or "",
@@ -307,6 +315,10 @@ def build_threads(events: list[dict], resolver=None) -> list[dict]:
     for thread in by_key.values():
         thread["messages"].sort(key=lambda message: _timestamp_order(message["timestamp"]))
         if not thread["is_group"]:
+            # A service's keypad spelling can coincide with a valid short
+            # national number. Its own thread key must not also select a person.
+            thread["aliases"] = [alias for alias in thread["aliases"]
+                                 if alias == thread["key"] or alias not in by_key]
             messages = thread["messages"]
             latest_incoming = next(
                 (message for message in reversed(messages) if not message["outgoing"]),

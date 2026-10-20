@@ -12,11 +12,11 @@ import os
 import tempfile
 import time
 from collections import Counter
-from collections.abc import Callable, Collection, Iterable, Iterator, Sequence
+from collections.abc import Callable, Collection, Hashable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from copy import copy
 from pathlib import Path
-from typing import TYPE_CHECKING, TextIO
+from typing import TYPE_CHECKING, TextIO, TypeVar
 
 import dbus
 
@@ -24,7 +24,7 @@ from blueferry import config
 from blueferry.bus import obex
 from blueferry.contact_photos import REJECT_TOO_LARGE, inspect_vcard_photo
 from blueferry.contact_repository import ContactRecord, ContactRepository
-from blueferry.events import canonical_address, is_email_shaped, normalize_phone
+from blueferry.events import canonical_address, is_email_shaped
 from blueferry.limits import (
     MAX_CONTACT_ADDRESS_CHARS,
     MAX_CONTACT_ADDRESSES_PER_CARD,
@@ -37,7 +37,7 @@ from blueferry.limits import (
 )
 from blueferry.obex.sessions import SessionManager
 from blueferry.obex.transfer import wait_for_transfer
-from blueferry.phone_numbers import address_identities
+from blueferry.phone_numbers import address_identities, contact_phone
 from blueferry.private_files import runtime_private_directory
 from blueferry.vcard import iter_bounded_lines, iter_vcard_bodies, iter_vcard_cards
 
@@ -82,9 +82,9 @@ def _parse_card(body: str) -> tuple[str | None, list[str], list[str]] | None:
             _, _, val = line.partition(":")
             if len(val) > MAX_CONTACT_ADDRESS_CHARS:
                 continue
-            norm = normalize_phone(val)
+            norm = contact_phone(val, config.PHONE_REGION)
             if norm and len(phones) < MAX_CONTACT_ADDRESSES_PER_CARD:
-                phones.append(("+" if val.strip().startswith("+") else "") + norm)
+                phones.append(norm)
         elif line.upper().startswith("EMAIL"):
             _, _, value = line.partition(":")
             value = value.strip()
@@ -495,6 +495,18 @@ def pull_phonebook(
 
 # ---- Lookup -------------------------------------------------------------
 
+_LookupValue = TypeVar("_LookupValue", bound=Hashable)
+
+
+def _unique_lookup(
+    raw: str | None, index: Mapping[str, _LookupValue], default: _LookupValue,
+) -> _LookupValue:
+    """Every known spelling must agree, including explicitly ambiguous entries."""
+    matches = {index[identity] for identity in address_identities(raw, config.PHONE_REGION)
+               if identity in index}
+    return next(iter(matches)) if len(matches) == 1 else default
+
+
 def _addresses(value: object) -> list[str]:
     """Coerce a stored address list into strings, discarding anything else.
 
@@ -566,7 +578,11 @@ class ContactsResolver:
                                    for name, phones, emails in self._records if name
                                    for address in (*phones, *emails)})
 
-        self._thread_addresses: dict[str, tuple[str, ...]] = {}
+        all_addresses = {identity for _name, phones, emails in self._records
+                         for identity in _identities(phones, emails)}
+        # Keep ambiguous identities in the index. Omitting them would let a
+        # query fall through to another spelling that happens to have one owner.
+        self._thread_addresses: dict[str, tuple[str, ...]] = dict.fromkeys(all_addresses, ())
         for addresses in _unique_addresses(self._records).values():
             ordered = tuple(sorted(addresses))
             for identity in ordered:
@@ -575,7 +591,7 @@ class ContactsResolver:
         # two people never shows either picture), except that exact
         # duplicates of one person, which iOS sends, count as one owner. The
         # photo comes from whichever duplicate carries one.
-        self._photo_refs: dict[str, int] = {}
+        self._photo_refs: dict[str, int | None] = dict.fromkeys(all_addresses)
         owner_of = _duplicate_owners(self._records)
         group_photo: dict[int, int] = {}
         for index, owner in enumerate(owner_of):
@@ -590,7 +606,7 @@ class ContactsResolver:
 
     def thread_addresses(self, raw: str | None) -> tuple[str, ...]:
         """Unambiguous address identities from the same PBAP record."""
-        return self._thread_addresses.get(canonical_address(raw) or "", ())
+        return _unique_lookup(raw, self._thread_addresses, ())
 
     def snapshot(self) -> ContactsResolver:
         """Capture lookup state without reopening the repository on a worker."""
@@ -659,13 +675,10 @@ class ContactsResolver:
 
     def photo_ref(self, raw: str | None) -> int | None:
         """Stored photo id for the one record that owns ``raw``, if any."""
-        identity = canonical_address(raw)
-        if identity is None:
-            return None
-        return self._photo_refs.get(identity)
+        return _unique_lookup(raw, self._photo_refs, None)
 
     def photo_count(self) -> int:
-        return len(set(self._photo_refs.values()))
+        return len({ref for ref in self._photo_refs.values() if ref is not None})
 
     def load_photo(self, ref: int) -> bytes | None:
         return self._repository.load_photo(ref)

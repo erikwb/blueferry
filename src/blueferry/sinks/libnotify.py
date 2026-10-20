@@ -397,7 +397,7 @@ class LibnotifySink:
     def _photo_uri(self, event: SmsEvent) -> str:
         """``file://`` URI of the sender's volatile avatar copy, or ``""``."""
         provider = getattr(self, "_contact_photo", None)
-        if provider is None:
+        if provider is None or getattr(event, "sender_alphanumeric", None):
             return ""
         try:
             path = provider(event.sender_address)

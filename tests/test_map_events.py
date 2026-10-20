@@ -225,3 +225,23 @@ def test_keypad_spelled_originator_is_recorded_as_alphanumeric() -> None:
 
     assert [event.sender_alphanumeric for event in received] == ["mbna", None, None]
     assert received[0].to_dict()["sender_alphanumeric"] == "mbna"
+
+
+def test_alphanumeric_sender_does_not_borrow_a_short_number_contact_name() -> None:
+    from types import SimpleNamespace
+
+    received = []
+    looked_up = []
+    listener = map_events.MapEventListener(
+        SimpleNamespace(map=None), received.append, submit_obex=lambda *_a, **_k: None,
+        resolve_contact=lambda address: looked_up.append(address) or "Person",
+    )
+    listener._running = True
+    for address, name in [("7467", "Shop"), ("+6837467", "Person")]:
+        listener._fetched(address, f"/session1/{address}", {}, SimpleNamespace(
+            sender_address=address, sender_name=name, body="hello", status="UNREAD",
+        ))
+    assert looked_up == ["+6837467"]
+    assert received[0].contact_name is None
+    assert received[0].display_sender != "Person"
+    assert received[1].contact_name == "Person"
