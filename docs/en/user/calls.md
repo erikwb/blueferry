@@ -102,7 +102,7 @@ The Qt and GTK clients can open `tel:` and `callto:` links, for example a
 phone number on a web page, in a mail, or in a PDF, and place the call
 through the iPhone. Clicking such a link always asks first: BlueFerry shows
 the number (and the contact's name when a conversation with it is known) and
-dials only after you choose **Call**. Without phone calls enabled (see above)
+places the call only after you press **Call**. Without phone calls enabled (see above)
 the dialog says so and offers to open the iPhone settings instead. Links that
 don't contain a plain number, and emergency numbers, are refused.
 
@@ -123,7 +123,8 @@ an already running window shows the dialog.
 
 The number is taken from the link without its parameters: an extension such
 as `;ext=12` is dropped, because it can't be dialed reliably, and `*` and `#`
-are refused as with `dial`.
+are refused as with `dial`. In the notation `+41 (0)79 …` the bracketed
+trunk `0` is dropped, as it is not dialed together with the country code.
 
 ## Limits
 

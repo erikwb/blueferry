@@ -109,12 +109,12 @@ Der Qt- und der GTK-Client können `tel:`- und `callto:`-Links öffnen, etwa
 eine Telefonnummer auf einer Webseite, in einer Mail oder in einem PDF, und
 den Anruf über das iPhone starten. Ein Klick auf einen solchen Link fragt
 immer zuerst nach: BlueFerry zeigt die Nummer (und den Namen des Kontakts,
-wenn eine Unterhaltung mit ihm bekannt ist) und wählt erst, wenn du **Call**
-wählst. Sind Anrufe nicht eingeschaltet (siehe oben), sagt der Dialog das und
+wenn eine Unterhaltung mit ihm bekannt ist) und ruft erst an, wenn du **Call**
+drückst. Sind Anrufe nicht eingeschaltet (siehe oben), sagt der Dialog das und
 bietet stattdessen die iPhone-Einstellungen an. Links ohne einfache Nummer
 und Notrufnummern werden abgelehnt.
 
-BlueFerry meldet sich für diese Links an, macht sich aber nicht selbst zum
+BlueFerry registriert sich für diese Links, macht sich aber nicht selbst zum
 Standard. So stellst du es ein:
 
 - KDE Plasma: Systemeinstellungen → Standardanwendungen → Telefonnummern,
@@ -131,7 +131,9 @@ ein bereits offenes Fenster zeigt dann den Dialog.
 
 Die Nummer wird ohne die Parameter des Links übernommen: Eine Durchwahl wie
 `;ext=12` fällt weg, weil sie sich nicht zuverlässig wählen lässt, und `*`
-und `#` werden wie bei `dial` abgelehnt.
+und `#` werden wie bei `dial` abgelehnt. In der Schreibweise `+41 (0)79 …`
+fällt die eingeklammerte `0` weg, weil sie mit der Landesvorwahl nicht
+gewählt wird.
 
 ## Grenzen
 
