@@ -2769,6 +2769,234 @@ Item {
     assert "ReferenceError" not in log and "TypeError" not in log, log
 
 
+@pytest.mark.private_dbus
+def test_quickshell_thread_list_keyboard_navigation(tmp_path, quickshell_environment):
+    """Send real clicks and keys to the shell, with no live transports."""
+    import shutil
+    import subprocess
+
+    executable = shutil.which("quickshell")
+    if executable is None:
+        pytest.skip("Quickshell is not installed")
+    for source in (ROOT / "data/quickshell").glob("*.qml"):
+        shutil.copyfile(source, tmp_path / source.name)
+    shutil.copyfile(
+        ROOT / "src/blueferry/qt/qml/ConversationLogic.qml",
+        tmp_path / "ConversationLogic.qml",
+    )
+    (tmp_path / "Theme.qml").write_text("import QtQuick\nThemePalette {}\n")
+    (tmp_path / "SetupTransport.qml").write_text('''import QtQuick
+Item {
+  signal lineReceived(int id, string kind, string line)
+  signal finished(int id, string kind, int code, string output, string diagnostic)
+  function execute(id, kind, command, interactive) {}
+  function cancel(id) {}
+  function write(id, text) {}
+}
+''')
+    (tmp_path / "BackendBridge.qml").write_text('''import QtQuick
+Item {
+  property bool desktopClient: false
+  property int nextId: 1
+  signal response(string method, int requestId, var result)
+  signal failure(string method, int requestId, string message)
+  signal eventReceived(string name, var data)
+  function request(method, args) { return nextId++; }
+  function requestLatest(method, args) {}
+  function cancelLatest(method) {}
+}
+''')
+    config = tmp_path / "shell.qml"
+    source = config.read_text().replace("import QtQuick\n", "import QtQuick\nimport QtTest\n", 1)
+    probe = r'''
+  TestCase {
+    parent: applicationSurface
+    name: "ThreadNavigation"
+    when: applicationSurface.Window.active
+
+    function expect(actual, expected, detail) {
+      if (actual !== expected) console.error(detail, "expected", expected, "got", actual);
+      compare(actual, expected, detail);
+    }
+
+    function test_navigation() {
+      setupController.configured = true;
+      root.phoneSettingsVisible = false;
+      const threads = [];
+      for (let index = 0; index < 20; index++) {
+        threads.push({key: "thread:" + index, name: "Person " + index,
+          recipients: ["person" + index + "@example.com"], messages: [],
+          reply_ready: true, is_group: false, starred: false});
+      }
+      root.threads = threads;
+      wait(50);
+      expect(root.selectedThreadKey, "", "loading threads must not select one");
+      keyClick(Qt.Key_Down);
+      expect(root.selectedThreadKey, "thread:0", "the list has initial keyboard focus");
+      const row = threadList.itemAtIndex(2);
+      verify(row !== null);
+      mouseClick(row, row.width / 2, row.height / 2);
+      compare(root.selectedThreadKey, "thread:2");
+      keyClick(Qt.Key_Down);
+      expect(root.selectedThreadKey, "thread:3", "Down opens the next conversation");
+      keyClick(Qt.Key_Up);
+      compare(root.selectedThreadKey, "thread:2", "Up opens the previous conversation");
+
+      for (let index = 3; index < threads.length; index++) keyClick(Qt.Key_Down);
+      compare(root.selectedThreadKey, "thread:19");
+      wait(50);
+      verify(threadList.contentY > 0, "keyboard selection must scroll the list");
+      const last = threadList.itemAtIndex(19);
+      verify(last !== null);
+      const lastY = last.mapToItem(threadList, 0, 0).y;
+      verify(lastY >= 0 && lastY + last.height <= threadList.height + 1,
+        "the selected row must stay visible");
+      keyClick(Qt.Key_Down);
+      compare(root.selectedThreadKey, "thread:19", "Down stops at the end");
+      for (let index = 0; index < threads.length; index++) keyClick(Qt.Key_Up);
+      compare(root.selectedThreadKey, "thread:0", "Up stops at the beginning");
+
+      // Refreshes can reorder rows (new messages, starring). Selection belongs
+      // to a thread key, not the old row number or a transient model reset.
+      root.selectedThreadKey = "thread:5";
+      root.reload();
+      backendBridge.response("threads", root.threadsRequestId, threads.slice().reverse());
+      wait(50);
+      compare(root.selectedThreadKey, "thread:5", "refresh preserves the selected thread");
+      keyClick(Qt.Key_Down);
+      expect(root.selectedThreadKey, "thread:4", "Down follows the refreshed order");
+
+      // Arrow keys remain text-editing keys while the composer has focus,
+      // including when a history refresh rebuilds the delegates.
+      composer.text = "first line\nsecond line";
+      composer.forceActiveFocus();
+      const editor = composer.contentChildren[0];
+      editor.cursorPosition = editor.length;
+      root.reload();
+      backendBridge.response("threads", root.threadsRequestId, threads);
+      wait(50);
+      keyClick(Qt.Key_Up);
+      compare(root.selectedThreadKey, "thread:4");
+      verify(editor.cursorPosition < "first line\n".length);
+      keyClick(Qt.Key_Down);
+      verify(editor.cursorPosition >= "first line\n".length);
+      compare(composer.text, "first line\nsecond line");
+
+      threadList.forceActiveFocus();
+      root.reload();
+      backendBridge.response("threads", root.threadsRequestId,
+        threads.filter(thread => thread.key !== "thread:4"));
+      wait(50);
+      expect(root.selectedThreadKey, "", "removing the selected thread clears selection");
+      keyClick(Qt.Key_Down);
+      expect(root.selectedThreadKey, "thread:0", "navigation recovers after removal");
+
+      newMessagePopup.open();
+      wait(50);
+      keyClick(Qt.Key_Down);
+      expect(root.selectedThreadKey, "thread:0", "dialog keys must not navigate threads");
+      newMessagePopup.close();
+      wait(50);
+      keyClick(Qt.Key_Down);
+      expect(root.selectedThreadKey, "thread:1", "closing the dialog restores list focus");
+
+      root.selectedThreadKey = "";
+      root.threads = [];
+      wait(50);
+      keyClick(Qt.Key_Up);
+      keyClick(Qt.Key_Down);
+      compare(root.selectedThreadKey, "", "empty lists do not select anything");
+      root.threads = threads;
+      wait(50);
+      keyClick(Qt.Key_Down);
+      compare(root.selectedThreadKey, "thread:0", "Down starts at the first thread");
+      root.selectedThreadKey = "";
+      keyClick(Qt.Key_Up);
+      compare(root.selectedThreadKey, "thread:19", "Up starts at the last thread");
+      console.log("BLUEFERRY_THREAD_NAVIGATION_OK");
+    }
+  }
+'''
+    config.write_text(source[:source.rfind("}")] + probe + "}\n")
+    environment = quickshell_environment.copy()
+    environment.pop("BLUEFERRY_OPEN_THREAD_KEY", None)
+    environment.pop("BLUEFERRY_OPEN_MESSAGE_HANDLE", None)
+    result = subprocess.run(
+        [executable, "--path", str(config)], env=environment,
+        capture_output=True, text=True, timeout=15, check=False,
+    )
+    log = result.stdout + result.stderr
+    assert result.returncode == 0 and "BLUEFERRY_THREAD_NAVIGATION_OK" in log, log
+    assert "WARN scene:" not in log and "ReferenceError" not in log and "TypeError" not in log, log
+
+
+def test_quickshell_composer_wraps_and_scrolls_when_resized(qml_engine):
+    warnings = []
+
+    def collect_warnings(errors):
+        warnings.extend(error.toString() for error in errors)
+
+    qml_engine.warnings.connect(collect_warnings)
+    component = QQmlComponent(qml_engine)
+    component.setData(b'''import QtQuick
+import QtQuick.Layouts
+import "."
+Window {
+  width: 320; height: 320; visible: true
+  ThemePalette { id: theme }
+  RowLayout {
+    anchors.left: parent.left
+    anchors.right: parent.right
+    anchors.top: parent.top
+    FerryMessageComposer {
+      id: composer
+      objectName: "composer"
+      ferryTheme: theme
+      Layout.fillWidth: true
+      placeholderText: "Write a message..."
+    }
+  }
+  readonly property real editorWidth: composer.contentChildren[0].width
+  readonly property int lineCount: composer.contentChildren[0].lineCount
+  readonly property real scrollHeight: composer.contentItem.contentHeight
+  readonly property real maxComposerHeight: theme.scaled(144)
+}''', QUrl.fromLocalFile(str(ROOT / "data/quickshell/composer-test.qml")))
+    window = component.create()
+    try:
+        assert window is not None, [error.toString() for error in component.errors()]
+        composer = window.findChild(QObject, "composer")
+        assert composer is not None
+        QTest.qWait(50)
+        empty_height = composer.property("height")
+        assert empty_height > 0
+        assert window.property("editorWidth") == pytest.approx(composer.property("availableWidth"))
+
+        composer.setProperty("text", "A long message that needs to wrap. " * 40)
+        QTest.qWait(50)
+        narrow_lines = window.property("lineCount")
+        assert narrow_lines > 1 and composer.property("multiline")
+        assert empty_height < composer.property("height") <= window.property("maxComposerHeight")
+        assert window.property("scrollHeight") > composer.property("availableHeight")
+        assert window.property("editorWidth") == pytest.approx(composer.property("availableWidth"))
+
+        window.setWidth(640)
+        QTest.qWait(50)
+        assert window.property("editorWidth") == pytest.approx(composer.property("availableWidth"))
+        assert composer.property("width") == pytest.approx(640)
+        assert 1 < window.property("lineCount") < narrow_lines
+
+        composer.setProperty("text", "")
+        QTest.qWait(50)
+        assert composer.property("height") == pytest.approx(empty_height)
+        assert not composer.property("multiline")
+    finally:
+        if window is not None:
+            window.deleteLater()
+            QGuiApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        qml_engine.warnings.disconnect(collect_warnings)
+    assert not warnings, "\n".join(warnings)
+
+
 @pytest.mark.parametrize("late_after_refresh", [False, True])
 @pytest.mark.private_dbus
 @pytest.mark.parametrize("late_read", ["success", "failure"])
@@ -3708,6 +3936,50 @@ def test_quickshell_now_playing_renders_the_bridge_view(qml_engine) -> None:
     finally:
         strip.deleteLater()
         QGuiApplication.processEvents()
+
+
+def test_quickshell_now_playing_stays_hidden_during_empty_reconnects(qml_engine) -> None:
+    from blueferry.quickshell_bridge import now_playing_view
+
+    theme_component = _component(qml_engine, "data/quickshell/ThemePalette.qml")
+    theme = theme_component.create()
+    assert theme is not None, theme_component.errors()
+    theme.setParent(qml_engine)
+    component = _component(qml_engine, "data/quickshell/QuickshellNowPlaying.qml")
+    strip = component.createWithInitialProperties({"ferryTheme": theme})
+    assert strip is not None, component.errors()
+    snapshot = {
+        "enabled": True, "available": True, "player": {"name": "Music", "state": "paused"},
+        "track": {}, "supported_commands": ["volume-up", "volume-down"],
+    }
+    theme.setParent(strip)
+    window = QQuickWindow()
+    window.resize(640, 100)
+    strip.setParentItem(window.contentItem())
+    window.show()
+    QGuiApplication.processEvents()
+    try:
+        for available in (False, True, False, True):
+            strip.setProperty("view", now_playing_view({**snapshot, "available": available}))
+            assert not strip.property("visible")
+
+        track = {"title": "A podcast", "artist": "A host"}
+        strip.setProperty("view", now_playing_view({
+            **snapshot, "track": track, "supported_commands": ["play"],
+        }))
+        assert strip.property("visible")
+        assert strip.findChild(QObject, "nowPlayingSummary").property("text") == (
+            "⏸  A podcast — A host"
+        )
+        assert strip.findChild(QObject, "nowPlayingToggle").property("enabled")
+
+        strip.setProperty("view", now_playing_view(snapshot))
+        assert not strip.property("visible")
+    finally:
+        window.close()
+        strip.deleteLater()
+        window.deleteLater()
+        QGuiApplication.sendPostedEvents(None, QEvent.DeferredDelete)
 
 
 def test_quickshell_fetches_now_playing_only_with_the_opt_in(qml_engine) -> None:

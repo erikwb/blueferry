@@ -55,6 +55,34 @@ def _ancs(title: str, subtitle: str, body: str, seen_at: str) -> dict:
     }
 
 
+def test_alphanumeric_sender_thread_is_named_and_read_only() -> None:
+    events = [
+        _sms("6262", None, "older code", "2026-10-19T13:30:00+00:00"),
+        _sms("6262", None, "code 123", "2026-10-19T13:37:25+00:00"),
+        _ancs("MBNA", "", "code 123", "2026-10-19T13:37:28+00:00"),
+        _sms("3873363749", None, "bill", "2026-10-19T14:00:00+00:00"),
+        _ancs("Fuse Energy", "", "bill", "2026-10-19T14:00:02+00:00"),
+        _sms("555", None, "reply STOP", "2026-10-19T15:00:00+00:00"),
+        _ancs("55 5", "", "reply STOP", "2026-10-19T15:00:02+00:00"),
+        # The same text twice within the correlation window is ambiguous.
+        _sms("7467", None, "parcel", "2026-10-19T16:00:00+00:00"),
+        _ancs("Shop", "", "parcel", "2026-10-19T16:00:04+00:00"),
+        _sms("7467", None, "parcel", "2026-10-19T16:00:15+00:00"),
+        _ancs("Shop", "", "parcel", "2026-10-19T16:00:18+00:00"),
+    ]
+
+    threads = {thread["key"]: thread for thread in build_threads(events)}
+
+    mbna = threads["address:short:6262"]
+    assert (mbna["name"], mbna["reply_ready"]) == ("MBNA", False)
+    assert len(mbna["messages"]) == 2
+    fuse = threads["address:phone:3873363749"]
+    assert (fuse["name"], fuse["reply_ready"]) == ("Fuse Energy", False)
+    assert threads["address:short:555"]["reply_ready"] is True
+    shop = threads["address:short:7467"]
+    assert (shop["name"], shop["reply_ready"]) == ("Shop", False)
+
+
 def test_unnamed_group_without_trusted_map_sender_name_is_read_only() -> None:
     events = [
         # Earlier 1:1 history teaches the resolver Alice's address.

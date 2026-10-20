@@ -482,7 +482,11 @@ A change to these rules has to be made in both places.
   connection.
 - **Bearers:** `bearer_supervisor` keeps BR/EDR and LE connected, independent
   of desktop applets. In full mode a missing LE bearer holds back MAP/PBAP
-  reconnects. Compatibility mode leaves LE disabled.
+  reconnects. Compatibility mode leaves LE disabled. LE transitions come
+  from `Bearer.LE1.Disconnected` and `Bearer.LE1` `Connected` property
+  changes as they happen, so ANCS, AMS and the battery client also see a
+  drop that is back before the next five-second poll; polling stays as the
+  fallback.
 - **Media (opt-in):** `ams/client` never dials. It follows the bearer
   supervisor's LE observations and BlueZ owner changes, subscribes after the
   link settles, and resets without `StopNotify` on loss. `media` owns the

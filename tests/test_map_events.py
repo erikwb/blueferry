@@ -154,7 +154,7 @@ def test_phone_read_updates_persist_without_notification_and_survive_fetch_race(
     assert read_events(storage=storage)[0]["is_read"] is True
     assert changed == [True]
     listener._fetched("message1", "/session1/message1", {}, SimpleNamespace(
-        sender_address="+15551234567", body="hello", status="UNREAD",
+        sender_address="+15551234567", sender_name=None, body="hello", status="UNREAD",
     ))
     assert received[0].is_read is True
     listener.stop()
@@ -208,3 +208,20 @@ def test_listener_fetches_mns_pushes_but_not_listed_messages(monkeypatch):
         )
 
     assert len(submitted) == 1
+
+
+def test_keypad_spelled_originator_is_recorded_as_alphanumeric() -> None:
+    from types import SimpleNamespace
+
+    received = []
+    listener = map_events.MapEventListener(
+        SimpleNamespace(map=None), received.append, submit_obex=lambda *_a, **_k: None,
+    )
+    listener._running = True
+    for address, name in [("6262", "mbna"), ("555", "555"), ("+15551234567", "Ann")]:
+        listener._fetched(address, f"/session1/{address}", {}, SimpleNamespace(
+            sender_address=address, sender_name=name, body="hello", status="UNREAD",
+        ))
+
+    assert [event.sender_alphanumeric for event in received] == ["mbna", None, None]
+    assert received[0].to_dict()["sender_alphanumeric"] == "mbna"

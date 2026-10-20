@@ -18,7 +18,7 @@ from bisect import bisect_left, bisect_right
 from datetime import datetime, timezone
 
 from blueferry.ancs.constants import ANCS_MESSAGE_CAPS_REQUESTED, MESSAGES_APP_ID
-from blueferry.events import canonical_address, safe_event_address
+from blueferry.events import canonical_address, safe_event_address, spelled_on_keypad
 from blueferry.named_groups import NamedGroupRoutes
 from blueferry.named_groups import named_group_key as named_group_key
 
@@ -404,18 +404,19 @@ def correlate_group_events(events: list[dict], resolver=None) -> list[dict]:
             continue
         if group_members_from_ancs(event) or named_group_from_ancs(event):
             continue
-        source_row_id = event.get(HISTORY_ROW_ID_FIELD)
-        if not isinstance(source_row_id, int):
-            continue
         ancs_body = str(event.get("body") or "")
         ancs_time = _seen_at(event)
         if not ancs_body or ancs_time is None:
             continue
         direct_candidates = message_candidates.matching(ancs_body, ancs_time, set())
+        sender_title = str(event.get("title") or "").strip()
+        for index in direct_candidates:
+            # The keypad match is its own evidence, so a repeated body is safe.
+            if spelled_on_keypad(sender_title, str(out[index].get("sender_address") or "")):
+                out[index]["sender_alphanumeric"] = sender_title
         if len(direct_candidates) != 1:
             continue
         sms = out[direct_candidates[0]]
-        sender_title = str(event.get("title") or "").strip()
         trusted_sender_name = str(sms.get("contact_name") or "").strip()
         if (
             sender_title
@@ -423,7 +424,9 @@ def correlate_group_events(events: list[dict], resolver=None) -> list[dict]:
             and sender_title.casefold() != trusted_sender_name.casefold()
         ):
             continue
-        sms.setdefault(CORRELATED_ANCS_ROW_IDS_FIELD, []).append(source_row_id)
+        source_row_id = event.get(HISTORY_ROW_ID_FIELD)
+        if isinstance(source_row_id, int):
+            sms.setdefault(CORRELATED_ANCS_ROW_IDS_FIELD, []).append(source_row_id)
 
     _reconcile_group_identities(out, addresses_by_name, resolver)
     return out
