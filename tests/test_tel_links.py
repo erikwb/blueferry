@@ -30,6 +30,15 @@ from blueferry.tel_links import (
     ("tel:+41%2079%20000%2000%2000", "+41790000000"),
     ("tel:%2B41790000000", "+41790000000"),
     ("tel:+41\u00a079\u00a0000", "+4179000"),
+    # The European "+CC (0)" notation: the trunk 0 is not dialed from abroad.
+    ("tel:+41 (0)79 000 00 00", "+41790000000"),
+    ("tel:+41(0)790000000", "+41790000000"),
+    ("tel:+49 (0) 30 0000000", "+49300000000"),
+    ("tel:+41%20(0)79%20000%2000%2000", "+41790000000"),
+    ("+1 (0) 555 010 0000", "+15550100000"),
+    # Only right after the country code; elsewhere "(0)" is part of the number.
+    ("tel:+41 79 (0) 000", "+41790000"),
+    ("tel:044 (0) 000", "0440000"),
     # RFC 3966 parameters are dropped, the number is kept.
     ("tel:+41790000000;ext=123", "+41790000000"),
     ("tel:0790000000;phone-context=example.com", "0790000000"),

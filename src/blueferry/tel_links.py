@@ -27,6 +27,8 @@ MAX_PHONE_LINK_CHARS = 1024
 _SCHEME_RE = re.compile(r"^(?:tel|callto):(?://)?", re.IGNORECASE)
 # Visual separators RFC 3966 allows, plus spaces and slashes seen in print.
 _SEPARATORS_RE = re.compile(r"[ \u00a0\-.()/]")
+# "+41 (0)79 …": the bracketed trunk prefix is dialed only within the country.
+_TRUNK_PREFIX_RE = re.compile(r"^(\+[0-9]{1,3})[ \u00a0]*\(0\)")
 _NUMBER_RE = re.compile(rf"^\+?[0-9]{{1,{MAX_DIAL_DIGITS}}}$")
 
 DialProblem = Literal["", "invalid", "emergency"]
@@ -46,7 +48,8 @@ def parse_phone_link(value: object) -> str | None:
     text = re.split(r"[;?]", text, maxsplit=1)[0]
     # Decode exactly once; an encoded ";", a control character or invalid
     # UTF-8 (decoded to U+FFFD) stays invalid.
-    number = _SEPARATORS_RE.sub("", unquote(text, errors="replace"))
+    decoded = _TRUNK_PREFIX_RE.sub(r"\1", unquote(text, errors="replace").strip())
+    number = _SEPARATORS_RE.sub("", decoded)
     return number if _NUMBER_RE.fullmatch(number) else None
 
 
