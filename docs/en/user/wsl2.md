@@ -6,8 +6,9 @@ parts of the Linux stack behave differently from a desktop install: firmware
 loading, WirePlumber's Bluetooth monitor, polkit, the desktop keyring, and
 obexd's message notification service.
 
-This was set up on Debian 13 (BlueZ 5.82, WirePlumber 0.5.8) under WSL 3.0.3
-with a TP-Link UB500 (RTL8761BU). WSL2 is not part of the CI package matrix.
+The steps below come from one setup: Debian 13 (BlueZ 5.82, WirePlumber
+0.5.8) under WSL 3.0.3 with a TP-Link UB500 (RTL8761BU). WSL2 is not part of
+the CI package matrix.
 
 ## What is different
 
@@ -33,19 +34,20 @@ with a TP-Link UB500 (RTL8761BU). WSL2 is not part of the CI package matrix.
   BlueFerry set the adapter class requires `subject.active` and
   `subject.local`, which are false for processes outside a session.
 - **No keyring exists and nothing unlocks one.** Encrypted history needs a
-  default keyring. A distribution that never had a graphical login has none,
-  the keyring prompt cannot open a window because user services do not get
-  WSLg's `DISPLAY`, and without a PAM login the keyring is never unlocked
-  automatically. Until it is set up, BlueFerry sends messages but keeps no
-  history, so clients show no conversations.
-- **obexd may register no profiles.** Without `evolution-data-server`,
-  obexd's PBAP and IrMC server plugins make a failing registry lookup during
-  startup that runs obexd's BlueZ watch before its MAP servers exist. obexd
-  registers its profiles only in that watch, so none are registered, among
-  them the Message Notification Server (`0x1133`) the iPhone needs to push
-  new messages. Reading and sending still work, but new messages never
-  arrive, and the daemon logs "the iPhone did not open MAP notifications".
-  This is not specific to WSL2.
+  default keyring, and a distribution that never had a graphical login has
+  none. User services do not get WSLg's `DISPLAY`, so the keyring prompt
+  cannot open a window. Without a PAM login, nothing unlocks the keyring
+  automatically either. Until it is set up, BlueFerry sends messages but
+  keeps no history, so clients show no conversations.
+- **obexd may register no profiles.** obexd registers its profiles with
+  BlueZ when it sees BlueZ on the bus. Without `evolution-data-server`, the
+  PBAP and IrMC server plugins make a failing registry lookup during
+  startup, and that lookup lets obexd see BlueZ before its MAP servers
+  exist. No profiles are registered, including the Message Notification
+  Server (`0x1133`) the iPhone needs to push new messages. Reading and
+  sending still work, but new messages never arrive, and the daemon logs
+  "the iPhone did not open MAP notifications". This is not specific to
+  WSL2.
 
 ## How to set it up
 
@@ -146,7 +148,7 @@ with a TP-Link UB500 (RTL8761BU). WSL2 is not part of the CI package matrix.
    });
    ```
 
-   It grants the same single sandboxed unit as the packaged rule.
+   Like the packaged rule, it lets you start only the one sandboxed unit.
 
 5. Start obexd without its PBAP and IrMC server plugins, so it registers the
    Message Notification Server. BlueFerry uses only obexd's PBAP client,
@@ -210,20 +212,21 @@ with a TP-Link UB500 (RTL8761BU). WSL2 is not part of the CI package matrix.
 
 ## Limits
 
-- **After every restart**, `wsl --shutdown` or a Windows reboot, run
-  `usbipd attach` again; `usbipd bind` persists. The firmware service
-  handles the firmware, whether the adapter is attached before or after it
-  runs. The keyring starts locked, so run `blueferry storage-unlock` and
-  enter its password; until then BlueFerry sends messages but keeps no
-  history. The password window often opens behind the terminal, so if
-  `storage-unlock` seems to hang, look for it in the Windows taskbar.
+- **Two manual steps after every restart.** After `wsl --shutdown` or a
+  Windows reboot, run `usbipd attach` again; `usbipd bind` persists. The
+  firmware service handles the firmware whether the adapter is attached
+  before or after it runs. The keyring starts locked, so run
+  `blueferry storage-unlock` and enter its password; until then BlueFerry
+  sends messages but keeps no history. The password window often opens
+  behind the terminal, so if `storage-unlock` seems to hang, look for it in
+  the Windows taskbar.
 - **ANCS may not return after the iPhone leaves range.** Debian 13's BlueZ
   5.82 predates the bearer API, so BlueFerry cannot dial the LE link itself
-  and waits for the iPhone to reconnect to its advertisement. On the setup
-  above, Classic Bluetooth, and with it messages, came back on its own, but
-  the LE link stayed down overnight, and the clients showed the hint about
-  stale Bluetooth state. Turning Bluetooth off and on in the iPhone's
-  Control Center brought ANCS back without restarting `bluetooth.service`.
+  and waits for the iPhone to reconnect to its advertisement. In testing,
+  Classic Bluetooth, and with it messages, came back on its own, but the LE
+  link stayed down overnight and the clients showed the hint about stale
+  Bluetooth state. Turning Bluetooth off and on in the iPhone's Control
+  Center brought ANCS back without restarting `bluetooth.service`.
 - **Polkit rule scope.** The WSL2 rule matches a user name instead of an
   active local session, so it also applies to that user's SSH and background
   sessions. It can still only start the class-setting unit.
@@ -231,8 +234,8 @@ with a TP-Link UB500 (RTL8761BU). WSL2 is not part of the CI package matrix.
   Bluetooth monitor running regardless of which session is active. On a
   single-user WSL2 distribution that is the intended behavior; do not copy
   this setting to a shared desktop machine.
-- USB/IP adds latency to every HCI packet. Pairing and MAP/PBAP worked on
-  the setup above. An internal Intel AX200 shared the same way logged
+- **USB/IP adds latency to every HCI packet.** Pairing and MAP/PBAP worked
+  on the setup above. An internal Intel AX200 shared the same way logged
   `hci0: Invalid exception type` firmware faults during pairing attempts;
   that test ran before the WirePlumber fix, so it is unclear whether the
   AX200 or USB/IP was to blame.

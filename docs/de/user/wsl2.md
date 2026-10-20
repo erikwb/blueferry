@@ -223,8 +223,8 @@ CI-Paketmatrix.
 
 ## Grenzen
 
-- **Nach jedem Neustart**, also `wsl --shutdown` oder einem
-  Windows-Neustart, führe `usbipd attach` erneut aus; `usbipd bind` bleibt
+- **Zwei manuelle Schritte nach jedem Neustart.** Nach `wsl --shutdown`
+  oder einem Windows-Neustart führe `usbipd attach` erneut aus; `usbipd bind` bleibt
   erhalten. Um die Firmware kümmert sich der Dienst, egal ob der Adapter vor
   oder nach ihm angehängt wird. Der Schlüsselbund startet gesperrt, also
   führe `blueferry storage-unlock` aus und gib sein Passwort ein; bis dahin
@@ -248,7 +248,7 @@ CI-Paketmatrix.
   Bluetooth-Monitor unabhängig davon, welche Sitzung aktiv ist. In einer
   WSL2-Distribution mit einem Benutzer ist das gewollt; übernimm die
   Einstellung nicht auf einen gemeinsam genutzten Desktop-Rechner.
-- USB/IP verzögert jedes HCI-Paket. Kopplung und MAP/PBAP funktionierten auf
+- **USB/IP verzögert jedes HCI-Paket.** Kopplung und MAP/PBAP funktionierten auf
   dem oben beschriebenen System. Ein auf dieselbe Weise durchgereichter
   interner Intel AX200 meldete bei Kopplungsversuchen
   `hci0: Invalid exception type`-Firmwarefehler; dieser Test lief vor der
