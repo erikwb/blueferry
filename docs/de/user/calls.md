@@ -103,6 +103,36 @@ Verbindung wieder frei, und das Gesprächsaudio geht zurück aufs Telefon.
 `blueferry calls` sollte dann `ready` zeigen, solange das iPhone verbunden
 ist.
 
+## Telefon-Links
+
+Der Qt- und der GTK-Client können `tel:`- und `callto:`-Links öffnen, etwa
+eine Telefonnummer auf einer Webseite, in einer Mail oder in einem PDF, und
+den Anruf über das iPhone starten. Ein Klick auf einen solchen Link fragt
+immer zuerst nach: BlueFerry zeigt die Nummer (und den Namen des Kontakts,
+wenn eine Unterhaltung mit ihm bekannt ist) und wählt erst, wenn du **Call**
+wählst. Sind Anrufe nicht eingeschaltet (siehe oben), sagt der Dialog das und
+bietet stattdessen die iPhone-Einstellungen an. Links ohne einfache Nummer
+und Notrufnummern werden abgelehnt.
+
+BlueFerry meldet sich für diese Links an, macht sich aber nicht selbst zum
+Standard. So stellst du es ein:
+
+- KDE Plasma: Systemeinstellungen → Standardanwendungen → Telefonnummern,
+  dort BlueFerry wählen.
+- GNOME und andere Desktops:
+  `xdg-mime default io.weirdware.BlueFerry.Gtk.desktop x-scheme-handler/tel`
+  ausführen (oder `io.weirdware.BlueFerry.Qt.desktop` für den Qt-Client), und
+  dasselbe für `x-scheme-handler/callto`, wenn du auch diese Links möchtest.
+
+`xdg-mime query default x-scheme-handler/tel` zeigt die aktuelle Wahl. Ein
+Link lässt sich auch von Hand übergeben, etwa
+`blueferry-qt tel:+41790000000` oder `blueferry-gtk --dial '079 000 00 00'`;
+ein bereits offenes Fenster zeigt dann den Dialog.
+
+Die Nummer wird ohne die Parameter des Links übernommen: Eine Durchwahl wie
+`;ext=12` fällt weg, weil sie sich nicht zuverlässig wählen lässt, und `*`
+und `#` werden wie bei `dial` abgelehnt.
+
 ## Grenzen
 
 - Experimentell. Getestet mit einem iPhone (iOS 27) auf einem
