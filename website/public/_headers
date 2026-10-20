@@ -6,7 +6,8 @@
 
 # The optional documentation site (built into /docs/) needs a looser policy:
 # its theme uses small inline scripts, loads Mermaid from unpkg.com for
-# diagrams, fetches its search index, and inlines SVG icons as data: URLs.
+# diagrams, fetches its search index and GitHub repository information, and
+# inlines SVG icons as data: URLs.
 /docs/*
   ! Content-Security-Policy
-  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' https://unpkg.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'none'
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' https://unpkg.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://api.github.com; worker-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'none'

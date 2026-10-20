@@ -23,30 +23,27 @@ The pages are organized by language:
 | `de/` | German user guide and developer overview; other developer pages link to English |
 | `images/` | Screenshots and logo, copied from `website/public/assets/` |
 
-### Optional website build
+### Website build
 
-The project website in `website/public/` needs no build step. The
-documentation site is an optional addition built with
+The landing page in `website/public/` is plain HTML, CSS and JavaScript. The
+documentation site is built with
 [Zensical](https://zensical.org/), the successor of Material for MkDocs. It
 reads the `mkdocs.yml` in the repository root.
 
 ```sh
-python -m venv /tmp/blueferry-docs
-/tmp/blueferry-docs/bin/pip install -r docs/requirements.txt
-/tmp/blueferry-docs/bin/zensical build --strict
+./website/build.sh
 ```
 
-The build writes to `website/public/docs/`, which Git ignores. `zensical serve`
-previews it at `http://localhost:8000/docs/`. `--strict` fails the build on
-broken links, anchors, or images.
+The script needs Python 3 with `venv` and installs the pinned requirements in
+a temporary environment. It builds with `--strict` and writes to
+`website/public/docs/`, which Git ignores. Build errors stop the upload.
 
 The configuration uses no third-party plugins, so it also builds with
 [MkDocs](https://www.mkdocs.org/) and the
 [Material theme](https://squidfunk.github.io/mkdocs-material/):
 
 ```sh
-/tmp/blueferry-docs/bin/pip install -r docs/requirements-mkdocs.txt
-/tmp/blueferry-docs/bin/mkdocs build --strict
+./website/build.sh mkdocs
 ```
 
 Diagrams are Mermaid code blocks. GitHub renders them natively, and the site
@@ -54,17 +51,19 @@ build loads Mermaid in the browser.
 
 ### Publishing
 
-The Docs workflow (`.github/workflows/docs.yml`) runs both builds with
-`--strict` whenever `docs/` or `mkdocs.yml` change, so a broken link fails the
-pull request that introduces it. It only checks the build and publishes
-nothing.
+The site is directly uploaded to the existing Cloudflare Worker
+`snowy-brook-1958`, attached to `blueferry.weirdware.io`. It is an assets-only
+Worker, not a Pages project. `website/wrangler.toml` records its configuration
+and runs the local strict build before every upload. No GitHub Actions job or
+Cloudflare build is needed.
 
 The site is meant to be served at `https://blueferry.weirdware.io/docs/`; the
 language switcher and some German navigation entries use absolute `/docs/...`
 paths. The landing page links there, and `website/public/_headers` gives
 `/docs/*` its own Content-Security-Policy, because the documentation theme uses
-inline scripts, fetches its search index and loads Mermaid from `unpkg.com`,
-which the landing page's policy forbids.
+inline scripts, fetches its search index and GitHub repository information,
+and loads Mermaid from `unpkg.com`, which the landing page's policy forbids.
 
-The one step left is on the host: it has to run the build command above before
-it serves `website/public/`. Until it does, `/docs/` returns 404.
+Upload a preview of the complete `website/public/` directory, check it, then
+promote that exact version to production. The commands are in the
+[website deployment guide](https://github.com/erikwb/blueferry/blob/main/website/README.md).
