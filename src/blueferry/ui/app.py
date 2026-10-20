@@ -57,6 +57,12 @@ class BlueFerryApp(Adw.Application):
         )
         self._client: DaemonClient | None = None
         self._activation: ClientActivation | None = None
+        # Positional arguments are not part of the parsed local options.
+        self._local_arguments: list[str] = []
+
+    def run(self, argv: list[str] | None = None) -> int:
+        self._local_arguments = list(argv or [])[1:]
+        return Adw.Application.run(self, argv)
 
     def do_startup(self) -> None:
         Adw.Application.do_startup(self)
@@ -131,7 +137,18 @@ class BlueFerryApp(Adw.Application):
         except dbus.DBusException:
             logging.getLogger(__name__).exception("could not activate the existing GTK client")
             return 1
-        return -1 if forwarded is None else 0 if forwarded else 1
+        if forwarded is None:
+            return -1
+        if dial_link(options, self._local_arguments):
+            # The pre-upgrade window owns the application ID, so normal
+            # forwarding (-1) would reach that process, which knows no phone
+            # links: the link would be lost silently either way.
+            logging.getLogger(__name__).warning(
+                "the running BlueFerry window is from an older version and cannot "
+                "call phone links; quit it and open the link again",
+            )
+            return 1
+        return 0 if forwarded else 1
 
     def do_command_line(self, command_line: Gio.ApplicationCommandLine) -> int:
         options = command_line.get_options_dict()

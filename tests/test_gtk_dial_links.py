@@ -180,3 +180,28 @@ def test_dial_activation_presents_the_window_then_asks():
     application = SimpleNamespace(_open_message=open_message)
     app_module.BlueFerryApp._open_dial(application, "tel:+15550100000", "token")
     assert order == [("open", "", "token"), ("dial", "tel:+15550100000")]
+
+
+@pytest.mark.parametrize(("forwarded", "arguments", "expected", "warned"), [
+    (None, ["tel:+15550100000"], -1, False),  # no old window: normal startup
+    (True, [], 0, False),
+    (False, [], 1, False),
+    # An old window cannot take the link; say so instead of losing it silently.
+    (True, ["tel:+15550100000"], 1, True),
+])
+def test_phone_link_for_a_pre_upgrade_window_is_reported(
+    monkeypatch, caplog, forwarded, arguments, expected, warned,
+):
+    monkeypatch.setattr(app_module, "forward_to_legacy_gtk", lambda _handle, _token: forwarded)
+    application = SimpleNamespace(_local_arguments=arguments)
+    with caplog.at_level("WARNING"):
+        result = app_module.BlueFerryApp.do_handle_local_options(application, _options())
+    assert result == expected
+    assert ("older version" in caplog.text) is warned
+
+
+def test_run_remembers_the_positional_arguments(monkeypatch):
+    monkeypatch.setattr(app_module.Adw.Application, "run", lambda _self, _argv: 0)
+    application = SimpleNamespace(_local_arguments=[])
+    assert app_module.BlueFerryApp.run(application, ["blueferry-gtk", "tel:+1"]) == 0
+    assert application._local_arguments == ["tel:+1"]
