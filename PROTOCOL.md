@@ -149,8 +149,9 @@ connection. MAP and PBAP are its successful end state; absence of Notification
 Access is expected and group messages may consequently lack ANCS-derived group
 metadata.
 
-The RTL8761BU (`0bda:8771`), AzureWave RTL8852CE (`13d3:3586`), and Realtek
-`0bda:8922` default to explicit pairing. RTL8761BU can abort its initial `Connect`
+The RTL8761BU (`0bda:8771`, and `2357:0604` on the TP-Link UB500), AzureWave
+RTL8852CE (`13d3:3586`), and Realtek `0bda:8922` default to explicit pairing.
+RTL8761BU can abort its initial `Connect`
 before authentication (#144); explicit pairing restored ANCS on the RTL8852CE
 (#58) and was used for a successful MAP/PBAP connection on `0bda:8922` (#68).
 Clients apply these defaults from the shared adapter probe and retain manual
