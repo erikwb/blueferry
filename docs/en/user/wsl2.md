@@ -216,6 +216,13 @@ with a TP-Link UB500 (RTL8761BU). WSL2 is not part of the CI package matrix.
   runs. The keyring starts locked, so run `blueferry storage-unlock` and
   enter its password; until then BlueFerry sends messages but keeps no
   history.
+- **ANCS may not return after the iPhone leaves range.** Debian 13's BlueZ
+  5.82 predates the bearer API, so BlueFerry cannot dial the LE link itself
+  and waits for the iPhone to reconnect to its advertisement. On the setup
+  above, Classic Bluetooth, and with it messages, came back on its own, but
+  the LE link stayed down overnight, and the clients showed the hint about
+  stale Bluetooth state. Turning Bluetooth off and on in the iPhone's
+  Control Center brought ANCS back without restarting `bluetooth.service`.
 - **Polkit rule scope.** The WSL2 rule matches a user name instead of an
   active local session, so it also applies to that user's SSH and background
   sessions. It can still only start the class-setting unit.

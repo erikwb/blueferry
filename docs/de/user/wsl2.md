@@ -229,6 +229,15 @@ CI-Paketmatrix.
   oder nach ihm angehängt wird. Der Schlüsselbund startet gesperrt, also
   führe `blueferry storage-unlock` aus und gib sein Passwort ein; bis dahin
   sendet BlueFerry Nachrichten, speichert aber keinen Verlauf.
+- **ANCS kommt nach einem Verlassen der Reichweite womöglich nicht zurück.**
+  BlueZ 5.82 aus Debian 13 ist älter als die Bearer-API, daher kann
+  BlueFerry die LE-Verbindung nicht selbst aufbauen und wartet, bis sich das
+  iPhone über seine Advertisement-Daten wieder verbindet. Auf dem oben
+  beschriebenen System kam klassisches Bluetooth und damit der Nachrichtenweg
+  von selbst zurück, die LE-Verbindung blieb aber über Nacht getrennt, und
+  die Clients zeigten den Hinweis auf veralteten Bluetooth-Zustand.
+  Bluetooth im Kontrollzentrum des iPhones aus- und wieder einzuschalten
+  brachte ANCS zurück, ohne `bluetooth.service` neu zu starten.
 - **Reichweite der polkit-Regel.** Die WSL2-Regel prüft einen Benutzernamen
   statt einer aktiven lokalen Sitzung und gilt daher auch für SSH- und
   Hintergrundsitzungen dieses Benutzers. Sie kann trotzdem nur die Unit
