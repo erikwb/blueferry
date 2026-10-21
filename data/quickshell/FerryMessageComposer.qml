@@ -45,7 +45,8 @@ ScrollView {
 
   TextArea {
     id: editor
-    width: control.availableWidth
+    // ScrollView sizes the editor; binding width back to the view creates
+    // a loop through the wrapping placeholder's implicit height at startup.
     leftPadding: control.ferryTheme.scaled(10)
     rightPadding: control.ferryTheme.scaled(10)
     color: control.ferryTheme.windowText

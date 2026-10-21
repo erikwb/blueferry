@@ -1247,7 +1247,9 @@ def test_adapter_selection_ranks_verified_then_unverified_then_incompatible(
     assert pair_setup.bluetooth_compatibility(requested)["adapter"] == requested
 
 
-@pytest.mark.parametrize("explicit_usb_id", ["0BDA:8771", "13D3:3586", "0bda:8922"])
+@pytest.mark.parametrize(
+    "explicit_usb_id", ["0BDA:8771", "2357:0604", "13D3:3586", "0bda:8922"],
+)
 def test_explicit_pairing_default_matches_only_the_selected_listed_adapter(
     monkeypatch, explicit_usb_id,
 ):

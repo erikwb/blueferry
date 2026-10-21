@@ -45,6 +45,7 @@ from blueferry.setup_client import (
     ConfigurationState,
     SetupClient,
 )
+from blueferry.tel_links import dial_request, known_contact_name
 
 # Bounds on the per-window avatar cache (least recently used entries are
 # dropped). The count covers a long list of small photos; the byte bound
@@ -88,6 +89,9 @@ class BridgeController(QObject):
     featuresChanged = Signal()
     doctorChanged = Signal()
     phoneCallsChanged = Signal()
+    # (number, problem) of a clicked tel:/callto: link to confirm; see
+    # tel_links.dial_request. Never dials by itself.
+    dialLinkRequested = Signal(str, str)
 
     def __init__(
         self,
@@ -1335,6 +1339,16 @@ class BridgeController(QObject):
         selected = str(number or "").strip()
         if selected:
             self._call_action(lambda: self._backend.dial(selected))
+
+    @Slot(str)
+    def requestDialLink(self, link: str) -> None:
+        """Ask QML to confirm a phone link; dialing waits for the user."""
+        number, problem = dial_request(link)
+        self.dialLinkRequested.emit(number, problem)
+
+    @Slot(str, result=str)
+    def contactNameForNumber(self, number: str) -> str:
+        return known_contact_name(self._state, str(number or ""))
 
     @Slot(str)
     def answerCall(self, call_id: str) -> None:
