@@ -442,6 +442,16 @@ class BackendClient:
         except dbus.exceptions.DBusException as error:
             raise BackendError(error.get_dbus_message() or str(error)) from error
 
+    def set_mirror_notification_removals(self, enabled: bool) -> bool:
+        try:
+            return bool(
+                self._iface(MESSAGES_IFACE).SetMirrorNotificationRemovals(
+                    dbus.Boolean(enabled), timeout=POLICY_CALL_TIMEOUT_SEC
+                )
+            )
+        except dbus.exceptions.DBusException as error:
+            raise BackendError(error.get_dbus_message() or str(error)) from error
+
     def set_phone_battery_warning(self, enabled: bool) -> bool:
         try:
             return bool(

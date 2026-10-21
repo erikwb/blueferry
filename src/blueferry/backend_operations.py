@@ -146,6 +146,11 @@ class NotificationPolicy(Protocol):
 
     def set_ancs_actions(self, enabled: bool) -> bool: ...
 
+    @property
+    def mirror_removals(self) -> bool: ...
+
+    def set_mirror_removals(self, enabled: bool) -> bool: ...
+
 
 class StarredThreads(Protocol):
     def keys(self) -> Sequence[str]: ...
@@ -782,6 +787,7 @@ class BackendOperations:
             "contacts_only_notifications": (
                 self.get_contacts_only_notifications()
             ),
+            "mirror_iphone_removals": self.get_mirror_notification_removals(),
             "contact_photos": self._contact_photos_enabled(),
         }
         if self.dependencies.notification_policy is not None:
@@ -1149,6 +1155,25 @@ class BackendOperations:
             raise NotReadyError("notification policy storage is unavailable")
         try:
             selected = self.dependencies.notification_policy.set_ancs_actions(
+                enabled
+            )
+        except ValueError as error:
+            raise InvalidArgumentsError(str(error)) from error
+        if self.dependencies.on_notification_policy_changed is not None:
+            self.dependencies.on_notification_policy_changed()
+        return selected
+
+    def get_mirror_notification_removals(self) -> bool:
+        """Return the saved opt-in for closing popups removed on the iPhone."""
+        policy = self.dependencies.notification_policy
+        return False if policy is None else bool(policy.mirror_removals)
+
+    def set_mirror_notification_removals(self, enabled: bool) -> bool:
+        """Opt in or out of closing popups removed on the iPhone."""
+        if self.dependencies.notification_policy is None:
+            raise NotReadyError("notification policy storage is unavailable")
+        try:
+            selected = self.dependencies.notification_policy.set_mirror_removals(
                 enabled
             )
         except ValueError as error:

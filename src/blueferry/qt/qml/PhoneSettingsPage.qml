@@ -455,6 +455,18 @@ Kirigami.ScrollablePage {
                     ? qsTr("Unavailable while notification content is hidden.")
                     : qsTr("Clicking a button runs that action on the iPhone, for example answering or declining a call. Applies to All iPhone Notifications.")
             }
+            // Opt-in; only daemons that report mirror_iphone_removals support it.
+            Controls.CheckBox {
+                objectName: "mirrorRemovalsCheckBox"
+                Layout.fillWidth: true
+                visible: iphonePage.bridge.status.mirror_iphone_removals !== undefined
+                text: qsTr("Sync notifications with iPhone")
+                checked: iphonePage.bridge.status.mirror_iphone_removals === true
+                enabled: iphonePage.bridge.status.daemon === true
+                    && !iphonePage.bridge.busy
+                onClicked: iphonePage.bridge.setMirrorNotificationRemovals(checked)
+                Accessible.description: qsTr("A notification removed or dismissed on the iPhone also closes its popup here. Applies to All iPhone Notifications.")
+            }
         }
         // Click rules only apply to non-Messages popups, which exist only in
         // the "all" policy. Load the editor (and its backend read) on demand,

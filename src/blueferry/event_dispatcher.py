@@ -336,6 +336,24 @@ class EventDispatcher:
             except Exception:
                 log.exception("sink %s failed to close ANCS popup", sink.name)
 
+    def ancs_mirror_removed(self, notification_id: int) -> None:
+        """A notification was removed on the iPhone: close any of its popups."""
+        self._fan_out("close_removed_ancs_popup", notification_id)
+
+    def ancs_session_reset(self) -> None:
+        """Forget popup UIDs of an ended ANCS session (they may be reused)."""
+        self._fan_out("forget_ancs_popups")
+
+    def _fan_out(self, method: str, *args: int) -> None:
+        for sink in self.sinks:
+            handler = getattr(sink, method, None)
+            if handler is None:
+                continue
+            try:
+                handler(*args)
+            except Exception:
+                log.exception("sink %s failed in %s", sink.name, method)
+
     def ancs_actions_reset(self) -> None:
         """Retire every action popup after the ANCS session reset its UIDs."""
         for sink in self.sinks:

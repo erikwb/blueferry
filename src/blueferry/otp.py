@@ -177,10 +177,10 @@ _NEGATIVE_CODE_PREFIXES = frozenset({
     "my", "our", "mein", "meine", "meinen", "unser", "unsere", "mon", "ma",
     "notre", "mio", "mia", "nostro", "mi", "nuestro", "mijn", "onze",
 })
-# Capitalised words that are not a service name right before a plain noun:
+# Words that are not a service name right before a plain noun:
 # articles, and the greetings, interjections and replies that open chat
-# messages ("Hello code 4821", "Sorry code 4821 didn't work"). Any other
-# capitalised word still reads as a service name ("Telegram code 58291").
+# messages ("Hello code 4821", "Sorry code 4821 didn't work"). Service
+# spelling is case-insensitive ("Telegram", "telegram", "eBay").
 _NOT_SERVICE_NAMES = frozenset({
     "the", "a", "an", "this", "that", "these", "those", "der", "die", "das",
     "ein", "eine", "dieser", "diese", "dieses", "le", "la", "les", "il", "el",
@@ -281,8 +281,8 @@ def _previous_word(text: str, end: int) -> str:
 def _names_a_service(text: str, keyword: _Keyword, *, context: bool) -> bool:
     """True when a plain noun right before a number is a service's code.
 
-    A capitalised name right before the noun qualifies ("Telegram code
-    58291"), a greeting does not ("Hello code 4821"). A noun that opens the
+    A name right before the noun qualifies regardless of capitalization
+    ("telegram code 58291"), a greeting does not ("Hello code 4821"). A noun that opens the
     sentence needs OTP context: "Code 2024 is your login code" qualifies,
     "Code 4821 for the gym" does not.
     """
@@ -293,7 +293,7 @@ def _names_a_service(text: str, keyword: _Keyword, *, context: bool) -> bool:
     if match is None:
         return False
     word = match.group(1)
-    return word[:1].isupper() and word.casefold() not in _NOT_SERVICE_NAMES
+    return word.casefold() not in _NOT_SERVICE_NAMES
 
 
 def _prefixed(

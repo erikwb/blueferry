@@ -496,6 +496,105 @@ def test_bridge_saves_the_call_history_opt_in_and_returns_its_status() -> None:
     assert len(client.calls) == 1
 
 
+def test_bridge_reduces_now_playing_to_booleans_and_verbatim_text() -> None:
+    snapshot = {
+        "enabled": True, "available": True,
+        "player": {"state": "playing"},
+        "track": {"title": "<b>Song</b>", "artist": "Band"},
+        "supported_commands": ["pause", "next"],
+    }
+    bridge = QuickshellBridge(SimpleNamespace(now_playing=lambda: snapshot))  # type: ignore[arg-type]
+
+    result = bridge.dispatch("now_playing", {})
+    assert result == {
+        "visible": True, "playing": True, "title": "<b>Song</b>", "artist": "Band",
+        "idle": False, "previous": False, "toggle": True, "next": True,
+    }
+    # No arrays reach QML, whatever the Qt version does with them.
+    assert not any(isinstance(value, list | tuple) for value in result.values())
+    assert json.loads(json.dumps(result)) == result
+
+
+@pytest.mark.parametrize("snapshot", [
+    {"enabled": False, "available": False, "detail": "disabled"},
+    {"enabled": True, "available": False, "detail": "waiting-for-iphone"},
+])
+def test_bridge_hides_now_playing_until_the_media_service_is_available(snapshot) -> None:
+    bridge = QuickshellBridge(SimpleNamespace(now_playing=lambda: snapshot))  # type: ignore[arg-type]
+
+    assert bridge.dispatch("now_playing", {}) == {
+        "visible": False, "playing": False, "title": "", "artist": "", "idle": False,
+        "previous": False, "toggle": False, "next": False,
+    }
+
+
+@pytest.mark.parametrize("state", [None, "paused", "stopped"])
+@pytest.mark.parametrize("track", [
+    {},
+    {"title": None, "artist": None, "album": None, "duration": None},
+    {"title": " \t", "artist": "\n", "album": "An album"},
+])
+def test_bridge_hides_empty_inactive_media_after_reconnect(state, track) -> None:
+    snapshot = {
+        "enabled": True, "available": True,
+        "player": {"name": "Music", "state": state, "volume": 0.0},
+        "track": track,
+        "supported_commands": ["volume-up", "volume-down"],
+        "supported_commands_known": True,
+    }
+    bridge = QuickshellBridge(SimpleNamespace(now_playing=lambda: snapshot))  # type: ignore[arg-type]
+
+    assert bridge.dispatch("now_playing", {}) == {
+        "visible": False, "playing": False, "title": "", "artist": "", "idle": False,
+        "previous": False, "toggle": False, "next": False,
+    }
+
+
+@pytest.mark.parametrize("state", ["playing", "rewinding", "fast-forwarding"])
+def test_bridge_keeps_active_playback_visible_before_track_metadata(state) -> None:
+    snapshot = {
+        "enabled": True, "available": True, "player": {"state": state}, "track": {},
+        "supported_commands": ["pause"],
+    }
+    bridge = QuickshellBridge(SimpleNamespace(now_playing=lambda: snapshot))  # type: ignore[arg-type]
+
+    view = bridge.dispatch("now_playing", {})
+    assert view["visible"] and view["playing"] and view["toggle"]
+    assert not view["idle"]
+
+
+@pytest.mark.parametrize("track", [{"title": "A podcast"}, {"artist": "A broadcaster"}])
+@pytest.mark.parametrize("state", [None, "paused"])
+def test_bridge_keeps_named_media_visible_without_active_playback(track, state) -> None:
+    snapshot = {
+        "enabled": True, "available": True, "player": {"state": state}, "track": track,
+        "supported_commands": ["play"],
+    }
+    bridge = QuickshellBridge(SimpleNamespace(now_playing=lambda: snapshot))  # type: ignore[arg-type]
+
+    view = bridge.dispatch("now_playing", {})
+    assert view["visible"] and view["toggle"]
+    assert not view["playing"] and not view["idle"]
+    assert view["title"] == track.get("title", "")
+    assert view["artist"] == track.get("artist", "")
+
+
+def test_bridge_sends_only_the_transport_media_commands() -> None:
+    sent: list[str] = []
+    bridge = QuickshellBridge(SimpleNamespace(send_media_command=sent.append))  # type: ignore[arg-type]
+
+    assert bridge.dispatch("media_command", {"command": "next"}) is None
+    for args, message in (
+        ({}, "command must be a string"),
+        ({"command": 1}, "command must be a string"),
+        ({"command": "volume-up"}, "unsupported media command"),
+        ({"command": "like"}, "unsupported media command"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            bridge.dispatch("media_command", args)
+    assert sent == ["next"]
+
+
 def test_bridge_saves_the_contact_photo_opt_in() -> None:
     client = FakeClient()
     client.set_contact_photos = lambda enabled: (  # type: ignore[attr-defined]

@@ -6,6 +6,7 @@ import logging
 import os
 import signal
 import sys
+from collections.abc import Callable
 from importlib.resources import files
 
 from PySide6.QtCore import QLibraryInfo, QLocale, QTimer, QTranslator, QUrl
@@ -13,10 +14,11 @@ from PySide6.QtGui import QAction, QGuiApplication, QIcon, QWindow
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
-from blueferry.client_activation import record_client_use
+from blueferry.client_activation import TRAY_BUS_NAME, record_client_use
 from blueferry.qt.activation import ClientActivation
 from blueferry.qt.avatars import AVATAR_PROVIDER, AvatarImageProvider
 from blueferry.qt.controller import BridgeController
+from blueferry.tel_links import phone_link_argument
 
 APP_ID = "io.weirdware.BlueFerry.Qt"
 APP_ICON = "io.weirdware.BlueFerry"
@@ -245,11 +247,24 @@ def _present_window(window: QWindow, token: str | None = None) -> None:
     record_client_use("qt")
 
 
+def _standalone_tray_running() -> bool:
+    from PySide6.QtDBus import QDBusConnection
+
+    from blueferry.qt.tray import name_registered
+
+    return name_registered(QDBusConnection.sessionBus(), TRAY_BUS_NAME)
+
+
 def _create_system_tray(
         application: QApplication,
         window: QWindow,
         ) -> QSystemTrayIcon | None:
-    """Expose the KDE/desktop status-notifier item for the Qt client."""
+    """Expose the KDE/desktop status-notifier item for the Qt client.
+
+    The standalone ``blueferry-tray`` item replaces it while it runs, so the
+    panel never shows two phones; closing the window then quits the client.
+    A service watcher follows the standalone tray starting or quitting later.
+    """
     if not QSystemTrayIcon.isSystemTrayAvailable():
         return None
 
@@ -281,16 +296,66 @@ def _create_system_tray(
             _present_window(window)
 
     tray.activated.connect(activated)
-    tray.show()
-    application.setQuitOnLastWindowClosed(False)
+    _follow_standalone_tray(application, tray)
     return tray
+
+
+def _show_own_tray(application: QApplication, tray: QSystemTrayIcon, standalone: bool) -> None:
+    """Hide this client's icon while ``blueferry-tray`` runs, show it otherwise."""
+    tray.setVisible(not standalone)
+    # Without an own icon a closed window would leave nothing to reopen it.
+    application.setQuitOnLastWindowClosed(standalone)
+
+
+def _follow_standalone_tray(application: QApplication, tray: QSystemTrayIcon) -> None:
+    from PySide6.QtDBus import QDBusConnection, QDBusServiceWatcher
+
+    bus = QDBusConnection.sessionBus()
+    watcher = QDBusServiceWatcher(
+        TRAY_BUS_NAME, bus, QDBusServiceWatcher.WatchModeFlag.WatchForOwnerChange, tray,
+    )
+    watcher.serviceOwnerChanged.connect(
+        lambda _name, _old, new: _show_own_tray(application, tray, bool(new))
+    )
+    tray._blueferry_tray_watcher = watcher
+    _show_own_tray(application, tray, _standalone_tray_running())
+
+
+def _dial_activation(controller, window: QWindow) -> Callable[[str, str], None]:
+    """Show the confirmation for a phone link, then raise the window."""
+
+    def activate_dial(link: str, token: str) -> None:
+        # Only asks for confirmation; BridgeController never dials a link.
+        controller.requestDialLink(link)
+        _present_window(window, token)
+
+    return activate_dial
+
+
+def _first_activation(
+        dial_link: str,
+        message: str,
+        token: str,
+        activate_dial: Callable[[str, str], None],
+        activate_message: Callable[[str, str], None],
+        ) -> None:
+    """Handle the launching command line once the window exists."""
+    if dial_link:
+        activate_dial(dial_link, token)
+    else:
+        activate_message(message, token)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     parser.add_argument("--message", default="")
+    # A phone link or number to confirm; desktop files pass a clicked
+    # tel:/callto: link as a bare argument (%u) instead.
+    parser.add_argument("--dial", default="")
     parser.add_argument("--diagnose-style", action="store_true")
     args, qt_args = parser.parse_known_args(sys.argv[1:])
+    link, qt_args = phone_link_argument(qt_args)
+    dial_link = args.dial or link
     if args.diagnose_style:
         print(_select_quick_controls_style(qt_args).describe())
         return 0
@@ -311,6 +376,12 @@ def main() -> int:
     activation = ClientActivation(application)
     if not activation.primary:
         quick_style.release_environment()
+        if dial_link:
+            if activation.forward_dial(dial_link, token):
+                return 0
+            print("blueferry-qt: could not pass the phone link to the running window",
+                  file=sys.stderr)
+            return 1
         return 0 if activation.forward(args.message, token) else 1
 
     controller = BridgeController(parent=application)
@@ -340,11 +411,14 @@ def main() -> int:
         else:
             present_message("")
 
+    activate_dial = _dial_activation(controller, window)
+
     activation.requested.connect(activate_message)
+    activation.dialRequested.connect(activate_dial)
     controller.messageOpenRequested.connect(present_message)
     window.activeChanged.connect(lambda: record_client_use("qt") if window.isActive() else None)
     def ready() -> None:
-        activate_message(args.message, token)
+        _first_activation(dial_link, args.message, token, activate_dial, activate_message)
         activation.ready()
 
     QTimer.singleShot(0, ready)

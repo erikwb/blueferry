@@ -17,9 +17,10 @@ BlueFerry's messaging focus.
 - BlueZ that reports the iPhone's LE link (`Bearer.LE1`: BlueZ 5.86 or newer
   with the bearer API, as notifications need today). Without it,
   `blueferry media` reports that the LE link state is unknown.
-- The command line works everywhere. The KDE/Kirigami client shows a
-  now-playing bar. The GTK and Quickshell clients have the switches but no
-  media view yet; the terminal client has neither.
+- The command line works everywhere. Every client shows what is playing
+  with previous/play-pause/next while media control is on (see below). The
+  Kirigami, GTK and Quickshell clients also have the switch; in the terminal
+  client, turn it on with the command line.
 
 ## Turn it on
 
@@ -64,13 +65,18 @@ refuses one the app lacks.
 
 In the Kirigami client a small bar with title, artist and
 previous/play-pause/next buttons appears above the conversations while
-something is playing. It is not shown at all while the option is off.
+something is playing. The Quickshell client shows the same strip under its
+header, the GTK client in the **iPhone** dialog (main menu, `Ctrl+I`), and
+the terminal client in a line under the status pills, where `p`, `[` and `]`
+play/pause, go back and skip. None of them is shown, and no client asks the
+backend, while the option is off.
 
 ```mermaid
 flowchart LR
     iPhone["iPhone (AMS)"] -- "Bluetooth LE<br>(same link as notifications)" --> Backend["BlueFerry backend"]
     Backend -- "authenticated D-Bus (Media1)" --> CLI["blueferry media"]
     Backend -- "authenticated D-Bus (Media1)" --> Kirigami["Kirigami now-playing bar"]
+    Backend -- "authenticated D-Bus (Media1)" --> Others["GTK, Quickshell and terminal clients"]
 ```
 
 ## Media keys, Plasma and playerctl (MPRIS, optional)

@@ -277,6 +277,13 @@ def build_threads(events: list[dict], resolver=None) -> list[dict]:
                 thread["roster_warning_id"] = str(
                     event.get("group_roster_warning_id") or ""
                 )
+        if not is_group and event.get("sender_alphanumeric"):
+            # A reply would go to the keypad digits, not to the named sender.
+            thread["reply_ready"] = False
+            name = str(event["sender_alphanumeric"])
+            # The bMessage name arrives lowercased; keep a notification's capitals.
+            if not name.islower() or name.casefold() != thread["name"].casefold():
+                thread["name"] = name
 
         message = {
             "handle": str(event.get("handle") or ""),

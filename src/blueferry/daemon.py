@@ -1177,6 +1177,8 @@ class Daemon:
                 notification_actions=self._ancs_actions_active,
                 on_notification_removed=self._ancs_notification_removed,
                 on_actions_reset=self._ancs_actions_reset,
+                on_removed=self._ancs_removed_on_iphone,
+                on_session_reset=self._ancs_session_reset,
             )
             # Publish before start(): its initial D-Bus sweep can dispatch
             # an owner change that must invalidate the in-progress scan.
@@ -1541,6 +1543,21 @@ class Daemon:
         removed = getattr(self.events, "ancs_removed", None)
         if removed is not None:
             removed(notification_id)
+
+    def _ancs_removed_on_iphone(self, notification_id: int) -> None:
+        """Opt-in: close the popup of a notification removed on the iPhone."""
+        if not self.notification_policy.mirror_removals:
+            return
+        removed = getattr(self.events, "ancs_mirror_removed", None)
+        if removed is not None:
+            removed(notification_id)
+
+    def _ancs_session_reset(self) -> None:
+        # Always, even with the setting off: switching it on later must never
+        # match a UID of an ended session.
+        reset = getattr(self.events, "ancs_session_reset", None)
+        if reset is not None:
+            reset()
 
     def _ancs_actions_reset(self) -> None:
         """Close action popups whose UIDs died with the ANCS session."""

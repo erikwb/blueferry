@@ -243,6 +243,19 @@ Press `?` for the keyboard map or `Ctrl+P` for the command palette. The TUI has
 conversation search, a multiline composer, mouse support, themes, and a layout
 that adapts to narrow terminals.
 
+## System tray item
+
+`blueferry-tray` ships with the Qt client: a small separate process for the
+system tray (a StatusNotifierItem under KDE Plasma). Its phone icon carries
+the number of unread messages; the tooltip shows the connection, battery,
+signal, and network. Left-click opens the Qt client (or raises it). The tray
+only talks to a running backend and never starts or restarts the daemon.
+While it runs, `blueferry-qt` leaves out its own tray icon.
+
+The tray does not start at login by default. Check **Start at login** in its
+menu, or run `blueferry-tray --autostart on`, to write
+`~/.config/autostart/io.weirdware.BlueFerry.Tray.desktop`.
+
 ## Omarchy Quattro
 
 The native bar panel lives in
@@ -449,6 +462,19 @@ physical iPhone.
 
 Restart the user service after editing `local.env` settings.
 
+### Sync notifications with iPhone (opt-in)
+
+With **All iPhone Notifications** selected, an iPhone app popup normally
+stays until it times out, even after you cleared the notification on the
+phone. Turn on **Sync notifications with iPhone** in the Qt client's iPhone
+settings, or run `blueferry notifications sync enable`, and a notification
+removed or dismissed on the iPhone also closes its desktop popup. It only
+closes popups and never sends anything to the phone. The choice is saved as
+`mirror_iphone_removals` in `settings.json` and reported under that key in
+`GetStatus`. iOS reuses notification numbers per Bluetooth session, so
+popups from before a reconnect just time out. Only the notification number
+and popup id are kept, in memory.
+
 ### Contact photos (optional)
 
 Contact photos are off by default. To show the iPhone's contact pictures as
@@ -645,6 +671,13 @@ What happens then:
   cannot be complete, so the phone stays the way to make emergency calls.
   Every client asks before it dials, because
   premium-rate prefixes differ by country and cannot be listed reliably.
+- The Qt and GTK clients handle `tel:` and `callto:` links (for example a
+  number on a web page): they show the number, and the contact's name when a
+  conversation with it is known, and dial only after **Call**. With calls
+  off they offer the iPhone settings instead. Make BlueFerry the default
+  with `xdg-mime default io.weirdware.BlueFerry.Qt.desktop x-scheme-handler/tel`
+  (or `…Gtk.desktop`), or in Plasma under System Settings → Default
+  Applications → Phone Numbers; see [Phone links](docs/en/user/calls.md#phone-links).
 - Bluetooth recovery (the adapter power cycle after a long ANCS outage) is
   held back while a call is in progress.
 - With a second call, answering holds the active call (HoldAndAnswer);
@@ -868,8 +901,9 @@ takes precedence. `BLUEFERRY_CALL_HISTORY_INTERVAL_SEC` (60–86400, default
   notification history.
 
 View the list with `blueferry call-history` (`--missed`, `--limit N`,
-`--sync` to refresh from the iPhone first) or **Recent Calls** in the KDE
-client's menu. The GTK, terminal, and Quickshell clients do not show it yet.
+`--sync` to refresh from the iPhone first), **Recent Calls** in the KDE
+client's menu, the **iPhone** dialog of the GTK client (`Ctrl+I`), or `h` in
+the terminal client. The Quickshell client does not show it yet.
 ## iPhone media control (optional)
 
 BlueFerry can show what the iPhone is playing and send play, pause, next,
@@ -888,8 +922,12 @@ blueferry media toggle     # also: play, pause, next, previous, volume-up,
 ```
 
 Only commands the iPhone currently offers are sent; for example, like/dislike
-exist only for players that advertise them. The Kirigami client shows a small
-now-playing bar above the conversations while a player is active.
+exist only for players that advertise them. While a player is active, the
+Kirigami client shows a small now-playing bar above the conversations, the
+Quickshell client a strip under its header, the GTK client a **Now Playing**
+row in its **iPhone** dialog (`Ctrl+I`), and the terminal client a line under
+its status pills (`p`, `[` and `]` play/pause, go back and skip). No client
+asks for now playing while the option is off.
 
 With the MPRIS option (`blueferry media enable-mpris`, or the second
 checkbox under **Media Control**), BlueFerry registers
@@ -932,6 +970,7 @@ blueferry media status
 blueferry history-clear
 blueferry otp status
 blueferry notifications open-map list
+blueferry notifications sync status
 blueferry doctor
 ```
 
