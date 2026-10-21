@@ -23,6 +23,7 @@ from blueferry import __version__  # noqa: E402
 from blueferry.client_activation import forward_to_legacy_gtk, record_client_use  # noqa: E402
 from blueferry.glib_client_activation import ClientActivation  # noqa: E402
 from blueferry.i18n import _  # noqa: E402
+from blueferry.tel_links import phone_link_argument  # noqa: E402
 from blueferry.ui.client import DaemonClient  # noqa: E402
 from blueferry.ui.window import MainWindow  # noqa: E402
 
@@ -49,12 +50,23 @@ class BlueFerryApp(Adw.Application):
             "message", 0, GLib.OptionFlags.NONE, GLib.OptionArg.STRING,
             "Open the conversation containing a message handle", "HANDLE",
         )
+        # Desktop files pass a clicked tel:/callto: link as a bare argument.
+        self.add_main_option(
+            "dial", 0, GLib.OptionFlags.NONE, GLib.OptionArg.STRING,
+            "Ask to call a tel: or callto: link or a phone number", "LINK",
+        )
         self._client: DaemonClient | None = None
         self._activation: ClientActivation | None = None
+        # Positional arguments are not part of the parsed local options.
+        self._local_arguments: list[str] = []
+
+    def run(self, argv: list[str] | None = None) -> int:
+        self._local_arguments = list(argv or [])[1:]
+        return Adw.Application.run(self, argv)
 
     def do_startup(self) -> None:
         Adw.Application.do_startup(self)
-        self._activation = ClientActivation("gtk", self._open_message)
+        self._activation = ClientActivation("gtk", self._open_message, self._open_dial)
         for name, callback in (
             ("about", self._show_about),
             ("shortcuts", self._show_shortcuts),
@@ -125,20 +137,40 @@ class BlueFerryApp(Adw.Application):
         except dbus.DBusException:
             logging.getLogger(__name__).exception("could not activate the existing GTK client")
             return 1
-        return -1 if forwarded is None else 0 if forwarded else 1
+        if forwarded is None:
+            return -1
+        if dial_link(options, self._local_arguments):
+            # The pre-upgrade window owns the application ID, so normal
+            # forwarding (-1) would reach that process, which knows no phone
+            # links: the link would be lost silently either way.
+            logging.getLogger(__name__).warning(
+                "the running BlueFerry window is from an older version and cannot "
+                "call phone links; quit it and open the link again",
+            )
+            return 1
+        return 0 if forwarded else 1
 
     def do_command_line(self, command_line: Gio.ApplicationCommandLine) -> int:
-        handle = command_line.get_options_dict().lookup_value("message", None)
+        options = command_line.get_options_dict()
+        handle = options.lookup_value("message", None)
         token = (
             command_line.getenv("XDG_ACTIVATION_TOKEN")
             or command_line.getenv("DESKTOP_STARTUP_ID") or ""
         )
-        self._open_message(handle.unpack() if handle is not None else "", token)
+        link = dial_link(options, command_line.get_arguments()[1:])
+        if link:
+            self._open_dial(link, token)
+        else:
+            self._open_message(handle.unpack() if handle is not None else "", token)
         return 0
 
-    def _open_message(self, handle: str, token: str) -> None:
+    def _open_dial(self, link: str, token: str) -> None:
+        # Only asks for confirmation; the window dials after Call.
+        self._open_message("", token).request_dial(link)
+
+    def _open_message(self, handle: str, token: str) -> MainWindow:
         win = self.props.active_window
-        if win is None:
+        if not isinstance(win, MainWindow):
             if self._client is None:
                 self._client = DaemonClient()
             win = MainWindow(application=self, client=self._client)
@@ -155,6 +187,7 @@ class BlueFerryApp(Adw.Application):
         # A later manual activation must not accidentally reuse this token.
         os.environ.pop("XDG_ACTIVATION_TOKEN", None)
         os.environ.pop("DESKTOP_STARTUP_ID", None)
+        return win
 
     def _window_active_changed(self, win: Gtk.Window, _pspec) -> None:
         if win.is_active():
@@ -166,6 +199,14 @@ class BlueFerryApp(Adw.Application):
         if self._client is not None:
             self._client.stop()
         Adw.Application.do_shutdown(self)
+
+
+def dial_link(options: GLib.VariantDict, arguments: list[str]) -> str:
+    """The phone link of a command line: ``--dial`` or a bare ``%u`` link."""
+    dial = options.lookup_value("dial", None)
+    if dial is not None and dial.unpack():
+        return str(dial.unpack())
+    return phone_link_argument(list(arguments))[0]
 
 
 def main() -> int:

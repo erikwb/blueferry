@@ -75,13 +75,18 @@ def now_playing_view(snapshot: object) -> dict[str, Any]:
     track, player = part("track"), part("player")
     title = str(track.get("title") or "")
     artist = str(track.get("artist") or "")
+    # AMS availability means the service is connected, not that a player has
+    # a track. Reconnects can report an empty, paused Music player with only
+    # volume controls. Keep the compact strip hidden until there is content
+    # to identify or active playback to control; named paused tracks stay.
+    visible = view.visible and bool(view.playing or title.strip() or artist.strip())
     return {
-        "visible": view.visible,
-        "playing": view.playing,
-        "title": title,
-        "artist": artist,
-        "idle": view.visible and not title and not player.get("state"),
-        **{name: name in view.commands for name in phone_overview.MEDIA_BUTTONS},
+        "visible": visible,
+        "playing": visible and view.playing,
+        "title": title if visible else "",
+        "artist": artist if visible else "",
+        "idle": visible and not title and not artist and not player.get("state"),
+        **{name: visible and name in view.commands for name in phone_overview.MEDIA_BUTTONS},
     }
 
 

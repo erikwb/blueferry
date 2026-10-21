@@ -752,6 +752,24 @@ ShellRoot {
                 clip: true
                 spacing: theme.scaled(5)
                 model: root.threads
+                activeFocusOnTab: true
+                Component.onCompleted: forceActiveFocus()
+                // Selection is keyed so a refresh/reorder cannot open another
+                // conversation just because ListView resets its current index.
+                currentIndex: root.threads.findIndex(thread => thread.key === root.selectedThreadKey)
+                keyNavigationEnabled: false
+                Keys.onUpPressed: moveSelection(-1)
+                Keys.onDownPressed: moveSelection(1)
+
+                function moveSelection(step) {
+                  if (root.threads.length === 0) return
+                  const selected = root.threads.findIndex(thread => thread.key === root.selectedThreadKey)
+                  const next = selected < 0 ? (step > 0 ? 0 : root.threads.length - 1)
+                    : Math.max(0, Math.min(root.threads.length - 1, selected + step))
+                  root.selectedThreadKey = root.threads[next].key
+                  positionViewAtIndex(next, ListView.Contain)
+                }
+
                 delegate: ItemDelegate {
                   id: threadDelegate
                   required property var modelData
@@ -760,7 +778,10 @@ ShellRoot {
                   highlighted: modelData.key === root.selectedThreadKey
                   leftPadding: theme.scaled(8)
                   rightPadding: theme.scaled(8)
-                  onClicked: root.selectedThreadKey = modelData.key
+                  onClicked: {
+                    root.selectedThreadKey = modelData.key
+                    threadList.forceActiveFocus()
+                  }
                   contentItem: Row {
                     clip: true
                     spacing: theme.scaled(10)

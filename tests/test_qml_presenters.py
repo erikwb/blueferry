@@ -791,6 +791,9 @@ def settings_window(qml_engine):
             signal messageSendSucceeded(string recipient, string body)
             signal threadSendSucceeded(string key, string body)
             signal groupConfirmationRequested(string key, string body, string recipients)
+            signal dialLinkRequested(string number, string problem)
+            property var contactNames: ({})
+            function contactNameForNumber(number) { return contactNames[number] || ""; }
             function record(method, args) { calls = calls.concat([{method: method, args: args}]); }
             function refresh() { record("refresh", []); }
             function findContacts(query) { record("findContacts", [query]); }
@@ -1074,6 +1077,170 @@ def test_qt_warns_about_a_suspect_le_bond_only_when_the_backend_reports_it(
         BackendStatus.from_dict({"daemon": True, "le_bond_suspect": "true"}).to_dict(),
     )
     assert _evaluate(qml_engine, "testWindow.leBondSuspect()") is False
+
+
+def _dial_dialog(qml_engine, window):
+    dialog = _settings_object(window, "dialLinkDialog")
+    qml_engine.globalObject().setProperty("dialLinkDialog", qml_engine.newQObject(dialog))
+    text = _settings_object(window, "dialLinkText")
+    qml_engine.globalObject().setProperty("dialLinkText", qml_engine.newQObject(text))
+    return dialog, text
+
+
+def _visible_dial_actions(qml_engine):
+    return _evaluate(qml_engine, '''dialLinkDialog.customFooterActions
+        .filter(action => action.visible).map(action => action.text)''')
+
+
+def _bridge_methods(qml_engine):
+    return _evaluate(qml_engine, "testBridge.calls.map(call => call.method)")
+
+
+def _wait_closed(dialog):
+    for _ in range(100):
+        if not dialog.property("visible"):
+            return
+        QTest.qWait(20)
+    raise AssertionError("dialog did not close")
+
+
+def _close_dial_dialog(dialog):
+    assert QMetaObject.invokeMethod(dialog, "close")
+    _wait_closed(dialog)
+
+
+def test_phone_link_dialog_asks_before_dialing_and_explains_disabled_calls(
+    qml_engine, settings_window,
+):
+    window, bridge = settings_window
+    dialog, text = _dial_dialog(qml_engine, window)
+    number_label = _settings_object(window, "dialLinkNumber")
+
+    # Calls off: say so and offer the settings instead of a Call button.
+    bridge.setProperty("status", {"daemon": True, "calls_enabled": False})
+    _evaluate(qml_engine, "testBridge.dialLinkRequested('+15550100000', '')")
+    QGuiApplication.processEvents()
+    assert dialog.property("visible") is True
+    assert dialog.property("canCall") is False
+    assert "turned off" in text.property("text")
+    assert "+15550100000" in text.property("text")
+    assert _visible_dial_actions(qml_engine) == ["Open iPhone Settings"]
+    _evaluate(qml_engine, "dialLinkDialog.customFooterActions[0].trigger()")
+    QGuiApplication.processEvents()
+    assert _evaluate(qml_engine, "testWindow.iphoneSettingsPage !== null") is True
+    _evaluate(qml_engine, "testWindow.closePhoneSettings()")
+    _wait_closed(dialog)
+
+    # Calls ready: a known contact is named, the number is shown, and only
+    # the Call action dials.
+    bridge.setProperty("contactNames", {"+15550100000": "<b>Test Contact</b>"})
+    bridge.setProperty("status", {"daemon": True, "calls_enabled": True, "calls_state": "ready"})
+    _evaluate(qml_engine, "testBridge.dialLinkRequested('+15550100000', '')")
+    QGuiApplication.processEvents()
+    assert dialog.property("canCall") is True
+    assert dialog.property("title") == "Place Call?"
+    assert text.property("text") == "Call <b>Test Contact</b> from your iPhone?"
+    assert _evaluate(qml_engine, "dialLinkText.textFormat") == 0  # Text.PlainText
+    assert number_label.property("visible") is True
+    assert number_label.property("text") == "+15550100000"
+    assert _visible_dial_actions(qml_engine) == ["Call"]
+    assert "dialCall" not in _bridge_methods(qml_engine)
+    _evaluate(qml_engine, "dialLinkDialog.customFooterActions[1].trigger()")
+    assert _evaluate(qml_engine, "testBridge.calls[testBridge.calls.length - 1]") == {
+        "method": "dialCall", "args": ["+15550100000"],
+    }
+    _wait_closed(dialog)
+
+    # Invalid and emergency links never offer a call.
+    for number, problem, expected in (
+        ("", "invalid", "does not contain"), ("112", "emergency", "Emergency"),
+    ):
+        _evaluate(qml_engine, f"testBridge.dialLinkRequested('{number}', '{problem}')")
+        QGuiApplication.processEvents()
+        assert expected in text.property("text")
+        assert _visible_dial_actions(qml_engine) == []
+        assert dialog.property("canCall") is False
+        _close_dial_dialog(dialog)
+    assert _bridge_methods(qml_engine).count("dialCall") == 1
+
+
+def test_phone_link_dialog_waits_for_the_first_status(qml_engine, settings_window):
+    window, bridge = settings_window
+    dialog, text = _dial_dialog(qml_engine, window)
+    # A link that started the client arrives before the status: no flash of
+    # "turned off" with a settings button that then becomes Call.
+    _evaluate(qml_engine, "testBridge.dialLinkRequested('+15550100000', '')")
+    QGuiApplication.processEvents()
+    assert dialog.property("visible") is False
+    bridge.setProperty("status", {"daemon": True, "calls_enabled": True, "calls_state": "ready"})
+    QGuiApplication.processEvents()
+    assert dialog.property("visible") is True
+    assert _visible_dial_actions(qml_engine) == ["Call"]
+    _close_dial_dialog(dialog)
+
+    # A failed status read still answers, as unreachable.
+    bridge.setProperty("status", {})
+    _evaluate(qml_engine, "testBridge.dialLinkRequested('+15550100000', '')")
+    QGuiApplication.processEvents()
+    assert dialog.property("visible") is False
+    bridge.setProperty("status", {"daemon": False})
+    QGuiApplication.processEvents()
+    assert "not reachable" in text.property("text")
+    assert _visible_dial_actions(qml_engine) == ["Open iPhone Settings"]
+    _close_dial_dialog(dialog)
+
+
+def test_phone_link_dialog_never_turns_a_button_into_call(qml_engine, settings_window):
+    window, bridge = settings_window
+    dialog, text = _dial_dialog(qml_engine, window)
+    bridge.setProperty("status", {"daemon": True, "calls_enabled": True, "calls_state": "connecting"})
+    _evaluate(qml_engine, "testBridge.dialLinkRequested('+15550100000', '')")
+    QGuiApplication.processEvents()
+    assert "still connecting" in text.property("text")
+    assert _visible_dial_actions(qml_engine) == ["Open iPhone Settings"]
+    # Calls become ready while the dialog is open: the offer stays as shown.
+    bridge.setProperty("status", {"daemon": True, "calls_enabled": True, "calls_state": "ready"})
+    QGuiApplication.processEvents()
+    assert _visible_dial_actions(qml_engine) == ["Open iPhone Settings"]
+    assert dialog.property("canCall") is False
+    _close_dial_dialog(dialog)
+
+    # The reverse only takes Call away.
+    _evaluate(qml_engine, "testBridge.dialLinkRequested('+15550100000', '')")
+    QGuiApplication.processEvents()
+    assert _visible_dial_actions(qml_engine) == ["Call"]
+    bridge.setProperty("status", {"daemon": True, "calls_enabled": True, "calls_state": "bluez_conflict"})
+    QGuiApplication.processEvents()
+    assert _visible_dial_actions(qml_engine) == []
+    assert "(bluez_conflict)" in text.property("text")
+    # A stale trigger cannot dial either.
+    _evaluate(qml_engine, "dialLinkDialog.customFooterActions[1].trigger()")
+    assert "dialCall" not in _bridge_methods(qml_engine)
+    _wait_closed(dialog)
+
+
+def test_a_second_phone_link_never_replaces_the_number_in_an_open_dialog(
+    qml_engine, settings_window,
+):
+    window, bridge = settings_window
+    dialog, text = _dial_dialog(qml_engine, window)
+    bridge.setProperty("status", {"daemon": True, "calls_enabled": True, "calls_state": "ready"})
+    _evaluate(qml_engine, "testBridge.dialLinkRequested('+15550100000', '')")
+    QGuiApplication.processEvents()
+    assert dialog.property("number") == "+15550100000"
+    # Any session process can send a link; the open dialog is closed first.
+    _evaluate(qml_engine, "testBridge.dialLinkRequested('+15550100001', '')")
+    QGuiApplication.processEvents()
+    assert dialog.property("number") == "+15550100000"
+    for _ in range(100):
+        if dialog.property("number") == "+15550100001" and dialog.property("visible"):
+            break
+        QTest.qWait(20)
+    assert dialog.property("number") == "+15550100001"
+    assert "+15550100001" in text.property("text")
+    assert dialog.property("visible") is True
+    assert "dialCall" not in _bridge_methods(qml_engine)
+    _close_dial_dialog(dialog)
 
 
 def test_optional_phone_status_indicator_appears_only_with_known_values(
@@ -2865,6 +3032,234 @@ Item {
     assert "ReferenceError" not in log and "TypeError" not in log, log
 
 
+@pytest.mark.private_dbus
+def test_quickshell_thread_list_keyboard_navigation(tmp_path, quickshell_environment):
+    """Send real clicks and keys to the shell, with no live transports."""
+    import shutil
+    import subprocess
+
+    executable = shutil.which("quickshell")
+    if executable is None:
+        pytest.skip("Quickshell is not installed")
+    for source in (ROOT / "data/quickshell").glob("*.qml"):
+        shutil.copyfile(source, tmp_path / source.name)
+    shutil.copyfile(
+        ROOT / "src/blueferry/qt/qml/ConversationLogic.qml",
+        tmp_path / "ConversationLogic.qml",
+    )
+    (tmp_path / "Theme.qml").write_text("import QtQuick\nThemePalette {}\n")
+    (tmp_path / "SetupTransport.qml").write_text('''import QtQuick
+Item {
+  signal lineReceived(int id, string kind, string line)
+  signal finished(int id, string kind, int code, string output, string diagnostic)
+  function execute(id, kind, command, interactive) {}
+  function cancel(id) {}
+  function write(id, text) {}
+}
+''')
+    (tmp_path / "BackendBridge.qml").write_text('''import QtQuick
+Item {
+  property bool desktopClient: false
+  property int nextId: 1
+  signal response(string method, int requestId, var result)
+  signal failure(string method, int requestId, string message)
+  signal eventReceived(string name, var data)
+  function request(method, args) { return nextId++; }
+  function requestLatest(method, args) {}
+  function cancelLatest(method) {}
+}
+''')
+    config = tmp_path / "shell.qml"
+    source = config.read_text().replace("import QtQuick\n", "import QtQuick\nimport QtTest\n", 1)
+    probe = r'''
+  TestCase {
+    parent: applicationSurface
+    name: "ThreadNavigation"
+    when: applicationSurface.Window.active
+
+    function expect(actual, expected, detail) {
+      if (actual !== expected) console.error(detail, "expected", expected, "got", actual);
+      compare(actual, expected, detail);
+    }
+
+    function test_navigation() {
+      setupController.configured = true;
+      root.phoneSettingsVisible = false;
+      const threads = [];
+      for (let index = 0; index < 20; index++) {
+        threads.push({key: "thread:" + index, name: "Person " + index,
+          recipients: ["person" + index + "@example.com"], messages: [],
+          reply_ready: true, is_group: false, starred: false});
+      }
+      root.threads = threads;
+      wait(50);
+      expect(root.selectedThreadKey, "", "loading threads must not select one");
+      keyClick(Qt.Key_Down);
+      expect(root.selectedThreadKey, "thread:0", "the list has initial keyboard focus");
+      const row = threadList.itemAtIndex(2);
+      verify(row !== null);
+      mouseClick(row, row.width / 2, row.height / 2);
+      compare(root.selectedThreadKey, "thread:2");
+      keyClick(Qt.Key_Down);
+      expect(root.selectedThreadKey, "thread:3", "Down opens the next conversation");
+      keyClick(Qt.Key_Up);
+      compare(root.selectedThreadKey, "thread:2", "Up opens the previous conversation");
+
+      for (let index = 3; index < threads.length; index++) keyClick(Qt.Key_Down);
+      compare(root.selectedThreadKey, "thread:19");
+      wait(50);
+      verify(threadList.contentY > 0, "keyboard selection must scroll the list");
+      const last = threadList.itemAtIndex(19);
+      verify(last !== null);
+      const lastY = last.mapToItem(threadList, 0, 0).y;
+      verify(lastY >= 0 && lastY + last.height <= threadList.height + 1,
+        "the selected row must stay visible");
+      keyClick(Qt.Key_Down);
+      compare(root.selectedThreadKey, "thread:19", "Down stops at the end");
+      for (let index = 0; index < threads.length; index++) keyClick(Qt.Key_Up);
+      compare(root.selectedThreadKey, "thread:0", "Up stops at the beginning");
+
+      // Refreshes can reorder rows (new messages, starring). Selection belongs
+      // to a thread key, not the old row number or a transient model reset.
+      root.selectedThreadKey = "thread:5";
+      root.reload();
+      backendBridge.response("threads", root.threadsRequestId, threads.slice().reverse());
+      wait(50);
+      compare(root.selectedThreadKey, "thread:5", "refresh preserves the selected thread");
+      keyClick(Qt.Key_Down);
+      expect(root.selectedThreadKey, "thread:4", "Down follows the refreshed order");
+
+      // Arrow keys remain text-editing keys while the composer has focus,
+      // including when a history refresh rebuilds the delegates.
+      composer.text = "first line\nsecond line";
+      composer.forceActiveFocus();
+      const editor = composer.contentChildren[0];
+      editor.cursorPosition = editor.length;
+      root.reload();
+      backendBridge.response("threads", root.threadsRequestId, threads);
+      wait(50);
+      keyClick(Qt.Key_Up);
+      compare(root.selectedThreadKey, "thread:4");
+      verify(editor.cursorPosition < "first line\n".length);
+      keyClick(Qt.Key_Down);
+      verify(editor.cursorPosition >= "first line\n".length);
+      compare(composer.text, "first line\nsecond line");
+
+      threadList.forceActiveFocus();
+      root.reload();
+      backendBridge.response("threads", root.threadsRequestId,
+        threads.filter(thread => thread.key !== "thread:4"));
+      wait(50);
+      expect(root.selectedThreadKey, "", "removing the selected thread clears selection");
+      keyClick(Qt.Key_Down);
+      expect(root.selectedThreadKey, "thread:0", "navigation recovers after removal");
+
+      newMessagePopup.open();
+      wait(50);
+      keyClick(Qt.Key_Down);
+      expect(root.selectedThreadKey, "thread:0", "dialog keys must not navigate threads");
+      newMessagePopup.close();
+      wait(50);
+      keyClick(Qt.Key_Down);
+      expect(root.selectedThreadKey, "thread:1", "closing the dialog restores list focus");
+
+      root.selectedThreadKey = "";
+      root.threads = [];
+      wait(50);
+      keyClick(Qt.Key_Up);
+      keyClick(Qt.Key_Down);
+      compare(root.selectedThreadKey, "", "empty lists do not select anything");
+      root.threads = threads;
+      wait(50);
+      keyClick(Qt.Key_Down);
+      compare(root.selectedThreadKey, "thread:0", "Down starts at the first thread");
+      root.selectedThreadKey = "";
+      keyClick(Qt.Key_Up);
+      compare(root.selectedThreadKey, "thread:19", "Up starts at the last thread");
+      console.log("BLUEFERRY_THREAD_NAVIGATION_OK");
+    }
+  }
+'''
+    config.write_text(source[:source.rfind("}")] + probe + "}\n")
+    environment = quickshell_environment.copy()
+    environment.pop("BLUEFERRY_OPEN_THREAD_KEY", None)
+    environment.pop("BLUEFERRY_OPEN_MESSAGE_HANDLE", None)
+    result = subprocess.run(
+        [executable, "--path", str(config)], env=environment,
+        capture_output=True, text=True, timeout=15, check=False,
+    )
+    log = result.stdout + result.stderr
+    assert result.returncode == 0 and "BLUEFERRY_THREAD_NAVIGATION_OK" in log, log
+    assert "WARN scene:" not in log and "ReferenceError" not in log and "TypeError" not in log, log
+
+
+def test_quickshell_composer_wraps_and_scrolls_when_resized(qml_engine):
+    warnings = []
+
+    def collect_warnings(errors):
+        warnings.extend(error.toString() for error in errors)
+
+    qml_engine.warnings.connect(collect_warnings)
+    component = QQmlComponent(qml_engine)
+    component.setData(b'''import QtQuick
+import QtQuick.Layouts
+import "."
+Window {
+  width: 320; height: 320; visible: true
+  ThemePalette { id: theme }
+  RowLayout {
+    anchors.left: parent.left
+    anchors.right: parent.right
+    anchors.top: parent.top
+    FerryMessageComposer {
+      id: composer
+      objectName: "composer"
+      ferryTheme: theme
+      Layout.fillWidth: true
+      placeholderText: "Write a message..."
+    }
+  }
+  readonly property real editorWidth: composer.contentChildren[0].width
+  readonly property int lineCount: composer.contentChildren[0].lineCount
+  readonly property real scrollHeight: composer.contentItem.contentHeight
+  readonly property real maxComposerHeight: theme.scaled(144)
+}''', QUrl.fromLocalFile(str(ROOT / "data/quickshell/composer-test.qml")))
+    window = component.create()
+    try:
+        assert window is not None, [error.toString() for error in component.errors()]
+        composer = window.findChild(QObject, "composer")
+        assert composer is not None
+        QTest.qWait(50)
+        empty_height = composer.property("height")
+        assert empty_height > 0
+        assert window.property("editorWidth") == pytest.approx(composer.property("availableWidth"))
+
+        composer.setProperty("text", "A long message that needs to wrap. " * 40)
+        QTest.qWait(50)
+        narrow_lines = window.property("lineCount")
+        assert narrow_lines > 1 and composer.property("multiline")
+        assert empty_height < composer.property("height") <= window.property("maxComposerHeight")
+        assert window.property("scrollHeight") > composer.property("availableHeight")
+        assert window.property("editorWidth") == pytest.approx(composer.property("availableWidth"))
+
+        window.setWidth(640)
+        QTest.qWait(50)
+        assert window.property("editorWidth") == pytest.approx(composer.property("availableWidth"))
+        assert composer.property("width") == pytest.approx(640)
+        assert 1 < window.property("lineCount") < narrow_lines
+
+        composer.setProperty("text", "")
+        QTest.qWait(50)
+        assert composer.property("height") == pytest.approx(empty_height)
+        assert not composer.property("multiline")
+    finally:
+        if window is not None:
+            window.deleteLater()
+            QGuiApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        qml_engine.warnings.disconnect(collect_warnings)
+    assert not warnings, "\n".join(warnings)
+
+
 @pytest.mark.parametrize("late_after_refresh", [False, True])
 @pytest.mark.private_dbus
 @pytest.mark.parametrize("late_read", ["success", "failure"])
@@ -4391,6 +4786,50 @@ def test_quickshell_now_playing_renders_the_bridge_view(qml_engine) -> None:
     finally:
         strip.deleteLater()
         QGuiApplication.processEvents()
+
+
+def test_quickshell_now_playing_stays_hidden_during_empty_reconnects(qml_engine) -> None:
+    from blueferry.quickshell_bridge import now_playing_view
+
+    theme_component = _component(qml_engine, "data/quickshell/ThemePalette.qml")
+    theme = theme_component.create()
+    assert theme is not None, theme_component.errors()
+    theme.setParent(qml_engine)
+    component = _component(qml_engine, "data/quickshell/QuickshellNowPlaying.qml")
+    strip = component.createWithInitialProperties({"ferryTheme": theme})
+    assert strip is not None, component.errors()
+    snapshot = {
+        "enabled": True, "available": True, "player": {"name": "Music", "state": "paused"},
+        "track": {}, "supported_commands": ["volume-up", "volume-down"],
+    }
+    theme.setParent(strip)
+    window = QQuickWindow()
+    window.resize(640, 100)
+    strip.setParentItem(window.contentItem())
+    window.show()
+    QGuiApplication.processEvents()
+    try:
+        for available in (False, True, False, True):
+            strip.setProperty("view", now_playing_view({**snapshot, "available": available}))
+            assert not strip.property("visible")
+
+        track = {"title": "A podcast", "artist": "A host"}
+        strip.setProperty("view", now_playing_view({
+            **snapshot, "track": track, "supported_commands": ["play"],
+        }))
+        assert strip.property("visible")
+        assert strip.findChild(QObject, "nowPlayingSummary").property("text") == (
+            "⏸  A podcast — A host"
+        )
+        assert strip.findChild(QObject, "nowPlayingToggle").property("enabled")
+
+        strip.setProperty("view", now_playing_view(snapshot))
+        assert not strip.property("visible")
+    finally:
+        window.close()
+        strip.deleteLater()
+        window.deleteLater()
+        QGuiApplication.sendPostedEvents(None, QEvent.DeferredDelete)
 
 
 def test_quickshell_fetches_now_playing_only_with_the_opt_in(qml_engine) -> None:

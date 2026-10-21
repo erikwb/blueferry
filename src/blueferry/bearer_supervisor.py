@@ -310,10 +310,12 @@ class BearerSupervisor:
         # until BlueZ is replaced or ANCS deliberately resets the transport.
         self._le_dial_spent = False
         self._le_reset_pending = False
+        self._le_reset_down_seen = False
         self._le_reset_failures = 0
         self._next_le_reset_attempt = 0.0
         self._last_errors: dict[str, tuple[str, str]] = {}
         self._states: dict[str, bool | None] = {"bredr": None, "le": None}
+        self._status_dirty = False
         self._failures: dict[str, int] = {"bredr": 0, "le": 0}
         self._next_attempt: dict[str, float] = {"bredr": 0.0, "le": 0.0}
         self._connected_since: dict[str, float | None] = {"bredr": None, "le": None}
@@ -486,6 +488,7 @@ class BearerSupervisor:
         if not self._le_reset_pending and not self._le_recovery_budget.take():
             return
         if not self._le_reset_pending:
+            self._le_reset_down_seen = False
             log.warning(
                 "ANCS transport disagrees with BlueZ; resetting the LE bearer"
             )
@@ -569,9 +572,30 @@ class BearerSupervisor:
         """Handle org.bluez.Bearer.LE1.Disconnected(name, message)."""
         if not self._running:
             return
+        self._count_le_disconnect(str(name))
+        # Every drop is published, also a local or suspend one: the link
+        # and every GATT registration on it are gone either way.
+        self._observe_signalled_le(False)
+
+    def _observe_signalled_le(self, connected: bool) -> None:
+        """Publish an LE transition that BlueZ signalled, without a poll.
+
+        A link can drop and come back between two polls (0.5 s on
+        hardware). Polling alone then never reports the cycle, and ANCS
+        and AMS keep registrations that iOS forgot with the link. The
+        signals arrive in order, so the last one always matches the
+        bearer; polling stays as the fallback.
+        """
+        if self._states["le"] is connected:
+            return
+        # The Disconnected signal counts the drop for the stale-bond report
+        # with its reason; the polled fallback must not count it again.
+        self._update_state("le", connected, deliberate=True, notify_status=False)
+
+    def _count_le_disconnect(self, name: str) -> None:
         first_signal = not self._le_disconnect_signal_seen
         self._le_disconnect_signal_seen = True
-        reason = _LE_DISCONNECT_REASONS.get(str(name), "unknown")
+        reason = _LE_DISCONNECT_REASONS.get(name, "unknown")
         now = self._clock()
         polled = self._le_last_polled_drop_at
         if (
@@ -595,6 +619,9 @@ class BearerSupervisor:
         self._le_last_polled_drop_at = None
         up_at, self._le_link_up_at = self._le_link_up_at, None
         lifetime = None if up_at is None else now - up_at
+        observations.properties_changed(
+            self.device_path, _INTERFACES["le"], {"Connected": False}, [],
+        )
         if reason == "suspend":
             return
         if (
@@ -618,8 +645,11 @@ class BearerSupervisor:
         interface = str(interface)
         observations.properties_changed(self.device_path, interface, changed, _invalidated)
         if interface == _INTERFACES["le"] and "Connected" in changed:
-            if bool(changed["Connected"]):
+            self._le_api_available = True
+            connected = bool(changed["Connected"])
+            if connected:
                 self._le_link_up_at = self._clock()
+            self._observe_signalled_le(connected)
         if interface in {_INTERFACES["le"], "org.bluez.Device1"} and any(
             bool(changed.get(key)) for key in ("Paired", "Bonded")
         ):
@@ -790,6 +820,12 @@ class BearerSupervisor:
         bredr, le = self._refresh_states()
         self._age_le_evidence()
 
+        # Connected=false can arrive before our Disconnect call completes.
+        # Keep publishing link changes, but let the reply/error callback finish
+        # the operation before completing a reset or starting either bearer.
+        if self._disconnecting:
+            return True
+
         if self._le_reset_pending and self._le_enabled:
             if le is False:
                 self._complete_le_reset()
@@ -818,6 +854,7 @@ class BearerSupervisor:
         if (
             self._le_api_available is False
             or self._le_settle_id is not None
+            or self._disconnecting
             or self._le_dial_exhausted()
         ):
             return
@@ -860,7 +897,9 @@ class BearerSupervisor:
         # Presence consumers need one complete poll. Publishing Classic first
         # leaves the previous LE value visible and can falsely report a return
         # while both bearers are disconnecting.
-        if previous != self._states and self._on_status is not None:
+        changed = previous != self._states or self._status_dirty
+        self._status_dirty = False
+        if changed and self._on_status is not None:
             self._on_status()
         return bredr, le
 
@@ -912,6 +951,8 @@ class BearerSupervisor:
         previous = self._states[kind]
         self._states[kind] = value
         if kind == "le":
+            if value is False and self._le_reset_pending:
+                self._le_reset_down_seen = True
             if value is not True:
                 self._le_recovery_budget.observe_health(False, None)
             if value is True:
@@ -976,8 +1017,15 @@ class BearerSupervisor:
         # therefore receive only genuine bearer lifecycle transitions.
         if previous != value and kind == "le" and self._on_le_state is not None:
             self._on_le_state(value)
-        if notify_status and previous != value and self._on_status is not None:
-            self._on_status()
+        if previous != value:
+            if notify_status:
+                if self._on_status is not None:
+                    self._on_status()
+            else:
+                # Notification clients see LE edges immediately. Presence
+                # consumers need the next complete two-bearer observation,
+                # rather than an LE event paired with stale Classic state.
+                self._status_dirty = True
         if kind == "le" and value is True:
             self._retarget_pending_classic_connect()
 
@@ -1000,6 +1048,10 @@ class BearerSupervisor:
         self._request_connect("bredr")
 
     def _request_connect(self, kind: str) -> None:
+        # Also guard callbacks already queued before a disconnect began. A
+        # state change or elapsed settle timer cannot release this operation.
+        if self._disconnecting:
+            return
         if kind in self._connecting:
             return
         if kind == "bredr" and "le" in self._connecting:
@@ -1234,6 +1286,7 @@ class BearerSupervisor:
             or not self._le_enabled
             or self._classic_connect_should_be_targeted()
             or self._connecting
+            or self._disconnecting
         ):
             return
         try:
@@ -1306,20 +1359,28 @@ class BearerSupervisor:
 
     def _complete_le_reset(self) -> None:
         """Publish a completed LE reset even if its down-state was transient."""
+        down_seen = self._le_reset_pending and self._le_reset_down_seen
         self._le_reset_pending = False
+        self._le_reset_down_seen = False
         self._le_reset_failures = 0
         self._next_le_reset_attempt = 0.0
-        observations.properties_changed(
-            self.device_path, _INTERFACES["le"], {}, ["Connected"],
-        )
-        self._update_state("le", False, deliberate=True)
-        if self.bredr_connected and self._le_enabled:
+        if not down_seen:
+            # Without a down observation, the reply supplies the session
+            # boundary. If signals already delivered down/up, a late reply
+            # must not retire the replacement connection a second time.
+            observations.properties_changed(
+                self.device_path, _INTERFACES["le"], {}, ["Connected"],
+            )
+            self._update_state("le", False, deliberate=True)
+        if self.bredr_connected and self._le_enabled and not self.le_connected:
             self._schedule_le_connect()
 
     def _disconnect_failed(self, error: Exception, generation: int) -> None:
         if generation != self._generation:
             return
         self._disconnecting.discard("le")
+        if not self._le_reset_pending:
+            return
         name, message = _connect_error_parts(error)
         if name in {
             "org.bluez.Error.NotConnected",
