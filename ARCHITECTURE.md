@@ -486,8 +486,12 @@ A change to these rules has to be made in both places.
   connection.
 - **Bearers:** `bearer_supervisor` keeps BR/EDR and LE connected, independent
   of desktop applets. In full mode a missing LE bearer holds back MAP/PBAP
-  reconnects. Compatibility mode leaves LE disabled. Classic reconnects back
-  off exponentially (up to 10 min without a live LE link). After three failed
+  reconnects. Compatibility mode leaves LE disabled. LE transitions come
+  from `Bearer.LE1.Disconnected` and `Bearer.LE1` `Connected` property
+  changes as they happen, so ANCS, AMS and the battery client also see a
+  drop that is back before the next five-second poll; polling stays as the
+  fallback. Classic reconnects back off exponentially (up to 10 min without
+  a live LE link). After three failed
   attempts with no sign of the phone (no LE link, no RSSI from a discovery in
   the last two minutes), or when BlueZ reports that the phone closed the
   Classic link itself (`Bearer.BREDR1.Disconnected` with `Reason.Remote`,

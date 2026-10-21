@@ -427,11 +427,38 @@ def test_a_stale_bond_report_flip_only_publishes_status(make_daemon) -> None:
     statuses = []
     instance._emit_status = lambda: statuses.append(True)
     h.supervisor._on_le_bond_report = instance._emit_status
+    # Signalled LE transitions are bearer changes of their own; count them
+    # apart from the report flip.
+    transitions = []
+    bearer_status_changed = instance._bearer_status_changed
+
+    def observe_transition() -> None:
+        transitions.append(True)
+        bearer_status_changed()
+
+    h.supervisor._on_status = observe_transition
 
     h.supervisor.start()
     assert instance.proximity.state == pl.STATE_ARMED
     _burst(h, bearer_supervisor.LE_FLAP_PERSIST_SECONDS - 3)
     assert not h.supervisor.le_bond_suspect
+    acted.clear()
+    statuses.clear()
+    transitions.clear()
+
+    # Short drops raise the report, but presence consumers wait for a complete
+    # poll. The report itself must not trigger proximity or calls work.
+    h.flap(reason=TIMEOUT)
+    h.flap(reason=TIMEOUT)
+
+    assert h.supervisor.le_bond_suspect
+    assert transitions == []
+    assert statuses == [True]
+    assert acted == []
+    h.poll()
+    assert len(transitions) == 1
+    assert acted == ["proximity", "calls"]
+
     # The user disconnects the phone from the desktop; the supervisor's
     # cache still says connected until its next poll.
     instance._on_device_disconnected("org.bluez.Reason.Local", "")
@@ -439,18 +466,10 @@ def test_a_stale_bond_report_flip_only_publishes_status(make_daemon) -> None:
     assert instance.proximity.state == pl.STATE_IDLE
     acted.clear()
     statuses.clear()
-
-    # Short drops still queued raise the report before that poll.
-    h.flap(reason=TIMEOUT)
-    h.flap(reason=TIMEOUT)
-
-    assert h.supervisor.le_bond_suspect
-    assert statuses == [True]
-    assert acted == []
     # Clearing the report is as inert as raising it.
     h.supervisor.note_le_usable("ANCS authorized")
     assert not h.supervisor.le_bond_suspect
-    assert statuses == [True, True]
+    assert statuses == [True]
     assert acted == []
     assert instance.proximity.state == pl.STATE_IDLE
 

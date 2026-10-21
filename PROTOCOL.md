@@ -149,8 +149,9 @@ connection. MAP and PBAP are its successful end state; absence of Notification
 Access is expected and group messages may consequently lack ANCS-derived group
 metadata.
 
-The RTL8761BU (`0bda:8771`), AzureWave RTL8852CE (`13d3:3586`), and Realtek
-`0bda:8922` default to explicit pairing. RTL8761BU can abort its initial `Connect`
+The RTL8761BU (`0bda:8771`, and `2357:0604` on the TP-Link UB500), AzureWave
+RTL8852CE (`13d3:3586`), and Realtek `0bda:8922` default to explicit pairing.
+RTL8761BU can abort its initial `Connect`
 before authentication (#144); explicit pairing restored ANCS on the RTL8852CE
 (#58) and was used for a successful MAP/PBAP connection on `0bda:8922` (#68).
 Clients apply these defaults from the shared adapter probe and retain manual
@@ -546,6 +547,32 @@ write keeps solicitation on. A previously authorized Control Point failure or
 timeout escalates to one serialized `Bearer.LE1.Disconnect`; MAP/PBAP stay
 available and LE rebuilds behind the profile-ordering gate.
 
+`Notifying=true` does not prove that iOS has the CCC on the current link.
+Observed with btmon on 2026-10-15 (Intel AX200, BlueZ 5.87, iOS 27, LE drop
+forced with `Bearer.LE1.Disconnect`): while LE was down, bluetoothd restored
+the Notification Source CCC over a BR/EDR ATT channel (PSM 31) that iOS closed
+about 90 ms later, and on the new LE link it wrote neither the Notification
+Source nor the Data Source CCC. iOS acknowledged the authorization probe on the
+Control Point, but no Data Source response followed. Before escalating, a
+silent probe of a previously authorized transport on a settled LE link
+therefore re-enables both CCCs once per LE link (`StopNotify`, then
+`StartNotify`, asynchronously; a `StopNotify` refused because no session exists
+goes on to `StartNotify`) and repeats the probe. Only when that probe stays
+silent too, or the re-enable fails, does the LE reset above follow. The toggle
+runs only after a completed Control Point write on a settled link, never on a
+dropped or flapping one, and never sends `StartNotify` once the link was
+reset meanwhile.
+Bearer signals are session boundaries, even when an LE disconnect and return
+both occur between the five-second health polls. They are delivered immediately
+to the notification clients; polling remains a fallback. An unavailable cached
+read is not proof of a disconnect, and cannot by itself unblock a failed ANCS
+transport. A confirmed disconnect does unblock it, even if an unavailable read
+intervenes before reconnection. Successful cached reads are refreshed ahead of
+the poll interval so ordinary reply latency and timer jitter do not produce
+false unknown states. Expired or failed reads still provide no health evidence.
+Subscription replies and notification receivers are tied to their ANCS session;
+callbacks from a retired session cannot authorize or enqueue work in its successor.
+
 A stale LE bond looks different from an absent phone. Observed with
 btmon on an Intel AX200, BlueZ 5.87, Linux 7.2.8 and iOS 27: after the bond
 had been removed on only one side, the iPhone still connected over LE about
@@ -725,7 +752,13 @@ specification-based expectation, not a captured result.
   per LE link; after that the ordinary subscription backoff applies.
 - AMS offers relative volume steps and fixed skips only, so an MPRIS volume
   write becomes one step, MPRIS `CanSeek` is false and `Seek`/`SetPosition`
-  have no effect, and MPRIS `Stop` pauses. The skips remain available through
+  have no effect, and MPRIS `Stop` pauses. A track whose PlaybackInfo is not
+  known yet reports `Paused`, not `Stopped` (desktops answer Stopped with
+  Play). Explicit `Play`, `Pause` and `Stop` retain their direction while
+  playback is unknown; a toggle-only command list cannot safely satisfy
+  them. With a known state, a toggle can supply the requested transition,
+  or the call has no effect if the phone is already in that state. Only
+  `PlayPause` always requests a toggle. The skips remain available through
   `Media1`. MPRIS `Rate` follows the PlaybackInfo rate (the last positive one
   while paused, since MPRIS forbids 0), `Volume` is omitted (from `Get`,
   `GetAll` and introspection alike) until the phone reports it, the transport
