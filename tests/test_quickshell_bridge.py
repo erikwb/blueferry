@@ -559,11 +559,55 @@ def test_bridge_hides_now_playing_until_the_media_service_is_available(snapshot)
     }
 
 
-def test_bridge_marks_an_idle_player() -> None:
-    snapshot = {"enabled": True, "available": True, "player": {}, "track": {}}
+@pytest.mark.parametrize("state", [None, "paused", "stopped"])
+@pytest.mark.parametrize("track", [
+    {},
+    {"title": None, "artist": None, "album": None, "duration": None},
+    {"title": " \t", "artist": "\n", "album": "An album"},
+])
+def test_bridge_hides_empty_inactive_media_after_reconnect(state, track) -> None:
+    snapshot = {
+        "enabled": True, "available": True,
+        "player": {"name": "Music", "state": state, "volume": 0.0},
+        "track": track,
+        "supported_commands": ["volume-up", "volume-down"],
+        "supported_commands_known": True,
+    }
     bridge = QuickshellBridge(SimpleNamespace(now_playing=lambda: snapshot))  # type: ignore[arg-type]
 
-    assert bridge.dispatch("now_playing", {})["idle"] is True
+    assert bridge.dispatch("now_playing", {}) == {
+        "visible": False, "playing": False, "title": "", "artist": "", "idle": False,
+        "previous": False, "toggle": False, "next": False,
+    }
+
+
+@pytest.mark.parametrize("state", ["playing", "rewinding", "fast-forwarding"])
+def test_bridge_keeps_active_playback_visible_before_track_metadata(state) -> None:
+    snapshot = {
+        "enabled": True, "available": True, "player": {"state": state}, "track": {},
+        "supported_commands": ["pause"],
+    }
+    bridge = QuickshellBridge(SimpleNamespace(now_playing=lambda: snapshot))  # type: ignore[arg-type]
+
+    view = bridge.dispatch("now_playing", {})
+    assert view["visible"] and view["playing"] and view["toggle"]
+    assert not view["idle"]
+
+
+@pytest.mark.parametrize("track", [{"title": "A podcast"}, {"artist": "A broadcaster"}])
+@pytest.mark.parametrize("state", [None, "paused"])
+def test_bridge_keeps_named_media_visible_without_active_playback(track, state) -> None:
+    snapshot = {
+        "enabled": True, "available": True, "player": {"state": state}, "track": track,
+        "supported_commands": ["play"],
+    }
+    bridge = QuickshellBridge(SimpleNamespace(now_playing=lambda: snapshot))  # type: ignore[arg-type]
+
+    view = bridge.dispatch("now_playing", {})
+    assert view["visible"] and view["toggle"]
+    assert not view["playing"] and not view["idle"]
+    assert view["title"] == track.get("title", "")
+    assert view["artist"] == track.get("artist", "")
 
 
 def test_bridge_sends_only_the_transport_media_commands() -> None:
