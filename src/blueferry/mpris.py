@@ -150,10 +150,15 @@ class NameClaim:
 
     def _call(self, method: str, args: tuple, signature: str, reply, error) -> None:
         self._busy = True
-        self._connection.call_async(
-            _DBUS_NAME, _DBUS_PATH, _DBUS_NAME, method, signature, args,
-            reply, error, timeout=NAME_CALL_TIMEOUT_SECONDS,
-        )
+        try:
+            self._connection.call_async(
+                _DBUS_NAME, _DBUS_PATH, _DBUS_NAME, method, signature, args,
+                reply, error, timeout=NAME_CALL_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:  # a closed connection raises at once
+            # Answer like an asynchronous failure. Staying busy would park
+            # every later want() behind a reply that never comes.
+            error(exc)
 
     def _advance(self) -> None:
         if self._busy:
@@ -411,9 +416,14 @@ class MprisPlayer(dbus.service.Object):
 
     def _player_properties(self) -> dict[str, object]:
         state = self._media.state
-        if not self._media.available or state.playback_state is None:
+        if not self._media.available or (
+            state.playback_state is None and state.title is None
+        ):
             status = "Stopped"
-        elif state.playback_state == PlaybackState.Paused:
+        elif state.playback_state is None or state.playback_state == PlaybackState.Paused:
+            # A track without a known PlaybackInfo is not "Stopped": desktops
+            # answer Stopped with Play, which a playing phone ignores. The
+            # AMS client reads the missing value within seconds.
             status = "Paused"
         else:
             status = "Playing"
@@ -549,7 +559,14 @@ class MprisPlayer(dbus.service.Object):
 
     @dbus.service.method(PLAYER_IFACE, in_signature="", out_signature="", sender_keyword="sender")
     def Pause(self, sender=None) -> None:
-        self._player_call(sender, "pause")
+        self._pause(sender)
+
+    def _pause(self, sender) -> None:
+        self._authorize(sender, "media-command")
+        state = self._media.state
+        if state.playback_state is None or state.playing:
+            self._command("pause")
+        # Already paused: MPRIS says no effect.
 
     @dbus.service.method(PLAYER_IFACE, in_signature="", out_signature="", sender_keyword="sender")
     def PlayPause(self, sender=None) -> None:
@@ -558,11 +575,17 @@ class MprisPlayer(dbus.service.Object):
     @dbus.service.method(PLAYER_IFACE, in_signature="", out_signature="", sender_keyword="sender")
     def Stop(self, sender=None) -> None:
         # AMS has no stop; pausing is the closest non-destructive action.
-        self._player_call(sender, "pause")
+        self._pause(sender)
 
     @dbus.service.method(PLAYER_IFACE, in_signature="", out_signature="", sender_keyword="sender")
     def Play(self, sender=None) -> None:
-        self._player_call(sender, "play")
+        # Unknown playback must not turn an explicit Play into a toggle:
+        # the phone may already be playing while PlaybackInfo catches up.
+        self._authorize(sender, "media-command")
+        state = self._media.state
+        if not state.playing:
+            self._command("play")
+        # Already playing: MPRIS says no effect.
 
     @dbus.service.method(PLAYER_IFACE, in_signature="x", out_signature="", sender_keyword="sender")
     def Seek(self, offset: int, sender=None) -> None:

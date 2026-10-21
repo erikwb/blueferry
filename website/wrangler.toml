@@ -1,0 +1,12 @@
+# Existing Worker serving blueferry.weirdware.io, originally uploaded in the dashboard.
+name = "snowy-brook-1958"
+compatibility_date = "2026-09-08"
+workers_dev = true
+preview_urls = true
+routes = [{ pattern = "blueferry.weirdware.io", custom_domain = true }]
+
+[assets]
+directory = "./public"
+
+[build]
+command = "./website/build.sh"

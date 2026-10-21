@@ -116,11 +116,14 @@ def parse(blob: str) -> ParsedBMessage:
             if not line:
                 continue
             up = line.upper()
-            if up.startswith("FN:"):
-                sender_name = line[3:].strip() or None
-            elif up.startswith("N:") and sender_name is None:
+            # iOS sends "FN;CHARSET=UTF-8:name", so allow parameters.
+            prop, _, prop_value = line.partition(":")
+            prop = prop.split(";", 1)[0].upper()
+            if prop == "FN":
+                sender_name = prop_value.strip() or None
+            elif prop == "N" and sender_name is None:
                 # N: surname; first; middle; prefix; suffix
-                parts = line[2:].split(";")
+                parts = prop_value.split(";")
                 joined = " ".join(p.strip() for p in (parts[1:2] + parts[0:1])
                                   if p.strip())
                 sender_name = joined or None
