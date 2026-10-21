@@ -483,6 +483,15 @@ class DaemonClient(GObject.Object):
             mutation=True,
         )
 
+    def dial_async(self, number: str, on_ok, on_err) -> None:
+        """Place a call the user has just confirmed (Calls1.Dial)."""
+        self._submit(
+            lambda: self._call_backend(lambda backend: backend.dial(number)),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
     def set_contact_photos_async(self, enabled: bool, on_ok, on_err) -> None:
         self._submit(
             lambda: self._call_backend(lambda backend: backend.set_contact_photos(enabled)),
