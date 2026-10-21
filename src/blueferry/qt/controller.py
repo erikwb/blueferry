@@ -40,6 +40,7 @@ from blueferry.setup_client import (
     ConfigurationState,
     SetupClient,
 )
+from blueferry.tel_links import dial_request, known_contact_name
 
 # Bounds on the per-window avatar cache (least recently used entries are
 # dropped). The count covers a long list of small photos; the byte bound
@@ -76,6 +77,9 @@ class BridgeController(QObject):
     callHistoryChanged = Signal()
     nowPlayingChanged = Signal()
     phoneCallsChanged = Signal()
+    # (number, problem) of a clicked tel:/callto: link to confirm; see
+    # tel_links.dial_request. Never dials by itself.
+    dialLinkRequested = Signal(str, str)
 
     def __init__(
         self,
@@ -965,6 +969,16 @@ class BridgeController(QObject):
             self._call_action(lambda: self._backend.dial(selected))
 
     @Slot(str)
+    def requestDialLink(self, link: str) -> None:
+        """Ask QML to confirm a phone link; dialing waits for the user."""
+        number, problem = dial_request(link)
+        self.dialLinkRequested.emit(number, problem)
+
+    @Slot(str, result=str)
+    def contactNameForNumber(self, number: str) -> str:
+        return known_contact_name(self._state, str(number or ""))
+
+    @Slot(str)
     def answerCall(self, call_id: str) -> None:
         if call_id:
             self._call_action(lambda: self._backend.answer_call(str(call_id)))
@@ -1065,6 +1079,24 @@ class BridgeController(QObject):
 
         self._run(
             lambda: self._backend.set_ancs_notification_actions(enabled),
+            completed,
+            failed,
+        )
+
+    @Slot(bool)
+    def setMirrorNotificationRemovals(self, enabled: bool) -> None:
+        """Whether a removal on the iPhone also closes the desktop popup."""
+        def completed(value: object) -> None:
+            self._status["mirror_iphone_removals"] = bool(value)
+            self.statusChanged.emit()
+
+        def failed(message: str) -> None:
+            # Put the saved value back on screen after a failed save.
+            self._operation_failed(message)
+            self.statusChanged.emit()
+
+        self._run(
+            lambda: self._backend.set_mirror_notification_removals(bool(enabled)),
             completed,
             failed,
         )

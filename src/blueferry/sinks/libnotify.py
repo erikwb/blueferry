@@ -218,6 +218,9 @@ class LibnotifySink:
         # -> (uid, positive, token).
         self._ancs_actions: dict[int, tuple[int, int]] = {}
         self._ancs_retries: dict[int, tuple[int, bool, int]] = {}
+        # desktop notification id -> ANCS uid for every ANCS popup of the
+        # current UID session, so a removal on the iPhone can close it.
+        self._ancs_popups: dict[int, int] = {}
         # Buttons are offered only once the server confirmed the "actions"
         # capability; a server that draws no buttons gets the plain popup.
         self._server_actions = False
@@ -313,6 +316,7 @@ class LibnotifySink:
         # server's popups are gone, and their ids may name someone else's.
         getattr(self, "_ancs_actions", {}).clear()
         getattr(self, "_ancs_retries", {}).clear()
+        getattr(self, "_ancs_popups", {}).clear()
         getattr(self, "_call_notifications", {}).clear()
         getattr(self, "_call_popups", {}).clear()
         getattr(self, "_plugin_popups", {}).clear()
@@ -440,10 +444,7 @@ class LibnotifySink:
                     subscription.remove()
                 except Exception:
                     log.debug("could not remove stale message watch", exc_info=True)
-            try:
-                self._notif.CloseNotification(dbus.UInt32(oldest))
-            except dbus.exceptions.DBusException:
-                log.debug("could not close stale desktop notification", exc_info=True)
+            self._close_async(oldest)
 
     def amend_message_popup(self, handle: str, line: str) -> bool:
         """Append ``line`` to the open popup for message ``handle``.
@@ -576,6 +577,11 @@ class LibnotifySink:
                 int(event.notification_id),
                 int(getattr(event, "action_token", 0)),
             )
+        uid = getattr(event, "notification_id", None)
+        if uid is not None:
+            # Without its iPhone UID a popup can't be matched to a removal;
+            # tracking it under a made-up 0 could close an unrelated one.
+            self._track_ancs_popup(int(nid), int(uid))
         if clickable:
             if not hasattr(self, "_open_apps"):
                 self._open_apps = {}
@@ -784,13 +790,56 @@ class LibnotifySink:
 
     def close_ancs_notification(self, uid: int) -> None:
         """Close a popup whose iPhone notification was removed on the phone."""
+        closing: set[int] = set()
         for table in (
             getattr(self, "_ancs_actions", {}),
             getattr(self, "_ancs_retries", {}),
         ):
             for nid in [nid for nid, value in table.items() if value[0] == uid]:
                 table.pop(nid, None)
-                self._close_async(nid)
+                closing.add(nid)
+        # The removal mirror may run right after this for the same UID: it
+        # must not close these popups a second time.
+        popups = getattr(self, "_ancs_popups", {})
+        for nid in closing:
+            popups.pop(nid, None)
+        for nid in sorted(closing):
+            self._close_async(nid)
+
+    def _track_ancs_popup(self, nid: int, uid: int) -> None:
+        tracked = getattr(self, "_ancs_popups", None)
+        if tracked is None:
+            tracked = self._ancs_popups = {}
+        tracked.pop(nid, None)
+        tracked[nid] = uid
+        while len(tracked) > MAX_ANCS_ACTION_POPUPS:
+            tracked.pop(next(iter(tracked)))
+
+    def close_removed_ancs_popup(self, uid: int) -> None:
+        """Mirror a removal on the iPhone: close every popup for this UID."""
+        tracked = getattr(self, "_ancs_popups", {})
+        closing = {nid for nid, value in tracked.items() if value == uid}
+        for table in (
+            getattr(self, "_ancs_actions", {}),
+            getattr(self, "_ancs_retries", {}),
+        ):
+            closing.update(nid for nid, value in table.items() if value[0] == uid)
+        # Each popup is closed once, even if it is an action popup tracked
+        # in two tables.
+        for nid in closing:
+            tracked.pop(nid, None)
+            getattr(self, "_ancs_actions", {}).pop(nid, None)
+            getattr(self, "_ancs_retries", {}).pop(nid, None)
+        for nid in sorted(closing):
+            self._close_async(nid)
+
+    def forget_ancs_popups(self) -> None:
+        """The ANCS UID session ended; its UIDs may name other notifications.
+
+        The popups themselves stay until they expire: their notifications
+        may still exist on the iPhone.
+        """
+        getattr(self, "_ancs_popups", {}).clear()
 
     def close_all_ancs_notifications(self) -> None:
         """Retire every action popup when the ANCS session (and UIDs) reset.
@@ -901,10 +950,7 @@ class LibnotifySink:
             if nid is None:
                 return
             notifications.pop(nid, None)
-            try:
-                self._notif.CloseNotification(dbus.UInt32(nid))
-            except dbus.exceptions.DBusException as error:
-                log.debug("could not close call popup: %s", error.get_dbus_name())
+            self._close_async(nid)
             return
         if record.call_id in popups or self._policy() == NO_NOTIFICATIONS:
             return
@@ -1052,11 +1098,8 @@ class LibnotifySink:
             return
         if nid not in self._pending:
             return  # already closed/handled
-        try:
-            self._notif.CloseNotification(dbus.UInt32(nid))
-            log.info("iPhone marked message read — closed popup %d", nid)
-        except dbus.exceptions.DBusException as e:
-            log.debug("CloseNotification(%d): %s", nid, e.get_dbus_name())
+        log.info("iPhone marked message read — closing popup %d", nid)
+        self._close_async(nid)
         # _on_closed will clean up the dict + signal match (reason=3)
 
     # ---- Linux user dismisses → mark-read on iPhone ----------------------
@@ -1198,6 +1241,7 @@ class LibnotifySink:
         # Closing an ANCS popup, for any reason, never runs an iPhone action.
         getattr(self, "_ancs_actions", {}).pop(nid_i, None)
         getattr(self, "_ancs_retries", {}).pop(nid_i, None)
+        getattr(self, "_ancs_popups", {}).pop(nid_i, None)
         call_id = getattr(self, "_call_notifications", {}).pop(nid_i, None)
         if call_id is not None:
             getattr(self, "_call_popups", {}).pop(call_id, None)

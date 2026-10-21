@@ -1262,6 +1262,52 @@ def test_failed_ancs_actions_change_reports_the_saved_value_again(monkeypatch):
     assert changes == [True]
 
 
+def test_mirror_removals_setting_is_forwarded_and_merged_into_status(monkeypatch):
+    backend = _Backend()
+    calls = []
+    backend.set_mirror_notification_removals = (
+        lambda enabled: calls.append(enabled) or enabled
+    )
+    controller = BridgeController(
+        backend=backend, setup=object(), subscribe=False, autostart=False,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_run",
+        lambda operation, on_done=None, *_args, **_kwargs: (
+            on_done(operation()) if on_done is not None else operation()
+        ),
+    )
+    changes = []
+    controller.statusChanged.connect(lambda: changes.append(True))
+
+    controller.setMirrorNotificationRemovals(True)
+
+    assert calls == [True]
+    assert controller.status["mirror_iphone_removals"] is True
+    assert changes == [True]
+
+
+def test_failed_mirror_removals_change_reports_the_saved_value_again(monkeypatch):
+    controller = BridgeController(
+        backend=_Backend(), setup=object(), subscribe=False, autostart=False,
+    )
+    controller._status["mirror_iphone_removals"] = False
+    monkeypatch.setattr(
+        controller,
+        "_run",
+        lambda _operation, _on_done=None, on_failed=None, **_kwargs: on_failed("refused"),
+    )
+    changes = []
+    controller.statusChanged.connect(lambda: changes.append(True))
+
+    controller.setMirrorNotificationRemovals(True)
+
+    assert controller.status["mirror_iphone_removals"] is False
+    assert controller.errorText == "refused"
+    assert changes == [True]
+
+
 def test_checking_bluetooth_le_again_reprobes_the_selected_adapter(
     monkeypatch,
 ) -> None:
@@ -1527,3 +1573,38 @@ def test_mpris_setting_is_forwarded_and_merged_into_status(monkeypatch):
     )
     controller.setMprisPlayer(True)
     assert controller.status["media_mpris_enabled"] is True
+
+
+def test_phone_links_only_ask_for_confirmation():
+    class DialBackend(_Backend):
+        def __init__(self):
+            super().__init__()
+            self.dialed = []
+
+        def dial(self, number):
+            self.dialed.append(number)
+            return "voicecall01"
+
+    backend = DialBackend()
+    controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+    _apply_threads(controller, [Thread(
+        key="address:phone:15550100000", name="Test Contact", is_group=False,
+        recipients=("+15550100000",), reply_ready=True, messages=(), last_ts="",
+    )])
+    requested = []
+    controller.dialLinkRequested.connect(lambda number, problem: requested.append((number, problem)))
+
+    controller.requestDialLink("tel:+1-555-010-0000")
+    controller.requestDialLink("tel:*21#")
+    controller.requestDialLink("callto:112")
+    controller.requestDialLink("tel:7042;phone-context=example.com")
+    controller.requestDialLink("tel:+15550100000;ext=7")
+    controller.requestDialLink("tel:+15550100000;m-routing=private")
+    controller._pool.waitForDone(1000)
+    assert requested == [
+        ("+15550100000", ""), ("", "invalid"), ("112", "emergency"),
+        ("", "invalid"), ("", "invalid"), ("", "invalid"),
+    ]
+    assert backend.dialed == []
+    assert controller.contactNameForNumber("+15550100000") == "Test Contact"
+    assert controller.contactNameForNumber("+15550100009") == ""

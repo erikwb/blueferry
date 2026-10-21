@@ -30,6 +30,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `backend_operations.py` | Toolkit- and transport-neutral application operations: validation, thread routing, and policy. |
 | `dbus_service.py` | Session D-Bus adapter (`Messages1`/`Events1`/`Presence1`/`CallHistory1`) that maps operations to wire types; claims the bus name. |
 | `dbus_security.py` | Caller UID validation and per-connection/daemon-wide rate limits. |
+| `dbus_call.py` | Asynchronous dbus-python calls with an explicit input signature (`call_async`), plus typed `ay`/`a{sv}` builders. |
 | `protocol.py` | Stable D-Bus identifiers and the API-generation compatibility check. |
 | `event_dispatcher.py` | Builds messages from MAP/ANCS events and fans them out to persistence, desktop, and D-Bus sinks. |
 | `events.py` | Normalized MAP event dataclasses (`SmsEvent`) and address/timestamp normalization. |
@@ -192,11 +193,15 @@ All paths are relative to `src/blueferry/` unless noted.
 | `tui_calls.py` | Optional Textual calls panel. |
 | `tui_options.py` | Textual "Options" screen (`o`): one checkbox per opt-in the daemon reports. |
 | `tui_notification_rules.py` | Textual editor for notification click rules. |
+| `tui_phone.py` | Opt-in Textual now-playing line and read-only recent-calls screen. |
+| `phone_overview.py` | Toolkit-free now-playing and recent-call rules shared by the GTK, TUI and Quickshell clients (mirrors the Qt QML rules). |
 | `ui/app.py` | GTK4/libadwaita application entry point. |
 | `ui/window.py` | Main GTK window. |
 | `ui/conversations.py` | GTK conversations page: history, group confirmation, replies. |
 | `ui/status.py` | GTK iPhone page: setup, health, preferences, maintenance. |
 | `ui/status_presenter.py` | Pure presentation rules for the status page (including the optional phone battery/signal suffix). |
+| `ui/phone.py` | GTK iPhone dialog: battery/signal/network, opt-in now playing and recent calls; fetches only while open. |
+| `ui/phone_presenter.py` | Pure presentation rules for the iPhone dialog. |
 | `ui/saved_choice.py` | Keeps a settings switch on the user's choice while its save and the next status settle. |
 | `ui/client.py` | Asynchronous GTK backend calls and D-Bus invalidations. |
 | `ui/avatars.py` | Bounded GTK photo cache and worker-side thumbnail decoding; late results from earlier contact generations are discarded. |
@@ -204,6 +209,8 @@ All paths are relative to `src/blueferry/` unless noted.
 | `ui/util.py` | Small UI helpers. |
 | `qt/app.py` | PySide6/Kirigami entry point. |
 | `qt/controller.py` | Asynchronous `BridgeController` exposed to QML. |
+| `qt/tray.py`, `qt/tray_presenter.py` | `blueferry-tray`: standalone StatusNotifierItem (unread badge, battery/signal tooltip); asynchronous QtDBus calls with auto-start disabled, so it never starts the daemon; owns `io.weirdware.BlueFerry.Client.Tray`, which `qt/app.py` watches to hide its own icon; pure presenters. |
+| `tray_autostart.py` | The tray's opt-in per-user XDG autostart entry. |
 | `qt/tasks.py` | Qt worker primitive. |
 | `qt/avatars.py` | Image provider that decodes opt-in contact photos with `QImageReader` after header and size checks. |
 | `qt/activation.py` | Qt adapter for client activation. |
@@ -249,6 +256,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `AvatarCache.qml`, `ContactAvatar.qml` | Bounded asynchronous contact photos in the conversation list and header; the bridge delivers validated bytes as data URLs without writing avatar files. |
 | `SavedChoice.qml` | The same for Quickshell checkboxes that save through the daemon. |
 | `QuickshellPhoneStatus.qml` | Optional iPhone battery/signal caption in the header (hidden when unknown). |
+| `QuickshellNowPlaying.qml` | Opt-in now-playing strip with transport buttons; renders the bridge's array-free `now_playing` view. |
 
 `data/blueferry-quickshell` is the launcher script, and
 `data/io.weirdware.BlueFerry.xml` is the canonical D-Bus introspection
@@ -271,6 +279,36 @@ contract.
   (`call_history`, `call_history_repository`, `call_history_sync`) and exists
   in the daemon only while the user has opted in (`CallHistory1.SetCallHistory`,
   seeded from `BLUEFERRY_CALL_HISTORY_ENABLED`).
+
+## D-Bus calls inside the daemon
+
+Everything in the daemon shares one GLib main loop, so a call that waits for
+a reply stalls BlueZ signals, timers, and every client meanwhile.
+
+- Calls from loop code are asynchronous: `reply_handler`/`error_handler` on
+  dbus-python proxies. `dbus_call.call_async` does that and always passes the
+  input signature. Never pass a bare `{}`/`[]` to a proxy fetched with
+  `introspect=False`: dbus-python cannot type it and raises `ValueError`
+  before sending.
+- Blocking work (`time.sleep`, `subprocess.run`, OBEX transfers, slow SQLite
+  opens) runs on the OBEX worker or in a helper process, never on the loop.
+- `tools/lint_mainloop.py` enforces this for modules the daemon imports at
+  import time (run in CI and by `tests/test_lint_mainloop.py`). Deliberate,
+  safe exceptions (worker-thread, CLI and helper-process code) go in its
+  `ALLOWLIST` with a reason. Existing calls that do block the loop are
+  tracked in `KNOWN_DEBT` and leave it only with their fix; never add to it.
+- The autouse `sync_dbus_guard` in `tests/conftest.py` catches blocking
+  calls the AST cannot see. Those that predate it are in the lint's
+  `RUNTIME_KNOWN_DEBT`.
+
+Suggested order for paying off `KNOWN_DEBT`, one module per change:
+`sinks/libnotify.py` (`Notify`, with the popup id recorded in the reply
+handler), `bearer_supervisor.py` and `bluez_setup.current_cod`, then
+`ancs/client.py` (its subscribe path needs an asynchronous state machine like
+AMS), and last `dbus_security.CallerGuard` and `dbus_service`, where caller
+credentials become an asynchronous lookup before dispatch. Signal watches
+(`add_signal_receiver`) still make one blocking `AddMatch` each in
+dbus-python; the guard tolerates that.
 
 ## D-Bus API and compatibility
 
@@ -455,7 +493,11 @@ A change to these rules has to be made in both places.
   connection.
 - **Bearers:** `bearer_supervisor` keeps BR/EDR and LE connected, independent
   of desktop applets. In full mode a missing LE bearer holds back MAP/PBAP
-  reconnects. Compatibility mode leaves LE disabled.
+  reconnects. Compatibility mode leaves LE disabled. LE transitions come
+  from `Bearer.LE1.Disconnected` and `Bearer.LE1` `Connected` property
+  changes as they happen, so ANCS, AMS and the battery client also see a
+  drop that is back before the next five-second poll; polling stays as the
+  fallback.
 - **Media (opt-in):** `ams/client` never dials. It follows the bearer
   supervisor's LE observations and BlueZ owner changes, subscribes after the
   link settles, and resets without `StopNotify` on loss. `media` owns the
@@ -679,6 +721,14 @@ A change to these rules has to be made in both places.
   the serialized Control Point queue. Clients only toggle the preference
   (`SetAncsNotificationActions`); no D-Bus method performs an action, because
   clients never see ANCS notifications or UIDs.
+- **Following removals on the iPhone** (off by default; `mirror_iphone_removals`
+  in `settings.json`, `Messages1.SetMirrorNotificationRemovals`): when the
+  iPhone reports an ANCS NotificationRemoved, the libnotify sink closes every
+  popup it showed for that UID, with or without action buttons. The sink
+  keeps a bounded desktop-id to UID map that is dropped whenever the UID
+  session ends (subscription torn down or renewed, or a PreExisting replay
+  after live events), because iOS may reuse the UIDs; those popups then just
+  expire. Only UIDs and desktop ids are kept; nothing is broadcast.
 - **Configuration** files are owner-only, size-bounded, opened without
   following final symlinks, and restricted to named settings. systemd never
   sources them as a process environment.
@@ -740,5 +790,7 @@ only on findings that stay reproducible in `PROTOCOL.md`.
 - Keep toolkit root files focused on navigation and composition. Put cohesive
   state derivation and presentation in loadable QML components with behavioral
   tests rather than growing root-level functions.
+- Never block the daemon's main loop; see
+  [D-Bus calls inside the daemon](#d-bus-calls-inside-the-daemon).
 - Prefer narrowly tested helpers over broad exception handling. Best-effort
   cleanup may catch broadly, but command paths must return actionable errors.

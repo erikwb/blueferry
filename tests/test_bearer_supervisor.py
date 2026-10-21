@@ -1426,6 +1426,68 @@ def test_le_observer_receives_only_lifecycle_transitions() -> None:
     assert observed[-1] is False
 
 
+def test_le_signals_preserve_a_disconnect_and_return_between_polls() -> None:
+    state = {"bredr": True, "le": True}
+    observed = []
+    supervisor = BearerSupervisor(
+        "/device", read_connected=state.get, connect=lambda *_args: None,
+        on_le_state=observed.append,
+        schedule=lambda *_args: 7, cancel=lambda _timer: None,
+    )
+    supervisor.start()
+    for connected in (False, True, True):
+        state["le"] = connected
+        supervisor._on_le_properties_changed(
+            "org.bluez.Bearer.LE1", {"Connected": connected}, [],
+        )
+    assert observed == [True, False, True]
+    supervisor.poke()
+    assert observed == [True, False, True]
+
+
+def test_disconnected_signal_retires_le_even_without_a_property_signal() -> None:
+    observed = []
+    supervisor = BearerSupervisor(
+        "/device", read_connected=lambda _kind: True, connect=lambda *_args: None,
+        on_le_state=observed.append,
+        schedule=lambda *_args: 7, cancel=lambda _timer: None,
+    )
+    supervisor.start()
+    supervisor._on_le_disconnected_signal("org.bluez.Reason.Timeout", "")
+    assert observed == [True, False]
+    supervisor._on_le_properties_changed(
+        "org.bluez.Bearer.LE1", {"Connected": False}, [],
+    )
+    assert observed == [True, False]
+
+
+def test_le_signal_defers_presence_status_until_both_bearers_are_sampled() -> None:
+    state = {"bredr": True, "le": True}
+    observed = []
+    statuses = []
+    supervisor = BearerSupervisor(
+        "/device", read_connected=state.get, connect=lambda *_args: None,
+        on_le_state=observed.append,
+        on_status=lambda: statuses.append((supervisor.bredr_state, supervisor.le_state)),
+        schedule=lambda *_args: 7, cancel=lambda _timer: None,
+    )
+    supervisor.start()
+    for connected in (False, True):
+        state["le"] = connected
+        supervisor._on_le_properties_changed(
+            "org.bluez.Bearer.LE1", {"Connected": connected}, [],
+        )
+    assert observed == [True, False, True]
+    assert statuses == [(True, True)]
+    # Even when the latest state is unchanged, consumers receive the next
+    # complete observation. They never act on stale Classic presence in the
+    # middle of a burst of LE signals.
+    supervisor.poke()
+    assert statuses == [(True, True), (True, True)]
+    supervisor.poke()
+    assert len(statuses) == 2
+
+
 def test_gatt_transport_failure_cycles_le_once_before_reconnecting() -> None:
     state = {"bredr": True, "le": True}
     disconnects = []
@@ -1510,6 +1572,40 @@ def test_gatt_transport_reset_preserves_a_reconnect_between_polls() -> None:
     assert observed == [True, False, True]
     assert disconnects == ["le"]
     assert supervisor._le_reset_pending is False
+
+
+@pytest.mark.parametrize("failed_reply", [False, True])
+@pytest.mark.parametrize("poll_while_down", [False, True])
+def test_late_reset_reply_preserves_a_reconnect_already_reported_by_signals(
+    failed_reply, poll_while_down,
+) -> None:
+    state = {"bredr": True, "le": True}
+    observed = []
+    replies = []
+    supervisor = BearerSupervisor(
+        "/device", read_connected=state.get, connect=lambda *_args: None,
+        disconnect=lambda _kind, success, error: replies.append(
+            (lambda: error(RuntimeError("not connected"))) if failed_reply else success,
+        ),
+        on_le_state=observed.append,
+        schedule=lambda *_args: 7, cancel=lambda _timer: None,
+    )
+    supervisor.start()
+    supervisor.recover_le_transport()
+    for connected in (False, True):
+        state["le"] = connected
+        supervisor._on_le_properties_changed(
+            "org.bluez.Bearer.LE1", {"Connected": connected}, [],
+        )
+        if not connected and poll_while_down:
+            supervisor._tick()
+    assert observed == [True, False, True]
+    settle_before_reply = supervisor._le_settle_id
+    replies.pop()()
+    assert observed == [True, False, True]
+    assert supervisor.le_connected
+    assert not supervisor._le_reset_pending
+    assert supervisor._le_settle_id == settle_before_reply
 
 
 def test_gatt_transport_recovery_waits_for_profile_gate_to_reopen() -> None:

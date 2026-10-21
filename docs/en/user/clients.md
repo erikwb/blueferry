@@ -17,6 +17,29 @@ Ubuntu 24.04, Linux Mint 22.3, or Pop!_OS 24.04.
 
 ![KDE client](../../images/qt.png)
 
+### System tray item
+
+`blueferry-tray` comes with `blueferry-qt` and puts a phone in the system
+tray (a StatusNotifierItem on KDE Plasma). The icon shows the number of
+unread messages; the tooltip shows the connection, battery, signal, and
+network. Click it to open BlueFerry, or to bring an open window to the front.
+
+Start it from the application menu as **BlueFerry Tray**. It does not start
+at login unless you ask for that: check **Start at login** in its menu, or
+run:
+
+```bash
+blueferry-tray --autostart on     # off, or status
+```
+
+This writes `~/.config/autostart/io.weirdware.BlueFerry.Tray.desktop`, the
+same file the desktop's own autostart settings show.
+
+The tray only follows a running background service; it never starts it.
+Without a BlueFerry setup the icon stays hidden. While the tray runs,
+`blueferry-qt` leaves out its own tray icon and quits when you close its
+window; the tray opens it again.
+
 ## Quickshell
 
 `blueferry-quickshell` follows Omarchy's active palette and system monospace

@@ -285,7 +285,9 @@ def test_real_map_and_ancs_dispatch_blocks_an_unsaved_group_sender(monkeypatch) 
     # Actual MAP objects have no group_key; group evidence came through ANCS.
     listener._fetched(
         "message1", "/session/message1", {"Timestamp": "20260928T115955Z"},
-        SimpleNamespace(sender_address="+15551234567", body=BODY, status="UNREAD"),
+        SimpleNamespace(
+            sender_address="+15551234567", sender_name=None, body=BODY, status="UNREAD",
+        ),
     )
     timers.settle()
 

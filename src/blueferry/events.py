@@ -23,6 +23,26 @@ _EMAIL_SHAPED = re.compile(
     r"^[A-Za-z0-9!#$%&'*+/=?^_`{|}~.-]+@"
     r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$"
 )
+# Short codes, and alphanumeric sender IDs that the iPhone's MAP server spells
+# as keypad digits ("MBNA" arrives as "6262"), are too short to be phone numbers.
+_SHORT_CODE = re.compile(r"[0-9]{3,6}")
+_KEYPAD = str.maketrans(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "22233344455566677778889999"
+)
+
+
+def spelled_on_keypad(name: str, sender_address: str) -> bool:
+    """True when MAP's digits are an alphanumeric sender ID typed on a keypad.
+
+    The iPhone's MAP server reports "MBNA" as 6262, while ANCS and the
+    bMessage originator name keep the letters. A reply would reach whoever
+    owns those digits, not the sender.
+    """
+    spelled = re.sub(r"[^A-Za-z0-9]", "", name).upper()
+    return (
+        any(char.isalpha() for char in spelled)
+        and spelled.translate(_KEYPAD) == sender_address
+    )
 
 def normalize_phone(raw: str | None) -> str | None:
     """Reduce a phone string to digits only (E.164-ish minus the +).
@@ -65,6 +85,8 @@ def canonical_address(raw: str | None) -> str | None:
         return f"phone:{phone}"
     if is_email_shaped(value):
         return f"email:{value.casefold()}"
+    if _SHORT_CODE.fullmatch(value):
+        return f"short:{value}"
     return None
 
 
@@ -136,6 +158,8 @@ class SmsEvent:
     group_members: list[str] = field(default_factory=list)
     group_recipients: list[str] = field(default_factory=list)
     group_reply_ready: bool = False
+    # The originator's name when the iPhone spelled it as keypad digits.
+    sender_alphanumeric: str | None = None
     seen_at: datetime = field(
         default_factory=lambda: datetime.now(timezone.utc)
     )
@@ -176,6 +200,7 @@ class SmsEvent:
             "group_members": list(self.group_members),
             "group_recipients": list(self.group_recipients),
             "group_reply_ready": self.group_reply_ready,
+            "sender_alphanumeric": self.sender_alphanumeric,
             "seen_at": self.seen_at.isoformat(),
         }
 

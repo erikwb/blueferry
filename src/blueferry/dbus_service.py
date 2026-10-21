@@ -382,6 +382,15 @@ class MessagesService(dbus.service.Object):
     @dbus.service.method(
         IFACE, in_signature="b", out_signature="b", sender_keyword="sender"
     )
+    def SetMirrorNotificationRemovals(self, enabled: bool, sender=None) -> bool:
+        return self._sync(lambda: self._authorized(
+            sender, "settings",
+            lambda: self.operations.set_mirror_notification_removals(bool(enabled)),
+        ))
+
+    @dbus.service.method(
+        IFACE, in_signature="b", out_signature="b", sender_keyword="sender"
+    )
     def SetPhoneBatteryWarning(self, enabled: bool, sender=None) -> bool:
         """Opt in or out of the low-battery desktop warning for the phone."""
         return self._sync(lambda: self._authorized(

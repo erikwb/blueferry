@@ -361,6 +361,14 @@ def test_notification_policy_is_backend_owned_and_notifies_status() -> None:
             self.ancs_actions = enabled
             return enabled
 
+        mirror_removals = False
+
+        def set_mirror_removals(self, enabled):
+            if not isinstance(enabled, bool):
+                raise ValueError("mirroring iPhone removals must be a boolean")
+            self.mirror_removals = enabled
+            return enabled
+
     changes = []
     operations = _operations(
         notification_policy=Policy(),
@@ -381,6 +389,19 @@ def test_notification_policy_is_backend_owned_and_notifies_status() -> None:
     assert changes == [True, True, True]
     with pytest.raises(InvalidArgumentsError):
         operations.set_ancs_notification_actions("on")
+    assert operations.status()["mirror_iphone_removals"] is False
+    assert operations.set_mirror_notification_removals(True) is True
+    assert operations.status()["mirror_iphone_removals"] is True
+    assert changes == [True, True, True, True]
+    with pytest.raises(InvalidArgumentsError):
+        operations.set_mirror_notification_removals("on")
+
+
+def test_mirror_removals_need_the_policy_store() -> None:
+    operations = _operations(notification_policy=None)
+    assert operations.status()["mirror_iphone_removals"] is False
+    with pytest.raises(NotReadyError):
+        operations.set_mirror_notification_removals(True)
 
 
 def test_notification_click_rules_are_validated_by_the_backend(tmp_path) -> None:

@@ -32,7 +32,7 @@ import itertools
 import logging
 import re
 import time
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -100,6 +100,11 @@ LEGACY_HEALTH_SECONDS = 60
 # phone is nearby. Report bearer cycles at INFO at most once per interval and
 # summarize the rest; the bearer supervisor owns the actionable warning.
 BEARER_CYCLE_LOG_SECONDS = 60
+# A previously authorized Control Point probe that times out on a settled LE
+# link first re-enables the Notification Source and Data Source CCCs
+# (StopNotify, then StartNotify) and repeats the probe, at most this often per
+# LE link. Only then does the transport escalate to an LE reset.
+MAX_NOTIFY_REFRESHES_PER_LINK = 1
 
 _BLUEZ_BUS_NAME = "org.bluez"
 
@@ -142,6 +147,7 @@ class _PendingRequest:
     busy_retries: int = 0
     action_label_ids: tuple[int, ...] = ()
     action: _ActionRequest | None = None
+    discarded: bool = False
 
 
 _APP_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")
@@ -229,6 +235,8 @@ class AncsClient:
         notification_actions: bool | Callable[[], bool] = False,
         on_notification_removed: Callable[[int], None] | None = None,
         on_actions_reset: Callable[[], None] | None = None,
+        on_removed: Callable[[int], None] | None = None,
+        on_session_reset: Callable[[], None] | None = None,
         schedule: Callable[[int, Callable[[], bool]], int] = GLib.timeout_add_seconds,
         cancel: Callable[[int], object] = GLib.source_remove,
         clock: Callable[[], float] = time.monotonic,
@@ -254,6 +262,14 @@ class AncsClient:
         self._notification_actions_setting = notification_actions
         self._on_notification_removed = on_notification_removed
         self._on_actions_reset = on_actions_reset
+        # For clients that follow the iPhone's list: every removal (not only
+        # actionable ones) and the end of a UID session, after which the old
+        # UIDs may name other notifications.
+        self._on_removed = on_removed
+        self._on_session_reset = on_session_reset
+        # Set once the current session delivered a live (not PreExisting)
+        # event; a later PreExisting replay then means a new session.
+        self._live_events_seen = False
 
         # Char path slots — set as InterfacesAdded fires
         self._ns_path: str | None = None
@@ -269,12 +285,17 @@ class AncsClient:
         # evidence that the rebuilt GATT transport is stale.
         self._was_authorized = previously_authorized
         self._bearer_connected: bool | None = None
+        self._subscription_generation = 0
         # The device is connected and BlueZ cannot report its LE bearer.
         self._legacy_connected = False
         self._legacy_retry_delay = SUBSCRIBE_RETRY_SECONDS
         self._bearer_ready = False
         self._transport_blocked = False
         self._owned_notify_paths: set[str] = set()
+        # CCC re-enable before an LE reset: the toggle in progress (None when
+        # idle) and how many this LE link has used.
+        self._notify_refresh: object | None = None
+        self._notify_refreshes = 0
 
         # In-flight per-notification attribute requests + app-name cache
         self._app_name_cache: OrderedDict[str, str] = OrderedDict()
@@ -428,6 +449,7 @@ class AncsClient:
             return
         self._bluez_owner_generation += 1
         self._bluez_owner_available = bool(new_owner)
+        self._notify_refreshes = 0
         # The old bluetoothd took its pending write_op with it; its late
         # callback (if any) no longer gates the new owner's Control Point.
         self._cp_write_token = None
@@ -576,6 +598,12 @@ class AncsClient:
         previous = self._bearer_connected
         self._bearer_connected = connected
         if not connected:
+            # Only a confirmed link boundary renews the CCC refresh budget.
+            self._notify_refreshes = 0
+            # A confirmed disconnect retires the failed transport. An
+            # intervening unknown cache read must not erase that boundary;
+            # unknown alone must never unblock a failed live transport.
+            self._transport_blocked = False
             self._bearer_ready = False
             self._cancel_bearer_settle()
             self._cancel_transport_reset()
@@ -588,6 +616,9 @@ class AncsClient:
                 or self._request_queue
             )
             if not had_state:
+                # A StartNotify call may still be awaiting its reply before
+                # any ownership or signal matches have been committed.
+                self._subscription_generation += 1
                 return
             self._log_bearer_cycle(
                 "disconnected",
@@ -605,13 +636,16 @@ class AncsClient:
 
         if previous is True:
             return
+        if self._transport_blocked:
+            # The reset timer may have elapsed while the bearer was unknown.
+            # Wait for a real reset, but do not lose the recovery request.
+            self._schedule_transport_reset()
+            return
         if previous is False:
             self._log_bearer_cycle(
                 "reconnected",
                 "iPhone LE bearer reconnected; rebuilding ANCS subscription",
             )
-            self._transport_blocked = False
-            self._cancel_transport_reset()
         if self._started:
             self._schedule_bearer_settle()
 
@@ -668,7 +702,13 @@ class AncsClient:
             # Keep the notify registrations, which bluetoothd completes when
             # the phone's LE link arrives, and probe again with backoff.
             self._schedule_subscribe_retry()
-        elif (
+        else:
+            self._schedule_transport_reset()
+        if was_connected and self.on_status is not None:
+            self.on_status()
+
+    def _schedule_transport_reset(self) -> None:
+        if (
             self._started
             and self._bearer_connected is True
             and self._on_transport_failure is not None
@@ -678,8 +718,6 @@ class AncsClient:
                 TRANSPORT_RESET_SECONDS,
                 self._request_transport_reset,
             )
-        if was_connected and self.on_status is not None:
-            self.on_status()
 
     def _request_transport_reset(self) -> bool:
         self._transport_reset_id = None
@@ -768,6 +806,7 @@ class AncsClient:
 
     def _clear_characteristic_subscription(self, *, stop_notify: bool = True) -> None:
         """Remove receivers and notification ownership before rediscovery."""
+        self._subscription_generation += 1
         self._cancel_authorization_retry()
         self._cancel_legacy_health()
         for match in self._characteristic_signal_matches:
@@ -776,12 +815,16 @@ class AncsClient:
             except Exception:
                 log.debug("could not remove ANCS characteristic watch", exc_info=True)
         self._characteristic_signal_matches = []
+        # A CCC re-enable in progress belongs to this subscription; its late
+        # replies only update notify ownership.
+        self._notify_refresh = None
         if self._notify_started and stop_notify:
             self._stop_bluez_notifications()
         self._notify_started = False
         self._authorized = False
         self._reset_requests()
         self._reset_actions()
+        self._end_session()
 
     def _stop_bluez_notifications(self) -> None:
         """Remove notification ownership created by us while ATT is up."""
@@ -823,11 +866,24 @@ class AncsClient:
         if not (self._ns_path and self._ds_path and self._cp_path):
             return
         generation = self._bluez_owner_generation
+        subscription_generation = self._subscription_generation
         ns_path = self._ns_path
         ds_path = self._ds_path
 
         def current_attempt() -> bool:
-            return self._started and generation == self._bluez_owner_generation
+            return (
+                self._started
+                and generation == self._bluez_owner_generation
+                and subscription_generation == self._subscription_generation
+            )
+
+        def on_ns_changed(*args) -> None:
+            if current_attempt():
+                self._on_ns_changed(*args)
+
+        def on_ds_changed(*args) -> None:
+            if current_attempt():
+                self._on_ds_changed(*args)
 
         def remove_attempt_matches(matches) -> None:
             for match in matches:
@@ -842,14 +898,14 @@ class AncsClient:
         try:
             bus = get_system_bus()
             matches.append(bus.add_signal_receiver(
-                self._on_ns_changed,
+                on_ns_changed,
                 dbus_interface="org.freedesktop.DBus.Properties",
                 signal_name="PropertiesChanged",
                 bus_name="org.bluez",
                 path=ns_path,
             ))
             matches.append(bus.add_signal_receiver(
-                self._on_ds_changed,
+                on_ds_changed,
                 dbus_interface="org.freedesktop.DBus.Properties",
                 signal_name="PropertiesChanged",
                 bus_name="org.bluez",
@@ -866,21 +922,29 @@ class AncsClient:
                 bus.get_object("org.bluez", ds_path),
                 "org.bluez.GattCharacteristic1",
             )
-            if self._should_start_notify(ns_path):
+            start_ns = self._should_start_notify(ns_path)
+            if not current_attempt():
+                remove_attempt_matches(matches)
+                return
+            if start_ns:
                 self._start_notify(ns)
                 if current_attempt():
                     self._owned_notify_paths.add(ns_path)
             if not current_attempt():
                 remove_attempt_matches(matches)
                 return
-            if self._should_start_notify(ds_path):
+            start_ds = self._should_start_notify(ds_path)
+            if not current_attempt():
+                remove_attempt_matches(matches)
+                return
+            if start_ds:
                 self._start_notify(ds)
                 if current_attempt():
                     self._owned_notify_paths.add(ds_path)
         except dbus.exceptions.DBusException as e:
             if not current_attempt():
                 remove_attempt_matches(matches)
-                log.debug("discarded stale ANCS subscribe attempt after BlueZ changed owner")
+                log.debug("discarded stale ANCS subscribe attempt after the session changed")
                 return
             log.warning("ANCS StartNotify failed: %s", e.get_dbus_name())
             self._observe_permission_error(e)
@@ -907,6 +971,7 @@ class AncsClient:
         self._notify_started = True
         # A fresh Notification Source subscription starts a new UID session.
         self._reset_actions()
+        self._end_session()
         log.info(
             "ANCS characteristic subscriptions active; requesting notification access"
         )
@@ -1108,6 +1173,8 @@ class AncsClient:
         self._forget_actionable(n.id)
         if n.type == EventID.NotificationRemoved:
             log.debug("ANCS removed uid=%d", n.id)
+            self._discard_notification_requests(n.id)
+            self._session_callback(self._on_removed, n.id)
             return
         # Skip pre-existing (notifications that already existed on the
         # iPhone at our connect time — too noisy on initial subscribe).
@@ -1119,7 +1186,10 @@ class AncsClient:
             if self._actionable:
                 log.info("ANCS session replay seen; retiring notification actions")
                 self._reset_actions()
+            if self._live_events_seen:
+                self._end_session()
             return
+        self._live_events_seen = True
         # Added or Modified → identify the source app without content first.
         self._categories[n.id] = n.category
         self._categories.move_to_end(n.id)
@@ -1200,6 +1270,7 @@ class AncsClient:
             self._active_request is not None
             or self._cp_write_token is not None
             or self._cp_busy_retry_id is not None
+            or self._notify_refresh is not None
             or not self._request_queue
         ):
             return
@@ -1271,6 +1342,13 @@ class AncsClient:
                 return
             name = error.get_dbus_name() or type(error).__name__
             detail = error.get_dbus_message() or str(error)
+            if request.discarded:
+                self._finish_active_request()
+                if _connection_was_lost(error):
+                    self._mark_transport_failed()
+                    return
+                self._pump_requests()
+                return
             if (
                 name.endswith(".InProgress")
                 and request.busy_retries < MAX_CONTROL_POINT_BUSY_RETRIES
@@ -1371,25 +1449,198 @@ class AncsClient:
         )
         self._request_timeout_id = None
         if request is not None and request.authorization_probe and self._was_authorized:
-            log.warning(
-                "previously authorized ANCS transport stopped responding; "
-                "resetting the LE bearer"
-            )
-            # A completed Control Point write followed by silence can mean
-            # BlueZ retained dead CCC registrations despite Notifying=true.
-            # Retire them while ATT is settled and no StartNotify is pending;
-            # doing this from disconnect/partial-subscribe paths is unsafe on
-            # BlueZ 5.87. The next connection must create fresh registrations.
-            # With LE unobservable, ATT cannot be known to be settled, so the
-            # registrations are left for bluetoothd to renew on reconnect.
-            if self._notify_started and self._bearer_connected is True and self._bearer_ready:
-                self._stop_bluez_notifications()
-            self._mark_transport_failed()
+            if self._refresh_notifications(request):
+                return False
+            self._escalate_unresponsive_transport()
             return False
         self._abandon_request(request)
         self._active_request = None
         self._pump_requests()
         return False
+
+    def _escalate_unresponsive_transport(self) -> None:
+        """Retire the registrations and reset LE: the transport stays silent."""
+        log.warning(
+            "previously authorized ANCS transport stopped responding; "
+            "resetting the LE bearer"
+        )
+        # A completed Control Point write followed by silence can mean
+        # BlueZ retained dead CCC registrations despite Notifying=true.
+        # Retire them while ATT is settled and no StartNotify is pending;
+        # doing this from disconnect/partial-subscribe paths is unsafe on
+        # BlueZ 5.87. The next connection must create fresh registrations.
+        # With LE unobservable, ATT cannot be known to be settled, so the
+        # registrations are left for bluetoothd to renew on reconnect.
+        if self._notify_started and self._bearer_connected is True and self._bearer_ready:
+            self._stop_bluez_notifications()
+        self._mark_transport_failed()
+
+    def _refresh_notifications(self, request: _PendingRequest) -> bool:
+        """Re-enable the NS and DS CCCs, then repeat the timed-out probe.
+
+        Hardware 2026-10-15 (iOS 27, BlueZ 5.87): after an LE drop forced
+        with ``Bearer.LE1.Disconnect``, bluetoothd restored the Notification
+        Source CCC over a short-lived BR/EDR ATT channel that iOS closed right
+        after, never wrote the Data Source CCC on the new LE link, and kept
+        ``Notifying=true`` for both. iOS acknowledged the Control Point write,
+        but its response had no subscription to come back on. StopNotify,
+        then StartNotify, makes BlueZ write each CCC on the current link.
+
+        Runs only on a settled LE link with a subscription, at most
+        MAX_NOTIFY_REFRESHES_PER_LINK times per link, never after a reset.
+        Returns False when it may not run; the caller then escalates.
+        """
+        ns_path, ds_path = self._ns_path, self._ds_path
+        if (
+            not self._started
+            or not self._notify_started
+            or self._legacy_connected
+            or self._bearer_connected is not True
+            or not self._bearer_ready
+            or self._notify_refresh is not None
+            or self._notify_refreshes >= MAX_NOTIFY_REFRESHES_PER_LINK
+            or ns_path is None
+            or ds_path is None
+        ):
+            return False
+        self._notify_refreshes += 1
+        # The probe is written again once both CCCs are re-enabled.
+        self._finish_active_request()
+        token = object()
+        self._notify_refresh = token
+        generation = self._bluez_owner_generation
+        remaining = deque((ns_path, ds_path))
+        log.info(
+            "ANCS transport is silent; re-enabling its notifications before "
+            "resetting the LE bearer"
+        )
+
+        def current() -> bool:
+            return (
+                self._started
+                and self._notify_refresh is token
+                and generation == self._bluez_owner_generation
+            )
+
+        def next_path() -> None:
+            if not current():
+                return
+            if remaining:
+                self._toggle_notify(remaining.popleft(), current, next_path, failed)
+                return
+            self._notify_refresh = None
+            # A fresh Notification Source subscription starts a new UID
+            # session, as in _try_subscribe().
+            self._reset_actions()
+            log.info("ANCS notifications re-enabled; repeating the access probe")
+            probe = _PendingRequest(
+                key=request.key,
+                packet=request.packet,
+                assembler=DataSourceAssembler(
+                    CommandID.GetAppAttributes, [0], app_id=MESSAGES_APP_ID,
+                ),
+                authorization_probe=True,
+            )
+            # Ahead of anything queued meanwhile: only this probe decides
+            # whether the LE reset is still needed.
+            if not self._request_queue.enqueue(
+                probe.key, probe, front=True,
+            ) and not self._request_queue.count_if(
+                lambda queued: queued.authorization_probe
+            ):
+                # A full backlog would leave the transport unproven.
+                self._escalate_unresponsive_transport()
+                return
+            self._pump_requests()
+
+        def failed(error: Exception) -> None:
+            if not current():
+                return
+            self._notify_refresh = None
+            name = (
+                error.get_dbus_name()
+                if isinstance(error, dbus.exceptions.DBusException)
+                else None
+            ) or type(error).__name__
+            log.warning("could not re-enable ANCS notifications: %s", name)
+            if (
+                isinstance(error, dbus.exceptions.DBusException)
+                and _connection_was_lost(error)
+            ):
+                # No StopNotify on a dropped link (BlueZ 5.87, see above).
+                self._mark_transport_failed()
+                return
+            self._escalate_unresponsive_transport()
+
+        next_path()
+        return True
+
+    def _toggle_notify(
+        self,
+        path: str,
+        current: Callable[[], bool],
+        done: Callable[[], None],
+        failed: Callable[[Exception], None],
+    ) -> None:
+        """StopNotify, then StartNotify, asynchronously: BlueZ rewrites the CCC.
+
+        Notify ownership follows every reply from the same bluetoothd, also
+        a late one. StartNotify is
+        never sent once the attempt is no longer current, so a reset cannot
+        be followed by a late CCC enable. A StopNotify refused because no
+        session exists goes on to StartNotify.
+        """
+        owner_generation = self._bluez_owner_generation
+
+        def characteristic():
+            return dbus.Interface(
+                get_system_bus().get_object(_BLUEZ_BUS_NAME, path, introspect=False),
+                "org.bluez.GattCharacteristic1",
+            )
+
+        def stopped(*_args) -> None:
+            if owner_generation == self._bluez_owner_generation:
+                self._owned_notify_paths.discard(path)
+            if not current():
+                return
+
+            def started(*_args) -> None:
+                # A replaced bluetoothd cannot own the new owner's session.
+                if owner_generation == self._bluez_owner_generation:
+                    self._owned_notify_paths.add(path)
+                if current():
+                    done()
+
+            def start_failed(error: Exception) -> None:
+                if current():
+                    failed(error)
+
+            try:
+                characteristic().StartNotify(
+                    reply_handler=started,
+                    error_handler=start_failed,
+                    timeout=DBUS_CALL_TIMEOUT_SECONDS,
+                )
+            except dbus.exceptions.DBusException as error:
+                start_failed(error)
+
+        def stop_failed(error: Exception) -> None:
+            if (
+                isinstance(error, dbus.exceptions.DBusException)
+                and _notification_is_already_stopped(error)
+            ):
+                stopped()
+            elif current():
+                failed(error)
+
+        try:
+            characteristic().StopNotify(
+                reply_handler=stopped,
+                error_handler=stop_failed,
+                timeout=DBUS_CALL_TIMEOUT_SECONDS,
+            )
+        except dbus.exceptions.DBusException as error:
+            stop_failed(error)
 
     def _finish_active_request(self) -> _PendingRequest | None:
         request = self._active_request
@@ -1454,6 +1705,9 @@ class AncsClient:
         if complete is None:
             return
         self._finish_active_request()
+        if request.discarded:
+            self._pump_requests()
+            return
         try:
             ev = DataSourceEvent.parse(complete)
         except ValueError as error:
@@ -1662,6 +1916,45 @@ class AncsClient:
             callback(notification_id)
         except Exception:
             log.exception("ANCS notification-removed callback raised")
+
+    def _end_session(self) -> None:
+        """The UID session ended: its UIDs may name other notifications next."""
+        self._live_events_seen = False
+        self._discard_notification_requests()
+        self._session_callback(self._on_session_reset)
+
+    def _discard_notification_requests(self, uid: int | None = None) -> None:
+        """Retire pending content without interrupting a Control Point write.
+
+        Drain an active response before sending the next request, but never
+        turn its attributes into a popup after removal or a session replay.
+        """
+        def matches(request: _PendingRequest) -> bool:
+            return request.notification is not None and (
+                uid is None or request.notification.id == uid
+            )
+
+        self._request_queue.remove_if(matches)
+        request = self._active_request
+        if request is not None and matches(request) and not request.discarded:
+            request.discarded = True
+            # A reused UID may queue behind the draining response. Releasing
+            # this key must not let the old completion release the new one.
+            self._request_queue.finish(request.key)
+            request.key = f"retired:{request.key}"
+        for app_id, pending in list(self._pending_app_lookups.items()):
+            pending[:] = [attrs for attrs in pending if uid is not None and attrs.id != uid]
+            if not pending:
+                self._pending_app_lookups.pop(app_id, None)
+
+    @staticmethod
+    def _session_callback(callback: Callable[..., None] | None, *args: int) -> None:
+        if callback is None:
+            return
+        try:
+            callback(*args)
+        except Exception:
+            log.exception("ANCS session callback raised")
 
     def _drop_queued_actions(
         self,

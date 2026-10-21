@@ -27,7 +27,8 @@ def test_active_wireplumber_gets_phone_sink_roles_removed(tmp_path) -> None:
 
     text = path.read_text()
     assert text == FRAGMENT_TEXT
-    assert "override.bluez5.roles" in text
+    assert "  bluez5.roles = [" in text
+    assert "override." not in text
     assert "a2dp_source" in text
     assert "a2dp_sink" not in text
     assert "hfp_hf" not in text
@@ -167,7 +168,7 @@ def test_pairing_policy_waits_for_wireplumber_reload(tmp_path, monkeypatch) -> N
 
 
 def _roles(text: str) -> list[str]:
-    line = next(line for line in text.splitlines() if "override.bluez5.roles" in line)
+    line = next(line for line in text.splitlines() if "bluez5.roles" in line)
     return line.split("[", 1)[1].split("]", 1)[0].split()
 
 

@@ -21,8 +21,11 @@ class _FakeNotifications:
         self._next += 1
         return self._next
 
-    def CloseNotification(self, notification_id):
+    def CloseNotification(self, notification_id, **kwargs):
+        # Closing must never block the daemon's main loop.
+        assert "reply_handler" in kwargs and "error_handler" in kwargs
         self.calls.append(("close", int(notification_id)))
+        kwargs["reply_handler"]()
 
 
 def _sink(policy="messages", on_call_action=None):

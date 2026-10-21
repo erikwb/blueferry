@@ -14,6 +14,7 @@ import threading
 from collections.abc import Callable, Mapping
 from typing import Any, TextIO
 
+from blueferry import phone_overview
 from blueferry.bus import get_session_bus
 from blueferry.client import BackendClient
 from blueferry.client_activation import record_client_use
@@ -55,6 +56,37 @@ def _boolean(args: Mapping[str, Any], name: str) -> bool:
     if not isinstance(value, bool):
         raise RequestError(f"{name} must be a boolean")
     return value
+
+
+def now_playing_view(snapshot: object) -> dict[str, Any]:
+    """Reduce GetNowPlaying for the shell without arrays or translated text.
+
+    The buttons are separate booleans, so nothing depends on how a Qt version
+    hands arrays to QML, and the shell, which loads no translation catalog,
+    words the placeholders itself. Track text stays verbatim.
+    """
+    view = phone_overview.now_playing(snapshot)
+
+    def part(key: str) -> Mapping[str, Any]:
+        value = snapshot.get(key) if view.visible and isinstance(snapshot, Mapping) else None
+        return value if isinstance(value, Mapping) else {}
+
+    track, player = part("track"), part("player")
+    title = str(track.get("title") or "")
+    artist = str(track.get("artist") or "")
+    # AMS availability means the service is connected, not that a player has
+    # a track. Reconnects can report an empty, paused Music player with only
+    # volume controls. Keep the compact strip hidden until there is content
+    # to identify or active playback to control; named paused tracks stay.
+    visible = view.visible and bool(view.playing or title.strip() or artist.strip())
+    return {
+        "visible": visible,
+        "playing": visible and view.playing,
+        "title": title if visible else "",
+        "artist": artist if visible else "",
+        "idle": visible and not title and not artist and not player.get("state"),
+        **{name: visible and name in view.commands for name in phone_overview.MEDIA_BUTTONS},
+    }
 
 
 class QuickshellBridge:
@@ -147,6 +179,14 @@ class QuickshellBridge:
             return self.client.set_ancs_notification_actions(
                 _boolean(args, "enabled")
             )
+        if method == "now_playing":
+            return now_playing_view(self.client.now_playing())
+        if method == "media_command":
+            command = _text(args, "command")
+            if command not in phone_overview.MEDIA_BUTTONS:
+                raise RequestError("unsupported media command")
+            self.client.send_media_command(command)
+            return None
         if method == "set_media_control":
             return self.client.set_media_control(_boolean(args, "enabled"))
         if method == "set_mpris_player":
@@ -259,6 +299,12 @@ def _install_signal_receivers(bridge: QuickshellBridge) -> list[object]:
         bus.add_signal_receiver(
             lambda handle: bridge.emit_event("open-message", str(handle)),
             signal_name="OpenMessageRequested",
+            **common,
+        ),
+        # Content-free; the shell refetches through now_playing.
+        bus.add_signal_receiver(
+            lambda: bridge.emit_event("now-playing-changed"),
+            signal_name="NowPlayingChanged",
             **common,
         ),
     ]

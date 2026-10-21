@@ -11,7 +11,12 @@ from pathlib import Path
 import dbus
 
 from blueferry.bus import get_session_bus, obex
-from blueferry.events import SmsEvent, normalize_phone, parse_map_timestamp
+from blueferry.events import (
+    SmsEvent,
+    normalize_phone,
+    parse_map_timestamp,
+    spelled_on_keypad,
+)
 from blueferry.limits import MAX_BMESSAGE_BYTES
 from blueferry.obex.bmessage import parse as parse_bmessage
 from blueferry.obex.sessions import SessionManager
@@ -189,6 +194,10 @@ class MapEventListener:
             return
         sender_raw = parsed.sender_address
         contact = self.resolve_contact(sender_raw) if sender_raw else None
+        alphanumeric = parsed.sender_name if (
+            parsed.sender_name and sender_raw
+            and spelled_on_keypad(parsed.sender_name, sender_raw)
+        ) else None
         event = SmsEvent(
             kind="sms_received",
             handle=handle,
@@ -200,6 +209,7 @@ class MapEventListener:
             is_read=(str(parsed.status or "").upper() == "READ"
                      or handle in self._read_handles),
             message_path=message_path,
+            sender_alphanumeric=alphanumeric,
         )
         log.info("sms_received (%d-char body)", len(event.body or ""))
         self._emit(event)
