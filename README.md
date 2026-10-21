@@ -671,6 +671,13 @@ What happens then:
   cannot be complete, so the phone stays the way to make emergency calls.
   Every client asks before it dials, because
   premium-rate prefixes differ by country and cannot be listed reliably.
+- The Qt and GTK clients handle `tel:` and `callto:` links (for example a
+  number on a web page): they show the number, and the contact's name when a
+  conversation with it is known, and dial only after **Call**. With calls
+  off they offer the iPhone settings instead. Make BlueFerry the default
+  with `xdg-mime default io.weirdware.BlueFerry.Qt.desktop x-scheme-handler/tel`
+  (or `…Gtk.desktop`), or in Plasma under System Settings → Default
+  Applications → Phone Numbers; see [Phone links](docs/en/user/calls.md#phone-links).
 - Bluetooth recovery (the adapter power cycle after a long ANCS outage) is
   held back while a call is in progress.
 - With a second call, answering holds the active call (HoldAndAnswer);

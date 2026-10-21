@@ -1715,3 +1715,39 @@ def test_tethering_opt_in_is_saved_and_reflected():
     controller.setTethering(True, True)
     _settle(controller)
     assert controller.tether["autoconnect"] is True
+
+
+
+def test_phone_links_only_ask_for_confirmation():
+    class DialBackend(_Backend):
+        def __init__(self):
+            super().__init__()
+            self.dialed = []
+
+        def dial(self, number):
+            self.dialed.append(number)
+            return "voicecall01"
+
+    backend = DialBackend()
+    controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+    _apply_threads(controller, [Thread(
+        key="address:phone:15550100000", name="Test Contact", is_group=False,
+        recipients=("+15550100000",), reply_ready=True, messages=(), last_ts="",
+    )])
+    requested = []
+    controller.dialLinkRequested.connect(lambda number, problem: requested.append((number, problem)))
+
+    controller.requestDialLink("tel:+1-555-010-0000")
+    controller.requestDialLink("tel:*21#")
+    controller.requestDialLink("callto:112")
+    controller.requestDialLink("tel:7042;phone-context=example.com")
+    controller.requestDialLink("tel:+15550100000;ext=7")
+    controller.requestDialLink("tel:+15550100000;m-routing=private")
+    controller._pool.waitForDone(1000)
+    assert requested == [
+        ("+15550100000", ""), ("", "invalid"), ("112", "emergency"),
+        ("", "invalid"), ("", "invalid"), ("", "invalid"),
+    ]
+    assert backend.dialed == []
+    assert controller.contactNameForNumber("+15550100000") == "Test Contact"
+    assert controller.contactNameForNumber("+15550100009") == ""

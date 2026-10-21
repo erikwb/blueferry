@@ -257,8 +257,10 @@ class MediaController:
             if fallback in supported:
                 return fallback
         elif command in (RemoteCommandID.Play, RemoteCommandID.Pause):
-            if RemoteCommandID.TogglePlayPause in supported and (
-                (command == RemoteCommandID.Play) != self.state.playing
+            if (
+                self.state.playback_state is not None
+                and RemoteCommandID.TogglePlayPause in supported
+                and (command == RemoteCommandID.Play) != self.state.playing
             ):
                 return RemoteCommandID.TogglePlayPause
         raise NotReadyError("the iPhone does not currently offer this media command")
