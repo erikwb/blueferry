@@ -77,6 +77,24 @@ def test_property_signal_beats_old_reply_and_invalidations_expire_value(reads):
     assert read() is True
 
 
+def test_five_second_poll_does_not_expire_prompt_successful_replies(reads):
+    cache, calls, now = reads
+
+    def read():
+        return cache.property("/device", "org.bluez.Bearer.LE1", "Connected")
+
+    pending(read)
+    now[0] = 0.0001
+    calls[-1][-2](True)
+    for tick in range(1, 30):
+        # A reply lands just after one poll; ordinary timer jitter makes
+        # the following poll slightly less than five seconds after it.
+        now[0] = tick * 5 + (tick // 2) * 0.001
+        assert read() is True
+        now[0] += 0.0001
+        calls[-1][-2](True)
+
+
 @pytest.mark.parametrize("invalidation", ["invalidate", "invalidate_managed_objects"])
 def test_late_snapshot_cannot_survive_owner_or_topology_change(reads, invalidation):
     cache, calls, _now = reads

@@ -29,6 +29,10 @@ LEGACY_FRAGMENT_NAME = "90-blueferry-keep-phone-audio.conf"
 # stripped: music stays on the phone, calls can come to the PC. Auto-connect
 # stays empty in both cases; BlueFerry's call controller asks oFono to bring
 # up HFP (Modem.Powered) instead of WirePlumber paging the phone.
+#
+# The roles key is plain `bluez5.roles`: WirePlumber 0.5.18 silently ignores a
+# nested `override.bluez5.roles` when no earlier fragment defines the key, so
+# the adapter kept advertising A2DP sink and HFP hands-free to the phone.
 BASE_ROLES = ("a2dp_source", "hfp_ag", "bap_source")
 CALL_ROLES = ("hfp_hf", "hsp_hs")
 
@@ -46,7 +50,7 @@ def fragment_text(*, allow_calls: bool = False) -> str:
 # BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE=false in BlueFerry's local.env and
 # restart blueferry.service.
 {calls_note}monitor.bluez.properties = {{
-  override.bluez5.roles = [ {" ".join(roles)} ]
+  bluez5.roles = [ {" ".join(roles)} ]
 }}
 monitor.bluez.rules = [
   {{

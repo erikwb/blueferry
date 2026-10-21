@@ -190,6 +190,10 @@ Kirigami.ApplicationWindow {
             root.markSelectedThreadRead()
         }
 
+        function onDialLinkRequested(number, problem) {
+            dialLinkDialog.request(number, problem)
+        }
+
         function onMessageOpenRequested(handle) {
             root.pendingMessageHandle = handle
             if (!root.selectMessage(handle))
@@ -416,6 +420,14 @@ Kirigami.ApplicationWindow {
         id: newMessageDialog
         objectName: "newMessageDialog"
         bridge: root.bridge
+    }
+
+    // A clicked tel:/callto: link; asks before dialing, and explains when
+    // calls are off, so it exists whether or not calls are enabled.
+    DialLinkDialog {
+        id: dialLinkDialog
+        bridge: root.bridge
+        onPhoneSettingsRequested: root.openPhoneSettings()
     }
 
     Kirigami.Page {

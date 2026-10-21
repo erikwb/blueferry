@@ -18,6 +18,7 @@ from blueferry.i18n import _
 from blueferry.message_links import is_safe_web_url, linkify_message
 from blueferry.models import BackendStatus, Thread, ThreadMessage
 from blueferry.recipients import participant_lines as _participant_lines
+from blueferry.tel_links import known_contact_name
 from blueferry.ui.avatars import AvatarCache
 from blueferry.ui.status_presenter import (
     le_bond_suspect,
@@ -379,6 +380,10 @@ class ConversationsPage(Gtk.Box):
         )
 
     # ---- data ----------------------------------------------------------
+
+    def contact_name_for(self, number: str) -> str:
+        """Name of a known direct conversation with ``number``, else ``""``."""
+        return known_contact_name(self._state, number)
 
     def open_message(self, handle: str) -> None:
         """Select a notification's message, refreshing if it is not loaded."""
