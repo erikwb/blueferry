@@ -193,6 +193,15 @@ class BackendClient:
         except dbus.exceptions.DBusException as error:
             raise self._media_error(error) from error
 
+    def set_phone_audio_route(self, route: str) -> str:
+        """Move iPhone media playback to ``pc`` or back to the ``phone``."""
+        try:
+            return str(self._media_iface().SetPhoneAudioRoute(
+                route, timeout=MEDIA_CALL_TIMEOUT_SEC + 10,
+            ))
+        except dbus.exceptions.DBusException as error:
+            raise self._media_error(error) from error
+
     def is_healthy(self) -> bool:
         try:
             return bool(self._iface(MESSAGES_IFACE).IsHealthy(timeout=5))

@@ -41,6 +41,16 @@ def _optional_str(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+PHONE_AUDIO_PLAYING = frozenset({"pc", "phone", "none", "unknown"})
+
+
+def _audio_playing(value: Any) -> str | None:
+    """A known ``phone_audio_playing`` value; a newer one reads as unknown."""
+    if value is None:
+        return None
+    return value if value in PHONE_AUDIO_PLAYING else "unknown"
+
+
 @dataclass(frozen=True, slots=True)
 class BackendStatus:
     daemon: bool = False
@@ -81,6 +91,9 @@ class BackendStatus:
     phone_signal_strength: int | None = None
     phone_network_name: str | None = None
     phone_network_status: str | None = None
+    # Where the iPhone's sound plays: "pc", "phone", "none" or "unknown";
+    # None when the daemon predates the key.
+    phone_audio_playing: str | None = None
     # None when the daemon predates the contact-photo setting.
     contact_photos: bool | None = None
     extra: Mapping[str, Any] = field(default_factory=dict, repr=False)
@@ -130,6 +143,7 @@ class BackendStatus:
             "phone_signal_strength",
             "phone_network_name",
             "phone_network_status",
+            "phone_audio_playing",
             "contact_photos",
         }
         return cls(
@@ -172,6 +186,7 @@ class BackendStatus:
             phone_signal_strength=_percent(value.get("phone_signal_strength")),
             phone_network_name=_optional_str(value.get("phone_network_name")),
             phone_network_status=_optional_str(value.get("phone_network_status")),
+            phone_audio_playing=_audio_playing(value.get("phone_audio_playing")),
             contact_photos=(
                 _bool(value["contact_photos"]) if "contact_photos" in value else None
             ),
@@ -180,7 +195,9 @@ class BackendStatus:
 
     def to_dict(self) -> dict[str, Any]:
         # Clients offer the calls opt-in only when the key is present.
-        reported = {} if self.calls_enabled is None else {"calls_enabled": self.calls_enabled}
+        reported: dict[str, object] = (
+            {} if self.calls_enabled is None else {"calls_enabled": self.calls_enabled}
+        )
         if self.saved_opt_ins:
             reported["saved_opt_ins"] = True
         # Likewise the contact-photo opt-in.
@@ -189,6 +206,9 @@ class BackendStatus:
         # Likewise the one-time code opt-in.
         if self.otp_autocopy is not None:
             reported["otp_autocopy"] = self.otp_autocopy
+        # Absent for daemons that predate it, so clients keep the old wording.
+        if self.phone_audio_playing is not None:
+            reported["phone_audio_playing"] = self.phone_audio_playing
         return {
             **self.extra,
             **reported,

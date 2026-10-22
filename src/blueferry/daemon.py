@@ -20,6 +20,7 @@ from gi.repository import GLib
 from blueferry import __version__, bluez_setup, config
 from blueferry.adapter_class_supervisor import AdapterClassSupervisor
 from blueferry.ams.client import AmsClient, AmsNotifySessions
+from blueferry.ams.constants import RemoteCommandID
 from blueferry.ancs.client import ACTION_DISCONNECTED, AncsClient
 from blueferry.backend_lifecycle import installed_release
 from blueferry.backend_operations import BackendDependencies
@@ -68,6 +69,8 @@ from blueferry.dbus_service import MessagesService, claim_bus_name
 from blueferry.errors import BlueFerryError, NotReadyError
 from blueferry.event_dispatcher import EventDispatcher
 from blueferry.events import SmsEvent
+from blueferry.gio_dbus import GioDBus
+from blueferry.gio_dbus import system_bus as gio_system_bus
 from blueferry.glib_timers import schedule_periodic
 from blueferry.group_routes import GroupRoutesStore
 from blueferry.history import (
@@ -87,6 +90,7 @@ from blueferry.obex.worker import ObexWorker
 from blueferry.otp_context import OtpMetadata
 from blueferry.otp_settings import OtpSettings
 from blueferry.pair_setup import bond_status
+from blueferry.phone_audio_route import PhoneAudioRoute, ResumePlayback
 from blueferry.phone_battery import BatteryWarningSettings, PhoneBattery
 from blueferry.profile_reset import (
     ProfileResetController,
@@ -151,6 +155,9 @@ class PairingRequiredError(RuntimeError):
 PHONE_STATUS_MIN_INTERVAL_SEC = 10
 # A failed MPRIS bus connection is retried while the player is wanted.
 MPRIS_RETRY_SEC = 30
+# Waiting for iOS to report the handback pause before toggling play.
+_RESUME_RETRIES = 4
+_RESUME_RETRY_MS = 750
 
 
 def _in_background(target: Callable[[], None], name: str) -> None:
@@ -295,6 +302,7 @@ class Daemon:
             # Publish the report only; a flip is not a bearer transition.
             on_le_bond_report=self._emit_status,
             bluez_blocked=lambda: self.bluez_health.unresponsive,
+            profile_busy=lambda: self.phone_audio_route.busy,
             on_bluez_error=self.bluez_health.report,
             on_bluez_ok=self.bluez_health.report_success,
         )
@@ -331,6 +339,22 @@ class Daemon:
             on_phone_status=lambda _status: self._phone_status_changed(),
             on_powered_failed=self.profile_reset.hfp_powered_failed,
             on_powered=self.profile_reset.hfp_powered,
+        )
+        # Where the iPhone's media playback goes. Only offered when the
+        # WirePlumber policy does not strip the A2DP sink role.
+        self.phone_audio_route = PhoneAudioRoute(
+            GioDBus(gio_system_bus),
+            device_path,
+            allowed=not config.KEEP_PHONE_AUDIO_ON_PHONE,
+            on_changed=self._emit_status_soon,
+            schedule=GLib.timeout_add_seconds,
+            cancel=GLib.source_remove,
+            prepare_resume=self._prepare_iphone_resume,
+            media_state=self._iphone_playback_state,
+            change_blocked=lambda: (
+                not self.bearers.can_change_profiles or self.recovery.active
+            ),
+            bluez_blocked=lambda: self.bluez_health.unresponsive,
         )
         # The phone's battery over LE (GATT Battery Service or BlueZ's
         # Battery1), independent of calls and HFP. Construction does no I/O.
@@ -837,6 +861,7 @@ class Daemon:
                 set_phone_battery_warning=self._set_battery_warning,
                 set_auto_profile_reset=self._set_auto_profile_reset,
                 set_media_mpris=self._set_media_mpris,
+                phone_audio=self.phone_audio_route,
                 contact_photos=self._contact_photos_enabled,
                 set_contact_photos=self._set_contact_photos,
                 set_otp_autocopy=self._set_otp_autocopy,
@@ -881,6 +906,8 @@ class Daemon:
         if self.media is None or self._dbus_service is None:
             return
         self.media.add_listener(self._dbus_service.emit_now_playing_changed)
+        # Where the sound plays also depends on the AMS playback state.
+        self.media.add_listener(self.phone_audio_route.media_changed)
         if self.media_settings.mpris:
             self._start_mpris()
 
@@ -972,6 +999,7 @@ class Daemon:
                 self.media_sessions.release()
             media, self.media = self.media, None
             media.close()
+            self.phone_audio_route.media_changed()
         log.info("iPhone media control %s", "enabled" if selected else "disabled")
         self._emit_status()
         if self._dbus_service is not None:
@@ -979,6 +1007,8 @@ class Daemon:
         return self._media_status()
 
     def _on_media_availability(self, available: bool) -> None:
+        if not available:
+            self.phone_audio_route.media_unavailable()
         if self.media is not None:
             self.media.handle_availability(available)
         self._emit_status()
@@ -1286,6 +1316,7 @@ class Daemon:
         # messaging, and a missing oFono is retried in the background.
         self.calls.start()
         self.phone_battery.start()
+        self.phone_audio_route.start()
 
         # Signal subscriptions belong to the GLib thread; the blocking session
         # creation itself belongs to the serialized OBEX worker.
@@ -1316,6 +1347,7 @@ class Daemon:
             return
         self._bluez_owner_generation += 1
         generation = self._bluez_owner_generation
+        self.phone_audio_route.bluez_owner_changed(bool(new_owner))
         # Invalidate before discovery or advertising can dispatch more D-Bus
         # work. An interrupted power restoration keeps ordinary reconnects
         # paused until the recovery controller explicitly resumes them.
@@ -1784,6 +1816,7 @@ class Daemon:
             "storage_state": self.storage.status.state,
             "storage_detail": self.storage.status.detail,
             **self._media_status(),
+            **self.phone_audio_route.snapshot(),
             **self._controller_identity(),
             **self.connectivity.snapshot(),
         }
@@ -1884,6 +1917,59 @@ class Daemon:
         main_loop.quit()
         return False
 
+    def _prepare_iphone_resume(self) -> ResumePlayback | None:
+        """Bind handback to the media controller that was playing at request time."""
+        media = self.media
+        if media is None or not media.available or not media.state.playing:
+            return None
+
+        def resume(still_current: Callable[[], bool]) -> None:
+            self._resume_iphone_playback(
+                lambda: self.media is media and still_current(),
+            )
+
+        return resume
+
+    def _iphone_playback_state(self) -> str:
+        """``playing``, ``paused`` or ``unknown`` as reported over AMS."""
+        media = self.media
+        if media is None or not media.available or media.state.playback_state is None:
+            return "unknown"
+        return "playing" if media.state.playing else "paused"
+
+    def _resume_iphone_playback(
+        self, still_current: Callable[[], bool], attempt: int = 0,
+    ) -> None:
+        """Resume after iOS paused on losing its A2DP output.
+
+        iOS reports the pause over AMS with a delay, so the cached state may
+        still say "playing" when this runs. An explicit Play is safe at any
+        time; only a toggle has to wait until the pause has been observed.
+        """
+        media = self.media
+        if not still_current() or media is None or not media.available:
+            return
+        supported = media.state.supported_commands
+        if RemoteCommandID.Play not in supported and media.state.playing:
+            if attempt < _RESUME_RETRIES:
+                def retry() -> bool:
+                    if self.media is media:
+                        self._resume_iphone_playback(still_current, attempt + 1)
+                    return False
+
+                GLib.timeout_add(_RESUME_RETRY_MS, retry)
+            return
+        try:
+            media.send_command(
+                "play",
+                lambda *_: log.info("resumed iPhone playback after audio handback"),
+                lambda error: log.info(
+                    "iPhone playback resume failed: %s", type(error).__name__),
+                still_current=still_current,
+            )
+        except Exception as error:  # media control may have gone away
+            log.info("iPhone playback resume failed: %s", type(error).__name__)
+
     def stop(self) -> None:
         log.info("=== BlueFerry stopping ===")
         owner_match, self._bluez_owner_match = self._bluez_owner_match, None
@@ -1896,6 +1982,7 @@ class Daemon:
         self.recovery.stop()
         self.calls.stop()
         self.phone_battery.stop()
+        self.phone_audio_route.stop()
         if self._phone_emit_id is not None:
             try:
                 GLib.source_remove(self._phone_emit_id)

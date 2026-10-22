@@ -142,6 +142,22 @@ backend. Media calls have their own rate-limit buckets.
 | `SetMediaControl` | `b enabled` → `s status_json` | Saves the opt-in and starts or stops media control at once |
 | `SetMprisPlayer` | `b enabled` → `s status_json` | Saves the separate MPRIS opt-in (`media_mpris_enabled`, `media_mpris_active`); the player exists only while media control is on and uses its own private connection |
 | `SendMediaCommand` | `s command` | `play`, `pause`, `toggle`, `next`, `previous`, `volume-up`, `volume-down`, `repeat`, `shuffle`, `skip-forward`, `skip-backward`, `like`, `dislike`, `bookmark`; only commands the iPhone currently offers are sent |
+| `SetPhoneAudioRoute` | `s route` → `s accepted` | `pc` opens, `phone` closes the iPhone's A2DP stream; `NotReady` while unavailable or busy, `AudioRouteFailed` when BlueZ refuses; own rate-limit bucket |
+
+The phone-audio keys in `GetStatus` (independent of the media-control
+opt-in; clients show the switch only when `phone_audio_route` exists):
+
+- `phone_audio_route`: `pc` (the A2DP stream to this computer is open),
+  `phone`, or `unavailable` with `phone_audio_reason`
+  (`keep_phone_audio_on_phone`, `phone_disconnected`, `no_a2dp_source`,
+  `unknown`).
+- `phone_audio_pending`: the route being switched to, or empty.
+- `phone_audio_playing`: where the sound plays right now. `pc` while the
+  phone's `MediaTransport1.State` is `active`; otherwise `phone` while Apple
+  Media Service reports playback, `none` while it reports a pause, and
+  `unknown` without media control. A change to `pc` is reported at once,
+  every other change only after it held for two seconds. `phone` together
+  with route `pc` means the user picked another output on the iPhone.
 
 ## Calls1 methods (optional phone calls)
 

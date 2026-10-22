@@ -721,6 +721,26 @@ class MessagesService(dbus.service.Object):
             error_handler,
         )
 
+    @dbus.service.method(
+        MEDIA_IFACE, in_signature="s", out_signature="s",
+        async_callbacks=("reply_handler", "error_handler"),
+        sender_keyword="sender",
+    )
+    def SetPhoneAudioRoute(
+        self, route: str, reply_handler, error_handler, sender=None,
+    ) -> None:
+        """Move the iPhone's media playback to this computer or the phone."""
+        self._async(
+            lambda: self._authorized(
+                sender, "audio-route",
+                lambda: self.operations.set_phone_audio_route(
+                    str(route), reply_handler,
+                    lambda error: error_handler(self._dbus_error(error)),
+                ),
+            ),
+            error_handler,
+        )
+
     # ---- Calls1: optional HFP call control --------------------------------
 
     def _call_control(self, sender, action, invoke, reply_handler, error_handler) -> None:

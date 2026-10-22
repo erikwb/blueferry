@@ -10,6 +10,7 @@ from blueferry.bluetooth_devices import PairedDevice, iphone_candidates
 from blueferry.i18n import _, ngettext
 from blueferry.models import BackendStatus
 from blueferry.onboarding import OnboardingState, ancs_unavailable_detail
+from blueferry.phone_audio_view import phone_audio
 from blueferry.proximity_lock import clamp_grace
 from blueferry.quirks_report import issue_report, issue_url
 from blueferry.setup_client import (
@@ -55,6 +56,7 @@ class IPhonePage(Gtk.Box):
         self._call_history_choice = SavedChoice()
         self._missed_call_popups_choice = SavedChoice()
         self._applying_proximity_lock = False
+        self._applying_phone_audio = False
         self._proximity_lock_choice = SavedChoice()
         self._applying_calls_enabled = False
         self._calls_enabled_choice = SavedChoice()
@@ -392,6 +394,19 @@ class IPhonePage(Gtk.Box):
         self._media_group.add(self._mpris_player_row)
         page.add(self._media_group)
 
+        # Shown only when the backend reports the audio-route keys. An
+        # action, not a saved preference: the switch follows bluetoothd.
+        self._phone_audio_group = Adw.PreferencesGroup(title=_("iPhone Sound"))
+        self._phone_audio_group.set_visible(False)
+        self._phone_audio_row = Adw.ActionRow(
+            title=_("Play the iPhone's Sound on This Computer"),
+        )
+        self._phone_audio_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
+        self._phone_audio_switch.connect("notify::active", self._phone_audio_changed)
+        self._phone_audio_row.add_suffix(self._phone_audio_switch)
+        self._phone_audio_row.set_activatable_widget(self._phone_audio_switch)
+        self._phone_audio_group.add(self._phone_audio_row)
+        page.add(self._phone_audio_group)
         # Shown only when the backend reports the profile reset state.
         self._connection_group = Adw.PreferencesGroup(title=_("iPhone Connection"))
         self._connection_group.set_visible(False)
@@ -1200,6 +1215,7 @@ class IPhonePage(Gtk.Box):
         self._applying_contacts_only_notifications = False
         self._apply_ancs_actions(status, reachable)
         self._apply_media_switches(status, reachable)
+        self._apply_phone_audio(status, reachable)
         self._apply_connection_switches(status, reachable)
         self._apply_call_history_switches(status, reachable)
         self._proximity_lock_group.set_visible("proximity_lock" in status.extra)
@@ -1390,6 +1406,31 @@ class IPhonePage(Gtk.Box):
             and not self._mpris_player_choice.saving
             and self._media_control_switch.get_active()
         )
+
+    def _apply_phone_audio(self, status: BackendStatus, reachable: bool) -> None:
+        # to_dict(): phone_audio_playing is a typed field, not in .extra.
+        audio = phone_audio(status.to_dict())
+        self._phone_audio_group.set_visible(audio["supported"])
+        self._applying_phone_audio = True
+        self._phone_audio_switch.set_active(audio["on_pc"])
+        self._applying_phone_audio = False
+        self._phone_audio_row.set_subtitle(audio["hint"])
+        self._phone_audio_row.set_sensitive(reachable and audio["available"])
+
+    def _phone_audio_changed(self, switch, _property) -> None:
+        if self._applying_phone_audio:
+            return
+        route = "pc" if switch.get_active() else "phone"
+        self._phone_audio_row.set_sensitive(False)
+
+        def switched(_value) -> None:
+            self._refresh()
+
+        def failed(error: str) -> None:
+            self._toast(_("Could not switch the iPhone's sound: {error}").format(error=error))
+            self._apply_status(self._last_status)
+
+        self._client.set_phone_audio_route_async(route, switched, failed)
 
     def _apply_call_history_switches(
         self, status: BackendStatus, reachable: bool

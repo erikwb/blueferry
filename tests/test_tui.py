@@ -798,6 +798,50 @@ def test_search_finds_other_addresses_in_a_merged_contact(monkeypatch):
     assert app._filtered_threads() == []
 
 
+def test_textual_sound_switch_moves_the_iphone_audio_and_explains_refusals() -> None:
+    class Backend(_Backend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.routes: list[str] = []
+            self.reported: dict = {
+                "phone_audio_route": "unavailable",
+                "phone_audio_reason": "keep_phone_audio_on_phone",
+            }
+
+        def status(self):
+            return BackendStatus.from_dict({
+                "daemon": True, "map": True, "storage_state": "ready", **self.reported,
+            })
+
+        def set_phone_audio_route(self, route):
+            self.routes.append(route)
+            self.reported = {"phone_audio_route": route}
+            return route
+
+    async def scenario() -> None:
+        backend = Backend()
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
+        async with app.run_test(size=(120, 36)) as pilot:
+            await _wait_for_threads(app, pilot, 2)
+            app.action_phone_audio()
+            await pilot.pause(0.1)
+            assert backend.routes == []
+            assert any(
+                "BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE=false" in str(note.message)
+                for note in app._notifications
+            )
+            backend.reported = {"phone_audio_route": "phone", "phone_audio_playing": "phone"}
+            await app._apply_snapshot(app.state.fetch_snapshot())
+            await _wait_for_static_text_containing(
+                app, pilot, "#connection-summary", "sound on iPhone",
+            )
+            app.action_phone_audio()
+            await app.workers.wait_for_complete()
+            assert backend.routes == ["pc"]
+
+    _run_headless(scenario())
+
+
 def test_b_reconnects_the_iphone_and_reports_the_result() -> None:
     class ReconnectBackend(_Backend):
         def __init__(self) -> None:

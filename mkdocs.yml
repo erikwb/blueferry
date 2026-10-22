@@ -104,6 +104,7 @@ nav:
           - Call history: en/user/call-history.md
           - Notification click rules: en/user/notification-click-rules.md
           - Media control: en/user/media-control.md
+          - iPhone sound on this computer: en/user/phone-audio.md
           - Away lock: en/user/proximity-lock.md
           - Phone calls (experimental): en/user/calls.md
           - Phone battery and signal: en/user/phone-status.md
@@ -133,6 +134,7 @@ nav:
           - Anrufliste: de/user/call-history.md
           - Klickregeln für Mitteilungen: de/user/notification-click-rules.md
           - Mediensteuerung: de/user/media-control.md
+          - iPhone-Ton am Computer: de/user/phone-audio.md
           - Abwesenheitssperre: de/user/proximity-lock.md
           - Anrufe (experimentell): de/user/calls.md
           - Akku und Empfang: de/user/phone-status.md

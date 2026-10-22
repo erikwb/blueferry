@@ -102,6 +102,10 @@ class FakeClient:
         self.calls.append(("set_calls_enabled", enabled))
         return {"calls_enabled": enabled}
 
+    def set_phone_audio_route(self, route):
+        self.calls.append(("set_phone_audio_route", route))
+        return route
+
 
 def test_bridge_dispatches_private_values_without_command_arguments() -> None:
     client = FakeClient()
@@ -498,6 +502,33 @@ def test_bridge_saves_the_call_history_opt_in_and_returns_its_status() -> None:
         with pytest.raises(ValueError, match=message):
             bridge.dispatch("set_call_history", args)
     assert len(client.calls) == 1
+
+
+def test_bridge_switches_the_phone_audio_route_and_rejects_other_values() -> None:
+    client = FakeClient()
+    bridge = QuickshellBridge(client)  # type: ignore[arg-type]
+
+    assert bridge.dispatch("set_phone_audio_route", {"route": "pc"}) == "pc"
+    for args in ({}, {"route": "speaker"}, {"route": 1}):
+        with pytest.raises(ValueError):
+            bridge.dispatch("set_phone_audio_route", args)
+    assert client.calls == [("set_phone_audio_route", "pc")]
+
+
+def test_status_carries_the_shared_sound_switch_wording() -> None:
+    from blueferry.models import BackendStatus
+
+    client = FakeClient()
+    client.status = lambda **_kwargs: BackendStatus.from_dict({  # type: ignore[method-assign]
+        "daemon": True, "phone_audio_route": "pc", "phone_audio_playing": "phone",
+    })
+    view = QuickshellBridge(client).dispatch("status", {})["phone_audio_view"]  # type: ignore[arg-type]
+    assert view["available"] is True and view["mismatch"] is True
+    assert "own speaker" in view["hint"]
+    # Older daemons: no key, no view.
+    assert "phone_audio_view" not in QuickshellBridge(FakeClient()).dispatch(  # type: ignore[arg-type]
+        "status", {},
+    )
 
 
 def test_bridge_saves_the_auto_profile_reset_and_returns_its_status() -> None:

@@ -279,6 +279,8 @@ def test_recovery_observation_excludes_permissions_and_missing_profiles(make_dae
 def test_own_power_events_and_owner_changes_do_not_start_parallel_recovery(make_daemon, monkeypatch):
     calls = []
     value = _daemon(make_daemon, calls)
+    audio_owners = []
+    monkeypatch.setattr(value.phone_audio_route, "bluez_owner_changed", audio_owners.append)
     _ready_bluetooth(monkeypatch, calls)
     value._watch_bluez_owner()
     monkeypatch.setattr(daemon.bluez_setup, 'forget_advert_registration', lambda: None)
@@ -286,6 +288,7 @@ def test_own_power_events_and_owner_changes_do_not_start_parallel_recovery(make_
     value._on_adapter_power_changed("org.bluez.Adapter1", {"Powered": False}, [])
     assert calls == []
     value._on_bluez_owner_changed('org.bluez', ':1.1', ':1.2')
+    assert audio_owners == [True]
     assert calls == ["recovery-invalidate"]
     value.recovery.active = False
     value._on_adapter_power_changed("org.bluez.Adapter1", {"Powered": False}, [])

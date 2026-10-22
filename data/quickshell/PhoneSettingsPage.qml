@@ -415,6 +415,34 @@ Rectangle {
           wrapMode: Text.Wrap
           text: "Like any desktop music player, every application in your session can then read the title, artist and album."
         }
+        // Only daemons that report the audio-route keys can switch the sound.
+        // An action, not a saved preference: it follows the reported route.
+        FerrySectionLabel {
+          ferryTheme: root.theme
+          visible: root.status.phone_audio_route !== undefined
+          text: "iPhone sound"
+        }
+        FerryCheckBox {
+          objectName: "phoneAudioCheckBox"
+          ferryTheme: root.theme
+          readonly property var view: root.status.phone_audio_view || ({})
+          visible: root.status.phone_audio_route !== undefined
+          text: "Play the iPhone's sound on this computer"
+          checked: root.status.phone_audio_route === "pc"
+          enabled: root.setup.configured && !root.busy.phoneAudio && view.available === true
+          Accessible.description: phoneAudioHint.text
+          onClicked: root.operationRequested("set_phone_audio_route", {route: checked ? "pc" : "phone"})
+        }
+        FerryLabel {
+          id: phoneAudioHint
+          objectName: "phoneAudioHint"
+          ferryTheme: root.theme
+          visible: root.status.phone_audio_route !== undefined && text !== ""
+          Layout.fillWidth: true
+          wrapMode: Text.Wrap
+          text: (root.status.phone_audio_view || {}).hint || ""
+        }
+
         // Only daemons with the profile reset report its state.
         FerrySectionLabel {
           ferryTheme: root.theme

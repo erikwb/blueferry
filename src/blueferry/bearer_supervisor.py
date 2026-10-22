@@ -280,6 +280,7 @@ class BearerSupervisor:
         on_le_dial: ObserveLeDial | None = None,
         on_reconnect_state: Callable[[], None] | None = None,
         bluez_blocked: Callable[[], bool] | None = None,
+        profile_busy: Callable[[], bool] | None = None,
         on_bluez_error: Callable[[Exception], None] | None = None,
         on_bluez_ok: Callable[[], None] | None = None,
         read_connected: ReadConnected | None = None,
@@ -306,6 +307,7 @@ class BearerSupervisor:
         # answer, every read waits for its timeout and every dial queues more
         # kernel work, so the supervisor stays idle.
         self._bluez_blocked = bluez_blocked or (lambda: False)
+        self._profile_busy = profile_busy or (lambda: False)
         self._on_bluez_error = on_bluez_error
         self._on_bluez_ok = on_bluez_ok
         self._read_connected = read_connected or self._read_cached_connected
@@ -550,6 +552,15 @@ class BearerSupervisor:
     def busy(self) -> bool:
         return bool(
             self._connecting or self._disconnecting or self._profile_reset_phase
+            or self._profile_busy()
+        )
+
+    @property
+    def can_change_profiles(self) -> bool:
+        """Whether a client may start a separate Connect/DisconnectProfile."""
+        return bool(
+            self._running and not self._bluez_blocked() and not self.busy
+            and not self._le_reset_pending and self._manual_dial_id is None
         )
 
     @property
@@ -653,7 +664,7 @@ class BearerSupervisor:
             return "unavailable"
         if self._bluez_blocked():
             return "bluez-unresponsive"
-        if self._profile_reset_phase is not None:
+        if self._profile_reset_phase is not None or self._profile_busy():
             return "in-progress"
         if self._states["bredr"] is True:
             return "connected"
@@ -702,6 +713,7 @@ class BearerSupervisor:
             return "bluez-unresponsive"
         if (
             self._profile_reset_phase is not None
+            or self._profile_busy()
             or self._le_reset_pending
             or self._connecting
             or self._disconnecting
@@ -1102,8 +1114,8 @@ class BearerSupervisor:
         bredr, le = self._refresh_states()
         self._age_le_evidence()
 
-        if self._profile_reset_phase is not None:
-            # reset_profiles owns the next Connect; do not dial underneath it.
+        if self._profile_reset_phase is not None or self._profile_busy():
+            # A reset or profile call owns the connection until its reply.
             return True
 
         # Connected=false can arrive before our Disconnect call completes.
@@ -1141,6 +1153,7 @@ class BearerSupervisor:
             self._le_api_available is False
             or self._bluez_blocked()
             or self._profile_reset_phase is not None
+            or self._profile_busy()
             or self._le_settle_id is not None
             or self._disconnecting
             or self._le_dial_exhausted()
@@ -1161,6 +1174,7 @@ class BearerSupervisor:
             not self._running
             or self._bluez_blocked()
             or self._profile_reset_phase is not None
+            or self._profile_busy()
         ):
             return False
         bredr, le = self._refresh_states()
@@ -1359,6 +1373,7 @@ class BearerSupervisor:
         if (
             self._bluez_blocked()
             or self._profile_reset_phase is not None
+            or self._profile_busy()
             or self._disconnecting
         ):
             return
@@ -1583,6 +1598,7 @@ class BearerSupervisor:
             or not self._le_enabled
             or self._bluez_blocked()
             or self._profile_reset_phase is not None
+            or self._profile_busy()
             or self._classic_connect_should_be_targeted()
             or self._connecting
             or self._disconnecting
@@ -1742,6 +1758,7 @@ class BearerSupervisor:
             self._le_api_available is False
             or self._bluez_blocked()
             or self._profile_reset_phase is not None
+            or self._profile_busy()
         ):
             # Keep a pending ANCS recovery for the next healthy poll. This
             # guard also covers hold_le's cancellation of an in-flight dial.

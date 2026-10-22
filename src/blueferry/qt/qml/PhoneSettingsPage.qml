@@ -566,6 +566,17 @@ Kirigami.ScrollablePage {
             }
         }
 
+        // Only daemons that report the audio-route keys can switch the sound.
+        Loader {
+            objectName: "phoneAudioLoader"
+            Layout.fillWidth: true
+            active: iphonePage.bridge.status.phone_audio_route !== undefined
+            visible: active
+            sourceComponent: PhoneAudioSettings {
+                bridge: iphonePage.bridge
+            }
+        }
+
         // Older daemons report the value without a runtime setter.
         Loader {
             objectName: "contactPhotosLoader"

@@ -427,6 +427,16 @@ class DaemonClient(GObject.Object):
             mutation=True,
         )
 
+    def set_phone_audio_route_async(self, route: str, on_ok, on_err) -> None:
+        self._submit(
+            lambda: self._call_backend(
+                lambda backend: backend.set_phone_audio_route(route)
+            ),
+            on_ok,
+            on_err,
+            mutation=True,
+        )
+
     def set_auto_profile_reset_async(self, enabled: bool, on_ok, on_err) -> None:
         self._submit(
             lambda: self._call_backend(
