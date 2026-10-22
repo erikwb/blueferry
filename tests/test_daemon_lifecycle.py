@@ -238,6 +238,11 @@ def test_status_exposes_split_ancs_and_last_le_error(make_daemon, monkeypatch):
     )
     instance.setup_verification = SimpleNamespace(verified=())
     monkeypatch.setattr(daemon_mod, "history_count", lambda **_kwargs: 0)
+    monkeypatch.setattr(
+        daemon_mod.config,
+        "current_profile_id",
+        lambda: "01234567-89ab-4cde-8fab-0123456789ab",
+    )
 
     status = instance._status()
 
@@ -252,6 +257,7 @@ def test_status_exposes_split_ancs_and_last_le_error(make_daemon, monkeypatch):
     assert status["last_le_error"] == "org.bluez.Error.Failed"
     assert status["last_le_error_message"] == "le-connection-abort-by-local"
     assert status["_build_id"] == "0.6.0-6"
+    assert status["phone_profile_id"] == "01234567-89ab-4cde-8fab-0123456789ab"
     assert status["phone_reconnect_state"] == "unreachable"
     assert status["phone_reconnect_paused"] is True
     assert status["phone_reconnect_next_in_sec"] == 540

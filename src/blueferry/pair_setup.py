@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+import uuid
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
@@ -1778,6 +1779,7 @@ def clear_local_target() -> Path:
     """Forget the selected phone without discarding unrelated preferences."""
     existing = config.read_local_env(LOCAL_ENV_PATH)
     existing.pop("BLUEFERRY_MAC", None)
+    existing.pop(config.PROFILE_ID_KEY, None)
     existing.pop("BLUEFERRY_ADAPTER", None)
     existing.pop("BLUEFERRY_ANCS_ENABLED", None)
     content = "".join(
@@ -1809,11 +1811,22 @@ def write_local_env(
     if adapter is not None and not config.is_valid_adapter(adapter):
         raise PairingError("invalid Bluetooth adapter name")
     existing = config.read_local_env(LOCAL_ENV_PATH)
+    old_mac = existing.get("BLUEFERRY_MAC", "").strip().upper()
+    old_profile_id = existing.get(config.PROFILE_ID_KEY, "")
     existing["BLUEFERRY_MAC"] = normalized_mac
+    if old_mac == normalized_mac and config.is_valid_profile_id(old_profile_id):
+        existing[config.PROFILE_ID_KEY] = old_profile_id
+    else:
+        existing[config.PROFILE_ID_KEY] = str(uuid.uuid4())
     if adapter:
         existing["BLUEFERRY_ADAPTER"] = adapter
     existing["BLUEFERRY_ANCS_ENABLED"] = "true" if ancs_enabled else "false"
-    ordered = ["BLUEFERRY_MAC", "BLUEFERRY_ADAPTER", "BLUEFERRY_ANCS_ENABLED"]
+    ordered = [
+        "BLUEFERRY_MAC",
+        config.PROFILE_ID_KEY,
+        "BLUEFERRY_ADAPTER",
+        "BLUEFERRY_ANCS_ENABLED",
+    ]
     ordered.extend(sorted(config.LOCAL_ENV_KEYS - set(ordered)))
     content = "".join(f"{key}={existing[key]}\n" for key in ordered if key in existing)
     try:

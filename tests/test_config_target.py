@@ -1,6 +1,8 @@
 """Runtime target configuration honors environment precedence."""
 
 import os
+import stat
+import uuid
 
 import pytest
 
@@ -57,3 +59,41 @@ def test_current_target_keeps_explicit_environment_override(tmp_path, monkeypatc
     monkeypatch.setenv("BLUEFERRY_ADAPTER", "hci2")
 
     assert config.current_target() == ("02:00:00:00:00:03", "hci2")
+
+
+def test_current_profile_id_migrates_old_pairing_once_and_remains_stable(
+    tmp_path, monkeypatch
+):
+    target = tmp_path / "local.env"
+    target.write_text(
+        "BLUEFERRY_MAC=02:00:00:00:00:01\nBLUEFERRY_ADAPTER=hci7\n",
+        encoding="utf-8",
+    )
+    target.chmod(0o600)
+    monkeypatch.setattr(config, "LOCAL_ENV_PATH", target)
+    monkeypatch.setattr(config, "EXPLICIT_ENV_KEYS", frozenset())
+
+    profile_id = config.current_profile_id()
+
+    assert profile_id is not None
+    assert uuid.UUID(profile_id).version == 4
+    assert config.current_profile_id() == profile_id
+    assert config.read_local_env(target)[config.PROFILE_ID_KEY] == profile_id
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+
+def test_current_profile_id_is_omitted_for_a_different_environment_target(
+    tmp_path, monkeypatch
+):
+    target = tmp_path / "local.env"
+    target.write_text(
+        "BLUEFERRY_MAC=02:00:00:00:00:01\n"
+        "BLUEFERRY_PROFILE_ID=01234567-89ab-4cde-8fab-0123456789ab\n",
+        encoding="utf-8",
+    )
+    target.chmod(0o600)
+    monkeypatch.setattr(config, "LOCAL_ENV_PATH", target)
+    monkeypatch.setattr(config, "EXPLICIT_ENV_KEYS", frozenset({"BLUEFERRY_MAC"}))
+    monkeypatch.setenv("BLUEFERRY_MAC", "02:00:00:00:00:02")
+
+    assert config.current_profile_id() is None

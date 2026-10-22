@@ -4,14 +4,16 @@ from __future__ import annotations
 import os
 import re
 import stat
+import uuid
 from pathlib import Path
 
 from blueferry.phone_numbers import default_phone_region
-from blueferry.private_files import read_private_text
+from blueferry.private_files import atomic_write_private_text, read_private_text
 
 MAX_CONFIG_FILE_BYTES = 64 * 1024
 LOCAL_ENV_KEYS = frozenset({
     "BLUEFERRY_MAC",
+    "BLUEFERRY_PROFILE_ID",
     "BLUEFERRY_PHONE_REGION",
     "BLUEFERRY_ADAPTER",
     "BLUEFERRY_ANCS_ENABLED",
@@ -41,6 +43,10 @@ LOCAL_ENV_KEYS = frozenset({
     "BLUEFERRY_MEDIA_CONTROL_ENABLED",
     "BLUEFERRY_MEDIA_MPRIS_ENABLED",
 })
+PROFILE_ID_KEY = "BLUEFERRY_PROFILE_ID"
+_PROFILE_ID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+)
 CONFIG_DIR: Path = Path(
     os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config")
 ) / "blueferry"
@@ -48,7 +54,9 @@ LOCAL_ENV_PATH: Path = CONFIG_DIR / "local.env"
 # Preserve which values genuinely came from the process environment before
 # ``_load_local_env`` copies file-backed values into ``os.environ``. Runtime
 # configuration checks must continue to honor explicit environment overrides.
-EXPLICIT_ENV_KEYS = frozenset(key for key in LOCAL_ENV_KEYS if key in os.environ)
+EXPLICIT_ENV_KEYS = frozenset(
+    key for key in LOCAL_ENV_KEYS if key != PROFILE_ID_KEY and key in os.environ
+)
 
 
 def read_local_env(path: Path | None = None) -> dict[str, str]:
@@ -79,7 +87,8 @@ def _load_local_env() -> None:
 
     Anything already in os.environ wins — explicit env > local.env."""
     for key, value in read_local_env().items():
-        os.environ.setdefault(key, value)
+        if key != PROFILE_ID_KEY:
+            os.environ.setdefault(key, value)
 
 
 _load_local_env()
@@ -129,6 +138,47 @@ def current_target() -> tuple[str, str]:
         mac if is_valid_mac(mac) else "",
         adapter if is_valid_adapter(adapter) else "hci0",
     )
+
+
+def is_valid_profile_id(value: str) -> bool:
+    """Whether a persisted ID uses the UUIDv4 wire format."""
+    return bool(_PROFILE_ID_RE.fullmatch(value))
+
+
+def current_profile_id() -> str | None:
+    """Return a persisted opaque ID only for the selected local pairing.
+
+    Existing profiles are migrated on first status read. An environment
+    override that selects a different phone deliberately has no profile ID,
+    because the persisted ID belongs to the locally paired phone.
+    """
+    values = read_local_env()
+    saved_mac = values.get("BLUEFERRY_MAC", "").strip().upper()
+    selected_mac, _adapter = current_target()
+    if not is_valid_mac(saved_mac) or selected_mac != saved_mac:
+        return None
+
+    profile_id = values.get(PROFILE_ID_KEY, "")
+    if is_valid_profile_id(profile_id):
+        return profile_id
+
+    # Keep older installations usable without asking them to pair again.
+    # This value is local metadata, unrelated to the Bluetooth address, and is
+    # stored alongside the existing owner-only pairing configuration.
+    profile_id = str(uuid.uuid4())
+    values[PROFILE_ID_KEY] = profile_id
+    content = "".join(
+        f"{key}={values[key]}\n" for key in sorted(LOCAL_ENV_KEYS) if key in values
+    )
+    try:
+        atomic_write_private_text(
+            LOCAL_ENV_PATH,
+            content,
+            maximum_bytes=MAX_CONFIG_FILE_BYTES,
+        )
+    except (OSError, ValueError):
+        return None
+    return profile_id
 
 
 IPHONE_MAC: str = _configured_mac()

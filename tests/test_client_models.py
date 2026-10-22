@@ -265,3 +265,12 @@ def test_status_reports_the_contact_photo_opt_in_only_when_the_daemon_does() -> 
     assert status.contact_photos is True
     assert status.to_dict()["contact_photos"] is True
     assert status.extra == {"contact_photo_count": 4}
+
+
+def test_status_decodes_only_canonical_opaque_phone_profile_ids() -> None:
+    profile_id = "01234567-89ab-4cde-8fab-0123456789ab"
+    assert BackendStatus.from_dict({}).phone_profile_id is None
+    status = BackendStatus.from_dict({"phone_profile_id": profile_id})
+    assert status.phone_profile_id == profile_id
+    assert status.to_dict()["phone_profile_id"] == profile_id
+    assert BackendStatus.from_dict({"phone_profile_id": "02:00:00:00:00:01"}).phone_profile_id is None
