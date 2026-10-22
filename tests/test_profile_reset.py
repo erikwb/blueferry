@@ -275,6 +275,73 @@ def test_reset_refuses_a_disconnected_or_unresponsive_peer() -> None:
     assert ("disconnect", "device") not in calls
 
 
+@pytest.mark.parametrize("phase", ["disconnecting", "settling"])
+def test_ancs_timer_cannot_overlap_a_whole_device_reset(phase) -> None:
+    from blueferry.ancs.client import TRANSPORT_RESET_SECONDS, AncsClient
+
+    state = {"bredr": True, "le": True}
+    supervisor, timers, calls, held = _bearers(state)
+    client = AncsClient(
+        "/device", on_event=lambda _event: None,
+        on_transport_failure=supervisor.recover_le_transport,
+        schedule=timers.schedule, cancel=timers.cancel,
+    )
+    # A stale GATT failure queued recovery before the HFP reset began.
+    client._started = True
+    client._bearer_connected = True
+    client._transport_blocked = True
+    client._schedule_transport_reset()
+    assert supervisor.reset_profiles() == "started"
+    disconnected = held.pop()[0]
+    if phase == "settling":
+        disconnected()
+    timers.fire(TRANSPORT_RESET_SECONDS)
+    supervisor.poke()
+    assert calls == [("disconnect", "device")]
+
+    # Neither the pending callback nor the settle period should leave an
+    # extra ANCS reset queued for the replacement connection.
+    if phase == "disconnecting":
+        disconnected()
+    state.update(bredr=False, le=False)
+    timers.fire(PROFILE_RESET_SETTLE_SECONDS)
+    assert calls == [("disconnect", "device"), ("connect", "bredr")]
+    state.update(bredr=True, le=True)
+    held.pop()[0]()
+    supervisor.poke()
+    assert calls == [("disconnect", "device"), ("connect", "bredr")]
+    supervisor.stop()
+
+
+def test_whole_device_reset_waits_for_an_already_queued_le_reset() -> None:
+    supervisor, _timers, calls, held = _bearers({"bredr": True, "le": True})
+    supervisor.hold_le()
+    supervisor.recover_le_transport()
+    assert calls == []
+    assert supervisor.reset_profiles() == "in-progress"
+    supervisor.enable_le()
+    assert calls == [("disconnect", "le")]
+    assert supervisor.reset_profiles() == "in-progress"
+    held.pop()[0]()
+    assert supervisor.reset_profiles() == "started"
+    assert calls == [("disconnect", "le"), ("disconnect", "device")]
+    supervisor.stop()
+
+
+def test_profile_reset_reconnect_also_waits_for_known_le() -> None:
+    state = {"bredr": True, "le": False}
+    supervisor, timers, calls, held = _bearers(state)
+    assert supervisor.reset_profiles() == "started"
+    held.pop()[0]()
+    state.update(bredr=False, le=None)
+    timers.fire(PROFILE_RESET_SETTLE_SECONDS)
+    assert calls == [("disconnect", "device")]
+    state["le"] = False
+    supervisor.poke()
+    assert calls == [("disconnect", "device"), ("connect", "bredr")]
+    supervisor.stop()
+
+
 def test_reset_skips_the_connect_when_the_phone_returned_by_itself() -> None:
     state = {"bredr": True, "le": False}
     supervisor, timers, calls, held = _bearers(state)

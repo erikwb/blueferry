@@ -564,6 +564,10 @@ class BearerSupervisor:
         if not self._running or self._le_api_available is False:
             # Without Bearer.LE1 the only disconnect drops Classic as well.
             return
+        if self._profile_reset_phase is not None:
+            # The whole-device reset already replaces this GATT transport.
+            # A queued ANCS callback must not also reset the replacement link.
+            return
         # A successful reset is published locally as disconnected before the
         # polling source can see a replacement inbound link. Ignore duplicate
         # failure reports during that synthetic down-state.
@@ -698,6 +702,7 @@ class BearerSupervisor:
             return "bluez-unresponsive"
         if (
             self._profile_reset_phase is not None
+            or self._le_reset_pending
             or self._connecting
             or self._disconnecting
             or self._manual_dial_id is not None
@@ -1134,6 +1139,8 @@ class BearerSupervisor:
     def _schedule_le_connect(self) -> None:
         if (
             self._le_api_available is False
+            or self._bluez_blocked()
+            or self._profile_reset_phase is not None
             or self._le_settle_id is not None
             or self._disconnecting
             or self._le_dial_exhausted()
@@ -1150,7 +1157,11 @@ class BearerSupervisor:
 
     def _connect_le_after_settle(self) -> bool:
         self._le_settle_id = None
-        if not self._running or self._profile_reset_phase is not None:
+        if (
+            not self._running
+            or self._bluez_blocked()
+            or self._profile_reset_phase is not None
+        ):
             return False
         bredr, le = self._refresh_states()
         if (
@@ -1345,7 +1356,11 @@ class BearerSupervisor:
     def _request_connect(self, kind: str, *, manual: bool = False) -> None:
         # Also guard callbacks already queued before a disconnect began. A
         # state change or elapsed settle timer cannot release this operation.
-        if self._disconnecting:
+        if (
+            self._bluez_blocked()
+            or self._profile_reset_phase is not None
+            or self._disconnecting
+        ):
             return
         if kind in self._connecting:
             return
@@ -1355,7 +1370,6 @@ class BearerSupervisor:
             return
         if (
             kind == "bredr"
-            and not manual
             and self._le_enabled
             and self._states["le"] is None
             and not self._classic_connect_should_be_targeted()
@@ -1567,6 +1581,8 @@ class BearerSupervisor:
         if (
             not self._le_preference_restore_pending
             or not self._le_enabled
+            or self._bluez_blocked()
+            or self._profile_reset_phase is not None
             or self._classic_connect_should_be_targeted()
             or self._connecting
             or self._disconnecting
@@ -1722,7 +1738,13 @@ class BearerSupervisor:
             self._bredr_remote_closed = True
 
     def _request_le_disconnect(self, *, force: bool = False) -> None:
-        if self._le_api_available is False:
+        if (
+            self._le_api_available is False
+            or self._bluez_blocked()
+            or self._profile_reset_phase is not None
+        ):
+            # Keep a pending ANCS recovery for the next healthy poll. This
+            # guard also covers hold_le's cancellation of an in-flight dial.
             return
         if "le" in self._disconnecting or ("le" in self._connecting and not force):
             return

@@ -2481,3 +2481,41 @@ def test_manual_reconnect_reports_connected_and_unavailable() -> None:
         "state": "connected", "paused": False, "next_in_sec": 0,
     }
     supervisor.stop()
+
+
+@pytest.mark.parametrize("next_le", [False, True])
+@pytest.mark.parametrize("read_error", [False, True])
+def test_manual_reconnect_waits_for_known_le_before_selecting_transport(next_le, read_error):
+    state = {"bredr": False, "le": None}
+    calls = []
+    scheduled = []
+
+    def read(kind):
+        if kind == "le" and state[kind] is None and read_error:
+            raise bearer_supervisor.dbus.exceptions.DBusException(
+                "not answered yet", name="org.freedesktop.DBus.Error.NoReply",
+            )
+        return state[kind]
+
+    supervisor = BearerSupervisor(
+        "/device", read_connected=read,
+        prefer=lambda kind: calls.append(("prefer", kind)),
+        connect=lambda kind, *_callbacks: calls.append(
+            ("connect", kind, supervisor._connect_targeted[kind]),
+        ),
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or len(scheduled),
+        cancel=lambda _source: None,
+    )
+    supervisor.start()
+    assert calls == []
+    assert supervisor.reconnect_now() == "started"
+    delay, dial = scheduled[-1]
+    assert delay == 0
+    dial()
+    assert calls == []
+
+    state["le"] = next_le
+    supervisor.poke()
+    expected = [] if next_le else [("prefer", "bredr")]
+    assert calls == [*expected, ("connect", "bredr", next_le)]
+    supervisor.stop()

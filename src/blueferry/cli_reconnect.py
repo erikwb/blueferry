@@ -11,7 +11,7 @@ from blueferry.client import BackendClient, BackendError
 from blueferry.reconnect_view import (
     UNREACHABLE_TEXT,
     UNSUPPORTED_TEXT,
-    reconnect_view,
+    bluez_text,
     result_text,
 )
 from blueferry.text_safety import terminal_text
@@ -67,16 +67,18 @@ def reconnect(
     for _attempt in range(WAIT_SECONDS):
         _sleep(1.0)
         try:
-            state = client.status().to_dict().get("phone_reconnect_state")
+            status = client.status().to_dict()
         except BackendError:
             continue
+        if status.get("bluez_unresponsive") is True:
+            typer.echo(bluez_text(status), err=True)
+            raise typer.Exit(code=1)
+        state = status.get("phone_reconnect_state")
         if state == "connected":
             typer.echo(result_text("connected"))
             return
         if state == "unreachable":
             typer.echo(UNREACHABLE_TEXT, err=True)
             raise typer.Exit(code=1)
-    try:
-        typer.echo(reconnect_view(client.status().to_dict()).hint)
-    except BackendError as error:
-        typer.echo(terminal_text(error), err=True)
+    typer.echo("Timed out waiting for the iPhone to reconnect.", err=True)
+    raise typer.Exit(code=1)

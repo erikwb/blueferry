@@ -153,6 +153,90 @@ def test_clients_show_the_restart_hint() -> None:
     assert "restart the computer" in result_text("bluez-unresponsive").lower()
 
 
+def test_queued_le_settle_waits_for_bluez_to_recover_without_reading_cache() -> None:
+    harness = _Harness()
+    state = {"bredr": True, "le": False}
+    calls = []
+    scheduled = []
+
+    def read(kind):
+        calls.append(("read", kind))
+        return state[kind]
+
+    supervisor = BearerSupervisor(
+        "/device", read_connected=read,
+        connect=lambda kind, *_callbacks: calls.append(("connect", kind)),
+        prefer=lambda kind: calls.append(("prefer", kind)),
+        schedule=lambda delay, callback: scheduled.append((delay, callback)) or len(scheduled),
+        cancel=lambda _source: None,
+        bluez_blocked=lambda: harness.health.unresponsive,
+        on_bluez_ok=harness.health.report_success,
+    )
+    supervisor.start()
+    settle = scheduled[0][1]
+    _make_unresponsive(harness)
+    calls.clear()
+    settle()
+    assert calls == []
+    assert harness.health.unresponsive
+    harness.health.probe()
+    harness.pings.pop()[0]()
+    supervisor.poke()
+    scheduled[-1][1]()
+    assert ("connect", "le") in calls
+    supervisor.stop()
+    harness.health.stop()
+
+
+def test_ancs_reset_waits_for_bluez_recovery_and_runs_only_once() -> None:
+    harness = _Harness()
+    calls = []
+    supervisor = BearerSupervisor(
+        "/device", read_connected=lambda _kind: True, connect=lambda *_args: None,
+        disconnect=lambda kind, *_callbacks: calls.append(kind),
+        schedule=lambda *_args: 7, cancel=lambda _source: None,
+        bluez_blocked=lambda: harness.health.unresponsive,
+    )
+    supervisor.start()
+    _make_unresponsive(harness)
+    supervisor.recover_le_transport()
+    supervisor.recover_le_transport()
+    supervisor.poke()
+    assert calls == []
+    harness.health.probe()
+    harness.pings.pop()[0]()
+    supervisor.poke()
+    supervisor.poke()
+    assert calls == ["le"]
+    supervisor.stop()
+    harness.health.stop()
+
+
+def test_inbound_le_does_not_retarget_a_connect_while_bluez_is_unresponsive() -> None:
+    harness = _Harness()
+    state = {"bredr": False, "le": False}
+    calls = []
+    supervisor = BearerSupervisor(
+        "/device", read_connected=state.get,
+        connect=lambda kind, *_callbacks: calls.append(kind),
+        schedule=lambda *_args: 7, cancel=lambda _source: None,
+        bluez_blocked=lambda: harness.health.unresponsive,
+    )
+    supervisor.start()
+    assert calls == ["bredr"]
+    _make_unresponsive(harness)
+    state["le"] = True
+    supervisor._on_le_properties_changed("org.bluez.Bearer.LE1", {"Connected": True}, [])
+    assert calls == ["bredr"]
+    harness.health.probe()
+    harness.pings.pop()[0]()
+    supervisor.poke()
+    assert calls == ["bredr", "bredr"]
+    assert supervisor._connect_targeted["bredr"]
+    supervisor.stop()
+    harness.health.stop()
+
+
 def test_introspect_no_reply_logs_are_throttled() -> None:
     now = [0.0]
     flt = IntrospectNoReplyFilter(window_sec=600, clock=lambda: now[0])

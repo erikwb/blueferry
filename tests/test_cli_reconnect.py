@@ -1,6 +1,7 @@
 """`blueferry reconnect` with a fake backend; never pages a phone."""
 from __future__ import annotations
 
+import pytest
 from typer.testing import CliRunner
 
 from blueferry import cli_reconnect
@@ -63,6 +64,41 @@ def test_reconnect_in_progress_and_no_wait(monkeypatch) -> None:
     result = _run(monkeypatch, _Backend("started", ["connecting"]), "--no-wait")
     assert result.exit_code == 0
     assert "Reconnecting" in result.output
+
+
+@pytest.mark.parametrize("state", ["connecting", "waiting"])
+def test_reconnect_timeout_is_a_failure(monkeypatch, state) -> None:
+    result = _run(monkeypatch, _Backend("started", [state]))
+    assert result.exit_code == 1
+    assert "Timed out" in result.stderr
+
+
+@pytest.mark.parametrize("state", ["waiting", "connected"])
+def test_reconnect_reports_bluez_hang_during_wait_before_using_cached_link(monkeypatch, state):
+    class Hung(_Backend):
+        def status(self):
+            return BackendStatus.from_dict({
+                "daemon": True, "phone_reconnect_state": state,
+                "bluez_unresponsive": True, "bluez_unresponsive_reason": "kernel",
+            })
+
+    sleeps = []
+    monkeypatch.setattr(cli_reconnect, "_client", lambda: Hung("started", []))
+    monkeypatch.setattr(cli_reconnect, "_sleep", sleeps.append)
+    result = CliRunner().invoke(app, ["reconnect"])
+    assert result.exit_code == 1
+    assert "stuck in the kernel" in result.stderr
+    assert sleeps == [1.0]
+
+
+def test_reconnect_status_errors_cannot_end_as_success(monkeypatch) -> None:
+    class Unavailable(_Backend):
+        def status(self):
+            raise BackendError("backend unavailable")
+
+    result = _run(monkeypatch, Unavailable("started", []))
+    assert result.exit_code == 1
+    assert "Timed out" in result.stderr
 
 
 def test_reconnect_reports_backend_errors(monkeypatch) -> None:
