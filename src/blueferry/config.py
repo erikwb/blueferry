@@ -4,14 +4,16 @@ from __future__ import annotations
 import os
 import re
 import stat
+import uuid
 from pathlib import Path
 
 from blueferry.phone_numbers import default_phone_region
-from blueferry.private_files import read_private_text
+from blueferry.private_files import atomic_write_private_text, private_file_lock, read_private_text
 
 MAX_CONFIG_FILE_BYTES = 64 * 1024
 LOCAL_ENV_KEYS = frozenset({
     "BLUEFERRY_MAC",
+    "BLUEFERRY_PROFILE_ID",
     "BLUEFERRY_PHONE_REGION",
     "BLUEFERRY_ADAPTER",
     "BLUEFERRY_ANCS_ENABLED",
@@ -41,6 +43,10 @@ LOCAL_ENV_KEYS = frozenset({
     "BLUEFERRY_MEDIA_CONTROL_ENABLED",
     "BLUEFERRY_MEDIA_MPRIS_ENABLED",
 })
+PROFILE_ID_KEY = "BLUEFERRY_PROFILE_ID"
+_PROFILE_ID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+)
 CONFIG_DIR: Path = Path(
     os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config")
 ) / "blueferry"
@@ -48,7 +54,9 @@ LOCAL_ENV_PATH: Path = CONFIG_DIR / "local.env"
 # Preserve which values genuinely came from the process environment before
 # ``_load_local_env`` copies file-backed values into ``os.environ``. Runtime
 # configuration checks must continue to honor explicit environment overrides.
-EXPLICIT_ENV_KEYS = frozenset(key for key in LOCAL_ENV_KEYS if key in os.environ)
+EXPLICIT_ENV_KEYS = frozenset(
+    key for key in LOCAL_ENV_KEYS if key != PROFILE_ID_KEY and key in os.environ
+)
 
 
 def read_local_env(path: Path | None = None) -> dict[str, str]:
@@ -79,7 +87,8 @@ def _load_local_env() -> None:
 
     Anything already in os.environ wins — explicit env > local.env."""
     for key, value in read_local_env().items():
-        os.environ.setdefault(key, value)
+        if key != PROFILE_ID_KEY:
+            os.environ.setdefault(key, value)
 
 
 _load_local_env()
@@ -129,6 +138,56 @@ def current_target() -> tuple[str, str]:
         mac if is_valid_mac(mac) else "",
         adapter if is_valid_adapter(adapter) else "hci0",
     )
+
+
+def is_valid_profile_id(value: str) -> bool:
+    """Whether a persisted ID uses the UUIDv4 wire format."""
+    return bool(_PROFILE_ID_RE.fullmatch(value))
+
+
+def current_profile_id(device_mac: str) -> str | None:
+    """Return a persisted opaque ID only for the daemon's active phone.
+
+    The caller supplies its startup target, including any environment override.
+    A newly saved phone must not label data from the old daemon before restart.
+    Legacy profiles are migrated under the same lock as pairing/forget writes;
+    a busy lock defers migration until a later status read without blocking.
+    """
+    device_mac = device_mac.strip().upper()
+    if not is_valid_mac(device_mac):
+        return None
+    values = read_local_env()
+    saved_mac = values.get("BLUEFERRY_MAC", "").strip().upper()
+    if saved_mac != device_mac:
+        return None
+
+    profile_id = values.get(PROFILE_ID_KEY, "")
+    if is_valid_profile_id(profile_id):
+        return profile_id
+
+    try:
+        with private_file_lock(LOCAL_ENV_PATH, blocking=False):
+            # Pairing may have changed, cleared or migrated the profile after
+            # the first read. Only update a fresh snapshot while holding the lock.
+            values = read_local_env()
+            if values.get("BLUEFERRY_MAC", "").strip().upper() != device_mac:
+                return None
+            profile_id = values.get(PROFILE_ID_KEY, "")
+            if is_valid_profile_id(profile_id):
+                return profile_id
+            profile_id = str(uuid.uuid4())
+            values[PROFILE_ID_KEY] = profile_id
+            content = "".join(
+                f"{key}={values[key]}\n" for key in sorted(LOCAL_ENV_KEYS) if key in values
+            )
+            atomic_write_private_text(
+                LOCAL_ENV_PATH,
+                content,
+                maximum_bytes=MAX_CONFIG_FILE_BYTES,
+            )
+    except (OSError, ValueError):
+        return None
+    return profile_id
 
 
 IPHONE_MAC: str = _configured_mac()

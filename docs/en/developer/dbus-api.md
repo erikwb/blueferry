@@ -49,6 +49,17 @@ package version.
 `GetStatus` also returns `_build_id`. Clients compare it with the installed
 package to restart an outdated backend after upgrades.
 
+When a phone is configured, `GetStatus` returns `phone_profile_id`: a random,
+stable UUIDv4 for that local pairing profile. It contains no Bluetooth address
+or contact data. Clients can use it to scope their own per-phone metadata. The
+key is `null` when no locally paired phone is selected; environment overrides
+for a different phone do not reuse the saved profile ID. Forgetting the phone
+clears the ID, and configuring a different phone creates a new one. Older
+profiles receive an ID on their first status read. During a target switch, the
+old daemon returns `null` rather than labeling its data with the new phone's
+ID. Migration also returns `null` while pairing configuration is being written
+and retries on a later status read.
+
 ## Messages1 methods
 
 ### Sending

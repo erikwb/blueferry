@@ -238,6 +238,11 @@ def test_status_exposes_split_ancs_and_last_le_error(make_daemon, monkeypatch):
     )
     instance.setup_verification = SimpleNamespace(verified=())
     monkeypatch.setattr(daemon_mod, "history_count", lambda **_kwargs: 0)
+    monkeypatch.setattr(
+        daemon_mod.config,
+        "current_profile_id",
+        lambda _mac: "01234567-89ab-4cde-8fab-0123456789ab",
+    )
 
     status = instance._status()
 
@@ -252,9 +257,39 @@ def test_status_exposes_split_ancs_and_last_le_error(make_daemon, monkeypatch):
     assert status["last_le_error"] == "org.bluez.Error.Failed"
     assert status["last_le_error_message"] == "le-connection-abort-by-local"
     assert status["_build_id"] == "0.6.0-6"
+    assert status["phone_profile_id"] == "01234567-89ab-4cde-8fab-0123456789ab"
     assert status["phone_reconnect_state"] == "unreachable"
     assert status["phone_reconnect_paused"] is True
     assert status["phone_reconnect_next_in_sec"] == 540
+
+
+@pytest.mark.parametrize("legacy_profile", [False, True])
+def test_status_does_not_report_a_new_phones_profile_before_restart(
+    make_daemon, monkeypatch, legacy_profile,
+):
+    from blueferry import config, pair_setup
+
+    monkeypatch.setattr(pair_setup, "LOCAL_ENV_PATH", config.LOCAL_ENV_PATH)
+    monkeypatch.setattr(config, "IPHONE_MAC", "02:00:00:00:00:01")
+    pair_setup.write_local_env(config.IPHONE_MAC, "hci0")
+    instance = make_daemon()
+    initial_id = instance._status()["phone_profile_id"]
+    assert initial_id is not None
+
+    # The old daemon can answer GetStatus between saving the new target and
+    # its restart (or the periodic target-config check).
+    pair_setup.write_local_env("02:00:00:00:00:02", "hci0")
+    if legacy_profile:
+        config.LOCAL_ENV_PATH.write_text("BLUEFERRY_MAC=02:00:00:00:00:02\n")
+    saved = config.read_local_env()
+    assert instance.bearers.device_path.endswith("dev_02_00_00_00_00_01")
+    assert instance._status()["phone_profile_id"] is None
+    assert config.read_local_env() == saved
+
+    # A replacement daemon for the new target receives its own ID.
+    monkeypatch.setattr(config, "IPHONE_MAC", "02:00:00:00:00:02")
+    new_id = make_daemon()._status()["phone_profile_id"]
+    assert new_id is not None and new_id != initial_id
 
 
 def test_manual_reconnect_is_forwarded_to_the_bearer_supervisor(make_daemon):
