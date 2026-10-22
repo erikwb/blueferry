@@ -85,6 +85,7 @@ RESUME_AFTER_HANDBACK_SEC = 2
 PLAYING_DEBOUNCE_SEC = 2
 # Try the signal watches again after the bus refused one.
 WATCH_RETRY_SEC = 30
+PROBE_RETRY_SEC = 30
 
 IN_PROGRESS_TEXT = (
     "Bluetooth is still changing the iPhone's audio connection. Try again "
@@ -113,8 +114,10 @@ class PhoneAudioRoute:
         schedule: Schedule,
         cancel: Cancel,
         was_playing: Callable[[], bool] | None = None,
-        resume_playback: Callable[[], None] | None = None,
+        resume_playback: Callable[[Callable[[], bool]], None] | None = None,
         media_state: Callable[[], str] | None = None,
+        change_blocked: Callable[[], bool] | None = None,
+        bluez_blocked: Callable[[], bool] | None = None,
     ) -> None:
         self._bus = bus
         self._device_path = device_path
@@ -129,7 +132,12 @@ class PhoneAudioRoute:
         self._transports: dict[str, str] = {}
         self._known = False
         self._pending: str | None = None
-        # Bumped by every probe and by stop(); only the reply of the latest
+        self._pending_failure: Callable[[Exception], None] | None = None
+        self._operation_generation = 0
+        self._resume_generation = 0
+        self._change_blocked = change_blocked or (lambda: False)
+        self._bluez_blocked = bluez_blocked or (lambda: False)
+        # Bumped by every probe, owner change and stop(); only the latest
         # probe is applied. Live signals do not bump it: bluetoothd sends its
         # signals and the GetManagedObjects reply over one connection, and
         # the bus and GDBus keep that order, so a signal that arrives before
@@ -145,9 +153,16 @@ class PhoneAudioRoute:
         self._playing: str | None = None
         self._debounce_id: int | None = None
         self._watch_retry_id: int | None = None
+        self._probe_retry_id: int | None = None
+        self._owner_available = True
+        self._started = False
         self._stopped = False
 
     # ---- state ---------------------------------------------------------
+
+    @property
+    def busy(self) -> bool:
+        return self._pending is not None
 
     def snapshot(self) -> dict[str, object]:
         route, reason = self._route()
@@ -177,6 +192,8 @@ class PhoneAudioRoute:
     # ---- where the sound plays -------------------------------------------
 
     def _current_playing(self) -> str:
+        if not self._owner_available or self._stopped:
+            return PLAYING_UNKNOWN
         if any(state == TRANSPORT_ACTIVE for state in self._transports.values()):
             return PLAYING_PC
         try:
@@ -227,6 +244,7 @@ class PhoneAudioRoute:
     # ---- observation ---------------------------------------------------
 
     def start(self) -> None:
+        self._started = True
         if self._matches:
             return
         self._stopped = False
@@ -275,6 +293,12 @@ class PhoneAudioRoute:
 
     def probe(self) -> None:
         """Re-read the device and its transports from bluetoothd."""
+        if self._stopped or not self._allowed or not self._owner_available:
+            return
+        if self._bluez_blocked():
+            self._retry_probe_later()
+            return
+        self._cancel_probe_retry()
         self._generation += 1
         generation = self._generation
 
@@ -292,6 +316,7 @@ class PhoneAudioRoute:
             before = self.snapshot()
             self._known = False
             self._changed(before)
+            self._retry_probe_later()
 
         try:
             self._bus.call(
@@ -300,6 +325,37 @@ class PhoneAudioRoute:
             )
         except Exception as error:
             failed(error)
+
+    def _retry_probe_later(self) -> None:
+        if self._probe_retry_id is not None:
+            return
+        generation = self._generation
+
+        def retry() -> bool:
+            if generation != self._generation:
+                return False
+            self._probe_retry_id = None
+            self.probe()
+            return False
+
+        self._probe_retry_id = self._schedule(PROBE_RETRY_SEC, retry)
+
+    def _cancel_probe_retry(self) -> None:
+        if self._probe_retry_id is not None:
+            self._cancel(self._probe_retry_id)
+            self._probe_retry_id = None
+
+    def bluez_owner_changed(self, available: bool) -> None:
+        """Discard state and operations belonging to the previous bluetoothd."""
+        before = self.snapshot()
+        self._owner_available = available
+        self._invalidate()
+        self._changed(before)
+        if available and self._started and not self._stopped:
+            if self._matches:
+                self.probe()
+            else:
+                self.start()
 
     def _apply_tree(self, objects: Mapping) -> None:
         device = objects.get(self._device_path, {}).get(DEVICE_IFACE) or {}
@@ -311,6 +367,8 @@ class PhoneAudioRoute:
             for path, interfaces in objects.items()
             if self._is_phone_sink(interfaces.get(TRANSPORT_IFACE))
         } if self._connected else {}
+        if not self._connected:
+            self._cancel_resume()
 
     @staticmethod
     def _offers_source(device: Mapping) -> bool:
@@ -324,6 +382,7 @@ class PhoneAudioRoute:
             self._has_source = self._offers_source(properties)
         if not self._connected:
             self._transports.clear()
+            self._cancel_resume()
 
     def _is_phone_sink(self, properties: Mapping | None) -> bool:
         if not properties:
@@ -334,6 +393,8 @@ class PhoneAudioRoute:
         )
 
     def _interfaces_added(self, path, interfaces) -> None:
+        if self._stopped or not self._owner_available:
+            return
         if not self._is_phone_sink(interfaces.get(TRANSPORT_IFACE)):
             return
         before = self.snapshot()
@@ -359,6 +420,8 @@ class PhoneAudioRoute:
         self._changed(before)
 
     def _properties_changed(self, interface, changed, _invalidated) -> None:
+        if self._stopped or not self._owner_available:
+            return
         if str(interface) != DEVICE_IFACE:
             return
         if "Connected" not in changed and "UUIDs" not in changed:
@@ -378,6 +441,8 @@ class PhoneAudioRoute:
     ) -> None:
         if route not in ROUTES:
             raise InvalidArgumentsError("route must be 'pc' or 'phone'")
+        if self._stopped or self._bluez_blocked() or self._change_blocked():
+            raise NotReadyError(IN_PROGRESS_TEXT)
         current, reason = self._route()
         if current == ROUTE_UNAVAILABLE:
             if reason == REASON_POLICY:
@@ -388,6 +453,11 @@ class PhoneAudioRoute:
             raise NotReadyError("the iPhone's audio route is unavailable")
         if self._pending is not None:
             raise NotReadyError("an audio route change is already in progress")
+        self._cancel_resume()
+        self._cancel_settle()
+        self._operation_generation += 1
+        generation = self._operation_generation
+        resume_generation = self._resume_generation
         before = self.snapshot()
         resume = (
             route == ROUTE_PHONE
@@ -396,21 +466,24 @@ class PhoneAudioRoute:
             and self._was_playing()
         )
         self._pending = route
+        self._pending_failure = failure
         self._changed(before)
         method = "ConnectProfile" if route == ROUTE_PC else "DisconnectProfile"
 
-        def done() -> None:
-            if self._stopped:
-                # A late BlueZ reply after stop() touches no timer or bus.
-                return
+        def done() -> bool:
+            if generation != self._operation_generation or self._pending is None:
+                return False
             before = self.snapshot()
             self._pending = None
+            self._pending_failure = None
             self._changed(before)
             self._settle()
+            return True
 
         def reply(*_args) -> None:
-            done()
-            if resume and not self._stopped:
+            if not done():
+                return
+            if resume and resume_generation == self._resume_generation:
                 self._schedule_resume()
             success(route)
 
@@ -420,7 +493,8 @@ class PhoneAudioRoute:
                 reply()
                 return
             log.info("phone audio %s failed: %s", method, name)
-            done()
+            if not done():
+                return
             if name == "org.bluez.Error.InProgress":
                 failure(NotReadyError(IN_PROGRESS_TEXT))
                 return
@@ -435,46 +509,77 @@ class PhoneAudioRoute:
             failed(error)
 
     def _schedule_resume(self) -> None:
-        if self._resume_id is not None:
-            self._cancel(self._resume_id)
+        generation = self._resume_generation
+
+        def still_current() -> bool:
+            return (
+                generation == self._resume_generation and not self._stopped
+                and self._owner_available and self._connected
+                and not self._bluez_blocked() and not self._change_blocked()
+            )
 
         def fire() -> bool:
+            if generation != self._resume_generation:
+                return False
             self._resume_id = None
-            if not self._stopped and self._resume_playback is not None:
+            if still_current() and self._resume_playback is not None:
                 try:
-                    self._resume_playback()
+                    self._resume_playback(still_current)
                 except Exception as error:  # media control may have gone away
                     log.info("could not resume iPhone playback: %s", type(error).__name__)
             return False
 
         self._resume_id = self._schedule(RESUME_AFTER_HANDBACK_SEC, fire)
 
+    def _cancel_resume(self) -> None:
+        # Also invalidates retries already handed to the AMS resume callback.
+        self._resume_generation += 1
+        if self._resume_id is not None:
+            self._cancel(self._resume_id)
+            self._resume_id = None
+
     def _settle(self) -> None:
-        if self._settle_id is not None:
-            self._cancel(self._settle_id)
+        self._cancel_settle()
+        generation = self._operation_generation
 
         def fire() -> bool:
+            if generation != self._operation_generation:
+                return False
             self._settle_id = None
             self.probe()
             return False
 
         self._settle_id = self._schedule(SETTLE_SEC, fire)
 
-    def stop(self) -> None:
-        self._stopped = True
-        self._pending = None
-        self._cancel_debounce()
-        if self._resume_id is not None:
-            self._cancel(self._resume_id)
-            self._resume_id = None
-        self._generation += 1
-        if self._watch_retry_id is not None:
-            self._cancel(self._watch_retry_id)
-            self._watch_retry_id = None
+    def _cancel_settle(self) -> None:
         if self._settle_id is not None:
             self._cancel(self._settle_id)
             self._settle_id = None
+
+    def stop(self) -> None:
+        self._stopped = True
+        self._invalidate()
         self._remove_matches()
+
+    def _invalidate(self) -> None:
+        self._generation += 1
+        self._operation_generation += 1
+        failure, self._pending_failure = self._pending_failure, None
+        self._pending = None
+        self._known = False
+        self._connected = False
+        self._has_source = False
+        self._transports.clear()
+        self._playing = PLAYING_UNKNOWN
+        self._cancel_debounce()
+        self._cancel_resume()
+        self._cancel_probe_retry()
+        if self._watch_retry_id is not None:
+            self._cancel(self._watch_retry_id)
+            self._watch_retry_id = None
+        self._cancel_settle()
+        if failure is not None:
+            failure(NotReadyError("the Bluetooth connection changed during audio routing"))
 
     def _remove_matches(self) -> None:
         matches, self._matches = self._matches, []

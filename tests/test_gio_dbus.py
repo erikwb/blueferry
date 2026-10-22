@@ -140,3 +140,70 @@ def test_subscription_delivers_unpacked_arguments_until_removed(service) -> None
     assert located == [("/pilot", "device", ["a"])]
     subscription.remove()
     client.close_sync(None)
+
+
+def test_audio_route_follows_a_replacement_bluez_owner():
+    from blueferry.phone_audio_route import A2DP_SINK_UUID, A2DP_SOURCE_UUID, PhoneAudioRoute
+
+    device = "/org/bluez/hci0/dev_AA"
+    objects = {
+        device: {"org.bluez.Device1": {
+            "Connected": GLib.Variant("b", True),
+            "UUIDs": GLib.Variant("as", [A2DP_SOURCE_UUID]),
+        }},
+        device + "/fd0": {"org.bluez.MediaTransport1": {
+            "Device": GLib.Variant("o", device),
+            "UUID": GLib.Variant("s", A2DP_SINK_UUID),
+            "State": GLib.Variant("s", "active"),
+        }},
+    }
+    info = Gio.DBusNodeInfo.new_for_xml('''
+        <node><interface name="org.freedesktop.DBus.ObjectManager">
+        <method name="GetManagedObjects"><arg type="a{oa{sa{sv}}}" direction="out"/>
+        </method></interface></node>
+    ''').interfaces[0]
+
+    def serve(connection):
+        def reply(_conn, _sender, _path, _iface, _method, _params, invocation):
+            invocation.return_value(GLib.Variant("(a{oa{sa{sv}}})", (objects,)))
+
+        register = getattr(connection, "register_object_with_closures2", None)
+        registration = (register or connection.register_object)("/", info, reply, None, None)
+        result = connection.call_sync(
+            "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+            "RequestName", GLib.Variant("(su)", ("org.bluez", 0)),
+            GLib.VariantType.new("(u)"), Gio.DBusCallFlags.NONE, 3000, None,
+        )
+        assert result.unpack() == (1,)
+        return registration
+
+    old, new, client = _connect(), _connect(), _connect()
+    registrations = []
+    bus = GioDBus(lambda: client)
+    subject = PhoneAudioRoute(
+        bus, device, allowed=True, on_changed=lambda: None,
+        schedule=lambda *_: 1, cancel=lambda _: None,
+    )
+    watch = bus.subscribe(
+        "org.freedesktop.DBus", "org.freedesktop.DBus", "NameOwnerChanged",
+        lambda _name, _old, owner: subject.bluez_owner_changed(bool(owner)), arg0="org.bluez",
+    )
+    try:
+        registrations.append((old, serve(old)))
+        subject.start()
+        _wait(lambda: subject.snapshot()["phone_audio_playing"] == "pc")
+        old.close_sync(None)
+        _wait(lambda: subject.snapshot()["phone_audio_playing"] == "unknown")
+        assert subject.snapshot()["phone_audio_route"] == "unavailable"
+        del objects[device + "/fd0"]
+        registrations.append((new, serve(new)))
+        _wait(lambda: subject.snapshot()["phone_audio_route"] == "phone")
+        assert subject.snapshot()["phone_audio_playing"] == "unknown"
+    finally:
+        subject.stop()
+        watch.remove()
+        for connection, registration in registrations:
+            connection.unregister_object(registration)
+        for connection in (old, new, client):
+            if not connection.is_closed():
+                connection.close_sync(None)

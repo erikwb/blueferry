@@ -302,6 +302,7 @@ class Daemon:
             # Publish the report only; a flip is not a bearer transition.
             on_le_bond_report=self._emit_status,
             bluez_blocked=lambda: self.bluez_health.unresponsive,
+            profile_busy=lambda: self.phone_audio_route.busy,
             on_bluez_error=self.bluez_health.report,
             on_bluez_ok=self.bluez_health.report_success,
         )
@@ -351,6 +352,10 @@ class Daemon:
             was_playing=self._iphone_playing,
             resume_playback=self._resume_iphone_playback,
             media_state=self._iphone_playback_state,
+            change_blocked=lambda: (
+                not self.bearers.can_change_profiles or self.recovery.active
+            ),
+            bluez_blocked=lambda: self.bluez_health.unresponsive,
         )
         # The phone's battery over LE (GATT Battery Service or BlueZ's
         # Battery1), independent of calls and HFP. Construction does no I/O.
@@ -1341,6 +1346,7 @@ class Daemon:
             return
         self._bluez_owner_generation += 1
         generation = self._bluez_owner_generation
+        self.phone_audio_route.bluez_owner_changed(bool(new_owner))
         # Invalidate before discovery or advertising can dispatch more D-Bus
         # work. An interrupted power restoration keeps ordinary reconnects
         # paused until the recovery controller explicitly resumes them.
@@ -1921,7 +1927,9 @@ class Daemon:
             return "unknown"
         return "playing" if media.state.playing else "paused"
 
-    def _resume_iphone_playback(self, attempt: int = 0) -> None:
+    def _resume_iphone_playback(
+        self, still_current: Callable[[], bool], attempt: int = 0,
+    ) -> None:
         """Resume after iOS paused on losing its A2DP output.
 
         iOS reports the pause over AMS with a delay, so the cached state may
@@ -1929,13 +1937,14 @@ class Daemon:
         time; only a toggle has to wait until the pause has been observed.
         """
         media = self.media
-        if media is None or not media.available:
+        if not still_current() or media is None or not media.available:
             return
         supported = media.state.supported_commands
         if RemoteCommandID.Play not in supported and media.state.playing:
             if attempt < _RESUME_RETRIES:
                 def retry() -> bool:
-                    self._resume_iphone_playback(attempt + 1)
+                    if self.media is media:
+                        self._resume_iphone_playback(still_current, attempt + 1)
                     return False
 
                 GLib.timeout_add(_RESUME_RETRY_MS, retry)
