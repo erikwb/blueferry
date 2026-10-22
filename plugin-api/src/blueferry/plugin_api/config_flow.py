@@ -151,7 +151,7 @@ def parse_login_step(reply: object, *, start: bool) -> LoginStep:
     value = _object(reply)
     state = value.get("state")
     allowed = LOGIN_START_STATES if start else LOGIN_STATES
-    if state not in allowed:
+    if not isinstance(state, str) or state not in allowed:
         raise FlowError("the plugin sent an invalid sign-in state")
     message = plain(value.get("message", ""))
     if state != "open":

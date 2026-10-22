@@ -124,6 +124,80 @@ def _ran(runner, word):
     return [call for call in runner.calls if word in " ".join(call)]
 
 
+@pytest.mark.parametrize("prepare_before_install", [False, True])
+def test_colliding_ids_cannot_replace_activation(setup, prepare_before_install):
+    manager, runner = setup
+    runner.files[OLD] = {"demo.plugin": MANIFEST.format(version="1").replace(
+        "Id=io.example.demo", "Id=io.example.demo-one")}
+    first = manager.prepare(URL)
+    runner.files[OLD] = {"demo.plugin": MANIFEST.format(version="1").replace(
+        "Id=io.example.demo", "Id=io.example.demo_one")}
+    second = manager.prepare(URL) if prepare_before_install else None
+    record = manager.commit(first)
+    service = manager.service_path(first.manifest)
+    original = service.read_bytes()
+    calls = len(runner.calls)
+    with pytest.raises(InstallError, match="shares its D-Bus name"):
+        manager.commit(second) if second else manager.prepare(URL)
+    assert service.read_bytes() == original
+    assert manager.records() == {record.id: record}
+    assert Path(record.venv).is_dir()
+    assert not any("pip" in call for call in runner.calls[calls:])
+    if second:
+        manager.discard(second)
+
+
+def test_colliding_unmanaged_manifest_blocks_install(setup):
+    manager, _runner = setup
+    manager.root.mkdir(parents=True)
+    for plugin_id in ("io.example.demo-one", "io.example.demo_one"):
+        manager.manifest_path(plugin_id).write_text(MANIFEST.format(version="1").replace(
+            "Id=io.example.demo", f"Id={plugin_id}"))
+    # Even an ID already present in an ambiguous manual installation must
+    # not publish a new activation file over the other ID's service.
+    _runner.files[OLD] = {"demo.plugin": MANIFEST.format(version="1").replace(
+        "Id=io.example.demo", "Id=io.example.demo-one")}
+    with pytest.raises(InstallError, match="shares its D-Bus name"):
+        manager.prepare(URL)
+    assert not _ran(_runner, "pip")
+
+
+@pytest.mark.parametrize("change", ["update", "reinstall", "remove"])
+def test_stale_confirmation_preserves_current_install(setup, change):
+    manager, runner = setup
+    manager.commit(manager.prepare(URL))
+    runner.tags["v0.2.0"] = NEW
+    waiting = manager.prepare_update("io.example.demo")
+    assert waiting is not None
+    if change == "remove":
+        manager.remove("io.example.demo")
+    else:
+        ref = "v0.1.0" if change == "reinstall" else HEAD
+        manager.commit(manager.prepare(URL, ref))
+    current = manager.records()
+    service = manager.service_path(waiting.manifest)
+    before = service.read_bytes() if service.exists() else None
+    calls = len(runner.calls)
+    stops = len(manager.stopper.calls)
+    with pytest.raises(InstallError, match="changed since preparation"):
+        manager.commit(waiting)
+    assert manager.records() == current
+    assert (service.read_bytes() if service.exists() else None) == before
+    assert len(runner.calls) == calls and len(manager.stopper.calls) == stops
+    assert all(Path(record.venv).is_dir() for record in current.values())
+    manager.discard(waiting)
+
+
+def test_two_first_install_confirmations_cannot_overwrite_each_other(setup):
+    manager, _runner = setup
+    first, second = manager.prepare(URL), manager.prepare(URL)
+    record = manager.commit(first)
+    with pytest.raises(InstallError, match="changed since preparation"):
+        manager.commit(second)
+    assert manager.records()[record.id] == record
+    manager.discard(second)
+
+
 def test_prepare_runs_no_plugin_code_and_commit_publishes_it(setup, monkeypatch) -> None:
     manager, runner = setup
     monkeypatch.setenv("XDG_DATA_HOME", str(manager.data_home))
