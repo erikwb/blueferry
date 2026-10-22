@@ -1859,3 +1859,67 @@ def test_every_ams_write_forces_a_plain_write_request(harness) -> None:
         assert options.signature == "sv"
         assert dict(options) == {"type": "request"}
         assert isinstance(options["type"], dbus.String)
+
+
+@pytest.mark.parametrize("event", [
+    "route", "owner", "stop", "media_lost", "media_disabled", "playing_again", "unchanged",
+])
+def test_queued_audio_resume_is_validated_before_gatt_write(harness, make_daemon, event):
+    from blueferry.ams.constants import PlaybackState
+    from blueferry.media import MediaController
+    from tests.test_phone_audio_route import DEV, Bus, Timers, tree
+
+    client, bus, timers, *_ = harness
+    _subscribe(client, bus, timers)
+    instance = make_daemon()
+    media_timers, audio_timers = Timers(), Timers()
+    media = MediaController(schedule=media_timers.schedule, cancel=media_timers.cancel)
+    media.attach(client)
+    media.state.playback_state = PlaybackState.Playing
+    media.state.supported_commands = frozenset({RemoteCommandID.Play, RemoteCommandID.Pause})
+    if event == "playing_again":
+        media.state.supported_commands = frozenset({RemoteCommandID.TogglePlayPause})
+    media.state.supported_commands_known = True
+    instance.media = media
+    audio_bus = Bus(tree(transport=True))
+    audio = instance.phone_audio_route
+    audio._bus, audio._device_path, audio._allowed = audio_bus, DEV, True
+    audio._schedule, audio._cancel = audio_timers.schedule, audio_timers.cancel
+    audio._on_changed = lambda: None
+    audio._change_blocked = lambda: False
+    audio.start()
+    audio.set_route("phone", lambda _: None, pytest.fail)
+    audio_bus.tree = tree()
+    audio_bus.held.pop()[0]()
+    media.state.playback_state = PlaybackState.Paused
+    bus.notify(EU, bytes([2, 2, 1]) + b"Tit")  # pending title read blocks commands
+    audio_timers.fire()  # automatic Play is now in the real AMS queue
+    assert bus.pending() == [("WriteValue", EA)]
+    if event == "route":
+        audio.set_route("pc", lambda _: None, lambda _: None)
+    elif event == "owner":
+        audio.bluez_owner_changed(False)
+    elif event == "stop":
+        audio.stop()
+    elif event == "media_lost":
+        instance._on_media_availability(False)
+        instance._on_media_availability(True)
+    elif event == "media_disabled":
+        instance.media = None
+    elif event == "playing_again":
+        media.state.playback_state = PlaybackState.Playing
+    # A later user command must still run after the cancelled resume is discarded.
+    client.send_command(RemoteCommandID.Pause, lambda: None, pytest.fail)
+    bus.take("WriteValue", EA).succeed()
+    bus.take("ReadValue", EA).succeed(dbus.Array(list(b"Title")))
+    if event == "unchanged":
+        play = bus.take("WriteValue", RC)
+        assert _bytes(play) == bytes([RemoteCommandID.Play])
+        play.succeed()
+    command = bus.take("WriteValue", RC)
+    assert _bytes(command) == bytes([RemoteCommandID.Pause])
+    command.succeed()
+    assert not bus.calls and audio.busy == (event == "route")
+    audio.stop()
+    client.stop()
+    media.close()

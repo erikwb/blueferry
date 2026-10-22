@@ -195,8 +195,16 @@ def test_audio_route_follows_a_replacement_bluez_owner():
         old.close_sync(None)
         _wait(lambda: subject.snapshot()["phone_audio_playing"] == "unknown")
         assert subject.snapshot()["phone_audio_route"] == "unavailable"
-        del objects[device + "/fd0"]
+        device_interfaces = objects[device]
+        objects.clear()
         registrations.append((new, serve(new)))
+        _wait(lambda: subject.snapshot()["phone_audio_reason"] == "phone_disconnected")
+        # BlueZ may export the phone after its early GetManagedObjects reply.
+        objects[device] = device_interfaces
+        new.emit_signal(
+            None, "/", "org.freedesktop.DBus.ObjectManager", "InterfacesAdded",
+            GLib.Variant("(oa{sa{sv}})", (device, device_interfaces)),
+        )
         _wait(lambda: subject.snapshot()["phone_audio_route"] == "phone")
         assert subject.snapshot()["phone_audio_playing"] == "unknown"
     finally:

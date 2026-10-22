@@ -99,6 +99,7 @@ _ALREADY = frozenset({
 
 Schedule = Callable[[int, Callable[[], bool]], int]
 Cancel = Callable[[int], object]
+ResumePlayback = Callable[[Callable[[], bool]], None]
 
 
 class PhoneAudioRoute:
@@ -113,8 +114,7 @@ class PhoneAudioRoute:
         on_changed: Callable[[], None],
         schedule: Schedule,
         cancel: Cancel,
-        was_playing: Callable[[], bool] | None = None,
-        resume_playback: Callable[[Callable[[], bool]], None] | None = None,
+        prepare_resume: Callable[[], ResumePlayback | None] | None = None,
         media_state: Callable[[], str] | None = None,
         change_blocked: Callable[[], bool] | None = None,
         bluez_blocked: Callable[[], bool] | None = None,
@@ -146,8 +146,7 @@ class PhoneAudioRoute:
         self._generation = 0
         self._settle_id: int | None = None
         self._resume_id: int | None = None
-        self._was_playing = was_playing
-        self._resume_playback = resume_playback
+        self._prepare_resume = prepare_resume
         # "playing", "paused" or "unknown" from Apple Media Service.
         self._media_state = media_state or (lambda: MEDIA_UNKNOWN)
         self._playing: str | None = None
@@ -240,6 +239,10 @@ class PhoneAudioRoute:
             return
         before = self.snapshot()
         self._changed(before)
+
+    def media_unavailable(self) -> None:
+        """An AMS session ended; its handback must not resume a later session."""
+        self._cancel_resume()
 
     # ---- observation ---------------------------------------------------
 
@@ -395,6 +398,15 @@ class PhoneAudioRoute:
     def _interfaces_added(self, path, interfaces) -> None:
         if self._stopped or not self._owner_available:
             return
+        if str(path) == self._device_path and DEVICE_IFACE in interfaces:
+            before = self.snapshot()
+            self._known = True
+            # InterfacesAdded carries the new object's complete properties.
+            self._connected = False
+            self._has_source = False
+            self._apply_device(interfaces[DEVICE_IFACE])
+            self._changed(before)
+            return
         if not self._is_phone_sink(interfaces.get(TRANSPORT_IFACE)):
             return
         before = self.snapshot()
@@ -403,6 +415,14 @@ class PhoneAudioRoute:
         self._changed(before)
 
     def _interfaces_removed(self, path, interfaces) -> None:
+        if self._stopped or not self._owner_available:
+            return
+        if str(path) == self._device_path and DEVICE_IFACE in interfaces:
+            before = self.snapshot()
+            self._invalidate()
+            self._known = True  # Observed absent, rather than an unknown probe.
+            self._changed(before)
+            return
         if TRANSPORT_IFACE not in interfaces or str(path) not in self._transports:
             return
         before = self.snapshot()
@@ -459,11 +479,10 @@ class PhoneAudioRoute:
         generation = self._operation_generation
         resume_generation = self._resume_generation
         before = self.snapshot()
+        # Capture the playing session now, before DisconnectProfile can wait.
         resume = (
-            route == ROUTE_PHONE
-            and self._was_playing is not None
-            and self._resume_playback is not None
-            and self._was_playing()
+            self._prepare_resume()
+            if route == ROUTE_PHONE and self._prepare_resume is not None else None
         )
         self._pending = route
         self._pending_failure = failure
@@ -483,8 +502,8 @@ class PhoneAudioRoute:
         def reply(*_args) -> None:
             if not done():
                 return
-            if resume and resume_generation == self._resume_generation:
-                self._schedule_resume()
+            if resume is not None and resume_generation == self._resume_generation:
+                self._schedule_resume(resume)
             success(route)
 
         def failed(error: Exception) -> None:
@@ -508,7 +527,7 @@ class PhoneAudioRoute:
         except Exception as error:
             failed(error)
 
-    def _schedule_resume(self) -> None:
+    def _schedule_resume(self, resume: ResumePlayback) -> None:
         generation = self._resume_generation
 
         def still_current() -> bool:
@@ -522,9 +541,9 @@ class PhoneAudioRoute:
             if generation != self._resume_generation:
                 return False
             self._resume_id = None
-            if still_current() and self._resume_playback is not None:
+            if still_current():
                 try:
-                    self._resume_playback(still_current)
+                    resume(still_current)
                 except Exception as error:  # media control may have gone away
                     log.info("could not resume iPhone playback: %s", type(error).__name__)
             return False

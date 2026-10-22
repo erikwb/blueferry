@@ -14,8 +14,9 @@ class _Media:
         self.state = SimpleNamespace(supported_commands=frozenset(supported), playing=playing)
         self.sent: list[str] = []
 
-    def send_command(self, name, ok, failed):
-        self.sent.append(name)
+    def send_command(self, name, ok, failed, *, still_current=None):
+        if still_current is None or still_current():
+            self.sent.append(name)
 
 
 def _host(media):

@@ -374,7 +374,7 @@ def _resuming_route(bus, *, playing: bool):
     subject = PhoneAudioRoute(
         bus, DEV, allowed=True, on_changed=lambda: None,
         schedule=timers.schedule, cancel=timers.cancel,
-        was_playing=lambda: playing, resume_playback=lambda _valid: resumed.append(1),
+        prepare_resume=lambda: (lambda _valid: resumed.append(1)) if playing else None,
     )
     return subject, timers, resumed
 
@@ -924,15 +924,14 @@ def test_new_route_cancels_toggle_retry_after_resume_was_dispatched(monkeypatch)
     media = SimpleNamespace(
         available=True,
         state=SimpleNamespace(playing=True, supported_commands={RemoteCommandID.TogglePlayPause}),
-        send_command=lambda name, *_: sent.append(name),
+        send_command=lambda name, *_args, **_kwargs: sent.append(name),
     )
     host = SimpleNamespace(media=media)
     host._resume_iphone_playback = Daemon._resume_iphone_playback.__get__(host)
     monkeypatch.setattr(GLib, "timeout_add", lambda _ms, cb: retries.append(cb) or len(retries))
     bus = Bus(tree(transport=True))
     subject, timers, _ = route(
-        bus, was_playing=lambda: media.state.playing,
-        resume_playback=host._resume_iphone_playback,
+        bus, prepare_resume=Daemon._prepare_iphone_resume.__get__(host),
     )
     subject.start()
     subject.set_route("phone", lambda _: None, pytest.fail)
@@ -943,3 +942,73 @@ def test_new_route_cancels_toggle_retry_after_resume_was_dispatched(monkeypatch)
     media.state.playing = False
     retries.pop()()
     assert not sent and not retries
+
+
+@pytest.mark.parametrize("after_restart", [False, True])
+def test_device_exported_after_initial_snapshot_enables_audio(after_restart):
+    bus = Bus({})
+    subject, timers, _ = route(bus)
+    subject.start()
+    if after_restart:
+        subject.bluez_owner_changed(False)
+        subject.bluez_owner_changed(True)
+    bus.receivers["InterfacesAdded"](DEV, tree(connected=False)[DEV])
+    bus.receivers["PropertiesChanged"]("org.bluez.Device1", {"Connected": True}, [])
+    assert subject.snapshot()["phone_audio_route"] == "phone"
+    assert not timers.pending
+    subject.set_route("pc", lambda _: None, lambda _: None)
+    assert bus.calls[-1][2] == "ConnectProfile"
+    subject.stop()
+
+
+def test_removing_device_clears_route_and_pending_operation():
+    bus = Bus(tree(transport=True, state="active"))
+    subject, timers, _ = route(bus)
+    subject.start()
+    accepted, errors = [], []
+    subject.set_route("phone", accepted.append, errors.append)
+    reply, _ = bus.held.pop()
+    bus.receivers["InterfacesRemoved"](DEV, ["org.bluez.Device1"])
+    assert subject.snapshot()["phone_audio_reason"] == "phone_disconnected"
+    assert subject.snapshot()["phone_audio_playing"] == "unknown"
+    assert len(errors) == 1 and isinstance(errors[0], NotReadyError)
+    bus.receivers["InterfacesAdded"](DEV, tree()[DEV])
+    reply()
+    assert subject.snapshot()["phone_audio_route"] == "phone"
+    assert not accepted and not timers.pending
+
+
+@pytest.mark.parametrize("replace_before_reply", [False, True])
+def test_handback_does_not_resume_replacement_media(make_daemon, replace_before_reply):
+    from blueferry.ams.constants import RemoteCommandID
+
+    old_sent, new_sent = [], []
+
+    def media(playing, sent):
+        return SimpleNamespace(
+            available=True,
+            state=SimpleNamespace(playing=playing, supported_commands={RemoteCommandID.Play}),
+            send_command=lambda name, *_args, **_kwargs: sent.append(name),
+        )
+
+    instance = make_daemon()
+    instance.media = media(True, old_sent)
+    subject = instance.phone_audio_route
+    bus, timers = Bus(tree(transport=True)), Timers()
+    subject._bus, subject._device_path, subject._allowed = bus, DEV, True
+    subject._schedule, subject._cancel = timers.schedule, timers.cancel
+    subject._on_changed = lambda: None
+    subject._change_blocked = lambda: False
+    subject.start()
+    subject.set_route("phone", lambda _: None, pytest.fail)
+    if not replace_before_reply:
+        bus.tree = tree()
+        bus.held.pop()[0]()
+    # Media control was disabled/re-enabled during the call or the resume delay.
+    instance.media = media(False, new_sent)
+    if replace_before_reply:
+        bus.tree = tree()
+        bus.held.pop()[0]()
+    timers.fire()
+    assert not old_sent and not new_sent
+    subject.stop()

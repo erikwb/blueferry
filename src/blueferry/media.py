@@ -51,6 +51,7 @@ class CommandWriter(Protocol):
 
     def send_command(
         self, command: RemoteCommandID, on_success: Success, on_failure: Failure,
+        *, still_current: Callable[[], bool] | None = None,
     ) -> None: ...
 
 
@@ -265,14 +266,28 @@ class MediaController:
                 return RemoteCommandID.TogglePlayPause
         raise NotReadyError("the iPhone does not currently offer this media command")
 
-    def send_command(self, name: str, on_success: Success, on_failure: Failure) -> None:
+    def send_command(
+        self, name: str, on_success: Success, on_failure: Failure,
+        *, still_current: Callable[[], bool] | None = None,
+    ) -> None:
         command = self.resolve_command(name)
         writer = self._writer
         if writer is None:
             raise NotReadyError("iPhone media control is not connected")
         log.info("sending iPhone media command %s", command.name)
-        writer.send_command(
-            command,
-            on_success,
-            lambda error: on_failure(OperationFailedError("MediaCommand", error)),
-        )
+
+        def failed(error: Exception) -> None:
+            on_failure(OperationFailedError("MediaCommand", error))
+
+        if still_current is None:
+            writer.send_command(command, on_success, failed)
+        else:
+            def current() -> bool:
+                # A queued Play resolved to Toggle must not pause a player
+                # which started again while waiting behind a GATT read.
+                return (
+                    writer is self._writer and still_current()
+                    and self.resolve_command(name) == command
+                )
+
+            writer.send_command(command, on_success, failed, still_current=current)

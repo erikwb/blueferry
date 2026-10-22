@@ -90,7 +90,7 @@ from blueferry.obex.worker import ObexWorker
 from blueferry.otp_context import OtpMetadata
 from blueferry.otp_settings import OtpSettings
 from blueferry.pair_setup import bond_status
-from blueferry.phone_audio_route import PhoneAudioRoute
+from blueferry.phone_audio_route import PhoneAudioRoute, ResumePlayback
 from blueferry.phone_battery import BatteryWarningSettings, PhoneBattery
 from blueferry.profile_reset import (
     ProfileResetController,
@@ -349,8 +349,7 @@ class Daemon:
             on_changed=self._emit_status_soon,
             schedule=GLib.timeout_add_seconds,
             cancel=GLib.source_remove,
-            was_playing=self._iphone_playing,
-            resume_playback=self._resume_iphone_playback,
+            prepare_resume=self._prepare_iphone_resume,
             media_state=self._iphone_playback_state,
             change_blocked=lambda: (
                 not self.bearers.can_change_profiles or self.recovery.active
@@ -1008,6 +1007,8 @@ class Daemon:
         return self._media_status()
 
     def _on_media_availability(self, available: bool) -> None:
+        if not available:
+            self.phone_audio_route.media_unavailable()
         if self.media is not None:
             self.media.handle_availability(available)
         self._emit_status()
@@ -1916,9 +1917,18 @@ class Daemon:
         main_loop.quit()
         return False
 
-    def _iphone_playing(self) -> bool:
+    def _prepare_iphone_resume(self) -> ResumePlayback | None:
+        """Bind handback to the media controller that was playing at request time."""
         media = self.media
-        return bool(media is not None and media.available and media.state.playing)
+        if media is None or not media.available or not media.state.playing:
+            return None
+
+        def resume(still_current: Callable[[], bool]) -> None:
+            self._resume_iphone_playback(
+                lambda: self.media is media and still_current(),
+            )
+
+        return resume
 
     def _iphone_playback_state(self) -> str:
         """``playing``, ``paused`` or ``unknown`` as reported over AMS."""
@@ -1955,6 +1965,7 @@ class Daemon:
                 lambda *_: log.info("resumed iPhone playback after audio handback"),
                 lambda error: log.info(
                     "iPhone playback resume failed: %s", type(error).__name__),
+                still_current=still_current,
             )
         except Exception as error:  # media control may have gone away
             log.info("iPhone playback resume failed: %s", type(error).__name__)
