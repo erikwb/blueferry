@@ -709,6 +709,127 @@ def test_gtk_call_history_switches_save_both_values_together():
     )
 
 
+def _phone_audio_page():
+    from types import SimpleNamespace
+
+    class Switch:
+        active = False
+
+        def get_active(self):
+            return self.active
+
+        def set_active(self, active):
+            self.active = active
+
+    class Row:
+        sensitive = visible = subtitle = None
+
+        def set_sensitive(self, value):
+            self.sensitive = value
+
+        def set_visible(self, value):
+            self.visible = value
+
+        def set_subtitle(self, value):
+            self.subtitle = value
+
+    page = SimpleNamespace(
+        _applying_phone_audio=False,
+        _phone_audio_group=Row(),
+        _phone_audio_row=Row(),
+        _phone_audio_switch=Switch(),
+        _last_status=None,
+        toasts=[], refreshes=[], applied=[], routes=[],
+    )
+    page._toast = page.toasts.append
+    page._refresh = lambda: page.refreshes.append(True)
+    page._apply_status = page.applied.append
+    page._client = SimpleNamespace(
+        set_phone_audio_route_async=lambda route, ok, err: page.routes.append((route, ok, err)),
+    )
+    return page
+
+
+def test_gtk_phone_audio_switch_follows_the_reported_route():
+    from blueferry.ui.status import IPhonePage
+
+    page = _phone_audio_page()
+    apply = lambda values, reachable=True: IPhonePage._apply_phone_audio(  # noqa: E731
+        page, BackendStatus.from_dict(values), reachable)
+
+    apply({})
+    assert page._phone_audio_group.visible is False
+
+    apply({"phone_audio_route": "unavailable", "phone_audio_reason": "keep_phone_audio_on_phone"})
+    assert page._phone_audio_group.visible is True
+    assert page._phone_audio_row.sensitive is False
+    assert "BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE=false" in page._phone_audio_row.subtitle
+
+    # The typed playing field reaches the hint (AirPlay picked on the iPhone).
+    apply({"phone_audio_route": "pc", "phone_audio_playing": "phone"})
+    assert page._phone_audio_switch.active is True
+    assert page._phone_audio_row.sensitive is True
+    assert "own speaker" in page._phone_audio_row.subtitle
+    apply({"phone_audio_route": "pc"}, reachable=False)
+    assert page._phone_audio_row.sensitive is False
+    # Showing a status never switches anything.
+    assert page.routes == [] and page._applying_phone_audio is False
+
+
+def test_gtk_phone_audio_switch_sends_the_route_and_restores_on_failure():
+    from blueferry.ui.status import IPhonePage
+
+    page = _phone_audio_page()
+    page._applying_phone_audio = True
+    IPhonePage._phone_audio_changed(page, page._phone_audio_switch, None)
+    assert page.routes == []
+
+    page._applying_phone_audio = False
+    page._phone_audio_switch.active = True
+    IPhonePage._phone_audio_changed(page, page._phone_audio_switch, None)
+    route, ok, err = page.routes[0]
+    assert route == "pc" and page._phone_audio_row.sensitive is False
+    ok("pc")
+    assert page.refreshes == [True]
+    err("busy")
+    assert page.toasts == ["Could not switch the iPhone's sound: busy"]
+    assert page.applied == [None]
+
+
+def test_gtk_auto_profile_reset_switch_follows_the_daemon_and_saves():
+    from blueferry.ui.saved_choice import SavedChoice
+    from blueferry.ui.status import IPhonePage
+
+    page = _media_switch_page()
+    page._auto_profile_reset_choice = SavedChoice()
+    page._auto_profile_reset_switch = type(page._media_control_switch)()
+    page._auto_profile_reset_row = type(page._media_control_row)()
+    page._connection_group = type(page._media_control_row)()
+    page._client.set_auto_profile_reset_async = lambda enabled, ok, err: page.saves.append(
+        ("reset", enabled, ok, err))
+    apply = lambda values, reachable=True: IPhonePage._apply_connection_switches(  # noqa: E731
+        page, BackendStatus.from_dict(values), reachable)
+
+    # Daemons without the profile reset do not show the setting.
+    apply({})
+    assert page._connection_group.visible is False
+
+    apply({"profile_reset_auto": True})
+    assert page._connection_group.visible is True
+    assert page._auto_profile_reset_switch.active is True
+    assert page._auto_profile_reset_row.sensitive is True
+    apply({"profile_reset_auto": True}, reachable=False)
+    assert page._auto_profile_reset_row.sensitive is False
+
+    page._auto_profile_reset_switch.set_active(False)
+    IPhonePage._auto_profile_reset_changed(page, page._auto_profile_reset_switch, None)
+    kind, enabled, ok, _err = page.saves[-1]
+    assert (kind, enabled) == ("reset", False)
+    ok({"profile_reset_auto": False})
+    assert page.toasts[-1] == "Connection reset preference saved"
+    assert page.refreshes
+
+
 class _PhotosWidget:
     def __init__(self, active: bool = False) -> None:
         self.visible = None

@@ -1619,3 +1619,26 @@ def test_initial_snapshot_does_not_overwrite_reused_call_path() -> None:
     assert len(controller.calls()) == 1
     assert controller.calls()[0].state == "active"
     assert controller.calls()[0].number == "+15551230099"
+
+
+def test_powered_timeouts_and_power_up_are_reported_for_profile_healing() -> None:
+    failures: list[str] = []
+    powered: list[bool] = []
+    transport = FakeTransport()
+    timers = Timers()
+    controller = CallController(
+        enabled=True, mac=MAC, adapter="hci0", transport=transport,
+        on_powered_failed=failures.append, on_powered=lambda: powered.append(True),
+        schedule=timers.schedule, cancel=timers.cancel,
+    )
+    controller.start()
+    transport.take("GetModems").on_reply([_modem()])
+    transport.take("SetProperty").on_error(
+        dbus.exceptions.DBusException("x", name="org.ofono.Error.Timedout")
+    )
+    assert failures == ["org.ofono.Error.Timedout"]
+    assert powered == []
+
+    transport.emit(MODEM_IFACE, "PropertyChanged", MODEM, "Powered", dbus.Boolean(True))
+    assert powered == [True]
+    assert controller.in_call is False

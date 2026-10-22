@@ -206,6 +206,15 @@ def test_popup_without_photo_or_when_disabled_has_no_image_hint(monkeypatch) -> 
     assert len(sink._notif.calls) == 1 and "image-path" not in sink._notif.calls[0][6]
 
 
+def test_alphanumeric_popup_does_not_use_a_persons_short_number_photo(monkeypatch) -> None:
+    sink = _sink(monkeypatch, lambda _address: pytest.fail("service looked up a contact photo"))
+    event = _event()
+    event.sender_address = "7467"
+    event.sender_alphanumeric = "Shop"
+    sink.handle(event)
+    assert "image-path" not in sink._notif.calls[0][6]
+
+
 def test_dispatcher_passes_the_photo_provider_only_when_enabled(monkeypatch) -> None:
     from blueferry import event_dispatcher
 

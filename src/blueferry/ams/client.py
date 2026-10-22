@@ -146,6 +146,10 @@ class AmsUnavailableError(RuntimeError):
     """AMS is not subscribed on a live LE link."""
 
 
+class AmsCommandCancelledError(RuntimeError):
+    """A queued automatic command was superseded before it could be written."""
+
+
 class AmsQueueFullError(RuntimeError):
     """The serialized GATT queue is full; the phone is not keeping up."""
 
@@ -1463,6 +1467,8 @@ class AmsClient:
         command: RemoteCommandID,
         on_success: Success,
         on_failure: Failure,
+        *,
+        still_current: Callable[[], bool] | None = None,
     ) -> None:
         """Write one Remote Command; the caller validates availability first."""
         if not self._available:
@@ -1478,9 +1484,17 @@ class AmsClient:
             log.info("AMS command %s failed: %s", command.name, _error_name(error))
             on_failure(error)
 
+        def run(ok: Success, fail: Failure) -> None:
+            # Attribute reads can keep this command queued after its caller's
+            # intent changed. Check immediately before sending WriteValue.
+            if still_current is not None and not still_current():
+                fail(AmsCommandCancelledError("media command was superseded"))
+                return
+            self._write(path, packet, ok, fail)
+
         operation = _Operation(
             f"command {command.name}",
-            lambda ok, fail: self._write(path, packet, ok, fail),
+            run,
             on_success,
             failed,
             self._generation,

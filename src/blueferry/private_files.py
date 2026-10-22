@@ -1,9 +1,12 @@
 """Race-resistant owner-only reads and atomic writes for small config files."""
 from __future__ import annotations
 
+import fcntl
 import os
 import stat
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 PRIVATE_DIRECTORY_MODE = 0o700
@@ -21,6 +24,34 @@ def ensure_private_directory(path: Path) -> None:
         path.chmod(PRIVATE_DIRECTORY_MODE)
     if stat.S_IMODE(path.stat().st_mode) != PRIVATE_DIRECTORY_MODE:
         raise PermissionError(f"could not secure private directory: {path}")
+
+
+@contextmanager
+def private_file_lock(path: Path, *, blocking: bool = True) -> Iterator[None]:
+    """Serialize updates across processes using a permanent private sidecar.
+
+    The data file is atomically replaced, so locking its inode would not
+    protect the next writer. Never unlink the sidecar, even after unlocking.
+    Nonblocking callers receive BlockingIOError while another writer owns it.
+    """
+    ensure_private_directory(path.parent)
+    lock_path = path.with_name(f".{path.name}.lock")
+    descriptor = os.open(
+        lock_path,
+        os.O_CREAT | os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK,
+        PRIVATE_FILE_MODE,
+    )
+    try:
+        current = os.fstat(descriptor)
+        if not stat.S_ISREG(current.st_mode) or current.st_uid != os.getuid():
+            raise PermissionError(f"private lock has the wrong owner/type: {lock_path}")
+        os.fchmod(descriptor, PRIVATE_FILE_MODE)
+        fcntl.flock(descriptor, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+        yield
+    finally:
+        # Closing also unlocks on exceptions; descriptors are never inherited
+        # by the setup helpers that exec into a separate Python process.
+        os.close(descriptor)
 
 
 def runtime_private_directory() -> Path:
