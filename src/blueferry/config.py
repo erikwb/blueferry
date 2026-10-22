@@ -8,7 +8,7 @@ import uuid
 from pathlib import Path
 
 from blueferry.phone_numbers import default_phone_region
-from blueferry.private_files import atomic_write_private_text, read_private_text
+from blueferry.private_files import atomic_write_private_text, private_file_lock, read_private_text
 
 MAX_CONFIG_FILE_BYTES = 64 * 1024
 LOCAL_ENV_KEYS = frozenset({
@@ -145,37 +145,46 @@ def is_valid_profile_id(value: str) -> bool:
     return bool(_PROFILE_ID_RE.fullmatch(value))
 
 
-def current_profile_id() -> str | None:
-    """Return a persisted opaque ID only for the selected local pairing.
+def current_profile_id(device_mac: str) -> str | None:
+    """Return a persisted opaque ID only for the daemon's active phone.
 
-    Existing profiles are migrated on first status read. An environment
-    override that selects a different phone deliberately has no profile ID,
-    because the persisted ID belongs to the locally paired phone.
+    The caller supplies its startup target, including any environment override.
+    A newly saved phone must not label data from the old daemon before restart.
+    Legacy profiles are migrated under the same lock as pairing/forget writes;
+    a busy lock defers migration until a later status read without blocking.
     """
+    device_mac = device_mac.strip().upper()
+    if not is_valid_mac(device_mac):
+        return None
     values = read_local_env()
     saved_mac = values.get("BLUEFERRY_MAC", "").strip().upper()
-    selected_mac, _adapter = current_target()
-    if not is_valid_mac(saved_mac) or selected_mac != saved_mac:
+    if saved_mac != device_mac:
         return None
 
     profile_id = values.get(PROFILE_ID_KEY, "")
     if is_valid_profile_id(profile_id):
         return profile_id
 
-    # Keep older installations usable without asking them to pair again.
-    # This value is local metadata, unrelated to the Bluetooth address, and is
-    # stored alongside the existing owner-only pairing configuration.
-    profile_id = str(uuid.uuid4())
-    values[PROFILE_ID_KEY] = profile_id
-    content = "".join(
-        f"{key}={values[key]}\n" for key in sorted(LOCAL_ENV_KEYS) if key in values
-    )
     try:
-        atomic_write_private_text(
-            LOCAL_ENV_PATH,
-            content,
-            maximum_bytes=MAX_CONFIG_FILE_BYTES,
-        )
+        with private_file_lock(LOCAL_ENV_PATH, blocking=False):
+            # Pairing may have changed, cleared or migrated the profile after
+            # the first read. Only update a fresh snapshot while holding the lock.
+            values = read_local_env()
+            if values.get("BLUEFERRY_MAC", "").strip().upper() != device_mac:
+                return None
+            profile_id = values.get(PROFILE_ID_KEY, "")
+            if is_valid_profile_id(profile_id):
+                return profile_id
+            profile_id = str(uuid.uuid4())
+            values[PROFILE_ID_KEY] = profile_id
+            content = "".join(
+                f"{key}={values[key]}\n" for key in sorted(LOCAL_ENV_KEYS) if key in values
+            )
+            atomic_write_private_text(
+                LOCAL_ENV_PATH,
+                content,
+                maximum_bytes=MAX_CONFIG_FILE_BYTES,
+            )
     except (OSError, ValueError):
         return None
     return profile_id

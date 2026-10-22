@@ -1778,7 +1778,7 @@ class Daemon:
         return {
             "backend_release": self._running_release,
             "_build_id": self._running_build_id,
-            "phone_profile_id": config.current_profile_id(),
+            "phone_profile_id": config.current_profile_id(config.IPHONE_MAC),
             "initializing": self._initializing,
             "ancs": bool(ancs and ancs.connected),
             "ancs_subscribed": bool(ancs and ancs.subscribed),
