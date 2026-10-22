@@ -6,11 +6,13 @@ import re
 import stat
 from pathlib import Path
 
+from blueferry.phone_numbers import default_phone_region
 from blueferry.private_files import read_private_text
 
 MAX_CONFIG_FILE_BYTES = 64 * 1024
 LOCAL_ENV_KEYS = frozenset({
     "BLUEFERRY_MAC",
+    "BLUEFERRY_PHONE_REGION",
     "BLUEFERRY_ADAPTER",
     "BLUEFERRY_ANCS_ENABLED",
     "BLUEFERRY_ANCS_APP_ALLOWLIST",
@@ -31,6 +33,7 @@ LOCAL_ENV_KEYS = frozenset({
     "BLUEFERRY_HISTORY_MAX_PAYLOAD_BYTES",
     "BLUEFERRY_PROXIMITY_LOCK",
     "BLUEFERRY_PROXIMITY_LOCK_GRACE_SEC",
+    "BLUEFERRY_AUTO_PROFILE_RESET",
     "BLUEFERRY_CONTACT_PHOTOS",
     "BLUEFERRY_CALL_HISTORY_ENABLED",
     "BLUEFERRY_CALL_HISTORY_INTERVAL_SEC",
@@ -80,6 +83,9 @@ def _load_local_env() -> None:
 
 
 _load_local_env()
+
+PHONE_REGION: str | None = default_phone_region(os.environ)
+"""Numbering region for contact matching; never rewrites outgoing addresses."""
 
 
 # ---- target device ------------------------------------------------------
@@ -336,6 +342,15 @@ PROXIMITY_LOCK_GRACE_SEC: int = _env_int(
     "BLUEFERRY_PROXIMITY_LOCK_GRACE_SEC", 60, 10, 3600
 )
 """Seconds the iPhone must stay continuously disconnected before locking."""
+
+AUTO_PROFILE_RESET: bool = _env_bool("BLUEFERRY_AUTO_PROFILE_RESET", True)
+"""Reset the iPhone's Bluetooth connection once when a profile is stuck.
+
+On by default: today it only acts on the opt-in phone calls, on a connected
+phone whose HFP bring-up bluetoothd keeps failing, at most once per ten
+minutes. A boolean ``auto_profile_reset`` in settings.json takes precedence;
+see ``profile_reset.auto_reset_enabled``.
+"""
 
 CALL_HISTORY_ENABLED: bool = _env_bool("BLUEFERRY_CALL_HISTORY_ENABLED", False)
 """Opt-in: pull the iPhone's recent calls over PBAP and retain them locally.

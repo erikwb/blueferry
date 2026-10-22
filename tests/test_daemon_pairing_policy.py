@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from blueferry import contact_sync, daemon
+from blueferry.bluez_health import BluezHealth
 
 
 class _Bearer:
@@ -107,6 +108,10 @@ def _daemon(make_daemon, calls):
         invalidate=lambda **_kwargs: calls.append("recovery-invalidate"),
     )
     value.bearers = _Bearer(calls)
+    # The BlueZ ping has its own tests; keep its timer and bus calls inert.
+    value.bluez_health = BluezHealth(
+        ping=lambda _ok, _err: None, schedule=lambda *_args: 1, cancel=lambda _id: None,
+    )
     value.events = _Events(calls)
     value.profiles = _Profiles(calls)
     value.adapter_class = _AdapterClass(calls)

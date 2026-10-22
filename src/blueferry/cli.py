@@ -21,6 +21,7 @@ from blueferry.cli_notification_actions import notification_actions_app
 from blueferry.cli_notifications import notifications_app
 from blueferry.cli_otp import otp_app, otp_check, otp_status
 from blueferry.cli_proximity import proximity_app
+from blueferry.cli_reconnect import reconnect
 from blueferry.notification_policy import NotificationPolicyStore
 
 app = typer.Typer(
@@ -163,6 +164,9 @@ def doctor(verbose: bool = typer.Option(False, "-v", "--verbose")):
         warnings = warnings or otp_warning
     if not _doctor_le_bond(log):
         warnings = True
+    if not _doctor_hfp_plugin(log):
+        warnings = True
+    _doctor_profile_reset(log)
 
     if not ok:
         typer.echo(typer.style("One or more checks FAILED.", fg=typer.colors.RED))
@@ -498,6 +502,61 @@ def _running_backend_status() -> dict | None:
     return dict(status.extra)
 
 
+def _doctor_hfp_plugin(log: logging.Logger) -> bool:
+    """Warn when bluetoothd's hfp plugin competes with oFono; False = warning."""
+    from blueferry.bluetooth_capabilities import hfp_plugin_conflict, hfp_plugin_hint
+    from blueferry.calls.settings import CallsSettings
+
+    if not CallsSettings().enabled:
+        return True
+    conflict = hfp_plugin_conflict()
+    if conflict is None:
+        log.info("oFono or bluetoothd not visible; skipped the HFP plugin check")
+        return True
+    if not conflict:
+        log.info("bluetoothd does not load its own hfp plugin; oFono owns HFP")
+        return True
+    log.warning(
+        "bluetoothd loads its own hfp plugin while oFono runs. Both race for "
+        "the iPhone's call-audio channel; when bluetoothd wins, oFono's HFP "
+        "modem never powers up and calls do not work."
+    )
+    log.warning("    %s", hfp_plugin_hint())
+    return False
+
+
+def _doctor_profile_reset(log: logging.Logger) -> None:
+    """Report BlueFerry's last automatic or manual profile reset."""
+    import datetime
+
+    from blueferry.reconnect_view import profile_reason_text
+
+    status = _running_backend_status()
+    if status is None or "profile_reset_auto" not in status:
+        return
+    state = "on" if status.get("profile_reset_auto") else "off"
+    log.info(
+        "Automatic profile reset: %s (settings.json auto_profile_reset, set by "
+        "'blueferry reconnect --[no-]auto-reset' or the app, wins over "
+        "BLUEFERRY_AUTO_PROFILE_RESET)",
+        state,
+    )
+    stuck = profile_reason_text(status.get("profile_reset_suggested"))
+    if stuck:
+        log.warning("    %s Run 'blueferry reconnect' to reset it.", stuck)
+    reason = status.get("profile_reset_last")
+    at = status.get("profile_reset_last_at")
+    if not reason or type(at) is not int or at <= 0:
+        log.info("    No profile reset since the backend started")
+        return
+    when = datetime.datetime.fromtimestamp(at).strftime("%Y-%m-%d %H:%M:%S")
+    trigger = "automatic" if status.get("profile_reset_last_auto") else "manual"
+    log.info(
+        "    Last profile reset: %s (%s, %s)",
+        when, trigger, profile_reason_text(reason) or "unknown reason",
+    )
+
+
 def _doctor_le_bond(log: logging.Logger) -> bool:
     """Report the daemon's stale-LE-bond finding; False means a warning."""
     from blueferry.pairing_diagnostics import le_bond_findings
@@ -624,6 +683,7 @@ app.command("audio")(audio)
 app.add_typer(notification_actions_app, name="notification-actions")
 app.add_typer(calls_app, name="calls")
 app.command("phone-status")(phone_status)
+app.command("reconnect")(reconnect)
 app.add_typer(otp_app, name="otp")
 
 
