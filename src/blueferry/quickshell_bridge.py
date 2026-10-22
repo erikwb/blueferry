@@ -191,6 +191,12 @@ class QuickshellBridge:
             return self.client.set_media_control(_boolean(args, "enabled"))
         if method == "set_mpris_player":
             return self.client.set_mpris_player(_boolean(args, "enabled"))
+        if method == "set_auto_profile_reset":
+            return {
+                "profile_reset_auto": self.client.set_auto_profile_reset(
+                    _boolean(args, "enabled")
+                )
+            }
         if method == "set_proximity_lock":
             grace = args.get("grace_seconds")
             if isinstance(grace, bool) or not isinstance(grace, int):

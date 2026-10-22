@@ -119,6 +119,9 @@ not a BlueFerry or BlueZ problem. Please report it to the
 and the output of `dmesg` and `sudo cat /proc/<pid>/stack` captured before you
 reboot.
 
+BlueFerry notices such a hang by itself, pauses its own Bluetooth work and
+says so in every client; see [Reconnect and self-healing](reconnect.md).
+
 ## Notifications stopped after working before
 
 If iPhone notifications previously worked with the same phone and adapter but

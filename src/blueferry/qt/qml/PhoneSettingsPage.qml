@@ -377,6 +377,41 @@ Kirigami.ScrollablePage {
                 Kirigami.FormData.label: qsTr("Contact Destinations:")
                 text: iphonePage.bridge.status.contacts || "0"
             }
+            // Manual reconnect: the automatic Classic backoff can wait up to
+            // ten minutes, and a stuck profile needs a device reset.
+            RowLayout {
+                objectName: "reconnectRow"
+                Kirigami.FormData.label: qsTr("iPhone Link:")
+                Layout.fillWidth: true
+                visible: (iphonePage.bridge.reconnect || ({})).available === true
+                spacing: Kirigami.Units.smallSpacing
+                Controls.Label {
+                    objectName: "reconnectHint"
+                    Layout.fillWidth: true
+                    text: (iphonePage.bridge.reconnect || ({})).hint || ""
+                    textFormat: Text.PlainText
+                    wrapMode: Text.Wrap
+                }
+                Controls.Button {
+                    objectName: "reconnectButton"
+                    visible: (iphonePage.bridge.reconnect || ({})).offered === true
+                        && iphonePage.bridge.status.bluez_unresponsive !== true
+                    text: qsTr("Reconnect")
+                    icon.name: "view-refresh"
+                    onClicked: iphonePage.bridge.reconnectPhone()
+                }
+            }
+            // Only daemons with the profile reset report its state.
+            Controls.CheckBox {
+                objectName: "autoProfileResetCheckBox"
+                Layout.fillWidth: true
+                visible: iphonePage.bridge.status.profile_reset_auto !== undefined
+                text: qsTr("Reset a stuck iPhone connection automatically")
+                checked: iphonePage.bridge.status.profile_reset_auto === true
+                enabled: iphonePage.bridge.status.daemon === true && !iphonePage.bridge.busy
+                onClicked: iphonePage.bridge.setAutoProfileReset(checked)
+                Accessible.description: qsTr("Briefly disconnects the iPhone when call audio stays stuck, at most every ten minutes. Reconnect still resets it on request.")
+            }
         }
         Kirigami.InlineMessage {
             Layout.fillWidth: true

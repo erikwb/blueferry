@@ -251,6 +251,7 @@ class BackendDependencies:
     on_storage_prepared: Callable[[Any], None] | None = None
     on_storage_changed: Callable[[], None] | None = None
     set_proximity_lock: Callable[[bool, int], dict[str, Any]] | None = None
+    reconnect_phone: Callable[[], str] | None = None
     # Returns the live call-history component, or None while the user has not
     # opted in. A callable because the opt-in can change at runtime.
     call_history: Callable[[], CallHistory | None] | None = None
@@ -262,6 +263,7 @@ class BackendDependencies:
     calls: CallControl | None = None
     set_calls_enabled: Callable[[bool], dict[str, Any]] | None = None
     set_phone_battery_warning: Callable[[bool], dict[str, Any]] | None = None
+    set_auto_profile_reset: Callable[[bool], dict[str, Any]] | None = None
     set_media_mpris: Callable[[bool], dict[str, Any]] | None = None
     # The contact-photo opt-in: a fixed value or the daemon's live setting.
     contact_photos: bool | Callable[[], bool] = False
@@ -1163,6 +1165,12 @@ class BackendOperations:
             self.dependencies.on_notification_policy_changed()
         return selected
 
+    def reconnect_phone(self) -> str:
+        """Clear the Classic backoff and page the iPhone once now."""
+        reconnect = self.dependencies.reconnect_phone
+        if reconnect is None:
+            raise NotReadyError("manual reconnect is unavailable in this backend")
+        return reconnect()
     def get_mirror_notification_removals(self) -> bool:
         """Return the saved opt-in for closing popups removed on the iPhone."""
         policy = self.dependencies.notification_policy
@@ -1436,6 +1444,19 @@ class BackendOperations:
         except OSError as error:
             log.error("could not save the battery warning preference: %s", error)
             raise NotReadyError("could not save the battery warning preference") from error
+
+    def set_auto_profile_reset(self, enabled: bool) -> bool:
+        """Save the automatic profile reset opt-out; returns the saved value."""
+        configure = self.dependencies.set_auto_profile_reset
+        if configure is None:
+            raise NotReadyError("the automatic profile reset is unavailable")
+        try:
+            return bool(configure(bool(enabled)).get("profile_reset_auto"))
+        except ValueError as error:
+            raise InvalidArgumentsError(str(error)) from error
+        except OSError as error:
+            log.error("could not save the profile reset preference: %s", error)
+            raise NotReadyError("could not save the profile reset preference") from error
 
     def set_calls_enabled(self, enabled: bool) -> dict[str, Any]:
         """Save the phone-calls opt-in and apply it without a restart."""

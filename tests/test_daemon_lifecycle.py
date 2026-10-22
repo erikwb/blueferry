@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from blueferry import daemon as daemon_mod
+from blueferry.bluez_health import BluezHealth
 
 
 def _idle_recovery():
@@ -230,6 +231,9 @@ def test_status_exposes_split_ancs_and_last_le_error(make_daemon, monkeypatch):
             "last_le_error": "org.bluez.Error.Failed",
             "last_le_error_message": "le-connection-abort-by-local",
         },
+        reconnect_snapshot=lambda: {
+            "state": "unreachable", "paused": True, "next_in_sec": 540,
+        },
         legacy_connected=False,
     )
     instance.setup_verification = SimpleNamespace(verified=())
@@ -248,6 +252,59 @@ def test_status_exposes_split_ancs_and_last_le_error(make_daemon, monkeypatch):
     assert status["last_le_error"] == "org.bluez.Error.Failed"
     assert status["last_le_error_message"] == "le-connection-abort-by-local"
     assert status["_build_id"] == "0.6.0-6"
+    assert status["phone_reconnect_state"] == "unreachable"
+    assert status["phone_reconnect_paused"] is True
+    assert status["phone_reconnect_next_in_sec"] == 540
+
+
+def test_manual_reconnect_is_forwarded_to_the_bearer_supervisor(make_daemon):
+    from blueferry.errors import NotReadyError
+
+    instance = make_daemon()
+    results = iter(["started", "unavailable"])
+    instance.bearers = SimpleNamespace(reconnect_now=lambda: next(results))
+    assert instance._reconnect_phone() == "started"
+    with pytest.raises(NotReadyError):
+        instance._reconnect_phone()
+
+
+def test_manual_reconnect_during_a_call_reports_the_call(make_daemon):
+    instance = make_daemon()
+    instance.bearers = SimpleNamespace(reconnect_now=lambda: "connected")
+    instance.profile_reset = SimpleNamespace(
+        suggested="hfp_powered_timeout", manual_reset=lambda: "call-active",
+    )
+    assert instance._reconnect_phone() == "call-active"
+    instance.profile_reset = SimpleNamespace(
+        suggested="hfp_powered_timeout", manual_reset=lambda: "started",
+    )
+    assert instance._reconnect_phone() == "profile-reset"
+
+
+def test_auto_profile_reset_opt_out_is_saved_and_applied(make_daemon, tmp_path, monkeypatch):
+    from blueferry import config, profile_reset
+
+    monkeypatch.setattr(config, "SETTINGS_JSON", tmp_path / "settings.json")
+    instance = make_daemon()
+    emitted = []
+    # The controller's change callback coalesces through _idle_add.
+    instance._idle_add = lambda *_args: 1
+    monkeypatch.setattr(instance, "_emit_status", lambda: emitted.append(True))
+    assert instance._set_auto_profile_reset(False) == {"profile_reset_auto": False}
+    assert instance.profile_reset.enabled is False
+    assert profile_reset.auto_reset_enabled(tmp_path / "settings.json") is False
+    assert instance._set_auto_profile_reset(True) == {"profile_reset_auto": True}
+    assert instance.profile_reset.enabled is True
+    assert emitted
+
+
+def test_manual_reconnect_names_a_stuck_kernel(make_daemon):
+    instance = make_daemon()
+    instance.bearers = SimpleNamespace(reconnect_now=lambda: "bluez-unresponsive")
+    instance.bluez_health = SimpleNamespace(
+        snapshot=lambda: {"bluez_unresponsive": True, "bluez_unresponsive_reason": "kernel"},
+    )
+    assert instance._reconnect_phone() == "bluez-kernel"
 
 
 @pytest.mark.parametrize("ancs_connected", [False, True])
@@ -264,6 +321,7 @@ def test_status_takes_le_from_ancs_when_bluez_cannot_report_it(
             "bredr": True, "le": False,
             "last_le_error": "", "last_le_error_message": "",
         },
+        reconnect_snapshot=lambda: {"state": "connected", "paused": False, "next_in_sec": 0},
         legacy_connected=True,
     )
     instance.setup_verification = SimpleNamespace(
@@ -343,6 +401,10 @@ def test_busy_adapter_during_root_start_leaves_repair_to_supervisor(
     monkeypatch.setattr(daemon_mod, "bond_status", lambda *_args, **_kwargs: True)
     instance.phone_audio = SimpleNamespace(reconcile=lambda **_kwargs: None)
     instance.adapter_class = SimpleNamespace(start=lambda: order.append("class"))
+    # The BlueZ ping has its own tests; keep its timer and bus calls inert.
+    instance.bluez_health = BluezHealth(
+        ping=lambda _ok, _err: None, schedule=lambda *_args: 1, cancel=lambda _id: None,
+    )
 
     # The real root path: class differs, btmgmt runs directly and says Busy.
     bluez_setup = daemon_mod.bluez_setup

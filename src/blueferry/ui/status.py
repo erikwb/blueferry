@@ -50,6 +50,7 @@ class IPhonePage(Gtk.Box):
         self._applying_ancs_actions = False
         self._applying_saved_switches = False
         self._media_control_choice = SavedChoice()
+        self._auto_profile_reset_choice = SavedChoice()
         self._mpris_player_choice = SavedChoice()
         self._call_history_choice = SavedChoice()
         self._missed_call_popups_choice = SavedChoice()
@@ -390,6 +391,27 @@ class IPhonePage(Gtk.Box):
         self._mpris_player_row.set_activatable_widget(self._mpris_player_switch)
         self._media_group.add(self._mpris_player_row)
         page.add(self._media_group)
+
+        # Shown only when the backend reports the profile reset state.
+        self._connection_group = Adw.PreferencesGroup(title=_("iPhone Connection"))
+        self._connection_group.set_visible(False)
+        self._auto_profile_reset_row = Adw.ActionRow(
+            title=_("Reset a Stuck iPhone Connection Automatically"),
+            subtitle=_(
+                "Briefly disconnects the iPhone when call audio stays stuck, "
+                "at most every ten minutes."
+            ),
+        )
+        self._auto_profile_reset_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
+        self._auto_profile_reset_switch.connect(
+            "notify::active", self._auto_profile_reset_changed
+        )
+        self._auto_profile_reset_row.add_suffix(self._auto_profile_reset_switch)
+        self._auto_profile_reset_row.set_activatable_widget(
+            self._auto_profile_reset_switch
+        )
+        self._connection_group.add(self._auto_profile_reset_row)
+        page.add(self._connection_group)
 
         # Shown only when the backend reports the call-history keys.
         self._call_history_group = Adw.PreferencesGroup(
@@ -1178,6 +1200,7 @@ class IPhonePage(Gtk.Box):
         self._applying_contacts_only_notifications = False
         self._apply_ancs_actions(status, reachable)
         self._apply_media_switches(status, reachable)
+        self._apply_connection_switches(status, reachable)
         self._apply_call_history_switches(status, reachable)
         self._proximity_lock_group.set_visible("proximity_lock" in status.extra)
         self._applying_proximity_lock = True
@@ -1328,6 +1351,19 @@ class IPhonePage(Gtk.Box):
         if stale:
             self._refresh()
 
+    def _apply_connection_switches(self, status: BackendStatus, reachable: bool) -> None:
+        self._connection_group.set_visible("profile_reset_auto" in status.extra)
+        self._applying_saved_switches = True
+        self._show_saved_choice(
+            self._auto_profile_reset_switch,
+            self._auto_profile_reset_choice,
+            status.extra.get("profile_reset_auto") is True,
+        )
+        self._applying_saved_switches = False
+        self._auto_profile_reset_row.set_sensitive(
+            reachable and not self._auto_profile_reset_choice.saving
+        )
+
     def _apply_media_switches(self, status: BackendStatus, reachable: bool) -> None:
         # Older daemons report neither key; one before the MPRIS player
         # reports only the first.
@@ -1418,6 +1454,17 @@ class IPhonePage(Gtk.Box):
             self._client.set_media_control_async,
             _("Media control preference saved"),
             _("Could not save media control preference: {error}"),
+        )
+
+    def _auto_profile_reset_changed(self, switch, _property) -> None:
+        self._save_switch(
+            switch,
+            self._auto_profile_reset_row,
+            self._auto_profile_reset_choice,
+            "profile_reset_auto",
+            self._client.set_auto_profile_reset_async,
+            _("Connection reset preference saved"),
+            _("Could not save connection reset preference: {error}"),
         )
 
     def _mpris_player_changed(self, switch, _property) -> None:

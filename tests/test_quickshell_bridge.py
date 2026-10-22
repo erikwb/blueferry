@@ -80,6 +80,10 @@ class FakeClient:
         self.calls.append(("set_mpris_player", enabled))
         return {"media_mpris_enabled": enabled}
 
+    def set_auto_profile_reset(self, enabled):
+        self.calls.append(("set_auto_profile_reset", enabled))
+        return enabled
+
     def set_proximity_lock(self, enabled, grace_seconds):
         self.calls.append(("set_proximity_lock", enabled, grace_seconds))
         return {
@@ -493,6 +497,19 @@ def test_bridge_saves_the_call_history_opt_in_and_returns_its_status() -> None:
     ):
         with pytest.raises(ValueError, match=message):
             bridge.dispatch("set_call_history", args)
+    assert len(client.calls) == 1
+
+
+def test_bridge_saves_the_auto_profile_reset_and_returns_its_status() -> None:
+    client = FakeClient()
+    bridge = QuickshellBridge(client)  # type: ignore[arg-type]
+
+    assert bridge.dispatch("set_auto_profile_reset", {"enabled": False}) == {
+        "profile_reset_auto": False,
+    }
+    assert client.calls == [("set_auto_profile_reset", False)]
+    with pytest.raises(ValueError, match="enabled must be a boolean"):
+        bridge.dispatch("set_auto_profile_reset", {"enabled": "no"})
     assert len(client.calls) == 1
 
 
