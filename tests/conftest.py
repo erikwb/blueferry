@@ -25,6 +25,10 @@ for _variable, _child in (
     os.makedirs(os.path.join(_scratch_home, _child), mode=0o700)
     os.environ[_variable] = os.path.join(_scratch_home, _child)
 
+# Existing fixtures use NANP numbers. Keep them independent of the host locale;
+# region-specific tests override config.PHONE_REGION or pass an explicit region.
+os.environ["BLUEFERRY_PHONE_REGION"] = "US"
+
 import dbus  # noqa: E402
 import dbus.connection  # noqa: E402
 import pytest  # noqa: E402

@@ -137,7 +137,7 @@ def test_phonebook_pull_selects_pb_with_pbap_filters_and_private_name(
     assert seen["filters"] == {
         "MaxCount": ("UInt16", 10), "Format": ("String", "vcard30"),
     }
-    assert stored == [("Alice", ["15551111111"], [])]
+    assert stored == [("Alice", ["+15551111111"], [])]
 
 
 def test_listing_pull_clamps_count_and_forwards_the_transfer_bound(
@@ -226,7 +226,7 @@ def test_single_vcard():
     assert len(cards) == 1
     name, phones, emails = cards[0]
     assert name == "John Smith"
-    assert phones == ["15551234567"]
+    assert phones == ["+15551234567"]
     assert emails == []
 
 
@@ -261,7 +261,7 @@ def test_multiple_phones_per_card():
     assert len(cards) == 1
     name, phones, emails = cards[0]
     assert name == "Multi"
-    assert sorted(phones) == ["15551111111", "15552222222", "15553333333"]
+    assert sorted(phones) == ["+15551111111", "+15552222222", "+15553333333"]
     assert emails == []
 
 
@@ -289,7 +289,7 @@ def test_card_with_no_name():
     assert len(cards) == 1
     name, phones, emails = cards[0]
     assert name is None
-    assert phones == ["15551234567"]
+    assert phones == ["+15551234567"]
     assert emails == []
 
 
@@ -378,7 +378,7 @@ def test_oversized_or_unterminated_vcards_do_not_hide_later_contacts() -> None:
     )
 
     assert _parse_vcard_records(blob) == [
-        ("Safe", ["15551234567"], []),
+        ("Safe", ["+15551234567"], []),
     ]
 
 
@@ -401,8 +401,8 @@ def test_large_contact_photo_does_not_discard_the_card() -> None:
     )
 
     assert _parse_vcard_records(blob) == [
-        ("Pictured", ["15551234567"], ["p@example.com"]),
-        ("Old Style", ["15557654321"], []),
+        ("Pictured", ["+15551234567"], ["p@example.com"]),
+        ("Old Style", ["+15557654321"], []),
     ]
 
 
@@ -432,9 +432,9 @@ def test_large_logo_sound_and_key_values_are_skipped_like_photos() -> None:
     )
 
     assert _parse_vcard_records(blob) == [
-        ("Logo Co", ["15550000000"], []),
-        ("Sound Person", ["15550000001"], []),
-        ("Key Holder", ["15550000002"], []),
+        ("Logo Co", ["+15550000000"], []),
+        ("Sound Person", ["+15550000001"], []),
+        ("Key Holder", ["+15550000002"], []),
     ]
 
 
@@ -448,7 +448,7 @@ def test_quoted_printable_photo_continues_through_soft_line_breaks() -> None:
         + "TEL;CELL:+15551112222\nNOTE:after=\nEND:VCARD\n"
     )
 
-    assert _parse_vcard_records(blob) == [("Printable", ["15551112222"], [])]
+    assert _parse_vcard_records(blob) == [("Printable", ["+15551112222"], [])]
     [card] = list(iter_vcard_bodies(blob, maximum=1))
     # The last photo line has no soft break, so TEL starts a new property.
     assert card == "VERSION:2.1\nFN:Printable\nTEL;CELL:+15551112222\nNOTE:after="
@@ -464,7 +464,7 @@ def test_colon_less_lines_never_start_a_skipped_property() -> None:
         "TEL;CELL:+15553334444\nEND:VCARD\n"
     )
 
-    assert _parse_vcard_records(blob) == [("Postbox", ["15553334444"], [])]
+    assert _parse_vcard_records(blob) == [("Postbox", ["+15553334444"], [])]
     [card] = list(iter_vcard_bodies(blob, maximum=1))
     assert card.split("\n") == [
         "VERSION:2.1", "FN:Postbox",
@@ -538,7 +538,7 @@ def test_folding_follows_the_card_version() -> None:
     )
 
     assert _parse_vcard_records(blob) == [
-        ("Ann Lee", ["15550001111"], []),
+        ("Ann Lee", ["+15550001111"], []),
         ("Ann Lee", [], []),
     ]
 
@@ -562,7 +562,7 @@ def test_line_iterables_parse_like_whole_text() -> None:
         "TEL:+15550000001\r\nEND:VCARD\r\n"
         "BEGIN:VCARD\nFN:Two\nEMAIL:two@example.com\nEND:VCARD"
     )
-    expected = [("One", ["15550000001"], []), ("Two", [], ["two@example.com"])]
+    expected = [("One", ["+15550000001"], []), ("Two", [], ["two@example.com"])]
     assert _parse_vcard_records(blob) == expected
     assert _parse_vcard_records(io.StringIO(blob, newline=None)) == expected
     assert _parse_vcard_records(blob.splitlines(keepends=True)) == expected
@@ -578,7 +578,7 @@ def test_streamed_lines_are_bounded_and_media_chunks_are_still_skipped() -> None
     pieces = list(iter_bounded_lines(io.StringIO(blob), limit=4096))
     assert max(len(piece) for piece in pieces) <= 4096
     assert _parse_vcard_records(iter_bounded_lines(io.StringIO(blob), limit=4096)) == [
-        ("Long", ["15550002222"], []),
+        ("Long", ["+15550002222"], []),
     ]
 
 
@@ -638,7 +638,7 @@ def test_unicode_line_separators_split_names_the_same_on_every_path(separator) -
     from blueferry.vcard import iter_bounded_lines
 
     card = f"BEGIN:VCARD\r\nVERSION:2.1\r\nFN:Ann{separator}Lee\r\nTEL:+15550003333\r\nEND:VCARD\r\n"
-    expected = [("Ann", ["15550003333"], [])]
+    expected = [("Ann", ["+15550003333"], [])]
     # Whole text, a universal-newline file, and the bounded production reader
     # cut the name at the separator exactly as splitlines() did before.
     assert _parse_vcard_records(card) == expected
@@ -679,7 +679,7 @@ def test_phonebook_is_streamed_from_the_transfer_file(tmp_path, monkeypatch) -> 
     )
 
     assert contacts.pull_phonebook(SimpleNamespace(pbap_path="/pbap")) == 1
-    assert replaced == [[("Streamed", ["15550001111"], [])]]
+    assert replaced == [[("Streamed", ["+15550001111"], [])]]
 
 
 def test_find_by_name_returns_phone_and_email_destinations(tmp_path, monkeypatch):
@@ -772,7 +772,7 @@ def test_records_tolerate_a_malformed_stored_row(tmp_path, monkeypatch):
 
 def test_resolver_only_equates_nanp_country_code_variants() -> None:
     resolver = ContactsResolver.__new__(ContactsResolver)
-    resolver._mem = {"15551234567": {"Alice"}}
+    resolver._mem = {"phone:15551234567": {"Alice"}}
 
     assert resolver.resolve("5551234567") == "Alice"
     assert resolver.resolve("+1 555 123 4567") == "Alice"
@@ -781,7 +781,19 @@ def test_resolver_only_equates_nanp_country_code_variants() -> None:
 
 def test_resolver_rejects_ambiguous_contact_names() -> None:
     resolver = ContactsResolver.__new__(ContactsResolver)
-    resolver._mem = {"15551234567": {"Alice", "Other Alice"}}
+    resolver._mem = {"phone:15551234567": {"Alice", "Other Alice"}}
 
     assert resolver.resolve("15551234567") is None
     assert resolver.resolve("5551234567") is None
+
+
+def test_legacy_contact_cache_preserves_delivery_prefixes(isolated_state):
+    records = _parse_vcard_records(
+        "BEGIN:VCARD\nFN:Friend\nTEL:+1 (202) 555-0123\nTEL:0412345678\nEND:VCARD\n"
+    )
+    repository = contact_repository.ContactRepository()
+    repository.replace(records)
+    assert repository.load() == [("Friend", ["+12025550123", "0412345678"], [])]
+    assert ContactsResolver().find_by_name("Friend") == [
+        ("Friend", "+12025550123"), ("Friend", "0412345678"),
+    ]

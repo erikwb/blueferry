@@ -6,11 +6,13 @@ import re
 import stat
 from pathlib import Path
 
+from blueferry.phone_numbers import default_phone_region
 from blueferry.private_files import read_private_text
 
 MAX_CONFIG_FILE_BYTES = 64 * 1024
 LOCAL_ENV_KEYS = frozenset({
     "BLUEFERRY_MAC",
+    "BLUEFERRY_PHONE_REGION",
     "BLUEFERRY_ADAPTER",
     "BLUEFERRY_ANCS_ENABLED",
     "BLUEFERRY_ANCS_APP_ALLOWLIST",
@@ -80,6 +82,9 @@ def _load_local_env() -> None:
 
 
 _load_local_env()
+
+PHONE_REGION: str | None = default_phone_region(os.environ)
+"""Numbering region for contact matching; never rewrites outgoing addresses."""
 
 
 # ---- target device ------------------------------------------------------

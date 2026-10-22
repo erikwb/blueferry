@@ -475,6 +475,19 @@ closes popups and never sends anything to the phone. The choice is saved as
 popups from before a reconnect just time out. Only the notification number
 and popup id are kept, in memory.
 
+### International contact numbers
+
+Contact search preserves the saved `+` prefix for sending messages. Local
+numbers are matched to international replies using the desktop's telephone
+region (`LC_ALL`, then `LC_TELEPHONE`, then `LANG`). For example, Australian
+`0412345678` matches `+61412345678`. To select a different numbering region,
+set `BLUEFERRY_PHONE_REGION=AU` (a two-letter country code) in
+`~/.config/blueferry/local.env` and restart the service. With no recognized
+region, BlueFerry does not guess a country for local numbers.
+
+After upgrading from a version that removed `+` during import, run
+`blueferry contacts-sync` once to restore the saved international prefixes.
+
 ### Contact photos (optional)
 
 Contact photos are off by default. To show the iPhone's contact pictures as

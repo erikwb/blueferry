@@ -638,6 +638,7 @@ Kirigami.ApplicationWindow {
                                         bridge: root.bridge
                                         group: threadDelegate.modelData.is_group
                                         address: !threadDelegate.modelData.is_group
+                                            && threadDelegate.modelData.reply_ready !== false
                                             && threadDelegate.modelData.recipients.length === 1
                                             ? threadDelegate.modelData.recipients[0] : ""
                                     }
@@ -737,6 +738,7 @@ Kirigami.ApplicationWindow {
                                     bridge: root.bridge
                                     group: messagesPage.thread !== null && messagesPage.thread.is_group
                                     address: messagesPage.thread !== null && !messagesPage.thread.is_group
+                                        && messagesPage.thread.reply_ready !== false
                                         && messagesPage.thread.recipients.length === 1
                                         ? messagesPage.thread.recipients[0] : ""
                                     implicitWidth: Kirigami.Units.iconSizes.medium
