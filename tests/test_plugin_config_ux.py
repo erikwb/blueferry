@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 
 import pytest
 from hypothesis import given
@@ -11,6 +13,7 @@ from blueferry.plugin_api.client import PluginError
 from blueferry.plugin_api.config import (
     SECRET_MASK,
     ConfigError,
+    parse_fields,
     validate,
     value_text,
     visible_fields,
@@ -25,6 +28,67 @@ from blueferry.plugin_api.config_flow import (
 from blueferry.plugin_api.manifest import ManifestError
 from blueferry.plugin_api.service import CardService
 from blueferry.plugin_api.testing import FakeHost, inline_service, manifest
+
+
+@pytest.mark.parametrize("state", [[], {}, None, 1])
+@pytest.mark.parametrize("start", [False, True])
+def test_bad_login_state_is_a_flow_error(state, start):
+    with pytest.raises(FlowError, match="invalid sign-in state"):
+        parse_login_step(json.dumps({"state": state}), start=start)
+
+
+@pytest.mark.parametrize("pattern,text", [
+    ("(a|aa)+", "a" * 80),
+    ("[A-Za-z0-9-]{20,80}", "a" * 40),
+    ("/.*", "/photos/2026"),
+    (r"\d{4}-\d{2}", "2026-10"),
+    (r"\w+", "café"),
+    (r"\{999999999\}", "{999999999}"),
+    (r"[{}+*?]{1,8}", "{+?}"),
+    (r"[]a]+", "]aa"),
+    (r"[a-z]{,8}", "hello"),
+    (r"[a-z]+{}", "hello{}"),
+    (r"^(https://(www\.)?icloud\.com/shortcuts/[0-9A-Za-z]{16,64}/?)?$",
+     "https://www.icloud.com/shortcuts/0123456789abcdef"),
+    (r"([a-z]+){0,1}", "hello"),
+])
+def test_existing_plain_patterns_keep_working(pattern, text):
+    field, = parse_fields([("name", {"Label": "Name", "Type": "string", "Pattern": pattern})])
+    assert field.coerce(text) == text
+
+
+@pytest.mark.parametrize("pattern", [
+    "((a+))+$", "a{999999999}", "(ab){0,999999999}", "a{,999999999}",
+    "((a+)){,8}",
+])
+def test_pattern_compilation_is_bounded(pattern):
+    with pytest.raises(ValueError, match=r"simple subset|repeat exceeds"):
+        parse_fields([("name", {"Label": "Name", "Type": "string", "Pattern": pattern})])
+
+
+def test_pattern_cannot_hang_defaults_or_later_field_validation():
+    # A subprocess timeout makes this regression safe even if the matcher
+    # regresses to stdlib re (which can hold the GIL indefinitely).
+    code = '''
+from blueferry.plugin_api.config import ConfigError, parse_fields
+values = {"Label": "Name", "Type": "string", "Pattern": "(a|aa)+"}
+field, = parse_fields([("name", values)])
+try:
+    field.coerce("a" * 80 + "!")
+except ConfigError:
+    pass
+else:
+    raise AssertionError("accepted invalid field")
+try:
+    parse_fields([("name", dict(values, Default="a" * 80 + "!"))])
+except ValueError:
+    pass
+else:
+    raise AssertionError("accepted invalid default")
+'''
+    completed = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                               text=True, timeout=5)
+    assert completed.returncode == 0, completed.stderr
 
 FORM = """
 [ConfigGroup account]

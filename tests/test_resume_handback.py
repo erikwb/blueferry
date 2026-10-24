@@ -14,20 +14,21 @@ class _Media:
         self.state = SimpleNamespace(supported_commands=frozenset(supported), playing=playing)
         self.sent: list[str] = []
 
-    def send_command(self, name, ok, failed):
-        self.sent.append(name)
+    def send_command(self, name, ok, failed, *, still_current=None):
+        if still_current is None or still_current():
+            self.sent.append(name)
 
 
 def _host(media):
     return SimpleNamespace(media=media, _resume_iphone_playback=None)
 
 
-def _run(host, monkeypatch, timers):
+def _run(host, monkeypatch, timers, still_current=lambda: True):
     monkeypatch.setattr(daemon_mod.GLib, "timeout_add",
                         lambda ms, cb: timers.append(cb) or len(timers))
     bound = daemon_mod.Daemon._resume_iphone_playback.__get__(host)
     host._resume_iphone_playback = bound
-    bound()
+    bound(still_current)
 
 
 def test_explicit_play_is_sent_even_while_the_cached_state_still_says_playing(monkeypatch):
@@ -55,3 +56,25 @@ def test_gives_up_after_the_retries_without_toggling_a_playing_player(monkeypatc
     while timers:
         timers.pop()()
     assert media.sent == []
+
+
+def test_delayed_toggle_does_not_resume_a_superseded_handback(monkeypatch):
+    media = _Media({RemoteCommandID.TogglePlayPause}, playing=True)
+    current = [True]
+    timers: list = []
+    _run(_host(media), monkeypatch, timers, lambda: current[0])
+    assert len(timers) == 1
+    current[0] = False
+    media.state.playing = False
+    timers.pop()()
+    assert not media.sent and not timers
+
+
+def test_delayed_toggle_does_not_resume_a_replacement_media_session(monkeypatch):
+    media = _Media({RemoteCommandID.TogglePlayPause}, playing=True)
+    host = _host(media)
+    timers: list = []
+    _run(host, monkeypatch, timers)
+    host.media = _Media({RemoteCommandID.Play}, playing=False)
+    timers.pop()()
+    assert not media.sent and not host.media.sent and not timers

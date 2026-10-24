@@ -155,7 +155,7 @@ def test_folded_vcard30_photo_is_unfolded_and_kept_out_of_the_body() -> None:
     assert "PHOTO" not in body and "TEL;TYPE=CELL" in body
     assert decode_vcard_photo(prop) == JPEG
     [(record, data)] = _parse_vcard_entries(blob)
-    assert record == ("Alice", ["15551112222"], []) and data == JPEG
+    assert record == ("Alice", ["+15551112222"], []) and data == JPEG
 
 
 def test_tab_folding_is_accepted() -> None:
@@ -173,7 +173,7 @@ def test_vcard21_unindented_base64_ends_at_the_blank_line() -> None:
     ])
     [(record, data)] = _parse_vcard_entries(blob)
     assert data == JPEG
-    assert record == ("Jane Doe", ["15553334444"], [])
+    assert record == ("Jane Doe", ["+15553334444"], [])
 
 
 def test_only_the_first_photo_is_kept_and_a_second_is_not_merged_into_it() -> None:
@@ -201,7 +201,7 @@ def test_oversized_photo_is_dropped_but_the_contact_survives() -> None:
     cards = list(iter_vcard_cards(blob, maximum=10, max_photo_chars=1000))
     assert [photo for _body, photo in cards] == [None, None]
     assert [record for record, _photo in _parse_vcard_entries(blob)] == [
-        ("Big", ["15550001111"], []), ("Next", ["15550002222"], []),
+        ("Big", ["+15550001111"], []), ("Next", ["+15550002222"], []),
     ]
 
 
@@ -223,7 +223,7 @@ def test_oversized_photo_histogram_uses_full_streamed_payload(monkeypatch, size,
     entries = _parse_vcard_entries(
         iter_bounded_lines(io.StringIO(blob), limit=4096), stats=stats,
     )
-    assert entries == [(("Big", ["15550001111"], []), None)]
+    assert entries == [(("Big", ["+15550001111"], []), None)]
     assert stats.sizes == {bucket: 1}
     assert stats.largest == size
     assert stats.dropped == {"too-large": 1}
@@ -426,6 +426,64 @@ def test_encrypted_photos_round_trip_owner_only_and_sealed(storage) -> None:
     assert resolver.photo("+15553334444") is None
     assert resolver.photo("+19999999999") is None
     assert resolver.photo_count() == 1
+
+
+@pytest.mark.parametrize("policy", ["encrypted", "plaintext"])
+@pytest.mark.parametrize("saved", ["0412345678", "+61412345678"])
+def test_international_contacts_round_trip_and_match_names_threads_photos(
+    storage, monkeypatch, policy, saved,
+):
+    from blueferry.recipients import validate_recipient
+    from blueferry.threads import build_threads
+
+    monkeypatch.setattr(config, "PHONE_REGION", "AU")
+    storage.set_policy(policy)
+    records = _parse_vcard_records(
+        _card("FN:US Friend", "TEL:+1 (202) 555-0123")
+        + _card("FN:AU Friend", f"TEL:{saved}")
+    )
+    repository = ContactRepository(storage)
+    repository.replace(records, photos=[JPEG, PNG])
+    resolver = ContactsResolver(storage=storage)
+    assert sorted(repository.load()) == sorted(records)
+    assert resolver.find_by_name("US Friend") == [("US Friend", "+12025550123")]
+    assert validate_recipient(resolver.find_by_name("US Friend")[0][1]) == "+12025550123"
+    assert resolver.find_by_name("AU Friend") == [("AU Friend", saved)]
+    assert resolver.count() == 2
+    for address in ("0412345678", "+61412345678"):
+        assert resolver.resolve(address) == "AU Friend"
+        assert resolver.photo(address) == PNG
+        assert set(resolver.thread_addresses(address)) == {
+            "phone:0412345678", "phone:61412345678",
+        }
+    assert resolver.resolve("+10412345678") is None
+    [thread] = build_threads([
+        {"kind": "sms_sent", "sender_address": "0412345678", "body": "hello",
+         "timestamp": "2026-10-20T12:00:00Z", "handle": "outgoing"},
+        {"kind": "sms_received", "sender_address": "+61412345678", "body": "reply",
+         "timestamp": "2026-10-20T12:01:00Z", "handle": "incoming"},
+    ], resolver)
+    assert thread["name"] == "AU Friend"
+    assert thread["recipients"] == ["+61412345678"]
+    assert [message["body"] for message in thread["messages"]] == ["hello", "reply"]
+    assert resolver.snapshot().count() == 2
+    assert resolver.refresh() == 2
+
+
+def test_shared_australian_number_does_not_join_contacts_or_assign_a_photo(storage, monkeypatch):
+    monkeypatch.setattr(config, "PHONE_REGION", "AU")
+    ContactRepository(storage).replace([
+        ("Alice", ["0412345678"], ["alice@example.com"]),
+        ("Bob", ["+61412345678"], ["bob@example.com"]),
+    ], photos=[JPEG, PNG])
+    resolver = ContactsResolver(storage=storage)
+    for address in ("0412345678", "+61412345678"):
+        assert resolver.resolve(address) is None
+        assert resolver.photo(address) is None
+        assert resolver.thread_addresses(address) == ()
+    assert resolver.photo("alice@example.com") == JPEG
+    assert resolver.photo("bob@example.com") == PNG
+    assert resolver.thread_addresses("alice@example.com") == ("email:alice@example.com",)
 
 
 def test_disabled_resolver_ignores_stored_photos(storage, monkeypatch) -> None:

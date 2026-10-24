@@ -484,8 +484,12 @@ class BluetoothRecovery:
         schedule=GLib.timeout_add_seconds,
         idle=GLib.idle_add,
         cancel=GLib.source_remove,
+        blocked: Callable[[], bool] | None = None,
     ) -> None:
         self.phone = phone.upper()
+        # True while bluetoothd does not answer D-Bus (bluez_health): a power
+        # cycle would only queue more work behind a stuck kernel call.
+        self._blocked = blocked or (lambda: False)
         self.adapter = adapter
         self.worker = worker
         self._read_async = read_async
@@ -619,6 +623,10 @@ class BluetoothRecovery:
         if not self._running:
             return False
         if self._suspended:
+            return True
+        if self._blocked():
+            if not self.active:
+                self.invalidate()
             return True
         if self.active or self.adapter.restore_pending:
             self._continue_restoration()

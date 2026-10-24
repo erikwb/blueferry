@@ -40,6 +40,12 @@ from blueferry.onboarding import ancs_unavailable_detail
 from blueferry.phone_audio_view import phone_audio
 from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH
 from blueferry.recipients import participant_lines
+from blueferry.reconnect_view import (
+    UNSUPPORTED_AUTO_RESET_TEXT,
+    auto_reset_text,
+    reconnect_view,
+    result_text,
+)
 from blueferry.text_safety import terminal_text
 from blueferry.time_display import format_message_timestamp
 from blueferry.tui_calls import CallsScreen
@@ -94,6 +100,12 @@ class _Client(Protocol):
     def remove_notification_open_target(self, bundle_id: str) -> bool: ...
     # Optional PC/iPhone sound switch (Media1.SetPhoneAudioRoute).
     def set_phone_audio_route(self, route: str) -> str: ...
+    # Manual Classic reconnect (Messages1.ReconnectPhone).
+    def reconnect_phone(self) -> str: ...
+
+    # Messages1.SetAutoProfileReset; returns the saved value.
+    def set_auto_profile_reset(self, enabled: bool) -> bool: ...
+
     # Opt-in media control (Media1) and call history (CallHistory1).
     def now_playing(self) -> dict: ...
 
@@ -605,6 +617,8 @@ class HelpScreen(ModalScreen[None]):
             "[bold #7dd3fc]Options[/]  o\n"
             "[bold #7dd3fc]Notification click rules[/]  l\n"
             f"{audio_line}"
+            "[bold #7dd3fc]Reconnect iPhone[/]  b\n"
+            "[bold #7dd3fc]Automatic connection reset on/off[/]  B\n"
             "[bold #7dd3fc]Commands[/]  Ctrl+P\n"
             "[bold #7dd3fc]Refresh[/]  r\n"
             "[bold #7dd3fc]Back[/]  Esc\n"
@@ -642,6 +656,8 @@ class BlueFerryApp(App[None]):
         Binding("o", "options", "Options"),
         Binding("l", "click_rules", "Click rules", show=False),
         Binding("a", "phone_audio", "Sound", show=False),
+        Binding("b", "reconnect", "Reconnect iPhone", show=False),
+        Binding("B", "toggle_auto_reset", "Automatic connection reset", show=False),
         Binding("h", "recent_calls", "Recent calls", show=False),
         Binding("p", "media('toggle')", "Play/Pause", show=False),
         Binding("left_square_bracket", "media('previous')", "Previous track", show=False),
@@ -1228,6 +1244,57 @@ class BlueFerryApp(App[None]):
         done = "iPhone sound on this computer" if route == "pc" else "iPhone sound on the iPhone"
         self.call_from_thread(self.notify, done, markup=False)
         self.call_from_thread(self.action_refresh)
+
+    def action_reconnect(self) -> None:
+        if isinstance(self.focused, Input | TextArea):
+            return
+        view = reconnect_view(self.state.status.to_dict())
+        if not view.offered:
+            self.notify(view.hint, severity="information", markup=False)
+            return
+        self._reconnect()
+
+    @work(thread=True, group="reconnect", exclusive=True, exit_on_error=False)
+    def _reconnect(self) -> None:
+        try:
+            result = self.state.client.reconnect_phone()
+        except BackendError as error:
+            self.call_from_thread(
+                self.notify, terminal_text(error), severity="error", markup=False,
+            )
+            return
+        failed = result in (
+            "unreachable", "bluez-kernel", "bluez-unresponsive", "call-active",
+        )
+        self.call_from_thread(
+            self.notify, result_text(result),
+            severity="error" if failed else "information", markup=False,
+        )
+        self.call_from_thread(self.action_refresh)
+
+    def action_toggle_auto_reset(self) -> None:
+        if isinstance(self.focused, Input | TextArea):
+            return
+        current = self.state.status.to_dict().get("profile_reset_auto")
+        if not isinstance(current, bool):
+            self.notify(UNSUPPORTED_AUTO_RESET_TEXT, severity="warning", markup=False)
+            return
+        self._set_auto_reset(not current)
+
+    @work(thread=True, group="auto-reset", exclusive=True, exit_on_error=False)
+    def _set_auto_reset(self, enabled: bool) -> None:
+        try:
+            selected = self.state.client.set_auto_profile_reset(enabled)
+        except BackendError as error:
+            self.call_from_thread(
+                self.notify, terminal_text(error), severity="error", markup=False,
+            )
+            return
+        self.call_from_thread(
+            self.notify, auto_reset_text(selected), severity="information", markup=False,
+        )
+        self.call_from_thread(self.action_refresh)
+
     def _load_now_playing(self) -> None:
         self._media_generation += 1
         status = self.state.status

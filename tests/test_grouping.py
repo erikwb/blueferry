@@ -73,13 +73,18 @@ def test_alphanumeric_sender_thread_is_named_and_read_only() -> None:
 
     threads = {thread["key"]: thread for thread in build_threads(events)}
 
-    mbna = threads["address:short:6262"]
+    mbna = threads["alphanumeric:short:6262"]
     assert (mbna["name"], mbna["reply_ready"]) == ("MBNA", False)
-    assert len(mbna["messages"]) == 2
-    fuse = threads["address:phone:3873363749"]
+    assert len(mbna["messages"]) == 1
+    # Without service evidence, the older numeric sender might be a person.
+    # Sharing keypad digits is not enough to merge or delete its messages.
+    older = threads["address:short:6262"]
+    assert [message["body"] for message in older["messages"]] == ["older code"]
+    assert mbna["aliases"] == []
+    fuse = threads["alphanumeric:phone:3873363749"]
     assert (fuse["name"], fuse["reply_ready"]) == ("Fuse Energy", False)
     assert threads["address:short:555"]["reply_ready"] is True
-    shop = threads["address:short:7467"]
+    shop = threads["alphanumeric:short:7467"]
     assert (shop["name"], shop["reply_ready"]) == ("Shop", False)
 
 

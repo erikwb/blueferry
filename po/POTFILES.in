@@ -1,6 +1,7 @@
 src/blueferry/conversation_state.py
 src/blueferry/onboarding.py
 src/blueferry/models.py
+src/blueferry/reconnect_view.py
 src/blueferry/phone_overview.py
 src/blueferry/ui/app.py
 src/blueferry/ui/window.py

@@ -34,6 +34,8 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 
+import regex
+
 GROUP_PREFIX = "Config "
 SECTION_PREFIX = "ConfigGroup "
 TYPES = frozenset({"string", "url", "secret", "bool", "int", "choice"})
@@ -56,6 +58,7 @@ MAX_PLACEHOLDER = 120
 MAX_EXAMPLE = 160
 MAX_ERROR_TEXT = 160
 MAX_PATTERN = 200
+PATTERN_TIMEOUT_SEC = 0.02
 MAX_HELP_URL = 300
 MAX_GROUP_LABEL = 40
 MAX_GROUPS = 8
@@ -63,10 +66,12 @@ MAX_GROUPS = 8
 ADVANCED = "advanced"
 BUILTIN_GROUPS = {"account": "Account", "options": "Options", ADVANCED: "Advanced"}
 # Pattern runs (in Python, also in the clients) on every key press, so it is
-# limited to plain syntax that cannot backtrack badly: no groups with flags or
-# lookarounds, no backreferences, no quantified groups holding a quantifier.
+# limited to plain syntax: no groups with flags or
+# lookarounds, no backreferences, no repeated groups holding a quantifier.
+# This syntax restriction alone cannot bound backtracking (e.g. (a|aa)+).
+# Matching also has a deadline, including while validating manifest defaults.
 _PATTERN_FORBIDDEN = re.compile(r"\(\?|\\[1-9AZbBpPkgN]|\[\[|\(\)")
-_NESTED_QUANTIFIER = re.compile(r"\([^()]*[*+?}][^()]*\)\s*[*+{]")
+_REPEAT = re.compile(r"\{(?:([0-9]+)(?:,([0-9]*))?|,([0-9]*))\}")
 
 
 class ConfigError(ValueError):
@@ -151,7 +156,14 @@ class ConfigField:
         return text
 
     def _match(self, text: str) -> None:
-        if self.pattern and re.fullmatch(self.pattern, text) is None:
+        if not self.pattern:
+            return
+        try:
+            matched = regex.fullmatch(self.pattern, text, flags=regex.VERSION0,
+                                      timeout=PATTERN_TIMEOUT_SEC)
+        except TimeoutError:
+            raise ConfigError(self.key, "format validation took too long") from None
+        if matched is None:
             raise ConfigError(self.key, self.error_text or "does not have the expected format")
 
     def shown(self, values: Mapping[str, object]) -> bool:
@@ -221,13 +233,70 @@ def _pattern(value: str, key: str) -> str:
         return ""
     what = f"Config {key}: Pattern"
     _plain(value, MAX_PATTERN, what)
-    if _PATTERN_FORBIDDEN.search(value) or _NESTED_QUANTIFIER.search(value):
+    if _PATTERN_FORBIDDEN.search(value):
         raise ValueError(f"{what} uses syntax outside the simple subset")
     try:
         re.compile(value)
-    except re.error:
+    except (re.error, OverflowError):
+        raise ValueError(f"{what} is not a regular expression") from None
+    _check_repeats(value, what)
+    try:
+        regex.compile(value, flags=regex.VERSION0)
+    except regex.error:
         raise ValueError(f"{what} is not a regular expression") from None
     return value
+
+
+def _check_repeats(pattern: str, what: str) -> None:
+    """Bound compilation cost as well as matching time.
+
+    The standard parser above already checked syntax. Track quantifiers
+    through *all* group depths to enforce the documented ban on nested
+    repetition, and cap counted repeats at the largest field value. A
+    timeout on matching cannot protect an engine expanding a{999999999}.
+    Escaped characters and character classes are single, opaque atoms.
+    """
+    groups = [False]
+    repeated_group = False
+    pos = 0
+    while pos < len(pattern):
+        char = pattern[pos]
+        if char == "\\":
+            pos += 2
+            repeated_group = False
+            continue
+        if char == "[":
+            pos += 1
+            if pattern[pos:pos + 1] == "^":
+                pos += 1
+            if pattern[pos:pos + 1] == "]":
+                pos += 1
+            while pattern[pos] != "]":
+                pos += 2 if pattern[pos] == "\\" else 1
+            repeated_group = False
+        elif char == "(":
+            groups.append(False)
+            repeated_group = False
+        elif char == ")":
+            repeated_group = groups.pop()
+            groups[-1] |= repeated_group
+        else:
+            repeat = _REPEAT.match(pattern, pos) if char == "{" else None
+            if char in "*+?" or repeat:
+                upper = repeat[0][1:-1].split(",")[-1] if repeat else ""
+                repeating = char in "*+" or (repeat is not None and (
+                    not upper or int(upper) > 1))
+                # An optional group does not amplify its inner repetitions;
+                # published manifests use these around optional URL fields.
+                if repeated_group and repeating:
+                    raise ValueError(f"{what} uses syntax outside the simple subset")
+                if repeat:
+                    if any(int(n) > MAX_SECRET for n in repeat.groups() if n):
+                        raise ValueError(f"{what} repeat exceeds {MAX_SECRET}")
+                    pos = repeat.end() - 1
+                groups[-1] = True
+            repeated_group = False
+        pos += 1
 
 
 def _help_url(value: str, key: str) -> str:

@@ -128,6 +128,7 @@ Edit `~/.config/blueferry/local.env`, then restart the service with
 | `BLUEFERRY_OTP_AUTOCOPY` | `false` | Starting value for one-time code auto-copy until a client saves the setting, see [One-time codes](#one-time-codes) |
 | `BLUEFERRY_OTP_CLEAR_SECONDS` | `0` | Clear a copied code after this many seconds (0 = keep, max 600) |
 | `BLUEFERRY_CONTACT_PHOTOS` | `false` | Starting value for contact photos until a client saves the setting; see [Contact photos](contact-photos.md) |
+| `BLUEFERRY_PHONE_REGION` | telephone locale | Two-letter country code for matching local contact numbers to international replies; see [Troubleshooting](troubleshooting.md#messages-work-but-names-are-missing) |
 
 Pairing writes the phone and adapter settings to the same file; change those
 by pairing again rather than by hand.
