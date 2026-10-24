@@ -128,7 +128,6 @@ Bearbeite `~/.config/blueferry/local.env` und starte den Dienst danach mit
 | `BLUEFERRY_HISTORY_RETENTION_DAYS` | `30` | Aufbewahrung des Verlaufs in Tagen (1–3650) |
 | `BLUEFERRY_HISTORY_MAX_EVENTS` | `10000` | Höchstzahl gespeicherter Ereignisse (100–1000000) |
 | `BLUEFERRY_HISTORY_MAX_PAYLOAD_BYTES` | `268435456` | Höchstmenge gespeicherter Daten in Byte (16 MiB–2 GiB) |
-| `BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE` | `true` | Anrufe und Musik auf dem iPhone lassen |
 | `BLUEFERRY_ANCS_APP_ALLOWLIST` | nicht gesetzt | Siehe [Apps filtern](#apps-filtern) |
 | `BLUEFERRY_ANCS_APP_BLOCKLIST` | nicht gesetzt | Siehe [Apps filtern](#apps-filtern) |
 | `BLUEFERRY_OTP_AUTOCOPY` | `false` | Startwert für das Kopieren von Einmalcodes, bis ein Client die Einstellung speichert, siehe [Einmalcodes](#einmalcodes) |
@@ -149,10 +148,12 @@ wird nur die Wahl an/aus, in `settings.json`. Die getrennte MPRIS-Option macht
 den aktuellen Titel bewusst für jede Anwendung in deiner Sitzung lesbar, wie
 bei jedem Desktop-Musikplayer.
 
-## Anrufe und Musik bleiben auf dem iPhone
+## Bluetooth-Audioweiterleitung
 
-Mit WirePlumber 0.5 oder neuer schreibt BlueFerry vor der Kopplung
-`~/.config/wireplumber/wireplumber.conf.d/99-blueferry-keep-phone-audio.conf`.
-Damit dient der Rechner dem iPhone nicht als Bluetooth-Lautsprecher oder
--Headset, und Anrufe und Musik bleiben auf dem Telefon. Mit
-`BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE=false` entfernst du diese Datei.
+BlueFerry überlässt die Audiorollen der Desktop-Konfiguration. Die automatische
+Beschränkung auf das iPhone wurde entfernt, weil sie Kopplung und ANCS-Einrichtung
+verhinderte. Beim Start oder vor der Kopplung entfernt BlueFerry seine alten
+`90-`- und `99-blueferry-keep-phone-audio.conf`-Fragmente und lädt WirePlumber
+bei Bedarf neu. Die bisherige Einstellung `BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE`
+wird ignoriert. Wähle das iPhone in dessen Audioausgabe-Menü oder verwende
+`blueferry audio phone`, um die Medienwiedergabe aufs Telefon zurückzugeben.

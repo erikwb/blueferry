@@ -5,16 +5,13 @@ this computer's speakers and back to the iPhone, from a switch or the command
 line. It does not restart PipeWire; it asks BlueZ to open or close the
 iPhone's Bluetooth audio stream (A2DP).
 
-The switch is **off by default**: out of the box BlueFerry keeps calls and
-music on the iPhone.
+The switch reflects the current Bluetooth audio route. Audio routing follows
+the desktop and iPhone settings; BlueFerry no longer removes audio roles to
+force playback to stay on the phone.
 
 ## Requirements
 
-- `BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE=false` in
-  `~/.config/blueferry/local.env`, then restart the backend. This lets this
-  computer keep the Bluetooth audio sink role; with the default `true`,
-  BlueFerry's WirePlumber fragment removes that role and the switch reports
-  why it is unavailable.
+- The desktop audio server must offer the Bluetooth audio sink role (`a2dp_sink`).
 - The iPhone connected over Bluetooth Classic (the connection that carries
   messages).
 - Optional: [media control](media-control.md). With it, BlueFerry can resume
@@ -57,9 +54,6 @@ The switch and its status carry no track or app data: only the route
 
 ## Troubleshooting
 
-- *Phone audio switching is unavailable. BlueFerry keeps phone audio on the
-  iPhone.* Set `BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE=false` and restart the
-  backend.
 - *Bluetooth is still changing the iPhone's audio connection.* bluetoothd is
   busy with an earlier change; try again after a few seconds.
 - The switch says this computer, but nothing is heard: check the iPhone's

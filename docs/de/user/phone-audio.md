@@ -6,16 +6,14 @@ schicken, per Schalter oder Kommandozeile. PipeWire wird dabei nicht neu
 gestartet; BlueFerry bittet BlueZ, den Bluetooth-Audiostrom (A2DP) des
 iPhones zu öffnen oder zu schließen.
 
-Der Schalter ist **standardmäßig aus**: Ab Werk lässt BlueFerry Anrufe und
-Musik auf dem iPhone.
+Der Schalter zeigt die aktuelle Bluetooth-Audioweiterleitung. Diese folgt
+den Desktop- und iPhone-Einstellungen; BlueFerry entfernt keine Audiorollen
+mehr, um die Wiedergabe auf dem Telefon zu halten.
 
 ## Voraussetzungen
 
-- `BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE=false` in
-  `~/.config/blueferry/local.env`, danach das Backend neu starten. Damit
-  behält dieser Computer die Rolle als Bluetooth-Audioempfänger; mit dem
-  Standardwert `true` entfernt BlueFerrys WirePlumber-Fragment diese Rolle,
-  und der Schalter sagt, warum er nicht verfügbar ist.
+- Der Audio-Server des Desktops muss die Bluetooth-Audioempfängerrolle
+  (`a2dp_sink`) anbieten.
 - Das iPhone ist über Bluetooth Classic verbunden (die Verbindung für
   Nachrichten).
 - Optional: [Mediensteuerung](media-control.md). Damit kann BlueFerry die
@@ -59,9 +57,6 @@ Schalter und Status enthalten keine Titel- oder App-Daten: nur die Route
 
 ## Fehlerbehebung
 
-- *Phone audio switching is unavailable. BlueFerry keeps phone audio on the
-  iPhone.* `BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE=false` setzen und das Backend
-  neu starten.
 - *Bluetooth is still changing the iPhone's audio connection.* bluetoothd ist
   noch mit einer früheren Änderung beschäftigt; nach ein paar Sekunden erneut
   versuchen.

@@ -21,9 +21,8 @@ computer. Otherwise the Apple Media Service playback state decides between
 change to ``pc`` is published at once; every other change must hold for
 ``PLAYING_DEBOUNCE_SEC`` so a track change does not flicker.
 
-Only meaningful when BlueFerry does not forbid the sink role, i.e. with
-``BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE=false``; otherwise the WirePlumber policy
-strips ``a2dp_sink`` and the route is reported as unavailable.
+Requires the desktop audio server to offer the A2DP sink role. BlueFerry no
+longer overrides the desktop's Bluetooth audio roles.
 
 This module is the pilot for GDBus (``blueferry.gio_dbus``): every call states
 its argument and reply types, and nothing here can block the main loop.
