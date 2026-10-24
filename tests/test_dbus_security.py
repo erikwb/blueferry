@@ -199,3 +199,19 @@ def test_notification_clicks_have_their_own_budget_apart_from_settings() -> None
         except RateLimitError:
             break
     assert clicks == 300
+
+
+def test_manual_reconnect_has_its_own_small_bucket() -> None:
+    now = [100.0]
+    guard = CallerGuard(
+        expected_uid=1000,
+        credential_provider=lambda _sender: {"UnixUserID": 1000},
+        clock=lambda: now[0],
+    )
+    for _ in range(6):
+        guard.authorize(":1.30", "reconnect")
+    with pytest.raises(RateLimitError):
+        guard.authorize(":1.30", "reconnect")
+    guard.authorize(":1.30", "settings")
+    now[0] += 61
+    guard.authorize(":1.30", "reconnect")

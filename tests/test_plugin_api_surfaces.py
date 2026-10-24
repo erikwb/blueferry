@@ -29,6 +29,16 @@ def _manifest(caps: str = "card;share;notify;", version: str = "1.2"):
     return manifest("io.example.surfaces", capabilities=caps, api_version=version)
 
 
+@pytest.mark.parametrize("kind", [[], {}])
+def test_malformed_action_kind_uses_button_fallback(kind):
+    items = sf.parse_card_items(json.dumps({"items": [{
+        "id": "item", "title": "Title", "actions": [
+            {"id": "action", "label": "Action", "kind": kind},
+        ],
+    }]}))
+    assert items[0].actions[0].kind == "button"
+
+
 @pytest.fixture
 def cache(tmp_path):
     root = tmp_path / "cache" / "blueferry"

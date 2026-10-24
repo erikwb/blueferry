@@ -95,9 +95,13 @@ class DBusTransport:
 
         bus = self._connection()
         try:
-            # Activation happens here: the bus starts the plugin from its
-            # D-Bus service file when the name has no owner yet.
-            proxy = bus.get_object(bus_name, OBJECT_PATH, introspect=False)
+            # Activate without handing over any payload, check the unique
+            # owner, then address that exact connection. A well-known name
+            # changing hands cannot redirect credentials or actions.
+            owner = bus.activate_name_owner(bus_name)
+            if int(bus.get_unix_user(owner)) != os.getuid():
+                raise PluginError("the plugin runs as a different user; ignoring it")
+            proxy = bus.get_object(owner, OBJECT_PATH, introspect=False)
             return getattr(proxy, method)(
                 *args, dbus_interface=interface, signature=signature, timeout=timeout,
             )
@@ -178,14 +182,12 @@ class PluginClient:
         )
 
     def _call(self, interface: str, method: str, signature: str, args: tuple,
-              timeout: float, *, precheck: bool = False) -> str:
-        if precheck:
-            # Before handing over files or a click: refuse a running plugin
-            # owned by somebody else. Without an owner yet, the call below
-            # activates ours and the check after it applies.
-            owner = self._transport.owner_uid(self.manifest.bus_name)
-            if owner is not None and owner != self._uid:
-                raise PluginError("the plugin runs as a different user; ignoring it")
+              timeout: float) -> str:
+        # Apply the early check to every method, including settings. The real
+        # transport additionally checks and pins the owner after activation.
+        owner = self._transport.owner_uid(self.manifest.bus_name)
+        if owner is not None and owner != self._uid:
+            raise PluginError("the plugin runs as a different user; ignoring it")
         reply = self._transport.call(
             self.manifest.bus_name, interface, method, signature, args, timeout,
         )
@@ -212,7 +214,7 @@ class PluginClient:
         if not isinstance(value, Mapping):
             raise PluginError("the plugin sent an invalid status")
         state = value.get("state")
-        if state not in _STATES:
+        if not isinstance(state, str) or state not in _STATES:
             raise PluginError("the plugin sent an invalid status")
         return PluginStatus(
             state=str(state),
@@ -301,7 +303,7 @@ class PluginClient:
         payload = config_flow.form_values_json(self._update(values, secrets=False))
         return self._flow(
             lambda reply: config_flow.parse_login_step(reply, start=True),
-            METHOD_CONFIG_LOGIN, "ss", (provider, payload), LOGIN_TIMEOUT_SEC, precheck=True,
+            METHOD_CONFIG_LOGIN, "ss", (provider, payload), LOGIN_TIMEOUT_SEC,
         )
 
     def config_login_status(self, login_id: str) -> config_flow.LoginStep:
@@ -336,9 +338,8 @@ class PluginClient:
         return surfaces.ActionResult(result.ok, result.message, uri)
 
     def _flow(self, parse: Callable[[object], Any], method: str, signature: str, args: tuple,
-              timeout: float, *, precheck: bool = False) -> Any:
-        reply = self._call(PLUGIN_INTERFACE, method, signature, args, timeout,
-                           precheck=precheck)
+              timeout: float) -> Any:
+        reply = self._call(PLUGIN_INTERFACE, method, signature, args, timeout)
         try:
             return parse(reply)
         except config_flow.FlowError as error:
@@ -347,9 +348,8 @@ class PluginClient:
     # ---- surfaces (ApiVersion 1.2) ------------------------------------------------
 
     def _surface(self, parse: Callable[[object], Any], interface: str, method: str,
-                 signature: str, args: tuple, timeout: float, *,
-                 precheck: bool = False) -> Any:
-        reply = self._call(interface, method, signature, args, timeout, precheck=precheck)
+                 signature: str, args: tuple, timeout: float) -> Any:
+        reply = self._call(interface, method, signature, args, timeout)
         try:
             return parse(reply)
         except surfaces.SurfaceError as error:
@@ -382,7 +382,7 @@ class PluginClient:
             raise PluginError("invalid action arguments") from None
         result = self._surface(
             surfaces.parse_action_result, PLUGIN_INTERFACE, METHOD_INVOKE_ACTION, "sss",
-            (item_id, action_id, payload), ACTION_TIMEOUT_SEC, precheck=True,
+            (item_id, action_id, payload), ACTION_TIMEOUT_SEC,
         )
         uri = self.checked_open_uri(result.open_uri) if result.open_uri else None
         return surfaces.ActionResult(result.ok, result.message, uri)
@@ -403,7 +403,7 @@ class PluginClient:
             raise PluginError(str(error)) from None
         return self._surface(
             surfaces.parse_send_result, PLUGIN_INTERFACE, METHOD_SEND_FILES, "sas",
-            (target_id, files), SHARE_TIMEOUT_SEC, precheck=True,
+            (target_id, files), SHARE_TIMEOUT_SEC,
         )
 
     def pending_notification(self) -> tuple[surfaces.Notification | None, bool]:
@@ -458,7 +458,7 @@ class PluginClient:
             return None
         if not isinstance(taken_at, str) or not _TIMESTAMP.fullmatch(taken_at):
             taken_at = ""
-        if kind not in _PHOTO_TYPES:
+        if not isinstance(kind, str) or kind not in _PHOTO_TYPES:
             kind = "other"
         return Photo(
             id=photo_id,

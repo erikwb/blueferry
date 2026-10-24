@@ -840,3 +840,88 @@ def test_textual_sound_switch_moves_the_iphone_audio_and_explains_refusals() -> 
             assert backend.routes == ["pc"]
 
     _run_headless(scenario())
+
+
+def test_b_reconnects_the_iphone_and_reports_the_result() -> None:
+    class ReconnectBackend(_Backend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.reconnects = 0
+
+        @staticmethod
+        def status() -> BackendStatus:
+            return BackendStatus.from_dict({
+                "daemon": True, "map": False, "pbap": False, "ancs": False,
+                "phone_reconnect_state": "unreachable",
+                "phone_reconnect_paused": True, "phone_reconnect_next_in_sec": 540,
+            })
+
+        def reconnect_phone(self) -> str:
+            self.reconnects += 1
+            return "started"
+
+    async def scenario() -> None:
+        backend = ReconnectBackend()
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
+        notes: list[str] = []
+        original = app.notify
+
+        def notify(message, *args, **kwargs):
+            notes.append(str(message))
+            return original(message, *args, **kwargs)
+
+        app.notify = notify  # type: ignore[method-assign]
+        async with app.run_test(size=(120, 36)) as pilot:
+            await _wait_for_threads(app, pilot, 2)
+            app.set_focus(None)
+            await pilot.press("b")
+            for _ in range(50):
+                if notes:
+                    break
+                await pilot.pause(0.02)
+            assert backend.reconnects == 1
+            assert notes and notes[-1].startswith("Reconnecting")
+
+    _run_headless(scenario())
+
+
+def test_shift_b_toggles_the_automatic_profile_reset() -> None:
+    class ResetBackend(_Backend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.saved: list[bool] = []
+
+        @staticmethod
+        def status() -> BackendStatus:
+            return BackendStatus.from_dict({
+                "daemon": True, "map": False, "pbap": False, "ancs": False,
+                "profile_reset_auto": True,
+            })
+
+        def set_auto_profile_reset(self, enabled: bool) -> bool:
+            self.saved.append(enabled)
+            return enabled
+
+    async def scenario() -> None:
+        backend = ResetBackend()
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
+        notes: list[str] = []
+        original = app.notify
+
+        def notify(message, *args, **kwargs):
+            notes.append(str(message))
+            return original(message, *args, **kwargs)
+
+        app.notify = notify  # type: ignore[method-assign]
+        async with app.run_test(size=(120, 36)) as pilot:
+            await _wait_for_threads(app, pilot, 2)
+            app.set_focus(None)
+            await pilot.press("B")
+            for _ in range(50):
+                if notes:
+                    break
+                await pilot.pause(0.02)
+            assert backend.saved == [False]
+            assert notes and "no longer reset automatically" in notes[-1]
+
+    _run_headless(scenario())

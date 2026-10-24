@@ -58,6 +58,7 @@ from blueferry.plugin_api.manifest import (
     ManifestError,
     PluginManifest,
     bus_name_for,
+    default_directories,
     discover,
     parse_manifest,
     valid_plugin_id,
@@ -446,6 +447,17 @@ class PluginManager:
 
     # ---- install --------------------------------------------------------------------
 
+    def _check_bus_name(self, plugin: PluginManifest) -> None:
+        # Include our explicit data_home even when it differs from the process
+        # environment, and records whose manifests are missing or damaged.
+        found = discover((self.root, *default_directories()),
+                         blueferry_version=self.blueferry_version)
+        ids = set(self.records()) | {p.id for p in (*found.plugins, *found.conflicts)}
+        for other_id in sorted(ids):
+            if other_id != plugin.id and bus_name_for(other_id) == plugin.bus_name:
+                raise InstallError(f"{plugin.id} shares its D-Bus name with {other_id}; "
+                                   "remove the conflicting plugin first")
+
     def prepare(self, url: str, ref: str | None = None) -> PreparedInstall:
         """Clone the pinned ref and read its manifest. Runs no plugin code."""
         with self._locked():
@@ -472,6 +484,7 @@ class PluginManager:
                 manifest = parse_manifest(text, blueferry_version=self.blueferry_version)
             except ManifestError as error:
                 raise InstallError(f"the plugin's manifest is unusable: {error}") from None
+            self._check_bus_name(manifest)
             for argv in (manifest.exec, manifest.cli):
                 if argv:
                     _venv_program(Path("venv"), argv, installed=False)  # refuse before asking
@@ -496,6 +509,13 @@ class PluginManager:
 
     def _commit(self, prepared: PreparedInstall) -> InstallRecord:
         plugin = prepared.manifest
+        # The user may have left the confirmation open while another client
+        # installed, updated, reinstalled or removed this plugin. The lock
+        # protects each operation, not the time spent awaiting confirmation.
+        if self.records().get(plugin.id) != prepared.previous:
+            raise InstallError("the installed plugin changed since preparation; "
+                               "prepare the installation again")
+        self._check_bus_name(plugin)
         target = self.source_dir(plugin.id)
         old_venvs = self._plugin_venvs(plugin.id)
         if prepared.previous is not None and Path(prepared.previous.venv) not in old_venvs:

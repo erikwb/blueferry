@@ -70,6 +70,8 @@ _RULES: dict[str, tuple[RateRule, ...]] = {
     # Feature switches are written to settings.json and need a restart;
     # a settings page flips a few at a time, never a stream.
     "feature": (RateRule(20, 60), RateRule(120, 3_600)),
+    # A manual reconnect pages the phone; a held button must not hammer it.
+    "reconnect": (RateRule(6, 60), RateRule(60, 3_600)),
 }
 
 
@@ -176,7 +178,7 @@ class CallerGuard:
                     attempts.popleft()
                 if len(attempts) >= rule.attempts:
                     raise RateLimitError(
-                        "too many requests; wait before trying again"
+                        "please wait a moment, then try again"
                     )
         for scope, selected in scoped:
             for rule in selected:

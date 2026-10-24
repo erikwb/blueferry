@@ -73,10 +73,63 @@ def test_stored_alphanumeric_name_makes_thread_read_only() -> None:
     assert thread["reply_ready"] is False
     assert alone["name"] == "shop"
     assert alone["reply_ready"] is False
+    assert len(thread["messages"]) == 3
+
+
+def test_alphanumeric_thread_retains_uncontested_legacy_key() -> None:
+    event = _sms("7467", "", "one", "2026-08-08T10:00:00+00:00")
+    event["sender_alphanumeric"] = "Shop"
+    [thread] = build_threads([event])
+
+    assert thread["key"] == "alphanumeric:short:7467"
+    assert thread["aliases"] == ["address:short:7467"]
+    assert sort_threads([thread], starred_keys={"address:short:7467"})[0]["starred"]
+
+
+def test_alphanumeric_thread_does_not_alias_a_numeric_sender_without_contacts() -> None:
+    service = _sms("32232665", "", "code", "2026-08-08T10:00:00+00:00")
+    service["sender_alphanumeric"] = "Facebook"
+    numeric = _sms("32232665", "", "hello", "2026-08-08T10:01:00+00:00")
+
+    person, readonly = build_threads([service, numeric])
+
+    assert readonly["key"] == "alphanumeric:phone:32232665"
+    assert readonly["aliases"] == []
+    assert not readonly["reply_ready"]
+    assert person["key"] == "address:phone:32232665"
+    assert person["reply_ready"]
+
+
+def test_legacy_service_key_cannot_overlap_a_persons_secondary_alias() -> None:
+    class Resolver:
+        @staticmethod
+        def thread_addresses(address):
+            # The bare digits are ambiguous, but an explicit international
+            # number can still resolve to a contact with an email-first key.
+            return (
+                "email:person@example.com", "phone:32232665", "phone:4532232665",
+            ) if address == "+4532232665" else ()
+
+        @staticmethod
+        def resolve(_address):
+            return None
+
+    service = _sms("32232665", "", "code", "2026-08-08T10:00:00+00:00")
+    service["sender_alphanumeric"] = "Facebook"
+    numeric = _sms("+4532232665", "Person", "hello", "2026-08-08T10:01:00+00:00")
+
+    person, readonly = build_threads([service, numeric], Resolver())
+
+    assert person["key"] == "address:email:person@example.com"
+    assert "address:phone:32232665" in person["aliases"]
+    assert readonly["aliases"] == []
 
 
 def test_untrusted_non_address_cannot_become_reply_thread() -> None:
     event = _sms("Mom<script>", "", "bad", "2026-08-08T10:00:00+00:00")
+    assert thread_key(event) is None
+    assert build_threads([event]) == []
+    event["sender_alphanumeric"] = "Shop"
     assert thread_key(event) is None
     assert build_threads([event]) == []
 

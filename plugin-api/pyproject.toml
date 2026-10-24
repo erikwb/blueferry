@@ -21,7 +21,7 @@ version = "1.6.0"
 description = "Contract between BlueFerry clients and out-of-process plugins"
 license = "GPL-2.0-or-later"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = ["regex>=2022.10.31"]
 
 [project.urls]
 Homepage = "https://github.com/erikwb/blueferry/blob/main/PLUGINS.md"

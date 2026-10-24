@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from typer.testing import CliRunner
 
 from blueferry import cli, commands, config
@@ -247,3 +248,91 @@ def test_doctor_with_a_real_path_probes_only_through_the_fake_runner(monkeypatch
 
     if shutil.which("wl-copy"):
         assert probes, "the capability probe must go through commands.run_command"
+
+
+def _proc(tmp_path, processes):
+    for pid, (comm, argv) in enumerate(processes, start=100):
+        entry = tmp_path / str(pid)
+        entry.mkdir()
+        (entry / "comm").write_text(comm + "\n")
+        (entry / "cmdline").write_bytes(b"\0".join(argv) + b"\0")
+    return tmp_path
+
+
+@pytest.mark.parametrize(("argv", "expected"), [
+    ([b"/usr/libexec/bluetooth/bluetoothd", b"-E"], True),
+    ([b"/usr/libexec/bluetooth/bluetoothd", b"-E", b"-P", b"hfp"], False),
+    ([b"/usr/libexec/bluetooth/bluetoothd", b"-E", b"-Phfp"], False),
+    ([b"/usr/libexec/bluetooth/bluetoothd", b"-E", b"--noplugin=sap,hfp"], False),
+    ([b"/usr/libexec/bluetooth/bluetoothd", b"-E", b"--noplugin", b"h*"], False),
+    ([b"/usr/libexec/bluetooth/bluetoothd", b"-E", b"-P", b"sap"], True),
+    # Without -E bluetoothd does not register its experimental hfp profile.
+    ([b"/usr/libexec/bluetooth/bluetoothd"], False),
+])
+def test_hfp_plugin_conflict_reads_the_bluetoothd_command_line(tmp_path, argv, expected):
+    from blueferry import bluetooth_capabilities as caps
+
+    root = _proc(tmp_path, [("ofonod", [b"/usr/sbin/ofonod"]), ("bluetoothd", argv)])
+    assert caps.hfp_plugin_conflict(root) is expected
+
+
+def test_hfp_plugin_check_is_skipped_without_ofono(tmp_path) -> None:
+    from blueferry import bluetooth_capabilities as caps
+
+    root = _proc(tmp_path, [("bluetoothd", [b"/usr/libexec/bluetooth/bluetoothd", b"-E"])])
+    assert caps.hfp_plugin_conflict(root) is None
+
+
+def _calls(monkeypatch, enabled: bool) -> None:
+    from blueferry.calls import settings as calls_settings
+
+    monkeypatch.setattr(
+        calls_settings.CallsSettings, "enabled", property(lambda _self: enabled),
+    )
+
+
+def test_doctor_recommends_bluetooth_opts_and_reports_the_last_reset(
+    monkeypatch, caplog,
+) -> None:
+    from blueferry import bluetooth_capabilities as caps
+
+    _matching_cod(monkeypatch)
+    _calls(monkeypatch, True)
+    monkeypatch.setattr(caps, "hfp_plugin_conflict", lambda: True)
+    monkeypatch.setattr(caps.service_manager, "init_system", lambda: "openrc")
+    monkeypatch.setattr(cli, "_running_backend_status", lambda: {
+        "profile_reset_auto": True,
+        "profile_reset_suggested": "",
+        "profile_reset_last": "hfp_powered_timeout",
+        "profile_reset_last_at": 1_760_000_000,
+        "profile_reset_last_auto": True,
+    })
+    caplog.set_level("INFO", logger="doctor")
+
+    result = CliRunner().invoke(cli.app, ["doctor"])
+
+    assert result.exit_code == 0
+    assert "Checks completed with warnings." in result.output
+    assert "/etc/conf.d/bluetooth" in caplog.text and "-P hfp" in caplog.text
+    assert "Automatic profile reset: on" in caplog.text
+    assert "Last profile reset" in caplog.text and "automatic" in caplog.text
+    assert "HFP" in caplog.text
+
+
+def test_doctor_skips_the_hfp_plugin_check_without_calls(monkeypatch, caplog) -> None:
+    from blueferry import bluetooth_capabilities as caps
+
+    _matching_cod(monkeypatch)
+    _calls(monkeypatch, False)
+    monkeypatch.setattr(caps, "hfp_plugin_conflict", lambda: True)
+    monkeypatch.setattr(cli, "_running_backend_status", lambda: {
+        "profile_reset_auto": True, "profile_reset_suggested": "hfp_powered_timeout",
+    })
+    caplog.set_level("INFO", logger="doctor")
+
+    result = CliRunner().invoke(cli.app, ["doctor"])
+
+    assert result.exit_code == 0
+    assert "-P hfp" not in caplog.text
+    assert "Run 'blueferry reconnect'" in caplog.text
+    assert "No profile reset since the backend started" in caplog.text

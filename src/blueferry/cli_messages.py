@@ -169,8 +169,7 @@ def resolve_recipient(raw: str, *, allow_email: bool = False) -> str:
         ))
         raise typer.Exit(code=2)
 
-    options = [(name, address if "@" in address else f"+{address}")
-               for name, address in matches]
+    options = matches
     if len(options) == 1:
         name, destination = options[0]
         typer.echo(typer.style(

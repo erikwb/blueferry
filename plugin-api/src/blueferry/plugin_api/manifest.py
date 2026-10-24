@@ -123,6 +123,9 @@ class Discovery:
     plugins: tuple[PluginManifest, ...] = ()
     # (file name, reason) for every manifest that was skipped.
     ignored: tuple[tuple[str, str], ...] = field(default_factory=tuple)
+    # Valid manifests whose distinct IDs share a bus name. Never call these;
+    # the manager also needs them to refuse an installation into that name.
+    conflicts: tuple[PluginManifest, ...] = ()
 
     def with_capability(self, capability: str) -> tuple[PluginManifest, ...]:
         return tuple(plugin for plugin in self.plugins if plugin.has(capability))
@@ -141,7 +144,7 @@ def valid_plugin_id(plugin_id: object) -> bool:
 
 
 def bus_name_for(plugin_id: str) -> str:
-    """``io.weirdware.BlueFerry.Plugin.<id>``; '-' is not valid in names."""
+    """The v1 bus-name mapping (discovery rejects colliding IDs)."""
     return BUS_NAME_PREFIX + plugin_id.replace("-", "_")
 
 
@@ -373,7 +376,15 @@ def discover(
                 ignored.append((path.name, str(error) or type(error).__name__))
                 continue
             plugins.setdefault(manifest.id, manifest)
-    return Discovery(tuple(plugins.values()), tuple(ignored))
+    by_bus: dict[str, list[PluginManifest]] = {}
+    for plugin in plugins.values():
+        by_bus.setdefault(plugin.bus_name, []).append(plugin)
+    conflicts = tuple(plugin for group in by_bus.values() if len(group) > 1 for plugin in group)
+    for plugin in conflicts:
+        ignored.append((plugin.path.name if plugin.path else plugin.id,
+                        f"another plugin ID uses the same D-Bus name: {plugin.bus_name}"))
+        del plugins[plugin.id]
+    return Discovery(tuple(plugins.values()), tuple(ignored), conflicts)
 
 
 def _manifest_files(directory: Path) -> Iterable[Path]:

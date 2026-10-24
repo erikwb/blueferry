@@ -1418,3 +1418,13 @@ def test_final_power_cycle_recheck_is_async_and_fails_closed(h, result):
     else:
         assert not h.recovery.active and not h.worker.reserved
         assert "pause" not in h.calls
+
+
+def test_no_recovery_while_bluez_does_not_answer(h):
+    blocked = [True]
+    h.recovery._blocked = lambda: blocked[0]
+    h.ready_to_probe()
+    assert "reset-le" not in h.calls and "probe" not in h.calls
+    blocked[0] = False
+    h.ready_to_probe()
+    assert "reset-le" in h.calls
