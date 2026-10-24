@@ -160,10 +160,24 @@ same defaults;
 `--no-explicit-pairing` selects Connect-first instead. This does not change the
 ANCS compatibility mode or require explicit pairing on other Realtek adapters.
 
-Both modes activate obexd's local Message Notification Server before pairing
-and install BlueFerry's WirePlumber phone-audio fragment so this computer is
-not an A2DP/HFP sink when iOS first connects. A failed pairing attempt removes
-that fragment if this attempt created it.
+Both modes activate obexd's local Message Notification Server before pairing.
+BlueFerry no longer restricts the adapter's audio roles: removing the A2DP
+sink made `Device1.Connect()` fail before authentication with
+`br-connection-unknown` on BlueZ 5.87. Old BlueFerry WirePlumber fragments
+are removed before pairing and on daemon startup, including without a bond.
+Before creating a new bond, Connect-first setup waits for an audio role in
+the adapter's UUIDs, including when cleanup raced daemon startup. A restarted
+WirePlumber process alone does not prove that its endpoints have registered.
+
+A controlled MediaTek test on 2026-10-24 confirmed the regression: connecting
+only AVRCP could pair Classic and open MAP/PBAP, but created no LE bond or
+ANCS service. Restoring the original `Device1.Connect()` path with normal
+audio roles produced BR/EDR SMP Pairing Request/Response and identity exchange,
+both Classic and LE bonds, and authorized ANCS alongside MAP/PBAP. The normal
+phone-audio restriction was reapplied after that test's bond; ANCS still
+completed. The fix removes the restriction rather than changing the pairing
+profile. Automatic audio routing restrictions are deferred to separate work.
+
 After authentication, setup trusts the bond, selects BR/EDR as the preferred
 bearer, lets the existing Classic ACL settle, and only then registers the
 short-lived solicitation advertisement. The daemon starts while that advert
@@ -789,8 +803,9 @@ bluetoothd then exports `org.bluez.MediaTransport1` with the local sink UUID
 `0000110b-…`. Starting the stream is the phone's job (AVDTP START on
 playback). `"phone"` calls `DisconnectProfile`, which closes the stream
 (`avdtp_close`). The route is reported as `pc` while that transport exists.
-None of this works while BlueFerry's WirePlumber fragment strips `a2dp_sink`
-(`BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE=true`, the default).
+The desktop audio configuration must provide `a2dp_sink`. BlueFerry no longer
+removes that role; the retired `BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE` setting
+has no effect.
 
 Where the sound plays is reported separately as `phone_audio_playing`: `pc`
 while `MediaTransport1.State` is `active`, otherwise the AMS playback state

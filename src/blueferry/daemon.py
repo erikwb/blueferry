@@ -119,7 +119,7 @@ from blueferry.solicitation_supervisor import SolicitationSupervisor
 from blueferry.starred_threads import StarredThreadsStore
 from blueferry.storage_preparation import PreparedStorage, prepare_storage
 from blueferry.storage_security import StorageSecurity
-from blueferry.wireplumber_policy import WirePlumberPhoneAudioPolicy
+from blueferry.wireplumber_policy import LegacyPhoneAudioPolicy
 
 if TYPE_CHECKING:
     from blueferry.mpris import MprisPlayer, NameClaim
@@ -257,13 +257,8 @@ class Daemon:
             ),
         )
         self.solicitation = SolicitationSupervisor(config.ADAPTER)
-        # The saved phone-calls opt-in decides both the call controller and
-        # whether the WirePlumber fragment keeps the hands-free roles.
         self.calls_settings = CallsSettings()
-        self.phone_audio = WirePlumberPhoneAudioPolicy(
-            allow_calls=self.calls_settings.enabled,
-        )
-        self._phone_audio_lock = threading.Lock()
+        self.phone_audio = LegacyPhoneAudioPolicy()
         # None until looked up, "" when it could not be determined.
         self._bluez_version: str | None = None
         self._bluez_version_requested = False
@@ -340,12 +335,11 @@ class Daemon:
             on_powered_failed=self.profile_reset.hfp_powered_failed,
             on_powered=self.profile_reset.hfp_powered,
         )
-        # Where the iPhone's media playback goes. Only offered when the
-        # WirePlumber policy does not strip the A2DP sink role.
+        # Where the iPhone's media playback goes, using the desktop's roles.
         self.phone_audio_route = PhoneAudioRoute(
             GioDBus(gio_system_bus),
             device_path,
-            allowed=not config.KEEP_PHONE_AUDIO_ON_PHONE,
+            allowed=True,
             on_changed=self._emit_status_soon,
             schedule=GLib.timeout_add_seconds,
             cancel=GLib.source_remove,
@@ -574,7 +568,6 @@ class Daemon:
         selected = self.calls_settings.set(enabled)
         self.calls.set_enabled(selected)
         log.info("phone calls %s", "enabled" if selected else "disabled")
-        self._apply_phone_audio_roles()
         self._emit_status()
         return self.calls.snapshot()
 
@@ -585,27 +578,6 @@ class Daemon:
         log.info("one-time code auto-copy %s", "enabled" if selected else "disabled")
         self._emit_status()
         return {"otp_autocopy": selected}
-
-    def _apply_phone_audio_roles(self) -> None:
-        """Rewrite the WirePlumber fragment off the main loop.
-
-        Reconciling may run ``wireplumber --version`` and restart WirePlumber
-        (bounded, but seconds), which must not stall D-Bus replies. Threads
-        of quick successive toggles take the lock in any order, so each
-        writes the setting saved at that moment, not the one it was started
-        for: whichever runs last leaves the fragment matching the setting.
-        """
-        if not config.KEEP_PHONE_AUDIO_ON_PHONE:
-            return
-
-        def apply() -> None:
-            with self._phone_audio_lock:
-                self.phone_audio = WirePlumberPhoneAudioPolicy(
-                    allow_calls=self.calls_settings.enabled,
-                )
-                self.phone_audio.reconcile(enabled=True)
-
-        _in_background(apply, "blueferry-phone-audio")
 
     def _emit_status_soon(self) -> None:
         """Emit one StatusChanged for everything changed in this iteration."""
@@ -1223,15 +1195,15 @@ class Daemon:
             self.recovery.start()
         if self.recovery.active or self.recovery.adapter.restore_pending:
             return
+        # Upgrade cleanup must also run without a bond: the old policy
+        # prevents that user from pairing in the first place.
+        self.phone_audio.remove()
         if bond_status(
             config.IPHONE_MAC, config.ADAPTER, timeout=BOND_CHECK_TIMEOUT_SEC,
         ) is not True:
             raise PairingRequiredError(
                 "the saved iPhone is not currently paired; open a client to pair it"
             )
-
-        with self._phone_audio_lock:
-            self.phone_audio.reconcile(enabled=config.KEEP_PHONE_AUDIO_ON_PHONE)
 
         # Class-of-Device is controller state, not durable configuration.
         # Repair it before opening either bearer and continue supervising it

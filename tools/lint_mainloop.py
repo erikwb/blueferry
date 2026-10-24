@@ -117,6 +117,7 @@ ALLOWLIST: dict[tuple[str, str, str], str] = {
             ("_stop_discovery", "sync-dbus"),
             ("_wait_for_classic_settled", "blocking"),
             ("_wait_for_classic_settled", "sync-dbus"),
+            ("_wait_for_pairing_audio_profiles.ready", "sync-dbus"),
             ("_wait_for_daemon_transports", "blocking"),
             ("_wait_for_paired_device", "blocking"),
             ("discover_devices", "blocking"),
