@@ -11,6 +11,7 @@ pytest.importorskip("PySide6")
 from blueferry.client import BackendError
 from blueferry.conversation_state import ConversationSnapshot
 from blueferry.models import BackendStatus, Thread
+from blueferry.qt import phone_link
 from blueferry.qt.controller import BridgeController
 from blueferry.setup_client import ConfigurationState
 
@@ -1651,6 +1652,107 @@ def test_phone_audio_hint_follows_the_typed_playing_field_from_a_refresh():
     audio = controller.phoneAudio
     assert audio["mismatch"] is True and audio["onPc"] is True
     assert audio["hint"] == "The iPhone is playing on its own speaker (chosen on the iPhone)."
+
+
+def test_feature_hints_point_to_the_setting_for_each_opt_in():
+    controller = BridgeController(backend=object(), setup=object(), subscribe=False, autostart=False)
+    controller._status = {"proximity_lock": "idle"}
+    hints = controller.featureHints
+    assert "Show and control what the iPhone is playing" in hints["media"]
+    assert "Settings \u203a Calls & Audio" in hints["calls"]
+    assert "Keep the iPhone's recent calls" in hints["callHistory"]
+    assert "Keep recent iPhone notifications" in hints["notifications"]
+    assert "proximity" not in hints
+    controller._status = {}
+    assert "Update the BlueFerry backend" in controller.featureHints["proximity"]
+
+    controller._status = {
+        "media_control_enabled": True, "calls_enabled": True, "phone_battery_level": 50,
+        "call_history_enabled": True, "notification_history_enabled": True,
+        "proximity_lock": "idle",
+    }
+    assert controller.featureHints == {}
+
+
+def test_notification_failure_stays_in_the_tab(monkeypatch):
+    controller = _inline_controller(monkeypatch, _PhoneLinkBackend(fail_notifications=True))
+    controller.watchNotifications(True)
+    assert controller.notifications == []
+    assert "locked" in controller.notificationsInfo["error"]
+    assert controller.errorText == ""
+
+
+def test_notifications_are_fetched_only_while_watched_and_forgotten_after(monkeypatch):
+    backend = _PhoneLinkBackend()
+    controller = _inline_controller(monkeypatch, backend)
+    controller.refreshNotifications()
+    controller._notificationsInvalidated()
+    assert backend.notification_calls == 0
+
+    controller.watchNotifications(True)
+    assert backend.notification_calls == 1
+    assert controller.notifications[0]["app"] == "com.example.chat"
+    assert controller.notifications[0]["body"] == ""
+    assert controller.notificationsInfo == {"enabled": True, "content": False, "error": ""}
+
+    controller.watchNotifications(False)
+    assert controller.notifications == []
+
+
+def test_phone_name_comes_from_the_configured_device():
+    controller = BridgeController(backend=object(), setup=object(), subscribe=False, autostart=False)
+    assert controller.phoneName == "iPhone"
+    controller._configuration = ConfigurationState.from_dict({"configured": True, "mac": "AA"})
+    controller._devices = [{"mac": "BB", "name": "Other"}, {"mac": "AA", "name": "Josh's iPhone"}]
+    assert controller.phoneName == "Josh's iPhone"
+
+
+@pytest.mark.parametrize(("calls_state", "expected"), [
+    ("connecting", "connecting to the iPhone"),
+    ("searching", "connecting to the iPhone"),
+    ("unavailable", "oFono is not running"),
+    ("ready", "Waiting for battery and signal"),
+])
+def test_phone_status_hint_names_the_hands_free_state(calls_state, expected):
+    hints = phone_link.feature_hints({"calls_enabled": True, "calls_state": calls_state})
+    assert expected in hints["phoneStatus"]
+
+
+def _inline_controller(monkeypatch, backend):
+    controller = BridgeController(backend=backend, setup=object(), subscribe=False, autostart=False)
+
+    def run_inline(operation, on_done=None, on_failed=None, *, busy=True):
+        assert busy is False
+        try:
+            value = operation()
+        except Exception as error:
+            on_failed(str(error))
+        else:
+            if on_done is not None:
+                on_done(value)
+
+    monkeypatch.setattr(controller, "_run", run_inline)
+    return controller
+
+
+class _PhoneLinkBackend:
+    def __init__(self, *, fail_notifications=False):
+        self.routes = []
+        self.notification_calls = 0
+        self.fail_notifications = fail_notifications
+
+    def set_phone_audio_route(self, route):
+        self.routes.append(route)
+        return route
+
+    def notifications(self, limit=50):
+        self.notification_calls += 1
+        if self.fail_notifications:
+            raise BackendError("local history is locked")
+        return {"enabled": True, "content": False, "notifications": [
+            {"id": 1, "app_id": "com.example.chat", "app_name": "",
+             "time": "2026-10-06T10:00:00+00:00"},
+        ]}
 
 
 def test_manual_reconnect_reports_an_unreachable_phone(monkeypatch):

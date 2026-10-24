@@ -65,6 +65,11 @@ _RULES: dict[str, tuple[RateRule, ...]] = {
     # Moving the phone's audio pages the phone and renegotiates AVDTP;
     # users retry while bluetoothd is still busy with the last change.
     "audio-route": (RateRule(20, 60), RateRule(120, 3_600)),
+    # The in-memory notification list is cheap but carries app content.
+    "notifications-read": (RateRule(240, 60),),
+    # Feature switches are written to settings.json and need a restart;
+    # a settings page flips a few at a time, never a stream.
+    "feature": (RateRule(20, 60), RateRule(120, 3_600)),
     # A manual reconnect pages the phone; a held button must not hammer it.
     "reconnect": (RateRule(6, 60), RateRule(60, 3_600)),
 }

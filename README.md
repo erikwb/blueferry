@@ -462,6 +462,15 @@ physical iPhone.
 
 Restart the user service after editing `local.env` settings.
 
+Three on/off switches without a setting of their own
+(`BLUEFERRY_SHOW_NOTIFICATION_CONTENT`, `BLUEFERRY_MARK_READ_ON_DISMISS`,
+`BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE`) can also be changed in the Qt settings
+or with `blueferry features` (`blueferry features off
+keep_phone_audio_on_phone`). They are stored in
+`~/.config/blueferry/settings.json`, override `local.env`, and apply after
+the service restarts; a variable set in the service's own environment still
+wins.
+
 ### Sync notifications with iPhone (opt-in)
 
 With **All iPhone Notifications** selected, an iPhone app popup normally
@@ -523,6 +532,21 @@ active contact downloads and retries storage or file-deletion failures; otherwis
 deletes them with the contacts at its next contact sync. `blueferry contacts-photo NAME -o FILE`
 exports one cached photo. Group conversations keep their group icons, and the
 terminal client does not show photos.
+
+### Recent app notifications (opt-in)
+
+`BLUEFERRY_NOTIFICATION_HISTORY=true` (or **Keep recent iPhone notifications**
+in the Qt settings, or `blueferry features on notification_history`, after a
+service restart) keeps the last 200 non-Messages iPhone app notifications in
+the daemon's memory so the Qt client's Notifications tab and `blueferry
+notifications recent` can list them. Nothing is written to disk: BlueFerry's
+history deliberately retains only Messages records, so the list starts empty
+after every backend restart. Titles and bodies are kept only with
+`BLUEFERRY_SHOW_NOTIFICATION_CONTENT=true`, otherwise just the app and the
+time. Apps other than Messages only reach BlueFerry with the "All iPhone
+Notifications" policy. While encrypted storage is locked the list is refused.
+It is a recent history, not a mirror of the iPhone's Notification Center:
+notifications dismissed on the iPhone stay in the list.
 
 ### Clicking iPhone app notifications
 
@@ -886,9 +910,9 @@ takes precedence. `BLUEFERRY_CALL_HISTORY_INTERVAL_SEC` (60–86400, default
   notification history.
 
 View the list with `blueferry call-history` (`--missed`, `--limit N`,
-`--sync` to refresh from the iPhone first), **Recent Calls** in the KDE
-client's menu, the **iPhone** dialog of the GTK client (`Ctrl+I`), or `h` in
-the terminal client. The Quickshell client does not show it yet.
+`--sync` to refresh from the iPhone first), the **Calls** tab of the KDE
+client, the **iPhone** dialog of the GTK client (`Ctrl+I`), or `h` in the
+terminal client. The Quickshell client does not show it yet.
 ## iPhone media control (optional)
 
 BlueFerry can show what the iPhone is playing and send play, pause, next,
