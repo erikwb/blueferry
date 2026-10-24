@@ -324,15 +324,15 @@ class PluginClient:
         """RunConfigAction (ApiVersion 1.6): a button of the settings form.
 
         Only ids the manifest declares as ``[ConfigAction <id>]``; a running
-        plugin owned by another user is refused before the call, as for a
-        card action. An ``open_uri`` that is neither http(s) nor a file in
+        plugin owned by another user is refused before the call, as for
+        every method. An ``open_uri`` that is neither http(s) nor a file in
         the plugin cache is dropped.
         """
         if not self.manifest.config or self.manifest.config_action(action_id) is None:
             raise PluginError("this plugin has no such settings action")
         result = self._surface(
             surfaces.parse_action_result, PLUGIN_INTERFACE, METHOD_RUN_CONFIG_ACTION, "s",
-            (action_id,), ACTION_TIMEOUT_SEC, precheck=True,
+            (action_id,), ACTION_TIMEOUT_SEC,
         )
         uri = self.checked_open_uri(result.open_uri) if result.open_uri else None
         return surfaces.ActionResult(result.ok, result.message, uri)
