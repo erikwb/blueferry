@@ -193,11 +193,11 @@ class MapEventListener:
         if not self._running:
             return
         sender_raw = parsed.sender_address
-        contact = self.resolve_contact(sender_raw) if sender_raw else None
         alphanumeric = parsed.sender_name if (
             parsed.sender_name and sender_raw
             and spelled_on_keypad(parsed.sender_name, sender_raw)
         ) else None
+        contact = self.resolve_contact(sender_raw) if sender_raw and not alphanumeric else None
         event = SmsEvent(
             kind="sms_received",
             handle=handle,

@@ -41,8 +41,10 @@ ShellRoot {
   property bool notificationPolicyBusy: false
   property bool contactsOnlyNotificationsBusy: false
   property bool ancsActionsBusy: false
+  property bool phoneAudioBusy: false
   readonly property SavedChoice mediaControl: SavedChoice {}
   readonly property SavedChoice mprisPlayer: SavedChoice {}
+  readonly property SavedChoice autoProfileReset: SavedChoice {}
   readonly property SavedChoice proximityLock: SavedChoice {}
   readonly property SavedChoice callsChoice: SavedChoice {}
   readonly property SavedChoice callHistory: SavedChoice {}
@@ -269,6 +271,7 @@ ShellRoot {
           result.contacts_only_notifications === true
         root.mediaControl.reported(result.media_control_enabled === true)
         root.mprisPlayer.reported(result.media_mpris_enabled === true)
+        root.autoProfileReset.reported(result.profile_reset_auto === true)
         root.proximityLock.reported(result.proximity_lock_enabled === true)
         root.callsChoice.reported(result.calls_enabled === true)
         root.callHistory.reported(result.call_history_enabled === true)
@@ -343,6 +346,9 @@ ShellRoot {
       } else if (method === "set_ancs_notification_actions") {
         root.ancsActionsBusy = false
         root.reload()
+      } else if (method === "set_phone_audio_route") {
+        root.phoneAudioBusy = false
+        root.reload()
       } else if (method === "set_media_control") {
         root.mediaControl.saved(
           typeof result === "object" && result !== null
@@ -353,6 +359,12 @@ ShellRoot {
         root.mprisPlayer.saved(
           typeof result === "object" && result !== null
             ? result.media_mpris_enabled === true : root.mprisPlayer.value,
+          root.statusBusy)
+        root.reload()
+      } else if (method === "set_auto_profile_reset") {
+        root.autoProfileReset.saved(
+          typeof result === "object" && result !== null
+            ? result.profile_reset_auto === true : root.autoProfileReset.value,
           root.statusBusy)
         root.reload()
       } else if (method === "set_proximity_lock") {
@@ -458,6 +470,10 @@ ShellRoot {
         root.ancsActionsBusy = false
         root.errorText = message || "Could not save action button preference"
         root.reload()
+      } else if (method === "set_phone_audio_route") {
+        root.phoneAudioBusy = false
+        root.errorText = message || "Could not switch the iPhone's sound"
+        root.reload()
       } else if (method === "set_media_control") {
         root.mediaControl.failed(root.backendStatus.media_control_enabled === true)
         root.errorText = message || "Could not save media control preference"
@@ -465,6 +481,10 @@ ShellRoot {
       } else if (method === "set_mpris_player") {
         root.mprisPlayer.failed(root.backendStatus.media_mpris_enabled === true)
         root.errorText = message || "Could not save desktop media controls preference"
+        root.reload()
+      } else if (method === "set_auto_profile_reset") {
+        root.autoProfileReset.failed(root.backendStatus.profile_reset_auto === true)
+        root.errorText = message || "Could not save connection reset preference"
         root.reload()
       } else if (method === "set_proximity_lock") {
         root.proximityLock.failed(root.backendStatus.proximity_lock_enabled === true)
@@ -513,10 +533,13 @@ ShellRoot {
         root.notificationPolicyBusy = false
         root.contactsOnlyNotificationsBusy = false
         root.ancsActionsBusy = false
+        root.phoneAudioBusy = false
         if (root.mediaControl.busy)
           root.mediaControl.failed(root.backendStatus.media_control_enabled === true)
         if (root.mprisPlayer.busy)
           root.mprisPlayer.failed(root.backendStatus.media_mpris_enabled === true)
+        if (root.autoProfileReset.busy)
+          root.autoProfileReset.failed(root.backendStatus.profile_reset_auto === true)
         if (root.proximityLock.busy)
           root.proximityLock.failed(root.backendStatus.proximity_lock_enabled === true)
         if (root.callsChoice.busy)
@@ -1190,6 +1213,8 @@ ShellRoot {
             media_control_enabled: root.mediaControl.value
           }, root.backendStatus.media_mpris_enabled === undefined ? {} : {
             media_mpris_enabled: root.mprisPlayer.value
+          }, root.backendStatus.profile_reset_auto === undefined ? {} : {
+            profile_reset_auto: root.autoProfileReset.value
           }, root.backendStatus.calls_enabled === undefined ? {} : {
             calls_enabled: root.callsChoice.value
           }, root.backendStatus.call_history_enabled === undefined ? {} : {
@@ -1206,6 +1231,8 @@ ShellRoot {
                   ancsActions: root.ancsActionsBusy,
                   mediaControl: root.mediaControl.busy,
                   mprisPlayer: root.mprisPlayer.busy,
+                  phoneAudio: root.phoneAudioBusy,
+                  autoProfileReset: root.autoProfileReset.busy,
                   proximityLock: root.proximityLock.busy,
                   calls: root.callsChoice.busy,
                   callHistory: root.callHistory.busy || root.missedCallPopups.busy,
@@ -1229,8 +1256,10 @@ ShellRoot {
               root.contactsOnlyNotificationsBusy = true
             }
             if (method === "set_ancs_notification_actions") root.ancsActionsBusy = true
+            if (method === "set_phone_audio_route") root.phoneAudioBusy = true
             if (method === "set_media_control") root.mediaControl.request(args.enabled)
             if (method === "set_mpris_player") root.mprisPlayer.request(args.enabled)
+            if (method === "set_auto_profile_reset") root.autoProfileReset.request(args.enabled)
             if (method === "set_proximity_lock") root.proximityLock.request(args.enabled)
             if (method === "set_calls_enabled") root.callsChoice.request(args.enabled)
             if (method === "set_call_history") {
@@ -1532,9 +1561,7 @@ ShellRoot {
                   font.pixelSize: theme.baseFontSize
                 }
                 Text {
-                  text: newContactDelegate.modelData.address.indexOf("@") >= 0
-                    ? newContactDelegate.modelData.address
-                    : "+" + newContactDelegate.modelData.address
+                  text: newContactDelegate.modelData.address
                   textFormat: Text.PlainText
                   color: theme.muted
                   font.family: theme.fontFamily

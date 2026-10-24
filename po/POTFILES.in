@@ -1,6 +1,7 @@
 src/blueferry/conversation_state.py
 src/blueferry/onboarding.py
 src/blueferry/models.py
+src/blueferry/reconnect_view.py
 src/blueferry/phone_overview.py
 src/blueferry/ui/app.py
 src/blueferry/ui/window.py
@@ -26,6 +27,7 @@ src/blueferry/qt/qml/RecentCallsPage.qml
 src/blueferry/qt/qml/CallHistorySettings.qml
 src/blueferry/qt/qml/NowPlayingBar.qml
 src/blueferry/qt/qml/MediaControlSettings.qml
+src/blueferry/qt/qml/PhoneAudioSettings.qml
 src/blueferry/qt/qml/CallsDialog.qml
 src/blueferry/qt/qml/DialLinkDialog.qml
 src/blueferry/qt/qml/ContactPhotoSettings.qml
@@ -34,3 +36,4 @@ src/blueferry/qt/qml/PhoneCallsSettings.qml
 src/blueferry/qt/qml/PhoneStatusIndicator.qml
 src/blueferry/qt/qml/TetherSection.qml
 src/blueferry/tether_status.py
+src/blueferry/phone_audio_view.py

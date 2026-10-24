@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import stat
+import uuid
 from contextlib import contextmanager, nullcontext
 
 import pytest
@@ -223,13 +224,16 @@ def test_write_local_env_preserves_settings_and_is_private(tmp_path, monkeypatch
 
     pair_setup.write_local_env("02:00:00:00:00:01", "hci7")
 
-    assert destination.read_text() == (
-        "BLUEFERRY_MAC=02:00:00:00:00:01\n"
-        "BLUEFERRY_ADAPTER=hci7\n"
-        "BLUEFERRY_ANCS_ENABLED=true\n"
-        "BLUEFERRY_ANCS_APP_BLOCKLIST=com.example.Chat\n"
-        "BLUEFERRY_SHOW_NOTIFICATION_CONTENT=false\n"
-    )
+    lines = destination.read_text().splitlines()
+    assert lines[0] == "BLUEFERRY_MAC=02:00:00:00:00:01"
+    assert lines[1].startswith("BLUEFERRY_PROFILE_ID=")
+    assert uuid.UUID(lines[1].partition("=")[2]).version == 4
+    assert lines[2:] == [
+        "BLUEFERRY_ADAPTER=hci7",
+        "BLUEFERRY_ANCS_ENABLED=true",
+        "BLUEFERRY_ANCS_APP_BLOCKLIST=com.example.Chat",
+        "BLUEFERRY_SHOW_NOTIFICATION_CONTENT=false",
+    ]
     assert stat.S_IMODE(destination.stat().st_mode) == 0o600
 
 
@@ -252,17 +256,36 @@ def test_write_local_env_persists_compatibility_ancs_policy(tmp_path, monkeypatc
         False,
     )
 
-    assert destination.read_text() == (
-        "BLUEFERRY_MAC=02:00:00:00:00:01\n"
-        "BLUEFERRY_ADAPTER=hci0\n"
-        "BLUEFERRY_ANCS_ENABLED=false\n"
-    )
+    lines = destination.read_text().splitlines()
+    assert lines[0] == "BLUEFERRY_MAC=02:00:00:00:00:01"
+    assert lines[1].startswith("BLUEFERRY_PROFILE_ID=")
+    assert uuid.UUID(lines[1].partition("=")[2]).version == 4
+    assert lines[2:] == [
+        "BLUEFERRY_ADAPTER=hci0",
+        "BLUEFERRY_ANCS_ENABLED=false",
+    ]
+
+
+def test_write_local_env_keeps_same_profile_and_rotates_for_a_new_phone(tmp_path, monkeypatch):
+    destination = tmp_path / "local.env"
+    monkeypatch.setattr(pair_setup, "LOCAL_ENV_PATH", destination)
+
+    pair_setup.write_local_env("02:00:00:00:00:01", "hci0")
+    initial = config.read_local_env(destination)[config.PROFILE_ID_KEY]
+    pair_setup.write_local_env("02:00:00:00:00:01", "hci1")
+    assert config.read_local_env(destination)[config.PROFILE_ID_KEY] == initial
+
+    pair_setup.write_local_env("02:00:00:00:00:02", "hci1")
+    replacement = config.read_local_env(destination)[config.PROFILE_ID_KEY]
+    assert uuid.UUID(replacement).version == 4
+    assert replacement != initial
 
 
 def test_clear_local_target_preserves_unrelated_preferences(tmp_path, monkeypatch):
     destination = tmp_path / "local.env"
     destination.write_text(
         "BLUEFERRY_MAC=02:00:00:00:00:01\n"
+        "BLUEFERRY_PROFILE_ID=01234567-89ab-4cde-8fab-0123456789ab\n"
         "BLUEFERRY_ADAPTER=hci7\n"
         "BLUEFERRY_ANCS_ENABLED=false\n"
         "BLUEFERRY_HISTORY_RETENTION_DAYS=14\n"

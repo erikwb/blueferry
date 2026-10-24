@@ -757,6 +757,8 @@ def settings_window(qml_engine):
             property var devices: []
             property var contactResults: []
             property var nowPlaying: ({})
+            property var phoneAudio: ({})
+            property var reconnect: ({})
             property var compatibility: ({})
             property var onboardingCompatibility: compatibility
             property bool compatibilityLoaded: false
@@ -805,7 +807,9 @@ def settings_window(qml_engine):
             function setMirrorNotificationRemovals(enabled) { record("setMirrorNotificationRemovals", [enabled]); }
             function setCallsEnabled(enabled) { record("setCallsEnabled", [enabled]); }
             function setPhoneBatteryWarning(enabled) { record("setPhoneBatteryWarning", [enabled]); }
+            function setAutoProfileReset(enabled) { record("setAutoProfileReset", [enabled]); }
             function setMprisPlayer(enabled) { record("setMprisPlayer", [enabled]); }
+            function setPhoneAudioRoute(route) { record("setPhoneAudioRoute", [route]); }
             function setContactPhotos(enabled) { record("setContactPhotos", [enabled]); }
             function setOtpAutocopy(enabled) { record("setOtpAutocopy", [enabled]); }
             function forgetDevice(mac) { record("forgetDevice", [mac]); }
@@ -820,6 +824,7 @@ def settings_window(qml_engine):
             function answerCall(callId) { record("answerCall", [callId]); }
             function hangupCall(callId) { record("hangupCall", [callId]); }
             function hangupAllCalls() { record("hangupAllCalls", []); }
+            function reconnectPhone() { record("reconnectPhone", []); }
         }
     ''', QUrl())
     assert not component.isError(), [error.toString() for error in component.errors()]
@@ -978,6 +983,32 @@ def test_qt_warns_about_a_suspect_le_bond_only_when_the_backend_reports_it(
         BackendStatus.from_dict({"daemon": True, "le_bond_suspect": "true"}).to_dict(),
     )
     assert _evaluate(qml_engine, "testWindow.leBondSuspect()") is False
+
+
+def test_reconnect_banner_shows_only_states_that_need_attention(
+    qml_engine, settings_window,
+):
+    from PySide6.QtCore import QMetaObject
+
+    window, bridge = settings_window
+    message = _settings_object(window, "reconnectMessage")
+    bridge.setProperty("configured", True)
+    bridge.setProperty("reconnect", {
+        "available": True, "offered": True, "attention": False,
+        "hint": "Reconnecting automatically.",
+    })
+    QGuiApplication.processEvents()
+    assert message.property("visible") is False
+    bridge.setProperty("reconnect", {
+        "available": True, "offered": True, "attention": True,
+        "hint": "Waiting for the iPhone; next automatic try in 9 min.",
+    })
+    QGuiApplication.processEvents()
+    assert message.property("visible") is True
+    assert "9 min" in message.property("text")
+    action = _settings_object(window, "reconnectAction")
+    QMetaObject.invokeMethod(action, "trigger")
+    assert _evaluate(qml_engine, "testBridge.calls.map(c => c.method)")[-1] == "reconnectPhone"
 
 
 def test_optional_calls_dialog_lists_calls_and_dials_through_the_bridge(
@@ -1411,6 +1442,43 @@ def test_media_control_setting_appears_only_for_supporting_daemons(qml_engine, s
         "daemon": True, "media_control_enabled": True, "media_control_available": True,
     })
     assert "Connected" in _settings_object(window, "mediaControlStateLabel").property("text")
+
+
+def test_phone_audio_switch_appears_only_for_supporting_daemons(qml_engine, settings_window):
+    window, bridge = settings_window
+    bridge.setProperty("setupLoaded", True)
+    bridge.setProperty("status", {"daemon": True})
+    QGuiApplication.processEvents()
+    loader = _settings_object(window, "phoneAudioLoader")
+    assert loader.property("active") is False
+
+    bridge.setProperty("status", {"daemon": True, "phone_audio_route": "phone"})
+    bridge.setProperty("phoneAudio", {
+        "supported": True, "available": True, "onPc": False, "pending": False,
+        "hint": "Playing on the iPhone.", "playing": "phone", "mismatch": False,
+    })
+    QGuiApplication.processEvents()
+    assert loader.property("active") is True
+    switch = _settings_object(window, "phoneAudioSwitch")
+    assert switch.property("checked") is False and switch.property("enabled") is True
+    assert _settings_object(window, "phoneAudioHint").property("text") == "Playing on the iPhone."
+
+    assert QMetaObject.invokeMethod(switch, "toggle")
+    assert QMetaObject.invokeMethod(switch, "toggled")
+    assert _evaluate(
+        qml_engine, "testBridge.calls.filter(c => c.method === 'setPhoneAudioRoute')"
+    ) == [{"method": "setPhoneAudioRoute", "args": ["pc"]}]
+    # The switch follows the reported route, not the click.
+    assert switch.property("checked") is False
+
+    # Unavailable (policy, disconnected, pending): greyed out with the reason.
+    bridge.setProperty("phoneAudio", {
+        "supported": True, "available": False, "onPc": False, "pending": False,
+        "hint": "Available while the iPhone is connected.", "playing": "", "mismatch": False,
+    })
+    QGuiApplication.processEvents()
+    assert switch.property("enabled") is False
+    assert "connected" in _settings_object(window, "phoneAudioHint").property("text")
 
 
 def test_ancs_actions_checkbox_is_opt_in_and_gated(qml_engine, settings_window):
@@ -3699,6 +3767,82 @@ def test_battery_warning_checkbox_follows_the_daemon(qml_engine, settings_window
     ) == [{"method": "setPhoneBatteryWarning", "args": [True]}]
 
 
+def test_quickshell_sound_switch_follows_the_route_and_sends_it(qml_engine, quickshell_setup):
+    base = {"notification_policy": "all", "contacts_only_notifications": False}
+    page, calls, close = _quickshell_settings_page(qml_engine, quickshell_setup, base)
+    switch = page.findChild(QObject, "phoneAudioCheckBox")
+    hint = page.findChild(QObject, "phoneAudioHint")
+    assert switch is not None and hint is not None
+    assert switch.property("visible") is False and hint.property("visible") is False
+
+    page.setProperty("status", {
+        **base, "phone_audio_route": "unavailable",
+        "phone_audio_view": {"available": False, "hint": "Available while the iPhone is connected."},
+    })
+    QGuiApplication.processEvents()
+    assert switch.property("visible") is True and switch.property("enabled") is False
+    assert hint.property("text") == "Available while the iPhone is connected."
+
+    page.setProperty("status", {
+        **base, "phone_audio_route": "phone",
+        "phone_audio_view": {"available": True, "hint": "Playing on the iPhone."},
+    })
+    QGuiApplication.processEvents()
+    assert switch.property("checked") is False and switch.property("enabled") is True
+    page.setProperty("busy", {"phoneAudio": True})
+    QGuiApplication.processEvents()
+    assert switch.property("enabled") is False
+    page.setProperty("busy", {})
+    QGuiApplication.processEvents()
+    assert QMetaObject.invokeMethod(switch, "toggle")
+    assert QMetaObject.invokeMethod(switch, "clicked")
+    assert calls == [("set_phone_audio_route", {"route": "pc"})]
+    close()
+
+
+def test_auto_profile_reset_checkbox_follows_the_daemon(qml_engine, settings_window):
+    window, bridge = settings_window
+    bridge.setProperty("setupLoaded", True)
+    QGuiApplication.processEvents()
+    checkbox = _settings_object(window, "autoProfileResetCheckBox")
+    bridge.setProperty("status", {"daemon": True})
+    QGuiApplication.processEvents()
+    assert checkbox.property("visible") is False
+
+    bridge.setProperty("status", {"daemon": True, "profile_reset_auto": True})
+    QGuiApplication.processEvents()
+    assert checkbox.property("checked") is True
+    assert QMetaObject.invokeMethod(checkbox, "toggle")
+    assert QMetaObject.invokeMethod(checkbox, "clicked")
+    assert _evaluate(
+        qml_engine, "testBridge.calls.filter(c => c.method === 'setAutoProfileReset')"
+    ) == [{"method": "setAutoProfileReset", "args": [False]}]
+
+
+def test_quickshell_auto_profile_reset_checkbox_is_shown_when_reported(
+    qml_engine, quickshell_setup,
+):
+    base = {"notification_policy": "all", "contacts_only_notifications": False}
+    page, calls, close = _quickshell_settings_page(qml_engine, quickshell_setup, base)
+    checkbox = page.findChild(QObject, "autoProfileResetCheckBox")
+    assert checkbox is not None
+    assert checkbox.property("visible") is False
+
+    page.setProperty("status", {**base, "profile_reset_auto": True})
+    QGuiApplication.processEvents()
+    assert checkbox.property("visible") is True
+    assert checkbox.property("checked") is True
+    page.setProperty("busy", {"autoProfileReset": True})
+    QGuiApplication.processEvents()
+    assert checkbox.property("enabled") is False
+    page.setProperty("busy", {})
+    QGuiApplication.processEvents()
+    assert QMetaObject.invokeMethod(checkbox, "toggle")
+    assert QMetaObject.invokeMethod(checkbox, "clicked")
+    assert calls == [("set_auto_profile_reset", {"enabled": False})]
+    close()
+
+
 def test_quickshell_media_checkboxes_are_opt_in_and_the_player_needs_media_control(
     qml_engine, quickshell_setup,
 ):
@@ -3947,6 +4091,12 @@ def test_quickshell_avatar_renders_a_photo_and_preserves_group_fallback(qml_engi
             break
         QTest.qWait(10)
     assert avatar.property("photoReady") is True
+    avatar.setProperty("thread", {
+        "name": "Service", "is_group": False, "reply_ready": False,
+        "recipients": ["alice@example.com"],
+    })
+    QGuiApplication.processEvents()
+    assert avatar.property("photoSource") == ""
     avatar.setProperty("thread", {
         "name": "Crew", "is_group": True, "recipients": ["alice@example.com"],
     })

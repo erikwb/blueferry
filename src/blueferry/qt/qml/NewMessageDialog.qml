@@ -73,10 +73,7 @@ Kirigami.Dialog {
                 id: contactDelegate
                 required property var modelData
                 width: contactResults.width
-                text: modelData.name + "\n" + (
-                    modelData.address.indexOf("@") >= 0
-                        ? modelData.address : "+" + modelData.address
-                )
+                text: modelData.name + "\n" + modelData.address
                 contentItem: Controls.Label {
                     text: contactDelegate.text
                     textFormat: Text.PlainText

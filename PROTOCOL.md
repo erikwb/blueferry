@@ -810,6 +810,41 @@ version, and controller noted as the maintenance rule below requires:
   therefore follows the kernel ifindex, or the only interface with
   `DEVTYPE=bluetooth`, instead of trusting the reported name.
 
+
+## A2DP audio route
+
+`Media1.SetPhoneAudioRoute("pc")` calls `Device1.ConnectProfile` with the
+phone's A2DP Source UUID `0000110a-…`. In BlueZ 5.87 that reaches
+`source_connect()` (`profiles/audio/source.c`): the computer, as A2DP sink,
+discovers and configures one of the phone's stream endpoints and opens the
+AVDTP stream; it returns `AlreadyConnected` when the stream is already open.
+bluetoothd then exports `org.bluez.MediaTransport1` with the local sink UUID
+`0000110b-…`. Starting the stream is the phone's job (AVDTP START on
+playback). `"phone"` calls `DisconnectProfile`, which closes the stream
+(`avdtp_close`). The route is reported as `pc` while that transport exists.
+None of this works while BlueFerry's WirePlumber fragment strips `a2dp_sink`
+(`BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE=true`, the default).
+
+Where the sound plays is reported separately as `phone_audio_playing`: `pc`
+while `MediaTransport1.State` is `active`, otherwise the AMS playback state
+(`phone` while playing, `none` while paused, `unknown` without media
+control). Observed with a real iPhone (iOS 27, Intel AX200, BlueZ 5.87,
+2026-10-15): picking the iPhone in the AirPlay menu keeps the transport but
+moves its `State` from `active` to `idle` while AMS still reports playback;
+GetStatus then reports route `pc` with `phone_audio_playing` `phone`, and
+picking this computer again returns to `pc`.
+
+Open hardware questions:
+
+- `DisconnectProfile` on the A2DP Source UUID may take AVRCP down with the
+  stream. The AVRCP target would then disappear and media control could
+  report NowPlaying as unavailable until the phone reconnects it.
+- The iPhone can open the A2DP stream itself, so a route set to `phone` may
+  silently return to `pc` without any BlueFerry request. The status follows
+  bluetoothd, so clients see that change, but BlueFerry does not prevent it.
+- How quickly iOS suspends the stream between tracks has not been measured;
+  the two-second debounce is a guess.
+
 ## Historical HFP result
 
 HFP calling is not part of BlueFerry, but the experiment produced one useful
