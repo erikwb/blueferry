@@ -61,6 +61,9 @@ All paths are relative to `src/blueferry/` unless noted.
 | `wireplumber_policy.py` | Manages one WirePlumber fragment that keeps iPhone audio on the phone (keeps the hands-free roles when calls are enabled). |
 | `proximity_lock.py` | Opt-in lock-only desktop lock after the iPhone's bearers stay down for a grace period; lock dispatch via ScreenSaver, then logind. |
 | `media.py` | Opt-in now-playing projection, media command policy, coalesced change listeners, and the persisted opt-in (`MediaControlSettings`). |
+| `phone_audio_route.py` | Content-free iPhone A2DP route (`pc`/`phone`/`unavailable`) from BlueZ `MediaTransport1`/`Device1` over GDBus, switched through `ConnectProfile`/`DisconnectProfile`; also where the sound plays (`phone_audio_playing`) from `MediaTransport1.State` and the AMS playback state, debounced. |
+| `gio_dbus.py` | `GioBus`: a two-method seam (typed asynchronous `call`, `subscribe`) over a `Gio.DBusConnection`, with dbus-python-compatible error names; used by `phone_audio_route.py`. |
+| `phone_audio_view.py` | Toolkit-free wording of the PC/iPhone sound switch for every client. |
 | `mpris.py` | Optional MPRIS2 player (`org.mpris.MediaPlayer2.blueferry_iphone`) over `media.py`, exported on its own private session-bus connection so the MPRIS name never addresses the BlueFerry object. |
 
 ### Bluetooth transports and supervision
@@ -95,10 +98,12 @@ All paths are relative to `src/blueferry/` unless noted.
 | `ams/parsers.py` | Pure AMS wire-format parsers and command/registration builders. |
 | `ams/state.py` | `NowPlaying` projection of Player, Queue, and Track attributes. |
 | `ams/constants.py` | AMS UUIDs, identifiers, and public command names. |
-| `bearer_supervisor.py` | Connects BR/EDR first, then keeps LE connected alongside it; reports a suspected stale LE bond from persistent bursts of very short LE links. |
+| `bearer_supervisor.py` | Connects BR/EDR first, then keeps LE connected alongside it; reports a suspected stale LE bond from persistent bursts of very short LE links; damps Classic reconnects to an absent phone. |
 | `solicitation_supervisor.py` | Keeps the ANCS solicitation advertisement on air until ANCS is proven healthy. |
 | `adapter_class_supervisor.py` | Detects Class-of-Device drift and repairs it through the constrained system helper. |
 | `bluetooth_recovery.py` | Last-resort, rate-limited adapter power cycle for persistent ANCS outages. |
+| `profile_reset.py` | Detects an HFP power-up (oFono Timedout) that bluetoothd keeps stuck and asks the bearer supervisor for one rate-limited Disconnect/Connect of the device. |
+| `bluez_health.py` | Detects a bluetoothd that no longer answers D-Bus (unanswered `Peer.Ping`s, `/proc` state) and pauses BlueFerry's own Bluetooth work. |
 | `bluez_setup.py` | Adapter preparation: Class-of-Device and the ANCS solicitation advertisement. |
 | `bluetooth_capabilities.py` | Controller capability probing and packaged BlueZ activation. |
 | `bluetooth_devices.py` | Typed BlueZ device projection for setup and clients. |
@@ -172,6 +177,8 @@ All paths are relative to `src/blueferry/` unless noted.
 | `cli_call_history.py` | Opt-in `call-history` listing, enable, and disable. |
 | `cli_common.py` | Small CLI presentation helpers. |
 | `cli_proximity.py` | `proximity-lock` status, dry run, enable, and disable. |
+| `cli_reconnect.py` | `reconnect`: manual Classic reconnect that waits for the outcome. |
+| `reconnect_view.py` | Toolkit-neutral texts for the manual reconnect and rate limits (Qt banner and iPhone page, TUI key `b`, CLI). |
 | `cli_notifications.py` | `notifications open-map` rule editing. |
 | `cli_media.py` | `blueferry media` now-playing status, commands, and `enable`/`disable`. |
 | `plugin_api/` | Plugin contract: manifest parser and discovery, settings schema (`config.py`, with groups, a pre-check and `ShowIf`), `TestConfig`/`ConfigLogin` replies (`config_flow.py`), surfaces (`card`, `share`, content-free `notify`) with checked `open_uri`, the standard log file, a validating `PluginClient`, `PluginService`/`PhotosService` bases (bounded worker pool, per-caller budget) and a test harness (`FakeHost`). Imports nothing else from `blueferry`. A symlink to `plugin-api/src/blueferry/plugin_api`, which `plugin-api/pyproject.toml` also builds as the distribution `blueferry-plugin-api` for plugins in their own repositories. |
@@ -185,6 +192,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `photos_view.py`, `cli_photos.py` | Client side of the `photos` capability: plugin lookup, loads for worker threads, plain-text labels; `blueferry photos`. |
 | `cli_plugins.py` | `blueferry plugins …` and `blueferry plugins ALIAS …` (exec of the plugin's own CLI; refused for a disabled plugin). |
 | `desktop_open.py` | Opens a checked URI with the desktop's default handler for the CLIs. |
+| `cli_audio.py` | `blueferry audio [status\|pc\|phone]`. |
 | `cli_notification_actions.py` | `notification-actions` status, enable, and disable for the opt-in iPhone action buttons. |
 | `cli_calls.py` | Optional `blueferry calls` commands over `Calls1` and `blueferry phone-status` (battery, signal, network from `GetStatus`). |
 | `cli_otp.py` | `blueferry otp status`, `enable`, `disable` and `check` for one-time code auto-copy (`otp-status` and `otp-check` stay as aliases). |
@@ -497,7 +505,56 @@ A change to these rules has to be made in both places.
   from `Bearer.LE1.Disconnected` and `Bearer.LE1` `Connected` property
   changes as they happen, so ANCS, AMS and the battery client also see a
   drop that is back before the next five-second poll; polling stays as the
-  fallback.
+  fallback. Classic reconnects back off exponentially (up to 10 min without
+  a live LE link). After three failed
+  attempts with no sign of the phone (no LE link, no RSSI from a discovery in
+  the last two minutes), or when BlueZ reports that the phone closed the
+  Classic link itself (`Bearer.BREDR1.Disconnected` with `Reason.Remote`,
+  e.g. Bluetooth switched off on the iPhone; immediately when LE is known to
+  be down and solicitation can bring the phone back, otherwise after one
+  failed attempt), the supervisor stops paging and probes only every 10 min
+  until an inbound link, LE or a discovery sighting shows the phone again.
+  On 2026-10-06 (kernel 7.2.8) a BR/EDR reconnect after Bluetooth was
+  switched off on the iPhone coincided with bluetoothd stuck in D state in
+  `l2cap_chan_connect` (via `rfcomm_dlc_open`, kernel hung-task trace), so
+  fewer pages matter.
+  `Messages1.ReconnectPhone()` (own `reconnect` rate bucket, 6/min) clears
+  the backoff and pages once on the next main-loop iteration; it never starts
+  a second attempt while one is running. GetStatus reports
+  `phone_reconnect_state` (`connected`/`connecting`/`waiting`/`unreachable`),
+  `phone_reconnect_paused` and `phone_reconnect_next_in_sec`;
+  `reconnect_view.py` turns them into the same texts for every client.
+- **Profile reset:** `profile_reset` counts a symptom seen on 2026-10-06:
+  oFono's `Modem.Powered=true` failing with `org.ofono.Error.Timedout` twice
+  in a row with BR/EDR up (bluetoothd's own hfp plugin held the RFCOMM
+  channel; doctor recommends `-P hfp`). It then asks
+  `BearerSupervisor.reset_profiles()` for `Device1.Disconnect`, 3 s pause,
+  `Device1.Connect`; the supervisor's health tick and the manual reconnect
+  stand aside meanwhile. Only with BR/EDR up, never while bluetoothd is
+  unresponsive, during a call (oFono reports one) or during the adapter
+  recovery; at most one automatic reset per 10 min, doubling up to 60 min
+  until a profile works again. The symptom only exists with the opt-in
+  calls, so nothing is reset without them. Opt-out at runtime through
+  `Messages1.SetAutoProfileReset` (saved as `auto_profile_reset` in
+  settings.json, which wins over `BLUEFERRY_AUTO_PROFILE_RESET=false`). While
+  a profile stays stuck on a live link, `ReconnectPhone` performs the reset
+  and answers `profile-reset`, or `call-active` during a call.
+  GetStatus: `profile_reset_auto`, `profile_reset_suggested` (reason token),
+  `profile_reset_last` (`hfp_powered_timeout`/`manual`),
+  `profile_reset_last_at` (Unix time) and `profile_reset_last_auto`. With calls on,
+  `blueferry doctor` warns when oFono runs next to a bluetoothd that loads
+  its hfp plugin (`-E` without `-P hfp`, read from `/proc`) and shows the
+  reset setting, a stuck profile and the last reset.
+- **BlueZ health:** `bluez_health` marks bluetoothd unresponsive after two
+  unanswered asynchronous `Peer.Ping`s 15 s apart (pinged every 30 s; a
+  NoReply from a bearer read only triggers an early ping). While
+  unresponsive the bearer supervisor and the power-cycle recovery stay idle,
+  `ReconnectPhone` answers `bluez-unresponsive`/`bluez-kernel`, GetStatus
+  carries `bluez_unresponsive` and `bluez_unresponsive_reason` (`kernel` when
+  `/proc/<pid>/status` of the `org.bluez` owner shows state D), one WARNING is
+  logged and dbus-python's "Introspect error … NoReply" lines are throttled
+  to one per 10 min. A successful ping or a new `org.bluez` owner resumes
+  normal operation.
 - **Media (opt-in):** `ams/client` never dials. It follows the bearer
   supervisor's LE observations and BlueZ owner changes, subscribes after the
   link settles, and resets without `StopNotify` on loss. `media` owns the

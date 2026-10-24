@@ -398,3 +398,54 @@ def test_set_phone_battery_warning_round_trips_on_messages1() -> None:
         bus.release_name(name)
 
     assert (bool(on), bool(off), saved) == (True, False, [True, False])
+
+
+def test_set_auto_profile_reset_round_trips_on_messages1() -> None:
+    saved = []
+
+    def configure(enabled):
+        saved.append(enabled)
+        return {"profile_reset_auto": enabled}
+
+    bus = dbus.SessionBus()
+    name = f"{BUS_NAME}.Callsr{os.getpid()}n{next(_service_ids)}"
+    bus_name = dbus.service.BusName(name, bus=bus, do_not_queue=True)
+    service = MessagesService(
+        bus_name, _Sessions(),
+        BackendDependencies(
+            status_provider=lambda: {"initializing": False},
+            set_auto_profile_reset=configure,
+        ),
+    )
+    try:
+        off = _call(name, MESSAGES_IFACE, "SetAutoProfileReset", False)["value"]
+        on = _call(name, MESSAGES_IFACE, "SetAutoProfileReset", True)["value"]
+    finally:
+        service.close()
+        service.remove_from_connection()
+        bus.release_name(name)
+
+    assert (bool(off), bool(on), saved) == (False, True, [False, True])
+
+
+def test_set_auto_profile_reset_maps_errors() -> None:
+    from types import SimpleNamespace
+
+    from blueferry.backend_operations import BackendOperations
+    from blueferry.errors import NotReadyError
+
+    sessions = SimpleNamespace(map=None, pbap=None)
+    with pytest.raises(NotReadyError):
+        BackendOperations(sessions, BackendDependencies()).set_auto_profile_reset(True)  # type: ignore[arg-type]
+
+    def failing(error):
+        def configure(_enabled):
+            raise error
+        return BackendOperations(
+            sessions, BackendDependencies(set_auto_profile_reset=configure),  # type: ignore[arg-type]
+        )
+
+    with pytest.raises(InvalidArgumentsError):
+        failing(ValueError("bad")).set_auto_profile_reset(True)
+    with pytest.raises(NotReadyError):
+        failing(OSError("disk full")).set_auto_profile_reset(True)

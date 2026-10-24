@@ -29,6 +29,9 @@ one. Discovery only parses files; it never starts anything. A manifest is
 ignored, with a reason the clients can show (`blueferry plugins list`), when
 it is malformed, larger than 16 KiB, not owned by the user or root, writable
 by group or others, or written for an unsupported `ApiVersion`.
+Distinct IDs must also have distinct derived D-Bus names: `io.example.a-b`
+and `io.example.a_b` cannot coexist. Discovery ignores both conflicting IDs
+and reports why; installing a conflicting ID fails before running plugin code.
 
 ## Manifest
 
@@ -96,7 +99,7 @@ characters).
 | `HelpUrl` | "Where do I find this?" link under the field: an `https://` URL (≤ 300), opened in the browser through the desktop launcher. |
 | `Group` | Section name, `[a-z][a-z0-9_]{0,31}`. Built in without a declaration: `account` ("Account"), `options` ("Options"), `advanced` ("Advanced", folded). Others need a `[ConfigGroup <name>]` section. |
 | `Advanced` | `true`: short for `Group=advanced`. |
-| `Pattern` | Regular expression the whole value must match (`string`, `url`, `secret`; ≤ 200). Only plain syntax: no `(?…)` groups, no backreferences, no quantified group holding a quantifier (`(a+)+`), so it cannot hang the form. |
+| `Pattern` | Regular expression the whole value must match (`string`, `url`, `secret`; ≤ 200). Only plain syntax: no `(?…)` groups, no backreferences, no repeated group holding a quantifier (`(a+)+`, even through nested groups). Optional groups remain supported. Counted repeats are at most 4096, the maximum field length. The SDK uses `regex` in Version 0 mode with a 20 ms matching deadline; exceeding it is a validation error. |
 | `ErrorText` | The message when `Pattern`, `Min` or `Max` fails, e.g. "Use 10 to 100." (≤ 160). Without it clients say "does not have the expected format" or "must be at least …". |
 | `ShowIf` | `<key>=<value>`: show the field only while an *earlier*, non-secret setting has this value (`true`/`false` for a `bool`, one of the choices for a `choice`). A hidden field is not required, and a field that depends on a hidden field is hidden too. |
 
@@ -499,7 +502,10 @@ and `blueferry plugins log ID [--lines N] [--path]`.
 ## Security
 
 - Clients use the **session bus** only and refuse a plugin whose bus name is
-  owned by a different Unix user.
+  owned by a different Unix user. The SDK transport activates the service
+  without a plugin-method payload, checks its unique owner's Unix user,
+  then sends the call to that exact connection. Changing the well-known
+  name's owner cannot redirect settings, credentials, files or actions.
 - Plugin data is **untrusted**: replies over 512 KiB are rejected, JSON is
   validated field by field, surface ids match `[A-Za-z0-9_.-]{1,64}`, text
   is shown as plain text only (escaped where a Qt control would read it as
@@ -632,7 +638,9 @@ The Qt settings (Plugins) offer the same.
 - Install, update, remove, enable/disable and index changes take a lock
   (`~/.local/share/blueferry/plugins/.lock`); a second one, e.g. from the
   CLI while the Qt settings install, waits a few seconds and then stops
-  with a message.
+  with a message. Commit also rechecks the installed record after the user
+  confirms: if another client has installed, updated, reinstalled or removed
+  that plugin in the meantime, preparation and confirmation must be repeated.
 - A manifest with the same `Id` that BlueFerry did not install (for example
   from an earlier `setup` command) is replaced; the summary says so.
 - `update` compares the pinned ref with the newest tag (or the branch HEAD

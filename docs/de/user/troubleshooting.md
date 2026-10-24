@@ -17,6 +17,18 @@ Nutze **Sync Contacts** im Client oder `blueferry contacts-sync`. Prüfe, dass
 **Kontakte synchronisieren** (englisch: **Sync Contacts**) in den
 Bluetooth-Einstellungen des iPhones für den Rechner eingeschaltet ist.
 
+Wenn eine lokale Nummer wie die australische `0412345678` nicht zur Antwort
+von `+61412345678` passt, prüfe die Nummernregion. BlueFerry verwendet das
+Land aus `LC_ALL`, danach `LC_TELEPHONE`, danach `LANG`. Zum Überschreiben
+trage `BLUEFERRY_PHONE_REGION=AU` (einen zweistelligen Ländercode) in
+`~/.config/blueferry/local.env` ein und starte den Dienst mit
+`systemctl --user restart blueferry` neu. Ohne erkannte Region nimmt BlueFerry
+kein Land für lokale Nummern an.
+
+Wenn eine frühere Version das `+` aus Kontakten entfernt hat, führe nach dem
+Update `blueferry contacts-sync` aus. Nur ein erneuter Abruf vom iPhone kann
+die ursprünglichen internationalen Vorwahlen im Cache wiederherstellen.
+
 ## Die Schalter erscheinen nicht auf dem iPhone
 
 Die Schalter **Mitteilungen zu Nachrichten anzeigen** und
@@ -113,6 +125,10 @@ ihn auf der
 (`linux-bluetooth@vger.kernel.org`), mit Kernel-Version, Adaptermodell und
 der Ausgabe von `dmesg` und `sudo cat /proc/<pid>/stack`, erfasst vor dem
 Neustart.
+
+BlueFerry erkennt so einen Hänger selbst, pausiert seine eigene
+Bluetooth-Arbeit und meldet das in jedem Client; siehe
+[Neu verbinden und Selbstheilung](reconnect.md).
 
 ## Mitteilungen funktionierten, jetzt nicht mehr
 

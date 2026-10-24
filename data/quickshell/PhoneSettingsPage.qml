@@ -415,6 +415,50 @@ Rectangle {
           wrapMode: Text.Wrap
           text: "Like any desktop music player, every application in your session can then read the title, artist and album."
         }
+        // Only daemons that report the audio-route keys can switch the sound.
+        // An action, not a saved preference: it follows the reported route.
+        FerrySectionLabel {
+          ferryTheme: root.theme
+          visible: root.status.phone_audio_route !== undefined
+          text: "iPhone sound"
+        }
+        FerryCheckBox {
+          objectName: "phoneAudioCheckBox"
+          ferryTheme: root.theme
+          readonly property var view: root.status.phone_audio_view || ({})
+          visible: root.status.phone_audio_route !== undefined
+          text: "Play the iPhone's sound on this computer"
+          checked: root.status.phone_audio_route === "pc"
+          enabled: root.setup.configured && !root.busy.phoneAudio && view.available === true
+          Accessible.description: phoneAudioHint.text
+          onClicked: root.operationRequested("set_phone_audio_route", {route: checked ? "pc" : "phone"})
+        }
+        FerryLabel {
+          id: phoneAudioHint
+          objectName: "phoneAudioHint"
+          ferryTheme: root.theme
+          visible: root.status.phone_audio_route !== undefined && text !== ""
+          Layout.fillWidth: true
+          wrapMode: Text.Wrap
+          text: (root.status.phone_audio_view || {}).hint || ""
+        }
+
+        // Only daemons with the profile reset report its state.
+        FerrySectionLabel {
+          ferryTheme: root.theme
+          visible: root.status.profile_reset_auto !== undefined
+          text: "iPhone connection"
+        }
+        FerryCheckBox {
+          objectName: "autoProfileResetCheckBox"
+          ferryTheme: root.theme
+          visible: root.status.profile_reset_auto !== undefined
+          text: "Reset a stuck iPhone connection automatically"
+          checked: root.status.profile_reset_auto === true
+          enabled: root.setup.configured && !root.busy.autoProfileReset
+          Accessible.description: "Briefly disconnects the iPhone when call audio stays stuck, at most every ten minutes."
+          onClicked: root.operationRequested("set_auto_profile_reset", {enabled: checked})
+        }
         // Only daemons that report the away-lock keys support the setting.
         FerrySectionLabel {
           ferryTheme: root.theme

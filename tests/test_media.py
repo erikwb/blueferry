@@ -889,3 +889,33 @@ def test_mpris_preference_is_seeded_and_saved(tmp_path, monkeypatch) -> None:
     assert MediaControlSettings(path).mpris is False
     with pytest.raises(ValueError):
         MediaControlSettings(path).set_mpris("yes")  # type: ignore[arg-type]
+
+
+def test_daemon_feeds_the_ams_playback_state_to_the_audio_route(make_daemon) -> None:
+    from blueferry.ams.constants import PlaybackState
+
+    instance = make_daemon()
+    assert instance.phone_audio_route._media_state == instance._iphone_playback_state
+    instance.media = None
+    assert instance._iphone_playback_state() == "unknown"
+    state = SimpleNamespace(playback_state=None, playing=False)
+    instance.media = SimpleNamespace(available=False, state=state)
+    assert instance._iphone_playback_state() == "unknown"
+    instance.media.available = True
+    assert instance._iphone_playback_state() == "unknown"
+    state.playback_state, state.playing = PlaybackState.Paused, False
+    assert instance._iphone_playback_state() == "paused"
+    state.playback_state, state.playing = PlaybackState.Playing, True
+    assert instance._iphone_playback_state() == "playing"
+
+
+def test_published_media_notifies_the_audio_route(make_daemon, monkeypatch) -> None:
+    instance = make_daemon()
+    listeners: list = []
+    instance.media = SimpleNamespace(add_listener=listeners.append)
+    instance._dbus_service = SimpleNamespace(emit_now_playing_changed=lambda: None)
+    monkeypatch.setattr(type(instance.media_settings), "mpris", property(lambda _self: False))
+    instance._publish_media()
+    assert instance.phone_audio_route.media_changed in listeners
+    instance._dbus_service = None
+    instance.media = None
