@@ -13,7 +13,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from blueferry.plugin_api import API_MINOR, MAX_REPLY_BYTES
-from blueferry.plugin_api.client import PluginClient, PluginError
+from blueferry.plugin_api.client import DBusTransport, PluginClient, PluginError
 from blueferry.plugin_api.manifest import (
     ManifestError,
     bus_name_for,
@@ -90,6 +90,82 @@ def test_manifest_parser_only_raises_manifest_errors(text) -> None:
 
 def test_bus_name_replaces_hyphens() -> None:
     assert bus_name_for("io.a.b-c") == "io.weirdware.BlueFerry.Plugin.io.a.b_c"
+
+
+def test_discovery_rejects_both_colliding_ids_but_preserves_id_shadowing(tmp_path):
+    user, system = tmp_path / "user", tmp_path / "system"
+    _write(user, "one.plugin", VALID)
+    _write(system, "one.plugin", VALID)
+    _write(system, "two.plugin", VALID.replace("immich-photos", "immich_photos"))
+    found = discover([user, system])
+    assert found.plugins == ()
+    assert len(found.conflicts) == 2
+    assert len(found.ignored) == 2
+    assert all("same D-Bus name" in reason for _, reason in found.ignored)
+
+
+@pytest.mark.parametrize("state", [[], {}, None, 1, True])
+def test_malformed_status_is_a_plugin_error(state):
+    client = PluginClient(manifest(), transport=ScriptedTransport({
+        "Status": json.dumps({"state": state}),
+    }))
+    with pytest.raises(PluginError, match="invalid status"):
+        client.status()
+
+
+@pytest.mark.parametrize("kind", [[], {}])
+def test_malformed_photo_type_uses_the_documented_fallback(kind):
+    client = PluginClient(manifest(), transport=ScriptedTransport({
+        "ListRecent": json.dumps([{"id": "photo", "type": kind}]),
+    }))
+    assert client.list_recent(1)[0].type == "other"
+
+
+@pytest.mark.parametrize("method", ["SetConfig", "TestConfig"])
+def test_credentials_are_not_sent_to_foreign_owner(method):
+    plugin = manifest(api_version="1.3", extra="ConfigTest=true\n\n"
+                      "[Config token]\nLabel=Token\nType=secret\n")
+    transport = ScriptedTransport({method: '{"ok": true}'}, uid=os.getuid() + 1)
+    client = PluginClient(plugin, transport=transport)
+    with pytest.raises(PluginError, match="different user"):
+        (client.set_config if method == "SetConfig" else client.test_config)({"token": "secret"})
+    assert transport.calls == []
+
+
+@pytest.mark.parametrize("foreign", [False, True])
+def test_dbus_transport_checks_activated_unique_owner_before_payload(foreign):
+    destinations = []
+    payloads = []
+
+    class Service:
+        def SetConfig(self, *args, **kwargs):
+            payloads.append(args)
+            return '{"ok": true}'
+
+    class Bus:
+        # Activation returns the connection that just acquired the name.
+        def activate_name_owner(self, name):
+            assert name == "io.example.plugin"
+            return ":1.original"
+
+        def get_unix_user(self, name):
+            # The well-known name has changed hands by the time it is used.
+            assert name == ":1.original"
+            return os.getuid() + int(foreign)
+
+        def get_object(self, name, path, introspect):
+            destinations.append(name)
+            assert name == ":1.original"
+            return Service()
+
+    transport = DBusTransport(Bus())
+    if foreign:
+        with pytest.raises(PluginError, match="different user"):
+            transport.call("io.example.plugin", "interface", "SetConfig", "s", ("secret",), 1)
+        assert destinations == payloads == []
+    else:
+        transport.call("io.example.plugin", "interface", "SetConfig", "s", ("secret",), 1)
+        assert destinations == [":1.original"] and payloads == [("secret",)]
 
 
 def _write(directory: Path, name: str, text: str, mode: int = 0o644) -> Path:

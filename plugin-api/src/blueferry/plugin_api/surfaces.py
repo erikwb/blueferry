@@ -270,7 +270,7 @@ def _action(entry: object) -> Action | None:
     send_to = entry.get("send_to")
     return Action(
         id=str(entry["id"]), label=label, icon=icon_name(entry.get("icon")) or None,
-        kind=str(kind) if kind in ACTION_KINDS else "button",
+        kind=kind if isinstance(kind, str) and kind in ACTION_KINDS else "button",
         send_to=str(send_to) if valid_id(send_to) else None,
     )
 
