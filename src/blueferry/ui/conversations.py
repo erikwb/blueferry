@@ -504,10 +504,9 @@ class ConversationsPage(Gtk.Box):
                         ellipsize=_ELLIPSIZE_END,
                     )
                 )
-                display_address = address if "@" in address else f"+{address}"
                 item.append(
                     Gtk.Label(
-                        label=display_address,
+                        label=address,
                         xalign=0,
                         ellipsize=_ELLIPSIZE_END,
                         css_classes=["dim-label", "caption"],
@@ -715,7 +714,8 @@ class ConversationsPage(Gtk.Box):
             image.clear()
             return
         address = (
-            thread.recipients[0] if not thread.is_group and len(thread.recipients) == 1 else ""
+            thread.recipients[0]
+            if thread.reply_ready and not thread.is_group and len(thread.recipients) == 1 else ""
         )
         texture = self._avatars.get(address)
         if texture is not None:

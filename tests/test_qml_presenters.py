@@ -766,6 +766,7 @@ def settings_window(qml_engine):
             property var callHistoryRows: ({})
             property var features: ({})
             property var doctor: ({})
+            property var reconnect: ({})
             property var compatibility: ({})
             property var onboardingCompatibility: compatibility
             property bool compatibilityLoaded: false
@@ -814,6 +815,7 @@ def settings_window(qml_engine):
             function setMirrorNotificationRemovals(enabled) { record("setMirrorNotificationRemovals", [enabled]); }
             function setCallsEnabled(enabled) { record("setCallsEnabled", [enabled]); }
             function setPhoneBatteryWarning(enabled) { record("setPhoneBatteryWarning", [enabled]); }
+            function setAutoProfileReset(enabled) { record("setAutoProfileReset", [enabled]); }
             function setMprisPlayer(enabled) { record("setMprisPlayer", [enabled]); }
             function setPhoneAudioRoute(route) { record("setPhoneAudioRoute", [route]); }
             function swapCalls() { record("swapCalls", []); }
@@ -841,6 +843,7 @@ def settings_window(qml_engine):
             function answerCall(callId) { record("answerCall", [callId]); }
             function hangupCall(callId) { record("hangupCall", [callId]); }
             function hangupAllCalls() { record("hangupAllCalls", []); }
+            function reconnectPhone() { record("reconnectPhone", []); }
         }
     ''', QUrl())
     assert not component.isError(), [error.toString() for error in component.errors()]
@@ -1042,6 +1045,32 @@ def test_qt_warns_about_a_suspect_le_bond_only_when_the_backend_reports_it(
         BackendStatus.from_dict({"daemon": True, "le_bond_suspect": "true"}).to_dict(),
     )
     assert _evaluate(qml_engine, "testWindow.leBondSuspect()") is False
+
+
+def test_reconnect_banner_shows_only_states_that_need_attention(
+    qml_engine, settings_window,
+):
+    from PySide6.QtCore import QMetaObject
+
+    window, bridge = settings_window
+    message = _settings_object(window, "reconnectMessage")
+    bridge.setProperty("configured", True)
+    bridge.setProperty("reconnect", {
+        "available": True, "offered": True, "attention": False,
+        "hint": "Reconnecting automatically.",
+    })
+    QGuiApplication.processEvents()
+    assert message.property("visible") is False
+    bridge.setProperty("reconnect", {
+        "available": True, "offered": True, "attention": True,
+        "hint": "Waiting for the iPhone; next automatic try in 9 min.",
+    })
+    QGuiApplication.processEvents()
+    assert message.property("visible") is True
+    assert "9 min" in message.property("text")
+    action = _settings_object(window, "reconnectAction")
+    QMetaObject.invokeMethod(action, "trigger")
+    assert _evaluate(qml_engine, "testBridge.calls.map(c => c.method)")[-1] == "reconnectPhone"
 
 
 
@@ -3793,6 +3822,49 @@ def test_quickshell_sound_switch_follows_the_route_and_sends_it(qml_engine, quic
     close()
 
 
+def test_auto_profile_reset_checkbox_follows_the_daemon(qml_engine, settings_window):
+    window, bridge = settings_window
+    bridge.setProperty("setupLoaded", True)
+    QGuiApplication.processEvents()
+    checkbox = _settings_object(window, "autoProfileResetCheckBox")
+    bridge.setProperty("status", {"daemon": True})
+    QGuiApplication.processEvents()
+    assert checkbox.property("visible") is False
+
+    bridge.setProperty("status", {"daemon": True, "profile_reset_auto": True})
+    QGuiApplication.processEvents()
+    assert checkbox.property("checked") is True
+    assert QMetaObject.invokeMethod(checkbox, "toggle")
+    assert QMetaObject.invokeMethod(checkbox, "clicked")
+    assert _evaluate(
+        qml_engine, "testBridge.calls.filter(c => c.method === 'setAutoProfileReset')"
+    ) == [{"method": "setAutoProfileReset", "args": [False]}]
+
+
+def test_quickshell_auto_profile_reset_checkbox_is_shown_when_reported(
+    qml_engine, quickshell_setup,
+):
+    base = {"notification_policy": "all", "contacts_only_notifications": False}
+    page, calls, close = _quickshell_settings_page(qml_engine, quickshell_setup, base)
+    checkbox = page.findChild(QObject, "autoProfileResetCheckBox")
+    assert checkbox is not None
+    assert checkbox.property("visible") is False
+
+    page.setProperty("status", {**base, "profile_reset_auto": True})
+    QGuiApplication.processEvents()
+    assert checkbox.property("visible") is True
+    assert checkbox.property("checked") is True
+    page.setProperty("busy", {"autoProfileReset": True})
+    QGuiApplication.processEvents()
+    assert checkbox.property("enabled") is False
+    page.setProperty("busy", {})
+    QGuiApplication.processEvents()
+    assert QMetaObject.invokeMethod(checkbox, "toggle")
+    assert QMetaObject.invokeMethod(checkbox, "clicked")
+    assert calls == [("set_auto_profile_reset", {"enabled": False})]
+    close()
+
+
 def test_quickshell_media_checkboxes_are_opt_in_and_the_player_needs_media_control(
     qml_engine, quickshell_setup,
 ):
@@ -4041,6 +4113,12 @@ def test_quickshell_avatar_renders_a_photo_and_preserves_group_fallback(qml_engi
             break
         QTest.qWait(10)
     assert avatar.property("photoReady") is True
+    avatar.setProperty("thread", {
+        "name": "Service", "is_group": False, "reply_ready": False,
+        "recipients": ["alice@example.com"],
+    })
+    QGuiApplication.processEvents()
+    assert avatar.property("photoSource") == ""
     avatar.setProperty("thread", {
         "name": "Crew", "is_group": True, "recipients": ["alice@example.com"],
     })

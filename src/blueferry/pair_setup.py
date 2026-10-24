@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+import uuid
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
@@ -30,7 +31,7 @@ from blueferry.pairing_policy import (
     resolve_pairing_policy,
 )
 from blueferry.pairing_types import PairingAttempt, PairingOutcome, PairingTransports
-from blueferry.private_files import atomic_write_private_text, read_private_text
+from blueferry.private_files import atomic_write_private_text, private_file_lock, read_private_text
 from blueferry.service_manager import backend_service_manager
 from blueferry.setup_verification import clear_setup_verification
 from blueferry.wireplumber_policy import WirePlumberPhoneAudioPolicy
@@ -1776,19 +1777,22 @@ def prepare_target_replacement(
 
 def clear_local_target() -> Path:
     """Forget the selected phone without discarding unrelated preferences."""
-    existing = config.read_local_env(LOCAL_ENV_PATH)
-    existing.pop("BLUEFERRY_MAC", None)
-    existing.pop("BLUEFERRY_ADAPTER", None)
-    existing.pop("BLUEFERRY_ANCS_ENABLED", None)
-    content = "".join(
-        f"{key}={existing[key]}\n" for key in sorted(config.LOCAL_ENV_KEYS) if key in existing
-    )
     try:
-        atomic_write_private_text(
-            LOCAL_ENV_PATH,
-            content,
-            maximum_bytes=config.MAX_CONFIG_FILE_BYTES,
-        )
+        with private_file_lock(LOCAL_ENV_PATH):
+            existing = config.read_local_env(LOCAL_ENV_PATH)
+            existing.pop("BLUEFERRY_MAC", None)
+            existing.pop(config.PROFILE_ID_KEY, None)
+            existing.pop("BLUEFERRY_ADAPTER", None)
+            existing.pop("BLUEFERRY_ANCS_ENABLED", None)
+            content = "".join(
+                f"{key}={existing[key]}\n"
+                for key in sorted(config.LOCAL_ENV_KEYS) if key in existing
+            )
+            atomic_write_private_text(
+                LOCAL_ENV_PATH,
+                content,
+                maximum_bytes=config.MAX_CONFIG_FILE_BYTES,
+            )
     except (OSError, ValueError) as error:
         raise PairingError(f"could not clear private configuration: {error}") from error
     try:
@@ -1808,20 +1812,32 @@ def write_local_env(
         raise PairingError("invalid Bluetooth device address")
     if adapter is not None and not config.is_valid_adapter(adapter):
         raise PairingError("invalid Bluetooth adapter name")
-    existing = config.read_local_env(LOCAL_ENV_PATH)
-    existing["BLUEFERRY_MAC"] = normalized_mac
-    if adapter:
-        existing["BLUEFERRY_ADAPTER"] = adapter
-    existing["BLUEFERRY_ANCS_ENABLED"] = "true" if ancs_enabled else "false"
-    ordered = ["BLUEFERRY_MAC", "BLUEFERRY_ADAPTER", "BLUEFERRY_ANCS_ENABLED"]
-    ordered.extend(sorted(config.LOCAL_ENV_KEYS - set(ordered)))
-    content = "".join(f"{key}={existing[key]}\n" for key in ordered if key in existing)
     try:
-        atomic_write_private_text(
-            LOCAL_ENV_PATH,
-            content,
-            maximum_bytes=config.MAX_CONFIG_FILE_BYTES,
-        )
+        with private_file_lock(LOCAL_ENV_PATH):
+            existing = config.read_local_env(LOCAL_ENV_PATH)
+            old_mac = existing.get("BLUEFERRY_MAC", "").strip().upper()
+            old_profile_id = existing.get(config.PROFILE_ID_KEY, "")
+            existing["BLUEFERRY_MAC"] = normalized_mac
+            if old_mac == normalized_mac and config.is_valid_profile_id(old_profile_id):
+                existing[config.PROFILE_ID_KEY] = old_profile_id
+            else:
+                existing[config.PROFILE_ID_KEY] = str(uuid.uuid4())
+            if adapter:
+                existing["BLUEFERRY_ADAPTER"] = adapter
+            existing["BLUEFERRY_ANCS_ENABLED"] = "true" if ancs_enabled else "false"
+            ordered = [
+                "BLUEFERRY_MAC",
+                config.PROFILE_ID_KEY,
+                "BLUEFERRY_ADAPTER",
+                "BLUEFERRY_ANCS_ENABLED",
+            ]
+            ordered.extend(sorted(config.LOCAL_ENV_KEYS - set(ordered)))
+            content = "".join(f"{key}={existing[key]}\n" for key in ordered if key in existing)
+            atomic_write_private_text(
+                LOCAL_ENV_PATH,
+                content,
+                maximum_bytes=config.MAX_CONFIG_FILE_BYTES,
+            )
     except (OSError, ValueError) as error:
         raise PairingError(f"could not save private configuration: {error}") from error
     return LOCAL_ENV_PATH

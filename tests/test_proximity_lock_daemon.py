@@ -382,6 +382,7 @@ def test_daemon_constructor_wiring_locks_through_the_real_dispatcher(
     instance.bearers = SimpleNamespace(
         bredr_state=None, le_state=None, legacy_connected=False,
         stop=lambda: None, snapshot=dict,
+        reconnect_snapshot=lambda: {"state": "waiting", "paused": False, "next_in_sec": 0},
     )
 
     def link(bredr):
