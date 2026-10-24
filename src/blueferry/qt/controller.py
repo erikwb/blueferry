@@ -27,6 +27,7 @@ from blueferry.conversation_state import (
     ReplyDisposition,
     fetch_conversation_snapshot,
 )
+from blueferry.doctor_report import DoctorReport, run_doctor
 from blueferry.i18n import _
 from blueferry.models import BackendStatus, CallsSnapshot
 from blueferry.onboarding import OnboardingState, effective_compatibility
@@ -77,6 +78,8 @@ class BridgeController(QObject):
     avatarsChanged = Signal()
     callHistoryChanged = Signal()
     nowPlayingChanged = Signal()
+    featuresChanged = Signal()
+    doctorChanged = Signal()
     phoneCallsChanged = Signal()
     # (number, problem) of a clicked tel:/callto: link to confirm; see
     # tel_links.dial_request. Never dials by itself.
@@ -90,6 +93,7 @@ class BridgeController(QObject):
         subscribe: bool = True,
         autostart: bool = True,
         parent: QObject | None = None,
+        doctor: Callable[[], DoctorReport] = run_doctor,
     ) -> None:
         super().__init__(parent)
         self._backend = backend or BackendClient()
@@ -107,6 +111,16 @@ class BridgeController(QObject):
         self._status: dict = {}
         self._notification_open_map: list[dict] = []
         self._devices: list[dict] = []
+        # Settings: local.env switches (Messages1.GetFeatures) and the doctor
+        # report; the doctor runs a local program on its own pool so the
+        # D-Bus worker stays free.
+        self._features: dict = {"loaded": False, "available": False, "items": {},
+                                "notice": "", "error": ""}
+        self._doctor_runner = doctor
+        self._doctor: dict = {"running": False, "ran": False, "ok": False,
+                              "warnings": False, "text": ""}
+        self._local_pool = QThreadPool(self)
+        self._local_pool.setMaxThreadCount(1)
         self._bluetooth_active = False
         self._busy_count = 0
         self._error_text = ""
@@ -1070,10 +1084,78 @@ class BridgeController(QObject):
 
     @Slot()
     def restartBackend(self) -> None:
-        self._run(
-            restart_backend,
-            lambda _value: QTimer.singleShot(800, self.refresh),
-        )
+        def restarted(_value: object) -> None:
+            self._features = {**self._features, "notice": ""}
+            QTimer.singleShot(800, self.refresh)
+            QTimer.singleShot(1200, self.loadFeatures)
+
+        self._run(restart_backend, restarted)
+
+    # ---- settings: feature switches and the doctor report ------------------
+
+    @Property("QVariantMap", notify=featuresChanged)
+    def features(self):
+        return self._features
+
+    @Slot()
+    def loadFeatures(self) -> None:
+        def done(value: object) -> None:
+            items = value if isinstance(value, dict) else {}
+            self._features = {**self._features, "loaded": True, "available": True,
+                              "items": items, "error": ""}
+            self.featuresChanged.emit()
+
+        def failed(message: str) -> None:
+            # Older daemons have no GetFeatures; the UI falls back to hints.
+            self._features = {**self._features, "loaded": True, "available": False,
+                              "items": {}, "error": message}
+            self.featuresChanged.emit()
+
+        self._run(lambda: self._backend.features(), done, failed, busy=False)
+
+    @Slot(str, bool)
+    def setFeature(self, name: str, enabled: bool) -> None:
+        def done(value: object) -> None:
+            notice = {
+                "restart-required": _("Restart the BlueFerry service to apply the change."),
+                "environment": _(
+                    "Saved, but the service's environment sets this variable and wins."
+                ),
+            }.get(str(value), "")
+            self._features = {**self._features, "notice": notice}
+            self.featuresChanged.emit()
+            self.loadFeatures()
+
+        self._run(lambda: self._backend.set_feature(str(name), bool(enabled)), done)
+
+    @Property("QVariantMap", notify=doctorChanged)
+    def doctor(self):
+        return self._doctor
+
+    @Slot()
+    def runDoctor(self) -> None:
+        if self._doctor["running"]:
+            return
+        self._doctor = {**self._doctor, "running": True}
+        self.doctorChanged.emit()
+        task = Task(self._doctor_runner)
+        self._tasks.add(task)
+
+        def done(report: object) -> None:
+            if isinstance(report, DoctorReport):
+                self._doctor = {"running": False, "ran": True, "ok": report.ok,
+                                "warnings": report.warnings, "text": report.text}
+            self.doctorChanged.emit()
+
+        def failed(message: str) -> None:
+            self._doctor = {"running": False, "ran": True, "ok": False,
+                            "warnings": False, "text": message}
+            self.doctorChanged.emit()
+
+        task.signals.done.connect(done)
+        task.signals.failed.connect(failed)
+        task.signals.finished.connect(lambda: self._tasks.discard(task))
+        self._local_pool.start(task)
 
     @Slot()
     def clearHistory(self) -> None:

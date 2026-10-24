@@ -51,6 +51,19 @@ CONFIG_DIR: Path = Path(
     os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config")
 ) / "blueferry"
 LOCAL_ENV_PATH: Path = CONFIG_DIR / "local.env"
+# Boolean switches the settings UIs may store in settings.json ("features")
+# through Messages1.SetFeature. Stored values override local.env; an
+# explicit process environment still wins over both.
+# The single source of the allowlist: (feature name, variable, default).
+# blueferry.features builds its table from this tuple.
+FEATURE_SWITCHES: tuple[tuple[str, str, bool], ...] = (
+    ("show_notification_content", "BLUEFERRY_SHOW_NOTIFICATION_CONTENT", True),
+    ("mark_read_on_dismiss", "BLUEFERRY_MARK_READ_ON_DISMISS", True),
+    ("keep_phone_audio_on_phone", "BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE", True),
+)
+FEATURE_ENV_KEYS = frozenset(variable for _, variable, _ in FEATURE_SWITCHES)
+FEATURES_SETTINGS_KEY = "features"
+MAX_SETTINGS_BYTES = 4 * 1024 * 1024
 # Preserve which values genuinely came from the process environment before
 # ``_load_local_env`` copies file-backed values into ``os.environ``. Runtime
 # configuration checks must continue to honor explicit environment overrides.
@@ -79,13 +92,35 @@ def read_local_env(path: Path | None = None) -> dict[str, str]:
     return values
 
 
+def read_feature_settings(path: Path | None = None) -> dict[str, bool]:
+    """Switches stored by the settings UIs in settings.json, allowlisted."""
+    import json
+
+    try:
+        document = json.loads(read_private_text(
+            path or (CONFIG_DIR / "settings.json"), maximum_bytes=MAX_SETTINGS_BYTES,
+        ))
+    except (OSError, UnicodeError, ValueError, TypeError):
+        return {}
+    stored = document.get(FEATURES_SETTINGS_KEY) if isinstance(document, dict) else None
+    if not isinstance(stored, dict):
+        return {}
+    return {
+        key: value for key, value in stored.items()
+        if key in FEATURE_ENV_KEYS and isinstance(value, bool)
+    }
+
+
 def _load_local_env() -> None:
     """Load supported local settings before reading module-level values.
 
     The daemon and CLI parse this file themselves; the systemd unit
     deliberately does not source it into the process environment.
 
-    Anything already in os.environ wins — explicit env > local.env."""
+    Precedence: explicit env > settings.json switches > local.env."""
+    for key, enabled in read_feature_settings().items():
+        if key not in EXPLICIT_ENV_KEYS:
+            os.environ[key] = "true" if enabled else "false"
     for key, value in read_local_env().items():
         if key != PROFILE_ID_KEY:
             os.environ.setdefault(key, value)

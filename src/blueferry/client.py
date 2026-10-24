@@ -444,6 +444,24 @@ class BackendClient:
         except dbus.exceptions.DBusException as error:
             raise BackendError(_dbus_message(error)) from error
 
+    def features(self) -> dict:
+        """Allowlisted local.env switches (Messages1.GetFeatures)."""
+        try:
+            return decode_mapping(self._iface(MESSAGES_IFACE).GetFeatures(
+                timeout=STATUS_CALL_TIMEOUT_SEC,
+            ))
+        except (dbus.exceptions.DBusException, ValueError) as error:
+            raise BackendError(_dbus_message(error)) from error
+
+    def set_feature(self, name: str, enabled: bool) -> str:
+        """Store one switch; ``active``, ``restart-required`` or ``environment``."""
+        try:
+            return str(self._iface(MESSAGES_IFACE).SetFeature(
+                str(name), dbus.Boolean(enabled), timeout=POLICY_CALL_TIMEOUT_SEC,
+            ))
+        except dbus.exceptions.DBusException as error:
+            raise BackendError(_dbus_message(error)) from error
+
     def set_ancs_notification_actions(self, enabled: bool) -> bool:
         try:
             return bool(
