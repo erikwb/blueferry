@@ -2,10 +2,48 @@
 from __future__ import annotations
 
 import json
+import os
 import stat
 
+import pytest
+
 from blueferry import config
+from blueferry.private_files import atomic_write_private_text, private_file_lock
 from blueferry.settings_store import SettingsStore
+
+
+def test_private_lock_survives_atomic_replacement_and_exception(tmp_path):
+    path = tmp_path / "local.env"
+    with pytest.raises(RuntimeError, match="failed update"), private_file_lock(path):
+        atomic_write_private_text(path, "first\n", maximum_bytes=1024)
+        atomic_write_private_text(path, "second\n", maximum_bytes=1024)
+        with pytest.raises(BlockingIOError), private_file_lock(path, blocking=False):
+            pytest.fail("replacement lost the update lock")
+        raise RuntimeError("failed update")
+
+    with private_file_lock(path, blocking=False):
+        assert path.read_text() == "second\n"
+    lock_path = tmp_path / ".local.env.lock"
+    assert stat.S_IMODE(lock_path.stat().st_mode) == 0o600
+
+
+@pytest.mark.parametrize("kind", ["symlink", "fifo"])
+def test_private_lock_rejects_links_and_nonregular_files(tmp_path, kind):
+    path = tmp_path / "local.env"
+    lock_path = tmp_path / ".local.env.lock"
+    victim = tmp_path / "untouched"
+    victim.write_text("do not change\n")
+    victim.chmod(0o644)
+    if kind == "symlink":
+        lock_path.symlink_to(victim)
+    else:
+        os.mkfifo(lock_path)
+
+    with pytest.raises(OSError), private_file_lock(path):
+        pytest.fail("unsafe lock accepted")
+
+    assert victim.read_text() == "do not change\n"
+    assert stat.S_IMODE(victim.stat().st_mode) == 0o644
 
 
 def test_local_env_repairs_modes_and_ignores_unrelated_variables(tmp_path) -> None:

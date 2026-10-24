@@ -134,6 +134,7 @@ Bearbeite `~/.config/blueferry/local.env` und starte den Dienst danach mit
 | `BLUEFERRY_OTP_AUTOCOPY` | `false` | Startwert für das Kopieren von Einmalcodes, bis ein Client die Einstellung speichert, siehe [Einmalcodes](#einmalcodes) |
 | `BLUEFERRY_OTP_CLEAR_SECONDS` | `0` | Kopierten Code nach so vielen Sekunden entfernen (0 = behalten, max. 600) |
 | `BLUEFERRY_CONTACT_PHOTOS` | `false` | Startwert für Kontaktfotos, bis ein Client die Einstellung speichert; siehe [Kontaktfotos](contact-photos.md) |
+| `BLUEFERRY_PHONE_REGION` | Telefon-Locale | Zweistelliger Ländercode zum Zuordnen lokaler Kontaktnummern zu internationalen Antworten; siehe [Fehlerbehebung](troubleshooting.md#nachrichten-kommen-an-aber-namen-fehlen) |
 
 Die Kopplung schreibt Telefon- und Adapter-Einstellungen in dieselbe Datei.
 Ändere diese durch eine neue Kopplung statt von Hand.

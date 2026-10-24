@@ -198,6 +198,14 @@
       <annotation name="io.weirdware.BlueFerry.Errors"
                   value="InvalidArgs,NotReady"/>
     </method>
+    <method name="SetAutoProfileReset">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Switch the automatic reset of a stuck iPhone profile on or off (saved in settings.json); state is profile_reset_auto in GetStatus. The manual ReconnectPhone reset is unaffected"/>
+      <arg name="enabled" type="b" direction="in"/>
+      <arg name="selected" type="b" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="InvalidArgs,NotReady"/>
+    </method>
     <method name="GetStoragePolicy">
       <arg name="policy" type="s" direction="out"/>
     </method>
@@ -226,6 +234,13 @@
     </method>
     <method name="IsHealthy">
       <arg name="healthy" type="b" direction="out"/>
+    </method>
+    <method name="ReconnectPhone">
+      <annotation name="org.freedesktop.DBus.Description"
+                  value="Clear the BR/EDR reconnect backoff and page the iPhone once now. Returns started, in-progress (no second attempt is started), connected, profile-reset (the link was up but a profile was stuck, so the device was disconnected and connected again), or bluez-unresponsive/bluez-kernel while bluetoothd does not answer D-Bus; GetStatus phone_reconnect_state/phone_reconnect_paused/phone_reconnect_next_in_sec report the outcome"/>
+      <arg name="result" type="s" direction="out"/>
+      <annotation name="io.weirdware.BlueFerry.Errors"
+                  value="NotReady"/>
     </method>
     <method name="OpenLegacyGtkMessage">
       <annotation name="org.freedesktop.DBus.Description"

@@ -11,6 +11,7 @@ Rectangle {
   property int avatarSize: ferryTheme.scaled(26)
   readonly property int decodeSize: Math.min(512, Math.ceil(avatarSize * Screen.devicePixelRatio))
   readonly property string address: thread && !thread.is_group
+    && thread.reply_ready !== false
     && thread.recipients && thread.recipients.length === 1 ? thread.recipients[0] : ""
   readonly property string photoSource: photos.revision >= 0 ? photos.cachedSource(address) : ""
   readonly property bool photoReady: photo.status === Image.Ready && photo.source.toString() !== ""

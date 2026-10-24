@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
+from uuid import UUID
 
 from blueferry.connectivity import is_map_connection_refused
 from blueferry.i18n import _
@@ -39,6 +40,17 @@ def _percent(value: Any) -> int | None:
 
 def _optional_str(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
+
+
+def _profile_id(value: Any) -> str | None:
+    """Accept only BlueFerry's canonical, opaque UUIDv4 profile ID."""
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = UUID(value)
+    except ValueError:
+        return None
+    return value if parsed.version == 4 and str(parsed) == value else None
 
 
 PHONE_AUDIO_PLAYING = frozenset({"pc", "phone", "none", "unknown"})
@@ -94,6 +106,8 @@ class BackendStatus:
     # Where the iPhone's sound plays: "pc", "phone", "none" or "unknown";
     # None when the daemon predates the key.
     phone_audio_playing: str | None = None
+    # Stable, opaque ID for the selected phone; absent without a local pairing.
+    phone_profile_id: str | None = None
     # None when the daemon predates the contact-photo setting.
     contact_photos: bool | None = None
     extra: Mapping[str, Any] = field(default_factory=dict, repr=False)
@@ -144,6 +158,7 @@ class BackendStatus:
             "phone_network_name",
             "phone_network_status",
             "phone_audio_playing",
+            "phone_profile_id",
             "contact_photos",
         }
         return cls(
@@ -187,6 +202,7 @@ class BackendStatus:
             phone_network_name=_optional_str(value.get("phone_network_name")),
             phone_network_status=_optional_str(value.get("phone_network_status")),
             phone_audio_playing=_audio_playing(value.get("phone_audio_playing")),
+            phone_profile_id=_profile_id(value.get("phone_profile_id")),
             contact_photos=(
                 _bool(value["contact_photos"]) if "contact_photos" in value else None
             ),
@@ -209,6 +225,8 @@ class BackendStatus:
         # Absent for daemons that predate it, so clients keep the old wording.
         if self.phone_audio_playing is not None:
             reported["phone_audio_playing"] = self.phone_audio_playing
+        if self.phone_profile_id is not None:
+            reported["phone_profile_id"] = self.phone_profile_id
         return {
             **self.extra,
             **reported,
