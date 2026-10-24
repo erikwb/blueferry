@@ -25,6 +25,7 @@ keywords = ["iphone", "bluetooth", "imessage", "bluez", "ancs", "map"]
 dependencies = [
   "cryptography>=41",
   "phonenumbers>=8.12",
+  "regex>=2022.10.31",
   "typer>=0.9",
   # dbus-python, PyGObject, libsecret, and the Secret Service provider are
   # native desktop dependencies supplied by the distribution. A development
@@ -63,7 +64,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "blueferry" = ["tui.tcss"]
-"blueferry.qt" = ["qml/*.qml"]
+"blueferry.qt" = ["qml/*.qml", "qml/ui/*.qml"]
 
 [tool.pytest.ini_options]
 # Without this, a bare `pytest` from the repo root recurses the whole tree

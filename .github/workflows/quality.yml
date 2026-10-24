@@ -18,7 +18,7 @@ jobs:
           appstream bandit dbus desktop-file-utils gettext git gtk4 kirigami
           libadwaita libsecret mypy python-build python-coverage
           python-cryptography python-dbus python-gobject python-hypothesis python-phonenumbers
-          python-installer python-pytest python-setuptools python-textual
+          python-installer python-pytest python-regex python-setuptools python-textual
           python-typer python-wheel pyside6 qt6-declarative qt6-tools quickshell ruff
       - uses: actions/checkout@v6
       - name: Static analysis
@@ -39,7 +39,7 @@ jobs:
             python -m coverage report
           '
       - name: QML syntax
-        run: /usr/lib/qt6/bin/qmllint src/blueferry/qt/qml/*.qml data/quickshell/*.qml
+        run: /usr/lib/qt6/bin/qmllint src/blueferry/qt/qml/*.qml src/blueferry/qt/qml/ui/*.qml data/quickshell/*.qml
 
   build-deb-ubuntu-24-04:
     name: Build Debian packages on Ubuntu 24.04
