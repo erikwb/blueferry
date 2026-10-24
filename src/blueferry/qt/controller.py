@@ -17,7 +17,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtDBus import QDBusConnection
 
-from blueferry import __version__, phone_audio_view
+from blueferry import __version__, phone_audio_view, phone_overview, photos_view
 from blueferry.backend_lifecycle import ensure_backend_current, restart_backend
 from blueferry.bluetooth_devices import iphone_candidates
 from blueferry.client import BackendClient
@@ -27,11 +27,17 @@ from blueferry.conversation_state import (
     ReplyDisposition,
     fetch_conversation_snapshot,
 )
+from blueferry.doctor_report import DoctorReport, run_doctor
 from blueferry.i18n import _
 from blueferry.models import BackendStatus, CallsSnapshot
 from blueferry.onboarding import OnboardingState, effective_compatibility
+from blueferry.plugin_api.client import Photo
 from blueferry.protocol import BUS_NAME, EVENTS_IFACE, OBJECT_PATH
+from blueferry.qt import phone_link
 from blueferry.qt.avatars import avatar_url
+from blueferry.qt.companion import CompanionTools
+from blueferry.qt.plugin_settings import PluginSettings
+from blueferry.qt.plugin_surfaces import PluginSurfaces
 from blueferry.qt.tasks import Task
 from blueferry.quirks_report import issue_report, issue_url
 from blueferry.reconnect_view import UNREACHABLE_TEXT, reconnect_view, result_text
@@ -77,6 +83,14 @@ class BridgeController(QObject):
     avatarsChanged = Signal()
     callHistoryChanged = Signal()
     nowPlayingChanged = Signal()
+    notificationsChanged = Signal()
+    photosChanged = Signal()
+    companionToolsChanged = Signal()
+    pluginSettingsChanged = Signal()
+    pluginSurfacesChanged = Signal()
+    phoneIdentityChanged = Signal()
+    featuresChanged = Signal()
+    doctorChanged = Signal()
     phoneCallsChanged = Signal()
     # (number, problem) of a clicked tel:/callto: link to confirm; see
     # tel_links.dial_request. Never dials by itself.
@@ -90,6 +104,10 @@ class BridgeController(QObject):
         subscribe: bool = True,
         autostart: bool = True,
         parent: QObject | None = None,
+        companion: CompanionTools | None = None,
+        plugin_settings: PluginSettings | None = None,
+        plugin_surfaces: PluginSurfaces | None = None,
+        doctor: Callable[[], DoctorReport] = run_doctor,
     ) -> None:
         super().__init__(parent)
         self._backend = backend or BackendClient()
@@ -107,6 +125,16 @@ class BridgeController(QObject):
         self._status: dict = {}
         self._notification_open_map: list[dict] = []
         self._devices: list[dict] = []
+        # Settings: local.env switches (Messages1.GetFeatures) and the doctor
+        # report; the doctor runs a local program on its own pool so the
+        # D-Bus worker stays free.
+        self._features: dict = {"loaded": False, "available": False, "items": {},
+                                "notice": "", "error": ""}
+        self._doctor_runner = doctor
+        self._doctor: dict = {"running": False, "ran": False, "ok": False,
+                              "warnings": False, "text": ""}
+        self._local_pool = QThreadPool(self)
+        self._local_pool.setMaxThreadCount(1)
         self._bluetooth_active = False
         self._busy_count = 0
         self._error_text = ""
@@ -153,6 +181,8 @@ class BridgeController(QObject):
         self._refresh_timer.setInterval(100)
         self._refresh_timer.timeout.connect(self.refresh)
         self._call_history: list[dict] = []
+        # Day-grouped rows for the Calls tab ("all" and "missed").
+        self._call_history_rows: dict = {}
         self._call_history_error = ""
         self._call_history_loading = False
         self._call_history_again = False
@@ -169,7 +199,36 @@ class BridgeController(QObject):
         self._now_playing_timer.setSingleShot(True)
         self._now_playing_timer.setInterval(150)
         self._now_playing_timer.timeout.connect(self.refreshNowPlaying)
+        # Opt-in app-notification list: fetched only while its tab is shown.
+        self._notifications: list[dict] = []
+        self._notifications_info: dict = {"enabled": False, "content": False, "error": ""}
+        self._notifications_watched = False
+        self._notifications_timer = QTimer(self)
+        self._notifications_timer.setSingleShot(True)
+        self._notifications_timer.setInterval(150)
+        self._notifications_timer.timeout.connect(self.refreshNotifications)
+        self.devicesChanged.connect(self.phoneIdentityChanged)
+        self.configuredChanged.connect(self.phoneIdentityChanged)
+        # The Photos tab (a plugin with the photos capability).
+        self._photos_watched = False
+        self._photos_plugin: object = None
+        self._photos: dict = {"present": False, "ready": False, "loaded": False,
+                              "hint": "", "items": []}
+        # UxPlay, LocalSend and iPhone photos: client-side, no daemon involved.
+        self._companion = companion or CompanionTools(parent=self)
+        self._companion.changed.connect(self.companionToolsChanged)
+        # Plugin management runs git, pip and plugin calls on its own queue.
+        self._plugin_settings = plugin_settings or PluginSettings(parent=self)
+        self._plugin_settings.changed.connect(self.pluginSettingsChanged)
         self._bus = QDBusConnection.sessionBus() if subscribe else None
+        # "From Plugins" and "Send to…", on their own pool.
+        self._plugin_surfaces = plugin_surfaces or PluginSurfaces(
+            bus=self._bus, parent=self,
+        )
+        self._plugin_surfaces.changed.connect(self.pluginSurfacesChanged)
+        # Enabling, installing or removing a plugin changes the card.
+        self._plugin_set: tuple = ()
+        self._plugin_settings.changed.connect(self._plugin_set_changed)
         if subscribe:
             self._subscribe()
         if autostart:
@@ -411,6 +470,291 @@ class BridgeController(QObject):
     def callHistory(self):
         return self._call_history
 
+    @Property("QVariantMap", notify=callHistoryChanged)
+    def callHistoryRows(self):
+        """Day-grouped rows for the Calls tab: ``all`` and ``missed``."""
+        return self._call_history_rows
+
+    @Property("QVariantMap", notify=statusChanged)
+    def featureHints(self):
+        return phone_link.feature_hints(self._status)
+
+    @Property(str, notify=phoneIdentityChanged)
+    def phoneName(self) -> str:
+        mac = self._configuration.mac
+        for device in self._devices:
+            if mac and device.get("mac") == mac and device.get("name"):
+                return str(device["name"])
+        return "iPhone"
+
+    @Property("QVariantMap", notify=pluginSettingsChanged)
+    def pluginSettings(self):
+        return self._plugin_settings.state()
+
+    @Slot()
+    def loadPlugins(self) -> None:
+        self._plugin_settings.load()
+
+    @Slot(str, bool)
+    def setPluginEnabled(self, plugin_id: str, enabled: bool) -> None:
+        self._plugin_settings.set_enabled(str(plugin_id), bool(enabled))
+
+    @Slot(str, str)
+    def preparePluginInstall(self, url: str, ref: str) -> None:
+        self._plugin_settings.prepare_install(str(url), str(ref))
+
+    @Slot(str)
+    def installStorePlugin(self, plugin_id: str) -> None:
+        self._plugin_settings.install_from_store(str(plugin_id))
+
+    @Slot(str)
+    def preparePluginUpdate(self, plugin_id: str) -> None:
+        self._plugin_settings.prepare_update(str(plugin_id))
+
+    @Slot()
+    def confirmPluginInstall(self) -> None:
+        self._plugin_settings.confirm_install()
+
+    @Slot()
+    def cancelPluginInstall(self) -> None:
+        self._plugin_settings.cancel_install()
+
+    @Slot(str)
+    def removePlugin(self, plugin_id: str) -> None:
+        self._plugin_settings.remove(str(plugin_id))
+
+    @Slot(str)
+    def loadPluginConfig(self, plugin_id: str) -> None:
+        self._plugin_settings.load_config(str(plugin_id))
+
+    @Slot(str, "QVariantMap")
+    def savePluginConfig(self, plugin_id: str, values: dict) -> None:
+        self._plugin_settings.save_config(str(plugin_id), dict(values or {}))
+
+    @Slot()
+    def closePluginConfig(self) -> None:
+        self._plugin_settings.close_config()
+
+    @Slot(str, "QVariantMap", result="QVariantMap")
+    def checkPluginConfig(self, plugin_id: str, values: dict) -> dict:
+        return self._plugin_settings.check_config(str(plugin_id), dict(values or {}))
+
+    @Slot(str, "QVariantMap")
+    def testPluginConfig(self, plugin_id: str, values: dict) -> None:
+        self._plugin_settings.test_config(str(plugin_id), dict(values or {}))
+
+    @Slot(str, "QVariantMap")
+    def signInPlugin(self, plugin_id: str, values: dict) -> None:
+        self._plugin_settings.sign_in(str(plugin_id), dict(values or {}))
+
+    @Slot()
+    def cancelPluginSignIn(self) -> None:
+        self._plugin_settings.cancel_sign_in()
+
+    @Slot(str)
+    def openPluginLog(self, plugin_id: str) -> None:
+        self._plugin_settings.open_log(str(plugin_id))
+
+    @Slot(str, str)
+    def openPluginHelp(self, plugin_id: str, key: str) -> None:
+        self._plugin_settings.open_help(str(plugin_id), str(key))
+
+    @Slot(bool)
+    def loadPluginStore(self, refresh: bool) -> None:
+        self._plugin_settings.load_store(bool(refresh))
+
+    @Slot("QVariantList")
+    def setPluginIndexes(self, urls: list) -> None:
+        self._plugin_settings.set_indexes([str(url) for url in urls or []])
+
+    @Slot()
+    def clearPluginMessage(self) -> None:
+        self._plugin_settings.clear_message()
+
+    def _plugin_set_changed(self) -> None:
+        current = tuple(
+            (row.get("id"), row.get("enabled"))
+            for row in self._plugin_settings.state().get("plugins", [])
+        )
+        if current != self._plugin_set:
+            known = bool(self._plugin_set)
+            self._plugin_set = current
+            if known:
+                self._plugin_surfaces.schedule_reload()
+
+    @Property("QVariantMap", notify=pluginSurfacesChanged)
+    def pluginSurfaces(self):
+        """cards (per plugin: name, ok, hint, items with actions), busy,
+        message, targets for "Send to…"; everything plain text."""
+        return self._plugin_surfaces.state()
+
+    @Slot()
+    def refreshPluginCards(self) -> None:
+        self._plugin_surfaces.reload()
+
+    @Slot(str, str, str)
+    def invokePluginAction(self, plugin_id: str, item_id: str, action_id: str) -> None:
+        self._plugin_surfaces.invoke(str(plugin_id), str(item_id), str(action_id))
+
+    @Slot()
+    def clearPluginCardMessage(self) -> None:
+        self._plugin_surfaces.clear_message()
+
+    @Slot()
+    def loadShareTargets(self) -> None:
+        self._plugin_surfaces.load_targets()
+
+    @Slot(str, "QVariantList")
+    def sendToTarget(self, key: str, urls: list) -> None:
+        self._plugin_surfaces.send(str(key), list(urls or []))
+
+    @Slot(str, str, str, "QVariantList")
+    def sendFromPluginCard(self, plugin_id: str, target_id: str, label: str, urls: list) -> None:
+        """A card action with send_to, or files dropped on a card item."""
+        self._plugin_surfaces.send_from_card(
+            str(plugin_id), str(target_id), str(label), list(urls or []))
+
+    @Property("QVariantMap", notify=companionToolsChanged)
+    def companionTools(self):
+        return self._companion.state()
+
+    @Slot()
+    def refreshCompanionTools(self) -> None:
+        self._companion.refresh()
+
+    @Slot(str)
+    def runCompanionTool(self, action: str) -> None:
+        self._companion.run(action)
+
+    @Slot()
+    def clearCompanionMessage(self) -> None:
+        self._companion.clear_message()
+
+    @Property("QVariantMap", notify=photosChanged)
+    def photos(self):
+        """present, ready, loaded, hint and items (id, label, video, thumbnail, original)."""
+        return self._photos
+
+    @Slot(bool)
+    def watchPhotos(self, watched: bool) -> None:
+        """The Photos tab became visible (load) or hidden (forget the list)."""
+        self._photos_watched = bool(watched)
+        if self._photos_watched:
+            self.refreshPhotos()
+            return
+        if self._photos["items"]:
+            self._photos = {**self._photos, "items": []}
+            self.photosChanged.emit()
+
+    @Slot()
+    def refreshPhotos(self) -> None:
+        if not self._photos_watched:
+            return
+
+        def load():
+            manifest = photos_view.find_plugin()
+            return manifest, photos_view.load_recent(manifest)
+
+        def completed(value: object) -> None:
+            manifest, snapshot = value  # type: ignore[misc]
+            self._photos_plugin = manifest
+            if not self._photos_watched:
+                return
+            self._photos = {
+                "present": snapshot.present,
+                "ready": snapshot.ready,
+                "loaded": True,
+                "hint": snapshot.hint,
+                "items": [_photo_item(photo) for photo in snapshot.photos],
+            }
+            self.photosChanged.emit()
+
+        def failed(message: str) -> None:
+            # Never leave the tab spinning: show why instead.
+            self._photos = {
+                "present": self._photos_plugin is not None, "ready": False, "loaded": True,
+                "hint": message or _("Photos unavailable"), "items": [],
+            }
+            self.photosChanged.emit()
+
+        self._run(load, completed, failed, busy=False)
+
+    @Slot(str)
+    def openPhoto(self, photo_id: str) -> None:
+        """Download the original (plugin) and open it in the default viewer."""
+        manifest = self._photos_plugin
+        if manifest is None:
+            return
+
+        def completed(value: object) -> None:
+            from PySide6.QtCore import QUrl
+            from PySide6.QtGui import QDesktopServices
+
+            url = QUrl.fromLocalFile(str(value))
+            items = [
+                {**item, "original": url.toString()} if item["id"] == photo_id else item
+                for item in self._photos["items"]
+            ]
+            self._photos = {**self._photos, "items": items}
+            self.photosChanged.emit()
+            QDesktopServices.openUrl(url)
+
+        self._run(
+            lambda: photos_view.fetch_original(manifest, str(photo_id)),  # type: ignore[arg-type]
+            completed,
+        )
+
+    @Property("QVariantList", notify=notificationsChanged)
+    def notifications(self):
+        return self._notifications
+
+    @Property("QVariantMap", notify=notificationsChanged)
+    def notificationsInfo(self):
+        return self._notifications_info
+
+    @Slot(bool)
+    def watchNotifications(self, watched: bool) -> None:
+        """The Notifications tab became visible (load) or hidden (forget)."""
+        self._notifications_watched = bool(watched)
+        if self._notifications_watched:
+            self.refreshNotifications()
+            return
+        self._notifications_timer.stop()
+        if self._notifications:
+            self._notifications = []
+            self.notificationsChanged.emit()
+
+    @Slot()
+    def refreshNotifications(self) -> None:
+        if not self._notifications_watched:
+            return
+
+        def completed(value: object) -> None:
+            if not self._notifications_watched:
+                return
+            snapshot = value if isinstance(value, dict) else {}
+            self._notifications = phone_link.notification_rows(snapshot.get("notifications"))
+            self._notifications_info = {
+                "enabled": snapshot.get("enabled") is True,
+                "content": snapshot.get("content") is True,
+                "error": "",
+            }
+            self.notificationsChanged.emit()
+
+        def failed(message: str) -> None:
+            self._notifications = []
+            self._notifications_info = {
+                **self._notifications_info, "error": message or _("Notifications are unavailable"),
+            }
+            self.notificationsChanged.emit()
+
+        self._run(lambda: self._backend.notifications(100), completed, failed, busy=False)
+
+    @Slot()
+    def _notificationsInvalidated(self) -> None:
+        if self._notifications_watched:
+            self._notifications_timer.start()
+
     @Property(str, notify=callHistoryChanged)
     def callHistoryError(self) -> str:
         return self._call_history_error
@@ -606,6 +950,14 @@ class BridgeController(QObject):
             BUS_NAME,
             OBJECT_PATH,
             EVENTS_IFACE,
+            "NotificationsChanged",
+            self,
+            SLOT("_notificationsInvalidated()"),
+        )
+        self._bus.connect(
+            BUS_NAME,
+            OBJECT_PATH,
+            EVENTS_IFACE,
             "CallHistoryChanged",
             self,
             SLOT("_callHistoryInvalidated()"),
@@ -677,6 +1029,8 @@ class BridgeController(QObject):
     @Slot("QVariantMap")
     def _historyChanged(self, _revision) -> None:
         self._refresh_timer.start()
+        # ClearHistory also empties the notification list.
+        self._notificationsInvalidated()
 
     @Slot()
     def _statusInvalidated(self) -> None:
@@ -703,6 +1057,7 @@ class BridgeController(QObject):
         self._call_history_again = False
         if self._call_history or self._call_history_error:
             self._call_history = []
+            self._call_history_rows = {}
             self._call_history_error = ""
             self.callHistoryChanged.emit()
 
@@ -716,13 +1071,20 @@ class BridgeController(QObject):
             return
         self._call_history_loading = True
 
-        def operation() -> list[dict]:
-            return [entry.to_dict() for entry in self._backend.call_history(200)]
+        def operation() -> tuple[list[dict], dict]:
+            entries = self._backend.call_history(200)
+            rows = {
+                "all": phone_overview.call_groups(entries),
+                "missed": phone_overview.call_groups(entries, missed_only=True),
+            }
+            return [entry.to_dict() for entry in entries], rows
 
         def completed(value: object) -> None:
             # A reply that lands after the page closed is discarded.
             if self._call_history_watched:
-                self._call_history = list(value) if isinstance(value, list) else []
+                calls, rows = value if isinstance(value, tuple) else ([], {})
+                self._call_history = list(calls)
+                self._call_history_rows = dict(rows)
                 self._call_history_error = ""
                 self.callHistoryChanged.emit()
             finished()
@@ -1065,15 +1427,88 @@ class BridgeController(QObject):
         self._call_action(self._backend.hangup_all_calls)
 
     @Slot()
+    def swapCalls(self) -> None:
+        """Hold the active call (or resume the held one): HFP AT+CHLD=2."""
+        self._call_action(self._backend.swap_calls)
+
+    @Slot()
     def syncContacts(self) -> None:
         self._run(self._backend.sync_contacts, lambda _value: self.refresh())
 
     @Slot()
     def restartBackend(self) -> None:
-        self._run(
-            restart_backend,
-            lambda _value: QTimer.singleShot(800, self.refresh),
-        )
+        def restarted(_value: object) -> None:
+            self._features = {**self._features, "notice": ""}
+            QTimer.singleShot(800, self.refresh)
+            QTimer.singleShot(1200, self.loadFeatures)
+
+        self._run(restart_backend, restarted)
+
+    # ---- settings: feature switches and the doctor report ------------------
+
+    @Property("QVariantMap", notify=featuresChanged)
+    def features(self):
+        return self._features
+
+    @Slot()
+    def loadFeatures(self) -> None:
+        def done(value: object) -> None:
+            items = value if isinstance(value, dict) else {}
+            self._features = {**self._features, "loaded": True, "available": True,
+                              "items": items, "error": ""}
+            self.featuresChanged.emit()
+
+        def failed(message: str) -> None:
+            # Older daemons have no GetFeatures; the UI falls back to hints.
+            self._features = {**self._features, "loaded": True, "available": False,
+                              "items": {}, "error": message}
+            self.featuresChanged.emit()
+
+        self._run(lambda: self._backend.features(), done, failed, busy=False)
+
+    @Slot(str, bool)
+    def setFeature(self, name: str, enabled: bool) -> None:
+        def done(value: object) -> None:
+            notice = {
+                "restart-required": _("Restart the BlueFerry service to apply the change."),
+                "environment": _(
+                    "Saved, but the service's environment sets this variable and wins."
+                ),
+            }.get(str(value), "")
+            self._features = {**self._features, "notice": notice}
+            self.featuresChanged.emit()
+            self.loadFeatures()
+
+        self._run(lambda: self._backend.set_feature(str(name), bool(enabled)), done)
+
+    @Property("QVariantMap", notify=doctorChanged)
+    def doctor(self):
+        return self._doctor
+
+    @Slot()
+    def runDoctor(self) -> None:
+        if self._doctor["running"]:
+            return
+        self._doctor = {**self._doctor, "running": True}
+        self.doctorChanged.emit()
+        task = Task(self._doctor_runner)
+        self._tasks.add(task)
+
+        def done(report: object) -> None:
+            if isinstance(report, DoctorReport):
+                self._doctor = {"running": False, "ran": True, "ok": report.ok,
+                                "warnings": report.warnings, "text": report.text}
+            self.doctorChanged.emit()
+
+        def failed(message: str) -> None:
+            self._doctor = {"running": False, "ran": True, "ok": False,
+                            "warnings": False, "text": message}
+            self.doctorChanged.emit()
+
+        task.signals.done.connect(done)
+        task.signals.failed.connect(failed)
+        task.signals.finished.connect(lambda: self._tasks.discard(task))
+        self._local_pool.start(task)
 
     @Slot()
     def clearHistory(self) -> None:
@@ -1533,3 +1968,19 @@ class BridgeController(QObject):
 
         adapter = self._configuration.adapter.strip() or None
         self._run(lambda: self._setup.forget(mac, adapter=adapter), completed)
+
+
+def _photo_item(photo: Photo) -> dict[str, object]:
+    """One grid cell; paths become file URLs, text stays plain."""
+    from PySide6.QtCore import QUrl
+
+    def url(path: object) -> str:
+        return QUrl.fromLocalFile(str(path)).toString() if path else ""
+
+    return {
+        "id": photo.id,
+        "label": photos_view.label(photo),
+        "video": photo.type == "video",
+        "thumbnail": url(photo.thumbnail),
+        "original": url(photo.original),
+    }

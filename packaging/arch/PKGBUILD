@@ -34,6 +34,7 @@ checkdepends=(
   'python-gobject'
   'python-hypothesis'
   'python-phonenumbers'
+  'python-regex>=2022.10.31'
   'python-pytest'
   'python-textual>=8.0'
   'python-typer>=0.12'
@@ -95,7 +96,7 @@ check() {
   appstreamcli validate --no-net data/io.weirdware.BlueFerry.Qt.metainfo.xml
   appstreamcli validate --no-net data/io.weirdware.BlueFerry.Quickshell.metainfo.xml
   PYTHONPATH="$PWD/src" python -c 'from blueferry.qt.app import main'
-  /usr/lib/qt6/bin/qmllint src/blueferry/qt/qml/*.qml
+  /usr/lib/qt6/bin/qmllint src/blueferry/qt/qml/*.qml src/blueferry/qt/qml/ui/*.qml
   /usr/lib/qt6/bin/qmllint data/quickshell/*.qml
 }
 
@@ -117,6 +118,7 @@ package_blueferry-backend() {
     'python-dbus'
     'python-gobject'
     'python-phonenumbers'
+    'python-regex>=2022.10.31'
     'python-textual>=8.0'
     'python-typer>=0.12'
     'systemd'
