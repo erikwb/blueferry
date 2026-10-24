@@ -39,6 +39,7 @@ from blueferry.bluetooth_recovery import (
     RecoveryObservation,
     probe_map,
 )
+from blueferry.bluez_health import PING_TIMEOUT_SEC, BluezHealth, IntrospectNoReplyFilter
 from blueferry.bluez_reads import observations
 from blueferry.build_info import build_id, installed_build_sha, running_build_sha
 from blueferry.bus import get_system_bus, main_loop
@@ -65,7 +66,7 @@ from blueferry.contact_repository import ContactRepository
 from blueferry.contact_sync import ContactSync
 from blueferry.contacts import ContactsResolver
 from blueferry.dbus_service import MessagesService, claim_bus_name
-from blueferry.errors import BlueFerryError
+from blueferry.errors import BlueFerryError, NotReadyError
 from blueferry.event_dispatcher import EventDispatcher
 from blueferry.events import SmsEvent
 from blueferry.features import FeatureSettings
@@ -91,9 +92,14 @@ from blueferry.obex.worker import ObexWorker
 from blueferry.otp_context import OtpMetadata
 from blueferry.otp_settings import OtpSettings
 from blueferry.pair_setup import bond_status
-from blueferry.phone_audio_route import PhoneAudioRoute
+from blueferry.phone_audio_route import PhoneAudioRoute, ResumePlayback
 from blueferry.phone_battery import BatteryWarningSettings, PhoneBattery
 from blueferry.plugin_notify import PluginPopup, PluginPopups
+from blueferry.profile_reset import (
+    ProfileResetController,
+    auto_reset_enabled,
+    save_auto_reset,
+)
 from blueferry.profile_supervisor import ProfileSessions, ProfileSupervisor
 from blueferry.protocol import BUS_NAME
 from blueferry.proximity_lock import (
@@ -286,22 +292,44 @@ class Daemon:
         # Keep LE out of the initial post-pair window.  The first OBEX
         # attempt below either establishes ordinary Classic MAP/PBAP or gives
         # iOS a chance to reject it before ANCS is allowed to connect.
+        self.bluez_health = BluezHealth(
+            ping=_ping_bluez,
+            owner_pid=_bluez_pid,
+            on_change=self._on_bluez_health_changed,
+        )
         self.bearers = BearerSupervisor(
             device_path,
             le_enabled=False,
             on_status=self._bearer_status_changed,
             on_le_state=self._observe_le_state,
             on_le_dial=self.solicitation.set_dialing,
+            on_reconnect_state=self._emit_status,
             inbound_le_primed=self.solicitation.active,
             le_bond_detection=self._le_bond_detection_applies,
             # Publish the report only; a flip is not a bearer transition.
             on_le_bond_report=self._emit_status,
+            bluez_blocked=lambda: self.bluez_health.unresponsive,
+            profile_busy=lambda: self.phone_audio_route.busy,
+            on_bluez_error=self.bluez_health.report,
+            on_bluez_ok=self.bluez_health.report_success,
         )
         # Calls-state and phone-status changes often arrive in bursts (a
         # modem going away, a flapping indicator); coalesce their
         # StatusChanged into one per main-loop iteration.
         self._status_emit_pending = False
         self._idle_add: Callable[..., int] = GLib.idle_add
+        # Heal HFP bring-ups that bluetoothd keeps stuck with one device
+        # reset, through the bearer supervisor so it never overlaps a
+        # reconnect. Inert until a symptom is reported.
+        self.profile_reset = ProfileResetController(
+            enabled=auto_reset_enabled(),
+            reset=self.bearers.reset_profiles,
+            peer_connected=lambda: self.bearers.bredr_connected,
+            bluez_blocked=lambda: self.bluez_health.unresponsive,
+            call_active=lambda: self.calls.in_call,
+            recovering=lambda: self.recovery.active,
+            on_changed=self._emit_status_soon,
+        )
         # Optional HFP calls through oFono. Inert unless explicitly enabled;
         # construction performs no I/O. oFono is only asked to page the phone
         # (Modem.Powered) while the Classic bearer is up.
@@ -316,6 +344,8 @@ class Daemon:
             phone_reachable=lambda: self.bearers.bredr_connected,
             hfp_conflict=self._bluez_hfp_conflict,
             on_phone_status=lambda _status: self._phone_status_changed(),
+            on_powered_failed=self.profile_reset.hfp_powered_failed,
+            on_powered=self.profile_reset.hfp_powered,
         )
         # Opt-in, memory-only list of recent iPhone app notifications.
         self.notification_log: NotificationLog | None = (
@@ -333,9 +363,12 @@ class Daemon:
             on_changed=self._emit_status_soon,
             schedule=GLib.timeout_add_seconds,
             cancel=GLib.source_remove,
-            was_playing=self._iphone_playing,
-            resume_playback=self._resume_iphone_playback,
+            prepare_resume=self._prepare_iphone_resume,
             media_state=self._iphone_playback_state,
+            change_blocked=lambda: (
+                not self.bearers.can_change_profiles or self.recovery.active
+            ),
+            bluez_blocked=lambda: self.bluez_health.unresponsive,
         )
         # The phone's battery over LE (GATT Battery Service or BlueZ's
         # Battery1), independent of calls and HFP. Construction does no I/O.
@@ -424,6 +457,7 @@ class Daemon:
             reset_le=lambda: self.bearers.recover_le_transport(allow_disconnected=True),
             pause=self._pause_for_recovery,
             resume=self._resume_after_recovery,
+            blocked=lambda: self.bluez_health.unresponsive,
         )
 
     def _recovery_observation(self) -> RecoveryObservation:
@@ -483,7 +517,47 @@ class Daemon:
         if emit is not None:
             emit()
 
+    def _reconnect_phone(self) -> str:
+        result = self.bearers.reconnect_now()
+        if result == "connected" and self.profile_reset.suggested:
+            # The link is up but a profile is stuck: "Reconnect" then means
+            # the same device reset the automatic path would do.
+            reset = self.profile_reset.manual_reset()
+            if reset == "started":
+                result = "profile-reset"
+            elif reset == "call-active":
+                # Not "connected": the stuck profile stays until the call ends.
+                result = "call-active"
+        if result == "bluez-unresponsive" and (
+            self.bluez_health.snapshot()["bluez_unresponsive_reason"] == "kernel"
+        ):
+            result = "bluez-kernel"
+        log.info("manual iPhone reconnect: %s", result)
+        if result == "unavailable":
+            raise NotReadyError("no iPhone is being supervised")
+        return result
+
+    def _on_bluez_health_changed(self) -> None:
+        self._emit_status()
+        if not self.bluez_health.unresponsive:
+            # Not re-entrantly from a ping reply or owner-change handler.
+            def resume() -> bool:
+                self.bearers.poke()
+                return False
+
+            self._idle_add(resume)
+
+    def _reconnect_status(self) -> dict[str, object]:
+        reconnect = self.bearers.reconnect_snapshot()
+        return {
+            "phone_reconnect_state": reconnect["state"],
+            "phone_reconnect_paused": reconnect["paused"],
+            "phone_reconnect_next_in_sec": reconnect["next_in_sec"],
+        }
+
     def _bearer_status_changed(self) -> None:
+        if getattr(self.bearers, "bredr_state", None) is False:
+            self.profile_reset.peer_lost()
         self.proximity.bearer_changed()
         self.calls.poke()
         le_connected = bool(getattr(self.bearers, "le_connected", False))
@@ -688,6 +762,13 @@ class Daemon:
         self._phone_emitted_at = self._clock()
         self._emit_status()
 
+    def _set_auto_profile_reset(self, enabled: bool) -> dict:
+        selected = save_auto_reset(enabled)
+        self.profile_reset.set_enabled(selected)
+        log.info("automatic profile reset %s", "enabled" if selected else "disabled")
+        self._emit_status()
+        return {"profile_reset_auto": self.profile_reset.enabled}
+
     def _set_battery_warning(self, enabled: bool) -> dict:
         selected = self.battery_warning.set(enabled)
         log.info("low-battery warning %s", "enabled" if selected else "disabled")
@@ -783,6 +864,7 @@ class Daemon:
                 on_storage_prepared=self._apply_storage_preparation,
                 on_storage_changed=self._on_storage_changed,
                 set_proximity_lock=self._set_proximity_lock,
+                reconnect_phone=self._reconnect_phone,
                 call_history=lambda: self.call_history,
                 set_call_history=self._set_call_history,
                 open_notification_click=self.events.open_notification_click,
@@ -791,6 +873,7 @@ class Daemon:
                 calls=self.calls,
                 set_calls_enabled=self._set_calls_enabled,
                 set_phone_battery_warning=self._set_battery_warning,
+                set_auto_profile_reset=self._set_auto_profile_reset,
                 set_media_mpris=self._set_media_mpris,
                 phone_audio=self.phone_audio_route,
                 notification_log=self.notification_log,
@@ -945,6 +1028,8 @@ class Daemon:
         return self._media_status()
 
     def _on_media_availability(self, available: bool) -> None:
+        if not available:
+            self.phone_audio_route.media_unavailable()
         if self.media is not None:
             self.media.handle_availability(available)
         self._emit_status()
@@ -1191,6 +1276,8 @@ class Daemon:
                 "adapter is in A/V Hands-Free CoD if the toggles aren't there."
             )
         self._watch_bluez_owner()
+        _throttle_introspect_errors()
+        self.bluez_health.start()
         self.solicitation.start()
 
         # A bond records trust but does not guarantee a live connection. The
@@ -1306,6 +1393,7 @@ class Daemon:
             return
         self._bluez_owner_generation += 1
         generation = self._bluez_owner_generation
+        self.phone_audio_route.bluez_owner_changed(bool(new_owner))
         # Invalidate before discovery or advertising can dispatch more D-Bus
         # work. An interrupted power restoration keeps ordinary reconnects
         # paused until the recovery controller explicitly resumes them.
@@ -1349,6 +1437,9 @@ class Daemon:
             and generation == self._bluez_owner_generation
         ):
             self._on_bluez_restart()
+        # Last: its change callback may poke the bearers, which must already
+        # have been reset for the new bluetoothd above.
+        self.bluez_health.owner_changed(str(new_owner or ""))
 
     def _on_bluez_restart(self) -> None:
         """Reapply MAP-first ordering before accepting the new BlueZ owner."""
@@ -1733,6 +1824,7 @@ class Daemon:
         return {
             "backend_release": self._running_release,
             "_build_id": self._running_build_id,
+            "phone_profile_id": config.current_profile_id(config.IPHONE_MAC),
             "initializing": self._initializing,
             "ancs": bool(ancs and ancs.connected),
             "ancs_subscribed": bool(ancs and ancs.subscribed),
@@ -1741,6 +1833,9 @@ class Daemon:
             "ancs_actions_preference": self.notification_policy.ancs_actions,
             "notification_content_shown": config.SHOW_NOTIFICATION_CONTENT,
             **bearers,
+            **self._reconnect_status(),
+            **self.profile_reset.snapshot(),
+            **self.bluez_health.snapshot(),
             # Without an LE bearer state, an ANCS round trip is the only
             # proof that LE is up.
             "le": bool(bearers.get("le")) or bool(
@@ -1870,9 +1965,18 @@ class Daemon:
         main_loop.quit()
         return False
 
-    def _iphone_playing(self) -> bool:
+    def _prepare_iphone_resume(self) -> ResumePlayback | None:
+        """Bind handback to the media controller that was playing at request time."""
         media = self.media
-        return bool(media is not None and media.available and media.state.playing)
+        if media is None or not media.available or not media.state.playing:
+            return None
+
+        def resume(still_current: Callable[[], bool]) -> None:
+            self._resume_iphone_playback(
+                lambda: self.media is media and still_current(),
+            )
+
+        return resume
 
     def _iphone_playback_state(self) -> str:
         """``playing``, ``paused`` or ``unknown`` as reported over AMS."""
@@ -1881,7 +1985,9 @@ class Daemon:
             return "unknown"
         return "playing" if media.state.playing else "paused"
 
-    def _resume_iphone_playback(self, attempt: int = 0) -> None:
+    def _resume_iphone_playback(
+        self, still_current: Callable[[], bool], attempt: int = 0,
+    ) -> None:
         """Resume after iOS paused on losing its A2DP output.
 
         iOS reports the pause over AMS with a delay, so the cached state may
@@ -1889,13 +1995,14 @@ class Daemon:
         time; only a toggle has to wait until the pause has been observed.
         """
         media = self.media
-        if media is None or not media.available:
+        if not still_current() or media is None or not media.available:
             return
         supported = media.state.supported_commands
         if RemoteCommandID.Play not in supported and media.state.playing:
             if attempt < _RESUME_RETRIES:
                 def retry() -> bool:
-                    self._resume_iphone_playback(attempt + 1)
+                    if self.media is media:
+                        self._resume_iphone_playback(still_current, attempt + 1)
                     return False
 
                 GLib.timeout_add(_RESUME_RETRY_MS, retry)
@@ -1906,6 +2013,7 @@ class Daemon:
                 lambda *_: log.info("resumed iPhone playback after audio handback"),
                 lambda error: log.info(
                     "iPhone playback resume failed: %s", type(error).__name__),
+                still_current=still_current,
             )
         except Exception as error:  # media control may have gone away
             log.info("iPhone playback resume failed: %s", type(error).__name__)
@@ -1932,6 +2040,7 @@ class Daemon:
         self.read_receipts.close()
         self.adapter_class.stop()
         self.bearers.stop()
+        self.bluez_health.stop()
         self.profiles.stop()
         self.contact_sync.stop()
         if self.call_history is not None:
@@ -2027,3 +2136,32 @@ class Daemon:
     def _signal(self, signum, _frame):
         log.info("received signal %d, stopping", signum)
         main_loop.quit()
+
+
+def _ping_bluez(on_reply: Callable[[], None], on_error: Callable[[Exception], None]) -> None:
+    """Asynchronous org.freedesktop.DBus.Peer.Ping to bluetoothd."""
+    get_system_bus().call_async(
+        "org.bluez", "/", "org.freedesktop.DBus.Peer", "Ping", "", (),
+        lambda *_args: on_reply(), on_error, timeout=PING_TIMEOUT_SEC,
+    )
+
+
+def _bluez_pid(on_pid: Callable[[int | None], None]) -> None:
+    """Asynchronously ask the bus daemon for bluetoothd's process id."""
+    get_system_bus().call_async(
+        "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+        "GetConnectionUnixProcessID", "s", ("org.bluez",),
+        lambda pid: on_pid(int(pid)), lambda _error: on_pid(None),
+        timeout=PING_TIMEOUT_SEC,
+    )
+
+
+_introspect_filter: IntrospectNoReplyFilter | None = None
+
+
+def _throttle_introspect_errors() -> None:
+    """dbus-python logs each failed introspection; keep one per window."""
+    global _introspect_filter
+    if _introspect_filter is None:
+        _introspect_filter = IntrospectNoReplyFilter()
+        logging.getLogger("dbus.proxies").addFilter(_introspect_filter)

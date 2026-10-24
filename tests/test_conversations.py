@@ -118,6 +118,17 @@ def _name_label(row):
     return row.child.children[1].children[0]
 
 
+@pytest.mark.parametrize("reply_ready, expected", [(True, "7467"), (False, "")])
+def test_service_conversation_does_not_request_a_persons_avatar(reply_ready, expected):
+    requested = []
+    page = SimpleNamespace(_avatars=SimpleNamespace(get=lambda address: requested.append(address)))
+    image = SimpleNamespace(set_visible=lambda _value: None, set_from_icon_name=lambda _name: None)
+    conversations.ConversationsPage._set_avatar(
+        page, image, _thread(recipients=("7467",), reply_ready=reply_ready),
+    )
+    assert requested == [expected]
+
+
 def test_group_dialog_rejects_a_roster_changed_while_it_was_open(monkeypatch):
     from unittest.mock import Mock
 

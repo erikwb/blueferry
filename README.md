@@ -484,6 +484,19 @@ closes popups and never sends anything to the phone. The choice is saved as
 popups from before a reconnect just time out. Only the notification number
 and popup id are kept, in memory.
 
+### International contact numbers
+
+Contact search preserves the saved `+` prefix for sending messages. Local
+numbers are matched to international replies using the desktop's telephone
+region (`LC_ALL`, then `LC_TELEPHONE`, then `LANG`). For example, Australian
+`0412345678` matches `+61412345678`. To select a different numbering region,
+set `BLUEFERRY_PHONE_REGION=AU` (a two-letter country code) in
+`~/.config/blueferry/local.env` and restart the service. With no recognized
+region, BlueFerry does not guess a country for local numbers.
+
+After upgrading from a version that removed `+` during import, run
+`blueferry contacts-sync` once to restore the saved international prefixes.
+
 ### Contact photos (optional)
 
 Contact photos are off by default. To show the iPhone's contact pictures as
@@ -773,8 +786,12 @@ pages the phone only every five minutes, or when it reconnects, until a
 power-up succeeds. The Arch and Fedora packages already start `bluetoothd`
 with `-P hfp`, which leaves that plugin out; elsewhere add it yourself (for
 example `BLUETOOTH_OPTS="-E -P hfp"` in `/etc/conf.d/bluetooth` on Gentoo, or
-a `bluetooth.service` drop-in on systemd). Audio routing itself is PipeWire's job; BlueFerry only controls the
-call.
+a `bluetooth.service` drop-in on systemd); `blueferry doctor` warns while
+oFono runs next to a `bluetoothd` that loads the plugin. Independently, after
+two such timeouts in a row with the Classic link up, BlueFerry resets the
+iPhone's connection once (see
+[Reconnect and self-healing](#reconnect-and-self-healing)). Audio routing
+itself is PipeWire's job; BlueFerry only controls the call.
 
 ## Plugins (optional)
 
@@ -1041,6 +1058,7 @@ blueferry otp status
 blueferry notifications open-map list
 blueferry notifications sync status
 blueferry doctor
+blueferry reconnect         # page the iPhone now instead of waiting
 ```
 
 Ambiguous contact names are presented for you to choose from rather than
@@ -1138,6 +1156,42 @@ It includes the package build and source SHA, pairing mode, controller details,
 and an ordered setup timeline. Please also include the iPhone model and iOS
 version. Reports remove Bluetooth addresses and home-directory paths, but it is
 still sensible to inspect anything before posting it publicly.
+
+### Reconnect and self-healing
+
+When the iPhone has been away, BlueFerry retries the Classic connection with a
+growing pause (up to 10 minutes) and stops paging a phone that shows no sign of
+being nearby, for example after Bluetooth was switched off on the iPhone. To
+reconnect at once, use **Reconnect** on the iPhone page (Connection Health) or
+in the main window's message, key `b` in the terminal client, or
+`blueferry reconnect`. If that fails with "iPhone not reachable", check that
+Bluetooth is on on the iPhone.
+
+If bluetoothd itself stops answering (for example stuck in the kernel),
+BlueFerry stops its own connection attempts and the clients say "The system
+Bluetooth service is not responding"; restarting the computer is then the only
+fix. BlueFerry resumes on its own once bluetoothd answers again or is
+restarted.
+
+With phone calls on, bluetoothd's own `hfp` plugin can hold the iPhone's call
+channel so that oFono's modem power-up keeps timing out
+(`org.ofono.Error.Timedout`). Start bluetoothd with `-P hfp` (see
+[Phone calls](#phone-calls-optional-experimental)). Until then BlueFerry heals
+it itself: after two timeouts in a row it disconnects the iPhone, waits three
+seconds and connects it again, only while the Classic link is up, never during
+a call, while bluetoothd does not answer or during an adapter recovery, and at
+most once every ten minutes (longer while the reset does not help). Otherwise
+**Reconnect** performs the same reset on request, and `blueferry doctor` shows
+the last one. To switch the automatic reset off, untick **Reset a stuck
+iPhone connection automatically** in the settings, press `B` in the terminal
+client or run `blueferry reconnect --no-auto-reset` (saved in
+`~/.config/blueferry/settings.json`, effective at once and taking precedence
+over `BLUEFERRY_AUTO_PROFILE_RESET=false` in `~/.config/blueferry/local.env`).
+Details:
+[Reconnect and self-healing](docs/en/user/reconnect.md).
+
+If an action answers "Please wait a moment, then try again", BlueFerry's
+request limit for that action was reached; it clears within a minute.
 
 ## Technical details
 

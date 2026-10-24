@@ -8,6 +8,8 @@ import pytest
 from blueferry import backend_operations, config
 from blueferry.backend_operations import BackendDependencies, BackendOperations
 from blueferry.confirmed_groups import ConfirmedGroupsStore
+from blueferry.contact_repository import ContactRepository
+from blueferry.contacts import ContactsResolver
 from blueferry.errors import (
     ConfirmationRequiredError,
     InvalidArgumentsError,
@@ -950,6 +952,72 @@ def test_delete_threads_erases_selected_conversation_and_notification_evidence(
     retained = read_events(path=path)
     assert [event["body"] for event in retained] == ["retained bob text"]
     assert [thread["name"] for thread in operations.list_threads(10)] == ["Bob"]
+
+
+@pytest.mark.parametrize("region, number, digits, sender", [
+    ("NU", "+6837467", "7467", "Shop"),
+    ("DK", "+4532232665", "32232665", "Facebook"),
+])
+@pytest.mark.parametrize("stored_sender", [False, True])
+@pytest.mark.parametrize("delete_service", [False, True])
+def test_service_actions_cannot_affect_a_person_with_the_same_keypad_digits(
+    tmp_path, monkeypatch, region, number, digits, sender, stored_sender, delete_service,
+) -> None:
+    path = tmp_path / "events.sqlite"
+    monkeypatch.setattr(config, "EVENTS_DB", path)
+    monkeypatch.setattr(config, "PHONE_REGION", region)
+    monkeypatch.setattr(ContactRepository, "load", lambda _self, **_kwargs: [
+        ("Person", [number], []),
+    ])
+    contacts = ContactsResolver(photos=lambda: False)
+    append_event({
+        "kind": "sms_received", "handle": "person", "sender_address": number,
+        "body": "private message", "is_read": False,
+        "seen_at": "2026-10-20T10:00:00Z",
+    }, path=path)
+    append_event({
+        "kind": "sms_received", "handle": "service", "sender_address": digits,
+        "sender_alphanumeric": sender if stored_sender else None,
+        "body": "service code", "is_read": False,
+        "seen_at": "2026-10-20T11:00:00Z",
+    }, path=path)
+    append_event({
+        "kind": "ancs_notification", "app_id": "com.apple.MobileSMS",
+        "title": sender, "body": "service code",
+        "seen_at": "2026-10-20T11:00:01Z",
+    }, path=path)
+    stars = StarredThreadsStore(path=tmp_path / "stars.json")
+    operations = _operations(contacts=contacts, starred_threads=stars)
+    service, person = operations.list_threads(10)
+    assert service["name"] == sender
+    assert person["name"] == "Person"
+
+    sent = []
+    monkeypatch.setattr(operations, "_queue_send", lambda address, body, *_callbacks: sent.append(
+        (address, body)
+    ))
+    operations.send_to_thread(person["key"], "hello", False, lambda _: None, lambda _: None)
+    assert sent == [(number, "hello")]
+    with pytest.raises(NotReadyError, match="no unambiguous reply destination"):
+        operations.send_to_thread(service["key"], "hello", False, lambda _: None, lambda _: None)
+    assert sent == [(number, "hello")]
+
+    operations.set_thread_starred(service["key"], True)
+    assert {thread["name"]: thread["starred"] for thread in operations.list_threads(10)} == {
+        sender: True, "Person": False,
+    }
+    assert operations.mark_thread_read(service["key"]) == 1
+    assert {event["handle"]: event["is_read"] for event in read_events(path=path)
+            if event["kind"] == "sms_received"} == {"service": True, "person": False}
+
+    selected, retained = (service, person) if delete_service else (person, service)
+    assert operations.delete_threads([selected["key"]], True) == 1
+    remaining = read_events(path=path)
+    assert [event["handle"] for event in remaining if event["kind"] == "sms_received"] == [
+        "person" if delete_service else "service",
+    ]
+    assert any(event["kind"] == "ancs_notification" for event in remaining) is not delete_service
+    assert [thread["key"] for thread in operations.list_threads(10)] == [retained["key"]]
 
 
 def test_delete_threads_erases_named_group_route_and_matched_ancs(

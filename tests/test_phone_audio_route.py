@@ -94,12 +94,13 @@ def tree(*, connected=True, source=True, transport=False, state="idle"):
     return objects
 
 
-def route(bus, *, allowed=True):
+def route(bus, *, allowed=True, **kwargs):
     timers = Timers()
     changes: list[int] = []
     subject = PhoneAudioRoute(
         bus, DEV, allowed=allowed, on_changed=lambda: changes.append(1),
         schedule=timers.schedule, cancel=timers.cancel,
+        **kwargs,
     )
     return subject, timers, changes
 
@@ -333,7 +334,8 @@ def test_late_reply_after_stop_touches_no_timer_or_bus() -> None:
     subject, timers, changes = route(bus)
     subject.start()
     accepted: list[str] = []
-    subject.set_route("pc", accepted.append, pytest.fail)
+    errors: list[Exception] = []
+    subject.set_route("pc", accepted.append, errors.append)
     reply = bus.held.pop()[0]
     subject.stop()
     assert subject.snapshot()["phone_audio_pending"] == ""
@@ -341,6 +343,7 @@ def test_late_reply_after_stop_touches_no_timer_or_bus() -> None:
     reply()
     assert timers.pending == {}
     assert len(bus.calls) == calls and len(changes) == emitted
+    assert not accepted and len(errors) == 1 and isinstance(errors[0], NotReadyError)
 
 
 def test_in_progress_maps_to_not_ready_with_a_retry_hint() -> None:
@@ -371,7 +374,7 @@ def _resuming_route(bus, *, playing: bool):
     subject = PhoneAudioRoute(
         bus, DEV, allowed=True, on_changed=lambda: None,
         schedule=timers.schedule, cancel=timers.cancel,
-        was_playing=lambda: playing, resume_playback=lambda: resumed.append(1),
+        prepare_resume=lambda: (lambda _valid: resumed.append(1)) if playing else None,
     )
     return subject, timers, resumed
 
@@ -717,3 +720,295 @@ def test_daemon_announces_a_change_of_only_the_playing_location(make_daemon) -> 
     assert after["phone_audio_playing"] == "phone"
     assert {key: after[key] for key in before} == before
     instance._dbus_service = None
+
+
+def test_failed_initial_probe_retries_without_a_bluetooth_signal():
+    bus = Bus(tree(transport=True))
+    bus.hold_probe = True
+    subject, timers, _ = route(bus)
+    subject.start()
+    bus.held_probes.pop()[1](DBusCallError("org.freedesktop.DBus.Error.NoReply", "timeout"))
+    assert subject.snapshot()["phone_audio_reason"] == "unknown"
+    assert len(timers.pending) == 1
+    bus.hold_probe = False
+    timers.fire()
+    assert subject.snapshot()["phone_audio_route"] == "pc"
+    assert not timers.pending
+
+
+def test_probe_retry_waits_for_bluez_health_and_is_cancelled_on_stop():
+    blocked = [True]
+    bus = Bus(tree())
+    subject, timers, _ = route(bus, bluez_blocked=lambda: blocked[0])
+    subject.start()
+    for _ in range(3):
+        timers.fire()
+        assert not bus.calls and len(timers.pending) == 1
+    blocked[0] = False
+    timers.fire()
+    assert subject.snapshot()["phone_audio_route"] == "phone"
+    blocked[0] = True
+    subject.probe()
+    (late_retry,) = [cb for _, cb in timers.pending.values()]
+    subject.stop()
+    calls = list(bus.calls)
+    late_retry()
+    assert bus.calls == calls and not timers.pending
+
+
+def test_owner_loss_immediately_clears_active_audio_and_reprobes_on_return():
+    bus = Bus(tree(transport=True, state="active"))
+    subject, timers, changes = route(bus, media_state=lambda: "playing")
+    subject.start()
+    assert subject.snapshot()["phone_audio_playing"] == "pc"
+    subject.bluez_owner_changed(False)
+    assert subject.snapshot() == {
+        "phone_audio_route": "unavailable", "phone_audio_reason": "unknown",
+        "phone_audio_pending": "", "phone_audio_playing": "unknown",
+    }
+    assert not timers.pending and len(changes) == 2
+    bus.tree = tree(connected=False)
+    subject.bluez_owner_changed(True)
+    assert subject.snapshot()["phone_audio_reason"] == "phone_disconnected"
+
+
+@pytest.mark.parametrize("late_error", [False, True])
+def test_old_owner_callbacks_cannot_finish_or_resume_a_new_operation(late_error):
+    bus = Bus(tree(transport=True))
+    subject, timers, resumed = _resuming_route(bus, playing=True)
+    subject.start()
+    old_results, errors, new_results = [], [], []
+    subject.set_route("phone", old_results.append, errors.append)
+    old_reply, old_failure = bus.held.pop()
+    bus.hold_probe = True
+    subject.probe()
+    old_probe, _ = bus.held_probes.pop()
+    subject.bluez_owner_changed(False)
+    assert len(errors) == 1 and isinstance(errors[0], NotReadyError)
+    bus.hold_probe = False
+    bus.tree = tree()
+    subject.bluez_owner_changed(True)
+    subject.set_route("pc", new_results.append, pytest.fail)
+    old_probe(tree(transport=True, state="active"))
+    if late_error:
+        old_failure(DBusCallError("org.bluez.Error.Failed", "old owner"))
+    else:
+        old_reply()
+    assert subject.busy and subject.snapshot()["phone_audio_pending"] == "pc"
+    assert subject.snapshot()["phone_audio_route"] == "phone"
+    assert not old_results and len(errors) == 1 and not timers.pending
+    bus.held.pop()[0]()
+    timers.fire()
+    assert new_results == ["pc"] and not resumed
+
+
+@pytest.mark.parametrize("event", ["new_route", "disconnect", "owner_loss", "stop"])
+def test_new_intent_or_connection_invalidates_even_a_queued_resume(event):
+    bus = Bus(tree(transport=True))
+    subject, timers, resumed = _resuming_route(bus, playing=True)
+    subject.start()
+    subject.set_route("phone", lambda _route: None, pytest.fail)
+    bus.held.pop()[0]()
+    queued = [cb for _, cb in timers.pending.values()]
+    errors = []
+    if event == "new_route":
+        subject.set_route("pc", lambda _route: None, errors.append)
+    elif event == "disconnect":
+        bus.receivers["PropertiesChanged"]("org.bluez.Device1", {"Connected": False}, [])
+    elif event == "owner_loss":
+        subject.bluez_owner_changed(False)
+    else:
+        subject.stop()
+    # A callback already queued by GLib must remain harmless after removal.
+    for callback in queued:
+        callback()
+    assert not resumed
+
+
+def test_daemon_audio_guard_observes_health_recovery_and_supervisor(make_daemon):
+    instance = make_daemon()
+    subject = instance.phone_audio_route
+    subject._allowed = True
+    subject._bus = Bus(tree())
+    subject._device_path = DEV
+    subject._on_changed = lambda: None
+    subject.start()
+    for guard in (
+        {"running": False, "busy": False, "health": False, "recovery": False},
+        {"running": True, "busy": True, "health": False, "recovery": False},
+        {"running": True, "busy": False, "health": True, "recovery": False},
+        {"running": True, "busy": False, "health": False, "recovery": True},
+    ):
+        instance.bearers._running = guard["running"]
+        instance.bearers._disconnecting = {"le"} if guard["busy"] else set()
+        instance.bluez_health = SimpleNamespace(unresponsive=guard["health"])
+        instance.recovery = SimpleNamespace(active=guard["recovery"])
+        with pytest.raises(NotReadyError):
+            subject.set_route("pc", pytest.fail, pytest.fail)
+    assert [call[2] for call in subject._bus.calls] == ["GetManagedObjects"]
+    instance.bluez_health = SimpleNamespace(unresponsive=False)
+    instance.recovery = SimpleNamespace(active=False)
+    errors = []
+    subject.set_route("pc", pytest.fail, errors.append)
+    assert instance.bearers.busy
+    assert instance.bearers.reset_profiles() == "in-progress"
+    subject.stop()
+    assert not instance.bearers.busy and len(errors) == 1
+
+
+def _supervised_route():
+    from blueferry.bearer_supervisor import BearerSupervisor
+
+    timers = Timers()
+    state = {"bredr": True, "le": True}
+    connects, disconnects = [], []
+    bus = Bus(tree(transport=True))
+    subject, audio_timers, _ = route(bus, change_blocked=lambda: not supervisor.can_change_profiles)
+    supervisor = BearerSupervisor(
+        DEV, read_connected=state.get,
+        connect=lambda *args: connects.append(args),
+        disconnect=lambda *args: disconnects.append(args),
+        profile_busy=lambda: subject.busy,
+        schedule=timers.schedule, cancel=timers.cancel,
+    )
+    supervisor.start()
+    subject.start()
+    return subject, supervisor, bus, timers, audio_timers, state, connects, disconnects
+
+
+def test_audio_waits_for_disconnect_reply_and_profile_reset_settle():
+    subject, supervisor, bus, timers, _, state, connects, disconnects = _supervised_route()
+    assert supervisor.reset_profiles() == "started"
+    state.update(bredr=False, le=False)
+    supervisor.poke()  # Early Connected=false must not release the operation.
+    for _ in range(2):
+        with pytest.raises(NotReadyError):
+            subject.set_route("pc", pytest.fail, pytest.fail)
+        if disconnects:
+            disconnects.pop()[1]()  # Still blocked during the reset's settle.
+    assert [call[2] for call in bus.calls] == ["GetManagedObjects"]
+    timers.fire()
+    assert connects
+    with pytest.raises(NotReadyError):
+        subject.set_route("pc", pytest.fail, pytest.fail)
+
+
+@pytest.mark.parametrize("operation", ["reset", "reconnect", "le_reset"])
+def test_bearer_work_waits_for_audio_reply(operation):
+    subject, supervisor, bus, timers, _, state, connects, disconnects = _supervised_route()
+    subject.set_route("phone", lambda _: None, pytest.fail)
+    assert supervisor.busy
+    if operation == "reset":
+        assert supervisor.reset_profiles() == "in-progress"
+    elif operation == "reconnect":
+        state["bredr"] = False
+        supervisor.poke()
+        assert supervisor.reconnect_now() == "in-progress"
+    else:
+        supervisor.recover_le_transport()
+    timers.fire()
+    assert not connects and not disconnects
+    bus.held.pop()[0]()
+    if operation == "reset":
+        assert supervisor.reset_profiles() == "started"
+    else:
+        supervisor.poke()
+    assert connects or disconnects
+
+
+def test_new_route_cancels_toggle_retry_after_resume_was_dispatched(monkeypatch):
+    from blueferry.ams.constants import RemoteCommandID
+    from blueferry.daemon import Daemon
+
+    sent, retries = [], []
+    media = SimpleNamespace(
+        available=True,
+        state=SimpleNamespace(playing=True, supported_commands={RemoteCommandID.TogglePlayPause}),
+        send_command=lambda name, *_args, **_kwargs: sent.append(name),
+    )
+    host = SimpleNamespace(media=media)
+    host._resume_iphone_playback = Daemon._resume_iphone_playback.__get__(host)
+    monkeypatch.setattr(GLib, "timeout_add", lambda _ms, cb: retries.append(cb) or len(retries))
+    bus = Bus(tree(transport=True))
+    subject, timers, _ = route(
+        bus, prepare_resume=Daemon._prepare_iphone_resume.__get__(host),
+    )
+    subject.start()
+    subject.set_route("phone", lambda _: None, pytest.fail)
+    bus.held.pop()[0]()
+    timers.fire()
+    assert len(retries) == 1 and not sent
+    subject.set_route("pc", lambda _: None, pytest.fail)
+    media.state.playing = False
+    retries.pop()()
+    assert not sent and not retries
+
+
+@pytest.mark.parametrize("after_restart", [False, True])
+def test_device_exported_after_initial_snapshot_enables_audio(after_restart):
+    bus = Bus({})
+    subject, timers, _ = route(bus)
+    subject.start()
+    if after_restart:
+        subject.bluez_owner_changed(False)
+        subject.bluez_owner_changed(True)
+    bus.receivers["InterfacesAdded"](DEV, tree(connected=False)[DEV])
+    bus.receivers["PropertiesChanged"]("org.bluez.Device1", {"Connected": True}, [])
+    assert subject.snapshot()["phone_audio_route"] == "phone"
+    assert not timers.pending
+    subject.set_route("pc", lambda _: None, lambda _: None)
+    assert bus.calls[-1][2] == "ConnectProfile"
+    subject.stop()
+
+
+def test_removing_device_clears_route_and_pending_operation():
+    bus = Bus(tree(transport=True, state="active"))
+    subject, timers, _ = route(bus)
+    subject.start()
+    accepted, errors = [], []
+    subject.set_route("phone", accepted.append, errors.append)
+    reply, _ = bus.held.pop()
+    bus.receivers["InterfacesRemoved"](DEV, ["org.bluez.Device1"])
+    assert subject.snapshot()["phone_audio_reason"] == "phone_disconnected"
+    assert subject.snapshot()["phone_audio_playing"] == "unknown"
+    assert len(errors) == 1 and isinstance(errors[0], NotReadyError)
+    bus.receivers["InterfacesAdded"](DEV, tree()[DEV])
+    reply()
+    assert subject.snapshot()["phone_audio_route"] == "phone"
+    assert not accepted and not timers.pending
+
+
+@pytest.mark.parametrize("replace_before_reply", [False, True])
+def test_handback_does_not_resume_replacement_media(make_daemon, replace_before_reply):
+    from blueferry.ams.constants import RemoteCommandID
+
+    old_sent, new_sent = [], []
+
+    def media(playing, sent):
+        return SimpleNamespace(
+            available=True,
+            state=SimpleNamespace(playing=playing, supported_commands={RemoteCommandID.Play}),
+            send_command=lambda name, *_args, **_kwargs: sent.append(name),
+        )
+
+    instance = make_daemon()
+    instance.media = media(True, old_sent)
+    subject = instance.phone_audio_route
+    bus, timers = Bus(tree(transport=True)), Timers()
+    subject._bus, subject._device_path, subject._allowed = bus, DEV, True
+    subject._schedule, subject._cancel = timers.schedule, timers.cancel
+    subject._on_changed = lambda: None
+    subject._change_blocked = lambda: False
+    subject.start()
+    subject.set_route("phone", lambda _: None, pytest.fail)
+    if not replace_before_reply:
+        bus.tree = tree()
+        bus.held.pop()[0]()
+    # Media control was disabled/re-enabled during the call or the resume delay.
+    instance.media = media(False, new_sent)
+    if replace_before_reply:
+        bus.tree = tree()
+        bus.held.pop()[0]()
+    timers.fire()
+    assert not old_sent and not new_sent
+    subject.stop()

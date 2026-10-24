@@ -17,7 +17,7 @@ jobs:
           pacman -Syu --noconfirm
           appstream bandit dbus desktop-file-utils gettext git gtk4 kirigami
           libadwaita libsecret mypy python-build python-coverage
-          python-cryptography python-dbus python-gobject python-hypothesis
+          python-cryptography python-dbus python-gobject python-hypothesis python-phonenumbers
           python-installer python-pytest python-setuptools python-textual
           python-typer python-wheel pyside6 qt6-declarative qt6-tools quickshell ruff
       - uses: actions/checkout@v6

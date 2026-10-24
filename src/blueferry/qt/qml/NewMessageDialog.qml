@@ -75,8 +75,7 @@ Kirigami.Dialog {
                 required property var modelData
                 density: "compact"
                 title: contactDelegate.modelData.name
-                subtitle: contactDelegate.modelData.address.indexOf("@") >= 0
-                    ? contactDelegate.modelData.address : "+" + contactDelegate.modelData.address
+                subtitle: contactDelegate.modelData.address
                 leading: Component {
                     ContactAvatar {
                         bridge: dialog.bridge

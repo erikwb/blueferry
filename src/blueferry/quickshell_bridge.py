@@ -201,6 +201,12 @@ class QuickshellBridge:
             if route not in ("pc", "phone"):
                 raise RequestError("route must be pc or phone")
             return self.client.set_phone_audio_route(route)
+        if method == "set_auto_profile_reset":
+            return {
+                "profile_reset_auto": self.client.set_auto_profile_reset(
+                    _boolean(args, "enabled")
+                )
+            }
         if method == "set_proximity_lock":
             grace = args.get("grace_seconds")
             if isinstance(grace, bool) or not isinstance(grace, int):
