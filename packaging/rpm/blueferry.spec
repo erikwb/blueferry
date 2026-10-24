@@ -15,6 +15,7 @@ BuildRequires:  python3-dbus
 BuildRequires:  python3-gobject
 BuildRequires:  python3dist(cryptography) >= 41
 BuildRequires:  python3dist(phonenumbers) >= 8.12
+BuildRequires:  python3dist(regex) >= 2022.10.31
 BuildRequires:  python3dist(hypothesis)
 BuildRequires:  python3dist(pytest)
 BuildRequires:  python3dist(setuptools) >= 68
@@ -33,6 +34,7 @@ Requires:       python3-dbus
 Requires:       python3-gobject
 Requires:       python3dist(cryptography) >= 41
 Requires:       python3dist(phonenumbers) >= 8.12
+Requires:       python3dist(regex) >= 2022.10.31
 Requires:       python3dist(typer) >= 0.9
 Requires:       systemd
 Recommends:     gnome-keyring
@@ -179,6 +181,7 @@ fi
 %{python3_sitelib}/blueferry/ancs
 %{python3_sitelib}/blueferry/calls
 %{python3_sitelib}/blueferry/obex
+%{python3_sitelib}/blueferry/plugin_api
 %{python3_sitelib}/blueferry/sinks
 %{python3_sitelib}/blueferry-*.dist-info
 %{_prefix}/lib/blueferry/vendor

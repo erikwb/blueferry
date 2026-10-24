@@ -69,6 +69,7 @@ from blueferry.dbus_service import MessagesService, claim_bus_name
 from blueferry.errors import BlueFerryError, NotReadyError
 from blueferry.event_dispatcher import EventDispatcher
 from blueferry.events import SmsEvent
+from blueferry.features import FeatureSettings
 from blueferry.gio_dbus import GioDBus
 from blueferry.gio_dbus import system_bus as gio_system_bus
 from blueferry.glib_timers import schedule_periodic
@@ -78,6 +79,7 @@ from blueferry.history import (
     mark_event_handles_read,
 )
 from blueferry.media import MediaController, MediaControlSettings
+from blueferry.notification_log import NotificationLog
 from blueferry.notification_policy import (
     ALL_NOTIFICATIONS,
     NotificationPolicyStore,
@@ -92,6 +94,7 @@ from blueferry.otp_settings import OtpSettings
 from blueferry.pair_setup import bond_status
 from blueferry.phone_audio_route import PhoneAudioRoute, ResumePlayback
 from blueferry.phone_battery import BatteryWarningSettings, PhoneBattery
+from blueferry.plugin_notify import PluginPopup, PluginPopups
 from blueferry.profile_reset import (
     ProfileResetController,
     auto_reset_enabled,
@@ -225,8 +228,12 @@ class Daemon:
             # returns no icon while photos are off.
             contact_photo=self._contact_photo_path,
             resolve_otp_metadata=self._resolve_otp_metadata,
+            plugin_action=self._plugin_popup_action,
             otp_autocopy=lambda: self.otp_settings.enabled,
         )
+        # Popups from plugins with the notify capability; watched once the
+        # sinks exist. Inert while no such plugin is installed and enabled.
+        self.plugin_popups: PluginPopups | None = None
         self.listener: MapEventListener | None = None
         self.mns_watch: MnsWatch | None = None
         # One MAP reconnect per MNS outage; seeing MNS again rearms it.
@@ -339,6 +346,13 @@ class Daemon:
             on_phone_status=lambda _status: self._phone_status_changed(),
             on_powered_failed=self.profile_reset.hfp_powered_failed,
             on_powered=self.profile_reset.hfp_powered,
+        )
+        # Opt-in, memory-only list of recent iPhone app notifications.
+        self.notification_log: NotificationLog | None = (
+            NotificationLog(
+                show_content=config.SHOW_NOTIFICATION_CONTENT, idle=GLib.idle_add,
+            )
+            if config.NOTIFICATION_HISTORY else None
         )
         # Where the iPhone's media playback goes. Only offered when the
         # WirePlumber policy does not strip the A2DP sink role.
@@ -862,11 +876,18 @@ class Daemon:
                 set_auto_profile_reset=self._set_auto_profile_reset,
                 set_media_mpris=self._set_media_mpris,
                 phone_audio=self.phone_audio_route,
+                notification_log=self.notification_log,
+                notification_content=config.SHOW_NOTIFICATION_CONTENT,
+                features=FeatureSettings(),
                 contact_photos=self._contact_photos_enabled,
                 set_contact_photos=self._set_contact_photos,
                 set_otp_autocopy=self._set_otp_autocopy,
             ),
         )
+        if self.notification_log is not None:
+            self.notification_log.set_listener(
+                self._dbus_service.emit_notifications_changed
+            )
         self.events.set_dbus_service(self._dbus_service)
         self._publish_media()
         self._initialize_storage()
@@ -1312,6 +1333,9 @@ class Daemon:
         # Sinks don't need the OBEX sessions — set them up now so ANCS events
         # still reach the desktop while MAP/PBAP are degraded.
         self.events.setup()
+        if self.notification_log is not None and self.notification_log not in self.events.sinks:
+            self.events.sinks.append(self.notification_log)
+        self._start_plugin_popups()
         # Optional calls only observe oFono; failures there never degrade
         # messaging, and a missing oFono is retried in the background.
         self.calls.start()
@@ -1330,6 +1354,28 @@ class Daemon:
             log.warning("    No MAP/PBAP session yet; retry is automatic.")
         # The "ready" line in the happy path is emitted by
         # _post_sessions_setup, so we don't duplicate it here.
+
+    def _start_plugin_popups(self) -> None:
+        """Watch for content-free plugin popups (PLUGINS.md, capability notify)."""
+        if self.plugin_popups is not None:
+            return
+        if self._bus_name is None:
+            log.warning("plugin popups need the daemon's bus name; they stay off")
+            return
+        try:
+            # Plugins hand popups only to the owner of io.weirdware.BlueFerry,
+            # so fetch on exactly the connection that holds that name.
+            self.plugin_popups = PluginPopups(
+                self._bus_name.get_bus(), show=self.events.plugin_notification,
+            )
+        except Exception:
+            log.warning("plugin popups are unavailable without a session bus")
+            return
+        self.plugin_popups.start()
+
+    def _plugin_popup_action(self, popup: PluginPopup) -> None:
+        if self.plugin_popups is not None:
+            self.plugin_popups.invoke(popup)
 
     def _watch_bluez_owner(self) -> None:
         """Supervise bluetoothd even when compatibility mode disables ANCS."""
@@ -1818,6 +1864,7 @@ class Daemon:
             "storage_detail": self.storage.status.detail,
             **self._media_status(),
             **self.phone_audio_route.snapshot(),
+            "notification_history_enabled": self.notification_log is not None,
             **self._controller_identity(),
             **self.connectivity.snapshot(),
         }
@@ -2026,6 +2073,8 @@ class Daemon:
         if self.media is not None:
             self.media.close()
         self.solicitation.stop()
+        if self.plugin_popups is not None:
+            self.plugin_popups.stop()
         self.events.stop()
         self._clear_photo_files()
         if self._sleep_match is not None:
