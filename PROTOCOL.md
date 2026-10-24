@@ -778,6 +778,39 @@ immediately (the specification guarantees it); remote commands, truncation
 reads and reconnect behavior; and whether AMS traffic affects ANCS
 reliability on other controllers.
 
+## Bluetooth PAN tethering (not yet observed)
+
+No real-device result is recorded yet. The implementation relies on these
+expectations, which need verification with a phone, iOS version, BlueZ
+version, and controller noted as the maintenance rule below requires:
+
+- The iPhone exposes Personal Hotspot as a PAN NAP service, so BlueZ
+  publishes `org.bluez.Network1` on the bonded device and
+  `Network1.Connect("nap")` returns a `bnep` interface. Whether iOS lists the
+  NAP record while Personal Hotspot is off, and whether the A/V Hands-Free
+  Class of Device used for pairing affects that, is unknown.
+- With Personal Hotspot off, iOS is expected to refuse the BNEP connection;
+  BlueZ then reports `org.bluez.Error.Failed`, which BlueFerry maps to
+  `hotspot-refused`. A missing `Network1` interface (no NAP record, or no
+  BlueZ network plugin / `BT_BNEP`) maps to `not-supported`.
+- PAN shares the Classic ACL link with MAP and PBAP. It is not known whether
+  iOS keeps MAP/PBAP/ANCS undisturbed while BNEP is up.
+- BlueZ 5 does not tie a `Network1` connection to the D-Bus caller that
+  created it: `profiles/network/connection.c` (checked in 5.87) keeps no
+  owner watch, and only `Network1.Disconnect`, the device's ACL disconnect,
+  or removing the service ends it. So the link-only fallback, like a
+  NetworkManager-owned link, survives a daemon stop or restart; an earlier
+  note here said otherwise. Surviving links are re-adopted through the
+  `Network1` watch, but only while the user has tethering enabled; with it
+  off BlueFerry does not watch `Network1` at all. Not yet observed with a
+  real iPhone.
+- udev can rename the `bnep` interface right after BlueZ brought it up
+  (observed: `bluetooth hci0:256 enp0s20f0u14: renamed from bnep0 (while
+  UP)`), while `Network1.Interface` keeps the old name. The recovery hold
+  therefore follows the kernel ifindex, or the only interface with
+  `DEVTYPE=bluetooth`, instead of trusting the reported name.
+
+
 ## A2DP audio route
 
 `Media1.SetPhoneAudioRoute("pc")` calls `Device1.ConnectProfile` with the

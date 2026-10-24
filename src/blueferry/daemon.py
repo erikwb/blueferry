@@ -119,6 +119,8 @@ from blueferry.solicitation_supervisor import SolicitationSupervisor
 from blueferry.starred_threads import StarredThreadsStore
 from blueferry.storage_preparation import PreparedStorage, prepare_storage
 from blueferry.storage_security import StorageSecurity
+from blueferry.tether import NetworkLinkWatch, TetherController, TetherSettings
+from blueferry.tether_backends import choose_backend
 from blueferry.wireplumber_policy import WirePlumberPhoneAudioPolicy
 
 if TYPE_CHECKING:
@@ -373,6 +375,34 @@ class Daemon:
         self._clock: Callable[[], float] = time.monotonic
         self._schedule_seconds: Callable[..., int] = GLib.timeout_add_seconds
         self._battery_link_seen = False
+        # Tethering is an explicit user action layered on the Classic link the
+        # bearer supervisor keeps; it never connects or drops that link itself.
+        # Until the user enables it, the controller does nothing at all: no
+        # PAN watch, no adoption, no recovery hold, and Connect is refused.
+        self.tether_settings = TetherSettings()
+        self.tether = TetherController(
+            choose_backend(
+                get_system_bus, device_path, config.IPHONE_MAC, config.TETHER_BACKEND,
+            ),
+            link_watch=NetworkLinkWatch(
+                get_system_bus,
+                device_path,
+                lambda connected, interface: self.tether.observe_link(connected, interface),
+                schedule=GLib.timeout_add_seconds,
+                cancel=GLib.source_remove,
+            ),
+            classic_ready=lambda: classic_reachable(self.bearers, self.sessions),
+            autoconnect_ready=lambda: (
+                self.profiles.ready and not self.recovery.active
+            ),
+            on_changed=self._emit_tether_changed,
+            enabled=self.tether_settings.enabled,
+            autoconnect=self.tether_settings.autoconnect,
+            auto_suppressed=self.tether_settings.auto_suppressed,
+            on_auto_suppressed=self.tether_settings.set_auto_suppressed,
+            schedule=GLib.timeout_add_seconds,
+            cancel=GLib.source_remove,
+        )
         self.contact_sync = ContactSync(
             sessions=self.sessions,
             storage=self.storage,
@@ -448,6 +478,9 @@ class Daemon:
 
     def _recovery_observation(self) -> RecoveryObservation:
         ancs = self.ancs
+        # Re-check the tether link so a stale "connected" cannot keep holding
+        # recovery back; the answer arrives before the next observation.
+        self.tether.probe_link()
         self.bearers.observe_ancs_health(
             bool(ancs and ancs.connected and not ancs.permission_denied),
             ancs.health_proof if ancs else None,
@@ -461,9 +494,9 @@ class Daemon:
                 and self.bearers.bredr_connected and self.bearers.le_state is not None
                 and self.solicitation.active()
             ),
-            # A recovery power cycle drops Classic, and with it the audio of a
-            # call routed to this computer. An LE hiccup is not worth that.
-            busy=self.bearers.busy or self.calls.in_call,
+            # A recovery power cycle would drop call audio and tethered internet.
+            # Only a tether link that demonstrably exists may hold it back.
+            busy=self.bearers.busy or self.calls.in_call or self.tether.link_alive(),
         )
 
     def _pause_for_recovery(self) -> None:
@@ -762,6 +795,20 @@ class Daemon:
         self._emit_status()
         return self._phone_status()
 
+    def _set_tethering(self, enabled: bool, autoconnect: bool) -> dict:
+        selected, automatic = self.tether_settings.set(enabled, autoconnect)
+        log.info(
+            "Bluetooth tethering %s (automatic %s)",
+            "enabled" if selected else "disabled",
+            "on" if automatic else "off",
+        )
+        return self.tether.configure(selected, automatic)
+
+    def _emit_tether_changed(self) -> None:
+        emit = getattr(self._dbus_service, "emit_tether_changed", None)
+        if emit is not None:
+            emit()
+
     def _observe_le_state(self, connected: bool | None) -> None:
         legacy_connected = self.bearers.legacy_connected
         if connected is not True and not legacy_connected:
@@ -861,6 +908,8 @@ class Daemon:
                 set_phone_battery_warning=self._set_battery_warning,
                 set_auto_profile_reset=self._set_auto_profile_reset,
                 set_media_mpris=self._set_media_mpris,
+                tether=self.tether,
+                set_tethering=self._set_tethering,
                 phone_audio=self.phone_audio_route,
                 contact_photos=self._contact_photos_enabled,
                 set_contact_photos=self._set_contact_photos,
@@ -1264,6 +1313,7 @@ class Daemon:
         # outbound LE bootstrap until ProfileSupervisor completes its first
         # MAP/PBAP attempt. Phone-initiated LE remains usable for ANCS.
         self.bearers.start()
+        self.tether.start()
 
         # ANCS — per-app notifications via BLE GATT. Independent of MAP/PBAP.
         # The bearer supervisor connects LE alongside BR/EDR; the client waits
@@ -1362,6 +1412,8 @@ class Daemon:
         observations.invalidate()
         if old_owner:
             bluez_setup.forget_advert_registration()
+            # bluetoothd took every BNEP link and pending reply with it.
+            self.tether.reset_after_bluez_restart()
         if new_owner and not self.recovery.active:
             # Reset before ANCS publishes status: that callback can already
             # register an advert with the replacement owner. Forgetting it
@@ -1401,6 +1453,7 @@ class Daemon:
         # Hold first because resetting bearer observations immediately probes
         # the replacement daemon. The old OBEX transport is already gone, so
         # discard its local sessions without asking obexd to remove them.
+        self.tether.reset_after_bluez_restart()
         self.bearers.hold_le()
         self.profiles.reconnect(
             "bluetoothd restarted",
@@ -1620,6 +1673,9 @@ class Daemon:
         self._post_available_sessions_setup()
 
         self._sync_solicitation()
+        # Only when tethering and automatic tethering are both enabled, and
+        # never ahead of MAP/PBAP: the phone's first host-initiated transactions stay theirs.
+        self.tether.maybe_autoconnect()
 
         log.info(
             "=== BlueFerry ready (contacts=%d, sinks=%s) ===",
@@ -1990,6 +2046,7 @@ class Daemon:
             except Exception:
                 log.debug("could not remove phone status timer", exc_info=True)
             self._phone_emit_id = None
+        self.tether.stop()
         self.read_receipts.close()
         self.adapter_class.stop()
         self.bearers.stop()
