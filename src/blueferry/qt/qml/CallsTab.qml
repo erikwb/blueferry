@@ -206,7 +206,7 @@ GridLayout {
                     required property var modelData
                     density: "compact"
                     title: suggestion.modelData.name
-                    subtitle: "+" + suggestion.modelData.address
+                    subtitle: suggestion.modelData.address
                     leading: Component {
                         ContactAvatar {
                             bridge: callsTab.bridge
@@ -214,7 +214,7 @@ GridLayout {
                         }
                     }
                     onClicked: {
-                        dialField.text = callsTab.dialable("+" + suggestion.modelData.address)
+                        dialField.text = callsTab.dialable(suggestion.modelData.address)
                         callsTab.bridge.findContacts("")
                     }
                 }

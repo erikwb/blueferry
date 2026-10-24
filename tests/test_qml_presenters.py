@@ -4481,6 +4481,34 @@ def test_dial_pad_dials_only_dialable_characters(qml_engine, settings_window):
     assert _evaluate(qml_engine, "testBridge.calls")[-1] == {"method": "dialCall", "args": ["079#+"]}
 
 
+
+def test_dial_suggestions_show_and_dial_contact_numbers_unchanged(qml_engine, settings_window):
+    window, bridge = settings_window
+    _evaluate(qml_engine, "testWindow.currentTab = testWindow.callsTab")
+    bridge.setProperty("status", {"calls_enabled": True})
+    bridge.setProperty("callsState", "ready")
+    QGuiApplication.processEvents()
+    _settings_object(window, "dialPadField").setProperty("text", "Kim")
+    bridge.setProperty("contactResults", [
+        {"name": "Pat US", "address": "+15550100123"},
+        {"name": "Kim AU", "address": "0491570156"},
+        {"name": "Mail", "address": "kim@example.org"},
+    ])
+    QGuiApplication.processEvents()
+    suggestions = _settings_object(window, "dialSuggestions")
+    suggestions.setProperty("width", 300)
+    QMetaObject.invokeMethod(suggestions, "forceLayout")
+    QGuiApplication.processEvents()
+    rows = {
+        str(item.property("subtitle")): item
+        for item in suggestions.property("contentItem").childItems()
+        if item.metaObject().indexOfSignal("clicked()") >= 0
+    }
+    # Shown exactly as stored: "+" only where the iPhone has one.
+    assert set(rows) == {"+15550100123", "0491570156"}
+    QMetaObject.invokeMethod(rows["0491570156"], "clicked")
+    assert _settings_object(window, "dialPadField").property("text") == "0491570156"
+
 def test_notifications_tab_loads_while_shown_and_renders_plain_text(qml_engine, settings_window):
     window, _bridge = settings_window
     _evaluate(qml_engine, "testWindow.currentTab = testWindow.notificationsTab")
