@@ -25,6 +25,7 @@ from blueferry.contact_repository import ContactRepository
 from blueferry.contacts import ContactsResolver, _parse_vcard_entries, _parse_vcard_records
 from blueferry.settings_store import SettingsStore
 from blueferry.storage_security import StorageSecurity
+from blueferry.threads import build_threads
 from blueferry.vcard import iter_bounded_lines, iter_vcard_bodies, iter_vcard_cards
 
 from .photo_fixtures import jpeg, png, png_header
@@ -616,6 +617,94 @@ def test_refresh_bumps_the_content_free_photo_revision(storage) -> None:
 
 # ---- PBAP pull: enabled vs. disabled -------------------------------------------
 
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("owner_name", ["My Number", "Meine Nummer", "Mon numéro"])
+def test_sync_excludes_owner_and_regroups_existing_self_messages(
+    storage, monkeypatch, tmp_path, enabled, owner_name,
+):
+    phone, email = "+15551112222", "self@example.com"
+    cards = [
+        _card(f"FN:{owner_name}", f"TEL:{phone}"),
+        _card("FN:Self", f"TEL:{phone}", f"EMAIL:{email}",
+              "PHOTO;ENCODING=b:" + _b64(JPEG)),
+        # A real contact with this name must not be filtered by its label.
+        _card("FN:My Number", "TEL:+15553334444"),
+    ]
+    ContactRepository(storage).replace(_parse_vcard_records("".join(cards[:2])))
+    resolver = ContactsResolver(storage=storage, photos=lambda: enabled)
+    events = [
+        {"kind": "sms_received", "handle": str(index), "sender_address": address,
+         "body": "hello", "timestamp": f"2026-10-24T10:00:0{index}Z", "is_read": False}
+        for index, address in enumerate((phone, email))
+    ]
+    assert len(build_threads(events, resolver)) == 2
+
+    class _Pbap:
+        def Select(self, location, phonebook, **_kwargs):
+            assert (location, phonebook) == ("int", "pb")
+
+        def PullAll(self, path, filters, **_kwargs):
+            start = int(filters.get("Offset", 0))
+            blob = "".join(cards[start:start + int(filters["MaxCount"])])
+            Path(path).write_text(blob)
+            return "/transfer/phonebook", {"Status": "complete", "Size": len(blob)}
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setattr(contacts, "obex", lambda *_args: _Pbap())
+    monkeypatch.setattr(contacts, "wait_for_transfer", lambda *_args, **_kwargs: "complete")
+    assert contacts.pull_phonebook(
+        SimpleNamespace(pbap_path="/pbap"), storage=storage, photos=enabled, max_contacts=2,
+    ) == 2
+    assert ContactRepository(storage).load() == [
+        ("Self", [phone], [email]), ("My Number", ["+15553334444"], []),
+    ]
+    resolver.refresh()
+    [thread] = build_threads(events, resolver)
+    assert len(thread["messages"]) == 2
+    assert resolver.photo(phone) == (JPEG if enabled else None)
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("status,advertised_size,has_file", [
+    ("complete", 0, True), ("complete", 0, False),
+    ("gone", 0, True), ("gone", 0, False),
+    ("complete", 123, True), ("gone", 123, False),
+])
+def test_empty_contact_sync_requires_confirmed_empty_transfer(
+    storage, monkeypatch, tmp_path, enabled, status, advertised_size, has_file,
+):
+    old = [("Old", ["+15551112222"], [])]
+    ContactRepository(storage).replace(old, photos=[JPEG])
+
+    class _Pbap:
+        def Select(self, *_args, **_kwargs):
+            pass
+
+        def PullAll(self, path, filters, **_kwargs):
+            assert int(filters["Offset"]) == 1
+            if has_file:
+                Path(path).write_text("")
+            return "/transfer/phonebook", {"Status": "queued", "Size": advertised_size}
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setattr(contacts, "obex", lambda *_args: _Pbap())
+    monkeypatch.setattr(contacts, "wait_for_transfer", lambda *_args, **_kwargs: status)
+    monkeypatch.setattr(contacts.time, "sleep", lambda _seconds: None)
+    if status == "complete" and advertised_size == 0:
+        assert contacts.pull_phonebook(
+            SimpleNamespace(pbap_path="/pbap"), storage=storage, photos=enabled,
+        ) == 0
+        assert ContactRepository(storage).load() == []
+        assert _photo_rows() == []
+    else:
+        with pytest.raises(RuntimeError, match="empty phonebook"):
+            contacts.pull_phonebook(
+                SimpleNamespace(pbap_path="/pbap"), storage=storage, photos=enabled,
+            )
+        assert ContactRepository(storage).load() == old
+        assert ContactsResolver(storage=storage).photo("+15551112222") == JPEG
+
+
 def _fake_pull(monkeypatch, tmp_path, blob: str):
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
     requested = []
@@ -645,7 +734,8 @@ def test_pull_request_is_identical_and_disabled_path_stores_no_photo(
     assert contacts.pull_phonebook(SimpleNamespace(pbap_path="/pbap"), storage=storage) == 1
 
     # No Fields filter either way: the photo arrives in the one bulk pull.
-    assert set(requested[0]) == {"MaxCount", "Format"}
+    assert set(requested[0]) == {"MaxCount", "Format", "Offset"}
+    assert int(requested[0]["Offset"]) == 1
     assert bool(_photo_rows()) is enabled
     # The off path leaves the upstream schema untouched.
     assert _photo_table_exists() is enabled

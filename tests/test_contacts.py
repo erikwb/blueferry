@@ -25,9 +25,10 @@ from blueferry.vcard import iter_vcard_bodies
 
 def test_pbap_filters_use_phonebook_access_names():
     filters = _pbap_pull_filters(123)
-    assert set(filters) == {"MaxCount", "Format"}
+    assert set(filters) == {"MaxCount", "Format", "Offset"}
     assert int(filters["MaxCount"]) == 123
     assert str(filters["Format"]) == "vcard30"
+    assert int(filters["Offset"]) == 1
 
 
 def test_phonebook_transfer_uses_runtime_dir_and_cleans_up_on_failure(
@@ -136,8 +137,34 @@ def test_phonebook_pull_selects_pb_with_pbap_filters_and_private_name(
     assert seen["name"] == "pb.vcf"
     assert seen["filters"] == {
         "MaxCount": ("UInt16", 10), "Format": ("String", "vcard30"),
+        "Offset": ("UInt16", 1),
     }
     assert stored == [("Alice", ["+15551111111"], [])]
+
+
+@pytest.mark.parametrize("phonebook", ["ich", "och", "mch", "cch"])
+def test_call_history_pull_keeps_the_first_entry(tmp_path, monkeypatch, phonebook):
+    cards = [
+        "BEGIN:VCARD\nFN:First caller\nTEL:+15551111111\nEND:VCARD\n",
+        "BEGIN:VCARD\nFN:Second caller\nTEL:+15552222222\nEND:VCARD\n",
+    ]
+
+    class _Pbap:
+        def Select(self, location, selected, **_kwargs):
+            assert (location, selected) == ("int", phonebook)
+
+        def PullAll(self, path, filters, **_kwargs):
+            start = int(filters.get("Offset", 0))
+            data = "".join(cards[start:start + int(filters["MaxCount"])])
+            Path(path).write_text(data)
+            return "/transfer/calls", {"Status": "complete", "Size": len(data)}
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setattr(contacts, "obex", lambda *_args: _Pbap())
+    monkeypatch.setattr(contacts, "wait_for_transfer", lambda *_args, **_kwargs: "complete")
+    assert contacts.pull_vcard_listing(
+        SimpleNamespace(pbap_path="/pbap"), phonebook, max_entries=1,
+    ) == cards[0]
 
 
 def test_listing_pull_clamps_count_and_forwards_the_transfer_bound(

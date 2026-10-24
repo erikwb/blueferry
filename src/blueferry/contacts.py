@@ -6,7 +6,6 @@ not `SetFolder`. Then `PullAll(targetfile, filters)`.
 """
 from __future__ import annotations
 
-import io
 import logging
 import os
 import tempfile
@@ -51,17 +50,25 @@ _PHONEBOOK_TRANSFER_MAX_SECONDS = 30 * 60
 
 # ---- vCard parsing ------------------------------------------------------
 
-def _pbap_pull_filters(max_contacts: int) -> dict:
+def _pbap_pull_filters(max_contacts: int, *, phonebook: str = "pb") -> dict:
     """Build filters using the PhonebookAccess1 API's exact spelling.
 
     PBAP uses MaxCount and lowercase vcard30. MAP's superficially similar
     ListMessages call uses MaxListCount; mixing the two makes BlueZ create a
     transfer that immediately fails and leaves a zero-byte target file.
     """
-    return {
+    filters = {
         "MaxCount": dbus.UInt16(max_contacts),
         "Format": dbus.String("vcard30"),
     }
+    # PBAP 1.2.3 sections 3.1.5.2 and 4.2 reserve index 0 in pb for
+    # the owner's card and deliver PullPhoneBook in ascending index order.
+    # iOS exposes the SIM number here as a synthetic contact, which can
+    # otherwise make the user's real contact card ambiguous. Call-history
+    # folders have no owner card: their first entry must still be included.
+    if phonebook == "pb":
+        filters["Offset"] = dbus.UInt16(1)
+    return filters
 
 def _parse_card(body: str) -> tuple[str | None, list[str], list[str]] | None:
     """Return one card's name with every safe phone and email address."""
@@ -360,7 +367,7 @@ def open_vcard_listing(
         out = Path(temporary_name) / f"{phonebook}.vcf"
         log.info("PBAP PullAll → %s (max=%d)", out, max_entries)
         ret = pbap.PullAll(
-            str(out), _pbap_pull_filters(max_entries), timeout=30.0
+            str(out), _pbap_pull_filters(max_entries, phonebook=phonebook), timeout=30.0
         )
         if isinstance(ret, tuple | list):
             transfer_path = str(ret[0])
@@ -403,13 +410,18 @@ def open_vcard_listing(
         size = out.stat().st_size if out.exists() else 0
         log.info("transfer status: %s, file size: %d bytes", status, size)
         if size == 0:
-            if allow_empty:
-                yield io.StringIO("")
-                return
-            raise RuntimeError(
-                "iPhone returned an empty phonebook; verify Settings → "
-                "Bluetooth → this computer → Sync Contacts is enabled"
-            )
+            # Skipping the owner card can legitimately leave no contacts.
+            # Disappearance alone, or a promised nonempty body, must not
+            # turn a failed download into an empty replacement of the cache.
+            if not (allow_empty and status == "complete"
+                    and int(initial.get("Size", 0) or 0) == 0):
+                raise RuntimeError(
+                    "iPhone returned an empty phonebook; verify Settings → "
+                    "Bluetooth → this computer → Sync Contacts is enabled"
+                )
+            # Keep the same seekable, file-backed stream for empty and
+            # nonempty phonebooks (including the two-pass photo parser).
+            out.touch(exist_ok=True)
         listing_size()
         with out.open(errors="replace") as stream:
             yield stream
@@ -460,7 +472,7 @@ def pull_phonebook(
     max_contacts = max(1, min(int(max_contacts), MAX_PHONEBOOK_CONTACTS))
     if storage is not None and not storage.status.can_write:
         raise RuntimeError(storage.status.detail)
-    with open_vcard_listing(sessions, "pb", max_entries=max_contacts) as stream:
+    with open_vcard_listing(sessions, "pb", max_entries=max_contacts, allow_empty=True) as stream:
         size = os.fstat(stream.fileno()).st_size
         if (config.CONTACT_PHOTOS if photos is None else photos) and storage is not None:
             # Find the records that own an address before budgeting photos.
