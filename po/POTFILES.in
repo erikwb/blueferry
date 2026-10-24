@@ -34,4 +34,5 @@ src/blueferry/qt/qml/ContactPhotoSettings.qml
 src/blueferry/qt/qml/OtpAutocopySettings.qml
 src/blueferry/qt/qml/PhoneCallsSettings.qml
 src/blueferry/qt/qml/PhoneStatusIndicator.qml
+src/blueferry/plugin_stopper.py
 src/blueferry/phone_audio_view.py

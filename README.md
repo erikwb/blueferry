@@ -769,6 +769,38 @@ iPhone's connection once (see
 [Reconnect and self-healing](#reconnect-and-self-healing)). Audio routing
 itself is PipeWire's job; BlueFerry only controls the call.
 
+## Plugins (optional)
+
+Features outside messaging run as separate plugin processes on your session
+bus, not inside the backend (see [PLUGINS.md](PLUGINS.md)). Nothing is
+installed by default.
+
+- **Install** with `blueferry plugins install URL` (any https Git URL) or
+  pick one from the curated store (`blueferry plugins available`). Every install and update
+  shows the source, the pinned ref and commit, the capabilities and the
+  command the plugin's manifest runs (`Exec`), and asks first. Each plugin
+  gets its own virtual environment under `~/.local/share/blueferry/plugins`;
+  pip fetches its dependencies from the network. Everything runs as you;
+  nothing asks for root.
+- **Settings** of a plugin come from its schema:
+  `blueferry plugins config ID --set KEY=VALUE --secret KEY` (`--test`,
+  `--login`). BlueFerry stores no plugin secrets; each plugin keeps its own
+  (the published plugins use the desktop keyring).
+- **Disable** stops BlueFerry from calling a plugin at once and stops a
+  plugin process it installed; `blueferry plugins disable ID`.
+- **Logs**: plugins write `~/.local/state/blueferry/plugins/<id>.log`
+  (owner-only, rotated, secrets masked); `blueferry plugins log ID`.
+
+```bash
+blueferry plugins list
+blueferry plugins available                 # the store
+blueferry plugins install https://github.com/joshii-h/blueferry-plugin-immich
+blueferry plugins config immich --set url=https://photos.example.org --secret api_key --test
+```
+
+Plugin text is plain text, and a plugin may only ask BlueFerry to open web
+links or files in its own cache.
+
 ## Lock when the iPhone goes away
 
 BlueFerry can lock your desktop session after the paired iPhone has been
