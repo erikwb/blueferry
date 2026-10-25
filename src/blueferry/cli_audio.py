@@ -6,7 +6,7 @@ import typer
 from blueferry.client import BackendClient, BackendError
 from blueferry.text_safety import terminal_text
 
-_ACTIONS = ("status", "pc", "phone")
+_ACTIONS = ("status", "pc", "phone", "auto")
 
 _REASONS = {
     "keep_phone_audio_on_phone": (
@@ -59,10 +59,10 @@ def describe_route(status: dict) -> str:
 
 def audio(
     action: str = typer.Argument(
-        "status", help="status, pc (play iPhone audio here) or phone", show_default=True,
+        "status", help="status, pc, phone, or auto (desktop-managed routing)", show_default=True,
     ),
 ) -> None:
-    """Show or switch where the iPhone's media playback is heard."""
+    """Show or remember where this iPhone's media playback should go."""
     selected = action.strip().casefold()
     if selected not in _ACTIONS:
         typer.echo(f"Unknown audio action. Choose one of: {', '.join(_ACTIONS)}", err=True)
@@ -77,10 +77,18 @@ def audio(
             playing = describe_playing(status)
             if playing:
                 typer.echo(playing)
+            preference = status.get("phone_audio_preference")
+            if preference in ("pc", "phone", "auto"):
+                typer.echo(f"Remembered audio choice: {preference}.")
+            if status.get("phone_audio_autoconnect_policy") == "pending-reload":
+                typer.echo("Restart WirePlumber to apply the phone's auto-connect rule.")
             if status.get("phone_audio_route") not in ("pc", "phone"):
                 raise typer.Exit(code=1)
             return
         client.set_phone_audio_route(selected)
+        if selected == "auto":
+            typer.echo("Audio routing follows the desktop again.")
+            return
         target = "this computer" if selected == "pc" else "the iPhone"
         typer.echo(f"Asked the iPhone to play its audio on {target}.")
     except BackendError as error:
