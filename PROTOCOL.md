@@ -816,14 +816,56 @@ moves its `State` from `active` to `idle` while AMS still reports playback;
 GetStatus then reports route `pc` with `phone_audio_playing` `phone`, and
 picking this computer again returns to `pc`.
 
-Open hardware questions:
+Hardware validation on 2026-10-25 UTC (MediaTek, BlueZ 5.87, PipeWire 1.6.9,
+WirePlumber 0.5.18): with normal adapter roles and a rule matching only the
+selected phone's `api.bluez5.address` with `bluez5.auto-connect = [ ]`, an
+explicit PC route opened an active A2DP transport and AVRCP. Returning to
+the phone removed that transport and disconnected AVRCP. Both bearers,
+MAP/PBAP and authorized/subscribed ANCS stayed up. Apple Media Service
+remained available: pause and play changed the observed playback state,
+and the operator confirmed sound on the phone. The operator also reported
+sound staying on the phone after reconnecting; polling did not capture the
+disconnect itself, so that part is not an independently verified reconnect
+trace. Fresh pairing with the rule, call audio, and delivery of a new ANCS
+notification were not tested in that experiment.
 
-- `DisconnectProfile` on the A2DP Source UUID may take AVRCP down with the
-  stream. The AVRCP target would then disappear and media control could
-  report NowPlaying as unavailable until the phone reconnects it.
+### Remembered media route
+
+The default is `auto`: BlueFerry leaves routing alone until an explicit
+PC/phone choice. `SetPhoneAudioRoute` now persists a successful choice for
+the selected phone in `settings.json`; `auto` clears it. A different phone
+does not inherit the choice. GetStatus separately reports the actual route,
+`phone_audio_preference`, and `phone_audio_autoconnect_policy`.
+
+While remembering either destination, an owned
+`zz-blueferry-phone-audio.conf` fragment disables automatic profile dials
+for that phone. It never changes `bluez5.roles`. Installing/removing the rule
+reloads WirePlumber on a worker; subsequent PC/phone choices reuse the same
+rule. Before a PC request, the controller observes the adapter's sink UUID
+after the reload. Unsupported WirePlumber leaves manual routing available,
+but cannot suppress the audio server's own dials.
+
+Pairing and forgetting hold an interprocess advisory lock for their whole
+operation. Audio policy reloads and profile requests acquire that same lock
+without blocking the daemon main loop. The audio lock lasts until the D-Bus
+operation replies, including if transport properties change first. A dead
+helper releases the lock through normal descriptor cleanup.
+
+Automatic restoration additionally waits for messaging and, when enabled,
+working ANCS. It makes one attempt per Classic connection, so an incoming
+stream cannot trigger an endless disconnect/reconnect loop. Unknown bearer
+observations do not replenish that budget. Explicit PC/phone requests always
+remain possible, and the existing playback-session guards govern resuming
+audio that was playing before a handback. Phone calls retain their separate
+opt-in and HFP roles. Automatic restoration is covered by hermetic tests;
+the hardware result above exercised the manual profile operations and rule.
+
+Remaining hardware questions:
+
 - The iPhone can open the A2DP stream itself, so a route set to `phone` may
-  silently return to `pc` without any BlueFerry request. The status follows
-  bluetoothd, so clients see that change, but BlueFerry does not prevent it.
+  return to `pc` without any BlueFerry request. The remembered preference
+  corrects the first unwanted stream after reconnecting, but deliberately
+  does not enforce it continuously.
 - How quickly iOS suspends the stream between tracks has not been measured;
   the two-second debounce is a guess.
 

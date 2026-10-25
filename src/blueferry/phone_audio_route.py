@@ -127,6 +127,7 @@ class PhoneAudioRoute:
         self._matches: list[Any] = []
         self._connected = False
         self._has_source = False
+        self.sink_available = False
         # Transport object path -> MediaTransport1.State.
         self._transports: dict[str, str] = {}
         self._known = False
@@ -360,6 +361,9 @@ class PhoneAudioRoute:
                 self.start()
 
     def _apply_tree(self, objects: Mapping) -> None:
+        adapter = self._device_path.rsplit("/", 1)[0]
+        roles = objects.get(adapter, {}).get("org.bluez.Adapter1", {}).get("UUIDs", ())
+        self.sink_available = A2DP_SINK_UUID in {str(uuid).lower() for uuid in roles}
         device = objects.get(self._device_path, {}).get(DEVICE_IFACE) or {}
         self._known = True
         self._connected = bool(device.get("Connected", False))
@@ -587,6 +591,7 @@ class PhoneAudioRoute:
         self._known = False
         self._connected = False
         self._has_source = False
+        self.sink_available = False
         self._transports.clear()
         self._playing = PLAYING_UNKNOWN
         self._cancel_debounce()

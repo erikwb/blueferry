@@ -1759,6 +1759,22 @@ def test_pairing_cleanup_waits_for_wireplumber(monkeypatch):
     assert attempt["timeline"][-1]["changed"] is True
 
 
+def test_pairing_holds_audio_guard_for_the_transaction_and_releases_on_error(monkeypatch):
+    from blueferry.audio_activity import audio_activity
+
+    def execute(*_args, **_kwargs):
+        with pytest.raises(BlockingIOError), audio_activity(blocking=False):
+            pass
+        raise pair_setup.PairingError("test cancellation")
+
+    monkeypatch.setattr(pair_setup, "_execute_pairing", execute)
+    monkeypatch.setattr(pair_setup, "_record_pairing_report", lambda *_a, **_k: None)
+    with pytest.raises(pair_setup.PairingError, match="test cancellation"):
+        pair_setup.complete_pairing("AA:BB:CC:DD:EE:FF", confirmation=lambda _code: True)
+    with audio_activity(blocking=False):
+        pass
+
+
 @pytest.mark.parametrize("ready", [True, False])
 def test_pairing_waits_for_an_actual_audio_role(monkeypatch, ready):
     from types import SimpleNamespace

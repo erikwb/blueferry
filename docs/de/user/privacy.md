@@ -157,3 +157,10 @@ verhinderte. Beim Start oder vor der Kopplung entfernt BlueFerry seine alten
 bei Bedarf neu. Die bisherige Einstellung `BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE`
 wird ignoriert. Wähle das iPhone in dessen Audioausgabe-Menü oder verwende
 `blueferry audio phone`, um die Medienwiedergabe aufs Telefon zurückzugeben.
+
+Die Auswahl PC oder iPhone wird zusammen mit der Telefonadresse lokal in
+`settings.json` gespeichert. Die separate Regel `zz-blueferry-phone-audio.conf`
+deaktiviert bei unterstütztem WirePlumber automatische Profilverbindungen nur
+für dieses Telefon, ohne Audiorollen zu entfernen. `blueferry audio auto`
+löscht die Auswahl und entfernt die Regel. Andere Geräte behalten die
+Desktop-Einstellungen.

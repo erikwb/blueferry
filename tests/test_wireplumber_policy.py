@@ -124,3 +124,97 @@ def test_cleanup_passes_restart_wait_to_service_manager(tmp_path, monkeypatch, w
 def test_cleanup_respects_wireplumber_config_override(tmp_path, monkeypatch):
     monkeypatch.setenv("WIREPLUMBER_CONFIG_DIR", f"{tmp_path}/first:{tmp_path}/second")
     assert policy_module.fragment_path() == tmp_path / "first/wireplumber.conf.d" / FRAGMENT_NAME
+
+
+def test_remembered_route_rule_matches_one_phone_without_removing_roles(tmp_path):
+    path = tmp_path / policy_module.PREFERENCE_FRAGMENT_NAME
+    other = tmp_path / "bluetooth-a2dp-autoconnect.conf"
+    other.write_text("user settings")
+    calls = []
+    policy = policy_module.PhoneAudioAutoConnectPolicy(
+        path=path, supported=lambda: True, active=lambda: True,
+        restart=lambda: calls.append("restart"),
+    )
+    assert policy.configure("aa:bb:cc:dd:ee:ff") == "active"
+    content = path.read_text()
+    assert 'api.bluez5.address = "AA:BB:CC:DD:EE:FF"' in content
+    assert "bluez5.auto-connect = [ ]" in content
+    assert "roles" not in content and "monitor.bluez.properties" not in content
+    assert "~bluez_card" not in content
+    policy.configure("AA:BB:CC:DD:EE:FF")
+    assert calls == ["restart"]
+    policy.configure("AA:BB:CC:DD:EE:00")
+    assert "AA:BB:CC:DD:EE:FF" not in path.read_text()
+    assert policy.configure(None) == "desktop"
+    policy.configure(None)
+    assert calls == ["restart"] * 3
+    assert not path.exists() and other.read_text() == "user settings"
+
+
+def test_default_desktop_does_not_probe_services_or_create_files(tmp_path):
+    def forbidden():
+        pytest.fail("no policy exists")
+    path = tmp_path / policy_module.PREFERENCE_FRAGMENT_NAME
+    policy = policy_module.PhoneAudioAutoConnectPolicy(path=path, supported=forbidden, active=forbidden)
+    assert policy.configure(None) == "desktop"
+    assert not path.exists()
+
+
+def test_failed_reload_is_retried_even_when_the_file_is_already_correct(tmp_path):
+    calls = []
+    def restart():
+        calls.append(True)
+        if len(calls) == 1:
+            raise OSError("temporary failure")
+    policy = policy_module.PhoneAudioAutoConnectPolicy(
+        path=tmp_path / "policy", supported=lambda: True, active=lambda: True, restart=restart,
+    )
+    with pytest.raises(OSError):
+        policy.configure("AA:BB:CC:DD:EE:FF")
+    assert not policy.path.exists()
+    policy.configure("AA:BB:CC:DD:EE:FF")
+    assert calls == [True, True]
+
+
+def test_preference_rule_replaces_a_symlink_without_touching_its_target(tmp_path):
+    user = tmp_path / "user"
+    user.write_text("user content")
+    path = tmp_path / "policy"
+    path.symlink_to(user)
+    policy = policy_module.PhoneAudioAutoConnectPolicy(
+        path=path, supported=lambda: True, active=lambda: True, restart=lambda: None,
+    )
+    policy.configure("AA:BB:CC:DD:EE:FF")
+    assert not path.is_symlink() and user.read_text() == "user content"
+    with pytest.raises(ValueError):
+        policy.configure('" } ] monitor.bluez.properties = {')
+
+
+@pytest.mark.parametrize("version,supported", [
+    ("wireplumber\nCompiled with libwireplumber 0.5.18\n", True),
+    ("wireplumber 0.5.6\n", True), ("wireplumber 0.4.17\n", False), ("unknown", False),
+])
+def test_wireplumber_version_formats(monkeypatch, version, supported):
+    monkeypatch.setattr(policy_module, "run_command", lambda *_a, **_k: SimpleNamespace(stdout=version))
+    assert policy_module._supports_fragments() is supported
+
+
+def test_inactive_service_does_not_claim_the_new_rule_is_loaded(tmp_path, monkeypatch):
+    monkeypatch.setattr(policy_module, "_manual_restart_hint", lambda: "Restart WirePlumber")
+    policy = policy_module.PhoneAudioAutoConnectPolicy(
+        path=tmp_path / "rule", supported=lambda: True, active=lambda: False,
+        restart=lambda: pytest.fail("must not start an inactive service"),
+    )
+    assert policy.configure("AA:BB:CC:DD:EE:FF") == "pending-reload"
+    assert policy.configure("AA:BB:CC:DD:EE:FF") == "pending-reload"
+
+
+def test_service_probe_failure_removes_an_unsaved_first_rule(tmp_path):
+    def fail():
+        raise OSError("no session manager")
+    policy = policy_module.PhoneAudioAutoConnectPolicy(
+        path=tmp_path / "rule", supported=lambda: True, active=fail,
+    )
+    with pytest.raises(OSError):
+        policy.configure("AA:BB:CC:DD:EE:FF")
+    assert not policy.path.exists()

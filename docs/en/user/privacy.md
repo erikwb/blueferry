@@ -151,3 +151,9 @@ fragments on startup or before pairing and reloads WirePlumber when needed.
 The old `BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE` setting is ignored. Choose the
 iPhone in its output picker, or use `blueferry audio phone`, to return media
 playback to the phone.
+
+Choosing PC or phone in BlueFerry saves that choice and the selected phone's
+address locally in `settings.json`. When supported, a separate
+`zz-blueferry-phone-audio.conf` rule disables automatic profile connections
+for that phone without removing adapter roles. `blueferry audio auto` clears
+the choice and removes this rule. Other devices keep the desktop's policy.

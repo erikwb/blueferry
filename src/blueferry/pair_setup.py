@@ -18,6 +18,7 @@ from gi.repository import GLib
 
 from blueferry import bluetooth_capabilities as capabilities
 from blueferry import config, pairing_diagnostics, quirks_report
+from blueferry.audio_activity import audio_activity
 from blueferry.bearer_supervisor import preferred_bearer_unavailable
 from blueferry.bluetooth_devices import PairedDevice
 from blueferry.bluez_reads import observations
@@ -33,7 +34,7 @@ from blueferry.pairing_types import PairingAttempt, PairingOutcome, PairingTrans
 from blueferry.private_files import atomic_write_private_text, private_file_lock, read_private_text
 from blueferry.service_manager import backend_service_manager
 from blueferry.setup_verification import clear_setup_verification
-from blueferry.wireplumber_policy import LegacyPhoneAudioPolicy
+from blueferry.wireplumber_policy import LegacyPhoneAudioPolicy, PhoneAudioAutoConnectPolicy
 
 log = logging.getLogger(__name__)
 
@@ -889,6 +890,7 @@ def _stop_user_service() -> None:
         raise PairingError(f"Could not stop BlueFerry: {error}") from error
 
 
+@audio_activity()
 def complete_pairing(
     mac: str,
     *,
@@ -1686,6 +1688,7 @@ def _execute_pairing(
     return outcome
 
 
+@audio_activity()
 def forget_device(mac: str, *, adapter: str | None = None) -> None:
     """Stop BlueFerry, remove the local bond, and clear the selected phone."""
     normalized = mac.strip().upper()
@@ -1737,6 +1740,10 @@ def forget_device(mac: str, *, adapter: str | None = None) -> None:
     _save_pending_teardown(adapter_name, teardown)
     log.debug("BlueZ teardown trace: %s", teardown)
     clear_local_target()
+    try:
+        PhoneAudioAutoConnectPolicy().configure(None)
+    except Exception:
+        log.warning("could not remove the forgotten phone's audio rule", exc_info=True)
     log.info("cleared configured BlueFerry target %s", normalized)
 
 

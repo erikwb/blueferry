@@ -556,13 +556,17 @@ an app's ID with `ls /usr/share/applications ~/.local/share/applications
 Messages, keep their normal behaviour.
 
 BlueFerry leaves Bluetooth audio roles to the desktop's audio configuration.
-The automatic keep-audio-on-the-iPhone policy has been removed because it
+The adapter-wide keep-audio-on-the-iPhone policy has been removed because it
 prevented normal pairing and ANCS setup. Existing BlueFerry `90-` and `99-`
 phone-audio fragments are removed on backend startup or before pairing;
 WirePlumber is restarted only when cleanup changes a file. The former
 `BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE` setting is ignored. Audio may follow the
 computer's normal Bluetooth routing; use the iPhone's output picker or
-`blueferry audio phone` to send media playback back to the phone.
+`blueferry audio phone` to send media playback back to the phone. Explicit
+PC/phone choices in BlueFerry are now remembered for the selected iPhone;
+`blueferry audio auto` clears that choice. With WirePlumber 0.5+, BlueFerry
+uses a phone-specific auto-connect rule while remembering a route, leaving
+the adapter's audio roles available for pairing. See [iPhone sound](docs/en/user/phone-audio.md).
 
 ## Phone calls (optional, experimental)
 
@@ -970,6 +974,7 @@ the iPhone's media playback here and back, without touching PipeWire:
 blueferry audio            # where the sound goes and where it plays
 blueferry audio pc         # play the iPhone's sound on this computer
 blueferry audio phone      # back to the iPhone
+blueferry audio auto       # clear the remembered choice; use desktop routing
 ```
 
 The Qt, GTK and Quickshell clients show the same switch as **iPhone Sound**
