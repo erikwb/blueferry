@@ -533,6 +533,11 @@ class BridgeController(QObject):
         """Why the dial pad cannot call; QML passes the properties it binds."""
         return phone_link_view.calls_hint(dict(status or {}), str(calls_state or ""))
 
+    @Slot("QVariantMap", float, result="QVariantMap")
+    def callCard(self, call: dict, now_ms: float) -> dict:
+        """A running call's card; QML passes its 1 s ticker in milliseconds."""
+        return phone_link_view.call_card(dict(call or {}), float(now_ms) / 1000)
+
     @Slot("QVariantMap", str, result="QVariantMap")
     def notificationsView(self, info: dict, opt_in_hint: str) -> dict:
         return phone_link_view.notifications_view(dict(info or {}), str(opt_in_hint or ""))

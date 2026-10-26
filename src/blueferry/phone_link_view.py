@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Mapping
+from datetime import datetime
 from typing import Any
 
 from blueferry import phone_overview
@@ -104,6 +105,45 @@ def calls_hint(status: Mapping[str, Any], calls_state: str) -> str:
     if calls_state == "unavailable":
         return _("oFono is not running, so calls are unavailable.")
     return _("Waiting for the iPhone's hands-free connection.")
+
+
+def call_duration(first_seen: object, now: float) -> str:
+    """``m:ss`` since a call was first seen; ``now`` is a Unix time."""
+    try:
+        started = datetime.fromisoformat(str(first_seen)).timestamp()
+    except (TypeError, ValueError):
+        return ""
+    total = max(0, int(now - started))
+    return f"{total // 60}:{total % 60:02d}"
+
+
+def call_card(call: Mapping[str, Any], now: float) -> dict[str, Any]:
+    """A running call (``CallInfo.to_dict()``) as the Calls tab shows it.
+
+    ``subtitle`` is the call's state or, while it is active, its duration
+    (``now`` is a Unix time). Answer is offered only while it rings; the
+    other button holds or resumes; the last one hangs up or declines.
+    """
+    ringing = call.get("ringing") is True
+    state = str(call.get("state") or "")
+    held = state == "held"
+    if ringing:
+        subtitle = _("Incoming call…")
+    elif held:
+        subtitle = _("On hold")
+    elif state in ("dialing", "alerting"):
+        subtitle = _("Calling…")
+    else:
+        subtitle = call_duration(call.get("first_seen"), now)
+    return {
+        "title": str(call.get("display_peer") or ""),
+        "subtitle": subtitle,
+        "ringing": ringing,
+        "held": held,
+        "answer": _("Answer"),
+        "hold": _("Resume") if held else _("Hold"),
+        "hangup": _("Decline") if ringing else _("Hang Up"),
+    }
 
 
 def notifications_view(info: Mapping[str, Any], opt_in_hint: str) -> dict[str, str]:

@@ -130,6 +130,8 @@ def call_groups(
             if row["count"] > 1 else row["caller"]
         )
         detail = direction_text(row["direction"])
+        # For screen readers: direction, caller and time (see the clients).
+        row["direction_label"] = detail
         if row["known"] and row["address"]:
             detail = _("{direction} · {number}").format(direction=detail, number=row["address"])
         row["detail"] = detail

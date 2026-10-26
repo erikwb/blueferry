@@ -91,7 +91,7 @@ ColumnLayout {
                 required property var modelData
                 partPrefix: "call"
                 density: "compact"
-                Accessible.name: callRow.modelData.detail
+                Accessible.name: callRow.modelData.direction_label
                     + ", " + callRow.modelData.caller + ", " + callRow.modelData.clock
                 title: callRow.modelData.title
                 titleColor: callRow.modelData.missed ? Kirigami.Theme.negativeTextColor
