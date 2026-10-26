@@ -229,3 +229,12 @@ def test_button_labels_from_plugins_are_escaped_and_titles_stay_plain() -> None:
     assert item["actions"][1]["label"] == "Tom & Jerry"  # no "<": plain already
     # The raw label, for buttons that never read markup (GTK).
     assert item["actions"][0]["labelPlain"] == "<a href='https://evil.example'>Open</a>"
+
+
+def test_stop_drops_a_pending_reload() -> None:
+    work = ManualRunner()
+    model = _model(work)
+    model.schedule_reload()
+    assert work.timers[0].active
+    model.stop()
+    assert not work.timers[0].active and not work.pending
