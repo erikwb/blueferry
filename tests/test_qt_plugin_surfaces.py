@@ -90,12 +90,58 @@ def test_reload_invoke_and_send_run_off_the_ui_thread(app, tmp_path, track) -> N
     assert sent == [("io.example.ls:iphone", [str(payload.resolve())])]
     # FileDialog.selectedFiles delivers QUrl objects.
     adapter.send("io.example.ls:iphone", [QUrl.fromLocalFile(str(payload))])
-    _wait(lambda: len(sent) == 2)
+    _wait(lambda: len(sent) == 2 and not adapter.state()["busy"])
     assert sent[1] == ("io.example.ls:iphone", [str(payload.resolve())])
     adapter.send("io.example.ls:iphone", ["/no/such/file"])
     _wait(lambda: "no such file" in adapter.state()["message"])
     adapter.send("gone:target", [str(payload)])
     assert adapter.state()["messageOk"] is False
+
+
+def test_an_action_of_a_plugin_disabled_meanwhile_opens_nothing(app, track) -> None:
+    opened: list[str] = []
+    installed = {"io.example.calendar"}
+
+    def invoke(plugin, item, action):
+        installed.clear()  # disabled while the plugin answered
+        return surfaces.Outcome(True, "Opened", "https://example.org/e")
+
+    adapter = track(PluginSurfaces(
+        load_cards=lambda: CARDS, share_available=lambda: False,
+        find=lambda plugin_id, capability: plugin_id if plugin_id in installed else None,
+        invoke=invoke, opener=opened.append,
+    ))
+    adapter.invoke("io.example.calendar", "next", "open")
+    _wait(lambda: adapter.state()["message"] == "Opened")
+    assert opened == []
+
+
+def test_a_second_send_waits_for_the_first(app, tmp_path, track) -> None:
+    import threading
+
+    payload = tmp_path / "a.jpg"
+    payload.write_bytes(b"x")
+    release = threading.Event()
+    sent: list[str] = []
+    choice = surfaces.ShareChoice("io.example.ls", "LocalSend", "iphone", "iPhone")
+
+    def send(target, files):
+        sent.append(target.key)
+        release.wait(5)
+        return surfaces.Outcome(True, "Sending 1 file")
+
+    adapter = track(PluginSurfaces(
+        load_cards=lambda: [], share_available=lambda: True,
+        load_targets=lambda: surfaces.ShareTargets([choice], []), send=send,
+    ))
+    adapter.load_targets()
+    _wait(lambda: adapter.state()["targetsLoaded"])
+    adapter.send("io.example.ls:iphone", [str(payload)])
+    _wait(lambda: sent == ["io.example.ls:iphone"])
+    adapter.send("io.example.ls:iphone", [str(payload)])  # still busy: ignored
+    release.set()
+    _wait(lambda: adapter.state()["message"] == "Sending 1 file")
+    assert sent == ["io.example.ls:iphone"]
 
 
 def test_a_crashing_loader_never_breaks_the_card(app, track) -> None:
