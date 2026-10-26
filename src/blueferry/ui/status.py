@@ -1,4 +1,8 @@
-"""Adaptive iPhone page for setup, health, preferences, and maintenance."""
+"""The GTK settings dialog: one preferences page per category.
+
+The categories mirror the Qt client's settings page (Phone, Notifications,
+Calls & Audio, Security, About); see :mod:`blueferry.ui.settings_presenter`.
+"""
 
 from __future__ import annotations
 
@@ -6,6 +10,7 @@ import threading
 
 from gi.repository import Adw, Gio, GLib, Gtk
 
+from blueferry import __version__
 from blueferry.bluetooth_devices import PairedDevice, iphone_candidates
 from blueferry.i18n import _, ngettext
 from blueferry.models import BackendStatus
@@ -25,7 +30,10 @@ from blueferry.setup_verification import (
     NOTIFICATION_ACCESS,
     remaining_iphone_setup_tasks,
 )
+from blueferry.ui.doctor import DoctorSection
+from blueferry.ui.feature_switches import FeatureSwitches
 from blueferry.ui.saved_choice import SavedChoice
+from blueferry.ui.settings_presenter import categories, service_state
 from blueferry.ui.setup_runner import SetupRunner
 from blueferry.ui.status_presenter import (
     connection_subtitle,
@@ -34,11 +42,13 @@ from blueferry.ui.status_presenter import (
 )
 
 
-class IPhonePage(Gtk.Box):
-    def __init__(self, client, toast) -> None:
-        super().__init__(orientation=Gtk.Orientation.VERTICAL)
+class SettingsDialog(Adw.PreferencesDialog):
+    def __init__(self, client, toast=None, *, doctor_runner=None, timer=None) -> None:
+        super().__init__(
+            title=_("Settings"), search_enabled=True, content_width=680, content_height=640,
+        )
         self._client = client
-        self._toast = toast
+        self._toast = toast or self.show_toast
         self._setup = SetupClient()
         self._setup_runner = SetupRunner(GLib.idle_add)
         self._compatibility: BluetoothCompatibility | None = None
@@ -69,11 +79,18 @@ class IPhonePage(Gtk.Box):
         self._explicit_pairing_overrides: dict[str, bool] = {}
         self._applying_pairing_mode = False
 
-        page = Adw.PreferencesPage()
-        self.append(page)
+        self.features = FeatureSwitches(client, self._toast, self._refresh, timer)
+        self.pages: dict[str, Adw.PreferencesPage] = {}
+        for category in categories():
+            page = Adw.PreferencesPage(
+                name=category.key, title=category.title, icon_name=category.icon,
+            )
+            # Every page leads with the notice while a restart is pending.
+            page.add(self.features.notice_group())
+            self.pages[category.key] = page
+            self.add(page)
 
         self._hardware_group = Adw.PreferencesGroup()
-        page.add(self._hardware_group)
         self._pairing_group = Adw.PreferencesGroup(
             title=_("Pair an iPhone"),
             description=_(
@@ -199,9 +216,7 @@ class IPhonePage(Gtk.Box):
         self._forget_button.connect("clicked", self._confirm_forget)
         forget.add_suffix(self._forget_button)
         self._pairing_group.add(forget)
-        page.add(self._pairing_group)
 
-        self._issue_group = Adw.PreferencesGroup()
         self._issue_row = Adw.ActionRow(
             title=_("Pairing Report"),
             subtitle=_("Attach the last pairing report if notifications stay unavailable"),
@@ -213,9 +228,7 @@ class IPhonePage(Gtk.Box):
         )
         self._issue_button.connect("clicked", self._file_pairing_issue)
         self._issue_row.add_suffix(self._issue_button)
-        self._issue_group.add(self._issue_row)
-        self._issue_group.set_visible(False)
-        page.add(self._issue_group)
+        self._issue_row.set_visible(False)
 
         self._paired_group = Adw.PreferencesGroup(title=_("Paired Phone"))
         self._paired_row = Adw.ActionRow(
@@ -232,7 +245,6 @@ class IPhonePage(Gtk.Box):
         self._paired_row.add_suffix(self._unpair_button)
         self._paired_group.add(self._paired_row)
         self._paired_group.set_visible(False)
-        page.add(self._paired_group)
 
         self._iphone_setup_group = Adw.PreferencesGroup(
             title=_("Finish Setup on the iPhone"),
@@ -271,9 +283,8 @@ class IPhonePage(Gtk.Box):
             self._iphone_setup_rows[key] = row
             self._iphone_setup_group.add(row)
         self._iphone_setup_group.set_visible(False)
-        page.add(self._iphone_setup_group)
 
-        daemon_group = Adw.PreferencesGroup(title=_("Connection Details"))
+        daemon_group = Adw.PreferencesGroup(title=_("Connection Health"))
         recheck = Gtk.Button(label=_("Recheck"), valign=Gtk.Align.CENTER)
         recheck.connect(
             "clicked",
@@ -313,8 +324,22 @@ class IPhonePage(Gtk.Box):
         self._ancs_recovery_label.set_visible(False)
         daemon_group.add(self._pbap_row)
         daemon_group.add(self._ancs_row)
-        daemon_group.add(self._ancs_recovery_label)
-        page.add(daemon_group)
+        self._contacts_row = Adw.ActionRow(title=_("Contact Destinations"))
+        daemon_group.add(self._contacts_row)
+
+        self.doctor = DoctorSection(client, self, doctor_runner)
+        self.doctor.group.add(self._issue_row)
+
+        contacts_group = Adw.PreferencesGroup(title=_("Contacts"))
+        sync_row = Adw.ActionRow(
+            title=_("Refresh Contacts"),
+            subtitle=_("Pull the current contact list from the iPhone"),
+        )
+        sync_button = Gtk.Button(label=_("Sync"), valign=Gtk.Align.CENTER)
+        sync_button.connect("clicked", self._sync_contacts)
+        sync_row.add_suffix(sync_button)
+        sync_row.set_activatable_widget(sync_button)
+        contacts_group.add(sync_row)
 
         notification_group = Adw.PreferencesGroup(
             title=_("Desktop Notifications"),
@@ -361,8 +386,23 @@ class IPhonePage(Gtk.Box):
         )
         self._ancs_actions_row.add_suffix(self._ancs_actions_switch)
         self._ancs_actions_row.set_activatable_widget(self._ancs_actions_switch)
-        notification_group.add(self._ancs_actions_row)
-        page.add(notification_group)
+
+        content_group = Adw.PreferencesGroup(title=_("Content and Actions"))
+        content_group.add(self.features.row(
+            "show_notification_content",
+            _("Show Message Content in Popups"),
+            _("Off: popups name the sender only."),
+        ))
+        content_group.add(self._ancs_actions_row)
+        content_group.add(self.features.row(
+            "mark_read_on_dismiss", _("Mark Read When a Popup Is Dismissed"),
+        ))
+        history_group = Adw.PreferencesGroup(title=_("History"))
+        history_group.add(self.features.row(
+            "notification_history",
+            _("Keep Recent iPhone Notifications"),
+            _("Lists other apps' notifications in the Notifications tab (memory only)."),
+        ))
 
         # Shown only when the backend reports the media-control keys.
         self._media_group = Adw.PreferencesGroup(title=_("Media Control"))
@@ -392,7 +432,6 @@ class IPhonePage(Gtk.Box):
         self._mpris_player_row.add_suffix(self._mpris_player_switch)
         self._mpris_player_row.set_activatable_widget(self._mpris_player_switch)
         self._media_group.add(self._mpris_player_row)
-        page.add(self._media_group)
 
         # Shown only when the backend reports the audio-route keys. An
         # action, not a saved preference: the switch follows bluetoothd.
@@ -406,10 +445,7 @@ class IPhonePage(Gtk.Box):
         self._phone_audio_row.add_suffix(self._phone_audio_switch)
         self._phone_audio_row.set_activatable_widget(self._phone_audio_switch)
         self._phone_audio_group.add(self._phone_audio_row)
-        page.add(self._phone_audio_group)
         # Shown only when the backend reports the profile reset state.
-        self._connection_group = Adw.PreferencesGroup(title=_("iPhone Connection"))
-        self._connection_group.set_visible(False)
         self._auto_profile_reset_row = Adw.ActionRow(
             title=_("Reset a Stuck iPhone Connection Automatically"),
             subtitle=_(
@@ -425,8 +461,10 @@ class IPhonePage(Gtk.Box):
         self._auto_profile_reset_row.set_activatable_widget(
             self._auto_profile_reset_switch
         )
-        self._connection_group.add(self._auto_profile_reset_row)
-        page.add(self._connection_group)
+        self._auto_profile_reset_row.set_visible(False)
+        daemon_group.add(self._auto_profile_reset_row)
+        # Not a row: AdwPreferencesGroup shows it below all the rows.
+        daemon_group.add(self._ancs_recovery_label)
 
         # Shown only when the backend reports the call-history keys.
         self._call_history_group = Adw.PreferencesGroup(
@@ -462,7 +500,6 @@ class IPhonePage(Gtk.Box):
             self._missed_call_popups_switch
         )
         self._call_history_group.add(self._missed_call_popups_row)
-        page.add(self._call_history_group)
 
         # Shown only when the backend reports the away-lock keys.
         self._proximity_lock_group = Adw.PreferencesGroup(
@@ -485,7 +522,6 @@ class IPhonePage(Gtk.Box):
             self._proximity_lock_switch
         )
         self._proximity_lock_group.add(self._proximity_lock_row)
-        page.add(self._proximity_lock_group)
 
         # Shown only when the status carries calls_enabled, as in the Qt client.
         self._calls_group = Adw.PreferencesGroup(
@@ -513,7 +549,6 @@ class IPhonePage(Gtk.Box):
             self._calls_enabled_switch
         )
         self._calls_group.add(self._calls_enabled_row)
-        page.add(self._calls_group)
 
         # Shown only for daemons that report the contact-photo opt-in.
         self._photos_group = Adw.PreferencesGroup(
@@ -533,7 +568,6 @@ class IPhonePage(Gtk.Box):
         self._photos_row.set_activatable_widget(self._photos_switch)
         self._photos_group.add(self._photos_row)
         self._photos_group.set_visible(False)
-        page.add(self._photos_group)
 
         # Shown only for daemons that report the one-time code opt-in.
         self._otp_group = Adw.PreferencesGroup(
@@ -555,7 +589,6 @@ class IPhonePage(Gtk.Box):
         self._otp_row.set_activatable_widget(self._otp_switch)
         self._otp_group.add(self._otp_row)
         self._otp_group.set_visible(False)
-        page.add(self._otp_group)
 
         data_group = Adw.PreferencesGroup(title=_("Local Data"))
         history_model = Gtk.StringList.new(
@@ -572,18 +605,8 @@ class IPhonePage(Gtk.Box):
         )
         self._storage_policy_row.connect("notify::selected", self._storage_policy_changed)
         data_group.add(self._storage_policy_row)
-        self._contacts_row = Adw.ActionRow(title=_("Contact Destinations"))
         self._events_row = Adw.ActionRow(title=_("History Events"))
-        data_group.add(self._contacts_row)
         data_group.add(self._events_row)
-        sync_row = Adw.ActionRow(
-            title=_("Refresh Contacts"),
-            subtitle=_("Pull the current contact list from the iPhone"),
-        )
-        sync_button = Gtk.Button(label=_("Sync"), valign=Gtk.Align.CENTER)
-        sync_button.connect("clicked", self._sync_contacts)
-        sync_row.add_suffix(sync_button)
-        data_group.add(sync_row)
         clear_row = Adw.ActionRow(
             title=_("Clear Local History"),
             subtitle=_("Does not delete contacts or messages from the iPhone"),
@@ -596,13 +619,67 @@ class IPhonePage(Gtk.Box):
         clear_button.connect("clicked", self._confirm_clear_history)
         clear_row.add_suffix(clear_button)
         data_group.add(clear_row)
-        page.add(data_group)
+
+        about_group = Adw.PreferencesGroup()
+        version_row = Adw.ActionRow(
+            title=_("Version"), subtitle=__version__, use_markup=False,
+            css_classes=["property"],
+        )
+        about_group.add(version_row)
+        self._service_row = Adw.ActionRow(
+            title=_("Background Service"), subtitle=service_state(False),
+            use_markup=False, css_classes=["property"],
+        )
+        about_group.add(self._service_row)
+        about_links = Adw.PreferencesGroup()
+        for title, action in (
+            (_("About BlueFerry"), "app.about"),
+            (_("Keyboard Shortcuts"), "app.shortcuts"),
+        ):
+            row = Adw.ActionRow(title=title, activatable=True, action_name=action)
+            row.add_suffix(Gtk.Image(icon_name="go-next-symbolic"))
+            about_links.add(row)
+        service_group = Adw.PreferencesGroup()
+        restart_row = Adw.ActionRow(title=_("Restart Service"))
+        restart_row.add_suffix(self.features.restart_button())
+        service_group.add(restart_row)
+        quit_row = Adw.ActionRow(title=_("Quit"), activatable=True, action_name="app.quit")
+        quit_row.add_suffix(Gtk.Image(icon_name="go-next-symbolic"))
+        service_group.add(quit_row)
+
+        for key, groups in (
+            ("phone", (
+                self._hardware_group, self._pairing_group, self._paired_group,
+                self._iphone_setup_group, daemon_group, self.doctor.group,
+                contacts_group, self._photos_group,
+            )),
+            ("notifications", (notification_group, content_group, history_group)),
+            ("calls", (
+                self._calls_group, self._call_history_group,
+                self._phone_audio_group, self._media_group,
+            )),
+            ("security", (self._otp_group, self._proximity_lock_group, data_group)),
+            ("about", (about_group, about_links, service_group)),
+        ):
+            for group in groups:
+                self.pages[key].add(group)
+        self.connect("closed", lambda _dialog: self.features.stop())
 
         client.connect("availability-changed", lambda *_: self._refresh())
         client.connect("status-invalidated", self._status_invalidated)
         self._load_setup_state()
         if self._setup.configuration().configured:
             self._refresh()
+
+    def show_toast(self, text: str) -> None:
+        self.add_toast(Adw.Toast(title=text, use_markup=False))
+
+    def open(self, parent: Gtk.Widget, category: str = "") -> None:
+        """Present on ``category`` (or the last page) with fresh switches."""
+        if category:
+            self.set_visible_page_name(category)
+        self.features.load()
+        self.present(parent)
 
     def _selected_device(self) -> PairedDevice | None:
         selected = self._device_row.get_selected()
@@ -801,7 +878,7 @@ class IPhonePage(Gtk.Box):
             found = issue_report()
             path = str(found) if found is not None else ""
         self._pairing_issue_report = path
-        self._issue_group.set_visible(bool(path))
+        self._issue_row.set_visible(bool(path))
 
     def _file_pairing_issue(self, _button) -> None:
         path = self._pairing_issue_report
@@ -830,7 +907,7 @@ class IPhonePage(Gtk.Box):
                 self._toast(_("Could not open GitHub. The report is at {path}.").format(path=path))
 
         dialog.connect("response", responded)
-        dialog.present(self.get_root())
+        dialog.present(self)
 
     def _setup_failed(self, message: str) -> bool:
         self._set_pairing_busy(False)
@@ -889,7 +966,7 @@ class IPhonePage(Gtk.Box):
             self._run_setup(self._setup.activate_bluez, activated)
 
         dialog.connect("response", responded)
-        dialog.present(self.get_root())
+        dialog.present(self)
 
     def _load_devices(self, *, scan: bool) -> None:
         def loaded(devices: list[PairedDevice]) -> None:
@@ -975,7 +1052,7 @@ class IPhonePage(Gtk.Box):
                 )
 
         dialog.connect("response", responded)
-        dialog.present(self.get_root())
+        dialog.present(self)
 
     def _start_pairing(
         self,
@@ -1044,7 +1121,7 @@ class IPhonePage(Gtk.Box):
                     decided.set()
 
                 dialog.connect("response", responded)
-                dialog.present(self.get_root())
+                dialog.present(self)
                 return GLib.SOURCE_REMOVE
 
             GLib.idle_add(present_confirmation)
@@ -1125,7 +1202,7 @@ class IPhonePage(Gtk.Box):
                 )
 
         dialog.connect("response", responded)
-        dialog.present(self.get_root())
+        dialog.present(self)
 
     def _refresh(self) -> None:
         self._client.get_status_async(self._apply_status, self._status_failed)
@@ -1142,6 +1219,8 @@ class IPhonePage(Gtk.Box):
         values = status.to_dict()
         reachable = status.daemon
         self._client.record_status(status)
+        self.features.set_daemon(reachable)
+        self._service_row.set_subtitle(service_state(reachable))
         self._daemon_row.set_subtitle(connection_subtitle(values, reachable=reachable))
         self._daemon_icon.set_from_icon_name(
             "emblem-ok-symbolic" if reachable else "dialog-warning-symbolic"
@@ -1368,7 +1447,7 @@ class IPhonePage(Gtk.Box):
             self._refresh()
 
     def _apply_connection_switches(self, status: BackendStatus, reachable: bool) -> None:
-        self._connection_group.set_visible("profile_reset_auto" in status.extra)
+        self._auto_profile_reset_row.set_visible("profile_reset_auto" in status.extra)
         self._applying_saved_switches = True
         self._show_saved_choice(
             self._auto_profile_reset_switch,
@@ -1686,7 +1765,7 @@ class IPhonePage(Gtk.Box):
                 else self._apply_status(self._last_status)
             ),
         )
-        dialog.present(self.get_root())
+        dialog.present(self)
 
     def _save_storage_policy(self, policy: str) -> None:
         self._storage_policy_row.set_sensitive(False)
@@ -1760,4 +1839,4 @@ class IPhonePage(Gtk.Box):
             )
 
         dialog.connect("response", responded)
-        dialog.present(self.get_root())
+        dialog.present(self)

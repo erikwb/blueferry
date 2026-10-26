@@ -1,0 +1,329 @@
+"""The GTK settings dialog on a private Broadway display: categories, feature
+switches with the restart notice and the old-daemon fallback, the doctor."""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import pytest
+
+from tests.gtk_broadway import run_scenario
+
+
+@pytest.mark.parametrize("scenario", ["categories", "features", "old-daemon", "doctor"])
+def test_gtk_settings(tmp_path, scenario):
+    run_scenario(tmp_path, str(Path(__file__).resolve()), scenario)
+
+
+ITEMS = {
+    "show_notification_content": {
+        "value": True, "running": True, "source": "environment",
+        "variable": "BLUEFERRY_SHOW_NOTIFICATION_CONTENT", "restart_required": False,
+    },
+    "mark_read_on_dismiss": {
+        "value": False, "running": False, "source": "default",
+        "variable": "BLUEFERRY_MARK_READ_ON_DISMISS", "restart_required": False,
+    },
+    "notification_history": {
+        "value": False, "running": False, "source": "default",
+        "variable": "BLUEFERRY_NOTIFICATION_HISTORY", "restart_required": False,
+    },
+}
+
+
+class FakeClient:
+    """Queues every daemon call; the scenario answers them when it chooses."""
+
+    def __init__(self, status):
+        self.status = status
+        self.calls = []
+
+    def connect(self, *_args):
+        return 0
+
+    def record_status(self, _status):
+        pass
+
+    def get_status_async(self, on_ok, _on_err=None):
+        on_ok(self.status)
+
+    def unlock_storage_async(self, *_args):
+        pass
+
+    def features_async(self, on_ok, on_err=None):
+        self.calls.append(("features", on_ok, on_err))
+
+    def set_feature_async(self, name, enabled, on_ok, on_err):
+        self.calls.append((("set_feature", name, enabled), on_ok, on_err))
+
+    def restart_backend_async(self, on_ok, on_err):
+        self.calls.append(("restart", on_ok, on_err))
+
+    def run_doctor_async(self, on_ok, on_err, runner=None):
+        self.calls.append(("doctor", on_ok, on_err))
+
+    def take(self, name):
+        names = [call[0] for call in self.calls]
+        assert name in names, (name, names)
+        return self.calls.pop(names.index(name))
+
+
+def _settings(status=None, **options):
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from blueferry.models import BackendStatus
+    from blueferry.setup_client import ConfigurationState
+    from blueferry.ui import status as status_module
+
+    status_module.Adw.init()
+    settings = status_module.Gtk.Settings.get_default()
+    settings.set_property("gtk-enable-animations", False)
+    configuration = ConfigurationState.from_dict({"configured": True, "saved": True})
+    client = FakeClient(status or BackendStatus(daemon=True))
+    with (
+        patch.object(status_module, "SetupClient",
+                     lambda: SimpleNamespace(configuration=lambda: configuration)),
+        patch.object(status_module.SettingsDialog, "_load_setup_state", lambda self: None),
+    ):
+        dialog = status_module.SettingsDialog(client, **options)
+    window = status_module.Adw.ApplicationWindow(default_width=760, default_height=720)
+    window.present()
+    return dialog, window, client
+
+
+def _settle():
+    from gi.repository import GLib
+
+    context = GLib.MainContext.default()
+    while context.pending():
+        context.iteration(False)
+
+
+def _wait_for(condition, timeout=3.0):
+    """Run the main loop until ``condition()``."""
+    import time
+
+    from gi.repository import GLib
+
+    context = GLib.MainContext.default()
+    deadline = time.monotonic() + timeout
+    while not condition():
+        assert time.monotonic() < deadline, "timed out"
+        context.iteration(False) or time.sleep(0.01)
+
+
+def _descendants(widget):
+    child = widget.get_first_child()
+    while child is not None:
+        yield child
+        yield from _descendants(child)
+        child = child.get_next_sibling()
+
+
+def _group_titles(page):
+    from gi.repository import Adw
+
+    return [
+        widget.get_title() for widget in _descendants(page)
+        if isinstance(widget, Adw.PreferencesGroup) and widget.get_title()
+    ]
+
+
+def _exercise_categories():
+    from blueferry.ui.settings_presenter import categories
+
+    dialog, window, client = _settings()
+    assert list(dialog.pages) == [category.key for category in categories()]
+    assert [page.get_title() for page in dialog.pages.values()] == [
+        "Phone", "Notifications", "Calls & Audio", "Security", "About"]
+    for key, groups in {
+        "phone": ["Connection Health", "Diagnostics", "Contacts"],
+        "notifications": ["Desktop Notifications", "Content and Actions", "History"],
+        "calls": ["Phone Calls", "Call History", "iPhone Sound", "Media Control"],
+        "security": ["One-Time Codes", "Away Lock", "Local Data"],
+    }.items():
+        titles = _group_titles(dialog.pages[key])
+        assert [title for title in titles if title in groups] == groups, (key, titles)
+    # The pairing report row now belongs to Diagnostics, as in the Qt client.
+    assert dialog._issue_row.get_parent() is not None
+    assert dialog._issue_row.get_ancestor(type(dialog.doctor.group)) is dialog.doctor.group
+    # Opening on a category shows that page and asks for fresh switches.
+    dialog.open(window, "calls")
+    _settle()
+    assert dialog.get_visible_page_name() == "calls"
+    assert [call[0] for call in client.calls] == ["features"]
+    # No restart is pending: no page shows the notice.
+    notices = [group for group, _row in dialog.features._notices]
+    assert len(notices) == len(dialog.pages) and not any(g.get_visible() for g in notices)
+    assert dialog._service_row.get_subtitle() == "Running"
+    dialog.close()
+    _settle()
+    window.destroy()
+
+
+def _exercise_features():
+    from tests.client_fakes import ManualTimer
+
+    timers = []
+
+    def timer(callback):
+        timers.append(ManualTimer(callback))
+        return timers[-1]
+
+    dialog, window, client = _settings(timer=timer)
+    dialog.open(window, "notifications")
+    _settle()
+    rows = {name: row for name, (row, _description) in dialog.features._rows.items()}
+    assert set(rows) == set(ITEMS)
+    # Until the daemon answers, nothing can be switched.
+    assert not any(row.get_sensitive() for row in rows.values())
+    client.take("features")[1](ITEMS)
+    pinned, mark_read = rows["show_notification_content"], rows["mark_read_on_dismiss"]
+    # One the service environment sets cannot be changed here.
+    assert pinned.get_active() and not pinned.get_sensitive()
+    assert "environment (BLUEFERRY_SHOW_NOTIFICATION_CONTENT)" in pinned.get_subtitle()
+    assert mark_read.get_sensitive() and not mark_read.get_active()
+
+    mark_read.set_active(True)
+    assert mark_read.get_active() and not mark_read.get_sensitive()
+    _call, saved, _failed = client.take(("set_feature", "mark_read_on_dismiss", True))
+    saved("restart-required")
+    client.take("features")[1]({**ITEMS, "mark_read_on_dismiss": {
+        **ITEMS["mark_read_on_dismiss"], "value": True, "source": "settings",
+        "restart_required": True,
+    }})
+    assert mark_read.get_active() and mark_read.get_sensitive()
+    assert "Applies after the service restarts." in mark_read.get_subtitle()
+    # Every page leads with the notice, worded by SetFeature's answer.
+    for group, row in dialog.features._notices:
+        assert group.get_visible()
+        assert row.get_title() == "Restart the BlueFerry service to apply the change."
+
+    # A failed save puts the switch back and says why.
+    toasts = []
+    dialog.features._toast = toasts.append
+    history = rows["notification_history"]
+    history.set_active(True)
+    client.take(("set_feature", "notification_history", True))[2]("Access denied")
+    assert not history.get_active() and history.get_sensitive()
+    assert toasts == ["Could not save the setting: Access denied"]
+
+    # Restart Service: every restart button waits for the restart.
+    button = dialog.features._restart_buttons[0]
+    button.emit("clicked")
+    assert not any(b.get_sensitive() for b in dialog.features._restart_buttons)
+    button.emit("clicked")
+    assert [call[0] for call in client.calls] == ["restart"]
+    client.take("restart")[1](None)
+    assert all(b.get_sensitive() for b in dialog.features._restart_buttons)
+    status_timer, features_timer = timers
+    assert (status_timer.delay, features_timer.delay) == (800, 1200)
+    features_timer.fire()
+    client.take("features")[1](ITEMS)
+    assert not any(group.get_visible() for group, _row in dialog.features._notices)
+    # The daemon going away makes the switches insensitive again.
+    dialog._apply_status(type(dialog._last_status)(daemon=False))
+    assert not mark_read.get_sensitive()
+    # Closing the dialog cancels the pending reload.
+    dialog._apply_status(type(dialog._last_status)(daemon=True))
+    button.emit("clicked")
+    client.take("restart")[1](None)
+    assert status_timer.active
+    dialog.close()
+    _settle()
+    assert not status_timer.active and not features_timer.active
+
+    # With the real GLib timers, closing removes the armed sources.
+    dialog, window, client = _settings()
+    dialog.open(window)
+    _settle()
+    dialog.features.restart()
+    client.take("restart")[1](None)
+    assert dialog.features._status_timer.active
+    dialog.close()
+    _settle()
+    assert not dialog.features._status_timer.active
+    assert not dialog.features._features_timer.active
+    window.destroy()
+
+
+def _exercise_old_daemon():
+    dialog, window, client = _settings()
+    dialog.open(window, "notifications")
+    _settle()
+    client.take("features")[2]("No such method 'GetFeatures'")
+    for name, (row, _description) in dialog.features._rows.items():
+        variable = ITEMS[name]["variable"]
+        assert not row.get_sensitive() and not row.get_active()
+        assert f"Set {variable}=true or false in ~/.config/blueferry/local.env" in (
+            row.get_subtitle()), row.get_subtitle()
+    assert not any(group.get_visible() for group, _row in dialog.features._notices)
+    dialog.close()
+    _settle()
+    window.destroy()
+
+
+def _exercise_doctor():
+    from blueferry.doctor_report import DoctorReport
+
+    dialog, window, client = _settings()
+    doctor = dialog.doctor
+    assert not doctor.report_row.get_visible()
+    # A run that ends while Settings is closed does not pop up a dialog.
+    doctor.run_button.emit("clicked")
+    assert doctor.spinner.get_visible() and not doctor.run_button.get_sensitive()
+    doctor.run()
+    _name, done, _failed = client.take("doctor")
+    assert [call[0] for call in client.calls] == []
+    done(DoctorReport(False, False, "ERROR <b>bluetoothd</b> & obexd"))
+    assert doctor.report_dialog is None and doctor.report_row.get_visible()
+    assert doctor.report_row.get_title() == "One or more checks failed."
+    assert doctor.run_button.get_sensitive() and not doctor.spinner.get_visible()
+
+    dialog.open(window, "phone")
+    _settle()
+    # Activating the row clicks its button.
+    assert doctor.run_row.get_activatable_widget() is doctor.run_button
+    doctor.run_button.emit("clicked")
+    client.take("doctor")[1](DoctorReport(True, True, "WARNING doctor: <b>Adapter</b> CoD"))
+    _settle()
+    report = doctor.report_dialog
+    assert report is not None and report.get_mapped()
+    assert report.summary.get_text() == "Checks completed with warnings."
+    buffer = report.report.get_buffer()
+    text = buffer.get_text(buffer.get_start_iter(), buffer.get_end_iter(), False)
+    assert text == "WARNING doctor: <b>Adapter</b> CoD"  # plain text, no markup
+    report.copy_button.emit("clicked")
+    copied = []
+    report.get_clipboard().read_text_async(
+        None, lambda clipboard, result: copied.append(clipboard.read_text_finish(result)),
+    )
+    _wait_for(lambda: copied)
+    assert copied == [text]
+    report.close()
+    _settle()
+    assert doctor.report_dialog is None
+    # The row reopens the last report; a failure shows its message.
+    doctor.run()
+    client.take("doctor")[2]("blueferry doctor did not finish: TimeoutExpired")
+    _settle()
+    assert doctor.report_dialog.summary.get_text() == "One or more checks failed."
+    doctor.report_dialog.close()
+    _settle()
+    doctor.report_row.emit("activated")
+    _settle()
+    assert doctor.report_dialog is not None and doctor.report_dialog.get_mapped()
+    doctor.report_dialog.close()
+    dialog.close()
+    _settle()
+    window.destroy()
+
+
+if __name__ == "__main__":
+    {
+        "categories": _exercise_categories,
+        "features": _exercise_features,
+        "old-daemon": _exercise_old_daemon,
+        "doctor": _exercise_doctor,
+    }[sys.argv[1]]()

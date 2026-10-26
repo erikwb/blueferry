@@ -11,6 +11,9 @@ src/blueferry/ui/status_presenter.py
 src/blueferry/ui/phone.py
 src/blueferry/ui/phone_presenter.py
 src/blueferry/ui/dial_presenter.py
+src/blueferry/ui/settings_presenter.py
+src/blueferry/ui/feature_switches.py
+src/blueferry/ui/doctor.py
 src/blueferry/qt/controller.py
 src/blueferry/qt/tray.py
 src/blueferry/qt/tray_presenter.py
