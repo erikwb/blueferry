@@ -122,7 +122,6 @@ Edit `~/.config/blueferry/local.env`, then restart the service with
 | `BLUEFERRY_HISTORY_RETENTION_DAYS` | `30` | Days of history to keep (1–3650) |
 | `BLUEFERRY_HISTORY_MAX_EVENTS` | `10000` | Maximum stored events (100–1000000) |
 | `BLUEFERRY_HISTORY_MAX_PAYLOAD_BYTES` | `268435456` | Maximum stored data in bytes (16 MiB–2 GiB) |
-| `BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE` | `true` | Keep calls and music on the iPhone |
 | `BLUEFERRY_ANCS_APP_ALLOWLIST` | unset | See [Filter apps](#filter-apps) |
 | `BLUEFERRY_ANCS_APP_BLOCKLIST` | unset | See [Filter apps](#filter-apps) |
 | `BLUEFERRY_OTP_AUTOCOPY` | `false` | Starting value for one-time code auto-copy until a client saves the setting, see [One-time codes](#one-time-codes) |
@@ -143,10 +142,18 @@ saved, in `settings.json`. The separate MPRIS option deliberately makes the
 current track readable by every application in your login session, like any
 desktop music player.
 
-## Calls and music stay on the iPhone
+## Bluetooth audio routing
 
-With WirePlumber 0.5 or newer, BlueFerry writes
-`~/.config/wireplumber/wireplumber.conf.d/99-blueferry-keep-phone-audio.conf`
-before pairing. It stops the computer from acting as a Bluetooth speaker or
-headset for the iPhone, so calls and music stay on the phone. Set
-`BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE=false` to remove that file.
+BlueFerry leaves audio roles to the desktop's configuration. The automatic
+keep-audio-on-the-phone policy was removed because it broke pairing and ANCS
+setup. BlueFerry removes its old `90-` and `99-blueferry-keep-phone-audio.conf`
+fragments on startup or before pairing and reloads WirePlumber when needed.
+The old `BLUEFERRY_KEEP_PHONE_AUDIO_ON_PHONE` setting is ignored. Choose the
+iPhone in its output picker, or use `blueferry audio phone`, to return media
+playback to the phone.
+
+Choosing PC or phone in BlueFerry saves that choice and the selected phone's
+address locally in `settings.json`. When supported, a separate
+`zz-blueferry-phone-audio.conf` rule disables automatic profile connections
+for that phone without removing adapter roles. `blueferry audio auto` clears
+the choice and removes this rule. Other devices keep the desktop's policy.

@@ -5,18 +5,120 @@ import gc
 import threading
 import time
 import weakref
+from pathlib import Path
+from types import SimpleNamespace
 
 import dbus
 import dbus.service
 import pytest
 from gi.repository import GLib
 
-from blueferry import bus
+from blueferry import bus, contacts
 from blueferry.errors import SendOutcomeUnknownError
 from blueferry.obex import map_send, transfer
 from blueferry.obex.sessions import SessionManager
 
 pytestmark = pytest.mark.private_dbus
+
+
+@pytest.mark.parametrize("phonebook", ["pb", "mch"])
+@pytest.mark.parametrize("status", ["complete", "error", None])
+def test_empty_pbap_download_retains_terminal_signal_before_polling(
+    tmp_path, monkeypatch, phonebook, status,
+):
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    service_bus = dbus.SessionBus(private=True)
+    service_bus.request_name("org.bluez.obex", dbus.bus.NAME_FLAG_DO_NOT_QUEUE)
+    objects, targets, watch_refs = [], [], []
+    original_subscribe = transfer.TransferStatusWatch._subscribe
+
+    def subscribe(watch):
+        watch_refs.append(weakref.ref(watch))
+        return original_subscribe(watch)
+
+    monkeypatch.setattr(transfer.TransferStatusWatch, "_subscribe", subscribe)
+
+    class RemovedTransfer(dbus.service.Object):
+        @dbus.service.signal("org.freedesktop.DBus.Properties", signature="sa{sv}as")
+        def PropertiesChanged(self, _interface, _changed, _invalidated):
+            pass
+
+        @dbus.service.method("org.freedesktop.DBus.Properties", in_signature="ss", out_signature="v")
+        def Get(self, _interface, _property):
+            raise dbus.exceptions.DBusException(
+                "transfer removed", name="org.freedesktop.DBus.Error.UnknownObject",
+            )
+
+        @dbus.service.method("org.bluez.obex.Transfer1", in_signature="", out_signature="")
+        def Cancel(self):
+            pass
+
+    class Phonebook(dbus.service.Object):
+        @dbus.service.method("org.bluez.obex.PhonebookAccess1", in_signature="ss", out_signature="")
+        def Select(self, location, selected):
+            assert (location, selected) == ("int", phonebook)
+
+        @dbus.service.method("org.bluez.obex.PhonebookAccess1", in_signature="sa{sv}", out_signature="oa{sv}")
+        def PullAll(self, filename, filters):
+            assert int(filters.get("Offset", 0)) == (1 if phonebook == "pb" else 0)
+            assert watch_refs, "must subscribe before starting the download"
+            target = Path(str(filename))
+            target.write_bytes(b"")
+            targets.append(target)
+            path = "/session/pbap/transfer1"
+            outgoing = RemovedTransfer(service_bus, path)
+            objects.append(outgoing)
+            if status is not None:
+                outgoing.PropertiesChanged("org.bluez.obex.Transfer1", {"Status": status}, [])
+            return dbus.ObjectPath(path), {"Status": "queued", "Size": dbus.UInt64(0)}
+
+    phone = Phonebook(service_bus, "/session/pbap")
+    finished = threading.Event()
+    result = {}
+
+    def run():
+        try:
+            bus.initialize_obex_worker_bus()
+            result["listing"] = contacts.pull_vcard_listing(
+                SimpleNamespace(pbap_path="/session/pbap"), phonebook,
+                max_entries=100, allow_empty=True,
+            )
+        except Exception as error:
+            result["error"] = error.with_traceback(None)
+        finally:
+            bus.close_obex_worker_bus()
+            finished.set()
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    try:
+        context = GLib.MainContext.default()
+        deadline = time.monotonic() + 10
+        while not finished.is_set() and time.monotonic() < deadline:
+            context.iteration(False)
+            time.sleep(0.001)
+        assert finished.is_set(), "PBAP worker did not finish on isolated D-Bus"
+        while context.pending():
+            context.iteration(False)
+        if status == "complete":
+            assert result == {"listing": ""}
+        elif status == "error":
+            assert isinstance(result.get("error"), transfer.TransferFailed)
+        else:
+            assert isinstance(result.get("error"), RuntimeError)
+            assert "empty phonebook" in str(result["error"])
+        assert targets and not targets[0].parent.exists()
+        # Stored exception context can retain the download frame and watch.
+        result.clear()
+        gc.collect()
+        assert watch_refs and all(ref() is None for ref in watch_refs)
+    finally:
+        worker.join(5)
+        assert not worker.is_alive()
+        for obj in objects:
+            obj.remove_from_connection()
+        phone.remove_from_connection()
+        service_bus.close()
 
 
 @pytest.mark.parametrize('cleanup_fails', [False, True])

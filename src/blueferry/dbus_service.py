@@ -748,7 +748,7 @@ class MessagesService(dbus.service.Object):
     def SetPhoneAudioRoute(
         self, route: str, reply_handler, error_handler, sender=None,
     ) -> None:
-        """Move the iPhone's media playback to this computer or the phone."""
+        """Remember pc/phone, or clear the preference with auto."""
         self._async(
             lambda: self._authorized(
                 sender, "audio-route",

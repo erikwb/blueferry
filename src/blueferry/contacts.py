@@ -6,14 +6,13 @@ not `SetFolder`. Then `PullAll(targetfile, filters)`.
 """
 from __future__ import annotations
 
-import io
 import logging
 import os
 import tempfile
 import time
 from collections import Counter
 from collections.abc import Callable, Collection, Hashable, Iterable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from copy import copy
 from pathlib import Path
 from typing import TYPE_CHECKING, TextIO, TypeVar
@@ -36,7 +35,7 @@ from blueferry.limits import (
     MAX_PHONEBOOK_CONTACTS,
 )
 from blueferry.obex.sessions import SessionManager
-from blueferry.obex.transfer import wait_for_transfer
+from blueferry.obex.transfer import TransferStatusWatch, wait_for_transfer
 from blueferry.phone_numbers import address_identities, contact_phone
 from blueferry.private_files import runtime_private_directory
 from blueferry.vcard import iter_bounded_lines, iter_vcard_bodies, iter_vcard_cards
@@ -51,17 +50,25 @@ _PHONEBOOK_TRANSFER_MAX_SECONDS = 30 * 60
 
 # ---- vCard parsing ------------------------------------------------------
 
-def _pbap_pull_filters(max_contacts: int) -> dict:
+def _pbap_pull_filters(max_contacts: int, *, phonebook: str = "pb") -> dict:
     """Build filters using the PhonebookAccess1 API's exact spelling.
 
     PBAP uses MaxCount and lowercase vcard30. MAP's superficially similar
     ListMessages call uses MaxListCount; mixing the two makes BlueZ create a
     transfer that immediately fails and leaves a zero-byte target file.
     """
-    return {
+    filters = {
         "MaxCount": dbus.UInt16(max_contacts),
         "Format": dbus.String("vcard30"),
     }
+    # PBAP 1.2.3 sections 3.1.5.2 and 4.2 reserve index 0 in pb for
+    # the owner's card and deliver PullPhoneBook in ascending index order.
+    # iOS exposes the SIM number here as a synthetic contact, which can
+    # otherwise make the user's real contact card ambiguous. Call-history
+    # folders have no owner card: their first entry must still be included.
+    if phonebook == "pb":
+        filters["Offset"] = dbus.UInt16(1)
+    return filters
 
 def _parse_card(body: str) -> tuple[str | None, list[str], list[str]] | None:
     """Return one card's name with every safe phone and email address."""
@@ -358,40 +365,43 @@ def open_vcard_listing(
         prefix="phonebook-", dir=temporary_root
     ) as temporary_name:
         out = Path(temporary_name) / f"{phonebook}.vcf"
-        log.info("PBAP PullAll → %s (max=%d)", out, max_entries)
-        ret = pbap.PullAll(
-            str(out), _pbap_pull_filters(max_entries), timeout=30.0
-        )
-        if isinstance(ret, tuple | list):
-            transfer_path = str(ret[0])
-            initial = dict(ret[1]) if len(ret) > 1 else {}
-        else:
-            transfer_path = str(ret)
-            initial = {}
+        # Subscribe before PullAll: obexd can emit completion and remove a
+        # small transfer before the worker's first property read. In
+        # particular, a zero-byte result needs positive completion evidence.
+        with closing(TransferStatusWatch(sessions.pbap_path)) as watch:
+            log.info("PBAP PullAll → %s (max=%d)", out, max_entries)
+            ret = pbap.PullAll(
+                str(out), _pbap_pull_filters(max_entries, phonebook=phonebook), timeout=30.0
+            )
+            if isinstance(ret, tuple | list):
+                transfer_path = str(ret[0])
+                initial = dict(ret[1]) if len(ret) > 1 else {}
+            else:
+                transfer_path = str(ret)
+                initial = {}
 
-        # PullAll returns initial Transfer1 properties alongside the path.
-        # Keep them: small transfers can finish and disappear before our first
-        # Properties.Get call.
-        initial_status = str(initial.get("Status", "queued"))
-        log.debug("PBAP transfer %s initial status=%s size=%s",
-                  transfer_path, initial_status, initial.get("Size", "unknown"))
-        def listing_size() -> int:
-            size = out.stat().st_size if out.exists() else 0
-            if max(size, int(initial.get("Size", 0) or 0)) > byte_limit:
-                raise RuntimeError(
-                    f"phonebook exceeds {byte_limit} byte safety limit"
-                )
-            return size
+            # PullAll also returns the transfer's initial properties.
+            initial_status = str(initial.get("Status", "queued"))
+            log.debug("PBAP transfer %s initial status=%s size=%s",
+                      transfer_path, initial_status, initial.get("Size", "unknown"))
+            def listing_size() -> int:
+                size = out.stat().st_size if out.exists() else 0
+                if max(size, int(initial.get("Size", 0) or 0)) > byte_limit:
+                    raise RuntimeError(
+                        f"phonebook exceeds {byte_limit} byte safety limit"
+                    )
+                return size
 
-        status = wait_for_transfer(
-            transfer_path,
-            initial_status=initial_status,
-            timeout_s=60,
-            overall_timeout_s=overall_timeout_s,
-            property_timeout_s=10.0,
-            allow_disappearance=True,
-            get_progress=listing_size,
-        )
+            status = wait_for_transfer(
+                transfer_path,
+                initial_status=initial_status,
+                timeout_s=60,
+                overall_timeout_s=overall_timeout_s,
+                property_timeout_s=10.0,
+                allow_disappearance=True,
+                get_progress=listing_size,
+                terminal_status=lambda timeout: watch.terminal(transfer_path, timeout),
+            )
 
         # obexd may remove a completed transfer object just before its output
         # becomes visible. Give the local write a bounded grace period.
@@ -403,13 +413,18 @@ def open_vcard_listing(
         size = out.stat().st_size if out.exists() else 0
         log.info("transfer status: %s, file size: %d bytes", status, size)
         if size == 0:
-            if allow_empty:
-                yield io.StringIO("")
-                return
-            raise RuntimeError(
-                "iPhone returned an empty phonebook; verify Settings → "
-                "Bluetooth → this computer → Sync Contacts is enabled"
-            )
+            # Skipping the owner card can legitimately leave no contacts.
+            # Disappearance alone, or a promised nonempty body, must not
+            # turn a failed download into an empty replacement of the cache.
+            if not (allow_empty and status == "complete"
+                    and int(initial.get("Size", 0) or 0) == 0):
+                raise RuntimeError(
+                    "iPhone returned an empty phonebook; verify Settings → "
+                    "Bluetooth → this computer → Sync Contacts is enabled"
+                )
+            # Keep the same seekable, file-backed stream for empty and
+            # nonempty phonebooks (including the two-pass photo parser).
+            out.touch(exist_ok=True)
         listing_size()
         with out.open(errors="replace") as stream:
             yield stream
@@ -460,7 +475,7 @@ def pull_phonebook(
     max_contacts = max(1, min(int(max_contacts), MAX_PHONEBOOK_CONTACTS))
     if storage is not None and not storage.status.can_write:
         raise RuntimeError(storage.status.detail)
-    with open_vcard_listing(sessions, "pb", max_entries=max_contacts) as stream:
+    with open_vcard_listing(sessions, "pb", max_entries=max_contacts, allow_empty=True) as stream:
         size = os.fstat(stream.fileno()).st_size
         if (config.CONTACT_PHOTOS if photos is None else photos) and storage is not None:
             # Find the records that own an address before budgeting photos.
