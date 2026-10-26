@@ -3516,10 +3516,12 @@ class _CallsBridge(QObject):
     def callHistoryRows(self):
         missed = {"direction": "missed", "caller": "<b>Eve</b>", "known": True,
                   "address": "+15551230002", "day": "Today", "clock": "2:36 PM",
-                  "missed": True, "count": 3}
+                  "missed": True, "count": 3, "title": "<b>Eve</b> (3)",
+                  "detail": "Missed · +15551230002"}
         outgoing = {"direction": "outgoing", "caller": "+15551230001", "known": False,
                     "address": "+15551230001", "day": "Today", "clock": "1:02 PM",
-                    "missed": False, "count": 1}
+                    "missed": False, "count": 1, "title": "+15551230001",
+                    "detail": "Outgoing"}
         return {"all": [missed, outgoing], "missed": [missed]}
 
     @Property("QVariantMap", constant=True)

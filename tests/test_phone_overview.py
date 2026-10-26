@@ -134,6 +134,8 @@ def test_call_groups_fold_repeats_and_label_days() -> None:
     ]
     assert rows[0]["missed"] and rows[0]["known"] and rows[0]["caller"] == "Anna"
     assert not rows[2]["known"] and rows[2]["caller"] == "+41790000002"
+    assert (rows[0]["title"], rows[0]["detail"]) == ("Anna (3)", "Missed · +41790000001")
+    assert (rows[2]["title"], rows[2]["detail"]) == ("+41790000002", "Incoming")
     missed = overview.call_groups(entries, missed_only=True, now=now)
     assert [row["count"] for row in missed] == [3]
     assert day_and_clock("garbage") == ("", "")
