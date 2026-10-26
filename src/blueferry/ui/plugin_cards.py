@@ -87,12 +87,15 @@ class PluginCardSection(Gtk.Box):
         bus: GioBus | None = None,
         files: FileChooser = choose_files,
         opener: Callable[[str], None] | None = None,
+        on_new_items: Callable[[], None] = lambda: None,
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         self._files = files
         self._launch = opener or (lambda uri: launch_uri(self, uri))
         self.watcher = CardChangeWatcher(self._card_changed, bus)
         self._cards_key = ""
+        self._on_new_items = on_new_items
+        self._seen_items: set[tuple[str, str]] = set()
         self._targets_key = ""
         self._item_rows: list[Gtk.Widget] = []
         self._buttons: list[Gtk.Widget] = []
@@ -144,7 +147,7 @@ class PluginCardSection(Gtk.Box):
         close.connect("clicked", lambda _b: self.model.clear_message())
         self.message_row.add_suffix(close)
 
-        self.model = surfaces(self._render, self._open, self.watcher.watch)
+        self.model = surfaces(self._render, self._open, self._watch)
         self._render()
         self.model.reload()
 
@@ -160,6 +163,11 @@ class PluginCardSection(Gtk.Box):
         self._stopped = True
         self.watcher.stop()
         self.model.stop()
+
+    def _watch(self, names: list[str]) -> None:
+        # A reload that ends after the window closed subscribes nothing.
+        if not self._stopped:
+            self.watcher.watch(names)
 
     def _card_changed(self) -> None:
         if not self._stopped:
@@ -230,6 +238,16 @@ class PluginCardSection(Gtk.Box):
         self.set_visible(bool(cards) or can_share or bool(message))
 
     def _build(self, cards: list[dict]) -> None:
+        items = {(str(card["pluginId"]), str(item["id"]))
+                 for card in cards for item in card.get("items") or []}
+        fresh = bool(items - self._seen_items)
+        self._seen_items = items
+        self._build_rows(cards)
+        if fresh:
+            # Something new, such as a running transfer: never hidden.
+            self._on_new_items()
+
+    def _build_rows(self, cards: list[dict]) -> None:
         child = self.list.get_first_child()
         while child is not None:
             self.list.remove(child)

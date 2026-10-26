@@ -38,6 +38,7 @@ class FakeClient:
         self.calls = []
         self.handlers = {}
         self.runners = {}
+        self.opened = []  # what the window would have launched
 
     # GObject signals
     def connect(self, name, handler):
@@ -162,7 +163,8 @@ def _window(status=None, *, width=940, timer=None):
     ):
         window = window_module.MainWindow(
             None, client, name_loader=lambda done: done("<b>Test</b> iPhone"),
-            timer=timer,
+            timer=timer, opener=client.opened.append, open_file=client.opened.append,
+            files=lambda *_args: None,
         )
     window.set_default_size(width, 700)
     window.present()

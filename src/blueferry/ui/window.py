@@ -37,6 +37,7 @@ from blueferry.ui.plugin_cards import (
     default_surfaces,
 )
 from blueferry.ui.status import SettingsDialog
+from blueferry.ui.ui_state import EXTRAS_EXPANDED, UiState
 
 COMPACT_WIDTH = "max-width: 650px"
 
@@ -47,6 +48,9 @@ class MainWindow(Adw.ApplicationWindow):
         surfaces: SurfacesFactory | None = None, tools: ToolsFactory | None = None,
         photo_runners: tuple[TaskRunner, TaskRunner] | None = None,
         card_bus: GioBus | None = None, files: FileChooser = choose_files,
+        opener: Callable[[str], None] | None = None,
+        open_file: Callable[[object], None] | None = None,
+        ui_state: UiState | None = None,
     ) -> None:
         super().__init__(application=application, title=_("BlueFerry"))
         self._client = client
@@ -82,7 +86,7 @@ class MainWindow(Adw.ApplicationWindow):
         )
         list_runner, original_runner = photo_runners or (
             client.task_runner("photos"), client.task_runner("photo-originals"))
-        self.photos = PhotosPage(list_runner, original_runner)
+        self.photos = PhotosPage(list_runner, original_runner, open_file=open_file)
         self.add_tab("photos", _("Photos"), "folder-pictures-symbolic", self.photos,
                      self.photos.set_watched)
         self.stack.connect("notify::visible-child-name", lambda *_args: self.sync_watches())
@@ -92,8 +96,10 @@ class MainWindow(Adw.ApplicationWindow):
         self.phone_card.add_status_listener(self.notifications.apply_status)
 
         # "From Plugins" and "Tools": below the card strip, on demand.
+        self._auto_extras = False
         self.plugin_cards = PluginCardSection(
-            surfaces or default_surfaces(client), bus=card_bus, files=files,
+            surfaces or default_surfaces(client), bus=card_bus, files=files, opener=opener,
+            on_new_items=self._new_plugin_items,
         )
         self.tools = CompanionToolsSection(tools or default_tools(client), timer=timer)
         self.extras_box = Gtk.Box(
@@ -114,6 +120,9 @@ class MainWindow(Adw.ApplicationWindow):
         )
         self.extras_button.connect("toggled", self._extras_toggled)
         self.phone_card.append(self.extras_button)
+        # The unfolded state is remembered; new card items unfold it too.
+        self._ui_state = ui_state or UiState(client.task_runner("ui-state"))
+        self._ui_state.load(self._ui_state_loaded)
         self._plugin_set: tuple | None = None
         self.settings.plugins.add_listener(self._plugins_changed)
 
@@ -219,7 +228,27 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _extras_toggled(self, button: Gtk.ToggleButton) -> None:
         self.extras.set_reveal_child(button.get_active())
+        if not self._auto_extras:
+            self._ui_state.save(**{EXTRAS_EXPANDED: button.get_active()})
         self.sync_watches()
+
+    def _unfold_extras(self) -> None:
+        if self._closed or self.extras_button.get_active():
+            return
+        self._auto_extras = True
+        try:
+            self.extras_button.set_active(True)
+        finally:
+            self._auto_extras = False
+
+    def _ui_state_loaded(self, values: dict) -> None:
+        if values.get(EXTRAS_EXPANDED) is True:
+            self._unfold_extras()
+
+    def _new_plugin_items(self) -> None:
+        # Not remembered: the user's own choice stays what was saved.
+        if hasattr(self, "extras_button"):
+            self._unfold_extras()
 
     def _plugins_changed(self, state: dict) -> None:
         """Enabling, installing or removing a plugin changes the card and

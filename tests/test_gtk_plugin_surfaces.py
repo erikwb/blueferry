@@ -17,7 +17,9 @@ from gi.repository import Gio, GLib
 from tests.gtk_broadway import run_scenario
 
 
-@pytest.mark.parametrize("scenario", ["cards", "send", "tools", "photos", "close"])
+@pytest.mark.parametrize(
+    "scenario", ["cards", "send", "tools", "photos", "close", "remembered"],
+)
 def test_gtk_plugin_surfaces(tmp_path, scenario):
     run_scenario(tmp_path, str(Path(__file__).resolve()), scenario)
 
@@ -124,7 +126,22 @@ def _cards():
     ]
 
 
-def _window(**window_options):
+class FakeUiState:
+    """Remembered window state, in memory."""
+
+    def __init__(self, values):
+        self.values = dict(values)
+        self.saved = []
+
+    def load(self, done):
+        done(dict(self.values))
+
+    def save(self, **values):
+        self.saved.append(values)
+        self.values.update(values)
+
+
+def _window(saved=None, **window_options):
     from types import SimpleNamespace
     from unittest.mock import patch
 
@@ -150,7 +167,7 @@ def _window(**window_options):
             return surfaces.ShareChoice(plugin_id, "LocalSend", target, label, "")
 
         model = PluginSurfacesModel(
-            runner=work, timer=work.timer, opener=lambda uri: opened.append(uri) or opener(uri),
+            runner=work, timer=work.timer, opener=opener,
             on_change=on_change, watch=watch,
             load_cards=_cards, share_available=lambda: True,
             card_names=lambda: ["io.example.Calendar", "io.example.LocalSend"],
@@ -167,6 +184,7 @@ def _window(**window_options):
     def files(_parent, title, done):
         chosen.append((title, done))
 
+    ui_state = FakeUiState(saved or {})
     configuration = ConfigurationState.from_dict({"configured": True, "saved": True})
     client = FakeClient()
     FakeSettings.opened = []
@@ -178,12 +196,15 @@ def _window(**window_options):
         window = window_module.MainWindow(
             None, client, name_loader=lambda done: done("iPhone"),
             surfaces=surfaces, card_bus=bus, files=files, timer=clock.timer,
+            # Nothing is ever launched or written: fakes for every way out.
+            opener=opened.append, open_file=opened.append, ui_state=ui_state,
             **window_options,
         )
     window.set_default_size(980, 760)
     window.present()
     _settle()
     return SimpleNamespace(window=window, client=client, work=work, invoked=invoked,
+                           ui_state=ui_state,
                            sent=sent, opened=opened, chosen=chosen, bus=bus)
 
 
@@ -227,13 +248,21 @@ def _exercise_cards():
 
     t = _window()
     window, section = t.window, t.window.plugin_cards
-    # Hidden until asked for; the card plugins load once, like the Qt card.
+    # Folded by default; the card plugins load once, like the Qt card, and
+    # new items unfold the panel without changing the remembered choice.
     assert not window.extras.get_reveal_child()
     assert len(t.work.pending) >= 1
     t.work.run_tasks()
-    window.extras_button.set_active(True)
     _settle()
     assert window.extras.get_reveal_child() and section.get_visible()
+    assert t.ui_state.saved == []
+    window.extras_button.set_active(False)
+    assert t.ui_state.saved == [{"plugins_tools_expanded": False}]
+    section.model.reload()
+    t.work.run_tasks()
+    assert not window.extras.get_reveal_child(), "the same items again: stays folded"
+    window.extras_button.set_active(True)
+    assert t.ui_state.saved[-1] == {"plugins_tools_expanded": True}
     # Only the card plugins' owners may say CardChanged.
     assert sorted(t.bus.handlers) == ["io.example.Calendar", "io.example.LocalSend"]
     interface, member, path, handler = t.bus.handlers["io.example.Calendar"]
@@ -400,6 +429,28 @@ def _photo_files(tmp):
     return paths
 
 
+def _thumbnail_limits(tmp):
+    """Oversized files and canvases are never decoded."""
+    from gi.repository import Gio
+
+    from blueferry.ui.photos import MAX_THUMBNAIL_BYTES, load_thumbnail
+    from tests.photo_fixtures import png, png_header
+
+    (tmp / "small.png").write_bytes(png(8, 8))
+    (tmp / "canvas.png").write_bytes(png_header(30000, 30000))
+    (tmp / "large.png").write_bytes(png(8, 8) + b"\0" * (MAX_THUMBNAIL_BYTES + 1))
+    results: dict = {}
+    for name in ("small", "canvas", "large"):
+        uri = Gio.File.new_for_path(str(tmp / f"{name}.png")).get_uri()
+        load_thumbnail(uri, Gio.Cancellable(), lambda texture, n=name: results.update({n: texture}))
+    deadline = time.monotonic() + 3
+    while len(results) < 3:
+        assert time.monotonic() < deadline, results
+        _settle()
+    assert results["small"] is not None
+    assert results["canvas"] is None and results["large"] is None
+
+
 def _exercise_photos():
     import tempfile
     from unittest.mock import patch
@@ -424,6 +475,7 @@ def _photos_scenario(tmp, answers):
     from tests.client_fakes import ManualRunner
 
     thumbs = _photo_files(tmp)
+    _thumbnail_limits(tmp)
     list_work, open_work = ManualRunner(), ManualRunner()
     opened = []
     t = _window(photo_runners=(list_work, open_work))
@@ -499,11 +551,22 @@ def _exercise_close():
     assert t.bus.handlers
     section.model.schedule_reload()
     assert section.model._timer.active
+    section.model.reload()  # still running when the window closes
     window.close()
     _settle()
     assert not t.bus.handlers and not section.model._timer.active
+    t.work.run_tasks()
+    assert not t.bus.handlers, "a late reload subscribes nothing"
     section.schedule_reload()  # a late settings change after closing
     assert not section.model._timer.active
+
+
+def _exercise_remembered():
+    # Unfolded last time: unfolded again, without writing anything.
+    t = _window(saved={"plugins_tools_expanded": True})
+    assert t.window.extras.get_reveal_child() and t.window.extras_button.get_active()
+    assert t.ui_state.saved == []
+    t.window.destroy()
 
 
 if __name__ == "__main__":
@@ -513,4 +576,5 @@ if __name__ == "__main__":
         "tools": _exercise_tools,
         "photos": _exercise_photos,
         "close": _exercise_close,
+        "remembered": _exercise_remembered,
     }[sys.argv[1]]()
