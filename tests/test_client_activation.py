@@ -268,7 +268,7 @@ def test_real_client_dbus_activation(tmp_path, monkeypatch, key):
             assert json.loads(read_line()) == ["during-load", "early-token"]
         assert read_line() == "ready"
         if key == "systemd":
-            monkeypatch.setattr(activation.os, "access", lambda *_args: True)
+            _installed_only(monkeypatch, lambda _client: True)
             monkeypatch.setenv("XDG_CURRENT_DESKTOP", "GNOME")
             assert activation.open_message("-$HOME literal", "focus-token")
             unit, mode, properties, aux = json.loads(read_line())
