@@ -66,11 +66,8 @@ class FeatureSwitches:
     def notice_group(self) -> Adw.PreferencesGroup:
         """A "restart required" notice for the top of one settings page."""
         group = Adw.PreferencesGroup()
-        row = Adw.ActionRow(
-            title=features_view.restart_notice(self._state),
-            use_markup=False,
-            icon_name="system-reboot-symbolic",
-        )
+        row = Adw.ActionRow(title=features_view.restart_notice(self._state), use_markup=False)
+        row.add_prefix(Gtk.Image(icon_name="system-reboot-symbolic"))
         row.add_suffix(self.restart_button(suggested=True))
         group.add(row)
         self._notices.append((group, row))
