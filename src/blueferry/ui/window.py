@@ -160,6 +160,7 @@ class MainWindow(Adw.ApplicationWindow):
         visible = self.stack.get_visible_child_name()
         if hasattr(self, "phone_card"):
             self.phone_card.set_watched(shown)
+            self.calls.set_shown(shown)
         for name, set_watched in self._watchers.items():
             set_watched(shown and name == visible)
 

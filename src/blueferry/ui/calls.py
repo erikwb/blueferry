@@ -4,7 +4,8 @@ GTK counterpart of the Qt client's ``CallsTab.qml`` and
 ``RecentCallsPage.qml``. The wording and rules are shared
 (``phone_link_view``, ``phone_overview.call_groups``). Calling always goes
 through the window's confirmation dialog (``MainWindow.request_dial``),
-which also explains numbers BlueFerry does not dial. The recent-call list
+which also explains numbers BlueFerry does not dial. Running calls are
+``ui/running_calls.py``. The recent-call list
 is read only while the tab is shown and the opt-in is on, and forgotten
 when the tab is left. Names, numbers and errors are plain text.
 """
@@ -23,6 +24,7 @@ from blueferry.i18n import _
 from blueferry.models import CallHistoryEntry
 from blueferry.ui.phone_presenter import direction_icon
 from blueferry.ui.reads import CoalescedRead
+from blueferry.ui.running_calls import RunningCalls
 from blueferry.ui.util import glib_timer
 
 MAX_CALLS = 200
@@ -70,6 +72,12 @@ class CallsPage(Gtk.Box):
             self._calls_loaded, self._calls_failed,
             active=lambda: self._watched and overview.call_history_enabled(self._status),
         )
+
+        # Running calls first, as in Qt; they also report the Calls1 state.
+        self.running = RunningCalls(
+            client, toast, on_state=self._render_dial_state, timer=timer,
+        )
+        self.append(self.running)
 
         self.hint_banner = Adw.Banner(use_markup=False, button_label=_("Open Settings"))
         self.hint_banner.connect("button-clicked", lambda _b: open_settings("calls"))
@@ -213,16 +221,32 @@ class CallsPage(Gtk.Box):
     # ---- the window's side ---------------------------------------------
 
     def apply_status(self, status: dict) -> None:
-        """A status read by the phone card."""
-        enabled = overview.call_history_enabled(status)
-        if enabled != overview.call_history_enabled(self._status):
-            self._forget_calls()
+        """A status read by the phone card.
+
+        Only a change of the call-history opt-in reads or rebuilds the list:
+        every StatusChanged would otherwise cost a ListCallHistory and reset
+        its scroll position.
+        """
+        was_enabled = overview.call_history_enabled(self._status)
+        hint = self.calls_hint
         self._status = status
-        self._render()
-        self._calls_read.refresh()
+        self.running.apply_status(status)
+        enabled = overview.call_history_enabled(status)
+        self._render_dial_state()
+        if enabled != was_enabled:
+            self._forget_calls()
+            self._calls_read.refresh()
+            self._render_calls()
+        elif hint != self.calls_hint:
+            self._render_calls()  # the call-back buttons follow readiness
+
+    def set_shown(self, shown: bool) -> None:
+        """The window became visible or hidden: running calls follow it."""
+        self.running.set_shown(shown)
 
     def set_watched(self, watched: bool) -> None:
         """Read the recent calls while the tab is shown; forget them after."""
+        self.running.set_watched(watched)
         if watched == self._watched:
             return
         self._watched = watched
@@ -237,7 +261,7 @@ class CallsPage(Gtk.Box):
 
     @property
     def calls_hint(self) -> str:
-        return phone_link_view.calls_hint(self._status, str(self._status.get("calls_state") or ""))
+        return phone_link_view.calls_hint(self._status, self.running.state)
 
     def dial(self) -> None:
         number = phone_link_view.dialable(self.entry.get_text())
@@ -333,6 +357,10 @@ class CallsPage(Gtk.Box):
     # ---- rendering ------------------------------------------------------
 
     def _render(self) -> None:
+        self._render_dial_state()
+        self._render_calls()
+
+    def _render_dial_state(self) -> None:
         hint = self.calls_hint
         self.hint_banner.set_title(hint)
         self.hint_banner.set_revealed(bool(hint))
@@ -342,7 +370,6 @@ class CallsPage(Gtk.Box):
             widget.set_sensitive(enabled)
         self.delete_button.set_visible(bool(self.entry.get_text()))
         self._render_dial()
-        self._render_calls()
 
     def _render_dial(self) -> None:
         hint = self.calls_hint
@@ -406,7 +433,7 @@ class CallsPage(Gtk.Box):
             title=item["title"], subtitle=item["detail"], use_markup=False,
         )
         row.update_property([Gtk.AccessibleProperty.LABEL], [
-            f"{item['detail']}, {item['caller']}, {item['clock']}",
+            f"{item['direction_label']}, {item['caller']}, {item['clock']}",
         ])
         icon = Gtk.Image(icon_name=direction_icon(item["direction"]))
         if item["missed"]:
