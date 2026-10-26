@@ -763,6 +763,24 @@ def settings_window(qml_engine):
             property var featureHints: ({})
             property var phoneAudio: ({})
             property string phoneName: "Test iPhone"
+            property string phoneConnection: "Not connected"
+            // phone_link_view.DIAL_KEYS and simplified stand-ins for the
+            // controller's phone_link_view slots (tested in test_phone_overview).
+            property var dialKeys: [["1", ""], ["2", "ABC"], ["3", "DEF"], ["4", "GHI"],
+                ["5", "JKL"], ["6", "MNO"], ["7", "PQRS"], ["8", "TUV"], ["9", "WXYZ"],
+                ["*", ""], ["0", "+"], ["#", ""]]
+            function dialable(value) { return String(value || "").replace(/[^0-9+*#]/g, "").slice(0, 32); }
+            function callsHint(status, state) {
+                if (status.calls_enabled !== true) return featureHints.calls || "Phone calls are off.";
+                return state === "ready" ? "" : "Waiting for the iPhone's hands-free connection.";
+            }
+            function notificationsView(info, hint) {
+                return {
+                    title: hint !== "" ? "Notification List Is Off" : "No Notifications Yet",
+                    explanation: hint !== "" ? hint : (info.error || ""),
+                    contentHint: info.enabled === true && info.content !== true ? "Only app names" : "",
+                };
+            }
             property var notifications: []
             property var notificationsInfo: ({})
             property var callHistoryRows: ({})
@@ -4557,6 +4575,7 @@ def test_phone_card_greys_out_opt_ins_and_switches_audio_explicitly(qml_engine, 
     card = _settings_object(window, "phoneCard")
     assert card.property("visible") is True
     assert _settings_object(window, "phoneCardName").property("text") == "Test iPhone"
+    assert _settings_object(window, "phoneCardConnection").property("text") == "Not connected"
     _evaluate(qml_engine, """testBridge.featureHints = {
         media: "Set BLUEFERRY_MEDIA_CONTROL_ENABLED=true", phoneStatus: "Battery <b>needs</b> calls"
     }""")

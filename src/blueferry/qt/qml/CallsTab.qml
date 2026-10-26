@@ -21,11 +21,10 @@ GridLayout {
     readonly property var phoneCalls: callsTab.bridge.phoneCalls || []
     readonly property var audio: callsTab.bridge.phoneAudio || ({})
     readonly property string dialText: callsTab.dialable(dialField.text)
-    readonly property bool searching: /[^0-9+*#\s()\-.\/]/.test(dialField.text)
 
-    // HFP dialing accepts digits, +, * and # only.
+    // What the field keeps: digits, +, * and # (phone_link_view.dialable).
     function dialable(value: string): string {
-        return String(value || "").replace(/[^0-9+*#]/g, "").slice(0, 32)
+        return callsTab.bridge.dialable(String(value || ""))
     }
 
     function append(key: string): void {
@@ -38,16 +37,10 @@ GridLayout {
             callsTab.bridge.dialCall(number)
     }
 
-    function notReadyText(): string {
-        if (!callsTab.callsEnabled)
-            return callsTab.hints.calls || qsTr("Phone calls are off.")
-        switch (callsTab.bridge.callsState) {
-        case "connecting": return qsTr("Bringing the iPhone's hands-free connection online…")
-        case "searching": return qsTr("Waiting for the iPhone's hands-free connection.")
-        case "unavailable": return qsTr("oFono is not running, so calls are unavailable.")
-        default: return qsTr("Waiting for the iPhone's hands-free connection.")
-        }
-    }
+    // Why the pad cannot call (phone_link_view.calls_hint); both arguments
+    // are bound so the text follows the status and the Calls1 state.
+    readonly property string notReadyText: callsTab.bridge.callsHint(
+        callsTab.bridge.status || ({}), callsTab.bridge.callsState || "")
 
     // Seconds since a call was first seen, for the running-call cards.
     property double now: Date.now()
@@ -149,7 +142,7 @@ GridLayout {
             Layout.fillWidth: true
             visible: !callsTab.callsEnabled || !callsTab.callsReady
             type: Kirigami.MessageType.Information
-            text: callsTab.notReadyText()
+            text: callsTab.notReadyText
         }
 
         ColumnLayout {
@@ -228,11 +221,7 @@ GridLayout {
                 rowSpacing: Kirigami.Units.largeSpacing
 
                 Repeater {
-                    model: [
-                        ["1", ""], ["2", "ABC"], ["3", "DEF"], ["4", "GHI"], ["5", "JKL"],
-                        ["6", "MNO"], ["7", "PQRS"], ["8", "TUV"], ["9", "WXYZ"],
-                        ["*", ""], ["0", "+"], ["#", ""]
-                    ]
+                    model: callsTab.bridge.dialKeys || []
                     delegate: Controls.AbstractButton {
                         id: key
                         required property var modelData
@@ -306,7 +295,7 @@ GridLayout {
                 }
                 Accessible.name: text
                 // Disabled buttons get no hover; the hint above explains why.
-                Controls.ToolTip.text: callsTab.callsReady ? text : callsTab.notReadyText()
+                Controls.ToolTip.text: callsTab.callsReady ? text : callsTab.notReadyText
                 Controls.ToolTip.visible: hovered
                 onClicked: callsTab.dial()
             }

@@ -16,6 +16,8 @@ ColumnLayout {
     readonly property var info: tab.bridge.notificationsInfo || ({})
     readonly property string optInHint: (tab.bridge.featureHints || {}).notifications || ""
     readonly property var rows: tab.bridge.notifications || []
+    // Placeholder and content notice (phone_link_view.notifications_view).
+    readonly property var view: tab.bridge.notificationsView(tab.info, tab.optInHint) || ({})
     spacing: 0
 
     SectionHeader {
@@ -39,9 +41,9 @@ ColumnLayout {
         Layout.leftMargin: Kirigami.Units.largeSpacing
         Layout.rightMargin: Kirigami.Units.largeSpacing
         Layout.bottomMargin: Kirigami.Units.smallSpacing
-        visible: tab.info.enabled === true && tab.info.content !== true
+        visible: (tab.view.contentHint || "") !== ""
         type: Kirigami.MessageType.Information
-        text: qsTr("Only app names and times are shown. Turn on “Show message content in popups” in Settings › Notifications to see titles and text.")
+        text: tab.view.contentHint || ""
     }
 
     Controls.ScrollView {
@@ -62,8 +64,7 @@ ColumnLayout {
                 title: row.modelData.app
                 bold: true
                 meta: row.modelData.time
-                subtitle: [row.modelData.title, row.modelData.subtitle || ""]
-                    .filter(part => part !== "").join(" · ")
+                subtitle: row.modelData.summary || ""
                 body: row.modelData.body
                 Accessible.name: row.modelData.app + ", " + row.modelData.time
             }
@@ -74,14 +75,8 @@ ColumnLayout {
                 visible: notificationList.count === 0
                 dimmed: tab.optInHint !== ""
                 icon.name: "notifications"
-                text: tab.optInHint !== ""
-                    ? qsTr("Notification List Is Off")
-                    : tab.info.error
-                        ? qsTr("Notifications Are Unavailable")
-                        : qsTr("No Notifications Yet")
-                explanation: tab.optInHint !== ""
-                    ? tab.optInHint
-                    : tab.info.error || qsTr("iPhone app notifications appear here while BlueFerry is running. The list is not saved.")
+                text: tab.view.title || ""
+                explanation: tab.view.explanation || ""
             }
         }
     }
