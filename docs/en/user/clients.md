@@ -35,7 +35,8 @@ bottom in a narrow window:
 its switches: **From Plugins** (the items [plugins](plugins.md) offer, with
 their buttons, and **Send to…**; files dropped on a device item are sent to
 it) and **Tools** (screen mirroring, LocalSend, the iPhone's photos over
-USB).
+USB). It stays as you left it and unfolds by itself when a plugin brings
+something new, such as a running transfer.
 
 **Settings** (main menu, `Ctrl+,`) has the same categories as the KDE
 client, one page each; the switcher sits in the header bar, or at the

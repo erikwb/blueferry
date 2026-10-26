@@ -38,7 +38,9 @@ in der Kopfzeile, in einem schmalen Fenster unten:
 seinen Schaltern zeigt: **From Plugins** (was [Plugins](plugins.md)
 anbieten, mit ihren Knöpfen, und **Send to…**; auf ein Geräte-Element
 gezogene Dateien gehen an dieses Gerät) und **Tools** (Bildschirm spiegeln,
-LocalSend, die Fotos des iPhones über USB).
+LocalSend, die Fotos des iPhones über USB). Der Bereich bleibt, wie du ihn
+verlassen hast, und klappt von selbst auf, wenn ein Plugin etwas Neues
+bringt, etwa eine laufende Übertragung.
 
 **Settings** (Hauptmenü, `Strg+,`) hat dieselben Kategorien wie der
 KDE-Client, je eine Seite; die Umschaltleiste sitzt in der Kopfzeile, in
