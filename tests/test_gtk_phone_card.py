@@ -34,6 +34,7 @@ class FakeClient:
         self.status = BackendStatus.from_dict(status or {"daemon": True, "map": True})
         self.calls = []
         self.handlers = {}
+        self.runners = {}
 
     # GObject signals
     def connect(self, name, handler):
@@ -73,6 +74,12 @@ class FakeClient:
     def notifications(self, limit):
         raise AssertionError("only called through submit")
 
+    # the plugin parts' workers: nothing runs unless a scenario says so
+    def task_runner(self, name, _workers=1):
+        from tests.client_fakes import ManualRunner
+
+        return self.runners.setdefault(name, ManualRunner())
+
     # the Messages tab's reads stay unanswered
     def list_threads_async(self, *_args, **_kwargs):
         pass
@@ -101,7 +108,10 @@ class FakeSettings:
     opened: ClassVar[list] = []
 
     def __init__(self, _client):
-        pass
+        from types import SimpleNamespace
+
+        self.listeners = []
+        self.plugins = SimpleNamespace(add_listener=self.listeners.append)
 
     def open(self, _parent, category=""):
         self.opened.append(category)
@@ -179,9 +189,9 @@ def _exercise_layout():
 
     window, _client = _window(CALLS_READY)
     assert [page.get_name() for page in window.stack.get_pages()] == [
-        "messages", "calls", "notifications"]
+        "messages", "calls", "notifications", "photos"]
     assert [page.get_title() for page in window.stack.get_pages()] == [
-        "Messages", "Calls", "Notifications"]
+        "Messages", "Calls", "Notifications", "Photos"]
     assert window.header.get_title_widget() is window.switcher
     assert not window.switcher_bar.get_reveal()
     assert window.stack.get_visible_child_name() == "messages"
@@ -417,7 +427,7 @@ def _exercise_notifications():
     runner = ManualRunner()
     window, client = _window({"daemon": True, "map": True}, timer=runner.timer)
     page = window.notifications
-    timer = runner.timers[-1]
+    timer = page.history._timer
     assert "notifications" not in client.names(), "hidden tab: nothing is read"
     window.show_tab("notifications")
     _settle()
