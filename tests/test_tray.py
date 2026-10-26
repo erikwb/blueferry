@@ -327,6 +327,12 @@ _OPEN_SETUP = textwrap.dedent("""
     from blueferry.qt.tray import TrayController
 
     GTK, QT, QS = CLIENTS
+    # Only the stubs on PATH count as installed, plus Qt from its module.
+    client_activation._SYSTEM_BIN = Path(sys.argv[1]) / "no-usr-bin"
+    sys.executable = str(Path(sys.argv[1]) / "no-venv" / "python")
+    client_activation._module_program = lambda client: (
+        [sys.executable, "-m", "blueferry.qt.app"] if client.key == "qt" else None
+    )
     app = QApplication([])
     calls, launches, failing = [], [], set()
     names, replies = [":1.7"], {}

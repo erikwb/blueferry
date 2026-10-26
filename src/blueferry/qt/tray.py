@@ -17,7 +17,6 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-import shutil
 import signal
 import sys
 from collections.abc import Callable
@@ -49,6 +48,7 @@ from blueferry.client_activation import (
     TRAY_BUS_NAME,
     DesktopClient,
     activation_environment,
+    client_program,
     is_live,
     ranked_clients,
 )
@@ -457,9 +457,7 @@ class TrayController(QObject):
     def _open_client(self, running: list[str], token: str) -> None:
         if self._closed:
             return
-        candidates = ranked_clients(running, installed=lambda client: (
-            client_command(client) is not None
-        ))
+        candidates = ranked_clients(running)
         if not candidates:
             log.warning("no BlueFerry graphical client is installed")
             return
@@ -518,24 +516,13 @@ def take_activation_token() -> str:
     return token if len(token) <= 4096 else ""
 
 
-def client_command(client: DesktopClient) -> tuple[str, list[str]] | None:
-    """How to start ``client`` here, or None when it is not installed."""
-    program = shutil.which(Path(client.executable).name)
-    if program:
-        return program, []
-    if client.key == "qt":
-        # The tray ships with the Qt client: run it from this installation.
-        return sys.executable, ["-m", "blueferry.qt.app"]
-    return None
-
-
 def launch_client(client: DesktopClient, token: str) -> bool:
-    command = client_command(client)
+    command = client_program(client)
     if command is None:
         return False
     process = QProcess()
     process.setProgram(command[0])
-    process.setArguments(command[1])
+    process.setArguments(command[1:])
     environment = QProcessEnvironment()
     for name, value in activation_environment(token).items():
         environment.insert(name, value)

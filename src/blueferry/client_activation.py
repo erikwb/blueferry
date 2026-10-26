@@ -8,8 +8,10 @@ notification action instead of delivering ActionInvoked to the daemon.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import logging
 import os
+import shutil
 import subprocess  # nosec B404
 import sys
 import threading
@@ -44,8 +46,9 @@ class DesktopClient:
         return f"{ACTIVATION_INTERFACE}.{self.desktop_id.rsplit('.', 1)[1]}"
 
     @property
-    def executable(self) -> str:
-        return f"/usr/bin/blueferry-{self.key}"
+    def program_name(self) -> str:
+        """The command name; ``client_program`` finds where it is installed."""
+        return f"blueferry-{self.key}"
 
 
 CLIENTS = (
@@ -96,8 +99,51 @@ def is_live(client: DesktopClient, running: Sequence[str]) -> bool:
     )
 
 
+_SYSTEM_BIN = Path("/usr/bin")
+# Clients that can also run from this Python installation, and the module
+# their own interpreter-independent dependency lives in.
+_CLIENT_MODULES = {"gtk": ("blueferry.ui.app", "gi"), "qt": ("blueferry.qt.app", "PySide6")}
+
+
+def _module_program(client: DesktopClient) -> list[str] | None:
+    """``python -m`` for a client shipped in this installation, if it can run."""
+    entry = _CLIENT_MODULES.get(client.key)
+    if entry is None:
+        return None
+    module, dependency = entry
+    try:
+        if importlib.util.find_spec(dependency) is None:
+            return None
+    except (ImportError, ValueError):
+        return None
+    # Look for the file instead of importing the client's package.
+    path = Path(__file__).resolve().parent.joinpath(*module.split(".")[1:]).with_suffix(".py")
+    return [sys.executable, "-m", module] if path.is_file() else None
+
+
+def client_program(client: DesktopClient) -> list[str] | None:
+    """The absolute command that starts ``client``, or None if it is missing.
+
+    PATH covers package, ``pipx`` and ``~/.local/bin`` installs. The
+    directory of this interpreter covers a virtual environment that is not
+    on the PATH of whoever started the daemon (a D-Bus activated daemon on
+    OpenRC, or the systemd user manager's PATH), and the module fallback a
+    client installed in this environment without its launcher. The result is
+    absolute, so the systemd transient unit runs the same file.
+    """
+    name = client.program_name
+    found = shutil.which(name)
+    if found:
+        return [os.path.abspath(found)]
+    for directory in (Path(sys.executable).parent, _SYSTEM_BIN):
+        candidate = directory / name
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return [str(candidate)]
+    return _module_program(client)
+
+
 def _installed(client: DesktopClient) -> bool:
-    return os.access(client.executable, os.X_OK)
+    return client_program(client) is not None
 
 
 def ranked_clients(
@@ -299,7 +345,11 @@ def open_message(handle: str, token: str) -> bool:
                 if bus.name_has_owner(live_name):
                     log.warning("the running %s client did not accept activation", client.key)
                     return False
-        argv = [client.executable, f"--message={handle}"]
+        program = client_program(client)
+        if program is None:
+            log.warning("the %s client is no longer installed", client.key)
+            return False
+        argv = [*program, f"--message={handle}"]
         environment = _activation_environment(token)
         if "org.freedesktop.systemd1" in running:
             # A child of blueferry.service inherits PrivateDevices/PrivateTmp

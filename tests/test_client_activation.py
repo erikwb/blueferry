@@ -15,10 +15,16 @@ import pytest
 from blueferry import client_activation as activation
 
 
+def _installed_only(monkeypatch, predicate):
+    monkeypatch.setattr(activation, "client_program", lambda client: (
+        [f"/usr/bin/{client.program_name}"] if predicate(client) else None
+    ))
+
+
 @pytest.fixture
 def preferences(monkeypatch, tmp_path):
     monkeypatch.setattr(activation.config, "CONFIG_DIR", tmp_path)
-    monkeypatch.setattr(activation.os, "access", lambda *_args: True)
+    _installed_only(monkeypatch, lambda _client: True)
     return tmp_path
 
 
@@ -79,7 +85,7 @@ def test_legacy_gtk_exit_during_forwarding_allows_fresh_start(preferences, monke
     monkeypatch.setattr(activation.subprocess, "Popen", lambda argv, **_kw: launched.append(argv))
     assert activation.forward_to_legacy_gtk("handle", "") is None
     assert activation.open_message("handle", "")
-    assert launched == [[activation.GTK_CLIENT.executable, "--message=handle"]]
+    assert launched == [["/usr/bin/blueferry-gtk", "--message=handle"]]
 
 
 def test_most_recent_running_client_wins(preferences, monkeypatch):
@@ -93,12 +99,12 @@ def test_most_recent_running_client_wins(preferences, monkeypatch):
 
 def test_removed_preference_and_corrupt_file_fall_back(preferences, monkeypatch):
     activation.record_client_use("qt")
-    monkeypatch.setattr(activation.os, "access", lambda path, _mode: path.endswith("gtk"))
+    _installed_only(monkeypatch, lambda client: client.key == "gtk")
     assert activation.select_client([]).key == "gtk"
     (preferences / "clients" / "qt").write_text("invalid")
-    monkeypatch.setattr(activation.os, "access", lambda *_args: True)
+    _installed_only(monkeypatch, lambda _client: True)
     assert activation.select_client([], environment={}).key == "gtk"
-    monkeypatch.setattr(activation.os, "access", lambda *_args: False)
+    _installed_only(monkeypatch, lambda _client: False)
     assert activation.select_client([]) is None
 
 
@@ -115,6 +121,77 @@ def test_ranked_clients_puts_running_first_then_installed_by_recency(preferences
     )
     assert [client.key for client in ranked] == ["quickshell", "qt"]
     assert activation.select_client([], environment={}).key == "gtk"
+
+
+@pytest.fixture
+def no_clients(monkeypatch, tmp_path):
+    """No client anywhere: an empty PATH, /usr/bin and venv, no modules."""
+    venv = tmp_path / "venv" / "bin"
+    venv.mkdir(parents=True)
+    monkeypatch.setenv("PATH", str(tmp_path / "empty-path"))
+    monkeypatch.setattr(activation, "_SYSTEM_BIN", tmp_path / "usr-bin")
+    monkeypatch.setattr(activation.sys, "executable", str(venv / "python"))
+    monkeypatch.setattr(activation.importlib.util, "find_spec", lambda _name: None)
+    return tmp_path
+
+
+def _launcher(directory: Path, key: str) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"blueferry-{key}"
+    path.write_text("#!/bin/sh\n")
+    path.chmod(0o755)
+    return path
+
+
+def test_client_program_finds_a_launcher_on_path(no_clients, monkeypatch):
+    local_bin = no_clients / "home" / ".local" / "bin"
+    gtk = _launcher(local_bin, "gtk")
+    monkeypatch.setenv("PATH", str(local_bin))
+    assert activation.client_program(activation.GTK_CLIENT) == [str(gtk)]
+    assert activation.client_program(activation.CLIENTS[2]) is None
+
+
+def test_client_program_finds_a_venv_launcher_off_path(no_clients):
+    # A D-Bus activated daemon on OpenRC, or systemd's PATH, may not include
+    # the virtual environment the daemon and its helper run from.
+    qt = _launcher(no_clients / "venv" / "bin", "qt")
+    assert activation.client_program(activation.CLIENTS[1]) == [str(qt)]
+
+
+def test_client_program_falls_back_to_the_installed_module(no_clients, monkeypatch):
+    monkeypatch.setattr(
+        activation.importlib.util, "find_spec",
+        lambda name: object() if name == "PySide6" else None,
+    )
+    python = str(no_clients / "venv" / "bin" / "python")
+    assert activation.client_program(activation.CLIENTS[1]) == [python, "-m", "blueferry.qt.app"]
+    assert activation.client_program(activation.GTK_CLIENT) is None  # no gi here
+    assert activation.select_client([], environment={}).key == "qt"
+
+
+@pytest.mark.parametrize("systemd", [False, True])
+def test_open_message_starts_a_venv_client_by_absolute_path(no_clients, monkeypatch, systemd):
+    monkeypatch.setattr(activation.config, "CONFIG_DIR", no_clients / "config")
+    gtk = _launcher(no_clients / "venv" / "bin", "gtk")
+    started = []
+    names = ["org.freedesktop.systemd1"] if systemd else []
+    monkeypatch.setattr(activation.dbus, "SessionBus", lambda **_kw: SimpleNamespace(
+        list_names=lambda: names, close=lambda: None,
+    ))
+    monkeypatch.setattr(activation, "start_transient_service",
+                        lambda _bus, _prefix, argv, _variables: started.append(("unit", argv)))
+    monkeypatch.setattr(activation.subprocess, "Popen",
+                        lambda argv, **_kw: started.append(("spawn", argv)))
+    assert activation.open_message("handle", "")
+    assert started == [("unit" if systemd else "spawn", [str(gtk), "--message=handle"])]
+
+
+def test_open_message_without_any_client_does_nothing(no_clients, monkeypatch):
+    monkeypatch.setattr(activation.config, "CONFIG_DIR", no_clients / "config")
+    monkeypatch.setattr(activation.dbus, "SessionBus", lambda **_kw: SimpleNamespace(
+        list_names=lambda: [], close=lambda: None,
+    ))
+    assert not activation.open_message("handle", "")
 
 
 def test_recency_files_are_private_and_leave_daemon_settings_alone(preferences):
