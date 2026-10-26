@@ -20,9 +20,12 @@ from blueferry.cli_messages import sms_list, sms_send
 from blueferry.cli_notification_actions import notification_actions_app
 from blueferry.cli_notifications import notifications_app
 from blueferry.cli_otp import otp_app, otp_check, otp_status
+from blueferry.cli_photos import photos_app
 from blueferry.cli_plugins import PLUGINS_CONTEXT, plugins
 from blueferry.cli_proximity import proximity_app
 from blueferry.cli_reconnect import reconnect
+from blueferry.cli_surfaces import cards as plugin_cards
+from blueferry.cli_surfaces import send as send_files
 from blueferry.notification_policy import NotificationPolicyStore
 
 app = typer.Typer(
@@ -681,6 +684,9 @@ app.add_typer(call_history_app, name="call-history")
 app.add_typer(notifications_app, name="notifications")
 app.command("media")(media)
 app.command("plugins", context_settings=PLUGINS_CONTEXT)(plugins)
+app.command("send")(send_files)
+app.command("cards")(plugin_cards)
+app.add_typer(photos_app, name="photos")
 app.command("audio")(audio)
 app.add_typer(notification_actions_app, name="notification-actions")
 app.add_typer(calls_app, name="calls")
