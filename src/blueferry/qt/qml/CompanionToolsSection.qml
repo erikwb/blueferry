@@ -18,6 +18,11 @@ ColumnLayout {
     readonly property var tools: section.bridge.companionTools || ({})
     readonly property var rows: (section.tools.tools || []).filter(tool => tool.key !== "eject")
     readonly property bool busy: (section.tools.busy || "") !== ""
+    // Poll only while someone can see it: not minimized, hidden or in the
+    // background (each poll runs idevice_id).
+    property bool windowActive: section.Window.active
+    readonly property bool watching: section.visible && section.windowActive
+    onWatchingChanged: if (section.watching) section.refresh()
 
     function tool(key) {
         return (section.tools.tools || []).find(entry => entry.key === key) || ({})
@@ -134,9 +139,10 @@ ColumnLayout {
 
     // USB devices come and go without a signal; look again while shown.
     Timer {
+        objectName: "companionPoll"
         interval: 5000
         repeat: true
-        running: section.visible && !section.busy
+        running: section.watching && !section.busy
         onTriggered: section.refresh()
     }
     Component.onCompleted: section.refresh()

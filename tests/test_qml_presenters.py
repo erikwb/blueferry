@@ -4691,6 +4691,26 @@ def test_phone_card_tools_grey_out_missing_tools_and_run_actions(qml_engine, set
         "&lt;a href='https://evil.example'&gt;x&lt;/a&gt; &amp; &lt;b&gt;y&lt;/b&gt;")
 
 
+def test_phone_card_tools_poll_only_while_the_window_is_active(qml_engine,
+                                                               settings_window):
+    window, bridge = settings_window
+    bridge.setProperty("companionTools", _COMPANION_TOOLS)
+    QGuiApplication.processEvents()
+    section = _settings_object(window, "companionTools")
+    poll = section.findChild(QObject, "companionPoll")
+    section.setProperty("windowActive", True)
+    QGuiApplication.processEvents()
+    assert poll.property("running") is True
+    section.setProperty("windowActive", False)  # minimized or in the background
+    QGuiApplication.processEvents()
+    assert poll.property("running") is False
+    before = bridge.property("companionRefreshes")
+    section.setProperty("windowActive", True)
+    QGuiApplication.processEvents()
+    assert poll.property("running") is True
+    assert bridge.property("companionRefreshes") == before + 1  # looks again at once
+
+
 def test_photos_tab_loads_while_shown_and_hints_without_a_plugin(qml_engine, settings_window):
     window, _bridge = settings_window
     _evaluate(qml_engine, "testWindow.currentTab = testWindow.photosTab")
