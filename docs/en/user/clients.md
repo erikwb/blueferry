@@ -24,6 +24,15 @@ bottom in a narrow window:
 - **Notifications**: the [recent iPhone notifications](notification-history.md)
   of other apps. When the list is off, the tab says why and opens the
   setting.
+- **Photos**: the newest photos and videos of a [photo plugin](plugins.md),
+  with All, Photos and Videos; a click downloads the original and opens it,
+  and an opened one can be dragged into other apps.
+
+**Plugins & Tools** on the card unfolds what the KDE client shows below
+its switches: **From Plugins** (the items [plugins](plugins.md) offer, with
+their buttons, and **Send to…**; files dropped on a device item are sent to
+it) and **Tools** (screen mirroring, LocalSend, the iPhone's photos over
+USB).
 
 **Settings** (main menu, `Ctrl+,`) has the same categories as the KDE
 client, one page each; the switcher sits in the header bar, or at the
@@ -40,8 +49,7 @@ bottom in a narrow window, and the search button finds any setting:
 
 The switches that need a restart (below) work as in the KDE client: while a
 change waits for the restart, every page starts with a notice and
-**Restart Service**. The GTK client doesn't have the Photos tab and the
-plugin section of the card yet, and it shows no running calls (answer, hold and hang up
+**Restart Service**. The GTK client shows no running calls (answer, hold and hang up
 on the iPhone or in the call popup); use the KDE client or `blueferry` on
 the command line for those. The sound and away lock switches are under
 **Settings** rather than on the card.

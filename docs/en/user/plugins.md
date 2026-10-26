@@ -7,7 +7,8 @@ background service, and nothing is installed by default.
 
 ## Companion tools
 
-The **Tools** section of the KDE client's phone card and `blueferry tools`
+The **Tools** section of the phone card (in the GTK client under
+**Plugins & Tools**) and `blueferry tools`
 start three programs BlueFerry does not ship. Each is greyed out, with what
 to install, until its tool is there.
 

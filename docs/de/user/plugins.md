@@ -7,7 +7,8 @@ läuft im Hintergrunddienst, und nichts ist ab Werk installiert.
 
 ## Begleitprogramme
 
-Der Abschnitt **Tools** der Telefonkarte im KDE-Client und `blueferry tools`
+Der Abschnitt **Tools** der Telefonkarte (im GTK-Client unter
+**Plugins & Tools**) und `blueferry tools`
 starten drei Programme, die BlueFerry nicht mitbringt. Jeder Eintrag bleibt
 ausgegraut, mit dem Hinweis, was zu installieren ist, bis das Programm da
 ist.
