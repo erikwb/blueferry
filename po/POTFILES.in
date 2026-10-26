@@ -8,7 +8,9 @@ src/blueferry/ui/window.py
 src/blueferry/ui/conversations.py
 src/blueferry/ui/status.py
 src/blueferry/ui/status_presenter.py
-src/blueferry/ui/phone.py
+src/blueferry/ui/phone_card.py
+src/blueferry/ui/calls.py
+src/blueferry/ui/notifications.py
 src/blueferry/ui/phone_presenter.py
 src/blueferry/ui/dial_presenter.py
 src/blueferry/ui/settings_presenter.py

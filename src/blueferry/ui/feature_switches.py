@@ -12,16 +12,13 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from gi.repository import Adw, GLib, Gtk
+from gi.repository import Adw, Gtk
 
 from blueferry import features_view
-from blueferry.client_tasks import ScheduledTimer, Timer, TimerFactory
+from blueferry.client_tasks import TimerFactory
 from blueferry.i18n import _
 from blueferry.ui.settings_presenter import feature_subtitle
-
-
-def _glib_timer(callback: Callable[[], None]) -> Timer:
-    return ScheduledTimer(GLib.timeout_add, GLib.source_remove, callback)
+from blueferry.ui.util import glib_timer
 
 
 class FeatureSwitches:
@@ -44,7 +41,7 @@ class FeatureSwitches:
         self._applying = False
         self._daemon = False
         self._restarting = False
-        make_timer = timer or _glib_timer
+        make_timer = timer or glib_timer
         # After a restart: the status first, then the switches, once the
         # restarted daemon is likely to answer (as in the Qt client).
         self._status_timer = make_timer(refresh_status)
