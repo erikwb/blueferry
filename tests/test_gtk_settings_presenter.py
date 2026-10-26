@@ -15,9 +15,7 @@ def test_categories_follow_the_qt_settings_page() -> None:
     qml = (ROOT / "src/blueferry/qt/qml/SettingsPage.qml").read_text()
     block = qml[qml.index("readonly property var categories"):qml.index("function categoryName")]
     qt = re.findall(r'"key": "(\w+)", "name": qsTr\("([^"]+)"\)', block)
-    # Plugins join the GTK dialog with the GTK plugin settings.
-    assert [(c.key, c.title) for c in categories()] == [
-        entry for entry in qt if entry[0] != "plugins"]
+    assert [(c.key, c.title) for c in categories()] == qt
     assert all(c.icon.endswith("-symbolic") for c in categories())
 
 

@@ -17,6 +17,8 @@ src/blueferry/ui/settings_presenter.py
 src/blueferry/ui/feature_switches.py
 src/blueferry/ui/doctor.py
 src/blueferry/ui/notification_rules.py
+src/blueferry/ui/plugin_settings.py
+src/blueferry/ui/plugin_settings_presenter.py
 src/blueferry/qt/controller.py
 src/blueferry/qt/tray.py
 src/blueferry/qt/tray_presenter.py
