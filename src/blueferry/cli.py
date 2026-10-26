@@ -27,6 +27,7 @@ from blueferry.cli_proximity import proximity_app
 from blueferry.cli_reconnect import reconnect
 from blueferry.cli_surfaces import cards as plugin_cards
 from blueferry.cli_surfaces import send as send_files
+from blueferry.cli_tools import tools
 from blueferry.notification_policy import NotificationPolicyStore
 
 app = typer.Typer(
@@ -686,6 +687,7 @@ app.add_typer(notifications_app, name="notifications")
 app.command("media")(media)
 app.command("audio")(audio)
 app.add_typer(features_app, name="features")
+app.command("tools")(tools)
 app.command("plugins", context_settings=PLUGINS_CONTEXT)(plugins)
 app.command("send")(send_files)
 app.command("cards")(plugin_cards)

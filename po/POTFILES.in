@@ -56,3 +56,6 @@ src/blueferry/qt/qml/SettingsPlugins.qml
 src/blueferry/qt/plugin_surfaces.py
 src/blueferry/qt/qml/PhotosTab.qml
 src/blueferry/qt/qml/PluginCardSection.qml
+src/blueferry/companion_tools.py
+src/blueferry/qt/companion.py
+src/blueferry/qt/qml/CompanionToolsSection.qml
