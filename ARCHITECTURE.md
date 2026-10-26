@@ -187,6 +187,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `cli_media.py` | `blueferry media` now-playing status, commands, and `enable`/`disable`. |
 | `cli_audio.py` | `blueferry audio [status\|pc\|phone]`. |
 | `cli_features.py` | `blueferry features [on\|off NAME]`. |
+| `features_view.py` | Toolkit-neutral state of the `GetFeatures`/`SetFeature` switches in Settings, shared by Qt and (soon) GTK: loaded or fallback for older daemons, and the restart/environment notice after a change. |
 | `plugin_api/` | Plugin contract: manifest parser and discovery, settings schema (`config.py`, with groups, a pre-check, `ShowIf` and the form's `[ConfigAction]` buttons), `TestConfig`/`ConfigLogin` replies (`config_flow.py`), surfaces (`card`, `share`, content-free `notify`) with checked `open_uri`, the standard log file, a validating `PluginClient`, `PluginService`/`PhotosService` bases (bounded worker pool, per-caller budget) and a test harness (`FakeHost`). Imports nothing else from `blueferry`. A symlink to `plugin-api/src/blueferry/plugin_api`, which `plugin-api/pyproject.toml` also builds as the distribution `blueferry-plugin-api` for plugins in their own repositories. |
 | `plugin_manager.py` | Installs plugins from https Git URLs: pinned ref, clone, confirmation, own venv, manifest and D-Bus service file; update, remove, enable/disable under a `flock`; validates `installs.json` on every read. |
 | `plugin_stopper.py` | After an update, removal or disabling, SIGTERMs the owner of the plugin's bus name if it runs as the user from the plugin's old venv (pidfd, never SIGKILL, never BlueFerry itself); blocking, worker thread or CLI only. |
@@ -237,7 +238,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `qt/qml/Main.qml` | Kirigami window: navigation and composition. |
 | `qt/qml/ConversationLogic.qml` | Thread lookup, roster-warning dedup, participant parsing (also used by Quickshell). |
 | `qt/qml/SettingsPage.qml` | Settings with categories on the left (Phone, Notifications, Calls & Audio, Security, About), a drill-down list in a narrow window, and the restart notice for feature switches. |
-| `qt/qml/Settings*.qml` | One page per category; every control of the former single iPhone settings page lives in one of them. `SettingsPhone` also runs `blueferry doctor` (`doctor_report.py`, child process on its own pool) and shows the report as plain text. |
+| `qt/qml/Settings*.qml` | One page per category; every control of the former single iPhone settings page lives in one of them. `SettingsPhone` also runs `blueferry doctor` (`doctor_report.py`, child process on its own pool; the report's state map is shared with GTK) and shows the report as plain text. |
 | `qt/qml/SubtitleSwitch.qml`, `qt/qml/FeatureSwitch.qml` | A switch row with a wrapped explanation; `FeatureSwitch` binds one `GetFeatures`/`SetFeature` switch and falls back to the `local.env` hint on older daemons. |
 | `qt/qml/PhoneAudioSettings.qml` | The PC/iPhone sound switch in Calls & Audio; loaded only for daemons that report `phone_audio_route`. |
 | `qt/qml/PhoneSettingsDialogs.qml` | Window-owned settings/pairing dialogs that outlive the page. |

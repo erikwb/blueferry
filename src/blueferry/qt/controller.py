@@ -20,6 +20,8 @@ from PySide6.QtDBus import QDBusConnection
 
 from blueferry import (
     __version__,
+    doctor_report,
+    features_view,
     phone_audio_view,
     phone_link_view,
     phone_overview,
@@ -168,11 +170,9 @@ class BridgeController(QObject):
         # Settings: local.env switches (Messages1.GetFeatures) and the doctor
         # report; the doctor runs a local program on its own pool so the
         # D-Bus worker stays free.
-        self._features: dict = {"loaded": False, "available": False, "items": {},
-                                "notice": "", "error": ""}
+        self._features: dict = features_view.initial()
         self._doctor_runner = doctor
-        self._doctor: dict = {"running": False, "ran": False, "ok": False,
-                              "warnings": False, "text": ""}
+        self._doctor: dict = doctor_report.idle_state()
         self._local_pool = QThreadPool(self)
         self._local_pool.setMaxThreadCount(1)
         self._bluetooth_active = False
@@ -1461,9 +1461,9 @@ class BridgeController(QObject):
     @Slot()
     def restartBackend(self) -> None:
         def restarted(_value: object) -> None:
-            self._features = {**self._features, "notice": ""}
-            QTimer.singleShot(800, self.refresh)
-            QTimer.singleShot(1200, self.loadFeatures)
+            self._features = features_view.with_notice(self._features, "")
+            QTimer.singleShot(features_view.RESTART_REFRESH_DELAY_MS, self.refresh)
+            QTimer.singleShot(features_view.RESTART_FEATURES_DELAY_MS, self.loadFeatures)
 
         self._run(restart_backend, restarted)
 
@@ -1476,15 +1476,12 @@ class BridgeController(QObject):
     @Slot()
     def loadFeatures(self) -> None:
         def done(value: object) -> None:
-            items = value if isinstance(value, dict) else {}
-            self._features = {**self._features, "loaded": True, "available": True,
-                              "items": items, "error": ""}
+            self._features = features_view.loaded(self._features, value)
             self.featuresChanged.emit()
 
         def failed(message: str) -> None:
             # Older daemons have no GetFeatures; the UI falls back to hints.
-            self._features = {**self._features, "loaded": True, "available": False,
-                              "items": {}, "error": message}
+            self._features = features_view.unavailable(self._features, message)
             self.featuresChanged.emit()
 
         self._run(lambda: self._backend.features(), done, failed, busy=False)
@@ -1492,13 +1489,8 @@ class BridgeController(QObject):
     @Slot(str, bool)
     def setFeature(self, name: str, enabled: bool) -> None:
         def done(value: object) -> None:
-            notice = {
-                "restart-required": _("Restart the BlueFerry service to apply the change."),
-                "environment": _(
-                    "Saved, but the service's environment sets this variable and wins."
-                ),
-            }.get(str(value), "")
-            self._features = {**self._features, "notice": notice}
+            self._features = features_view.with_notice(
+                self._features, features_view.set_notice(value))
             self.featuresChanged.emit()
             self.loadFeatures()
 
@@ -1512,20 +1504,17 @@ class BridgeController(QObject):
     def runDoctor(self) -> None:
         if self._doctor["running"]:
             return
-        self._doctor = {**self._doctor, "running": True}
+        self._doctor = doctor_report.running_state(self._doctor)
         self.doctorChanged.emit()
         task = Task(self._doctor_runner)
         self._tasks.add(task)
 
         def done(report: object) -> None:
-            if isinstance(report, DoctorReport):
-                self._doctor = {"running": False, "ran": True, "ok": report.ok,
-                                "warnings": report.warnings, "text": report.text}
+            self._doctor = doctor_report.finished_state(self._doctor, report)
             self.doctorChanged.emit()
 
         def failed(message: str) -> None:
-            self._doctor = {"running": False, "ran": True, "ok": False,
-                            "warnings": False, "text": message}
+            self._doctor = doctor_report.failed_state(message)
             self.doctorChanged.emit()
 
         task.signals.done.connect(done)
