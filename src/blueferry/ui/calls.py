@@ -27,7 +27,7 @@ from blueferry.ui.util import glib_timer
 
 MAX_CALLS = 200
 SEARCH_DELAY_MS = 200
-MAX_QUERY = 64
+MAX_QUERY = 64  # the dial field's length, as in the Qt client
 _END = Pango.EllipsizeMode.END
 
 
@@ -99,7 +99,7 @@ class CallsPage(Gtk.Box):
         field = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         self.entry = Gtk.Entry(
             placeholder_text=_("Number or name"), xalign=0.5, hexpand=True,
-            width_chars=8, css_classes=["title-2", "flat"],
+            max_length=MAX_QUERY, width_chars=8, css_classes=["title-2", "flat"],
         )
         self.entry.update_property(
             [Gtk.AccessibleProperty.LABEL], [_("Phone number or contact name")],
@@ -278,8 +278,7 @@ class CallsPage(Gtk.Box):
             self._search_timer.start(SEARCH_DELAY_MS)
 
     def _search_contacts(self) -> None:
-        # Searches at most MAX_QUERY characters, like the Qt field's 64.
-        text = self.entry.get_text().strip()[:MAX_QUERY]
+        text = self.entry.get_text().strip()
         request = self._contacts.begin_contact_search(text if len(text) >= 2 else "")
         if request is None:
             self._render_suggestions()
