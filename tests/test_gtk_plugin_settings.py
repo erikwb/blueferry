@@ -292,6 +292,7 @@ def _exercise_installed():
 
     class Manager(_OneManager):
         enabled = True
+        refuse = False
         removed: list[str] = []  # noqa: RUF012
 
         def entries(self):
@@ -301,6 +302,10 @@ def _exercise_installed():
                 ("broken.plugin", "<i>no Exec</i>")]
 
         def set_enabled(self, plugin_id, enabled):
+            from blueferry.plugin_manager import InstallError
+
+            if Manager.refuse:
+                raise InstallError("settings file is read-only")
             Manager.enabled = enabled
 
         def remove(self, plugin_id):
@@ -338,10 +343,22 @@ def _exercise_installed():
     widgets["switch"].set_active(False)
     _settle()
     assert plugins.form is None and plugins.model.state()["config"] == {}
+    # The switch keeps the new position while the change runs; it never
+    # flips back to the old value before the list is read again.
+    work.run_next()
+    assert not widgets["switch"].get_active()
+    assert plugins._plugin_widgets["io.example.cloud"] is widgets
     work.run_tasks()
     widgets = plugins._plugin_widgets["io.example.cloud"]
     assert not widgets["switch"].get_active() and not widgets["settings"].get_sensitive()
     assert "Disabled" in plugins._plugin_rows[0].get_subtitle()
+    # A change that fails shows the real state again.
+    Manager.refuse = True
+    widgets["switch"].set_active(True)
+    assert widgets["switch"].get_active()
+    work.run_tasks()
+    assert "read-only" in plugins.message_row.get_title()
+    assert not widgets["switch"].get_active()
     assert opened == []
     dialog.close()
     _settle()

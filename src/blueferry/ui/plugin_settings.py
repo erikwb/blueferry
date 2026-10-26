@@ -119,6 +119,7 @@ class PluginSettingsPage:
         self._index_rows: list[Gtk.Widget] = []
         self._index_buttons: list[Gtk.Button] = []
         self._syncing = False
+        self._pending_toggles: set[str] = set()
 
         # ---- message: git's and pip's last line, a plugin's errors ------
         self.message_group = Adw.PreferencesGroup(visible=False)
@@ -306,6 +307,7 @@ class PluginSettingsPage:
         self._plugins_key = key
         _clear(self.installed_group, self._plugin_rows)
         self._plugin_widgets = {}
+        self._pending_toggles.clear()
         if state["loaded"] and not state["plugins"]:
             row = Adw.ActionRow(
                 title=_("No plugins installed. Add one from the list below."),
@@ -393,13 +395,11 @@ class PluginSettingsPage:
     def _toggled(self, plugin_id: str, enabled: bool) -> None:
         if self._syncing:
             return
-        # Setting a switch back from inside its own notify confuses
-        # GtkSwitch's state; the switches follow the model once it answers.
-        self._syncing = True
-        try:
-            self.model.set_enabled(plugin_id, enabled)
-        finally:
-            self._syncing = False
+        # The switch keeps the user's position until the reloaded list
+        # rebuilds the rows (or the change failed): setting it back from
+        # the state in between would flip it to the old value for a moment.
+        self._pending_toggles.add(plugin_id)
+        self.model.set_enabled(plugin_id, enabled)
 
     def _render_store(self, state: dict) -> None:
         store = state["store"]
@@ -472,20 +472,23 @@ class PluginSettingsPage:
         """Sensitivity and switch positions; no row is rebuilt."""
         state = self.model.state()
         busy = bool(state["busy"])
-        toggling, self._syncing = self._syncing, True
+        # A step that failed ends a pending toggle: show the real state again.
+        failed = not busy and bool(state["message"]) and state["messageOk"] is False
+        self._syncing = True
         try:
             rows = {plugin["id"]: plugin for plugin in state["plugins"]}
             for plugin_id, widgets in self._plugin_widgets.items():
                 plugin = rows.get(plugin_id, {})
                 enabled = plugin.get("enabled") is True
-                if not toggling:
+                if plugin_id not in self._pending_toggles or failed:
+                    self._pending_toggles.discard(plugin_id)
                     widgets["switch"].set_active(enabled)
                 widgets["switch"].set_sensitive(not busy)
                 widgets["settings"].set_sensitive(not busy and enabled)
                 for name in ("log", "update", "remove"):
                     widgets[name].set_sensitive(not busy)
         finally:
-            self._syncing = toggling
+            self._syncing = False
         for button, card in self._store_buttons:
             button.set_sensitive(present.store_action(card, busy).sensitive)
         for button in (self.refresh_button, self.store_refresh, self.default_button,
