@@ -56,6 +56,12 @@ style dependencies fail this check even when CLI/TUI startup still succeeds.
   context. The defaults are bound at import time, so patching `GLib` does
   not replace them. `tests/test_glib_source_guard.py` finds these classes by
   scanning the source and checks every test construction.
+- The toolkit-neutral client models (`client_tasks.py` seams) are tested
+  without Qt or GTK on `tests/client_fakes.py`: a `ManualRunner` queues the
+  work and runs it, with its callbacks, only when the test drains it, and its
+  timers fire only on request. Late answers are produced by holding work
+  back, not by thread gates. The Qt adapter tests keep only the pool, timer
+  and signal wiring.
 - Unit tests never arm real GLib timer or idle sources. The autouse
   `glib_source_guard` in `tests/conftest.py` refuses such a call on the
   test's thread with an `AssertionError` at the call site, and also fails
