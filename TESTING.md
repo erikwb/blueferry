@@ -62,6 +62,12 @@ style dependencies fail this check even when CLI/TUI startup still succeeds.
   timers fire only on request. Late answers are produced by holding work
   back, not by thread gates. The Qt adapter tests keep only the pool, timer
   and signal wiring.
+- The Textual adapters (`tui_tasks.py`) are tested in a headless
+  `App.run_test()`: callbacks arrive on the UI thread, done or error before
+  finished, a removed screen gets no late answer, and timers restart and
+  stop. Textual screens such as Options take their slow seams (service
+  restart, `blueferry doctor`) as constructor arguments, so tests never
+  restart a service or start a child process.
 - Unit tests never arm real GLib timer or idle sources. The autouse
   `glib_source_guard` in `tests/conftest.py` refuses such a call on the
   test's thread with an `AssertionError` at the call site, and also fails

@@ -243,6 +243,12 @@ Press `?` for the keyboard map or `Ctrl+P` for the command palette. The TUI has
 conversation search, a multiline composer, mouse support, themes, and a layout
 that adapts to narrow terminals.
 
+`o` opens Options with the settings categories of the Qt and GTK clients
+(Phone, Notifications, Calls & Audio, Security, About): the saved
+preferences the backend offers, the restart-required feature switches with
+**Restart Service**, and **Run Diagnostics** (`blueferry doctor` with a
+copyable report).
+
 ## System tray item
 
 `blueferry-tray` ships with the Qt client: a small separate process for the
