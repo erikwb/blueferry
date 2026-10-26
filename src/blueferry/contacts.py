@@ -12,7 +12,7 @@ import tempfile
 import time
 from collections import Counter
 from collections.abc import Callable, Collection, Hashable, Iterable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from copy import copy
 from pathlib import Path
 from typing import TYPE_CHECKING, TextIO, TypeVar
@@ -35,7 +35,7 @@ from blueferry.limits import (
     MAX_PHONEBOOK_CONTACTS,
 )
 from blueferry.obex.sessions import SessionManager
-from blueferry.obex.transfer import wait_for_transfer
+from blueferry.obex.transfer import TransferStatusWatch, wait_for_transfer
 from blueferry.phone_numbers import address_identities, contact_phone
 from blueferry.private_files import runtime_private_directory
 from blueferry.vcard import iter_bounded_lines, iter_vcard_bodies, iter_vcard_cards
@@ -365,40 +365,43 @@ def open_vcard_listing(
         prefix="phonebook-", dir=temporary_root
     ) as temporary_name:
         out = Path(temporary_name) / f"{phonebook}.vcf"
-        log.info("PBAP PullAll → %s (max=%d)", out, max_entries)
-        ret = pbap.PullAll(
-            str(out), _pbap_pull_filters(max_entries, phonebook=phonebook), timeout=30.0
-        )
-        if isinstance(ret, tuple | list):
-            transfer_path = str(ret[0])
-            initial = dict(ret[1]) if len(ret) > 1 else {}
-        else:
-            transfer_path = str(ret)
-            initial = {}
+        # Subscribe before PullAll: obexd can emit completion and remove a
+        # small transfer before the worker's first property read. In
+        # particular, a zero-byte result needs positive completion evidence.
+        with closing(TransferStatusWatch(sessions.pbap_path)) as watch:
+            log.info("PBAP PullAll → %s (max=%d)", out, max_entries)
+            ret = pbap.PullAll(
+                str(out), _pbap_pull_filters(max_entries, phonebook=phonebook), timeout=30.0
+            )
+            if isinstance(ret, tuple | list):
+                transfer_path = str(ret[0])
+                initial = dict(ret[1]) if len(ret) > 1 else {}
+            else:
+                transfer_path = str(ret)
+                initial = {}
 
-        # PullAll returns initial Transfer1 properties alongside the path.
-        # Keep them: small transfers can finish and disappear before our first
-        # Properties.Get call.
-        initial_status = str(initial.get("Status", "queued"))
-        log.debug("PBAP transfer %s initial status=%s size=%s",
-                  transfer_path, initial_status, initial.get("Size", "unknown"))
-        def listing_size() -> int:
-            size = out.stat().st_size if out.exists() else 0
-            if max(size, int(initial.get("Size", 0) or 0)) > byte_limit:
-                raise RuntimeError(
-                    f"phonebook exceeds {byte_limit} byte safety limit"
-                )
-            return size
+            # PullAll also returns the transfer's initial properties.
+            initial_status = str(initial.get("Status", "queued"))
+            log.debug("PBAP transfer %s initial status=%s size=%s",
+                      transfer_path, initial_status, initial.get("Size", "unknown"))
+            def listing_size() -> int:
+                size = out.stat().st_size if out.exists() else 0
+                if max(size, int(initial.get("Size", 0) or 0)) > byte_limit:
+                    raise RuntimeError(
+                        f"phonebook exceeds {byte_limit} byte safety limit"
+                    )
+                return size
 
-        status = wait_for_transfer(
-            transfer_path,
-            initial_status=initial_status,
-            timeout_s=60,
-            overall_timeout_s=overall_timeout_s,
-            property_timeout_s=10.0,
-            allow_disappearance=True,
-            get_progress=listing_size,
-        )
+            status = wait_for_transfer(
+                transfer_path,
+                initial_status=initial_status,
+                timeout_s=60,
+                overall_timeout_s=overall_timeout_s,
+                property_timeout_s=10.0,
+                allow_disappearance=True,
+                get_progress=listing_size,
+                terminal_status=lambda timeout: watch.terminal(transfer_path, timeout),
+            )
 
         # obexd may remove a completed transfer object just before its output
         # becomes visible. Give the local write a bounded grace period.

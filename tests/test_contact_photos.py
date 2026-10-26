@@ -10,6 +10,7 @@ from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 
+import dbus
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
@@ -23,6 +24,7 @@ from blueferry.contact_photos import (
 )
 from blueferry.contact_repository import ContactRepository
 from blueferry.contacts import ContactsResolver, _parse_vcard_entries, _parse_vcard_records
+from blueferry.obex import transfer
 from blueferry.settings_store import SettingsStore
 from blueferry.storage_security import StorageSecurity
 from blueferry.threads import build_threads
@@ -380,6 +382,22 @@ def photos_enabled(monkeypatch):
     monkeypatch.setattr(config, "CONTACT_PHOTOS", True)
 
 
+@pytest.fixture(autouse=True)
+def transfer_signals(monkeypatch):
+    from unittest.mock import Mock
+
+    callbacks, matches = [], []
+    def subscribe(callback):
+        callbacks.append(callback)
+        match = Mock()
+        matches.append(match)
+        return match
+    monkeypatch.setattr(transfer, "_add_transfer_receiver", subscribe)
+    yield callbacks
+    for match in matches:
+        match.remove.assert_called_once_with()
+
+
 @pytest.fixture
 def storage(isolated_state):
     selected = StorageSecurity(
@@ -616,6 +634,61 @@ def test_refresh_bumps_the_content_free_photo_revision(storage) -> None:
 
 
 # ---- PBAP pull: enabled vs. disabled -------------------------------------------
+
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("status", ["complete", "error", None])
+def test_empty_sync_uses_terminal_signal_before_object_removal(
+    storage, monkeypatch, tmp_path, transfer_signals, enabled, status,
+):
+    old = [("Old", ["+15551112222"], [])]
+    ContactRepository(storage).replace(old, photos=[JPEG])
+    target = None
+
+    class FastTransfer:
+        def Select(self, *_args, **_kwargs):
+            pass
+
+        def PullAll(self, filename, _filters, **_kwargs):
+            nonlocal target
+            target = Path(filename)
+            target.write_bytes(b"")
+            assert len(transfer_signals) == 1
+            if status is not None:
+                transfer_signals[0](
+                    "org.bluez.obex.Transfer1", {"Status": status}, [],
+                    path="/pbap/transfer1",
+                )
+            return "/pbap/transfer1", {"Status": "queued", "Size": 0}
+
+        def Get(self, *_args, **_kwargs):
+            raise dbus.exceptions.DBusException(
+                "transfer removed", name="org.freedesktop.DBus.Error.UnknownObject",
+            )
+
+        def Cancel(self, **_kwargs):
+            pass
+
+    interface = FastTransfer()
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setattr(contacts, "obex", lambda *_args: interface)
+    monkeypatch.setattr(transfer, "obex", lambda *_args: interface)
+    monkeypatch.setattr(contacts.time, "sleep", lambda _seconds: None)
+    if status == "complete":
+        assert contacts.pull_phonebook(
+            SimpleNamespace(pbap_path="/pbap"), storage=storage, photos=enabled,
+        ) == 0
+        assert ContactRepository(storage).load() == []
+        assert _photo_rows() == []
+    else:
+        expected = transfer.TransferFailed if status == "error" else RuntimeError
+        with pytest.raises(expected):
+            contacts.pull_phonebook(
+                SimpleNamespace(pbap_path="/pbap"), storage=storage, photos=enabled,
+            )
+        assert ContactRepository(storage).load() == old
+        assert ContactsResolver(storage=storage).photo("+15551112222") == JPEG
+    assert target is not None and not target.parent.exists()
+
 
 @pytest.mark.parametrize("enabled", [False, True])
 @pytest.mark.parametrize("owner_name", ["My Number", "Meine Nummer", "Mon numéro"])

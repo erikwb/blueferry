@@ -326,6 +326,9 @@ The iPhone phonebook is available through BlueZ's
   contact ambiguous, without depending on its localized name. A confirmed
   empty download after skipping the owner is a valid empty contact list;
   disappearance of an empty transfer alone does not clear the cache.
+- Subscribe to transfer completion before `PullAll`. BlueZ can emit the
+  terminal signal and remove `Transfer1` before polling observes completion;
+  retain that signal as evidence for valid empty contacts and call histories.
 - vCards contain `FN`, multiple `TEL` values, and `EMAIL` values. Retaining
   emails is necessary for contacts that exist only as Apple-ID destinations.
 - BlueFerry sends no `Fields` filter, and BlueZ then omits the PBAP Filter

@@ -23,6 +23,21 @@ from blueferry.obex import transfer
 from blueferry.vcard import iter_vcard_bodies
 
 
+@pytest.fixture(autouse=True)
+def transfer_signals(monkeypatch):
+    from unittest.mock import Mock
+
+    matches = []
+    def subscribe(_callback):
+        match = Mock()
+        matches.append(match)
+        return match
+    monkeypatch.setattr(transfer, "_add_transfer_receiver", subscribe)
+    yield
+    for match in matches:
+        match.remove.assert_called_once_with()
+
+
 def test_pbap_filters_use_phonebook_access_names():
     filters = _pbap_pull_filters(123)
     assert set(filters) == {"MaxCount", "Format", "Offset"}
@@ -57,6 +72,21 @@ def test_phonebook_transfer_uses_runtime_dir_and_cleans_up_on_failure(
     assert target.parent.parent == runtime_dir / "blueferry"
     assert not target.parent.exists()
     assert (runtime_dir / "blueferry").stat().st_mode & 0o777 == 0o700
+
+
+def test_phonebook_does_not_start_if_completion_watch_cannot_subscribe(tmp_path, monkeypatch):
+    def fail_subscription(_callback):
+        raise RuntimeError("cannot subscribe to transfer status")
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setattr(transfer, "_add_transfer_receiver", fail_subscription)
+    monkeypatch.setattr(contacts, "obex", lambda *_args: SimpleNamespace(
+        Select=lambda *_args, **_kwargs: None,
+        PullAll=lambda *_args, **_kwargs: pytest.fail("must subscribe before PullAll"),
+    ))
+    with pytest.raises(RuntimeError, match="cannot subscribe"):
+        contacts.pull_phonebook(SimpleNamespace(pbap_path="/pbap"))
+    assert list((tmp_path / "blueferry").iterdir()) == []
 
 
 def test_phonebook_transfer_fails_closed_without_runtime_dir(
