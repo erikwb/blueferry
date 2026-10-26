@@ -84,6 +84,12 @@ def _newer_symbols() -> tuple[dict[str, set[str]], set[tuple[str, str, str]]]:
     return newer_top, newer_members
 
 
+_PYTHON_METHODS = {
+    name for kind in (str, bytes, list, dict, set, tuple) for name in dir(kind)
+    if not name.startswith("_")
+}
+
+
 def _uses(source: str) -> tuple[set[tuple[str, str]], set[tuple[str, str, str]], set[str]]:
     """``(Adw/Gtk top-level names, qualified Type.MEMBER uses, other member names)``.
 
@@ -93,10 +99,14 @@ def _uses(source: str) -> tuple[set[tuple[str, str]], set[tuple[str, str, str]],
     """
     top = set(re.findall(r"\b(Adw|Gtk)\.([A-Za-z_]\w*)", source))
     qualified = set(re.findall(r"\b(Adw|Gtk)\.(\w+)\.([A-Z][A-Z0-9_]*)\b", source))
-    members = set(re.findall(r"\.([A-Za-z_]\w*)\s*\(", source))  # calls
+    # Method names of Python's own containers (``text.find``, ``rows.insert``)
+    # would match GTK methods of the same name added later.
+    members = set(re.findall(r"\.([A-Za-z_]\w*)\s*\(", source)) - _PYTHON_METHODS  # calls
     members |= {name.replace("-", "_") for name in re.findall(
         r"""["'](?:notify::)?([a-z][a-z0-9-]*)["']""", source)}  # properties, signals
-    members |= set(re.findall(r"\b([a-z][a-z0-9_]*)\s*=(?!=)", source))  # keyword arguments
+    # Keyword arguments only inside Adw/Gtk constructor calls, not every assignment.
+    for arguments in re.findall(r"\b(?:Adw|Gtk)\.[A-Z]\w*\(([^()]*)\)", source):
+        members |= set(re.findall(r"\b([a-z][a-z0-9_]*)\s*=(?!=)", arguments))
     return top, qualified, members
 
 
